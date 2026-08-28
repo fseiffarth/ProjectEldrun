@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { errorPhrase, liveControlAvailable, titleToTabLabel } from "../../lib/browser";
 import { useT } from "../../lib/i18n";
@@ -7,6 +6,7 @@ import { useBrowserStore, EMPTY_BROWSER_TAB } from "../../stores/browser";
 import { useSettingsStore } from "../../stores/settings";
 import { useTabsStore, type TabEntry } from "../../stores/tabs";
 import { UntestedTag } from "../common/UntestedTag";
+import { ContextMenuPortal } from "../common/ContextMenuPortal";
 import { BrowserAddressBar } from "./BrowserAddressBar";
 import { BrowserBlockedNotice } from "./BrowserBlockedNotice";
 import { BrowserReaderView } from "./BrowserReaderView";
@@ -326,18 +326,13 @@ export function BrowserPane({ tab, visible, ownsTabs = false }: BrowserPaneProps
           dialog would appear once per browser tab in the app. It is mounted once
           per window by `BrowserDownloadHost` instead. */}
 
-      {menuPos &&
-        createPortal(
-          <>
-            <div
-              style={{ position: "fixed", inset: 0, zIndex: 200 }}
-              onPointerDown={() => setMenuPos(null)}
-            />
-            <div
-              className="context-menu browser-menu"
-              style={{ left: menuPos.x, top: menuPos.y, zIndex: 201 }}
-              onPointerDown={(e) => e.stopPropagation()}
-            >
+      {menuPos && (
+          <ContextMenuPortal
+            x={menuPos.x}
+            y={menuPos.y}
+            onClose={() => setMenuPos(null)}
+            className="context-menu browser-menu"
+          >
               <div className="context-menu-group">
                 <button
                   disabled={!currentUrl}
@@ -368,9 +363,7 @@ export function BrowserPane({ tab, visible, ownsTabs = false }: BrowserPaneProps
                   <UntestedTag />
                 </button>
               </div>
-            </div>
-          </>,
-          document.body,
+          </ContextMenuPortal>
         )}
     </div>
   );

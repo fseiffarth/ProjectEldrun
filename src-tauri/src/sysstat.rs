@@ -175,9 +175,10 @@ pub fn machine_load() -> MachineLoad {
 /// rebuild its cached process tree instead of reusing the previous walk.
 static PROC_TREE_GEN: AtomicU64 = AtomicU64::new(0);
 
-/// Cache for [`descendant_pids`], keyed by the (sorted) root pid set. Holds the
-/// generation it was built at and a freshness deadline; reused only while both
-/// the generation is unchanged *and* the entry is younger than [`CACHE_TTL`].
+/// One cache entry for [`descendant_pids`], keyed by the (sorted) root pid set.
+/// Holds the generation it was built at and a freshness deadline; reused only
+/// while both the generation is unchanged *and* the entry is younger than
+/// [`CACHE_TTL`].
 struct DescendantCache {
     roots: Vec<u32>,
     pids: Vec<u32>,
@@ -185,7 +186,18 @@ struct DescendantCache {
     computed_at: Instant,
 }
 
-static DESCENDANT_CACHE: Mutex<Option<DescendantCache>> = Mutex::new(None);
+/// A **small keyed set**, not a single slot: several callers sample with
+/// different root sets on overlapping timers (a hovered project pill and the
+/// renderer watchdog are the concrete pair), and a single entry meant each one
+/// evicted the other every sample — every hit became a full process-table walk.
+/// A handful of entries under the same TTL/generation rules keeps concurrent
+/// samplers all warm.
+static DESCENDANT_CACHE: Mutex<Vec<DescendantCache>> = Mutex::new(Vec::new());
+
+/// How many distinct root sets keep a live entry at once. Two is the observed
+/// concurrent floor (pill hover + watchdog); four adds headroom for another
+/// hover or monitor pane without letting the lookup scan grow.
+const CACHE_ENTRIES: usize = 4;
 
 /// Upper bound on cache reuse even if no spawn/death bumped the generation: a
 /// process tree can grow/shrink without Eldrun spawning the PTY directly (an
@@ -225,20 +237,32 @@ pub fn descendant_pids(roots: &[u32]) -> Vec<u32> {
     let generation = PROC_TREE_GEN.load(Ordering::Relaxed);
     {
         let cache = DESCENDANT_CACHE.lock().unwrap();
-        if let Some(entry) = cache.as_ref() {
-            if entry.generation == generation
-                && entry.roots == key
-                && entry.computed_at.elapsed() < CACHE_TTL
-            {
-                return entry.pids.clone();
-            }
+        if let Some(entry) = cache.iter().find(|e| {
+            e.generation == generation && e.roots == key && e.computed_at.elapsed() < CACHE_TTL
+        }) {
+            return entry.pids.clone();
         }
     }
 
     let pids = compute_descendant_pids(&key);
 
     let mut cache = DESCENDANT_CACHE.lock().unwrap();
-    *cache = Some(DescendantCache {
+    // A spawn/death or the TTL stales every entry at once (they all describe
+    // the one process table), so dead entries are pruned wholesale — along
+    // with any previous entry for this key, which the push below replaces.
+    cache.retain(|e| {
+        e.generation == generation && e.computed_at.elapsed() < CACHE_TTL && e.roots != key
+    });
+    while cache.len() >= CACHE_ENTRIES {
+        let oldest = cache
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, e)| e.computed_at)
+            .map(|(i, _)| i)
+            .unwrap_or(0);
+        cache.remove(oldest);
+    }
+    cache.push(DescendantCache {
         roots: key,
         pids: pids.clone(),
         generation,
@@ -2404,12 +2428,12 @@ M\t44000
         let gen = PROC_TREE_GEN.load(Ordering::Relaxed);
         {
             let mut cache = DESCENDANT_CACHE.lock().unwrap();
-            *cache = Some(DescendantCache {
+            *cache = vec![DescendantCache {
                 roots: fake_roots.clone(),
                 pids: fake_pids.clone(),
                 generation: gen,
                 computed_at: Instant::now(),
-            });
+            }];
         }
         // Same roots + same generation + fresh → cache hit returns the seeded set
         // (which could never come from a real process walk for pid 424242).
@@ -2428,16 +2452,47 @@ M\t44000
         let gen = PROC_TREE_GEN.load(Ordering::Relaxed);
         {
             let mut cache = DESCENDANT_CACHE.lock().unwrap();
-            *cache = Some(DescendantCache {
+            *cache = vec![DescendantCache {
                 roots: vec![111111u32],
                 pids: vec![111111u32, 222222u32],
                 generation: gen,
                 computed_at: Instant::now(),
-            });
+            }];
         }
         // Different roots → cache miss → recompute (no 222222 from a real walk).
         let other = descendant_pids(&[333333]);
         assert!(!other.contains(&222222));
+    }
+
+    #[test]
+    fn descendant_pids_cache_holds_multiple_root_sets() {
+        let _guard = lock_cache_for_test();
+        // The concrete regression the keyed cache fixes: two callers alternating
+        // different root sets (a hovered pill and the renderer watchdog) must
+        // BOTH stay warm instead of evicting each other every sample. Seed two
+        // synthetic entries; both queries must be served from the cache (the
+        // seeded pids could never come from a real process walk).
+        let gen = PROC_TREE_GEN.load(Ordering::Relaxed);
+        let a = DescendantCache {
+            roots: vec![424242u32],
+            pids: vec![424242u32, 555555u32],
+            generation: gen,
+            computed_at: Instant::now(),
+        };
+        let b = DescendantCache {
+            roots: vec![434343u32],
+            pids: vec![434343u32, 666666u32],
+            generation: gen,
+            computed_at: Instant::now(),
+        };
+        {
+            let mut cache = DESCENDANT_CACHE.lock().unwrap();
+            *cache = vec![a, b];
+        }
+        assert_eq!(descendant_pids(&[424242]), vec![424242, 555555]);
+        assert_eq!(descendant_pids(&[434343]), vec![434343, 666666]);
+        // And reading one must not have evicted the other: both still hit.
+        assert_eq!(descendant_pids(&[424242]), vec![424242, 555555]);
     }
 
     // The sampling assertions below rely on a real process backend (Linux `/proc`

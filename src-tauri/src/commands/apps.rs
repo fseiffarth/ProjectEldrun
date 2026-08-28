@@ -220,9 +220,26 @@ fn launch_command(exec: &str, args: &[String], file: Option<&str>) -> Command {
 }
 
 // ── Commands ───────────────────────────────────────────────────────────────
+//
+// The launch commands are `async` + `spawn_blocking` because `do_launch` /
+// `open_file` resolve the spawned app's window via `find_window_for_pid` /
+// `find_new_window` — up to 20 × 100 ms sleep-polls each (a fresh xcb
+// connection per poll on X11), i.e. 2–4 s of main-thread stall per launch when
+// run synchronously (the freeze class `commands::git`'s `run_off_thread` doc
+// describes). Single-instance apps, whose spawned pid execs and exits without
+// ever mapping a window, hit the full budget every time.
+
+/// Offload a blocking launch body to a worker thread.
+async fn run_off_thread<T: Send + 'static>(
+    f: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    tokio::task::spawn_blocking(f)
+        .await
+        .map_err(|e| format!("app task failed: {e}"))?
+}
 
 #[tauri::command]
-pub fn launch_app(
+pub async fn launch_app(
     registry: State<'_, WindowRegistryState>,
     exec: String,
     args: Option<Vec<String>>,
@@ -231,22 +248,26 @@ pub fn launch_app(
     role: Option<String>,
     origin: Option<String>,
 ) -> Result<TrackedWindow, String> {
-    let origin = origin.unwrap_or_else(|| {
-        if role.is_some() {
-            ORIGIN_GLOBAL_APP.to_string()
-        } else {
-            ORIGIN_MANUAL_LAUNCH.to_string()
-        }
-    });
-    do_launch(
-        registry.inner(),
-        &exec,
-        &args.unwrap_or_default(),
-        file.as_deref(),
-        project_id.as_deref(),
-        role.as_deref(),
-        &origin,
-    )
+    let registry = registry.inner().clone();
+    run_off_thread(move || {
+        let origin = origin.unwrap_or_else(|| {
+            if role.is_some() {
+                ORIGIN_GLOBAL_APP.to_string()
+            } else {
+                ORIGIN_MANUAL_LAUNCH.to_string()
+            }
+        });
+        do_launch(
+            &registry,
+            &exec,
+            &args.unwrap_or_default(),
+            file.as_deref(),
+            project_id.as_deref(),
+            role.as_deref(),
+            &origin,
+        )
+    })
+    .await
 }
 
 /// Icon lookups walk desktop-entry and icon-theme directories recursively, so
@@ -340,7 +361,7 @@ pub(crate) fn base64_encode(bytes: &[u8]) -> String {
 }
 
 #[tauri::command]
-pub fn open_file(
+pub async fn open_file(
     registry: State<'_, WindowRegistryState>,
     workspace: State<'_, crate::commands::workspace::WorkspaceStateArc>,
     path: String,
@@ -352,6 +373,24 @@ pub fn open_file(
     // absent on double-click / manual launch, leaving WM placement untouched.
     x: Option<i32>,
     y: Option<i32>,
+) -> Result<TrackedWindow, String> {
+    let registry = registry.inner().clone();
+    let workspace = workspace.inner().clone();
+    // Worst case chains `find_window_for_pid` AND `find_new_window` → ~4 s.
+    run_off_thread(move || {
+        open_file_blocking(&registry, &workspace, path, handler, project_id, origin, (x, y))
+    })
+    .await
+}
+
+fn open_file_blocking(
+    registry: &WindowRegistryState,
+    workspace: &crate::commands::workspace::WorkspaceStateArc,
+    path: String,
+    handler: Option<String>,
+    project_id: Option<String>,
+    origin: Option<String>,
+    (x, y): (Option<i32>, Option<i32>),
 ) -> Result<TrackedWindow, String> {
     let origin = origin.unwrap_or_else(|| ORIGIN_MANUAL_LAUNCH.to_string());
     // Best-effort: move a resolved window to the drop point so an externally
@@ -404,7 +443,7 @@ pub fn open_file(
         let window_id = find_window_for_pid(pid, 20).or_else(|| find_new_window(&before, 20));
         place(window_id);
         return track_opened_file(
-            registry.inner(),
+            registry,
             launch_exec,
             path,
             pid,
@@ -417,7 +456,7 @@ pub fn open_file(
     let window_id = find_new_window(&before, 20);
     place(window_id);
     track_opened_file(
-        registry.inner(),
+        registry,
         "open-file".to_string(),
         path,
         0,
@@ -1726,41 +1765,48 @@ pub fn check_pid_alive(pid: u32) -> bool {
 
 /// Best-effort restore: launch apps from `open_apps` metadata.
 /// Skips embedded-mode apps (unsupported in Tauri).
+///
+/// Async + `spawn_blocking`: each launch pays `do_launch`'s window-resolution
+/// poll (up to ~2 s), and this runs N of them during project activation.
 #[tauri::command]
-pub fn restore_open_apps(
+pub async fn restore_open_apps(
     registry: State<'_, WindowRegistryState>,
     open_apps: Vec<crate::schema::project::OpenApp>,
     project_id: String,
-) -> Vec<TrackedWindow> {
-    let mut launched = Vec::new();
-    for app in open_apps {
-        if app.mode.as_deref() == Some("embedded") {
-            continue;
-        }
-        // Skip if already running for this project.
-        {
-            let reg = registry.lock().unwrap();
-            if reg
-                .windows
-                .values()
-                .any(|w| w.exec == app.exec && w.project_id.as_deref() == Some(&project_id))
-            {
+) -> Result<Vec<TrackedWindow>, String> {
+    let registry = registry.inner().clone();
+    run_off_thread(move || {
+        let mut launched = Vec::new();
+        for app in open_apps {
+            if app.mode.as_deref() == Some("embedded") {
                 continue;
             }
+            // Skip if already running for this project.
+            {
+                let reg = registry.lock().unwrap();
+                if reg
+                    .windows
+                    .values()
+                    .any(|w| w.exec == app.exec && w.project_id.as_deref() == Some(&project_id))
+                {
+                    continue;
+                }
+            }
+            if let Ok(win) = do_launch(
+                &registry,
+                &app.exec,
+                &[],
+                app.file.as_deref(),
+                Some(&project_id),
+                None,
+                ORIGIN_RESTORED,
+            ) {
+                launched.push(win);
+            }
         }
-        if let Ok(win) = do_launch(
-            registry.inner(),
-            &app.exec,
-            &[],
-            app.file.as_deref(),
-            Some(&project_id),
-            None,
-            ORIGIN_RESTORED,
-        ) {
-            launched.push(win);
-        }
-    }
-    launched
+        Ok(launched)
+    })
+    .await
 }
 
 fn track_opened_file(

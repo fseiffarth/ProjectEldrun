@@ -341,7 +341,7 @@ pub fn publish_project(
         }
     };
 
-    let (entry_index, mut list) = find_entry(&project_id)?;
+    let (entry_index, list) = find_entry(&project_id)?;
     let local_file = list[entry_index].local_file.clone();
     let project: Project =
         storage::read_json(&PathBuf::from(&local_file)).map_err(|e| e.to_string())?;
@@ -394,15 +394,16 @@ pub fn publish_project(
 
     // Reflect the new push target + provider in both projects.json and project.json.
     let new_git_type = normalize_git_type(&format!("remote-{visibility}"));
-    list[entry_index]
-        .extra
-        .insert("git_type".to_string(), Value::String(new_git_type.clone()));
-    list[entry_index].extra.insert(
-        "git_provider".to_string(),
-        Value::String(provider.as_str().to_string()),
-    );
-    storage::write_json(&storage::state_dir().join("projects.json"), &list)
-        .map_err(|e| e.to_string())?;
+    crate::commands::projects::patch_project_entry(&project_id, |entry| {
+        entry
+            .extra
+            .insert("git_type".to_string(), Value::String(new_git_type.clone()));
+        entry.extra.insert(
+            "git_provider".to_string(),
+            Value::String(provider.as_str().to_string()),
+        );
+        Ok(())
+    })?;
 
     let proj_path = PathBuf::from(&local_file);
     if proj_path.exists() {
@@ -452,7 +453,7 @@ pub fn project_has_origin(project_id: String) -> Result<bool, String> {
 /// it. Re-publishing later re-creates or re-attaches a remote.
 #[tauri::command]
 pub fn unpublish_project(project_id: String) -> Result<(), String> {
-    let (idx, mut list) = find_entry(&project_id)?;
+    let (idx, list) = find_entry(&project_id)?;
     let local_file = list[idx].local_file.clone();
     let project: Project =
         storage::read_json(&PathBuf::from(&local_file)).map_err(|e| e.to_string())?;
@@ -496,12 +497,13 @@ pub fn unpublish_project(project_id: String) -> Result<(), String> {
         }
     }
 
-    list[idx]
-        .extra
-        .insert("git_type".to_string(), Value::String("local".to_string()));
-    list[idx].extra.remove("git_provider");
-    storage::write_json(&storage::state_dir().join("projects.json"), &list)
-        .map_err(|e| e.to_string())?;
+    crate::commands::projects::patch_project_entry(&project_id, |entry| {
+        entry
+            .extra
+            .insert("git_type".to_string(), Value::String("local".to_string()));
+        entry.extra.remove("git_provider");
+        Ok(())
+    })?;
 
     let proj_path = PathBuf::from(&local_file);
     if proj_path.exists() {
@@ -532,7 +534,7 @@ pub fn set_project_visibility(project_id: String, visibility: String) -> Result<
         }
     };
 
-    let (idx, mut list) = find_entry(&project_id)?;
+    let (idx, list) = find_entry(&project_id)?;
     let local_file = list[idx].local_file.clone();
     let project: Project =
         storage::read_json(&PathBuf::from(&local_file)).map_err(|e| e.to_string())?;
@@ -572,11 +574,12 @@ pub fn set_project_visibility(project_id: String, visibility: String) -> Result<
     };
 
     let new_git_type = normalize_git_type(&format!("remote-{visibility}"));
-    list[idx]
-        .extra
-        .insert("git_type".to_string(), Value::String(new_git_type.clone()));
-    storage::write_json(&storage::state_dir().join("projects.json"), &list)
-        .map_err(|e| e.to_string())?;
+    crate::commands::projects::patch_project_entry(&project_id, |entry| {
+        entry
+            .extra
+            .insert("git_type".to_string(), Value::String(new_git_type.clone()));
+        Ok(())
+    })?;
 
     let proj_path = PathBuf::from(&local_file);
     if proj_path.exists() {

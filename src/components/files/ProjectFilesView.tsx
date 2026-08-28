@@ -15,6 +15,8 @@ import { ProjectFilesSettingsDialog, useProjectFileFilters } from "./ProjectFile
 import { useImportDrop } from "./importDrop";
 import { logoutRemote, useProjectsStore } from "../../stores/projects";
 import { isTrashProject } from "../../lib/trashProject";
+import { GIT_STATE_COLOR } from "../../lib/gitColors";
+import { ContextMenuPortal } from "../common/ContextMenuPortal";
 import { useSyncStore, amberPaths, localNewPaths } from "../../stores/sync";
 import { confirmSyncTransfer } from "../../stores/syncConfirm";
 import { openLinkedFile, viewerForPath } from "../embed/FileViewerPane";
@@ -1227,21 +1229,12 @@ export function ProjectFilesView({
         {mobileAccessError && (
           <div className="right-panel-mobile-access-error" role="alert">{mobileAccessError}</div>
         )}
-        {sshTagMenu && projectId && createPortal(
-          <>
-            <div
-              style={{ position: "fixed", inset: 0, zIndex: 200 }}
-              onPointerDown={() => setSshTagMenu(null)}
-              onContextMenu={(e) => {
-                e.preventDefault();
-                setSshTagMenu(null);
-              }}
-            />
-            <div
-              className="context-menu"
-              style={{ left: sshTagMenu.x, top: sshTagMenu.y, zIndex: 201 }}
-              onPointerDown={(e) => e.stopPropagation()}
-            >
+        {sshTagMenu && projectId && (
+          <ContextMenuPortal
+            x={sshTagMenu.x}
+            y={sshTagMenu.y}
+            onClose={() => setSshTagMenu(null)}
+          >
               <div className="context-menu-group">
                 <div className="context-menu-group-label">
                   {project?.remote?.host ?? t("projectFilesView.remoteFallback")}
@@ -1259,9 +1252,7 @@ export function ProjectFilesView({
                   <UntestedTag />
                 </button>
               </div>
-            </div>
-          </>,
-          document.body,
+          </ContextMenuPortal>
         )}
         {/* Remote/Local file-source switch (remote SSH projects only). A live
             segmented control — NOT a tag — that flips the files view between the
@@ -1327,7 +1318,7 @@ export function ProjectFilesView({
                   onClick={handleCommitConfirm}
                   title={t("projectFilesView.confirmCommitTitle")}
                 >
-                  <span data-testid="commit-bar" style={{ width: 7, height: 7, borderRadius: "50%", marginRight: 5, flexShrink: 0, background: "#e3b341" }} />
+                  <span data-testid="commit-bar" className="git-step-dot" style={{ background: GIT_STATE_COLOR.staged }} />
                   <span>↵</span>
                   <span className="git-btn-label">{t("projectFilesView.confirm")}</span>
                 </button>
@@ -1357,7 +1348,7 @@ export function ProjectFilesView({
                       onClick={handleAdd}
                       title={t("projectFilesView.stageAllTitle", { count: gitStatus.unstaged + gitStatus.untracked })}
                     >
-                      <span data-testid="add-bar" style={{ width: 7, height: 7, borderRadius: "50%", marginRight: 5, flexShrink: 0, background: "#f85149" }} />
+                      <span data-testid="add-bar" className="git-step-dot" style={{ background: GIT_STATE_COLOR.modified }} />
                       <span>⊕</span>
                       <span className="git-btn-label">{t("projectFilesView.add", { count: gitStatus.unstaged + gitStatus.untracked })}</span>
                     </button>
@@ -1381,7 +1372,7 @@ export function ProjectFilesView({
                       onClick={handleCommitOpen}
                       title={t("projectFilesView.commitStagedTitle", { count: gitStatus.staged })}
                     >
-                      <span data-testid="commit-bar" style={{ width: 7, height: 7, borderRadius: "50%", marginRight: 5, flexShrink: 0, background: "#e3b341" }} />
+                      <span data-testid="commit-bar" className="git-step-dot" style={{ background: GIT_STATE_COLOR.staged }} />
                       <span>✔</span>
                       <span className="git-btn-label">{t("projectFilesView.commit", { count: gitStatus.staged })}</span>
                     </button>
@@ -1410,7 +1401,7 @@ export function ProjectFilesView({
                         { count: unpushedCommits.length },
                       )}
                     >
-                      <span data-testid="push-bar" style={{ width: 7, height: 7, borderRadius: "50%", marginRight: 5, flexShrink: 0, background: "#3fb950" }} />
+                      <span data-testid="push-bar" className="git-step-dot" style={{ background: GIT_STATE_COLOR.unpushed }} />
                       <span>⬆</span>
                       <span className="git-btn-label">{t("projectFilesView.push", { count: unpushedCommits.length })}</span>
                     </button>
@@ -1469,7 +1460,7 @@ export function ProjectFilesView({
         {(["files", "git", "search", "windows"] as View[]).map((v) => (
           <button
             key={v}
-            className={`tab-add-btn${view === v ? " active" : ""}`}
+            className={`toolbar-btn${view === v ? " active" : ""}`}
             style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: v === "files" ? 0 : 2 }}
             aria-pressed={view === v}
             onClick={() => setView(v)}
@@ -1493,7 +1484,7 @@ export function ProjectFilesView({
             first shows up at all. */}
         {!activeBox && project?.remote && projectId && (
           <button
-            className={`tab-add-btn right-panel-orange-btn${view === "orange" ? " active" : ""}`}
+            className={`toolbar-btn right-panel-orange-btn${view === "orange" ? " active" : ""}`}
             style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: 2 }}
             aria-pressed={view === "orange"}
             onClick={() => setView((v) => (v === "orange" ? "files" : "orange"))}
@@ -1513,7 +1504,7 @@ export function ProjectFilesView({
             click from being reattached. */}
         {!activeBox && project?.remote && projectId && (
           <button
-            className={`tab-add-btn right-panel-orange-btn${view === "sessions" ? " active" : ""}`}
+            className={`toolbar-btn right-panel-orange-btn${view === "sessions" ? " active" : ""}`}
             style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: 2 }}
             aria-pressed={view === "sessions"}
             onClick={() => setView((v) => (v === "sessions" ? "files" : "sessions"))}
@@ -1526,7 +1517,7 @@ export function ProjectFilesView({
             toggle never appears off-cluster. Badged with the live queue count. */}
         {!activeBox && slurmSupported && projectId && (
           <button
-            className={`tab-add-btn right-panel-orange-btn${view === "jobs" ? " active" : ""}`}
+            className={`toolbar-btn right-panel-orange-btn${view === "jobs" ? " active" : ""}`}
             style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: 2 }}
             aria-pressed={view === "jobs"}
             onClick={() => setView((v) => (v === "jobs" ? "files" : "jobs"))}
@@ -1537,7 +1528,7 @@ export function ProjectFilesView({
         )}
         {importDrop.canImport && (
           <button
-            className="tab-add-btn"
+            className="toolbar-btn"
             style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: 2 }}
             onClick={(e) => {
               const r = e.currentTarget.getBoundingClientRect();
@@ -1548,17 +1539,12 @@ export function ProjectFilesView({
             ⬇
           </button>
         )}
-        {importMenu && createPortal(
-          <>
-            <div
-              style={{ position: "fixed", inset: 0, zIndex: 200 }}
-              onPointerDown={() => setImportMenu(null)}
-            />
-            <div
-              className="context-menu"
-              style={{ left: importMenu.x, top: importMenu.y, zIndex: 201 }}
-              onPointerDown={(e) => e.stopPropagation()}
-            >
+        {importMenu && (
+          <ContextMenuPortal
+            x={importMenu.x}
+            y={importMenu.y}
+            onClose={() => setImportMenu(null)}
+          >
               <button
                 onClick={() => {
                   setImportMenu(null);
@@ -1575,13 +1561,11 @@ export function ProjectFilesView({
               >
                 {t("projectFilesView.importFolder")}
               </button>
-            </div>
-          </>,
-          document.body,
+          </ContextMenuPortal>
         )}
         {projectDir && (
           <button
-            className="tab-add-btn"
+            className="toolbar-btn"
             style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: 2 }}
             onClick={openInOsBrowser}
             title={t("projectFilesView.openInFileManagerTitle")}
@@ -1591,7 +1575,7 @@ export function ProjectFilesView({
         )}
         {!activeBox && projectDir && (
           <button
-            className={`tab-add-btn${showDownloads ? " active" : ""}`}
+            className={`toolbar-btn${showDownloads ? " active" : ""}`}
             style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: 2 }}
             aria-pressed={showDownloads}
             onClick={() => {
@@ -1611,7 +1595,7 @@ export function ProjectFilesView({
             the Downloads group's reason — it has no single project below. */}
         {!activeBox && !compact && (
           <button
-            className={`tab-add-btn${alertsEnabled ? " active" : ""}`}
+            className={`toolbar-btn${alertsEnabled ? " active" : ""}`}
             style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: 2 }}
             aria-pressed={alertsEnabled}
             onClick={() => {
@@ -1626,7 +1610,7 @@ export function ProjectFilesView({
         )}
         {projectId && (
           <button
-            className="tab-add-btn"
+            className="toolbar-btn"
             style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: 2 }}
             onClick={() => setShowSettings(true)}
             title={t("projectFilesView.projectSettingsTitle")}
@@ -1690,7 +1674,7 @@ export function ProjectFilesView({
             </div>
           )}
           {gitError && (
-            <div style={{ fontSize: 10, color: "var(--danger, #f85149)", wordBreak: "break-all", padding: "2px 6px 4px", borderBottom: "1px solid var(--border-color)" }}>
+            <div style={{ fontSize: 10, color: "var(--danger)", wordBreak: "break-all", padding: "2px 6px 4px", borderBottom: "1px solid var(--border-color)" }}>
               {gitError}
             </div>
           )}

@@ -42,7 +42,7 @@ pub const PRIMARY_HOST: &str = "primary";
 /// Pool key for a `(project, host)` pair. Two hosts of one project → two entries,
 /// so a worker connects/disconnects independently of the primary. The `\u{1}`
 /// separator can't appear in a project or host id.
-fn conn_key(project_id: &str, host_id: &str) -> String {
+pub(crate) fn conn_key(project_id: &str, host_id: &str) -> String {
     format!("{project_id}\u{1}{host_id}")
 }
 
@@ -353,19 +353,25 @@ pub async fn connect_host(
     // on the saved credential, and taking that literally made the pooled connect
     // fail with a saved password sitting right there in the keychain (`ssh_connect`
     // filters it, so the probe passed and only this leg failed).
-    let saved_pw;
-    let password = password.filter(|p| !p.is_empty());
-    let password = if password.is_some() {
-        password
+    let supplied = password.filter(|p| !p.is_empty()).map(str::to_string);
+    let password = if supplied.is_some() {
+        supplied
     } else {
-        saved_pw = crate::services::remote_credentials::get(
-            &crate::services::remote_credentials::ssh_account(&spec.user, &spec.host, spec.port),
-        );
-        saved_pw.as_deref()
+        let account =
+            crate::services::remote_credentials::ssh_account(&spec.user, &spec.host, spec.port);
+        // Secret Service can block for seconds while its collection is locked.
+        // Keep that bounded/blocking read off Tokio's async worker threads.
+        tokio::task::spawn_blocking(move || crate::services::remote_credentials::get(&account))
+            .await
+            .unwrap_or(None)
     };
-    let (sftp, child) =
-        crate::services::sftp::open_pooled_session(&spec.user, &spec.host, spec.port, password)
-            .await?;
+    let (sftp, child) = crate::services::sftp::open_pooled_session(
+        &spec.user,
+        &spec.host,
+        spec.port,
+        password.as_deref(),
+    )
+    .await?;
 
     // Resolve the master's socket path now, while nothing is held: it spawns a
     // local `ssh -G` (see `ssh_exec::resolve_control_path`), which must not run

@@ -102,7 +102,7 @@ html, body, #root {
 
 .startup-splash-message {
   min-height: 18px;
-  color: var(--text-muted, #9fb0d0);
+  color: var(--text-muted);
   font-size: 12px;
   letter-spacing: 0.03em;
   animation: startup-splash-arrive 600ms 140ms cubic-bezier(0.22, 1, 0.36, 1) both;
@@ -181,7 +181,7 @@ html, body, #root {
   align-items: center;
   justify-content: center;
   background: var(--bg-panel);
-  color: var(--text-muted, #9fb0d0);
+  color: var(--text-muted);
   font-size: 13px;
   letter-spacing: 0.02em;
   pointer-events: none;
@@ -533,8 +533,7 @@ body.eldrun-scrollbar-dragging {
      back to the native light GTK scrollbar (white trough + grey slider), and a
      low-alpha thumb over that washes to grey — the bug this replaces. */
   --scrollbar-thumb: var(--accent);
-  --scrollbar-thumb-hover: var(--accent-hover, var(--accent));
-  --scrollbar-track: var(--bg-panel);
+  --scrollbar-thumb-hover: var(--accent-hover);
   --control-bg: #18243b;
   --control-hover-bg: #22304a;
   --control-border: #293852;
@@ -543,12 +542,10 @@ body.eldrun-scrollbar-dragging {
   --danger: #ff5c8a;
   /* Helix signature hues for the pill/tab labels (apricot + green). */
   --helix-orange: #f47868;
-  --helix-green: #9fd86a;
   --pill-bg: transparent;
   --pill-active-bg: rgba(54, 197, 240, 0.16);
   --pill-active-border: #36c5f0;
   --pill-hover-bg: rgba(54, 197, 240, 0.14);
-  --offline-bg: rgba(255, 92, 138, 0.88);
   --wm-close: #ff5c8a;
   --wm-minimize: #ffd166;
   --wm-maximize: #7ee787;
@@ -595,12 +592,10 @@ body.eldrun-scrollbar-dragging {
   --warning: #e3b341;
   --danger: #f85149;
   --helix-orange: #f47868;
-  --helix-green: #9fd86a;
   --pill-bg: transparent;
   --pill-active-bg: rgba(56, 139, 253, 0.1);
   --pill-active-border: rgba(56, 139, 253, 0.2);
   --pill-hover-bg: rgba(139, 148, 158, 0.08);
-  --offline-bg: rgba(248, 81, 73, 0.88);
   --wm-close: #f85149;
   --wm-minimize: #e3b341;
   --wm-maximize: #3fb950;
@@ -639,12 +634,10 @@ body.eldrun-scrollbar-dragging {
   --warning: #9a6700;
   --danger: #d1242f;
   --helix-orange: #d6492f;
-  --helix-green: #2e7d32;
   --pill-bg: transparent;
   --pill-active-bg: rgba(9, 105, 218, 0.1);
   --pill-active-border: rgba(9, 105, 218, 0.24);
   --pill-hover-bg: rgba(87, 96, 106, 0.08);
-  --offline-bg: rgba(209, 36, 47, 0.88);
   --wm-close: #f85149;
   --wm-minimize: #e3b341;
   --wm-maximize: #3fb950;
@@ -683,12 +676,10 @@ body.eldrun-scrollbar-dragging {
   --warning: #9a6700;
   --danger: #d1242f;
   --helix-orange: #d6492f;
-  --helix-green: #2e7d32;
   --pill-bg: transparent;
   --pill-active-bg: rgba(9, 105, 218, 0.16);
   --pill-active-border: #0969da;
   --pill-hover-bg: rgba(20, 184, 166, 0.12);
-  --offline-bg: rgba(209, 36, 47, 0.88);
   --wm-close: #ff5c8a;
   --wm-minimize: #ffd166;
   --wm-maximize: #7ee787;
@@ -727,12 +718,10 @@ body.eldrun-scrollbar-dragging {
   --warning: #9a6700;
   --danger: #d1242f;
   --helix-orange: #d6492f;
-  --helix-green: #2e7d32;
   --pill-bg: transparent;
   --pill-active-bg: rgba(124, 92, 219, 0.12);
   --pill-active-border: rgba(124, 92, 219, 0.28);
   --pill-hover-bg: rgba(95, 88, 120, 0.08);
-  --offline-bg: rgba(209, 36, 47, 0.88);
   --wm-close: #f85149;
   --wm-minimize: #e3b341;
   --wm-maximize: #3fb950;
@@ -749,6 +738,33 @@ body.eldrun-scrollbar-dragging {
   --glass-panel: rgba(242, 239, 250, 0.58);
   --glass-elevated: rgba(248, 246, 253, 0.95);
   --glass-header: rgba(242, 239, 250, 0.5);
+}
+
+/* ── Derived tokens (one definition for every theme) ──────────────────────
+   These names used to be a phantom family — referenced with divergent literal
+   fallbacks but defined nowhere, so the fallbacks were the design (e.g.
+   selected file rows rendered GitHub-blue in all five themes). Each value
+   derives from a theme primitive via var()/color-mix, which resolves against
+   the ACTIVE theme at the element, so a single :root block serves all themes
+   — do not copy these into the per-theme blocks above. */
+:root {
+  --bg-hover: rgba(127, 127, 127, 0.15);
+  --bg-subtle: rgba(127, 127, 127, 0.07);
+  --bg-inset: rgba(127, 127, 127, 0.12);
+  --bg-secondary: rgba(127, 127, 127, 0.18);
+  --bg-input: var(--control-bg);
+  --accent-soft: color-mix(in srgb, var(--accent) 22%, transparent);
+  --text-tertiary: var(--text-muted);
+  /* Layering contract, in one place instead of scattered comments. The app's
+     layers, bottom to top: hint bubbles (90) < modal backdrop (100) <
+     elevated dialogs (110) < context menus/popovers (1000, catcher just
+     under) < tooltips (10000, above everything — they follow the pointer). */
+  --z-hint: 90;
+  --z-modal: 100;
+  --z-modal-elevated: 110;
+  --z-menu-catcher: 999;
+  --z-menu: 1000;
+  --z-tooltip: 10000;
 }
 
 /* ── Glass chrome (fancy_dark / light_lavender) ───────────────────────────
@@ -1557,8 +1573,8 @@ select option {
 }
 
 .presentation-tool:hover:not(:disabled) {
-  border-color: var(--accent-color);
-  color: var(--accent-color);
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 .presentation-tool:disabled {
@@ -1567,8 +1583,8 @@ select option {
 }
 
 .presentation-tool.on {
-  background: var(--accent-color);
-  border-color: var(--accent-color);
+  background: var(--accent);
+  border-color: var(--accent);
   color: var(--bg-panel);
 }
 
@@ -1641,7 +1657,7 @@ select option {
 
 .presentation-slider input[type="range"] {
   width: 100%;
-  accent-color: var(--accent-color);
+  accent-color: var(--accent);
   cursor: pointer;
 }
 
@@ -1825,9 +1841,9 @@ select option {
 }
 
 .file-viewer-save.is-dirty {
-  color: var(--warning, #d29922);
-  border-color: color-mix(in srgb, var(--warning, #d29922) 55%, transparent);
-  background: color-mix(in srgb, var(--warning, #d29922) 10%, transparent);
+  color: var(--warning);
+  border-color: color-mix(in srgb, var(--warning) 55%, transparent);
+  background: color-mix(in srgb, var(--warning) 10%, transparent);
 }
 
 .file-viewer-save:disabled {
@@ -1836,9 +1852,9 @@ select option {
 }
 
 .file-viewer-save:not(:disabled):hover {
-  color: var(--warning, #d29922);
-  border-color: var(--warning, #d29922);
-  background: color-mix(in srgb, var(--warning, #d29922) 18%, transparent);
+  color: var(--warning);
+  border-color: var(--warning);
+  background: color-mix(in srgb, var(--warning) 18%, transparent);
 }
 
 /* "Format document" button — same chrome as the save button. */
@@ -2030,10 +2046,10 @@ select option {
   color: var(--text-muted);
 }
 .hpc-ws-remaining.tone-warn {
-  color: var(--warning, #d29922);
+  color: var(--warning);
 }
 .hpc-ws-remaining.tone-urgent {
-  color: var(--danger, #f85149);
+  color: var(--danger);
   font-weight: 600;
 }
 /* Hover hint showing the saved run arguments. The native `title` tooltip is
@@ -2132,7 +2148,7 @@ select option {
 
 .file-viewer-md-btn:hover {
   color: var(--text-primary);
-  background: var(--bg-hover, rgba(127, 127, 127, 0.15));
+  background: var(--bg-hover);
 }
 
 /* Transient status line under the header (format errors / "no formatter"). */
@@ -2276,7 +2292,7 @@ select option {
 
 /* Inline "go to page" input, swapped in for the readout above while active. */
 .file-viewer-pdf-pagejump-input {
-  background: var(--bg-base, var(--bg-main, var(--bg-panel)));
+  background: var(--bg-main);
   color: var(--text-primary);
   border: 1px solid var(--border-color);
   border-radius: var(--radius-sm);
@@ -2372,7 +2388,7 @@ select option {
 }
 
 .file-viewer-error {
-  color: var(--danger, #f85149);
+  color: var(--danger);
   white-space: pre-wrap;
   word-break: break-word;
 }
@@ -2422,7 +2438,7 @@ select option {
 }
 
 .yaml-row:hover {
-  background: var(--bg-subtle, rgba(255, 255, 255, 0.03));
+  background: var(--bg-subtle);
 }
 
 /* Reorder-by-drag: the grip appears on hover (it is an affordance, not furniture),
@@ -2482,11 +2498,11 @@ select option {
    hover tint; a hovered delete hands down the danger tint instead, so everything
    tinted is exactly what the × will take. */
 .yaml-row-marked {
-  background: var(--bg-subtle, rgba(255, 255, 255, 0.03));
+  background: var(--bg-subtle);
 }
 
 .yaml-row-marked-del {
-  background: color-mix(in srgb, var(--danger, #f85149) 16%, transparent);
+  background: color-mix(in srgb, var(--danger) 16%, transparent);
 }
 
 /* …and a hovered whole-entry action (copy, move, comment, grip) hands down the
@@ -2520,7 +2536,7 @@ select option {
 }
 
 .yaml-row:has(> .yaml-actions .yaml-act-del:hover) {
-  background: color-mix(in srgb, var(--danger, #f85149) 16%, transparent);
+  background: color-mix(in srgb, var(--danger) 16%, transparent);
 }
 
 /* The persistent add row: hovering either button tints it, so it's clear a new
@@ -2939,8 +2955,8 @@ select option {
 }
 
 .yaml-act-del:not(:disabled):hover {
-  color: var(--danger, #f85149);
-  border-color: var(--danger, #f85149);
+  color: var(--danger);
+  border-color: var(--danger);
 }
 
 .yaml-add-inline {
@@ -3051,7 +3067,7 @@ select option {
   align-items: center;
   gap: 6px;
   padding: 3px 6px;
-  background: var(--bg-subtle, rgba(255, 255, 255, 0.03));
+  background: var(--bg-subtle);
   border-bottom: 1px solid var(--border-color);
 }
 
@@ -3351,7 +3367,7 @@ select option {
   padding: 4px 6px;
   border: 0;
   border-top: 1px solid var(--border-color);
-  background: var(--bg-subtle, rgba(255, 255, 255, 0.03));
+  background: var(--bg-subtle);
   color: var(--accent, #4493f8);
   font: inherit;
   font-size: 11px;
@@ -3397,7 +3413,7 @@ select option {
 .bib-filter {
   flex: 0 1 220px;
   min-width: 100px;
-  background: var(--bg-input, var(--bg-panel));
+  background: var(--bg-input);
   color: var(--text-primary);
   border: 1px solid var(--border-color);
   border-radius: var(--radius-sm);
@@ -3425,7 +3441,7 @@ select option {
 .bib-cards-note {
   margin-bottom: 8px;
   padding: 4px 8px;
-  border-left: 2px solid var(--warning, #d29922);
+  border-left: 2px solid var(--warning);
   color: var(--text-muted);
   font-size: 11px;
 }
@@ -3451,7 +3467,7 @@ select option {
 /* A duplicate citation key is silently wrong (the bibliography keeps one entry
    and drops the other), so the card wears the warning colour on its edge. */
 .bib-card-dup {
-  border-left-color: var(--warning, #d29922);
+  border-left-color: var(--warning);
 }
 
 .bib-card-head {
@@ -3459,7 +3475,7 @@ select option {
   align-items: center;
   gap: 6px;
   padding: 3px 6px;
-  background: var(--bg-subtle, rgba(255, 255, 255, 0.03));
+  background: var(--bg-subtle);
   border-bottom: 1px solid var(--border-color);
 }
 
@@ -3533,8 +3549,8 @@ select option {
   flex: none;
   padding: 0 4px;
   border-radius: var(--radius-sm);
-  background: color-mix(in srgb, var(--warning, #d29922) 22%, transparent);
-  color: var(--warning, #d29922);
+  background: color-mix(in srgb, var(--warning) 22%, transparent);
+  color: var(--warning);
   font-size: 10px;
   white-space: nowrap;
 }
@@ -3696,7 +3712,7 @@ select option {
   padding: 8px 12px;
   font-size: 12px;
   border-bottom: 1px solid var(--border, #30363d);
-  background: var(--bg-subtle, rgba(255, 255, 255, 0.03));
+  background: var(--bg-subtle);
 }
 
 .tex-install-banner-text {
@@ -3876,7 +3892,7 @@ select option {
   font-weight: 600;
 }
 .file-viewer-gutter-line.is-breakable:focus-visible {
-  outline: 1px solid var(--accent-color);
+  outline: 1px solid var(--accent);
   outline-offset: -1px;
 }
 
@@ -3887,8 +3903,8 @@ select option {
    them. Placed after the breakpoint rules to win over `.is-breakable`'s reset. */
 .file-viewer-gutter-line.caret {
   color: var(--text-primary);
-  background: color-mix(in srgb, var(--accent-color) 16%, transparent);
-  box-shadow: inset 2px 0 0 var(--accent-color);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  box-shadow: inset 2px 0 0 var(--accent);
   border-radius: 2px;
 }
 
@@ -4858,7 +4874,7 @@ select option {
 .file-viewer-replace-row { padding-left: 26px; }
 .file-viewer-replace-btn { white-space: nowrap; }
 .file-viewer-find-input {
-  background: var(--bg-base, var(--bg-main, var(--bg-panel)));
+  background: var(--bg-main);
   color: var(--text-primary);
   border: 1px solid var(--border-color);
   border-radius: var(--radius-sm);
@@ -5146,7 +5162,7 @@ select option {
   color: var(--text-primary);
   /* Neutral gray reads on both light and dark panels (the white fallback was
      invisible on light themes). */
-  background: var(--bg-hover, rgba(127, 127, 127, 0.18));
+  background: var(--bg-hover);
 }
 
 /* #47 save-state icon button: square-ish, icon-only. */
@@ -5192,7 +5208,7 @@ select option {
   gap: 8px;
   padding: 4px 10px;
   font-size: 11px;
-  background: color-mix(in srgb, var(--warning, #d29922) 18%, var(--bg-panel));
+  background: color-mix(in srgb, var(--warning) 18%, var(--bg-panel));
   color: var(--text-primary);
   border-bottom: 1px solid var(--border-color);
 }
@@ -5225,7 +5241,7 @@ select option {
   color: var(--text-muted);
 }
 .file-viewer-tex-option input {
-  background: var(--bg-base, var(--bg-panel));
+  background: var(--bg-input);
   color: var(--text-primary);
   border: 1px solid var(--border-color);
   border-radius: var(--radius-sm);
@@ -5531,7 +5547,7 @@ select option {
 }
 .file-viewer-pdf-redact-box.is-armed:hover,
 .file-viewer-pdf-redact-box.is-armed:focus-visible {
-  outline: 2px solid var(--danger, #e05252);
+  outline: 2px solid var(--danger);
 }
 
 /* The drag surface. It covers the page while the tool is armed, which is what
@@ -5586,7 +5602,7 @@ select option {
   border-bottom: 1px solid var(--border-subtle);
 }
 .file-viewer-pdf-copy-success {
-  color: var(--success, #3fb950);
+  color: var(--success);
 }
 
 /* The tool's strip under the toolbar. */
@@ -5621,7 +5637,7 @@ select option {
   color: var(--text-muted);
 }
 .file-viewer-pdf-redact-warn {
-  color: var(--warning, #d29922);
+  color: var(--warning);
 }
 
 /* The metadata panel (#pdf-meta) shares the blackout tool's strip; only the field
@@ -5657,7 +5673,7 @@ select option {
 /* The toolbar button while a deletion is pending, so the armed state is visible
    with the panel closed. */
 .file-viewer-zoom-btn.is-armed {
-  box-shadow: inset 0 -2px 0 var(--warning, #d29922);
+  box-shadow: inset 0 -2px 0 var(--warning);
 }
 
 /* ── Remarks (#pdf-notes) ─────────────────────────────────────────────────
@@ -5770,7 +5786,7 @@ select option {
 }
 .file-viewer-pdf-note-del {
   margin-left: auto;
-  color: var(--danger, #e05252);
+  color: var(--danger);
 }
 .file-viewer-pdf-note-hint {
   color: var(--text-muted);
@@ -6348,9 +6364,9 @@ select option {
   padding: 8px 12px;
   font-size: 12px;
   line-height: 1.4;
-  color: var(--warning, #d29922);
-  background: color-mix(in srgb, var(--warning, #d29922) 12%, transparent);
-  border-bottom: 1px solid var(--warning, #d29922);
+  color: var(--warning);
+  background: color-mix(in srgb, var(--warning) 12%, transparent);
+  border-bottom: 1px solid var(--warning);
 }
 
 .file-viewer-tex-shell-warning code {
@@ -6367,7 +6383,7 @@ select option {
   font-size: 12px;
   line-height: 1.4;
   color: var(--text-muted);
-  background: var(--bg-subtle, rgba(127, 127, 127, 0.08));
+  background: var(--bg-subtle);
   border-bottom: 1px solid var(--border-color);
 }
 
@@ -6382,9 +6398,9 @@ select option {
   padding: 10px 12px;
   max-height: 40%;
   overflow: auto;
-  background: color-mix(in srgb, var(--danger, #f85149) 10%, var(--bg-panel, #fff));
-  border: 1px solid color-mix(in srgb, var(--danger, #f85149) 45%, transparent);
-  border-left: 3px solid var(--danger, #f85149);
+  background: color-mix(in srgb, var(--danger) 10%, var(--bg-panel, #fff));
+  border: 1px solid color-mix(in srgb, var(--danger) 45%, transparent);
+  border-left: 3px solid var(--danger);
   border-radius: var(--radius);
 }
 
@@ -6401,13 +6417,13 @@ select option {
   flex-shrink: 0;
   font-size: 13px;
   line-height: 1;
-  color: var(--danger, #f85149);
+  color: var(--danger);
 }
 
 .file-viewer-tex-error-title {
   font-weight: 600;
   font-size: 12px;
-  color: var(--danger, #f85149);
+  color: var(--danger);
 }
 
 .file-viewer-tex-error-count {
@@ -6421,7 +6437,7 @@ select option {
   font-size: 11px;
   font-weight: 600;
   color: #fff;
-  background: var(--danger, #f85149);
+  background: var(--danger);
   border-radius: 999px;
 }
 
@@ -6576,14 +6592,14 @@ select option {
   font-family: var(--font-mono, ui-monospace, "SF Mono", Menlo, Consolas, monospace);
   font-size: 0.88em;
   color: var(--accent-secondary, var(--accent));
-  background: color-mix(in srgb, var(--accent-secondary, var(--accent)) 12%, var(--bg-input, rgba(127, 127, 127, 0.15)));
+  background: color-mix(in srgb, var(--accent-secondary, var(--accent)) 12%, var(--bg-input));
   padding: 0.12em 0.35em;
   border-radius: var(--radius-sm);
 }
 
 .markdown-body pre {
   position: relative;
-  background: var(--bg-input, rgba(127, 127, 127, 0.12));
+  background: var(--bg-input);
   border: 1px solid var(--border-color);
   border-radius: var(--radius);
   padding: 11px 13px;
@@ -6607,7 +6623,7 @@ select option {
   letter-spacing: 0.04em;
   text-transform: uppercase;
   color: var(--text-muted);
-  background: var(--bg-secondary, rgba(127, 127, 127, 0.18));
+  background: var(--bg-secondary);
   border-left: 1px solid var(--border-color);
   border-bottom: 1px solid var(--border-color);
   border-bottom-left-radius: 5px;
@@ -6697,7 +6713,7 @@ select option {
 }
 
 .markdown-body thead th {
-  background: color-mix(in srgb, var(--accent) 14%, var(--bg-secondary, rgba(127, 127, 127, 0.16)));
+  background: color-mix(in srgb, var(--accent) 14%, var(--bg-secondary));
   color: var(--text-primary);
   font-weight: 650;
   text-align: left;
@@ -6705,7 +6721,7 @@ select option {
 }
 
 .markdown-body tbody tr:nth-child(even) {
-  background: var(--bg-input, rgba(127, 127, 127, 0.07));
+  background: var(--bg-input);
 }
 
 .markdown-body tbody tr:hover {
@@ -6720,7 +6736,7 @@ select option {
   padding: 0.5em 0.95em;
   border-left: 4px solid var(--border-color);
   border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
-  background: var(--bg-input, rgba(127, 127, 127, 0.08));
+  background: var(--bg-input);
 }
 .markdown-body .md-alert > :first-child { margin-top: 0; }
 .markdown-body .md-alert > :last-child { margin-bottom: 0; }
@@ -7593,11 +7609,11 @@ select option {
 }
 
 /* OS file drag hovering over the panel: pulsing accent glow + dashed inset
-   border, plus a "drop to copy" hint banner sliding down from the top. */
-.right-panel.drop-active {
-  animation: right-panel-drop-pulse 1.1s ease-in-out infinite;
-}
-
+   border, plus a "drop to copy" hint banner sliding down from the top.
+   The blurred glow is STATIC on the ::before and only opacity animates —
+   WebKitGTK software-renders animated blurred box-shadows (see the repo
+   rule); the dash-in's own opacity is overridden by the pulse, which starts
+   low anyway. */
 .right-panel.drop-active::before {
   content: "";
   position: absolute;
@@ -7606,7 +7622,10 @@ select option {
   border-radius: var(--radius);
   pointer-events: none;
   z-index: 20;
-  animation: right-panel-drop-dash 0.4s ease-out;
+  box-shadow: inset 0 0 22px 0 color-mix(in srgb, var(--accent) 32%, transparent);
+  animation:
+    right-panel-drop-dash 0.4s ease-out,
+    right-panel-drop-pulse 1.1s ease-in-out infinite;
 }
 
 .right-panel.drop-active::after {
@@ -7634,10 +7653,10 @@ select option {
 @keyframes right-panel-drop-pulse {
   0%,
   100% {
-    box-shadow: inset 0 0 0 0 color-mix(in srgb, var(--accent) 0%, transparent);
+    opacity: 0.45;
   }
   50% {
-    box-shadow: inset 0 0 22px 0 color-mix(in srgb, var(--accent) 32%, transparent);
+    opacity: 1;
   }
 }
 
@@ -7751,7 +7770,7 @@ select option {
   border-radius: var(--radius-sm);
 }
 .custom-agent-remove:hover:not(:disabled) {
-  color: var(--danger, #e5534b);
+  color: var(--danger);
   background: rgba(229, 83, 75, 0.12);
 }
 .custom-agent-form {
@@ -8034,12 +8053,7 @@ select option {
   margin: 0;
   font-size: 11px;
 }
-.folder-picker-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-  margin-top: 12px;
-}
+/* .folder-picker-actions: layout comes from the shared dialog-footer rule. */
 .folder-picker-actions button {
   border: 1px solid var(--control-border);
   border-radius: var(--radius-sm);
@@ -8136,7 +8150,7 @@ select option {
   border-radius: var(--radius-sm, 4px);
   border: 1px solid transparent;
   background: transparent;
-  color: var(--text-tertiary, var(--text-secondary));
+  color: var(--text-tertiary);
   opacity: 0.7;
   cursor: pointer;
   transition: color 0.12s ease, background 0.12s ease, border-color 0.12s ease, opacity 0.12s ease;
@@ -8146,7 +8160,7 @@ select option {
   opacity: 1;
   color: var(--accent, #89b4fa);
   border-color: var(--border-subtle);
-  background: var(--bg-hover, rgba(127, 127, 127, 0.15));
+  background: var(--bg-hover);
 }
 
 .right-panel-mobile-btn:disabled {
@@ -8156,9 +8170,9 @@ select option {
 
 .right-panel-mobile-btn.on {
   opacity: 1;
-  color: var(--success, #3fb950);
-  border-color: color-mix(in srgb, var(--success, #3fb950) 45%, transparent);
-  background: color-mix(in srgb, var(--success, #3fb950) 16%, transparent);
+  color: var(--success);
+  border-color: color-mix(in srgb, var(--success) 45%, transparent);
+  background: color-mix(in srgb, var(--success) 16%, transparent);
 }
 
 .right-panel-mobile-btn-icon {
@@ -8188,9 +8202,9 @@ select option {
 }
 
 /* Selected-state for the generic small toolbar button (view-switcher rows like
-   Files/Git/Search/Apps, and every other `.tab-add-btn` toggle) — previously
+   Files/Git/Search/Apps, and every other `.toolbar-btn` toggle) — previously
    unstyled, so `aria-pressed`/`.active` carried no visible marker at all. */
-.tab-add-btn.active {
+.toolbar-btn.active {
   color: var(--accent);
   border-color: color-mix(in srgb, var(--accent) 55%, transparent);
   background: color-mix(in srgb, var(--accent) 14%, transparent);
@@ -8459,7 +8473,7 @@ select option {
   margin-left: auto;
 }
 
-.project-files-tab-header .tab-add-btn {
+.project-files-tab-header .toolbar-btn {
   font-size: 10px;
   padding: 1px 6px;
   height: 20px;
@@ -8467,11 +8481,8 @@ select option {
 }
 
 /* Same OS-file-drop affordance as the panel (pulsing glow, dashed inset border,
-   drop hint) — the animations are shared. */
-.project-files-tab.drop-active {
-  animation: right-panel-drop-pulse 1.1s ease-in-out infinite;
-}
-
+   drop hint) — the animations are shared, and like the panel the blurred glow
+   is static on the ::before with only opacity pulsing. */
 .project-files-tab.drop-active::before {
   content: "";
   position: absolute;
@@ -8480,7 +8491,10 @@ select option {
   border-radius: var(--radius);
   pointer-events: none;
   z-index: 20;
-  animation: right-panel-drop-dash 0.4s ease-out;
+  box-shadow: inset 0 0 22px 0 color-mix(in srgb, var(--accent) 32%, transparent);
+  animation:
+    right-panel-drop-dash 0.4s ease-out,
+    right-panel-drop-pulse 1.1s ease-in-out infinite;
 }
 
 .project-files-tab.drop-active::after {
@@ -8629,6 +8643,17 @@ select option {
   text-transform: uppercase;
   letter-spacing: 0.04em;
   line-height: 1;
+}
+
+/* The colored state dot inside a git action button (add/commit/push). The
+   color comes from lib/gitColors' GIT_STATE_COLOR via inline style; only the
+   geometry lives here so the four buttons cannot drift. */
+.git-step-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  margin-right: 5px;
+  flex-shrink: 0;
 }
 
 /* Click-opened navigable change tree under the Add/Commit/Push actions.
@@ -9190,17 +9215,17 @@ select option {
 }
 
 /* The reorder insertion bar's pulse: the glow breathes and the bar grows a
-   touch so the drop point reads as live during a pill drag. */
+   touch so the drop point reads as live during a pill drag. The blurred glow
+   itself is the bar's static box-shadow — only opacity/transform animate
+   (WebKitGTK software-renders animated blurred box-shadows). */
 @keyframes drag-insert-pulse {
   0%,
   100% {
     opacity: 0.6;
-    box-shadow: 0 0 4px var(--accent);
     transform: scaleY(0.85);
   }
   50% {
     opacity: 1;
-    box-shadow: 0 0 10px var(--accent);
     transform: scaleY(1);
   }
 }
@@ -9471,7 +9496,7 @@ select option {
    vertical list, each pill spanning the dropdown width. */
 .project-box-dropdown {
   position: fixed;
-  z-index: 1000;
+  z-index: var(--z-menu);
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -9631,8 +9656,8 @@ select option {
 }
 
 .project-box-member-remove:hover {
-  color: var(--danger, #f85149);
-  border-color: var(--danger, #f85149);
+  color: var(--danger);
+  border-color: var(--danger);
 }
 
 /* Multi-root file view (box scope): one collapsible section per root, each set
@@ -9840,7 +9865,7 @@ select option {
 }
 
 .pill-popup-status.inactive {
-  color: var(--text-muted, #6c7086);
+  color: var(--text-muted);
 }
 
 .pill-popup-time {
@@ -9896,7 +9921,7 @@ select option {
 }
 
 .tab-popup-meta.working {
-  color: var(--success, #4caf50);
+  color: var(--success);
 }
 
 /* ── Project switcher action buttons ──────────────────────────────────────── */
@@ -10927,7 +10952,7 @@ select option {
 .file-run-args-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 1000;
+  z-index: var(--z-menu);
 }
 .file-run-args {
   position: fixed;
@@ -10951,7 +10976,7 @@ select option {
   text-overflow: ellipsis;
 }
 .file-run-args-input {
-  background: var(--bg-input, var(--control-bg));
+  background: var(--bg-input);
   color: var(--text-primary);
   border: 1px solid var(--border-color);
   border-radius: var(--radius-sm);
@@ -10985,9 +11010,25 @@ select option {
 /* ── Context menus ───────────────────────────────────────────────────── */
 .context-menu {
   position: fixed;
-  z-index: 1000;
+  z-index: var(--z-menu);
   min-width: 150px;
   padding: 4px;
+}
+
+/* ContextMenuPortal's two layers: the full-viewport dismiss catcher and the
+   menu itself. `.context-menu-portal` is added by the portal on top of the
+   caller's chrome class and owns position + z, so a chrome class with its own
+   in-flow positioning (e.g. .tab-new-menu) still layers correctly — call
+   sites must not inline a z-index. */
+.context-menu-catcher {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-menu-catcher);
+}
+
+.context-menu-portal {
+  position: fixed;
+  z-index: var(--z-menu);
 }
 
 /* Glowing frame that floats onto the right-clicked file-tree row so it's
@@ -11001,6 +11042,10 @@ select option {
   border-radius: var(--radius-sm);
   border: 2px solid var(--accent);
   box-sizing: border-box;
+  /* Static blurred glow; the pulse animates only opacity (WebKitGTK
+     software-renders animated blurred box-shadows). The pulse's opacity
+     takes over from the in-animation once its 200ms delay elapses. */
+  box-shadow: 0 0 9px 2px var(--accent);
   animation:
     file-entry-highlight-in 200ms cubic-bezier(0.16, 1, 0.3, 1) both,
     file-entry-highlight-pulse 1.3s ease-in-out 200ms infinite;
@@ -11019,10 +11064,10 @@ select option {
 
 @keyframes file-entry-highlight-pulse {
   0%, 100% {
-    box-shadow: 0 0 5px 1px var(--accent);
+    opacity: 0.65;
   }
   50% {
-    box-shadow: 0 0 13px 3px var(--accent);
+    opacity: 1;
   }
 }
 
@@ -11488,7 +11533,7 @@ select option {
    and the files pane's whole-tree sync row (all three start the same transfer). */
 .file-tree-sync-progress {
   font-size: 10px;
-  color: var(--success, #3fb950);
+  color: var(--success);
   margin-left: auto;
   white-space: nowrap;
 }
@@ -11515,7 +11560,7 @@ select option {
 }
 
 .project-files-sync-result--bad {
-  color: var(--error, #f85149);
+  color: var(--danger);
 }
 
 /* SSH-sync Phase 1: local/remote source toggle row in the files view. */
@@ -11566,7 +11611,7 @@ select option {
   padding: 1px;
   border-radius: var(--radius-sm);
   border: 1px solid var(--border-subtle);
-  background: var(--bg-inset, rgba(127, 127, 127, 0.12));
+  background: var(--bg-inset);
 }
 .right-panel-source-switch .source-seg {
   flex-shrink: 0;
@@ -11618,7 +11663,7 @@ select option {
   padding: 1px 7px;
   border-radius: var(--radius-sm);
   border: 1px solid var(--border-subtle);
-  background: var(--bg-inset, rgba(127, 127, 127, 0.12));
+  background: var(--bg-inset);
   color: var(--text-secondary);
   font-family: inherit;
   font-size: 9px;
@@ -11705,7 +11750,7 @@ select option {
   text-underline-offset: 2px;
 }
 .file-tree-crumb.crumb-missing {
-  color: var(--danger, #f85149);
+  color: var(--danger);
   text-decoration: line-through;
   text-decoration-thickness: 1px;
   opacity: 0.85;
@@ -11753,8 +11798,8 @@ select option {
 
 /* Multi-selection highlight (click / shift-range / ctrl-toggle). Sits above the
    plain hover but below the move-drop-target outline. */
-.file-entry.selected { background-color: var(--accent-soft, rgba(88, 166, 255, 0.22)); }
-.file-entry.selected:hover { background-color: var(--accent-soft, rgba(88, 166, 255, 0.28)); }
+.file-entry.selected { background-color: var(--accent-soft); }
+.file-entry.selected:hover { background-color: var(--accent-soft); }
 
 /* The tree is focusable (tabIndex) so it can catch Enter/Escape for the
    selection; suppress the focus ring around the whole panel. */
@@ -11789,7 +11834,7 @@ select option {
 .file-entry.move-drop-target,
 .file-tree-up.move-drop-target,
 .file-tree-crumb.move-drop-target {
-  background-color: var(--accent-soft, rgba(88, 166, 255, 0.22));
+  background-color: var(--accent-soft);
   outline: 1px solid var(--accent);
   outline-offset: -1px;
   border-radius: var(--radius-sm);
@@ -11834,7 +11879,7 @@ select option {
   background: transparent;
 }
 .downloads-resize:hover {
-  background: var(--accent-soft, rgba(88, 166, 255, 0.22));
+  background: var(--accent-soft);
 }
 .downloads-header {
   display: flex;
@@ -11879,7 +11924,7 @@ select option {
 }
 .downloads-error {
   font-size: 10px;
-  color: var(--danger, #f85149);
+  color: var(--danger);
   word-break: break-all;
   padding: 2px 8px;
 }
@@ -11924,7 +11969,7 @@ select option {
   background: transparent;
 }
 .alerts-resize:hover {
-  background: var(--accent-soft, rgba(88, 166, 255, 0.22));
+  background: var(--accent-soft);
 }
 .alerts-header {
   display: flex;
@@ -11950,12 +11995,12 @@ select option {
 /* Overdue is emphasis on the same number, never a second one — the header
    badges' rule. */
 .alerts-count.overdue {
-  color: var(--danger, #f85149);
-  border-color: var(--danger, #f85149);
+  color: var(--danger);
+  border-color: var(--danger);
 }
 .alerts-error {
   font-size: 10px;
-  color: var(--danger, #f85149);
+  color: var(--danger);
   word-break: break-word;
   padding: 2px 8px;
 }
@@ -11978,7 +12023,7 @@ select option {
   cursor: pointer;
 }
 .alerts-row:hover:not(:disabled) {
-  background: var(--bg-hover, rgba(127, 127, 127, 0.12));
+  background: var(--bg-hover);
 }
 /* A surface that is switched off still shows its rows: the alert is real, only
    the way in is missing, and the row's tooltip says which switch. */
@@ -11993,10 +12038,10 @@ select option {
   color: var(--text-muted, var(--text-secondary));
 }
 .alerts-dot.overdue {
-  color: var(--danger, #f85149);
+  color: var(--danger);
 }
 .alerts-dot.now {
-  color: var(--warning, #d29922);
+  color: var(--warning);
 }
 .alerts-dot.soon {
   color: var(--accent);
@@ -12035,7 +12080,7 @@ select option {
   padding-right: 2px;
 }
 .alerts-when.overdue {
-  color: var(--danger, #f85149);
+  color: var(--danger);
 }
 
 /* ── Muting ───────────────────────────────────────────────────────────────
@@ -12055,7 +12100,7 @@ select option {
 }
 .alerts-row-wrap:hover,
 .alerts-row-wrap:focus-within {
-  background: var(--bg-hover, rgba(127, 127, 127, 0.12));
+  background: var(--bg-hover);
 }
 /* The door. Accent-tinted and always visible (never hover-revealed like the
    mute), because a meeting two minutes off is the one alert whose whole point is
@@ -12088,23 +12133,23 @@ select option {
   height: 20px;
   margin-left: 5px;
   padding: 0;
-  border: 1px solid color-mix(in srgb, var(--success, #3fb950) 72%, transparent);
+  border: 1px solid color-mix(in srgb, var(--success) 72%, transparent);
   border-radius: var(--radius-sm);
   background:
-    linear-gradient(135deg, transparent 3px, color-mix(in srgb, var(--success, #3fb950) 10%, transparent) 0)
+    linear-gradient(135deg, transparent 3px, color-mix(in srgb, var(--success) 10%, transparent) 0)
     top left;
-  color: var(--success, #3fb950);
+  color: var(--success);
   cursor: pointer;
   font-size: 12px;
   font-weight: 700;
   line-height: 18px;
   box-shadow:
-    2px 2px 0 color-mix(in srgb, var(--success, #3fb950) 22%, transparent),
-    inset 0 0 0 1px color-mix(in srgb, var(--success, #3fb950) 8%, transparent);
+    2px 2px 0 color-mix(in srgb, var(--success) 22%, transparent),
+    inset 0 0 0 1px color-mix(in srgb, var(--success) 8%, transparent);
 }
 .alerts-done:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--success, #3fb950) 22%, transparent);
-  border-color: var(--success, #3fb950);
+  background: color-mix(in srgb, var(--success) 22%, transparent);
+  border-color: var(--success);
 }
 .alerts-done:disabled {
   cursor: wait;
@@ -12372,7 +12417,7 @@ select option {
    implies the whole tree is on the remote. */
 .file-entry.not-on-remote .file-icon,
 .file-entry.not-on-remote .file-name {
-  color: var(--text-muted, #687899);
+  color: var(--text-muted);
 }
 
 /* "local only" = green, matching the local/remote color language the
@@ -12459,11 +12504,11 @@ select option {
   padding: 5px 8px;
   font-size: 11px;
   border-bottom: 1px solid var(--border-color);
-  background: color-mix(in srgb, var(--warning, #d29922) 14%, transparent);
+  background: color-mix(in srgb, var(--warning) 14%, transparent);
   color: var(--text-primary);
 }
 .hpc-expiry-banner.tone-urgent {
-  background: color-mix(in srgb, var(--danger, #f85149) 16%, transparent);
+  background: color-mix(in srgb, var(--danger) 16%, transparent);
 }
 .hpc-expiry-actions {
   display: flex;
@@ -12540,7 +12585,7 @@ select option {
    slot, tinted the keep-local/push green so "upload me" reads in the view's
    existing color language rather than a third tone. */
 .orange-file-dot--new {
-  color: var(--success, #3fb950);
+  color: var(--success);
 }
 
 /* Timestamp-only comparison for a diverged pair: a small pill, tinted by
@@ -12795,7 +12840,7 @@ select option {
   height: 16px;
   font-size: 9px;
   line-height: 1;
-  color: var(--success, #3fb950);
+  color: var(--success);
   opacity: 0.75;
 }
 
@@ -13452,7 +13497,7 @@ select option {
 
 .global-app-edit-popover {
   position: fixed;
-  z-index: 1000;
+  z-index: var(--z-menu);
   width: 320px;
   padding: 10px;
   background: var(--bg-elevated);
@@ -13885,7 +13930,7 @@ select option {
 .modal-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 100;
+  z-index: var(--z-modal);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -13898,7 +13943,7 @@ select option {
    hub. This lifts the connect detail's backdrop one layer up so it always sits
    over the hub that spawned it. */
 .modal-backdrop.modal-backdrop-elevated {
-  z-index: 110;
+  z-index: var(--z-modal-elevated);
 }
 
 /* One dialog surface for the whole app — the shells differ only in size.
@@ -14655,7 +14700,7 @@ button.settings-btn.danger:hover:not(:disabled),
   border: 1px solid var(--border-color);
   border-radius: var(--radius-sm);
   background: var(--bg-panel);
-  box-shadow: var(--shadow-lg, 0 6px 24px rgba(0, 0, 0, 0.35));
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
   pointer-events: none;
 }
 .file-viewer-pdf-outline-preview img {
@@ -14691,13 +14736,13 @@ button.settings-btn.danger:hover:not(:disabled),
   font-size: 12px;
 }
 .file-viewer-banner.is-error {
-  color: var(--danger, #e05252);
+  color: var(--danger);
 }
 /* A question about something irreversible (the blackout burn-in), not a failure —
    so it is toned as a warning rather than as an error. */
 .file-viewer-banner.is-warn {
-  color: var(--warning, #d29922);
-  background: color-mix(in srgb, var(--warning, #d29922) 12%, var(--control-bg));
+  color: var(--warning);
+  background: color-mix(in srgb, var(--warning) 12%, var(--control-bg));
 }
 .file-viewer-banner button {
   border: 1px solid var(--border-color);
@@ -15111,8 +15156,8 @@ label.settings-toggle-card-row {
   background: color-mix(in srgb, var(--bg-panel) 85%, transparent);
 }
 
-.mobile-security-health.good { border-left-color: var(--success, #59b777); }
-.mobile-security-health.danger { border-left-color: var(--danger, #df7280); }
+.mobile-security-health.good { border-left-color: var(--success); }
+.mobile-security-health.danger { border-left-color: var(--danger); }
 .mobile-security-health.off { border-left-color: var(--text-muted); }
 
 .mobile-security-health strong { color: var(--text-primary); font-size: 12px; }
@@ -15371,7 +15416,7 @@ label.settings-toggle-card-row {
   font-size: 0.82em;
   line-height: 1.35;
   text-align: right;
-  color: var(--danger, #d9534f);
+  color: var(--danger);
 }
 
 .help-section {
@@ -15503,7 +15548,7 @@ label.settings-toggle-card-row {
 }
 
 .settings-error {
-  color: var(--danger, #f85149);
+  color: var(--danger);
   font-size: 12px;
   word-break: break-word;
 }
@@ -16486,7 +16531,7 @@ label.settings-toggle-card-row {
   padding: 6px 8px;
   border-left: 3px solid var(--accent);
   border-radius: var(--radius-sm);
-  background: var(--bg-subtle, rgba(127, 127, 127, 0.08));
+  background: var(--bg-subtle);
   font-size: 11px;
   line-height: 1.5;
   color: var(--text-secondary);
@@ -16659,7 +16704,7 @@ label.settings-toggle-card-row {
   margin-left: 6px;
   padding: 0 4px;
   border-radius: var(--radius-sm);
-  background: var(--accent-soft, rgba(88, 166, 255, 0.22));
+  background: var(--accent-soft);
   color: var(--accent);
   font-size: 9px;
   font-weight: 600;
@@ -17030,9 +17075,9 @@ label.settings-toggle-card-row {
 }
 
 .vpn-connect-btn.vpn-status-connected {
-  border-color: var(--success, #3fb950);
-  color: var(--success, #3fb950);
-  background: color-mix(in srgb, var(--success, #3fb950) 14%, transparent);
+  border-color: var(--success);
+  color: var(--success);
+  background: color-mix(in srgb, var(--success) 14%, transparent);
 }
 
 .vpn-connect-btn.vpn-status-error {
@@ -17096,8 +17141,8 @@ label.settings-toggle-card-row {
 }
 
 .dialog-connect-btn:hover:not(:disabled) {
-  background: var(--accent-hover, var(--accent));
-  border-color: var(--accent-hover, var(--accent));
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
 }
 
 .dialog-connect-btn:disabled {
@@ -17377,7 +17422,7 @@ label.settings-toggle-card-row {
   margin-top: 4px;
   padding-top: 6px;
   border-top: 1px solid color-mix(in srgb, var(--danger) 40%, transparent);
-  color: var(--text-main);
+  color: var(--text-primary);
 }
 
 .sshfs-install-instruction {
@@ -17562,11 +17607,21 @@ label.settings-toggle-card-row {
   word-break: break-all;
 }
 
-.project-dialog-actions {
+/* ── Dialog footer row ────────────────────────────────────────────────────
+   ONE layout for every dialog's action row. `.dialog-actions` is the neutral
+   name new dialogs should use; the older family names stay as aliases because
+   each also scopes its own button chrome (`.project-dialog-actions button`'s
+   shine, `.folder-picker-actions button`'s outline) that a rename would
+   detach. The geometry lives only here — do not re-declare it per family. */
+.dialog-actions,
+.project-dialog-actions,
+.mail-dialog-actions,
+.folder-picker-actions {
   display: flex;
+  flex-wrap: wrap;
   justify-content: flex-end;
   gap: 8px;
-  margin-top: 4px;
+  margin-top: 8px;
 }
 
 /* ── Large-folder sync prompt (BigFolderExcludeDialog) ───────────────── */
@@ -17737,7 +17792,13 @@ label.settings-toggle-card-row {
   color: var(--text-muted);
 }
 
+/* Pointer-following tooltip, portaled to <body> (activity calendar, disk-usage
+   chart). Positioning + layering live here — call sites set only left/top. */
 .activity-tooltip {
+  position: fixed;
+  transform: translate(-50%, -100%);
+  pointer-events: none;
+  z-index: var(--z-tooltip);
   padding: 5px 9px;
   background: var(--bg-elevated);
   border: 1px solid var(--border-color);
@@ -17961,8 +18022,8 @@ label.settings-toggle-card-row {
    Warning-toned rather than danger — the model is perfectly good, it just
    can't do this one job, and it stays usable for autocomplete/grammar/Mistral. */
 .local-model-loaded-badges > span.local-model-notools-chip {
-  background: color-mix(in srgb, var(--warning, #d29922) 20%, transparent);
-  color: var(--warning, #d29922);
+  background: color-mix(in srgb, var(--warning) 20%, transparent);
+  color: var(--warning);
 }
 
 /* ── The device's own GPU memory: how much headroom is left before the next
@@ -18252,8 +18313,8 @@ label.settings-toggle-card-row {
   text-align: center;
 }
 .local-model-role-chip.local-model-unload:hover {
-  border-color: var(--danger, #e5534b);
-  color: var(--danger, #e5534b);
+  border-color: var(--danger);
+  color: var(--danger);
 }
 .local-model-role-chip.local-model-unload:disabled {
   opacity: 0.6;
@@ -18596,8 +18657,8 @@ label.settings-toggle-card-row {
    mostly about. It is the ONLY coloured chip on a card, which is what lets it
    be found by scanning a column of otherwise grey ones. */
 .local-model-chip.local-model-notools-chip {
-  background: color-mix(in srgb, var(--warning, #d29922) 20%, transparent);
-  color: var(--warning, #d29922);
+  background: color-mix(in srgb, var(--warning) 20%, transparent);
+  color: var(--warning);
 }
 /* The second line — the twin of `.local-model-roles`, down to the 25px indent
    that clears the leading glyph above. Caveat tags at the left corner, the
@@ -18642,8 +18703,8 @@ label.settings-toggle-card-row {
   white-space: nowrap;
 }
 .local-model-notools-slot > span.local-model-notools-chip {
-  background: color-mix(in srgb, var(--warning, #d29922) 20%, transparent);
-  color: var(--warning, #d29922);
+  background: color-mix(in srgb, var(--warning) 20%, transparent);
+  color: var(--warning);
 }
 .local-model-load-bar {
   margin: 2px 12px 4px;
@@ -18655,9 +18716,9 @@ label.settings-toggle-card-row {
 .local-model-igpu-notice {
   margin: 4px 10px 6px;
   padding: 8px 10px;
-  border: 1px solid var(--warning, #d08a2c);
+  border: 1px solid var(--warning);
   border-radius: var(--radius);
-  background: color-mix(in srgb, var(--warning, #d08a2c) 10%, transparent);
+  background: color-mix(in srgb, var(--warning) 10%, transparent);
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -18672,7 +18733,7 @@ label.settings-toggle-card-row {
 }
 .local-model-igpu-fix {
   align-self: flex-start;
-  border: 1px solid var(--warning, #d08a2c);
+  border: 1px solid var(--warning);
   border-radius: var(--radius-sm);
   padding: 3px 8px;
   font-size: 12px;
@@ -18800,7 +18861,7 @@ label.settings-toggle-card-row {
 .ollama-chip.active {
   background: var(--accent);
   border-color: var(--accent);
-  color: var(--accent-fg, #fff);
+  color: var(--accent-contrast);
 }
 
 .ollama-install-log {
@@ -19290,7 +19351,7 @@ label.settings-toggle-card-row {
   font-size: 11px;
   line-height: 1.45;
   color: var(--text-secondary);
-  background: var(--bg-hover, color-mix(in srgb, var(--text-primary) 6%, transparent));
+  background: var(--bg-hover);
   border: 1px solid var(--border);
 }
 .vpn-prompt-connected {
@@ -19443,11 +19504,11 @@ label.settings-toggle-card-row {
 }
 .mobile-indicator-actions .vpn-indicator-connect { margin-top: 0; }
 .mobile-indicator-actions .mobile-indicator-lockdown {
-  color: var(--danger, #df7280);
-  border-color: color-mix(in srgb, var(--danger, #df7280) 60%, var(--control-border));
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 60%, var(--control-border));
 }
 .mobile-indicator-actions .mobile-indicator-lockdown:hover {
-  background: color-mix(in srgb, var(--danger, #df7280) 14%, transparent);
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
 }
 /* Title row carries the pinned "OpenVPN" label plus a top-right × (unified with the
    other menus). The label keeps its accent styling; the row just lays the two out. */
@@ -19631,8 +19692,8 @@ label.settings-toggle-card-row {
   font-size: 11px;
   line-height: 1.45;
   color: var(--text-primary);
-  background: color-mix(in srgb, var(--warning, #d08a2c) 12%, transparent);
-  border: 1px solid color-mix(in srgb, var(--warning, #d08a2c) 40%, transparent);
+  background: color-mix(in srgb, var(--warning) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--warning) 40%, transparent);
 }
 
 /* ── Header Machines indicator (MachinesIndicator) ──────────────────────────
@@ -19932,7 +19993,7 @@ label.settings-toggle-card-row {
   overflow-y: auto;
   padding: 4px 6px;
   border-radius: var(--radius-sm);
-  background: var(--bg-inset, var(--border, rgba(128, 128, 128, 0.15)));
+  background: var(--bg-inset);
 }
 .machines-io-result-row {
   display: flex;
@@ -19981,7 +20042,7 @@ label.settings-toggle-card-row {
   font-size: 10px;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: var(--text-tertiary, var(--text-secondary));
+  color: var(--text-tertiary);
 }
 .remote-connect-location-path {
   flex: 1 1 auto;
@@ -20103,7 +20164,7 @@ label.settings-toggle-card-row {
    never pierced by a stray hint. Portaled to body (see HintBubble). */
 .hint-bubble {
   position: fixed;
-  z-index: 90;
+  z-index: var(--z-hint);
   padding: 10px 12px;
   border-radius: var(--radius);
   background: var(--bg-elevated);
@@ -20201,7 +20262,8 @@ label.settings-toggle-card-row {
 @media (prefers-reduced-motion: reduce) {
   .hint-bubble,
   .hint-bubble--banner,
-  .hint-target {
+  .hint-target,
+  .tour-target {
     animation: none;
   }
 }
@@ -20265,17 +20327,19 @@ label.settings-toggle-card-row {
 }
 
 .hint-bubble-got-it:hover {
-  background: var(--accent-hover, var(--accent));
+  background: var(--accent-hover);
 }
 
-/* The element a coachmark points at gets this class while the hint is shown, so
-   the eye lands on the thing to click (see HintHost). */
-.hint-target {
-  animation: hint-target-pulse 1.6s ease-in-out infinite;
+/* The element a tour step spotlights (TourHost) — an OUTWARD spread ring.
+   Deliberately a different class from .hint-target: the hint version keeps
+   its ring inset so it survives an overflow:hidden ancestor like .tab-bar,
+   and a shared name meant the later keyframes clobbered both consumers. */
+.tour-target {
+  animation: tour-target-pulse 1.6s ease-in-out infinite;
   border-radius: var(--radius);
 }
 
-@keyframes hint-target-pulse {
+@keyframes tour-target-pulse {
   0%,
   100% {
     box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 65%, transparent);
@@ -20332,7 +20396,7 @@ label.settings-toggle-card-row {
 .right-panel-reveal-handle:hover {
   opacity: 1;
   color: var(--text-primary);
-  background-color: var(--bg-hover, var(--bg-panel));
+  background-color: var(--bg-hover);
 }
 
 /* Mirror the reveal handle and tour marker to the left edge when the panel
@@ -20474,7 +20538,7 @@ label.settings-toggle-card-row {
 }
 
 .tour-bubble-next:hover {
-  background: var(--accent-hover, var(--accent));
+  background: var(--accent-hover);
 }
 
 /* Interactive step: the click the task just asked for has to reach the real
@@ -20562,7 +20626,7 @@ label.settings-toggle-card-row {
   margin-top: 9px;
   padding: 7px 9px;
   border-radius: var(--radius-sm);
-  background: var(--bg-subtle, var(--bg-panel));
+  background: var(--bg-subtle);
   border: 1px dashed var(--border-color);
   color: var(--text-secondary);
   line-height: 1.45;
@@ -20911,7 +20975,7 @@ label.settings-toggle-card-row {
 
 .network-metric.transmit strong,
 .network-graph-legend .transmit {
-  color: var(--success, #3fb950);
+  color: var(--success);
 }
 
 .network-usage-totals {
@@ -20937,7 +21001,7 @@ label.settings-toggle-card-row {
 }
 
 .network-usage-totals .tx {
-  color: var(--success, #3fb950);
+  color: var(--success);
 }
 
 .network-graph-wrap {
@@ -20971,7 +21035,7 @@ label.settings-toggle-card-row {
 }
 
 .network-line.transmit {
-  stroke: var(--success, #3fb950);
+  stroke: var(--success);
 }
 
 .network-graph-scale {
@@ -21094,7 +21158,7 @@ label.settings-toggle-card-row {
 
 .network-warning {
   padding: 8px 10px;
-  color: var(--warning, #d29922);
+  color: var(--warning);
 }
 
 .network-status-panel {
@@ -23752,7 +23816,7 @@ label.settings-toggle-card-row {
 }
 
 .deck-font-banner {
-  border-left: 3px solid var(--warning, #d89b2c);
+  border-left: 3px solid var(--warning);
 }
 
 /* A "!" on the Export button when the deck contains characters the built-in PDF
@@ -23761,7 +23825,7 @@ label.settings-toggle-card-row {
 .deck-export-warn {
   margin-left: 4px;
   font-weight: 700;
-  color: var(--warning, #d89b2c);
+  color: var(--warning);
 }
 
 /* The in-place text editor: a real textarea on the object's own box, sharing the
@@ -24033,7 +24097,7 @@ label.settings-toggle-card-row {
 
 /* The elapsed clock earns its colour only once a target is set: an amber that
    means nothing is an amber nobody reads when it does mean something. */
-.deck-presenter-timer.is-near { color: var(--warning, #d89b2c); }
+.deck-presenter-timer.is-near { color: var(--warning); }
 .deck-presenter-timer.is-over { color: var(--danger); }
 .deck-presenter-timer.is-paused { color: var(--text-muted); }
 
@@ -24609,10 +24673,10 @@ label.settings-toggle-card-row {
   font-weight: 800;
   line-height: 1;
   letter-spacing: -0.06em;
-  color: var(--warning, #e3b341);
+  color: var(--warning);
 }
 .mail-menu-priority.urgent .mail-menu-priority-mark {
-  color: var(--danger, #f85149);
+  color: var(--danger);
 }
 
 /* ── The 🗓 button's day list ───────────────────────────────────────────────
@@ -24852,7 +24916,7 @@ label.settings-toggle-card-row {
 }
 .todo-menu-late {
   flex: 0 0 auto;
-  color: var(--danger, #f85149);
+  color: var(--danger);
   font-variant-numeric: tabular-nums;
   font-size: 11px;
 }
@@ -24869,7 +24933,7 @@ label.settings-toggle-card-row {
    and a title, and "High" spelled out would be the widest thing on it. */
 .todo-menu-prio {
   flex: 0 0 auto;
-  color: var(--warning, #e8a33d);
+  color: var(--warning);
   font-weight: 700;
 }
 
@@ -25807,33 +25871,6 @@ handle — it swallows the pointer before the card ever sees it. */
   flex: 1;
 }
 
-.mail-btn {
-  padding: 4px 10px;
-  border-radius: var(--radius);
-  border: 1px solid var(--border-color);
-  background: var(--bg-input);
-  color: var(--text-primary);
-  font-size: 12px;
-  cursor: pointer;
-}
-.mail-btn:hover:not(:disabled) {
-  border-color: var(--accent);
-}
-.mail-btn:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-.mail-btn-primary {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: var(--bg-panel);
-  font-weight: 600;
-}
-.mail-btn-danger {
-  border-color: var(--danger, #d9534f);
-  color: var(--danger, #d9534f);
-}
-
 .mail-input {
   padding: 5px 8px;
   border-radius: var(--radius);
@@ -25867,7 +25904,7 @@ handle — it swallows the pointer before the card ever sees it. */
   border-bottom: 1px solid var(--border-subtle);
 }
 .mail-error-strip {
-  background: color-mix(in srgb, var(--danger, #d9534f) 14%, transparent);
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
   color: var(--text-primary);
 }
 .mail-note-strip {
@@ -26010,40 +26047,26 @@ handle — it swallows the pointer before the card ever sees it. */
    the two ends of the feature recognisably one thing. */
 .mail-priority-chip {
   font-weight: 600;
-  border-color: color-mix(in srgb, var(--warning, #e3b341) 55%, transparent);
-  background: color-mix(in srgb, var(--warning, #e3b341) 12%, transparent);
+  border-color: color-mix(in srgb, var(--warning) 55%, transparent);
+  background: color-mix(in srgb, var(--warning) 12%, transparent);
 }
 .mail-priority-chip.urgent {
-  border-color: color-mix(in srgb, var(--danger, #f85149) 55%, transparent);
-  background: color-mix(in srgb, var(--danger, #f85149) 12%, transparent);
+  border-color: color-mix(in srgb, var(--danger) 55%, transparent);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
 }
 .mail-priority-chip:hover {
-  border-color: var(--warning, #e3b341);
+  border-color: var(--warning);
 }
 .mail-priority-chip.urgent:hover {
-  border-color: var(--danger, #f85149);
+  border-color: var(--danger);
 }
 .mail-priority-chip.selected {
-  border-color: var(--warning, #e3b341);
-  background: color-mix(in srgb, var(--warning, #e3b341) 24%, transparent);
+  border-color: var(--warning);
+  background: color-mix(in srgb, var(--warning) 24%, transparent);
 }
 .mail-priority-chip.urgent.selected {
-  border-color: var(--danger, #f85149);
-  background: color-mix(in srgb, var(--danger, #f85149) 24%, transparent);
-}
-
-/* The band's secondary actions (add/edit an account, open the filters). Pill
-   shaped like everything beside them, and one weight quieter than a chip — they
-   open a dialog, they do not switch what is on screen. */
-.mail-btn-small {
-  padding: 3px 10px;
-  border-radius: 999px;
-  font-size: 11px;
-  color: var(--text-muted);
-  background: transparent;
-}
-.mail-btn-small:hover:not(:disabled) {
-  color: var(--text-primary);
+  border-color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 24%, transparent);
 }
 
 /* Three panes: rail, list, message. The list is fixed-ish so the message pane
@@ -26092,7 +26115,7 @@ handle — it swallows the pointer before the card ever sees it. */
   cursor: pointer;
 }
 .mail-rail-folder:hover {
-  background: var(--bg-hover, rgba(127, 127, 127, 0.12));
+  background: var(--bg-hover);
 }
 .mail-rail-folder.selected {
   background: color-mix(in srgb, var(--accent) 22%, transparent);
@@ -26135,10 +26158,10 @@ handle — it swallows the pointer before the card ever sees it. */
      different baselines inside one pill. */
   line-height: inherit;
   letter-spacing: -0.06em;
-  color: var(--warning, #e3b341);
+  color: var(--warning);
 }
 .mail-priority-chip.urgent .mail-rail-priority-mark {
-  color: var(--danger, #f85149);
+  color: var(--danger);
 }
 /* The badge counts EVERYTHING filed, and the accent tint is the "some of it is
    unread" signal — so an all-read list still shows its size, muted. Without the
@@ -26250,7 +26273,7 @@ handle — it swallows the pointer before the card ever sees it. */
   cursor: pointer;
 }
 .mail-row:hover {
-  background: var(--bg-hover, rgba(127, 127, 127, 0.10));
+  background: var(--bg-hover);
 }
 .mail-row.selected {
   background: color-mix(in srgb, var(--accent) 20%, transparent);
@@ -26276,7 +26299,7 @@ handle — it swallows the pointer before the card ever sees it. */
   font-size: 12px;
 }
 .mail-flag-btn.on {
-  color: var(--warning, #e3b341);
+  color: var(--warning);
 }
 /* Read ⇄ unread, beside the star: the same shape of control, so it inherits the
    star's rule outright and states only what differs. `on` here means *unread* —
@@ -26344,10 +26367,10 @@ handle — it swallows the pointer before the card ever sees it. */
   margin-right: 4px;
   font-weight: 800;
   font-size: 11px;
-  color: var(--warning, #e3b341);
+  color: var(--warning);
 }
 .mail-row-priority.urgent {
-  color: var(--danger, #f85149);
+  color: var(--danger);
 }
 /* Which mailbox a row came from — rendered only in a cross-account list, where
    the rail no longer answers it. Deliberately the quietest line in the row: it
@@ -26374,7 +26397,7 @@ handle — it swallows the pointer before the card ever sees it. */
   margin-top: 3px;
   padding-left: var(--mail-row-indent);
   font-size: 11px;
-  color: var(--warning, #e3b341);
+  color: var(--warning);
 }
 .mail-list-paging {
   display: flex;
@@ -26433,8 +26456,8 @@ handle — it swallows the pointer before the card ever sees it. */
 .mail-warning-strip {
   padding: 5px 8px;
   border-radius: var(--radius);
-  border-left: 3px solid var(--warning, #e3b341);
-  background: color-mix(in srgb, var(--warning, #e3b341) 12%, transparent);
+  border-left: 3px solid var(--warning);
+  background: color-mix(in srgb, var(--warning) 12%, transparent);
   font-size: 12px;
   line-height: 1.5;
 }
@@ -26453,16 +26476,16 @@ handle — it swallows the pointer before the card ever sees it. */
   background: color-mix(in srgb, var(--text-primary) 4%, transparent);
 }
 .mail-auth-good {
-  border-left-color: var(--success, #3fb950);
-  background: color-mix(in srgb, var(--success, #3fb950) 10%, transparent);
+  border-left-color: var(--success);
+  background: color-mix(in srgb, var(--success) 10%, transparent);
 }
 .mail-auth-warn {
-  border-left-color: var(--warning, #e3b341);
-  background: color-mix(in srgb, var(--warning, #e3b341) 10%, transparent);
+  border-left-color: var(--warning);
+  background: color-mix(in srgb, var(--warning) 10%, transparent);
 }
 .mail-auth-bad {
-  border-left-color: var(--danger, #f85149);
-  background: color-mix(in srgb, var(--danger, #f85149) 12%, transparent);
+  border-left-color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
 }
 .mail-auth-head {
   display: flex;
@@ -26499,13 +26522,13 @@ handle — it swallows the pointer before the card ever sees it. */
   color: var(--text-muted);
 }
 .mail-auth-chip.tone-good {
-  border-color: color-mix(in srgb, var(--success, #3fb950) 45%, transparent);
+  border-color: color-mix(in srgb, var(--success) 45%, transparent);
 }
 .mail-auth-chip.tone-warn {
-  border-color: color-mix(in srgb, var(--warning, #e3b341) 55%, transparent);
+  border-color: color-mix(in srgb, var(--warning) 55%, transparent);
 }
 .mail-auth-chip.tone-bad {
-  border-color: color-mix(in srgb, var(--danger, #f85149) 55%, transparent);
+  border-color: color-mix(in srgb, var(--danger) 55%, transparent);
 }
 .mail-auth-hint {
   margin: 0;
@@ -26649,10 +26672,10 @@ handle — it swallows the pointer before the card ever sees it. */
   font-weight: 700;
 }
 .mail-ai-report-mark.urgent {
-  color: var(--danger, #f85149);
+  color: var(--danger);
 }
 .mail-ai-report-mark.important {
-  color: var(--warning, #e3b341);
+  color: var(--warning);
 }
 .mail-ai-report-reason {
   color: var(--text-secondary);
@@ -26726,8 +26749,8 @@ handle — it swallows the pointer before the card ever sees it. */
 .mail-unsafe-card {
   padding: 12px;
   border-radius: var(--radius);
-  border: 1px solid var(--danger, #d9534f);
-  background: color-mix(in srgb, var(--danger, #d9534f) 10%, transparent);
+  border: 1px solid var(--danger);
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
 }
 .mail-unsafe-card p {
   margin: 6px 0 0;
@@ -26778,7 +26801,7 @@ handle — it swallows the pointer before the card ever sees it. */
   cursor: pointer;
 }
 .mail-link-row.warn {
-  border-left: 3px solid var(--warning, #e3b341);
+  border-left: 3px solid var(--warning);
 }
 .mail-link-host {
   font-family: var(--font-mono, ui-monospace, Menlo, Consolas, monospace);
@@ -26788,7 +26811,7 @@ handle — it swallows the pointer before the card ever sees it. */
 }
 .mail-link-flag {
   font-size: 11px;
-  color: var(--warning, #e3b341);
+  color: var(--warning);
 }
 
 .mail-attachments {
@@ -26895,8 +26918,8 @@ handle — it swallows the pointer before the card ever sees it. */
   padding: 5px 8px;
   margin-bottom: 10px;
   border-radius: var(--radius);
-  border-left: 3px solid var(--warning, #e3b341);
-  background: color-mix(in srgb, var(--warning, #e3b341) 12%, transparent);
+  border-left: 3px solid var(--warning);
+  background: color-mix(in srgb, var(--warning) 12%, transparent);
   font-size: 12px;
   line-height: 1.5;
 }
@@ -26960,7 +26983,7 @@ handle — it swallows the pointer before the card ever sees it. */
   margin-top: 8px;
   padding: 6px 8px;
   border-radius: var(--radius);
-  background: color-mix(in srgb, var(--danger, #d9534f) 12%, transparent);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
   font-size: 12px;
 }
 .caldav-confirm-strip span {
@@ -27005,8 +27028,8 @@ handle — it swallows the pointer before the card ever sees it. */
   margin-bottom: 10px;
   padding: 6px 8px;
   border-radius: var(--radius);
-  border-left: 3px solid var(--danger, #d9534f);
-  background: color-mix(in srgb, var(--danger, #d9534f) 12%, transparent);
+  border-left: 3px solid var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
   font-size: 11px;
   line-height: 1.5;
 }
@@ -27054,8 +27077,8 @@ handle — it swallows the pointer before the card ever sees it. */
   line-height: 1.5;
 }
 .ics-review-notice-bad {
-  border-left: 3px solid var(--warning, #e3b341);
-  background: color-mix(in srgb, var(--warning, #e3b341) 12%, transparent);
+  border-left: 3px solid var(--warning);
+  background: color-mix(in srgb, var(--warning) 12%, transparent);
 }
 .ics-review-list {
   list-style: none;
@@ -27090,7 +27113,7 @@ handle — it swallows the pointer before the card ever sees it. */
   color: var(--text-muted);
 }
 .ics-review-row-kept .ics-review-effect {
-  color: var(--warning, #e3b341);
+  color: var(--warning);
 }
 .ics-review-sample {
   flex-basis: 100%;
@@ -27116,7 +27139,7 @@ handle — it swallows the pointer before the card ever sees it. */
    timer fires, and a quietly stale calendar looks just like one with nothing
    new in it. The error itself is the button's tooltip. */
 .cal-list-sync-error {
-  color: var(--warning, #e3b341);
+  color: var(--warning);
   font-weight: 600;
 }
 
@@ -27164,13 +27187,7 @@ handle — it swallows the pointer before the card ever sees it. */
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius);
 }
-.mail-dialog-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  justify-content: flex-end;
-  padding-top: 6px;
-}
+/* .mail-dialog-actions: layout comes from the shared dialog-footer rule. */
 /* ── Encryption at rest (docs/mail_encryption_plan.md) ─────────────────────
    No colour of its own. The dialog is mostly prose about what encryption does
    and does not buy, and a green "secure" chrome around that prose would be the
@@ -27313,10 +27330,10 @@ handle — it swallows the pointer before the card ever sees it. */
   font-size: 12px;
   min-width: 16px;
   text-align: center;
-  color: var(--warning, #e3b341);
+  color: var(--warning);
 }
 .mail-filter-mark.urgent {
-  color: var(--danger, #d9534f);
+  color: var(--danger);
 }
 .mail-filter-name {
   flex: 1;
@@ -27329,10 +27346,6 @@ handle — it swallows the pointer before the card ever sees it. */
 .mail-filter-row-actions {
   display: flex;
   gap: 2px;
-}
-.mail-btn-icon {
-  padding: 1px 5px;
-  line-height: 1.2;
 }
 .mail-filter-chips {
   display: flex;
@@ -27364,7 +27377,7 @@ handle — it swallows the pointer before the card ever sees it. */
   padding: 0 2px;
 }
 .mail-filter-chip-x:hover {
-  color: var(--danger, #d9534f);
+  color: var(--danger);
 }
 .mail-filters-term-add {
   display: flex;
@@ -27453,8 +27466,8 @@ handle — it swallows the pointer before the card ever sees it. */
   gap: 8px;
   padding: 8px;
   border-radius: var(--radius);
-  border-left: 3px solid var(--danger, #d9534f);
-  background: color-mix(in srgb, var(--danger, #d9534f) 12%, transparent);
+  border-left: 3px solid var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
   font-size: 12px;
 }
 .mail-confirm-strip span {
@@ -27523,7 +27536,7 @@ handle — it swallows the pointer before the card ever sees it. */
   line-height: 1;
 }
 .mail-staged-remove:hover {
-  color: var(--danger, #d9534f);
+  color: var(--danger);
 }
 
 /* ── In-app browser (#61) ───────────────────────────────────────────────────
@@ -27668,7 +27681,7 @@ handle — it swallows the pointer before the card ever sees it. */
   flex: 0 0 auto;
 }
 .browser-address-userinfo {
-  color: var(--danger, #d9534f);
+  color: var(--danger);
   text-decoration: line-through;
   flex: 0 0 auto;
 }
@@ -27682,15 +27695,15 @@ handle — it swallows the pointer before the card ever sees it. */
   border: 1px solid var(--border-subtle);
 }
 .browser-address-flag {
-  color: var(--danger, #d9534f);
-  border-color: var(--danger, #d9534f);
+  color: var(--danger);
+  border-color: var(--danger);
 }
 .browser-address-punycode {
-  color: var(--warning, #e3b341);
+  color: var(--warning);
   font-family: var(--font-mono, ui-monospace, Menlo, Consolas, monospace);
 }
 .browser-address-hint {
-  color: var(--warning, #e3b341);
+  color: var(--warning);
 }
 
 /* The security chip. The WORD carries the meaning; the glyph is ornament beside
@@ -27709,10 +27722,10 @@ handle — it swallows the pointer before the card ever sees it. */
   border-radius: var(--radius);
 }
 .browser-security-chip.tone-secure {
-  color: var(--success, #3fb950);
+  color: var(--success);
 }
 .browser-security-chip.tone-insecure {
-  color: var(--danger, #d9534f);
+  color: var(--danger);
 }
 .browser-security-chip:hover {
   background: color-mix(in srgb, var(--accent) 16%, transparent);
@@ -27725,7 +27738,7 @@ handle — it swallows the pointer before the card ever sees it. */
   border-radius: var(--radius);
   padding: 0 5px;
   font-size: 10px;
-  color: var(--warning, #e3b341);
+  color: var(--warning);
 }
 
 .browser-security-popover {
@@ -27787,13 +27800,13 @@ handle — it swallows the pointer before the card ever sees it. */
   border-bottom: 1px solid var(--border-subtle);
 }
 .browser-error-strip {
-  background: color-mix(in srgb, var(--danger, #d9534f) 14%, transparent);
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
 }
 .browser-note-strip {
   background: color-mix(in srgb, var(--accent) 12%, transparent);
 }
 .browser-warning-strip {
-  background: color-mix(in srgb, var(--warning, #e3b341) 16%, transparent);
+  background: color-mix(in srgb, var(--warning) 16%, transparent);
 }
 .browser-error-strip span,
 .browser-note-strip span {
@@ -27852,9 +27865,9 @@ handle — it swallows the pointer before the card ever sees it. */
 .browser-unsafe-card {
   margin: 18px;
   padding: 14px 16px;
-  border: 1px solid var(--danger, #d9534f);
+  border: 1px solid var(--danger);
   border-radius: var(--radius);
-  background: color-mix(in srgb, var(--danger, #d9534f) 10%, transparent);
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
 }
 
 .browser-start {
@@ -27889,7 +27902,7 @@ handle — it swallows the pointer before the card ever sees it. */
 }
 .browser-blocked-title {
   font-weight: 650;
-  color: var(--danger, #d9534f);
+  color: var(--danger);
   font-size: 14px;
 }
 /* The gate's THIRD outcome — reachable, but worth telling you about first (a
@@ -27897,7 +27910,7 @@ handle — it swallows the pointer before the card ever sees it. */
    an error, and painting it red would train the user to click past the red one
    too. */
 .browser-blocked-confirm .browser-blocked-title {
-  color: var(--warning, #e3b341);
+  color: var(--warning);
 }
 .browser-blocked-reason {
   max-width: 46rem;
@@ -27982,7 +27995,7 @@ handle — it swallows the pointer before the card ever sees it. */
    The native Print Manager tab (`printing/PrintManagerPane`), which replaced the
    `print_manager` global-app slot. Built entirely from theme tokens, like the
    mail pane, so it inherits every theme instead of carrying its own palette; the
-   button/strip shapes deliberately mirror `.mail-btn`/`.mail-toolbar` so a pane
+   button/strip shapes deliberately mirror `.settings-btn`/`.mail-toolbar` so a pane
    the user meets once does not look like a different application. */
 
 .print-pane {
@@ -28043,8 +28056,8 @@ handle — it swallows the pointer before the card ever sees it. */
   cursor: default;
 }
 .print-btn.danger {
-  border-color: var(--danger, #d9534f);
-  color: var(--danger, #d9534f);
+  border-color: var(--danger);
+  color: var(--danger);
 }
 .print-btn.small {
   padding: 2px 7px;
@@ -28059,7 +28072,7 @@ handle — it swallows the pointer before the card ever sees it. */
   word-break: break-word;
 }
 .print-strip.error {
-  color: var(--danger, #d9534f);
+  color: var(--danger);
 }
 .print-strip.notice {
   color: var(--text-muted);
@@ -28110,7 +28123,7 @@ handle — it swallows the pointer before the card ever sees it. */
   color: var(--text-muted);
 }
 .print-state.warn {
-  color: var(--warning, #e3b341);
+  color: var(--warning);
 }
 .print-state-message {
   font-size: 11px;
@@ -28140,13 +28153,13 @@ handle — it swallows the pointer before the card ever sees it. */
   flex: none;
 }
 .print-lamp.good {
-  background: var(--success, #3fb950);
+  background: var(--success);
 }
 .print-lamp.busy {
   background: var(--accent);
 }
 .print-lamp.bad {
-  background: var(--danger, #d9534f);
+  background: var(--danger);
 }
 
 .print-queue-empty {
@@ -28249,8 +28262,8 @@ handle — it swallows the pointer before the card ever sees it. */
   line-height: 1.3;
 }
 .skills-btn.danger {
-  border-color: var(--danger, #d9534f);
-  color: var(--danger, #d9534f);
+  border-color: var(--danger);
+  color: var(--danger);
 }
 .skills-btn.primary {
   border-color: var(--accent);
@@ -28332,10 +28345,10 @@ handle — it swallows the pointer before the card ever sees it. */
   word-break: break-word;
 }
 .skills-strip.error {
-  color: var(--danger, #d9534f);
+  color: var(--danger);
 }
 .skills-strip.notice {
-  color: var(--warning, #e3b341);
+  color: var(--warning);
 }
 
 .skills-body {
@@ -28460,7 +28473,7 @@ handle — it swallows the pointer before the card ever sees it. */
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: var(--warning, #e3b341);
+  background: var(--warning);
   flex: none;
 }
 
@@ -28584,7 +28597,7 @@ handle — it swallows the pointer before the card ever sees it. */
 }
 
 .tex-structure-row:hover {
-  background: var(--bg-hover, rgba(127, 127, 127, 0.12));
+  background: var(--bg-hover);
 }
 
 .tex-structure-row.is-active {

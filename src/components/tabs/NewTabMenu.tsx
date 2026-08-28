@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import {
@@ -10,28 +10,22 @@ import {
   type TabEntry,
 } from "../../stores/tabs";
 import { useSettingsStore } from "../../stores/settings";
-import { boxMembersOfScope, useBoxesStore } from "../../stores/boxes";
-import { useProjectsStore } from "../../stores/projects";
 import { PROJECT_FILES_TAB_CMD } from "../../stores/tabs";
 import {
-  EMPTY_CUSTOM_AGENTS,
-  DEFAULT_COMPACT_AGENT_IDS,
   SHELL_ITEMS,
   TAB_ACCENT,
   agentMenuEntries,
   buildStaticTabSpec,
   compactAgentMenuEntries,
-  enabledInstalledAgentBins,
   isFileTabKind,
   itemLabel,
   type StaticMenuItem,
 } from "./newTabItems";
 import { AddTabMenuList } from "./AddTabMenuList";
-import { listLocalDrivers, type LocalDriverInfo } from "../../lib/localDrivers";
+import { useAddTabMenuData } from "./useAddTabMenuData";
 import { useExperimental } from "../../lib/experimental";
 import { useT } from "../../lib/i18n";
 import { registerHostBoundTab } from "../../lib/hostBound";
-import { AGENT_REGISTRY_CHANGED_EVENT } from "../../lib/agentRegistry";
 
 interface Props {
   /** Scope (project id or "root") the new tab belongs to. Gates the project-only
@@ -73,92 +67,17 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
   const webBrowser = useExperimental("web_browser");
   const browserHome = useSettingsStore((s) => s.settings?.browser_home_url);
 
-  const localModel = useSettingsStore(
-    (s) => s.settings?.ollama_roles?.tabs ?? s.settings?.ollama_model,
-  );
-  // Box scope (#41 Phase 5): per-member rows. In a popout the projects/boxes
-  // stores may be empty (this window is inert to them) — the list is then just
-  // empty and no group renders.
-  const nmBoxes = useBoxesStore((s) => s.boxes);
-  const nmProjects = useProjectsStore((s) => s.projects);
-  const boxMembers = useMemo(
-    () => boxMembersOfScope(scope, nmBoxes, nmProjects),
-    [scope, nmBoxes, nmProjects],
-  );
-  const customAgents = useSettingsStore(
-    (s) => s.settings?.custom_agents ?? EMPTY_CUSTOM_AGENTS,
-  );
-  // Built-in agents the user turned off in "Manage Agents" (Settings) despite
-  // being installed — hidden from this menu without uninstalling the CLI.
-  const disabledAgents = useSettingsStore((s) => s.settings?.disabled_agents);
-  const compactAgentIds = useSettingsStore(
-    (s) => s.settings?.compact_tab_agents ?? DEFAULT_COMPACT_AGENT_IDS,
-  );
-
-  // Installed agent CLIs (id == cmd); only offer ones actually present. `null`
-  // until the probe resolves, so the Agents list renders nothing (not a flash of
-  // all agents) until we know.
-  const [agentStatuses, setAgentStatuses] = useState<
-    { id: string; bin: string; installed: boolean }[] | null
-  >(null);
-  // Installed commands minus Manage Agents' disabled registry ids — the set every tab-choice consumer
-  // below (Agents group, Mistral/vibe local-model driver) should use.
-  const enabledAgents = useMemo(() => {
-    if (!agentStatuses) return null;
-    return enabledInstalledAgentBins(agentStatuses, disabledAgents);
-  }, [agentStatuses, disabledAgents]);
-  const compactAgentBins = useMemo(() => {
-    if (!agentStatuses) return new Set<string>();
-    const compactIds = new Set(compactAgentIds);
-    return new Set(
-      agentStatuses
-        .filter((agent) => compactIds.has(agent.id) || compactIds.has(agent.bin))
-        .map((agent) => agent.bin),
-    );
-  }, [agentStatuses, compactAgentIds]);
-  // Installed *custom*-agent commands, probed separately (they aren't in the
-  // built-in registry). `null` until resolved — custom agents render enabled
-  // until a probe proves one missing.
-  const [installedCustom, setInstalledCustom] = useState<Set<string> | null>(null);
-  const [localDrivers, setLocalDrivers] = useState<LocalDriverInfo[]>([]);
-  const refreshInstalledAgents = useCallback(() => {
-    void invoke<{ id: string; bin: string; installed: boolean }[]>("list_agents")
-      .then(setAgentStatuses)
-      .catch(() => setAgentStatuses([]));
-  }, []);
-  useEffect(() => {
-    refreshInstalledAgents();
-    window.addEventListener(AGENT_REGISTRY_CHANGED_EVENT, refreshInstalledAgents);
-    return () => window.removeEventListener(AGENT_REGISTRY_CHANGED_EVENT, refreshInstalledAgents);
-  }, [refreshInstalledAgents]);
-  // Re-probed whenever the active local model changes: `available` depends on
-  // it, because these are all tool-calling agents and a completion-only model
-  // (llama3 is one) can't drive one at all — Ollama refuses the first request
-  // and the tab dies on arrival. Withholding the entry is the whole guard; the
-  // backend refuses again on launch for the stale-menu case. A model that
-  // *passes* may still meet `ollama launch`'s own "Launch anyway?" prompt in
-  // the tab — left to the user on purpose (see lib/localDrivers.ts).
-  const refreshLocalDrivers = useCallback(() => {
-    void listLocalDrivers(localModel)
-      .then(setLocalDrivers)
-      .catch(() => {});
-  }, [localModel]);
-  useEffect(() => {
-    refreshLocalDrivers();
-    window.addEventListener(AGENT_REGISTRY_CHANGED_EVENT, refreshLocalDrivers);
-    return () => window.removeEventListener(AGENT_REGISTRY_CHANGED_EVENT, refreshLocalDrivers);
-  }, [refreshLocalDrivers]);
-  // Re-probe custom commands whenever the set changes (adding one in the dialog).
-  useEffect(() => {
-    const cmds = customAgents.map((a) => a.cmd);
-    if (cmds.length === 0) {
-      setInstalledCustom(new Set());
-      return;
-    }
-    invoke<string[]>("probe_binaries", { bins: cmds })
-      .then((found) => setInstalledCustom(new Set(found)))
-      .catch(() => setInstalledCustom(new Set()));
-  }, [customAgents]);
+  // All the probe/registry/settings plumbing behind the entries is the shared
+  // hook — one implementation with TabBar's "+" menu, so the two cannot drift.
+  const {
+    localModel,
+    localDrivers,
+    enabledAgents,
+    compactAgentBins,
+    customAgents,
+    installedCustom,
+    boxMembers,
+  } = useAddTabMenuData(scope);
 
   // Outside-click / Escape closes the menu.
   useEffect(() => {

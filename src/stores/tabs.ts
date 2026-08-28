@@ -758,6 +758,56 @@ export interface SavedTabEntry {
   mobileRequestHash?: string;
 }
 
+/**
+ * Project a live `TabEntry` onto the persisted `SavedTabEntry` shape — THE one
+ * place the ~20-field persisted tab shape is enumerated. Used by both persist
+ * paths (`persistScope`'s debounced save and the project-switch snapshot in
+ * `stores/projects.ts`); maintaining the list field-for-field in two places is
+ * how `folder`, viewer scroll state, `agentMode` and the tmux names each got
+ * lost on one path while the other saved them.
+ *
+ * Field notes (why several of these are here at all):
+ *  - `url`: a "browser" tab's COMMITTED address (#61) — this projection is the
+ *    only path to disk, and a restored tab shows it on its resume card, never
+ *    auto-navigated.
+ *  - `agentMode` / `resumeArgs`: the launch args that carry them are NOT
+ *    persisted; both are re-applied when args are rebuilt in `loadFromLayout`.
+ *  - `tmuxSession` / `tmuxAttach`: dropping these mints a fresh session name on
+ *    restore and `tmux new-session -A` FORKS a second remote session instead of
+ *    reattaching the running one.
+ *  - `ephemeral`: without the no-tmux marker a restored SLURM log tab is
+ *    re-wrapped in tmux and leaks a `tail -F` daemon on the login node.
+ *  - `hostBoundUid` (#150): a restored local-model tab must still resolve to
+ *    its registered marker in the state dir.
+ */
+export function toSavedTabEntry(t: TabEntry): SavedTabEntry {
+  return {
+    key: t.key,
+    label: t.label,
+    cmd: t.cmd,
+    cwd: t.cwd,
+    kind: t.kind,
+    env: t.env ?? {},
+    sessionId: t.sessionId,
+    embedPath: t.embedPath,
+    embedExec: t.embedExec,
+    viewer: t.viewer,
+    viewerState: t.viewerState,
+    // SSH-sync Phase 0: the per-tab locality.
+    location: t.location,
+    agentMode: t.agentMode,
+    // A "projectfiles" tab's browsed folder.
+    folder: t.folder,
+    url: t.url,
+    resumeArgs: t.resumeArgs,
+    tmuxSession: t.tmuxSession,
+    tmuxAttach: t.tmuxAttach,
+    hostBoundUid: t.hostBoundUid,
+    mobileRequestHash: t.mobileRequestHash,
+    ephemeral: t.ephemeral,
+  };
+}
+
 /** Serialized layout tree as persisted in project.json's `tab_groups`. */
 export type SavedLayoutTree =
   | {
@@ -875,7 +925,11 @@ interface TabsStore {
   // scope without disturbing the active project. When `scope` is the current
   // scope this behaves exactly like `addTab`; otherwise the tab is written into
   // that scope's maps only (the user sees it after switching to it).
-  addTabToScope: (scope: string, tab: Omit<TabEntry, "key">) => TabEntry;
+  addTabToScope: (
+    scope: string,
+    tab: Omit<TabEntry, "key">,
+    opts?: { seeded?: boolean },
+  ) => TabEntry;
   // Open a second tab like an existing one (the tab context menu's "Duplicate"),
   // landing directly to its RIGHT rather than at the end of the group — a copy
   // that appears eight tabs away doesn't read as a copy. Everything that
@@ -1744,6 +1798,35 @@ export function applyResize(
   return { ...node, children: node.children.map((c) => applyResize(c, splitId, dividerIndex, fraction)) };
 }
 
+/**
+ * Pure divider-drag math shared by the main window's SplitView and the detached
+ * popout (the two used to carry verbatim copies): given the pointer position
+ * `pos` within a split container of extent `total` (both along the split axis,
+ * px), the new size FRACTION of the child left of divider `dividerIndex`. The
+ * pair sum is preserved by the caller (`applyResize` shape); neither side of the
+ * dragged pair may shrink below `minPx` — when the pair is too small to fit both
+ * minimums it splits evenly.
+ */
+export function dividerFraction(
+  node: SplitNode,
+  dividerIndex: number,
+  pos: number,
+  total: number,
+  minPx: number,
+): number {
+  // Fraction of the whole container up to the pointer.
+  const wholeFraction = Math.min(Math.max(pos / total, 0), 1);
+  // Sum of sizes before this divider's left child.
+  let before = 0;
+  for (let i = 0; i < dividerIndex; i++) before += node.sizes[i];
+  const pair = node.sizes[dividerIndex] + node.sizes[dividerIndex + 1];
+  // Desired size of the left child of the pair = pointer fraction minus the
+  // space taken by everything before the pair.
+  const leftSize = wholeFraction - before;
+  const minFrac = Math.min(minPx / total, pair / 2);
+  return Math.min(Math.max(leftSize, minFrac), pair - minFrac);
+}
+
 /** Deep-clone a layout tree, regenerating all group/split ids. */
 function regenIds(node: LayoutNode): LayoutNode {
   if (node.type === "group") {
@@ -1964,6 +2047,19 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
   },
 
   setScope: (scope) => {
+    // Leaving a `box:<id>` scope flushes its layout: box scopes have no other
+    // switch-time save (a project switch writes through `switch_project_runtime`,
+    // the root through `projects.setActive`), while the scope change cancels
+    // CenterPanel's 300 ms persist debounce — so a tab opened/closed/moved just
+    // before leaving the box was never written. Boxes persist under their own id
+    // in the state dir with no project.json export, hence localFile "".
+    // Scope-addressed and fire-and-forget, like the root flush.
+    // (The literal prefix mirrors `stores/boxes.BOX_SCOPE_PREFIX`; importing it
+    // here would be a stores/tabs ⇄ stores/boxes cycle.)
+    const prev = get().scope;
+    if (prev !== scope && prev.startsWith("box:")) {
+      void get().persistScope(prev, "").catch(() => {});
+    }
     set((s) => {
       const tabs = s.tabsByScope[scope] ?? [];
       const layout = s.layoutByScope[scope] ?? null;
@@ -2037,51 +2133,20 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     return true;
   },
 
-  addTab: (tab, opts) => {
+  // The current-scope variant of `addTabToScope`. One implementation: the two
+  // were near-identical copies and had already drifted (only this one threaded
+  // `seeded` through).
+  addTab: (tab, opts) => get().addTabToScope(get().scope, tab, opts),
+
+  addTabToScope: (scope, tab, opts) => {
     const key = nextKey(tab.kind);
     // Spread first so a stray `key` on the payload can't shadow the minted one.
-    const entry: TabEntry = {
-      ...withTmuxSession(withRunHostDefault(get().scope, tab), get().scope),
-      key,
-    };
-    if (!opts?.seeded) countTabOpen(get().scope, entry);
-    set((s) => {
-      const { tabs, layout, focusedGroupId } = currentScopeState(s);
-      const nextTabs = [...tabs, entry];
-
-      // No layout yet → create a root group containing this tab.
-      if (!layout) {
-        const root: GroupNode = {
-          type: "group",
-          id: nextGroupId(),
-          tabKeys: [key],
-          activeKey: key,
-        };
-        return writeScope(s, s.scope, nextTabs, root, root.id);
-      }
-
-      // Add into the focused group (fall back to the first group).
-      const target =
-        (focusedGroupId && findGroup(layout, focusedGroupId)) ||
-        allGroups(layout)[0];
-      const next = mapGroup(layout, target.id, (g) => ({
-        ...g,
-        tabKeys: [...g.tabKeys, key],
-        activeKey: key,
-      }));
-      return writeScope(s, s.scope, nextTabs, next, target.id);
-    });
-    return entry;
-  },
-
-  addTabToScope: (scope, tab) => {
-    const key = nextKey(tab.kind);
     const entry: TabEntry = {
       ...withTmuxSession(withRunHostDefault(scope, tab), scope),
       key,
       scope,
     };
-    countTabOpen(scope, entry);
+    if (!opts?.seeded) countTabOpen(scope, entry);
     set((s) => {
       const tabs = s.tabsByScope[scope] ?? [];
       const layout = s.layoutByScope[scope] ?? null;
@@ -2422,28 +2487,20 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       const merged = { ...tab.viewerState, ...patch };
       // No-op if nothing actually changed, so a redundant write doesn't churn
       // the tabs array (which would re-fire the saveLayout debounce for nothing).
-      const cur = tab.viewerState ?? {};
-      if (
-        cur.scrollTop === merged.scrollTop &&
-        cur.yamlScrollTop === merged.yamlScrollTop &&
-        cur.scrollLeft === merged.scrollLeft &&
-        cur.scale === merged.scale &&
-        cur.offsetX === merged.offsetX &&
-        cur.offsetY === merged.offsetY &&
-        cur.fontSize === merged.fontSize &&
-        cur.autocomplete === merged.autocomplete &&
-        cur.autocompleteMode === merged.autocompleteMode &&
-        cur.grammarCheck === merged.grammarCheck &&
-        // TeX workspace: switching the centered file and resizing the sidebar both
-        // patch these, so each must be compared or a change-only patch would be
-        // swallowed by the guard.
-        cur.texActivePath === merged.texActivePath &&
-        cur.texSidebarWidth === merged.texSidebarWidth &&
-        // New array ref on every change, so this term is false exactly when a card
-        // was folded/unfolded — which is what lets a collapse-only patch through the
-        // guard (it touches none of the scalar fields above).
-        cur.gridCollapsed === merged.gridCollapsed
-      ) {
+      // Generic shallow compare over the union of keys: the hand-maintained
+      // field list this replaces silently DROPPED persistence for every
+      // ViewerState field it lagged behind on (yamlCollapsed, gridFocus,
+      // delimiter, columnWidths, bibSort, breakpoints, …) — a patch touching
+      // only an unlisted field merged, compared equal on the listed ones, and
+      // never reached the store. Non-scalar fields (arrays/objects) compare by
+      // reference, which is exactly right: viewers hand in a fresh ref
+      // precisely when such a field changed.
+      const cur = (tab.viewerState ?? {}) as Record<string, unknown>;
+      const mergedRec = merged as Record<string, unknown>;
+      const changed = [...new Set([...Object.keys(cur), ...Object.keys(mergedRec)])].some(
+        (k) => cur[k] !== mergedRec[k],
+      );
+      if (!changed) {
         return {};
       }
       const nextTabs = tabs.map((t) =>
@@ -4088,38 +4145,12 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
   },
 
   hydrateThenCreateInScope: async ({ scope, cwd, localFile, requestHash, spec }) => {
-    if (!Object.prototype.hasOwnProperty.call(get().tabsByScope, scope)) {
-      const saved = await invoke<Record<string, unknown>>("load_tab_session", {
-        projectId: scope,
-      });
-      // Another request or the ordinary UI may have hydrated the same scope while
-      // the backend read was in flight. Never overwrite that newer live state.
-      if (!Object.prototype.hasOwnProperty.call(get().tabsByScope, scope)) {
-        const layout = ((saved.tabLayout as SavedTabEntry[] | undefined) ?? []).filter((tab) =>
-          isRestorableTab({
-            kind: tab.kind ?? "shell",
-            cmd: tab.cmd,
-            sessionId: tab.sessionId,
-            resumeArgs: tab.resumeArgs,
-            viewer: tab.viewer,
-          }),
-        );
-        if (layout.length > 0) {
-          get().loadFromLayout(
-            layout,
-            cwd,
-            scope,
-            saved.tabGroups as SavedLayoutTree | undefined,
-          );
-        } else {
-          set((state) => ({
-            tabsByScope: { ...state.tabsByScope, [scope]: [] },
-            layoutByScope: { ...state.layoutByScope, [scope]: null },
-            focusedGroupByScope: { ...state.focusedGroupByScope, [scope]: null },
-          }));
-        }
-      }
-    }
+    // A failed backend read propagates (rejecting the request): swallowing it
+    // and creating the tab anyway would let `persistScopeStrict` below OVERWRITE
+    // the saved layout with just this one tab. `createEmptyScope` marks a scope
+    // whose read succeeded but held nothing restorable as hydrated, so that same
+    // persist is licensed to write it.
+    await hydrateScopeFromDisk(scope, cwd, { createEmptyScope: true });
 
     const existing = get().tabsByScope[scope]?.find(
       (tab) => tab.mobileRequestHash === requestHash,
@@ -4186,50 +4217,9 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       .filter((t) => t.sessionId)
       .map((t) => ({ sessionId: t.sessionId, cmd: t.cmd, label: t.label }));
     try {
-      const tabLayout = restorable.map((t) => ({
-        key: t.key,
-        label: t.label,
-        cmd: t.cmd,
-        cwd: t.cwd,
-        kind: t.kind,
-        env: t.env ?? {},
-        sessionId: t.sessionId,
-        embedPath: t.embedPath,
-        embedExec: t.embedExec,
-        viewer: t.viewer,
-        viewerState: t.viewerState,
-        // SSH-sync Phase 0: persist the per-tab locality.
-        location: t.location,
-        // Persist the planner/doer mode so the tab comes back in it (the args
-        // that carry it are NOT persisted — they're rebuilt in loadFromLayout).
-        agentMode: t.agentMode,
-        // Persist a "projectfiles" tab's browsed folder.
-        folder: t.folder,
-        // Persist a "browser" tab's COMMITTED address (#61). This is the whole
-        // of a browser tab's persistence, and without this line it never reached
-        // disk at all: `loadFromLayout` reads `t.url`, `snapshotScopeForSwitch`
-        // carries live TabEntries through a project switch unchanged (so the
-        // in-memory round trip looked fine), but THIS is the only path to
-        // `project.json` — so a real relaunch brought the tab back with no
-        // address and an empty start page instead of its resume card.
-        url: t.url,
-        // Persist a restart-resumable custom agent's resume flag (the args that
-        // carry it are rebuilt in loadFromLayout, like agentMode).
-        resumeArgs: t.resumeArgs,
-        // Persist the stable tmux session name + any attach target, so a persistent
-        // remote shell tab REATTACHES to the same host session after a relaunch.
-        tmuxSession: t.tmuxSession,
-        tmuxAttach: t.tmuxAttach,
-        // The host-bound marker id (#150) — persisted so a restored local-model
-        // tab still resolves to its registered marker in the state dir.
-        hostBoundUid: t.hostBoundUid,
-        mobileRequestHash: t.mobileRequestHash,
-        // Persist the no-tmux marker. Without it a restored SLURM log tab is an
-        // ordinary shell tab again, gets a freshly minted session name, and leaves
-        // the `tail -F` daemon on the login node the flag exists to prevent — and
-        // a relaunch after a crash is exactly when that would happen.
-        ephemeral: t.ephemeral,
-      }));
+      // The persisted per-tab shape lives in ONE place (`toSavedTabEntry`), so
+      // this save and the project-switch snapshot cannot drift field-by-field.
+      const tabLayout = restorable.map(toSavedTabEntry);
       // #42: re-dock detached groups into the persisted tree so disk reflects a
       // restart-as-docked layout (their tabs are already in the flat list above
       // via get().tabs). Prune AFTER merging so dropped (non-restorable) tabs in
@@ -4282,6 +4272,71 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     await get().persistScope(get().scope, localFile);
   },
 }));
+
+/**
+ * Hydrate a scope from its saved tab session on disk — THE one implementation
+ * of "read `load_tab_session`, filter to restorable tabs, `loadFromLayout`".
+ * The root restore (CenterPanel), the box restore (`stores/boxes`), the
+ * background project restore (`stores/projects`) and the Mobile
+ * `hydrateThenCreateInScope` all hydrate through here; the four hand-rolled
+ * copies this replaces had already drifted (root/box omitted `resumeArgs` from
+ * the restorable probe, so a saved custom-agent tab — restorable only via
+ * `resumeArgs?.length` — restored in a project scope and silently vanished in
+ * root/box scopes).
+ *
+ * Returns true when the scope is hydrated — by this call, or concurrently by
+ * another path (in-memory state wins; disk is never re-read over it). Returns
+ * false when the saved layout held nothing restorable; the scope key is then
+ * NOT created (unless `createEmptyScope`), because an absent key is exactly
+ * what tells `persistScope` "never hydrated" and keeps a later empty save from
+ * erasing the on-disk layout. Callers seed their scope's default tab on false.
+ * A failed backend read throws — each caller decides whether that seeds a
+ * default or aborts.
+ *
+ * `defaultCwd` may be a thunk for callers whose fallback cwd is itself an IPC
+ * away (the root scope's `root_work_dir`); it is only awaited once restorable
+ * tabs are known to exist, and the hydration guard is re-checked after it.
+ */
+export async function hydrateScopeFromDisk(
+  scope: string,
+  defaultCwd: string | (() => Promise<string>),
+  opts: { createEmptyScope?: boolean } = {},
+): Promise<boolean> {
+  const hydrated = () =>
+    Object.prototype.hasOwnProperty.call(useTabsStore.getState().tabsByScope, scope);
+  if (hydrated()) return true;
+  const saved = await invoke<Record<string, unknown>>("load_tab_session", {
+    projectId: scope,
+  });
+  // The ordinary UI (or another request) may have hydrated the same scope while
+  // the backend read was in flight. Never overwrite that newer live state.
+  if (hydrated()) return true;
+  const restorable = ((saved.tabLayout as SavedTabEntry[] | undefined) ?? []).filter((tab) =>
+    isRestorableTab({
+      kind: tab.kind ?? cmdToKind(tab.cmd || (tab.type === "files" ? FILES_TAB_CMD : "")),
+      cmd: tab.cmd,
+      sessionId: tab.sessionId,
+      resumeArgs: tab.resumeArgs,
+      viewer: tab.viewer,
+    }),
+  );
+  if (restorable.length === 0) {
+    if (opts.createEmptyScope) {
+      useTabsStore.setState((state) => ({
+        tabsByScope: { ...state.tabsByScope, [scope]: [] },
+        layoutByScope: { ...state.layoutByScope, [scope]: null },
+        focusedGroupByScope: { ...state.focusedGroupByScope, [scope]: null },
+      }));
+    }
+    return false;
+  }
+  const cwd = typeof defaultCwd === "function" ? await defaultCwd() : defaultCwd;
+  if (hydrated()) return true;
+  useTabsStore
+    .getState()
+    .loadFromLayout(restorable, cwd, scope, (saved.tabGroups as SavedLayoutTree | undefined) ?? undefined);
+  return true;
+}
 
 /** Replace the group `groupId` via `fn`, returning a new tree (structural). */
 export function mapGroup(

@@ -218,7 +218,7 @@ export function MailAiMessageActions({ header }: { header: MailHeader }) {
         {canSummarize && (
           <button
             type="button"
-            className="mail-btn"
+            className="settings-btn"
             disabled={summarizing}
             onClick={() => void doSummarize()}
           >
@@ -228,7 +228,7 @@ export function MailAiMessageActions({ header }: { header: MailHeader }) {
         {canEvent && (
           <button
             type="button"
-            className="mail-btn"
+            className="settings-btn"
             disabled={eventBusy}
             onClick={() => void doExtractEvent()}
           >
@@ -238,7 +238,7 @@ export function MailAiMessageActions({ header }: { header: MailHeader }) {
         {canTask && (
           <button
             type="button"
-            className="mail-btn"
+            className="settings-btn"
             disabled={taskBusy}
             onClick={() => void doExtractTask()}
           >
@@ -282,12 +282,12 @@ export function MailAiMessageActions({ header }: { header: MailHeader }) {
             {taskDraft.due ? t("mailAi.taskDue", { date: taskDraft.due }) : t("mailAi.taskNoDue")}
           </div>
           <div className="mail-ai-task-actions">
-            <button type="button" className="mail-btn" onClick={() => setTaskDraft(null)}>
+            <button type="button" className="settings-btn" onClick={() => setTaskDraft(null)}>
               {t("common.cancel")}
             </button>
             <button
               type="button"
-              className="mail-btn mail-btn-primary"
+              className="settings-btn primary"
               onClick={() => void confirmTask()}
             >
               {t("mailAi.taskAdd")}

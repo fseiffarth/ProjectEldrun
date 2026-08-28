@@ -19,15 +19,15 @@ import {
 import {
   cmdToKind,
   effectiveTabLocation,
-  FILES_TAB_CMD,
+  hydrateScopeFromDisk,
   isPtyTabKind,
   isRestorableTab,
   isResumableAgentTab,
   remoteHostIdOf,
   ROOT_SCOPE,
+  toSavedTabEntry,
   useTabsStore,
   type SavedLayoutTree,
-  type SavedTabEntry,
   type TabKind,
   type TabLocation,
   type TabEntry,
@@ -968,7 +968,11 @@ export async function restoreProjectScope(project: ProjectEntry): Promise<void> 
   if (restoringScopes.has(scope)) return;
   restoringScopes.add(scope);
   try {
-    await restoreProjectScopeInner(project, scope);
+    // A failed read restores nothing (and seeds nothing): the layout may still
+    // be there on the next attempt. `hydrateScopeFromDisk` owns the guards this
+    // doc comment describes (in-memory state wins; nothing restorable creates
+    // NO key).
+    await hydrateScopeFromDisk(scope, resolveProjectDirectory(project)).catch(() => {});
   } finally {
     restoringScopes.delete(scope);
   }
@@ -976,30 +980,6 @@ export async function restoreProjectScope(project: ProjectEntry): Promise<void> 
 
 /** In-flight `restoreProjectScope` calls, keyed by scope. */
 const restoringScopes = new Set<string>();
-
-async function restoreProjectScopeInner(project: ProjectEntry, scope: string): Promise<void> {
-  const saved = await invoke<Record<string, unknown>>("load_tab_session", {
-    projectId: scope,
-  }).catch(() => null);
-  if (!saved) return;
-  const restorable = ((saved.tabLayout as SavedTabEntry[] | undefined) ?? []).filter((tab) =>
-    isRestorableTab({
-      kind: tab.kind ?? cmdToKind(tab.cmd || (tab.type === "files" ? FILES_TAB_CMD : "")),
-      cmd: tab.cmd,
-      sessionId: tab.sessionId,
-      resumeArgs: tab.resumeArgs,
-      viewer: tab.viewer,
-    }),
-  );
-  if (restorable.length === 0) return;
-  if (scope in useTabsStore.getState().tabsByScope) return;
-  useTabsStore.getState().loadFromLayout(
-    restorable,
-    resolveProjectDirectory(project),
-    scope,
-    (saved.tabGroups as SavedLayoutTree | undefined) ?? undefined,
-  );
-}
 
 /** Project scopes this session has already tried to restore in the background.
  *  Tried, not restored: a project whose saved layout held nothing restorable
@@ -1233,46 +1213,14 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
       projectId: id,
       previousProjectId: previousId,
       previousSnapshot: {
-        // Keep in step with the canonical persist in `tabs.ts` (persistScope):
-        // this snapshot OVERWRITES the previous project's project.json on switch,
-        // so any field dropped here is lost on a switch even though the debounced
-        // save wrote it. That is how a Files (Project) tab's browsed `folder` (and
-        // a viewer's scroll position / an agent's plan-mode) went missing on
-        // switch-away.
-        tabLayout: tabs.map((t) => ({
-          key: t.key,
-          label: t.label,
-          cmd: t.cmd,
-          cwd: t.cwd,
-          kind: t.kind,
-          env: t.env ?? {},
-          sessionId: t.sessionId,
-          embedPath: t.embedPath,
-          embedExec: t.embedExec,
-          viewer: t.viewer,
-          viewerState: t.viewerState,
-          location: t.location,
-          agentMode: t.agentMode,
-          folder: t.folder,
-          // A "browser" tab's committed address.
-          url: t.url,
-          // A restart-resumable custom agent's resume flag.
-          resumeArgs: t.resumeArgs,
-          // The stable tmux session name + any Sessions-view attach target. Without
-          // these the previous project's persisted session name is WIPED on every
-          // switch-away (this snapshot overwrites its terminals.json), so on the
-          // next relaunch `loadFromLayout` mints a fresh name and `tmux new-session
-          // -A` FORKS a second remote session instead of reattaching the running one.
-          tmuxSession: t.tmuxSession,
-          tmuxAttach: t.tmuxAttach,
-          // The host-bound marker id (#150), so a local-model tab keeps its
-          // container exemption across a switch.
-          hostBoundUid: t.hostBoundUid,
-          mobileRequestHash: t.mobileRequestHash,
-          // The no-tmux marker, so a SLURM log tab is not re-wrapped in tmux (and
-          // left leaking a `tail -F` daemon) after a switch-away + relaunch.
-          ephemeral: t.ephemeral,
-        })),
+        // This snapshot OVERWRITES the previous project's project.json on
+        // switch, so any field dropped here is lost even though the debounced
+        // save wrote it — which is how a Files (Project) tab's browsed `folder`
+        // (and a viewer's scroll position / an agent's plan-mode / the tmux
+        // session names) each went missing while the shape was maintained
+        // field-for-field in two places. `toSavedTabEntry` is now the ONE
+        // enumeration of the persisted shape, shared with `persistScope`.
+        tabLayout: tabs.map(toSavedTabEntry),
         tabGroups,
         activeTabIndex,
         fileTabs: [],
@@ -1956,6 +1904,10 @@ export function listenProjectRuntimeSwitched(): Promise<() => void> {
         kind: t.kind ?? cmdToKind(t.cmd),
         cmd: t.cmd,
         sessionId: t.sessionId,
+        // A custom agent is restorable only via `resumeArgs?.length` — omitting
+        // it here dropped such tabs on a runtime switch (the same drift the
+        // root/box restore copies had before `hydrateScopeFromDisk`).
+        resumeArgs: t.resumeArgs,
         viewer: t.viewer,
       }),
     );

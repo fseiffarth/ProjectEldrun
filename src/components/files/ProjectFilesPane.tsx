@@ -484,7 +484,7 @@ export function ProjectFilesPane({
             const autoAll = !!syncMap?.[""]?.auto;
             return (
               <button
-                className="tab-add-btn"
+                className="toolbar-btn"
                 style={{
                   fontSize: 10,
                   padding: "1px 6px",
@@ -512,7 +512,7 @@ export function ProjectFilesPane({
               is how it is re-opened (e.g. once the project is finally connected,
               so the host column can be filled in). */}
           <button
-            className="tab-add-btn"
+            className="toolbar-btn"
             style={{ fontSize: 10, padding: "1px 6px", height: 20 }}
             onClick={() => useBigFoldersStore.getState().open(projectId)}
             title={t("projectFilesPane.bigFoldersTitle")}
@@ -539,7 +539,7 @@ export function ProjectFilesPane({
             </span>
           )}
           <button
-            className="tab-add-btn"
+            className="toolbar-btn"
             style={{
               fontSize: 10,
               padding: "1px 6px",

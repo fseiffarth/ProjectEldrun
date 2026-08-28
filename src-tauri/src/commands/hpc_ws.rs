@@ -870,30 +870,20 @@ pub fn set_project_hpc(
     project_id: String,
     hpc: Option<crate::schema::project::HpcInfo>,
 ) -> Result<(), String> {
-    use crate::schema::projects::ProjectsList;
     use crate::storage;
 
-    let list_path = storage::state_dir().join("projects.json");
-    let mut list: ProjectsList = if list_path.exists() {
-        storage::read_json(&list_path).map_err(|e| e.to_string())?
-    } else {
-        Vec::new()
-    };
-    let entry = list
-        .iter_mut()
-        .find(|p| p.id == project_id)
-        .ok_or_else(|| format!("project '{project_id}' not found"))?;
-    match &hpc {
-        Some(info) => {
-            let value = serde_json::to_value(info).map_err(|e| e.to_string())?;
-            entry.extra.insert("hpc".into(), value);
+    let local_file = crate::commands::projects::patch_project_entry(&project_id, |entry| {
+        match &hpc {
+            Some(info) => {
+                let value = serde_json::to_value(info).map_err(|e| e.to_string())?;
+                entry.extra.insert("hpc".into(), value);
+            }
+            None => {
+                entry.extra.remove("hpc");
+            }
         }
-        None => {
-            entry.extra.remove("hpc");
-        }
-    }
-    let local_file = entry.local_file.clone();
-    storage::write_json(&list_path, &list).map_err(|e| e.to_string())?;
+        Ok(entry.local_file.clone())
+    })?;
 
     let proj_path = std::path::PathBuf::from(&local_file);
     if proj_path.exists() {
@@ -966,7 +956,6 @@ pub async fn hpc_ws_move_root(
     new_root: String,
 ) -> Result<crate::schema::projects::ProjectEntry, String> {
     run_off_thread(move || {
-        use crate::schema::projects::ProjectsList;
         use crate::storage;
 
         let root = validate_abs_path("project root", &new_root)?;
@@ -991,24 +980,14 @@ pub async fn hpc_ws_move_root(
         })
         .map_err(|e| format!("could not create '{root}' on the host: {e}"))?;
 
-        let list_path = storage::state_dir().join("projects.json");
-        let mut list: ProjectsList = if list_path.exists() {
-            storage::read_json(&list_path).map_err(|e| e.to_string())?
-        } else {
-            return Err("project not found".to_string());
-        };
-        let entry = list
-            .iter_mut()
-            .find(|p| p.id == project_id)
-            .ok_or_else(|| format!("project '{project_id}' not found"))?;
-
         let mut spec = target.spec.clone();
         spec.remote_path = root.clone();
         let value = serde_json::to_value(&spec).map_err(|e| e.to_string())?;
-        entry.extra.insert("remote".to_string(), value);
-        let local_file = entry.local_file.clone();
-        let updated = entry.clone();
-        storage::write_json(&list_path, &list).map_err(|e| e.to_string())?;
+        let (local_file, updated) =
+            crate::commands::projects::patch_project_entry(&project_id, |entry| {
+                entry.extra.insert("remote".to_string(), value);
+                Ok((entry.local_file.clone(), entry.clone()))
+            })?;
 
         let proj_path = std::path::PathBuf::from(&local_file);
         if proj_path.exists() {

@@ -742,7 +742,16 @@ let mutationQueue: Promise<unknown> = Promise.resolve();
 
 export function MobileBridgeHost() {
   const t = useT();
-  const alerts = useAlertsFeed();
+  // The phone's Alerts screen is its own surface, so it is read *past* the file
+  // viewer's 🔔 key: `files_alerts` is that group's visibility, and closing the
+  // strip beside the tree on the laptop must not blank the phone — a control on
+  // one surface silently switching off another one that has no way back. What
+  // says which alerts exist (the source switches, the lookahead, the mutes) is
+  // still shared, so the two surfaces never disagree about the rows themselves.
+  // Gated on the Mobile host actually being on: with no phone in the picture the
+  // feed stays exactly as opt-in as before, arming no timer and reading no store.
+  const mobileHostOn = useSettingsStore((s) => s.settings?.eldrun_mobile_host?.enabled ?? false);
+  const alerts = useAlertsFeed({ ignoreVisibility: mobileHostOn });
   const alertsRef = useRef(alerts);
   const tRef = useRef(t);
   alertsRef.current = alerts;

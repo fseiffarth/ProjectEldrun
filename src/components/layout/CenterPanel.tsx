@@ -22,20 +22,17 @@ import {
   BLOB_TAB_CMD,
   DEFAULT_MIN_SUBWINDOW_PX,
   EMPTY_GROUP_ID,
-  FILES_TAB_CMD,
   allGroups,
-  cmdToKind,
+  dividerFraction,
   effectiveTabLocation,
   findGroup,
-  isRestorableTab,
+  hydrateScopeFromDisk,
   isResumableAgentTab,
   isPtyTabKind,
   localTabCwd,
   remoteHostIdOf,
   useTabsStore,
   type LayoutNode,
-  type SavedLayoutTree,
-  type TabKind,
 } from "../../stores/tabs";
 import { useSettingsStore } from "../../stores/settings";
 import { useDragStore } from "../../stores/drag";
@@ -57,7 +54,7 @@ import {
   type PhysPoint,
   type WindowFrame,
 } from "../../lib/coords";
-import { dragPlatform } from "../../lib/dragPlatform";
+import { bindDragRelease, dragPlatform } from "../../lib/dragPlatform";
 import { shouldPersistTab, shouldPersistLocalTab } from "../../lib/tmuxSession";
 import { isTrashProject } from "../../lib/trashProject";
 import { IS_WINDOWS } from "../../lib/platform";
@@ -211,29 +208,17 @@ export function CenterPanel() {
     const nextScope = activeId ?? "root";
     setScope(nextScope);
 
-    type LayoutEntry = { key: string; label: string; cmd: string; cwd: string; kind?: TabKind; type?: string; env?: Record<string, string>; sessionId?: string; embedPath?: string; embedExec?: string; viewer?: "pdf" | "image" | "markdown" | "text" };
-    // Keep shell/files/network tabs, resumable agent tabs (Claude with a sessionId,
-    // resumed via --resume), and in-app file-viewer embeds; other agent/embed tabs
-    // (including external-app embeds) are dropped. Derive kind from the saved entry
-    // or its command. The saved groups tree self-heals (loadFromLayout drops
-    // dropped keys).
-    const restorableOf = (raw: LayoutEntry[]) =>
-      raw.filter((t) =>
-        isRestorableTab({
-          kind: t.kind ?? cmdToKind(t.cmd || (t.type === "files" ? FILES_TAB_CMD : "")),
-          cmd: t.cmd,
-          sessionId: t.sessionId,
-          viewer: t.viewer,
-        }),
-      );
-
     if (!activeId) {
       // Root context. Its tabs now persist under the `"root"` id (state dir), so
       // restore them on the first visit this session exactly as a project's are;
       // later visits trust the in-memory state. When nothing restorable was saved
       // (a fresh install, or a root left at its default), seed the 3D project-blob
       // — the root's default tab — but only when projects exist (an empty cloud
-      // has nothing to show).
+      // has nothing to show). `hydrateScopeFromDisk` owns the guards and the
+      // restorable filter (shared with the project/box restores, so a saved
+      // custom-agent tab no longer vanishes at root); the root work dir is
+      // resolved lazily — it is only the fallback cwd for tabs that saved an
+      // empty one (e.g. a files tab).
       if ("root" in useTabsStore.getState().tabsByScope) return;
       const seedBlob = () => {
         if (
@@ -248,21 +233,9 @@ export function CenterPanel() {
           );
         }
       };
-      invoke<Record<string, unknown>>("load_tab_session", { projectId: "root" })
-        .then(async (proj) => {
-          // Another effect run may have hydrated root while we awaited.
-          if ("root" in useTabsStore.getState().tabsByScope) return;
-          const restorable = restorableOf((proj.tabLayout as LayoutEntry[] | undefined) ?? []);
-          if (restorable.length === 0) {
-            seedBlob();
-            return;
-          }
-          // Restored root tabs carry their own cwd; the root work dir is only the
-          // fallback for any that saved an empty one (e.g. a files tab).
-          const rootCwd = await invoke<string>("root_work_dir").catch(() => "");
-          if ("root" in useTabsStore.getState().tabsByScope) return;
-          const groups = proj.tabGroups as SavedLayoutTree | undefined;
-          loadFromLayout(restorable, rootCwd, "root", groups ?? undefined);
+      hydrateScopeFromDisk("root", () => invoke<string>("root_work_dir").catch(() => ""))
+        .then((hydrated) => {
+          if (!hydrated) seedBlob();
         })
         .catch(() => seedBlob());
       return;
@@ -1585,6 +1558,11 @@ function SplitView(props: TreeProps & { node: Extract<LayoutNode, { type: "split
   const minWidth = useSettingsStore((s) => s.settings?.min_subwindow_width) ?? DEFAULT_MIN_SUBWINDOW_PX;
   const minHeight = useSettingsStore((s) => s.settings?.min_subwindow_height) ?? DEFAULT_MIN_SUBWINDOW_PX;
 
+  // A mid-flight divider drag's teardown, so unmounting this subtree (scope
+  // switch, group close) unbinds the window listeners instead of leaking them.
+  const activeDragTeardown = useRef<(() => void) | null>(null);
+  useEffect(() => () => activeDragTeardown.current?.(), []);
+
   const startDrag = (dividerIndex: number) => (e: React.PointerEvent) => {
     e.preventDefault();
     const container = containerRef.current;
@@ -1611,26 +1589,20 @@ function SplitView(props: TreeProps & { node: Extract<LayoutNode, { type: "split
 
     const onMove = (ev: PointerEvent) => {
       // The new fraction is the pointer position within the SPAN of the two
-      // children adjacent to this divider, measured from the container origin.
+      // children adjacent to this divider, measured from the container origin
+      // (pure math shared with the popout: dividerFraction in stores/tabs).
       const isRow = node.dir === "row";
       const total = isRow ? rect.width : rect.height;
       if (total <= 0) return;
       const pos = isRow ? ev.clientX - rect.left : ev.clientY - rect.top;
-      // Fraction of the whole container up to the pointer.
-      const wholeFraction = Math.min(Math.max(pos / total, 0), 1);
-      // Sum of sizes before this divider's left child.
-      let before = 0;
-      for (let i = 0; i < dividerIndex; i++) before += node.sizes[i];
+      const clamped = dividerFraction(
+        node,
+        dividerIndex,
+        pos,
+        total,
+        isRow ? minWidth : minHeight,
+      );
       const pair = node.sizes[dividerIndex] + node.sizes[dividerIndex + 1];
-      // Desired size of the left child of the pair = pointer fraction minus the
-      // space taken by everything before the pair.
-      const leftSize = wholeFraction - before;
-      // Enforce the min subwindow size: neither side of the pair may shrink below
-      // `minPx` (as a fraction of the container). If the pair is too small to fit
-      // both minimums, split it evenly.
-      const minPx = isRow ? minWidth : minHeight;
-      const minFrac = Math.min(minPx / total, pair / 2);
-      const clamped = Math.min(Math.max(leftSize, minFrac), pair - minFrac);
       // Resize the two neighbours on the DOM (mirrors applyResize: only these two
       // change, the pair sum is preserved) instead of writing the store every
       // frame — the store write rebuilt the whole layout tree and re-rendered the
@@ -1645,11 +1617,15 @@ function SplitView(props: TreeProps & { node: Extract<LayoutNode, { type: "split
       // per frame, not once per pointermove).
       scheduleResize();
     };
-    const onUp = (ev: PointerEvent) => {
-      (e.target as HTMLElement).releasePointerCapture?.(ev.pointerId);
+    const teardown = () => {
+      activeDragTeardown.current = null;
+      unbindRelease();
       window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", onUp);
+      (e.target as HTMLElement).releasePointerCapture?.(e.pointerId);
       if (rafId != null) cancelAnimationFrame(rafId);
+    };
+    const commit = () => {
+      teardown();
       // Commit the final position to the store ONCE. The next render writes these
       // same sizes via `node.sizes`, matching the DOM, so there's no visual jump;
       // clear the override first so the layout effect stops re-asserting it.
@@ -1658,8 +1634,26 @@ function SplitView(props: TreeProps & { node: Extract<LayoutNode, { type: "split
       if (sizes) props.resizeSplit(node.id, dividerIndex, sizes[dividerIndex]);
       props.onResized();
     };
+    const abort = () => {
+      teardown();
+      // No store change happened, so no re-render will overwrite the drag's DOM
+      // flex writes — re-assert the committed store sizes ourselves.
+      dragSizesRef.current = null;
+      for (const [i, el] of childRefs.current) {
+        if (node.sizes[i] != null) el.style.flex = `${node.sizes[i]} 1 0`;
+      }
+      props.onResized();
+    };
+    // Engine-correct release semantics (the same policy every other drag path
+    // routes through): pointerup commits; on WebKitGTK — which frequently fires
+    // `pointercancel` INSTEAD of `pointerup` (see the in-window tab-drag effect
+    // above) — a cancel commits too, while on engines with a real pointerup a
+    // cancel is a genuine capture loss and aborts; Escape always aborts. The
+    // bare-`pointerup` pair this replaces left the gesture STUCK mid-drag on
+    // Linux whenever the release arrived as a cancel.
+    const unbindRelease = bindDragRelease({ onCommit: commit, onAbort: abort });
     window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", onUp);
+    activeDragTeardown.current = teardown;
   };
 
   return (

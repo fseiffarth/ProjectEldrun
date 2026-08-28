@@ -129,34 +129,27 @@ pub fn vm_set_spec(project_id: String, mut spec: VmSpec) -> Result<VmSpec, Strin
         })
         .collect();
 
-    let list_path = storage::state_dir().join("projects.json");
-    let mut list: ProjectsList = storage::read_json(&list_path).map_err(|e| e.to_string())?;
-    let entry = list
-        .iter_mut()
-        .find(|p| p.id == project_id)
-        .ok_or_else(|| format!("project '{project_id}' not found"))?;
-
-    // The tiers are exclusive — a VM project must never also enable the Docker
-    // sandbox (`set_project_sandbox` refuses the reverse direction).
-    let sandboxed = entry
-        .extra
-        .get("sandbox")
-        .and_then(|v| v.get("enabled"))
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    if sandboxed {
-        return Err(
-            "This project has the Docker container enabled; the VM and container tiers are exclusive."
-                .to_string(),
+    let local_file = crate::commands::projects::patch_project_entry(&project_id, |entry| {
+        // The tiers are exclusive — a VM project must never also enable the
+        // Docker sandbox (`set_project_sandbox` refuses the reverse direction).
+        let sandboxed = entry
+            .extra
+            .get("sandbox")
+            .and_then(|v| v.get("enabled"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if sandboxed {
+            return Err(
+                "This project has the Docker container enabled; the VM and container tiers are exclusive."
+                    .to_string(),
+            );
+        }
+        entry.extra.insert(
+            "vm".to_string(),
+            serde_json::to_value(&spec).map_err(|e| e.to_string())?,
         );
-    }
-
-    entry.extra.insert(
-        "vm".to_string(),
-        serde_json::to_value(&spec).map_err(|e| e.to_string())?,
-    );
-    let local_file = entry.local_file.clone();
-    storage::write_json(&list_path, &list).map_err(|e| e.to_string())?;
+        Ok(entry.local_file.clone())
+    })?;
 
     let proj_path = PathBuf::from(local_file);
     if let Ok(mut project) = storage::read_json::<Project>(&proj_path) {

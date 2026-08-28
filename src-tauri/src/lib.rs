@@ -955,7 +955,6 @@ pub fn run() {
             // SSH-sync (Phase 1): selective local↔remote mirror sync.
             commands::sync::sync_pull,
             commands::sync::sync_whole_project,
-            commands::sync::sync_now,
             commands::sync::sync_push,
             commands::sync::sync_mark_selected,
             commands::sync::sync_set_auto,
@@ -1127,6 +1126,7 @@ pub fn run() {
             // Git
             commands::git::git_available,
             commands::git::git_status,
+            commands::git::git_dirty_probe,
             commands::git::git_repo_root,
             commands::git::detect_git_providers,
             commands::git::git_add_all,

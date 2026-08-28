@@ -764,14 +764,14 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
           ⎇ {current ?? t("gitHistory.detached")}
         </span>
         <button
-          className={`tab-add-btn git-history-mode${graphMode ? " active" : ""}`}
+          className={`toolbar-btn git-history-mode${graphMode ? " active" : ""}`}
           onClick={toggleGraphMode}
           aria-pressed={graphMode}
           title={t(graphMode ? "gitHistory.switchToListView" : "gitHistory.switchToGraphView")}
         >
           {t(graphMode ? "gitHistory.graphModeGraph" : "gitHistory.graphModeList")}
         </button>
-        <button className="tab-add-btn git-history-refresh" onClick={load} title={t("common.refresh")} disabled={loading}>
+        <button className="toolbar-btn git-history-refresh" onClick={load} title={t("common.refresh")} disabled={loading}>
           ⟳
         </button>
       </div>
@@ -779,7 +779,7 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
       {lockstepEligible && (
         <div className="git-lockstep-bar" style={{ display: "flex", alignItems: "center", gap: 6, padding: "3px 6px", borderBottom: "1px solid var(--border-color)", fontSize: 10 }}>
           <button
-            className={`tab-add-btn${lockstep?.enabled ? " active" : ""}`}
+            className={`toolbar-btn${lockstep?.enabled ? " active" : ""}`}
             onClick={toggleLockstep}
             disabled={lockstepBusy}
             aria-pressed={!!lockstep?.enabled}
@@ -794,21 +794,21 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
                 style={{
                   padding: "1px 6px",
                   borderRadius: "var(--radius)",
-                  color: "#fff",
+                  color: "var(--accent-contrast)",
                   background:
                     lockstep.status === "synchronized"
-                      ? "var(--success, #3fb950)"
+                      ? "var(--success)"
                       : lockstep.status === "syncing"
-                        ? "var(--warning, #e3b341)"
+                        ? "var(--warning)"
                         : lockstep.status === "disconnected"
-                          ? "var(--text-muted, #8b949e)"
-                          : "var(--danger, #f85149)",
+                          ? "var(--text-muted)"
+                          : "var(--danger)",
                 }}
               >
                 {t(LOCKSTEP_STATUS_KEY[lockstep.status])}
               </span>
               <button
-                className="tab-add-btn"
+                className="toolbar-btn"
                 onClick={lockstepSyncNow}
                 // Nothing to sync against without a connection — the button would only
                 // produce another "disconnected" (#28p D4).
@@ -826,7 +826,7 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
                 // it would destroy (#28p D3) — Use-local/Use-remote would be meaningless
                 // here (there is nothing paired yet to pick a winner between).
                 <button
-                  className="tab-add-btn"
+                  className="toolbar-btn"
                   onClick={lockstepPairConfirm}
                   disabled={lockstepBusy}
                   title={t("gitHistory.overwritePairTitle", {
@@ -839,7 +839,7 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
                 lockstep.status === "desynchronized" && (
                   <>
                     <button
-                      className="tab-add-btn"
+                      className="toolbar-btn"
                       onClick={() => lockstepResolve("local")}
                       disabled={lockstepBusy}
                       title={t("gitHistory.useLocalTitle")}
@@ -847,7 +847,7 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
                       {t("gitHistory.useLocal")}
                     </button>
                     <button
-                      className="tab-add-btn"
+                      className="toolbar-btn"
                       onClick={() => lockstepResolve("remote")}
                       disabled={lockstepBusy}
                       title={t("gitHistory.useRemoteTitle")}
@@ -855,7 +855,7 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
                       {t("gitHistory.useRemote")}
                     </button>
                     <button
-                      className="tab-add-btn"
+                      className="toolbar-btn"
                       onClick={resolveInTerminal}
                       disabled={lockstepBusy}
                       title={t("gitHistory.resolveInTerminalTitle")}
@@ -866,7 +866,7 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
                 )
               )}
               <button
-                className="tab-add-btn"
+                className="toolbar-btn"
                 onClick={() => (backups ? setBackups(null) : loadBackups())}
                 disabled={lockstepBusy || lockstep.status === "disconnected"}
                 aria-pressed={!!backups}
@@ -875,7 +875,7 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
                 {t("gitHistory.backups")}
               </button>
               {lockstep.status === "desynchronized" && lockstep.detail && (
-                <span style={{ color: "var(--danger, #f85149)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={lockstep.detail}>
+                <span style={{ color: "var(--danger)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={lockstep.detail}>
                   {lockstep.detail}
                 </span>
               )}
@@ -908,7 +908,7 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
                   {new Date(b.ts * 1000).toLocaleString()}
                 </span>
                 <button
-                  className="tab-add-btn"
+                  className="toolbar-btn"
                   onClick={() => restoreBackup(b)}
                   disabled={lockstepBusy}
                   title={t("gitHistory.restoreTitle", { peer: b.peer, branch: b.branch })}
@@ -979,7 +979,7 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
           <span className="git-worktree-spacer" />
           {worktrees.some((w) => w.is_prunable) && (
             <button
-              className="tab-add-btn"
+              className="toolbar-btn"
               onClick={pruneWorktrees}
               disabled={loading}
               title={t("gitHistory.pruneWorktreesTitle")}
@@ -988,7 +988,7 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
             </button>
           )}
           <button
-            className="tab-add-btn"
+            className="toolbar-btn"
             onClick={() =>
               setWtForm((f) =>
                 f
@@ -1144,7 +1144,7 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
               aria-label={t("gitHistory.worktreeNamePlaceholder")}
             />
             <button
-              className="tab-add-btn"
+              className="toolbar-btn"
               onClick={createWorktree}
               disabled={loading || !wtForm.branch.trim()}
             >

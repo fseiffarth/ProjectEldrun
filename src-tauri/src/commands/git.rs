@@ -479,6 +479,42 @@ fn git_status_blocking(project_dir: String) -> Result<GitStatus, String> {
     })
 }
 
+/// One probe behind the project switcher's per-pill git dot.
+#[derive(serde::Serialize)]
+pub struct GitDirtyProbe {
+    pub status: GitStatus,
+    /// Commits ahead of the upstream — computed **only when the working tree is
+    /// clean**, `0` otherwise (the dot never consults it while anything is
+    /// dirty or staged, so probing it unconditionally paid a second git spawn
+    /// per project per poll tick for an answer that was then discarded).
+    pub unpushed: usize,
+}
+
+/// `git_status` + the unpushed-commit count as ONE command, for the switcher's
+/// 12 s per-project dot poll: one git spawn and one IPC round trip in the
+/// common (dirty, non-repo, or no-upstream-relevant) case instead of two each.
+#[tauri::command]
+pub async fn git_dirty_probe(project_dir: String) -> Result<GitDirtyProbe, String> {
+    run_off_thread(move || {
+        let status = git_status_blocking(project_dir.clone())?;
+        let clean = status.is_repo
+            && status.staged == 0
+            && status.unstaged == 0
+            && status.untracked == 0;
+        let unpushed = if clean {
+            // Best-effort, like the frontend's old `.catch(() => [])`: a failed
+            // unpushed read must not blank a dot the status half already earned.
+            git_unpushed_commits_blocking(project_dir)
+                .map(|v| v.len())
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        Ok(GitDirtyProbe { status, unpushed })
+    })
+    .await
+}
+
 /// Resolve the git top-level enclosing `project_dir`/`rel_path` (the folder the
 /// user is currently browsing in the file tree). Returns the absolute repo root
 /// path, or `None` when the folder isn't inside any git repo. The right panel

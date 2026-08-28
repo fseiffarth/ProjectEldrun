@@ -162,7 +162,7 @@ export function SearchPanel({
           <div
             style={{
               fontSize: 11,
-              color: "var(--danger, #f85149)",
+              color: "var(--danger)",
               wordBreak: "break-all",
               padding: "6px 8px",
             }}

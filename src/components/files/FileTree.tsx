@@ -23,6 +23,7 @@ import {
 import { bindDragRelease, dragPlatform, PLATFORM } from "../../lib/dragPlatform";
 import { useSettingsStore } from "../../stores/settings";
 import { useExperimental } from "../../lib/experimental";
+import { GIT_STATE_COLOR } from "../../lib/gitColors";
 import { createDeckFile } from "../../lib/viewers/deck/create";
 import { useProjectsStore } from "../../stores/projects";
 import { useRemoteStatusStore } from "../../stores/remoteStatus";
@@ -170,13 +171,7 @@ type AutoConfirm = { entry: FileEntry; files: number; bytes: number } | null;
 const AUTO_SYNC_WARN_FILES = 200;
 const AUTO_SYNC_WARN_BYTES = 100 * 1024 * 1024;
 
-export const STATUS_COLOR: Record<string, string> = {
-  modified:  "#f85149", // red – tracked, unstaged working-tree change
-  untracked: "#f85149", // red – new, not yet tracked
-  staged:    "#d29922", // orange – staged, not committed
-  unpushed:  "#3fb950", // green – committed locally, not pushed
-  ignored:   "#6e7681", // dim gray – ignored by git
-};
+export const STATUS_COLOR = GIT_STATE_COLOR;
 
 const STATUS_TITLE_KEY: Record<string, TranslationKey> = {
   modified:  "fileTree.statusModified",
@@ -4300,7 +4295,7 @@ export function FileTree({
               }}
             />
             {pastePrompt.error && (
-              <div className="file-delete-path" style={{ color: "var(--danger, #f85149)" }}>
+              <div className="file-delete-path" style={{ color: "var(--danger)" }}>
                 {pastePrompt.error}
               </div>
             )}

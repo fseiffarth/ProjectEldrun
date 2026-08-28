@@ -70,9 +70,23 @@ pub fn set_project_git_hosting(
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
 
-    // project.json — authoritative per-project store for the URL.
-    let (idx, mut list) = find_entry(&project_id)?;
-    let local_file = list[idx].local_file.clone();
+    // projects.json — always-local source of truth for the pill and the
+    // serialization boundary shared with background project writers.
+    let local_file = crate::commands::projects::patch_project_entry(&project_id, |entry| {
+        match &cleaned_url {
+            Some(url) => {
+                entry
+                    .extra
+                    .insert("git_profile_url".to_string(), Value::String(url.clone()));
+            }
+            None => {
+                entry.extra.remove("git_profile_url");
+            }
+        }
+        Ok(entry.local_file.clone())
+    })?;
+
+    // project.json — descriptive/export mirror.
     let proj_path = PathBuf::from(&local_file);
     if proj_path.exists() {
         if let Ok(mut project) = storage::read_json::<Project>(&proj_path) {
@@ -80,22 +94,6 @@ pub fn set_project_git_hosting(
             storage::write_json(&proj_path, &project).map_err(|e| e.to_string())?;
         }
     }
-
-    // projects.json — mirror into the pill list entry's flattened `extra` so the
-    // frontend sees it without reading project.json (kept consistent with how
-    // `git_type`/`description` are mirrored).
-    match &cleaned_url {
-        Some(url) => {
-            list[idx]
-                .extra
-                .insert("git_profile_url".to_string(), Value::String(url.clone()));
-        }
-        None => {
-            list[idx].extra.remove("git_profile_url");
-        }
-    }
-    storage::write_json(&storage::state_dir().join("projects.json"), &list)
-        .map_err(|e| e.to_string())?;
 
     // Token → keyring. Only touch it when explicitly provided/cleared.
     if clear_token {

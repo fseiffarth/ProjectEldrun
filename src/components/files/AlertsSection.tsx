@@ -371,7 +371,7 @@ export function AlertsSection({ onClose }: AlertsSectionProps) {
           </button>
         )}
         <button
-          className="tab-add-btn"
+          className="toolbar-btn"
           style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: "auto" }}
           onClick={refresh}
           title={t("filesAlerts.refresh")}
@@ -379,7 +379,7 @@ export function AlertsSection({ onClose }: AlertsSectionProps) {
           ⟳
         </button>
         <button
-          className="tab-add-btn"
+          className="toolbar-btn"
           style={{ fontSize: 10, padding: "1px 6px", height: 20 }}
           onClick={onClose}
           title={t("filesAlerts.hide")}

@@ -392,7 +392,9 @@ pub fn start(state: UsageWatchState) {
             // async runtime's worker.
             let _ = tokio::task::spawn_blocking(move || {
                 for (project_id, counters) in batch {
-                    crate::schema::usage_stats::record(&project_id, &counters);
+                    if let Err(error) = crate::schema::usage_stats::record(&project_id, &counters) {
+                        eprintln!("usage_stats: record watcher counters: {error}");
+                    }
                 }
             })
             .await;

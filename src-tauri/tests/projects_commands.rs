@@ -4,11 +4,12 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 use eldrun_lib::commands::projects::{
-    archive_project, create_project, delete_archived_project, get_projects, import_project,
-    list_archived_projects, load_project, restore_archived_project, set_project_auto_connect,
-    set_project_description, set_project_remote_control, set_project_sandbox,
-    set_project_sandbox_spec, CreateProjectRequest, ImportProjectRequest, CLAUDE_SETTINGS,
-    GITIGNORE_DEFAULT, SCAFFOLD_FILES,
+    archive_project_blocking, create_project_blocking, delete_archived_project, get_projects,
+    import_project_blocking, list_archived_projects, load_project,
+    restore_archived_project_blocking, save_projects,
+    set_project_auto_connect, set_project_description, set_project_remote_control,
+    set_project_sandbox, set_project_sandbox_spec, CreateProjectRequest, ImportProjectRequest,
+    CLAUDE_SETTINGS, GITIGNORE_DEFAULT, SCAFFOLD_FILES,
 };
 use eldrun_lib::schema::project::{
     RemoteSpec, SandboxScope, SandboxSourceDecision, SandboxSpec, SandboxToggleOutcome,
@@ -161,6 +162,60 @@ fn assert_project_registered(expected_local_file: &Path, expected_name: &str) {
 }
 
 #[test]
+fn corrupt_projects_registry_is_never_replaced_with_a_default() {
+    with_isolated_home("corrupt-registry-home", |_| {
+        let path = eldrun_lib::storage::state_dir().join("projects.json");
+        fs::create_dir_all(path.parent().unwrap()).expect("state dir");
+        fs::write(&path, b"{broken").expect("corrupt registry fixture");
+
+        assert!(save_projects(Vec::new()).is_err());
+        assert_eq!(fs::read(path).unwrap(), b"{broken");
+    });
+}
+
+#[test]
+fn stale_frontend_save_preserves_a_newer_entry_patch() {
+    with_isolated_home("stale-save-home", |_| {
+        let target = tempdir_in_test_projects("stale-save-target");
+        let entry = create_project_blocking(CreateProjectRequest {
+            name: "stale-save".to_string(),
+            directory: target.path().to_string_lossy().to_string(),
+            description: None,
+            git_type: None,
+            skip_scaffold: false,
+            remote: None,
+            mirror_parent: None,
+            vm: None,
+        })
+        .expect("create project");
+        let mut stale = get_projects().expect("load stale snapshot");
+
+        set_project_description(entry.id.clone(), Some("newer".to_string()))
+            .expect("patch description");
+        stale
+            .iter_mut()
+            .find(|project| project.id == entry.id)
+            .expect("stale entry")
+            .status = "active".to_string();
+        save_projects(stale).expect("save stale frontend snapshot");
+
+        let current = get_projects().expect("reload registry");
+        let current = current
+            .iter()
+            .find(|project| project.id == entry.id)
+            .expect("current entry");
+        assert_eq!(current.status, "active");
+        assert_eq!(
+            current
+                .extra
+                .get("description")
+                .and_then(|value| value.as_str()),
+            Some("newer")
+        );
+    });
+}
+
+#[test]
 fn create_project_preserves_existing_scaffolds() {
     with_isolated_home("create-home", |_| {
         let target = tempdir_in_test_projects("create-target");
@@ -177,7 +232,7 @@ fn create_project_preserves_existing_scaffolds() {
             vm: None,
         };
 
-        let entry = create_project(req).expect("create project");
+        let entry = create_project_blocking(req).expect("create project");
         assert_eq!(entry.name, "create-project");
         assert_eq!(entry.status, "inactive");
         assert_eq!(
@@ -233,7 +288,7 @@ fn create_remote_project_enables_lockstep_when_git_backed() {
             vm: None,
         };
 
-        let entry = create_project(req).expect("create remote git project");
+        let entry = create_project_blocking(req).expect("create remote git project");
         let state = eldrun_lib::services::git_peer::load_state(&entry.id);
         assert!(
             state.enabled,
@@ -272,7 +327,7 @@ fn create_remote_project_leaves_lockstep_off_without_git() {
             vm: None,
         };
 
-        let entry = create_project(req).expect("create remote non-git project");
+        let entry = create_project_blocking(req).expect("create remote non-git project");
         let state = eldrun_lib::services::git_peer::load_state(&entry.id);
         assert!(
             !state.enabled,
@@ -313,7 +368,7 @@ fn create_remote_project_scaffolds_the_local_mirror() {
             vm: None,
         };
 
-        let entry = create_project(req).expect("create remote project");
+        let entry = create_project_blocking(req).expect("create remote project");
         assert!(
             entry.extra.contains_key("remote"),
             "entry should carry a remote spec"
@@ -372,7 +427,7 @@ fn import_project_copy_creates_missing_scaffolds_without_overwriting_existing_on
             mirror_parent: None,
         };
 
-        let entry = import_project(req).expect("import copy");
+        let entry = import_project_blocking(req).expect("import copy");
         let target = PathBuf::from(&entry.local_file)
             .parent()
             .expect("project file parent")
@@ -420,7 +475,7 @@ fn import_project_move_creates_missing_scaffolds_without_overwriting_existing_on
             mirror_parent: None,
         };
 
-        let entry = import_project(req).expect("import move");
+        let entry = import_project_blocking(req).expect("import move");
         let target = PathBuf::from(&entry.local_file)
             .parent()
             .expect("project file parent")
@@ -463,7 +518,7 @@ fn import_project_keep_creates_missing_scaffolds_in_place_without_overwriting_ex
             mirror_parent: None,
         };
 
-        let entry = import_project(req).expect("import keep");
+        let entry = import_project_blocking(req).expect("import keep");
 
         assert_eq!(entry.name, "keep-project");
         assert_eq!(entry.status, "inactive");
@@ -508,7 +563,7 @@ fn import_project_skip_scaffold_does_not_add_missing_scaffold_files() {
             mirror_parent: None,
         };
 
-        let entry = import_project(req).expect("import skip-scaffold");
+        let entry = import_project_blocking(req).expect("import skip-scaffold");
 
         // Only project.json is written; no scaffold files or git init.
         assert!(source.path().join("project.json").exists());
@@ -544,7 +599,7 @@ fn set_project_description_writes_both_projects_json_and_project_json() {
         let target = tempdir_in_test_projects("desc-target");
         seed_project(target.path(), "desc");
 
-        let entry = create_project(CreateProjectRequest {
+        let entry = create_project_blocking(CreateProjectRequest {
             name: "desc-project".to_string(),
             directory: target.path().to_string_lossy().to_string(),
             description: Some("original".to_string()),
@@ -594,7 +649,7 @@ fn set_project_description_writes_both_projects_json_and_project_json() {
 
 fn new_local_project(name: &str, target: &Path) -> eldrun_lib::schema::projects::ProjectEntry {
     seed_project(target, name);
-    create_project(CreateProjectRequest {
+    create_project_blocking(CreateProjectRequest {
         name: name.to_string(),
         directory: target.to_string_lossy().to_string(),
         description: None,
@@ -617,7 +672,7 @@ fn archive_and_restore_local_project_roundtrip() {
         assert!(dir.join("project.json").exists());
 
         // Archive: the on-disk dir moves out and the pill drops from the list.
-        archive_project(id.clone(), "2026-07-01T00:00:00+00:00".to_string()).expect("archive");
+        archive_project_blocking(id.clone(), "2026-07-01T00:00:00+00:00".to_string()).expect("archive");
         assert!(
             !dir.join("project.json").exists(),
             "original project dir should have moved into the archive"
@@ -633,7 +688,7 @@ fn archive_and_restore_local_project_roundtrip() {
         assert!(!archived[0].remote);
 
         // Restore: comes back inactive, the folder + files return, archive empties.
-        let restored = restore_archived_project(id.clone()).expect("restore");
+        let restored = restore_archived_project_blocking(id.clone()).expect("restore");
         assert_eq!(restored.status, "inactive");
         assert_eq!(restored.id, id);
         assert!(get_projects().unwrap().iter().any(|p| p.id == id));
@@ -654,7 +709,7 @@ fn permanent_delete_removes_archived_project() {
         let entry = new_local_project("del-project", target.path());
         let id = entry.id.clone();
 
-        archive_project(id.clone(), "2026-07-01T00:00:00+00:00".to_string()).expect("archive");
+        archive_project_blocking(id.clone(), "2026-07-01T00:00:00+00:00".to_string()).expect("archive");
         assert_eq!(list_archived_projects().unwrap().len(), 1);
 
         delete_archived_project(id.clone()).expect("delete forever");
@@ -663,7 +718,7 @@ fn permanent_delete_removes_archived_project() {
             "archive must be empty after permanent delete"
         );
         // Restoring a permanently-deleted project is an error (nothing to read).
-        assert!(restore_archived_project(id).is_err());
+        assert!(restore_archived_project_blocking(id).is_err());
     });
 }
 
@@ -936,8 +991,8 @@ fn sandbox_spec_roundtrips_and_reads_legacy_shape() {
 #[test]
 fn archive_rejects_traversal_ids_and_missing_projects() {
     with_isolated_home("archive-guard-home", |_| {
-        assert!(archive_project("../evil".to_string(), "x".to_string()).is_err());
-        assert!(archive_project("no-such-id".to_string(), "x".to_string()).is_err());
+        assert!(archive_project_blocking("../evil".to_string(), "x".to_string()).is_err());
+        assert!(archive_project_blocking("no-such-id".to_string(), "x".to_string()).is_err());
     });
 }
 
@@ -950,7 +1005,7 @@ fn archive_rejects_traversal_ids_and_missing_projects() {
 fn set_project_auto_connect_writes_both_copies_and_clears() {
     with_isolated_home("auto-connect-home", |_| {
         let mirror_parent = tempdir_in_test_projects("auto-connect-mirror");
-        let entry = create_project(CreateProjectRequest {
+        let entry = create_project_blocking(CreateProjectRequest {
             name: "auto-connect".to_string(),
             directory: String::new(),
             description: None,
@@ -1010,7 +1065,7 @@ fn set_project_auto_connect_writes_both_copies_and_clears() {
 fn set_project_auto_connect_rejects_local_and_unknown_projects() {
     with_isolated_home("auto-connect-local-home", |_| {
         let target = tempdir_in_test_projects("auto-connect-local");
-        let entry = create_project(CreateProjectRequest {
+        let entry = create_project_blocking(CreateProjectRequest {
             name: "local-project".to_string(),
             directory: target.path().to_string_lossy().to_string(),
             description: None,

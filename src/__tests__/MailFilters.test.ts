@@ -15,7 +15,7 @@ import {
   ruleProblems,
   toggleField,
 } from "../lib/mailFilters";
-import { TRANSLATIONS } from "../lib/i18n";
+import { TRANSLATIONS } from "../lib/i18nDicts/all";
 import type { MailFilterRule } from "../types/mail";
 
 /**

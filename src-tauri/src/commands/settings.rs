@@ -32,7 +32,7 @@ pub fn get_settings() -> Result<Settings, String> {
 #[tauri::command]
 pub fn save_settings(settings: Settings) -> Result<(), String> {
     let path = storage::state_dir().join("settings.json");
-    storage::write_json(&path, &settings).map_err(|e| e.to_string())
+    storage::write_json_atomic(&path, &settings).map_err(|e| e.to_string())
 }
 
 /// Persist only the main window's geometry, leaving every other setting on disk
@@ -48,13 +48,10 @@ pub fn save_settings(settings: Settings) -> Result<(), String> {
 #[tauri::command]
 pub fn save_window_state(state: WindowState) -> Result<(), String> {
     let path = storage::state_dir().join("settings.json");
-    let mut settings: Settings = if path.exists() {
-        storage::read_json(&path).map_err(|e| e.to_string())?
-    } else {
-        Settings::default()
-    };
-    settings.window_state = Some(state);
-    storage::write_json(&path, &settings).map_err(|e| e.to_string())
+    storage::patch_json(&path, Settings::default(), |settings| {
+        settings.window_state = Some(state);
+        Ok(())
+    })
 }
 
 /// Detect installed apps for the global-app toolbar roles on the current

@@ -259,17 +259,19 @@ export function TourHost() {
     // shift (e.g. a project opening adds the tab bar the step points at).
   }, [step, projectCount, activeId]);
 
-  // Pulse the highlighted element while its step is on screen (reuses the
-  // contextual-hint `.hint-target` glow), cleaned up on step change/teardown.
+  // Pulse the highlighted element while its step is on screen (the tour's own
+  // `.tour-target` outward ring — NOT the contextual hints' `.hint-target`,
+  // whose ring is kept inset to survive overflow:hidden ancestors), cleaned up
+  // on step change/teardown.
   useEffect(() => {
     if (!step?.anchor) return;
     const els = step.spanAll
       ? Array.from(document.querySelectorAll(step.anchor))
       : [document.querySelector(step.anchor)].filter((e): e is Element => e != null);
     if (els.length === 0) return;
-    for (const el of els) el.classList.add("hint-target");
+    for (const el of els) el.classList.add("tour-target");
     return () => {
-      for (const el of els) el.classList.remove("hint-target");
+      for (const el of els) el.classList.remove("tour-target");
     };
   }, [step, projectCount, activeId]);
 

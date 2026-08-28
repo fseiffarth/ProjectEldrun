@@ -128,7 +128,7 @@ fn write_terminal_session(
     if let Err(e) = std::fs::create_dir_all(&dir) {
         return Err(format!("create session dir: {e}"));
     }
-    storage::write_json(&dir.join(TERMINALS_FILE), &session).map_err(|e| e.to_string())?;
+    storage::write_json_atomic(&dir.join(TERMINALS_FILE), &session).map_err(|e| e.to_string())?;
 
     // Drop host-bound markers (#150) for tabs this project no longer has, so the
     // directory does not accumulate one file per local-model tab ever opened.
@@ -164,7 +164,7 @@ fn write_export_copy(local_file: &str, session: &TerminalSession) {
     let Some(sessions_dir) = eldrun_sessions_dir(local_file) else {
         return;
     };
-    if let Err(e) = storage::write_json(&sessions_dir.join(TERMINALS_FILE), session) {
+    if let Err(e) = storage::write_json_atomic(&sessions_dir.join(TERMINALS_FILE), session) {
         eprintln!("terminal_service: write .eldrun export copy: {e}");
     }
 }
@@ -459,7 +459,7 @@ pub fn adopt_project_tree_session(
     session.open_apps = None;
     let dir = storage::project_session_dir(project_id);
     std::fs::create_dir_all(&dir).map_err(|e| format!("create session dir: {e}"))?;
-    storage::write_json(&dir.join(TERMINALS_FILE), &session).map_err(|e| e.to_string())?;
+    storage::write_json_atomic(&dir.join(TERMINALS_FILE), &session).map_err(|e| e.to_string())?;
     Ok(session)
 }
 
@@ -499,7 +499,7 @@ pub fn migrate_project_sessions_once() {
         if std::fs::create_dir_all(&dir).is_err() {
             continue;
         }
-        match storage::write_json(&dir.join(TERMINALS_FILE), &session) {
+        match storage::write_json_atomic(&dir.join(TERMINALS_FILE), &session) {
             Ok(()) => {
                 migrated += 1;
                 eprintln!(

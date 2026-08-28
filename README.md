@@ -165,6 +165,10 @@ grab the `.AppImage` (portable Linux) or `.deb` (Debian/Ubuntu), or the `.exe`
 installer on Windows. To build from source instead, follow the requirements
 below.
 
+The Linux packages are built on Ubuntu 24.04, so they need glibc 2.39 or newer
+(Ubuntu 24.04+, Debian 13+, Fedora 40+). On an older distro the loader fails
+with `GLIBC_2.39 not found` — build from source there instead.
+
 Once it is installed, **Settings → Updates** checks the same releases page from
 inside the app and can download and install a newer build for you. It only
 looks when you open that screen — Eldrun never checks in the background — and

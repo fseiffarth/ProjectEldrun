@@ -326,7 +326,7 @@ export function MailAccountDialog({
           {credential.saved && (
             <button
               type="button"
-              className="mail-btn"
+              className="settings-btn"
               onClick={() => {
                 setRemember(false);
                 void credential.forget();
@@ -386,12 +386,12 @@ export function MailAccountDialog({
           {error && <div className="project-dialog-error">{error}</div>}
 
           <div className="mail-dialog-actions">
-            <button type="button" className="mail-btn" onClick={onClose}>
+            <button type="button" className="settings-btn" onClick={onClose}>
               {t("common.cancel")}
             </button>
             <button
               type="button"
-              className="mail-btn"
+              className="settings-btn"
               disabled={busy !== "" || incomplete || blocked}
               onClick={() => void doTest()}
             >
@@ -400,7 +400,7 @@ export function MailAccountDialog({
             {account && (
               <button
                 type="button"
-                className="mail-btn mail-btn-danger"
+                className="settings-btn danger"
                 onClick={() => setConfirmDelete(true)}
               >
                 {t("mail.removeAccount")}
@@ -408,7 +408,7 @@ export function MailAccountDialog({
             )}
             <button
               type="button"
-              className="mail-btn mail-btn-primary"
+              className="settings-btn primary"
               disabled={busy !== "" || incomplete || blocked}
               onClick={() => void doSave()}
             >
@@ -419,12 +419,12 @@ export function MailAccountDialog({
           {confirmDelete && account && (
             <div className="mail-confirm-strip">
               <span>{t("mail.removeAccountConfirm")}</span>
-              <button type="button" className="mail-btn" onClick={() => setConfirmDelete(false)}>
+              <button type="button" className="settings-btn" onClick={() => setConfirmDelete(false)}>
                 {t("common.cancel")}
               </button>
               <button
                 type="button"
-                className="mail-btn mail-btn-danger"
+                className="settings-btn danger"
                 onClick={() => onDelete(account.id)}
               >
                 {t("common.delete")}

@@ -526,8 +526,44 @@ fn parse_master_pid(text: &str) -> Option<u32> {
         .ok()
 }
 
+/// One shared system-wide `ss -H -t -i -n -p` reading, run **at most once**
+/// however many projects are sampled against it. The output is system-wide —
+/// the per-project part of a link snapshot is only slicing out that master's
+/// row — yet `linux_ssh_link` used to spawn it per call, and `-p` makes each
+/// run walk every `/proc/<pid>/fd` on the machine to resolve sockets to their
+/// processes. The run is lazy, so a caller whose master turns out to be gone
+/// never pays for it; the inner `None` means `ss` itself failed to spawn.
+#[cfg(target_os = "linux")]
+#[derive(Default)]
+pub(crate) struct SsDump(Option<Option<String>>);
+
+#[cfg(target_os = "linux")]
+impl SsDump {
+    fn text(&mut self) -> Option<&str> {
+        self.0
+            .get_or_insert_with(|| {
+                Command::new("ss")
+                    .args(["-H", "-t", "-i", "-n", "-p"])
+                    .env("LC_ALL", "C")
+                    .output()
+                    .ok()
+                    .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+            })
+            .as_deref()
+    }
+}
+
 #[cfg(target_os = "linux")]
 pub(crate) fn linux_ssh_link(project_id: &str) -> SshLinkSnapshot {
+    linux_ssh_link_shared(project_id, &mut SsDump::default())
+}
+
+/// The shared-`ss` core of [`linux_ssh_link`]: the per-project `ssh -O check`
+/// (the master lookup) stays per call, the system-wide socket scan comes from
+/// `ss` — which `services::net_usage` fills once per sample tick for all of a
+/// tick's connected projects instead of once per project.
+#[cfg(target_os = "linux")]
+pub(crate) fn linux_ssh_link_shared(project_id: &str, ss: &mut SsDump) -> SshLinkSnapshot {
     let Some(target) = remote::remote_target_for(project_id) else {
         return SshLinkSnapshot {
             supported: false,
@@ -582,11 +618,7 @@ pub(crate) fn linux_ssh_link(project_id: &str) -> SshLinkSnapshot {
         };
     };
 
-    let output = Command::new("ss")
-        .args(["-H", "-t", "-i", "-n", "-p"])
-        .env("LC_ALL", "C")
-        .output();
-    let Ok(output) = output else {
+    let Some(ss_text) = ss.text() else {
         return SshLinkSnapshot {
             supported: false,
             connected: true,
@@ -601,7 +633,7 @@ pub(crate) fn linux_ssh_link(project_id: &str) -> SshLinkSnapshot {
             ),
         };
     };
-    let parsed = parse_ssh_link_ss(&String::from_utf8_lossy(&output.stdout), master_pid);
+    let parsed = parse_ssh_link_ss(ss_text, master_pid);
     parsed.unwrap_or_else(|| SshLinkSnapshot {
         supported: true,
         connected: true,

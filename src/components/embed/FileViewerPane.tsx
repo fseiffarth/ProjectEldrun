@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
+import { Suspense, createContext, lazy, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import { useWindowsStore } from "../../stores/windows";
@@ -31,7 +31,6 @@ import { CompareView } from "./CompareView";
 import { PresentationOverlay } from "./PresentationOverlay";
 import { usePresentationStore } from "../../stores/presentation";
 import { renderMarkdown, toggleTaskCheckbox } from "../../lib/viewers/markdown";
-import { enrichMarkdownDom } from "../../lib/viewers/markdownEnrich";
 import { highlight, languageForPath, escapeHtml } from "../../lib/viewers/highlight";
 import { useOllamaStatus } from "../../lib/ollamaStatus";
 import {
@@ -125,14 +124,11 @@ import {
   fileMtime,
   describeFileError,
 } from "./fileAccess";
-import { TableView } from "./TableView";
-import { NotebookView } from "./NotebookView";
 import { DiffView } from "./DiffView";
 import { SyncMergeView } from "./SyncMergeView";
 import { OdtView } from "./OdtView";
 import { MediaView } from "./MediaView";
 import { GifView } from "./GifView";
-import { SqliteView } from "./SqliteView";
 import { ImageAnnotator } from "./ImageAnnotator";
 import {
   type TexCapability,
@@ -171,8 +167,6 @@ import {
 } from "../../lib/viewers/tex";
 import { TexStructureSidebar } from "./tex/TexStructureSidebar";
 import { focusTexWorkspaceForSource } from "./openTexWorkspace";
-import { PdfView } from "./pdf/PdfViewer";
-import { DeckView } from "./deck/DeckView";
 import { YamlTree } from "./YamlTree";
 import { YamlGrid } from "./YamlGrid";
 import { BibCards } from "./BibCards";
@@ -180,6 +174,17 @@ import { isTreePath, isJsonPath } from "../../lib/viewers/yaml";
 import { isBibPath } from "../../lib/viewers/bib";
 import { hasCards } from "../../lib/viewers/yamlGrid";
 import { useT, type TranslationKey } from "../../lib/i18n";
+
+// The five heavyweight leaf viewers are code-split (§5.1 startup size): a
+// static import here would parse pdfjs-dist + pdf-lib + fontkit (PdfView,
+// DeckView) and the table/notebook/sqlite machinery at every window's launch.
+// `lazy` defers each to its first render behind the existing dispatch switch;
+// the Suspense boundaries sit around the two render sites below.
+const TableView = lazy(() => import("./TableView").then((m) => ({ default: m.TableView })));
+const NotebookView = lazy(() => import("./NotebookView").then((m) => ({ default: m.NotebookView })));
+const SqliteView = lazy(() => import("./SqliteView").then((m) => ({ default: m.SqliteView })));
+const PdfView = lazy(() => import("./pdf/PdfViewer").then((m) => ({ default: m.PdfView })));
+const DeckView = lazy(() => import("./deck/DeckView").then((m) => ({ default: m.DeckView })));
 
 /**
  * Persisted reader-position plumbing for an in-app viewer. Snapshots the tab's
@@ -580,7 +585,9 @@ export function FileViewerPane({ viewer, path, projectId, tabKey, visible = true
             not, and a second handler competing for Escape mid-talk is exactly
             what made holstering the laser end the talk (TODO V #98). */}
         <div className="presentation-host">
-          {view}
+          {/* Fallback null: a lazy viewer's chunk loads in milliseconds off
+              local disk, and any placeholder would flash for exactly that. */}
+          <Suspense fallback={null}>{view}</Suspense>
           {!presenting && <PresentationOverlay />}
         </div>
       </ViewerHeaderInfoContext.Provider>
@@ -6159,12 +6166,25 @@ function MarkdownView({
   // enrichment pass (Dev A): it finds the mermaid code blocks and math
   // placeholders renderMarkdown emitted and renders them in place. Re-runs
   // whenever the rendered HTML changes or we switch back to preview mode.
+  // The module is imported HERE, not at the top of the file (§5.3 startup
+  // size): mermaid + katex + the katex CSS initialize at its module
+  // evaluation, so a static import would pay that at every window's launch
+  // instead of at the first markdown preview. Placeholders render as plain
+  // source until the chunk lands (milliseconds), then enrich in place.
   const previewRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     if (mode !== "preview") return;
-    const el = previewRef.current;
-    if (!el) return;
-    void enrichMarkdownDom(el);
+    if (!previewRef.current) return;
+    let cancelled = false;
+    void import("../../lib/viewers/markdownEnrich").then((m) => {
+      // Re-read the ref after the await: the pane may have unmounted, or the
+      // effect re-run for newer HTML (that run enriches the current DOM).
+      const el = previewRef.current;
+      if (!cancelled && el) void m.enrichMarkdownDom(el);
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [html, mode]);
 
   // #49/#50: local-file links in the rendered preview open in-app. Unlike the
@@ -6824,7 +6844,9 @@ function TexWorkspaceView({
             className="tex-workspace-pane"
             style={{ display: p === activePath ? undefined : "none" }}
           >
-            {centerFor(p)}
+            {/* PdfView is lazy (§5.1) and this center renders outside the
+                pane-level Suspense above. */}
+            <Suspense fallback={null}>{centerFor(p)}</Suspense>
           </div>
         ))}
       </div>

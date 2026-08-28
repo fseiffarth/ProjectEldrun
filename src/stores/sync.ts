@@ -151,6 +151,8 @@ export interface SyncPushResult {
    *  what distinguishes "pushed nothing because nothing qualified" from
    *  "pushed everything". */
   skipped_excluded: number;
+  /** Git-tracked files omitted because enabled lockstep carries them as commits. */
+  skipped_tracked: number;
 }
 
 interface SyncStore {
@@ -170,8 +172,6 @@ interface SyncStore {
   /** Push the whole local mirror to the host, skipping host-diverged (amber)
    *  files (force=false → conflicts are returned, not clobbered). */
   pushWholeProject: (projectId: string) => Promise<SyncPushResult>;
-  /** Re-pull every selected file (reconcile; clears amber). */
-  syncNow: (projectId: string) => Promise<void>;
   /** Push a local mirror file/folder to the host. Blocks stale files (returned in
    *  `conflicts`) unless `force`; the caller prompts and re-calls per conflict. */
   push: (
@@ -447,11 +447,6 @@ export const useSyncStore = create<SyncStore>((set, get) => ({
   // come back in `conflicts` and are never overwritten — the toolbar caller just
   // fires it and lets the tree overlay show what stayed orange.
   pushWholeProject: async (projectId) => get().push(projectId, "", false),
-
-  syncNow: async (projectId) => {
-    await invoke("sync_now", { projectId });
-    await get().refreshStatus(projectId);
-  },
 
   push: async (projectId, relPath, force = false) => {
     const result = await invoke<SyncPushResult>("sync_push", {

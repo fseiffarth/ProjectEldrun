@@ -59,16 +59,41 @@ fn stringify(value: ValueRef<'_>) -> String {
     }
 }
 
+/// Offload a blocking SQLite read to a worker thread. An arbitrary dropped
+/// `.db` — possibly on a network mount — is opened and queried synchronously,
+/// which run inline on the main thread is the freeze class `commands::git`'s
+/// `run_off_thread` doc describes. The sync bodies stay directly unit-testable.
+async fn run_off_thread<T: Send + 'static>(
+    f: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    tokio::task::spawn_blocking(f)
+        .await
+        .map_err(|e| format!("sqlite task failed: {e}"))?
+}
+
 /// List the user tables (and views) in a SQLite database file, sorted by name.
 #[tauri::command]
-pub fn sqlite_tables(path: String) -> Result<Vec<String>, String> {
+pub async fn sqlite_tables(path: String) -> Result<Vec<String>, String> {
+    run_off_thread(move || sqlite_tables_blocking(path)).await
+}
+
+pub fn sqlite_tables_blocking(path: String) -> Result<Vec<String>, String> {
     let conn = open_readonly(&path)?;
     list_tables(&conn)
 }
 
 /// Read up to `limit` rows from `table`, starting at `offset`.
 #[tauri::command]
-pub fn sqlite_page(
+pub async fn sqlite_page(
+    path: String,
+    table: String,
+    limit: u32,
+    offset: u32,
+) -> Result<SqlitePage, String> {
+    run_off_thread(move || sqlite_page_blocking(path, table, limit, offset)).await
+}
+
+pub fn sqlite_page_blocking(
     path: String,
     table: String,
     limit: u32,
@@ -144,7 +169,7 @@ mod tests {
     #[test]
     fn lists_tables_and_views() {
         let (_dir, path) = fixture();
-        let tables = sqlite_tables(path).unwrap();
+        let tables = sqlite_tables_blocking(path).unwrap();
         // Sorted by name; view + table, no sqlite_* internals.
         assert_eq!(tables, vec!["high".to_string(), "people".to_string()]);
     }
@@ -152,7 +177,7 @@ mod tests {
     #[test]
     fn pages_rows_with_columns_and_total() {
         let (_dir, path) = fixture();
-        let page = sqlite_page(path, "people".to_string(), 100, 0).unwrap();
+        let page = sqlite_page_blocking(path, "people".to_string(), 100, 0).unwrap();
         assert_eq!(page.columns, vec!["id", "name", "score"]);
         assert_eq!(page.total, 2);
         assert_eq!(page.rows.len(), 2);
@@ -164,7 +189,7 @@ mod tests {
     #[test]
     fn paginates_with_limit_and_offset() {
         let (_dir, path) = fixture();
-        let page = sqlite_page(path, "people".to_string(), 1, 1).unwrap();
+        let page = sqlite_page_blocking(path, "people".to_string(), 1, 1).unwrap();
         assert_eq!(page.total, 2);
         assert_eq!(page.rows.len(), 1);
         assert_eq!(page.rows[0][0], "2");
@@ -173,7 +198,7 @@ mod tests {
     #[test]
     fn rejects_unknown_table() {
         let (_dir, path) = fixture();
-        let err = sqlite_page(path, "people; DROP TABLE people".to_string(), 10, 0).unwrap_err();
+        let err = sqlite_page_blocking(path, "people; DROP TABLE people".to_string(), 10, 0).unwrap_err();
         assert!(err.contains("unknown table"), "got: {err}");
     }
 }

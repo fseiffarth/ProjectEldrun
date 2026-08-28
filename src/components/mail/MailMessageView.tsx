@@ -145,13 +145,13 @@ export function MailMessageView({
             that case. */}
         {body?.crypto && <MailCryptoPanel info={body.crypto} />}
         <div className="mail-message-actions">
-          <button type="button" className="mail-btn" onClick={() => onReply("reply")}>
+          <button type="button" className="settings-btn" onClick={() => onReply("reply")}>
             {t("mail.composeReply")}
           </button>
-          <button type="button" className="mail-btn" onClick={() => onReply("replyAll")}>
+          <button type="button" className="settings-btn" onClick={() => onReply("replyAll")}>
             {t("mail.composeReplyAll")}
           </button>
-          <button type="button" className="mail-btn" onClick={() => onReply("forward")}>
+          <button type="button" className="settings-btn" onClick={() => onReply("forward")}>
             {t("mail.composeForward")}
           </button>
         </div>
@@ -469,12 +469,12 @@ function LinkConfirmDialog({
             </div>
           )}
           <div className="mail-dialog-actions">
-            <button type="button" className="mail-btn" autoFocus onClick={onClose}>
+            <button type="button" className="settings-btn" autoFocus onClick={onClose}>
               {t("common.cancel")}
             </button>
             <button
               type="button"
-              className="mail-btn"
+              className="settings-btn"
               onClick={() => {
                 navigator.clipboard?.writeText(link.href).catch(() => {});
                 setCopied(true);
@@ -485,7 +485,7 @@ function LinkConfirmDialog({
             {mailto && (
               <button
                 type="button"
-                className="mail-btn mail-btn-primary"
+                className="settings-btn primary"
                 onClick={() => onComposeTo(link.href.slice("mailto:".length).split("?")[0])}
               >
                 {t("mail.linkCompose")}
@@ -494,7 +494,7 @@ function LinkConfirmDialog({
             {openable && (
               <button
                 type="button"
-                className="mail-btn mail-btn-primary"
+                className="settings-btn primary"
                 onClick={() => {
                   void openMailLink(link.href).catch(() => {});
                   onClose();
@@ -601,7 +601,7 @@ function MailAttachments({
           <span className="mail-attachment-size">{formatSize(part.size)}</span>
           <button
             type="button"
-            className="mail-btn"
+            className="settings-btn"
             disabled={busy === part.part_id}
             onClick={() => void doPreview(part)}
           >
@@ -611,7 +611,7 @@ function MailAttachments({
           </button>
           <button
             type="button"
-            className="mail-btn"
+            className="settings-btn"
             disabled={busy === part.part_id}
             onClick={() => setConfirm(part)}
           >
@@ -693,14 +693,14 @@ function AttachmentSaveDialog({
             )}
           </div>
           <div className="mail-dialog-actions">
-            <button type="button" className="mail-btn" autoFocus onClick={onClose}>
+            <button type="button" className="settings-btn" autoFocus onClick={onClose}>
               {t("common.cancel")}
             </button>
-            <button type="button" className="mail-btn" onClick={onSaveElsewhere}>
+            <button type="button" className="settings-btn" onClick={onSaveElsewhere}>
               {t("mail.attachmentChooseLocation")}
             </button>
             {emailsFolder && (
-              <button type="button" className="mail-btn mail-btn-primary" onClick={onSaveToEmails}>
+              <button type="button" className="settings-btn primary" onClick={onSaveToEmails}>
                 {t("mail.attachmentSaveToEmails")}
               </button>
             )}

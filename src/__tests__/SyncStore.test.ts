@@ -89,12 +89,10 @@ describe("sync store actions", () => {
     expect(args).toEqual({ projectId: "p1", relPaths: ["a", "b"], selected: false, isDir: true });
   });
 
-  it("syncWholeProject and syncNow call their commands", async () => {
+  it("syncWholeProject calls its command", async () => {
     await useSyncStore.getState().syncWholeProject("p1");
-    await useSyncStore.getState().syncNow("p1");
     const calls = invokeMock.mock.calls.map((c) => c[0]);
     expect(calls).toContain("sync_whole_project");
-    expect(calls).toContain("sync_now");
   });
 
   it("push forwards force + returns conflicts", async () => {

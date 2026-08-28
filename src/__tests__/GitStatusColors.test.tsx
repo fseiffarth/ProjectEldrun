@@ -1,6 +1,8 @@
 /**
  * Tests for git status color bars:
- * - STATUS_COLOR mapping (untracked/modified=red, staged=orange, unpushed=green, ignored=gray)
+ * - STATUS_COLOR mapping (untracked/modified=danger, staged=warning,
+ *   unpushed=success, ignored=muted — theme TOKENS, never hardcoded hexes,
+ *   so the light themes' own palettes apply; see lib/gitColors)
  * - RightPanel git action buttons have correct color bars
  * - Hovering a button shows the relevant staged/unpushed list
  */
@@ -59,24 +61,30 @@ function setupInvoke({
 }
 
 describe("STATUS_COLOR", () => {
-  it("untracked is red (#f85149)", () => {
-    expect(STATUS_COLOR.untracked).toBe("#f85149");
+  it("untracked is the danger token", () => {
+    expect(STATUS_COLOR.untracked).toBe("var(--danger)");
   });
 
-  it("modified is red (#f85149)", () => {
-    expect(STATUS_COLOR.modified).toBe("#f85149");
+  it("modified is the danger token", () => {
+    expect(STATUS_COLOR.modified).toBe("var(--danger)");
   });
 
-  it("staged is orange (#d29922)", () => {
-    expect(STATUS_COLOR.staged).toBe("#d29922");
+  it("staged is the warning token", () => {
+    expect(STATUS_COLOR.staged).toBe("var(--warning)");
   });
 
-  it("unpushed is green (#3fb950)", () => {
-    expect(STATUS_COLOR.unpushed).toBe("#3fb950");
+  it("unpushed is the success token", () => {
+    expect(STATUS_COLOR.unpushed).toBe("var(--success)");
   });
 
-  it("ignored is dim gray (#6e7681)", () => {
-    expect(STATUS_COLOR.ignored).toBe("#6e7681");
+  it("ignored is the muted-text token", () => {
+    expect(STATUS_COLOR.ignored).toBe("var(--text-muted)");
+  });
+
+  it("never hardcodes a hex — the light themes define their own palette", () => {
+    for (const color of Object.values(STATUS_COLOR)) {
+      expect(color).toMatch(/^var\(--[a-z-]+\)$/);
+    }
   });
 });
 
@@ -94,25 +102,25 @@ describe("git action button bars", () => {
     return result!;
   }
 
-  it("Add button has red status bar", async () => {
+  it("Add button has the danger status dot", async () => {
     setupInvoke({ untracked: 1 });
     await renderOpenPanel();
     const bar = await screen.findByTestId("add-bar");
-    expect(bar.style.background).toBe("rgb(248, 81, 73)");
+    expect(bar.style.background).toBe("var(--danger)");
   });
 
-  it("Commit button has yellow status bar", async () => {
+  it("Commit button has the warning status dot", async () => {
     setupInvoke({ staged: 1 });
     await renderOpenPanel();
     const bar = await screen.findByTestId("commit-bar");
-    expect(bar.style.background).toBe("rgb(227, 179, 65)");
+    expect(bar.style.background).toBe("var(--warning)");
   });
 
-  it("Push button has green status bar when remote present and commits ahead", async () => {
+  it("Push button has the success status dot when remote present and commits ahead", async () => {
     setupInvoke({ has_remote: true, unpushedCommits: ["abc123"] });
     await renderOpenPanel();
     const bar = await screen.findByTestId("push-bar");
-    expect(bar.style.background).toBe("rgb(63, 185, 80)");
+    expect(bar.style.background).toBe("var(--success)");
   });
 
   it("Push button is absent when no remote", async () => {

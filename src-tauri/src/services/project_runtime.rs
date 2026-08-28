@@ -394,5 +394,7 @@ fn flush_project_secs(project_id: &str, secs: f64) {
     // Efficiency #12: record into the rolling daily-summary file (a small,
     // bounded map) instead of appending to the unbounded `time_log.json` and
     // rewriting the whole growing file on every switch / 60s tick.
-    crate::schema::time_log::record_secs(project_id, secs);
+    if let Err(error) = crate::schema::time_log::record_secs(project_id, secs) {
+        eprintln!("project_runtime: record time for '{project_id}': {error}");
+    }
 }

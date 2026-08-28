@@ -31,6 +31,7 @@ import { create } from "zustand";
 
 import type { MailHeader, MailPriority } from "../types/mail";
 import { mailPriorityPage } from "../lib/mail";
+import { useMailStore } from "./mail";
 
 /**
  * A card drag in flight. Positions are viewport coordinates.
@@ -226,3 +227,64 @@ export const useTodoStore = create<TodoStore>((set, get) => ({
   error: null,
   setError: (error) => set({ error }),
 }));
+
+// ── The shared urgent-mail poll ──────────────────────────────────────────────
+//
+// The 60 s re-read behind `urgentMail`/`importantMail`, refcounted at module
+// level — `stores/hostSessions`' retain/release pattern. It exists because the
+// consumers are mounted many times at once (`useAlertsFeed` rides the file
+// viewer, which renders in the right panel plus every Files tab, and
+// `TodoMailRail` is a third copy): each used to arm its own interval keyed on
+// `newCount`, so one mail delivery re-armed N timers and a right panel plus a
+// few Files tabs cost N identical local queries per minute, forever. One poll
+// serves them all; the shared `useTodoStore` rows they already read from are
+// the shared answer.
+//
+// Callers own the gate: `loadUrgentMail` reaches `mail_priority_page`, and
+// opening the mail store's backend creates `~/.local/share/eldrun/mail/` as a
+// side effect — so retain ONLY behind the `mail_client` check (plus whatever
+// surface gate applies), exactly where the per-instance intervals sat.
+
+/** The rails'/alerts' shared cadence. Defensible only because
+ *  `mail_priority_page` is a read of the **local** SQLite index and opens no
+ *  socket; if that ever stops being true, this timer is the thing to go. */
+const URGENT_MAIL_TICK_MS = 60_000;
+
+let urgentMailRefs = 0;
+let urgentMailInterval: ReturnType<typeof setInterval> | null = null;
+let urgentMailUnsub: (() => void) | null = null;
+
+/** Join (or start) the shared poll. Pair with {@link releaseUrgentMailPoll}. */
+export function retainUrgentMailPoll(): void {
+  urgentMailRefs += 1;
+  if (urgentMailRefs > 1) return; // another surface already drives the poll
+  void useTodoStore.getState().loadUrgentMail();
+  urgentMailInterval = setInterval(
+    () => void useTodoStore.getState().loadUrgentMail(),
+    URGENT_MAIL_TICK_MS,
+  );
+  // `newCount` is the arrival signal (the `mail:new` listener itself belongs to
+  // `MailIndicator`, mounted once per window). Re-reading on it lives HERE, once,
+  // rather than in each consumer's effect deps, where a delivery re-fired the
+  // query once per mounted surface.
+  let lastNewCount = useMailStore.getState().newCount;
+  urgentMailUnsub = useMailStore.subscribe((s) => {
+    if (s.newCount === lastNewCount) return;
+    lastNewCount = s.newCount;
+    void useTodoStore.getState().loadUrgentMail();
+  });
+}
+
+/** Drop one subscriber; the poll stops when the last one leaves. The last
+ *  reading is deliberately kept (`hostSessions`' rule): an emptied rail would
+ *  read as "nothing urgent", which is a different and possibly wrong claim. */
+export function releaseUrgentMailPoll(): void {
+  urgentMailRefs = Math.max(0, urgentMailRefs - 1);
+  if (urgentMailRefs > 0) return;
+  if (urgentMailInterval !== null) {
+    clearInterval(urgentMailInterval);
+    urgentMailInterval = null;
+  }
+  urgentMailUnsub?.();
+  urgentMailUnsub = null;
+}

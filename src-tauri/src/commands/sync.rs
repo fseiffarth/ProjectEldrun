@@ -12,6 +12,7 @@
 //! rather than opening a one-shot session, since bulk transfers must ride the
 //! shared ControlMaster.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use futures_util::{stream, StreamExt};
@@ -200,61 +201,6 @@ pub async fn sync_whole_project(
 ) -> Result<usize, String> {
     let (target, sftp) = resolve(&project_id, pool.inner()).await?;
     pull_subtree(&app, &project_id, &target, &sftp, "", manifest.inner()).await
-}
-
-/// Re-pull every currently-selected file (the "sync now" reconcile): brings the
-/// mirror back in step with the host and clears amber → green. Returns the number
-/// of files re-pulled.
-#[tauri::command]
-pub async fn sync_now(
-    app: AppHandle,
-    project_id: String,
-    pool: State<'_, RemotePoolState>,
-    manifest: State<'_, SyncManifestState>,
-) -> Result<usize, String> {
-    let (target, sftp) = resolve(&project_id, pool.inner()).await?;
-    // Snapshot the selected file paths under the lock, then transfer outside it.
-    let selected: Vec<String> = {
-        let mut guard = manifest.lock().await;
-        let m = ensure_loaded(&mut guard, &project_id);
-        m.iter()
-            .filter(|(_, e)| e.selected && !e.is_dir)
-            .map(|(k, _)| k.clone())
-            .collect()
-    };
-    // #28q: "clears amber → green" means the host wins every file that moved on both
-    // sides. Name the local edits that costs before overwriting them.
-    let doomed = unsynced_local_edits(&project_id, manifest.inner(), &selected).await;
-    warn_overwritten(
-        &project_id,
-        "Sync now (re-pulled every selected file)",
-        doomed,
-    );
-
-    let total = selected.len();
-    emit(&app, &project_id, "start", "", 0, total);
-    let mut done = 0usize;
-    for rel in selected {
-        let host_abs = join_remote(&target.spec.remote_path, &rel);
-        let (size, mtime) = remote_sync::stat_or_zero(&sftp, &host_abs).await;
-        let local = mirror_local_path(&project_id, &rel);
-        if remote_sync::pull_file(&sftp, &host_abs, size, &local)
-            .await
-            .is_ok()
-        {
-            let local_meta = std::fs::metadata(&local).ok();
-            let (ls, lm) = local_size_mtime(local_meta);
-            let mut guard = manifest.lock().await;
-            let m = ensure_loaded(&mut guard, &project_id);
-            remote_sync::record_pull(m, &rel, size, mtime, ls, lm);
-            let _ = remote_sync::save_manifest(&project_id, m);
-            net_usage::record_files(&project_id, 1, 0);
-        }
-        done += 1;
-        emit(&app, &project_id, "file", &rel, done, total);
-    }
-    emit(&app, &project_id, "done", "", done, total);
-    Ok(done)
 }
 
 /// Toggle the `selected` flag for one or more project-relative paths WITHOUT
@@ -1170,12 +1116,45 @@ pub struct SyncTransferPreview {
     /// Push only, non-forced: files that would be BLOCKED as stale and queued for
     /// per-file resolution instead of written.
     pub conflicts: usize,
+    /// Git-tracked files omitted because lockstep owns them and moves them as
+    /// commits instead of loose bytes.
+    pub tracked: usize,
     /// Whether the receiving side was actually inspected. False when the push
     /// preview gave up on per-file stats (see [`PUSH_PREVIEW_STAT_CAP`]) **or**
     /// when a host stat errored out — the overwrite/destructive/conflict counts
     /// are then unknown, not zero, and the dialog must keep saying so rather than
     /// promising that nothing on the far side is replaced.
     pub exact: bool,
+}
+
+/// Apply the same tracked-tree ownership split as the background byte-sync
+/// engine. Returns the byte-sync candidates plus the number left to lockstep.
+fn drop_lockstep_tracked<T>(
+    project_id: &str,
+    files: Vec<T>,
+    rel: impl Fn(&T) -> &str,
+) -> (Vec<T>, usize) {
+    let enabled = crate::services::git_peer::load_state(project_id).enabled;
+    let tracked = crate::services::git_peer::tracked_paths(project_id);
+    drop_tracked_files(files, &tracked, enabled, rel)
+}
+
+fn drop_tracked_files<T>(
+    files: Vec<T>,
+    tracked: &HashSet<String>,
+    enabled: bool,
+    rel: impl Fn(&T) -> &str,
+) -> (Vec<T>, usize) {
+    if !enabled || tracked.is_empty() {
+        return (files, 0);
+    }
+    let before = files.len();
+    let kept = files
+        .into_iter()
+        .filter(|file| !tracked.contains(rel(file)))
+        .collect::<Vec<_>>();
+    let omitted = before - kept.len();
+    (kept, omitted)
 }
 
 /// Price a pull or push before it runs (see [`SyncTransferPreview`]).
@@ -1274,6 +1253,7 @@ async fn preview_pull(
             .filter(|f| !remote_sync::is_excluded(m, &f.rel, rel))
             .collect()
     };
+    let (files, tracked) = drop_lockstep_tracked(project_id, files, |f| &f.rel);
 
     let bytes = files.iter().map(|f| f.size).sum();
     let overwrites = files
@@ -1291,6 +1271,7 @@ async fn preview_pull(
         destructive_total: doomed.len(),
         destructive: doomed.into_iter().take(PREVIEW_NAME_CAP).collect(),
         conflicts: 0,
+        tracked,
         exact: true,
     })
 }
@@ -1318,6 +1299,7 @@ async fn preview_push(
             .filter(|f| !remote_sync::is_excluded(m, f, rel))
             .collect()
     };
+    let (files, tracked) = drop_lockstep_tracked(project_id, files, String::as_str);
     let bytes = files
         .iter()
         .filter_map(|r| std::fs::metadata(mirror_local_path(project_id, r)).ok())
@@ -1328,6 +1310,7 @@ async fn preview_push(
         return Ok(SyncTransferPreview {
             files: files.len(),
             bytes,
+            tracked,
             exact: false,
             ..Default::default()
         });
@@ -1379,6 +1362,7 @@ async fn preview_push(
         destructive_total: doomed.len(),
         destructive: doomed.into_iter().take(PREVIEW_NAME_CAP).collect(),
         conflicts,
+        tracked,
         exact: unchecked == 0,
     })
 }
@@ -1407,6 +1391,8 @@ pub struct SyncPushResult {
     /// the count that distinguishes "pushed nothing because nothing qualified"
     /// from "pushed everything".
     pub skipped_excluded: usize,
+    /// Files omitted because enabled git lockstep owns their tracked paths.
+    pub skipped_tracked: usize,
 }
 
 /// Push a local mirror file or folder subtree to the host (the bidirectional
@@ -1438,11 +1424,17 @@ pub async fn sync_push(
             .collect()
     };
     let skipped_excluded = walked - files.len();
+    let (files, skipped_tracked) = drop_lockstep_tracked(&project_id, files, String::as_str);
     // A targeted push (a named file/folder) with zero candidates is a click that
     // would silently do nothing — say why instead. Whole-mirror pushes ("") keep
     // returning Ok: an empty mirror is a legitimate steady state there.
     if files.is_empty() && !rel_path.is_empty() {
-        return Err(if walked > 0 {
+        return Err(if skipped_tracked > 0 && skipped_excluded == 0 {
+            format!(
+                "'{rel_path}' is git-tracked and travels as a commit through Git Lockstep — \
+                 nothing was byte-pushed"
+            )
+        } else if walked > 0 {
             format!("'{rel_path}' is excluded from sync — nothing was pushed")
         } else {
             format!(
@@ -1548,6 +1540,7 @@ pub async fn sync_push(
         failed,
         first_error,
         skipped_excluded,
+        skipped_tracked,
     })
 }
 
@@ -1585,8 +1578,8 @@ pub async fn sync_diff(
 /// and which the pull about to run will therefore overwrite and lose (#28q).
 ///
 /// A pull is the one byte-sync operation that destroys something: it writes the host's
-/// bytes over the mirror's, and `sync_now`'s whole job — "clears amber → green" — is to
-/// do exactly that to files that moved on *both* sides. Which reads as bringing things
+/// bytes over the mirror's, including the per-file and whole-project pull actions that
+/// resolve amber by choosing the host. Which reads as bringing things
 /// in step, and is also, silently, choosing the host and discarding the local edit. The
 /// auto-sync engine never does this (it skips an amber file rather than pick a winner);
 /// only the manual commands do, and only because the user asked. So: not blocked, but
@@ -1686,6 +1679,7 @@ async fn pull_subtree(
         let skipped = before - kept.len();
         (kept, skipped)
     };
+    let (files, _skipped_tracked) = drop_lockstep_tracked(project_id, files, |file| &file.rel);
 
     let total = files.len();
     emit(app, project_id, "start", rel, 0, total);
@@ -1704,7 +1698,7 @@ async fn pull_subtree(
     // It transfers the *whole* subtree, so it is given up entirely as soon as one
     // file inside was excluded — a fast path that ignores the exclusion would haul
     // the very folder the user just said to leave on the host.
-    let rsynced = is_dir && skipped_excluded == 0 && try_rsync_pull(target, rel).await;
+    let rsynced = is_dir && skipped_excluded == 0 && try_rsync_pull(target, rel, &files).await;
 
     let mut done = 0usize;
     for file in files {
@@ -1745,10 +1739,13 @@ async fn pull_subtree(
 /// when rsync actually transferred (the caller then just stats locally); `false`
 /// to fall back to the SFTP walker. Best-effort — any probe/transfer failure
 /// returns `false`.
-async fn try_rsync_pull(target: &RemoteTarget, rel: &str) -> bool {
+async fn try_rsync_pull(target: &RemoteTarget, rel: &str, files: &[remote_sync::HostFile]) -> bool {
     if !remote_sync::rsync_available_local() {
         return false;
     }
+    let Some(rsync_files) = remote_sync::rsync_subtree_files(files, rel) else {
+        return false;
+    };
     let spec = target.spec.clone();
     let project_id = target.project_id.clone();
     let host_src = join_remote(&spec.remote_path, rel);
@@ -1757,8 +1754,15 @@ async fn try_rsync_pull(target: &RemoteTarget, rel: &str) -> bool {
         if !remote_sync::rsync_available_host(&spec) {
             return false;
         }
-        remote_sync::rsync_pull_dir(&spec.user, &spec.host, spec.port, &host_src, &local_dest)
-            .is_ok()
+        remote_sync::rsync_pull_dir(
+            &spec.user,
+            &spec.host,
+            spec.port,
+            &host_src,
+            &local_dest,
+            &rsync_files,
+        )
+        .is_ok()
     })
     .await
     .unwrap_or(false)
@@ -1855,7 +1859,22 @@ fn emit(app: &AppHandle, project_id: &str, phase: &str, rel_path: &str, done: us
 
 #[cfg(test)]
 mod tests {
-    use super::rewrite_diff_labels;
+    use std::collections::HashSet;
+
+    use super::{drop_tracked_files, rewrite_diff_labels};
+
+    #[test]
+    fn manual_candidates_drop_the_tracked_set_when_lockstep_is_enabled() {
+        let files = vec!["src/main.rs".to_string(), "notes.txt".to_string()];
+        let tracked = HashSet::from(["src/main.rs".to_string()]);
+        let (kept, omitted) = drop_tracked_files(files.clone(), &tracked, true, String::as_str);
+        assert_eq!(kept, vec!["notes.txt"]);
+        assert_eq!(omitted, 1);
+
+        let (kept, omitted) = drop_tracked_files(files.clone(), &tracked, false, String::as_str);
+        assert_eq!(kept, files);
+        assert_eq!(omitted, 0);
+    }
 
     #[test]
     fn rewrite_diff_labels_relabels_both_sides() {

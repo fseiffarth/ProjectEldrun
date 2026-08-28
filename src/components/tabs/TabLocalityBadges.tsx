@@ -1,5 +1,4 @@
 import { useState } from "react";
-import { createPortal } from "react-dom";
 import {
   effectiveTabLocation,
   remoteHostIdOf,
@@ -13,6 +12,7 @@ import {
 import { useFileSourcesStore } from "../../stores/fileSources";
 import { useRunHostPrefStore } from "../../stores/runHostPref";
 import { UntestedTag } from "../common/UntestedTag";
+import { ContextMenuPortal } from "../common/ContextMenuPortal";
 import { useT } from "../../lib/i18n";
 
 /**
@@ -172,16 +172,13 @@ export function LocalityMenu({
       {opts?.note && <span className="tab-menu-hint">{opts.note}</span>}
     </button>
   );
-  return createPortal(
-    <>
-      <div
-        style={{ position: "fixed", inset: 0, zIndex: 40 }}
-        onPointerDown={onClose}
-      />
-      <div
-        className="tab-new-menu"
-        style={{ position: "fixed", left: menu.x, top: menu.y, zIndex: 41 }}
-      >
+  return (
+    <ContextMenuPortal
+      x={menu.x}
+      y={menu.y}
+      onClose={onClose}
+      className="tab-new-menu"
+    >
         {menu.view === "root" ? (
           <>
             {machineItem("local", "⌂", t("tabLocality.localMirrorItem"))}
@@ -227,9 +224,7 @@ export function LocalityMenu({
             )}
           </>
         )}
-      </div>
-    </>,
-    document.body,
+    </ContextMenuPortal>
   );
 }
 

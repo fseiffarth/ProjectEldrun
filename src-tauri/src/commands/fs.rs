@@ -699,8 +699,26 @@ async fn remote_metadata(
     }
 }
 
+/// Offload a blocking local-fs body to a worker thread. The full recursive
+/// walks (Ctrl+P/QuickOpen), tree copies/moves, external imports, and archive
+/// extraction below all do work proportional to tree/archive size; run inline
+/// they blocked the main thread — the freeze class `commands::git`'s
+/// `run_off_thread` doc describes. The sync bodies stay directly
+/// unit-testable.
+async fn run_off_thread<T: Send + 'static>(
+    f: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    tokio::task::spawn_blocking(f)
+        .await
+        .map_err(|e| format!("fs task failed: {e}"))?
+}
+
 #[tauri::command]
-pub fn list_project_endings(project_dir: String) -> Result<Vec<String>, String> {
+pub async fn list_project_endings(project_dir: String) -> Result<Vec<String>, String> {
+    run_off_thread(move || list_project_endings_blocking(project_dir)).await
+}
+
+pub fn list_project_endings_blocking(project_dir: String) -> Result<Vec<String>, String> {
     let root = canonical(&project_dir)?;
     let mut endings = BTreeSet::new();
     collect_project_endings(&root, &root, 0, &mut endings)?;
@@ -708,7 +726,11 @@ pub fn list_project_endings(project_dir: String) -> Result<Vec<String>, String> 
 }
 
 #[tauri::command]
-pub fn list_project_paths(project_dir: String) -> Result<Vec<ProjectPathEntry>, String> {
+pub async fn list_project_paths(project_dir: String) -> Result<Vec<ProjectPathEntry>, String> {
+    run_off_thread(move || list_project_paths_blocking(project_dir)).await
+}
+
+pub fn list_project_paths_blocking(project_dir: String) -> Result<Vec<ProjectPathEntry>, String> {
     let root = canonical(&project_dir)?;
     let mut paths = Vec::new();
     collect_project_paths(&root, &root, "", 0, &mut paths)?;
@@ -995,7 +1017,17 @@ pub fn create_dir_local(project_dir: &str, rel_path: &str) -> Result<(), String>
 /// in-project copy/paste, or two box-co-accessible projects). The destination
 /// must not already exist, and a directory may not be copied into itself.
 #[tauri::command]
-pub fn copy_path(
+pub async fn copy_path(
+    src_project_dir: String,
+    src_rel: String,
+    dest_project_dir: String,
+    dest_rel: String,
+) -> Result<(), String> {
+    run_off_thread(move || copy_path_blocking(src_project_dir, src_rel, dest_project_dir, dest_rel))
+        .await
+}
+
+pub fn copy_path_blocking(
     src_project_dir: String,
     src_rel: String,
     dest_project_dir: String,
@@ -1012,7 +1044,17 @@ pub fn copy_path(
 /// confinement and pre-conditions as [`copy_path`]. Falls back to copy+remove
 /// when a plain rename is not possible (e.g. across filesystems/mountpoints).
 #[tauri::command]
-pub fn move_path(
+pub async fn move_path(
+    src_project_dir: String,
+    src_rel: String,
+    dest_project_dir: String,
+    dest_rel: String,
+) -> Result<(), String> {
+    run_off_thread(move || move_path_blocking(src_project_dir, src_rel, dest_project_dir, dest_rel))
+        .await
+}
+
+pub fn move_path_blocking(
     src_project_dir: String,
     src_rel: String,
     dest_project_dir: String,
@@ -1045,7 +1087,19 @@ pub fn move_path(
 /// of the imported copy. Callers prompt the user (see `project_path_exists`)
 /// before passing `replace=true`.
 #[tauri::command]
-pub fn import_external_file(
+pub async fn import_external_file(
+    project_dir: String,
+    source_path: String,
+    dest_rel: String,
+    replace: bool,
+) -> Result<String, String> {
+    run_off_thread(move || {
+        import_external_file_blocking(project_dir, source_path, dest_rel, replace)
+    })
+    .await
+}
+
+pub fn import_external_file_blocking(
     project_dir: String,
     source_path: String,
     dest_rel: String,
@@ -1122,7 +1176,11 @@ pub fn project_path_exists(project_dir: String, rel_path: String) -> Result<bool
 /// `enclosed_name` (which rejects `..`/absolute components), and the resolved
 /// output is additionally confined to the destination folder before any write.
 #[tauri::command]
-pub fn extract_archive(project_dir: String, rel_path: String) -> Result<String, String> {
+pub async fn extract_archive(project_dir: String, rel_path: String) -> Result<String, String> {
+    run_off_thread(move || extract_archive_blocking(project_dir, rel_path)).await
+}
+
+pub fn extract_archive_blocking(project_dir: String, rel_path: String) -> Result<String, String> {
     let root = canonical(&project_dir)?;
     let archive = canonical(root.join(&rel_path).to_string_lossy().as_ref())?;
     enforce_confinement(&root, &archive)?;
@@ -2049,7 +2107,20 @@ const MAX_SCAN_DEPTH: usize = 64;
 fn should_skip_ending_scan_dir(name: &str) -> bool {
     matches!(
         name,
-        ".git" | ".eldrun" | "node_modules" | "target" | "dist" | "build" | ".next" | ".cache"
+        ".git"
+            | ".eldrun"
+            | "node_modules"
+            | "target"
+            | "dist"
+            | "build"
+            | ".next"
+            | ".cache"
+            // Python vendor/artifact dirs — a 50k-file venv would otherwise be
+            // walked on every Ctrl+P/QuickOpen scan.
+            | ".venv"
+            | "venv"
+            | "__pycache__"
+            | ".tox"
     )
 }
 
@@ -2361,7 +2432,7 @@ mod tests {
         let dir = tmp.path().to_string_lossy().to_string();
         std::fs::write(tmp.path().join("a.txt"), "hello").unwrap();
 
-        copy_path(dir.clone(), "a.txt".into(), dir.clone(), "b.txt".into()).unwrap();
+        copy_path_blocking(dir.clone(), "a.txt".into(), dir.clone(), "b.txt".into()).unwrap();
 
         assert_eq!(
             std::fs::read_to_string(tmp.path().join("a.txt")).unwrap(),
@@ -2380,7 +2451,7 @@ mod tests {
         std::fs::create_dir(tmp.path().join("src")).unwrap();
         std::fs::write(tmp.path().join("src/main.rs"), "fn main() {}").unwrap();
 
-        copy_path(dir.clone(), "src".into(), dir.clone(), "src2".into()).unwrap();
+        copy_path_blocking(dir.clone(), "src".into(), dir.clone(), "src2".into()).unwrap();
 
         assert_eq!(
             std::fs::read_to_string(tmp.path().join("src2/main.rs")).unwrap(),
@@ -2396,7 +2467,7 @@ mod tests {
         std::fs::write(tmp.path().join("a.txt"), "1").unwrap();
         std::fs::write(tmp.path().join("b.txt"), "2").unwrap();
 
-        let err = copy_path(dir.clone(), "a.txt".into(), dir.clone(), "b.txt".into()).unwrap_err();
+        let err = copy_path_blocking(dir.clone(), "a.txt".into(), dir.clone(), "b.txt".into()).unwrap_err();
         assert!(err.contains("already exists"), "{err}");
         // The pre-existing destination is untouched.
         assert_eq!(
@@ -2435,7 +2506,7 @@ mod tests {
             &[("a.txt", b"hello"), ("sub/", b""), ("sub/b.txt", b"world")],
         );
 
-        let folder = extract_archive(dir.clone(), "bundle.zip".into()).unwrap();
+        let folder = extract_archive_blocking(dir.clone(), "bundle.zip".into()).unwrap();
 
         assert_eq!(folder, "bundle");
         assert_eq!(
@@ -2455,7 +2526,7 @@ mod tests {
         std::fs::create_dir(tmp.path().join("bundle")).unwrap();
         write_test_zip(&tmp.path().join("bundle.zip"), &[("a.txt", b"x")]);
 
-        let folder = extract_archive(dir.clone(), "bundle.zip".into()).unwrap();
+        let folder = extract_archive_blocking(dir.clone(), "bundle.zip".into()).unwrap();
 
         assert_eq!(folder, "bundle (1)");
         assert!(tmp.path().join("bundle (1)/a.txt").exists());
@@ -2471,7 +2542,7 @@ mod tests {
             &[("../escaped.txt", b"pwned"), ("safe.txt", b"ok")],
         );
 
-        extract_archive(dir.clone(), "evil.zip".into()).unwrap();
+        extract_archive_blocking(dir.clone(), "evil.zip".into()).unwrap();
 
         // The traversal entry is dropped; the sibling escape file never appears.
         assert!(!tmp.path().join("escaped.txt").exists());
@@ -2485,7 +2556,7 @@ mod tests {
         std::fs::create_dir(tmp.path().join("src")).unwrap();
 
         let err =
-            copy_path(dir.clone(), "src".into(), dir.clone(), "src/inner".into()).unwrap_err();
+            copy_path_blocking(dir.clone(), "src".into(), dir.clone(), "src/inner".into()).unwrap_err();
         assert!(err.contains("into itself"), "{err}");
     }
 
@@ -2495,7 +2566,7 @@ mod tests {
         let dir = tmp.path().to_string_lossy().to_string();
         std::fs::write(tmp.path().join("a.txt"), "hello").unwrap();
 
-        move_path(dir.clone(), "a.txt".into(), dir.clone(), "sub/b.txt".into()).unwrap();
+        move_path_blocking(dir.clone(), "a.txt".into(), dir.clone(), "sub/b.txt".into()).unwrap();
 
         assert!(!tmp.path().join("a.txt").exists());
         assert_eq!(
@@ -2513,7 +2584,7 @@ mod tests {
         let proj = tempfile::tempdir().unwrap();
         std::fs::create_dir(proj.path().join("assets")).unwrap();
 
-        let rel = import_external_file(
+        let rel = import_external_file_blocking(
             proj.path().to_string_lossy().to_string(),
             ext.path().join("photo.png").to_string_lossy().to_string(),
             "assets".into(),
@@ -2537,7 +2608,7 @@ mod tests {
         let proj = tempfile::tempdir().unwrap();
         std::fs::write(proj.path().join("a.txt"), "old").unwrap();
 
-        let rel = import_external_file(
+        let rel = import_external_file_blocking(
             proj.path().to_string_lossy().to_string(),
             ext.path().join("a.txt").to_string_lossy().to_string(),
             "".into(),
@@ -2564,7 +2635,7 @@ mod tests {
         let proj = tempfile::tempdir().unwrap();
         std::fs::write(proj.path().join("a.txt"), "old").unwrap();
 
-        let rel = import_external_file(
+        let rel = import_external_file_blocking(
             proj.path().to_string_lossy().to_string(),
             ext.path().join("a.txt").to_string_lossy().to_string(),
             "".into(),
@@ -2597,7 +2668,7 @@ mod tests {
         std::fs::write(ext.path().join("pkg/mod.rs"), "fn x() {}").unwrap();
         let proj = tempfile::tempdir().unwrap();
 
-        let rel = import_external_file(
+        let rel = import_external_file_blocking(
             proj.path().to_string_lossy().to_string(),
             ext.path().join("pkg").to_string_lossy().to_string(),
             "".into(),
@@ -2618,7 +2689,7 @@ mod tests {
         std::fs::write(ext.path().join("a.txt"), "x").unwrap();
         let proj = tempfile::tempdir().unwrap();
 
-        let err = import_external_file(
+        let err = import_external_file_blocking(
             proj.path().to_string_lossy().to_string(),
             ext.path().join("a.txt").to_string_lossy().to_string(),
             "../escape".into(),
@@ -2642,7 +2713,7 @@ mod tests {
         std::fs::write(tmp.path().join("src/lib.py"), "x = 1").unwrap();
         std::os::unix::fs::symlink(tmp.path(), tmp.path().join("repo")).unwrap();
 
-        let endings = list_project_endings(tmp.path().to_string_lossy().to_string()).unwrap();
+        let endings = list_project_endings_blocking(tmp.path().to_string_lossy().to_string()).unwrap();
 
         // Real file endings are collected; the self-symlink is never entered.
         assert!(endings.contains(&".rs".to_string()));

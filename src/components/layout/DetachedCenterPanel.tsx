@@ -57,6 +57,7 @@ import { useSettingsStore } from "../../stores/settings";
 import {
   DEFAULT_MIN_SUBWINDOW_PX,
   allGroups,
+  dividerFraction,
   findGroup,
   type DropEdge,
   type GroupNode,
@@ -565,6 +566,10 @@ export function DetachedCenterPanel({
   // neither side of the dragged pair shrinks below the min subwindow size. The
   // resize streams back to the main window via `onResize` (a "resize" edit), so
   // the host's `detachedGroupsByScope` record stays the source of truth.
+  // A mid-flight divider drag's teardown, so unmounting mid-gesture (the popout
+  // closing/docking) unbinds the window listeners instead of leaking them.
+  const dividerDragTeardown = useRef<(() => void) | null>(null);
+  useEffect(() => () => dividerDragTeardown.current?.(), []);
   const onDividerPointerDown =
     (node: SplitNode, dividerIndex: number) => (e: React.PointerEvent) => {
       if (e.button !== 0) return;
@@ -580,23 +585,27 @@ export function DetachedCenterPanel({
         const total = isRow ? rect.width : rect.height;
         if (total <= 0) return;
         const pos = isRow ? ev.clientX - rect.left : ev.clientY - rect.top;
-        const wholeFraction = Math.min(Math.max(pos / total, 0), 1);
-        let before = 0;
-        for (let i = 0; i < dividerIndex; i++) before += node.sizes[i];
-        const pair = node.sizes[dividerIndex] + node.sizes[dividerIndex + 1];
-        const leftSize = wholeFraction - before;
-        const minPx = isRow ? minWidth : minHeight;
-        const minFrac = Math.min(minPx / total, pair / 2);
-        const clamped = Math.min(Math.max(leftSize, minFrac), pair - minFrac);
-        onResize(node.id, dividerIndex, clamped);
+        // Same pure math as the main window's SplitView (dividerFraction).
+        onResize(
+          node.id,
+          dividerIndex,
+          dividerFraction(node, dividerIndex, pos, total, isRow ? minWidth : minHeight),
+        );
       };
-      const onUp = (ev: PointerEvent) => {
-        captureEl.releasePointerCapture?.(ev.pointerId);
+      const teardown = () => {
+        dividerDragTeardown.current = null;
+        unbindRelease();
         window.removeEventListener("pointermove", onMove);
-        window.removeEventListener("pointerup", onUp);
+        captureEl.releasePointerCapture?.(e.pointerId);
       };
+      // Every move already streamed its resize to the main window, so commit and
+      // abort tear down the same way; what matters is that the gesture ENDS on
+      // WebKitGTK's `pointercancel`-instead-of-`pointerup` too — the bare
+      // `pointerup` listener this replaces left the divider glued to the cursor
+      // there (the exact split `CenterPanel` documents / dragPlatform encodes).
+      const unbindRelease = bindDragRelease({ onCommit: teardown, onAbort: teardown });
       window.addEventListener("pointermove", onMove);
-      window.addEventListener("pointerup", onUp);
+      dividerDragTeardown.current = teardown;
     };
 
   // #42: a tab/file dragged out of the MAIN window over this popout. We (1) answer

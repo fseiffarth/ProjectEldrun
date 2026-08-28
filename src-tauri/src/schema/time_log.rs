@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -129,6 +130,14 @@ fn legacy_log_path() -> std::path::PathBuf {
     storage::state_dir().join(LEGACY_LOG_FILE)
 }
 
+static TIME_SUMMARY_LOCK: Mutex<()> = Mutex::new(());
+
+fn lock_summary() -> std::sync::MutexGuard<'static, ()> {
+    TIME_SUMMARY_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 /// Load the rolling summary, migrating the legacy `time_log.json` in once if it
 /// has not been folded in yet. The migration is recorded (`migrated = true`)
 /// and persisted so subsequent loads are a single small-file read.
@@ -136,10 +145,10 @@ fn legacy_log_path() -> std::path::PathBuf {
 /// Backward compatibility: an install that only ever wrote the legacy log will
 /// have its history preserved on first load here; the legacy file is left in
 /// place untouched (so a rollback to an older Eldrun still sees its data).
-pub fn load_summary_migrating() -> TimeSummary {
+fn load_summary_migrating_unlocked() -> Result<TimeSummary, String> {
     let path = summary_path();
     let mut summary: TimeSummary = if path.exists() {
-        storage::read_json(&path).unwrap_or_default()
+        storage::read_json(&path).map_err(|e| e.to_string())?
     } else {
         TimeSummary::default()
     };
@@ -147,37 +156,55 @@ pub fn load_summary_migrating() -> TimeSummary {
     if !summary.migrated {
         let legacy = legacy_log_path();
         if legacy.exists() {
-            if let Ok(entries) = storage::read_json::<TimeLog>(&legacy) {
-                summary.fold_legacy(&entries);
-            }
+            let entries = storage::read_json::<TimeLog>(&legacy).map_err(|e| e.to_string())?;
+            summary.fold_legacy(&entries);
         }
         summary.migrated = true;
-        let _ = storage::write_json(&path, &summary);
+        storage::write_json_atomic(&path, &summary).map_err(|e| e.to_string())?;
     }
 
-    summary
+    Ok(summary)
+}
+
+pub fn load_summary_migrating() -> Result<TimeSummary, String> {
+    let _guard = lock_summary();
+    load_summary_migrating_unlocked()
 }
 
 /// Persist the rolling summary.
 pub fn save_summary(summary: &TimeSummary) -> Result<(), String> {
-    storage::write_json(&summary_path(), summary).map_err(|e| e.to_string())
+    let _guard = lock_summary();
+    storage::write_json_atomic(&summary_path(), summary).map_err(|e| e.to_string())
+}
+
+/// Mutate the rolling summary under the same lock used by timer flushes and
+/// migration. Existing-file parse failures abort without replacing the file.
+pub fn patch_summary(
+    patch: impl FnOnce(&mut TimeSummary) -> Result<(), String>,
+) -> Result<(), String> {
+    let _guard = lock_summary();
+    let mut summary = load_summary_migrating_unlocked()?;
+    patch(&mut summary)?;
+    storage::write_json_atomic(&summary_path(), &summary).map_err(|e| e.to_string())
 }
 
 /// Record `secs` of activity for `project_id` on the current UTC day in the
 /// rolling summary. O(map) read-modify-write of a bounded file rather than an
 /// append to an unbounded log.
-pub fn record_secs(project_id: &str, secs: f64) {
+pub fn record_secs(project_id: &str, secs: f64) -> Result<(), String> {
     if !secs.is_finite() || secs <= 0.0 {
-        return;
+        return Ok(());
     }
-    let mut summary = load_summary_migrating();
-    summary.add(project_id, &storage::today_utc(), secs);
-    let _ = save_summary(&summary);
+    let date = storage::today_utc();
+    patch_summary(|summary| {
+        summary.add(project_id, &date, secs);
+        Ok(())
+    })
 }
 
 /// Total seconds recorded for `project_id` on the current UTC day.
-pub fn today_secs(project_id: &str) -> f64 {
-    load_summary_migrating().seconds_on(project_id, &storage::today_utc())
+pub fn today_secs(project_id: &str) -> Result<f64, String> {
+    Ok(load_summary_migrating()?.seconds_on(project_id, &storage::today_utc()))
 }
 
 #[cfg(test)]

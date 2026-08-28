@@ -391,9 +391,18 @@ async fn reconcile_pass(
     // An auto dir may be the project root (""), i.e. project-wide auto-sync-all,
     // in which case the walks cover the whole tree.
     let mut candidates: BTreeSet<String> = auto_files.into_iter().collect();
+    // Host directory walks already paid for size+mtime. Carry those values into
+    // the reconcile loop instead of serially re-stat'ing every walked file over
+    // SFTP. Explicit single-file markers and mirror-only candidates still stat.
+    let mut walked_host_meta: HashMap<String, (u64, Option<u64>)> = HashMap::new();
     for d in &auto_dirs {
         match remote_sync::walk_host_files(&sftp, &target.spec.remote_path, d).await {
-            Ok(files) => candidates.extend(files.into_iter().map(|f| f.rel)),
+            Ok(files) => {
+                for file in files {
+                    walked_host_meta.insert(file.rel.clone(), (file.size, file.mtime));
+                    candidates.insert(file.rel);
+                }
+            }
             Err(_) => return, // connection dropped mid-walk → abandon this pass
         }
         if let Ok(local) = remote_sync::walk_mirror_files(project_id, d) {
@@ -404,6 +413,7 @@ async fn reconcile_pass(
     // nearer directory marker): the reconcile only touches paths whose *effective*
     // auto-sync is on, so a project-wide auto can still exclude individual subtrees.
     candidates.retain(|rel| remote_sync::is_auto(&snapshot, rel));
+    walked_host_meta.retain(|rel, _| candidates.contains(rel));
 
     // #28p D1: with git lockstep on, the tracked tree belongs to lockstep — it delivers
     // those files as *commits*. Shipping them here as loose bytes first lands them on
@@ -424,7 +434,10 @@ async fn reconcile_pass(
         let host_abs = remote_sync::join_remote(&target.spec.remote_path, &rel);
         // `Option`, distinguishing a gone host path (None) from an empty file —
         // the same input `push_decision`/`divergence` expect (matches sync_push).
-        let host = sftp::metadata_on(&sftp, &host_abs).await.ok();
+        let host = match walked_host_meta.get(&rel) {
+            Some(meta) => Some(*meta),
+            None => sftp::metadata_on(&sftp, &host_abs).await.ok(),
+        };
         let local_path = mirror_local_path(project_id, &rel);
         let local = std::fs::metadata(&local_path)
             .ok()

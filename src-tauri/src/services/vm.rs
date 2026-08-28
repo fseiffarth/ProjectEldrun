@@ -827,27 +827,22 @@ fn ensure_seed(
 /// the project's own `project.json` — before anything connects. Ports are
 /// per-boot; this is the one writer.
 fn record_vm_endpoint(project_id: &str, ssh_port: u16) -> Result<(), String> {
-    let list_path = storage::state_dir().join("projects.json");
-    let mut list: ProjectsList = storage::read_json(&list_path).map_err(|e| e.to_string())?;
-    let entry = list
-        .iter_mut()
-        .find(|e| e.id == project_id)
-        .ok_or_else(|| format!("project '{project_id}' not found"))?;
-    let mut spec: RemoteSpec = entry
-        .extra
-        .get("remote")
-        .and_then(|v| serde_json::from_value(v.clone()).ok())
-        .ok_or_else(|| format!("VM project '{project_id}' has no remote spec"))?;
-    spec.host = "127.0.0.1".to_string();
-    spec.port = Some(ssh_port);
-    spec.key_auth = Some(true);
-    spec.vm = Some(true);
-    entry.extra.insert(
-        "remote".to_string(),
-        serde_json::to_value(&spec).map_err(|e| e.to_string())?,
-    );
-    let local_file = entry.local_file.clone();
-    storage::write_json(&list_path, &list).map_err(|e| e.to_string())?;
+    let (spec, local_file) = crate::commands::projects::patch_project_entry(project_id, |entry| {
+        let mut spec: RemoteSpec = entry
+            .extra
+            .get("remote")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .ok_or_else(|| format!("VM project '{project_id}' has no remote spec"))?;
+        spec.host = "127.0.0.1".to_string();
+        spec.port = Some(ssh_port);
+        spec.key_auth = Some(true);
+        spec.vm = Some(true);
+        entry.extra.insert(
+            "remote".to_string(),
+            serde_json::to_value(&spec).map_err(|e| e.to_string())?,
+        );
+        Ok((spec, entry.local_file.clone()))
+    })?;
 
     let proj_path = PathBuf::from(local_file);
     if let Ok(mut project) = storage::read_json::<Project>(&proj_path) {

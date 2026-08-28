@@ -122,8 +122,21 @@ pub fn workspace_name(state: State<'_, WorkspaceStateArc>) -> String {
 }
 
 /// Returns "wlan", "lan", or "disconnected".
+///
+/// Async + `spawn_blocking`: the header polls this every 10 s, and on
+/// Windows/macOS the probe spawns `netsh` / `route` + `networksetup`
+/// (100–500 ms each, worse when the network stack is wedged) — run
+/// synchronously that work landed on the main thread every tick. The spawns
+/// are additionally time-capped ([`probe_output_capped`]) so a hung tool
+/// yields "disconnected" instead of a stuck poll.
 #[tauri::command]
-pub fn network_conn_type() -> String {
+pub async fn network_conn_type() -> String {
+    tokio::task::spawn_blocking(network_conn_type_blocking)
+        .await
+        .unwrap_or_else(|_| "disconnected".into())
+}
+
+pub(crate) fn network_conn_type_blocking() -> String {
     if cfg!(target_os = "linux") {
         detect_conn_type_linux(Path::new("/sys/class/net"))
     } else if cfg!(target_os = "windows") {
@@ -133,6 +146,49 @@ pub fn network_conn_type() -> String {
     } else {
         "disconnected".into()
     }
+}
+
+/// Hard cap on one connectivity-probe spawn. Well under the header's 10 s poll
+/// interval so a slow tool cannot make ticks pile up.
+const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Run `bin args…` and return its stdout, or `None` on spawn failure or when it
+/// exceeds [`PROBE_TIMEOUT`] (the child is killed). The slimmed-down twin of
+/// `printing.rs`'s `run_capped`: `netsh`/`networksetup` talk to OS services
+/// that can hang, and `.output()` alone would wait with them. stderr is
+/// discarded (these probes only pattern-match stdout), so a single reader
+/// thread suffices and cannot deadlock on a full pipe.
+fn probe_output_capped(bin: &str, args: &[&str]) -> Option<String> {
+    use std::process::Stdio;
+    let mut child = crate::paths::command_no_window(bin)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let mut out_pipe = child.stdout.take();
+    let reader = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(p) = out_pipe.as_mut() {
+            let _ = std::io::Read::read_to_end(p, &mut buf);
+        }
+        buf
+    });
+    let deadline = std::time::Instant::now() + PROBE_TIMEOUT;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if std::time::Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(40)),
+            Err(_) => return None,
+        }
+    }
+    Some(String::from_utf8_lossy(&reader.join().unwrap_or_default()).into_owned())
 }
 
 pub(crate) fn detect_conn_type_linux(net_dir: &Path) -> String {
@@ -160,24 +216,18 @@ pub(crate) fn detect_conn_type_linux(net_dir: &Path) -> String {
 
 fn detect_conn_type_windows() -> String {
     // Check for an active Wi-Fi connection via `netsh wlan show interfaces`.
-    // `command_no_window` keeps these probes from flashing a console window on
-    // every poll (Eldrun is a windowed app with no console).
-    if let Ok(out) = crate::paths::command_no_window("netsh")
-        .args(["wlan", "show", "interfaces"])
-        .output()
-    {
-        let text = String::from_utf8_lossy(&out.stdout).to_lowercase();
+    // `command_no_window` (inside `probe_output_capped`) keeps these probes
+    // from flashing a console window on every poll (Eldrun is a windowed app
+    // with no console).
+    if let Some(text) = probe_output_capped("netsh", &["wlan", "show", "interfaces"]) {
+        let text = text.to_lowercase();
         if text.contains("state") && text.contains("connected") {
             return "wlan".into();
         }
     }
     // Check for any active Ethernet via `netsh interface show interface`.
-    if let Ok(out) = crate::paths::command_no_window("netsh")
-        .args(["interface", "show", "interface"])
-        .output()
-    {
-        let text = String::from_utf8_lossy(&out.stdout).to_lowercase();
-        if text.contains("connected") {
+    if let Some(text) = probe_output_capped("netsh", &["interface", "show", "interface"]) {
+        if text.to_lowercase().contains("connected") {
             return "lan".into();
         }
     }
@@ -186,20 +236,14 @@ fn detect_conn_type_windows() -> String {
 
 pub(crate) fn detect_conn_type_macos() -> String {
     // Check the default route's interface, then probe its type via networksetup.
-    let out = std::process::Command::new("route")
-        .args(["-n", "get", "default"])
-        .output();
-    let Ok(out) = out else {
+    let Some(text) = probe_output_capped("route", &["-n", "get", "default"]) else {
         return "disconnected".into();
     };
-    let text = String::from_utf8_lossy(&out.stdout);
     for line in text.lines() {
         if let Some(iface) = line.trim().strip_prefix("interface:") {
             let iface = iface.trim();
-            let hw = std::process::Command::new("networksetup")
-                .args(["-getinfo", iface])
-                .output()
-                .map(|o| String::from_utf8_lossy(&o.stdout).to_lowercase())
+            let hw = probe_output_capped("networksetup", &["-getinfo", iface])
+                .map(|o| o.to_lowercase())
                 .unwrap_or_default();
             if hw.contains("wi-fi") || hw.contains("airport") {
                 return "wlan".into();
@@ -289,7 +333,7 @@ mod tests {
 
     #[test]
     fn network_conn_type_returns_known_value() {
-        let val = network_conn_type();
+        let val = network_conn_type_blocking();
         assert!(
             ["wlan", "lan", "disconnected"].contains(&val.as_str()),
             "unexpected network type: {val}"

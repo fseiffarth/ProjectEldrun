@@ -16,6 +16,7 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use serde::Deserialize;
 
@@ -26,6 +27,17 @@ use crate::schema::calendar::{
     DEFAULT_CALENDAR_ID, RANK_EPSILON, RANK_GAP,
 };
 use crate::storage;
+
+/// Calendar CRUD and CalDAV merges are read-modify-write transactions over the
+/// same file. Atomic replacement protects readers; this lock protects edits
+/// from overwriting one another between their read and rename.
+static CALENDAR_RMW_LOCK: Mutex<()> = Mutex::new(());
+
+fn lock_calendar() -> std::sync::MutexGuard<'static, ()> {
+    CALENDAR_RMW_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 pub(crate) fn calendar_path() -> PathBuf {
     storage::state_dir().join("calendar.json")
@@ -79,6 +91,7 @@ fn calendar_ids(data: &CalendarData) -> HashSet<&str> {
 /// Insert `event`, minting an id and defaulting its calendar. The caller's `id`
 /// is ignored — the store owns identity.
 fn create_event_at(path: &Path, mut event: CalendarEvent) -> Result<CalendarEvent, String> {
+    let _guard = lock_calendar();
     let mut data = read_data(path)?;
     event.id = fresh_id(&event_ids(&data));
     if event.calendar_id.is_empty() {
@@ -92,6 +105,7 @@ fn create_event_at(path: &Path, mut event: CalendarEvent) -> Result<CalendarEven
 
 /// Replace the event with `event.id` wholesale.
 fn update_event_at(path: &Path, event: CalendarEvent) -> Result<CalendarEvent, String> {
+    let _guard = lock_calendar();
     let mut data = read_data(path)?;
     let slot = data
         .events
@@ -105,6 +119,7 @@ fn update_event_at(path: &Path, event: CalendarEvent) -> Result<CalendarEvent, S
 }
 
 fn delete_event_at(path: &Path, id: &str) -> Result<(), String> {
+    let _guard = lock_calendar();
     let mut data = read_data(path)?;
     let before = data.events.len();
     data.events.retain(|e| e.id != id);
@@ -132,6 +147,7 @@ fn normalized_task(data: &CalendarData, id: &str) -> Result<CalendarTask, String
 }
 
 fn create_task_at(path: &Path, mut task: CalendarTask) -> Result<CalendarTask, String> {
+    let _guard = lock_calendar();
     let mut data = read_data(path)?;
     task.id = fresh_id(&task_ids(&data));
     if task.calendar_id.is_empty() {
@@ -145,6 +161,7 @@ fn create_task_at(path: &Path, mut task: CalendarTask) -> Result<CalendarTask, S
 }
 
 fn update_task_at(path: &Path, task: CalendarTask) -> Result<CalendarTask, String> {
+    let _guard = lock_calendar();
     let mut data = read_data(path)?;
     let id = task.id.clone();
     let slot = data
@@ -159,6 +176,7 @@ fn update_task_at(path: &Path, task: CalendarTask) -> Result<CalendarTask, Strin
 }
 
 fn delete_task_at(path: &Path, id: &str) -> Result<(), String> {
+    let _guard = lock_calendar();
     let mut data = read_data(path)?;
     let before = data.tasks.len();
     data.tasks.retain(|t| t.id != id);
@@ -222,6 +240,7 @@ fn column_order(data: &CalendarData, column: &str, exclude: &str) -> Vec<(String
 /// completed a card. The frontend merges those into its store rather than
 /// reloading the whole calendar.
 fn move_tasks_at(path: &Path, moves: Vec<TaskPlacement>) -> Result<Vec<CalendarTask>, String> {
+    let _guard = lock_calendar();
     let mut data = read_data(path)?;
     // The first drag is what creates the board — a *read* deliberately never
     // does, so a calendar-only user's file never grows board state.
@@ -364,6 +383,7 @@ fn columns_set_at(
         // default set — which reads as "my board reset itself".
         return Err("cannot delete the last column".to_string());
     }
+    let _guard = lock_calendar();
     let mut data = read_data(path)?;
     data.ensure_board();
 
@@ -394,6 +414,7 @@ fn columns_set_at(
 // ── Calendars ───────────────────────────────────────────────────────────────
 
 fn create_calendar_at(path: &Path, mut calendar: Calendar) -> Result<Calendar, String> {
+    let _guard = lock_calendar();
     let mut data = read_data(path)?;
     calendar.id = fresh_id(&calendar_ids(&data));
     data.calendars.push(calendar.clone());
@@ -402,6 +423,7 @@ fn create_calendar_at(path: &Path, mut calendar: Calendar) -> Result<Calendar, S
 }
 
 fn update_calendar_at(path: &Path, calendar: Calendar) -> Result<Calendar, String> {
+    let _guard = lock_calendar();
     let mut data = read_data(path)?;
     let slot = data
         .calendars
@@ -418,6 +440,7 @@ fn update_calendar_at(path: &Path, calendar: Calendar) -> Result<Calendar, Strin
 /// calendar keeps `normalize()`'s "at least one calendar" invariant meaningful
 /// (otherwise the next read would silently resurrect a default).
 fn delete_calendar_at(path: &Path, id: &str) -> Result<(), String> {
+    let _guard = lock_calendar();
     let mut data = read_data(path)?;
     if data.calendars.len() <= 1 {
         return Err("cannot delete the last calendar".to_string());
@@ -448,6 +471,7 @@ fn replace_calendar_events_at(
     events: Vec<CalendarEvent>,
     tasks: Vec<CalendarTask>,
 ) -> Result<CalendarData, String> {
+    let _guard = lock_calendar();
     let mut data = read_data(path)?;
     if !data.calendars.iter().any(|c| c.id == calendar_id) {
         return Err(format!("calendar '{calendar_id}' not found"));
@@ -543,6 +567,7 @@ pub(crate) fn merge_caldav_calendar_at(
     removed: &[String],
     full: bool,
 ) -> Result<CalendarData, String> {
+    let _guard = lock_calendar();
     let mut data = read_data(path)?;
     if !data.calendars.iter().any(|c| c.id == calendar_id) {
         return Err(format!("calendar '{calendar_id}' not found"));
@@ -715,6 +740,7 @@ pub(crate) fn set_caldav_identity_at(
     href: &str,
     etag: &str,
 ) -> Result<(), String> {
+    let _guard = lock_calendar();
     let mut data = read_data(path)?;
     let extra = match kind {
         "event" => data
@@ -780,9 +806,27 @@ fn check_ics_path(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Offload a blocking calendar-store body to a worker thread. Every command
+/// below is a whole-file read (or read-modify-write) of `calendar.json` —
+/// written on every board drag — plus the user-picked `.ics` reads/writes; run
+/// synchronously on the main thread that turns into jank as CalDAV calendars
+/// grow (the freeze class `commands::git`'s `run_off_thread` doc describes).
+/// The `*_at` bodies stay sync and directly unit-testable.
+async fn run_off_thread<T: Send + 'static>(
+    f: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    tokio::task::spawn_blocking(f)
+        .await
+        .map_err(|e| format!("calendar task failed: {e}"))?
+}
+
 /// Read an `.ics` file the user picked, for the frontend parser.
 #[tauri::command]
-pub fn calendar_read_ics(path: String) -> Result<String, String> {
+pub async fn calendar_read_ics(path: String) -> Result<String, String> {
+    run_off_thread(move || calendar_read_ics_blocking(path)).await
+}
+
+fn calendar_read_ics_blocking(path: String) -> Result<String, String> {
     let p = PathBuf::from(&path);
     check_ics_path(&p)?;
 
@@ -801,7 +845,11 @@ pub fn calendar_read_ics(path: String) -> Result<String, String> {
 
 /// Write an `.ics` file to the path the user picked.
 #[tauri::command]
-pub fn calendar_write_ics(path: String, content: String) -> Result<(), String> {
+pub async fn calendar_write_ics(path: String, content: String) -> Result<(), String> {
+    run_off_thread(move || calendar_write_ics_blocking(path, content)).await
+}
+
+fn calendar_write_ics_blocking(path: String, content: String) -> Result<(), String> {
     let p = PathBuf::from(&path);
     check_ics_path(&p)?;
     if content.len() as u64 > MAX_ICS_BYTES {
@@ -823,87 +871,92 @@ pub async fn calendar_fetch_ics(url: String) -> Result<String, String> {
 /// Replace `calendar_id`'s events/tasks with a freshly parsed set, in one
 /// atomic write.
 #[tauri::command]
-pub fn calendar_replace_events(
+pub async fn calendar_replace_events(
     calendar_id: String,
     events: Vec<CalendarEvent>,
     tasks: Vec<CalendarTask>,
 ) -> Result<CalendarData, String> {
-    replace_calendar_events_at(&calendar_path(), &calendar_id, events, tasks)
+    run_off_thread(move || replace_calendar_events_at(&calendar_path(), &calendar_id, events, tasks))
+        .await
 }
 
 // ── Commands ────────────────────────────────────────────────────────────────
 
 #[tauri::command]
-pub fn calendar_load() -> Result<CalendarData, String> {
-    read_data(&calendar_path())
+pub async fn calendar_load() -> Result<CalendarData, String> {
+    run_off_thread(move || read_data(&calendar_path())).await
 }
 
 /// Replace the whole store. Used by ICS import, which rewrites in bulk.
 #[tauri::command]
-pub fn calendar_save(data: CalendarData) -> Result<(), String> {
-    let mut data = data;
-    data.normalize();
-    write_data(&calendar_path(), &data)
+pub async fn calendar_save(data: CalendarData) -> Result<(), String> {
+    run_off_thread(move || {
+        let _guard = lock_calendar();
+        let mut data = data;
+        data.normalize();
+        write_data(&calendar_path(), &data)
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn create_event(event: CalendarEvent) -> Result<CalendarEvent, String> {
-    create_event_at(&calendar_path(), event)
+pub async fn create_event(event: CalendarEvent) -> Result<CalendarEvent, String> {
+    run_off_thread(move || create_event_at(&calendar_path(), event)).await
 }
 
 #[tauri::command]
-pub fn update_event(event: CalendarEvent) -> Result<CalendarEvent, String> {
-    update_event_at(&calendar_path(), event)
+pub async fn update_event(event: CalendarEvent) -> Result<CalendarEvent, String> {
+    run_off_thread(move || update_event_at(&calendar_path(), event)).await
 }
 
 #[tauri::command]
-pub fn delete_event(id: String) -> Result<(), String> {
-    delete_event_at(&calendar_path(), &id)
+pub async fn delete_event(id: String) -> Result<(), String> {
+    run_off_thread(move || delete_event_at(&calendar_path(), &id)).await
 }
 
 #[tauri::command]
-pub fn create_task(task: CalendarTask) -> Result<CalendarTask, String> {
-    create_task_at(&calendar_path(), task)
+pub async fn create_task(task: CalendarTask) -> Result<CalendarTask, String> {
+    run_off_thread(move || create_task_at(&calendar_path(), task)).await
 }
 
 #[tauri::command]
-pub fn update_task(task: CalendarTask) -> Result<CalendarTask, String> {
-    update_task_at(&calendar_path(), task)
+pub async fn update_task(task: CalendarTask) -> Result<CalendarTask, String> {
+    run_off_thread(move || update_task_at(&calendar_path(), task)).await
 }
 
 #[tauri::command]
-pub fn delete_task(id: String) -> Result<(), String> {
-    delete_task_at(&calendar_path(), &id)
+pub async fn delete_task(id: String) -> Result<(), String> {
+    run_off_thread(move || delete_task_at(&calendar_path(), &id)).await
 }
 
 /// Apply a board drag. See [`move_tasks_at`].
 #[tauri::command]
-pub fn todo_move_tasks(moves: Vec<TaskPlacement>) -> Result<Vec<CalendarTask>, String> {
-    move_tasks_at(&calendar_path(), moves)
+pub async fn todo_move_tasks(moves: Vec<TaskPlacement>) -> Result<Vec<CalendarTask>, String> {
+    run_off_thread(move || move_tasks_at(&calendar_path(), moves)).await
 }
 
 /// Replace the board's columns. See [`columns_set_at`].
 #[tauri::command]
-pub fn todo_columns_set(
+pub async fn todo_columns_set(
     columns: Vec<TaskColumn>,
     fallback_column: Option<String>,
 ) -> Result<CalendarData, String> {
-    columns_set_at(&calendar_path(), columns, fallback_column)
+    run_off_thread(move || columns_set_at(&calendar_path(), columns, fallback_column)).await
 }
 
 #[tauri::command]
-pub fn create_calendar(calendar: Calendar) -> Result<Calendar, String> {
-    create_calendar_at(&calendar_path(), calendar)
+pub async fn create_calendar(calendar: Calendar) -> Result<Calendar, String> {
+    run_off_thread(move || create_calendar_at(&calendar_path(), calendar)).await
 }
 
 #[tauri::command]
-pub fn update_calendar(calendar: Calendar) -> Result<Calendar, String> {
-    update_calendar_at(&calendar_path(), calendar)
+pub async fn update_calendar(calendar: Calendar) -> Result<Calendar, String> {
+    run_off_thread(move || update_calendar_at(&calendar_path(), calendar)).await
 }
 
 #[tauri::command]
-pub fn delete_calendar(id: String) -> Result<(), String> {
-    delete_calendar_at(&calendar_path(), &id)
+pub async fn delete_calendar(id: String) -> Result<(), String> {
+    run_off_thread(move || delete_calendar_at(&calendar_path(), &id)).await
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────
@@ -927,6 +980,33 @@ mod tests {
             end: end.into(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn concurrent_calendar_edits_do_not_lose_rows() {
+        let (_dir, path) = tmp_path();
+        let path = std::sync::Arc::new(path);
+        let mut threads = Vec::new();
+        for i in 0..12 {
+            let path = path.clone();
+            threads.push(std::thread::spawn(move || {
+                create_event_at(
+                    path.as_ref(),
+                    event(
+                        &format!("event-{i}"),
+                        "2026-08-28T10:00:00Z",
+                        "2026-08-28T11:00:00Z",
+                    ),
+                )
+                .unwrap();
+            }));
+        }
+        for thread in threads {
+            thread.join().unwrap();
+        }
+
+        let data = read_data(path.as_ref()).unwrap();
+        assert_eq!(data.events.len(), 12);
     }
 
     #[test]
@@ -1202,7 +1282,7 @@ mod tests {
         let (dir, _) = tmp_path();
         let secret = dir.path().join("id_rsa");
         std::fs::write(&secret, "PRIVATE KEY").unwrap();
-        let err = calendar_read_ics(secret.to_string_lossy().into_owned());
+        let err = calendar_read_ics_blocking(secret.to_string_lossy().into_owned());
         assert!(err.is_err(), "a non-.ics path must be refused");
     }
 
@@ -1211,7 +1291,7 @@ mod tests {
         let (dir, _) = tmp_path();
         let ics = dir.path().join("cal.ics");
         std::fs::write(&ics, "BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n").unwrap();
-        let text = calendar_read_ics(ics.to_string_lossy().into_owned()).unwrap();
+        let text = calendar_read_ics_blocking(ics.to_string_lossy().into_owned()).unwrap();
         assert!(text.contains("VCALENDAR"));
     }
 
@@ -1219,7 +1299,7 @@ mod tests {
     fn write_ics_refuses_a_non_ics_path() {
         let (dir, _) = tmp_path();
         let target = dir.path().join("important.conf");
-        assert!(calendar_write_ics(target.to_string_lossy().into_owned(), "x".into()).is_err());
+        assert!(calendar_write_ics_blocking(target.to_string_lossy().into_owned(), "x".into()).is_err());
         assert!(!target.exists(), "the refused write must not have happened");
     }
 

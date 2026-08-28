@@ -1384,7 +1384,7 @@ const SYSMON_CSS = `
   gap: 2px;
   padding: 2px;
   border-radius: 999px;
-  background: var(--bg-subtle, rgba(127, 127, 127, 0.1));
+  background: var(--bg-subtle);
   border: 1px solid var(--control-border);
 }
 .sysmon-mode-btn {
@@ -1466,7 +1466,7 @@ const SYSMON_CSS = `
   padding: 8px 10px;
   border-left: 3px solid var(--accent);
   border-radius: 4px;
-  background: var(--bg-subtle, rgba(127, 127, 127, 0.08));
+  background: var(--bg-subtle);
   color: var(--text-secondary, inherit);
   font-size: 11px;
   line-height: 1.5;

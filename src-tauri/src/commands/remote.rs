@@ -343,13 +343,22 @@ pub async fn remote_connected_targets(
 /// already at HEAD. Emits a `worker-sync-report` and returns the same report.
 #[tauri::command]
 pub async fn worker_sync_now(
+    app: AppHandle,
     pool: State<'_, RemotePoolState>,
+    worker_sync: State<'_, crate::services::worker_sync::WorkerSyncState>,
     project_id: String,
     host_id: String,
 ) -> Result<crate::services::worker_sync::WorkerSyncReport, String> {
     let _dial = user_dial_for_host(&project_id, &host_id);
-    let report =
-        crate::services::worker_sync::sync_worker(pool.inner(), &project_id, &host_id, true).await;
+    let report = crate::services::worker_sync::sync_worker_guarded(
+        &app,
+        pool.inner(),
+        worker_sync.inner(),
+        &project_id,
+        &host_id,
+        true,
+    )
+    .await;
     Ok(report)
 }
 

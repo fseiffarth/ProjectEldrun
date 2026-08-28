@@ -44,7 +44,19 @@ const DEFAULT_MAX_RESULTS: usize = 500;
 fn should_skip_dir(name: &str) -> bool {
     matches!(
         name,
-        ".git" | ".eldrun" | "node_modules" | "target" | "dist" | "build" | ".next" | ".cache"
+        ".git"
+            | ".eldrun"
+            | "node_modules"
+            | "target"
+            | "dist"
+            | "build"
+            | ".next"
+            | ".cache"
+            // Python vendor/artifact dirs, mirrored from fs.rs.
+            | ".venv"
+            | "venv"
+            | "__pycache__"
+            | ".tox"
     )
 }
 
@@ -191,8 +203,27 @@ fn walk(
 /// Literal, project-confined content search. Returns up to `max_results`
 /// matching lines (default 500). Vendor/build dirs, binary files, and oversized
 /// files are skipped; symlinks are not followed.
+///
+/// Async + `spawn_blocking` because the walk reads every file ≤ 8 MiB in the
+/// tree — run synchronously that froze the whole window for the duration of
+/// every search on a large project (the main-thread freeze class
+/// `commands::git`'s `run_off_thread` doc describes). The sync body stays
+/// directly unit-testable below.
 #[tauri::command]
-pub fn project_search(
+pub async fn project_search(
+    project_dir: String,
+    query: String,
+    case_sensitive: bool,
+    max_results: Option<usize>,
+) -> Result<Vec<SearchMatch>, String> {
+    tokio::task::spawn_blocking(move || {
+        project_search_blocking(project_dir, query, case_sensitive, max_results)
+    })
+    .await
+    .map_err(|e| format!("search task failed: {e}"))?
+}
+
+pub fn project_search_blocking(
     project_dir: String,
     query: String,
     case_sensitive: bool,
@@ -237,7 +268,7 @@ mod tests {
         .unwrap();
         fs::write(root.join("b.rs"), "fn main() { let needle = 1; }\n").unwrap();
 
-        let matches = project_search(
+        let matches = project_search_blocking(
             root.to_string_lossy().to_string(),
             "NEEDLE".into(),
             true,
@@ -262,7 +293,7 @@ mod tests {
         fs::write(root.join("a.txt"), "second NEEDLE here\n").unwrap();
         fs::write(root.join("b.rs"), "let needle = 1;\n").unwrap();
 
-        let matches = project_search(
+        let matches = project_search_blocking(
             root.to_string_lossy().to_string(),
             "needle".into(),
             false,
@@ -290,7 +321,7 @@ mod tests {
         // Binary file with a NUL byte that also contains the literal text.
         fs::write(root.join("blob.bin"), b"QUERYME\x00binary\n").unwrap();
 
-        let matches = project_search(
+        let matches = project_search_blocking(
             root.to_string_lossy().to_string(),
             "QUERYME".into(),
             true,
@@ -310,7 +341,7 @@ mod tests {
         let body: String = (0..10).map(|i| format!("line {i} HIT\n")).collect();
         fs::write(root.join("many.txt"), body).unwrap();
 
-        let matches = project_search(
+        let matches = project_search_blocking(
             root.to_string_lossy().to_string(),
             "HIT".into(),
             true,
@@ -327,7 +358,7 @@ mod tests {
         let root = dir.path();
         fs::write(root.join("a.txt"), "anything\n").unwrap();
         let matches =
-            project_search(root.to_string_lossy().to_string(), "".into(), true, None).unwrap();
+            project_search_blocking(root.to_string_lossy().to_string(), "".into(), true, None).unwrap();
         assert!(matches.is_empty());
     }
 }

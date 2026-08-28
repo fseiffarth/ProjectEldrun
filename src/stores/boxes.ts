@@ -4,14 +4,7 @@ import { create } from "zustand";
 import type { ProjectBox } from "../types";
 import { resolveProjectDirectory } from "../types";
 import { useProjectsStore } from "./projects";
-import {
-  FILES_TAB_CMD,
-  cmdToKind,
-  isRestorableTab,
-  useTabsStore,
-  type SavedLayoutTree,
-  type TabKind,
-} from "./tabs";
+import { cmdToKind, hydrateScopeFromDisk, useTabsStore } from "./tabs";
 
 /** Scope-id prefix for box-rooted tabs, disjoint from project ids and "root". */
 export const BOX_SCOPE_PREFIX = "box:";
@@ -108,16 +101,6 @@ export async function restoreBoxScope(scope: string): Promise<void> {
   const boxId = scope.slice(BOX_SCOPE_PREFIX.length);
   const box = useBoxesStore.getState().boxes.find((b) => b.id === boxId);
   const folder = box?.folder ?? "";
-  type LayoutEntry = {
-    key: string;
-    label: string;
-    cmd: string;
-    cwd: string;
-    kind?: TabKind;
-    type?: string;
-    sessionId?: string;
-    viewer?: "pdf" | "image" | "markdown" | "text";
-  };
   const seedShell = () => {
     const tabsStore = useTabsStore.getState();
     if (tabsStore.scope !== scope) return;
@@ -129,23 +112,10 @@ export async function restoreBoxScope(scope: string): Promise<void> {
     );
   };
   try {
-    const proj = await invoke<Record<string, unknown>>("load_tab_session", { projectId: scope });
-    if (scope in useTabsStore.getState().tabsByScope) return;
-    const raw = (proj.tabLayout as LayoutEntry[] | undefined) ?? [];
-    const restorable = raw.filter((t) =>
-      isRestorableTab({
-        kind: t.kind ?? cmdToKind(t.cmd || (t.type === "files" ? FILES_TAB_CMD : "")),
-        cmd: t.cmd,
-        sessionId: t.sessionId,
-        viewer: t.viewer,
-      }),
-    );
-    if (restorable.length === 0) {
-      seedShell();
-      return;
-    }
-    const groups = proj.tabGroups as SavedLayoutTree | undefined;
-    useTabsStore.getState().loadFromLayout(restorable, folder, scope, groups ?? undefined);
+    // The shared hydration path (also the fix for saved custom-agent tabs,
+    // which the hand-rolled copy here dropped by omitting `resumeArgs` from
+    // the restorable probe). False → nothing restorable was saved → seed.
+    if (!(await hydrateScopeFromDisk(scope, folder))) seedShell();
   } catch {
     seedShell();
   }
@@ -259,6 +229,21 @@ export const useBoxesStore = create<BoxesStore>((set, get) => ({
   openBox: async (boxId) => {
     const box = get().boxes.find((b) => b.id === boxId);
     if (!box) return;
+    // Flush the OUTGOING scope's layout before the switch: entering a box
+    // cancels CenterPanel's 300 ms persist debounce (its cleanup clears the
+    // timer and re-schedules for the box scope), so a tab opened/closed/moved
+    // within 300 ms of this click was simply never written. `persistScope` is
+    // scope-addressed, so it is safe however far the switch has progressed;
+    // fire-and-forget like the root flush in `projects.setActive`. Leaving a
+    // box scope is flushed by `setScope` itself (which also covers box→box
+    // here, so only a non-box outgoing scope needs handling).
+    const tabsStore = useTabsStore.getState();
+    const outgoing = tabsStore.scope;
+    if (outgoing !== boxScopeId(boxId) && !outgoing.startsWith(BOX_SCOPE_PREFIX)) {
+      const localFile =
+        useProjectsStore.getState().projects.find((p) => p.id === outgoing)?.local_file ?? "";
+      void tabsStore.persistScope(outgoing, localFile).catch(() => {});
+    }
     // Lazily create the box folder and capture the resolved path back into state.
     const folder = await invoke<string>("ensure_box_folder", { boxId });
     set((state) => ({

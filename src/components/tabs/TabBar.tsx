@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import {
@@ -25,19 +25,17 @@ import { commitDrop } from "./commitDrop";
 import { TabDropPlaceholder } from "./TabDropPlaceholder";
 import {
   AGENT_ITEMS,
-  EMPTY_CUSTOM_AGENTS,
-  DEFAULT_COMPACT_AGENT_IDS,
   SHELL_ITEMS,
   TAB_ACCENT,
   agentMenuEntries,
   buildStaticTabSpec,
   compactAgentMenuEntries,
-  enabledInstalledAgentBins,
   isFileTabKind,
   itemLabel,
   type StaticMenuItem,
 } from "./newTabItems";
 import { AddTabMenuList } from "./AddTabMenuList";
+import { useAddTabMenuData } from "./useAddTabMenuData";
 import { CustomAgentDialog } from "./CustomAgentDialog";
 import { type AgentMode, supportsAgentMode } from "./agentModes";
 import { reseedDetached, startDetachedDropSession } from "./detachedDropTargets";
@@ -54,16 +52,13 @@ import { useClampToViewport } from "../../hooks/useClampToViewport";
 import { startCursorPoll, desktopCursor, type PhysPoint } from "../../lib/coords";
 import { bindDragRelease, dragPlatform } from "../../lib/dragPlatform";
 import { useProjectsStore } from "../../stores/projects";
-import { boxMembersOfScope, useBoxesStore } from "../../stores/boxes";
 import { useSettingsStore } from "../../stores/settings";
 import { useExperimental } from "../../lib/experimental";
 import { closeTabWithConfirm } from "../../lib/closeRemoteTab";
 import { registerHostBoundTab } from "../../lib/hostBound";
-import { listLocalDrivers, type LocalDriverInfo } from "../../lib/localDrivers";
 import { useActivityStore } from "../../stores/activity";
 import { UntestedTag } from "../common/UntestedTag";
 import { useT } from "../../lib/i18n";
-import { AGENT_REGISTRY_CHANGED_EVENT } from "../../lib/agentRegistry";
 import { TRASH_PROJECT_ID } from "../../lib/trashProject";
 
 /** Default fly-out card size when no live pane thumbnail is available (group
@@ -221,16 +216,20 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
   // is waiting on a decision, while not being looked at pulses until it's viewed.
   const attentionByTab = useActivityStore((s) => s.attentionByTab);
   const clearAttention = useActivityStore((s) => s.clearAttention);
-  // Active project's name, used to name an agent's own session on launch.
-  // Box scope (#41 Phase 5): per-member rows in the "+" menu. Empty outside a
-  // box scope, so every other scope pays nothing here.
-  const boxMenuBoxes = useBoxesStore((st) => st.boxes);
-  const boxMenuProjects = useProjectsStore((st) => st.projects);
-  const boxMembers = useMemo(
-    () => boxMembersOfScope(scope, boxMenuBoxes, boxMenuProjects),
-    [scope, boxMenuBoxes, boxMenuProjects],
-  );
+  // All the "+"-menu data plumbing (agent registry probe, enabled/compact/
+  // custom agents, local-model drivers, box-member rows) is the shared hook —
+  // one implementation with the popout's NewTabMenu, so the two cannot drift.
+  const {
+    localModel,
+    localDrivers,
+    enabledAgents,
+    compactAgentBins,
+    customAgents,
+    installedCustom,
+    boxMembers,
+  } = useAddTabMenuData(scope);
 
+  // Active project's name, used to name an agent's own session on launch.
   const projectName = useProjectsStore(
     (s) => s.projects.find((p) => p.id === s.activeId)?.name ?? "",
   );
@@ -261,88 +260,8 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
   // #56: Shift+right-click on a tab enters inline rename mode for that key (no
   // menu, no prompt dialog). The label becomes a focused, text-selected <input>.
   const [editingKey, setEditingKey] = useState<string | null>(null);
-  // The local (Ollama) model a "Local Model" tab launches: the model tagged for
-  // the "tabs" task in the 🧠 menu, falling back to the default `ollama_model`.
-  // The add menu offers ONE "Local Model" entry that launches it, rather than
-  // listing every installed model.
-  const localModel = useSettingsStore(
-    (s) => s.settings?.ollama_roles?.tabs ?? s.settings?.ollama_model,
-  );
-  // Coding agents that can drive the active local model besides Mistral/vibe —
-  // Claude Code, Codex, OpenCode, Droid via `ollama launch` (or a direct
-  // fallback). Re-probed whenever the active model changes: these are all
-  // tool-calling agents, so a completion-only model (llama3 is one) can't drive
-  // any of them and they're withheld rather than offered as a tab that dies on
-  // its first request. Passing the gate isn't a promise the model is *good* at
-  // it — `ollama launch` has its own opinion and may greet the tab with a
-  // "Launch anyway?" prompt (see lib/localDrivers.ts).
-  const [localDrivers, setLocalDrivers] = useState<LocalDriverInfo[]>([]);
-  const refreshLocalDrivers = useCallback(() => {
-    void listLocalDrivers(localModel)
-      .then(setLocalDrivers)
-      .catch(() => {});
-  }, [localModel]);
-  useEffect(() => {
-    refreshLocalDrivers();
-    window.addEventListener(AGENT_REGISTRY_CHANGED_EVENT, refreshLocalDrivers);
-    return () => window.removeEventListener(AGENT_REGISTRY_CHANGED_EVENT, refreshLocalDrivers);
-  }, [refreshLocalDrivers]);
-  // Installed agent CLIs (by id == cmd). The add menu only offers agents whose
-  // binary is actually present, so it never lists ones the user can't launch.
-  // `null` until the probe resolves; render nothing until then to avoid a flash
-  // of the full list. Re-probed after Manage Agents changes the local registry.
-  const [agentStatuses, setAgentStatuses] = useState<
-    { id: string; bin: string; installed: boolean }[] | null
-  >(null);
-  const refreshInstalledAgents = useCallback(() => {
-    void invoke<{ id: string; bin: string; installed: boolean }[]>("list_agents")
-      .then(setAgentStatuses)
-      .catch(() => setAgentStatuses([]));
-  }, []);
-  useEffect(() => {
-    refreshInstalledAgents();
-    window.addEventListener(AGENT_REGISTRY_CHANGED_EVENT, refreshInstalledAgents);
-    return () => window.removeEventListener(AGENT_REGISTRY_CHANGED_EVENT, refreshInstalledAgents);
-  }, [refreshInstalledAgents]);
-  // Built-in agents the user turned off in "Manage Agents" (Settings) despite
-  // being installed — hidden from this menu without uninstalling the CLI.
-  const disabledAgents = useSettingsStore((s) => s.settings?.disabled_agents);
-  const compactAgentIds = useSettingsStore(
-    (s) => s.settings?.compact_tab_agents ?? DEFAULT_COMPACT_AGENT_IDS,
-  );
-  // Installed commands minus Manage Agents' disabled registry ids — the set every tab-choice consumer
-  // below (Agents group, Mistral/vibe local-model driver) should use.
-  const enabledAgents = useMemo(() => {
-    if (!agentStatuses) return null;
-    return enabledInstalledAgentBins(agentStatuses, disabledAgents);
-  }, [agentStatuses, disabledAgents]);
-  const compactAgentBins = useMemo(() => {
-    if (!agentStatuses) return new Set<string>();
-    const compactIds = new Set(compactAgentIds);
-    return new Set(
-      agentStatuses
-        .filter((agent) => compactIds.has(agent.id) || compactIds.has(agent.bin))
-        .map((agent) => agent.bin),
-    );
-  }, [agentStatuses, compactAgentIds]);
-  // User-defined custom agents (Settings.custom_agents) + the manage-dialog it
-  // opens. Their commands aren't in the built-in registry, so they're probed
-  // separately (`probe_binaries`); `null` until resolved. See agentMenuEntries.
-  const customAgents = useSettingsStore(
-    (s) => s.settings?.custom_agents ?? EMPTY_CUSTOM_AGENTS,
-  );
-  const [installedCustom, setInstalledCustom] = useState<Set<string> | null>(null);
+  // The manage-custom-agents dialog the "+" menu's "Add custom…" opens.
   const [agentDialogOpen, setAgentDialogOpen] = useState(false);
-  useEffect(() => {
-    const cmds = customAgents.map((a) => a.cmd);
-    if (cmds.length === 0) {
-      setInstalledCustom(new Set());
-      return;
-    }
-    invoke<string[]>("probe_binaries", { bins: cmds })
-      .then((found) => setInstalledCustom(new Set(found)))
-      .catch(() => setInstalledCustom(new Set()));
-  }, [customAgents]);
   const addMenuRef = useRef<HTMLDivElement>(null);
   const addBtnRef = useRef<HTMLButtonElement>(null);
   // The tabs live in their own horizontally-scrolling strip; chevrons flank it
@@ -1688,7 +1607,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                   key: "close-all",
                   label: t("newTabMenu.itemCloseAllTabs"),
                   dot: "×",
-                  color: "var(--danger, #d9534f)",
+                  color: "var(--danger)",
                   disabled: !hasAnyTabs,
                   onPick: () => {
                     closeAllTabs();
@@ -1748,7 +1667,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
               setTabMenu(null);
             }}
           >
-            <span className="tab-new-menu-dot" style={{ color: "var(--danger, #d9534f)" }}>×</span>
+            <span className="tab-new-menu-dot" style={{ color: "var(--danger)" }}>×</span>
             {t("common.close")}
           </button>
           <button
@@ -1759,7 +1678,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
               setTabMenu(null);
             }}
           >
-            <span className="tab-new-menu-dot" style={{ color: "var(--danger, #d9534f)" }}>×</span>
+            <span className="tab-new-menu-dot" style={{ color: "var(--danger)" }}>×</span>
             {t("tabBar.closeOthers")}
           </button>
           <button
@@ -1770,7 +1689,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
               setTabMenu(null);
             }}
           >
-            <span className="tab-new-menu-dot" style={{ color: "var(--danger, #d9534f)" }}>×</span>
+            <span className="tab-new-menu-dot" style={{ color: "var(--danger)" }}>×</span>
             {t("tabBar.closeToLeft")}
           </button>
           <button
@@ -1781,7 +1700,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
               setTabMenu(null);
             }}
           >
-            <span className="tab-new-menu-dot" style={{ color: "var(--danger, #d9534f)" }}>×</span>
+            <span className="tab-new-menu-dot" style={{ color: "var(--danger)" }}>×</span>
             {t("tabBar.closeToRight")}
           </button>
         </div>,
