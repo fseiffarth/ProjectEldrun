@@ -61,6 +61,8 @@ import { useRunHostPrefStore } from "../../stores/runHostPref";
 import { readFileText } from "../embed/fileAccess";
 import { SetDefaultAppDialog } from "./SetDefaultAppDialog";
 import { SendToProjectDialog, type SendSource } from "./SendToProjectDialog";
+import { AddRemarkDialog } from "./AddRemarkDialog";
+import { useProjectRemarksStore } from "../../stores/projectRemarks";
 import { normalizeScanPath } from "./ProjectFilesSettings";
 import { FileTreeSearch } from "./FileTreeSearch";
 import { useClampToViewport } from "../../hooks/useClampToViewport";
@@ -484,6 +486,9 @@ export function FileTree({
   const [autoConfirm, setAutoConfirm] = useState<AutoConfirm>(null);
   const [defaultAppFor, setDefaultAppFor] = useState<FileEntry | null>(null);
   const [sendTo, setSendTo] = useState<SendSource | null>(null);
+  const [remarkFor, setRemarkFor] = useState<FileEntry | null>(null);
+  const remarksEnabled = useExperimental("project_remarks");
+  const remarkCounts = useProjectRemarksStore((s) => projectId ? s.byProject[projectId]?.countsByFile : undefined);
   const [pastePrompt, setPastePrompt] = useState<PastePrompt | null>(null);
   const [pasteBusy, setPasteBusy] = useState(false);
   // SSH-sync Phase 2: project-relative paths whose push was blocked by a stale
@@ -3538,6 +3543,11 @@ export function FileTree({
               onMouseLeave={handleEntryMouseLeave}
             >
               <GitMarker status={status} />
+              {remarksEnabled && projectId && !e.is_dir && (
+                <span className="file-remark-slot">
+                  {(remarkCounts?.[relForEntry(e)] ?? 0) > 0 && <span className="file-remark-count">{remarkCounts?.[relForEntry(e)]}</span>}
+                </span>
+              )}
               {/* Fixed-width sync slot: always reserved on a sync-tracked tree so
                   file/folder names stay left-aligned whether or not the row has an
                   action button. `none` → red sync/push button; `amber` → orange
@@ -4175,6 +4185,11 @@ export function FileTree({
                     <UntestedTag />
                   </button>
                 )}
+                {remarksEnabled && projectId && !entry.is_dir && (
+                  <button className="untested" onClick={() => { setContextMenu(null); setRemarkFor(entry); }}>
+                    {t("projectRemarks.addMenu")} <UntestedTag />
+                  </button>
+                )}
                 {/* The per-file/folder SFTP exit — the one casual way bytes
                     leave a mirrorless (VM) project, size-confirmed. */}
                 {remoteListing && (
@@ -4389,6 +4404,10 @@ export function FileTree({
           fromProjectId={projectId}
           onClose={() => setSendTo(null)}
         />
+      )}
+      {remarkFor && projectId && (
+        <AddRemarkDialog projectId={projectId} projectDir={projectDir} file={relForEntry(remarkFor)}
+          onClose={() => setRemarkFor(null)} />
       )}
       {tooltip && createPortal(
         <div

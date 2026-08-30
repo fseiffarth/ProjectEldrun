@@ -53,7 +53,10 @@ interface Props {
   project: ProjectEntry;
   active: boolean;
   onClick: () => void;
-  onClose: () => void;
+  /** Omit when the pill is visible but has no close/remove action in this view. */
+  onClose?: () => void;
+  /** Localized tooltip override for views where × means something other than close. */
+  closeTitle?: string;
   onReorder: (fromId: string, toId: string) => void;
   /** Alt-drop one pill onto another: box the two projects together. */
   onGroup?: (fromId: string, toId: string) => void;
@@ -1241,6 +1244,7 @@ export function ProjectPill({
   active,
   onClick,
   onClose,
+  closeTitle,
   onReorder,
   onGroup,
   onAssignToBox,
@@ -2534,10 +2538,10 @@ export function ProjectPill({
           </button>
         )}
         {project.remote && <RemoteConnMenu project={project} compact />}
-        {!trashProject && (
+        {!trashProject && onClose && (
           <button
             className="pill-close-btn"
-            title={t("pill.closeProject")}
+            title={closeTitle ?? t("pill.closeProject")}
             onClick={(e) => { e.stopPropagation(); onClose(); }}
           >
             ×

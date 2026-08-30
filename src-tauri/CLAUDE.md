@@ -113,6 +113,9 @@ workflow); see `src/CLAUDE.md` for the frontend file map.
 
 **Schema (`schema/`)** — Serde structs mirroring the JSON state files.
 
+`schema/calendar.rs` also owns `TaskFileLink`, the one-way project-file remark
+back-reference on a board card; CalDAV merges preserve it beside mail/event.
+
 | File | Purpose |
 |------|---------|
 | `projects.rs` / `project.rs` | `projects.json` entries + per-project `project.json`. |

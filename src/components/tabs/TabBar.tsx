@@ -1313,19 +1313,6 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
       {isDropTarget && reorderIndex === tabs.length && tabs.length > 0 && (
         <Fragment key="drop-marker-end">{dropPlaceholder}</Fragment>
       )}
-      <div className="tab-new-wrap">
-        <button
-          ref={addBtnRef}
-          // When this group has no tabs, the + is the only way to get started —
-          // pulse it to draw the eye to it.
-          className={`tab-new-btn${tabs.length === 0 ? " empty-hint" : ""}`}
-          data-hint-anchor="tab-add"
-          title={t("tabBar.newTabTitle")}
-          onClick={openAddMenu}
-        >
-          +
-        </button>
-      </div>
       </div>
       {canScrollRight && (
         <button
@@ -1339,6 +1326,27 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
           ›
         </button>
       )}
+      {/* The + lives OUTSIDE the scrolling strip, beside the grip, the chevrons
+          and the controls cluster — and for their reason: it is the only way to
+          add a tab to this group, so it must stay reachable no matter how many
+          tabs fill (and overflow) the bar. Inside the strip it scrolled away
+          with the tabs, and a narrow subwindow hid the one control that opens a
+          new one. It sits after the right chevron so the chevrons keep flanking
+          the strip they scroll; with no overflow there is no chevron, so it
+          still renders flush after the final tab. */}
+      <div className="tab-new-wrap">
+        <button
+          ref={addBtnRef}
+          // When this group has no tabs, the + is the only way to get started —
+          // pulse it to draw the eye to it.
+          className={`tab-new-btn${tabs.length === 0 ? " empty-hint" : ""}`}
+          data-hint-anchor="tab-add"
+          title={t("tabBar.newTabTitle")}
+          onClick={openAddMenu}
+        >
+          +
+        </button>
+      </div>
       {/* The subwindow controls stay pinned at the far right of the bar. When a
           file viewer is docked below, this cluster reserves the viewer's width
           (`filesReserveWidth`) and right-aligns within it, so it sits directly

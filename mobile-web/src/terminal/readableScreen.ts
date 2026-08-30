@@ -252,16 +252,28 @@ function capLine(line: ReadableLine): ReadableLine {
 }
 
 /**
- * Builds the reading view. Physical rows that xterm wrapped are rejoined into
- * the logical line the program emitted, so the phone re-wraps at *its* width
- * instead of showing the desktop tmux window's column count as hard breaks.
+ * Builds readable lines for buffer rows [first, end). Physical rows that xterm
+ * wrapped are rejoined into the logical line the program emitted, so the phone
+ * re-wraps at *its* width instead of showing the desktop tmux window's column
+ * count as hard breaks.
+ *
+ * `afterText` is the text of the rendered line directly above this range. Blank
+ * collapsing needs it at the seam: when the ranges above and below are built in
+ * separate passes (the lazy history and the live tail), a paragraph break at
+ * the start of this range survives exactly when the line above it holds text —
+ * the same result one pass over both would produce. Absent or blank, leading
+ * blanks are dropped, which is also how the whole-screen build never opens
+ * with one.
  */
-export function readableScreen(buffer: ReadableBufferLike, maxRows = MAX_ROWS): ReadableScreen {
-  const first = Math.max(0, buffer.length - maxRows);
-  let clipped = first > 0;
+export function readableRange(
+  buffer: ReadableBufferLike,
+  first: number,
+  end: number,
+  afterText?: string,
+): ReadableLine[] {
   const joined: ReadableLine[] = [];
 
-  for (let row = first; row < buffer.length; row += 1) {
+  for (let row = first; row < end; row += 1) {
     const bufferLine = buffer.getLine(row);
     if (!bufferLine) continue;
     const spans = rowSpans(bufferLine);
@@ -282,14 +294,28 @@ export function readableScreen(buffer: ReadableBufferLike, maxRows = MAX_ROWS): 
     if (spans === "border") continue;
     if (spans === "blank") {
       // Collapse a run of blank rows — a repainting TUI leaves plenty — into a
-      // single paragraph break, and never open the view with one.
-      if (lines.length > 0 && lines[lines.length - 1].text !== "") {
+      // single paragraph break, and never open the range with one unless the
+      // caller says real text stands directly above it.
+      const previousText = lines.length > 0 ? lines[lines.length - 1].text : afterText ?? "";
+      if (previousText !== "") {
         lines.push({ key: `${line.key}b`, text: "", spans: [] });
       }
       continue;
     }
     lines.push(capLine({ key: line.key, text: spanText(spans), spans }));
   }
+  return lines;
+}
+
+/**
+ * Builds the bounded reading view: the last `maxRows` rows of the buffer,
+ * capped to MAX_LINES logical lines. The fallback shape — the lazy history in
+ * `readableHistory.ts` extends the same rendering backwards without the caps.
+ */
+export function readableScreen(buffer: ReadableBufferLike, maxRows = MAX_ROWS): ReadableScreen {
+  const first = Math.max(0, buffer.length - maxRows);
+  let clipped = first > 0;
+  const lines = readableRange(buffer, first, buffer.length);
   while (lines.length > 0 && lines[lines.length - 1].text === "") lines.pop();
 
   if (lines.length > MAX_LINES) clipped = true;
@@ -297,6 +323,6 @@ export function readableScreen(buffer: ReadableBufferLike, maxRows = MAX_ROWS): 
 }
 
 /** The plain text of what the reading view is showing, for Copy. */
-export function readableText(lines: ReadableLine[]) {
+export function readableText(lines: readonly ReadableLine[]) {
   return lines.map((line) => line.text).join("\n");
 }

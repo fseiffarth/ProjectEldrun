@@ -1097,3 +1097,105 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       page break must produce one highlight per page.
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work
+
+100. **Markdown viewer: cross-file `#fragment` navigation.** ✅ Implemented ·
+    A preview link like `docs/guide.md#setup` now opens the target *and*
+    scrolls its preview to the heading. The click posts the fragment to
+    `stores/mdAnchor` keyed by the target's absolute path (`openLinkedFile`
+    may re-activate an existing tab, so a prop cannot carry it — the same
+    shape as `stores/editorJump` for SyncTeX line targets); the target's
+    `MarkdownView` consumes it once its preview is rendered. Fragment→id
+    matching (`matchAnchorId` in `lib/viewers/markdown.ts`) tries the decoded
+    fragment verbatim, then its slugified form (a link written as the
+    heading's visible text), then case-insensitively; in-page `#anchor`
+    clicks go through the same matcher.
+    - [x] 🤖 Automated test (`src/__tests__/MdAnchor.test.ts`)
+    - [ ] 🖐️ Manual test — in one md file write `[x](other.md#some-heading)`
+      and click it in Preview: the other file should open scrolled to that
+      heading; click again from the source file (repeat jump must re-fire).
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+101. **Markdown relationship graph (opt-in `md_graph`).** ✅ Implemented ·
+    A third "Graph" mode on the markdown viewer, behind the `md_graph`
+    experimental flag (Settings → Experimental; on by default in debug mode):
+    the viewed document's local-file links crawled breadth-first
+    (`lib/viewers/mdGraph.ts` — markdown targets followed, every other file a
+    leaf, unreadable md targets drawn as missing, capped at 120 nodes) and
+    rendered as clickable SVG on concentric depth rings
+    (`components/embed/MdGraphView.tsx`). Clicking a node opens that file
+    through the same `openLinkedFile` routing a preview link uses. Reads ride
+    the confined `read_file_text` with the pane's project scope; the crawl is
+    one bounded pass per look, never a background poll.
+    - [x] 🤖 Automated test (`src/__tests__/MdGraph.test.ts`)
+    - [ ] 🖐️ Manual test — enable the flag, open `PROJECT.md` in a scaffolded
+      project, switch to Graph: the scaffold files should ring the center;
+      click `README.md` to open it; delete a linked file and rebuild (↻) to
+      see it dashed red.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+102. **`PROJECT.md` scaffold: the navigation entry point.** ✅ Implemented ·
+    New and imported projects (and the scaffold repair) now also get a
+    `PROJECT.md` — a map linking every other scaffold file with one line on
+    what it is for, so a fresh project can be walked from a single file via
+    the md viewer's link-following (#49/#50) and the graph (#101). Listed
+    first in `SCAFFOLD_FILES` (`commands/projects.rs`), linked from
+    `AGENTS.md`'s Project docs, named in the agent scaffold-fill prompt as
+    the map to keep working, and in `STANDARD_PROJECT_FILES` so the tree
+    sorts it with the other standard docs. Never overwritten when present.
+    - [x] 🤖 Automated test (scaffold tests in `commands/projects.rs`)
+    - [ ] 🖐️ Manual test — create a new project and check `PROJECT.md`
+      exists, links resolve in the viewer, and an existing project picks it
+      up via scaffold repair without touching other files.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+103. **PDF region capture rides the global Screenshot app.** ✅ Implemented ·
+    The PDF viewer's ✂ "select and copy as image" toolbar tool is gone; the
+    same region capture is now armed by the header's global Screenshot button
+    instead. Pressing Screenshot while a PDF viewer is visible offers the shot
+    to it first (claimable `eldrun:screenshot-capture` window event,
+    `lib/screenshot.ts`; first visible viewer claims, so the OS region tool is
+    only spawned when no PDF is on screen). The drag captures from the rendered
+    page canvas (document-sharp, pending blackouts burned in), copies the PNG
+    to the clipboard AND files it as `screenshots/Screenshot-….png` in the
+    PDF's own project (`write_project_file_bytes`) — the global screenshot's
+    file-plus-clipboard contract. One press is one shot; Esc cancels.
+    - [ ] 🤖 Automated test
+    - [ ] 🖐️ Manual test — open a PDF, press the header Screenshot button:
+      the capture bar should appear (no OS tool); drag a region and check the
+      clipboard paste and the new file under `screenshots/`; press Screenshot
+      with no PDF visible and check the OS region tool still runs; Esc while
+      armed cancels without a shot.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+211. **Migrate project: step-by-step scaffold/entry migration.** ✅ Implemented ·
+    Project Settings (file-view gear) grew a Migration section whose "Migrate
+    project…" opens a reviewed, per-step migration dialog — the counterpart of
+    the pill's all-at-once "Repair scaffold files". `project_migration_plan`
+    (commands/projects.rs) is a pure dry-run listing one step per missing
+    piece: normalize the `projects.json` entry (directory backfill, legacy
+    `git_type` — the fields the type tags derive from), each missing scaffold
+    file, each untouched legacy agent-doc stub, missing default `.gitignore`
+    patterns (named in the step), `.claude/settings.json`, and `git init`.
+    Every step renders with what it would change plus Accept/Decline;
+    `project_migration_apply` runs only the accepted ids and re-checks each
+    condition on disk, so a stale accept is a no-op, never an overwrite.
+    Frontend: `ProjectMigrationDialog.tsx` + pure `migration.ts` helpers.
+    - [x] 🤖 Automated test (`commands/projects.rs` migration tests,
+      `src/__tests__/ProjectMigration.test.ts`)
+    - [ ] 🖐️ Manual test — needs a backend restart (two new commands). On an
+      old project (or one with a deleted scaffold file / legacy `# Claude
+      Context` stub): open the file view's ⚙ → Migrate project…, check each
+      step lists correctly, decline one step and apply — the declined change
+      must not happen, the accepted ones must; re-open: only the declined
+      step remains; an up-to-date project says so.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+212. **Project remarks follow-ups.** REMARKS.md v1 leaves directory roll-up
+    badges, FileBrowser's unscoped context menu, MarkdownView's edit-mode
+    add-at-line button, and fs-watch-driven live badge refresh for later. The
+    current surfaces refresh on project/view demand to avoid background SFTP
+    polling.

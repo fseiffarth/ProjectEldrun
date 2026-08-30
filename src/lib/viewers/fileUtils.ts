@@ -12,6 +12,7 @@ export interface FileEntry {
 }
 
 export const STANDARD_PROJECT_FILES = new Set([
+  "PROJECT.md",
   "README.md",
   "ROADMAP.md",
   "TODO.md",

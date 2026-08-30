@@ -30,7 +30,10 @@ import { SaveIcon } from "../common/SaveIcon";
 import { CompareView } from "./CompareView";
 import { PresentationOverlay } from "./PresentationOverlay";
 import { usePresentationStore } from "../../stores/presentation";
-import { renderMarkdown, toggleTaskCheckbox } from "../../lib/viewers/markdown";
+import { matchAnchorId, renderMarkdown, splitLineHint, toggleTaskCheckbox } from "../../lib/viewers/markdown";
+import { useMdAnchorStore } from "../../stores/mdAnchor";
+import { useProjectRemarksStore } from "../../stores/projectRemarks";
+import { MdGraphView } from "./MdGraphView";
 import { highlight, languageForPath, escapeHtml } from "../../lib/viewers/highlight";
 import { useOllamaStatus } from "../../lib/ollamaStatus";
 import {
@@ -90,6 +93,7 @@ import {
 } from "../../lib/slurm";
 import { FileDropContext } from "../files/fileDropContext";
 import { UntestedTag } from "../common/UntestedTag";
+import { AddRemarkDialog } from "../files/AddRemarkDialog";
 import { FileSourceSwitch } from "../files/ProjectFilesPane";
 import {
   basename,
@@ -98,6 +102,7 @@ import {
   isPathWithin,
   normalizePath,
   resolvePath,
+  relativePathWithin,
   toFileUri,
 } from "../../lib/paths";
 import { IS_MAC, IS_WINDOWS } from "../../lib/platform";
@@ -781,7 +786,7 @@ export function openLinkedFile(
  *  result keeps `mdPath`'s separator style, so it is correct on Windows (native
  *  backslashes + drive letter) as well as Unix. Returns null for an empty target. */
 function resolveLocalHref(mdPath: string, href: string): string | null {
-  let h = href.trim().replace(/[?#].*$/, "");
+  let h = splitLineHint(href.trim()).href.replace(/[?#].*$/, "");
   if (!h) return null;
   if (/^file:\/\//i.test(h)) {
     const decoded = fromFileUri(h);
@@ -1275,6 +1280,10 @@ export function useEditableFile(path: string) {
         lastMtime.current = await fileMtime(path, scope);
       } catch {
         /* mtime refresh is best-effort */
+      }
+      if (scope && basename(path).toLowerCase() === "remarks.md") {
+        const project = useProjectsStore.getState().projects.find((p) => p.id === scope);
+        if (project) await useProjectRemarksStore.getState().load(scope, resolveProjectDirectory(project));
       }
     } catch (e) {
       setSaveError(String(e));
@@ -5634,6 +5643,10 @@ function TextView({
   const projectId = useFileScope();
   const project = useProjectsStore((s) => s.projects.find((p) => p.id === projectId));
   const projectDir = project ? resolveProjectDirectory(project) : "";
+  const remarksEnabled = useExperimental("project_remarks");
+  const remarkRel = projectDir ? relativePathWithin(projectDir, path) : null;
+  const caretApiRef = useRef<(() => number | null) | null>(null);
+  const [remarkLine, setRemarkLine] = useState<number | null>(null);
   const bp = useBreakpoints(pyDebug, draft, loaded, viewPos);
   const [launching, setLaunching] = useState(false);
   // Arguments typed into the Run button's right-click popover, appended to the
@@ -5998,6 +6011,19 @@ function TextView({
         {showEditor && (
           <CompareButton active={compareOpen} toggle={() => setCompareOpen((v) => !v)} />
         )}
+        {showEditor && remarksEnabled && projectId && remarkRel != null && (
+          <button
+            type="button"
+            className="file-viewer-icon-btn"
+            title={t("projectRemarks.addMenu")}
+            onClick={() => {
+              const offset = caretApiRef.current?.() ?? 0;
+              setRemarkLine(offsetToLineCol(draft, offset).line);
+            }}
+          >
+            💬 <UntestedTag />
+          </button>
+        )}
         {/* The YAML tree and the bib cards edit the text, so their edits are
             ordinary undo steps — the buttons stay live in those modes, unlike in a
             read-only preview. */}
@@ -6097,9 +6123,14 @@ function TextView({
             initialScrollTop={srcScroll.current}
             onScrollPersist={persistScroll}
             groupId={groupId}
+            caretApiRef={caretApiRef}
           />
         )}
       </div>
+      {remarkLine != null && projectId && remarkRel != null && (
+        <AddRemarkDialog projectId={projectId} projectDir={projectDir} file={remarkRel}
+          line={remarkLine} onClose={() => setRemarkLine(null)} />
+      )}
     </div>
   );
 }
@@ -6121,7 +6152,14 @@ function MarkdownView({
     undo, redo, canUndo, canRedo, externalChange, reloadFromDisk, keepMine,
   } = useEditableFile(path);
   const scope = useFileScope();
-  const [mode, setMode] = useState<"preview" | "edit">("preview");
+  // The relationship-graph mode is opt-in (`md_graph` experimental flag): the
+  // Graph button only renders while the flag is live, and a mode the flag
+  // withdrew falls back to the preview rather than stranding a blank pane.
+  const graphEnabled = useExperimental("md_graph");
+  const [mode, setMode] = useState<"preview" | "edit" | "graph">("preview");
+  useEffect(() => {
+    if (!graphEnabled && mode === "graph") setMode("preview");
+  }, [graphEnabled, mode]);
   const [compareOpen, setCompareOpen] = useState(false);
   const font = useEditorFontSize(tabKey, "markdown");
   const wheelRef = useZoomModifierWheel((e) => onCtrlWheelFont(e, font.inc, font.dec));
@@ -6233,6 +6271,26 @@ function MarkdownView({
     };
   }, [html, mode, path, scope]);
 
+  // Cross-file `#fragment` navigation (stores/mdAnchor): when a followed link
+  // into this document carried a fragment, scroll the rendered preview to that
+  // heading once the preview exists — covering both a freshly opened tab (the
+  // request outlives the mount) and an already-open one (`openLinkedFile`
+  // re-activates it, and this store is how the fragment still arrives).
+  // Consumed after one attempt in preview mode, found or not — a fragment
+  // naming no heading is an authoring fact, not a standing order. While Edit
+  // mode is showing, the request is left pending and applies on the switch
+  // back to Preview.
+  const anchorReq = useMdAnchorStore((s) => s.requestsByPath[path]);
+  useEffect(() => {
+    if (!anchorReq || mode !== "preview" || !loaded) return;
+    const root = previewRef.current;
+    if (!root) return;
+    const els = Array.from(root.querySelectorAll<HTMLElement>("[id]"));
+    const id = matchAnchorId(els.map((el) => el.id), anchorReq.fragment);
+    if (id) els.find((el) => el.id === id)?.scrollIntoView({ block: "start" });
+    useMdAnchorStore.getState().consume(path);
+  }, [anchorReq, mode, loaded, html, path]);
+
   // Print the rendered Markdown. Prefer the live preview DOM (it carries the
   // enriched mermaid/KaTeX output and inlined local images); fall back to a fresh
   // render of the current draft when Edit mode has the preview unmounted.
@@ -6323,17 +6381,18 @@ function MarkdownView({
       const href = a.getAttribute("href") ?? "";
       if (href.startsWith("#")) {
         e.preventDefault();
-        let id = href.slice(1);
-        try { id = decodeURIComponent(id); } catch { /* keep the raw fragment */ }
-        const target = Array.from(previewRef.current?.querySelectorAll<HTMLElement>("[id]") ?? [])
-          .find((element) => element.id === id);
-        target?.scrollIntoView({ block: "start" });
+        const els = Array.from(
+          previewRef.current?.querySelectorAll<HTMLElement>("[id]") ?? [],
+        );
+        const id = matchAnchorId(els.map((element) => element.id), href.slice(1));
+        if (id) els.find((element) => element.id === id)?.scrollIntoView({ block: "start" });
         return;
       }
       if (!a.classList.contains("file-link")) return;
       // Keep local paths inside Eldrun rather than allowing the webview to
       // navigate away from the native preview.
       e.preventDefault();
+      const hinted = splitLineHint(href);
       const target = resolveLocalHref(path, href);
       if (!target) return;
       openLinkedFile(tabKey, dirname(path), {
@@ -6341,6 +6400,16 @@ function MarkdownView({
         viewer: viewerForPath(target),
         label: basename(target),
       });
+      if (hinted.line != null) {
+        useEditorJumpStore.getState().requestJump(target, hinted.line);
+      }
+      // A fragment on a cross-file markdown link (`docs/guide.md#setup`) rides
+      // the anchor channel: the target view — freshly mounted or re-activated —
+      // consumes it once its preview is rendered.
+      const fragment = href.split("#").slice(1).join("#");
+      if (fragment && viewerForPath(target) === "markdown") {
+        useMdAnchorStore.getState().requestAnchor(target, fragment);
+      }
     },
     [path, tabKey, draft, setDraft],
   );
@@ -6363,6 +6432,15 @@ function MarkdownView({
           >
             {t("fileViewer.modeEdit")}
           </button>
+          {graphEnabled && (
+            <button
+              className={`file-viewer-mode${mode === "graph" ? " active" : ""}`}
+              aria-pressed={mode === "graph"}
+              onClick={() => setMode("graph")}
+            >
+              {t("fileViewer.modeGraph")}
+            </button>
+          )}
         </div>
         {mode === "edit" && <MarkdownToolbar api={editorApi} />}
         <FontSizeControls fontSize={font.fontSize} inc={font.inc} dec={font.dec} reset={font.reset} />
@@ -6389,7 +6467,18 @@ function MarkdownView({
         ref={setBodyRef}
         onScroll={reportPreviewSync}
       >
-        {mode === "edit" && compareOpen ? (
+        {mode === "graph" ? (
+          <MdGraphView
+            path={path}
+            onOpen={(target) =>
+              openLinkedFile(tabKey, dirname(path), {
+                path: target,
+                viewer: viewerForPath(target),
+                label: basename(target),
+              })
+            }
+          />
+        ) : mode === "edit" && compareOpen ? (
           <CompareView
             path={path}
             rightText={draft}

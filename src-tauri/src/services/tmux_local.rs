@@ -17,6 +17,7 @@
 //! spawns `tmux` itself, and `cwd`/`env` set on the client are inherited by a
 //! freshly-created session.
 
+use crate::services::ssh_exec::TMUX_HISTORY_LINES;
 use crate::terminal::PtyOptions;
 
 /// Prefix reserved for tmux sessions Eldrun creates on the local machine.
@@ -88,8 +89,18 @@ pub fn tmux_available() -> bool {
 /// and resume). Attach is deliberately non-evicting so desktop and phone clients
 /// coexist. `status off` / `mouse on` / `window-size largest` are session-scoped
 /// after a literal `;` argv item (tmux splits its argv on a standalone `;`).
+/// `history-limit` alone comes **before** `new-session` and is `-g`: a pane
+/// copies the limit at creation, so a `-t`-scoped set after the fact would leave
+/// the session's one pane at tmux's default 2000 — see
+/// [`ssh_exec::TMUX_HISTORY_LINES`](crate::services::ssh_exec::TMUX_HISTORY_LINES),
+/// which also sizes the phone replay.
 pub fn local_tmux_args(session: &str, target_cmd: &str, target_args: &[String]) -> Vec<String> {
     let mut args: Vec<String> = vec![
+        "set-option".into(),
+        "-g".into(),
+        "history-limit".into(),
+        TMUX_HISTORY_LINES.to_string(),
+        ";".into(),
         "new-session".into(),
         "-A".into(),
         "-s".into(),
@@ -191,6 +202,13 @@ mod tests {
         assert_eq!(
             args,
             vec![
+                // history-limit precedes new-session: a pane copies it at
+                // creation, so the trailing `-t`-scoped sets are too late.
+                "set-option",
+                "-g",
+                "history-limit",
+                "10000",
+                ";",
                 "new-session",
                 "-A",
                 "-s",
@@ -222,9 +240,9 @@ mod tests {
         // A command tab keeps a login shell AFTER the command so the finished run
         // reattaches (resumable-command-tab guarantee) instead of re-running.
         let args = local_tmux_args("eldrun-x", "python", &["train.py".into()]);
-        assert_eq!(args[0], "new-session");
+        assert_eq!(args[5], "new-session");
         assert!(args.iter().any(|a| a == "eldrun-x"));
-        let target = &args[4];
+        let target = &args[9];
         assert_eq!(
             target,
             "'python' 'train.py'; exec \"${SHELL:-/bin/bash}\" -l"

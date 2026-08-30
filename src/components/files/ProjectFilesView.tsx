@@ -67,6 +67,9 @@ import {
   type HpcWorkspace,
 } from "../../lib/hpcWorkspace";
 import { useT, type TranslationKey } from "../../lib/i18n";
+import { useExperimental } from "../../lib/experimental";
+import { useProjectRemarksStore } from "../../stores/projectRemarks";
+import { RemarksPane } from "./RemarksPane";
 
 /** How long the pointer must rest on a session row before its stats card opens
  *  (TODO #85) — same value and rationale as `FileTree`'s `TOOLTIP_DWELL_MS`:
@@ -227,7 +230,7 @@ interface GitStatus {
   is_repo: boolean;
 }
 
-type View = "files" | "windows" | "git" | "search" | "orange" | "sessions" | "jobs";
+type View = "files" | "windows" | "git" | "search" | "orange" | "sessions" | "jobs" | "remarks";
 
 // A single shared empty array for scopes with no registered tabs. Must be a
 // stable reference — a Zustand selector that returned a fresh `[]` here would
@@ -331,6 +334,13 @@ export function ProjectFilesView({
   const t = useT();
   const { windows, refresh, untrack } = useWindowsStore();
   const [view, setView] = useState<View>("files");
+  const remarksEnabled = useExperimental("project_remarks");
+  useEffect(() => {
+    if (active && remarksEnabled && projectId && projectDir) {
+      void useProjectRemarksStore.getState().load(projectId, projectDir);
+    }
+  }, [active, remarksEnabled, projectId, projectDir]);
+  useEffect(() => { if (!remarksEnabled && view === "remarks") setView("files"); }, [remarksEnabled, view]);
   const [showSettings, setShowSettings] = useState(false);
   // Toggles the Downloads section stacked below the file tree (fast-copy of
   // recent downloads into the project). Toolbar ⬇⬇ button; files view only.
@@ -1526,6 +1536,17 @@ export function ProjectFilesView({
             ⚙ {jobRows.length > 0 && <span className="side-panel-orange-count">{jobRows.length}</span>}
           </button>
         )}
+        {!activeBox && remarksEnabled && projectId && (
+          <button
+            className={`toolbar-btn side-panel-orange-btn${view === "remarks" ? " active" : ""}`}
+            style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: 2 }}
+            aria-pressed={view === "remarks"}
+            onClick={() => setView((v) => (v === "remarks" ? "files" : "remarks"))}
+            title={t("projectRemarks.view")}
+          >
+            💬 <UntestedTag />
+          </button>
+        )}
         {importDrop.canImport && (
           <button
             className="toolbar-btn"
@@ -2382,6 +2403,9 @@ export function ProjectFilesView({
           mountTree={mountTree}
           compact={compact}
         />
+      )}
+      {view === "remarks" && projectId && (
+        <RemarksPane projectId={projectId} projectDir={projectDir} visible={active} />
       )}
 
       {view === "windows" && (

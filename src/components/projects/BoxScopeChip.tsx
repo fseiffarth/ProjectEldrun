@@ -196,9 +196,7 @@ export function BoxScopeChip({
             <span className="box-chip-icon" aria-hidden>
               ▣
             </span>
-            <span className="box-chip-label">
-              {selected ? selected.name : t("boxChip.label")}
-            </span>
+            {selected && <span className="box-chip-label">{selected.name}</span>}
             {selected && (
               <span
                 className="project-box-member-count"

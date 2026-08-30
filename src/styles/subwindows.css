@@ -432,6 +432,39 @@
   line-height: 1;
 }
 .blob-node-label {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.blob-node-category-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+.blob-node-category-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--bg-main) 50%, transparent);
+}
+.blob-node-box-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+  padding: 0 5px;
+  border: 1px solid color-mix(in srgb, var(--accent-secondary) 48%, transparent);
+  border-radius: var(--radius-full);
+  color: var(--accent-secondary);
+  background: color-mix(in srgb, var(--accent-secondary) 16%, transparent);
+  font-size: 10px;
+  line-height: 14px;
+}
+.blob-node-box-tag-label {
+  max-width: 52px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -504,6 +537,19 @@
   height: 7px;
   border-radius: 50%;
   background: var(--cat-color);
+}
+/* Box and category tags intentionally share a row: a box supplements a
+   project's own categories, rather than replacing the tags it already has. */
+.blob-hover-box-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 7px 1px 5px;
+  border: 1px solid color-mix(in srgb, var(--accent-secondary) 48%, transparent);
+  border-radius: var(--radius-full);
+  color: var(--accent-secondary);
+  background: color-mix(in srgb, var(--accent-secondary) 16%, transparent);
+  font-size: 10px;
 }
 /* Pointer-anchored info card shown while hovering a node (project description /
    box details). Rendered in a body portal so it's never clipped or scaled by

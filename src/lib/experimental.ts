@@ -53,6 +53,8 @@ export const EXPERIMENTAL_FLAGS = [
   "mail_client",
   "web_browser",
   "terminal_webgl",
+  "md_graph",
+  "project_remarks",
 ] as const;
 
 export type ExperimentalFlag = (typeof EXPERIMENTAL_FLAGS)[number];

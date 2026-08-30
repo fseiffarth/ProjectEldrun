@@ -108,6 +108,11 @@ import { PdfSelectionBar, selectionBarPos } from "./PdfSelectionBar";
 import { readViewerSelection, type ViewerSelection } from "./selection";
 import { PdfLinkConfirmDialog } from "./PdfLinkDialog";
 import { openRoutedUri } from "../../../lib/linkTarget";
+import {
+  SCREENSHOT_CAPTURE_EVENT,
+  screenshotFilename,
+  type ScreenshotCaptureDetail,
+} from "../../../lib/screenshot";
 import { useSettingsStore } from "../../../stores/settings";
 import { PageStrip } from "../../common/PageStrip";
 import { PrinterIcon } from "../../common/PrinterIcon";
@@ -464,7 +469,8 @@ function PdfPageCanvas({
   onNeedNotes?: () => void;
   /** The blackout tool is armed: a drag over the page marks an area. */
   redacting?: boolean;
-  /** The image-copy tool is armed: a drag copies that page region as a PNG. */
+  /** The region-capture mode is armed (by the global Screenshot app): a drag
+   *  copies that page region as a PNG. */
   copySelecting?: boolean;
   /** The ids of the file's own highlight annotations on this sheet that the viewer
    *  is drawing itself, joined — so the canvas repaints when the set changes. The
@@ -1623,9 +1629,12 @@ function PdfCanvas({
   // all until Save. These four are only the tool's own state.
   /** The blackout tool is armed — a drag over a page marks an area. */
   const [redacting, setRedacting] = useState(false);
-  /** The image-copy tool is armed — a drag over a page writes that crop to the
-   *  native system clipboard. Mutually exclusive with redaction because both
-   *  tools own the same plain drag gesture. */
+  /** The region-capture mode is armed — a drag over a page writes that crop to
+   *  the native system clipboard (and into the project's screenshots/ folder).
+   *  Armed by the global Screenshot app rather than a toolbar button: pressing
+   *  Screenshot while a PDF is on screen means this document, at document
+   *  sharpness, not a grab of the screen around it. Mutually exclusive with
+   *  redaction because both modes own the same plain drag gesture. */
   const [copySelecting, setCopySelecting] = useState(false);
   const [copyBusy, setCopyBusy] = useState(false);
   const [copyNotice, setCopyNotice] = useState<string | null>(null);
@@ -1636,23 +1645,75 @@ function PdfCanvas({
     },
     [],
   );
+  // The project the viewed file belongs to (the longest project directory that is
+  // a prefix of `path`), so a capture files its PNG into the right screenshots/
+  // folder and the merge picker lists the right tree even in a detached window.
+  // It must stay project-scoped: the backend confines every write and read to the
+  // scope's tree, so an arbitrary path would simply be refused.
+  const pdfProjectDir = useMemo(() => {
+    const { projects } = useProjectsStore.getState();
+    let best = "";
+    for (const p of projects) {
+      const dir = resolveProjectDirectory(p);
+      if (dir && isPathWithin(path, dir) && dir.length > best.length) best = dir;
+    }
+    return best;
+  }, [path]);
   const copySelection = useCallback(
     async (png: Uint8Array) => {
       setCopyBusy(true);
       setCopyNotice(null);
       try {
         await invoke("copy_png_bytes_to_clipboard", { png: Array.from(png) });
-        setCopyNotice(t("pdfViewer.copySelectionDone"));
+        // The global screenshot's contract: the file in screenshots/ is the
+        // product, the clipboard the convenience. A PDF outside any project has
+        // nowhere to file the shot, and a failed write must not fail a capture
+        // whose clipboard copy already landed — the notice just claims less.
+        let saved = false;
+        if (pdfProjectDir) {
+          try {
+            await invoke("write_project_file_bytes", {
+              projectDir: pdfProjectDir,
+              relPath: `screenshots/${screenshotFilename()}`,
+              content: Array.from(png),
+            });
+            saved = true;
+          } catch {
+            /* clipboard copy stands on its own */
+          }
+        }
+        setCopyNotice(t(saved ? "pdfViewer.copySelectionSaved" : "pdfViewer.copySelectionDone"));
         if (copyNoticeTimer.current != null) window.clearTimeout(copyNoticeTimer.current);
         copyNoticeTimer.current = window.setTimeout(() => setCopyNotice(null), 2500);
+        // One press of Screenshot is one shot, like every OS region tool this
+        // stands in for — disarm rather than wait for an Esc.
+        setCopySelecting(false);
       } catch (e) {
         setEditError(t("pdfViewer.copySelectionFailed", { msg: String(e) }));
       } finally {
         setCopyBusy(false);
       }
     },
-    [t],
+    [t, pdfProjectDir],
   );
+  // The global Screenshot app offers the shot to visible viewers before it
+  // spawns the OS region tool (see `lib/screenshot`). Claim it while this pane
+  // is the one on screen: `paneVisible` is false for every hidden tab, so of
+  // the many mounted viewers only the visible one(s) even listen, and the
+  // `claimed` flag keeps two side-by-side PDFs from both arming.
+  useEffect(() => {
+    if (!paneVisible || !doc) return;
+    const onCapture = (e: Event) => {
+      const detail = (e as CustomEvent<ScreenshotCaptureDetail>).detail;
+      if (!detail || detail.claimed || copyBusy) return;
+      detail.claimed = true;
+      setRedacting(false);
+      setCopyNotice(null);
+      setCopySelecting(true);
+    };
+    window.addEventListener(SCREENSHOT_CAPTURE_EVENT, onCapture);
+    return () => window.removeEventListener(SCREENSHOT_CAPTURE_EVENT, onCapture);
+  }, [paneVisible, doc, copyBusy]);
   /** Grow each drawn box out to the words it touches. On by default: a box drawn by
    *  eye clips ascenders and word ends, and the burn-in is pixel-exact, so an
    *  unsnapped mark is how a legible sliver of the redacted word survives. */
@@ -2480,19 +2541,8 @@ function PdfCanvas({
   noteSaveRef.current = () => void handleSave(false, true);
 
   // ── Merge: splice another PDF's pages into this arrangement ──────────────
-  // The project the viewed file belongs to (the longest project directory that is a
-  // prefix of `path`), so the picker lists the right tree even in a detached window.
-  // It must stay project-scoped: the backend confines every read to the scope's tree,
-  // so an arbitrary path from an OS file dialog would simply be refused.
-  const pdfProjectDir = useMemo(() => {
-    const { projects } = useProjectsStore.getState();
-    let best = "";
-    for (const p of projects) {
-      const dir = resolveProjectDirectory(p);
-      if (dir && isPathWithin(path, dir) && dir.length > best.length) best = dir;
-    }
-    return best;
-  }, [path]);
+  // (`pdfProjectDir` — the project tree the picker lists — is declared beside the
+  // region-capture mode above, which files its screenshots by the same answer.)
 
   // BOX scope (#41 Phase 5): the merge picker offers EVERY root the scope can
   // read — the box folder plus each member project's tree — with a root
@@ -3764,20 +3814,10 @@ function PdfCanvas({
           ▮
         </button>
         <UntestedTag />
-        <button
-          className={`file-viewer-zoom-btn${copySelecting ? " active" : ""}`}
-          onClick={() => {
-            setCopySelecting((v) => !v);
-            setRedacting(false);
-            setCopyNotice(null);
-          }}
-          disabled={!doc || copyBusy}
-          title={t("pdfViewer.copySelectionTitle")}
-          aria-label={t("pdfViewer.copySelectionLabel")}
-          aria-pressed={copySelecting}
-        >
-          ✂
-        </button>
+        {/* There is deliberately no ✂ copy-region button any more either: the
+            region capture is armed by the header's global Screenshot app, which
+            hands the shot to a visible PDF viewer before it would spawn an OS
+            region tool — one capture entry point instead of two. */}
         {/* The remarks panel (#pdf-notes) — the document's comments as a list, and
             the way to walk them. A panel rather than a mode: reading the remarks is
             not a thing you stop doing to the page, so it arms nothing and turns
@@ -3957,15 +3997,19 @@ function PdfCanvas({
           <span className="file-viewer-pdf-redact-warn">{t("pdfRedact.flattenWarning")}</span>
         </div>
       )}
-      {copySelecting && (
+      {/* A successful shot disarms the mode, so the bar outlives it just long
+          enough to carry the busy/"copied" feedback the disarm would otherwise
+          swallow. */}
+      {(copySelecting || copyBusy || copyNotice) && (
         <div
           className="file-viewer-pdf-copy-bar"
           role="status"
           aria-live="polite"
         >
-          <span>{t("pdfViewer.copySelectionHint")}</span>
+          {copySelecting && <span>{t("pdfViewer.copySelectionHint")}</span>}
           {copyBusy && <span>{t("pdfViewer.copySelectionWorking")}</span>}
           {copyNotice && <span className="file-viewer-pdf-copy-success">{copyNotice}</span>}
+          <UntestedTag />
         </div>
       )}
       {metaOpen && doc && (

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api, normalizeTodoBoard, type TodoBoard, type TodoCard, type TodoColumn, type TodoTaskInput } from "../api";
 
 type Editing = TodoCard | "new" | null;
@@ -8,8 +8,12 @@ function localDate(): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
 
+// The derived fields have to come off, `rank` included: the desktop's task input
+// is `deny_unknown_fields`, so a card that already carries a board placement —
+// i.e. every card that has ever been dragged — made the whole update request a
+// 400, and editing one from the phone (a rename above all) could never save.
 function inputOf(task: TodoCard): TodoTaskInput {
-  const { id: _id, done: _done, ...input } = task;
+  const { id: _id, done: _done, rank: _rank, ...input } = task;
   return input;
 }
 
@@ -21,7 +25,7 @@ function blankTask(board: TodoBoard): TodoTaskInput {
   };
 }
 
-export function Todo({ back }: { back: () => void }) {
+export function Todo({ card }: { card?: string }) {
   const [board, setBoard] = useState<TodoBoard | null>(null);
   const [editing, setEditing] = useState<Editing>(null);
   const [search, setSearch] = useState("");
@@ -36,6 +40,18 @@ export function Todo({ back }: { back: () => void }) {
       .catch((reason) => setError(`Desktop board unavailable: ${String(reason)}`));
   }, []);
   useEffect(load, [load]);
+  // An alert that named a card opens that card, and does it exactly once: the
+  // board is reloaded after every mutation, so re-opening on each arrival would
+  // put the editor back on screen the moment the user closed it. A card that is
+  // no longer on the board (ticked, deleted, filtered out on the desktop) simply
+  // leaves the reader on the board rather than reporting anything.
+  const opened = useRef(false);
+  useEffect(() => {
+    if (!card || opened.current || !board) return;
+    opened.current = true;
+    const task = board.tasks.find((entry) => entry.id === card);
+    if (task) setEditing(task);
+  }, [card, board]);
 
   const mutate = async (body: unknown) => {
     setBusy(true); setError("");
@@ -65,7 +81,7 @@ export function Todo({ back }: { back: () => void }) {
   });
 
   return <main className="screen todo-screen">
-    <header><button className="back" onClick={back}>‹</button><h1>To-do board</h1><button onClick={load} disabled={busy}>↻</button></header>
+    <header><h1>To-do board</h1><button onClick={load} disabled={busy}>↻</button></header>
     <p className="notice">Synced through the connected Eldrun desktop. The board is unavailable while the desktop is closed.</p>
     {error && <p className="error">{error}</p>}
     <div className="todo-mobile-filters"><input type="search" value={search} placeholder="Search cards" onChange={(event) => setSearch(event.target.value)} /><select value={projectFilter} onChange={(event) => setProjectFilter(event.target.value)}><option value="">Any project</option><option value="none">No project</option>{board?.projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select><select value={tagFilter} onChange={(event) => setTagFilter(event.target.value)}><option value="">Any tag</option>{tags.map((tag) => <option key={tag} value={tag}>#{tag}</option>)}</select><label className="todo-inline-check"><input type="checkbox" checked={hideDone} onChange={(event) => setHideDone(event.target.checked)} /> Hide done</label></div>

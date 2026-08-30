@@ -141,6 +141,13 @@ pub struct MobileAlertItem {
     pub minutes_away: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub days_away: Option<i64>,
+    /// A card row's **opaque** task id — the same derived value the to-do board
+    /// snapshot already hands this device, never `calendar.json`'s own id. It is
+    /// here so a tapped card alert can open that card instead of dropping the
+    /// reader at a board of forty, which is exactly the search the alert existed
+    /// to save. Absent for every other kind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -660,6 +667,7 @@ mod tests {
                     all_day: false,
                     minutes_away: Some(30),
                     days_away: Some(0),
+                    task_id: Some("opaque-task".into()),
                 }],
             },
         };
@@ -667,6 +675,10 @@ mod tests {
         assert_eq!(json["status"], "alerts");
         assert_eq!(json["alerts"]["items"][0]["kind"], "task");
         assert!(json["alerts"]["items"][0].get("source").is_none());
+        // The card reference that lets a tapped alert open its own card is the
+        // board's own opaque id, so it stays the only task identity this device
+        // ever holds.
+        assert_eq!(json["alerts"]["items"][0]["task_id"], "opaque-task");
     }
 
     #[test]

@@ -28,14 +28,22 @@ function relativeAlertTime(item: MobileAlertItem): string {
   return minutes < 0 ? `${amount} overdue` : `In ${amount}`;
 }
 
-function AlertRows({ alerts, todo, mail }: { alerts: MobileAlerts; todo: () => void; mail: () => void }) {
+function AlertRows({ alerts, todo, mail }: { alerts: MobileAlerts; todo: (card?: string) => void; mail: () => void }) {
   if (!alerts.enabled) return null;
   return <section className="mobile-alerts" aria-labelledby="mobile-alerts-heading">
     <h2 id="mobile-alerts-heading">Alerts</h2>
     {alerts.items.length === 0
       ? <p className="mobile-alerts-empty">Nothing needs attention.</p>
       : <div className="mobile-alert-list">{alerts.items.map((item, index) => {
-        const open = item.kind === "mail" ? mail : item.kind === "task" ? todo : undefined;
+        // A card row opens *its own* card: the alert has already named the one
+        // thing that needs attention, and a board of forty is where finding it
+        // again costs the search the row exists to save. A row the desktop
+        // could not resolve to a card still opens the board.
+        const open = item.kind === "mail"
+          ? mail
+          : item.kind === "task"
+            ? () => todo(item.task_id)
+            : undefined;
         const contents = <>
           <span className={`mobile-alert-dot ${item.severity}`} aria-hidden="true" />
           <span className="mobile-alert-icon" aria-hidden="true">{ALERT_ICON[item.kind]}</span>
@@ -49,7 +57,7 @@ function AlertRows({ alerts, todo, mail }: { alerts: MobileAlerts; todo: () => v
   </section>;
 }
 
-export function Home({ open, todo, mail, calendar }: { open: (id: string) => void; todo: () => void; mail: () => void; calendar: () => void }) {
+export function Home({ open, todo, mail }: { open: (id: string) => void; todo: (card?: string) => void; mail: () => void }) {
   const [view, setView] = useState<"active" | "search">("active");
   const [query, setQuery] = useState("");
   const [rows, setRows] = useState<ProjectRow[]>([]);
@@ -92,15 +100,12 @@ export function Home({ open, todo, mail, calendar }: { open: (id: string) => voi
         <img className="home-logo" src="/icons/icon.svg" alt="" />
         <strong>Eldrun</strong>
       </div>
-      <div className="home-tools" aria-label="Global views">
-        <button className="home-tool" onClick={todo}>☑ <span>To-do</span></button>
-        <button className="home-tool" onClick={mail}>✉ <span>Mail</span></button>
-        <button className="home-tool" onClick={calendar}>🗓 <span>Calendar</span></button>
-      </div>
+      {/* The global views used to live here as a header rail; they are tabs of
+          their own now, so the bar at the bottom of every screen carries them. */}
+      <div className="mobile-build"><small>Eldrun Mobile v{APP_VERSION}</small><span className={offline ? "lamp off" : "lamp"} /></div>
     </header>
     <div className="projects-row">
       <h1>Projects</h1>
-      <div className="mobile-build"><small>Eldrun Mobile v{APP_VERSION}</small><span className={offline ? "lamp off" : "lamp"} /></div>
     </div>
     <nav><button className={view === "active" ? "selected" : ""} onClick={() => setView("active")}>Active</button><button className={view === "search" ? "selected" : ""} onClick={() => setView("search")}>Search</button></nav>
     {view === "search" && <input className="search" placeholder="Project name" value={query} autoFocus onChange={(event) => setQuery(event.target.value)} />}

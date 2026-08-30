@@ -918,6 +918,20 @@ export function SettingsDialog({
               help={t("settings.terminalWebglHelp")}
             />
 
+            <ToggleCard
+              label={<>{t("settings.mdGraph")} <UntestedTag /></>}
+              checked={experimentalEnabled(settings, "md_graph")}
+              onChange={(e) => void updateSettings({ md_graph: e.target.checked })}
+              help={t("settings.mdGraphHelp")}
+            />
+
+            <ToggleCard
+              label={<>{t("settings.projectRemarks")} <UntestedTag /></>}
+              checked={experimentalEnabled(settings, "project_remarks")}
+              onChange={(e) => void updateSettings({ project_remarks: e.target.checked })}
+              help={t("settings.projectRemarksHelp")}
+            />
+
             {/* Mail is ONE switch. It used to be two — this gate plus a
                 `mail_global_app` sub-toggle deciding whether the header button
                 appeared *as well as* the mail tab — but the tab is retired, so

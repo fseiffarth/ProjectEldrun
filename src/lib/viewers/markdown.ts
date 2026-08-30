@@ -48,14 +48,32 @@ function imgSrc(url: string): { kind: "remote" | "local"; url: string } | null {
 /** #49: true when a (already-safe) href points at a local file rather than a
  *  remote/anchor target, so the markdown viewer can mark it visibly clickable.
  *  Relative paths, absolute paths, and the `file:` scheme count; http(s)/
- *  mailto/tel and pure `#anchor` links do not. */
-function isLocalHref(href: string): boolean {
+ *  mailto/tel and pure `#anchor` links do not. Exported for the relationship
+ *  graph (`mdGraph.ts`), whose link extraction must classify targets exactly the
+ *  way the renderer does — two copies of this rule would eventually show a graph
+ *  node the preview never made clickable, or vice versa. */
+export function isLocalHref(href: string): boolean {
   const trimmed = href.trim();
   if (!trimmed || trimmed.startsWith("#") || /^\/\//.test(trimmed)) return false;
   if (/^(https?:|mailto:|tel:)/i.test(trimmed)) return false;
   return /^file:/i.test(trimmed)
     || /^[a-z]:[\\/]/i.test(trimmed)
     || !/^[a-z][a-z0-9+.-]*:/i.test(trimmed);
+}
+
+/** Split a trailing Markdown source-position hint from a local-file href.
+ * `:line` and `:line:column` are accepted; the column is intentionally ignored.
+ * A Windows drive colon is never considered a hint because digits must follow
+ * the final path colon. Query/fragment suffixes remain attached to the href. */
+export function splitLineHint(href: string): { href: string; line: number | null } {
+  const suffixAt = href.search(/[?#]/);
+  const body = suffixAt < 0 ? href : href.slice(0, suffixAt);
+  const suffix = suffixAt < 0 ? "" : href.slice(suffixAt);
+  const match = body.match(/^(.*?):(\d+)(?::\d+)?$/);
+  if (!match || !match[1]) return { href, line: null };
+  const line = Number(match[2]);
+  if (!Number.isSafeInteger(line) || line < 1) return { href, line: null };
+  return { href: `${match[1]}${suffix}`, line };
 }
 
 /** Map a fenced-code info string (the word after the opening ```) to a
@@ -84,12 +102,33 @@ const FENCE_LANG: Record<string, Lang> = {
 /** A slug for a heading's text, used as the heading `id` so in-document
  *  `#anchor` links resolve. Mirrors GitHub's scheme closely enough for our docs:
  *  lowercased, non-word characters dropped, spaces → hyphens. */
-function slugify(raw: string): string {
+export function slugify(raw: string): string {
   return raw
     .toLowerCase()
     .replace(/[^\w\s-]/g, "")
     .trim()
     .replace(/\s+/g, "-");
+}
+
+/** The rendered-heading id a link fragment names, or null when none matches.
+ *  `ids` are the `[id]` values present in the rendered preview (in document
+ *  order); `fragment` is the raw text after `#` in the authored href. Tried in
+ *  order: the percent-decoded fragment verbatim (the authored link already used
+ *  the slug), then its slugified form (the link was written as the heading's
+ *  visible text, e.g. `#Project Docs`). Case-insensitive fallback last, since
+ *  GitHub slugs are lowercase but hand-written fragments often are not. */
+export function matchAnchorId(ids: string[], fragment: string): string | null {
+  let frag = fragment;
+  try {
+    frag = decodeURIComponent(fragment);
+  } catch {
+    /* keep the raw fragment */
+  }
+  if (ids.includes(frag)) return frag;
+  const slug = slugify(frag);
+  if (slug && ids.includes(slug)) return slug;
+  const lower = frag.toLowerCase();
+  return ids.find((id) => id.toLowerCase() === lower) ?? null;
 }
 
 /** The extracted-span stores backing one inline render. A link label is rendered

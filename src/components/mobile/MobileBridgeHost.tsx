@@ -69,6 +69,7 @@ interface MobileAlertItem {
   all_day: boolean;
   minutes_away?: number;
   days_away?: number;
+  task_id?: string;
 }
 interface MobileAlerts { enabled: boolean; items: MobileAlertItem[] }
 interface MobileCalendarEvent {
@@ -455,12 +456,17 @@ async function todoMutate(action: TodoAction): Promise<DesktopResponse> {
   return { status: "todo", board: await todoSnapshot() };
 }
 
-function alertsSnapshot(feed: AlertsFeed): MobileAlerts {
+async function alertsSnapshot(feed: AlertsFeed): Promise<MobileAlerts> {
   return {
     enabled: feed.enabled,
     // Keep source ids and action metadata inside the desktop process. The
-    // mobile home needs a timeline, not a second control surface.
-    items: feed.items.map((item) => ({
+    // mobile home needs a timeline, not a second control surface. The one
+    // exception is a card row's `task_id`, and it is not a widening of the
+    // boundary: it is the *same* opaque id `todoSnapshot` already hands this
+    // device for that card, so tapping the alert can open the card it names —
+    // the header's own to-do list has routed to the card rather than the board
+    // since it existed, for the reason it exists at all.
+    items: await Promise.all(feed.items.map(async (item) => ({
       kind: item.kind,
       severity: item.severity,
       title: item.title,
@@ -469,7 +475,10 @@ function alertsSnapshot(feed: AlertsFeed): MobileAlerts {
       all_day: item.allDay,
       minutes_away: item.minutesAway ?? undefined,
       days_away: item.daysAway ?? undefined,
-    })),
+      task_id: item.kind === "task" && item.source.taskId
+        ? await opaqueId("task", item.source.taskId)
+        : undefined,
+    }))),
   };
 }
 
@@ -728,7 +737,7 @@ async function handleRequest(
     case "activate": return activate(request.project_id);
     case "create": return create(request.request, t);
     case "todo": return { status: "todo", board: await todoSnapshot() };
-    case "alerts": return { status: "alerts", alerts: alertsSnapshot(alerts) };
+    case "alerts": return { status: "alerts", alerts: await alertsSnapshot(alerts) };
     case "calendar": return { status: "calendar", calendar: await calendarSnapshot(request.month) };
     case "calendar_mutate": return calendarMutate(request.month, request.action);
     case "todo_mutate": return todoMutate(request.action);

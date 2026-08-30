@@ -743,6 +743,8 @@ pub fn run() {
             commands::projects::project_scaffold_missing,
             commands::projects::repair_project_scaffold,
             commands::projects::repair_all_project_scaffolds,
+            commands::projects::project_migration_plan,
+            commands::projects::project_migration_apply,
             commands::projects::import_project,
             commands::projects::check_project_site,
             commands::projects::extend_project_to_remote,

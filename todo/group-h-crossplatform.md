@@ -431,4 +431,139 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     - [ ] ✅ Works
     - [ ] ❌ Doesn't work
 
+- [~] **31h — Mobile composer status chips** (2026-08-28; ✅ Code-complete, ⚠️
+  needs live QA on a phone against a real Claude Code / Codex tab).
+  The phone Terminal screen's composer now has the official Claude Code mobile
+  shape: a ＋ button (inserts an `@` file mention into the draft), a model chip
+  and a mode chip on a bar under the textarea, plus a small path · branch ·
+  context readout above it. The labels come from
+  `mobile-web/src/terminal/statusLine.ts`, which parses the status area the
+  agent TUI draws *below its own input box* (path, branch, model, mode,
+  context %) out of the readable screen — only below a recognized input
+  prompt, only positive matches, generic "Model"/"Mode" labels otherwise.
+  Tapping the model chip sends `/model` and the mode chip sends Shift+Tab, so
+  the chip labels follow the TUI's own redraw — both taps now open a list sheet
+  instead (see 31j). Tested in `src/__tests__/MobileStatusLine.test.ts`.
+  - [ ] 🖐️ Manual test — on the phone, open a Claude tab: chips show the
+    model/mode from the statusline, `/model` picker opens from the model chip,
+    mode chip cycles plan/accept-edits, ＋ inserts `@` into the draft
+    - [ ] ✅ Works
+    - [ ] ❌ Doesn't work
+
+- [~] **31i — Mobile lazy terminal history, whole session** (2026-08-28;
+  ✅ Code-complete, ⚠️ needs live QA on a phone; the tmux `history-limit` half
+  needs a backend restart and takes effect per newly created session).
+  The phone Focus view no longer clips at 400 lines: lines that scroll out of
+  the live tail are absorbed once into frozen, memoized chunks
+  (`mobile-web/src/terminal/readableHistory.ts` — trim-aware via xterm's
+  internal `onTrim`, falls back to the old bounded view if that internal moves)
+  and a "Show earlier output (N lines)" button at the top lazily reveals them
+  page by page (~800 lines/tap, scroll-anchored), up to 20k lines in memory.
+  Depth is one number by design: tmux sessions are now created with
+  `history-limit 10000` (`ssh_exec::TMUX_HISTORY_LINES`, set *before*
+  `new-session` in both the remote wrap and `tmux_local` — a pane copies the
+  limit at creation), the sidecar replay captures the same depth
+  (`pty_bridge::MOBILE_SCROLLBACK_LINES`), and the phone xterm's scrollback
+  matches (`PHONE_SCROLLBACK`). Copy copies exactly what is revealed. Tested in
+  `src/__tests__/MobileReadableScreen.test.ts` (lazy-history describe block).
+  - [ ] 🖐️ Manual test — on the phone, open an agent tab with a long session:
+    "Show earlier output" appears, reveals older lines without the view
+    jumping, repeated taps walk back to the session start, reconnect (airplane
+    mode toggle) replays without duplicating lines
+    - [ ] ✅ Works
+    - [ ] ❌ Doesn't work
+
+- [~] **31j — Mobile model/mode chips open a list, not a TUI dialog**
+  (2026-08-28; ✅ Code-complete, ⚠️ needs live QA on a phone against a real
+  Claude Code / Codex tab).
+  Both composer chips now open a bottom sheet with a tappable list — name,
+  description, a check on the one the session is in — instead of leaving the
+  reader to walk a dialog that reflows into nonsense at phone width.
+  - **Model**: the chip still sends `/model`; the sheet lists the rows the
+    session's *own* picker drew, read by `mobile-web/src/terminal/selectPrompt.ts`
+    (a contiguous run of numbered rows carrying exactly one highlight marker —
+    anything else is not a dialog and the sheet steps aside after 6s). A tap
+    moves the highlight with the same ↑/↓ + Enter the on-screen key row sends;
+    dismissing sends Esc. Nothing decides what the models are but the session.
+  - **Mode**: neither CLI has a mode picker, so the sheet lists the family the
+    session's *reported* mode belongs to (`terminal/agentModes.ts`: Claude
+    default/accept edits/plan/bypass permissions, Codex read only/auto/full
+    access) and applies one by pressing Shift+Tab until the redrawn status line
+    reports it — no cycle order assumed, a full lap without a match leaves the
+    session where it was and says so. A session whose mode no family claims
+    keeps the old single-cycle tap. `statusLine` learned Codex's bare `auto`
+    (anchored, so Claude's `auto-compact` and `~/…/auto/…` stay unmatched).
+  Tested in `src/__tests__/MobileSelectPrompt.test.ts` and
+  `src/__tests__/MobileOptionSheet.test.tsx`.
+  - [ ] 🖐️ Manual test — on the phone, open a Claude tab: the model chip opens
+    a list of the real models with the current one checked, tapping one
+    switches it (chip label follows), ✕ closes both sheet and picker; the mode
+    chip opens the four modes, tapping Plan lands in plan mode, tapping bypass
+    on a session without it reports the failure and leaves the mode unchanged
+    - [ ] ✅ Works
+    - [ ] ❌ Doesn't work
+
+- [~] **31l — Mobile Focus mode chips for all agent families** (2026-08-28;
+  ✅ Code-complete, ⚠️ needs live QA on a phone).
+  The mode sheet now covers every agent whose TUI actually prints its mode,
+  keyed by the tab's agent label as well as the shown mode:
+  - **Claude default** — Claude Code prints *nothing* in default mode, so the
+    sheet never appeared for the most common state. A `silent` mode on the
+    family reads an input frame with no mode text as "default" (label-gated:
+    only a tab labelled Claude earns it), so the sheet opens, marks Default
+    current, and a walk *to* default can confirm.
+  - **Qwen Code** — full family (Ask permissions / Plan / Accept edits / Auto
+    / YOLO); all five are on its Shift+Tab cycle and each draws indicator
+    text (English locale), so every switch is verifiable. `statusLine` learned
+    the shapes, the `*` YOLO prompt prefix, and decimal `45.2% context used`.
+  - **Gemini CLI** — deliberately no family: since ~0.5 the approval mode is
+    only prompt colour + aria-label, nothing the readable view can parse, so
+    the chip keeps blind-cycling. Its `NN% used` context column is read.
+  - Vibe/OpenCode are alt-screen TUIs (Focus already hands them to Terminal);
+    Aider is a plain REPL. `scripts/backend-stale.sh` now also flags a stale
+    *embedded* mobile bundle (mobile-web src newer than mobile-dist, or
+    mobile-dist newer than the running process) — the phone serves the bundle
+    baked in at compile time, which is how "Claude without the Terminal
+    toggle" happened while every source file was right.
+  - [ ] 🖐️ Manual test — on the phone: a Claude tab in default mode shows
+    "default" on the mode chip and the sheet opens with Default checked;
+    walking Default→Plan→Default confirms both ways; a Qwen tab lists five
+    modes and lands on the tapped one (incl. YOLO, whose prompt turns `*`);
+    a Gemini tab still blind-cycles but shows its `% used` as context
+    - [ ] ✅ Works
+    - [ ] ❌ Doesn't work
+
+- [~] **31k — Mobile fingerprint unlock is the default** (2026-08-28;
+  ✅ Code-complete, ⚠️ needs live QA on a phone).
+  The local lock used to demand PIN *then* biometric; now the enrolled
+  WebAuthn platform credential alone unlocks, prompted automatically as the
+  locked screen opens (a browser that wants a user gesture — iOS Safari —
+  gets a "Unlock with fingerprint" button instead), and the PIN is the
+  fallback for a failed/unavailable authenticator. Either factor alone
+  suffices — the lock guards casual access and the paired signing key is a
+  non-exportable CryptoKey the PIN never encrypted. A successful biometric
+  unlock clears the PIN lockout counter; a PIN lockout does not block the
+  biometric path. An existing record with no credential (setup ran where
+  `isUserVerifyingPlatformAuthenticatorAvailable()` said no — e.g. Firefox
+  Android, or no OS screen lock at the time) is **retro-enrolled**: a
+  successful PIN unlock on a now-capable browser raises the enrollment sheet
+  (`maybeEnrollBiometric`, announced in the unlock copy first), so fingerprint
+  becomes the default from the next unlock without re-pairing; a refused
+  enrollment just stays PIN-only and offers again next time
+  (`mobile-web/src/localLock.ts`, `mobile-web/src/screens/LocalUnlock.tsx`).
+  A browser that exposes **no** platform authenticator now says so and names
+  the remedy, rather than silently showing a PIN field: DuckDuckGo (and every
+  other browser built on the system WebView) has no WebAuthn, which is why
+  this never appeared on a phone before — the note points at Chrome/Safari
+  and warns that re-pairing is the cost, a pairing being per-browser
+  IndexedDB state.
+  - [ ] 🖐️ Manual test — on the phone with a lock configured: a PIN-only
+    record offers fingerprint enrollment right after a PIN unlock; from then
+    on reopening the PWA raises the fingerprint sheet by itself (or shows the
+    button on iOS), a fingerprint alone unlocks, cancelling it leaves the PIN
+    path working, a fresh setup on a biometric-capable phone states
+    PIN-as-fallback
+    - [ ] ✅ Works
+    - [ ] ❌ Doesn't work
+
 ---

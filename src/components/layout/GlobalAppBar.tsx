@@ -6,6 +6,7 @@ import { useSettingsStore } from "../../stores/settings";
 import type { GlobalAppEntry } from "../../types";
 import { resolveProjectDirectory } from "../../types";
 import { basename, IS_WINDOWS } from "../../lib/paths";
+import { requestInAppCapture } from "../../lib/screenshot";
 import { useT, type TranslationKey } from "../../lib/i18n";
 
 // A platform-appropriate example path for the executable-picker placeholder
@@ -117,6 +118,11 @@ export function GlobalAppBar() {
 
   const launch = (role: string, exec: string) => {
     if (role === "screenshot") {
+      // A visible PDF viewer claims the shot first: the region is then captured
+      // from the rendered document itself (sharper than a screen grab, pending
+      // blackouts burned in) and lands on the clipboard + the project's
+      // screenshots/ folder — no OS tool involved. See `lib/screenshot`.
+      if (requestInAppCapture()) return;
       // Capture a region into the active project's screenshots/ folder, driving
       // the configured tool's output path (or a native fallback) there. Without
       // an active project there's nowhere to file the shot, so fall back to

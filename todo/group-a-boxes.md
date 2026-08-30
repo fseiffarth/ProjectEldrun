@@ -150,5 +150,21 @@
       disconnected; per-member Git/Search/⚙ line)
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work
+    > **Phase 7 — slice membership controls (2026-08-28, 🤖 covered,
+    > untested live).** While a Box slice is selected, the switcher's `+`
+    > becomes a filterable list of active non-members and each member pill's
+    > `×` removes only that membership. Opening a member keeps the slice in
+    > membership mode; an open project removed from the Box stays visible as
+    > the existing non-member exception, without a Box badge or `×`. Project
+    > creation/import and global deactivation remain unchanged in All projects.
+    - [x] 🤖 Automated test — vitest `BoxMembershipControls` (candidate
+      eligibility/filter/empty state, repeated in-place adds, member removal,
+      open non-member exception, and All-project behavior), plus the existing
+      `BoxRendering`/`BoxUx` switcher regressions.
+    - [ ] 🖐️ Manual test (select a Box, add several projects without reopening
+      `+`, remove both an ordinary and a currently open member, then return to All
+      projects and confirm the ordinary create/import/deactivate controls)
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 ---

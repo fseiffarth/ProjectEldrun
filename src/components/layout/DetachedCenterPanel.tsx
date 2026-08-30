@@ -1370,9 +1370,13 @@ export function DetachedCenterPanel({
           {isDropTarget && localReorder === orderedTabs.length && orderedTabs.length > 0 && (
             <Fragment key="drop-marker-end">{dropPlaceholder}</Fragment>
           )}
+          </DetachedTabStrip>
           {/* #42: the popout's own "+" — the detached window had no way to add
               tabs. Streams an "add" edit to the main window (which owns tab
-              creation + the PTY) via onAddTab. */}
+              creation + the PTY) via onAddTab. Rendered OUTSIDE
+              `DetachedTabStrip` (i.e. outside the scrolling `.tab-strip`) for
+              the main window's reason: the one control that adds a tab must not
+              scroll away with the tabs when the bar overflows. */}
           {scope !== TRASH_PROJECT_ID && <div className="tab-new-wrap">
             <button
               className="tab-new-btn"
@@ -1393,7 +1397,6 @@ export function DetachedCenterPanel({
               +
             </button>
           </div>}
-          </DetachedTabStrip>
           {/* Per-subwindow right file viewer, same ◫ toggle as the main window's
               TabBar. Applied optimistically + streamed to the main window. When
               the viewer is docked below, the control reserves its width (like

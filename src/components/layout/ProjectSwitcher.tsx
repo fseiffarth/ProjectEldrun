@@ -45,6 +45,7 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
   const renameBox = useBoxesStore((s) => s.renameBox);
   const deleteBox = useBoxesStore((s) => s.deleteBox);
   const addToBox = useBoxesStore((s) => s.addToBox);
+  const removeFromBox = useBoxesStore((s) => s.removeFromBox);
   const boxProjects = useBoxesStore((s) => s.boxProjects);
   const openBox = useBoxesStore((s) => s.openBox);
   const membership = useBoxMembership();
@@ -197,6 +198,7 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
   // never reshuffles the row under the pointer. Session-only — a slice is where
   // you are looking right now, not a setting.
   const [boxFilter, setBoxFilter] = useState<string | null>(null);
+  const [boxCandidateFilter, setBoxCandidateFilter] = useState("");
 
   // Entering a box scope by any other door (the search popover, a restored
   // scope at launch, a popout's stream) selects its slice. One-way: leaving the
@@ -214,6 +216,22 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
     if (boxFilter && !boxes.some((b) => b.id === boxFilter)) setBoxFilter(null);
   }, [boxes, boxFilter]);
 
+  // Membership mode follows the selected slice rather than the current tab
+  // scope. Opening a member changes `scope`, but the + and × controls must keep
+  // editing the Box the strip is still showing.
+  const currentBox = useMemo(
+    () => (boxFilter ? boxes.find((b) => b.id === boxFilter) ?? null : null),
+    [boxes, boxFilter],
+  );
+  const currentBoxMemberIds = useMemo(
+    () => new Set(currentBox?.member_ids ?? []),
+    [currentBox],
+  );
+
+  useEffect(() => {
+    setBoxCandidateFilter("");
+  }, [currentBox?.id]);
+
   /** Pick a box's slice (and open its scope) or go back to every project. */
   const selectBox = (boxId: string | null) => {
     setBoxFilter(boxId);
@@ -224,11 +242,19 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
   // project currently in scope even when it is not one, since a strip that
   // hides the project you are working in is a strip that has lost you.
   const visibleProjects = useMemo<ProjectEntry[]>(() => {
-    const box = boxFilter ? boxes.find((b) => b.id === boxFilter) : null;
-    if (!box) return activeProjects;
-    const members = new Set(box.member_ids);
-    return activeProjects.filter((p) => members.has(p.id) || p.id === scope);
-  }, [activeProjects, boxes, boxFilter, scope]);
+    if (!currentBox) return activeProjects;
+    return activeProjects.filter((p) => currentBoxMemberIds.has(p.id) || p.id === scope);
+  }, [activeProjects, currentBox, currentBoxMemberIds, scope]);
+
+  const boxCandidates = useMemo(() => {
+    if (!currentBox) return [];
+    const needle = boxCandidateFilter.trim().toLocaleLowerCase();
+    return activeProjects.filter(
+      (project) =>
+        !currentBoxMemberIds.has(project.id) &&
+        (!needle || project.name.toLocaleLowerCase().includes(needle)),
+    );
+  }, [activeProjects, boxCandidateFilter, currentBox, currentBoxMemberIds]);
 
   // Pointer-driven pill reorder (stores/pillDrag): every OTHER visible project
   // pill "parts" to open the dragged one's landing slot — a `shiftPx` per id,
@@ -476,6 +502,9 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
             active={!!boxFilter && scope === `${BOX_SCOPE_PREFIX}${boxFilter}`}
             forcedDragOver={!!boxFilter && pillDrag?.overBoxId === boxFilter}
           />
+          {/* Hairline between the fixed leading segment (★ · 🗑 · ▣) and the
+              scrolling project strip, so the two zones read as two zones. */}
+          <div className="pills-lead-sep" aria-hidden />
           <button
             type="button"
             className="pills-scroll-btn left"
@@ -497,29 +526,47 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
             // window; pills/boxes are nested so their press is left untouched.
             onMouseDown={startWindowDrag}
           >
-            {visibleProjects.map((project) => (
-              <ProjectPill
-                key={project.id}
-                project={project}
-                active={scope === project.id}
-                onClick={() => {
-                  // A plain activation click clears the multi-selection (3b).
-                  usePillSelectionStore.getState().clear();
-                  void setActive(project.id);
-                }}
-                onClose={() => deactivateProject(project.id)}
-                onReorder={(fromId, toId) => void reorderProjects(fromId, toId)}
-                onGroup={(fromId, toId) => void groupProjects(fromId, toId)}
-                onAssignToBox={(boxId) => void addToBox(project.id, boxId)}
-                boxNames={(membership.get(project.id) ?? [])
-                  .map((boxId) => boxes.find((b) => b.id === boxId)?.name)
-                  .filter((n): n is string => !!n)}
-                isDragged={pillDrag?.id === project.id}
-                dragDx={pillDrag?.id === project.id ? pillDrag.dx : undefined}
-                shiftPx={pillShifts.get(project.id)}
-                groupHintActive={pillDrag?.groupTargetId === project.id}
-              />
-            ))}
+            {visibleProjects.map((project) => {
+              const isCurrentBoxMember = currentBoxMemberIds.has(project.id);
+              const boxNames = currentBox
+                ? isCurrentBoxMember
+                  ? [currentBox.name]
+                  : []
+                : (membership.get(project.id) ?? [])
+                    .map((boxId) => boxes.find((b) => b.id === boxId)?.name)
+                    .filter((n): n is string => !!n);
+              return (
+                <ProjectPill
+                  key={project.id}
+                  project={project}
+                  active={scope === project.id}
+                  onClick={() => {
+                    // A plain activation click clears the multi-selection (3b).
+                    usePillSelectionStore.getState().clear();
+                    void setActive(project.id);
+                  }}
+                  onClose={currentBox
+                    ? isCurrentBoxMember
+                      ? () => removeFromBox(project.id, currentBox.id)
+                      : undefined
+                    : () => deactivateProject(project.id)}
+                  closeTitle={currentBox && isCurrentBoxMember
+                    ? t("projectSwitcher.removeFromBox", {
+                        name: project.name,
+                        box: currentBox.name,
+                      })
+                    : undefined}
+                  onReorder={(fromId, toId) => void reorderProjects(fromId, toId)}
+                  onGroup={(fromId, toId) => void groupProjects(fromId, toId)}
+                  onAssignToBox={(boxId) => void addToBox(project.id, boxId)}
+                  boxNames={boxNames}
+                  isDragged={pillDrag?.id === project.id}
+                  dragDx={pillDrag?.id === project.id ? pillDrag.dx : undefined}
+                  shiftPx={pillShifts.get(project.id)}
+                  groupHintActive={pillDrag?.groupTargetId === project.id}
+                />
+              );
+            })}
           </div>
           <button
             type="button"
@@ -548,7 +595,9 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
           <button
             className="project-switcher-add-btn"
             data-hint-anchor="add-project"
-            title={t("projectSwitcher.addOrImport")}
+            title={t(currentBox
+              ? "projectSwitcher.addProjectsToBox"
+              : "projectSwitcher.addOrImport")}
             // Hover-opened, like its sibling header menus (GlobalAppMenu,
             // LocalModelMenu, VpnIndicator). Click reveals rather than toggling: a
             // click also fires mouseenter, so a toggle here would open on enter and
@@ -559,34 +608,69 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
             +
           </button>
           {showAddMenu && (
-            <div className="project-switcher-add-menu">
-              <button onClick={() => { closeHeaderMenu(ADD_MENU_ID); setDialog("new"); }}>
-                {t("projectSwitcher.newProject")}
-              </button>
-              <button onClick={() => { closeHeaderMenu(ADD_MENU_ID); setDialog("import"); }}>
-                {t("projectSwitcher.importProject")}
-              </button>
-              <button
-                className="untested"
-                onClick={() => { closeHeaderMenu(ADD_MENU_ID); setDialog("clone"); }}
-              >
-                {t("projectSwitcher.importFromGitHub")} <UntestedTag />
-              </button>
-              <button
-                className="untested"
-                onClick={() => { closeHeaderMenu(ADD_MENU_ID); openHpcWizard(); }}
-              >
-                {t("projectSwitcher.hpcPipeline")} <UntestedTag />
-              </button>
-              <button
-                className="untested"
-                onClick={() => {
-                  closeHeaderMenu(ADD_MENU_ID);
-                  useBoxEditorStore.getState().openCreate();
-                }}
-              >
-                {t("projectSwitcher.newBox")} <UntestedTag />
-              </button>
+            <div className={`project-switcher-add-menu${currentBox ? " box-membership" : ""}`}>
+              {currentBox ? (
+                <>
+                  <div className="project-switcher-box-add-title">
+                    {t("projectSwitcher.addProjectsToBox")} <UntestedTag />
+                  </div>
+                  <input
+                    className="project-switcher-box-add-filter"
+                    value={boxCandidateFilter}
+                    onChange={(e) => setBoxCandidateFilter(e.target.value)}
+                    placeholder={t("projectSwitcher.filterBoxCandidates")}
+                    aria-label={t("projectSwitcher.filterBoxCandidates")}
+                    autoFocus
+                  />
+                  <div className="project-switcher-box-add-list">
+                    {boxCandidates.map((project) => (
+                      <button
+                        type="button"
+                        key={project.id}
+                        data-project-id={project.id}
+                        onClick={() => void addToBox(project.id, currentBox.id)}
+                      >
+                        {project.name}
+                      </button>
+                    ))}
+                    {boxCandidates.length === 0 && (
+                      <div className="project-switcher-box-add-empty">
+                        {t("projectSwitcher.noBoxCandidates")}
+                      </div>
+                    )}
+                  </div>
+                </>
+              ) : (
+                <>
+                  <button onClick={() => { closeHeaderMenu(ADD_MENU_ID); setDialog("new"); }}>
+                    {t("projectSwitcher.newProject")}
+                  </button>
+                  <button onClick={() => { closeHeaderMenu(ADD_MENU_ID); setDialog("import"); }}>
+                    {t("projectSwitcher.importProject")}
+                  </button>
+                  <button
+                    className="untested"
+                    onClick={() => { closeHeaderMenu(ADD_MENU_ID); setDialog("clone"); }}
+                  >
+                    {t("projectSwitcher.importFromGitHub")} <UntestedTag />
+                  </button>
+                  <button
+                    className="untested"
+                    onClick={() => { closeHeaderMenu(ADD_MENU_ID); openHpcWizard(); }}
+                  >
+                    {t("projectSwitcher.hpcPipeline")} <UntestedTag />
+                  </button>
+                  <button
+                    className="untested"
+                    onClick={() => {
+                      closeHeaderMenu(ADD_MENU_ID);
+                      useBoxEditorStore.getState().openCreate();
+                    }}
+                  >
+                    {t("projectSwitcher.newBox")} <UntestedTag />
+                  </button>
+                </>
+              )}
             </div>
           )}
         </div>

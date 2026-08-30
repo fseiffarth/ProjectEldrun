@@ -373,6 +373,18 @@
   box-shadow: inset 0 0 0 1px var(--accent);
 }
 
+/* The white hairline after the leading segment (★ · 🗑 · ▣ chip), before the
+   scrolling project pills — the visible edge between the fixed zone and the
+   strip that moves under it. */
+.pills-lead-sep {
+  flex-shrink: 0;
+  align-self: center;
+  width: 1px;
+  height: 22px;
+  background: #fff;
+  opacity: 0.6;
+}
+
 /* The chip's dropdown — the only place boxes are listed. Portaled to the body
    so it escapes the header's clipping, and wearing the switcher's own menu
    chrome (.project-switcher-add-menu's shape) rather than a second look. */
@@ -895,8 +907,8 @@
   padding: 4px 5px 0;
   gap: 2px;
   /* The bar itself no longer scrolls; only the inner `.tab-strip` does. The bar
-     stays a fixed row holding the scroll chevrons, the strip (including the +
-     button after its final tab), and the close/detach controls. */
+     stays a fixed row holding the scroll chevrons, the strip, the + button
+     after them, and the close/detach controls. */
   overflow: hidden;
   /* A fixed-height strip at the top of its subwindow. NOT flex:1 — the tab bar
      lives inside the column-flex `.subwindow`, so growing would let it eat the
@@ -953,14 +965,19 @@
 }
 .tab-drag-grip:active { cursor: grabbing; }
 
-/* The horizontally-scrolling tab container. Grows to fill the bar between the
-   chevrons and close controls and carries the + directly after the final tab;
-   its scrollbar is hidden (chevrons + wheel drive the scroll instead). */
+/* The horizontally-scrolling tab container, holding the tabs and nothing else;
+   its scrollbar is hidden (chevrons + wheel drive the scroll instead).
+   `flex: 0 1 auto` — it takes only the width its tabs need and shrinks when
+   they overflow, rather than growing to fill the bar. That is what keeps the +
+   beside it (see `.tab-new-wrap`) glued to the final tab instead of being flung
+   to the bar's right edge, and `min-width: 0` is what lets the strip shrink to
+   nothing in a very narrow subwindow. The free space is claimed by
+   `.tab-controls`' auto margin instead. */
 .tab-strip {
   display: flex;
   align-items: flex-start;
   gap: 0;
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   min-width: 0;
   overflow-x: auto;
   /* Scrolls, shows nothing — not even one of the app's own thumbs; overflow is
@@ -1466,6 +1483,10 @@
   justify-content: flex-end;
   flex-shrink: 0;
   min-width: 0;
+  /* The greedy `.tab-strip` used to push this cluster to the bar's right edge;
+     the strip only takes what its tabs need now (so the + stays beside them),
+     so the auto margin is what claims the free space instead. */
+  margin-left: auto;
 }
 
 /* #42: detached ("pop out") window title-bar controls — the native
@@ -1601,6 +1622,10 @@
 }
 
 /* ── New-tab button + dropdown ───────────────────────────────────────── */
+/* Sits OUTSIDE the scrolling `.tab-strip`, like the drag grip and the chevrons,
+   so the one control that adds a tab to this group stays on screen however many
+   tabs fill (and overflow) the bar. `flex-shrink: 0` is what holds it there
+   while the strip beside it collapses. */
 .tab-new-wrap {
   position: relative;
   display: flex;

@@ -666,6 +666,7 @@ pub(crate) fn merge_caldav_calendar_at(
                     task.subtasks = local.subtasks.clone();
                     task.mail = local.mail.clone();
                     task.event = local.event.clone();
+                    task.file = local.file.clone();
                     task.project_id = local.project_id.clone();
                     task.created = local.created.clone();
                     carry_extra(&mut task.extra, &local.extra);
@@ -964,7 +965,7 @@ pub async fn delete_calendar(id: String) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::schema::calendar::Subtask;
+    use crate::schema::calendar::{Subtask, TaskFileLink};
     use std::collections::HashMap;
 
     fn tmp_path() -> (tempfile::TempDir, PathBuf) {
@@ -1770,6 +1771,12 @@ mod tests {
             ..Default::default()
         }];
         task.project_id = "proj-1".into();
+        task.file = Some(TaskFileLink {
+            project_id: "proj-1".into(),
+            path: "src/main.rs".into(),
+            line: Some(42),
+            text: "why?".into(),
+        });
         task.created = "2026-07-01T08:00".into();
         update_task_at(&path, task).unwrap();
 
@@ -1804,6 +1811,7 @@ mod tests {
         assert_eq!(after.tags, vec!["thesis".to_string()]);
         assert_eq!(after.subtasks.len(), 1);
         assert_eq!(after.project_id, "proj-1");
+        assert_eq!(after.file.as_ref().map(|f| f.path.as_str()), Some("src/main.rs"));
         assert_eq!(after.created, "2026-07-01T08:00");
     }
 

@@ -312,6 +312,16 @@ pub struct Settings {
     /// the backend reads it, the renderer is an xterm.js concern.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub terminal_webgl: Option<bool>,
+    /// EXPERIMENTAL, default OFF. The markdown relationship graph: a "Graph"
+    /// mode on the markdown viewer that crawls the viewed document's local-file
+    /// links and renders them as a clickable navigation map. Purely a frontend
+    /// gate — the crawl reads files through the same confined `read_file_text`
+    /// every viewer read goes through, so nothing in the backend reads this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub md_graph: Option<bool>,
+    /// EXPERIMENTAL, default OFF. Project-wide per-file remarks in REMARKS.md.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_remarks: Option<bool>,
     /// EXPERIMENTAL, default OFF. The in-app browser (TODO J #61,
     /// `docs/browser_plan_{a,b,c}.md`): a JS-free reader tab plus a separate
     /// hardened live-page window. Read via `web_browser()`, which applies the

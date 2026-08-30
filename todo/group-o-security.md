@@ -486,3 +486,28 @@ intent. What is left is listed here.
       - [ ] ❌ Doesn't work
 
 ---
+
+153. **Harden Eldrun Mobile's local unlock into a cryptographic gate (PROPOSED
+     — needs sign-off).** From the 2026-08-28 mobile security re-review. Today
+     the phone's app lock (`mobile-web/src/localLock.ts`) is a UI gate: the
+     device signing key is a non-exportable `CryptoKey` in IndexedDB usable by
+     any script in the Serve origin, and the PIN is a PBKDF2 verifier that
+     wraps nothing — so an unlocked, running phone plus origin script (remote
+     debugging, or setting the `sessionStorage` unlock flag) bypasses the lock.
+     Not a bug: the UI states this posture honestly ("protects against casual
+     access to an unlocked phone"). The proposed enhancement uses the WebAuthn
+     **PRF extension** to derive a wrapping key from a platform-authenticator
+     assertion and store the device key **encrypted at rest**, so no usable key
+     exists without a biometric/device-lock assertion where PRF is supported;
+     PIN-only and PRF-incapable phones keep today's behavior (no lockout).
+     Full spec — enrollment/unlock/migration, the extractable-key tradeoff, and
+     the residual it does *not* close (unlocked-and-running) — in
+     [`docs/eldrun_mobile_future_plan.md`](../docs/eldrun_mobile_future_plan.md)
+     §G. Needs the user's sign-off on the extractable-key tradeoff before any
+     implementation.
+    - [ ] 🤖 Automated test
+    - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+---

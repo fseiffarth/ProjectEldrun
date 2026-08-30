@@ -402,6 +402,14 @@ export interface Settings {
    *  `docs/typing_latency_plan.md` Step 4); a terminal whose WebGL fails, at load
    *  or via runtime context loss, demotes itself back to canvas. */
   terminal_webgl?: boolean;
+  /** EXPERIMENTAL, default OFF. The markdown relationship graph: adds a "Graph"
+   *  mode to the markdown viewer that crawls the viewed document's local-file
+   *  links (markdown targets recursively, everything else as a leaf) and renders
+   *  them as a clickable navigation map. Purely a frontend gate — the crawl rides
+   *  the same confined `read_file_text` every viewer read uses. */
+  md_graph?: boolean;
+  /** EXPERIMENTAL, default OFF. Project-wide per-file remarks in REMARKS.md. */
+  project_remarks?: boolean;
   /** Persistent LOCAL (tmux) sessions (TODO #85): when true (the default on Unix),
    *  a local project's shell/script tabs run inside a tmux session on the machine,
    *  so a long run keeps going if Eldrun crashes and the tab reattaches on restart.
@@ -1163,6 +1171,14 @@ export interface TaskEventLink {
   location?: string;
 }
 
+/** A project file a card was converted from, plus a frozen remark snapshot. */
+export interface TaskFileLink {
+  project_id?: string;
+  path: string;
+  line?: number | null;
+  text?: string;
+}
+
 /** One column of the todo board. */
 export interface TaskColumn {
   id: string;
@@ -1207,6 +1223,8 @@ export interface CalendarTask {
    *  `mail`/`event` — both conversions build the same card, they differ only in
    *  which object they record. */
   event?: TaskEventLink | null;
+  /** The file remark this card was converted from. */
+  file?: TaskFileLink | null;
   /** `ProjectEntry.id`, or absent. Never validated against `projects.json` — an
    *  unresolvable id still filters and renders as an unknown-project chip. */
   project_id?: string;

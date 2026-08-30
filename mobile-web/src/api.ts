@@ -60,6 +60,9 @@ export interface MobileAlertItem {
   all_day: boolean;
   minutes_away?: number;
   days_away?: number;
+  /** `kind === "task"` only: the board's own opaque card id, so tapping the row
+   * can open that card rather than dropping the reader at the whole board. */
+  task_id?: string;
 }
 export interface MobileAlerts { enabled: boolean; items: MobileAlertItem[] }
 /** A bounded, read-only occurrence expanded by the connected desktop. It never

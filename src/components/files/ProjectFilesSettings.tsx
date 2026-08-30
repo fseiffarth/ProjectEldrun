@@ -14,6 +14,8 @@ import {
 import { useSettingsStore } from "../../stores/settings";
 import { VIEWER_PREF_TYPES } from "../../lib/viewers/fileUtils";
 import { PythonInterpreterWindow } from "../projects/PythonInterpreterWindow";
+import { ProjectMigrationDialog } from "../projects/ProjectMigrationDialog";
+import { UntestedTag } from "../common/UntestedTag";
 import { useT } from "../../lib/i18n";
 import { DEFAULT_LOOKAHEAD_DAYS } from "../../lib/alerts";
 import type { ProjectEntry, Settings, ViewerPref } from "../../types";
@@ -227,6 +229,7 @@ export function ProjectFilesSettingsDialog({
   const updateSettings = useSettingsStore((s) => s.updateSettings);
   const { availableEndings, hiddenEndings, error, toggleHiddenEnding } = filters;
   const [showPython, setShowPython] = useState(false);
+  const [showMigrate, setShowMigrate] = useState(false);
 
   const alertsOn = settings?.files_alerts ?? true;
   const alertSources = settings?.files_alerts_sources ?? {};
@@ -302,6 +305,32 @@ export function ProjectFilesSettingsDialog({
               >
                 {project.python_interpreter ? "✓ " : ""}
                 {t("projectSettings.pythonInterpreter")}
+              </button>
+            </div>
+          </>
+        )}
+
+        {/* Step-by-step migration of an old project to the current Eldrun
+            state (scaffold files, agent-doc templates, .gitignore defaults,
+            registry fields) — the reviewed, per-step counterpart of the pill's
+            all-at-once "Repair scaffold files". */}
+        {project && (
+          <>
+            <SettingsSection
+              title={
+                <>
+                  {t("projectSettings.migration")} <UntestedTag />
+                </>
+              }
+              help={t("projectSettings.migrationHelp")}
+            />
+            <div className="settings-link-row">
+              <button
+                type="button"
+                className="settings-btn"
+                onClick={() => setShowMigrate(true)}
+              >
+                {t("projectSettings.migrateProject")}
               </button>
             </div>
           </>
@@ -528,6 +557,10 @@ export function ProjectFilesSettingsDialog({
         so dismissing the picker threw away the dialog it was opened from. */}
     {showPython && project && (
       <PythonInterpreterWindow project={project} onClose={() => setShowPython(false)} />
+    )}
+    {/* Sibling for the same reason as the interpreter picker above. */}
+    {showMigrate && project && (
+      <ProjectMigrationDialog project={project} onClose={() => setShowMigrate(false)} />
     )}
     </>,
     document.body,

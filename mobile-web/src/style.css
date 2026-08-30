@@ -43,8 +43,16 @@ small { color:#9498aa; }
 .home-brand { display:flex; flex:1; align-items:center; gap:8px; min-width:0; }
 .home-brand strong { font-size:1.05rem; letter-spacing:.01em; }
 .home-logo { width:36px; height:36px; flex:0 0 auto; }
-.home-tools { display:flex; align-items:center; gap:6px; }
-.home-tool { display:flex; align-items:center; gap:5px; padding:9px 10px; border-color:#4d4675; color:#eeeaff; white-space:nowrap; }
+/* The four top-level sections. Fixed to the bottom edge so it survives the long
+   scroll of a board or a month, centered on wide screens with the same 720px
+   measure as `.screen`, and kept under the modal backdrops (z-index 10/12) so an
+   open editor still covers it. `.tabbed > .screen` pays for the space it takes
+   out of the viewport; without it the last card sits under the bar. */
+.mobile-tabbar { position:fixed; inset:auto 0 0 0; z-index:8; margin:0; gap:2px; padding:6px max(8px,calc((100vw - 720px) / 2)) max(6px,env(safe-area-inset-bottom)); border-top:1px solid #2b2f3f; background:rgba(13,15,21,.96); backdrop-filter:blur(10px); }
+.mobile-tab { flex:1; display:grid; justify-items:center; gap:3px; padding:7px 4px; border:0; border-radius:10px; background:transparent; color:#9498aa; font-size:.72rem; line-height:1.1; }
+.mobile-tab span { font-size:1.2rem; line-height:1.15; }
+.mobile-tab.active { background:rgba(108,92,231,.18); color:#d7cffd; }
+.tabbed > .screen { padding-bottom:calc(76px + max(24px,env(safe-area-inset-bottom))); }
 .projects-row { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:17px; }
 .projects-row h1 { font-size:1.2rem; }
 .mobile-alerts { display:grid; gap:10px; margin-top:28px; }
@@ -170,9 +178,8 @@ button.mobile-alert-row { cursor:pointer; }
 .mobile-calendar-agenda article span { color:#aeb2c2; font-size:.86rem; }
 .mobile-calendar-agenda article.cancelled { opacity:.58; }
 .mobile-calendar-agenda article.cancelled strong { text-decoration:line-through; }
-@media (max-width:480px) { .home-tools { gap:4px; } .home-tool { padding-inline:8px; } .mobile-build small { font-size:.72rem; } .mail-mobile-row > div { display:grid; gap:3px; } .mail-mobile-pager button { padding-inline:9px; } }
-@media (max-width:480px) { .home-tools { overflow-x:auto; max-width:67vw; padding-bottom:2px; scrollbar-width:none; } .home-tools::-webkit-scrollbar { display:none; } .home-tool span { display:none; } .home-tool { padding:9px; } }
-@media (max-width:360px) { .home-brand strong { display:none; } .projects-row { margin-top:14px; } .mobile-calendar-day { min-height:48px; } }
+@media (max-width:480px) { .mobile-build small { font-size:.72rem; } .mail-mobile-row > div { display:grid; gap:3px; } .mail-mobile-pager button { padding-inline:9px; } }
+@media (max-width:360px) { .projects-row { margin-top:14px; } .mobile-calendar-day { min-height:48px; } .mobile-tab { font-size:.68rem; } }
 .terminal-screen { height:100dvh; display:grid; grid-template-rows:auto 1fr auto; position:relative; background:#0b0d13; padding-top:env(safe-area-inset-top); padding-bottom:env(safe-area-inset-bottom); }
 .terminal-screen header { padding:0 12px; gap:8px; }
 .terminal-title { display:grid; min-width:0; flex:1; gap:1px; }
@@ -211,6 +218,8 @@ button.mobile-alert-row { cursor:pointer; }
 .readable-line .d { opacity:.62; }
 .readable-blank { height:.7em; }
 .readable-notice { margin-bottom:10px; padding:8px 10px; border-left:3px solid #747b90; border-radius:8px; background:#14161e; color:#9298aa; font:400 .78rem/1.45 Inter,ui-sans-serif,system-ui,sans-serif; }
+.readable-earlier { display:block; width:100%; margin-bottom:10px; padding:9px 10px; border:1px solid #34384a; border-radius:9px; background:#151823; color:#9da3b6; font:500 .78rem/1.4 Inter,ui-sans-serif,system-ui,sans-serif; text-align:center; }
+.readable-earlier:active { background:#1c2030; color:#c8cdda; }
 .readable-empty { min-height:100%; display:grid; place-content:center; justify-items:center; gap:6px; color:#9498aa; text-align:center; }
 .readable-empty strong { color:#d9dce7; }
 /* Bottom-anchored, like the jump pill: the newest output is what a reader is
@@ -222,14 +231,21 @@ button.mobile-alert-row { cursor:pointer; }
 .last-sent { display:grid; grid-template-columns:auto minmax(0,1fr); gap:8px; align-items:start; margin:6px 7px 0; padding:8px 10px; border-radius:9px; background:#211d35; color:#dcd6ff; font-size:.78rem; }
 .last-sent span { color:#9e91e9; font-weight:750; text-transform:uppercase; letter-spacing:.06em; }
 .last-sent p { margin:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; unicode-bidi:plaintext; }
-.prompt-composer { display:flex; align-items:end; gap:8px; margin:7px 7px 2px; padding:4px 5px 4px 12px; border:1px solid #454a60; border-radius:14px; background:#171a24; box-shadow:0 6px 20px rgba(0,0,0,.18); }
+.session-facts { display:flex; align-items:center; gap:10px; margin:6px 14px 0; color:#8b90a5; font-size:.72rem; font-family:ui-monospace,SFMono-Regular,monospace; white-space:nowrap; overflow:hidden; }
+.session-facts .fact-path { flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; }
+.session-facts .fact-branch,.session-facts .fact-context { flex:0 0 auto; }
+.prompt-composer { display:flex; flex-direction:column; gap:2px; margin:7px 7px 2px; padding:6px 8px 8px 12px; border:1px solid #454a60; border-radius:16px; background:#171a24; box-shadow:0 6px 20px rgba(0,0,0,.18); }
 .prompt-composer:focus-within { border-color:#8c7df4; box-shadow:0 0 0 2px rgba(120,104,217,.4),0 6px 20px rgba(0,0,0,.18); }
-.prompt-composer textarea { flex:1; width:0; min-height:42px; max-height:116px; resize:none; border:0; padding:10px 0; appearance:none; -webkit-appearance:none; background-color:#171a24 !important; color:#fff !important; -webkit-text-fill-color:#fff; caret-color:#fff; line-height:1.35; }
+.prompt-composer textarea { width:100%; min-height:42px; max-height:116px; resize:none; border:0; padding:8px 0; appearance:none; -webkit-appearance:none; background-color:#171a24 !important; color:#fff !important; -webkit-text-fill-color:#fff; caret-color:#fff; line-height:1.35; }
 .prompt-composer textarea:focus { outline:0; }
 .prompt-composer textarea:disabled { opacity:1; color:#9fa4b6 !important; -webkit-text-fill-color:#9fa4b6; }
-.prompt-composer-actions { display:flex; flex:0 0 auto; align-items:center; align-self:stretch; gap:3px; }
-.prompt-composer-actions button { display:grid; place-items:center; width:40px; min-width:40px; padding:0; border:0; border-radius:10px; }
-.prompt-composer-actions svg { width:20px; height:20px; fill:none; stroke:currentColor; stroke-width:1.9; stroke-linecap:round; stroke-linejoin:round; }
+.composer-bar { display:flex; align-items:center; gap:6px; }
+.composer-bar svg { width:20px; height:20px; fill:none; stroke:currentColor; stroke-width:1.9; stroke-linecap:round; stroke-linejoin:round; }
+.composer-bar .composer-dictate,.composer-bar .send-icon { display:grid; place-items:center; width:40px; min-width:40px; height:40px; padding:0; border:0; border-radius:10px; }
+.composer-add { display:grid; place-items:center; flex:0 0 auto; width:36px; height:36px; padding:0; border:0; border-radius:50%; background:transparent; color:#c8cdda; }
+.composer-chip { display:flex; align-items:center; flex:0 1 auto; gap:5px; min-width:0; max-width:34vw; overflow:hidden; padding:8px 13px; border:0; border-radius:999px; background:#232735; color:#e2e5f0; font-size:.82rem; white-space:nowrap; text-overflow:ellipsis; }
+.composer-chip svg { width:15px; height:15px; flex:0 0 auto; }
+.composer-spacer { flex:1 0 0; }
 .composer-dictate { color:#dcd6ff; background:transparent; }
 .composer-dictate.listening { color:#fff; background:#7a3151; box-shadow:0 0 0 2px rgba(227,107,154,.22); }
 .composer-dictate.listening svg rect { fill:currentColor; stroke:none; }
@@ -244,5 +260,43 @@ button.mobile-alert-row { cursor:pointer; }
 .voice-feedback { margin:6px 6px 0; padding:9px 11px; border-radius:9px; background:#29253d; color:#e8e3ff; font-size:.86rem; overflow-wrap:anywhere; }
 .voice-feedback.error { background:#3b2027; color:#ffb4c0; }
 .danger { color:#ff9aa6; }
-.splash { display:grid; place-items:center; color:#f4c95d; font-size:4rem; }
+/* The composer chips' bottom sheet: a phone list in place of walking a TUI
+   dialog with the arrow keys. */
+.sheet-backdrop { position:fixed; inset:0; z-index:12; display:flex; align-items:flex-end; background:rgba(4,5,9,.7); }
+.option-sheet { display:grid; gap:11px; width:100%; max-height:82dvh; padding:8px 10px calc(16px + env(safe-area-inset-bottom)); border-top:1px solid #383c4d; border-radius:20px 20px 0 0; background:#171a24; overflow:auto; overscroll-behavior:contain; }
+.sheet-grip { justify-self:center; width:38px; height:4px; border-radius:999px; background:#3d4256; }
+.option-sheet header { min-height:0; padding-inline:2px; }
+.option-sheet h2 { flex:1; margin:0; font-size:1.02rem; text-align:center; }
+.sheet-close { width:42px; flex:0 0 auto; padding:7px 0; border:0; border-radius:10px; background:transparent; color:#c9cddb; font-size:1.05rem; }
+.sheet-note { margin:0; padding:2px 6px 4px; color:#9da3b6; font-size:.84rem; overflow-wrap:anywhere; }
+.sheet-note.error { color:#ffb4c0; }
+.option-list { display:grid; gap:3px; margin:0; padding:0; list-style:none; }
+.option-list button { display:flex; align-items:center; gap:12px; width:100%; padding:13px 14px; border:0; border-radius:13px; background:#1e2230; text-align:left; }
+.option-list button.current { color:#8fb6ff; background:#1c2336; }
+.option-list button > span { display:grid; flex:1; gap:3px; min-width:0; }
+.option-list strong { font-weight:600; overflow-wrap:anywhere; }
+.option-list small { color:#98a0b4; font-size:.82rem; overflow-wrap:anywhere; }
+.option-list button.current small { color:#7ea3dd; }
+.option-list svg { width:21px; height:21px; flex:0 0 auto; fill:none; stroke:currentColor; stroke-width:2.2; stroke-linecap:round; stroke-linejoin:round; }
+.sheet-pending { flex:0 0 auto; color:#c8cdda; font-size:.78rem; }
+/* Launch curtain — the desktop app's `.startup-splash` ported (see base.css):
+   the Eldrun mark inside two counter-rotating orbit rings, over the brand name,
+   the state, and a sweeping progress hairline. The colours are literals rather
+   than tokens because this bundle has no theme layer; they are the desktop
+   accent (#6c8dff → the mobile purple) and the mark's own gold. */
+.splash { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:12px; text-align:center; }
+.splash-mark { position:relative; display:grid; place-items:center; width:104px; height:104px; animation:splash-arrive 600ms cubic-bezier(.22,1,.36,1) both; }
+.splash-mark svg { position:relative; z-index:1; width:72px; height:72px; color:#e7e9f2; filter:drop-shadow(0 0 16px rgba(124,108,255,.55)); }
+.splash-orbit { position:absolute; inset:3px; border:1px solid rgba(124,108,255,.52); border-radius:50%; animation:splash-orbit 2.5s linear infinite; }
+.splash-orbit-two { inset:14px; border-color:rgba(199,154,69,.6); animation-direction:reverse; animation-duration:1.8s; }
+.splash-name { font-size:17px; font-weight:650; letter-spacing:.3em; padding-left:.3em; animation:splash-arrive 600ms 80ms cubic-bezier(.22,1,.36,1) both; }
+.splash-message { max-width:34ch; min-height:18px; color:#9498aa; font-size:.82rem; letter-spacing:.03em; animation:splash-arrive 600ms 140ms cubic-bezier(.22,1,.36,1) both; }
+.splash-progress { width:148px; height:2px; overflow:hidden; border-radius:999px; background:rgba(56,60,77,.8); }
+.splash-progress span { display:block; width:48%; height:100%; border-radius:inherit; background:linear-gradient(90deg,transparent,#7c6cff,#c79a45,transparent); animation:splash-progress 1.25s ease-in-out infinite; }
+@keyframes splash-arrive { from { opacity:0; transform:translateY(10px) scale(.96); } to { opacity:1; transform:none; } }
+@keyframes splash-orbit { to { transform:rotate(360deg); } }
+@keyframes splash-progress { from { transform:translateX(-110%); } to { transform:translateX(215%); } }
+@media (prefers-reduced-motion:reduce) {
+  .splash-mark,.splash-name,.splash-message,.splash-orbit,.splash-progress span { animation:none; }
+}
 @media (max-width:480px) { .terminal-title small { display:none; } .terminal-screen header { padding-inline:6px; } .terminal-view-switch button { padding-inline:7px; } }

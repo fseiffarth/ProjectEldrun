@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 
-import type { CalendarTask, TaskColumn } from "../../types";
+import { resolveProjectDirectory, type CalendarTask, type TaskColumn } from "../../types";
 import { useCalendarStore } from "../../stores/calendar";
 import { useProjectsStore } from "../../stores/projects";
 import { useTodoStore } from "../../stores/todo";
@@ -20,6 +20,9 @@ import {
 import { useT } from "../../lib/i18n";
 import { useUse24h } from "../../lib/timeFormat";
 import { useStepReorder } from "./useStepReorder";
+import { resolveRemarkAbsPath } from "../../lib/projectRemarks";
+import { jumpToSource } from "../embed/FileViewerPane";
+import { basename } from "../../lib/paths";
 
 interface Props {
   task: CalendarTask;
@@ -442,7 +445,7 @@ export function TodoCard({ task, columns, onPointerDown, onEdit, onOpenMail }: P
         </div>
       )}
 
-      {(task.project_id || task.mail) && (
+      {(task.project_id || task.mail || task.file) && (
         <div className="todo-card-foot">
           {task.project_id && (
             <button
@@ -468,6 +471,21 @@ export function TodoCard({ task, columns, onPointerDown, onEdit, onOpenMail }: P
               aria-label={t("todoCard.openMail")}
             >
               ✉
+            </button>
+          )}
+          {task.file && (
+            <button
+              type="button"
+              className={"todo-card-mail" + (project ? "" : " todo-card-project-unknown")}
+              onPointerDown={stop}
+              disabled={!project}
+              title={project ? task.file.path : t("todoCard.unknownProject")}
+              onClick={() => {
+                const abs = resolveRemarkAbsPath(resolveProjectDirectory(project), task.file!.path);
+                if (abs) jumpToSource(abs, task.file!.line ?? 1);
+              }}
+            >
+              📌 {basename(task.file.path)}{task.file.line != null ? `:${task.file.line}` : ""}
             </button>
           )}
         </div>

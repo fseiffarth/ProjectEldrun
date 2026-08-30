@@ -2341,10 +2341,12 @@ _Layout, style, and anything an agent must not do._
 
 ## Project docs
 
+- [PROJECT.md](./PROJECT.md) — map of the scaffold: every file linked, with what it is for
 - [README.md](./README.md) — overview
 - [DOCUMENTATION.md](./DOCUMENTATION.md) — reference documentation
 - [ROADMAP.md](./ROADMAP.md) — planned direction
 - [TODO.md](./TODO.md) — open work items
+- [REMARKS.md](./REMARKS.md) — project-wide remarks attached to files and lines
 - [STATUS.md](./STATUS.md) — current state
 "#;
 
@@ -2376,11 +2378,55 @@ Gemini-specific overrides only.
 Other agent files: [AGENTS.md](./AGENTS.md) · [CLAUDE.md](./CLAUDE.md)
 "#;
 
+/// The navigation hub: one file linking every other scaffold file with a line
+/// on what it is for, so a fresh project can be walked from a single entry
+/// point — the links are relative, so the markdown viewer's link-following
+/// (#49/#50) opens each target in-app. Scaffolded like the rest (never
+/// overwritten), and listed first so previews show the map before the mapped.
+const PROJECT_SCAFFOLD: &str = r#"# Project Map
+
+Start here. This file links every scaffold file with what it is for, so the
+project can be navigated from one place. The links are relative and open
+in Eldrun's markdown viewer.
+
+## Docs
+
+- [README.md](./README.md) — overview: what this project is and how to use it
+- [DOCUMENTATION.md](./DOCUMENTATION.md) — reference documentation
+- [ROADMAP.md](./ROADMAP.md) — planned direction
+- [STATUS.md](./STATUS.md) — current state
+- [TODO.md](./TODO.md) — open work items
+- [REMARKS.md](./REMARKS.md) — project-wide remarks attached to files and lines
+
+## Agent instructions
+
+- [AGENTS.md](./AGENTS.md) — canonical instructions for every AI coding agent
+- [CLAUDE.md](./CLAUDE.md) — Claude Code pointer; imports AGENTS.md
+- [GEMINI.md](./GEMINI.md) — Gemini CLI pointer; imports AGENTS.md
+
+## Config
+
+- [.claude/settings.json](./.claude/settings.json) — Claude Code permissions for this project
+- [.gitignore](./.gitignore) — patterns git ignores (git-backed projects only)
+
+_Add links to your own key files and folders here so this stays the map of
+the project._
+"#;
+
+const REMARKS_SCAFFOLD: &str = r#"# Remarks
+
+Per-file remarks. One bullet per remark:
+`- [ ] [<path>:<line>](./<path>:<line>) — text`. Line optional, a hint only.
+Tick a box to resolve a remark. Everything else in this file is yours.
+"#;
+
 pub const SCAFFOLD_FILES: &[(&str, &str)] = &[
+    ("PROJECT.md", PROJECT_SCAFFOLD),
     ("AGENTS.md", AGENTS_SCAFFOLD),
     ("CLAUDE.md", CLAUDE_SCAFFOLD),
     ("GEMINI.md", GEMINI_SCAFFOLD),
     ("TODO.md", "# TODO\n"),
+    ("REMARKS.md", REMARKS_SCAFFOLD),
     ("ROADMAP.md", "# Roadmap\n"),
     ("STATUS.md", "# Status\n"),
     ("README.md", "# Project\n"),
@@ -2484,31 +2530,43 @@ fn git_head_unborn(dir: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// The `GITIGNORE_DEFAULT` patterns absent from `dir/.gitignore` — a missing
+/// file reports every default. Read-only: this is the migration plan's preview
+/// of what `ensure_gitignore_defaults` would append.
+fn missing_gitignore_lines_at(dir: &Path) -> std::io::Result<Vec<String>> {
+    let defaults: Vec<&str> = GITIGNORE_DEFAULT
+        .lines()
+        .filter(|l| !l.is_empty())
+        .collect();
+    let path = dir.join(".gitignore");
+    if !path.exists() {
+        return Ok(defaults.into_iter().map(str::to_string).collect());
+    }
+    let existing = fs::read_to_string(&path)?;
+    let existing_lines: HashSet<&str> = existing.lines().collect();
+    Ok(defaults
+        .into_iter()
+        .filter(|l| !existing_lines.contains(l))
+        .map(str::to_string)
+        .collect())
+}
+
 /// Append any `GITIGNORE_DEFAULT` pattern missing from `dir/.gitignore` to the
 /// end of the file, creating it fresh if absent. Existing lines are never
 /// reordered or removed — this only ever adds patterns Eldrun scaffolds by
 /// default (e.g. a new one like `project.json` added after the project's
 /// `.gitignore` was first written). Returns the patterns that were added.
 fn ensure_gitignore_defaults(dir: &Path) -> std::io::Result<Vec<String>> {
-    let path = dir.join(".gitignore");
-    let defaults: Vec<&str> = GITIGNORE_DEFAULT
-        .lines()
-        .filter(|l| !l.is_empty())
-        .collect();
-    if !path.exists() {
-        fs::write(&path, GITIGNORE_DEFAULT)?;
-        return Ok(defaults.into_iter().map(str::to_string).collect());
-    }
-    let existing = fs::read_to_string(&path)?;
-    let existing_lines: HashSet<&str> = existing.lines().collect();
-    let missing: Vec<&str> = defaults
-        .into_iter()
-        .filter(|l| !existing_lines.contains(l))
-        .collect();
+    let missing = missing_gitignore_lines_at(dir)?;
     if missing.is_empty() {
         return Ok(vec![]);
     }
-    let mut updated = existing;
+    let path = dir.join(".gitignore");
+    if !path.exists() {
+        fs::write(&path, GITIGNORE_DEFAULT)?;
+        return Ok(missing);
+    }
+    let mut updated = fs::read_to_string(&path)?;
     if !updated.is_empty() && !updated.ends_with('\n') {
         updated.push('\n');
     }
@@ -2517,7 +2575,7 @@ fn ensure_gitignore_defaults(dir: &Path) -> std::io::Result<Vec<String>> {
         updated.push('\n');
     }
     fs::write(&path, updated)?;
-    Ok(missing.into_iter().map(str::to_string).collect())
+    Ok(missing)
 }
 
 /// Result of repairing one project's scaffold — which pieces were actually
@@ -2847,6 +2905,252 @@ pub fn project_scaffold_missing(project_id: String) -> Result<bool, String> {
         return Ok(false);
     }
     Ok(scaffold_is_missing_at(&target, with_git))
+}
+
+// ── Step-by-step project migration ─────────────────────────────────────────
+
+/// One proposed change of the "Migrate project" flow. The dialog renders each
+/// step with what it would do and the user accepts or declines it; `id` is what
+/// an accepting `project_migration_apply` call echoes back. Kinds:
+/// `entry` (normalize the projects.json entry), `createFile`, `upgradeStub`,
+/// `gitignore`, `gitInit`.
+#[derive(Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MigrationStep {
+    pub id: String,
+    pub kind: String,
+    /// The project-relative file the step touches, when it touches one.
+    pub path: Option<String>,
+    /// Human-readable specifics (gitignore patterns to append, entry fields
+    /// that change) — data, not prose: the frontend owns the wording.
+    pub details: Vec<String>,
+}
+
+/// The dry-run answer to "what would migrating this project change" — a list
+/// the user reviews step by step. Empty `steps` means already up to date.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MigrationPlan {
+    pub project_id: String,
+    pub name: String,
+    /// The local dir scaffold steps would run in; `None` when no local target
+    /// has materialized yet (then only the `entry` step can be offered).
+    pub target_dir: Option<String>,
+    pub steps: Vec<MigrationStep>,
+}
+
+/// What one apply actually changed. `report` reuses the repair shape so the
+/// summary code is shared with "Repair scaffold files".
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MigrationApplyReport {
+    pub entry_normalized: bool,
+    pub report: ScaffoldRepairReport,
+}
+
+/// What `normalize_entry` would change on this entry, as `field: old → new`
+/// lines — computed by running the real normalizer on a clone and diffing, so
+/// the preview can never drift from what an accepted `entry` step applies.
+fn entry_migration_details(entry: &ProjectEntry) -> Vec<String> {
+    let mut probe = entry.clone();
+    if !normalize_entry(&mut probe) {
+        return vec![];
+    }
+    let mut details = Vec::new();
+    for key in ["directory", "git_type"] {
+        let before = entry.extra.get(key).and_then(Value::as_str);
+        let after = probe.extra.get(key).and_then(Value::as_str);
+        if before != after {
+            details.push(match before {
+                Some(b) => format!("{key}: {b} → {}", after.unwrap_or("")),
+                None => format!("{key} → {}", after.unwrap_or("")),
+            });
+        }
+    }
+    details
+}
+
+/// The scaffold-side migration steps for one materialized target dir — the
+/// same conditions `repair_project_scaffold_at` acts on, read-only and one
+/// step per piece so each can be accepted or declined on its own.
+fn migration_steps_at(dir: &Path, with_git: bool) -> std::io::Result<Vec<MigrationStep>> {
+    let mut steps = Vec::new();
+    for (name, content) in SCAFFOLD_FILES {
+        let p = dir.join(name);
+        match fs::read_to_string(&p) {
+            Ok(existing) => {
+                if existing != *content && is_legacy_agent_stub(name, &existing) {
+                    steps.push(MigrationStep {
+                        id: format!("stub:{name}"),
+                        kind: "upgradeStub".to_string(),
+                        path: Some((*name).to_string()),
+                        details: vec![],
+                    });
+                }
+            }
+            Err(_) => {
+                if !p.exists() {
+                    steps.push(MigrationStep {
+                        id: format!("file:{name}"),
+                        kind: "createFile".to_string(),
+                        path: Some((*name).to_string()),
+                        details: vec![],
+                    });
+                }
+            }
+        }
+    }
+    if !dir.join(".claude/settings.json").exists() {
+        steps.push(MigrationStep {
+            id: "claude_settings".to_string(),
+            kind: "createFile".to_string(),
+            path: Some(".claude/settings.json".to_string()),
+            details: vec![],
+        });
+    }
+    if with_git {
+        let missing = missing_gitignore_lines_at(dir)?;
+        if !missing.is_empty() {
+            steps.push(MigrationStep {
+                id: "gitignore".to_string(),
+                kind: "gitignore".to_string(),
+                path: Some(".gitignore".to_string()),
+                details: missing,
+            });
+        }
+        // `.exists()`, not `is_dir()`: a linked worktree's `.git` is a file
+        // (#23 I6) and must not invite a nested `git init`.
+        if !dir.join(".git").exists() {
+            steps.push(MigrationStep {
+                id: "git_init".to_string(),
+                kind: "gitInit".to_string(),
+                path: None,
+                details: vec![],
+            });
+        }
+    }
+    Ok(steps)
+}
+
+/// Apply the **accepted** scaffold steps only. Every condition is re-checked
+/// against the disk (the plan is a snapshot and the tree can move under it),
+/// so a stale accept degrades to a no-op rather than an overwrite — the
+/// never-overwrite rule of `repair_project_scaffold_at` holds per step.
+fn apply_migration_steps_at(
+    dir: &Path,
+    with_git: bool,
+    accepted: &HashSet<String>,
+) -> std::io::Result<ScaffoldRepairReport> {
+    fs::create_dir_all(dir)?;
+    let mut report = ScaffoldRepairReport::default();
+    for (name, content) in SCAFFOLD_FILES {
+        let p = dir.join(name);
+        if accepted.contains(&format!("file:{name}")) && !p.exists() {
+            fs::write(&p, content)?;
+            report.created_files.push((*name).to_string());
+        } else if accepted.contains(&format!("stub:{name}")) {
+            if let Ok(existing) = fs::read_to_string(&p) {
+                if existing != *content && is_legacy_agent_stub(name, &existing) {
+                    fs::write(&p, content)?;
+                    report.updated_files.push((*name).to_string());
+                }
+            }
+        }
+    }
+    if accepted.contains("claude_settings") {
+        let dot_claude = dir.join(".claude");
+        fs::create_dir_all(&dot_claude)?;
+        let cs = dot_claude.join("settings.json");
+        if !cs.exists() {
+            fs::write(&cs, CLAUDE_SETTINGS)?;
+            report
+                .created_files
+                .push(".claude/settings.json".to_string());
+        }
+    }
+    if with_git && accepted.contains("gitignore") {
+        report.gitignore_lines_added = ensure_gitignore_defaults(dir)?;
+    }
+    if with_git && accepted.contains("git_init") && !dir.join(".git").exists() {
+        let _ = crate::services::git_init::init_repo(dir);
+        report.git_initialized = dir.join(".git").exists();
+    }
+    Ok(report)
+}
+
+/// Dry-run for the "Migrate project" dialog: everything an old project is
+/// missing relative to the current Eldrun state, one step per piece. Changes
+/// nothing.
+#[tauri::command]
+pub fn project_migration_plan(project_id: String) -> Result<MigrationPlan, String> {
+    let list_path = storage::state_dir().join("projects.json");
+    let list: ProjectsList = storage::read_json(&list_path).map_err(|e| e.to_string())?;
+    let entry = list
+        .into_iter()
+        .find(|p| p.id == project_id)
+        .ok_or_else(|| "Project not found".to_string())?;
+    let mut steps = Vec::new();
+    let entry_details = entry_migration_details(&entry);
+    if !entry_details.is_empty() {
+        steps.push(MigrationStep {
+            id: "entry".to_string(),
+            kind: "entry".to_string(),
+            path: None,
+            details: entry_details,
+        });
+    }
+    let mut target_dir = None;
+    if let Some((target, with_git)) = scaffold_target_for_entry(&entry) {
+        if target.is_dir() {
+            steps.extend(migration_steps_at(&target, with_git).map_err(|e| e.to_string())?);
+            target_dir = Some(target.to_string_lossy().to_string());
+        }
+    }
+    Ok(MigrationPlan {
+        project_id: entry.id,
+        name: entry.name,
+        target_dir,
+        steps,
+    })
+}
+
+/// Apply the steps the user accepted (by id, from `project_migration_plan`).
+/// Declined steps are simply absent from `accepted` and nothing runs for them.
+#[tauri::command]
+pub fn project_migration_apply(
+    project_id: String,
+    accepted: Vec<String>,
+) -> Result<MigrationApplyReport, String> {
+    let accepted: HashSet<String> = accepted.into_iter().collect();
+    let mut entry_normalized = false;
+    if accepted.contains("entry") {
+        entry_normalized = patch_projects_list(|list| {
+            let entry = list
+                .iter_mut()
+                .find(|p| p.id == project_id)
+                .ok_or_else(|| "Project not found".to_string())?;
+            Ok(normalize_entry(entry))
+        })?;
+    }
+    // Re-read after the entry step: normalization can backfill the very
+    // `directory` the scaffold target resolves from.
+    let list_path = storage::state_dir().join("projects.json");
+    let list: ProjectsList = storage::read_json(&list_path).map_err(|e| e.to_string())?;
+    let entry = list
+        .into_iter()
+        .find(|p| p.id == project_id)
+        .ok_or_else(|| "Project not found".to_string())?;
+    let mut report = ScaffoldRepairReport::default();
+    if let Some((target, with_git)) = scaffold_target_for_entry(&entry) {
+        if target.is_dir() {
+            report =
+                apply_migration_steps_at(&target, with_git, &accepted).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(MigrationApplyReport {
+        entry_normalized,
+        report,
+    })
 }
 
 #[derive(Debug, Deserialize)]
@@ -4358,6 +4662,105 @@ mod tests {
         );
     }
 
+    // ── Step-by-step migration ─────────────────────────────────────────────
+
+    #[test]
+    fn migration_plan_lists_one_step_per_missing_piece() {
+        let tmp = tempfile::tempdir().unwrap();
+        let steps = migration_steps_at(tmp.path(), true).unwrap();
+        // Every scaffold file + .claude/settings.json as createFile, plus the
+        // gitignore and git-init steps.
+        let create: Vec<&str> = steps
+            .iter()
+            .filter(|s| s.kind == "createFile")
+            .filter_map(|s| s.path.as_deref())
+            .collect();
+        assert_eq!(create.len(), SCAFFOLD_FILES.len() + 1);
+        assert!(create.contains(&"AGENTS.md"));
+        assert!(create.contains(&".claude/settings.json"));
+        let gitignore = steps.iter().find(|s| s.id == "gitignore").unwrap();
+        assert!(gitignore.details.contains(&"project.json".to_string()));
+        assert!(steps.iter().any(|s| s.id == "git_init"));
+    }
+
+    #[test]
+    fn migration_plan_offers_a_stub_upgrade_not_a_create_for_a_legacy_doc() {
+        let tmp = tempfile::tempdir().unwrap();
+        scaffold_project(tmp.path(), false).unwrap();
+        std::fs::write(tmp.path().join("CLAUDE.md"), "# Claude Context\n").unwrap();
+        let steps = migration_steps_at(tmp.path(), false).unwrap();
+        assert_eq!(
+            steps,
+            vec![MigrationStep {
+                id: "stub:CLAUDE.md".to_string(),
+                kind: "upgradeStub".to_string(),
+                path: Some("CLAUDE.md".to_string()),
+                details: vec![],
+            }],
+            "a complete no-git scaffold with one legacy stub has exactly that one step"
+        );
+    }
+
+    #[test]
+    fn migration_apply_honours_declines_step_by_step() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Accept only two of the plan's steps; everything declined must stay
+        // exactly as it was — including git init.
+        let accepted: HashSet<String> = ["file:AGENTS.md".to_string(), "gitignore".to_string()]
+            .into_iter()
+            .collect();
+        let report = apply_migration_steps_at(tmp.path(), true, &accepted).unwrap();
+        assert_eq!(report.created_files, vec!["AGENTS.md"]);
+        assert!(!report.gitignore_lines_added.is_empty());
+        assert!(tmp.path().join(".gitignore").exists());
+        assert!(!tmp.path().join("TODO.md").exists(), "declined file created");
+        assert!(
+            !tmp.path().join(".claude/settings.json").exists(),
+            "declined settings created"
+        );
+        assert!(!report.git_initialized);
+        assert!(!tmp.path().join(".git").exists(), "declined git init ran");
+    }
+
+    #[test]
+    fn migration_apply_rechecks_disk_so_a_stale_accept_never_overwrites() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Planned as missing, but the user (or an agent) wrote real content
+        // before the apply landed — the accepted create must become a no-op.
+        std::fs::write(tmp.path().join("AGENTS.md"), "# Agents\n\nReal guidance.\n").unwrap();
+        let accepted: HashSet<String> =
+            ["file:AGENTS.md".to_string(), "stub:AGENTS.md".to_string()]
+                .into_iter()
+                .collect();
+        let report = apply_migration_steps_at(tmp.path(), false, &accepted).unwrap();
+        assert!(report.created_files.is_empty());
+        assert!(report.updated_files.is_empty());
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("AGENTS.md")).unwrap(),
+            "# Agents\n\nReal guidance.\n",
+        );
+    }
+
+    #[test]
+    fn entry_migration_details_previews_the_normalize_diff() {
+        let mut entry = legacy_entry();
+        entry
+            .extra
+            .insert("git_type".to_string(), Value::String("private".to_string()));
+        let details = entry_migration_details(&entry);
+        assert_eq!(
+            details,
+            vec![
+                "directory → /home/u/eldrun/projects/projecteldrun".to_string(),
+                "git_type: private → remote-private".to_string(),
+            ],
+        );
+        // An already-normalized entry previews no step.
+        let mut probe = entry.clone();
+        normalize_entry(&mut probe);
+        assert!(entry_migration_details(&probe).is_empty());
+    }
+
     // ── scaffold_project ───────────────────────────────────────────────────
 
     #[test]
@@ -4366,6 +4769,7 @@ mod tests {
         scaffold_project(tmp.path(), true).unwrap();
 
         for name in &[
+            "PROJECT.md",
             "AGENTS.md",
             "CLAUDE.md",
             "GEMINI.md",

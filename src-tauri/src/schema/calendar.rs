@@ -377,6 +377,18 @@ pub struct TaskEventLink {
     pub location: String,
 }
 
+/// A project file a card was converted from, with a frozen remark snapshot.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct TaskFileLink {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub project_id: String,
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<u32>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub text: String,
+}
+
 /// A to-do (VTODO). `due`/`start` use the same local encoding as events; a task
 /// with no `due` simply never appears in the calendar views, only in the task list.
 ///
@@ -446,6 +458,9 @@ pub struct CalendarTask {
     /// just record which object it came from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event: Option<TaskEventLink>,
+    /// The project file remark this card was converted from, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<TaskFileLink>,
     /// `ProjectEntry.id` this card belongs to, or empty.
     ///
     /// Deliberately **not** validated against `projects.json`: that would make
@@ -1468,6 +1483,12 @@ mod tests {
                 occurrence_start: "2026-07-30T09:00".into(),
                 ..Default::default()
             }),
+            file: Some(TaskFileLink {
+                project_id: "proj".into(),
+                path: "src/lib.rs".into(),
+                line: Some(9),
+                text: "snapshot".into(),
+            }),
             project_id: "proj".into(),
             ..task("t")
         };
@@ -1483,6 +1504,7 @@ mod tests {
         assert_eq!(back.rank, Some(2048.0));
         assert_eq!(back.tags, vec!["v2"]);
         assert_eq!(back.project_id, "proj");
+        assert_eq!(back.file.as_ref().map(|f| f.path.as_str()), Some("src/lib.rs"));
         assert_eq!(back.mail.unwrap().message_id, "inbox-42");
         let event = back.event.unwrap();
         assert_eq!(event.event_id, "ev-7");

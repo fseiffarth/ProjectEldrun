@@ -1894,6 +1894,29 @@
 }
 .mobile-indicator-error { color: var(--danger, var(--text-primary)); }
 .mobile-indicator-notice { color: var(--success, var(--text-primary)); }
+/* The pairing code is read off this menu and typed on a phone, so it is set
+   large and spaced rather than folded into the 10px status line beside it. */
+.mobile-indicator-paircode {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 8px;
+  text-align: center;
+}
+.mobile-indicator-paircode code {
+  font-family: var(--mono-font, monospace);
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  color: var(--text-primary);
+  user-select: text;
+  overflow-wrap: anywhere;
+}
+.mobile-indicator-paircode span {
+  font-size: 10px;
+  line-height: 1.4;
+  color: var(--text-secondary);
+}
 .mobile-indicator-actions {
   display: flex;
   flex-wrap: wrap;

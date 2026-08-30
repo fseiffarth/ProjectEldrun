@@ -343,18 +343,34 @@ pub enum TmuxWrap {
     Attach(String),
 }
 
+/// tmux scrollback depth for Eldrun-created sessions — and therefore the depth
+/// the phone replay (`mobile_control::pty_bridge`) and the phone's own xterm
+/// buffer are sized to: the three are one number by design, so what tmux
+/// retains is what a reattach can show. tmux's own default is 2000 lines, which
+/// silently bounded "the whole session" long before any client cap did.
+///
+/// A pane copies `history-limit` at creation, so it must be set *before*
+/// `new-session` — which forces `-g` (there is no session to scope it to yet).
+/// The wraps already set global options (`status off`, `mouse on`), so this
+/// widens no footprint kind, only the retention number; like them it is
+/// runtime server state that dies with the tmux server, never configuration
+/// on disk.
+pub const TMUX_HISTORY_LINES: u32 = 10_000;
+
 /// Wrap a resolved `exec …` line in a tmux launch (see [`TmuxWrap`]). Emitted as
 /// a POSIX-sh `if command -v tmux …` so a host **without** tmux degrades to the
 /// plain exec (today's behavior) plus a one-line notice, instead of failing —
 /// tmux is usually preinstalled on a compute/HPC host but cannot be assumed. The
-/// session gets `status off` (Eldrun already draws tabs/layout, so tmux's status
-/// bar is redundant chrome) and `mouse on` (wheel scrolls tmux history, so
-/// scrollback still feels native), chained as extra tmux commands after a literal
-/// `;` argv separator.
+/// session gets [`TMUX_HISTORY_LINES`] of scrollback (set before `new-session`,
+/// since a pane copies the limit at creation), `status off` (Eldrun already
+/// draws tabs/layout, so tmux's status bar is redundant chrome) and `mouse on`
+/// (wheel scrolls tmux history, so scrollback still feels native), chained as
+/// extra tmux commands around a literal `;` argv separator.
 fn tmux_wrap_exec(exec_line: &str, wrap: &TmuxWrap) -> String {
-    // `status off`/`mouse on` are passed as separate tmux commands: a standalone
+    // The extra options are passed as separate tmux commands: a standalone
     // `;` token (quoted so the remote shell hands it to tmux literally, not as a
     // shell separator) splits tmux's argv into successive commands.
+    let history = format!("set -g history-limit {TMUX_HISTORY_LINES} ';'");
     let opts = "';' set -g status off ';' set -g mouse on";
     match wrap {
         TmuxWrap::Session(name) => {
@@ -365,7 +381,7 @@ fn tmux_wrap_exec(exec_line: &str, wrap: &TmuxWrap) -> String {
             let target = shell_quote(exec_line);
             format!(
                 "if command -v tmux >/dev/null 2>&1; then \
-                 exec tmux new-session -A -D -s {q} {target} {opts}; \
+                 exec tmux {history} new-session -A -D -s {q} {target} {opts}; \
                  else printf 'eldrun: tmux not found on the remote host; session persistence is OFF (install tmux to enable it)\\n' >&2; {exec_line}; fi"
             )
         }
@@ -373,7 +389,7 @@ fn tmux_wrap_exec(exec_line: &str, wrap: &TmuxWrap) -> String {
             let q = shell_quote(name);
             format!(
                 "if command -v tmux >/dev/null 2>&1; then \
-                 exec tmux new-session -A -D -s {q} {opts}; \
+                 exec tmux {history} new-session -A -D -s {q} {opts}; \
                  else printf 'eldrun: tmux not found on the remote host; cannot attach session %s\\n' {q} >&2; exec \"${{SHELL:-/bin/bash}}\" -l; fi"
             )
         }
@@ -1403,7 +1419,11 @@ mod tests {
         // …and the exec is a new-session -A -D on the derived name, with the login
         // shell exec nested as tmux's (quoted) command argument.
         assert!(cmd.contains("command -v tmux >/dev/null 2>&1"));
-        assert!(cmd.contains("exec tmux new-session -A -D -s 'eldrun-p1_shell-1' "));
+        // history-limit precedes new-session — a pane copies it at creation, so
+        // chaining it after (like status/mouse) would leave the default 2000.
+        assert!(cmd.contains(
+            "exec tmux set -g history-limit 10000 ';' new-session -A -D -s 'eldrun-p1_shell-1' "
+        ));
         assert!(cmd.contains("'exec \"${SHELL:-/bin/bash}\" -l'"));
         // status/mouse options are chained as separate tmux commands.
         assert!(cmd.contains("';' set -g status off ';' set -g mouse on"));
@@ -1421,7 +1441,7 @@ mod tests {
         assert!(cmd.contains("curl -fsSL https://claude.ai/install.sh | bash"));
         // …and the whole `$SHELL -lc '<prelude; exec claude>'` line is tmux's
         // (quoted) command argument on the persistent session.
-        assert!(cmd.contains("exec tmux new-session -A -D -s 'eldrun-p1_a1' "));
+        assert!(cmd.contains("';' new-session -A -D -s 'eldrun-p1_a1' "));
     }
 
     #[test]
@@ -1448,7 +1468,7 @@ mod tests {
         assert!(cmd.contains("--resume"));
         assert!(cmd.contains("sess-abc"));
         // …and the whole thing is tmux's command argument on the persistent session.
-        assert!(cmd.contains("exec tmux new-session -A -D -s 'eldrun-p1--agent-uuid' "));
+        assert!(cmd.contains("';' new-session -A -D -s 'eldrun-p1--agent-uuid' "));
         // tmux-absent still runs the plain exec fallback.
         assert!(cmd.contains("session persistence is OFF"));
     }
@@ -1465,7 +1485,7 @@ mod tests {
             "/srv/p",
             Some(&wrap),
         );
-        assert!(cmd.contains("exec tmux new-session -A -D -s 'train' "));
+        assert!(cmd.contains("exec tmux set -g history-limit 10000 ';' new-session -A -D -s 'train' "));
         // No fresh target is exec'd inside the attach (the session already runs).
         assert!(!cmd.contains("run.py"));
     }

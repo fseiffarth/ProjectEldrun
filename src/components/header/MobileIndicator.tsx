@@ -35,6 +35,9 @@ interface RuntimeStatus {
 interface AdminResponse {
   status: string;
   devices?: Array<{ id: string }>;
+  code?: string;
+  expires_at?: number;
+  message?: string;
 }
 
 const pause = (ms: number) => new Promise<void>((resolve) => window.setTimeout(resolve, ms));
@@ -84,6 +87,11 @@ export function MobileIndicator() {
   const [refreshing, setRefreshing] = useState(false);
   const [reconnecting, setReconnecting] = useState(false);
   const [uploadingVersion, setUploadingVersion] = useState(false);
+  const [pairing, setPairing] = useState(false);
+  // The code is only good for `PAIR_TTL` (five minutes), so it is held with its
+  // own expiry and dropped when that passes: a code still on screen after it
+  // stopped working is worse than no code at all.
+  const [pairCode, setPairCode] = useState<{ code: string; expiresAt: number } | null>(null);
   const [lockingDown, setLockingDown] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [uploadNotice, setUploadNotice] = useState<string | null>(null);
@@ -141,6 +149,17 @@ export function MobileIndicator() {
     if (!mobileEnabled || !visible) closeMenu(MENU_ID);
   }, [mobileEnabled, visible, closeMenu]);
 
+  useEffect(() => {
+    if (!pairCode) return;
+    const remaining = pairCode.expiresAt * 1000 - Date.now();
+    if (remaining <= 0) {
+      setPairCode(null);
+      return;
+    }
+    const timer = window.setTimeout(() => setPairCode(null), remaining);
+    return () => window.clearTimeout(timer);
+  }, [pairCode]);
+
   const reveal = () => openMenu(MENU_ID);
   const scheduleClose = () => {
     window.clearTimeout(closeTimer.current);
@@ -187,6 +206,29 @@ export function MobileIndicator() {
     }
   };
 
+  const createPairingCode = async () => {
+    // Pairing is the sidecar's own business, so the running host is asked again
+    // here rather than trusted from the last poll: the button is enabled off a
+    // status that may be up to POLL_MS old.
+    setPairing(true);
+    setError(null);
+    setPairCode(null);
+    try {
+      const current = await invoke<RuntimeStatus>("mobile_host_status");
+      setStatus(current);
+      if (!current.running) throw new Error(tr("mobile.errStartHostFirst"));
+      const response = await invoke<AdminResponse>("mobile_admin", { request: { type: "pairing_code" } });
+      if (response.status !== "pairing_code" || !response.code) {
+        throw new Error(response.message ?? tr("mobile.errPairingUnavailable"));
+      }
+      setPairCode({ code: response.code, expiresAt: response.expires_at ?? Math.floor(Date.now() / 1000) + 300 });
+    } catch (reason) {
+      setError(String(reason));
+    } finally {
+      setPairing(false);
+    }
+  };
+
   const lockDownNow = async () => {
     if (!mobileHost) return;
     if (!window.confirm(tr("mobile.lockdownConfirm"))) return;
@@ -197,6 +239,7 @@ export function MobileIndicator() {
       if (response.status === "error") throw new Error(response.message ?? tr("mobile.indRevokeError"));
       await updateSettings({ eldrun_mobile_host: { ...mobileHost, enabled: false } });
       await invoke("mobile_host_apply", { enabled: false });
+      setPairCode(null);
       closeMenu(MENU_ID);
     } catch (reason) {
       setError(tr("mobile.lockdownPartial", { reason: String(reason) }));
@@ -207,6 +250,7 @@ export function MobileIndicator() {
 
   if (!mobileEnabled || !visible) return null;
 
+  const busy = refreshing || reconnecting || uploadingVersion || pairing || lockingDown;
   const tone = statusTone(status, refreshing || reconnecting);
   const title = tone === "connected"
     ? t("mobile.indConnectedTitle")
@@ -267,24 +311,33 @@ export function MobileIndicator() {
             {status?.origin && <div className="mobile-indicator-origin">{status.origin}</div>}
             {error && <div className="mobile-indicator-error">{error}</div>}
             {uploadNotice && <div className="mobile-indicator-notice" role="status">{uploadNotice}</div>}
+            {pairCode && (
+              <div className="mobile-indicator-paircode" role="status">
+                <code>{pairCode.code}</code>
+                <span>{t("mobile.pairCodeValidity")}</span>
+              </div>
+            )}
             <div className="mobile-indicator-actions">
-              <button type="button" className="vpn-indicator-connect" disabled={refreshing || reconnecting || uploadingVersion || lockingDown} onClick={() => void refresh()}>
+              <button type="button" className="vpn-indicator-connect" disabled={busy} onClick={() => void refresh()}>
                 {refreshing ? t("mobile.refreshing") : t("mobile.indRefresh")}
               </button>
-              <button type="button" className="vpn-indicator-connect" disabled={refreshing || reconnecting || uploadingVersion || lockingDown} onClick={() => void reconnect()}>
+              <button type="button" className="vpn-indicator-connect" disabled={busy} onClick={() => void reconnect()}>
                 {reconnecting ? t("mobile.indReconnecting") : t("mobile.indReconnect")}
+              </button>
+              <button type="button" className="vpn-indicator-connect" disabled={busy || !status?.running} onClick={() => void createPairingCode()}>
+                {pairing ? t("mobile.creatingCode") : t("mobile.newPairingCode")}
               </button>
               {status?.running && hasPairedPhone && (
                 <button
                   type="button"
                   className="vpn-indicator-connect"
-                  disabled={refreshing || reconnecting || uploadingVersion || lockingDown}
+                  disabled={busy}
                   onClick={() => void uploadMobileVersion()}
                 >
                   {uploadingVersion ? t("mobile.indUploading") : t("mobile.indUpload")}
                 </button>
               )}
-              <button type="button" className="vpn-indicator-connect mobile-indicator-lockdown" disabled={refreshing || reconnecting || uploadingVersion || lockingDown || !status?.running} onClick={() => void lockDownNow()}>
+              <button type="button" className="vpn-indicator-connect mobile-indicator-lockdown" disabled={busy || !status?.running} onClick={() => void lockDownNow()}>
                 {lockingDown ? t("mobile.indLocking") : t("mobile.indLock")}
               </button>
             </div>
