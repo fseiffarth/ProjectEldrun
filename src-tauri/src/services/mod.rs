@@ -1,4 +1,8 @@
 pub mod agent_session;
+// Default-on Linux filesystem boundary for local agent tabs.  The authority
+// decision and root computation stay AppHandle-free; terminal spawn only applies
+// the resulting bubblewrap argv.
+pub mod agent_fence;
 // "Check for a new Eldrun" against the GitHub releases page: version compare,
 // per-platform asset pick, staged download, per-platform install.
 pub mod app_update;

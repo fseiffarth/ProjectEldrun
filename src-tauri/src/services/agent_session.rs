@@ -710,6 +710,7 @@ mod tests {
             rows: 24,
             local_only: false,
             sandbox: false,
+            agent: true,
             project_id: None,
             remote_host_id: None,
             tmux_session: None,

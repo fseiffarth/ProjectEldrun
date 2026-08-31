@@ -64,6 +64,9 @@ vi.mock("../stores/settings", () => ({
   useSettingsStore: vi.fn((sel: (s: object) => unknown) =>
     sel({ settings: { color_scheme: "dark" } }),
   ),
+  // Pass-through: only "system" resolves differently, and these tests pin a
+  // concrete scheme.
+  resolveTheme: (s: string) => s,
 }));
 
 import { TerminalView } from "../components/terminal/TerminalView";
@@ -128,5 +131,22 @@ describe("TerminalView — attach-only (#42)", () => {
     });
 
     expect(names().filter((name) => name === "pty_spawn")).toHaveLength(1);
+  });
+
+  it("declares agent kinds in the restriction-only spawn field", async () => {
+    await act(async () => {
+      render(
+        <TerminalView
+          id="p:custom-agent"
+          cmd="team-wrapper"
+          cwd="/p"
+          kind="local_agent"
+          visible
+          focused
+        />,
+      );
+    });
+    const call = invoke.mock.calls.find((entry) => entry[0] === "pty_spawn");
+    expect((call?.[1] as { opts: { agent: boolean } }).opts.agent).toBe(true);
   });
 });

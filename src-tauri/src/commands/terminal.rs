@@ -321,6 +321,49 @@ pub async fn pty_spawn(
     // twice.)
     opts = crate::services::agent_session::resolve_agent_session(opts);
 
+    // Resolve the fourth authority axis while cmd/cwd still describe the agent
+    // itself.  A local project member gets its own root plus the union of every
+    // box it belongs to; a box-scoped tab gets that box's roots.  Remote agents
+    // are reported as not applicable (local paths mean nothing on the far host).
+    // Root resolution is backend-owned and unknown scopes fail closed.
+    let remote_agent_run = !opts.local_only
+        && opts
+            .project_id
+            .as_deref()
+            .is_some_and(|id| crate::services::remote::remote_target_for(id).is_some());
+    let agent_spawn = crate::services::agent_fence::is_agent(&opts);
+    let fence_roots = if agent_spawn && !remote_agent_run {
+        Some(
+            crate::services::agent_fence::roots_for_scope(
+                opts.project_id.as_deref(),
+                opts.local_only,
+            )
+            .ok_or_else(|| {
+                format!(
+                    "Agent fence: unknown project or box scope '{}'; agent '{}' was not started.",
+                    opts.project_id.as_deref().unwrap_or("root"),
+                    opts.id
+                )
+            })?,
+        )
+    } else {
+        None
+    };
+
+    // Agent-native working-root flags are portable metadata, not the OS
+    // boundary: pass them on every platform for local multi-root runs.  Pick the
+    // root containing cwd as "own" so box-scoped member tabs do not receive a
+    // redundant flag for the directory they already started in.
+    if let Some(roots) = fence_roots.as_deref() {
+        let own = roots
+            .iter()
+            .filter(|root| std::path::Path::new(&opts.cwd).starts_with(root))
+            .max_by_key(|root| root.components().count())
+            .cloned()
+            .unwrap_or_else(|| std::path::PathBuf::from(&opts.cwd));
+        crate::services::agent_fence::add_box_root_args(&mut opts, roots, &own);
+    }
+
     // Codex resume, without the hook. Codex will not run Eldrun's SessionStart
     // hook until the user trusts it (`/hooks`), and an untrusted hook fails
     // silently — so nothing recorded a tab's live session id and every restored
@@ -445,6 +488,40 @@ pub async fn pty_spawn(
         crate::services::ssh_exec::wrap_pty_options(&mut opts)?;
     }
 
+    // Apply the outer bubblewrap boundary after docker/ssh selection but before
+    // local tmux.  This keeps the tmux server on the host while the command
+    // *inside* its session is fenced.  A missing/blocked bwrap fails closed.
+    let mut fenced_registration: Option<(String, String)> = None;
+    if let Some(roots) = fence_roots.as_deref() {
+        let decision = crate::services::agent_fence::decide(
+            &opts,
+            roots.to_vec(),
+            remote_agent_run,
+            crate::services::agent_fence::policy_enabled(opts.project_id.as_deref()),
+            cfg!(target_os = "linux"),
+            crate::services::agent_fence::bwrap_available(),
+        );
+        match decision {
+            crate::services::agent_fence::FenceDecision::Fenced { .. }
+                if opts.cmd != "ssh" && opts.cmd != "docker" =>
+            {
+                let scope_id = opts
+                    .project_id
+                    .clone()
+                    .unwrap_or_else(|| "root".to_string());
+                #[cfg(target_os = "linux")]
+                crate::services::agent_fence::wrap_pty_options_bwrap(&mut opts, roots, &scope_id)?;
+                fenced_registration = Some((opts.id.clone(), scope_id));
+            }
+            crate::services::agent_fence::FenceDecision::Unavailable { install_hint } => {
+                return Err(format!(
+                    "Agent fence: bubblewrap is unavailable, so this agent was not started. Install it with `{install_hint}`, or turn the Agent fence off for this project."
+                ));
+            }
+            _ => {}
+        }
+    }
+
     // Persistent LOCAL (tmux) sessions (TODO #85): a tab that resolved to a LOCAL
     // spawn — i.e. ssh/docker wrapping did NOT rewrite it — and carries a
     // `tmux_session` name is wrapped in a tmux session on this machine, so the run
@@ -474,7 +551,21 @@ pub async fn pty_spawn(
         }
     }
 
-    crate::terminal::spawn_pty(app, registry.inner().clone(), opts)
+    let result = crate::terminal::spawn_pty(app, registry.inner().clone(), opts);
+    if result.is_ok() {
+        if let Some((tab_id, scope_id)) = fenced_registration {
+            crate::services::agent_fence::register_tab(&tab_id, &scope_id);
+        }
+    }
+    result
+}
+
+/// Honest per-scope fence status for the project-pill menu.  This performs no
+/// spawn and uses the same cached bubblewrap probe and backend authority inputs
+/// as `pty_spawn`.
+#[tauri::command]
+pub fn agent_fence_status(project_id: String) -> crate::services::agent_fence::AgentFenceStatus {
+    crate::services::agent_fence::status_for_scope(&project_id)
 }
 
 /// List the tmux sessions running on the **local** machine (TODO #85), for a local
@@ -701,6 +792,7 @@ pub async fn pty_kill(registry: State<'_, RegistryState>, id: String) -> Result<
     // future PTY that reuses the id.
     crate::commands::credentials::forget_login_pty(&id);
     registry.lock().unwrap().kill(&id);
+    crate::services::agent_fence::on_tab_gone(&id);
     Ok(())
 }
 
@@ -717,6 +809,7 @@ pub async fn pty_kill_scope(
         crate::commands::credentials::forget_login_pty(id);
         crate::terminal::route_remove_all_views(id);
         registry.lock().unwrap().kill(id);
+        crate::services::agent_fence::on_tab_gone(id);
     }
     Ok(ids)
 }

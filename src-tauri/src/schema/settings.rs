@@ -3,6 +3,25 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// Read-only host toolchain/config paths restored inside the default-empty home
+/// of a fenced local agent.  Secrets such as `.ssh`, `gh`, AWS and gcloud are
+/// intentionally absent.
+pub const DEFAULT_AGENT_FENCE_PATHS: &[&str] = &[
+    "~/.local/bin",
+    "~/.local/share/claude",
+    "~/.local/share/pnpm",
+    "~/.nvm",
+    "~/.cargo",
+    "~/.rustup",
+    "~/anaconda3",
+    "~/miniconda3",
+    "~/.pyenv",
+    "~/.bun",
+    "~/go",
+    "~/.gitconfig",
+    "~/.config/git",
+];
+
 /// One entry in `settings["global_apps"]`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GlobalAppEntry {
@@ -59,6 +78,19 @@ pub struct Settings {
     /// frontend-side as a CSS `zoom`; the backend only round-trips the value.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ui_zoom: Option<f32>,
+    /// Custom accent color (`#rrggbb`) overriding the active theme's `--accent`
+    /// across every theme. Unset = the theme's own accent. Frontend logic only
+    /// (`stores/settings.applyAccent` — the hover/active/pill tokens all derive
+    /// from `--accent`, so one inline var recolors them together); the backend
+    /// just round-trips the value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ui_accent: Option<String>,
+    /// Corner style override: `"square"` or `"rounded"`. Unset = the active
+    /// theme's own radius tokens (the house square, or soft_dark's rounded).
+    /// Frontend logic only (`stores/settings.applyCorners`); the backend just
+    /// round-trips the value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ui_corners: Option<String>,
     /// Calendar: first column of the week — `0` = Sunday (default), `1` = Monday.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub calendar_week_start: Option<u8>,
@@ -268,6 +300,14 @@ pub struct Settings {
     /// app/web. Only Claude supports the flag; other agents ignore it. Default ON.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_remote_control: Option<bool>,
+    /// Default-on filesystem fence for locally-running agent tabs.  On Linux it
+    /// uses bubblewrap; per-project overrides live in projects.json.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_fence: Option<bool>,
+    /// Extra host paths exposed read-only inside the agent fence.  Unset uses
+    /// [`DEFAULT_AGENT_FENCE_PATHS`]; an explicit empty list exposes none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_fence_paths: Option<Vec<String>>,
     /// When true (the default), the usage recap opens by itself on the first
     /// launch of each day. Turning it off leaves the recap reachable from
     /// Settings — it stops the popup, it does not stop the counting.
@@ -576,6 +616,12 @@ pub struct Settings {
     /// header. Unset means visible whenever the Mobile host is enabled.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mobile_indicator: Option<bool>,
+    /// Whether the header's machine-state cluster (connection, battery, Mobile,
+    /// OpenVPN, Machines, CPU/RAM/GPU) is expanded into the bar. Unset means
+    /// collapsed to one lamp; a member with something wrong to say still shows
+    /// itself either way (see `stores/headerStatus`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub header_status_expanded: Option<bool>,
     #[serde(flatten)]
     pub extra: HashMap<String, Value>,
 }
@@ -685,6 +731,23 @@ impl Settings {
     /// Defaults ON when unset so existing settings files opt in automatically.
     pub fn agent_remote_control(&self) -> bool {
         self.agent_remote_control.unwrap_or(true)
+    }
+
+    /// Whether local agent tabs should receive the filesystem fence.  Default
+    /// ON so older settings files adopt the safer posture automatically.
+    pub fn agent_fence(&self) -> bool {
+        self.agent_fence.unwrap_or(true)
+    }
+
+    /// The configured read-only toolchain/config allowlist, or the documented
+    /// defaults when the key has never been written.
+    pub fn agent_fence_paths(&self) -> Vec<String> {
+        self.agent_fence_paths.clone().unwrap_or_else(|| {
+            DEFAULT_AGENT_FENCE_PATHS
+                .iter()
+                .map(|path| (*path).to_string())
+                .collect()
+        })
     }
 
     /// Whether the usage recap auto-opens once a day. Defaults ON when unset, so
@@ -881,5 +944,25 @@ mod tests {
             "mail_ai_allow fell through to `extra`: {:?}",
             s.extra.keys().collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn agent_fence_defaults_on_with_documented_paths_and_preserves_empty_override() {
+        let defaults = Settings::default();
+        assert!(defaults.agent_fence());
+        assert_eq!(
+            defaults.agent_fence_paths(),
+            super::DEFAULT_AGENT_FENCE_PATHS
+                .iter()
+                .map(|path| (*path).to_string())
+                .collect::<Vec<_>>()
+        );
+
+        let off: Settings =
+            serde_json::from_str(r#"{"agent_fence":false,"agent_fence_paths":[]}"#)
+                .expect("agent fence settings parse");
+        assert!(!off.agent_fence());
+        assert!(off.agent_fence_paths().is_empty());
+        assert!(off.extra.is_empty());
     }
 }

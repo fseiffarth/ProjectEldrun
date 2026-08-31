@@ -845,7 +845,11 @@ pub fn up(
     let (tx_rw, tx_ro) = if strict_trash {
         (Vec::new(), Vec::new())
     } else {
-        claude_transcript_mounts(&home, project_dir, &claude_projects_stage(project_id))
+        claude_transcript_mounts(
+            &home,
+            &[project_dir.to_string()],
+            &claude_projects_stage(project_id),
+        )
     };
     let rw_mounts: Vec<String> = rw_mounts.into_iter().chain(tx_rw).collect();
     let ro_mounts: Vec<String> = ro_mounts.into_iter().chain(tx_ro).collect();
@@ -1549,7 +1553,11 @@ fn narrowed_agent_mounts(dir: &str, unmounted: &[&str]) -> Vec<String> {
 /// there. With the shared root mounted, a contained agent could overwrite another
 /// project's tab record and thereby choose which conversation an **uncontained**
 /// agent resumes.
-fn rw_mounts(home: &str, live_sessions_src: &str, live_sessions_dst: &str) -> Vec<String> {
+pub(crate) fn rw_mounts(
+    home: &str,
+    live_sessions_src: &str,
+    live_sessions_dst: &str,
+) -> Vec<String> {
     let mut m = Vec::new();
     m.extend(narrowed_agent_mounts(
         &format!("{home}/.claude"),
@@ -1593,7 +1601,7 @@ const TRANSCRIPT_PROBE_LINES: usize = 32;
 /// nobody knew about at create time (a subdir tab, a fresh worktree) lands in a
 /// real host directory instead of the container's throwaway layer — teardown
 /// harvests it into `~/.claude/projects` (see [`harvest_claude_transcripts`]).
-fn claude_projects_stage(project_id: &str) -> PathBuf {
+pub(crate) fn claude_projects_stage(project_id: &str) -> PathBuf {
     stage_dir(project_id).join("claude-projects")
 }
 
@@ -1679,9 +1687,9 @@ fn transcript_name_matches(name: &str, project_dir: &str) -> bool {
 ///
 /// The whole dir used to be one rw mount, which made every project's history
 /// rewritable from inside any container.
-fn claude_transcript_mounts(
+pub(crate) fn claude_transcript_mounts(
     home: &str,
-    project_dir: &str,
+    roots: &[String],
     stage: &Path,
 ) -> (Vec<String>, Vec<String>) {
     let dest_root = format!("{home}/.claude/{CLAUDE_PROJECTS_ENTRY}");
@@ -1710,8 +1718,10 @@ fn claude_transcript_mounts(
         let _ = std::fs::create_dir_all(stage.join(&name));
         let pair = format!("{}:{dest_root}/{name}", src.to_string_lossy());
         let ours = match transcript_cwd(&src) {
-            Some(cwd) => cwd_is_within(&cwd, project_dir),
-            None => transcript_name_matches(&name, project_dir),
+            Some(cwd) => roots.iter().any(|root| cwd_is_within(&cwd, root)),
+            None => roots
+                .iter()
+                .any(|root| transcript_name_matches(&name, root)),
         };
         if ours {
             rw.push(pair);
@@ -1773,7 +1783,7 @@ fn harvest_claude_transcripts(stage: &Path, real_root: &Path) {
 }
 
 /// [`harvest_claude_transcripts`] for one project's stage.
-fn harvest_project_transcripts(project_id: &str) {
+pub(crate) fn harvest_project_transcripts(project_id: &str) {
     let real = paths::home_dir()
         .join(".claude")
         .join(CLAUDE_PROJECTS_ENTRY);
@@ -1798,7 +1808,7 @@ fn harvest_all_transcripts() {
 /// Read-only identical-path mounts: just the hook *script* dir, which is shared
 /// with host-run agents and so must be immutable from inside the container (see
 /// the module doc). Mounted only when it exists on the host.
-fn ro_mounts(hooks_dir: &Path) -> Vec<String> {
+pub(crate) fn ro_mounts(hooks_dir: &Path) -> Vec<String> {
     let mut m = Vec::new();
     if hooks_dir.is_dir() {
         let h = hooks_dir.to_string_lossy();
@@ -1810,7 +1820,7 @@ fn ro_mounts(hooks_dir: &Path) -> Vec<String> {
 /// Per-project staging dir for the writable hook-config copies:
 /// `<state_dir>/sandbox-stage/<sanitized project id>`. One dir per project
 /// (mounts are fixed at create), refreshed at each `up` — no per-tab leak.
-fn stage_dir(project_id: &str) -> PathBuf {
+pub(crate) fn stage_dir(project_id: &str) -> PathBuf {
     storage::state_dir()
         .join("sandbox-stage")
         .join(sanitize_key(project_id))
@@ -1836,7 +1846,7 @@ fn stage_dir(project_id: &str) -> PathBuf {
 /// `src:dst` strings: a host path is not colon-free on every platform (a
 /// Windows drive letter carries one), so joining here would hand the caller a
 /// string it cannot split back apart unambiguously.
-fn staged_config_mounts(home: &str, stage: &Path) -> Vec<(String, String)> {
+pub(crate) fn staged_config_mounts(home: &str, stage: &Path) -> Vec<(String, String)> {
     let home = Path::new(home);
     let mut mounts = Vec::new();
     for rel in [
@@ -2383,6 +2393,7 @@ mod tests {
             rows: 24,
             local_only: false,
             sandbox: false,
+            agent: true,
             project_id: None,
             remote_host_id: None,
             tmux_session: None,
@@ -2408,6 +2419,7 @@ mod tests {
             rows: 24,
             local_only: false,
             sandbox: true,
+            agent: true,
             project_id: Some("box:abc".to_string()),
             remote_host_id: None,
             tmux_session: None,
@@ -2772,6 +2784,12 @@ mod tests {
             "ours-subdir",
             Some(&project_dir.join("sub").to_string_lossy()),
         );
+        let second_root = base.join("work").join("box-sibling");
+        transcript_dir(
+            &projects,
+            "ours-second-root",
+            Some(&second_root.join("nested").to_string_lossy()),
+        );
         transcript_dir(
             &projects,
             "sibling",
@@ -2785,7 +2803,8 @@ mod tests {
 
         let stage = base.join("stage");
         let home_str = home.to_string_lossy().into_owned();
-        let (rw, ro) = claude_transcript_mounts(&home_str, &project, &stage);
+        let roots = vec![project.clone(), second_root.to_string_lossy().into_owned()];
+        let (rw, ro) = claude_transcript_mounts(&home_str, &roots, &stage);
 
         let src_of = |name: &str| projects.join(name).to_string_lossy().into_owned();
         let has = |v: &[String], name: &str| {
@@ -2800,6 +2819,7 @@ mod tests {
 
         assert!(has(&rw, "ours"));
         assert!(has(&rw, "ours-subdir"));
+        assert!(has(&rw, "ours-second-root"));
         assert!(
             has(&ro, "sibling"),
             "a sibling project must not be writable"
@@ -2814,10 +2834,10 @@ mod tests {
         for name in ["sibling", "elsewhere", "empty-unknown"] {
             assert!(!has(&rw, name));
         }
-        assert_eq!(rw.len() + ro.len(), 1 + 5);
+        assert_eq!(rw.len() + ro.len(), 1 + 6);
         // Deterministic, so the mount list doesn't flap with readdir order.
         assert_eq!(
-            claude_transcript_mounts(&home_str, &project, &stage),
+            claude_transcript_mounts(&home_str, &roots, &stage),
             (rw, ro)
         );
 

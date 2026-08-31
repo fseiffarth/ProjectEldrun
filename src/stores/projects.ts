@@ -861,6 +861,9 @@ interface ProjectsStore {
    *  (`true`/`false`), or clear the override (`null`) to inherit the global
    *  `agent_remote_control` setting. */
   setProjectRemoteControl: (id: string, remoteControl: boolean | null) => Promise<void>;
+  /** Force the local-agent filesystem fence on/off, or clear to inherit the
+   * global default. Running tabs keep their current boundary until respawn. */
+  setProjectAgentFence: (id: string, agentFence: boolean | null) => Promise<void>;
   /** Opt a remote project in/out of auto-connect (connect it silently on launch
    *  and activation). Only offered once the connect can complete with no prompt —
    *  a saved SSH password, or a host recorded as `key_auth`; `autoConnectRemote`
@@ -1596,6 +1599,14 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
       remoteControl,
     });
     patchProject(id, (project) => ({ ...project, remote_control: saved ?? undefined }));
+  },
+
+  setProjectAgentFence: async (id, agentFence) => {
+    const saved = await invoke<boolean | null>("set_project_agent_fence", {
+      projectId: id,
+      agentFence,
+    });
+    patchProject(id, (project) => ({ ...project, agent_fence: saved ?? undefined }));
   },
 
   setProjectAutoConnect: async (id, enabled) => {

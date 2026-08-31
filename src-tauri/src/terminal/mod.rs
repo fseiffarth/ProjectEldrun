@@ -431,6 +431,11 @@ pub struct PtyOptions {
     /// of a project whose sandbox toggle is enabled. See `services::sandbox`.
     #[serde(default)]
     pub sandbox: bool,
+    /// Restriction-only declaration that this renderer tab is an agent.  The
+    /// backend also recognises known agent binaries; this covers custom/local
+    /// agent launchers whose command name alone is not classifiable.
+    #[serde(default)]
+    pub agent: bool,
     /// The owning project's id, set by the frontend for tabs that belong to a
     /// project scope (not the root scope). It makes remoteness **explicit**: the
     /// ssh-wrap spawn path resolves the project's `RemoteSpec` from this id (via
@@ -713,6 +718,7 @@ impl PtyRegistry {
             // `docker exec` CLIENT — TERM the process inside the container too
             // (best-effort, no-op for tabs that never containerized).
             crate::services::sandbox::kill_tab_process(id);
+            crate::services::agent_fence::on_tab_gone(id);
         }
     }
 
@@ -738,6 +744,7 @@ impl PtyRegistry {
             // Containerized tab: also TERM the in-container process (the docker
             // exec client we just killed is not it).
             crate::services::sandbox::kill_tab_process(&id);
+            crate::services::agent_fence::on_tab_gone(&id);
         }
         reap_pids(subtree, ReapMode::Immediate);
         invalidate_proc_tree_cache();
@@ -954,6 +961,7 @@ pub fn spawn_pty(
             crate::services::codex_bind::untrack(&id, seq);
         }
         if current_spawn_ended {
+            crate::services::agent_fence::on_tab_gone(&id);
             let _ = app.emit("terminal-exit", TerminalExit { id, code: None });
         }
     });

@@ -281,6 +281,7 @@ mod tests {
             rows: 24,
             local_only: false,
             sandbox: false,
+            agent: false,
             project_id: Some("p".into()),
             remote_host_id: None,
             tmux_session: None,

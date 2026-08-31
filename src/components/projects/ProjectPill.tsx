@@ -18,7 +18,7 @@ import { PillStatusBars } from "./PillStatusBars";
 import { useProjectsStore } from "../../stores/projects";
 import { useSettingsStore } from "../../stores/settings";
 import { cmdToKind, isResumableAgentTab, isRestorableTab, useTabsStore } from "../../stores/tabs";
-import { IS_WINDOWS } from "../../lib/platform";
+import { IS_LINUX, IS_WINDOWS } from "../../lib/platform";
 import { runInstallInTab, PROVIDER_CLI_INSTALL, providerAuthLoginCmd } from "../../lib/installCommand";
 import { PythonInterpreterWindow } from "./PythonInterpreterWindow";
 import { useGitDirtyStore, type GitDirtyState } from "../../stores/gitDirty";
@@ -48,6 +48,11 @@ import { bindDragRelease, dragPlatform } from "../../lib/dragPlatform";
 import { useT, type TranslationKey } from "../../lib/i18n";
 import { isTrashProject } from "../../lib/trashProject";
 import { TrashProjectIcon } from "./TrashProjectIcon";
+import {
+  agentFenceLabelKey,
+  agentFenceReasonKey,
+  type AgentFenceStatus,
+} from "../../lib/agentFence";
 
 interface Props {
   project: ProjectEntry;
@@ -76,6 +81,10 @@ interface Props {
   /** Names of the boxes this project is in (N:M overlay model): renders the
    *  small box badge on the pill, tooltip naming them. Empty/absent = no badge. */
   boxNames?: string[];
+  /** Keyboard-steering station number (the digit that jumps here while the
+   *  mode is active). Renders a small overlay chip — absolutely positioned so
+   *  showing it never shifts the strip. Absent outside steering mode. */
+  station?: number;
 }
 
 /** File endings that mark a project as holding Python — the "Python interpreter…"
@@ -1253,6 +1262,7 @@ export function ProjectPill({
   dragDx,
   shiftPx,
   groupHintActive,
+  station,
 }: Props) {
   const t = useT();
   // Shared hover card (identical popup in the right file-viewer). Owns the
@@ -1310,6 +1320,22 @@ export function ProjectPill({
   const moveRemoteMirror = useProjectsStore((s) => s.moveRemoteMirror);
   const setProjectSandbox = useProjectsStore((s) => s.setProjectSandbox);
   const setProjectRemoteControl = useProjectsStore((s) => s.setProjectRemoteControl);
+  const setProjectAgentFence = useProjectsStore((s) => s.setProjectAgentFence);
+  const [agentFenceStatus, setAgentFenceStatus] = useState<AgentFenceStatus | null>(null);
+  useEffect(() => {
+    if (!contextMenu) return;
+    let cancelled = false;
+    invoke<AgentFenceStatus>("agent_fence_status", { projectId: project.id })
+      .then((status) => {
+        if (!cancelled) setAgentFenceStatus(status);
+      })
+      .catch(() => {
+        if (!cancelled) setAgentFenceStatus(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [contextMenu, project.id, project.agent_fence]);
   const [showContainerSettings, setShowContainerSettings] = useState(false);
   // VM tier (`docs/vm_projects_plan.md`): the settings dialog, plus a light
   // running/off poll for the pill's VM glyph — a local registry read, only
@@ -2117,6 +2143,49 @@ export function ProjectPill({
                     : "pill.remoteControlOff",
               )}
             </button>
+            <button
+              className="untested"
+              onClick={() => {
+                setContextMenu(null);
+                void setProjectAgentFence(
+                  project.id,
+                  project.agent_fence === undefined
+                    ? false
+                    : project.agent_fence === false
+                      ? true
+                      : null,
+                );
+              }}
+              title={t("pill.agentFenceMenuTitle")}
+            >
+              {t(agentFenceLabelKey(project.agent_fence))}
+              {agentFenceStatus &&
+                !agentFenceStatus.enforced &&
+                agentFenceReasonKey(agentFenceStatus.reason) && (
+                  <span>
+                    {t("pill.agentFenceNotEnforced", {
+                      reason: t(agentFenceReasonKey(agentFenceStatus.reason)!),
+                    })}
+                  </span>
+                )}
+              <UntestedTag />
+            </button>
+            {IS_LINUX && agentFenceStatus?.bwrap_available === false && (
+                <button
+                  className="untested"
+                  onClick={() => {
+                    setContextMenu(null);
+                    runInstallInTab(
+                      t("pill.agentFenceInstall"),
+                      "sudo apt install -y bubblewrap",
+                      "bash",
+                    );
+                  }}
+                >
+                  {t("pill.agentFenceInstall")}
+                  <UntestedTag />
+                </button>
+              )}
             {project.remote && (
               <button
                 disabled={!autoConnectEligible}
@@ -2473,6 +2542,13 @@ export function ProjectPill({
         onContextMenu={handleContextMenu}
         onPointerDown={startPillDrag}
       >
+        {/* Steering-mode station number (digit → jump target). aria-hidden:
+            purely a visual echo of the transient keyboard mode. */}
+        {station != null && (
+          <span className="steering-station-chip" aria-hidden>
+            {station}
+          </span>
+        )}
         <button
           className="pill-main"
           onClick={onClick}

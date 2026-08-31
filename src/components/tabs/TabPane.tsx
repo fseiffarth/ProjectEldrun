@@ -200,6 +200,7 @@ function TabPaneImpl({
           tmuxSession={tmuxSession ?? null}
           tmuxAttach={tab.tmuxAttach ?? null}
           hostBoundUid={tab.hostBoundUid ?? null}
+          kind={tab.kind}
           zoomable={zoomable}
           visible={visible}
           focused={focused}

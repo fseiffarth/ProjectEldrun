@@ -1768,6 +1768,7 @@ mod tests {
             rows: 24,
             local_only: false,
             sandbox: false,
+            agent: false,
             project_id: project_id.map(str::to_string),
             remote_host_id: None,
             tmux_session: None,

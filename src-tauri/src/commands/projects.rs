@@ -1443,6 +1443,34 @@ pub fn set_project_remote_control(
     Ok(remote_control)
 }
 
+/// Set or clear a project's override of the global default-on agent fence.
+/// The trusted projects.json mirror is what terminal spawn reads; project.json
+/// receives the same value for display/export compatibility only.
+#[tauri::command]
+pub fn set_project_agent_fence(
+    project_id: String,
+    agent_fence: Option<bool>,
+) -> Result<Option<bool>, String> {
+    patch_project_entry_mirrored(
+        &project_id,
+        |entry| {
+            match agent_fence {
+                Some(value) => {
+                    entry
+                        .extra
+                        .insert("agent_fence".into(), serde_json::Value::Bool(value));
+                }
+                None => {
+                    entry.extra.remove("agent_fence");
+                }
+            }
+            Ok(())
+        },
+        |project, ()| project.agent_fence = agent_fence,
+    )?;
+    Ok(agent_fence)
+}
+
 /// Persist a container spec into both stores: the `projects.json` entry's
 /// flattened `sandbox` (the always-local mirror the spawn path reads) and the
 /// project's own `project.json` (best effort — the list is the source of truth).
