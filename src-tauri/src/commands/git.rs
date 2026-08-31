@@ -129,6 +129,20 @@ pub(crate) fn hardened_git_args<S: AsRef<str>>(args: &[S]) -> Vec<String> {
 pub(crate) fn hardened_git_command<S: AsRef<str>>(args: &[S]) -> std::process::Command {
     let mut cmd = crate::paths::command_no_window("git");
     cmd.args(hardened_git_args(args));
+    // Read-only commands must not write the repo. `git status` (and everything
+    // that runs it: the file tree's per-entry letters, the git bar, the pill's
+    // dirty poll) opportunistically REWRITES `.git/index` when stat data looks
+    // stale — an `index.lock` create + rename that bumps `.git`'s mtime, which the
+    // file tree's non-recursive watch on the project root sees as a change to the
+    // `.git` entry. That re-listed the folder, which ran `git status`, which
+    // rewrote the index, which… — a closed loop that kept the root folder
+    // re-listing about once a second for as long as it was on screen, and rows
+    // flickering between sections whenever one of the piled-up probes failed.
+    // `GIT_OPTIONAL_LOCKS=0` is git's own switch for exactly this ("don't take
+    // optional locks, don't do the optional index refresh"): the output of every
+    // read command is unchanged, and the mutating commands (add, commit, …) take
+    // their mandatory locks regardless.
+    cmd.env("GIT_OPTIONAL_LOCKS", "0");
     cmd
 }
 
