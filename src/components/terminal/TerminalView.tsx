@@ -5,7 +5,7 @@ import { WebglAddon } from "@xterm/addon-webgl";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { invoke } from "@tauri-apps/api/core";
-import { useSettingsStore } from "../../stores/settings";
+import { resolveTheme, useSettingsStore } from "../../stores/settings";
 import { useProjectsStore } from "../../stores/projects";
 import { useT } from "../../lib/i18n";
 import { useExperimental } from "../../lib/experimental";
@@ -82,9 +82,49 @@ interface Props {
   // running rather than tearing the connection down. This view owns the PTY
   // (it spawns it, unlike `attachOnly`), it just declines to reap it on unmount.
   persistOnUnmount?: boolean;
+  /** The tab-store kind. Threaded explicitly so custom/local agent launchers
+   * receive the restriction even when their command name is not recognisable. */
+  kind?: TabKind;
 }
 
 function terminalTheme(scheme: string | undefined) {
+  // "system" never reaches the CSS unresolved (stores/settings.applyTheme
+  // resolves it against the OS preference) and must not reach this mapping
+  // unresolved either — the terminal is the largest surface in the window, and
+  // an unrecognized scheme here would silently paint the fancy_dark palette
+  // inside a light window. (An OS flip while the app is open re-themes the
+  // window live but an open terminal only on its next theme write — accepted.)
+  if (scheme) scheme = resolveTheme(scheme);
+  if (scheme === "soft_dark") {
+    // The neutral dark theme: background/foreground match its own
+    // --bg-main/--text-primary exactly (the achromatic pair's rule below),
+    // with a GitHub-dimmed-style ANSI ramp — muted enough not to glow against
+    // the gray ground, still unmistakably coloured (they are not chrome).
+    return {
+      background: "#17181c",
+      foreground: "#e8eaf0",
+      cursor: "#e8eaf0",
+      cursorAccent: "#17181c",
+      selectionBackground: "#3a4150",
+      selectionForeground: "#e8eaf0",
+      black: "#4a4f5a",
+      red: "#f47067",
+      green: "#57ab5a",
+      yellow: "#c69026",
+      blue: "#6c9bf0",
+      magenta: "#b083f0",
+      cyan: "#39c5cf",
+      white: "#b4bac5",
+      brightBlack: "#6e7480",
+      brightRed: "#ff938a",
+      brightGreen: "#6bc46d",
+      brightYellow: "#daaa3f",
+      brightBlue: "#86b3f7",
+      brightMagenta: "#c89bf5",
+      brightCyan: "#56d4dd",
+      brightWhite: "#e8eaf0",
+    };
+  }
   if (scheme === "light_lavender") {
     // Neutral slots form a wide lavender ramp (not grey) so Claude Code's ANSI
     // theme reads as lavender with strong contrast: `black` is a deep saturated
@@ -121,7 +161,75 @@ function terminalTheme(scheme: string | undefined) {
       brightWhite: "#2c2348",
     };
   }
-  if (scheme === "light" || scheme === "fancy_light") {
+  // The two achromatic themes (see "The two achromatic themes" in themes.css)
+  // get their own terminal palettes rather than sharing the tinted ones below,
+  // for the reason a terminal always needs its own: the pane is the largest
+  // single surface in the window, so a terminal on #0d1117 inside a window on
+  // #000000 does not read as a slightly different black — it reads as a panel
+  // someone forgot to style. Background and foreground therefore match the
+  // theme's own --bg-main/--text-primary exactly.
+  //
+  // The sixteen ANSI slots stay COLOURED, and that is the same rule the tokens
+  // follow: they are not chrome. A terminal's red and green are a diff's - and
+  // +, a test run's fail and pass, an agent's error — meaning the program chose,
+  // which the theme has no standing to overrule. What is neutral in the palette
+  // is only what was already neutral: the black/white ramp, re-spaced so its
+  // four steps stay distinct against a pure ground (on #000000 the old dim grey
+  // sat too close to the background, and dimmed text in an agent TUI is a whole
+  // tier of its output).
+  if (scheme === "light") {
+    return {
+      background: "#ffffff",
+      foreground: "#000000",
+      cursor: "#000000",
+      cursorAccent: "#ffffff",
+      selectionBackground: "#cfcfcf",
+      selectionForeground: "#000000",
+      black: "#000000",
+      red: "#d1242f",
+      green: "#1a7f37",
+      yellow: "#9a6700",
+      blue: "#0969da",
+      magenta: "#8250df",
+      cyan: "#1b7c83",
+      white: "#767676",
+      brightBlack: "#4d4d4d",
+      brightRed: "#cf222e",
+      brightGreen: "#2da44e",
+      brightYellow: "#bf8700",
+      brightBlue: "#0550ae",
+      brightMagenta: "#6639ba",
+      brightCyan: "#3192aa",
+      brightWhite: "#000000",
+    };
+  }
+  if (scheme === "dark") {
+    return {
+      background: "#000000",
+      foreground: "#ffffff",
+      cursor: "#ffffff",
+      cursorAccent: "#000000",
+      selectionBackground: "#3d3d3d",
+      selectionForeground: "#ffffff",
+      black: "#5a5a5a",
+      red: "#f85149",
+      green: "#3fb950",
+      yellow: "#e3b341",
+      blue: "#388bfd",
+      magenta: "#bc8cff",
+      cyan: "#39c5cf",
+      white: "#cccccc",
+      brightBlack: "#8a8a8a",
+      brightRed: "#ff7b72",
+      brightGreen: "#56d364",
+      brightYellow: "#e3b341",
+      brightBlue: "#58a6ff",
+      brightMagenta: "#d2a8ff",
+      brightCyan: "#39c5cf",
+      brightWhite: "#ffffff",
+    };
+  }
+  if (scheme === "fancy_light") {
     return {
       background: "#ffffff",
       foreground: "#24292f",
@@ -205,7 +313,7 @@ function readAgentFontSize(): number {
   return DEFAULT_FONT_SIZE;
 }
 
-export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, localOnly = false, sandbox = false, projectId = null, remoteHostId = null, tmuxSession = null, tmuxAttach = null, hostBoundUid = null, visible, focused, attachOnly = false, zoomable = false, persistOnUnmount = false }: Props) {
+export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, localOnly = false, sandbox = false, projectId = null, remoteHostId = null, tmuxSession = null, tmuxAttach = null, hostBoundUid = null, visible, focused, attachOnly = false, zoomable = false, persistOnUnmount = false, kind: declaredKind }: Props) {
   const viewerId = useRef(crypto.randomUUID()).current;
   const viewerUpdateSeq = useRef(0);
   const colorScheme = useSettingsStore((s) => s.settings?.color_scheme);
@@ -450,7 +558,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
     // (a local model driven through `vibe` still has cmd "vibe") — TerminalView
     // is handed cmd/env, not the TabEntry's kind.
     const localModel = env.ELDRUN_LOCAL_MODEL || env.VIBE_ACTIVE_MODEL;
-    const kind: TabKind = localModel ? "local_agent" : cmdToKind(cmd);
+    const kind: TabKind = declaredKind ?? (localModel ? "local_agent" : cmdToKind(cmd));
     const agentLeaf = agentPromptLeaf({ kind, cmd, env });
     // A shell tab can be RESUMED with no initialInput to type — a tmux reattach on
     // reconnect/relaunch. tmux probes the outer terminal on attach (secondary DA,
@@ -742,7 +850,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       notePtySpawn(id);
       const spawn = () =>
         invoke("pty_spawn", {
-          opts: { id, cmd, args, env, cwd, cols: term.cols, rows: term.rows, local_only: localOnly, sandbox, project_id: projectId ?? null, remote_host_id: remoteHostId ?? null, tmux_session: tmuxSession ?? null, tmux_attach: tmuxAttach ?? null, host_bound_uid: hostBoundUid ?? null },
+          opts: { id, cmd, args, env, cwd, cols: term.cols, rows: term.rows, local_only: localOnly, sandbox, agent: kind === "agent" || kind === "local_agent", project_id: projectId ?? null, remote_host_id: remoteHostId ?? null, tmux_session: tmuxSession ?? null, tmux_attach: tmuxAttach ?? null, host_bound_uid: hostBoundUid ?? null },
         });
       try {
         await spawn();
@@ -935,7 +1043,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       fitRef.current = null;
       openedRef.current = false;
     };
-  }, [id, cmd, cwd, initialInput, argsKey, envKey, localOnly, sandbox, projectId, remoteHostId, tmuxSession, tmuxAttach, hostBoundUid, attachOnly, zoomable, persistOnUnmount]);
+  }, [id, cmd, cwd, initialInput, argsKey, envKey, localOnly, sandbox, projectId, remoteHostId, tmuxSession, tmuxAttach, hostBoundUid, attachOnly, zoomable, persistOnUnmount, declaredKind]);
 
   // Re-theme a LIVE, OPEN terminal. Both halves of that guard are load-bearing,
   // and `termRef.current` alone was neither: assigning `options.theme` makes
@@ -1009,12 +1117,13 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
         // on the right (the viewport scrollbar already insets the right edge), so
         // the text margins read as balanced. FitAddon accounts for this padding.
         ...(zoomable ? { paddingLeft: 10, paddingRight: 4 } : null),
-        background:
-          colorScheme === "light_lavender"
-            ? "#faf9fe"
-            : colorScheme === "light" || colorScheme === "fancy_light"
-              ? "#ffffff"
-              : "#0d1117",
+        // The ground under xterm's own canvas, which must be the SAME colour the
+        // terminal paints — it shows through before the renderer's first frame
+        // and in the strip below the last row. So it is read straight off
+        // `terminalTheme` rather than restated as a second ternary over the same
+        // schemes: that copy had already drifted (it answered #0d1117 for every
+        // dark scheme, so a theme with its own background flashed the wrong one).
+        background: terminalTheme(colorScheme).background,
       }}
     />
   );

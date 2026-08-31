@@ -64,8 +64,8 @@
 
 .file-tree-up:hover { background-color: var(--pill-hover-bg); }
 
-/* In-tree search (filename + content), shared by the side panel and the
-   Files (Project) tab since both render FileTree. */
+/* In-tree search (filename + content) — the app's ONE project search, shared
+   by every surface that renders FileTree. */
 .file-tree-search {
   display: flex;
   flex-direction: column;
@@ -111,6 +111,16 @@
   display: flex;
   align-items: center;
   gap: 2px;
+}
+
+/* The line shown in the search box's place on a remote-source listing (the
+   search backends walk the local path). Muted, non-interactive — the
+   Local/Remote switch above is the way to act on it. */
+.file-tree-search-remote-hint {
+  font-size: 10px;
+  color: var(--text-muted);
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border-color);
 }
 
 .file-tree-search-mode {
@@ -216,6 +226,13 @@
   padding: 2px 4px;
 }
 
+.file-tree-bar-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+}
+
 .file-tree-refresh:disabled { opacity: 0.5; cursor: default; }
 
 .file-tree-remote-label {
@@ -231,7 +248,6 @@
 .file-tree-sync-progress {
   font-size: 10px;
   color: var(--success);
-  margin-left: auto;
   white-space: nowrap;
 }
 
@@ -319,7 +335,7 @@
   background: transparent;
   color: var(--text-secondary);
   font-family: inherit;
-  font-size: 9px;
+  font-size: var(--text-xs);
   font-weight: 700;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -363,7 +379,7 @@
   background: var(--bg-inset);
   color: var(--text-secondary);
   font-family: inherit;
-  font-size: 9px;
+  font-size: var(--text-xs);
   font-weight: 700;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -399,7 +415,7 @@
   background: transparent;
   color: var(--text-secondary);
   font-family: inherit;
-  font-size: 9px;
+  font-size: var(--text-xs);
   font-weight: 700;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -645,15 +661,33 @@
   margin-left: 4px;
 }
 
-/* ── Alerts section (side panel, below the file tree) ────────────────────── */
-/* Same chrome as the Downloads group above — the two share a slot, so a second
-   look would read as a second kind of thing. The height rule is now the same
-   too: drag-resizable via `.alerts-resize`, exactly like `.downloads-resize`. */
+/* ── Alerts section (side panel, below the file tree) ──────────────────────
+   Deliberately NOT the Downloads group's chrome, though the two share the slot
+   below the tree. Everything else in this panel belongs to ONE project — its
+   tree, its git bar, its downloads — and all of it is replaced when the project
+   is switched; the alerts are the machine's, and the same twelve rows stay put
+   across every switch. Wearing the panel's own ground, a global strip read as
+   one more project-scoped section of the project on screen, which is precisely
+   the thing it must not be mistaken for.
+
+   The distinction is the **ground**, and deliberately nothing else: no badge and
+   no scope label, which would each cost one of the twelve slots' worth of width
+   in the header and still have to be read. The surface is the theme's own app
+   ground with a wash of the accent mixed into it, so it reads as a different
+   *kind* of surface in all five themes without being a second colour scheme —
+   the mix is against the theme's ground, so a light theme gets a tint and a dark
+   one a glow, both from tokens. Those mixes live in themes.css now
+   (--alerts-bg / --alerts-header-bg / --alerts-border, plus the
+   overdue/now/soon ramp), so the group is recolorable on its own. The accent-toned band across the top seals it,
+   where the sections above are divided by the ordinary hairline. The height rule
+   is still the Downloads group's — drag-resizable via `.alerts-resize`, exactly
+   like `.downloads-resize` — because *how it is sized* is a property of the
+   slot, and only *whose it is* has to differ. */
 .alerts-section {
   display: flex;
   flex-direction: column;
-  border-top: 1px solid var(--border-color);
-  background: var(--bg-panel);
+  border-top: 2px solid var(--alerts-border);
+  background: var(--alerts-bg);
   flex: 0 0 auto;
   min-height: 0;
 }
@@ -668,11 +702,16 @@
 .alerts-resize:hover {
   background: var(--accent-soft);
 }
+/* The head takes the same wash a shade stronger, so the strip reads as a bar
+   with a body under it rather than as a hole in the panel — and so the group is
+   still legible as its own thing when the list underneath is empty, which is
+   exactly the state the group spends most of a good day in. */
 .alerts-header {
   display: flex;
   align-items: center;
   gap: 4px;
   padding: 3px 6px;
+  background: var(--alerts-header-bg);
   border-bottom: 1px solid var(--border-color);
 }
 .alerts-title {
@@ -692,8 +731,8 @@
 /* Overdue is emphasis on the same number, never a second one — the header
    badges' rule. */
 .alerts-count.overdue {
-  color: var(--danger);
-  border-color: var(--danger);
+  color: var(--alerts-overdue);
+  border-color: var(--alerts-overdue);
 }
 .alerts-error {
   font-size: 10px;
@@ -729,19 +768,19 @@
   opacity: 0.7;
 }
 .alerts-dot {
-  font-size: 9px;
+  font-size: var(--text-xs);
   line-height: 1;
   flex: 0 0 auto;
   color: var(--text-muted, var(--text-secondary));
 }
 .alerts-dot.overdue {
-  color: var(--danger);
+  color: var(--alerts-overdue);
 }
 .alerts-dot.now {
-  color: var(--warning);
+  color: var(--alerts-now);
 }
 .alerts-dot.soon {
-  color: var(--accent);
+  color: var(--alerts-soon);
 }
 .alerts-kind {
   font-size: 11px;
@@ -777,7 +816,7 @@
   padding-right: 2px;
 }
 .alerts-when.overdue {
-  color: var(--danger);
+  color: var(--alerts-overdue);
 }
 
 /* ── Muting ───────────────────────────────────────────────────────────────
@@ -1037,7 +1076,7 @@
 /* SSH-sync: actionable buttons shown left of the icon per sync state — an
    unsynced row wears the orange list's own take-remote/keep-local controls
    (`.orange-file-act--slot` below), a diverged row the amber diff button.
-   `#d29922` (amber) = diverged. */
+   `--warning` (amber) = diverged. */
 /* Fixed-width gutter reserving space for the sync/diff button so file & folder
    names stay left-aligned across a sync-tracked tree even on rows with no button
    (in-sync/green). Sits between the git-status marker and the file icon. */
@@ -1059,19 +1098,19 @@
   padding: 0;
   border-radius: var(--radius-sm);
   background: transparent;
-  font-size: 9px;
+  font-size: var(--text-xs);
   line-height: 1;
   cursor: pointer;
 }
 
 .file-diff-btn {
-  border: 1px solid color-mix(in srgb, #d29922 70%, transparent);
-  color: #d29922;
+  border: 1px solid color-mix(in srgb, var(--warning) 70%, transparent);
+  color: var(--warning);
 }
 
 .file-diff-btn:hover {
-  background: color-mix(in srgb, #d29922 14%, transparent);
-  border-color: #d29922;
+  background: color-mix(in srgb, var(--warning) 14%, transparent);
+  border-color: var(--warning);
 }
 
 .file-diff-btn:disabled {
@@ -1089,7 +1128,7 @@
   height: 16px;
   font-size: 10px;
   line-height: 1;
-  color: var(--accent, #3fb950);
+  color: var(--accent);
   opacity: 0.85;
 }
 
@@ -1103,7 +1142,7 @@
   justify-content: center;
   width: 16px;
   height: 16px;
-  font-size: 9px;
+  font-size: var(--text-xs);
   line-height: 1;
   color: var(--text-muted);
   opacity: 0.85;
@@ -1132,7 +1171,7 @@
   height: 16px;
   box-sizing: border-box;
   border-radius: 999px;
-  font-size: 9px;
+  font-size: var(--text-xs);
   line-height: 1;
   letter-spacing: 0.02em;
   text-transform: uppercase;
@@ -1151,8 +1190,8 @@
 
 /* Side-panel "orange" (diverged) toolbar button + its count badge. */
 .side-panel-orange-btn.active {
-  color: #d29922;
-  border-color: color-mix(in srgb, #d29922 60%, transparent);
+  color: var(--warning);
+  border-color: color-mix(in srgb, var(--warning) 60%, transparent);
 }
 
 .side-panel-orange-count {
@@ -1161,9 +1200,9 @@
   padding: 0 3px;
   margin-left: 2px;
   border-radius: var(--radius);
-  background: #d29922;
-  color: #1a1a1a;
-  font-size: 9px;
+  background: var(--warning);
+  color: var(--bg-main);
+  font-size: var(--text-xs);
   line-height: 13px;
   text-align: center;
 }
@@ -1270,11 +1309,11 @@
 }
 
 .orange-file-name:hover:not(:disabled) {
-  color: var(--accent, #3fb950);
+  color: var(--accent);
 }
 
 .orange-file-dot {
-  color: #d29922;
+  color: var(--warning);
   flex-shrink: 0;
 }
 
@@ -1297,7 +1336,7 @@
   flex-shrink: 0;
   padding: 1px 6px;
   border-radius: var(--radius-full);
-  font-size: 9px;
+  font-size: var(--text-xs);
   font-weight: 600;
   line-height: 1.5;
   letter-spacing: 0.02em;
@@ -1330,7 +1369,7 @@
    row. */
 .tmux-session-meta {
   margin-left: 6px;
-  color: var(--text-secondary, #8b949e);
+  color: var(--text-secondary);
   font-size: 10px;
   flex-shrink: 0;
 }
@@ -1386,7 +1425,7 @@
   padding: 3px 7px 3px 14px;
   border-bottom: 1px solid var(--border-color);
   color: var(--text-secondary, var(--text-primary));
-  font-size: 9px;
+  font-size: var(--text-xs);
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -1436,7 +1475,7 @@
   border: 1px solid var(--border-color);
   border-radius: var(--radius-sm);
   color: var(--text-muted);
-  font-size: 9px;
+  font-size: var(--text-xs);
   padding: 1px 5px;
   cursor: pointer;
 }
@@ -1520,9 +1559,9 @@
   justify-content: center;
   width: 16px;
   height: 16px;
-  font-size: 9px;
+  font-size: var(--text-xs);
   line-height: 1;
-  color: #d29922;
+  color: var(--warning);
 }
 
 /* The tree head's folder-level "in sync with the host" marker. Deliberately dim
@@ -1535,7 +1574,7 @@
   justify-content: center;
   width: 16px;
   height: 16px;
-  font-size: 9px;
+  font-size: var(--text-xs);
   line-height: 1;
   color: var(--success);
   opacity: 0.75;
@@ -1573,8 +1612,8 @@
 
 .nested-repo-pill.active {
   color: var(--text-primary);
-  border-color: var(--accent, #58a6ff);
-  background: color-mix(in srgb, var(--accent, #58a6ff) 18%, transparent);
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
   cursor: default;
 }
 
@@ -1619,7 +1658,7 @@
   border: none;
   border-top: 1px solid var(--border-color, rgba(255,255,255,0.12));
   cursor: pointer;
-  color: var(--accent, #58a6ff);
+  color: var(--accent);
 }
 
 .file-tree-more:hover {
@@ -1629,7 +1668,72 @@
 .file-tree-hidden-caret {
   display: inline-block;
   width: 9px;
-  font-size: 9px;
+  font-size: var(--text-xs);
+}
+
+/* The breadcrumb's right end: the folder total and the sort control, stacked
+   at the edge by ONE auto margin on the group (two autos on two siblings would
+   share the slack and float the total mid-row instead). */
+.file-tree-crumb-end {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+/* Inside the group the total no longer pushes: the group already did. */
+.file-tree-crumb-end .file-tree-path-total {
+  margin-left: 0;
+}
+
+.file-tree-sort {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+/* Compact sizing for the shared dropdown — the breadcrumb is a 12px row, not a
+   dialog, so the trigger drops to the size of the crumbs beside it. The menu
+   hangs from the right edge because the control is the row's last element and
+   a left-anchored popup would run off the panel. */
+.file-tree-sort-key .dropdown-trigger {
+  min-height: 18px;
+  padding: 0 5px;
+  gap: 3px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  color: var(--text-muted);
+}
+
+.file-tree-sort-key .dropdown-trigger:hover:not(:disabled) {
+  color: var(--text-secondary);
+}
+
+.file-tree-sort-key .dropdown-menu {
+  left: auto;
+  right: 0;
+  min-width: 96px;
+}
+
+/* Direction toggle: the ↑/↓ that the old row folded into the active key. */
+.file-tree-sort-dir {
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-sm);
+  background: var(--control-bg);
+  color: var(--text-muted);
+  font-family: inherit;
+  font-size: 10px;
+  line-height: 1;
+  min-height: 18px;
+  padding: 0 4px;
+  cursor: pointer;
+}
+
+.file-tree-sort-dir:hover {
+  color: var(--accent);
+  border-color: var(--accent);
 }
 
 .file-tree-path-total {
@@ -1652,19 +1756,8 @@
   font-style: italic;
 }
 
-.file-tree-scaffold-toggle {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  padding: 2px 8px 4px;
-  font-size: 10px;
-  color: var(--text-muted);
-  cursor: pointer;
-  user-select: none;
-}
-
 .file-tree.drag-over {
-  outline: 2px dashed var(--accent, #58a6ff);
+  outline: 2px dashed var(--accent);
   outline-offset: -2px;
   border-radius: var(--radius);
   background: rgba(88, 166, 255, 0.06);
@@ -1674,9 +1767,9 @@
 .file-name { flex: 1; min-width: 0; overflow-wrap: anywhere; word-break: break-word; line-height: 1.3; }
 .file-size { font-size: 10px; color: var(--text-muted); flex-shrink: 0; line-height: 1.3; }
 .file-size.size-small  { color: var(--text-muted); }
-.file-size.size-medium { color: #e3b341; }
+.file-size.size-medium { color: var(--warning); }
 .file-size.size-large  { color: #f0883e; }
-.file-size.size-huge   { color: #f85149; }
+.file-size.size-huge   { color: var(--danger); }
 /* A folder excluded from scans. Italic and dimmer than `size-small` so it reads
    as "no measurement" rather than as a very small one — the whole point is that
    nothing was walked, and a number-shaped grey would suggest otherwise. */

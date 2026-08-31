@@ -1020,6 +1020,55 @@
   border-top: 2px solid var(--accent);
 }
 
+/* The header's ← (back) and ‹ (fold) buttons, and the same pair on the folded
+   rail — one rule, so the control means the same thing on both surfaces. */
+.tex-structure-chrome-btn {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary, var(--text-primary));
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.tex-structure-chrome-btn:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.tex-structure-chrome-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+/* Push the fold button to the header's right edge, whatever sits before it. */
+.tex-structure-fold {
+  margin-left: auto;
+}
+
+/* The folded sidebar: a rail wide enough for the two buttons and nothing else,
+   so the fold never leaves a bare pane edge with no way back. */
+.tex-structure-rail {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  width: 26px;
+  padding: 6px 0;
+  border-right: 1px solid var(--border-color);
+  border-top: 2px solid var(--accent);
+  background: var(--bg-panel);
+}
+
 .tex-structure-title {
   font-size: 11px;
   font-weight: 600;

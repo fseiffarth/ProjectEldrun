@@ -23,16 +23,20 @@
        light themes override with the softer grey set — copy from `light`)
      --border-color / --border-subtle       → separators, outlines
      --text-primary / --text-secondary / --text-muted → text tiers
-     --accent / --accent-hover / --accent-active      → the theme's hue
-       (buttons, active pill, links, scrollbar thumb, focus rings)
+     --accent                               → the theme's hue (buttons, active
+       pill, links, scrollbar thumb, focus rings). -hover/-active and the
+       pill-active/hover washes DERIVE from it automatically (see the base
+       block); override them only when the derivation direction is wrong
+       (the achromatic pair) or the theme wants a different hue there.
      --accent-secondary                     → secondary highlight hue
      --control-bg / --control-hover-bg / --control-border → inputs/buttons
      --pill-active-bg / --pill-active-border / --pill-hover-bg → project pills
      --success / --warning / --danger        → status colors (usually keep)
      --wm-close / --wm-minimize / --wm-maximize → window-control buttons
      --activity-0..4                         → calendar heatmap ramp (light→dark)
-   Tip: pick one --accent, then derive -hover (darker), -active (darker
-   still), and the pill-active-* rgba() from that same hue.
+   Tip: a minimal theme is surfaces + borders + text tiers + ONE --accent +
+   controls — hover/active/pill washes and the status softs derive themselves.
+   `soft_dark` below is the smallest real example.
    ───────────────────────────────────────────────────────────────────── */
 
 /* ── Theme: fancy_dark (default) ─────────────────────────────────────── */
@@ -53,10 +57,18 @@
   --border-subtle: #22304a;
   --text-primary: #f4f8ff;
   --text-secondary: #d8e2f3;
-  --text-muted: #687899;
+  /* Muted still clears ~4.5:1 on every resting surface up to --bg-elevated —
+     the light theme's "muted is a tone, not an excuse" rule, applied here. */
+  --text-muted: #8091a9;
   --accent: #36c5f0;
-  --accent-hover: #5edcff;
-  --accent-active: #1ca7d8;
+  /* Hover/press are DERIVED from --accent by default (see the derived-token
+     family below): toward --text-primary, so the direction is right in both
+     dark themes (lighten) and light ones (darken). var()'s lazy resolution
+     means each theme's own --accent feeds these — a theme only overrides them
+     when its accent is an extreme the mix cannot step away from (the
+     achromatic pair, whose accent IS the ink). */
+  --accent-hover: color-mix(in srgb, var(--accent) 84%, var(--text-primary));
+  --accent-active: color-mix(in srgb, var(--accent) 70%, var(--text-primary));
   --accent-secondary: #b388ff;
   --info: #6cb6ff;
   /* ── Agent-status palette ────────────────────────────────────────────────
@@ -151,9 +163,49 @@
   /* Helix signature hues for the pill/tab labels (apricot + green). */
   --helix-orange: #f47868;
   --pill-bg: transparent;
-  --pill-active-bg: rgba(54, 197, 240, 0.16);
-  --pill-active-border: #36c5f0;
-  --pill-hover-bg: rgba(54, 197, 240, 0.14);
+  /* SECONDARY CHROME HEADERS — the subwindow tab bars and the file panel's own
+     header rows. They read as a THIRD surface, distinct from both the window's
+     top bar (--bg-header plus its 0.32 accent wash) and the content behind them
+     (--bg-main / --bg-panel): one step up the elevation ladder, carrying a
+     lighter accent tint than the app header, so the hierarchy reads top-down
+     (app header > subwindow header > content). Derived from the theme's own
+     --accent/--bg-elevated, so every theme gets it for free; only the
+     achromatic pair and the glass themes redeclare it below.
+     --glass-subheader is its translucent counterpart (see the glass section). */
+  --bg-subheader: color-mix(in srgb, var(--accent) 14%, var(--bg-elevated));
+  --glass-subheader: color-mix(in srgb, var(--accent) 14%, var(--glass-panel));
+  /* THE SIDE PANEL, as its own three tokens. Each follows the shared token it
+     would otherwise read, and none of them is a second name for it: --bg-panel
+     is the app's whole secondary-surface tone (a hundred rules — settings
+     sections, the file browser, switcher chrome, assorted popovers) and
+     --bg-subheader is every chrome header including the subwindow tab bars, so
+     recoloring the panel through either repaints all of that with it. A theme
+     never needs to declare these; they exist so the panel can be given a look
+     of its own from the Theme Customizer without the rest of the window
+     following it. The header pair applies only INSIDE `.side-panel`
+     (files-panel.css) — the same header markup renders in the Files tab and
+     the docked file column, which stay on the shared token. */
+  /* THE ALERTS GROUP (the strip under the file tree). Its look is derived —
+     the theme's ground with a wash of accent mixed in, and the urgency ramp
+     borrowed from the status hues — and these tokens are where that derivation
+     now lives, so the group can be recolored from the Theme Customizer without
+     the surfaces and status colors it borrows from moving with it. A theme
+     never declares them; the mixes below are the whole default. */
+  --alerts-bg: color-mix(in srgb, var(--accent) 8%, var(--bg-main));
+  --alerts-header-bg: color-mix(in srgb, var(--accent) 16%, var(--bg-panel));
+  --alerts-border: color-mix(in srgb, var(--accent) 42%, var(--border-color));
+  --alerts-overdue: var(--danger);
+  --alerts-now: var(--warning);
+  --alerts-soon: var(--accent);
+  --bg-side-panel: var(--bg-panel);
+  --bg-side-panel-header: var(--bg-subheader);
+  --side-panel-border: var(--border-color);
+  /* Derived from the theme's own --accent (lazy var() resolution, like the
+     scrollbar pair above) — a theme only redeclares these to be softer or
+     grayer than the accent wash, not to restate it. */
+  --pill-active-bg: color-mix(in srgb, var(--accent) 16%, transparent);
+  --pill-active-border: var(--accent);
+  --pill-hover-bg: color-mix(in srgb, var(--accent) 12%, transparent);
   --wm-close: #ff5c8a;
   --wm-minimize: #ffd166;
   --wm-maximize: #7ee787;
@@ -176,84 +228,183 @@
   --glass-header: linear-gradient(90deg, rgba(16, 22, 36, 0.55) 0%, rgba(22, 33, 58, 0.55) 48%, rgba(36, 23, 53, 0.55) 100%);
 }
 
-/* ── Theme: dark (plain dark) ────────────────────────────────────────── */
+/* ── The two achromatic themes: `dark` and `light` ─────────────────────────
+   `light` is white paper with black ink; `dark` is its exact inverse. They are
+   the pair to reach for when the "fancy" themes' hues are noise — and the pair
+   is deliberately built to ONE rule rather than tuned by eye: everything that
+   is chrome is neutral, and the only colour left in the window is colour that
+   MEANS something.
+
+   Four consequences, each of which is why a token below reads the way it does:
+
+   1. RESTING SURFACES ARE PURE. --bg-main, --bg-panel and --bg-elevated are the
+      same #ffffff (or #000000) — the window, the panels, the menus and the
+      dialogs are one tone. Depth is therefore carried by --border-color and the
+      elevation shadows ALONE, which is why the border is a step stronger here
+      than in the tinted themes: it is doing the whole job that a fill step does
+      elsewhere. Every piece of chrome that floats already draws one (the header
+      its `0 1px 0`, the side panel its `border-left`, menus and dialogs their
+      shared surface rule), so nothing needed a new edge — but do not "simplify"
+      one away in these themes, because there is no tone underneath to catch it.
+
+   2. HOVER AND PRESS ARE NOT PURE, and must not be. A resting surface is the
+      thing the user reads; a hover fill is feedback, and feedback with no delta
+      is no feedback. So --control-hover-bg, --pill-hover-bg and --pill-active-bg
+      step off the pure tone by the smallest amount that is still visible.
+
+   3. --accent IS INK. Black on white, white on black — so a primary button is a
+      solid black slab with white text, an active pill wears a black frame, and
+      a focus ring is a black outline. That works with the app's existing
+      contrast rule for free: `.btn-primary` puts --bg-main on the accent fill,
+      and --bg-main is exactly the opposite tone here. --accent-hover/-active
+      then step *away* from the extreme rather than toward it (there is nothing
+      darker than black), so a filled control lifts on hover and lifts further
+      on press. The scrollbar is the ink too, and says so by NOT appearing in
+      either block below: :root already derives the thumb from --accent, so the
+      pair inherits white-on-black and black-on-white for free. Both used to
+      name their own mid-greys, on the argument that a scrollbar is not the
+      subject — but a grey capsule against a pure tone is the one piece of
+      chrome that reads as absent, and a bar has to be findable before it can
+      afford to be discreet.
+
+   4. WHAT KEEPS ITS HUE IS WHAT CARRIES MEANING, and nothing else.
+      --success/--warning/--danger stay coloured because the agent-status
+      palette at the top of this file resolves against them — working, waiting
+      on you, and finished are read as green/amber at a glance, and a greyscale
+      lamp would say only "a lamp". Everything decorative goes neutral with the
+      rest: --helix-orange (a signature label tint), the --wm-* window controls
+      (a close button is chrome, not an alarm) and the --activity-* heatmap,
+      whose green ramp becomes the grey ramp light→dark it always logically was.
+   ───────────────────────────────────────────────────────────────────────── */
+
+/* ── Theme: dark (black paper, white ink) ────────────────────────────── */
 [data-theme="dark"] {
-  --bg-main: #0d1117;
-  --bg-panel: #161b22;
-  --bg-elevated: #1c2128;
-  --bg-header: #161b22;
-  --bg-header-solid: #161b22;
-  --border-color: #30363d;
-  --border-subtle: #21262d;
-  --text-primary: #e6edf3;
-  --text-secondary: #8b949e;
-  --text-muted: #484f58;
-  --accent: #388bfd;
-  --accent-hover: #58a6ff;
-  --accent-active: #1f6feb;
-  --accent-secondary: #d29922;
-  --info: #58a6ff;
-  --control-bg: #1c2128;
-  --control-hover-bg: #262d36;
-  --control-border: #30363d;
+  --bg-main: #000000;
+  --bg-panel: #000000;
+  --bg-elevated: #000000;
+  --bg-header: #000000;
+  --bg-header-solid: #000000;
+  /* The one surface that steps off pure black — a deliberate exception to
+     rule 1, because a chrome header that cannot be told from the pane under it
+     is not a header. It was #101010 first, which honoured the rule and was
+     invisible: an unreadable distinction is the same as none. So the step is
+     large enough to actually read, and pays for that only in TONE — the value
+     is neutral, so nothing here acquires a hue, and the shared --bg-subheader
+     derivation (white at 14% over black) stays refused. */
+  --bg-subheader: #1e1e1e;
+  /* A shadow is invisible on black, so the separation is entirely this edge —
+     hence a border that is clearly readable rather than a whisper. */
+  --border-color: #333333;
+  --border-subtle: #1f1f1f;
+  --text-primary: #ffffff;
+  --text-secondary: #b4b4b4;
+  --text-muted: #8a8a8a;
+  --accent: #ffffff;
+  --accent-hover: #d4d4d4;
+  --accent-active: #a8a8a8;
+  --accent-secondary: #a8a8a8;
+  --info: #cccccc;
+  /* MUST be overridden here. :root fixes this at #ffffff for every theme, which
+     works only because every other theme's --accent is a mid-tone hue; with a
+     WHITE accent it would be white text on a white fill — invisible on the
+     ~40 rules that pair `background: var(--accent)` with this. It is the tone
+     opposite the accent, i.e. --bg-main, which is also why the handful of rules
+     that put it over --danger/--warning instead still read: black on those two
+     is the higher-contrast pairing, not the lower one. */
+  --accent-contrast: #000000;
+  --control-bg: #000000;
+  --control-hover-bg: #1a1a1a;
+  --control-border: #3d3d3d;
   --success: #3fb950;
   --warning: #e3b341;
   --danger: #f85149;
-  --helix-orange: #f47868;
+  --helix-orange: #b4b4b4;
   --pill-bg: transparent;
-  --pill-active-bg: rgba(56, 139, 253, 0.1);
-  --pill-active-border: rgba(56, 139, 253, 0.2);
-  --pill-hover-bg: rgba(139, 148, 158, 0.08);
-  --wm-close: #f85149;
-  --wm-minimize: #e3b341;
-  --wm-maximize: #3fb950;
-  --activity-0: #161b22;
-  --activity-1: #0e4429;
-  --activity-2: #006d32;
-  --activity-3: #26a641;
-  --activity-4: #39d353;
+  --pill-active-bg: rgba(255, 255, 255, 0.1);
+  --pill-active-border: #ffffff;
+  --pill-hover-bg: rgba(255, 255, 255, 0.07);
+  --wm-close: #d4d4d4;
+  --wm-minimize: #8a8a8a;
+  --wm-maximize: #8a8a8a;
+  --activity-0: #141414;
+  --activity-1: #3a3a3a;
+  --activity-2: #5e5e5e;
+  --activity-3: #909090;
+  --activity-4: #e8e8e8;
 }
 
-/* ── Theme: light (plain light) ─────────────────────────────────────── */
+/* ── Theme: light (white paper, black ink) ──────────────────────────── */
 [data-theme="light"] {
   --bg-main: #ffffff;
-  --bg-panel: #f6f8fa;
+  --bg-panel: #ffffff;
   --bg-elevated: #ffffff;
-  --bg-header: #f6f8fa;
-  --bg-header-solid: #f6f8fa;
-  --shadow-1: 0 1px 2px rgba(16, 24, 40, 0.06), 0 1px 3px rgba(16, 24, 40, 0.1);
-  --shadow-2: 0 4px 16px rgba(16, 24, 40, 0.12), 0 2px 6px rgba(16, 24, 40, 0.08);
-  --shadow-3: 0 16px 48px rgba(16, 24, 40, 0.18), 0 4px 12px rgba(16, 24, 40, 0.1);
-  --border-color: #d0d7de;
-  --border-subtle: #eaecef;
-  --text-primary: #24292f;
-  --text-secondary: #57606a;
-  --text-muted: #8c959f;
-  --accent: #0969da;
-  --accent-hover: #0550ae;
-  --accent-active: #054da7;
-  --accent-secondary: #bf8700;
-  --info: #0969da;
+  --bg-header: #ffffff;
+  --bg-header-solid: #ffffff;
+  /* The inverse of `dark`'s one step off the pure tone — see the note there;
+     also raised from a barely-visible #f0f0f0 for that reason. */
+  --bg-subheader: #ebebeb;
+  /* Neutral black alphas, not the bluish-grey set the tinted light themes use —
+     a shadow with a hue in it is the one thing that would tint this theme. */
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.06), 0 1px 3px rgba(0, 0, 0, 0.1);
+  --shadow-2: 0 4px 16px rgba(0, 0, 0, 0.12), 0 2px 6px rgba(0, 0, 0, 0.08);
+  --shadow-3: 0 16px 48px rgba(0, 0, 0, 0.18), 0 4px 12px rgba(0, 0, 0, 0.1);
+  --border-color: #d4d4d4;
+  --border-subtle: #e8e8e8;
+  --text-primary: #000000;
+  --text-secondary: #444444;
+  /* The dimmest tier still clears 4.5:1 on white — "muted" is a tone, not an
+     excuse for text nobody can read. */
+  --text-muted: #767676;
+  --accent: #000000;
+  --accent-hover: #2b2b2b;
+  --accent-active: #4d4d4d;
+  --accent-secondary: #555555;
+  --info: #3f3f3f;
+  /* Same value :root already carries, restated so the pair above and below read
+     as one decision — the contrast tone is --bg-main in both themes, and a
+     future change to the :root default must not silently unpair this one. */
+  --accent-contrast: #ffffff;
   --logo-color: #000;
   --control-bg: #ffffff;
-  --control-hover-bg: #f6f8fa;
-  --control-border: #d0d7de;
+  --control-hover-bg: #f2f2f2;
+  --control-border: #c9c9c9;
   --success: #1a7f37;
   --warning: #9a6700;
   --danger: #d1242f;
-  --helix-orange: #d6492f;
+  --helix-orange: #444444;
   --pill-bg: transparent;
-  --pill-active-bg: rgba(9, 105, 218, 0.1);
-  --pill-active-border: rgba(9, 105, 218, 0.24);
-  --pill-hover-bg: rgba(87, 96, 106, 0.08);
-  --wm-close: #f85149;
-  --wm-minimize: #e3b341;
-  --wm-maximize: #3fb950;
-  --activity-0: #ebedf0;
-  --activity-1: #9be9a8;
-  --activity-2: #40c463;
-  --activity-3: #30a14e;
-  --activity-4: #216e39;
+  --pill-active-bg: rgba(0, 0, 0, 0.06);
+  --pill-active-border: #000000;
+  --pill-hover-bg: rgba(0, 0, 0, 0.05);
+  --wm-close: #2b2b2b;
+  --wm-minimize: #767676;
+  --wm-maximize: #767676;
+  --activity-0: #ededed;
+  --activity-1: #c4c4c4;
+  --activity-2: #8f8f8f;
+  --activity-3: #5a5a5a;
+  --activity-4: #1c1c1c;
+}
+
+/* ── The achromatic pair's header ───────────────────────────────────────
+   `.app-header`'s accent wash (`shell.css`'s `::before`, --accent at 0.32)
+   exists to make the top bar read as themed rather than as a neutral panel.
+   In a theme whose accent IS the ink it does the opposite: white at 32% over
+   black, or black over white, is a mid-grey band — the one surface in the
+   window that isn't the pure tone rule 1 above declares, and the header is
+   the piece of chrome that rule is most visible on. So both opt out of the
+   wash and take their separation from the edge alone, which is what rule 1
+   says carries depth here.
+
+   They keep the shared accent seam under the header (`shell.css`), which here
+   resolves to the **ink** — these two themes' accent IS --text-primary. That
+   is the whole of what says where the header stops once the wash is gone, and
+   it is a step stronger than the borders inside the window: those separate two
+   panels of the same surface, this one separates the app's chrome from its
+   content. */
+[data-theme="dark"] .app-header::before,
+[data-theme="light"] .app-header::before {
+  content: none;
 }
 
 /* ── Theme: fancy_light ─────────────────────────────────────────────── */
@@ -270,10 +421,10 @@
   --border-subtle: #d8e5f0;
   --text-primary: #1f2937;
   --text-secondary: #334155;
-  --text-muted: #64748b;
+  --text-muted: #5f6e84;
   --accent: #0969da;
-  --accent-hover: #0550ae;
-  --accent-active: #054da7;
+  /* -hover/-active derive from --accent (base block) — toward the dark
+     text-primary, i.e. they darken here, as the old literals did. */
   --accent-secondary: #14b8a6;
   --info: #0ea5e9;
   --logo-color: #000;
@@ -285,8 +436,8 @@
   --danger: #d1242f;
   --helix-orange: #d6492f;
   --pill-bg: transparent;
-  --pill-active-bg: rgba(9, 105, 218, 0.16);
-  --pill-active-border: #0969da;
+  /* -active-bg/-active-border derive from --accent (base block); only the
+     hover keeps its own hue — the teal secondary, not the blue accent. */
   --pill-hover-bg: rgba(20, 184, 166, 0.12);
   --wm-close: #ff5c8a;
   --wm-minimize: #ffd166;
@@ -312,10 +463,10 @@
   --border-subtle: #ebe7f6;
   --text-primary: #2e2a3d;
   --text-secondary: #5f5878;
-  --text-muted: #938bab;
+  --text-muted: #746d8f;
   --accent: #7c5cdb;
-  --accent-hover: #6a49c8;
-  --accent-active: #5d3eb8;
+  /* -hover/-active derive from --accent (base block) — they darken toward
+     the near-black text-primary, matching the old hand-picked pair. */
   --accent-secondary: #9d6ecb;
   --info: #6d7fd4;
   --logo-color: #000;
@@ -327,7 +478,9 @@
   --danger: #d1242f;
   --helix-orange: #d6492f;
   --pill-bg: transparent;
-  --pill-active-bg: rgba(124, 92, 219, 0.12);
+  /* -active-bg derives from --accent (base block). The border stays a soft
+     wash rather than the derived solid accent, and hover stays a neutral
+     gray — this theme's pills are deliberately quieter than the accent. */
   --pill-active-border: rgba(124, 92, 219, 0.28);
   --pill-hover-bg: rgba(95, 88, 120, 0.08);
   --wm-close: #f85149;
@@ -348,6 +501,45 @@
   --glass-header: rgba(242, 239, 250, 0.5);
 }
 
+/* ── Theme: soft_dark ─────────────────────────────────────────────────────
+   The neutral dark theme: dark GRAY, not near-black and not navy. Chrome is
+   achromatic — neutral borders, neutral surfaces — and the only standing hue
+   is the restrained blue accent on interaction, the Linear/Zed convention.
+   Everything not declared here inherits the :root (fancy_dark) defaults:
+   shadows, status colors, wm buttons, the activity ramp, and the derived
+   accent-hover/-active and pill washes, which resolve against this accent.
+   Also the one theme that opts back INTO rounded corners: the radius tokens
+   exist precisely so a theme can flip the house square style from its own
+   block, and this theme's whole point is the current mainstream look. */
+[data-theme="soft_dark"] {
+  --bg-main: #17181c;
+  --bg-panel: #1c1e24;
+  --bg-elevated: #24262e;
+  --bg-header: #1c1e24;
+  --bg-header-solid: #1c1e24;
+  --border-color: #2e3138;
+  --border-subtle: #26282e;
+  --text-primary: #e8eaf0;
+  --text-secondary: #b9bec9;
+  --text-muted: #8b91a0;
+  --accent: #6c9bf0;
+  --accent-secondary: #9d8cff;
+  --info: #7fb3f5;
+  --control-bg: #202329;
+  --control-hover-bg: #282b33;
+  --control-border: #363a43;
+  --radius-sm: 4px;
+  --radius: 8px;
+  --radius-lg: 12px;
+}
+
+/* No accent wash over soft_dark's header: a 32% blue band over neutral gray
+   chrome is exactly the tint this theme exists to not have. Separation comes
+   from the header's ordinary border shadow, which the gray surfaces catch. */
+[data-theme="soft_dark"] .app-header::before {
+  content: none;
+}
+
 /* ── Derived tokens (one definition for every theme) ──────────────────────
    These names used to be a phantom family — referenced with divergent literal
    fallbacks but defined nowhere, so the fallbacks were the design (e.g.
@@ -362,17 +554,45 @@
   --bg-secondary: rgba(127, 127, 127, 0.18);
   --bg-input: var(--control-bg);
   --accent-soft: color-mix(in srgb, var(--accent) 22%, transparent);
+  /* Status washes — the tinted background behind a success/warning/danger
+     chip or banner. Derived from each theme's own status hues so component
+     files stop hand-rolling their own rgba() approximations of these. */
+  --success-soft: color-mix(in srgb, var(--success) 18%, transparent);
+  --warning-soft: color-mix(in srgb, var(--warning) 18%, transparent);
+  --danger-soft: color-mix(in srgb, var(--danger) 18%, transparent);
   --text-tertiary: var(--text-muted);
+  /* Type scale. The app's five sanctioned UI sizes — new rules read a token,
+     never a bare px, so density can be retuned from here (and a future UI-
+     scale setting has one place to act). --text-xs is the floor: nothing
+     user-readable renders below 10px. The base 13px matches .app-shell. */
+  --text-xs: 10px;
+  --text-sm: 11px;
+  --text-md: 12px;
+  --text-base: 13px;
+  --text-lg: 15px;
+  /* Spacing scale (4px grid) for new rules — the existing corpus migrates
+     opportunistically. Odd one-off gaps (3px, 5px, 7px) are drift, not design. */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  /* Entrance easing for menus/dialogs/reveals — the splash's arrival curve,
+     promoted to a token. Pair with --transition/--transition-slow durations. */
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
   /* Layering contract, in one place instead of scattered comments. The app's
      layers, bottom to top: hint bubbles (90) < modal backdrop (100) <
      elevated dialogs (110) < context menus/popovers (1000, catcher just
-     under) < tooltips (10000, above everything — they follow the pointer). */
+     under) < tooltips (10000, above everything — they follow the pointer) <
+     the side panel's edge handle (10001). The handle tops even tooltips on
+     purpose: it is a 20px sliver against the window frame and the ONLY marker
+     of which edge the unpinned panel lives on, so nothing may bury it. */
   --z-hint: 90;
   --z-modal: 100;
   --z-modal-elevated: 110;
   --z-menu-catcher: 999;
   --z-menu: 1000;
   --z-tooltip: 10000;
+  --z-edge-handle: 10001;
 }
 
 /* ── Glass chrome (fancy_dark / light_lavender) ───────────────────────────
@@ -417,7 +637,10 @@
 [data-theme="fancy_dark"] .app-header,
 [data-theme="light_lavender"] .app-header {
   background: var(--glass-header);
-  box-shadow: 0 8px 24px -16px rgba(0, 0, 0, 0.4);
+  /* Keeps the shared accent seam (shell.css) and adds the glass drop shadow
+     under it — this rule replaces the base box-shadow wholesale, so the seam
+     has to be restated here or these two themes lose it. */
+  box-shadow: 0 1px 0 var(--accent), 0 8px 24px -16px rgba(0, 0, 0, 0.4);
 }
 
 /* The right-side file panel is fully opaque even in the glass themes: it floats
@@ -425,14 +648,20 @@
    opts out of the shared frosted-glass rule above (opaque fill ⇒ blur is moot). */
 [data-theme="fancy_dark"] .side-panel,
 [data-theme="light_lavender"] .side-panel {
-  background-color: var(--bg-panel);
+  background-color: var(--bg-side-panel);
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
 }
 
+/* The glass pair's secondary-chrome fill: --bg-subheader's opaque derivation
+   would kill the frost on a bar that sits over content, so these take the
+   translucent counterpart (--glass-subheader) — same 14% accent tint, over
+   --glass-panel instead of --bg-elevated. The panel header rows keep the
+   opaque token: `.side-panel` itself opts out of the glass treatment (above),
+   so a frosted header inside an opaque panel would frost nothing. */
 [data-theme="fancy_dark"] .tab-bar,
 [data-theme="light_lavender"] .tab-bar {
-  background-color: var(--glass-panel);
+  background-color: var(--glass-subheader);
 }
 
 [data-theme="fancy_dark"] .subwindow-files,

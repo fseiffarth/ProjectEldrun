@@ -12,8 +12,11 @@
   right: 0;
   bottom: 0;
   width: 280px;
-  background-color: var(--bg-panel);
-  border-left: 1px solid var(--border-color);
+  /* Its own token (themes.css), following --bg-panel until something sets it:
+     --bg-panel is the whole app's secondary-surface tone, so recoloring the
+     panel through that would repaint every other panel-toned surface with it. */
+  background-color: var(--bg-side-panel);
+  border-left: 1px solid var(--side-panel-border);
   display: flex;
   flex-direction: column;
   transform: translateX(calc(100% + 2px));
@@ -43,7 +46,7 @@
   right: auto;
   left: 0;
   border-left: none;
-  border-right: 1px solid var(--border-color);
+  border-right: 1px solid var(--side-panel-border);
   transform: translateX(calc(-100% - 2px));
 }
 
@@ -96,7 +99,7 @@
   background: linear-gradient(
     to right,
     transparent,
-    color-mix(in srgb, var(--accent, #58a6ff) 70%, transparent) 60%,
+    color-mix(in srgb, var(--accent) 70%, transparent) 60%,
     transparent
   );
 }
@@ -350,8 +353,14 @@
   cursor: pointer;
   font-size: 12px;
 }
+/* --bg-hover, not --bg-panel. A hover expressed as another surface's tone only
+   works while the two surfaces happen to differ; the achromatic `light`/`dark`
+   themes paint main, panel and elevated the same, so a panel-coloured hover on
+   a panel-coloured row is no hover at all. --bg-hover is the translucent grey
+   that exists for this and reads on every theme. Same fix below and in
+   viewers.css (`.file-viewer-tex-error-jump`). */
 .set-default-app-row:hover {
-  background: var(--bg-panel);
+  background: var(--bg-hover);
 }
 .set-default-app-row.selected {
   background: var(--accent);
@@ -500,7 +509,7 @@
   font-size: 12px;
 }
 .folder-picker-item:hover {
-  background: var(--bg-panel);
+  background: var(--bg-hover);
 }
 .folder-picker-icon {
   flex-shrink: 0;
@@ -610,6 +619,12 @@
   flex-wrap: wrap;
   row-gap: 6px;
   padding: 8px 12px;
+  /* The shared secondary-chrome surface (themes.css), the same one a subwindow's
+     tab bar wears: the panel's header block has to read apart from the panel
+     body under it (--bg-panel) and from the window's top bar above it. The
+     toolbar row below takes the same fill so the two rows read as ONE header
+     block rather than as a header and a stray strip. */
+  background-color: var(--bg-subheader);
   border-bottom: 1px solid var(--border-subtle);
   font-size: 11px;
   font-weight: 600;
@@ -646,12 +661,12 @@
   color: var(--text-tertiary);
   opacity: 0.7;
   cursor: pointer;
-  transition: color 0.12s ease, background 0.12s ease, border-color 0.12s ease, opacity 0.12s ease;
+  transition: color var(--transition), background var(--transition), border-color var(--transition), opacity var(--transition);
 }
 
 .side-panel-mobile-btn:hover:not(:disabled) {
   opacity: 1;
-  color: var(--accent, #89b4fa);
+  color: var(--accent);
   border-color: var(--border-subtle);
   background: var(--bg-hover);
 }
@@ -691,7 +706,21 @@
   flex-wrap: wrap;
   gap: 2px;
   padding: 4px 12px;
+  /* Second row of the same header block — shares `.side-panel-header`'s fill. */
+  background-color: var(--bg-subheader);
   border-bottom: 1px solid var(--border-subtle);
+}
+
+/* The SIDE PANEL's header block specifically. The two rules above paint every
+   host of this markup — the panel, the Files (Project) tab, the docked column
+   — from the shared chrome-header token; inside the panel they take the
+   panel's own token instead, which follows --bg-subheader until something sets
+   it. That is what lets the Theme Customizer's "Side panel" section recolor
+   this panel alone without moving the subwindow tab bars, which read the same
+   shared token. */
+.side-panel .side-panel-header,
+.side-panel .side-panel-toolbar {
+  background-color: var(--bg-side-panel-header);
 }
 
 /* Selected-state for the generic small toolbar button (view-switcher rows like
@@ -701,6 +730,22 @@
   color: var(--accent);
   border-color: color-mix(in srgb, var(--accent) 55%, transparent);
   background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+/* The Git button carries the colour of its next available action: red for Add,
+   amber for Commit, green for Push. This keeps pending work visible while the
+   actions themselves live in the Git view. */
+.toolbar-btn--flagged {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.toolbar-btn-flag {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  flex: 0 0 auto;
 }
 
 /* Auto-pinned "Hidden subwindows" section: shown above the view toolbar only
@@ -729,7 +774,7 @@
   color: var(--text-primary);
 }
 .hidden-sw-caret {
-  font-size: 9px;
+  font-size: var(--text-xs);
   width: 10px;
   display: inline-block;
 }
@@ -856,32 +901,11 @@
   font-size: 13px;
 }
 .hidden-sw-btn:hover {
-  background: var(--bg-panel);
+  background: var(--bg-hover);
   color: var(--accent);
 }
 .hidden-sw-close:hover {
   color: var(--danger);
-}
-
-/* Inline variant of the git action bar when it lives in the header row, on its
-   own row below the project name: drop the full-width strip styling so it
-   hugs its buttons, left-aligned under the name. */
-.side-panel-header .git-action-bar--inline {
-  flex: 0 1 auto;
-  min-width: 0;
-  /* Wrap the buttons among themselves (left-aligned) so a single action never
-     spills past the panel border. */
-  flex-wrap: wrap;
-  justify-content: flex-start;
-  gap: 4px;
-  padding: 0;
-  border-bottom: none;
-}
-
-.side-panel-header .git-action-bar--inline .git-action-btn {
-  flex: 0 0 auto;
-  padding: 3px 8px;
-  font-size: 12px;
 }
 
 .side-panel-pin {
@@ -894,9 +918,17 @@
   padding: 0;
   font-size: 13px;
   line-height: 1;
-  border: 1px solid var(--border-subtle);
+  /* A BORDERLESS glyph button: no frame and no resting fill, so it sits on the
+     panel header as a bare 📌 / ⇄ rather than as a chip. It used to wear a
+     --border-subtle frame over a --bg-elevated fill, which was a chip drawn on
+     a surface it was already the same colour as — and in the achromatic themes,
+     where --bg-elevated IS the panel, the fill did nothing at all while the
+     frame was the only thing left, so the control read as an empty box. The
+     24px box is unchanged: `box-sizing: border-box` is global (base.css), so
+     dropping the border does not move the glyph or the buttons beside it. */
+  border: none;
   border-radius: var(--radius);
-  background: var(--bg-elevated, rgba(255, 255, 255, 0.04));
+  background: transparent;
   color: var(--text-secondary);
   cursor: pointer;
   /* Dim the unpinned pin with plain opacity, NOT a CSS filter. Applying `filter`
@@ -904,33 +936,31 @@
      WebView2 on Windows — the color glyph doesn't compose through the filter
      shader path — while WebKitGTK on Linux shows it fine. That vanished the pin
      entirely in the packaged Windows build. Opacity dims without breaking emoji. */
-  opacity: 0.6;
-  transition: opacity var(--transition), background var(--transition), border-color var(--transition);
+  opacity: 0.55;
+  transition: opacity var(--transition), background var(--transition);
 }
 
+/* Hover is the only fill this button ever takes, and it is --bg-hover: a
+   translucent grey that darkens a light panel and lightens a dark one, so one
+   declaration is correct on every theme. An accent-coloured frame is not an
+   option here any more — there is no frame. */
 .side-panel-pin:hover {
   opacity: 1;
-  border-color: var(--accent, #58a6ff);
+  background: var(--bg-hover);
 }
 
+/* Pinned is carried by OPACITY ALONE — the same mechanism the comment above
+   already established as this button's, and the one that works on a colour
+   emoji, whose glyph ignores `color` entirely. So there is no fill and no frame
+   to be theme-dependent, and nothing that can collide with a pure-black or
+   pure-white accent. `aria-pressed` on the button carries the state for anyone
+   the 0.55→1 step does not reach. */
 .side-panel-pin.pinned {
   opacity: 1;
-  background: var(--accent, #58a6ff);
-  border-color: var(--accent, #58a6ff);
-  box-shadow: 0 0 0 1px var(--accent, #58a6ff);
-}
-
-.side-panel-sort {
-  display: flex;
-  align-items: center;
-  gap: 1px;
-  padding: 2px 6px;
-  border-bottom: 1px solid var(--border-subtle);
-  flex-shrink: 0;
 }
 
 /* The Files (Project) tab: the side panel's file view hosted in a pane. The
-   rows inside it (sort / source / scroll / tree) are the panel's own classes —
+   rows inside it (source / scroll / tree) are the panel's own classes —
    only the shell differs, since a tab has no fixed width, no pin and no slide-in
    transform. */
 .project-files-tab {
@@ -1011,54 +1041,70 @@
   animation: side-panel-drop-flash 0.5s ease-out;
 }
 
-.sort-key-btn {
-  background: none;
-  border: none;
-  cursor: pointer;
-  font-size: 10px;
-  color: var(--text-muted);
-  padding: 2px 5px;
-  border-radius: var(--radius-sm);
-  text-transform: uppercase;
-  letter-spacing: 0.3px;
-  font-family: inherit;
-  white-space: nowrap;
-}
-
-.sort-key-btn:hover {
-  color: var(--text-secondary);
-  background: var(--pill-hover-bg);
-}
-
-.sort-key-btn.active {
-  color: var(--accent, #58a6ff);
-  font-weight: 700;
-}
-
 /* ── Git action buttons ──────────────────────────────────────────────── */
+/* The Add/Commit/Push footer: pinned under the scrolling history rather than
+   floating above it, so the actions stay put however far down the log the
+   view is scrolled. Hence border-TOP and `flex: 0 0 auto` — it is a sibling
+   of `.side-panel-scroll`, not a row inside it. `position: relative` is what
+   the change-tree popover anchors to. */
 .git-action-bar {
+  position: relative;
+  flex: 0 0 auto;
   display: flex;
+  flex-wrap: wrap;
   gap: 3px;
   padding: 4px 6px;
-  border-bottom: 1px solid var(--border-color);
+  background: var(--bg-panel);
+  border-top: 1px solid var(--border-color);
+}
+
+.git-action-error {
+  width: 100%;
+  color: var(--danger);
+  font-size: 10px;
+  overflow-wrap: anywhere;
+}
+
+/* The commit message box, above the buttons: the footer grows upward, so the
+   confirm stays the bottom-most control. Tall enough for a subject line, a
+   blank line and a real body — a three-line box is where multi-line commit
+   messages quietly stop being written — but capped at a third of the panel so
+   it can never crowd out the history it is describing. Still `resize:
+   vertical`, so the drag handle remains the way to go bigger or smaller. */
+.git-commit-input {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 96px;
+  max-height: 33vh;
+  font-family: inherit;
+  font-size: 11px;
+  padding: 3px 5px;
+  resize: vertical;
+  color: var(--text-primary);
+  background: var(--bg-panel);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
 }
 
 .git-action-btn {
   /* Per-action accent; each button overrides --git-btn-accent below so its
      colour matches the status dot it carries (red=add, yellow=commit,
-     green=push). Defaults to the theme accent for the confirm/back buttons. */
+     green=push). Defaults to the theme accent for the confirm/back buttons.
+     Geometry matches `.toolbar-btn` in the view switcher two rows up (10px
+     text, 1px 6px padding, 20px tall) so the panel has one button size. */
   --git-btn-accent: var(--accent);
   background: color-mix(in srgb, var(--git-btn-accent) 14%, transparent);
   border: 1px solid color-mix(in srgb, var(--git-btn-accent) 55%, transparent);
   color: var(--git-btn-accent);
   border-radius: var(--radius-sm);
   cursor: pointer;
-  padding: 4px 9px;
-  font-size: 13px;
+  padding: 1px 6px;
+  height: 20px;
+  font-size: 10px;
   font-weight: 600;
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 3px;
   font-family: inherit;
   transition: background var(--transition), color var(--transition), border-color var(--transition);
   white-space: nowrap;
@@ -1107,7 +1153,8 @@
   border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
   cursor: pointer;
   padding: 0 5px;
-  font-size: 10px;
+  height: 20px;
+  font-size: var(--text-xs);
   line-height: 1;
   display: inline-flex;
   align-items: center;
@@ -1131,10 +1178,18 @@
    the Local/Remote switch): uppercase, bold, letter-spaced. */
 .git-btn-label {
   display: inline;
-  font-size: 9px;
+  font-size: var(--text-xs);
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.04em;
+  line-height: 1;
+}
+
+/* The leading ⊕/✔/⬆ marker. Kept a shade larger than the button's 10px text
+   so shrinking the buttons to the toolbar's size didn't shrink the one part
+   of them that is read as an icon. */
+.git-btn-glyph {
+  font-size: 12px;
   line-height: 1;
 }
 
@@ -1142,27 +1197,29 @@
    color comes from lib/gitColors' GIT_STATE_COLOR via inline style; only the
    geometry lives here so the four buttons cannot drift. */
 .git-step-dot {
-  width: 7px;
-  height: 7px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
-  margin-right: 5px;
+  margin-right: 3px;
   flex-shrink: 0;
 }
 
-/* Click-opened navigable change tree under the Add/Commit/Push actions.
-   Anchored to the right edge of the action bar and grown leftward: the panel
+/* Click-opened navigable change tree, grown UPWARD out of the Add/Commit/Push
+   actions — they sit at the foot of the panel now, so a downward popover would
+   open off the bottom edge. Anchored to the right and grown leftward: the panel
    hugs the app's right frame, so anchoring left would push a wide tree off
    screen. Sized to the longest path (min keeps it readable, max caps depth). */
 .git-change-tree {
   position: absolute;
-  top: calc(100% + 4px);
+  bottom: calc(100% + 4px);
+  top: auto;
   right: 0;
   left: auto;
   min-width: 280px;
   max-width: min(480px, calc(100vw - 16px));
   width: max-content;
   z-index: 200;
-  background: var(--bg-panel, #1e1e1e);
+  background: var(--bg-panel);
   border: 1px solid var(--border-color);
   border-radius: var(--radius);
   max-height: 320px;
@@ -1338,7 +1395,7 @@
 /* Host / Mirror — only rendered for a remote project, where there really are two
    repos (#23 I2). Compact: it is a qualifier on the section, not a main control. */
 .git-worktree-site .dropdown-trigger {
-  font-size: 9px;
+  font-size: var(--text-xs);
   padding: 1px 5px;
 }
 
@@ -1365,7 +1422,7 @@
 }
 
 .git-worktree-flag {
-  font-size: 9px;
+  font-size: var(--text-xs);
   line-height: 1;
 }
 
@@ -1442,7 +1499,7 @@
    offer — but the user still has to be able to see where the thing will land. */
 .git-worktree-path {
   flex-basis: 100%;
-  font-size: 9px;
+  font-size: var(--text-xs);
   color: var(--text-muted);
   font-family: var(--font-mono, monospace);
   overflow: hidden;
@@ -1455,7 +1512,7 @@
 .git-worktree-note {
   flex-basis: 100%;
   padding: 0 6px 4px;
-  font-size: 9px;
+  font-size: var(--text-xs);
   line-height: 1.35;
   color: var(--text-muted);
 }
@@ -1523,7 +1580,7 @@
 
 .git-commit-ref {
   flex-shrink: 0;
-  font-size: 9px;
+  font-size: var(--text-xs);
   padding: 0 5px;
   border-radius: var(--radius);
   background: var(--accent);
@@ -1533,7 +1590,7 @@
 
 .git-commit-date {
   flex-shrink: 0;
-  font-size: 9px;
+  font-size: var(--text-xs);
   color: var(--text-muted);
   white-space: nowrap;
 }

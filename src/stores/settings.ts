@@ -2,9 +2,16 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { emit } from "@tauri-apps/api/event";
 import { create } from "zustand";
-import type { Settings, Theme, WindowState } from "../types";
+import {
+  THEMES,
+  type Settings,
+  type Theme,
+  type ThemePreset,
+  type WindowState,
+} from "../types";
 import { applyLanguage, type Language } from "../lib/i18n";
 import { mergeVerdicts, verdictsUnchanged, type PyMainCache } from "../lib/pythonMainCache";
+import { THEME_COLOR_RE, THEME_VAR_NAMES } from "../lib/themeTokens";
 
 /** Each Tauri window is its own JS runtime with its own copy of this store, so
  *  a theme change made in one (normally the main window's Settings dialog)
@@ -19,15 +26,258 @@ export const THEME_CHANGED_EVENT = "eldrun:theme-changed";
  *  re-applies the new language. See the listener in `DetachedApp`. */
 export const LANGUAGE_CHANGED_EVENT = "eldrun:language-changed";
 
+/** The "system" pseudo-theme resolved to a real one via the OS light/dark
+ *  preference. It exists only in settings and the picker — the CSS knows
+ *  nothing about it, so it must never reach `data-theme` unresolved (an
+ *  unknown value there silently falls back to the :root fancy_dark tokens
+ *  while claiming to be something else). */
+export function resolveTheme(scheme: string): string {
+  if (scheme !== "system") return scheme;
+  try {
+    return window.matchMedia?.("(prefers-color-scheme: light)").matches
+      ? "fancy_light"
+      : "fancy_dark";
+  } catch {
+    return "fancy_dark";
+  }
+}
+
+/** Re-applies "system" when the OS scheme flips while the app is open. Armed
+ *  only while the stored scheme IS "system"; module-level because applyTheme
+ *  is a plain function each window calls, and two live listeners would both
+ *  re-apply — harmless but pointless. */
+let systemThemeMedia: MediaQueryList | null = null;
+let systemThemeOnChange: (() => void) | null = null;
+
+function armSystemThemeListener(scheme: string) {
+  if (scheme === "system") {
+    if (systemThemeOnChange) return;
+    try {
+      const media = window.matchMedia?.("(prefers-color-scheme: light)");
+      if (!media?.addEventListener) return;
+      systemThemeMedia = media;
+      systemThemeOnChange = () => applyTheme("system");
+      media.addEventListener("change", systemThemeOnChange);
+    } catch {
+      // No matchMedia (tests) — "system" then just means fancy_dark.
+    }
+  } else if (systemThemeMedia && systemThemeOnChange) {
+    systemThemeMedia.removeEventListener("change", systemThemeOnChange);
+    systemThemeMedia = null;
+    systemThemeOnChange = null;
+  }
+}
+
 export function applyTheme(scheme: string) {
-  document.documentElement.setAttribute("data-theme", scheme);
+  const resolved = resolveTheme(scheme);
+  document.documentElement.setAttribute("data-theme", resolved);
+  armSystemThemeListener(scheme);
   // Cache for index.html's pre-paint inline script, so the next launch
   // paints the right theme immediately instead of flashing the CSS
-  // :root default until settings arrive over the async invoke.
+  // :root default until settings arrive over the async invoke. The RESOLVED
+  // theme is cached, never "system" — the pre-paint script sets data-theme
+  // verbatim and cannot resolve. If the OS scheme flipped while the app was
+  // closed, the pre-paint is one frame behind and load() corrects it.
   try {
-    localStorage.setItem("eldrun-theme", scheme);
+    localStorage.setItem("eldrun-theme", resolved);
   } catch {
     // localStorage unavailable — worst case is the old one-frame flash.
+  }
+}
+
+/** Like THEME_CHANGED_EVENT, for the appearance overrides (accent color,
+ *  corner style, per-token theme colors): broadcast so every live window
+ *  re-applies them. Payload is the full set — a popout cannot know which part
+ *  changed. */
+export const APPEARANCE_CHANGED_EVENT = "eldrun:appearance-changed";
+
+export interface AppearancePayload {
+  accent: string | null;
+  corners: string | null;
+  /** Absent from an older window's payload; treated as "no overrides". */
+  themeVars?: Record<string, string>;
+}
+
+/** A user accent must be a full hex color — anything else (an empty string, a
+ *  named color, a truncated paste) is treated as "no override" rather than
+ *  written into the root style, where an invalid value would silently drop
+ *  every rule reading it. */
+export function normalizeAccent(accent: string | null | undefined): string | null {
+  return typeof accent === "string" && /^#[0-9a-fA-F]{6}$/.test(accent.trim())
+    ? accent.trim().toLowerCase()
+    : null;
+}
+
+/** The tokens a custom accent overrides INLINE alongside `--accent`. The tinted
+ *  themes would not need them (their hover/active/pill tokens already derive
+ *  from `--accent` in themes.css), but the achromatic pair declares explicit
+ *  literals for all five — their accent is the ink — which would keep painting
+ *  the old tone under a custom accent. The inline values restate the SAME
+ *  derivations themes.css runs, so a custom accent behaves exactly like a
+ *  theme's own on every theme. */
+const ACCENT_DERIVED: ReadonlyArray<readonly [string, string]> = [
+  ["--accent-hover", "color-mix(in srgb, var(--accent) 84%, var(--text-primary))"],
+  ["--accent-active", "color-mix(in srgb, var(--accent) 70%, var(--text-primary))"],
+  ["--pill-active-bg", "color-mix(in srgb, var(--accent) 16%, transparent)"],
+  ["--pill-active-border", "var(--accent)"],
+  ["--pill-hover-bg", "color-mix(in srgb, var(--accent) 12%, transparent)"],
+];
+
+/** Apply (or with null/undefined, clear) the custom accent on THIS window's
+ *  root element. Inline root vars outrank every `[data-theme]` block, so the
+ *  override survives theme switching — it is a cross-theme preference. */
+export function applyAccent(accent: string | null | undefined) {
+  const root = document.documentElement.style;
+  const value = normalizeAccent(accent);
+  if (value) {
+    root.setProperty("--accent", value);
+    for (const [name, formula] of ACCENT_DERIVED) root.setProperty(name, formula);
+  } else {
+    root.removeProperty("--accent");
+    for (const [name] of ACCENT_DERIVED) root.removeProperty(name);
+  }
+  // Pre-paint cache, applyTheme's bargain: index.html re-applies this before
+  // first paint so launch doesn't flash the theme accent and then snap.
+  try {
+    if (value) localStorage.setItem("eldrun-accent", value);
+    else localStorage.removeItem("eldrun-accent");
+  } catch {
+    // localStorage unavailable — worst case is a one-frame accent flash.
+  }
+}
+
+/** Keep only what may safely reach the root style: a catalog token name
+ *  (`lib/themeTokens`) holding a `#rrggbb`/`#rrggbbaa` color. `ui_theme_vars`
+ *  is written as INLINE CUSTOM PROPERTIES, so an unvalidated pair from a
+ *  hand-edited settings.json would be an arbitrary-CSS-variable write; and an
+ *  invalid *value* is worse than none, since every rule reading that token
+ *  silently drops (the reason `normalizeAccent` above exists). `--accent` is
+ *  rejected on purpose: it has its own setting, `ui_accent`. */
+export function normalizeThemeVars(
+  vars: Record<string, string> | null | undefined,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!vars || typeof vars !== "object") return out;
+  for (const [name, value] of Object.entries(vars)) {
+    if (!THEME_VAR_NAMES.has(name)) continue;
+    if (typeof value !== "string") continue;
+    const v = value.trim().toLowerCase();
+    if (THEME_COLOR_RE.test(v)) out[name] = v;
+  }
+  return out;
+}
+
+/** Apply the per-token color overrides on THIS window's root element.
+ *
+ *  Every catalog token is CLEARED first and only the overridden ones re-set:
+ *  inline root vars outrank every `[data-theme]` block, so a token dropped
+ *  from the map has to be removed explicitly or it would keep shadowing all
+ *  themes forever — with no UI left pointing at it.
+ *
+ *  Applied AFTER `applyAccent` by every caller, so a hand-picked
+ *  `--accent-hover` wins over the value `applyAccent` derives from the accent.
+ *  That ordering is the whole contract between the two overrides. */
+export function applyThemeVars(vars: Record<string, string> | null | undefined) {
+  const root = document.documentElement.style;
+  const clean = normalizeThemeVars(vars);
+  for (const name of THEME_VAR_NAMES) {
+    const value = clean[name];
+    if (value) root.setProperty(name, value);
+    else root.removeProperty(name);
+  }
+  // Pre-paint cache, like the accent/corner ones: index.html re-applies these
+  // before first paint so launch doesn't flash the theme's own palette.
+  try {
+    if (Object.keys(clean).length > 0) {
+      localStorage.setItem("eldrun-theme-vars", JSON.stringify(clean));
+    } else {
+      localStorage.removeItem("eldrun-theme-vars");
+    }
+  } catch {
+    // localStorage unavailable — worst case is a one-frame palette flash.
+  }
+}
+
+/** How many saved looks `ui_theme_presets` may hold, and how long a name may
+ *  be. Both are guards on a list that is written back whole on every settings
+ *  save and rendered in one card — not a judgement about how many themes
+ *  anybody needs. */
+export const THEME_PRESET_LIMIT = 40;
+export const THEME_PRESET_NAME_MAX = 60;
+
+const THEME_VALUES = new Set<string>(THEMES.map((t) => t.value));
+
+/** Keep only what may safely be loaded back onto the document. A preset is
+ *  `ui_theme_vars` + `ui_accent` + `ui_corners` + a base theme travelling
+ *  together, and loading one writes all four — so it gets the same treatment
+ *  `normalizeThemeVars` gives the map on its own, plus an id and a name.
+ *
+ *  Everything is validated on READ rather than only on write: settings.json is
+ *  hand-editable, and a preset sitting in it is inert until the moment somebody
+ *  presses Load, at which point an unvalidated entry would be an
+ *  arbitrary-CSS-variable write with a friendly button in front of it. */
+export function normalizeThemePresets(
+  presets: unknown,
+): ThemePreset[] {
+  if (!Array.isArray(presets)) return [];
+  const out: ThemePreset[] = [];
+  const seen = new Set<string>();
+  for (const raw of presets) {
+    if (!raw || typeof raw !== "object") continue;
+    const p = raw as Record<string, unknown>;
+    const id = typeof p.id === "string" ? p.id.trim() : "";
+    const name = typeof p.name === "string" ? p.name.trim() : "";
+    if (!id || !name || seen.has(id)) continue;
+    seen.add(id);
+    const entry: ThemePreset = {
+      id,
+      name: name.slice(0, THEME_PRESET_NAME_MAX),
+      vars: normalizeThemeVars(p.vars as Record<string, string> | undefined),
+    };
+    if (typeof p.theme === "string" && THEME_VALUES.has(p.theme)) {
+      entry.theme = p.theme as Theme;
+    }
+    const accent = normalizeAccent(p.accent as string | undefined);
+    if (accent) entry.accent = accent;
+    if (p.corners === "square" || p.corners === "rounded") entry.corners = p.corners;
+    if (typeof p.saved === "number" && Number.isFinite(p.saved)) entry.saved = p.saved;
+    out.push(entry);
+    if (out.length >= THEME_PRESET_LIMIT) break;
+  }
+  return out;
+}
+
+/** The radius ladders behind `Settings.ui_corners`. "rounded" matches
+ *  soft_dark's own tokens, so the knob and that theme agree on what rounded
+ *  means; "square" is the house default restated. */
+export const CORNER_RADII: Record<"square" | "rounded", readonly [string, string, string]> = {
+  square: ["0px", "0px", "0px"],
+  rounded: ["4px", "8px", "12px"],
+};
+
+/** Apply (or with null/undefined/unknown, clear) the corner-style override on
+ *  THIS window's root element — the three radius tokens every surface reads. */
+export function applyCorners(corners: string | null | undefined) {
+  const root = document.documentElement.style;
+  const radii =
+    corners === "square" || corners === "rounded" ? CORNER_RADII[corners] : null;
+  if (radii) {
+    root.setProperty("--radius-sm", radii[0]);
+    root.setProperty("--radius", radii[1]);
+    root.setProperty("--radius-lg", radii[2]);
+  } else {
+    root.removeProperty("--radius-sm");
+    root.removeProperty("--radius");
+    root.removeProperty("--radius-lg");
+  }
+  try {
+    if (radii && (corners === "square" || corners === "rounded")) {
+      localStorage.setItem("eldrun-corners", corners);
+    } else {
+      localStorage.removeItem("eldrun-corners");
+    }
+  } catch {
+    // localStorage unavailable — worst case is a one-frame corner flash.
   }
 }
 
@@ -173,6 +423,9 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
   load: async (opts) => {
     const settings = await invoke<Settings>("get_settings");
     applyTheme(settings.color_scheme ?? "fancy_dark");
+    applyAccent(settings.ui_accent);
+    applyThemeVars(settings.ui_theme_vars);
+    applyCorners(settings.ui_corners);
     applyLanguage(settings.language);
     // `ui_zoom` is the MAIN window's own zoom. A popout skips it and applies its
     // own persisted zoom from its seed instead (zoom is per window, not global).
@@ -207,6 +460,18 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
       if ("color_scheme" in patch) {
         void emit(THEME_CHANGED_EVENT, updated.color_scheme);
       }
+    }
+    if ("ui_accent" in patch || "ui_corners" in patch || "ui_theme_vars" in patch) {
+      applyAccent(updated.ui_accent);
+      // After the accent: a hand-picked token beats the accent's derivation.
+      applyThemeVars(updated.ui_theme_vars);
+      applyCorners(updated.ui_corners);
+      const payload: AppearancePayload = {
+        accent: updated.ui_accent ?? null,
+        corners: updated.ui_corners ?? null,
+        themeVars: normalizeThemeVars(updated.ui_theme_vars),
+      };
+      void emit(APPEARANCE_CHANGED_EVENT, payload);
     }
     if ("ui_zoom" in patch) {
       applyZoom(updated.ui_zoom);

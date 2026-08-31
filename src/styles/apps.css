@@ -554,9 +554,12 @@
    project. Give it the same compact, icon-only reading as the fixed root
    terminal pill while preserving its hover title, accessible name and status
    strip. */
+/* 38px, not 42: the icon inside is 18px and centred, so this width IS the pill's
+   inset — 10px each side, the same inset the root pill and the box chip beside
+   it carry, which is what makes ★ → 🗑 and 🗑 → ▣ the same gap. */
 .project-pill.trash-project-pill {
-  width: 42px;
-  max-width: 42px;
+  width: 38px;
+  max-width: 38px;
 }
 
 .trash-project-pill .pill-main {
@@ -610,7 +613,7 @@
   position: absolute;
   right: -3px;
   bottom: -3px;
-  font-size: 8px;
+  font-size: var(--text-xs);
   line-height: 1;
   color: var(--text-muted);
   background: var(--bg-panel);
@@ -743,7 +746,7 @@
  * keeps its width, the path ellipsizes. */
 .project-search-path-label {
   flex: 0 0 auto;
-  font-size: 9px;
+  font-size: var(--text-xs);
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -930,7 +933,8 @@
 }
 
 /* Settings alone gets the split-scroll frame: it does NOT scroll itself —
-   .dialog-scroll (its one JSX child, see SettingsPanel.tsx) does. Split out
+   .dialog-scroll (the second of its two JSX children, the pinned
+   `.settings-title-row` being the first; see SettingsPanel.tsx) does. Split out
    because a native scrollbar rendered on the SAME element as border-radius
    doesn't get rounded itself — it runs straight to the very top/bottom of the
    box, visually notching the rounded corner where the two meet. This frame
@@ -1018,12 +1022,11 @@
    --bg-header) with no per-theme branching, since --bg-header is a plain color
    in some themes and a gradient in others. The band bleeds to the dialog's
    edges; the padding/margins that achieve that differ per context (the dialog's
-   own padding is 0 for a framed surface, 22px for a plain .project-dialog, and
-   18px inside a .settings-dialog's scroll frame) and are set below. */
+   own padding is 0 for a framed surface and 22px for a plain .project-dialog)
+   and are set below. */
 .project-dialog.dialog-framed > .settings-title-row,
 .stats-dialog.dialog-framed > .settings-title-row,
 .settings-dialog > .settings-title-row,
-.settings-dialog > .dialog-scroll > .settings-title-row,
 .project-dialog:not(.dialog-framed) > .settings-title-row {
   background:
     linear-gradient(
@@ -1034,22 +1037,23 @@
   border-bottom: 1px solid var(--border-color);
 }
 
-/* Fixed header of a plain .settings-dialog (EventDialog, CustomAgentDialog):
-   the surface's padding is 0, so the band is full-width — it only needs its own
-   inset. */
+/* Fixed header of a .settings-dialog — EventDialog and CustomAgentDialog, and
+   since the panels were restructured, SettingsPanel and every one of its
+   sub-panels too. The surface's padding is 0, so the band is full-width and
+   only needs its own inset.
+
+   It is a SIBLING of `.dialog-scroll`, never a child, and that is the whole
+   point: the app paints its own overlay scrollbar thumb over a container's
+   right edge (`lib/customScrollbar.ts`), spanning the scroll box's full height
+   — so a header inside the scroll had the thumb running up over the accent
+   band and across the ✕ in the corner. Outside it, the thumb starts beneath
+   the header, which is the same split `.menu-scroll-region` makes for the
+   hover menus and `.dialog-framed` for every other scrolling dialog. It must
+   not shrink when the body is long, so the flex column gives only below it. */
 .settings-dialog > .settings-title-row {
   margin: 0;
   padding: 16px 18px 10px;
-}
-
-/* Header that scrolls inside a .settings-dialog's frame (SettingsPanel and its
-   sub-panels): pull the band out to the scroll's top and side edges (negative
-   margins == the .dialog-scroll's 18px padding) so it still reads as a full-
-   width top bar, with a gap before the body. */
-.settings-dialog > .dialog-scroll > .settings-title-row {
-  /* margin-bottom 0: the scroll frame is a flex column with its own 12px gap. */
-  margin: -18px -18px 0;
-  padding: 16px 18px 10px;
+  flex-shrink: 0;
 }
 
 /* Header of a plain (self-scrolling) .project-dialog — ProjectPill's little
@@ -1058,4 +1062,68 @@
   /* margin-bottom 0: .project-dialog is a flex column with its own 12px gap. */
   margin: -22px -24px 0;
   padding: 16px 24px 10px;
+}
+
+/* ── Shortcut cheat sheet (ShortcutHelpOverlay) ──────────────────────────── */
+/* Rides the shared `.project-dialog.dialog-framed` chrome; all that is here is
+   its size and the key rows. kbd chips copy the steering legend's, so the two
+   surfaces describing the same keys read the same. */
+.shortcut-help-overlay {
+  width: min(640px, calc(100vw - 32px));
+}
+.shortcut-help-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.shortcut-help-section h3 {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--accent-secondary);
+}
+.shortcut-help-intro {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+.shortcut-help-row {
+  display: grid;
+  /* Fixed key column so the labels align into a scannable table; wide enough
+     for the longest fixed strings ("Tab / Shift+Tab", "Ctrl + / − / 0"). */
+  grid-template-columns: 140px 1fr;
+  gap: 12px;
+  align-items: baseline;
+  font-size: 13px;
+}
+.shortcut-help-row kbd {
+  justify-self: start;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 1px 6px;
+  color: var(--text-primary);
+  background: var(--control-hover-bg);
+  border: 1px solid var(--border-color);
+  border-radius: 3px;
+  white-space: nowrap;
+}
+.shortcut-help-label {
+  color: var(--text-primary);
+}
+.shortcut-help-custom {
+  font-style: italic;
+  color: var(--accent);
+}
+.shortcut-help-desc {
+  color: var(--text-secondary);
+}
+.shortcut-help-footer {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+  border-top: 1px solid var(--border-subtle);
+  padding-top: 10px;
 }

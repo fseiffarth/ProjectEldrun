@@ -91,7 +91,7 @@
 }
 .split-scroll-link-btn.linked {
   opacity: 1;
-  color: var(--accent-contrast, #fff);
+  color: var(--accent-contrast);
   background: var(--accent);
   border-color: var(--accent);
 }
@@ -326,7 +326,7 @@
 }
 .blob-view-toggle button.is-active {
   background: var(--accent);
-  color: var(--accent-contrast, #fff);
+  color: var(--accent-contrast);
 }
 /* Pie mode: flat chart, so drop the grab cursor + 3D perspective. */
 .blob-viewport-pie {
@@ -363,7 +363,7 @@
 }
 .blob-pie-label {
   fill: var(--bg-main);
-  font-size: 9px;
+  font-size: var(--text-xs);
   font-weight: 600;
   pointer-events: none;
   paint-order: stroke;
@@ -655,6 +655,55 @@
   color: var(--bg-main);
   background: var(--accent);
   border-radius: var(--radius);
+}
+
+/* ── Keyboard steering mode legend (SteeringLegend) ──────────────────────── */
+/* Bottom-center, portalled to body, display-only. Static shadow token only —
+   never an animated blurred box-shadow (WebKitGTK software-renders those). */
+.steering-legend {
+  position: fixed;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  z-index: 9998;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 6px 14px;
+  max-width: min(92vw, 1100px);
+  padding: 8px 14px;
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-2);
+  pointer-events: none;
+  font-size: 12px;
+}
+.steering-legend-title {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+.steering-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+  color: var(--text-secondary);
+}
+.steering-legend-item kbd {
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 5px;
+  color: var(--text-primary);
+  background: var(--control-hover-bg);
+  border: 1px solid var(--border-color);
+  border-radius: 3px;
 }
 
 /* Floating label following the pointer during a tab drag. */

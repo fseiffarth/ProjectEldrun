@@ -10,6 +10,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { STATUS_COLOR } from "../components/files/FileTree";
+import { clearFileViewSnapshots } from "../lib/fileViewSnapshots";
 
 const { mockInvoke } = vi.hoisted(() => ({ mockInvoke: vi.fn() }));
 
@@ -18,7 +19,7 @@ vi.mock("../stores/projects", () => ({
   useProjectsStore: vi.fn(),
 }));
 vi.mock("../stores/windows", () => ({
-  useWindowsStore: () => ({ windows: [], refresh: vi.fn(), untrack: vi.fn() }),
+  useWindowsStore: () => ({ windows: [], refresh: vi.fn(), untrack: vi.fn(), closeApp: vi.fn() }),
 }));
 vi.mock("../stores/settings", () => ({
   useSettingsStore: () => null,
@@ -91,6 +92,11 @@ describe("STATUS_COLOR", () => {
 describe("git action button bars", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // The panel seeds its git bar and tree from module-level snapshots so a
+    // reveal paints instantly (lib/fileViewSnapshots). Every case here renders
+    // the SAME project, so without a reset each one would start seeded from the
+    // previous case's counts.
+    clearFileViewSnapshots();
     mockUseProjectsStore.mockReturnValue({ projects: [ACTIVE_PROJECT], activeId: "proj-1" } as ReturnType<typeof useProjectsStore>);
   });
 
@@ -99,6 +105,7 @@ describe("git action button bars", () => {
     await act(async () => {
       result = render(<SidePanel open={true} />);
     });
+    await userEvent.setup().click(screen.getByRole("button", { name: "Git" }));
     return result!;
   }
 
@@ -107,6 +114,17 @@ describe("git action button bars", () => {
     await renderOpenPanel();
     const bar = await screen.findByTestId("add-bar");
     expect(bar.style.background).toBe("var(--danger)");
+  });
+
+  it("flags the Git button with the next pending action colour", async () => {
+    setupInvoke({ staged: 1 });
+    await renderOpenPanel();
+    await screen.findByTestId("commit-bar");
+    const flag = await screen.findByRole("button", { name: "Git" }).then((button) =>
+      button.querySelector(".toolbar-btn-flag"),
+    );
+    expect(flag).not.toBeNull();
+    expect((flag as HTMLElement).style.backgroundColor).toBe("var(--warning)");
   });
 
   it("Commit button has the warning status dot", async () => {
@@ -151,6 +169,11 @@ describe("git action button bars", () => {
 describe("git change tree", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // The panel seeds its git bar and tree from module-level snapshots so a
+    // reveal paints instantly (lib/fileViewSnapshots). Every case here renders
+    // the SAME project, so without a reset each one would start seeded from the
+    // previous case's counts.
+    clearFileViewSnapshots();
     mockUseProjectsStore.mockReturnValue({ projects: [ACTIVE_PROJECT], activeId: "proj-1" } as ReturnType<typeof useProjectsStore>);
   });
 
@@ -159,6 +182,7 @@ describe("git change tree", () => {
     await act(async () => {
       result = render(<SidePanel open={true} />);
     });
+    await userEvent.setup().click(screen.getByRole("button", { name: "Git" }));
     return result!;
   }
 
