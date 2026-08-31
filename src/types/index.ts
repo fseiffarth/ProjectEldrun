@@ -1,5 +1,6 @@
 import type { LinkOpenTarget } from "./browser";
 import type { PyMainVerdict } from "../lib/pythonMainCache";
+import type { AgentCron } from "../lib/agentCron";
 
 export interface GlobalAppEntry {
   exec: string;
@@ -121,6 +122,10 @@ export interface Settings {
   /** Show Eldrun Mobile's host-connection control in the desktop header. This
    * defaults to on when Mobile itself is enabled; an explicit false hides it. */
   mobile_indicator?: boolean;
+  /** Is the header's machine-state cluster (connection, battery, Mobile, VPN,
+   * Machines, CPU/RAM/GPU) expanded into the bar? Unset means collapsed to a
+   * single summary lamp; anything non-nominal shows itself regardless. */
+  header_status_expanded?: boolean;
   git_profile_url?: string;
   git_token?: string;
   color_scheme?: string;
@@ -138,6 +143,31 @@ export interface Settings {
    *  Clamped to [0.5, 3]. Zoom is **per window**: a detached popout persists its
    *  own zoom on its layout entry (see `DetachedGroup.zoom`), not here. */
   ui_zoom?: number;
+  /** Custom accent color (`#rrggbb`) overriding the active theme's `--accent`
+   *  across every theme; unset = the theme's own. Applied as inline root CSS
+   *  vars by `stores/settings.applyAccent` — the hover/active/pill tokens all
+   *  derive from `--accent`, so one override recolors them together. */
+  ui_accent?: string;
+  /** Corner style override: `"square"` or `"rounded"`; unset = the active
+   *  theme's own radius tokens. Applied by `stores/settings.applyCorners`. */
+  ui_corners?: CornerStyle;
+  /** Per-token color overrides from the Theme Customizer, keyed by CSS custom
+   *  property (`{"--bg-panel": "#101820"}`). Only the `lib/themeTokens` catalog
+   *  names, holding `#rrggbb`/`#rrggbbaa`, are honoured — see
+   *  `stores/settings.normalizeThemeVars`, which is what stands between a
+   *  hand-edited settings.json and an arbitrary inline-CSS write. Cross-theme
+   *  like `ui_accent`, and applied after it, so a hand-picked `--accent-hover`
+   *  beats the one derived from the accent. Round-trips through the backend's
+   *  `extra` catch-all — no Rust field needed. */
+  ui_theme_vars?: Record<string, string>;
+  /** Saved looks from the Theme Customizer: the whole appearance — base theme,
+   *  accent, per-token overrides and corner style — under a name, so a palette
+   *  you built can be put away and brought back instead of being the one thing
+   *  the app can hold at a time. Validated on read the way `ui_theme_vars` is
+   *  (`stores/settings.normalizeThemePresets`), since a stored preset reaches
+   *  the root style the moment it is loaded. Round-trips through the backend's
+   *  `extra` catch-all — no Rust field needed. */
+  ui_theme_presets?: ThemePreset[];
   /** Calendar: first column of the week — `0` = Sunday (default), `1` = Monday. */
   calendar_week_start?: 0 | 1;
   /** Calendar: the view a fresh calendar tab opens on. Default `"month"`. */
@@ -285,6 +315,15 @@ export interface Settings {
    *  uninstalling the CLI. Round-trips through the backend settings `extra`
    *  catch-all — no Rust field needed. Unset/empty = nothing hidden. */
   disabled_agents?: string[];
+  /** The scheduled agent warm-up (Manage CLIs → Scheduled warm-up): at each
+   *  configured local time, one short message is sent to that agent in the Trash
+   *  project, so its usage window starts *then* rather than whenever the first
+   *  real prompt happens to be typed. A global time list with per-agent
+   *  participation and per-agent overrides; read through `lib/agentCron.ts`,
+   *  which is also where the semantics of every field live. Round-trips through
+   *  the backend settings `extra` catch-all — no Rust field needed, since
+   *  nothing in the backend reads it. Unset = nothing scheduled. */
+  agent_cron?: AgentCron;
   /** The default local (Ollama) model. Used by any task without its own
    *  per-task assignment in `ollama_roles`, and as the legacy "active model".
    *  Chosen in the 🧠 menu (click a loaded model's name). Unset = none. */
@@ -372,6 +411,12 @@ export interface Settings {
    *  so the running session can be monitored/steered from the Claude app/web. Only
    *  Claude supports this flag; other agents ignore the setting. */
   agent_remote_control?: boolean;
+  /** Default-on filesystem fence for local agent tabs. Linux uses bubblewrap;
+   * remote-host and non-Linux tabs report that it is not enforced. */
+  agent_fence?: boolean;
+  /** Extra host toolchain/config paths exposed read-only inside the fence.
+   * Unset uses the backend defaults; an explicit empty list exposes none. */
+  agent_fence_paths?: string[];
   /** When true (the default), the usage recap opens by itself on the first launch
    *  of each day. Turning it off stops the popup, not the counting — the recap
    *  stays reachable from Settings. */
@@ -887,6 +932,9 @@ export interface ProjectEntry {
    *  tabs; absent inherits the global setting (`settings.agent_remote_control`,
    *  default ON). Set from the pill's "Remote control" menu item. */
   remote_control?: boolean;
+  /** Per-project override of the global default-on agent filesystem fence.
+   * Absent inherits `settings.agent_fence`. */
+  agent_fence?: boolean;
   /** Which machine shells launched from this project run on — the persisted
    *  `RunHostPicker` choice (a `TabLocation`: "local" | "remote" | "host:<id>").
    *  Seeds the live `useRunHostPrefStore` on load so the choice survives a
@@ -1331,17 +1379,48 @@ export function resolveLocalMirror(project: ProjectEntry | null | undefined): st
   return typeof mirror === "string" && mirror.trim() ? mirror : null;
 }
 
+/** Corner-style override for the whole app (`Settings.ui_corners`). Unset in
+ *  settings = the active theme's own radius tokens. */
+export type CornerStyle = "square" | "rounded";
+
 export type Theme =
+  | "system"
   | "fancy_dark"
+  | "soft_dark"
   | "dark"
   | "light"
   | "fancy_light"
   | "light_lavender";
 
 export const THEMES: { value: Theme; label: string }[] = [
+  { value: "system", label: "System (follow OS)" },
   { value: "fancy_dark", label: "Fancy Dark" },
+  { value: "soft_dark", label: "Soft Dark" },
   { value: "dark", label: "Plain Dark" },
   { value: "light", label: "Plain Light" },
   { value: "fancy_light", label: "Fancy Light" },
   { value: "light_lavender", label: "Light Lavender" },
 ];
+
+/** One saved look from the Theme Customizer (`Settings.ui_theme_presets`).
+ *
+ *  It stores everything the customizer can change, not just the token map: a
+ *  palette built on top of Fancy Dark reads as somebody else's on Plain Light,
+ *  so the base theme travels with it, and so do the accent (its own setting)
+ *  and the corner style (the same window's knob). Loading one writes all four
+ *  settings in a single patch. */
+export interface ThemePreset {
+  /** Stable id; the list is keyed and addressed by it, never by name. */
+  id: string;
+  name: string;
+  /** The base theme the look sat on. Unset = leave the current one alone. */
+  theme?: Theme;
+  /** Accent override at save time; unset = the base theme's own accent. */
+  accent?: string;
+  /** Corner style at save time; unset = the base theme's own radii. */
+  corners?: CornerStyle;
+  /** The per-token overrides, in `ui_theme_vars`' shape. */
+  vars: Record<string, string>;
+  /** Epoch ms the preset was written, for the "saved <date>" line. */
+  saved?: number;
+}

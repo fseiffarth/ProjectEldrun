@@ -18,6 +18,7 @@ describe("LESSONS catalog", () => {
       "add-tab",
       "native-viewer",
       "arrange-tabs",
+      "keyboard-steering",
       "yaml-viewer",
       "pdf-viewer",
       "tex-workspace",

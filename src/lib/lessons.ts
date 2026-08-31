@@ -342,6 +342,71 @@ export const LESSONS: Lesson[] = [
     ],
   },
   {
+    id: "keyboard-steering",
+    category: "basics",
+    titleKey: "lessons.keyboardSteering.title",
+    blurbKey: "lessons.keyboardSteering.blurb",
+    steps: [
+      // The entry chord is the one control that is always there, so the task
+      // sits here: entering the mode makes the legend appear, and the later
+      // steps are then read with the real chips/badges on screen.
+      {
+        id: "enter-mode",
+        anchor: null,
+        placement: "bottom",
+        titleKey: "lessons.keyboardSteering.enterModeTitle",
+        bodyKey: "lessons.keyboardSteering.enterModeBody",
+        task: {
+          promptKey: "lessons.keyboardSteering.enterModeTask",
+          hintKey: "lessons.keyboardSteering.enterModeTaskHint",
+          appear: ".steering-legend",
+        },
+      },
+      {
+        id: "stations",
+        anchor: ".project-pills-region",
+        placement: "top",
+        titleKey: "lessons.keyboardSteering.stationsTitle",
+        bodyKey: "lessons.keyboardSteering.stationsBody",
+      },
+      {
+        id: "move-focus",
+        anchor: null,
+        placement: "bottom",
+        titleKey: "lessons.keyboardSteering.moveFocusTitle",
+        bodyKey: "lessons.keyboardSteering.moveFocusBody",
+      },
+      {
+        id: "single-keys",
+        anchor: null,
+        placement: "bottom",
+        titleKey: "lessons.keyboardSteering.singleKeysTitle",
+        bodyKey: "lessons.keyboardSteering.singleKeysBody",
+      },
+      {
+        id: "exits",
+        anchor: null,
+        placement: "bottom",
+        titleKey: "lessons.keyboardSteering.exitsTitle",
+        bodyKey: "lessons.keyboardSteering.exitsBody",
+      },
+      {
+        id: "cheat-sheet",
+        anchor: null,
+        placement: "bottom",
+        titleKey: "lessons.keyboardSteering.cheatSheetTitle",
+        bodyKey: "lessons.keyboardSteering.cheatSheetBody",
+      },
+      {
+        id: "project-cycle",
+        anchor: null,
+        placement: "bottom",
+        titleKey: "lessons.keyboardSteering.projectCycleTitle",
+        bodyKey: "lessons.keyboardSteering.projectCycleBody",
+      },
+    ],
+  },
+  {
     id: "yaml-viewer",
     category: "basics",
     titleKey: "lessons.yamlViewer.title",
