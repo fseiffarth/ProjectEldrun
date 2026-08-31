@@ -528,6 +528,19 @@ pub fn run() {
                 _app.handle().clone(),
                 mobile_desktop.clone(),
             );
+            // Announce window-registry mutations made outside a frontend command
+            // (a launched app exiting) so every window's Apps view refreshes.
+            {
+                use tauri::{Emitter, Manager};
+                let handle = _app.handle().clone();
+                _app.state::<WindowRegistryState>().lock().unwrap().notify =
+                    Some(Arc::new(move |project_id: Option<String>| {
+                        let _ = handle.emit(
+                            "app-windows-changed",
+                            serde_json::json!({ "project_id": project_id }),
+                        );
+                    }));
+            }
             #[cfg(target_os = "linux")]
             install_webview_crash_reporter(_app);
             // Recolor WebKitGTK's native in-content scrollbars (page CSS can't —
@@ -696,6 +709,7 @@ pub fn run() {
             commands::vm::remote_download_size,
             commands::vm::remote_download_to,
             commands::projects::set_project_remote_control,
+            commands::projects::set_project_agent_fence,
             commands::projects::set_project_mobile_access,
             commands::projects::sandbox_preflight,
             commands::python::python_interpreters,
@@ -1075,6 +1089,7 @@ pub fn run() {
             commands::tex::resolve_tex_root,
             // Terminal
             commands::terminal::pty_spawn,
+            commands::terminal::agent_fence_status,
             commands::terminal::register_host_bound_tab,
             commands::terminal::pty_write,
             commands::terminal::pty_resize,
@@ -1095,6 +1110,7 @@ pub fn run() {
             commands::apps::open_file,
             commands::apps::list_tracked_windows,
             commands::apps::untrack_window,
+            commands::apps::close_tracked_window,
             commands::apps::check_pid_alive,
             commands::apps::restore_open_apps,
             commands::apps::run_script_detached,
@@ -1213,6 +1229,7 @@ pub fn run() {
             commands::agents::install_agent_remote,
             commands::agents::install_agent_remote_command,
             commands::agents::uninstall_agent,
+            commands::agents::agent_warmup,
             commands::ollama::ollama_is_running,
             commands::ollama::ollama_status,
             commands::ollama::ollama_gpu_status,

@@ -76,9 +76,16 @@ pub struct DetachedBounds {
     pub h: u32,
 }
 
+/// Called with the changed row's `project_id` whenever the registry mutates
+/// outside a frontend-initiated command (a launched child exiting). Installed
+/// once in `lib.rs` setup to emit `app-windows-changed`; `None` in tests and
+/// AppHandle-free service paths, where the mutation simply goes unannounced.
+pub type WindowsChangedNotifier = Arc<dyn Fn(Option<String>) + Send + Sync>;
+
 #[derive(Default)]
 pub struct WindowRegistry {
     pub windows: HashMap<String, TrackedWindow>,
+    pub notify: Option<WindowsChangedNotifier>,
     /// Detached-subwindow display numbers, keyed by the window's stable label.
     /// Assigned in `detach_subwindow` (lowest free positive int) so each popout's
     /// OS title reads "Eldrun win-N", and freed on dock-back/close
@@ -109,6 +116,12 @@ pub const ORIGIN_MIDDLE_FILE_BROWSER: &str = "middle_file_browser";
 pub const ORIGIN_GLOBAL_APP: &str = "global_app";
 pub const ORIGIN_MANUAL_LAUNCH: &str = "manual_launch";
 pub const ORIGIN_RESTORED: &str = "restored";
+/// Opened from the Downloads section below the file tree
+/// (`DownloadsSection.tsx`).
+pub const ORIGIN_DOWNLOADS: &str = "downloads";
+/// Opened from the blob/file viewer's "open externally" affordance
+/// (`ProjectBlobPane.tsx`).
+pub const ORIGIN_BLOB_FILE_VIEWER: &str = "blob_file_viewer";
 /// A tiling subwindow popped out into its own borderless Tauri WebviewWindow
 /// (#42). Project-owned: it follows the same project-switch hide/show parking
 /// path as the other project-owned window origins.
@@ -118,11 +131,23 @@ fn default_window_origin() -> String {
     ORIGIN_MANUAL_LAUNCH.to_string()
 }
 
-pub fn is_project_opened_window(window: &TrackedWindow) -> bool {
+/// Origins that belong to a project's Apps view (and, together with
+/// [`ORIGIN_DETACHED_SUBWINDOW`], to project-switch parking — see
+/// `window_service::is_project_owned`). Global launches (`global_app`,
+/// `manual_launch`) stay out: they are the machine's, not a project's.
+pub fn is_project_opened_origin(origin: &str) -> bool {
     matches!(
-        window.origin.as_str(),
-        ORIGIN_SIDE_FILE_TREE | ORIGIN_MIDDLE_FILE_BROWSER
+        origin,
+        ORIGIN_SIDE_FILE_TREE
+            | ORIGIN_MIDDLE_FILE_BROWSER
+            | ORIGIN_RESTORED
+            | ORIGIN_DOWNLOADS
+            | ORIGIN_BLOB_FILE_VIEWER
     )
+}
+
+pub fn is_project_opened_window(window: &TrackedWindow) -> bool {
+    is_project_opened_origin(&window.origin)
 }
 
 pub fn opened_windows_for_project<'a>(
@@ -153,7 +178,9 @@ pub fn do_launch(
         .stdout(Stdio::null())
         .stderr(Stdio::null());
 
-    let pid = crate::paths::spawn_reaped(cmd).map_err(|e| format!("launch {launch_exec}: {e}"))?;
+    let before = list_window_ids();
+    let child = cmd.spawn().map_err(|e| format!("launch {launch_exec}: {e}"))?;
+    let pid = child.id();
     let window_id = find_window_for_pid(pid, 20);
 
     let opened_at = SystemTime::now()
@@ -174,8 +201,96 @@ pub fn do_launch(
         window_id,
         origin: origin.to_string(),
     };
-    registry.lock().unwrap().windows.insert(id, win.clone());
+    registry
+        .lock()
+        .unwrap()
+        .windows
+        .insert(id.clone(), win.clone());
+    watch_child_exit(child, registry.clone(), id, before);
     Ok(win)
+}
+
+/// What happens to a tracked window's registry row when the child Eldrun
+/// spawned for it exits.
+#[derive(Debug, PartialEq, Eq)]
+enum ExitAction {
+    /// The app is gone: drop the row.
+    Remove,
+    /// The launcher exited but a window it produced is still on screen — a
+    /// hand-off to an existing instance (a browser, `code`). Keep the row as a
+    /// pid-0, delist-only entry, adopting the given window id when the launch
+    /// never resolved one.
+    KeepDemoted(Option<u64>),
+}
+
+/// Pure keep-vs-remove decision for a launched child's exit, so the policy is
+/// unit-testable apart from the wait-thread that applies it.
+fn launched_exit_action(
+    entry_window_id: Option<u64>,
+    live_window_ids: &[u64],
+    adopted_window: Option<u64>,
+) -> ExitAction {
+    match entry_window_id {
+        Some(wid) if live_window_ids.contains(&wid) => ExitAction::KeepDemoted(None),
+        Some(_) => ExitAction::Remove,
+        None => match adopted_window {
+            Some(wid) => ExitAction::KeepDemoted(Some(wid)),
+            None => ExitAction::Remove,
+        },
+    }
+}
+
+/// Wait on a launched child from a background thread (which also keeps
+/// `spawn_reaped`'s zombie-reaping duty) and reconcile the registry when it
+/// exits: remove the row — the fix for dead apps sitting in the Apps view
+/// forever — unless a window survives the launcher (hand-off), then notify the
+/// frontend via the registry's `notify` hook.
+fn watch_child_exit(
+    mut child: std::process::Child,
+    registry: WindowRegistryState,
+    id: String,
+    before: Vec<u64>,
+) {
+    std::thread::spawn(move || {
+        let _ = child.wait();
+        let entry_window_id = match registry.lock().unwrap().windows.get(&id) {
+            // Already closed/untracked while the app ran: nothing to reconcile.
+            None => return,
+            Some(entry) => entry.window_id,
+        };
+        // Window probes run OUTSIDE the lock: each is an X11/OS enumeration and
+        // `find_new_window` sleeps between attempts.
+        let live = list_window_ids();
+        let adopted = if entry_window_id.is_none() {
+            find_new_window(&before, 1)
+        } else {
+            None
+        };
+        let action = launched_exit_action(entry_window_id, &live, adopted);
+        let (project_id, notify) = {
+            let mut reg = registry.lock().unwrap();
+            let Some(project_id) = reg.windows.get(&id).map(|e| e.project_id.clone()) else {
+                return;
+            };
+            match action {
+                ExitAction::Remove => {
+                    reg.windows.remove(&id);
+                }
+                ExitAction::KeepDemoted(adopt) => {
+                    if let Some(entry) = reg.windows.get_mut(&id) {
+                        entry.pid = 0;
+                        if adopt.is_some() {
+                            entry.window_id = adopt;
+                        }
+                    }
+                }
+            }
+            (project_id, reg.notify.clone())
+        };
+        if let Some(notify) = notify {
+            notify(project_id);
+        }
+    });
 }
 
 /// Split an exec string into the literal program to spawn and any leading
@@ -448,11 +563,13 @@ fn open_file_blocking(
         cmd.stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
-        let pid =
-            crate::paths::spawn_reaped(cmd).map_err(|e| format!("open with {launch_exec}: {e}"))?;
+        let child = cmd
+            .spawn()
+            .map_err(|e| format!("open with {launch_exec}: {e}"))?;
+        let pid = child.id();
         let window_id = find_window_for_pid(pid, 20).or_else(|| find_new_window(&before, 20));
         place(window_id);
-        return track_opened_file(
+        let win = track_opened_file(
             registry,
             launch_exec,
             path,
@@ -460,7 +577,9 @@ fn open_file_blocking(
             project_id,
             window_id,
             origin,
-        );
+        )?;
+        watch_child_exit(child, registry.clone(), win.id.clone(), before);
+        return Ok(win);
     }
     opener::open(&path).map_err(|e| e.to_string())?;
     let window_id = find_new_window(&before, 20);
@@ -1720,8 +1839,85 @@ pub fn untrack_window(registry: State<'_, WindowRegistryState>, id: String) -> b
     registry.lock().unwrap().windows.remove(&id).is_some()
 }
 
+/// Close a tracked app from the Apps view: SIGTERM its whole process subtree
+/// (SIGKILL after a grace — `terminal`'s tab-close primitive), remove the
+/// registry row, and announce the change. Refuses rows that cannot be safely
+/// signalled: detached subwindows and anything carrying Eldrun's own pid
+/// (killing that subtree would kill Eldrun), and pid-0 rows (OS-default opens,
+/// demoted hand-offs — nothing to signal; the frontend falls back to a plain
+/// untrack).
+///
+/// The row is removed HERE rather than by the exit watcher: the watcher's
+/// hand-off guard can still see the dying window on screen and would demote
+/// the row to a pid-0 ghost instead of dropping it.
+#[tauri::command]
+pub fn close_tracked_window(
+    registry: State<'_, WindowRegistryState>,
+    id: String,
+) -> Result<(), String> {
+    let (entry, notify) = {
+        let reg = registry.lock().unwrap();
+        (reg.windows.get(&id).cloned(), reg.notify.clone())
+    };
+    let Some(entry) = entry else {
+        return Err("unknown window".into());
+    };
+    if entry.origin == ORIGIN_DETACHED_SUBWINDOW || entry.pid == std::process::id() {
+        return Err("not closeable: eldrun-owned window".into());
+    }
+    if entry.pid == 0 {
+        return Err("not closeable: no tracked pid".into());
+    }
+    crate::terminal::reap_child_subtree(entry.pid, crate::terminal::ReapMode::Graceful);
+    registry.lock().unwrap().windows.remove(&id);
+    if let Some(notify) = notify {
+        notify(entry.project_id.clone());
+    }
+    Ok(())
+}
+
+/// Backstop for the exit watcher: drop Apps-view rows in the given scope whose
+/// spawned process is gone AND whose window (when one was resolved) is no
+/// longer on screen. Catches any wait-thread miss; PID reuse can keep a dead
+/// row listed (documented limitation, `docs/CODE_REVIEW_SECURITY.md`). pid-0
+/// rows are never pruned — there is no liveness signal for them, and on
+/// Wayland the window list reads empty, which must not delete live rows.
+pub fn prune_dead_windows(reg: &mut WindowRegistry, project_id: Option<&str>) {
+    prune_dead_windows_with(reg, project_id, pid_alive, list_window_ids)
+}
+
+fn prune_dead_windows_with(
+    reg: &mut WindowRegistry,
+    project_id: Option<&str>,
+    alive: impl Fn(u32) -> bool,
+    live_windows: impl FnOnce() -> Vec<u64>,
+) {
+    let dead: Vec<(String, Option<u64>)> = reg
+        .windows
+        .values()
+        .filter(|w| w.project_id.as_deref() == project_id)
+        .filter(|w| is_project_opened_window(w))
+        .filter(|w| w.pid > 0 && !alive(w.pid))
+        .map(|w| (w.id.clone(), w.window_id))
+        .collect();
+    if dead.is_empty() {
+        return;
+    }
+    // Paid only when a dead-pid candidate exists — one OS window enumeration.
+    let live = live_windows();
+    for (id, wid) in dead {
+        if wid.is_none_or(|w| !live.contains(&w)) {
+            reg.windows.remove(&id);
+        }
+    }
+}
+
 #[tauri::command]
 pub fn check_pid_alive(pid: u32) -> bool {
+    pid_alive(pid)
+}
+
+pub fn pid_alive(pid: u32) -> bool {
     if pid == 0 {
         return false;
     }
@@ -2168,12 +2364,104 @@ mod tests {
     // ── origin predicates ──────────────────────────────────────────────────
 
     #[test]
-    fn restored_origin_is_not_project_opened_window() {
-        // ORIGIN_RESTORED is project-owned (window_service) but NOT a
-        // "project opened window" in apps.rs — the distinction matters for
-        // which windows are sent to opened_windows_for_project.
-        let w = tracked(Some("p1"), ORIGIN_RESTORED, Some(1));
-        assert!(!is_project_opened_window(&w));
+    fn apps_view_origin_set_is_exactly_the_project_launch_surfaces() {
+        // Every origin a project surface launches with shows in the Apps view;
+        // global launches and Eldrun's own detached windows never do.
+        for origin in [
+            ORIGIN_SIDE_FILE_TREE,
+            ORIGIN_MIDDLE_FILE_BROWSER,
+            ORIGIN_RESTORED,
+            ORIGIN_DOWNLOADS,
+            ORIGIN_BLOB_FILE_VIEWER,
+        ] {
+            assert!(is_project_opened_origin(origin), "{origin} must be listed");
+        }
+        for origin in [
+            ORIGIN_GLOBAL_APP,
+            ORIGIN_MANUAL_LAUNCH,
+            ORIGIN_DETACHED_SUBWINDOW,
+        ] {
+            assert!(
+                !is_project_opened_origin(origin),
+                "{origin} must not be listed"
+            );
+        }
+    }
+
+    // ── launched_exit_action ───────────────────────────────────────────────
+
+    #[test]
+    fn exit_of_app_whose_window_is_gone_removes_the_row() {
+        assert_eq!(
+            launched_exit_action(Some(10), &[20, 30], None),
+            ExitAction::Remove
+        );
+        // No window ever resolved and none appeared: nothing left to manage.
+        assert_eq!(launched_exit_action(None, &[20], None), ExitAction::Remove);
+    }
+
+    #[test]
+    fn exit_with_surviving_window_demotes_to_pid_zero() {
+        // Hand-off (browser, `code`): the launcher exited but its window lives.
+        assert_eq!(
+            launched_exit_action(Some(10), &[10, 20], None),
+            ExitAction::KeepDemoted(None)
+        );
+        // Unresolved launch that produced a new window: keep and adopt it.
+        assert_eq!(
+            launched_exit_action(None, &[20], Some(42)),
+            ExitAction::KeepDemoted(Some(42))
+        );
+    }
+
+    // ── prune_dead_windows ─────────────────────────────────────────────────
+
+    fn registry_of(wins: Vec<TrackedWindow>) -> WindowRegistry {
+        let mut reg = WindowRegistry::default();
+        for (i, mut w) in wins.into_iter().enumerate() {
+            w.id = format!("w{i}");
+            reg.windows.insert(w.id.clone(), w);
+        }
+        reg
+    }
+
+    #[test]
+    fn prune_drops_dead_pid_rows_and_keeps_live_and_pid_zero_ones() {
+        let mut dead = tracked(Some("p1"), ORIGIN_SIDE_FILE_TREE, None);
+        dead.pid = 100;
+        let mut alive = tracked(Some("p1"), ORIGIN_SIDE_FILE_TREE, None);
+        alive.pid = 200;
+        let mut opener = tracked(Some("p1"), ORIGIN_DOWNLOADS, Some(7));
+        opener.pid = 0; // OS-default open: no liveness signal, never pruned.
+        let mut reg = registry_of(vec![dead, alive, opener]);
+
+        prune_dead_windows_with(&mut reg, Some("p1"), |pid| pid == 200, Vec::new);
+
+        let pids: Vec<u32> = reg.windows.values().map(|w| w.pid).collect();
+        assert_eq!(reg.windows.len(), 2);
+        assert!(pids.contains(&200), "live pid stays");
+        assert!(pids.contains(&0), "pid-0 row stays");
+    }
+
+    #[test]
+    fn prune_keeps_dead_pid_row_while_its_window_is_still_on_screen() {
+        // Hand-off the watcher missed: pid gone, window alive → not pruned.
+        let mut w = tracked(Some("p1"), ORIGIN_SIDE_FILE_TREE, Some(55));
+        w.pid = 100;
+        let mut reg = registry_of(vec![w]);
+        prune_dead_windows_with(&mut reg, Some("p1"), |_| false, || vec![55]);
+        assert_eq!(reg.windows.len(), 1);
+        prune_dead_windows_with(&mut reg, Some("p1"), |_| false, Vec::new);
+        assert!(reg.windows.is_empty(), "window gone too → pruned");
+    }
+
+    #[test]
+    fn prune_only_touches_the_requested_scope() {
+        let mut other = tracked(Some("p2"), ORIGIN_SIDE_FILE_TREE, None);
+        other.pid = 100;
+        let mut reg = registry_of(vec![other]);
+        prune_dead_windows_with(&mut reg, Some("p1"), |_| false, Vec::new);
+        assert_eq!(reg.windows.len(), 1, "p2's row is not p1's to prune");
     }
 
     #[test]

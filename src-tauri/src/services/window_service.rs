@@ -1,9 +1,6 @@
 use std::collections::HashMap;
 
-use crate::commands::apps::{
-    TrackedWindow, ORIGIN_DETACHED_SUBWINDOW, ORIGIN_MIDDLE_FILE_BROWSER, ORIGIN_RESTORED,
-    ORIGIN_SIDE_FILE_TREE,
-};
+use crate::commands::apps::{TrackedWindow, ORIGIN_DETACHED_SUBWINDOW};
 use crate::platform::WorkspaceBackend;
 use crate::schema::session::WindowSession;
 use crate::services::terminal_service::eldrun_sessions_dir;
@@ -147,14 +144,11 @@ pub fn resolve_missing_window_ids(
     }
 }
 
+/// Everything the Apps view lists (`is_project_opened_origin`) parks on a
+/// project switch, plus detached subwindows — which park but are never listed
+/// (they are Eldrun's own windows, not launched apps).
 fn is_project_owned(origin: &str) -> bool {
-    matches!(
-        origin,
-        ORIGIN_SIDE_FILE_TREE
-            | ORIGIN_MIDDLE_FILE_BROWSER
-            | ORIGIN_RESTORED
-            | ORIGIN_DETACHED_SUBWINDOW
-    )
+    crate::commands::apps::is_project_opened_origin(origin) || origin == ORIGIN_DETACHED_SUBWINDOW
 }
 
 fn project_owned_windows<'a, 'b>(
@@ -197,6 +191,29 @@ mod tests {
         assert!(is_project_owned(ORIGIN_DETACHED_SUBWINDOW));
         assert!(is_project_owned(ORIGIN_SIDE_FILE_TREE));
         assert!(!is_project_owned(ORIGIN_GLOBAL_APP));
+    }
+
+    #[test]
+    fn apps_view_origins_all_park_on_project_switch() {
+        // The parking set is the Apps-view set plus detached subwindows, so
+        // everything the view lists is hidden/shown with its project.
+        use crate::commands::apps::{
+            ORIGIN_BLOB_FILE_VIEWER, ORIGIN_DOWNLOADS, ORIGIN_MANUAL_LAUNCH,
+            ORIGIN_MIDDLE_FILE_BROWSER, ORIGIN_RESTORED,
+        };
+        for origin in [
+            ORIGIN_SIDE_FILE_TREE,
+            ORIGIN_MIDDLE_FILE_BROWSER,
+            ORIGIN_RESTORED,
+            ORIGIN_DOWNLOADS,
+            ORIGIN_BLOB_FILE_VIEWER,
+            ORIGIN_DETACHED_SUBWINDOW,
+        ] {
+            assert!(is_project_owned(origin), "{origin} must park");
+        }
+        for origin in [ORIGIN_GLOBAL_APP, ORIGIN_MANUAL_LAUNCH] {
+            assert!(!is_project_owned(origin), "{origin} must not park");
+        }
     }
 
     #[test]

@@ -74,7 +74,10 @@ pub fn get_opened_windows(
     windows: State<'_, WindowRegistryState>,
     project_id: Option<String>,
 ) -> Vec<TrackedWindow> {
-    let windows = windows.lock().unwrap();
+    let mut windows = windows.lock().unwrap();
+    // Backstop for the exit watcher: a read is the moment a stale dead row
+    // would become visible, so sweep the requested scope first.
+    crate::commands::apps::prune_dead_windows(&mut windows, project_id.as_deref());
     opened_windows_for_project(windows.windows.values(), project_id.as_deref())
 }
 

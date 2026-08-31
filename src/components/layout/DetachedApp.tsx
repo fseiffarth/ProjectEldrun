@@ -4,11 +4,16 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   useSettingsStore,
   applyTheme,
+  applyAccent,
+  applyCorners,
+  applyThemeVars,
   applyZoom,
   clampZoom,
   stepZoom,
   THEME_CHANGED_EVENT,
   LANGUAGE_CHANGED_EVENT,
+  APPEARANCE_CHANGED_EVENT,
+  type AppearancePayload,
 } from "../../stores/settings";
 import { applyLanguage, useT } from "../../lib/i18n";
 import {
@@ -41,6 +46,7 @@ import { useTabLandStore } from "../../stores/tabLand";
 import { startFocusTracking, useQuiesce } from "../../stores/power";
 import { applyFastModeAttribute, useFastMode } from "../../lib/fastMode";
 import { useRemoteStatusStore } from "../../stores/remoteStatus";
+import { installWindowsEvents } from "../../stores/windows";
 import { listenPdfReveal } from "../../stores/pdfSync";
 import { listenEditorJump } from "../../stores/editorJump";
 import { DetachedCenterPanel } from "./DetachedCenterPanel";
@@ -105,6 +111,11 @@ export function DetachedApp({ param }: Props) {
   // `[data-energy-saver]`, so an unfocused popout's render thread can reach a
   // genuine idle instead of repainting glows nobody is looking at.
   useEffect(() => startFocusTracking(), []);
+  // A popout hosts the docked file column → its Apps view needs the same
+  // app-windows-changed subscription the main window installs.
+  useEffect(() => {
+    installWindowsEvents();
+  }, []);
   const quiesce = useQuiesce();
   useEffect(() => {
     const root = document.documentElement;
@@ -179,6 +190,25 @@ export function DetachedApp({ param }: Props) {
     let cancelled = false;
     listen<string>(THEME_CHANGED_EVENT, (e) => {
       applyTheme(e.payload);
+    })
+      .then((fn) => { if (cancelled) fn(); else unlisten = fn; })
+      .catch(() => {});
+    return () => { cancelled = true; unlisten?.(); };
+  }, []);
+
+  // Same story for the appearance overrides (custom accent + corner style):
+  // they are inline vars on each window's own root element, so a change in the
+  // main window's Settings needs the broadcast to reach this document too. The
+  // initial values arrive with the settings load above.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    listen<AppearancePayload>(APPEARANCE_CHANGED_EVENT, (e) => {
+      applyAccent(e.payload.accent);
+      // After the accent, as everywhere else: an explicit token override wins
+      // over the value applyAccent derives from the accent.
+      applyThemeVars(e.payload.themeVars);
+      applyCorners(e.payload.corners);
     })
       .then((fn) => { if (cancelled) fn(); else unlisten = fn; })
       .catch(() => {});
