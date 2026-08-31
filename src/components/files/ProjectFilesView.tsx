@@ -3,7 +3,6 @@ import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { GitHistory } from "./GitHistory";
 import { GitChangeTree, type ChangeScope } from "./GitChangeTree";
-import { SearchPanel } from "./SearchPanel";
 import {
   FileSourceSwitch,
   ProjectFilesPane,
@@ -24,6 +23,11 @@ import { useWindowsStore } from "../../stores/windows";
 import { useGitDirtyStore, gitDirtyState } from "../../stores/gitDirty";
 import { resolveLocalMirror, type ProjectEntry } from "../../types";
 import { fmtModified, type SortKey } from "../../lib/viewers/fileUtils";
+import {
+  readGitBarSnapshot,
+  writeGitBarSnapshot,
+  type GitStatus,
+} from "../../lib/fileViewSnapshots";
 import { basename, dirname } from "../../lib/paths";
 import { projectTypeTags } from "../projects/projectTypeTags";
 import { ProjectHoverCard, useProjectHoverCard } from "../projects/ProjectHoverCard";
@@ -222,15 +226,8 @@ export function mtimeDivergenceCue(
   return { text: t("projectFilesView.sameTime"), tone: "neutral", title };
 }
 
-interface GitStatus {
-  staged: number;
-  unstaged: number;
-  untracked: number;
-  has_remote: boolean;
-  is_repo: boolean;
-}
 
-type View = "files" | "windows" | "git" | "search" | "orange" | "sessions" | "jobs" | "remarks";
+type View = "files" | "windows" | "git" | "orange" | "sessions" | "jobs" | "remarks";
 
 // A single shared empty array for scopes with no registered tabs. Must be a
 // stable reference — a Zustand selector that returned a fresh `[]` here would
@@ -240,7 +237,7 @@ const EMPTY_SCOPE_TABS: TabEntry[] = [];
 /**
  * The shared file view rendered by BOTH the side panel (`SidePanel`) and the
  * Files (Project) tab (`ProjectFilesTab`) — the view switcher (Files / Git /
- * Search / Apps / Orange), the inline git action bar, the git history, search,
+ * Apps / Orange), the inline git action bar, the git history,
  * the tracked-windows list, the diverged (orange) list, the type tags, hover
  * card and SSH logout, plus the settings dialog. One component, so the panel and
  * the tab can never drift into two different file *viewers* of the same project
@@ -332,7 +329,16 @@ export function ProjectFilesView({
   compact,
 }: ProjectFilesViewProps) {
   const t = useT();
-  const { windows, refresh, untrack } = useWindowsStore();
+  const { windows, refresh, closeApp } = useWindowsStore();
+  // The Apps view shows THIS scope's launches only — the store holds every
+  // scope's slice (it is shared by all mounted viewers), so filter per render.
+  const scopedWindows = useMemo(
+    () =>
+      windows
+        .filter((w) => (w.project_id ?? null) === (projectId ?? null))
+        .sort((a, b) => a.opened_at - b.opened_at),
+    [windows, projectId],
+  );
   const [view, setView] = useState<View>("files");
   const remarksEnabled = useExperimental("project_remarks");
   useEffect(() => {
@@ -418,8 +424,17 @@ export function ProjectFilesView({
       .finally(() => setMobileAccessBusy(false));
   };
 
-  const [gitStatus, setGitStatus] = useState<GitStatus | null>(null);
-  const [unpushedCommits, setUnpushedCommits] = useState<string[]>([]);
+  // Seeded from the last snapshot of this repo so a reveal (the whole view is
+  // unmounted by the `panelsHidden` toggle) shows the action bar populated on
+  // the first frame instead of an empty one that fills in a `git status` later.
+  // Keyed by `projectDir`, which is what `effectiveGitRoot` is until nested-repo
+  // detection says otherwise — and that detection refreshes the bar itself.
+  const [gitStatus, setGitStatus] = useState<GitStatus | null>(
+    () => readGitBarSnapshot(projectDir)?.status ?? null,
+  );
+  const [unpushedCommits, setUnpushedCommits] = useState<string[]>(
+    () => readGitBarSnapshot(projectDir)?.unpushed ?? [],
+  );
   const [openTree, setOpenTree] = useState<"add" | "commit" | "push" | null>(null);
   const [commitMsg, setCommitMsg] = useState<string | null>(null);
   const [gitBusy, setGitBusy] = useState(false);
@@ -457,6 +472,7 @@ export function ProjectFilesView({
     ]).then(([status, unpushed]) => {
       setGitStatus(status);
       setUnpushedCommits(unpushed);
+      writeGitBarSnapshot(dir, { status, unpushed });
       // Keep the project's pill dot in sync from the data we just fetched (no
       // extra git subprocesses), so edits/commits/pushes reflect immediately
       // instead of waiting for the switcher's periodic poll.
@@ -1038,17 +1054,24 @@ export function ProjectFilesView({
     onImported: () => refreshGit(effectiveGitRoot),
   });
 
+  // Refresh THIS scope's slice of the windows store (root/box scope included:
+  // projectId null is a real scope holding its own null-project launches).
   useEffect(() => {
-    if (active && projectId) {
-      refresh(projectId);
+    if (active) {
+      refresh(projectId ?? undefined);
     }
   }, [active, projectId]);
 
   useEffect(() => {
     if (active && effectiveGitRoot && !remoteBlocked) {
       refreshGit(effectiveGitRoot);
-    } else {
+    } else if (!effectiveGitRoot || remoteBlocked) {
+      // No repo to describe, or a remote pool that can't be asked — those are
+      // real "we don't know" states, so the bar clears. Merely going inactive is
+      // not: the counts stay put so the next reveal has something to show, and
+      // the branch above refreshes them the moment it comes back.
       setGitStatus(null);
+      setUnpushedCommits([]);
     }
   }, [active, effectiveGitRoot, remoteBlocked]);
 
@@ -1120,6 +1143,19 @@ export function ProjectFilesView({
       setGitBusy(false);
     }
   };
+
+  // Keep pending Git work visible from the Files view without keeping the
+  // action controls in a separate header row. The colour matches the next
+  // actionable step: add, then commit, then push.
+  const gitPendingColor = !gitStatus?.is_repo
+    ? null
+    : gitStatus.unstaged + gitStatus.untracked > 0
+      ? GIT_STATE_COLOR.modified
+      : gitStatus.staged > 0
+        ? GIT_STATE_COLOR.staged
+        : unpushedCommits.length > 0
+          ? GIT_STATE_COLOR.unpushed
+          : null;
 
   return (
     <div
@@ -1308,133 +1344,6 @@ export function ProjectFilesView({
           )}
           </>
         )}
-        {/* Git status/action buttons drop to their own row below the project name
-            (forced by the flex-basis breaker) instead of crowding it. Only
-            rendered when there's something to do (or we're mid-commit) — an
-            empty strip with no actions just wastes space. */}
-        {!activeBox && gitStatus?.is_repo &&
-          (commitMsg !== null ||
-            gitStatus.unstaged + gitStatus.untracked > 0 ||
-            gitStatus.staged > 0 ||
-            unpushedCommits.length > 0) && (
-          <>
-            <span style={{ flexBasis: "100%", width: 0, height: 0 }} />
-            <div ref={actionBarRef} className="git-action-bar git-action-bar--inline" style={{ position: "relative" }}>
-            {commitMsg !== null ? (
-              <>
-                <button
-                  className="git-action-btn git-action-btn--commit"
-                  disabled={gitBusy}
-                  onClick={handleCommitConfirm}
-                  title={t("projectFilesView.confirmCommitTitle")}
-                >
-                  <span data-testid="commit-bar" className="git-step-dot" style={{ background: GIT_STATE_COLOR.staged }} />
-                  <span>↵</span>
-                  <span className="git-btn-label">{t("projectFilesView.confirm")}</span>
-                </button>
-                <button
-                  className="git-action-btn git-action-btn--back"
-                  disabled={gitBusy}
-                  onClick={() => setCommitMsg(null)}
-                  title={t("projectFilesView.goBackTitle")}
-                >
-                  <span>←</span>
-                  <span className="git-btn-label">{t("projectFilesView.back")}</span>
-                </button>
-              </>
-            ) : (
-              <>
-                {/* Each action only appears when it has work to do: Add when there
-                    are unstaged/untracked changes, Commit when something is staged,
-                    Push when commits are ahead of the remote. A clean, pushed repo
-                    shows no buttons. The caret beside each action opens a
-                    navigable folder tree of the files it touches, with line
-                    stats. */}
-                {gitStatus.unstaged + gitStatus.untracked > 0 && (
-                  <div className="git-action git-action--add">
-                    <button
-                      className="git-action-btn git-action-btn--add"
-                      disabled={gitBusy}
-                      onClick={handleAdd}
-                      title={t("projectFilesView.stageAllTitle", { count: gitStatus.unstaged + gitStatus.untracked })}
-                    >
-                      <span data-testid="add-bar" className="git-step-dot" style={{ background: GIT_STATE_COLOR.modified }} />
-                      <span>⊕</span>
-                      <span className="git-btn-label">{t("projectFilesView.add", { count: gitStatus.unstaged + gitStatus.untracked })}</span>
-                    </button>
-                    <button
-                      className="git-action-toggle"
-                      disabled={gitBusy}
-                      aria-label={t("projectFilesView.showChangedFiles")}
-                      aria-expanded={openTree === "add"}
-                      title={t("projectFilesView.showChangedFiles")}
-                      onClick={() => setOpenTree((prev) => (prev === "add" ? null : "add"))}
-                    >
-                      {openTree === "add" ? "▴" : "▾"}
-                    </button>
-                  </div>
-                )}
-                {gitStatus.staged > 0 && (
-                  <div className="git-action git-action--commit">
-                    <button
-                      className="git-action-btn git-action-btn--commit"
-                      disabled={gitBusy}
-                      onClick={handleCommitOpen}
-                      title={t("projectFilesView.commitStagedTitle", { count: gitStatus.staged })}
-                    >
-                      <span data-testid="commit-bar" className="git-step-dot" style={{ background: GIT_STATE_COLOR.staged }} />
-                      <span>✔</span>
-                      <span className="git-btn-label">{t("projectFilesView.commit", { count: gitStatus.staged })}</span>
-                    </button>
-                    <button
-                      className="git-action-toggle"
-                      disabled={gitBusy}
-                      aria-label={t("projectFilesView.showStagedFiles")}
-                      aria-expanded={openTree === "commit"}
-                      title={t("projectFilesView.showStagedFiles")}
-                      onClick={() => setOpenTree((prev) => (prev === "commit" ? null : "commit"))}
-                    >
-                      {openTree === "commit" ? "▴" : "▾"}
-                    </button>
-                  </div>
-                )}
-                {unpushedCommits.length > 0 && (
-                  <div className="git-action git-action--push">
-                    <button
-                      className="git-action-btn git-action-btn--push"
-                      disabled={gitBusy}
-                      onClick={handlePush}
-                      title={t(
-                        unpushedCommits.length === 1
-                          ? "projectFilesView.pushCommitOneTitle"
-                          : "projectFilesView.pushCommitManyTitle",
-                        { count: unpushedCommits.length },
-                      )}
-                    >
-                      <span data-testid="push-bar" className="git-step-dot" style={{ background: GIT_STATE_COLOR.unpushed }} />
-                      <span>⬆</span>
-                      <span className="git-btn-label">{t("projectFilesView.push", { count: unpushedCommits.length })}</span>
-                    </button>
-                    <button
-                      className="git-action-toggle"
-                      disabled={gitBusy}
-                      aria-label={t("projectFilesView.showUnpushedFiles")}
-                      aria-expanded={openTree === "push"}
-                      title={t("projectFilesView.showUnpushedFiles")}
-                      onClick={() => setOpenTree((prev) => (prev === "push" ? null : "push"))}
-                    >
-                      {openTree === "push" ? "▴" : "▾"}
-                    </button>
-                  </div>
-                )}
-                {treeScope && projectDir && (
-                  <GitChangeTree projectDir={projectDir} scope={treeScope} />
-                )}
-              </>
-            )}
-          </div>
-          </>
-          )}
       </div>
       )}
 
@@ -1467,10 +1376,10 @@ export function ProjectFilesView({
       )}
 
       <div className="side-panel-toolbar">
-        {(["files", "git", "search", "windows"] as View[]).map((v) => (
+        {(["files", "git", "windows"] as View[]).map((v) => (
           <button
             key={v}
-            className={`toolbar-btn${view === v ? " active" : ""}`}
+            className={`toolbar-btn${view === v ? " active" : ""}${v === "git" && gitPendingColor ? " toolbar-btn--flagged" : ""}`}
             style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: v === "files" ? 0 : 2 }}
             aria-pressed={view === v}
             onClick={() => setView(v)}
@@ -1480,9 +1389,14 @@ export function ProjectFilesView({
                 ? "projectFilesView.tabFiles"
                 : v === "git"
                   ? "projectFilesView.tabGit"
-                  : v === "search"
-                    ? "projectFilesView.tabSearch"
-                    : "projectFilesView.tabApps",
+                  : "projectFilesView.tabApps",
+            )}
+            {v === "git" && gitPendingColor && (
+              <span
+                className="toolbar-btn-flag"
+                style={{ backgroundColor: gitPendingColor }}
+                aria-hidden="true"
+              />
             )}
           </button>
         ))}
@@ -1670,40 +1584,9 @@ export function ProjectFilesView({
         </div>
       )}
 
-      {!compact && !activeBox && gitStatus?.is_repo && (
-        <>
-          {commitMsg !== null && (
-            <div style={{ padding: "4px 6px", borderBottom: "1px solid var(--border-color)" }}>
-              <textarea
-                ref={commitRef}
-                value={commitMsg}
-                onChange={(e) => setCommitMsg(e.target.value)}
-                rows={3}
-                style={{
-                  width: "100%",
-                  fontSize: 11,
-                  background: "var(--bg-panel)",
-                  color: "var(--text-primary)",
-                  border: "1px solid var(--border-color)",
-                  borderRadius: "var(--radius-sm)",
-                  padding: "3px 5px",
-                  resize: "vertical",
-                  boxSizing: "border-box",
-                  fontFamily: "inherit",
-                }}
-              />
-            </div>
-          )}
-          {gitError && (
-            <div style={{ fontSize: 10, color: "var(--danger)", wordBreak: "break-all", padding: "2px 6px 4px", borderBottom: "1px solid var(--border-color)" }}>
-              {gitError}
-            </div>
-          )}
-        </>
-      )}
-
       {view === "git" && (
-        <div className="side-panel-scroll" style={{ flex: 1, overflowY: "auto" }}>
+        <>
+        <div className="side-panel-scroll" style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
           {nestedRoot && (
             <div className="nested-repo-toggle" role="group" aria-label={t("projectFilesView.gitRepositoryAriaLabel")}>
               <button
@@ -1731,10 +1614,77 @@ export function ProjectFilesView({
             onChanged={() => effectiveGitRoot && refreshGit(effectiveGitRoot)}
           />
         </div>
-      )}
-
-      {view === "search" && (
-        <SearchPanel projectDir={projectDir} linkingTabKey={undefined} />
+        {/* Add / Commit / Push live at the FOOT of the panel, below the history
+            they act on — the same place every other "do it" control in the app
+            sits, and out of the scroll area so they stay reachable however far
+            down the log you are. The commit box is rendered above the buttons
+            for that reason too: the footer grows upward, so the confirm stays
+            the bottom-most thing. Its change-tree popover opens upward
+            (`.git-action-bar` in files-panel.css). */}
+        {!activeBox && gitStatus?.is_repo && (
+          <div ref={actionBarRef} className="git-action-bar">
+            {gitPendingColor && <UntestedTag />}
+            {commitMsg !== null && (
+              <textarea
+                ref={commitRef}
+                value={commitMsg}
+                onChange={(e) => setCommitMsg(e.target.value)}
+                rows={7}
+                className="git-commit-input"
+              />
+            )}
+            {commitMsg !== null ? (
+              <>
+                <button className="git-action-btn git-action-btn--commit" disabled={gitBusy} onClick={handleCommitConfirm} title={t("projectFilesView.confirmCommitTitle")}>
+                  <span data-testid="commit-bar" className="git-step-dot" style={{ background: GIT_STATE_COLOR.staged }} />
+                  <span className="git-btn-glyph">↵</span><span className="git-btn-label">{t("projectFilesView.confirm")}</span>
+                </button>
+                <button className="git-action-btn git-action-btn--back" disabled={gitBusy} onClick={() => setCommitMsg(null)} title={t("projectFilesView.goBackTitle")}>
+                  <span className="git-btn-glyph">←</span><span className="git-btn-label">{t("projectFilesView.back")}</span>
+                </button>
+              </>
+            ) : (
+              <>
+                {gitStatus.unstaged + gitStatus.untracked > 0 && (
+                  <div className="git-action git-action--add">
+                    <button className="git-action-btn git-action-btn--add" disabled={gitBusy} onClick={handleAdd} title={t("projectFilesView.stageAllTitle", { count: gitStatus.unstaged + gitStatus.untracked })}>
+                      <span data-testid="add-bar" className="git-step-dot" style={{ background: GIT_STATE_COLOR.modified }} />
+                      <span className="git-btn-glyph">⊕</span><span className="git-btn-label">{t("projectFilesView.add", { count: gitStatus.unstaged + gitStatus.untracked })}</span>
+                    </button>
+                    <button className="git-action-toggle" disabled={gitBusy} aria-label={t("projectFilesView.showChangedFiles")} aria-expanded={openTree === "add"} title={t("projectFilesView.showChangedFiles")} onClick={() => setOpenTree((prev) => (prev === "add" ? null : "add"))}>
+                      {openTree === "add" ? "▾" : "▴"}
+                    </button>
+                  </div>
+                )}
+                {gitStatus.staged > 0 && (
+                  <div className="git-action git-action--commit">
+                    <button className="git-action-btn git-action-btn--commit" disabled={gitBusy} onClick={handleCommitOpen} title={t("projectFilesView.commitStagedTitle", { count: gitStatus.staged })}>
+                      <span data-testid="commit-bar" className="git-step-dot" style={{ background: GIT_STATE_COLOR.staged }} />
+                      <span className="git-btn-glyph">✔</span><span className="git-btn-label">{t("projectFilesView.commit", { count: gitStatus.staged })}</span>
+                    </button>
+                    <button className="git-action-toggle" disabled={gitBusy} aria-label={t("projectFilesView.showStagedFiles")} aria-expanded={openTree === "commit"} title={t("projectFilesView.showStagedFiles")} onClick={() => setOpenTree((prev) => (prev === "commit" ? null : "commit"))}>
+                      {openTree === "commit" ? "▾" : "▴"}
+                    </button>
+                  </div>
+                )}
+                {unpushedCommits.length > 0 && (
+                  <div className="git-action git-action--push">
+                    <button className="git-action-btn git-action-btn--push" disabled={gitBusy} onClick={handlePush} title={t(unpushedCommits.length === 1 ? "projectFilesView.pushCommitOneTitle" : "projectFilesView.pushCommitManyTitle", { count: unpushedCommits.length })}>
+                      <span data-testid="push-bar" className="git-step-dot" style={{ background: GIT_STATE_COLOR.unpushed }} />
+                      <span className="git-btn-glyph">⬆</span><span className="git-btn-label">{t("projectFilesView.push", { count: unpushedCommits.length })}</span>
+                    </button>
+                    <button className="git-action-toggle" disabled={gitBusy} aria-label={t("projectFilesView.showUnpushedFiles")} aria-expanded={openTree === "push"} title={t("projectFilesView.showUnpushedFiles")} onClick={() => setOpenTree((prev) => (prev === "push" ? null : "push"))}>
+                      {openTree === "push" ? "▾" : "▴"}
+                    </button>
+                  </div>
+                )}
+                {treeScope && projectDir && <GitChangeTree projectDir={projectDir} scope={treeScope} />}
+              </>
+            )}
+            {gitError && <div className="git-action-error">{gitError}</div>}
+          </div>
+        )}
+        </>
       )}
 
       {view === "orange" && (
@@ -2386,6 +2336,8 @@ export function ProjectFilesView({
           shownPaths={filters.shownPaths}
           scanExcluded={filters.scanExcluded}
           onToggleScanExcluded={filters.toggleScanExcluded}
+          separateScaffold={filters.separateScaffold}
+          separateGitignored={filters.separateGitignored}
           sortKey={sortKey}
           descending={descending}
           onSortChange={(key, desc) => {
@@ -2410,10 +2362,13 @@ export function ProjectFilesView({
 
       {view === "windows" && (
         <div className="side-panel-scroll" style={{ flex: 1, overflowY: "auto", padding: 4 }}>
-          {windows.length === 0 ? (
+          <div className="file-tree-empty" style={{ paddingBottom: 4 }}>
+            <UntestedTag />
+          </div>
+          {scopedWindows.length === 0 ? (
             <div className="file-tree-empty">{t("projectFilesView.noOpenedWindows")}</div>
           ) : (
-            windows.map((w) => (
+            scopedWindows.map((w) => (
               <div key={w.id} className="file-entry">
                 <span className="file-icon">🪟</span>
                 <span className="file-name" title={w.exec}>
@@ -2422,8 +2377,8 @@ export function ProjectFilesView({
                 </span>
                 <button
                   className="tab-close"
-                  onClick={() => untrack(w.id)}
-                  title={t("projectFilesView.untrackTitle")}
+                  onClick={() => closeApp(w.id)}
+                  title={t(w.pid > 0 ? "projectFilesView.closeAppTitle" : "projectFilesView.untrackTitle")}
                 >
                   ×
                 </button>

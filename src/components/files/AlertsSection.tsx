@@ -38,6 +38,15 @@ import { UntestedTag } from "../common/UntestedTag";
  * not a default: a file viewer that starts telling you about your mail is a
  * change to the app nobody asked for.
  *
+ * **It is chromed as the machine's, not the project's.** Every other group in
+ * this panel is swapped out when the project is switched — the tree, the git
+ * bar, the downloads — while these rows are the same ones whichever project is
+ * open, so wearing the panel's own ground made a global strip read as one more
+ * section of the project on screen. It carries its own **ground** instead — an
+ * accent-tinted surface behind an accent-toned seal (`.alerts-section` in
+ * `styles/file-tree.css`) — which is the whole of the distinction: no badge, no
+ * label, nothing that costs a row of the twelve.
+ *
  * Rows come from `useAlertsFeed`, whose selectors are `lib/alerts`' pure ones;
  * this component does not keep a second copy of alert state. Opening a row hands
  * off to the owning surface, while its Done button resolves each kind on its

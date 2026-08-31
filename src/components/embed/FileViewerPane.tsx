@@ -170,7 +170,7 @@ import {
   type TexStructure,
   type TexFileNode,
 } from "../../lib/viewers/tex";
-import { TexStructureSidebar } from "./tex/TexStructureSidebar";
+import { TexStructureRail, TexStructureSidebar } from "./tex/TexStructureSidebar";
 import { focusTexWorkspaceForSource } from "./openTexWorkspace";
 import { YamlTree } from "./YamlTree";
 import { YamlGrid } from "./YamlGrid";
@@ -6677,6 +6677,10 @@ function texWorkspaceContains(structure: TexStructure, path: string): boolean {
 // used CLEAN pane is dropped; a dirty pane (or the main file) is never evicted.
 const TEX_WS_MAX_PANES = 12;
 const TEX_WS_SIDEBAR_DEFAULT = 240;
+// How many previously-centered files the workspace's ← button can walk back
+// through. A cap rather than an unbounded list: nobody steps back through a
+// hundred files, and the stack holds absolute paths for the life of the tab.
+const TEX_WS_BACK_MAX = 50;
 
 /**
  * The LaTeX WORKSPACE host: one tab that composes the left structure sidebar and
@@ -6765,6 +6769,40 @@ function TexWorkspaceView({
 
   const setActivePath = useCallback((p: string) => patchViewerState({ texActivePath: p }), [patchViewerState]);
 
+  // Where the center has BEEN, most-recent last — the back stack behind the ←
+  // button. Clicking a child in the sidebar (or following a `\ref`, or a SyncTeX
+  // reverse jump) replaces what is centered, and until this existed the only way
+  // back to the chapter you came from was to find it in the tree again — which for
+  // a graphic reached from a figure three files deep is a search rather than a
+  // step. Session state, deliberately NOT persisted: a stack restored from disk
+  // would offer to go "back" to a file this sitting never left, and where you were
+  // ten minutes before a relaunch is not a thing anyone is holding in their head.
+  // Bounded, because a long editing session walks a lot of files.
+  const [backStack, setBackStack] = useState<string[]>([]);
+  // A side switch (Local/Remote) re-roots every path in the workspace, so the
+  // stack it was built from names files on the other side.
+  useEffect(() => { setBackStack([]); }, [mainPath]);
+
+  // THE navigation: every path that replaces the center goes through here — the
+  // sidebar, an in-document link, a SyncTeX jump — so nothing can move the center
+  // without the back stack learning about it. A re-select of what is already
+  // centered is not a step, or ← would walk a file back onto itself.
+  const goTo = useCallback(
+    (p: string) => {
+      if (p === activePath) return;
+      setBackStack((prev) => [...prev, activePath].slice(-TEX_WS_BACK_MAX));
+      setActivePath(p);
+    },
+    [activePath, setActivePath],
+  );
+  const backTarget = backStack[backStack.length - 1];
+  const backLabel = backTarget ? basename(backTarget) : undefined;
+  const goBack = useCallback(() => {
+    if (backTarget === undefined) return;
+    setBackStack((prev) => prev.slice(0, -1));
+    setActivePath(backTarget);
+  }, [backTarget, setActivePath]);
+
   // Keep-mounted center: the LRU list of mounted paths (most-recent last). The
   // active file is always mounted; the main file is pinned; a dirty pane is never
   // evicted (its unsaved draft would be lost).
@@ -6845,31 +6883,35 @@ function TexWorkspaceView({
   const onFollowChild = useCallback(
     (resolved: { path: string; viewer: InternalViewer; label: string }) => {
       if (resolved.path === mainPath || (structure && texWorkspaceContains(structure, resolved.path))) {
-        setActivePath(resolved.path);
+        goTo(resolved.path);
         return true;
       }
       return false;
     },
-    [mainPath, structure, setActivePath],
+    [mainPath, structure, goTo],
   );
   const onJumpToSource = useCallback(
     (input: string, line: number, column: number) => {
       if (input === mainPath || (structure && texWorkspaceContains(structure, input))) {
-        setActivePath(input);
+        goTo(input);
         useEditorJumpStore.getState().requestJump(input, line, column);
       } else {
         jumpToSource(input, line, column);
       }
     },
-    [mainPath, structure, setActivePath],
+    [mainPath, structure, goTo],
   );
 
-  // Sidebar width, persisted per tab (store-or-local, see `patchViewerState`).
+  // Sidebar width and fold, persisted per tab (store-or-local, see
+  // `patchViewerState`). Absent `texSidebarHidden` means shown.
   const sidebarWidth = (storeVs?.texSidebarWidth ?? localVs.texSidebarWidth) ?? TEX_WS_SIDEBAR_DEFAULT;
+  const sidebarHidden = (storeVs?.texSidebarHidden ?? localVs.texSidebarHidden) ?? false;
   const onResizeSidebar = useCallback(
     (w: number) => patchViewerState({ texSidebarWidth: w }),
     [patchViewerState],
   );
+  const hideSidebar = useCallback(() => patchViewerState({ texSidebarHidden: true }), [patchViewerState]);
+  const showSidebar = useCallback(() => patchViewerState({ texSidebarHidden: false }), [patchViewerState]);
 
   const centerFor = (p: string) => {
     const v = viewerForPath(p);
@@ -6900,19 +6942,33 @@ function TexWorkspaceView({
 
   return (
     <div className="tex-workspace">
-      {structure ? (
+      {sidebarHidden ? (
+        <TexStructureRail onShow={showSidebar} onBack={backTarget ? goBack : undefined} backLabel={backLabel} />
+      ) : structure ? (
         <TexStructureSidebar
           structure={structure}
           activePath={activePath}
           width={sidebarWidth}
-          onSelect={(p) => setActivePath(p)}
+          onSelect={(p) => goTo(p)}
           onResize={onResizeSidebar}
+          onHide={hideSidebar}
+          onBack={backTarget ? goBack : undefined}
+          backLabel={backLabel}
         />
       ) : (
         <div className="tex-structure-sidebar" style={{ width: sidebarWidth }}>
           <div className="tex-structure-header">
             <span className="tex-structure-title">{t("texWorkspace.structureTitle")}</span>
             <UntestedTag />
+            <button
+              type="button"
+              className="tex-structure-chrome-btn tex-structure-fold"
+              title={t("texWorkspace.hideStructure")}
+              aria-label={t("texWorkspace.hideStructure")}
+              onClick={hideSidebar}
+            >
+              ‹
+            </button>
           </div>
         </div>
       )}

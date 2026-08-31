@@ -4,11 +4,11 @@
  * both local-only (their backends walk the canonical local path, so `FileTree`
  * only mounts this for a non-remote-source tree):
  *
- *  - **name**: fuzzy filename/path search over the whole project tree
- *    (`list_project_paths`, ranked by the shared `fuzzy.ts`). Fetched lazily on
- *    the first keystroke and cached per project dir.
- *  - **content**: literal line search inside files (`project_search`, the same
- *    backend the side panel's Search view uses), debounced.
+ *  - **name**: literal ranked filename/path search over the whole project tree
+ *    (`list_project_paths`, ranked by `lib/projectSearch`'s `rankNameMatches`).
+ *    Fetched lazily on the first keystroke and cached per project dir.
+ *  - **content**: literal line search inside files (`project_search` — this is
+ *    its only frontend), debounced.
  *
  * Every result offers BOTH of the actions the feature asks for: **jump to this
  * path** (reveal + select the entry in the tree, via `onReveal`) and **open**
@@ -22,6 +22,16 @@ import { useEditorJumpStore } from "../../stores/editorJump";
 import { useSettingsStore } from "../../stores/settings";
 import { basename, resolvePath } from "../../lib/paths";
 import { disabledViewers, fileIcon, folderIcon, type FileEntry } from "../../lib/viewers/fileUtils";
+import {
+  CONTENT_DEBOUNCE_MS,
+  MAX_CONTENT_RESULTS,
+  MAX_NAME_RESULTS,
+  MIN_CONTENT_LEN,
+  matchParts,
+  rankNameMatches,
+  type PathEntry,
+  type SearchMatch,
+} from "../../lib/projectSearch";
 import { openFileEntry } from "./openFileEntry";
 import { useT } from "../../lib/i18n";
 
@@ -33,28 +43,9 @@ function extensionOf(path: string): string {
   return dot > 0 ? name.slice(dot).toLowerCase() : "";
 }
 
-interface PathEntry {
-  path: string;
-  is_dir: boolean;
-}
-
-/** Mirror of the Rust `SearchMatch` struct from `commands::search`. */
-interface SearchMatch {
-  path: string;
-  rel: string;
-  line: number;
-  col: number;
-  text: string;
-}
-
-const MAX_NAME_RESULTS = 200;
-const MAX_CONTENT_RESULTS = 500;
-const MIN_CONTENT_LEN = 2;
-const DEBOUNCE_MS = 220;
-
 /** Highlight the literal (case-insensitive) substring match in a path. */
 function HighlightedPath({ text, query }: { text: string; query: string }) {
-  const parts = contentParts(text, query, false);
+  const parts = matchParts(text, query, false);
   if (!parts) return <>{text}</>;
   return (
     <>
@@ -63,20 +54,6 @@ function HighlightedPath({ text, query }: { text: string; query: string }) {
       {parts.after}
     </>
   );
-}
-
-/** Split a content line around the literal match so the hit can be marked. */
-function contentParts(
-  text: string,
-  query: string,
-  caseSensitive: boolean,
-): { before: string; hit: string; after: string } | null {
-  if (!query) return null;
-  const hay = caseSensitive ? text : text.toLowerCase();
-  const needle = caseSensitive ? query : query.toLowerCase();
-  const idx = hay.indexOf(needle);
-  if (idx < 0) return null;
-  return { before: text.slice(0, idx), hit: text.slice(idx, idx + query.length), after: text.slice(idx + query.length) };
 }
 
 export function FileTreeSearch({
@@ -158,27 +135,7 @@ export function FileTreeSearch({
 
   const nameResults = useMemo(() => {
     if (mode !== "name" || !trimmed) return [];
-    // Literal (case-insensitive) substring match on the path — NOT a fuzzy
-    // subsequence, which for a whole project matches almost everything. Rank a
-    // hit in the basename above one only in an ancestor folder, then a basename
-    // prefix highest, then shorter paths.
-    const q = trimmed.toLowerCase();
-    const scoped = scopeRel ? paths.filter((e) => e.path.startsWith(`${scopeRel}/`)) : paths;
-    const matched: { e: PathEntry; rank: number }[] = [];
-    for (const e of scoped) {
-      if (!e.path.toLowerCase().includes(q)) continue;
-      const base = basename(e.path).toLowerCase();
-      const rank = base.startsWith(q) ? 0 : base.includes(q) ? 1 : 2;
-      matched.push({ e, rank });
-    }
-    matched.sort((a, b) =>
-      a.rank !== b.rank
-        ? a.rank - b.rank
-        : a.e.path.length !== b.e.path.length
-          ? a.e.path.length - b.e.path.length
-          : a.e.path.localeCompare(b.e.path),
-    );
-    return matched.slice(0, MAX_NAME_RESULTS).map((m) => m.e);
+    return rankNameMatches(paths, trimmed, scopeRel);
   }, [mode, trimmed, paths, scopeRel]);
 
   // Content search: debounced call into the shared literal search backend,
@@ -215,7 +172,7 @@ export function FileTreeSearch({
           setError(String(e));
           setLoading(false);
         });
-    }, DEBOUNCE_MS);
+    }, CONTENT_DEBOUNCE_MS);
     return () => clearTimeout(timer);
   }, [mode, scopeDir, trimmed, caseSensitive]);
 
@@ -346,7 +303,7 @@ export function FileTreeSearch({
         </div>
       )}
       {content.map((m, i) => {
-        const parts = contentParts(m.text, trimmed, caseSensitive);
+        const parts = matchParts(m.text, trimmed, caseSensitive);
         // The backend's `rel` is relative to `scopeDir`; re-root it at the
         // project so reveal/open address the same path the tree uses.
         const projectRel = scopeRel ? `${scopeRel}/${m.rel}` : m.rel;

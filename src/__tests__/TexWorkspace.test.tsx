@@ -277,6 +277,57 @@ describe("TeX workspace — center switching + SyncTeX", () => {
     expect(useTabsStore.getState().tabs).toHaveLength(1);
   });
 
+  it("(h) the structure sidebar folds to a rail and comes back, persisted per tab", async () => {
+    setupInvoke();
+    const { tabKey, useTabsStore } = await renderWorkspace();
+    await screen.findByRole("button", { name: /chap\.tex/i });
+
+    await act(async () => {
+      await userEvent.click(await screen.findByRole("button", { name: /hide the structure/i }));
+    });
+
+    // Folded: the tree is gone, the persisted flag is set, and the rail still
+    // offers the way back (a fold must never be a one-way door).
+    await waitFor(() =>
+      expect(
+        useTabsStore.getState().tabs.find((t) => t.key === tabKey)?.viewerState?.texSidebarHidden,
+      ).toBe(true),
+    );
+    expect(screen.queryByRole("button", { name: /chap\.tex/i })).toBeNull();
+
+    await act(async () => {
+      await userEvent.click(await screen.findByRole("button", { name: /show the structure/i }));
+    });
+    await screen.findByRole("button", { name: /chap\.tex/i });
+    expect(
+      useTabsStore.getState().tabs.find((t) => t.key === tabKey)?.viewerState?.texSidebarHidden,
+    ).toBe(false);
+  });
+
+  it("(i) back returns the center to the previously centered file", async () => {
+    setupInvoke();
+    const { tabKey, useTabsStore } = await renderWorkspace();
+    const vsOf = () => useTabsStore.getState().tabs.find((t) => t.key === tabKey)?.viewerState;
+
+    // Nothing centered yet ⇒ nothing to go back to: the button is present (it is
+    // the only navigation this tab has) but inert.
+    const backBefore = await screen.findByRole("button", { name: /nothing to go back to/i });
+    expect((backBefore as HTMLButtonElement).disabled).toBe(true);
+
+    await act(async () => {
+      await userEvent.click(await screen.findByRole("button", { name: /chap\.tex/i }));
+    });
+    await waitFor(() => expect(vsOf()?.texActivePath).toBe(CHILD));
+
+    await act(async () => {
+      await userEvent.click(await screen.findByRole("button", { name: /back to main\.tex/i }));
+    });
+    await waitFor(() => expect(vsOf()?.texActivePath).toBe(MAIN));
+    // One step back is the whole stack — the button goes inert again.
+    const backAfter = await screen.findByRole("button", { name: /nothing to go back to/i });
+    expect((backAfter as HTMLButtonElement).disabled).toBe(true);
+  });
+
   it("(e) a commented-out \\input is not listed in the sidebar", async () => {
     // A document whose live \input{chap} is followed by a commented one. The
     // sidebar must list only the live child. (The editor's follow behaviour for

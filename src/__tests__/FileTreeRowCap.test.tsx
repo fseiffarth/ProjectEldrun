@@ -22,7 +22,7 @@ const { mockInvoke } = vi.hoisted(() => ({ mockInvoke: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: mockInvoke }));
 vi.mock("../stores/projects", () => ({ useProjectsStore: vi.fn() }));
 vi.mock("../stores/windows", () => ({
-  useWindowsStore: () => ({ windows: [], refresh: vi.fn(), untrack: vi.fn() }),
+  useWindowsStore: () => ({ windows: [], refresh: vi.fn(), untrack: vi.fn(), closeApp: vi.fn() }),
 }));
 vi.mock("../stores/settings", () => ({ useSettingsStore: () => null }));
 

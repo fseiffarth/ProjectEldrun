@@ -5,6 +5,66 @@ import type { TexFileNode, TexGraphicNode, TexStructure } from "../../../lib/vie
 import { UntestedTag } from "../../common/UntestedTag";
 import { useT } from "../../../lib/i18n";
 
+/**
+ * The workspace's "back to the file I was on" button, rendered in both the
+ * sidebar's header and its folded rail — one component, so the two cannot end up
+ * describing the same step differently.
+ *
+ * Shown DISABLED rather than hidden when there is nowhere to go back to: this is
+ * the only navigation control the workspace has, and one that appears the moment
+ * a file is opened is a control nobody finds before they need it.
+ */
+function TexBackButton({ onBack, backLabel }: { onBack?: () => void; backLabel?: string }) {
+  const t = useT();
+  const title = onBack
+    ? t("texWorkspace.back", { name: backLabel ?? "" })
+    : t("texWorkspace.backEmpty");
+  return (
+    <button
+      type="button"
+      className="tex-structure-chrome-btn tex-structure-back"
+      title={title}
+      aria-label={title}
+      disabled={!onBack}
+      onClick={onBack}
+    >
+      ←
+    </button>
+  );
+}
+
+/**
+ * The folded structure sidebar: a thin vertical rail carrying the way back out
+ * of the fold and the Back button beside it. The fold never leaves a bare pane
+ * edge — a sidebar that can only be recovered from a settings panel (or not at
+ * all) is a one-way door, and this tab has no other chrome to put the control in.
+ */
+export function TexStructureRail({
+  onShow,
+  onBack,
+  backLabel,
+}: {
+  onShow: () => void;
+  onBack?: () => void;
+  backLabel?: string;
+}) {
+  const t = useT();
+  return (
+    <div className="tex-structure-rail">
+      <button
+        type="button"
+        className="tex-structure-chrome-btn"
+        title={t("texWorkspace.showStructure")}
+        aria-label={t("texWorkspace.showStructure")}
+        onClick={onShow}
+      >
+        ›
+      </button>
+      <TexBackButton onBack={onBack} backLabel={backLabel} />
+    </div>
+  );
+}
+
 /** Extension of a basename, lower-cased, for `fileIcon`. */
 function extOf(name: string): string | null {
   const dot = name.lastIndexOf(".");
@@ -58,6 +118,9 @@ export function TexStructureSidebar({
   width,
   onSelect,
   onResize,
+  onHide,
+  onBack,
+  backLabel,
 }: {
   structure: TexStructure;
   /** Absolute path of the file currently centered, for the active highlight. */
@@ -68,6 +131,12 @@ export function TexStructureSidebar({
   onSelect: (path: string, viewer: InternalViewer) => void;
   /** Persist a drag-resized width (fired on pointer-up, not per move). */
   onResize: (width: number) => void;
+  /** Fold the sidebar away to its rail. */
+  onHide: () => void;
+  /** Go back to the previously centered file; absent = nothing to go back to. */
+  onBack?: () => void;
+  /** Basename of what `onBack` would return to, for the button's title. */
+  backLabel?: string;
 }) {
   const t = useT();
   const [liveWidth, setLiveWidth] = useState<number | null>(null);
@@ -155,8 +224,18 @@ export function TexStructureSidebar({
   return (
     <div className="tex-structure-sidebar" style={{ width: shownWidth }}>
       <div className="tex-structure-header">
+        <TexBackButton onBack={onBack} backLabel={backLabel} />
         <span className="tex-structure-title">{t("texWorkspace.structureTitle")}</span>
         <UntestedTag />
+        <button
+          type="button"
+          className="tex-structure-chrome-btn tex-structure-fold"
+          title={t("texWorkspace.hideStructure")}
+          aria-label={t("texWorkspace.hideStructure")}
+          onClick={onHide}
+        >
+          ‹
+        </button>
       </div>
       <div className="tex-structure-body">
         {renderFileRow(root, 0)}

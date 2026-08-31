@@ -15,7 +15,7 @@ const { mockInvoke } = vi.hoisted(() => ({ mockInvoke: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: mockInvoke }));
 vi.mock("../stores/projects", () => ({ useProjectsStore: vi.fn() }));
 vi.mock("../stores/windows", () => ({
-  useWindowsStore: () => ({ windows: [], refresh: vi.fn(), untrack: vi.fn() }),
+  useWindowsStore: () => ({ windows: [], refresh: vi.fn(), untrack: vi.fn(), closeApp: vi.fn() }),
 }));
 vi.mock("../stores/settings", () => ({ useSettingsStore: () => null }));
 
@@ -105,23 +105,28 @@ describe("file tree navigation", () => {
     const user = userEvent.setup();
     await renderPanel();
 
-    // No breadcrumb at the project root.
-    expect(document.querySelector(".file-tree-breadcrumb")).toBeNull();
+    // At the project root the breadcrumb holds ⌂ and nothing to go up to.
+    expect(document.querySelector(".file-tree-breadcrumb")).toBeTruthy();
+    expect(document.querySelector(".file-tree-up[title='Go up']")).toBeNull();
+    expect(document.querySelector(".file-tree-crumb[title='Project root']")).toBeTruthy();
+    expect(document.querySelector(".file-tree-crumb.current")?.textContent).toBe("⌂");
 
     // Enter the subfolder.
     await user.click(await screen.findByText("sub"));
 
     const crumb = await screen.findByText("sub", { selector: ".file-tree-crumb" });
     expect(crumb).toBeTruthy();
-    expect(document.querySelector(".file-tree-up")).toBeTruthy();
+    expect(document.querySelector(".file-tree-up[title='Go up']")).toBeTruthy();
     expect(document.querySelector(".file-tree-crumb[title='Project root']")).toBeTruthy();
     // The subfolder's contents are now listed.
     expect(await screen.findByText("deep.txt")).toBeTruthy();
 
-    // Clicking the root crumb returns to the top (breadcrumb disappears).
+    // Clicking the root crumb returns to the top (the up button goes away and
+    // ⌂ becomes the current crumb again).
     await user.click(screen.getByTitle("Project root"));
     await screen.findByText(LONG_NAME);
-    expect(document.querySelector(".file-tree-breadcrumb")).toBeNull();
+    expect(document.querySelector(".file-tree-up[title='Go up']")).toBeNull();
+    expect(document.querySelector(".file-tree-crumb.current")?.textContent).toBe("⌂");
   });
 
   it("seeds relPath from the saved folder so a mount never flashes root", () => {

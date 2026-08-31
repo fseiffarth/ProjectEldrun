@@ -32,6 +32,12 @@ type ProjectJson = Record<string, unknown>;
 const PANEL_HIDDEN_ENDINGS_KEY = "panel_hidden_endings";
 const PANEL_HIDDEN_PATHS_KEY = "panel_hidden_paths";
 const PANEL_SHOWN_PATHS_KEY = "panel_shown_paths";
+/** Tree grouping: does the root's scaffold get its own collapsible section, and
+ *  does everything git ignores get one? Both default to ON — that is what the
+ *  tree's own state used to seed, so an existing project's view is unchanged
+ *  until the switch is thrown. */
+const PANEL_SEPARATE_SCAFFOLD_KEY = "panel_separate_scaffold";
+const PANEL_SEPARATE_GITIGNORED_KEY = "panel_separate_gitignored";
 /** Folders excluded from every recursive scan. Read by the backend too — keep the
  *  spelling in step with `commands::fs::excluded_rel_set`. */
 const SCAN_EXCLUDED_PATHS_KEY = "scan_excluded_paths";
@@ -52,6 +58,12 @@ const PYTHON_ENDINGS = new Set([".py", ".pyw", ".pyi"]);
  *  an alert strip and become an agenda. */
 const ALERT_DAYS_MIN = 1;
 const ALERT_DAYS_MAX = 60;
+
+/** A stored boolean, where anything but an explicit `false` is the default —
+ *  an absent key (every project predating the setting) means "on". */
+function readBool(project: ProjectJson | null, key: string): boolean {
+  return project?.[key] !== false;
+}
 
 function readStringList(project: ProjectJson | null, key: string): string[] {
   const raw = project?.[key];
@@ -78,6 +90,18 @@ export interface ProjectFileFilters {
   availableEndings: string[];
   /** Folders the user excluded from recursive scans (see `toggleScanExcluded`). */
   scanExcluded: string[];
+  /**
+   * Whether the tree gives the project root's scaffold files, and everything
+   * git ignores, their own collapsible sections. Per project rather than per
+   * surface: the file view is mounted many times at once (the side panel, each
+   * Files (Project) tab, each docked subwindow column), so the toggle these
+   * replace showed one project with different sections depending on which copy
+   * was last clicked — and reset itself on every remount.
+   */
+  separateScaffold: boolean;
+  separateGitignored: boolean;
+  setSeparateScaffold: (value: boolean) => void;
+  setSeparateGitignored: (value: boolean) => void;
   error: string | null;
   toggleHiddenEnding: (ending: string, checked: boolean) => void;
   /**
@@ -111,6 +135,8 @@ export function useProjectFileFilters(opts: {
   const [hiddenPaths, setHiddenPaths] = useState<string[]>([]);
   const [shownPaths, setShownPaths] = useState<string[]>([]);
   const [scanExcluded, setScanExcluded] = useState<string[]>([]);
+  const [separateScaffold, setSeparateScaffoldState] = useState(true);
+  const [separateGitignored, setSeparateGitignoredState] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -122,6 +148,8 @@ export function useProjectFileFilters(opts: {
       setHiddenPaths([]);
       setShownPaths([]);
       setScanExcluded([]);
+      setSeparateScaffoldState(true);
+      setSeparateGitignoredState(true);
       return;
     }
     Promise.all([
@@ -138,6 +166,8 @@ export function useProjectFileFilters(opts: {
         setHiddenPaths(readStringList(loaded, PANEL_HIDDEN_PATHS_KEY));
         setShownPaths(readStringList(loaded, PANEL_SHOWN_PATHS_KEY));
         setScanExcluded(readStringList(loaded, SCAN_EXCLUDED_PATHS_KEY).map(normalizeScanPath).filter(Boolean));
+        setSeparateScaffoldState(readBool(loaded, PANEL_SEPARATE_SCAFFOLD_KEY));
+        setSeparateGitignoredState(readBool(loaded, PANEL_SEPARATE_GITIGNORED_KEY));
       })
       .catch((e) => {
         setProject(null);
@@ -146,6 +176,8 @@ export function useProjectFileFilters(opts: {
         setHiddenPaths([]);
         setShownPaths([]);
         setScanExcluded([]);
+        setSeparateScaffoldState(true);
+        setSeparateGitignoredState(true);
         setError(String(e));
       });
   }, [localFile, projectDir, remoteBlocked]);
@@ -196,12 +228,37 @@ export function useProjectFileFilters(opts: {
     invoke("save_project", { localFile, project: nextProject }).catch((e) => setError(String(e)));
   };
 
+  /** Optimistic single-key write, for the same reason `toggleScanExcluded` is
+   *  one: the tree re-sections off these flags, and awaiting the write leaves
+   *  the switch showing the old value while the file view has not moved. */
+  const patchProject = (key: string, value: unknown) => {
+    if (!localFile || !project) return;
+    const nextProject = { ...project, [key]: value };
+    setProject(nextProject);
+    setError(null);
+    invoke("save_project", { localFile, project: nextProject }).catch((e) => setError(String(e)));
+  };
+
+  const setSeparateScaffold = (value: boolean) => {
+    setSeparateScaffoldState(value);
+    patchProject(PANEL_SEPARATE_SCAFFOLD_KEY, value);
+  };
+
+  const setSeparateGitignored = (value: boolean) => {
+    setSeparateGitignoredState(value);
+    patchProject(PANEL_SEPARATE_GITIGNORED_KEY, value);
+  };
+
   return {
     hiddenEndings,
     hiddenPaths,
     shownPaths,
     availableEndings,
     scanExcluded,
+    separateScaffold,
+    separateGitignored,
+    setSeparateScaffold,
+    setSeparateGitignored,
     error,
     toggleHiddenEnding,
     toggleScanExcluded,
@@ -227,7 +284,16 @@ export function ProjectFilesSettingsDialog({
   const t = useT();
   const settings = useSettingsStore((s) => s.settings);
   const updateSettings = useSettingsStore((s) => s.updateSettings);
-  const { availableEndings, hiddenEndings, error, toggleHiddenEnding } = filters;
+  const {
+    availableEndings,
+    hiddenEndings,
+    error,
+    toggleHiddenEnding,
+    separateScaffold,
+    separateGitignored,
+    setSeparateScaffold,
+    setSeparateGitignored,
+  } = filters;
   const [showPython, setShowPython] = useState(false);
   const [showMigrate, setShowMigrate] = useState(false);
 
@@ -290,6 +356,37 @@ export function ProjectFilesSettingsDialog({
           </div>
         )}
         {error && <div className="settings-error">{error}</div>}
+
+        {/* Where the tree puts a project's own scaffold files and everything git
+            ignores: their own collapsible sections, or in among the rest. Both
+            are grouping rules, not hiding rules — nothing disappears either way
+            — which is why they sit beside the endings above rather than in it.
+            They live here at all because the file view is rendered many times
+            over at once, so the toggle that used to sit under the tree meant
+            one project could show different sections in the side panel and in a
+            Files (Project) tab, and reset itself on every remount. */}
+        <SettingsSection
+          title={
+            <>
+              {t("projectSettings.treeGrouping")} <UntestedTag />
+            </>
+          }
+          help={t("projectSettings.treeGroupingHelp")}
+        />
+        <SettingsCard>
+          <ToggleRow
+            label={t("projectSettings.separateScaffold")}
+            title={t("projectSettings.separateScaffoldHelp")}
+            checked={separateScaffold}
+            onChange={(e) => setSeparateScaffold(e.target.checked)}
+          />
+          <ToggleRow
+            label={t("projectSettings.separateGitignored")}
+            title={t("projectSettings.separateGitignoredHelp")}
+            checked={separateGitignored}
+            onChange={(e) => setSeparateGitignored(e.target.checked)}
+          />
+        </SettingsCard>
 
         {hasPython && project && (
           <>

@@ -4,7 +4,6 @@ import { FileTree } from "./FileTree";
 import { AlertsSection } from "./AlertsSection";
 import { DownloadsSection } from "./DownloadsSection";
 import { GitHistory } from "./GitHistory";
-import { SearchPanel } from "./SearchPanel";
 import { ProjectFilesSettingsDialog, useProjectFileFilters } from "./ProjectFilesSettings";
 import { remoteMemberTreeDir } from "../../lib/fileMove";
 import { useProjectsStore } from "../../stores/projects";
@@ -24,20 +23,12 @@ import { BOX_SCOPE_PREFIX, boxScopeId, useBoxesStore } from "../../stores/boxes"
 import { resolveLocalMirror, resolveProjectDirectory } from "../../types";
 import type { ProjectBox, ProjectEntry } from "../../types";
 import type { SortKey } from "../../lib/viewers/fileUtils";
-import { useT, type TranslationKey } from "../../lib/i18n";
+import { useT } from "../../lib/i18n";
 import { UntestedTag } from "../common/UntestedTag";
 
-const SORT_KEY_LABEL: Record<SortKey, TranslationKey> = {
-  name: "sortKey.name",
-  size: "sortKey.size",
-  type: "sortKey.type",
-  created: "sortKey.created",
-  modified: "sortKey.modified",
-};
-
 /**
- * THE project file view — the tree, its sort row, the remote sync row and the
- * Downloads section. Rendered twice: by the side panel, and by the "Files
+ * THE project file view — the tree, the remote sync row and the Downloads
+ * section. Rendered twice: by the side panel, and by the "Files
  * (Project)" tab (`ProjectFilesTab`). One component, so the two can never drift
  * into two different file views of the same project.
  *
@@ -269,11 +260,17 @@ function BoxRootSection({
   remote = false,
   sortKey,
   descending,
+  onSortChange,
   active = true,
-}: BoxRoot & { sortKey: SortKey; descending: boolean; active?: boolean }) {
+}: BoxRoot & {
+  sortKey: SortKey;
+  descending: boolean;
+  onSortChange?: (sortKey: SortKey, descending: boolean) => void;
+  active?: boolean;
+}) {
   const t = useT();
   const [collapsed, setCollapsed] = useState(false);
-  const [view, setView] = useState<"files" | "git" | "search">("files");
+  const [view, setView] = useState<"files" | "git">("files");
   const [showSettings, setShowSettings] = useState(false);
   const rel = useProjectsStore((s) => s.sidePanelFolderByProject[rootId] ?? "");
   const setSidePanelFolder = useProjectsStore((s) => s.setSidePanelFolder);
@@ -320,7 +317,7 @@ function BoxRootSection({
       </button>
       {!collapsed && variant === "member" && (
         <div className="side-panel-toolbar side-panel-toolbar--box-root">
-          {(["files", "git", "search"] as const).map((v) => (
+          {(["files", "git"] as const).map((v) => (
             <button
               key={v}
               className={`toolbar-btn${view === v ? " active" : ""}`}
@@ -328,13 +325,7 @@ function BoxRootSection({
               aria-pressed={view === v}
               onClick={() => setView(v)}
             >
-              {t(
-                v === "files"
-                  ? "projectFilesView.tabFiles"
-                  : v === "git"
-                    ? "projectFilesView.tabGit"
-                    : "projectFilesView.tabSearch",
-              )}
+              {t(v === "files" ? "projectFilesView.tabFiles" : "projectFilesView.tabGit")}
             </button>
           ))}
           <button
@@ -400,11 +391,14 @@ function BoxRootSection({
             localFile={localFile}
             sortKey={sortKey}
             descending={descending}
+            onSortChange={onSortChange}
             hiddenEndings={filters.hiddenEndings}
             hiddenPaths={filters.hiddenPaths}
             shownPaths={filters.shownPaths}
             scanExcluded={filters.scanExcluded}
             onToggleScanExcluded={filters.toggleScanExcluded}
+            separateScaffold={filters.separateScaffold}
+            separateGitignored={filters.separateGitignored}
             initialRelPath={rel}
             onRelPathChange={(folder) => setSidePanelFolder(rootId, folder)}
             syncSource={remote ? source : undefined}
@@ -421,11 +415,6 @@ function BoxRootSection({
             remote={remote}
             onChanged={() => {}}
           />
-        </div>
-      )}
-      {!collapsed && !remoteBlocked && view === "search" && (
-        <div className="file-root-body">
-          <SearchPanel projectDir={treeDir} linkingTabKey={undefined} />
         </div>
       )}
       {showSettings && project && localFile && (
@@ -460,9 +449,18 @@ interface Props {
    *  view), which simply don't offer the action. */
   scanExcluded?: string[];
   onToggleScanExcluded?: (relPath: string, excluded: boolean) => void;
+  /** Tree grouping (`panel_separate_scaffold` / `panel_separate_gitignored` in
+   *  project.json, edited in Project Settings): whether the root's scaffold and
+   *  everything git ignores get their own collapsible sections. Omitted by a
+   *  host with no project.json behind it, which simply gets the default (on). */
+  separateScaffold?: boolean;
+  separateGitignored?: boolean;
   /** Sort is the host's, not the pane's: the side panel unmounts this pane when
    *  it shows Git/Search, and a sort order that reset itself on the way back
-   *  would be a worse view than the one the user chose. */
+   *  would be a worse view than the one the user chose. The control itself is
+   *  rendered by the tree, right-aligned in the breadcrumb (⌂) row — it used to
+   *  own a full-width row of key buttons above the tree, which cost a row of
+   *  height for five words the view already sorts by. */
   sortKey: SortKey;
   descending: boolean;
   onSortChange: (sortKey: SortKey, descending: boolean) => void;
@@ -483,8 +481,8 @@ interface Props {
    *  work — fs-watch, sync re-stat, host probes, folder-size walks — restarting
    *  with a catch-up when its project becomes current again (see FileTree). */
   active?: boolean;
-  /** Compact (docked subwindow) mode: hide the remote-sync row and the sort row
-   *  so the tree's find-files search box is the topmost element. */
+  /** Compact (docked subwindow) mode: hide the remote-sync row and the sort
+   *  control so the tree's find-files search box is the topmost element. */
   compact?: boolean;
 }
 
@@ -500,6 +498,8 @@ export function ProjectFilesPane({
   shownPaths,
   scanExcluded,
   onToggleScanExcluded,
+  separateScaffold = true,
+  separateGitignored = true,
   sortKey,
   descending,
   onSortChange,
@@ -691,32 +691,6 @@ export function ProjectFilesPane({
           </button>
         </div>
       )}
-      {!compact && (
-      <div className="side-panel-sort">
-        {(["name", "size", "type", "created", "modified"] as SortKey[]).map((key) => (
-          <button
-            key={key}
-            className={`sort-key-btn${sortKey === key ? " active" : ""}`}
-            onClick={() =>
-              sortKey === key
-                ? onSortChange(key, !descending)
-                : onSortChange(key, descending)
-            }
-            title={
-              sortKey === key
-                ? t(
-                    descending
-                      ? "projectFilesPane.sortDescendingTitle"
-                      : "projectFilesPane.sortAscendingTitle",
-                  )
-                : t("projectFilesPane.sortByTitle", { key: t(SORT_KEY_LABEL[key]) })
-            }
-          >
-            {t(SORT_KEY_LABEL[key])}{sortKey === key ? (descending ? " ↓" : " ↑") : ""}
-          </button>
-        ))}
-      </div>
-      )}
       <div className="side-panel-scroll" style={{ flex: 1, overflowY: "auto" }}>
         {mountTree && activeBox ? (
           boxRoots.length === 0 ? (
@@ -728,6 +702,7 @@ export function ProjectFilesPane({
                 {...r}
                 sortKey={sortKey}
                 descending={descending}
+                onSortChange={compact ? undefined : onSortChange}
                 active={active}
               />
             ))
@@ -793,11 +768,14 @@ export function ProjectFilesPane({
                 localFile={project?.local_file}
                 sortKey={sortKey}
                 descending={descending}
+                onSortChange={compact ? undefined : onSortChange}
                 hiddenEndings={hiddenEndings}
                 hiddenPaths={hiddenPaths}
                 shownPaths={shownPaths}
                 scanExcluded={scanExcluded}
                 onToggleScanExcluded={onToggleScanExcluded}
+                separateScaffold={separateScaffold}
+                separateGitignored={separateGitignored}
                 initialRelPath={folder}
                 onRelPathChange={onFolderChange}
                 onOpenFolderTab={onOpenFolderTab}
