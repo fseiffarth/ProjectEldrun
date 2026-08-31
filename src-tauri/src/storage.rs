@@ -105,11 +105,13 @@ where
 /// Windows: `%APPDATA%\eldrun\`
 /// macOS:   `~/Library/Application Support/eldrun/`
 pub fn state_dir() -> std::path::PathBuf {
-    // Test/dev override. The state dir is now written to by tests (the per-project
-    // session state moved here out of the project tree), and a test suite that
-    // writes into the developer's real `~/.local/share/eldrun/` is not a test
-    // suite. Not a supported runtime knob — nothing sets it but the test harness,
-    // and anything that could set it for the app already owns the process.
+    // Test/sandbox override. The state dir is written to by tests (the
+    // per-project session state moved here out of the project tree), and a test
+    // suite that writes into the developer's real `~/.local/share/eldrun/` is
+    // not a test suite. `start-eldrun-dev-sandbox.sh` sets it too, paired with
+    // `ELDRUN_HOME` (see `paths::eldrun_home`), so a dev window keeps its state
+    // away from the packaged daily-driver instance's. Still not a user-facing
+    // knob — whatever sets it for the app already owns the process.
     if let Ok(dir) = std::env::var("ELDRUN_STATE_DIR") {
         if !dir.is_empty() {
             return std::path::PathBuf::from(dir);

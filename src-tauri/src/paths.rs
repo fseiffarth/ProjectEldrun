@@ -358,8 +358,32 @@ where
     }
 }
 
+/// The `~/eldrun` tree: managed projects ([`projects_root`]), the root
+/// workspace, trash, boxes, and the project archive.
+///
+/// `ELDRUN_HOME` overrides it so a sandboxed dev instance
+/// (`start-eldrun-dev-sandbox.sh`) keeps its projects, trash, and boxes
+/// symlink farm out of the daily-driver instance's real tree — an instance
+/// reconciling those folders against its own (empty) state must not be looking
+/// at another instance's folders. Set it together with `ELDRUN_STATE_DIR`:
+/// overriding only one splits a single instance's world across the sandbox and
+/// the real data.
+pub fn eldrun_home() -> PathBuf {
+    eldrun_home_for(|key| std::env::var(key).ok())
+}
+
+pub fn eldrun_home_for<F>(mut env: F) -> PathBuf
+where
+    F: FnMut(&str) -> Option<String>,
+{
+    match non_empty(env("ELDRUN_HOME")) {
+        Some(dir) => PathBuf::from(dir),
+        None => home_dir().join("eldrun"),
+    }
+}
+
 pub fn projects_root() -> PathBuf {
-    home_dir().join("eldrun").join("projects")
+    eldrun_home().join("projects")
 }
 
 /// The default parent for remote (SSH) projects' local mirrors: a top-level
@@ -367,11 +391,11 @@ pub fn projects_root() -> PathBuf {
 /// `projects/ssh/` subfolder. Keeps synced remote working copies out of the
 /// managed-local-projects tree.
 pub fn projects_ssh_root() -> PathBuf {
-    home_dir().join("eldrun").join("projects-ssh")
+    eldrun_home().join("projects-ssh")
 }
 
 pub fn root_work_dir() -> PathBuf {
-    home_dir().join("eldrun").join("root")
+    eldrun_home().join("root")
 }
 
 /// The permanent, isolated workspace for disposable agent work. Unlike the
@@ -380,7 +404,7 @@ pub fn root_work_dir() -> PathBuf {
 pub const TRASH_PROJECT_ID: &str = "eldrun-trash";
 
 pub fn trash_work_dir() -> PathBuf {
-    home_dir().join("eldrun").join("trash")
+    eldrun_home().join("trash")
 }
 
 pub fn is_trash_project_id(project_id: &str) -> bool {
@@ -388,7 +412,7 @@ pub fn is_trash_project_id(project_id: &str) -> bool {
 }
 
 pub fn boxes_root() -> PathBuf {
-    home_dir().join("eldrun").join("boxes")
+    eldrun_home().join("boxes")
 }
 
 /// Holding area for deleted projects: `~/eldrun/archive/<id>/`. A deleted
@@ -396,7 +420,7 @@ pub fn boxes_root() -> PathBuf {
 /// erased, so it can be restored or permanently cleared from Settings. Only ever
 /// emptied manually from the Settings "Archived projects" panel.
 pub fn archive_root() -> PathBuf {
-    home_dir().join("eldrun").join("archive")
+    eldrun_home().join("archive")
 }
 
 fn non_empty(value: Option<String>) -> Option<String> {
@@ -600,6 +624,21 @@ mod tests {
         assert_eq!(resolve_offpath_binary("/usr/bin/vibe"), None);
         assert_eq!(resolve_offpath_binary(r"C:\tools\vibe.exe"), None);
         assert_eq!(resolve_offpath_binary(""), None);
+    }
+
+    #[test]
+    fn eldrun_home_for_honors_override() {
+        let dir = eldrun_home_for(|key| {
+            (key == "ELDRUN_HOME").then(|| "/tmp/eldrun-sandbox".to_string())
+        });
+        assert_eq!(dir, PathBuf::from("/tmp/eldrun-sandbox"));
+    }
+
+    #[test]
+    fn eldrun_home_for_ignores_empty_override() {
+        // An empty ELDRUN_HOME means unset, same as ELDRUN_STATE_DIR's rule.
+        let dir = eldrun_home_for(|key| (key == "ELDRUN_HOME").then(String::new));
+        assert_eq!(dir, home_dir().join("eldrun"));
     }
 
     #[test]

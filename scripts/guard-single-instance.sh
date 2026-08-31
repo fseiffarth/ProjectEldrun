@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Refuse to start a second Eldrun dev session.
 #
-# Two concurrent instances corrupt the shared workspace state under
-# ~/.local/share/eldrun. Worse, a second `tauri dev` whose vite loses the race
+# Two concurrent dev sessions corrupt the shared workspace state under
+# ~/.local/share/eldrun (start-eldrun-dev-sandbox.sh redirects that state, but
+# both sessions still want port 1420, so one-at-a-time stands regardless).
+# Worse, a second `tauri dev` whose vite loses the race
 # for port 1420 logs the bind failure and carries on anyway, pointing its window
 # at the *first* session's dev server — so the new window renders that session's
 # stale, half-hot-reloaded module graph and looks like an old build. That is not
@@ -13,6 +15,10 @@
 #   - start-eldrun-tauri-hotreload.sh (the desktop entry)
 #   - the `pretauri:dev` npm hook, which catches a bare `npm run tauri:dev`
 # Running twice in one launch is harmless: nothing has started yet either time.
+#
+# A *packaged* Eldrun (npm run package) deliberately matches neither pgrep
+# below: running the stable build as a daily driver beside one dev session is
+# the supported dogfooding setup — see start-eldrun-dev-sandbox.sh.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
