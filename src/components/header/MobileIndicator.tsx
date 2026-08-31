@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useSettingsStore } from "../../stores/settings";
 import { useHeaderHoverMenuStore } from "../../stores/headerHoverMenu";
+import { useHeaderStatusReport } from "../../stores/headerStatus";
 import { UntestedTag } from "../common/UntestedTag";
 import { translate, useI18nStore, useT } from "../../lib/i18n";
 
@@ -248,8 +249,9 @@ export function MobileIndicator() {
     }
   };
 
-  if (!mobileEnabled || !visible) return null;
-
+  // Above the early return, because the header's status cluster has to be told
+  // this widget renders nothing (a hook cannot hide behind a `return null`, and
+  // an unreported member is silently not counted rather than folded).
   const busy = refreshing || reconnecting || uploadingVersion || pairing || lockingDown;
   const tone = statusTone(status, refreshing || reconnecting);
   const title = tone === "connected"
@@ -259,6 +261,17 @@ export function MobileIndicator() {
       : tone === "error"
         ? t("mobile.indErrorTitle")
         : t("mobile.indStoppedTitle");
+
+  // "Checking" is every poll of an ordinary healthy host, so only a real error
+  // escalates out of a collapsed header.
+  useHeaderStatusReport(
+    "mobile",
+    !mobileEnabled || !visible
+      ? null
+      : { tone: tone === "error" ? "alert" : tone === "connected" ? "ok" : "off", label: title },
+  );
+
+  if (!mobileEnabled || !visible) return null;
 
   return (
     <div

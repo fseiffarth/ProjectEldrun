@@ -89,6 +89,9 @@ export function SettingsMenu() {
           <button onClick={() => fire("eldrun:open-settings", "help")}>
             {t("nav.help.title")}
           </button>
+          <button onClick={() => fire("eldrun:open-shortcut-help")}>
+            {t("shortcutHelp.title")}
+          </button>
           <button onClick={() => fire("eldrun:open-how-to-start")}>
             {t("projectSwitcher.howToStartMenu")}
           </button>
