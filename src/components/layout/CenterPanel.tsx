@@ -37,6 +37,7 @@ import {
 import { useSettingsStore } from "../../stores/settings";
 import { useDragStore } from "../../stores/drag";
 import { useSubwindowNavStore } from "../../stores/subwindowNav";
+import { useKeyboardSteeringStore } from "../../stores/keyboardSteering";
 import { useWindowFocused } from "../../hooks/useWindowFocused";
 import { useScrollSyncStore } from "../../stores/scrollSync";
 import { useWindowMoveStore } from "../../stores/windowMove";
@@ -1283,6 +1284,12 @@ export function SplitPreviewOverlay({ groupRects }: { groupRects: Record<string,
  *    group and every subwindow shows a numbered badge — the committed focus is
  *    0, others numbered in document order (wrapping) so ↑/↓ read as relative
  *    steps. Focus commits (moving the frame's committed home) on Shift release.
+ *  - While keyboard steering mode is active: the SAME badges, anchored to the
+ *    committed focus (steering arrows commit immediately, so there is no
+ *    preview id — the badges re-anchor after every step). Deliberately the
+ *    relative ↓/↑ labels, not absolute digits: in steering the digits 1–9
+ *    belong to the project stations, and a second set of digits here would
+ *    collide with them.
  * `pointer-events: none`, panel-relative coords from the same measured rects.
  */
 export function FocusFrameOverlay({
@@ -1297,6 +1304,7 @@ export function FocusFrameOverlay({
   const focusedGroupId = useTabsStore((s) => s.focusedGroupId);
   const navActive = useSubwindowNavStore((s) => s.active);
   const previewGroupId = useSubwindowNavStore((s) => s.previewGroupId);
+  const steeringActive = useKeyboardSteeringStore((s) => s.active);
   // Only the OS-focused window draws its focus frame, so a blurred main window
   // doesn't show an active subwindow alongside a focused popout (#42).
   const windowFocused = useWindowFocused();
@@ -1336,7 +1344,7 @@ export function FocusFrameOverlay({
           }}
         />
       )}
-      {navActive &&
+      {(navActive || steeringActive) &&
         f >= 0 &&
         orderedIds.map((id, p) => {
           const r = groupRects[id];

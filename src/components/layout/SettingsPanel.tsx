@@ -14,6 +14,7 @@ import { usePowerStore, useEnergySaver } from "../../stores/power";
 import { useProjectsStore } from "../../stores/projects";
 import { DEFAULT_MIN_SUBWINDOW_PX } from "../../stores/tabs";
 import { DEFAULT_MAIL_CHECK_MIN } from "../../lib/mail";
+import { ThemeCustomizerDialog } from "./ThemeCustomizer";
 import type {
   ArchivedProject,
   CalendarViewKind,
@@ -31,10 +32,14 @@ import { GitTokenScopes, tokenPageUrl } from "../common/GitTokenScopes";
 import { OPEN_STATS_EVENT } from "../stats/StatsRecapHost";
 import {
   SHORTCUT_DEFS,
+  SHORTCUT_GROUPS,
   chordFromEvent,
   chordLabel,
+  findConflicts,
+  isFixedChord,
   resolveChord,
   type ShortcutAction,
+  type ShortcutDef,
   type ShortcutMap,
 } from "../../lib/shortcuts";
 import {
@@ -173,10 +178,14 @@ const HELP_SECTIONS: HelpSection[] = [
 ];
 
 /**
- * Group L / #62 — let the user rebind the eight navigation chords. Click a
- * row's chord button to enter capture mode; the next non-modifier keydown is
- * stored as the override (persisted to `settings.keyboard_shortcuts`). "Reset"
- * clears an override back to its built-in default.
+ * Group L / #62 — let the user rebind the navigation chords, one boxed list
+ * per `SHORTCUT_GROUPS` section (the cheat sheet's grouping, driven entirely
+ * by each def's `group`). Click a row's chord button to enter capture mode;
+ * the next non-modifier keydown is stored as the override (persisted to
+ * `settings.keyboard_shortcuts`). "Reset" clears an override back to its
+ * built-in default; "Reset all" clears the whole map. A colliding capture is
+ * still stored — the user may mean to fix the other action next — and both
+ * rows wear the warning until one moves (`findConflicts`).
  */
 function ShortcutsSettings({ onBack, onClose }: SubPanelProps) {
   const t = useT();
@@ -197,6 +206,11 @@ function ShortcutsSettings({ onBack, onClose }: SubPanelProps) {
     delete next[action];
     saveMap(next);
   };
+
+  const hasOverrides = Object.keys(overrides).length > 0;
+  const conflicts = findConflicts(overrides);
+  const labelOf = (action: ShortcutAction) =>
+    SHORTCUT_DEFS.find((d) => d.action === action)?.label ?? action;
 
   // While capturing, the next real key sets the chord. Capture at the window
   // level so the keystroke is grabbed even though our hidden field, not a
@@ -221,39 +235,77 @@ function ShortcutsSettings({ onBack, onClose }: SubPanelProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [capturing, overrides]);
 
+  // One boxed-list entry: the capture/reset row, plus the conflict/fixed-key
+  // warning line when its effective chord cannot work as bound.
+  const renderRow = (def: ShortcutDef) => {
+    const active = capturing === def.action;
+    const effective = resolveChord(def.action, overrides);
+    const isCustom = !!overrides[def.action];
+    const clash = conflicts.get(def.action);
+    const fixed = isFixedChord(effective);
+    return (
+      <div className="shortcut-entry" key={def.action}>
+        <div className="settings-row shortcut-row">
+          <span className="settings-role-label">
+            {def.label}
+            {def.untested && <> <UntestedTag /></>}
+          </span>
+          <button
+            type="button"
+            className={`shortcut-capture-btn${active ? " capturing" : ""}`}
+            onClick={() => setCapturing(active ? null : def.action)}
+            title={t("shortcuts.captureTitle")}
+          >
+            {active ? t("shortcuts.pressKeys") : chordLabel(effective)}
+          </button>
+          <button
+            type="button"
+            className="settings-btn sm"
+            disabled={!isCustom}
+            onClick={() => reset(def.action)}
+            title={t("shortcuts.resetTitle")}
+          >
+            {t("common.reset")}
+          </button>
+        </div>
+        {fixed && (
+          <div className="shortcut-conflict">
+            ⚠ {t("shortcuts.fixedConflict", { chord: chordLabel(effective) })}
+          </div>
+        )}
+        {clash && (
+          <div className="shortcut-conflict">
+            ⚠ {t("shortcuts.conflict", { actions: clash.map(labelOf).join(", ") })}
+          </div>
+        )}
+      </div>
+    );
+  };
+
   return (
     <>
       <SettingsHeader title={t("nav.shortcuts.title")} onBack={onBack} onClose={onClose} />
+      <div className="dialog-scroll">
       <p className="settings-help">{t("shortcuts.help")}</p>
-      <SettingsList boxed>
-        {SHORTCUT_DEFS.map((def) => {
-          const active = capturing === def.action;
-          const effective = resolveChord(def.action, overrides);
-          const isCustom = !!overrides[def.action];
-          return (
-            <div className="settings-row shortcut-row" key={def.action}>
-              <span className="settings-role-label">{def.label}</span>
-              <button
-                type="button"
-                className={`shortcut-capture-btn${active ? " capturing" : ""}`}
-                onClick={() => setCapturing(active ? null : def.action)}
-                title={t("shortcuts.captureTitle")}
-              >
-                {active ? t("shortcuts.pressKeys") : chordLabel(effective)}
-              </button>
-              <button
-                type="button"
-                className="settings-btn sm"
-                disabled={!isCustom}
-                onClick={() => reset(def.action)}
-                title={t("shortcuts.resetTitle")}
-              >
-                {t("common.reset")}
-              </button>
-            </div>
-          );
-        })}
-      </SettingsList>
+      <div className="settings-link-row">
+        <button
+          type="button"
+          className="settings-btn sm"
+          disabled={!hasOverrides}
+          onClick={() => saveMap({})}
+          title={t("shortcuts.resetAllTitle")}
+        >
+          {t("shortcuts.resetAll")}
+        </button>
+      </div>
+      {SHORTCUT_GROUPS.map((g) => (
+        <SettingsSection title={t(g.labelKey)} key={g.id}>
+          <SettingsList boxed>
+            {SHORTCUT_DEFS.filter((d) => d.group === g.id).map(renderRow)}
+          </SettingsList>
+        </SettingsSection>
+      ))}
+      </div>
     </>
   );
 }
@@ -292,6 +344,7 @@ function GitHostingSettings({ onBack, onClose }: SubPanelProps) {
   return (
     <>
       <SettingsHeader title={t("nav.git.title")} onBack={onBack} onClose={onClose} />
+      <div className="dialog-scroll">
       <p className="settings-help">{t("git.help")}</p>
       <SettingsCard>
       <label className="settings-field">
@@ -332,6 +385,7 @@ function GitHostingSettings({ onBack, onClose }: SubPanelProps) {
       </span>
       </SettingsCard>
       <GitTokenScopes provider={provider} />
+      </div>
     </>
   );
 }
@@ -372,6 +426,7 @@ function VpnAutoConnectSettings({ onBack, onClose }: SubPanelProps) {
   return (
     <>
       <SettingsHeader title={t("nav.vpn.title")} onBack={onBack} onClose={onClose} />
+      <div className="dialog-scroll">
       <p className="settings-help">{t("vpn.autoConnectHelp")}</p>
       {configs === null ? (
         <p className="settings-help">{t("common.loading")}</p>
@@ -407,6 +462,7 @@ function VpnAutoConnectSettings({ onBack, onClose }: SubPanelProps) {
           })}
         </SettingsList>
       )}
+      </div>
     </>
   );
 }
@@ -512,6 +568,7 @@ function ArchivedProjectsPanel({ onBack, onClose }: SubPanelProps) {
   return (
     <>
       <SettingsHeader title={t("nav.archive.title")} onBack={onBack} onClose={onClose} />
+      <div className="dialog-scroll">
       <p className="settings-help">{t("archive.help")}</p>
       {error && <div className="project-dialog-error">{error}</div>}
       {items === null ? (
@@ -617,6 +674,7 @@ function ArchivedProjectsPanel({ onBack, onClose }: SubPanelProps) {
           </div>
         )
       )}
+      </div>
     </>
   );
 }
@@ -649,6 +707,7 @@ function ScaffoldRepairPanel({ onBack, onClose }: SubPanelProps) {
         onBack={onBack}
         onClose={onClose}
       />
+      <div className="dialog-scroll">
       <p className="settings-help">{t("scaffoldRepair.help")}</p>
       {error && <div className="project-dialog-error">{error}</div>}
       <div className="settings-link-row">
@@ -672,6 +731,7 @@ function ScaffoldRepairPanel({ onBack, onClose }: SubPanelProps) {
           </ul>
         )
       )}
+      </div>
     </>
   );
 }
@@ -681,6 +741,7 @@ function HelpPanel({ onBack, onClose }: SubPanelProps) {
   return (
     <>
       <SettingsHeader title={t("help.title")} onBack={onBack} onClose={onClose} />
+      <div className="dialog-scroll">
 
       <p className="settings-help">{t("help.intro")}</p>
 
@@ -700,6 +761,7 @@ function HelpPanel({ onBack, onClose }: SubPanelProps) {
           </dl>
         </div>
       ))}
+      </div>
     </>
   );
 }
@@ -732,6 +794,10 @@ export function SettingsDialog({
 }) {
   const { settings, setTheme, setLanguage, updateSettings } = useSettingsStore();
   const [panel, setPanel] = useState<SettingsPanelKind>(initialPanel);
+  // The theme customizer is a window of its own, not a sub-panel: it is opened
+  // INSTEAD of this dialog (‹ Back returns here), so the palette it edits is
+  // not judged through the settings scroll sitting on top of it.
+  const [showCustomizer, setShowCustomizer] = useState(false);
   const t = useT();
 
   const currentTheme = (settings?.color_scheme ?? "fancy_dark") as Theme;
@@ -759,13 +825,22 @@ export function SettingsDialog({
     return energyMode === "off" ? t("settings.energyOff") : t("settings.energyInactive");
   })();
 
+  if (showCustomizer) {
+    return (
+      <ThemeCustomizerDialog
+        onClose={onClose}
+        onBack={() => setShowCustomizer(false)}
+      />
+    );
+  }
+
   return (
     <div className="modal-backdrop how-to-start-backdrop" onMouseDown={onClose}>
       <div className="settings-dialog" onMouseDown={(e) => e.stopPropagation()}>
-       <div className="dialog-scroll">
         {panel === "main" && (
           <>
             <SettingsHeader title={t("settings.title")} onClose={onClose} />
+            <div className="dialog-scroll">
 
             <SettingRow
               label={t("settings.theme")}
@@ -775,6 +850,20 @@ export function SettingsDialog({
                   onChange={(v) => void setTheme(v as Theme)}
                   options={THEMES.map((theme) => ({ value: theme.value, label: theme.label }))}
                 />
+              }
+            />
+
+            <SettingRow
+              label={<>{t("settings.themeVars")} <UntestedTag /></>}
+              help={t("settings.themeVars.help")}
+              control={
+                <button
+                  type="button"
+                  className="settings-btn"
+                  onClick={() => setShowCustomizer(true)}
+                >
+                  {t("settings.themeVars.open")}
+                </button>
               }
             />
 
@@ -1024,6 +1113,22 @@ export function SettingsDialog({
                 onChange={(e) => void updateSettings({ show_gpu_usage: e.target.checked })}
               />
               <p className="settings-help">{t("settings.resourceMonitorHelp")}</p>
+              {/* The fold is normally driven by the ‹/› in the header itself;
+                  this row is here so it is findable, and so the default can be
+                  turned off by someone who wants every lamp out permanently. */}
+              <ToggleRow
+                label={
+                  <>
+                    {t("statusCluster.settingLabel")} <UntestedTag />
+                  </>
+                }
+                title={t("statusCluster.settingHelp")}
+                checked={!(settings?.header_status_expanded ?? false)}
+                onChange={(e) =>
+                  void updateSettings({ header_status_expanded: !e.target.checked })
+                }
+              />
+              <p className="settings-help">{t("statusCluster.settingHelp")}</p>
             </SettingsCard>
 
             {/* The clock lives in its own section, not under Resource monitor:
@@ -1426,6 +1531,7 @@ export function SettingsDialog({
                 </button>
               ))}
             </div>
+            </div>
           </>
         )}
         {panel === "global" && <GlobalAppsSettings onBack={() => setPanel("main")} onClose={onClose} />}
@@ -1440,7 +1546,6 @@ export function SettingsDialog({
         {panel === "scaffoldRepair" && <ScaffoldRepairPanel onBack={() => setPanel("main")} onClose={onClose} />}
         {panel === "updates" && <UpdatesPanel onBack={() => setPanel("main")} onClose={onClose} />}
         {panel === "help" && <HelpPanel onBack={() => setPanel("main")} onClose={onClose} />}
-       </div>
       </div>
     </div>
   );

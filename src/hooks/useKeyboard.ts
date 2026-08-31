@@ -6,7 +6,12 @@ import { useProjectsStore } from "../stores/projects";
 import { useSettingsStore, stepZoom } from "../stores/settings";
 import { useSubwindowNavStore } from "../stores/subwindowNav";
 import {
+  projectStations,
+  useKeyboardSteeringStore,
+} from "../stores/keyboardSteering";
+import {
   chordMatches,
+  isLoneModifier,
   resolveChord,
   type ShortcutAction,
   type ShortcutMap,
@@ -55,10 +60,126 @@ export function isEditableTarget(target: EventTarget | null): boolean {
  *   - Shift+Tab            → cycle tabs within the focused subwindow
  *   - Shift+Ctrl+W         → close the focused subwindow
  *   - Ctrl+W               → close the active tab
+ *   - Shift+Ctrl+←         → cycle to the previous active project
+ *   - F1                   → open the shortcut cheat sheet (window event)
+ *   - Ctrl+Shift+Space     → toggle keyboard steering mode (see below)
+ *
+ * Steering mode (`steeringMode` chord): a modal layer for the fixed keys in
+ * `STEERING_KEYS`, captured on `document` in the CAPTURE phase so xterm never
+ * sees them and the mode works FROM a focused terminal — the point is that the
+ * hands never leave the keyboard. While active every key is swallowed.
  */
 export function useKeyboard({ onTogglePanels }: KeyboardOptions) {
   useEffect(() => {
     const win = getCurrentWindow();
+
+    // ── Keyboard steering mode ────────────────────────────────────────────
+    // A capture-phase listener on `document`, which threads two needles at
+    // once: it runs BEFORE xterm's textarea handlers (target phase), so a
+    // steered key is stopped before the PTY can see it — and BEFORE this
+    // hook's own editable-target guard by construction, so the toggle chord
+    // works from a focused terminal (the whole point). But it runs AFTER the
+    // settings panel's chord-capture listener (window, capture phase), so
+    // rebinding the steering chord itself still captures instead of toggling.
+    function onSteeringKeyDown(e: KeyboardEvent) {
+      const steering = useKeyboardSteeringStore.getState();
+      const overrides = useSettingsStore.getState().settings
+        ?.keyboard_shortcuts as ShortcutMap | undefined;
+
+      // The chord toggles: enter when inactive, exit when active.
+      if (chordMatches(resolveChord("steeringMode", overrides), e)) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (steering.active) steering.exit();
+        else steering.enter();
+        return;
+      }
+      if (!steering.active) return;
+
+      // Lone modifiers pass through unswallowed so Shift+Tab still composes.
+      if (isLoneModifier(e.key)) return;
+
+      // The mode owns the keyboard: every non-modifier key below — mapped or
+      // not — is swallowed here, so nothing ever leaks to the app underneath.
+      e.preventDefault();
+      e.stopPropagation();
+
+      const tabs = useTabsStore.getState();
+
+      if (e.key === "Escape" || e.key === "Enter") {
+        steering.exit();
+        return;
+      }
+
+      // 1–9 — jump to the Nth station of the SAME ring cycleProject walks:
+      // 1 = the root scope, 2 = the first project pill (display order) — the
+      // numbers the pill badges show. Jumping leaves the mode.
+      if (/^[1-9]$/.test(e.key)) {
+        const target = projectStations()[Number(e.key) - 1];
+        steering.exit();
+        if (target !== undefined) {
+          const ps = useProjectsStore.getState();
+          if (target !== ps.activeId) void ps.setActive(target);
+        }
+        return;
+      }
+
+      // Arrows — move the subwindow focus in document order (↓/→ forward,
+      // ↑/← back), committing immediately via focusGroup (no Shift-preview:
+      // the badges re-anchor each step). Stays in the mode.
+      if (e.key.startsWith("Arrow")) {
+        const ids = allGroups(tabs.layout).map((g) => g.id);
+        const n = ids.length;
+        if (n >= 2) {
+          const fwd = e.key === "ArrowDown" || e.key === "ArrowRight";
+          const from = tabs.focusedGroupId ? ids.indexOf(tabs.focusedGroupId) : -1;
+          const base = from >= 0 ? from : 0;
+          tabs.focusGroup(ids[(base + (fwd ? 1 : -1) + n) % n]);
+        }
+        return;
+      }
+
+      const focused = tabs.focusedGroupId;
+      const group = focused ? findGroup(tabs.layout, focused) : null;
+
+      // Tab / Shift+Tab — next / previous tab in the focused subwindow.
+      if (e.key === "Tab") {
+        if (group && group.tabKeys.length > 1) {
+          const len = group.tabKeys.length;
+          const cur = group.activeKey ? group.tabKeys.indexOf(group.activeKey) : 0;
+          const next = group.tabKeys[(cur + (e.shiftKey ? -1 : 1) + len) % len];
+          tabs.setGroupActive(group.id, next);
+        }
+        return;
+      }
+
+      // ? — the shortcut cheat sheet (its host listens for the event; part of
+      // the later steering work). Opening an overlay leaves the mode.
+      if (e.key === "?") {
+        steering.exit();
+        window.dispatchEvent(new Event("eldrun:open-shortcut-help"));
+        return;
+      }
+
+      switch (e.key.toLowerCase()) {
+        case "f": // toggle the focused subwindow's docked file viewer
+          if (focused && group) tabs.setGroupFiles(focused, !group.filesOpen);
+          return;
+        case "p": // toggle the side panels
+          onTogglePanels();
+          return;
+        case "w": // close the active tab
+          if (tabs.activeKey) tabs.removeTab(tabs.activeKey);
+          return;
+        case "s": // open settings — same door the header ⚙ menu fires
+          steering.exit();
+          window.dispatchEvent(
+            new CustomEvent("eldrun:open-settings", { detail: "main" }),
+          );
+          return;
+        // Anything else: swallowed above, mode stays on.
+      }
+    }
 
     async function onKeyDown(e: KeyboardEvent) {
       // F11 — OS fullscreen toggle. On Windows, real fullscreen strips the
@@ -147,10 +268,23 @@ export function useKeyboard({ onTogglePanels }: KeyboardOptions) {
         return;
       }
 
-      // Cycle to the next active project.
+      // Cycle to the next / previous active project.
       if (is("cycleProject")) {
         e.preventDefault();
-        cycleProject();
+        cycleProject(1);
+        return;
+      }
+      if (is("cycleProjectBack")) {
+        e.preventDefault();
+        cycleProject(-1);
+        return;
+      }
+
+      // Open the shortcut cheat sheet. This hook only fires the door event
+      // (the header-menu pattern); the overlay host owns the dialog.
+      if (is("shortcutHelp")) {
+        e.preventDefault();
+        window.dispatchEvent(new Event("eldrun:open-shortcut-help"));
         return;
       }
 
@@ -265,12 +399,18 @@ export function useKeyboard({ onTogglePanels }: KeyboardOptions) {
     function onBlur() {
       const nav = useSubwindowNavStore.getState();
       if (nav.active) nav.end();
+      // Steering must not survive a window blur either — coming back to a
+      // window silently swallowing every key would read as a hung app.
+      const steering = useKeyboardSteeringStore.getState();
+      if (steering.active) steering.exit();
     }
 
+    document.addEventListener("keydown", onSteeringKeyDown, true);
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("keyup", onKeyUp);
     window.addEventListener("blur", onBlur);
     return () => {
+      document.removeEventListener("keydown", onSteeringKeyDown, true);
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup", onKeyUp);
       window.removeEventListener("blur", onBlur);
@@ -289,20 +429,16 @@ export function useKeyboard({ onTogglePanels }: KeyboardOptions) {
  * one-way door out of the root terminal.
  *
  * `null` leads the ring for the same reason the pill is pinned to the left edge.
+ *
+ * The ring itself lives in `stores/keyboardSteering.projectStations` — the
+ * steering digits and pill badges number the same list, so the three surfaces
+ * can never disagree about which project is station N.
  */
-function cycleProject() {
+function cycleProject(delta: 1 | -1) {
   const ps = useProjectsStore.getState();
-  // Active = not inactive; ordered by `position` (the pill display order),
-  // behind the root scope.
-  const stations: (string | null)[] = [
-    null,
-    ...ps.projects
-      .filter((p) => p.status !== "inactive")
-      .sort((a, b) => a.position - b.position)
-      .map((p) => p.id),
-  ];
+  const stations = projectStations();
   if (stations.length < 2) return;
   const idx = stations.indexOf(ps.activeId);
-  const next = stations[(idx + 1) % stations.length];
+  const next = stations[(idx + delta + stations.length) % stations.length];
   if (next !== ps.activeId) void ps.setActive(next);
 }

@@ -20,6 +20,7 @@ import { TRASH_PROJECT_ID } from "../../lib/trashProject";
 import { ROOT_SCOPE, useTabsStore } from "../../stores/tabs";
 import { PillStatusBars } from "../projects/PillStatusBars";
 import { useGitDirtyStore } from "../../stores/gitDirty";
+import { projectStations, useKeyboardSteeringStore } from "../../stores/keyboardSteering";
 import { useQuiesce, saverInterval } from "../../stores/power";
 import { useFastMode } from "../../lib/fastMode";
 import { resolveProjectDirectory, type ProjectEntry } from "../../types";
@@ -158,6 +159,24 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
     // The same stale-object bug affected any other pill-visible metadata that
     // was not copied into that signature.
   }, [projects]);
+
+  // Keyboard steering mode: while active, every pill wears its station number
+  // (the digit that jumps there — 1 is the root pill). Numbered from the SAME
+  // ring the digit handler and cycleProject walk (projectStations), so badge
+  // and jump can never disagree; only the first nine stations get a digit. A
+  // box slice hides some ring members — their digits still jump, just unbadged.
+  const steeringActive = useKeyboardSteeringStore((s) => s.active);
+  const stationById = useMemo(() => {
+    if (!steeringActive) return null;
+    const m = new Map<string, number>();
+    projectStations().forEach((id, i) => {
+      if (id && i < 9) m.set(id, i + 1);
+    });
+    return m;
+    // `projects` re-mints the map when the strip changes; projectStations reads
+    // the store imperatively, which the linter cannot see.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [steeringActive, projects]);
 
   // Per-pill git "dirty" dots: poll every active local project's git state on a
   // shared interval (one loop for all pills, deduped by project id) and store
@@ -431,10 +450,14 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
         // right-click only ever surfaces our own pill context menu.
         onContextMenu={(e) => e.preventDefault()}
       >
-        {/* Divides the header's global cluster (🧠 ✉ 🗓 ☑ ▦ ⚙) from the project
-            strip. What is left of this line belongs to the machine; what is
-            right of it belongs to the project list. */}
-        <div className="project-switcher-separator" />
+        {/* No leading divider here any more. There used to be one, describing
+            itself as the line between the header's global cluster and the
+            project strip — but that cluster moved to the right of the strip, and
+            `.header-left` draws exactly that line at its own trailing edge. Two
+            hairlines ten pixels apart with nothing between them read as a
+            rendering fault, and the doubling is also what made the clock sit
+            noticeably further from the root pill than the root pill sits from
+            the Trash pill. */}
         <div
           className={`project-pills-region${pillOverflow.left ? " overflow-left" : ""}${
             pillOverflow.right ? " overflow-right" : ""
@@ -466,6 +489,12 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
               <StarIcon className="root-pill-star" />
             </button>
             <PillStatusBars scope={ROOT_SCOPE} />
+            {/* Steering station 1 — the ring's root (`null`) head. */}
+            {steeringActive && (
+              <span className="steering-station-chip" aria-hidden>
+                1
+              </span>
+            )}
           </div>
           {/* The Trash workspace, pinned right of the root terminal: a fixed
               leading segment of built-in scopes (★ root · 🗑 trash · ▣ box)
@@ -486,6 +515,7 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
               // the pill's own guards already hide the × and the drag.
               onClose={() => {}}
               onReorder={() => {}}
+              station={stationById?.get(trashProject.id)}
             />
           )}
           {/* Boxes: ONE chip beside the root pill rather than a pill per box
@@ -564,6 +594,7 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
                   dragDx={pillDrag?.id === project.id ? pillDrag.dx : undefined}
                   shiftPx={pillShifts.get(project.id)}
                   groupHintActive={pillDrag?.groupTargetId === project.id}
+                  station={stationById?.get(project.id)}
                 />
               );
             })}

@@ -385,8 +385,11 @@ export function DetachedCenterPanel({
   // Only the actions with a popout equivalent are wired: close tab, prev/next/
   // cycle tab, cycle subwindow focus, and F11 OS-fullscreen. The rest are
   // deliberately absent because the popout has no matching concept:
-  // app-internal fullscreen, hide/close-subwindow (no such edit), and
-  // cycle-project (a popout owns no project switcher). Live values are read
+  // app-internal fullscreen, hide/close-subwindow (no such edit),
+  // cycle-project / cycleProjectBack (a popout owns no project switcher), and
+  // keyboard steering + shortcutHelp (main-window mode/overlays) — their
+  // chords are simply never checked here, so pressing one in a popout falls
+  // through as a clean no-op rather than entering a half-mode. Live values are read
   // through a ref so the window listener binds once and never churns on the
   // per-render identity of the edit callbacks.
   const kbRef = useRef({ tree, focusedGroupId, onActivate, onClose, onFiles });
