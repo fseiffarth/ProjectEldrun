@@ -357,6 +357,10 @@ pub struct AgentInfo {
     pub uninstall_cmd_sudo: String,
     pub docs: String,
     pub installed: bool,
+    /// Whether the scheduled warm-up can drive this CLI: it has a known
+    /// one-shot print/exec mode (`WARMUPS`). False greys the schedule toggle
+    /// on the agent's card.
+    pub warmup: bool,
 }
 
 fn find_spec(id: &str) -> Option<&'static AgentSpec> {
@@ -612,6 +616,7 @@ pub async fn list_agents() -> Vec<AgentInfo> {
                 uninstall_cmd,
                 docs: spec.docs.to_string(),
                 installed: spec_is_installed(spec),
+                warmup: warmup_args(spec).is_some(),
             }
         })
         .collect()
@@ -930,9 +935,204 @@ pub async fn uninstall_agent(id: String) -> Result<String, String> {
     Ok(format!("{} removed ({}).", spec.label, path.display()))
 }
 
+// ---------------------------------------------------------------------------
+// Scheduled warm-up (Manage CLIs → Scheduled warm-up)
+// ---------------------------------------------------------------------------
+
+/// Per-agent argv prefix that runs the CLI **once, non-interactively**, on a
+/// message passed as the final argument — Claude's `-p`, Codex's `exec`, and so
+/// on. This is what the scheduled warm-up (`agent_warmup`) runs: the point of a
+/// warm-up is to open the CLI's usage window, and its print/exec mode does that
+/// as surely as a keystroke in a tab would while needing no PTY, no tab, no
+/// project, and no window — it starts, answers once, and exits.
+///
+/// Only agents whose one-shot mode is documented are listed; one that is not
+/// here cannot be scheduled (`AgentInfo::warmup` says so and the panel greys
+/// the toggle). Guessing a flag would either open an interactive TUI on a
+/// null stdin that then sits there forever, or run nothing at all while the
+/// schedule looks armed — so an unknown recipe is a refusal, never a fallback.
+///
+/// The message goes **last** on purpose: a prefix ending in a value flag
+/// (`goose run -t`) reads it as that flag's value, and one ending in a mode
+/// (`opencode run`) reads it as the positional prompt. Keyed by the registry
+/// `id`, so `find_spec` is the only lookup.
+const WARMUPS: &[(&str, &[&str])] = &[
+    ("claude", &["-p"]),
+    ("codex", &["exec", "--skip-git-repo-check"]),
+    ("gemini", &["-p"]),
+    ("qwen", &["-p"]),
+    ("copilot", &["-p"]),
+    ("cursor-agent", &["-p"]),
+    ("grok", &["-p"]),
+    ("kimi", &["-p"]),
+    ("vibe", &["-p"]),
+    ("pi", &["-p"]),
+    ("amp", &["-x"]),
+    ("opencode", &["run"]),
+    ("goose", &["run", "-t"]),
+    ("crush", &["run"]),
+];
+
+/// How long a warm-up process may live before it is killed. A print-mode run
+/// answering "Test" takes seconds; the ceiling only exists so a CLI that hangs
+/// on a first-run prompt (a trust dialog, a login) does not leave a process
+/// behind per scheduled slot for as long as Eldrun runs.
+const WARMUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+/// Longest message a warm-up may send. The frontend sends a fixed four-letter
+/// word; the bound is here so this command can never be turned into "run an
+/// agent on arbitrary text" by anything holding the IPC.
+const WARMUP_MESSAGE_MAX: usize = 200;
+
+/// The one-shot argv prefix for `spec`, or `None` when its print mode is not
+/// known (see `WARMUPS`).
+fn warmup_args(spec: &AgentSpec) -> Option<&'static [&'static str]> {
+    WARMUPS
+        .iter()
+        .find(|(id, _)| *id == spec.id)
+        .map(|(_, args)| *args)
+}
+
+/// The full argv (without the binary) of one warm-up run: the recipe, then the
+/// message as its own final argument — never interpolated into a shell line.
+fn warmup_argv(spec: &AgentSpec, message: &str) -> Option<Vec<String>> {
+    let mut argv: Vec<String> = warmup_args(spec)?.iter().map(|s| s.to_string()).collect();
+    argv.push(message.to_string());
+    Some(argv)
+}
+
+/// Resolve an agent by registry `id` *or* binary name. The schedule is keyed by
+/// whatever the settings panel handed it (the id), while the + menu's tab
+/// specs speak in binaries (`agy`, `gpte`); accepting both means a schedule
+/// written by either surface finds its agent.
+fn find_spec_by_id_or_bin(agent: &str) -> Option<&'static AgentSpec> {
+    find_spec(agent).or_else(|| AGENTS.iter().find(|a| a.bin == agent))
+}
+
+/// The folder every warm-up runs in. A print-mode agent records its session
+/// under its working directory (Claude keys `~/.claude/projects/` by cwd), so
+/// the run gets a directory of its own under Eldrun's state dir rather than a
+/// project's: it must not show up in any project's resume list, and it must
+/// not be able to read anything a project holds. Nothing else lives here.
+fn warmup_dir() -> Result<std::path::PathBuf, String> {
+    let dir = crate::storage::state_dir().join("agent-cron");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+    Ok(dir)
+}
+
+/// What `agent_warmup` started, for the scheduler's log line.
+#[derive(serde::Serialize)]
+pub struct AgentWarmupLaunch {
+    pub pid: u32,
+    /// The command line as run, for display only (args are passed as argv).
+    pub command: String,
+    pub cwd: String,
+}
+
+/// Send one warm-up message to `agent` by running its CLI's print mode as a
+/// detached background process — no terminal, no tab, no window.
+///
+/// Refuses (rather than improvises) when the agent is unknown, has no known
+/// one-shot mode, or is not installed, so the scheduler can say which. The
+/// process is reaped by a thread of its own: `std::process::Child` left
+/// unwaited is a zombie on Unix, and the same thread enforces
+/// `WARMUP_TIMEOUT`.
+#[tauri::command]
+pub async fn agent_warmup(agent: String, message: String) -> Result<AgentWarmupLaunch, String> {
+    let message = message.trim().to_string();
+    if message.is_empty() || message.len() > WARMUP_MESSAGE_MAX || message.contains(['\n', '\r']) {
+        return Err("warm-up message must be one short line".into());
+    }
+    let spec = find_spec_by_id_or_bin(&agent).ok_or_else(|| format!("unknown agent: {agent}"))?;
+    let argv = warmup_argv(spec, &message)
+        .ok_or_else(|| format!("{} has no known non-interactive mode", spec.label))?;
+    let path = resolve_spec_path(spec).ok_or_else(|| format!("{} is not installed", spec.label))?;
+    let cwd = warmup_dir()?;
+
+    let mut cmd = crate::paths::command_no_window(&path);
+    cmd.args(&argv)
+        .current_dir(&cwd)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    #[cfg(unix)]
+    {
+        // Its own process group: a signal aimed at Eldrun's terminal group (a
+        // Ctrl+C in the launcher shell) must not take a half-sent warm-up with
+        // it, and a warm-up must never be what a Ctrl+C reaches first.
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("cannot start {}: {e}", path.display()))?;
+    let pid = child.id();
+    let label = spec.label;
+    std::thread::spawn(move || {
+        let started = std::time::Instant::now();
+        loop {
+            match child.try_wait() {
+                Ok(Some(_)) | Err(_) => break,
+                Ok(None) if started.elapsed() > WARMUP_TIMEOUT => {
+                    eprintln!("agent warm-up: {label} (pid {pid}) still running after {WARMUP_TIMEOUT:?}, killing");
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    break;
+                }
+                Ok(None) => std::thread::sleep(std::time::Duration::from_secs(1)),
+            }
+        }
+    });
+
+    Ok(AgentWarmupLaunch {
+        pid,
+        command: std::iter::once(path.display().to_string())
+            .chain(argv)
+            .collect::<Vec<_>>()
+            .join(" "),
+        cwd: cwd.display().to_string(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_warmup_recipe_names_a_registry_agent_and_puts_the_message_last() {
+        for (id, args) in WARMUPS {
+            let spec = find_spec(id).unwrap_or_else(|| panic!("warm-up recipe for unknown agent {id}"));
+            let argv = warmup_argv(spec, "Test").expect("recipe resolves");
+            assert_eq!(argv.len(), args.len() + 1, "{id}");
+            assert_eq!(argv.last().map(String::as_str), Some("Test"), "{id}");
+            assert_eq!(&argv[..args.len()], *args, "{id}");
+            assert!(args.iter().all(|a| !a.is_empty()), "{id}: empty arg");
+        }
+    }
+
+    #[test]
+    fn warmup_is_refused_for_agents_without_a_known_print_mode() {
+        let aider = find_spec("aider").expect("aider in registry");
+        assert!(warmup_args(aider).is_none());
+        assert!(warmup_argv(aider, "Test").is_none());
+        let claude = find_spec("claude").expect("claude in registry");
+        assert_eq!(
+            warmup_argv(claude, "Test").unwrap(),
+            vec!["-p".to_string(), "Test".to_string()]
+        );
+        assert_eq!(
+            warmup_argv(find_spec("codex").unwrap(), "Test").unwrap(),
+            vec!["exec", "--skip-git-repo-check", "Test"]
+        );
+    }
+
+    #[test]
+    fn warmup_resolves_an_agent_by_id_or_by_binary() {
+        assert_eq!(find_spec_by_id_or_bin("antigravity").map(|s| s.id), Some("antigravity"));
+        assert_eq!(find_spec_by_id_or_bin("agy").map(|s| s.id), Some("antigravity"));
+        assert_eq!(find_spec_by_id_or_bin("claude").map(|s| s.id), Some("claude"));
+        assert!(find_spec_by_id_or_bin("not-an-agent").is_none());
+    }
 
     #[test]
     fn windows_shell_flags_powershell_only_commands() {

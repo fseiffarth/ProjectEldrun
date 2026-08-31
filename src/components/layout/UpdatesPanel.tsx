@@ -154,6 +154,7 @@ export function UpdatesPanel({
         onBack={onBack}
         onClose={onClose}
       />
+      <div className="dialog-scroll">
       <p className="settings-help">{t("updates.help")}</p>
 
       <SettingRow
@@ -266,6 +267,7 @@ export function UpdatesPanel({
             {t("updates.openReleasePage")}
           </button>
         )}
+      </div>
       </div>
     </>
   );

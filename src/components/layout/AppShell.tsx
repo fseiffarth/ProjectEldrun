@@ -31,6 +31,8 @@ import { LogoIcon } from "./LogoIcon";
 import { MobileBridgeHost } from "../mobile/MobileBridgeHost";
 import { VpnPasswordPrompt } from "./VpnPasswordPrompt";
 import { AlarmPopup } from "../calendar/AlarmPopup";
+import { SteeringLegend } from "./SteeringLegend";
+import { ShortcutHelpOverlay } from "./ShortcutHelpOverlay";
 import { RemoteConnectDialog } from "../projects/RemoteConnectDialog";
 import { RemoteMachinesDialogHost } from "../projects/RemoteMachinesWindow";
 import { GlobalMachineMonitorDialogHost } from "../monitoring/GlobalMachineMonitorDialog";
@@ -41,9 +43,11 @@ import { BrowserDownloadHost } from "../browser/BrowserDownloadHost";
 import { MailOverlayHost } from "../mail/MailOverlay";
 import { CalendarOverlayHost } from "../calendar/CalendarOverlay";
 import { CalDavSyncHost } from "../calendar/CalDavSyncHost";
+import { AgentCronHost } from "./AgentCronHost";
 import { CalDavConflictDialog } from "../calendar/CalDavConflictDialog";
 import { TodoOverlayHost } from "../todo/TodoOverlay";
 import { SkillsOverlayHost } from "../skills/SkillsOverlay";
+import { InstallOverlayHost } from "./InstallOverlay";
 import { LocalLossDialog } from "../common/LocalLossDialog";
 import { HostKeyConfirmDialog } from "../common/HostKeyConfirmDialog";
 import { HpcGuardDialog } from "../common/HpcGuardDialog";
@@ -71,6 +75,7 @@ import { autoConnectVpnOnLaunch } from "../../lib/vpnAutoConnect";
 import { initRemoteAutoReconnect } from "../../lib/remoteAutoReconnect";
 import { initExperimentalSweep } from "../../lib/experimentalSweep";
 import { initMachineSync } from "../../lib/machineSync";
+import { installWindowsEvents } from "../../stores/windows";
 import { listenEditorJump } from "../../stores/editorJump";
 import { listenSourceJump } from "../embed/FileViewerPane";
 import { BOX_SCOPE_PREFIX, useBoxesStore } from "../../stores/boxes";
@@ -431,6 +436,8 @@ export function AppShell() {
   useEffect(() => {
     initRemoteAutoReconnect();
     initMachineSync();
+    // App-registry changes (a launched app exiting) → scoped Apps-view refresh.
+    installWindowsEvents();
   }, []);
 
   // Withdraw the tabs (and live browser windows) of any experiment that is
@@ -912,7 +919,9 @@ export function AppShell() {
             border swallows them. That left no way to open the panel at all, and so
             no way to reach the pin that lives inside it. A click is delivered even
             where the mousemove stream isn't, so this is the reliable path; it
-            unmounts the moment the panel is open (revealPanel). */}
+            unmounts the moment the panel is open (revealPanel). It doubles as
+            the *edge marker*: unpinned, the panel is invisible, so this labelled
+            tab is the only thing saying which side it will slide in from. */}
         {panelTarget && !panelsHidden && !revealPanel && (
           <button
             type="button"
@@ -922,7 +931,10 @@ export function AppShell() {
             onClick={() => reveal(panelCloseTimer, setPanelOpen)}
             onMouseEnter={() => reveal(panelCloseTimer, setPanelOpen)}
           >
-            <span aria-hidden="true">{panelSide === "left" ? "›" : "‹"}</span>
+            <span className="srh-chevron" aria-hidden="true">
+              {panelSide === "left" ? "›" : "‹"}
+            </span>
+            <span className="srh-label" aria-hidden="true">{t("appShell.filesEdgeLabel")}</span>
           </button>
         )}
       </div>
@@ -984,6 +996,14 @@ export function AppShell() {
           calendar pane, so refreshing only while that pane is open would leave
           the calendar stale exactly where it is looked at. */}
       <CalDavSyncHost />
+      {/* The agent warm-up cron (Manage CLIs → Scheduled warm-up). Renders
+          nothing and starts no timer until an agent is scheduled — at the shell
+          for `CalDavSyncHost`'s reason turned around: the panel that configures
+          it is precisely the surface nobody has open at 06:00, so a timer living
+          there would only ever fire while its own settings page was being read.
+          Main window only, so two windows cannot both send the morning's
+          message. */}
+      <AgentCronHost />
       {/* The push half's one question (Phase 3): a `412` means the resource
           changed elsewhere, which is the user's decision and not the app's. Here
           rather than in the calendar pane because the conflicting edit can come
@@ -1000,6 +1020,18 @@ export function AppShell() {
           the window and must survive a project switch), and after the three
           above because it is opened from a header menu that sits over them. */}
       <SkillsOverlayHost />
+      {/* One-click installs' terminal (`runInstallInTab`): a centered attach-only
+          view of the root-scope install tab, so the install is watched — and its
+          prompts answered — where it was clicked. After the overlay family and
+          the settings surfaces in DOM order so it lands on top of the dialog the
+          install was started from; closing it leaves the install running in the
+          root terminal. */}
+      <InstallOverlayHost />
+      {/* The shortcut cheat sheet (F1, `?` in steering mode, or the ⚙ menu) —
+          after the overlay family above so the sheet, openable from the
+          keyboard while any of them is up, lands on top (same z-index, DOM
+          order is the tie-break). */}
+      <ShortcutHelpOverlay />
       {/* Fires once per connect (manual or silent auto-connect): warns that the
           host's load/memory/logged-in sessions suggest it's already in use. */}
       <RemoteUsageWarningDialog />
@@ -1007,6 +1039,9 @@ export function AppShell() {
           must reach the user whatever tab they are on — and even if they have
           never opened a calendar tab this session. */}
       <AlarmPopup />
+      {/* Keyboard steering mode's bottom legend — display-only echo of the
+          swallowed keys, mounted at the shell like the other overlays. */}
+      <SteeringLegend />
       <QuickOpen />
       <HintHost />
       <TourHost />

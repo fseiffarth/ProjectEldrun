@@ -440,7 +440,7 @@ export interface ViewerState {
   // rather than a stale one baked into the file.
   deckRailWidth?: number;
   // --- TeX workspace (`viewer:"texworkspace"`) --------------------------------
-  // These four ride the single workspace tab whose `embedPath` is the resolved
+  // These ride the single workspace tab whose `embedPath` is the resolved
   // build root, so its layout survives a reopen/restart like every other viewer's
   // reader state. Each follows the "stale id is inert, re-derived from content"
   // convention (yamlCollapsed/gridFocus): a value that no longer resolves against
@@ -455,6 +455,13 @@ export interface ViewerState {
   // The left structure sidebar's width in px. Absent uses the default; only
   // written on an explicit resize.
   texSidebarWidth?: number;
+  // Whether the left structure sidebar is folded away to its rail. Absent means
+  // SHOWN — the sidebar is what makes the tab a workspace rather than an editor,
+  // so only the reader who put it away stores anything. Per tab like the width
+  // beside it: a two-file note and a forty-file thesis want different amounts of
+  // that column, and the rail (never a bare edge) is what keeps the fold
+  // reversible from where it happened.
+  texSidebarHidden?: boolean;
 }
 
 // Detached windows render their tabs from a Tauri-event SEED into local React
@@ -590,8 +597,13 @@ export interface TabEntry {
   // grant itself is a file in the state dir; this is only the index into it, which
   // is why a planted value buys nothing.
   hostBoundUid?: string;
-  // Keyed hash of a mobile create request. It contains no client token and lets
-  // a timed-out retry resolve to this exact saved tab instead of duplicating it.
+  // Idempotency key of the request that created this tab, for the callers that
+  // create one without a click behind them: a Mobile create (a keyed hash — it
+  // contains no client token) whose timed-out retry must resolve to this exact
+  // saved tab instead of duplicating it, and the agent warm-up cron, whose slot
+  // id (`lib/agentCron`'s `agentCronKey`) does the same job for two ticks racing
+  // inside the grace window. Named for its first caller; read only by
+  // `hydrateThenCreateInScope`, which is what both go through.
   mobileRequestHash?: string;
 }
 
