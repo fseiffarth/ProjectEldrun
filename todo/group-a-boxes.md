@@ -166,5 +166,11 @@
       projects and confirm the ordinary create/import/deactivate controls)
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work
+    > **Phase 8 — agent-fence integration (2026-08-31, implemented; live QA
+    > pending):** box-scoped and member-scoped local agents receive the box's
+    > read-write root union under the default-on bubblewrap fence, plus native
+    > Claude/Codex/Gemini working-root flags. See Group S #204 for the complete
+    > boundary and QA matrix. A member's container/VM remains a separate,
+    > stronger axis and does not become a box-level container/VM.
 
 ---

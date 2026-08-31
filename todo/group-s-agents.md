@@ -410,3 +410,55 @@ unchanged; the new agents are additive.
       the caution turns out not to be enough.
 
 ---
+
+203. **Manage CLIs is two lists, not one.** ✅ **Shipped** (2026-08-31). The
+    panel rendered every CLI in the registry as a full install card, sorted
+    installed-first, so the handful of entries anyone manages (enable, remove,
+    reinstall, schedule) sat above a dozen cards nobody had asked for and the
+    list only gets longer as agents are added. It is now two `SettingsSection`s
+    over one card renderer — **Installed**, always listed, and **Available to
+    install**, which shows *nothing* until a query is typed into its search box
+    (matched on the label, the id and the binary name, since a CLI is looked for
+    by whichever of the three the user happens to know). The empty states are
+    stated rather than blank: a count + "type a name" with no query, a named
+    miss for one that matches nothing, and "everything is installed" when the
+    catalog is exhausted.
+    - [ ] 🖐️ Manual test — both sections render, the search finds a CLI by
+      label/id/bin, an install from a search result moves the card to
+      **Installed** on the next refresh, and the three empty states read
+      correctly in all five languages.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+204. **Agent fence — confine local agents to their project or box.** ✅
+    **Implemented 2026-08-31; automated coverage added; live QA pending.**
+    Default-on Linux `bubblewrap` boundary for agent/local-agent tabs, with a
+    global toggle + read-only toolchain allowlist and per-project
+    inherit/off/on override. The backend owns the decision, fails closed when
+    bubblewrap cannot actually create a namespace, and computes project roots
+    plus the union of every box membership. Container agents keep their
+    container boundary; remote-host/macOS/Windows cases are named as not
+    enforced. Filesystem only (network shared). See
+    `docs/context/agent_authority.md` and `services/agent_fence.rs`.
+    - [x] 🤖 Automated test — bwrap argv ordering/binds, decision matrix,
+      override precedence, plain/multi-box/box-scope roots, agent-native
+      add-dir flags + idempotence, multi-root transcript rw classification,
+      frontend pill states/status reasons and settings-path round-trip.
+    - [ ] 🖐️ Manual test after a deliberate backend restart:
+      - [ ] Fenced Claude starts at all (fixed 2026-08-31: the fence now binds
+        the binary's symlink-chain dirs, e.g. `~/.local/share/claude/versions`,
+        instead of dying with `bwrap: execvp claude: No such file or directory`).
+      - [ ] Plain local Claude: `~/.ssh` and another project are absent; edits
+        inside its project work; `/rename`/SessionStart resume survives respawn.
+      - [ ] Repeat the boundary/edit check in Codex and Gemini.
+      - [ ] Member A's agent can list/edit member B and the box folder; a
+        box-scoped agent can do the same; native add-dir flags are present.
+      - [ ] Pill cycles default → off → on; off lets a newly respawned agent see
+        the ordinary home while existing tabs remain unchanged.
+      - [ ] Remote project says “not enforced: remote host” and still spawns.
+      - [ ] Container project skips the fence and keeps the container boundary.
+      - [ ] Missing bubblewrap gives the readable fail-closed error and the
+        install row; after install/recheck the row disappears.
+      - [ ] A shell tab in the same project remains unfenced.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work

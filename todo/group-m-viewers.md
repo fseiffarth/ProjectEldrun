@@ -1199,3 +1199,41 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     add-at-line button, and fs-watch-driven live badge refresh for later. The
     current surfaces refresh on project/view demand to avoid background SFTP
     polling.
+221. **TeX workspace: fold the Structure sidebar, and a Back step.** ✅ Done
+    2026-08-31, code-complete and **live-unverified**. Two controls, both in the
+    workspace's only chrome (its sidebar header), because the center is whatever
+    viewer is showing and has none to spare.
+    - **Fold** — `‹` in the header puts the sidebar away and leaves a 26 px rail
+      carrying `›` to bring it back. Never a bare pane edge: a sidebar
+      recoverable only from a settings panel is a one-way door, and this tab has
+      nowhere else to put the control. Persisted per tab as
+      `ViewerState.texSidebarHidden` beside `texSidebarWidth` (absent = shown, so
+      only the reader who folded it stores anything) — frontend-only, **no
+      backend restart**, since `viewerState` already round-trips through the
+      layout save. Also on the no-structure placeholder header, or a document
+      whose gather failed could not be folded at all.
+    - **Back** — `←`, beside the fold on both surfaces (one `TexBackButton`, so
+      the two cannot describe the same step differently). Every path that
+      replaces the center now goes through one `goTo`: a sidebar click, an
+      in-document `\ref`/link follow, a SyncTeX reverse jump — so the stack
+      cannot miss a navigation. Session state, bounded at 50 and **not
+      persisted** (a stack restored from disk would offer to go "back" to a file
+      this sitting never left); cleared when the tab's Local/Remote switch
+      re-roots every path. Shown **disabled**, never hidden, when the stack is
+      empty — it is the tab's only navigation control, and one that appears the
+      moment a file is opened is one nobody finds before they need it. No
+      keyboard binding: `Alt+←` is the PDF viewer's own back step, and a PDF
+      opened in the workspace centre would be answering for both.
+    - i18n: `texWorkspace.hideStructure` / `showStructure` / `back` /
+      `backEmpty`, 4 strings × 5 languages.
+    - [x] 🤖 Automated test (`src/__tests__/TexWorkspace.test.tsx` (h) fold →
+      rail → back, persisted; (i) sidebar click then ← returns the centre and
+      the button goes inert again)
+    - [ ] 🖐️ Manual test — open a multi-file `.tex` as a workspace: fold the
+      sidebar (tree gone, rail with two buttons remains), reopen the tab and
+      confirm it is still folded, unfold from the rail. Then click a child
+      `.tex`, a graphic and a `\ref` in turn and walk back through them with ←;
+      check the button's tooltip names the file it would return to, that it is
+      inert on the main document, and that a resize still works after unfolding.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work

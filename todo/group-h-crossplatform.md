@@ -533,6 +533,35 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     - [ ] ✅ Works
     - [ ] ❌ Doesn't work
 
+- [~] **31n — Mobile Focus: + attaches from the phone; sheets freeze the view**
+  (2026-08-31; ✅ Code-complete, ⚠️ needs live QA on a phone — and a rebuild +
+  restart first, since the phone serves the bundle baked into the binary).
+  - **+ → "From this phone"** opens the phone's own picker (camera / photo
+    library / files, multiple). Each file is `POST`ed raw to
+    `/api/v1/tabs/{id}/inbox` (own 24 MiB body limit) and lands in the tab's
+    project under `.eldrun/inbox/<UTC stamp>-<safe name>` — a folder the
+    desktop already git-ignores, hides from the tree and skips in sync — and
+    the phone writes `@.eldrun/inbox/<file>` into the draft as each one lands.
+    The reference is *project-relative* on purpose: no host path crosses the
+    browser API, and it is what the agent needs from its own cwd. "A project
+    file (@)" is the old + behaviour. A pending/failed row sits above the
+    composer (oversized files never leave the phone; failures name the reason).
+    The write is defensive (`inbox.rs`): sanitized + stamped name,
+    `create_new`, inbox must canonicalize below the project root.
+  - **Frozen reading view**: while the model or mode sheet is up, the Focus
+    pane keeps the frame it held when the sheet opened; the `/model` picker
+    and the Shift+Tab status redraws are still *read* from the live screen
+    (the sheet lists the picker, the walk confirms against it) but not painted
+    behind it. Closing the sheet resumes the live view.
+  - [ ] 🖐️ Manual test — on the phone: + → From this phone → pick a photo →
+    "Sending…" row appears, then `@.eldrun/inbox/….jpg ` lands in the draft and
+    the file is in `<project>/.eldrun/inbox/` on the desktop; send the message
+    and Claude reads the image; pick a >24 MB video → refused without upload;
+    + → A project file inserts a bare `@`. Open the Model sheet → the picker
+    text does not appear behind the sheet; close it → the view resumes
+    - [ ] ✅ Works
+    - [ ] ❌ Doesn't work
+
 - [~] **31k — Mobile fingerprint unlock is the default** (2026-08-28;
   ✅ Code-complete, ⚠️ needs live QA on a phone).
   The local lock used to demand PIN *then* biometric; now the enrolled
@@ -563,6 +592,34 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     button on iOS), a fingerprint alone unlocks, cancelling it leaves the PIN
     path working, a fresh setup on a biometric-capable phone states
     PIN-as-fallback
+    - [ ] ✅ Works
+    - [ ] ❌ Doesn't work
+
+- [~] **31m — Mobile to-do board: sticky filters, FAB, hide archived**
+  (2026-08-30; ✅ Code-complete, ⚠️ needs live QA on a phone).
+  Four changes to `mobile-web/src/screens/Todo.tsx`. **"Hide done" is
+  remembered** (`mobile-web/src/prefs.ts`, `localStorage` under
+  `eldrun.mobile.*`) — the screen is remounted by every tab switch, so the
+  toggle was being re-ticked a dozen times a session; the search and the two
+  pickers stay transient on purpose, since a filter that outlives the visit
+  hides cards nobody chose to hide. **"Hide archived" is new and defaults
+  on**: it hides cards resting in a column flagged `archived`, which "hide
+  done" cannot reach (an *abandoned* archived card has `percent < 100`). That
+  flag had to be added to the bridge — `protocol::TodoColumn.archived`
+  (`#[serde(default)]`; the struct is `deny_unknown_fields`, so the desktop
+  could not have sent it otherwise) and `MobileBridgeHost`'s snapshot — and is
+  read off the flag, never the column's name, so a rename cannot change what
+  the filter hides. **Add card is a FAB** floating above the tab bar (z-index
+  between the bar and the editor backdrop); + Column stays as a small button
+  at the top. **The search moved directly under the header** and the "synced
+  through the desktop" notice to the foot of the screen. Tested in
+  `src/__tests__/MobileTodoBoard.test.ts`.
+  - [ ] 🖐️ Manual test — on the phone: tick "Hide done", leave the board and
+    come back (still ticked); the board opens with archived cards hidden and
+    the archive column still showing its count; unticking "Hide archived"
+    reveals them and is remembered; the ＋ button adds a card and never sits
+    under the tab bar or over the editor; the last column is fully scrollable
+    past the button
     - [ ] ✅ Works
     - [ ] ❌ Doesn't work
 

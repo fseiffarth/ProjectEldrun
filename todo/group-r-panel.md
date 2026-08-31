@@ -17,7 +17,17 @@
     the app/window is closed. Fix the add/remove lifecycle so the list reflects
     live windows. Doubles as a window-tracking test surface: on hover, show the
     entry's window id, monitor id, and z-order.
-    - [ ] 🤖 Automated test
+    Implemented 2026-08-30, **never live-tested**: every launch keeps its `Child`
+    and a wait-thread reconciles the registry on exit (hand-offs to an existing
+    instance keep a pid-0 delist-only row when their window survives), emitting
+    `app-windows-changed` → scoped store refresh; `get_opened_windows` prunes
+    dead-pid rows as a backstop; × now **closes** the app via
+    `close_tracked_window` (subtree SIGTERM→KILL, untrack fallback for pid-0
+    rows); the list is per-scope (merge-refresh store + per-render filter, root/
+    box scopes included) and the Apps-view origin set grew `restored`/
+    `downloads`/`blob_file_viewer`, kept in step with parking. The hover
+    window-id/monitor/z-order debug surface is NOT built.
+    - [x] 🤖 Automated test
     - [ ] 🖐️ Manual test
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work
@@ -71,6 +81,24 @@
     Pure selectors in `src/lib/alerts.ts` (clock passed in, so the boundary cases
     are testable), the reads in `useAlertsFeed`, the chrome in `AlertsSection`.
     Implemented 2026-07-29, **never live-tested**.
+    - [x] 🤖 Automated test
+    - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+68. **Merge the two project searches into the tree's search box.** The toolbar
+    "Search" view (`SearchPanel`) duplicated the in-tree search
+    (`FileTreeSearch`) with strictly less capability — content-only, no scope,
+    no reveal, every hit opened as raw text, and on a remote project it silently
+    searched the local mirror. Deleted the view (main toolbar + box member-root
+    mini toolbar), extracted the shared pure pieces into
+    `src/lib/projectSearch.ts` (`SearchMatch`, `matchParts`, `rankNameMatches`),
+    and a remote-source tree now shows a "switch the source to Local to search"
+    hint in the box's place instead of nothing. Implemented 2026-08-31.
+    Follow-ups, deliberately out of scope: `QuickOpen` (Ctrl+P) is a third
+    name-search implementation (true fuzzy, `lib/fuzzy.ts`) that could share
+    `list_project_paths` plumbing; a host-side `project_search` over SSH would
+    let the Remote source search for real.
     - [x] 🤖 Automated test
     - [ ] 🖐️ Manual test
       - [ ] ✅ Works

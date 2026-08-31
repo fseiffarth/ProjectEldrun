@@ -45,6 +45,12 @@ change was not run live.
   the launcher and the `pretauri:dev` hook). It also refuses when port 1420 is
   held by an orphaned vite — a second `tauri dev` would otherwise attach to the
   *first* session's dev server and silently render its stale module graph.
+- Dogfooding: `./start-eldrun-dev-sandbox.sh` runs the same dev server with
+  `ELDRUN_STATE_DIR`/`ELDRUN_HOME` redirected under
+  `~/.local/share/eldrun-dev/`, so a disposable dev window coexists with a
+  packaged daily-driver Eldrun (`npm run package`) without sharing any state —
+  sessions live in the packaged build, out of HMR's reach. Still one dev
+  session at a time (port 1420), and still launched by the user only.
 
 ## Docs
 
@@ -77,7 +83,8 @@ area you're touching; never read speculatively.
 
 Longer-lived plans and matrices live in `docs/` — e.g.
 `multi_host_remote_plan.md`, `git_lockstep_case_matrix.md`,
-`eldrun_mobile_agent_plan.md`. Project docs:
+`eldrun_mobile_agent_plan.md`. `docs/competitive_landscape.md` holds the
+positioning-vs-positioning read on overlapping tools. Project docs:
 `README.md`, `DOCUMENTATION.md`, `ROADMAP.md`, `STATUS.md`, and `TODO.md` —
 whose per-group files live in `todo/`.
 
@@ -278,6 +285,9 @@ loopback port, and from there is an ordinary `RemoteSpec` with `vm: true`.
 
 ## Backend notes
 
+- `services::agent_fence` owns the default-on Linux bubblewrap fence for local
+  agents; writable roots derive from `box_allowed_roots`, and missing/unusable
+  bubblewrap fails closed rather than silently launching on the host.
 - Remote GPU snapshots are parsed through the same local `gpustat` parsers so
   host readings match local ones field-for-field.
 - `services::openvpn` tracks both headless tunnels and interactive terminal
