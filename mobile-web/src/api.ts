@@ -3,7 +3,7 @@ export type AgentStatus = "working" | "question" | "done";
 export interface TabRow { id: string; label: string; kind: "shell" | "agent"; agent_label?: string; agent_status?: AgentStatus; available: boolean; viewer_busy: boolean; last_activity?: number }
 export interface AgentRow { id: string; label: string; modes: ("plan" | "auto")[] }
 export interface ProjectDetail { project: ProjectRow; tabs: TabRow[]; desktop_available: boolean; agents: AgentRow[] }
-export interface TodoColumn { id: string; name: string; position: number; done: boolean; color?: string }
+export interface TodoColumn { id: string; name: string; position: number; done: boolean; archived: boolean; color?: string }
 export interface TodoSubtask { id: string; title: string; done: boolean }
 export interface TodoTaskInput {
   title: string;
@@ -36,7 +36,10 @@ export interface TodoBoard {
 export function normalizeTodoBoard(board: TodoBoard): TodoBoard {
   return {
     ...board,
-    columns: board.columns ?? [],
+    // `archived` is the newest of these fields, so a desktop older than it sends
+    // a column without one; false is the honest reading — a board that has no
+    // archive column has nothing for "hide archived" to hide.
+    columns: (board.columns ?? []).map((column) => ({ ...column, archived: column.archived ?? false })),
     tasks: (board.tasks ?? []).map((task) => ({
       ...task,
       notes: task.notes ?? "",
@@ -186,4 +189,44 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   // which then read `undefined.map` and white-screened the whole app.
   if (body === undefined) throw new ApiError(response.status, "malformed_response");
   return body as T;
+}
+
+/** A file the phone dropped into the tab's project inbox. `reference` is
+ * project-relative (`.eldrun/inbox/<file>`) — the one path shape that crosses
+ * this boundary, because it carries no host component and is exactly what the
+ * agent needs after an `@`. */
+export interface InboxAttachment { name: string; reference: string; size: number }
+/** Mirrors the desktop's `inbox::MAX_INBOX_FILE`; checked here first so an
+ * oversized pick fails before any bytes leave the phone. */
+export const MAX_INBOX_FILE = 24 * 1024 * 1024;
+/** A photo over a cellular link is not a 10-second request. */
+const UPLOAD_TIMEOUT = 120_000;
+
+/** `POST /api/v1/tabs/{id}/inbox` — the raw file as the body, its name in the
+ * query (a header cannot carry a non-Latin-1 photo-library name). */
+export async function uploadToInbox(tabId: string, file: Blob, name: string): Promise<InboxAttachment> {
+  let response: Response;
+  try {
+    response = await fetch(`/api/v1/tabs/${encodeURIComponent(tabId)}/inbox?name=${encodeURIComponent(name)}`, {
+      method: "POST",
+      body: file,
+      credentials: "same-origin",
+      cache: "no-store",
+      signal: AbortSignal.timeout(UPLOAD_TIMEOUT),
+      headers: { "Content-Type": file.type || "application/octet-stream" },
+    });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") throw new ApiError(0, "timeout");
+    throw new ApiError(0, "offline");
+  }
+  let body: { error?: string; attachment?: InboxAttachment } | undefined;
+  try {
+    body = await response.json() as typeof body;
+  } catch {
+    body = undefined;
+  }
+  if (response.status === 401) onUnauthorized?.();
+  if (!response.ok) throw new ApiError(response.status, body?.error ?? "request_failed");
+  if (!body?.attachment?.reference) throw new ApiError(response.status, "malformed_response");
+  return body.attachment;
 }

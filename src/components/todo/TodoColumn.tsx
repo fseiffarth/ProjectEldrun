@@ -9,6 +9,8 @@ interface Props {
   columns: TaskColumn[];
   title: string;
   cards: CalendarTask[];
+  /** Matching cards, including any hidden by the board's "Hide done" toggle. */
+  cardCount: number;
   /**
    * Where the drop placeholder sits in this column, or null when not the target.
    *
@@ -51,6 +53,7 @@ export function TodoColumn({
   columns,
   title,
   cards,
+  cardCount,
   placeholderIndex,
   placeholderHeight,
   dropTarget,
@@ -74,7 +77,7 @@ export function TodoColumn({
     if (renaming) nameRef.current?.focus();
   }, [renaming]);
 
-  const overLimit = !!column.limit && column.limit > 0 && cards.length > column.limit;
+  const overLimit = !!column.limit && column.limit > 0 && cardCount > column.limit;
 
   /**
    * The cards actually rendered: the dragged one is **taken out**, not left in
@@ -163,11 +166,11 @@ export function TodoColumn({
           className={"todo-column-count" + (overLimit ? " todo-column-over" : "")}
           title={
             column.limit
-              ? t("todoBoard.wipLimit", { count: cards.length, limit: column.limit })
-              : t("todoBoard.cardCount", { count: cards.length })
+              ? t("todoBoard.wipLimit", { count: cardCount, limit: column.limit })
+              : t("todoBoard.cardCount", { count: cardCount })
           }
         >
-          {column.limit ? `${cards.length}/${column.limit}` : cards.length}
+          {column.limit ? `${cardCount}/${column.limit}` : cardCount}
         </span>
 
         <span className="todo-column-actions">
@@ -194,7 +197,7 @@ export function TodoColumn({
           <button
             type="button"
             className="todo-column-btn todo-column-btn-danger"
-            onClick={() => onDelete(column, cards.length)}
+            onClick={() => onDelete(column, cardCount)}
             title={t("todoBoard.deleteColumn")}
             aria-label={t("todoBoard.deleteColumn")}
           >

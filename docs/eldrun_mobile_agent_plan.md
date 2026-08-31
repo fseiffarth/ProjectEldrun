@@ -111,7 +111,11 @@ A native iOS/Android wrapper may follow, but it must reuse this API and protocol
 
 ### Explicitly out of scope
 
-- browsing, editing, uploading, downloading, or opening files;
+- browsing, editing, downloading, or opening files. The one file the phone
+  may *send* is the composer's **+ → From this phone** drop: bytes land in
+  the tab's project under `.eldrun/inbox/` (git-ignored, hidden from the
+  tree, skipped by sync) and the phone gets back only the project-relative
+  `.eldrun/inbox/<file>` reference to put after an `@` — never a host path;
 - muting calendar events, configuring CalDAV credentials, or editing a single
   occurrence of a recurring event;
 - viewer/embed/browser/external-app tab types;

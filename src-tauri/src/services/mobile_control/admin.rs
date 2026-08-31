@@ -275,6 +275,26 @@ pub async fn serve(
     Err("Eldrun Mobile host is not supported on this platform".into())
 }
 
+/// The sidecar's most common state — not running — reaching a caller as a
+/// sentence rather than an errno.
+///
+/// A stopped host leaves its socket *file* behind, so connecting to it fails
+/// with `ECONNREFUSED`; passing that through rendered the whole feature's
+/// ordinary down state in the Mobile menu as `Connection refused (os error
+/// 111)`, which names neither Eldrun Mobile nor anything the reader can act on.
+/// `NotFound` is the same state with the socket file already gone.
+pub const NOT_RUNNING_ERROR: &str = "The Eldrun Mobile host is not running";
+
+#[cfg(unix)]
+fn connect_error(error: std::io::Error) -> String {
+    match error.kind() {
+        std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound => {
+            NOT_RUNNING_ERROR.to_string()
+        }
+        _ => error.to_string(),
+    }
+}
+
 #[cfg(unix)]
 pub async fn admin_call(socket: &Path, request: &AdminRequest) -> Result<AdminResponse, String> {
     let mut stream = tokio::time::timeout(
@@ -283,7 +303,7 @@ pub async fn admin_call(socket: &Path, request: &AdminRequest) -> Result<AdminRe
     )
     .await
     .map_err(|_| "mobile host connection timed out")?
-    .map_err(|e| e.to_string())?;
+    .map_err(connect_error)?;
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
         write_frame(&mut stream, request).await?;
         read_frame(&mut stream).await

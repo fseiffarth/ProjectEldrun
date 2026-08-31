@@ -23,6 +23,8 @@ interface Props {
   columns: TaskColumn[];
   /** Already filtered and already carrying the optimistic overlay. */
   tasks: CalendarTask[];
+  /** The matching cards before the optional "Hide done" display filter. */
+  countTasks: CalendarTask[];
   defaultCalendarId: string;
   /** The project a new card inherits, or null. */
   inheritProjectId: string | null;
@@ -70,6 +72,7 @@ const DRAG_THRESHOLD = 5;
 export function TodoBoard({
   columns,
   tasks,
+  countTasks,
   defaultCalendarId,
   inheritProjectId,
   onEditCard,
@@ -87,6 +90,10 @@ export function TodoBoard({
   const buckets = useMemo(
     () => bucketByColumn(tasks, columns, today),
     [tasks, columns, today],
+  );
+  const countBuckets = useMemo(
+    () => bucketByColumn(countTasks, columns, today),
+    [countTasks, columns, today],
   );
 
   // ── Drag ────────────────────────────────────────────────────────────────
@@ -401,6 +408,7 @@ export function TodoBoard({
           columns={columns}
           title={columnTitle(column, t, storedColumns)}
           cards={buckets.get(column.id) ?? []}
+          cardCount={countBuckets.get(column.id)?.length ?? 0}
           placeholderIndex={
             cardDrag?.overColumn === column.id ? cardDrag.overIndex : null
           }

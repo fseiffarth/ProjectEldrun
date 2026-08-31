@@ -109,6 +109,16 @@ pub struct TodoColumn {
     pub name: String,
     pub position: i64,
     pub done: bool,
+    /// An archive column (`schema::calendar::TaskColumn::archived`): a resting
+    /// place a card is filed into and left in. The phone's board carries its own
+    /// "hide archived" switch, so it needs the flag rather than the column's
+    /// *name* — the label is renameable and a rename must not change what a
+    /// filter hides. `default` because the desktop bridge is the writer here and
+    /// a desktop older than this field simply never sends it; the struct denies
+    /// unknown fields, so a newer desktop's snapshot would be rejected wholesale
+    /// without it.
+    #[serde(default)]
+    pub archived: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
 }

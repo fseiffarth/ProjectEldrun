@@ -42,7 +42,7 @@ interface CreateRequest {
   mode?: string;
   idempotency_key: string;
 }
-interface TodoColumn { id: string; name: string; position: number; done: boolean; color?: string }
+interface TodoColumn { id: string; name: string; position: number; done: boolean; archived: boolean; color?: string }
 interface TodoSubtask { id: string; title: string; done: boolean }
 interface TodoTaskInput {
   title: string;
@@ -315,6 +315,9 @@ async function todoSnapshot(): Promise<TodoBoard> {
       name: column.name,
       position: column.position,
       done: column.done,
+      // The phone filters archived cards on the flag, not on the column's name:
+      // a rename must not change what its "hide archived" switch hides.
+      archived: column.archived ?? false,
       color: column.color || undefined,
     })),
     tasks: await Promise.all(calendar.tasks.map(async (task) => ({

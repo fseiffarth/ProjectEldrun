@@ -1,7 +1,7 @@
 :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; background:#0b0d13; color:#e7e9f2; }
 * { box-sizing:border-box; }
 body { margin:0; min-height:100dvh; background:radial-gradient(circle at 80% 0,#262143 0,transparent 42%),#11131a; }
-button,input,textarea { font:inherit; }
+button,input,textarea,select { font:inherit; }
 button { color:inherit; }
 .screen { max-width:720px; min-height:100dvh; margin:auto; padding:max(22px,env(safe-area-inset-top)) 18px max(24px,env(safe-area-inset-bottom)); }
 header,.brand,.card,.settings-row,.agent-create,.mobile-build,.card-trailing { display:flex; align-items:center; gap:12px; }
@@ -13,6 +13,12 @@ h1 { margin:0; font-size:1.35rem; }
 label { display:grid; gap:7px; color:#b7bac8; }
 input { width:100%; border:1px solid #3a3e50; border-radius:12px; padding:13px; background:#171a24; color:#fff; }
 input.code { font:700 1.7rem ui-monospace,monospace; letter-spacing:.3em; text-align:center; }
+/* Every dropdown in the PWA. The native arrow is drawn hard against the right
+   border and a mobile engine gives it no inset of its own, so it is replaced by
+   one we place: `appearance:none` plus a chevron background, with the padding
+   reserving the room it sits in. Long option text (project and calendar names)
+   ellipsizes instead of running under it. */
+select { width:100%; min-width:0; appearance:none; -webkit-appearance:none; border:1px solid #3a3e50; border-radius:10px; padding:10px 34px 10px 10px; background-color:#171a24; background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8' fill='none' stroke='%239aa0b4' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M1 1.6 6 6.4 11 1.6'/%3E%3C/svg%3E"); background-repeat:no-repeat; background-position:right 12px center; background-size:12px 8px; color:#fff; text-overflow:ellipsis; }
 button { border:1px solid #383c4d; background:#1b1e29; border-radius:11px; padding:11px 14px; }
 button:disabled { opacity:.45; }
 .primary { background:#6c5ce7; border-color:#8c7df4; font-weight:700; }
@@ -69,29 +75,74 @@ button.mobile-alert-row { cursor:pointer; }
 .mobile-alert-row time { color:#b7bac8; font-size:.78rem; white-space:nowrap; }
 .mobile-alerts-empty { margin:0; padding:16px; border:1px solid #383c4d; border-radius:11px; color:#9498aa; text-align:center; }
 .todo-create { display:grid; grid-template-columns:1fr 120px auto; gap:8px; margin:14px 0; }
-.todo-create select,.todo-mobile-card select,.todo-editor select { border:1px solid #3a3e50; border-radius:10px; padding:10px; background:#171a24; color:#fff; }
-.todo-mobile-top-actions { display:flex; gap:8px; margin:14px 0; }
-.todo-mobile-top-actions button { flex:1; }
-.todo-mobile-filters { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; margin:14px 0; }
-.todo-mobile-filters > input { grid-column:span 2; }
-.todo-mobile-filters select { min-width:0; border:1px solid #3a3e50; border-radius:10px; padding:10px; background:#171a24; color:#fff; }
-.todo-mobile-filters .todo-inline-check { grid-column:span 2; }
-.todo-columns { display:grid; gap:14px; }
-.todo-mobile-column { display:grid; gap:9px; padding:12px; background:rgba(28,31,43,.92); border:1px solid #383c4d; border-top:4px solid; border-radius:12px; }
-.todo-mobile-column h2 { margin:0; font-size:1rem; display:flex; justify-content:space-between; }
+/* Adding a column is a rare, structural act, and it now sits at the foot of the
+   column list where a new column would land — drawn as a ghost so it reads as
+   the end of the board rather than as a second main action beside the FAB. */
+.todo-add-column { width:100%; padding:14px; border-style:dashed; background:transparent; color:#9498aa; }
+/* Adding a card is the one thing this screen is opened to do, and the board it
+   scrolls is as long as the day's work — so the button rides above the content
+   instead of sitting at the top where it scrolls away. Anchored over the tab bar
+   (z-index 8) and under the editor backdrop (10), on the same 720px measure as
+   `.screen` so it keeps the board's right edge on a wide window. */
+.todo-fab { position:fixed; z-index:9; right:max(18px,calc((100vw - 720px) / 2 + 18px)); bottom:calc(86px + max(24px,env(safe-area-inset-bottom))); width:58px; height:58px; padding:0; border-radius:50%; font-size:1.9rem; line-height:1; box-shadow:0 10px 24px rgba(4,5,9,.55); }
+/* The last card must not end under the button the way it must not end under the
+   tab bar; this replaces `.tabbed > .screen`'s allowance rather than adding to
+   it, so the two never double up. */
+.tabbed > .todo-screen { padding-bottom:calc(150px + max(24px,env(safe-area-inset-bottom))); }
+/* The search sits on its own, directly under the header: it is the first thing
+   reached for on a board of forty cards, so it is not one cell of the filter
+   grid below it. */
+.todo-mobile-search { margin-top:14px; }
+/* Still there to explain an empty board, now at the foot of it: it says the same
+   sentence every visit, so it does not need the space above the search. */
+.todo-mobile-note { margin:22px 0 0; background:none; padding:0; color:#9498aa; font-size:.82rem; }
+.todo-mobile-filters { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; margin:10px 0 16px; }
+/* Two checks, one per column — the pair reads as one row of switches under the
+   two pickers rather than two full-width bands. They wear the pickers' own box
+   so the four controls read as one row of four rather than two plus two. */
+.todo-mobile-filters .todo-inline-check { min-width:0; padding:10px; border:1px solid #3a3e50; border-radius:10px; background:#171a24; color:#b7bac8; font-size:.87rem; }
+.todo-columns { display:grid; gap:16px; }
+.todo-mobile-column { display:grid; gap:10px; padding:13px; background:rgba(28,31,43,.92); border:1px solid #383c4d; border-top:4px solid; border-radius:14px; }
+.todo-mobile-column h2 { margin:0; font-size:1.05rem; display:flex; align-items:center; gap:8px; min-width:0; }
+.todo-column-count { padding:1px 9px; border-radius:999px; background:#2b3040; color:#c3c8db; font-size:.76rem; font-weight:700; }
 .todo-mobile-column-head { display:flex; justify-content:space-between; align-items:center; gap:8px; }
-.todo-mobile-column-head > div { display:flex; gap:4px; }
-.todo-mobile-column-head button { min-width:34px; padding:6px 8px; }
-.todo-mobile-card { display:grid; gap:8px; padding:11px; background:#151822; border-radius:9px; }
+.todo-mobile-column-head > div { display:flex; gap:2px; }
+/* The four column verbs are chrome, not content: muted and borderless, so the
+   column's own name is what the eye lands on when the board is scrolled. */
+.todo-mobile-column-head button { min-width:32px; padding:6px 7px; border-color:transparent; background:transparent; color:#8b90a3; }
+.todo-mobile-column-head button:active { background:#232838; }
+.todo-mobile-column-head button.danger { color:#c08b93; }
+.todo-column-empty { margin:0; padding:10px 2px; color:#767b8d; font-size:.85rem; }
+.todo-mobile-card { display:grid; gap:8px; padding:12px; background:#161a25; border:1px solid #272c3a; border-radius:11px; }
+.todo-mobile-card.done { opacity:.62; }
 .todo-mobile-card.done strong { text-decoration:line-through; color:#9498aa; }
 .todo-mobile-card-title { display:flex; align-items:flex-start; gap:9px; }
-.todo-mobile-card-title strong { padding-top:3px; overflow-wrap:anywhere; }
+.todo-mobile-card-title strong { padding-top:2px; font-size:.98rem; font-weight:650; line-height:1.35; overflow-wrap:anywhere; }
 .todo-check { width:24px; height:24px; flex:0 0 auto; padding:0; border-radius:7px; border-color:#776db4; background:#24203b; color:#fff; font-weight:800; }
-.todo-mobile-meta { display:flex; flex-wrap:wrap; gap:5px 8px; }
-.todo-mobile-tag { padding:2px 6px; border-radius:0; background:#2d2944; color:#d4ceff; }
-.todo-mobile-actions { display:flex; gap:8px; }
-.todo-mobile-actions button { padding:8px 11px; }
-.todo-mobile-actions select { flex:1; }
+/* Everything below the title hangs off the title's own left edge (checkbox +
+   gap), so a card reads as one block of text instead of three ragged ones. */
+.todo-mobile-notes,.todo-mobile-meta,.todo-mobile-progress { margin-left:33px; }
+.todo-mobile-notes { margin-top:-2px; color:#9aa0b2; font-size:.83rem; line-height:1.45; overflow-wrap:anywhere; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+.todo-mobile-meta { display:flex; flex-wrap:wrap; gap:6px; }
+/* One chip shape, four readings. The deadline carries the only colour that
+   means anything at a glance, so nothing else competes with it. */
+.todo-chip { padding:3px 9px; border:1px solid transparent; border-radius:999px; background:#232839; color:#b2b7c9; font-size:.76rem; line-height:1.4; white-space:nowrap; }
+.todo-chip.due.overdue { background:#3b2027; border-color:#65323d; color:#ffb4c0; }
+.todo-chip.due.today { background:#3a2f19; border-color:#66522a; color:#ffd79a; }
+.todo-chip.due.soon { background:#1d2a38; border-color:#2f4658; color:#bfe0ff; }
+.todo-chip.prio.high { color:#ffc2b4; }
+.todo-chip.prio.low { color:#8f95a8; }
+.todo-chip.steps { color:#a9d9bd; }
+.todo-chip.tag { background:#2d2944; color:#d4ceff; }
+.todo-mobile-progress { display:flex; align-items:center; gap:8px; }
+.todo-progress-track { flex:1; height:5px; border-radius:999px; background:#262b3a; overflow:hidden; }
+.todo-progress-fill { display:block; height:100%; border-radius:999px; }
+.todo-mobile-progress small { font-size:.74rem; font-variant-numeric:tabular-nums; }
+/* Divided off the card's content: the controls are how a card is worked, not
+   part of what it says. */
+.todo-mobile-actions { display:flex; align-items:center; gap:6px; padding-top:9px; border-top:1px solid #242938; }
+.todo-mobile-actions button { padding:7px 10px; font-size:.83rem; background:#1b1f2b; border-color:#2f3444; color:#b7bac8; }
+.todo-mobile-actions select { flex:1; padding:7px 30px 7px 9px; font-size:.83rem; background-position:right 9px center; }
 .todo-editor-backdrop { position:fixed; inset:0; z-index:10; display:grid; place-items:center; padding:18px; background:rgba(4,5,9,.76); }
 .todo-editor { width:min(100%,440px); display:grid; gap:14px; padding:18px; border:1px solid #524a78; border-radius:14px; background:#171a24; }
 .todo-editor-full { max-height:calc(100dvh - 36px); overflow:auto; overscroll-behavior:contain; }
@@ -109,7 +160,7 @@ button.mobile-alert-row { cursor:pointer; }
 .todo-editor-grid label { min-width:0; }
 .todo-editor-grid output { margin-left:5px; color:#d7d2ff; }
 .todo-tag-list { display:flex; flex-wrap:wrap; gap:6px; }
-.todo-tag-list button { padding:5px 8px; border-radius:0; background:#2d2944; color:#d4ceff; }
+.todo-tag-list button { padding:5px 10px; border-radius:999px; background:#2d2944; border-color:#3d3860; color:#d4ceff; }
 .todo-add-row { grid-template-columns:minmax(0,1fr) auto; }
 .todo-step-list { display:grid; gap:7px; }
 .todo-step-row { grid-template-columns:auto minmax(0,1fr) auto auto auto; align-items:center; }
@@ -300,3 +351,11 @@ button.mobile-alert-row { cursor:pointer; }
   .splash-mark,.splash-name,.splash-message,.splash-orbit,.splash-progress span { animation:none; }
 }
 @media (max-width:480px) { .terminal-title small { display:none; } .terminal-screen header { padding-inline:6px; } .terminal-view-switch button { padding-inline:7px; } }
+/* A phone file on its way into the project inbox (composer + → From this
+   phone), or one that did not arrive. Delivered ones leave the list: the `@`
+   reference in the draft is the record. */
+.inbox-upload { display:flex; align-items:center; gap:8px; margin:6px 7px 0; padding:8px 10px; border-radius:9px; background:#211d35; color:#dcd6ff; font-size:.78rem; }
+.inbox-upload.error { background:#3b2027; color:#ffb4c0; }
+.inbox-upload strong { flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:650; }
+.inbox-upload span { flex:1 1 auto; min-width:0; overflow-wrap:anywhere; }
+.inbox-upload button { flex:0 0 auto; padding:4px 9px; border:0; border-radius:7px; background:rgba(255,255,255,.09); color:inherit; font-size:.8rem; }

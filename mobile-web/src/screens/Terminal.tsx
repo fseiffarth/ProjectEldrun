@@ -2,7 +2,7 @@ import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "rea
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
-import { ApiError, api, type TabRow } from "../api";
+import { ApiError, api, MAX_INBOX_FILE, uploadToInbox, type TabRow } from "../api";
 import { TERMINAL_PROTOCOL } from "../terminal/protocol";
 import { readableRange, readableScreen, readableText, TRUNCATION_NOTICE, type ReadableLine } from "../terminal/readableScreen";
 import {
@@ -87,6 +87,26 @@ const CLOSE_REASONS: Record<string, string> = {
   session_busy: "Another viewer is holding this session.",
   session_gone: "This session has ended on the desktop.",
 };
+
+/** Why a phone file did not reach the project inbox, by the desktop's code. */
+const UPLOAD_FAILURES: Record<string, string> = {
+  file_too_large: "is larger than 24 MB.",
+  empty_file: "is empty.",
+  inbox_full: "did not fit — the project's inbox is full.",
+  project_unavailable: "could not be saved — the project folder is unavailable.",
+  tab_not_found: "could not be saved — this session's project is no longer shared.",
+  timeout: "took too long to send.",
+  offline: "did not reach the desktop — the connection dropped.",
+};
+
+/** A file on its way from the phone into the project inbox, or one that did
+ * not make it. A delivered one leaves the list: its `@` reference is in the
+ * draft, which is the record. */
+interface InboxUpload {
+  id: number;
+  name: string;
+  failure?: string;
+}
 
 /** One logical line of the session, with the colours the program actually
  * emitted. Style is never inferred from the text — see `readableScreen`. */
@@ -209,6 +229,21 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
    * before the session has drawn the picker it lists. */
   const [modelSheet, setModelSheet] = useState(false);
   const [modeSheet, setModeSheet] = useState(false);
+  /** The composer's **+**: a phone file into the project inbox, or an `@`. */
+  const [addSheet, setAddSheet] = useState(false);
+  const [uploads, setUploads] = useState<InboxUpload[]>([]);
+  const fileInput = useRef<HTMLInputElement>(null);
+  /** Bumped when the tab changes so a late upload result lands nowhere. */
+  const uploadRun = useRef(0);
+  const uploadSeq = useRef(0);
+  /** The reading view as it stood when a composer sheet opened. While the
+   * sheet is up the session repaints under it — the `/model` picker, a status
+   * line per Shift+Tab — and that churn is the sheet's *input*, not something
+   * to read: the sheet lists the picker and confirms the walk from the live
+   * `lines`; what is painted behind it stays still. */
+  const [frozenLines, setFrozenLines] = useState<ReadableLine[] | null>(null);
+  const linesRef = useRef<ReadableLine[]>([]);
+  linesRef.current = lines;
   /** The mode a Shift+Tab walk is currently trying to reach. */
   const [switching, setSwitching] = useState("");
   /** A mode the walk went a full cycle without reaching. */
@@ -237,6 +272,9 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     setSendFailed(false);
     setModelSheet(false);
     setModeSheet(false);
+    setAddSheet(false);
+    setUploads([]);
+    uploadRun.current += 1;
     setSwitching("");
     setSwitchFailed("");
     sawPicker.current = false;
@@ -763,11 +801,58 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     setSwitching("");
     setSwitchFailed(value);
   };
+  const sheetUp = modelSheet || modeSheet;
+  useLayoutEffect(() => {
+    setFrozenLines(sheetUp ? linesRef.current : null);
+  }, [sheetUp]);
   /** Adds an `@` for the agent's file mentions to the draft — context is
    * resolved by the agent from the submitted message, not by the phone. */
   const addContext = () => {
     setDraft((current) => `${current}${current && !current.endsWith(" ") ? " " : ""}@`);
     composerInput.current?.focus();
+  };
+  /** Appends one token to the draft with a space on each side as needed. */
+  const appendToDraft = (token: string) => {
+    setDraft((current) => `${current}${current && !current.endsWith(" ") ? " " : ""}${token} `);
+  };
+  /** Sends the picked files into the project inbox one by one and writes each
+   * one's `@` reference into the draft as it lands. The reference is the
+   * desktop's — the phone never composes a path. */
+  const attachFromPhone = (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    const run = uploadRun.current;
+    for (const file of Array.from(files)) {
+      const id = ++uploadSeq.current;
+      const name = file.name || "attachment";
+      if (file.size > MAX_INBOX_FILE) {
+        setUploads((current) => [...current, { id, name, failure: UPLOAD_FAILURES.file_too_large }]);
+        continue;
+      }
+      setUploads((current) => [...current, { id, name }]);
+      void uploadToInbox(tab.id, file, name).then(
+        (attachment) => {
+          if (uploadRun.current !== run) return;
+          setUploads((current) => current.filter((upload) => upload.id !== id));
+          appendToDraft(`@${attachment.reference}`);
+        },
+        (error: unknown) => {
+          if (uploadRun.current !== run) return;
+          const code = error instanceof ApiError ? error.code : "";
+          const failure = UPLOAD_FAILURES[code] ?? "could not be sent to the desktop.";
+          setUploads((current) => current.map((upload) => upload.id === id ? { ...upload, failure } : upload));
+        },
+      );
+    }
+    composerInput.current?.focus();
+  };
+  const dismissUpload = (id: number) => setUploads((current) => current.filter((upload) => upload.id !== id));
+  const pickAdd = (key: string) => {
+    setAddSheet(false);
+    if (key === "phone") {
+      fileInput.current?.click();
+    } else {
+      addContext();
+    }
   };
   const copyReadable = async () => {
     try {
@@ -889,6 +974,13 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     pending: choice.value === switching,
   }));
   const failedMode = modes.find((choice) => choice.value === switchFailed);
+  /** What the reading view paints: the live screen, or the frame it held when
+   * a composer sheet opened. */
+  const shown = frozenLines ?? lines;
+  const addOptions: SheetOption[] = [
+    { key: "phone", label: "From this phone", description: "A photo, screenshot or file — saved to the project's inbox and referenced in the message", current: false },
+    { key: "project", label: "A project file (@)", description: "Type a path after the @ for the agent to read", current: false },
+  ];
   return <main className={`terminal-screen ${tab.kind}-tab`} style={viewportHeight ? { height: viewportHeight } : undefined}><header><button className="back" onClick={back}>‹</button><div className="terminal-title"><h1>{tab.label}</h1><small>{tab.kind === "agent" ? "Agent session" : "Shell session"}</small></div><div className="terminal-view-switch" aria-label="Output view"><button className={view === "focus" ? "selected" : ""} aria-pressed={view === "focus"} onClick={() => setView("focus")}>Focus</button><button className={view === "terminal" ? "selected" : ""} aria-pressed={view === "terminal"} onClick={() => setView("terminal")}>Terminal</button></div><span className={connected ? "lamp" : "lamp off"} /></header>
     <div className="terminal-body">
       <div ref={host} className={`terminal${view === "focus" ? " focus-source" : ""}`} />
@@ -899,7 +991,7 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
             const stream = event.currentTarget;
             setAtBottom(stream.scrollHeight - stream.scrollTop - stream.clientHeight < 120);
           }}>
-          {lines.length === 0 && visibleChunks.length === 0 && earlier.open.length === 0
+          {shown.length === 0 && visibleChunks.length === 0 && earlier.open.length === 0
             ? <div className="readable-empty"><strong>Waiting for output</strong><span>The exact terminal is running behind this view.</span></div>
             : <div className="readable-lines">
                 {clipped && <div className="readable-notice">{TRUNCATION_NOTICE}</div>}
@@ -907,7 +999,7 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
                 {hiddenLines === 0 && earlier.dropped && <div className="readable-notice">{TRUNCATION_NOTICE}</div>}
                 {visibleChunks.map((chunk) => <HistoryLines key={chunk.id} lines={chunk.lines} />)}
                 {earlier.open.map((line) => <ReadableRow key={line.key} line={line} />)}
-                {lines.map((line) => <ReadableRow key={line.key} line={line} />)}
+                {shown.map((line) => <ReadableRow key={line.key} line={line} />)}
               </div>}
         </section>
         {lines.length > 0 && <div className="readable-tools">
@@ -921,6 +1013,9 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
       {stoppedReason && <div className="voice-feedback error" role="alert">{stoppedReason}</div>}
       {sendFailed && !stoppedReason && <div className="voice-feedback error" role="alert">That did not reach the desktop — the connection dropped. It will retry on its own.</div>}
       {lastSent && <div className="last-sent"><span>Sent</span><p>{lastSent}</p></div>}
+      {uploads.map((upload) => upload.failure
+        ? <div key={upload.id} className="inbox-upload error" role="alert"><strong>{upload.name}</strong><span>{upload.failure}</span><button onClick={() => dismissUpload(upload.id)} aria-label={`Dismiss ${upload.name}`}>✕</button></div>
+        : <div key={upload.id} className="inbox-upload" role="status"><strong>{upload.name}</strong><span>Sending to the project inbox…</span></div>)}
       {status && (status.path || status.branch || status.context) && <div className="session-facts" title={status.path}>
         {status.path && <span className="fact-path">{shortenPath(status.path)}</span>}
         {status.branch && <span className="fact-branch">⎇ {status.branch}</span>}
@@ -930,7 +1025,8 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
         <textarea ref={composerInput} value={draft} disabled={!connected} rows={1} aria-label={tab.kind === "agent" ? "Message agent" : "Shell command"} placeholder={connected ? (tab.kind === "agent" ? "Message the agent…" : "Type a command…") : "Reconnecting…"} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); submitDraft(); } }} />
         <div className="composer-bar">
           {tab.kind === "agent" && <>
-            <button className="composer-add" disabled={!connected} onClick={addContext} aria-label="Add a file reference" title="Add a file reference (@)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg></button>
+            <input ref={fileInput} type="file" multiple hidden aria-hidden="true" tabIndex={-1} data-testid="inbox-file-input" onChange={(event) => { attachFromPhone(event.target.files); event.target.value = ""; }} />
+            <button className="composer-add" disabled={!connected} onClick={() => setAddSheet(true)} aria-label="Add to the message" aria-haspopup="dialog" aria-expanded={addSheet} title="Add a photo or file from this phone, or a project file (@)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg></button>
             <button className="composer-chip" disabled={!connected} onClick={selectModel} aria-haspopup="dialog" aria-expanded={modelSheet} title="Choose the model (/model)">{status?.model ?? "Model"}</button>
             <button className="composer-chip" disabled={!connected} onClick={openModeSheet} aria-haspopup={modes.length > 0 ? "dialog" : undefined} aria-expanded={modes.length > 0 ? modeSheet : undefined} title={modes.length > 0 ? "Choose the permission mode" : "Switch mode (Shift+Tab)"}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2 4.5 13.5H11L10 22l8.5-11.5H12L13 2Z" /></svg>{status?.mode ?? activeMode ?? "Mode"}</button>
           </>}
@@ -950,6 +1046,14 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
       busy={false}
       onPick={chooseModel}
       onClose={closeModelSheet}
+    />}
+    {addSheet && <OptionSheet
+      title="Add to the message"
+      options={addOptions}
+      waiting=""
+      busy={false}
+      onPick={pickAdd}
+      onClose={() => setAddSheet(false)}
     />}
     {modeSheet && <OptionSheet
       title="Permission mode"
