@@ -279,7 +279,7 @@ export interface ProjectFilesViewProps {
   mountTree: boolean;
 
   /** Compact mode: strip the project-name/tags/source-switch/git-bar header row
-   *  and the Alerts group (with its 🔔) — the view-switcher toolbar (Files/Git/
+   *  and the Alerts group — the view-switcher toolbar (Files/Git/
    *  Search/Apps/±/sessions/jobs/import/etc.) and every view it switches to
    *  render identically to the full chrome. The sync + sort rows
    *  (`ProjectFilesPane`) are still stripped, so the tree's find-files search
@@ -1560,26 +1560,12 @@ export function ProjectFilesView({
             📥
           </button>
         )}
-        {/* Always offered, never gated on the setting it writes: the button IS
-            the way back, so hiding it whenever the group is off would leave the
-            × a one-way door out of a default-on feature, reopenable only from
-            the Project Settings dialog. A box's multi-root view is excluded for
-            the Downloads group's reason — it has no single project below. */}
-        {!activeBox && !compact && (
-          <button
-            className={`toolbar-btn${alertsEnabled ? " active" : ""}`}
-            style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: 2 }}
-            aria-pressed={alertsEnabled}
-            onClick={() => {
-              void updateSettings({ files_alerts: !alertsEnabled });
-              // The group lives in the files view; jump there when revealing it.
-              if (!alertsEnabled) setView("files");
-            }}
-            title={t("filesAlerts.toolbarTitle")}
-          >
-            🔔
-          </button>
-        )}
+        {/* The Alerts group's 🔔 used to sit here, between 📥 and ⚙. It is now the
+            header's (`header/AlertsToggle`), beside the ☑ board: `files_alerts`
+            is one machine-wide setting and the group draws the same rows in
+            every project, so a per-project toolbar rendered one switch once per
+            open file viewer and made a global thing look like this project's.
+            The group itself stays below the tree — only its switch moved. */}
         {projectId && (
           <button
             className="toolbar-btn"
@@ -2385,12 +2371,20 @@ export function ProjectFilesView({
           onCloseDownloads={() => setShowDownloads(false)}
           showAlerts={alertsHere}
           onCloseAlerts={() => void updateSettings({ files_alerts: false })}
+          // The host's frame footer belongs to the panel, not to the global
+          // Alerts group stacked under the tree, so in the files view the pane
+          // places it ABOVE that group. Every other view renders it at the
+          // bottom (below) — there is no section down there to be mistaken for.
+          frameFooter={footer}
           // Right-click → "Open in a new tab": the same file view, on that
           // folder, as a Files (Project) tab in this project's scope.
           onOpenFolderTab={onOpenFolderTab}
           // A closed panel keeps no tree mounted (and so no fs-watch).
           mountTree={mountTree}
           compact={compact}
+          searchOpen={searchOpen}
+          onSearchOpenChange={setSearchOpen}
+          refreshNonce={refreshNonce}
         />
       )}
       {view === "remarks" && projectId && (
@@ -2424,7 +2418,7 @@ export function ProjectFilesView({
           )}
         </div>
       )}
-      {footer}
+      {view !== "files" && footer}
       {showSettings && project && localFile && (
         <ProjectFilesSettingsDialog
           localFile={localFile}

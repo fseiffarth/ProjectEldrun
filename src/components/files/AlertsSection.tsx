@@ -17,7 +17,6 @@ import {
   type DueDelta,
 } from "../../lib/todoBoard";
 import { useT, type TranslationKey } from "../../lib/i18n";
-import { UntestedTag } from "../common/UntestedTag";
 
 /**
  * The side-panel **Alerts** group: urgent mail, the next appointments, and the
@@ -31,12 +30,14 @@ import { UntestedTag } from "../common/UntestedTag";
  * costs no window and no gesture, and a row is one click from the surface that
  * actually owns the thing.
  *
- * **Opt-in, and deliberately so.** The toolbar button that reveals this group is
- * only rendered when `files_alerts` is on (see `ProjectFilesView`), because the
- * feature reads three unrelated stores and puts deadlines in the corner of a
- * pane whose job is files. That is a strong opinion about how somebody works,
- * not a default: a file viewer that starts telling you about your mail is a
- * change to the app nobody asked for.
+ * **Switchable, and deliberately so.** The group is rendered only while
+ * `files_alerts` is on, because the feature reads three unrelated stores and
+ * puts deadlines in the corner of a pane whose job is files. That is a strong
+ * opinion about how somebody works: a file viewer that starts telling you about
+ * your mail is a change to the app nobody asked for. Its switch is the header's
+ * 🔔 (`header/AlertsToggle`), beside the ☑ board — not a button in the project
+ * file toolbar, where it once was: one machine-wide key belongs with the global
+ * apps, not in a row that is redrawn per project and per open viewer.
  *
  * **It is chromed as the machine's, not the project's.** Every other group in
  * this panel is swapped out when the project is switched — the tree, the git
@@ -350,9 +351,7 @@ export function AlertsSection({ onClose }: AlertsSectionProps) {
         title={t("filesAlerts.resizeHint")}
       />
       <div className="alerts-header">
-        <span className="alerts-title">
-          🔔 {t("filesAlerts.title")} <UntestedTag />
-        </span>
+        <span className="alerts-title">🔔 {t("filesAlerts.title")}</span>
         {items.length > 0 && (
           <span
             className={"alerts-count" + (counts.overdue > 0 ? " overdue" : "")}

@@ -26,11 +26,15 @@
   font-size: 13px;
 }
 
-/* ── Global apps in the header (MailIndicator, CalendarIndicator) ───────────
-   The ✉ and 🗓 buttons beside the brain button, and the overlays they open.
-   Both are the same kind of thing — an app you reach from anywhere, not a
-   per-project status readout like the right cluster — so they share one rule
-   set here rather than each carrying a copy that can drift apart.
+/* ── Global apps in the header (MailIndicator, CalendarIndicator, ...) ──────
+   The ✉ 🗓 ☑ 🔔 buttons beside the brain button, and the overlays they open.
+   All four are the same kind of thing — a machine-wide control you reach from
+   anywhere, not a per-project status readout like the right cluster — so they
+   share one rule set here rather than each carrying a copy that can drift
+   apart. The 🔔 is the newest member and holds no badge of its own, but it
+   still rides these rules rather than a private treatment: in a row of
+   identical 32px icon buttons, one that is 1px different is the only thing the
+   eye finds.
 
    Each button is a plain `.global-apps-menu-btn` inside a `.global-apps-menu`
    wrapper: the brain button's exact chrome. Everything below is therefore
@@ -39,7 +43,8 @@
    colours and transitions are all inherited. */
 .mail-indicator-btn,
 .calendar-indicator-btn,
-.todo-indicator-btn {
+.todo-indicator-btn,
+.alerts-toggle-btn {
   /* Positioning context for the badge. It must be the BUTTON and not the
      `.global-apps-menu` wrapper: `.header-center` stretches that wrapper to the
      full header height, so a badge anchored to it would float above the 32px
@@ -48,14 +53,16 @@
 }
 .mail-indicator-btn[aria-pressed="true"],
 .todo-indicator-btn[aria-pressed="true"],
-.calendar-indicator-btn[aria-pressed="true"] {
+.calendar-indicator-btn[aria-pressed="true"],
+.alerts-toggle-btn[aria-pressed="true"] {
   background: var(--control-hover-bg);
   color: var(--text-primary);
   border-color: var(--text-muted);
 }
 .mail-indicator-icon,
 .calendar-indicator-icon,
-.todo-indicator-icon {
+.todo-indicator-icon,
+.alerts-toggle-icon {
   font-size: 15px;
   line-height: 1;
 }

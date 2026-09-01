@@ -10,6 +10,7 @@ import { StatusCluster } from "../header/StatusCluster";
 import { MailIndicator } from "../header/MailIndicator";
 import { CalendarIndicator } from "../header/CalendarIndicator";
 import { TodoIndicator } from "../header/TodoIndicator";
+import { AlertsToggle } from "../header/AlertsToggle";
 import { SettingsMenu } from "../header/SettingsMenu";
 import { WindowControls } from "../header/WindowControls";
 import { ProjectSwitcher } from "./ProjectSwitcher";
@@ -106,6 +107,12 @@ export function HeaderBar() {
         <MailIndicator />
         <CalendarIndicator />
         <TodoIndicator />
+        {/* The Alerts group's on/off switch. It rides with the global apps rather
+            than with the menus to its right because that is what it is: one
+            machine-wide state, like mail, the calendar and the board beside it —
+            it moved here out of the per-project file toolbar, where a global
+            switch was rendered once per open file viewer. */}
+        <AlertsToggle />
         <span className="header-right-gap" aria-hidden="true" />
         <LocalModelMenu />
         <GlobalAppMenu />

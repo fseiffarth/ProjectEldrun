@@ -186,8 +186,9 @@ export interface AlertInput {
  * exactly one input.
  */
 export interface AlertGateInput {
-  /** `files_alerts` — the file viewer's 🔔 group *is* this key, so it is the
-   *  group's visibility rather than a preference above one. */
+  /** `files_alerts` — the file viewer's Alerts group *is* this key (the header's
+   *  🔔 writes it), so it is the group's visibility rather than a preference
+   *  above one. */
   visible: boolean;
   /**
    * Ignore `visible`. Because that key is the desktop group's visibility, a
