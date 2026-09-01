@@ -78,9 +78,9 @@ fn default_global_apps(
 /// roles. Unlike Windows/macOS, a Linux app has no fixed install path, so each
 /// candidate is a binary name resolved via `PATH` (`crate::paths::resolve_executable`,
 /// which already covers the GUI-launched-process PATH gap). Mail, calendar,
-/// file-manager and system-monitor roles are deliberately absent, for the same
-/// reason as the other two platforms: Eldrun has its own of each. There is no
-/// app guaranteed present on every distro, so — unlike Windows (Notepad) or
+/// file-manager, system-monitor, notes and media-player roles are deliberately
+/// absent, for the same reason as the other two platforms: Eldrun has its own
+/// of each. There is no app guaranteed present on every distro, so — unlike
 /// macOS (Safari) — the toolbar can still come back empty on a minimal
 /// install; a role can always be set by hand in the Global Apps settings panel.
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
@@ -90,7 +90,7 @@ fn detect_linux_global_apps(
     use std::collections::HashMap;
 
     // role -> ordered candidate binary names on PATH (first found wins).
-    let candidates: [(&str, &[&str]); 6] = [
+    let candidates: [(&str, &[&str]); 4] = [
         (
             "browser",
             &[
@@ -102,14 +102,6 @@ fn detect_linux_global_apps(
             ],
         ),
         ("password_manager", &["keepassxc", "bitwarden", "keepassx"]),
-        (
-            "media_player",
-            &["vlc", "mpv", "totem", "celluloid", "rhythmbox"],
-        ),
-        (
-            "notes",
-            &["gnome-text-editor", "kate", "gedit", "xed", "mousepad"],
-        ),
         (
             "screenshot",
             &[
@@ -176,11 +168,11 @@ fn env_join(var: &str, tail: &str) -> String {
 }
 
 /// Probe well-known install locations for the common global-app roles on
-/// Windows. Notepad is effectively guaranteed, so the toolbar is never empty;
-/// the browser and the rest are included only when found. Mail, calendar,
-/// file-manager and system-monitor roles are deliberately absent: Eldrun has
-/// its own of each (the Monitor tab for the last), so seeding an external app
-/// for them only offered a second, worse copy.
+/// Windows. Every role is included only when found, so the toolbar can come
+/// back empty. Mail, calendar, file-manager, system-monitor, notes and
+/// media-player roles are deliberately absent: Eldrun has its own of each (the
+/// Monitor tab, the editable file viewers, the in-tab media viewer), so seeding
+/// an external app for them only offered a second, worse copy.
 #[cfg(target_os = "windows")]
 fn detect_windows_global_apps(
 ) -> Option<std::collections::HashMap<String, crate::schema::settings::GlobalAppEntry>> {
@@ -188,7 +180,7 @@ fn detect_windows_global_apps(
     use std::collections::HashMap;
 
     // role -> ordered candidate executable paths (first existing wins).
-    let candidates: [(&str, Vec<String>); 5] = [
+    let candidates: [(&str, Vec<String>); 3] = [
         (
             "browser",
             vec![
@@ -206,17 +198,9 @@ fn detect_windows_global_apps(
                 env_join("ProgramFiles", "Microsoft\\Edge\\Application\\msedge.exe"),
             ],
         ),
-        ("notes", vec![env_join("WINDIR", "System32\\notepad.exe")]),
         (
             "screenshot",
             vec![env_join("WINDIR", "System32\\SnippingTool.exe")],
-        ),
-        (
-            "media_player",
-            vec![
-                env_join("ProgramFiles(x86)", "Windows Media Player\\wmplayer.exe"),
-                env_join("ProgramFiles", "Windows Media Player\\wmplayer.exe"),
-            ],
         ),
         (
             "password_manager",
@@ -255,9 +239,10 @@ fn detect_windows_global_apps(
 /// (not the `.app` path) so the existing `Command::new(exec)` launch path works.
 /// Roles whose app is absent (e.g. iTerm) are skipped; the toolbar is never empty
 /// on a stock install since Safari is always present. Mail, calendar,
-/// file-manager and system-monitor roles are deliberately absent — Eldrun has
-/// its own of each (the Monitor tab for the last), so seeding Mail/Finder/
-/// Activity Monitor here only offered a second, worse copy.
+/// file-manager, system-monitor, notes and media-player roles are deliberately
+/// absent — Eldrun has its own of each (the Monitor tab, the editable file
+/// viewers, the in-tab media viewer), so seeding Mail/Finder/Activity Monitor/
+/// Notes/QuickTime here only offered a second, worse copy.
 #[cfg(target_os = "macos")]
 fn detect_macos_global_apps(
 ) -> Option<std::collections::HashMap<String, crate::schema::settings::GlobalAppEntry>> {
@@ -265,25 +250,13 @@ fn detect_macos_global_apps(
     use std::collections::HashMap;
 
     // role -> ordered candidate executable paths (first existing wins).
-    let candidates: [(&str, Vec<String>); 4] = [
+    let candidates: [(&str, Vec<String>); 2] = [
         (
             "browser",
             vec![
                 "/Applications/Safari.app/Contents/MacOS/Safari".to_string(),
                 "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome".to_string(),
                 "/Applications/Firefox.app/Contents/MacOS/firefox".to_string(),
-            ],
-        ),
-        (
-            "notes",
-            vec!["/System/Applications/Notes.app/Contents/MacOS/Notes".to_string()],
-        ),
-        (
-            "media_player",
-            vec![
-                "/System/Applications/QuickTime Player.app/Contents/MacOS/QuickTime Player"
-                    .to_string(),
-                "/System/Applications/Music.app/Contents/MacOS/Music".to_string(),
             ],
         ),
         (

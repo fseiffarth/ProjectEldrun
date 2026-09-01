@@ -19,8 +19,6 @@ export const GLOBAL_APP_ROLES: Array<{ key: string; labelKey: TranslationKey; fa
   { key: "browser", labelKey: "globalApp.role.browser", fallback: "🌐" },
   { key: "password_manager", labelKey: "globalApp.role.password_manager", fallback: "⚿" },
   { key: "video_conf", labelKey: "globalApp.role.video_conf", fallback: "▣" },
-  { key: "media_player", labelKey: "globalApp.role.media_player", fallback: "▶" },
-  { key: "notes", labelKey: "globalApp.role.notes", fallback: "☰" },
   { key: "screenshot", labelKey: "globalApp.role.screenshot", fallback: "▤" },
   { key: "screen_recorder", labelKey: "globalApp.role.screen_recorder", fallback: "●" },
   { key: "chat", labelKey: "globalApp.role.chat", fallback: "☏" },
@@ -33,9 +31,12 @@ const ROLE_BY_KEY = Object.fromEntries(GLOBAL_APP_ROLES.map((role) => [role.key,
 // (the header's `CalendarIndicator` + its overlay), the file manager (the file panel, the Files tab, the docked file
 // column), the print manager (the native Print Manager tab —
 // `PRINTING_TAB_CMD` / `printing/PrintManagerPane`, opened from the new-tab
-// menu) and the system monitor (the native Monitor tab — `MONITOR_TAB_CMD` /
+// menu), the system monitor (the native Monitor tab — `MONITOR_TAB_CMD` /
 // `monitoring/SystemMonitorPane`, likewise from the new-tab menu, plus the
-// header's per-machine `GlobalMachineMonitorDialog`).
+// header's per-machine `GlobalMachineMonitorDialog`), notes (the editable
+// text/markdown viewers in `embed/FileViewerPane`, reached from the file tree
+// or a Files tab) and the media player (the in-tab audio/video viewer,
+// `embed/MediaView`, which every playable extension routes to).
 // Dropping them from `GLOBAL_APP_ROLES` alone is not enough — an
 // existing `settings.json` (or a Windows/macOS seeded default) still holds the
 // entries, and `orderedGlobalApps` deliberately renders *unknown* roles so a
@@ -53,6 +54,8 @@ const RETIRED_GLOBAL_APP_ROLES = new Set([
   "file_manager",
   "print_manager",
   "system_monitor",
+  "notes",
+  "media_player",
 ]);
 
 type EditState = {
