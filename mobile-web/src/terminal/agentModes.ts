@@ -60,10 +60,20 @@ const CLAUDE: ModeFamily = {
   ],
 };
 
-/** Codex: its approval modes, as its own status line names them. */
+/** Codex: its approval modes, as its own status line names them. Its working
+ * mode is `silent` — verified against codex-cli 0.151.0, which draws a mode
+ * line for "Plan mode" and nothing at all while it is working — so without the
+ * silent entry a Codex session sitting in its ordinary mode had no list, and
+ * one showing "plan mode" was claimed by Claude Code's family instead (both
+ * offer a plan, and only the label parts them). Which of the working modes a
+ * session actually has is its own business: `applyMode` verifies every step
+ * against what the session printed, so one it does not offer simply fails to
+ * confirm rather than being reported as applied. */
 const CODEX: ModeFamily = {
   agent: /codex/iu,
   choices: [
+    { value: "working", label: "Working", description: "Edits and runs; asks by its own approval setting", silent: true },
+    { value: "plan", label: "Plan", description: "Researches and plans; changes nothing", aliases: ["plan mode"] },
     { value: "read only", label: "Read only", description: "Reads and answers; changes nothing" },
     { value: "auto", label: "Auto", description: "Edits and runs inside the workspace" },
     { value: "full access", label: "Full access", description: "Edits and runs without a workspace boundary" },
@@ -125,4 +135,24 @@ export function currentMode(
   }
   const normalized = mode.trim().toLowerCase();
   return choices.find((choice) => claims(choice, normalized))?.value;
+}
+
+/** Shift+Tab, the way a terminal without the kitty keyboard protocol sends it:
+ * the legacy backtab. */
+const LEGACY_SHIFT_TAB = "\u001b[Z";
+
+/** Shift+Tab as the kitty protocol's CSI-u form - Tab (9) with Shift (2). */
+const CSI_U_SHIFT_TAB = "\u001b[9;2u";
+
+/** The bytes a Shift+Tab must arrive as for this session's TUI to act on it.
+ *
+ * Claude Code and Qwen Code cycle on the legacy backtab. Codex does not: it
+ * binds its mode cycle to Tab-with-Shift and reads only the CSI-u encoding, so
+ * a backtab leaves it exactly where it was - the walk in `applyMode` would run
+ * a whole lap and report a failed switch on a session that offers the mode.
+ * Codex accepts CSI-u whether or not the terminal answered its keyboard-
+ * enhancement probe. The desktop pane re-encodes the same key for the same
+ * reason (`src/lib/terminalControl.ts`). */
+export function shiftTabKey(agentLabel?: string): string {
+  return agentLabel && CODEX.agent.test(agentLabel) ? CSI_U_SHIFT_TAB : LEGACY_SHIFT_TAB;
 }

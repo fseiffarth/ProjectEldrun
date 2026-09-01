@@ -16,7 +16,7 @@ import { type TerminalEvent } from "../terminal/protocol";
 import { installTerminalTouchScroll } from "../terminal/touchScroll";
 import { sessionStatus, shortenPath, type SessionStatus } from "../terminal/statusLine";
 import { readSelectPrompt, selectKeys } from "../terminal/selectPrompt";
-import { currentMode, modeChoices } from "../terminal/agentModes";
+import { currentMode, modeChoices, shiftTabKey } from "../terminal/agentModes";
 import { agentInputWrites } from "../terminal/composer";
 import {
   prepareOnDeviceSpeech,
@@ -747,15 +747,16 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     if (picker) type("\u001b");
     setModelSheet(false);
   };
-  /** Shift+Tab — the mode cycle Claude Code, Codex and Qwen Code all bind.
-   * The chip label follows the status line the TUI redraws, so the feedback
-   * is real. */
-  const cycleMode = () => press("\u001b[Z");
   /** The modes this session has, decided by the mode it is showing with the
    * tab's agent label as the tie-break (and, for a family whose default mode
    * draws no text at all, as the way in). Empty for a session no family
    * claims — the chip then keeps cycling, as before. */
   const agentLabel = tab.agent_label ?? tab.label;
+  /** Shift+Tab — the mode cycle Claude Code, Codex and Qwen Code all bind,
+   * encoded the way this family's TUI reads it (`shiftTabKey`). The chip label
+   * follows the status line the TUI redraws, so the feedback is real. */
+  const shiftTab = shiftTabKey(agentLabel);
+  const cycleMode = () => press(shiftTab);
   const modes = useMemo(() => modeChoices(status?.mode, agentLabel), [status?.mode, agentLabel]);
   const activeMode = currentMode(modes, status?.mode, status != null);
   const openModeSheet = () => {
@@ -783,7 +784,7 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     setSwitchFailed("");
     setSwitching(value);
     for (let step = 0; step < MODE_CYCLE_LIMIT; step += 1) {
-      if (!type("\u001b[Z")) break;
+      if (!type(shiftTab)) break;
       await new Promise((resolve) => { window.setTimeout(resolve, MODE_SETTLE); });
       if (modeWalk.current !== walk) return;
       const now = statusRef.current?.mode;

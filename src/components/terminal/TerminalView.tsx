@@ -18,7 +18,7 @@ import { ROOT_SCOPE, bumpUsage, markAgentActive } from "../../stores/usage";
 import { onTerminalExit, onTerminalOutput, onTerminalReady, onTerminalReplay } from "../../lib/terminalBus";
 import { hpcGuardRefusal } from "../../lib/hpcGuard";
 import { useHpcGuardStore } from "../../stores/hpcGuardPrompt";
-import { claimInitialInput, decodeOsc52Clipboard, initialInputForPty, isTerminalIdentityResponse, isTerminalReport, stripTerminalQueries } from "../../lib/terminalControl";
+import { CSI_U_SHIFT_TAB, claimInitialInput, decodeOsc52Clipboard, initialInputForPty, isCodexCommand, isTerminalIdentityResponse, isTerminalReport, stripTerminalQueries } from "../../lib/terminalControl";
 import { clearPtyInput, writePtyInput } from "../../lib/terminalInput";
 import "@xterm/xterm/css/xterm.css";
 
@@ -702,6 +702,10 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       }
     };
 
+    // Codex is the one agent whose Shift+Tab has to be re-encoded on its way to
+    // the PTY; resolved once here from the pane's command.
+    const csiUShiftTab = isCodexCommand(cmd);
+
     term.attachCustomKeyEventHandler((e) => {
       if (e.type !== "keydown") return true;
       // Ctrl +/-/0 zoom (agent panes only). preventDefault stops WebKit's own
@@ -714,6 +718,16 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
         if (e.code === "Equal") { e.preventDefault(); e.stopPropagation(); applyFontSize(cur + 1, true); return false; }
         if (e.code === "Minus") { e.preventDefault(); e.stopPropagation(); applyFontSize(cur - 1, true); return false; }
         if (e.code === "Digit0") { e.preventDefault(); e.stopPropagation(); applyFontSize(DEFAULT_FONT_SIZE, true); return false; }
+      }
+      // Shift+Tab in a Codex pane. xterm.js would send the legacy backtab, which
+      // Codex's permission-mode cycle does not recognize — send the CSI-u form of
+      // Tab+Shift it does read instead (see terminalControl.shiftTabForAgent).
+      // Every other agent cycles on the backtab, so nothing else is re-encoded.
+      if (csiUShiftTab && e.code === "Tab" && e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
+        e.preventDefault();
+        noteUserInput(id);
+        writePtyInput(id, PTY_ENCODER.encode(CSI_U_SHIFT_TAB)).catch(console.error);
+        return false;
       }
       if (!e.ctrlKey || !e.shiftKey) return true;
       if (e.code === "KeyC") {

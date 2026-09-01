@@ -81,7 +81,7 @@ describe("Eldrun Mobile permission modes", () => {
     expect(modeChoices("plan").map((choice) => choice.value))
       .toEqual(["default", "accept edits", "plan", "bypass permissions"]);
     expect(modeChoices("full access").map((choice) => choice.value))
-      .toEqual(["read only", "auto", "full access"]);
+      .toEqual(["working", "plan", "read only", "auto", "full access"]);
     expect(modeChoices("yolo").map((choice) => choice.value))
       .toEqual(["ask permissions", "plan", "auto-accept", "auto", "yolo"]);
   });
@@ -101,7 +101,11 @@ describe("Eldrun Mobile permission modes", () => {
       .toEqual(["default", "accept edits", "plan", "bypass permissions"]);
     // "auto" is Codex's without a label and Qwen's with one.
     expect(modeChoices("auto", "Qwen")[0].value).toBe("ask permissions");
-    expect(modeChoices("auto")[0].value).toBe("read only");
+    expect(modeChoices("auto")[0].value).toBe("working");
+    // "plan" is Codex's too since 0.151 — the label is again the only tie-break,
+    // and without it Claude Code's list wins by declaration order.
+    expect(modeChoices("plan mode", "Codex").map((choice) => choice.value))
+      .toEqual(["working", "plan", "read only", "auto", "full access"]);
   });
 
   it("reads a frame without mode text as a silent-mode family's default", () => {
@@ -113,8 +117,13 @@ describe("Eldrun Mobile permission modes", () => {
     expect(currentMode(claude, undefined, true)).toBe("default");
     // With no input frame on screen, absence of text says nothing.
     expect(currentMode(claude, undefined, false)).toBeUndefined();
-    // Codex and Qwen always print their mode; no text means no readout.
-    expect(modeChoices(undefined, "Codex")).toEqual([]);
+    // Codex draws no mode line while it is working (verified against
+    // codex-cli 0.151.0), so a framed Codex tab with no mode text reads the
+    // same way a Claude one does.
+    const codex = modeChoices(undefined, "Codex");
+    expect(codex.map((choice) => choice.value)).toEqual(["working", "plan", "read only", "auto", "full access"]);
+    expect(currentMode(codex, undefined, true)).toBe("working");
+    // Qwen draws one for every mode; no text means no readout.
     expect(modeChoices(undefined, "Qwen")).toEqual([]);
   });
 

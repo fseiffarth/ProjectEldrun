@@ -143,3 +143,40 @@ export function decodeOsc52Clipboard(data: string): string | null {
   const flattened = text.replace(/[\r\n]+/g, " ").slice(0, OSC52_MAX_CHARS);
   return flattened.length > 0 ? flattened : null;
 }
+
+/** Shift+Tab, the way xterm.js encodes it: the legacy backtab `ESC [ Z`. */
+export const LEGACY_SHIFT_TAB = `${CSI}Z`;
+
+/** Shift+Tab in the kitty keyboard protocol's CSI-u form: Tab (9) with the
+ *  Shift modifier (2). */
+export const CSI_U_SHIFT_TAB = `${CSI}9;2u`;
+
+/** Which byte sequence a Shift+Tab must arrive as for `cmd`'s TUI to see it.
+ *
+ *  Every agent CLI binds its permission-mode cycle to Shift+Tab, and all of
+ *  them but one read the legacy backtab `ESC [ Z` that xterm.js sends — xterm.js
+ *  implements neither the kitty keyboard protocol nor `modifyOtherKeys`, so the
+ *  backtab is all a pane can produce on its own.
+ *
+ *  Codex is the exception. It binds `chat.next_permission_mode` to Tab-with-
+ *  Shift and only recognizes the CSI-u encoding of it; a backtab matches
+ *  nothing, so the mode never cycles even though its composer footer advertises
+ *  "shift+tab to cycle". Verified against codex-cli 0.151.0 in a legacy-key
+ *  terminal: `ESC [ Z` changed nothing, `ESC [ 9 ; 2 u` stepped the mode. Codex
+ *  parses CSI-u whether or not the terminal ever answered its keyboard-
+ *  enhancement probe, so sending that form needs no negotiation.
+ *
+ *  Codex-only on purpose: Claude Code and Qwen Code cycle on the backtab, and
+ *  re-encoding Shift+Tab terminal-wide would break every ordinary curses
+ *  program that reads backtab as "focus previous field". */
+export function shiftTabForAgent(cmd: string | null | undefined): string {
+  return isCodexCommand(cmd) ? CSI_U_SHIFT_TAB : LEGACY_SHIFT_TAB;
+}
+
+/** Whether `cmd` launches Codex — matched on the binary's leaf name, so an
+ *  absolute path or a versioned wrapper still counts. */
+export function isCodexCommand(cmd: string | null | undefined): boolean {
+  if (!cmd) return false;
+  const leaf = cmd.trim().split(/[\\/]/).pop() ?? "";
+  return leaf.replace(/\.(exe|cmd|bat)$/i, "").toLowerCase() === "codex";
+}
