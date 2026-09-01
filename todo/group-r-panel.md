@@ -121,3 +121,40 @@
     - [ ] 🖐️ Manual test
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work
+
+244. **[Bug] The panel asked its questions in two different chromes.** "New File"
+    in the side panel opened `window.prompt()` — which WebKitGTK draws as an
+    origin-titled browser alert ("localhost:1420 says" in a dev window, a blank
+    system box in a packaged one) — while the rename gesture right next to it
+    opened Eldrun's own dialog. Auditing the rest of the panel found the same
+    split everywhere: New Folder, New Presentation, the sessions kill/rename,
+    the SLURM cancel/watch, the HPC workspace extend and project move, the log
+    copy, every destructive git confirm (lockstep resolve, pairing overwrite,
+    backup restore, worktree remove/force-remove/lock) and the remarks
+    edit/delete.
+    `RenameDialog`'s chrome is generalized into
+    `src/components/common/PromptDialogs.tsx` — `TextPromptDialog`,
+    `ConfirmDialog`, `MessageDialog` on the `.file-delete-dialog` surface, plus a
+    `useDialogs()` hook that returns `await`-able versions so a handler that had
+    a `window.confirm` in the middle of it keeps its straight-line shape.
+    `RenameDialog` is now a thin wrapper over `TextPromptDialog`, so the two can
+    no longer drift. Two behaviours come with it: a create that fails keeps the
+    dialog open with the typed name and the reason (the native prompt threw both
+    away), and the validators that were alerts — a tmux-safe session name, a
+    workspace day count — land under the field instead of in a second box.
+    A `reset --hard` warning that *lists paths* is also finally readable, since
+    the strings' newlines survive (`.file-delete-body`).
+    Frontend: `components/common/PromptDialogs.tsx` (new),
+    `components/files/{RenameDialog,FileTree,FileBrowser,ProjectFilesView,GitHistory,RemarksPane}.tsx`,
+    `styles/file-tree.css`, `lib/i18n.ts` + the four dictionaries.
+    Implemented 2026-09-01.
+    - [x] 🤖 Automated test
+    - [ ] 🖐️ Manual test — in the side panel, right-click the tree background →
+      **New File**: an Eldrun dialog opens (accent top rail, "Creating in
+      &lt;folder&gt;"), Enter creates, and a name that already exists keeps the
+      dialog open with the error under the field. Same for New Folder and New
+      Presentation, and in the middle file browser. Then check one confirm
+      (Git → a worktree Remove, or Sessions → kill) and one report (Jobs → Copy
+      logs): no browser-titled box appears anywhere.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work

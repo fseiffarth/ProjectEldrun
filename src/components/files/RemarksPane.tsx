@@ -8,6 +8,7 @@ import { useCalendarStore } from "../../stores/calendar";
 import { boardColumns, taskFromRemark } from "../../lib/todoBoard";
 import { useT } from "../../lib/i18n";
 import { UntestedTag } from "../common/UntestedTag";
+import { useDialogs } from "../common/PromptDialogs";
 
 const EMPTY_REMARKS: ProjectRemark[] = [];
 
@@ -15,6 +16,9 @@ export function RemarksPane({ projectId, projectDir, visible }: {
   projectId: string; projectDir: string; visible: boolean;
 }) {
   const t = useT();
+  // Edit/delete ask in the panel's own dialog, like every other side-panel
+  // gesture — not in WebKitGTK's origin-titled native boxes.
+  const { promptText, confirmAction, dialogs } = useDialogs();
   const entry = useProjectRemarksStore((s) => s.byProject[projectId]);
   const [cursor, setCursor] = useState(0);
   const remarks = entry?.remarks ?? EMPTY_REMARKS;
@@ -57,6 +61,7 @@ export function RemarksPane({ projectId, projectDir, visible }: {
   };
 
   return <div className="project-remarks-pane">
+    {dialogs}
     <div className="project-remarks-walk">
       <button title={t("projectRemarks.previous")} onClick={() => walk(-1)}>‹</button>
       <span>{remarks.length ? `${cursor + 1}/${remarks.length}` : "0/0"}</span>
@@ -74,8 +79,22 @@ export function RemarksPane({ projectId, projectDir, visible }: {
           <button className="project-remark-target" disabled={missing} onClick={() => jump(remark)}>{file}{remark.line != null ? `:${remark.line}` : ""}</button>
           <span className="project-remark-text">{remark.text}</span>
           {missing && <small>{t("projectRemarks.fileMissing")}</small>}
-          <button title={t("projectRemarks.edit")} onClick={() => { const next = window.prompt(t("projectRemarks.edit"), remark.text); if (next != null) void useProjectRemarksStore.getState().edit(projectId, projectDir, remark, next); }}>✎</button>
-          <button title={t("projectRemarks.delete")} onClick={() => { if (window.confirm(t("projectRemarks.confirmDelete"))) void useProjectRemarksStore.getState().remove(projectId, projectDir, remark); }}>×</button>
+          <button title={t("projectRemarks.edit")} onClick={() => void promptText({
+            title: t("projectRemarks.edit"),
+            body: <><strong>{file}</strong>{remark.line != null ? `:${remark.line}` : ""}</>,
+            label: t("projectRemarks.edit"),
+            initial: remark.text,
+            confirmLabel: t("common.save"),
+          }, (next) => useProjectRemarksStore.getState().edit(projectId, projectDir, remark, next))}>✎</button>
+          <button title={t("projectRemarks.delete")} onClick={() => void (async () => {
+            const ok = await confirmAction({
+              title: t("projectRemarks.delete"),
+              body: t("projectRemarks.confirmDelete"),
+              confirmLabel: t("common.delete"),
+              danger: true,
+            });
+            if (ok) await useProjectRemarksStore.getState().remove(projectId, projectDir, remark);
+          })()}>×</button>
           <button onClick={() => void makeCard(remark)}>{t("projectRemarks.makeCard")}</button>
         </div>;
       })}

@@ -1920,6 +1920,21 @@
   word-break: break-all;
 }
 
+/* The prose of a dialog that carries a *message* rather than a sentence about a
+   file — the confirms and reports that used to be `window.confirm`/`alert`.
+   Their strings were written for a native box and still spell their paragraph
+   breaks as newlines, so the newlines are honoured here instead of the strings
+   being rewritten into markup at every call site. */
+.file-delete-body {
+  white-space: pre-wrap;
+}
+
+/* A message dialog reporting a failure: the text itself is the error, so it
+   takes the danger color without the path box's frame (there is no path). */
+.file-delete-error-text {
+  color: var(--danger);
+}
+
 /* A failed operation, reported in the path box's shape because it is about the
    same thing the path box names. Three overlays spelled this as an inline
    `color: var(--danger)` on `.file-delete-path`; it is a state these prompts

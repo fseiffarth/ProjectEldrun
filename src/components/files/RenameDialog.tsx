@@ -1,7 +1,6 @@
-import { useState } from "react";
-import { createPortal } from "react-dom";
 import { useT } from "../../lib/i18n";
 import { UntestedTag } from "../common/UntestedTag";
+import { TextPromptDialog } from "../common/PromptDialogs";
 
 /**
  * Renaming a file or folder, in Eldrun's own chrome.
@@ -15,8 +14,12 @@ import { UntestedTag } from "../common/UntestedTag";
  * Shared rather than written twice: `FileTree` (the panel/Files-tab tree) and
  * `FileBrowser` (the middle file browser) both rename, and a rename that looks
  * and behaves differently depending on which pane you started it from is exactly
- * the drift the shared-viewer rule exists to stop. Rides `.file-delete-dialog`,
- * the chrome the tree's other prompts already use.
+ * the drift the shared-viewer rule exists to stop.
+ *
+ * The chrome itself now lives in `TextPromptDialog` (`common/PromptDialogs`),
+ * which the panel's other name prompts — New File, New Folder, New Presentation,
+ * rename-session — also wear, so this dialog can no longer be the only gesture
+ * in the panel that looks like Eldrun.
  */
 export function RenameDialog({
   entryName,
@@ -37,78 +40,36 @@ export function RenameDialog({
   onRename: (next: string) => Promise<void>;
 }) {
   const t = useT();
-  const [name, setName] = useState(entryName);
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-
-  const trimmed = name.trim();
-  const submittable = !busy && trimmed.length > 0 && trimmed !== entryName;
-
-  async function submit() {
-    if (!submittable) return;
-    // A path separator would not rename but move — refused here rather than left
-    // to the backend, so the message lands next to the field that caused it.
-    if (trimmed.includes("/") || trimmed.includes("\\")) {
-      setError(t("fileTree.invalidFileName"));
-      return;
-    }
-    setBusy(true);
-    setError(null);
-    try {
-      await onRename(trimmed);
-    } catch (e) {
-      // Kept open with the failure on it: the name is usually one character away
-      // from working (a collision, a bad character), and closing would make the
-      // user type it again.
-      setError(String(e));
-      setBusy(false);
-    }
-  }
-
-  return createPortal(
-    <div className="modal-backdrop" onMouseDown={() => !busy && onCancel()}>
-      <div className="file-delete-dialog" onMouseDown={(e) => e.stopPropagation()}>
-        <h2>
+  return (
+    <TextPromptDialog
+      title={
+        <>
           {t(isDir ? "fileTree.renameFolderTitle" : "fileTree.renameFileTitle")} <UntestedTag />
-        </h2>
-        <p>
+        </>
+      }
+      body={
+        <>
           <strong>{entryName}</strong> {t("fileTree.renameInPre")} <strong>{folder}</strong>{" "}
           {t("fileTree.renameToPost")}
-        </p>
-        <input
-          className="file-paste-name"
-          autoFocus
-          aria-label={t("fileTree.renameToPrompt")}
-          value={name}
-          disabled={busy}
-          onChange={(e) => {
-            setName(e.target.value);
-            setError(null);
-          }}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") void submit();
-            if (e.key === "Escape") onCancel();
-          }}
-          // Selects the stem, not the extension: renaming a file almost never
-          // means renaming ".tsx", so the suffix stays put while the part being
-          // changed is already highlighted.
-          onFocus={(e) => {
-            const dot = isDir ? -1 : entryName.lastIndexOf(".");
-            e.currentTarget.setSelectionRange(0, dot > 0 ? dot : entryName.length);
-          }}
-        />
-        {error && <div className="file-delete-path file-delete-error">{error}</div>}
-        <div className="file-delete-actions">
-          <button type="button" onClick={onCancel} disabled={busy}>
-            {t("common.cancel")}
-          </button>
-          <button type="button" onClick={submit} disabled={!submittable}>
-            {t("common.rename")}
-          </button>
-        </div>
-      </div>
-    </div>,
-    document.body,
+        </>
+      }
+      label={t("fileTree.renameToPrompt")}
+      initial={entryName}
+      confirmLabel={t("common.rename")}
+      // Selects the stem, not the extension: renaming a file almost never means
+      // renaming ".tsx", so the suffix stays put while the part being changed is
+      // already highlighted.
+      selectStem={!isDir}
+      unchanged={entryName}
+      // A path separator would not rename but move — refused here rather than
+      // left to the backend, so the message lands next to the field that caused
+      // it.
+      validate={(next) =>
+        next.includes("/") || next.includes("\\") ? t("fileTree.invalidFileName") : null
+      }
+      onCancel={onCancel}
+      onSubmit={onRename}
+    />
   );
 }
 

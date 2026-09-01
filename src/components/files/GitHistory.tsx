@@ -5,6 +5,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Dropdown } from "../common/Dropdown";
 import { UntestedTag } from "../common/UntestedTag";
+import { useDialogs } from "../common/PromptDialogs";
 import { useTabsStore } from "../../stores/tabs";
 import { useT, type TranslationKey } from "../../lib/i18n";
 
@@ -308,6 +309,11 @@ const LOCKSTEP_STATUS_KEY: Record<LockstepStatus, TranslationKey> = {
 
 export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) {
   const t = useT();
+  // Every destructive git question below is asked in the panel's own dialog —
+  // the native `confirm()` these used arrives themeless, titled with the page
+  // origin, and (worse for a `reset --hard` warning that *lists paths*) collapses
+  // to one unreadable line.
+  const { promptText, confirmAction, dialogs } = useDialogs();
   const [commits, setCommits] = useState<GitCommit[]>([]);
   const [branches, setBranches] = useState<GitBranch[]>([]);
   const [worktrees, setWorktrees] = useState<Worktree[]>([]);
@@ -440,12 +446,13 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
       const other = t(
         authority === "local" ? "gitHistory.authorityRemoteHost" : "gitHistory.authorityLocalMirror",
       );
-      if (
-        !window.confirm(
-          t("gitHistory.confirmResolve", { authority: authorityLabel, other }),
-        )
-      )
-        return;
+      const ok = await confirmAction({
+        title: t("gitHistory.resolveTitle"),
+        body: t("gitHistory.confirmResolve", { authority: authorityLabel, other }),
+        confirmLabel: t("gitHistory.resolveAction", { authority: authorityLabel }),
+        danger: true,
+      });
+      if (!ok) return;
       setLockstepBusy(true);
       setError(null);
       try {
@@ -462,7 +469,7 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
         setLockstepBusy(false);
       }
     },
-    [projectId, load, onChanged, t],
+    [projectId, load, onChanged, t, confirmAction],
   );
 
   // #28p D3: pairing refused because the empty side holds files that differ from what
@@ -479,17 +486,18 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
       conflict.paths.length > 10
         ? t("gitHistory.andMore", { count: conflict.paths.length - 10 })
         : "";
-    if (
-      !window.confirm(
-        t("gitHistory.confirmOverwritePair", {
-          count: conflict.paths.length,
-          side,
-          list,
-          more,
-        }),
-      )
-    )
-      return;
+    const ok = await confirmAction({
+      title: t("gitHistory.overwritePairDialogTitle"),
+      body: t("gitHistory.confirmOverwritePair", {
+        count: conflict.paths.length,
+        side,
+        list,
+        more,
+      }),
+      confirmLabel: t("gitHistory.overwritePairAction"),
+      danger: true,
+    });
+    if (!ok) return;
     setLockstepBusy(true);
     setError(null);
     try {
@@ -502,7 +510,7 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
     } finally {
       setLockstepBusy(false);
     }
-  }, [projectId, lockstep?.pairingConflict, load, onChanged, t]);
+  }, [projectId, lockstep?.pairingConflict, load, onChanged, t, confirmAction]);
 
   // #28p D6: the backup refs every resolve/restore creates were write-only — they
   // pinned objects forever and nothing could list or restore them, which also hollowed
@@ -524,17 +532,18 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
   const restoreBackup = useCallback(
     async (b: BackupRef) => {
       if (!projectId) return;
-      if (
-        !window.confirm(
-          t("gitHistory.confirmRestore", {
-            peer: b.peer,
-            branch: b.branch,
-            sha: b.sha.slice(0, 7),
-            subject: b.subject || t("gitHistory.noSubject"),
-          }),
-        )
-      )
-        return;
+      const ok = await confirmAction({
+        title: t("gitHistory.restoreDialogTitle"),
+        body: t("gitHistory.confirmRestore", {
+          peer: b.peer,
+          branch: b.branch,
+          sha: b.sha.slice(0, 7),
+          subject: b.subject || t("gitHistory.noSubject"),
+        }),
+        confirmLabel: t("gitHistory.restoreAction"),
+        danger: true,
+      });
+      if (!ok) return;
       setLockstepBusy(true);
       setError(null);
       try {
@@ -553,7 +562,7 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
         setLockstepBusy(false);
       }
     },
-    [projectId, load, loadBackups, onChanged, t],
+    [projectId, load, loadBackups, onChanged, t, confirmAction],
   );
 
   // #28p D8: a genuine two-sided divergence used to offer only "pick a winner". Open a
@@ -649,7 +658,13 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
    */
   async function removeWorktree(wt: Worktree, force = 0) {
     if (force === 0) {
-      if (!window.confirm(t("gitHistory.confirmRemoveWorktree", { path: wt.path }))) return;
+      const ok = await confirmAction({
+        title: t("gitHistory.removeWorktreeDialogTitle"),
+        body: t("gitHistory.confirmRemoveWorktree", { path: wt.path }),
+        confirmLabel: t("common.remove"),
+        danger: true,
+      });
+      if (!ok) return;
     }
     setLoading(true);
     setError(null);
@@ -669,7 +684,13 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
       if (next > force) {
         const key =
           next === 2 ? "gitHistory.confirmForceRemoveLocked" : "gitHistory.confirmForceRemoveDirty";
-        if (window.confirm(t(key, { path: wt.path }))) {
+        const forced = await confirmAction({
+          title: t("gitHistory.removeWorktreeDialogTitle"),
+          body: t(key, { path: wt.path }),
+          confirmLabel: t("gitHistory.removeWorktreeForceAction"),
+          danger: true,
+        });
+        if (forced) {
           await removeWorktree(wt, next);
           return;
         }
@@ -683,7 +704,15 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
     setError(null);
     try {
       if (lock) {
-        const reason = window.prompt(t("gitHistory.lockReasonPrompt", { path: wt.path }), "");
+        // Empty is a legitimate answer — git locks without a reason — so the
+        // dialog accepts a blank field; only dismissing it cancels.
+        const reason = await promptText({
+          title: t("gitHistory.lockDialogTitle"),
+          body: t("gitHistory.lockReasonPrompt", { path: wt.path }),
+          label: t("gitHistory.lockReasonLabel"),
+          confirmLabel: t("gitHistory.lockWorktreeAction"),
+          allowEmpty: true,
+        });
         if (reason === null) {
           setLoading(false);
           return;
@@ -759,6 +788,7 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
 
   return (
     <div className="git-history">
+      {dialogs}
       <div className="git-history-toolbar">
         <span className="git-history-branch" title={t("gitHistory.currentBranchTitle")}>
           ⎇ {current ?? t("gitHistory.detached")}

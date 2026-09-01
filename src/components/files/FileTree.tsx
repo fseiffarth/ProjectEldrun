@@ -73,6 +73,7 @@ import { FileTreeSearch } from "./FileTreeSearch";
 import { useClampToViewport } from "../../hooks/useClampToViewport";
 import { UntestedTag } from "../common/UntestedTag";
 import { RenameDialog, containingFolderLabel } from "./RenameDialog";
+import { useDialogs } from "../common/PromptDialogs";
 import { Dropdown } from "../common/Dropdown";
 import { useT, type TranslationKey } from "../../lib/i18n";
 
@@ -594,6 +595,9 @@ export function FileTree({
   const [pastePrompt, setPastePrompt] = useState<PastePrompt | null>(null);
   const [pasteBusy, setPasteBusy] = useState(false);
   const [renamePrompt, setRenamePrompt] = useState<RenamePrompt>(null);
+  // The panel's other questions — New File/Folder/Presentation — in the same
+  // chrome the rename above wears, rather than in the browser's native boxes.
+  const { promptText, dialogs } = useDialogs();
   // SSH-sync Phase 2: project-relative paths whose push was blocked by a stale
   // host base, awaiting the user's keep-local / take-host / skip choice. The
   // first is shown in the conflict modal; resolving advances the queue.
@@ -2757,55 +2761,87 @@ export function FileTree({
    */
   async function createDeck() {
     setContextMenu(null);
-    const name = window.prompt(t("fileTree.newPresentationPrompt"), "talk");
-    const trimmed = name?.trim();
-    if (!trimmed) return;
-    setLoading(true);
-    setError(null);
-    try {
-      const { fileName, abs } = await createDeckFile({
-        projectDir,
-        projectId,
-        relDir: relPath,
-        name: trimmed,
-      });
-      await load(relPath);
-      openEntry(
-        {
-          name: fileName,
-          path: abs,
-          is_dir: false,
-          size: 0,
-          extension: "json",
-          mime: "application/json",
-        },
-        false,
-      );
-    } catch (err) {
-      setError(String(err));
-      setLoading(false);
-    }
+    // The write runs from inside the dialog, so a refused name (a collision, a
+    // bad character) keeps the typed one on screen instead of discarding it.
+    await promptText(
+      {
+        title: t("fileTree.newPresentation"),
+        body: newEntryBody(),
+        label: t("fileTree.newPresentationPrompt"),
+        initial: "talk",
+        confirmLabel: t("common.create"),
+      },
+      async (trimmed) => {
+        setLoading(true);
+        setError(null);
+        try {
+          const { fileName, abs } = await createDeckFile({
+            projectDir,
+            projectId,
+            relDir: relPath,
+            name: trimmed,
+          });
+          await load(relPath);
+          openEntry(
+            {
+              name: fileName,
+              path: abs,
+              is_dir: false,
+              size: 0,
+              extension: "json",
+              mime: "application/json",
+            },
+            false,
+          );
+        } catch (err) {
+          setLoading(false);
+          throw err;
+        }
+      },
+    );
+  }
+
+  /** "Creating in <folder>" — the same orientation the rename dialog gives, and
+   *  the answer to the question a bare name field cannot: *where*. The tree's
+   *  browsed folder, not the clicked entry's. */
+  function newEntryBody() {
+    const folder = relPath
+      ? relPath.slice(relPath.lastIndexOf("/") + 1)
+      : t("fileTree.projectRootFolder");
+    return (
+      <>
+        {t("fileTree.newEntryIn")} <strong>{folder}</strong>
+      </>
+    );
   }
 
   async function createEntry(kind: "file" | "dir") {
     setContextMenu(null);
-    const label = t(kind === "file" ? "fileTree.newFileNamePrompt" : "fileTree.newFolderNamePrompt");
-    const name = window.prompt(label, "");
-    const trimmed = name?.trim();
-    if (!trimmed) return;
-    const rel = relPath ? `${relPath}/${trimmed}` : trimmed;
-    setLoading(true);
-    setError(null);
-    try {
-      await invoke(kind === "file" ? "create_file" : "create_dir", {
-        projectDir,
-        relPath: rel,
-      });
-      await load(relPath);
-    } catch (err) {
-      setError(String(err));
-      setLoading(false);
-    }
+    await promptText(
+      {
+        title: t(kind === "file" ? "fileBrowser.newFile" : "fileBrowser.newFolder"),
+        body: newEntryBody(),
+        label: t(
+          kind === "file" ? "fileTree.newFileNamePrompt" : "fileTree.newFolderNamePrompt",
+        ),
+        confirmLabel: t("common.create"),
+      },
+      async (trimmed) => {
+        const rel = relPath ? `${relPath}/${trimmed}` : trimmed;
+        setLoading(true);
+        setError(null);
+        try {
+          await invoke(kind === "file" ? "create_file" : "create_dir", {
+            projectDir,
+            relPath: rel,
+          });
+          await load(relPath);
+        } catch (err) {
+          setLoading(false);
+          throw err;
+        }
+      },
+    );
   }
 
   function copyEntries(targets: FileEntry[], op: "copy" | "cut") {
@@ -4672,6 +4708,7 @@ export function FileTree({
         </div>,
         document.body,
       )}
+      {dialogs}
       {renamePrompt && (
         <RenameDialog
           entryName={renamePrompt.entry.name}

@@ -33,6 +33,7 @@ import { projectTypeTags } from "../projects/projectTypeTags";
 import { ProjectHoverCard, useProjectHoverCard } from "../projects/ProjectHoverCard";
 import { useRemoteMachinesStore } from "../../stores/remoteMachines";
 import { UntestedTag } from "../common/UntestedTag";
+import { useDialogs } from "../common/PromptDialogs";
 import { ROOT_SCOPE, useTabsStore, type TabEntry } from "../../stores/tabs";
 import { persistentSessionOf } from "../../lib/closeRemoteTab";
 import { sessionKindFromName, type TmuxSessionKind } from "../../lib/tmuxSession";
@@ -329,6 +330,10 @@ export function ProjectFilesView({
   compact,
 }: ProjectFilesViewProps) {
   const t = useT();
+  // Sessions/Jobs/workspaces ask their questions in the panel's own chrome, the
+  // one the file tree below them already uses — not in WebKitGTK's native boxes,
+  // which arrive themeless and titled with the page origin.
+  const { promptText, confirmAction, showMessage, dialogs } = useDialogs();
   const { windows, refresh, closeApp } = useWindowsStore();
   // The Apps view shows THIS scope's launches only — the store holds every
   // scope's slice (it is shared by all mounted viewers), so filter per render.
@@ -744,9 +749,15 @@ export function ProjectFilesView({
   // poll reconciles. Unlike a tab close (which merely detaches), a kill terminates
   // the session, so the tab that owns it — now attached to a dead session — is
   // closed too rather than left showing a defunct terminal.
-  const killSession = (hostId: string, name: string) => {
+  const killSession = async (hostId: string, name: string) => {
     if (!projectId) return;
-    if (!window.confirm(t("projectFilesView.confirmKillSession", { name }))) return;
+    const ok = await confirmAction({
+      title: t("projectFilesView.killSessionDialogTitle"),
+      body: t("projectFilesView.confirmKillSession", { name }),
+      confirmLabel: t("projectFilesView.killSessionAction"),
+      danger: true,
+    });
+    if (!ok) return;
     const ownerKey = sessionOwners.get(`${hostId} ${name}`);
     invoke("remote_tmux_kill", { projectId, hostId, session: name })
       .then(() => {
@@ -761,23 +772,32 @@ export function ProjectFilesView({
   // Rename a host session (per-row). The name must be tmux-safe; on success the
   // owning tab's persisted name is updated too, so it reattaches to the renamed
   // session after a restart (the live client stays attached — rename never drops it).
-  const renameSession = (hostId: string, oldName: string) => {
+  const renameSession = async (hostId: string, oldName: string) => {
     if (!projectId) return;
-    const proposed = window.prompt(t("projectFilesView.renameSessionPrompt"), oldName);
-    if (proposed === null) return;
-    const next = proposed.trim();
-    if (!next || next === oldName) return;
-    if (!/^[A-Za-z0-9_-]+$/.test(next)) {
-      window.alert(t("projectFilesView.sessionNameInvalid"));
-      return;
-    }
-    invoke("remote_tmux_rename", { projectId, hostId, session: oldName, newName: next })
-      .then(() => {
+    await promptText(
+      {
+        title: t("projectFilesView.renameSessionDialogTitle"),
+        label: t("projectFilesView.renameSessionPrompt"),
+        initial: oldName,
+        confirmLabel: t("common.rename"),
+        unchanged: oldName,
+        // The tmux-safe check was an alert that threw the typed name away; as a
+        // validator it lands under the field, with the name still in it.
+        validate: (next) =>
+          /^[A-Za-z0-9_-]+$/.test(next) ? null : t("projectFilesView.sessionNameInvalid"),
+      },
+      async (next) => {
+        await invoke("remote_tmux_rename", {
+          projectId,
+          hostId,
+          session: oldName,
+          newName: next,
+        });
         const ownerKey = sessionOwners.get(`${hostId} ${oldName}`);
         if (ownerKey) useTabsStore.getState().setTabTmuxName(scope, ownerKey, next);
         useHostSessionsStore.getState().renameRow(projectId, hostId, oldName, next);
-      })
-      .catch((e) => window.alert(t("projectFilesView.renameSessionFailed", { error: String(e) })));
+      },
+    );
   };
 
   // ── SLURM jobs (HPC) ──────────────────────────────────────────────────────
@@ -839,7 +859,11 @@ export function ProjectFilesView({
         isRemote: !!project?.remote,
       });
     } catch (e) {
-      window.alert(t("projectFilesView.watchJobResolveFailed", { jobId, error: String(e) }));
+      void showMessage({
+        title: t("projectFilesView.watchJobDialogTitle"),
+        body: t("projectFilesView.watchJobResolveFailed", { jobId, error: String(e) }),
+        error: true,
+      });
     }
   };
 
@@ -889,16 +913,30 @@ export function ProjectFilesView({
   // to be repeated, so the row's own value is passed straight back.
   const extendWs = async (ws: HpcWorkspace) => {
     if (!projectDir) return;
-    const answer = window.prompt(t("projectFilesView.extendWorkspacePrompt", { id: ws.id }), "30");
-    if (!answer) return;
-    const days = Number(answer.trim());
-    if (!Number.isFinite(days) || days < 1) return;
-    try {
-      const next = await wsExtend(wsTargetForProject(projectDir), ws.id, days, ws.filesystem);
-      setWsRows((rs) => rs.map((r) => (r.id === ws.id ? { ...r, ...next } : r)));
-    } catch (e) {
-      window.alert(t("projectFilesView.extendWorkspaceFailed", { id: ws.id, error: String(e) }));
-    }
+    await promptText(
+      {
+        title: t("projectFilesView.extendWorkspaceDialogTitle"),
+        body: t("projectFilesView.extendWorkspacePrompt", { id: ws.id }),
+        label: t("projectFilesView.extendWorkspaceDaysLabel"),
+        initial: "30",
+        confirmLabel: t("projectFilesView.extendWorkspaceAction"),
+        // A day count, so a non-number is refused where it was typed rather
+        // than silently dropping the click on the floor as the prompt did.
+        validate: (answer) =>
+          Number.isFinite(Number(answer)) && Number(answer) >= 1
+            ? null
+            : t("projectFilesView.extendWorkspaceDaysInvalid"),
+      },
+      async (answer) => {
+        const next = await wsExtend(
+          wsTargetForProject(projectDir),
+          ws.id,
+          Number(answer),
+          ws.filesystem,
+        );
+        setWsRows((rs) => rs.map((r) => (r.id === ws.id ? { ...r, ...next } : r)));
+      },
+    );
   };
 
   // Move the project's host tree into another workspace — the escape hatch an
@@ -911,7 +949,12 @@ export function ProjectFilesView({
     if (!projectId || !project?.remote) return;
     const folder = basename(project.remote.remote_path.replace(/\/+$/, "")) || projectId;
     const dest = projectPathIn(ws, folder);
-    const ok = window.confirm(t("projectFilesView.confirmMoveProject", { dest }));
+    const ok = await confirmAction({
+      title: t("projectFilesView.moveProjectTitle"),
+      body: t("projectFilesView.confirmMoveProject", { dest }),
+      confirmLabel: t("projectFilesView.moveProjectAction"),
+      danger: true,
+    });
     if (!ok) return;
     setWsBusy(true);
     try {
@@ -963,7 +1006,11 @@ export function ProjectFilesView({
         logs_dir: logsDir,
       }).catch(() => {});
     } catch (e) {
-      window.alert(t("projectFilesView.moveProjectFailed", { error: String(e) }));
+      void showMessage({
+        title: t("projectFilesView.moveProjectTitle"),
+        body: t("projectFilesView.moveProjectFailed", { error: String(e) }),
+        error: true,
+      });
     } finally {
       setWsBusy(false);
     }
@@ -976,31 +1023,43 @@ export function ProjectFilesView({
     if (!projectId || !dir) return;
     try {
       const n = await pullLogs(projectId, dir);
-      window.alert(
-        n > 0
-          ? t(n === 1 ? "projectFilesView.pulledLogsOne" : "projectFilesView.pulledLogsMany", { count: n })
-          : t("projectFilesView.noLogsYet"),
-      );
+      await showMessage({
+        title: t("projectFilesView.pullLogsDialogTitle"),
+        body:
+          n > 0
+            ? t(n === 1 ? "projectFilesView.pulledLogsOne" : "projectFilesView.pulledLogsMany", { count: n })
+            : t("projectFilesView.noLogsYet"),
+      });
     } catch (e) {
-      window.alert(t("projectFilesView.copyLogsFailed", { error: String(e) }));
+      await showMessage({
+        title: t("projectFilesView.pullLogsDialogTitle"),
+        body: t("projectFilesView.copyLogsFailed", { error: String(e) }),
+        error: true,
+      });
     }
   };
 
   // Cancel a job (confirmed). Drops the row optimistically; the poll reconciles.
-  const cancelJob = (jobId: string, name: string) => {
+  const cancelJob = async (jobId: string, name: string) => {
     if (!projectDir) return;
-    if (
-      !window.confirm(
-        t("projectFilesView.confirmCancelJob", { jobId, name: name ? ` (${name})` : "" }),
-      )
-    )
-      return;
-    slurmCancel(projectDir, jobId)
-      .then(() => {
-        setJobRows((rs) => rs.filter((r) => r.id !== jobId));
-        if (projectId) useHpcJobsStore.getState().remove(projectId, jobId, "primary");
-      })
-      .catch((e) => window.alert(t("projectFilesView.cancelJobFailed", { error: String(e) })));
+    const ok = await confirmAction({
+      title: t("projectFilesView.cancelJobDialogTitle"),
+      body: t("projectFilesView.confirmCancelJob", { jobId, name: name ? ` (${name})` : "" }),
+      confirmLabel: t("projectFilesView.cancelJobAction"),
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await slurmCancel(projectDir, jobId);
+      setJobRows((rs) => rs.filter((r) => r.id !== jobId));
+      if (projectId) useHpcJobsStore.getState().remove(projectId, jobId, "primary");
+    } catch (e) {
+      await showMessage({
+        title: t("projectFilesView.cancelJobDialogTitle"),
+        body: t("projectFilesView.cancelJobFailed", { error: String(e) }),
+        error: true,
+      });
+    }
   };
 
   // Resolve the scaffold-missing flag whenever the project changes. Failures
@@ -1175,6 +1234,7 @@ export function ProjectFilesView({
     >
       {resizeHandle}
       {importDrop.conflictModal}
+      {dialogs}
       {/* Compact (docked subwindow) viewer: only the project-name/tags/source-
           switch/git-bar header is stripped — the tree's find-files search stays
           topmost. The Files/Git/Search/Apps toolbar (± diverged, sessions, jobs,
@@ -2145,7 +2205,7 @@ export function ProjectFilesView({
                               type="button"
                               className="orange-file-act"
                               title={t("projectFilesView.renameSessionTitle")}
-                              onClick={() => renameSession(hostId, s.name)}
+                              onClick={() => void renameSession(hostId, s.name)}
                             >
                               {t("projectFilesView.rename")}
                             </button>
@@ -2154,7 +2214,7 @@ export function ProjectFilesView({
                               className="orange-file-act"
                               title={t("projectFilesView.killSessionTitle")}
                               aria-label={t("projectFilesView.killSessionAria", { name: s.name })}
-                              onClick={() => killSession(hostId, s.name)}
+                              onClick={() => void killSession(hostId, s.name)}
                             >
                               ×
                             </button>
@@ -2253,7 +2313,7 @@ export function ProjectFilesView({
                 const here = projectWs?.id === ws.id && projectWs?.path === ws.path;
                 return (
                   <div key={`${ws.filesystem ?? ""}/${ws.id}`} className="orange-file-row" title={ws.path}>
-                    <span className="orange-file-name" style={{ cursor: "default" }}>
+                    <span className="orange-file-name" style={{ cursor: "var(--cur-default, default)" }}>
                       <span className="orange-file-dot" aria-hidden="true">{here ? "●" : "○"}</span>
                       {ws.id}
                       <span className={`tmux-session-meta hpc-ws-remaining tone-${expiryTone(ws)}`}>
@@ -2334,7 +2394,7 @@ export function ProjectFilesView({
                     className="orange-file-act"
                     title={t("projectFilesView.cancelJobTitle")}
                     aria-label={t("projectFilesView.cancelJobAria", { id: j.id })}
-                    onClick={() => cancelJob(j.id, j.name)}
+                    onClick={() => void cancelJob(j.id, j.name)}
                   >
                     ×
                   </button>

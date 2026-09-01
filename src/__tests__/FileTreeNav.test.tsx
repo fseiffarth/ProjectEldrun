@@ -151,9 +151,8 @@ describe("file tree navigation", () => {
     expect(document.querySelector(".file-tree-crumb[title='Project root']")).toBeTruthy();
   });
 
-  it("#1 'New File' from the context menu prompts and calls create_file", async () => {
+  it("#1 'New File' from the context menu asks in Eldrun's dialog and calls create_file", async () => {
     const user = userEvent.setup();
-    const promptSpy = vi.spyOn(window, "prompt").mockReturnValue("created.ts");
     await renderPanel();
 
     // Right-click the file-tree background to open the root context menu (New
@@ -162,11 +161,15 @@ describe("file tree navigation", () => {
     fireEvent.contextMenu(document.querySelector(".file-tree")!);
     await user.click(await screen.findByText("New File"));
 
-    expect(promptSpy).toHaveBeenCalled();
+    // The name is asked for in the app's own dialog (`TextPromptDialog`), not in
+    // `window.prompt` — WebKitGTK draws that as an origin-titled browser alert.
+    const field = await screen.findByLabelText("New file name:");
+    await user.type(field, "created.ts");
+    await user.click(screen.getByRole("button", { name: "Create" }));
+
     expect(mockInvoke).toHaveBeenCalledWith("create_file", {
       projectDir: "/tmp/test-project",
       relPath: "created.ts",
     });
-    promptSpy.mockRestore();
   });
 });
