@@ -15,8 +15,8 @@
  * exactly the people most likely to hit a broken experiment.
  *
  * Most gates hide an *entry point* and nothing else: `python_run_debug` takes the
- * Run button off a viewer that keeps working, `agent_mode_toggle` takes a badge off
- * a tab that keeps running. Those flags have nothing to withdraw beyond the button.
+ * Run button off a viewer that keeps working. Those flags have nothing to
+ * withdraw beyond the button.
  *
  * A flag that owns a whole TAB is different, and `EXPERIMENTAL_TAB_KINDS` is that
  * list. Turning one off **withdraws the feature**, open tabs included: leaving a
@@ -47,7 +47,6 @@ import type { TabKind } from "../stores/tabs";
 
 /** Every experimental flag. Keys of `Settings`, all `boolean | undefined`. */
 export const EXPERIMENTAL_FLAGS = [
-  "agent_mode_toggle",
   "python_run_debug",
   "deck_presenter",
   "mail_client",

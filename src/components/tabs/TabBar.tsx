@@ -37,7 +37,6 @@ import {
 import { AddTabMenuList } from "./AddTabMenuList";
 import { useAddTabMenuData } from "./useAddTabMenuData";
 import { CustomAgentDialog } from "./CustomAgentDialog";
-import { type AgentMode, supportsAgentMode } from "./agentModes";
 import { reseedDetached, startDetachedDropSession } from "./detachedDropTargets";
 import { TabHoverCard } from "./TabHoverCard";
 import { useFastMode } from "../../lib/fastMode";
@@ -167,9 +166,6 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
   const ensureTab = useTabsStore((s) => s.ensureTab);
   const removeTab = useTabsStore((s) => s.removeTab);
   const setTabLocation = useTabsStore((s) => s.setTabLocation);
-  const setAgentMode = useTabsStore((s) => s.setAgentMode);
-  // Experimental — off by default, on in debug mode: the Plan/Auto badge.
-  const agentModeToggle = useExperimental("agent_mode_toggle");
   // Experimental — off for users, on in debug: the in-app browser (#61). This is
   // the entry-point half of the gate; the other half is the withdrawal
   // (`lib/experimentalSweep`), which closes any browser tab already open when the
@@ -178,8 +174,6 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
   // Where a fresh browser tab opens. Empty/unset = the built-in start page, not
   // a remote request.
   const browserHome = useSettingsStore((s) => s.settings?.browser_home_url);
-  // Timestamp of the last mode flip, for the respawn debounce in handleAgentMode.
-  const lastModeToggle = useRef(0);
   const closeGroup = useTabsStore((s) => s.closeGroup);
   const hideGroup = useTabsStore((s) => s.hideGroup);
   // Per-subwindow right file viewer: toggle state lives on the group node.
@@ -462,23 +456,6 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
     // menus can never drift.
     addTab(buildStaticTabSpec(item, projectCwd, projectName, t));
     setMenuPos(null);
-  }
-
-  // Flip an agent tab between Plan and Auto. This rewrites the tab's launch args,
-  // which respawns its PTY — the agent resumes onto the same conversation, but a
-  // turn in flight is killed with it, so a busy tab asks first. The debounce keeps
-  // a burst of clicks from tripping the backend's crash-loop guard (which refuses
-  // to respawn a PTY that has spawned too often in 10s) and leaving a dead tab.
-  function handleAgentMode(key: string, ptyId: string, current?: AgentMode) {
-    const now = Date.now();
-    if (now - lastModeToggle.current < 1000) return;
-    if (busyByTab[ptyId] && !window.confirm(t("tabBar.confirmModeSwitch"))) {
-      return;
-    }
-    lastModeToggle.current = now;
-    // Unset (the agent's own default) resolves to Plan on first click; after that
-    // it is a straight two-way flip.
-    setAgentMode(key, current === "plan" ? "auto" : "plan");
   }
 
   /** Box "+" menu: a Files (Project) tab rooted at ONE member (the viewer
@@ -1266,32 +1243,22 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                 mirror, a clickable toggle when the file exists on both sides.
                 Shared with the detached strip (see TabLocalityBadges). */}
             <TabSourceBadge tabKey={tab.key} />
-            {/* Planner/doer badge (experimental, off by default) — click to switch
-                the agent between Plan and Auto. Only for agents that can actually
-                be launched into a mode AND resume on the respawn that costs (see
-                agentModes.ts); every other agent tab is untouched. */}
-            {agentModeToggle && supportsAgentMode(tab.cmd) && (() => {
-              const mode = tab.agentMode;
-              const title =
-                mode === "plan"
-                  ? t("tabBar.modePlanTitle")
-                  : mode === "auto"
-                    ? t("tabBar.modeAutoTitle")
-                    : t("tabBar.modeDefaultTitle");
-              return (
-                <button
-                  className={`tab-agent-mode ${mode ?? "unset"}`}
-                  title={`${title}. ${t("tabBar.modeRestartSuffix")}`}
-                  onPointerDown={(e) => e.stopPropagation()}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleAgentMode(tab.key, ptyId, mode);
-                  }}
-                >
-                  {mode === "plan" ? "⏸" : mode === "auto" ? "⚡" : "◇"}
-                </button>
-              );
-            })()}
+            {/* TeX ⇄ PDF coupling mark: this tab's other half (the compiled PDF,
+                or the LaTeX source that produces it) when that tab is open —
+                click to jump to it. Derived from the paths, so it needs nothing
+                persisted on the tab; see lib/texPdfLink. */}
+            <TabTexLinkBadge
+              partner={texPdfPartner(texPdfTabs, tab)}
+              onFocus={setActive}
+            />
+            {/* There is deliberately no Plan/Auto badge here. An agent's
+                permission mode is the agent's own to set, through its own CLI
+                (Claude's shift+tab, Codex's mode picker) — Eldrun launches the
+                plain command and injects no mode flag. The badge that used to
+                sit here rewrote the tab's launch args, which respawned the PTY
+                on every flip; the mode a user sets inside the session still
+                survives a restart, because `services::agent_session` re-applies
+                the mode Claude's own hook recorded. */}
             {/* Locality badge — click to choose where this agent/shell tab runs:
                 the local mirror, the primary host, or (multi-host remote,
                 docs/multi_host_remote_plan.md) any worker machine. Only shown for

@@ -26,7 +26,6 @@ import {
   customAgentToItem,
   type StaticMenuItem,
 } from "../tabs/newTabItems";
-import { supportsAgentMode, withAgentMode, type AgentMode } from "../tabs/agentModes";
 import { useT } from "../../lib/i18n";
 import { useAlertsFeed, type AlertsFeed } from "../files/useAlertsFeed";
 
@@ -166,10 +165,12 @@ async function agentChoices(): Promise<CatalogChoice[]> {
       public: {
         id: await invoke<string>("mobile_opaque_id", { domain: "agent", value: item.cmd }),
         label: item.label,
-        modes:
-          settings?.agent_mode_toggle && supportsAgentMode(item.cmd)
-            ? ["plan", "auto"]
-            : [],
+        // Always empty: Eldrun no longer launches an agent into a permission
+        // mode, so there is no launch mode for the phone to pick. The phone can
+        // still change the mode of a *running* session, which it does the way a
+        // person would — pressing Shift+Tab and reading the TUI's own status
+        // line back (`mobile-web/src/terminal/agentModes.ts`).
+        modes: [] as string[],
       },
     })),
   );
@@ -233,13 +234,6 @@ async function create(request: CreateRequest, t: ReturnType<typeof useT>): Promi
       return { status: "error", code: "unsupported_mode", message: "Agent mode is unavailable" };
     }
     spec = buildStaticTabSpec(choice.item, cwd, project.name, t);
-    if (request.mode) {
-      spec = {
-        ...spec,
-        args: withAgentMode(spec.cmd, spec.args ?? [], request.mode as AgentMode),
-        agentMode: request.mode as AgentMode,
-      };
-    }
   }
   let created: TabEntry;
   try {

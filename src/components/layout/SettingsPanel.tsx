@@ -983,18 +983,6 @@ export function SettingsDialog({
               }
             />
 
-            <ToggleCard
-              label={t("settings.agentModeToggle")}
-              checked={experimentalEnabled(settings, "agent_mode_toggle")}
-              onChange={(e) => void updateSettings({ agent_mode_toggle: e.target.checked })}
-              help={
-                <>
-                  {t("settings.agentModeHelp1")} <b>Plan</b> {t("settings.agentModeHelp2")}{" "}
-                  <b>Auto</b> {t("settings.agentModeHelp3")}
-                </>
-              }
-            />
-
             {/* An experiment rather than the default because WebGL rides the
                 GPU/driver path the DMABUF re-test failed on (flicker, missing
                 content, renderer crash — docs/typing_latency_plan.md Step 4):

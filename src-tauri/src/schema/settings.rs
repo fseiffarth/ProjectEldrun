@@ -317,15 +317,6 @@ pub struct Settings {
     /// day rather than on every window. Written by the recap host itself.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub daily_stats_last_shown: Option<String>,
-    /// EXPERIMENTAL, default OFF. When true, agent tabs whose agent supports it
-    /// (currently only Claude) show a Plan/Auto badge that switches the tab's
-    /// authority mode — `--permission-mode plan` vs `acceptEdits`. Switching
-    /// respawns the agent (the mode is a launch flag), which is only safe because
-    /// the backend resumes the conversation; see `services::agent_session`. Purely
-    /// a frontend gate: the flag reaches the backend inside `opts.args` like any
-    /// other launch arg, so nothing in the spawn path reads this.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub agent_mode_toggle: Option<bool>,
     /// EXPERIMENTAL, default OFF. When true, a Python file in the native code
     /// viewer gets the Run/Debug buttons and the breakpoint gutter (#87). Purely a
     /// frontend gate, and off by default because Run *executes the file*: the
@@ -765,13 +756,6 @@ impl Settings {
         flag.unwrap_or_else(|| self.debug.unwrap_or(false))
     }
 
-    /// Whether the experimental per-tab Plan/Auto agent-mode badge is offered.
-    /// Switching a mode restarts the agent, so nobody outside debug mode gets that
-    /// behaviour without asking for it.
-    pub fn agent_mode_toggle(&self) -> bool {
-        self.experimental(self.agent_mode_toggle)
-    }
-
     /// Whether the experimental Python Run/Debug buttons and breakpoint gutter are
     /// offered in the code viewer. Run *executes the file*, so outside debug mode it
     /// is opt-in.
@@ -830,7 +814,6 @@ mod tests {
     fn experimental_flags_default_to_debug_mode() {
         let off = Settings::default();
         assert!(!off.python_run_debug());
-        assert!(!off.agent_mode_toggle());
         assert!(!off.deck_presenter());
         assert!(!off.web_browser());
 
@@ -839,7 +822,6 @@ mod tests {
             ..Default::default()
         };
         assert!(debug.python_run_debug());
-        assert!(debug.agent_mode_toggle());
         assert!(debug.deck_presenter());
         assert!(debug.web_browser());
 

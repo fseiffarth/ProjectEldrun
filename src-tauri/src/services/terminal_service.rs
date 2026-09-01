@@ -346,7 +346,6 @@ pub fn sanitize_tab_layout(
             "env",
             "location",
             "args",
-            "agentMode",
             HOST_BOUND_UID_KEY,
         ] {
             tab.extra.remove(key);

@@ -34,7 +34,6 @@ import {
   type ViewerState,
 } from "./tabs";
 import { useRunHostPrefStore } from "./runHostPref";
-import { type AgentMode } from "../components/tabs/agentModes";
 import { useTimerStore } from "./timer";
 import { useSettingsStore, whenSettingsLoaded } from "./settings";
 import { mayAutoTouch, targetOfSpec } from "../lib/hpcHost";
@@ -779,7 +778,6 @@ interface ProjectRuntimeSwitchedPayload {
     viewer?: "pdf" | "image" | "markdown" | "text";
     viewerState?: ViewerState;
     location?: "local" | "remote";
-    agentMode?: AgentMode;
     /** A "projectfiles" tab's browsed folder (see TabEntry.folder). */
     folder?: string;
     /** A "browser" tab's committed address (see TabEntry.url). */

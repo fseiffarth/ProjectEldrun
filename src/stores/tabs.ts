@@ -1,7 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { create } from "zustand";
 import { useShallow } from "zustand/react/shallow";
-import { type AgentMode, withAgentMode } from "../components/tabs/agentModes";
 import type { InternalViewer } from "../lib/viewers/fileUtils";
 import type { AutocompleteMode } from "../types";
 import { forgetPty } from "../lib/promptCount";
@@ -562,16 +561,14 @@ export interface TabEntry {
   // default (agents local, shells remote — see effectiveTabLocation). Inert on a
   // local project. Persisted so the choice survives a restart.
   location?: TabLocation;
-  // The tab's agent authority mode — the planner/doer split ("plan" proposes,
-  // "auto" auto-accepts edits). Only meaningful for agents in the capability
-  // table (Claude and Gemini; see components/tabs/agentModes.ts) and only
-  // surfaced when the experimental `agent_mode_toggle` setting is on. Absent →
-  // no mode flag is passed and the agent runs in its own default (ask each
-  // time), which is the behaviour of every tab predating this feature. The mode
-  // rides in `args` as the agent's mode flag (`--permission-mode`/`--approval-mode
-  // <x>`); this field is the durable record of it, since `args` are rebuilt from
-  // scratch on restore (loadFromLayout).
-  agentMode?: AgentMode;
+  // There is deliberately no `agentMode` here. An agent tab launches with the
+  // plain CLI command and no permission-mode flag; the mode is the agent's own
+  // to set, inside its own TUI. Eldrun used to carry a per-tab Plan/Auto mode
+  // and fold it into `args`, which made every flip a PTY respawn — and made the
+  // *tab layout* a second, disagreeing authority record beside whatever the
+  // session was actually in. The mode a user sets in-session still survives a
+  // restart: `services::agent_session` re-applies the one Claude's own hook
+  // recorded onto the `--resume` respawn.
   // For "projectfiles" tabs: the project-relative folder the tree is browsed
   // into. Persisted, so "Open in new tab" on a folder (and the tab's own
   // navigation) survive a restart instead of coming back at the project root.
@@ -755,9 +752,6 @@ export interface SavedTabEntry {
   viewerState?: ViewerState;
   // SSH-sync Phase 0: persisted per-tab local/remote locality (see TabEntry).
   location?: TabLocation;
-  // Persisted planner/doer mode (see TabEntry.agentMode). Re-applied to the
-  // launch args on restore, so a tab comes back in the mode it was left in.
-  agentMode?: AgentMode;
   // Persisted browsed folder of a "projectfiles" tab (see TabEntry.folder).
   folder?: string;
   // Persisted committed address of a "browser" tab (see TabEntry.url). This one
@@ -783,15 +777,15 @@ export interface SavedTabEntry {
  * place the ~20-field persisted tab shape is enumerated. Used by both persist
  * paths (`persistScope`'s debounced save and the project-switch snapshot in
  * `stores/projects.ts`); maintaining the list field-for-field in two places is
- * how `folder`, viewer scroll state, `agentMode` and the tmux names each got
- * lost on one path while the other saved them.
+ * how `folder`, viewer scroll state and the tmux names each got lost on one
+ * path while the other saved them.
  *
  * Field notes (why several of these are here at all):
  *  - `url`: a "browser" tab's COMMITTED address (#61) — this projection is the
  *    only path to disk, and a restored tab shows it on its resume card, never
  *    auto-navigated.
- *  - `agentMode` / `resumeArgs`: the launch args that carry them are NOT
- *    persisted; both are re-applied when args are rebuilt in `loadFromLayout`.
+ *  - `resumeArgs`: the launch args that carry it are NOT persisted; it is
+ *    re-applied when args are rebuilt in `loadFromLayout`.
  *  - `tmuxSession` / `tmuxAttach`: dropping these mints a fresh session name on
  *    restore and `tmux new-session -A` FORKS a second remote session instead of
  *    reattaching the running one.
@@ -815,7 +809,6 @@ export function toSavedTabEntry(t: TabEntry): SavedTabEntry {
     viewerState: t.viewerState,
     // SSH-sync Phase 0: the per-tab locality.
     location: t.location,
-    agentMode: t.agentMode,
     // A "projectfiles" tab's browsed folder.
     folder: t.folder,
     url: t.url,
@@ -1013,11 +1006,6 @@ interface TabsStore {
   // remote project). No-op when unchanged. The CenterPanel's localOnly/cwd
   // computation reads the result so the next mount spawns on the chosen side.
   setTabLocation: (key: string, location: TabLocation) => void;
-  // Set an agent tab's planner/doer mode. Rewrites the tab's launch args, which
-  // respawns its PTY (TerminalView's spawn effect keys on the args) — the agent
-  // comes back on the same conversation via the backend's resume rewrite. No-op
-  // when unchanged, or for an agent with no mode support.
-  setAgentMode: (key: string, mode: AgentMode) => void;
   // Merge a patch into an embed tab's persisted viewer position (scroll/zoom/
   // pan). The viewer panes call this as the reader scrolls/zooms; the debounced
   // saveLayout effect then flushes it to project.json (see ViewerState).
@@ -2416,39 +2404,17 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     });
   },
 
-  setAgentMode: (key, mode) => {
-    set((s) => {
-      const { tabs, layout, focusedGroupId } = currentScopeState(s);
-      let changed = false;
-      const nextTabs = tabs.map((t) => {
-        if (t.key !== key || t.agentMode === mode) return t;
-        const prev = t.args ?? [];
-        const args = withAgentMode(t.cmd, prev, mode);
-        // withAgentMode hands back the very same array for an agent with no mode
-        // support — don't record a mode we didn't actually pass.
-        if (args === prev) return t;
-        changed = true;
-        return {
-          ...t,
-          agentMode: mode,
-          // The args change is what respawns the PTY (TerminalView keys its
-          // spawn effect on them).
-          args,
-          // The respawn replays `initialInput` — for Claude that is the
-          // `/rename <project>` launch command. Typing it again into a session
-          // we are *resuming* would be junk, so retire it once the tab has
-          // launched at least once.
-          initialInput: undefined,
-        };
-      });
-      // Stable array when nothing changed, so an idle re-toggle doesn't churn
-      // the tabs array / wake the saveLayout debounce.
-      if (!changed) return {};
-      return writeScope(s, s.scope, nextTabs, layout, focusedGroupId);
-    });
-  },
-
   setViewerState: (key, patch) => {
+    // Popout heap (#231): viewer state (scroll/zoom/sort/delimiter/breakpoints)
+    // persists on the payload in the MAIN store. Keep the popout's own seed
+    // registry current too, so a pane remounting inside the popout before the
+    // next reseed still recovers what it just wrote.
+    const ctx = getDetachedWindowContext();
+    if (ctx) {
+      setDetachedViewerState(key, { ...getDetachedViewerState(key), ...patch });
+      ctx.pushEdit({ kind: "setViewerState", key, patch });
+      return;
+    }
     set((s) => {
       const { tabs, layout, focusedGroupId } = currentScopeState(s);
       const tab = tabs.find((t) => t.key === key);
@@ -3936,32 +3902,13 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
             ? RESUMABLE_AGENTS[t.cmd](t.sessionId)
             : (t.resumeArgs ?? [])
           : [];
-      // Args are rebuilt from scratch here, so a persisted planner/doer mode has
-      // to be re-applied onto them or the tab would silently come back in the
-      // agent's default mode — half the point of the toggle is that the split
-      // survives a restart.
-      //
-      // **A tab comes back in the mode it was in, and absence is one of those
-      // modes.** The badge has three states (`◇` unset / `⏸` plan / `⚡` auto) and
-      // unset is not a missing value: it is the tab launching with no
-      // `--permission-mode` at all, i.e. the agent's own default, which is what
-      // every agent tab nobody ever clicked the badge on is running in. Restoring
-      // that as Plan changed the mode of a resumed session on every relaunch — the
-      // one thing the persistence is here to prevent.
-      //
-      // It used to fail **closed** into Plan for a mode-capable tab with no
-      // persisted mode, on the grounds that the layout was read out of the project
-      // tree and deleting `"agentMode":"plan"` from an entry would promote a
-      // planner into a doer. Both halves of that have since stopped holding.
-      // `load_terminal_session` reads `<state_dir>/sessions/<id>/terminals.json`
-      // and nothing else (`sandbox_hardening_plan` Phase 1 / #142) — the
-      // project-tree copy is export-only. And against a layout that genuinely IS
-      // attacker-written the default buys nothing anyway: `sanitize_tab_layout`
-      // keeps `agentMode` for a known `cmd`, so such a file writes
-      // `"agentMode":"auto"` outright and never takes the absent branch. It cost a
-      // real behaviour and closed nothing.
-      const restoredMode = t.agentMode;
-      const args = restoredMode ? withAgentMode(t.cmd, base, restoredMode) : base;
+      // No permission-mode flag is folded in here, and a layout written before
+      // that toggle was removed carries an `agentMode` this ignores. An agent
+      // restores on the plain resume command and picks its mode up where it
+      // keeps it: Claude's own hook record, re-applied by the backend's
+      // `--resume` rewrite (`services::agent_session`), and for every other
+      // agent whatever its CLI does on resume.
+      const args = base;
       // Codex mints its conversation id itself, so `sessionId` is Eldrun's
       // stable *binding* key rather than a CLI argument. The backend resolves
       // that key from ELDRUN_TAB_UID before it spawns the restored tab. Layouts
@@ -3994,8 +3941,6 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
         viewerState: t.viewerState,
         // SSH-sync Phase 0: restore the persisted per-tab locality.
         location: t.location,
-        // Restore the planner/doer mode (already folded into `args` above).
-        agentMode: restoredMode,
         // A "projectfiles" tab reopens on the folder it was browsed into.
         folder: t.folder,
         // A "browser" tab reopens holding the address it was last on — on its

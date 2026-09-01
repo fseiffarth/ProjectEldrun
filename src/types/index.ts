@@ -424,11 +424,6 @@ export interface Settings {
   /** UTC date ("YYYY-MM-DD") the recap was last auto-shown, so it opens once a day
    *  rather than once per window. Written by the recap host. */
   daily_stats_last_shown?: string;
-  /** EXPERIMENTAL, default OFF. Shows a Plan/Auto badge on agent tabs whose agent
-   *  supports an absolute mode flag AND resumes on respawn (currently Claude only —
-   *  see components/tabs/agentModes.ts). Switching restarts the agent; the
-   *  conversation is resumed, the terminal scrollback is not. */
-  agent_mode_toggle?: boolean;
   /** EXPERIMENTAL, default OFF. Gives a Python file in the code viewer its Run/Debug
    *  buttons and the breakpoint gutter (#87). Off by default because Run *executes
    *  the file* — one click away from an editor — so it is opt-in. Go-to-definition

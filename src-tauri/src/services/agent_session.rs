@@ -1,5 +1,5 @@
 //! Per-tab Claude session tracking so Eldrun can resume the *current* session
-//! after a `/clear`.
+//! after a `/clear` — and resume it in the permission mode it was left in.
 //!
 //! Claude is launched with a deterministic launch id (`--session-id <uuid>`),
 //! but `/clear` rolls Claude onto a fresh session id with no recorded link back
@@ -129,20 +129,26 @@ fn codex_session_exists(root: &std::path::Path, uuid: &str) -> bool {
 fn resolve_claude_session(opts: PtyOptions) -> PtyOptions {
     let projects = paths::home_dir().join(".claude").join("projects");
     let project_id = opts.project_id.clone();
-    resolve_claude_session_impl(opts, &projects, |uid| {
-        read_live_session_for(project_id.as_deref(), uid)
-    })
+    resolve_claude_session_impl(
+        opts,
+        &projects,
+        |uid| read_live_session_for(project_id.as_deref(), uid),
+        |uid| read_live_mode_for(project_id.as_deref(), uid),
+    )
 }
 
 /// Testable core of [`resolve_claude_session`]: `projects` is the Claude session
-/// root and `live_lookup` maps a launch id → recorded live id (if any).
-fn resolve_claude_session_impl<F>(
+/// root, `live_lookup` maps a launch id → recorded live id (if any), and
+/// `mode_lookup` maps a launch id → the last hook-recorded permission mode.
+fn resolve_claude_session_impl<F, M>(
     mut opts: PtyOptions,
     projects: &std::path::Path,
     live_lookup: F,
+    mode_lookup: M,
 ) -> PtyOptions
 where
     F: Fn(&str) -> Option<String>,
+    M: Fn(&str) -> Option<String>,
 {
     if opts.cmd != "claude" {
         return opts;
@@ -173,6 +179,27 @@ where
         Some(id) => {
             opts.args[i] = "--resume".to_string();
             opts.args[i + 1] = id;
+            // Claude restores the mode a session was *launched* with, but NOT a
+            // mode the user cycled to with shift+tab mid-session (the cycle fires
+            // no hook event; verified empirically against 2.1.251) — so a
+            // respawned tab used to come back in the wrong mode. Re-apply the
+            // last mode the Stop hook recorded. This is now the ONLY thing that
+            // carries a permission mode across a respawn — Eldrun launches the
+            // plain command and has no mode toggle of its own — so what it
+            // preserves is exactly what the user set inside the CLI. An explicit
+            // mode flag already on the args (a custom agent's own flag) outranks
+            // the record, and anything outside the known mode set is discarded —
+            // the record is hook-parsed JSON becoming a CLI argument.
+            let has_mode_flag = opts
+                .args
+                .iter()
+                .any(|a| a == "--permission-mode" || a == "--dangerously-skip-permissions");
+            if !has_mode_flag {
+                if let Some(mode) = mode_lookup(&launch_id).filter(|m| is_permission_mode(m)) {
+                    opts.args.push("--permission-mode".to_string());
+                    opts.args.push(mode);
+                }
+            }
         }
         None => {
             // No resumable log yet → (re)create under the launch id.
@@ -324,6 +351,54 @@ pub fn read_live_session_in(dir: &std::path::Path, uid: &str) -> Option<String> 
     let id = raw.trim().to_string();
     if is_uuidish(&id) {
         Some(id)
+    } else {
+        None
+    }
+}
+
+/// The permission modes Claude's hook payloads report and its `--permission-mode`
+/// flag accepts ("manual" is a CLI-only alias that hooks report as "default").
+/// A recorded value outside this set is discarded: the record is written by a
+/// hook parsing attacker-visible JSON, and the value becomes a CLI argument.
+fn is_permission_mode(s: &str) -> bool {
+    matches!(
+        s,
+        "default" | "plan" | "acceptEdits" | "auto" | "dontAsk" | "bypassPermissions"
+    )
+}
+
+/// Read the last permission mode recorded for `uid` — the Stop hook writes
+/// `<uid>.mode` beside the live-session record. Same two-root, newest-wins logic
+/// as [`read_live_session_for`], for the same container-toggle reason.
+pub fn read_live_mode_for(project_id: Option<&str>, uid: &str) -> Option<String> {
+    let root = live_sessions_dir();
+    let mut best: Option<(std::time::SystemTime, String)> = None;
+    let mut consider = |dir: &std::path::Path| {
+        if let Some(mode) = read_live_mode_in(dir, uid) {
+            let stamp = std::fs::metadata(dir.join(format!("{uid}.mode")))
+                .and_then(|m| m.modified())
+                .unwrap_or(std::time::UNIX_EPOCH);
+            if best.as_ref().is_none_or(|(t, _)| stamp >= *t) {
+                best = Some((stamp, mode));
+            }
+        }
+    };
+    consider(&root);
+    if let Some(pid) = project_id {
+        consider(&project_live_sessions_dir(pid));
+    }
+    best.map(|(_, m)| m)
+}
+
+/// Testable core of [`read_live_mode_for`] against an explicit directory.
+fn read_live_mode_in(dir: &std::path::Path, uid: &str) -> Option<String> {
+    if !is_uuid_shaped(uid) {
+        return None;
+    }
+    let raw = std::fs::read_to_string(dir.join(format!("{uid}.mode"))).ok()?;
+    let mode = raw.trim().to_string();
+    if is_permission_mode(&mode) {
+        Some(mode)
     } else {
         None
     }
@@ -496,8 +571,9 @@ pub fn codex_binder_enabled() -> bool {
     !matches!(codex_hook_state(), CodexHookState::Enabled)
 }
 
-/// Install (idempotently) the `SessionStart` hook and its script for every agent
-/// Eldrun can track (Claude + Codex), so it learns each tab's live session id.
+/// Install (idempotently) the session hooks and their script for every agent
+/// Eldrun can track (Claude + Codex), so it learns each tab's live session id —
+/// and, for Claude (`SessionStart` + `Stop`), its live permission mode.
 /// Safe to call on every startup. The shared script keys by `$ELDRUN_TAB_UID`
 /// and reads `session_id` from the hook's stdin JSON — both CLIs use that schema.
 pub fn install_session_start_hook() -> std::io::Result<()> {
@@ -529,24 +605,29 @@ fn write_hook_script() -> std::io::Result<()> {
     Ok(())
 }
 
-/// POSIX-sh hook body. Reads the SessionStart JSON on stdin, extracts
-/// `session_id`, and records it under `<live_dir>/<ELDRUN_TAB_UID>`. No jq
-/// dependency: a single `sed` pulls the uuid out of the one-line JSON.
+/// POSIX-sh hook body. Reads the hook JSON on stdin and records, per tab key:
+/// `session_id` → `<live_dir>/<ELDRUN_TAB_UID>`, and — when the event carries it
+/// (`SessionStart` does not; `Stop` does) — `permission_mode` →
+/// `<live_dir>/<ELDRUN_TAB_UID>.mode`. No jq dependency: one `sed` per field
+/// pulls the value out of the one-line JSON.
 #[cfg(not(windows))]
 fn hook_script_body(live_dir: &str) -> String {
     format!(
         "#!/bin/sh\n\
-         # Eldrun SessionStart hook — records Claude's live session id per tab so\n\
-         # Eldrun can resume the current session (incl. after /clear). No-op unless\n\
+         # Eldrun agent hook (SessionStart + Stop) — records Claude's live session\n\
+         # id and permission mode per tab so Eldrun can resume the current session\n\
+         # in the mode it was left in (incl. after /clear). No-op unless\n\
          # launched by Eldrun (ELDRUN_TAB_UID set). Managed by Eldrun; do not edit.\n\
          [ -n \"$ELDRUN_TAB_UID\" ] || exit 0\n\
          case \"$ELDRUN_TAB_UID\" in *[!a-zA-Z0-9-]*|\"\") exit 0 ;; esac\n\
          input=$(cat)\n\
          sid=$(printf '%s' \"$input\" | tr '\\n' ' ' | sed -n 's/.*\"session_id\"[[:space:]]*:[[:space:]]*\"\\([0-9a-fA-F-]*\\)\".*/\\1/p')\n\
-         [ -n \"$sid\" ] || exit 0\n\
+         mode=$(printf '%s' \"$input\" | tr '\\n' ' ' | sed -n 's/.*\"permission_mode\"[[:space:]]*:[[:space:]]*\"\\([a-zA-Z]*\\)\".*/\\1/p')\n\
+         [ -n \"$sid\" ] || [ -n \"$mode\" ] || exit 0\n\
          dir=\"{live_dir}\"\n\
          mkdir -p \"$dir\" 2>/dev/null || exit 0\n\
-         printf '%s' \"$sid\" > \"$dir/$ELDRUN_TAB_UID\"\n\
+         [ -n \"$sid\" ] && printf '%s' \"$sid\" > \"$dir/$ELDRUN_TAB_UID\"\n\
+         [ -n \"$mode\" ] && printf '%s' \"$mode\" > \"$dir/$ELDRUN_TAB_UID.mode\"\n\
          exit 0\n",
         live_dir = live_dir,
     )
@@ -574,20 +655,25 @@ fn hook_script_body(live_dir: &str) -> String {
          if ($uid -notmatch '^[A-Za-z0-9-]+$') {{ exit 0 }}\r\n\
          $payload = [Console]::In.ReadToEnd()\r\n\
          $m = [regex]::Match($payload, '\"session_id\"\\s*:\\s*\"([0-9A-Fa-f-]+)\"')\r\n\
-         if (-not $m.Success) {{ exit 0 }}\r\n\
-         $sid = $m.Groups[1].Value\r\n\
+         $mm = [regex]::Match($payload, '\"permission_mode\"\\s*:\\s*\"([A-Za-z]+)\"')\r\n\
+         if ((-not $m.Success) -and (-not $mm.Success)) {{ exit 0 }}\r\n\
          $dir = '{live_dir}'\r\n\
          [void](New-Item -ItemType Directory -Force -Path $dir -ErrorAction SilentlyContinue)\r\n\
-         [IO.File]::WriteAllText((Join-Path $dir $uid), $sid)\r\n\
+         if ($m.Success) {{ [IO.File]::WriteAllText((Join-Path $dir $uid), $m.Groups[1].Value) }}\r\n\
+         if ($mm.Success) {{ [IO.File]::WriteAllText((Join-Path $dir ($uid + '.mode')), $mm.Groups[1].Value) }}\r\n\
          exit 0\r\n",
         live_dir = live_dir,
     )
 }
 
-/// Merge our `SessionStart` handler into a Claude `settings.json`, preserving all
-/// other content and other hooks. Idempotent: a handler already pointing at our
-/// script is left untouched. The matcher is omitted so the hook fires for every
-/// `source` (startup / resume / clear / compact).
+/// Merge our handlers into a Claude `settings.json`, preserving all other content
+/// and other hooks. `SessionStart` tracks the live session id across
+/// startup/resume/clear/compact; `Stop` re-records it *with* `permission_mode`
+/// after every response — SessionStart payloads don't carry the mode and a
+/// shift+tab mode cycle fires no event of its own, so the latest Stop record is
+/// what resume re-applies. Idempotent per event: a handler already pointing at
+/// our script is left untouched. Matchers are omitted so each hook fires for
+/// every `source`.
 fn register_hook_in_settings(settings_path: &std::path::Path) -> std::io::Result<()> {
     if let Some(parent) = settings_path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -606,31 +692,36 @@ fn register_hook_in_settings(settings_path: &std::path::Path) -> std::io::Result
     if !hooks.is_object() {
         *hooks = serde_json::json!({});
     }
-    let session_start = hooks
-        .as_object_mut()
-        .unwrap()
-        .entry("SessionStart")
-        .or_insert_with(|| serde_json::json!([]));
-    if !session_start.is_array() {
-        *session_start = serde_json::json!([]);
+    let mut changed = false;
+    for event in ["SessionStart", "Stop"] {
+        let entry = hooks
+            .as_object_mut()
+            .unwrap()
+            .entry(event)
+            .or_insert_with(|| serde_json::json!([]));
+        if !entry.is_array() {
+            *entry = serde_json::json!([]);
+        }
+        let arr = entry.as_array_mut().unwrap();
+        let already = arr.iter().any(|group| {
+            group
+                .get("hooks")
+                .and_then(|h| h.as_array())
+                .is_some_and(|hs| {
+                    hs.iter()
+                        .any(|h| h.get("command").and_then(|c| c.as_str()) == Some(cmd.as_str()))
+                })
+        });
+        if !already {
+            arr.push(serde_json::json!({
+                "hooks": [ { "type": "command", "command": cmd } ]
+            }));
+            changed = true;
+        }
     }
-    let arr = session_start.as_array_mut().unwrap();
-
-    let already = arr.iter().any(|group| {
-        group
-            .get("hooks")
-            .and_then(|h| h.as_array())
-            .is_some_and(|hs| {
-                hs.iter()
-                    .any(|h| h.get("command").and_then(|c| c.as_str()) == Some(cmd.as_str()))
-            })
-    });
-    if already {
+    if !changed {
         return Ok(());
     }
-    arr.push(serde_json::json!({
-        "hooks": [ { "type": "command", "command": cmd } ]
-    }));
 
     let serialized = serde_json::to_string_pretty(&root).map_err(std::io::Error::other)?;
     std::fs::write(settings_path, serialized)?;
@@ -773,9 +864,12 @@ mod tests {
         let uuid = "00000000-0000-0000-0000-000000000000";
         let projects = projects_with_sessions(&[]);
         let out =
-            resolve_claude_session_impl(opts_with_args(&["--session-id", uuid]), &projects, |_| {
-                None
-            });
+            resolve_claude_session_impl(
+                opts_with_args(&["--session-id", uuid]),
+                &projects,
+                |_| None,
+                |_| None,
+            );
         assert_eq!(out.args, vec!["--session-id".to_string(), uuid.to_string()]);
         // The launch id is always exposed to the SessionStart hook.
         assert_eq!(
@@ -790,9 +884,12 @@ mod tests {
         let uuid = "00000000-0000-0000-0000-000000000000";
         let projects = projects_with_sessions(&[uuid]);
         let out =
-            resolve_claude_session_impl(opts_with_args(&["--session-id", uuid]), &projects, |_| {
-                None
-            });
+            resolve_claude_session_impl(
+                opts_with_args(&["--session-id", uuid]),
+                &projects,
+                |_| None,
+                |_| None,
+            );
         assert_eq!(out.args, vec!["--resume".to_string(), uuid.to_string()]);
         let _ = std::fs::remove_dir_all(&projects);
     }
@@ -809,6 +906,7 @@ mod tests {
             opts_with_args(&["--resume", launch]),
             &projects,
             |uid| (uid == launch).then(|| live.to_string()),
+            |_| None,
         );
         assert_eq!(out.args, vec!["--resume".to_string(), live.to_string()]);
         assert_eq!(
@@ -825,7 +923,7 @@ mod tests {
         let launch = "00000000-0000-0000-0000-000000000000";
         let projects = projects_with_sessions(&[]);
         let out =
-            resolve_claude_session_impl(opts_with_args(&["--resume", launch]), &projects, |_| None);
+            resolve_claude_session_impl(opts_with_args(&["--resume", launch]), &projects, |_| None, |_| None);
         assert_eq!(
             out.args,
             vec!["--session-id".to_string(), launch.to_string()]
@@ -838,7 +936,7 @@ mod tests {
         let mut opts = opts_with_args(&["--session-id", "abc-123"]);
         opts.cmd = "bash".to_string();
         let projects = projects_with_sessions(&[]);
-        let out = resolve_claude_session_impl(opts, &projects, |_| Some("x".to_string()));
+        let out = resolve_claude_session_impl(opts, &projects, |_| Some("x".to_string()), |_| None);
         assert_eq!(
             out.args,
             vec!["--session-id".to_string(), "abc-123".to_string()]
@@ -865,7 +963,7 @@ mod tests {
     fn resolve_leaves_args_without_session_flag_untouched() {
         let projects = projects_with_sessions(&[]);
         let out =
-            resolve_claude_session_impl(opts_with_args(&["--foo", "bar"]), &projects, |_| None);
+            resolve_claude_session_impl(opts_with_args(&["--foo", "bar"]), &projects, |_| None, |_| None);
         assert_eq!(out.args, vec!["--foo".to_string(), "bar".to_string()]);
         let _ = std::fs::remove_dir_all(&projects);
     }
@@ -1024,6 +1122,8 @@ mod tests {
         assert!(body.contains("[ -n \"$ELDRUN_TAB_UID\" ] || exit 0"));
         assert!(body.contains("/home/x/.local/share/eldrun/live_sessions"));
         assert!(body.contains("\"session_id\""));
+        assert!(body.contains("\"permission_mode\""));
+        assert!(body.contains(".mode"));
     }
 
     #[cfg(windows)]
@@ -1034,6 +1134,8 @@ mod tests {
         assert!(body.contains("if ([string]::IsNullOrEmpty($uid)) { exit 0 }"));
         assert!(body.contains(r"C:\Users\x\AppData\Roaming\eldrun\live_sessions"));
         assert!(body.contains("\"session_id\""));
+        assert!(body.contains("\"permission_mode\""));
+        assert!(body.contains(".mode"));
     }
 
     #[test]
@@ -1062,6 +1164,17 @@ mod tests {
         // unix registers the bare script path (ends with the name); Windows wraps it
         // in a `powershell ... -File "<path>"` invocation, so assert containment.
         assert!(cmd.contains(HOOK_SCRIPT_NAME));
+        // The Stop handler (permission-mode capture) is registered too — appended
+        // AFTER the user's own Stop group, which survives untouched.
+        let stop = v["hooks"]["Stop"].as_array().unwrap();
+        assert_eq!(stop.len(), 2);
+        let ours = |g: &serde_json::Value| {
+            g["hooks"].as_array().is_some_and(|hs| {
+                hs.iter()
+                    .any(|h| h["command"].as_str().is_some_and(|c| c.contains(HOOK_SCRIPT_NAME)))
+            })
+        };
+        assert!(!ours(&stop[0]) && ours(&stop[1]));
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
@@ -1228,5 +1341,94 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&root);
         let _ = std::fs::remove_dir_all(&live_dir);
+    }
+
+    // ── permission-mode resume ──────────────────────────────────────────────
+
+    fn strs(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn resolve_reapplies_recorded_permission_mode_on_resume() {
+        let uuid = "00000000-0000-0000-0000-000000000000";
+        let projects = projects_with_sessions(&[uuid]);
+        let out = resolve_claude_session_impl(
+            opts_with_args(&["--session-id", uuid]),
+            &projects,
+            |_| None,
+            |_| Some("acceptEdits".to_string()),
+        );
+        assert_eq!(
+            out.args,
+            strs(&["--resume", uuid, "--permission-mode", "acceptEdits"])
+        );
+        let _ = std::fs::remove_dir_all(&projects);
+    }
+
+    #[test]
+    fn resolve_never_applies_a_mode_record_to_a_fresh_session() {
+        // No session log → fresh `--session-id` launch; a leftover mode record
+        // must not steer a conversation that does not exist yet.
+        let uuid = "00000000-0000-0000-0000-000000000000";
+        let projects = projects_with_sessions(&[]);
+        let out = resolve_claude_session_impl(
+            opts_with_args(&["--session-id", uuid]),
+            &projects,
+            |_| None,
+            |_| Some("plan".to_string()),
+        );
+        assert_eq!(out.args, strs(&["--session-id", uuid]));
+        let _ = std::fs::remove_dir_all(&projects);
+    }
+
+    #[test]
+    fn resolve_lets_an_explicit_mode_flag_outrank_the_record() {
+        // A custom agent whose argv already names `--permission-mode` keeps it;
+        // the hook record must neither override it nor stack a second pair behind
+        // it.
+        let uuid = "00000000-0000-0000-0000-000000000000";
+        let projects = projects_with_sessions(&[uuid]);
+        let out = resolve_claude_session_impl(
+            opts_with_args(&["--session-id", uuid, "--permission-mode", "plan"]),
+            &projects,
+            |_| None,
+            |_| Some("acceptEdits".to_string()),
+        );
+        assert_eq!(out.args, strs(&["--resume", uuid, "--permission-mode", "plan"]));
+        let _ = std::fs::remove_dir_all(&projects);
+    }
+
+    #[test]
+    fn resolve_discards_junk_mode_records() {
+        // The record is hook-parsed JSON becoming a CLI argument: only the known
+        // mode set may pass.
+        let uuid = "00000000-0000-0000-0000-000000000000";
+        let projects = projects_with_sessions(&[uuid]);
+        let out = resolve_claude_session_impl(
+            opts_with_args(&["--session-id", uuid]),
+            &projects,
+            |_| None,
+            |_| Some("acceptEdits; rm -rf /".to_string()),
+        );
+        assert_eq!(out.args, strs(&["--resume", uuid]));
+        let _ = std::fs::remove_dir_all(&projects);
+    }
+
+    #[test]
+    fn mode_records_round_trip_and_reject_junk() {
+        let tmp = unique_tmp("eldrun-mode");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let uid = "11111111-2222-3333-4444-555555555555";
+        std::fs::write(tmp.join(format!("{uid}.mode")), "acceptEdits\n").unwrap();
+        assert_eq!(read_live_mode_in(&tmp, uid).as_deref(), Some("acceptEdits"));
+        // unknown values and traversal keys are refused
+        std::fs::write(tmp.join(format!("{uid}.mode")), "yolo").unwrap();
+        assert_eq!(read_live_mode_in(&tmp, uid), None);
+        assert_eq!(read_live_mode_in(&tmp, "../etc/passwd"), None);
+        assert!(is_permission_mode("plan") && is_permission_mode("bypassPermissions"));
+        // "manual" is a CLI-only alias — hooks report it as "default".
+        assert!(!is_permission_mode("manual") && !is_permission_mode(""));
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

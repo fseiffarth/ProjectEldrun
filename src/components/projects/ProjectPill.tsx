@@ -1396,8 +1396,10 @@ export function ProjectPill({
   // Flip the project-container toggle. The flag is in every TerminalView's
   // spawn deps, so flipping respawns each live tab of this project —
   // Claude/Codex resume across the respawn, but a live NON-resumable agent
-  // (Gemini/Vibe/…) would lose its conversation: confirm before destroying it
-  // (the same hazard class tabs/agentModes.ts exists for). On enable, run the
+  // (Gemini/Vibe/…) would lose its conversation: confirm before destroying it.
+  // (The retired Plan/Auto toggle was the same hazard class, and respawning a
+  // live session on a settings flip is what retired it — see
+  // docs/context/agent_authority.md.) On enable, run the
   // docker preflight right away so a missing image becomes a one-click build
   // running in a fresh terminal tab (house convention — never a
   // copy-it-yourself message) instead of an error at the next tab spawn.
