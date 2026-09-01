@@ -89,8 +89,29 @@ async function renderPanel() {
   });
 }
 
+/** A toolbar button by its glyph — the 🔍 fold and the ↻ re-list both live in
+ *  the Files/Git/Apps row now, not in a row of the tree's own. */
+function toolbarBtn(glyph: string): HTMLButtonElement {
+  const toolbar = document.querySelector(".side-panel-toolbar");
+  expect(toolbar).toBeTruthy();
+  const btn = [...toolbar!.querySelectorAll("button")].find((b) =>
+    (b.textContent ?? "").includes(glyph),
+  );
+  expect(btn).toBeTruthy();
+  return btn as HTMLButtonElement;
+}
+
+/**
+ * The search box folds away and starts CLOSED, so every test that types into it
+ * has to open it first. Opening is idempotent here: the toolbar's 🔍 is only
+ * clicked when the input isn't already mounted.
+ */
 function searchInput(): HTMLInputElement {
-  const input = document.querySelector<HTMLInputElement>(".file-tree-search-input");
+  let input = document.querySelector<HTMLInputElement>(".file-tree-search-input");
+  if (!input) {
+    fireEvent.click(toolbarBtn("🔍"));
+    input = document.querySelector<HTMLInputElement>(".file-tree-search-input");
+  }
   expect(input).toBeTruthy();
   return input!;
 }
@@ -108,7 +129,15 @@ describe("in-tree project search", () => {
     vi.clearAllMocks();
     clearFileViewSnapshots();
     setupInvoke();
-    useProjectsStore.setState({ projects: [PROJECT], activeId: "p1", loaded: true });
+    // The browsed folder is store state, not component state: without this the
+    // "scope" test's walk into `sub/` leaks into whatever runs next, which then
+    // searches a subfolder it never opened.
+    useProjectsStore.setState({
+      projects: [PROJECT],
+      activeId: "p1",
+      loaded: true,
+      sidePanelFolderByProject: {},
+    });
     useTabsStore.setState({ scope: "root" });
     useRemoteStatusStore.setState({ byProject: {}, byHost: {} });
     useFileSourcePrefStore.setState({ byProject: {}, byViewer: {} });
@@ -137,6 +166,7 @@ describe("in-tree project search", () => {
 
   it("content mode debounces one project_search per settled query and opens hits at their line", async () => {
     await renderPanel();
+    searchInput(); // the mode pills only exist once the box is unfolded
     fireEvent.click(screen.getByRole("button", { name: "Content" }));
 
     // Two quick keystrokes settle into exactly ONE backend call.
@@ -166,6 +196,7 @@ describe("in-tree project search", () => {
 
   it("the Aa toggle re-searches case-sensitively", async () => {
     await renderPanel();
+    searchInput(); // the mode pills only exist once the box is unfolded
     fireEvent.click(screen.getByRole("button", { name: "Content" }));
     fireEvent.change(searchInput(), { target: { value: "hello" } });
     await waitForSearchCalls(1);
@@ -177,6 +208,7 @@ describe("in-tree project search", () => {
 
   it("a too-short content query renders the hint and never reaches the backend", async () => {
     await renderPanel();
+    searchInput(); // the mode pills only exist once the box is unfolded
     fireEvent.click(screen.getByRole("button", { name: "Content" }));
     fireEvent.change(searchInput(), { target: { value: "h" } });
 
@@ -193,6 +225,7 @@ describe("in-tree project search", () => {
     // Enter the subfolder, then search: the walk is confined to it.
     fireEvent.click(await screen.findByText("sub"));
     await screen.findByText("deep.txt");
+    searchInput(); // the mode pills only exist once the box is unfolded
     fireEvent.click(screen.getByRole("button", { name: "Content" }));
     fireEvent.change(searchInput(), { target: { value: "hello" } });
     const [scoped] = await waitForSearchCalls(1);
@@ -211,8 +244,47 @@ describe("in-tree project search", () => {
     const labels = [...toolbar!.querySelectorAll("button")].map((b) => b.textContent);
     expect(labels).toEqual(expect.arrayContaining(["Files", "Git", "Apps"]));
     expect(labels).not.toContain("Search");
-    // …while the tree's own search box is there.
-    expect(document.querySelector(".file-tree-search-input")).toBeTruthy();
+    // …while the tree's own search is there, one click behind the toolbar's 🔍.
+    expect(toolbarBtn("🔍")).toBeTruthy();
+    expect(searchInput()).toBeTruthy();
+  });
+
+  it("the box is hidden by default, opens from the toolbar, and folds back away clearing the query", async () => {
+    await renderPanel();
+    // Closed on arrival: the tree spends no row at all on search chrome.
+    expect(document.querySelector(".file-tree-search")).toBeNull();
+    expect(document.querySelector(".file-tree-search-input")).toBeNull();
+    expect(document.querySelector(".file-tree-search-modes")).toBeNull();
+    const toggle = toolbarBtn("🔍");
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    // 🔍 and ↻ both moved into the Files/Git/Apps row; the tree draws neither.
+    expect(toolbarBtn("↻")).toBeTruthy();
+    expect(document.querySelector(".file-tree-refresh")).toBeNull();
+
+    fireEvent.change(searchInput(), { target: { value: "readme" } });
+    await waitFor(() => {
+      expect(document.querySelector(".file-search-results")).toBeTruthy();
+    });
+    expect(toolbarBtn("🔍").getAttribute("aria-expanded")).toBe("true");
+
+    // Closing folds the box AND drops the query, so the tree is what comes back.
+    fireEvent.click(toolbarBtn("🔍"));
+    expect(document.querySelector(".file-tree-search-input")).toBeNull();
+    expect(document.querySelector(".file-search-results")).toBeNull();
+    expect(searchInput().value).toBe("");
+  });
+
+  it("the toolbar's ↻ re-lists the tree", async () => {
+    await renderPanel();
+    const before = mockInvoke.mock.calls.filter(([cmd]) => cmd === "list_dir").length;
+    await act(async () => {
+      fireEvent.click(toolbarBtn("↻"));
+    });
+    await waitFor(() => {
+      expect(
+        mockInvoke.mock.calls.filter(([cmd]) => cmd === "list_dir").length,
+      ).toBeGreaterThan(before);
+    });
   });
 
   it("a remote-source listing shows the switch-to-Local hint instead of the box", async () => {

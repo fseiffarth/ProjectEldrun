@@ -351,22 +351,31 @@ export function ProjectFilesView({
   // Toggles the Downloads section stacked below the file tree (fast-copy of
   // recent downloads into the project). Toolbar ⬇⬇ button; files view only.
   const [showDownloads, setShowDownloads] = useState(false);
+  // The in-tree search box's fold, hoisted out of FileTree so its 🔍 can live in
+  // the toolbar row beside Files/Git/Apps: closed (the default) the tree spends
+  // no row at all on search chrome, which in the side panel's width is the
+  // difference between seeing three more files and not. ↻ moved up with it —
+  // the two shared the tree's row, and leaving refresh behind would have kept
+  // that row alive for one button. It reaches the tree as a bumped counter.
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [refreshNonce, setRefreshNonce] = useState(0);
   // The Alerts group stacked below the file tree (urgent mail, the next
   // appointments, due/overdue cards). Unlike Downloads there is no local shown
   // flag: `files_alerts` IS the visibility, which is what lets the × stick — the
   // group is on by default, so a close that came back at the next remount (and
   // this viewer is mounted many times over) would be a control that doesn't work.
-  // Being the same switch the Settings dialog writes, the two can't disagree.
+  // It is one machine-wide key, so the header's 🔔 (`header/AlertsToggle`), this
+  // group's ×, and the Project Settings checkbox are three faces of one switch
+  // and cannot disagree.
   const alertsEnabled = useSettingsStore((s) => s.settings?.files_alerts ?? true);
   const mobileHostEnabled = useSettingsStore((s) => s.settings?.eldrun_mobile_host?.enabled ?? false);
   // ...but never in the docked subwindow column (`compact`), whatever the
   // setting says: that viewer is a ~300px sidebar beside a terminal, where a
   // strip of mail/appointment/card rows takes the space the tree is there for
   // — and it is the surface mounted many times over at once, so one alert
-  // would be repeated once per open subwindow. Its 🔔 goes with it: a toggle
-  // that writes a setting whose group can never appear here is a dead control
-  // (and would silently arm the group in the panel and every Files tab).
-  // The side panel and the Files (Project) tab are unaffected.
+  // would be repeated once per open subwindow. The header's 🔔 still reads as
+  // on, correctly: it is the machine's switch, and the group it arms is showing
+  // in the side panel and every Files tab — this one column is the exception.
   const alertsHere = alertsEnabled && !compact;
   const updateSettings = useSettingsStore((s) => s.updateSettings);
   const setProjectMobileAccess = useProjectsStore((s) => s.setProjectMobileAccess);
@@ -1458,7 +1467,35 @@ export function ProjectFilesView({
             onClick={() => setView((v) => (v === "remarks" ? "files" : "remarks"))}
             title={t("projectRemarks.view")}
           >
-            💬 <UntestedTag />
+            💬
+          </button>
+        )}
+        {/* The tree's search + refresh, hoisted out of the tree itself. Files
+            view only: both act on the tree, and the tree is only mounted there
+            (a ↻ in the Git view would bump a counter nothing is listening to).
+            Same chrome as every other toolbar button — see `toolbar-btn`. */}
+        {view === "files" && (
+          <button
+            className={`toolbar-btn${searchOpen ? " active" : ""}`}
+            style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: 2 }}
+            aria-pressed={searchOpen}
+            aria-expanded={searchOpen}
+            onClick={() => setSearchOpen((v) => !v)}
+            title={searchOpen ? t("fileTree.hideSearch") : t("fileTree.showSearch")}
+            aria-label={searchOpen ? t("fileTree.hideSearch") : t("fileTree.showSearch")}
+          >
+            🔍
+          </button>
+        )}
+        {view === "files" && (
+          <button
+            className="toolbar-btn"
+            style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: 2 }}
+            onClick={() => setRefreshNonce((n) => n + 1)}
+            title={t("fileTree.refreshTitle")}
+            aria-label={t("common.refresh")}
+          >
+            ↻
           </button>
         )}
         {importDrop.canImport && (

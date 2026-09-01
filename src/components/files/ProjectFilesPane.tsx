@@ -262,11 +262,17 @@ function BoxRootSection({
   descending,
   onSortChange,
   active = true,
+  searchOpen,
+  onSearchOpenChange,
+  refreshNonce,
 }: BoxRoot & {
   sortKey: SortKey;
   descending: boolean;
   onSortChange?: (sortKey: SortKey, descending: boolean) => void;
   active?: boolean;
+  searchOpen?: boolean;
+  onSearchOpenChange?: (open: boolean) => void;
+  refreshNonce?: number;
 }) {
   const t = useT();
   const [collapsed, setCollapsed] = useState(false);
@@ -404,6 +410,9 @@ function BoxRootSection({
             syncSource={remote ? source : undefined}
             remoteProbeDir={remote ? dir : undefined}
             active={active}
+            searchOpen={searchOpen}
+            onSearchOpenChange={onSearchOpenChange}
+            refreshNonce={refreshNonce}
           />
         </div>
       )}
@@ -484,6 +493,14 @@ interface Props {
   /** Compact (docked subwindow) mode: hide the remote-sync row and the sort
    *  control so the tree's find-files search box is the topmost element. */
   compact?: boolean;
+  /** The in-tree search box's fold state and the manual re-list, both owned by
+   *  the host: the 🔍 / ↻ pair lives in the Files/Git/Apps toolbar row, not in
+   *  a row of the tree's own. Forwarded verbatim to every FileTree below (the
+   *  single-root tree and each of a box's roots), so one toggle folds them all
+   *  — a box's roots are one search affordance, not N. */
+  searchOpen?: boolean;
+  onSearchOpenChange?: (open: boolean) => void;
+  refreshNonce?: number;
 }
 
 export function ProjectFilesPane({
@@ -511,6 +528,9 @@ export function ProjectFilesPane({
   mountTree = true,
   active = true,
   compact,
+  searchOpen,
+  onSearchOpenChange,
+  refreshNonce,
 }: Props) {
   const t = useT();
   const { activeBox, boxRoots } = useBoxRoots(scope);
@@ -704,6 +724,9 @@ export function ProjectFilesPane({
                 descending={descending}
                 onSortChange={compact ? undefined : onSortChange}
                 active={active}
+                searchOpen={searchOpen}
+                onSearchOpenChange={onSearchOpenChange}
+                refreshNonce={refreshNonce}
               />
             ))
           )
@@ -782,6 +805,9 @@ export function ProjectFilesPane({
                 syncSource={isRemoteProject ? source : undefined}
                 remoteProbeDir={isRemoteProject ? projectDir : undefined}
                 active={active}
+                searchOpen={searchOpen}
+                onSearchOpenChange={onSearchOpenChange}
+                refreshNonce={refreshNonce}
               />
             );
           })()

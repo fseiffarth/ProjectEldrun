@@ -3521,6 +3521,8 @@ export const en = {
   "fileTree.searchInScope": "Search in {scope}…",
   "fileTree.searchInFiles": "Search in files…",
   "fileTree.clearSearch": "Clear search",
+  "fileTree.showSearch": "Show search",
+  "fileTree.hideSearch": "Hide search",
   "fileTree.searchNamesTitle": "Search file and folder names",
   "fileTree.searchName": "Name",
   "fileTree.searchContentTitle": "Search inside file contents",

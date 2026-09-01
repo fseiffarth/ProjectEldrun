@@ -3381,6 +3381,8 @@ export const dict: Dict = {
   "fileTree.searchInScope": "In {scope} suchen…",
   "fileTree.searchInFiles": "In Dateien suchen…",
   "fileTree.clearSearch": "Suche löschen",
+  "fileTree.showSearch": "Suche einblenden",
+  "fileTree.hideSearch": "Suche ausblenden",
   "fileTree.searchNamesTitle": "Datei- und Ordnernamen durchsuchen",
   "fileTree.searchName": "Name",
   "fileTree.searchContentTitle": "Innerhalb der Dateiinhalte suchen",

@@ -107,6 +107,18 @@
 }
 .file-tree-search-clear:hover { background-color: var(--pill-hover-bg); }
 
+/* The magnifier that folds the box away. Same chrome as the row's other icon
+   button (`file-tree-up`, which it also carries) so the two read as a pair;
+   `.active` is the pressed state while the box is open. Collapsed, the row
+   holds only those two buttons, so they sit at the edges the expanded row puts
+   them at instead of bunching up on the left. */
+.file-tree-search-toggle.active {
+  background-color: var(--pill-hover-bg);
+  color: var(--text-primary);
+}
+
+.file-tree-search--collapsed .file-tree-search-row { justify-content: space-between; }
+
 .file-tree-search-modes {
   display: flex;
   align-items: center;

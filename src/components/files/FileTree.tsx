@@ -186,6 +186,17 @@ interface Props {
    *  tree's project becomes current again everything restarts, with one quiet
    *  catch-up re-list covering whatever changed while it was hidden. */
   active?: boolean;
+  /** Fold state of the in-tree search box, when the HOST owns that chrome. The
+   *  side panel puts the 🔍 / ↻ pair in its Files/Git/Apps toolbar row, so the
+   *  tree renders neither button itself and, closed, renders no search row at
+   *  all — the whole point of the move was to stop spending a row on chrome.
+   *  Omit both and the tree keeps its own toggle beside the box (standalone
+   *  use, e.g. a bare `<FileTree>` in a test). */
+  searchOpen?: boolean;
+  onSearchOpenChange?: (open: boolean) => void;
+  /** Bumped by the host's ↻ to force a re-list. A counter, not a boolean: two
+   *  refreshes in a row must both land. */
+  refreshNonce?: number;
 }
 
 type GitStatusMap = Record<string, string>;
@@ -328,6 +339,9 @@ export function FileTree({
   syncSource,
   remoteProbeDir,
   active = true,
+  searchOpen: searchOpenProp,
+  onSearchOpenChange,
+  refreshNonce,
 }: Props) {
   const t = useT();
   // Non-null inside a detached popout: replaces the main window's CenterPanel
@@ -505,6 +519,28 @@ export function FileTree({
   const [pathEdit, setPathEdit] = useState<string | null>(null);
   const pathEditRef = useRef<HTMLInputElement | null>(null);
   const [search, setSearch] = useState("");
+  // Search folds away and starts CLOSED: the box + mode pills cost two rows of
+  // tree on every surface that renders FileTree (the side panel is the tight
+  // one), and most sessions browse rather than search. Opening it is one click,
+  // and closing clears the query so the tree comes straight back.
+  const [searchOpenSelf, setSearchOpenSelf] = useState(false);
+  // Who owns the fold: the side panel passes both halves and draws the toggle
+  // in its own toolbar; a bare tree keeps the toggle (and the refresh button)
+  // in the search row.
+  const hostOwnsSearchChrome = onSearchOpenChange !== undefined;
+  const searchOpen = hostOwnsSearchChrome ? !!searchOpenProp : searchOpenSelf;
+  function setSearchOpen(open: boolean) {
+    if (onSearchOpenChange) onSearchOpenChange(open);
+    else setSearchOpenSelf(open);
+  }
+  // Closing must not leave a live query behind: `searching` already ignores it,
+  // but the next open would silently repopulate the results view from a query
+  // nobody typed now. This is an effect on the RESULT rather than a line in the
+  // setter above, because the fold can also be closed from outside the tree
+  // entirely — the side panel's toolbar owns that button and never calls in.
+  useEffect(() => {
+    if (!searchOpen) setSearch("");
+  }, [searchOpen]);
   const [searchMode, setSearchMode] = useState<"name" | "content">("name");
   const [searchCase, setSearchCase] = useState(false);
   // Search scope: false (default) confines the search to the browsed folder
@@ -780,6 +816,19 @@ export function FileTree({
     setPyMainNonce((n) => n + 1);
     if (projectId) void refreshSyncStatus(projectId);
   }
+
+  // The host's ↻ (the side panel's toolbar owns that button now) reaches the
+  // tree as a bumped counter. The first render carries the host's starting
+  // value, which is not a refresh request — only a CHANGE is, so the last-seen
+  // value is seeded from the prop rather than from 0/undefined.
+  const lastRefreshNonce = useRef(refreshNonce);
+  useEffect(() => {
+    if (refreshNonce === lastRefreshNonce.current) return;
+    lastRefreshNonce.current = refreshNonce;
+    refreshListing();
+    // `refreshListing` is re-created every render; the nonce is the trigger.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refreshNonce]);
 
   // Per-entry git status resolving the "whole directory is ignored" sentinel the
   // backend emits under the reserved key "." (git's porcelain never lists an empty
@@ -3142,7 +3191,7 @@ export function FileTree({
   // Whether the search results replace the browsed listing. The search box is
   // only offered on a local-source tree (its backends walk the local path).
   const canSearch = !remoteListing;
-  const searching = canSearch && search.trim().length > 0;
+  const searching = canSearch && searchOpen && search.trim().length > 0;
   // Folder the search is confined to: the browsed folder by default, the whole
   // project when "root" is chosen (or when already at the root).
   const searchScope = searchRoot ? "" : relPath;
@@ -3331,112 +3380,145 @@ export function FileTree({
           </div>
         </div>
       )}
-      {canSearch && (
-        <div className="file-tree-search">
+      {/* Closed under a host that owns the chrome, there is nothing left to
+          draw — that is the row the move to the toolbar buys back. A bare tree
+          still renders the row, because its own toggle lives in it. */}
+      {canSearch && (searchOpen || !hostOwnsSearchChrome) && (
+        <div className={`file-tree-search${searchOpen ? "" : " file-tree-search--collapsed"}`}>
           <div className="file-tree-search-row">
-            <input
-              type="text"
-              className="file-tree-search-input"
-              value={search}
-              placeholder={
-                searchMode === "name"
-                  ? searchScope
-                    ? t("fileTree.findFilesInScope", { scope: scopeLabel })
-                    : t("fileTree.findFiles")
-                  : searchScope
-                    ? t("fileTree.searchInScope", { scope: scopeLabel })
-                    : t("fileTree.searchInFiles")
-              }
-              spellCheck={false}
-              autoComplete="off"
-              onChange={(e) => setSearch(e.target.value)}
-              onKeyDown={(e) => {
-                // Keep the tree's Enter/Escape handler out of the input.
-                e.stopPropagation();
-                if (e.key === "Escape") setSearch("");
-              }}
-            />
-            {search && (
+            {/* The one control that survives the fold. It sits where the input
+                would start, so opening does not move the row's other buttons. */}
+            {!hostOwnsSearchChrome && (
               <button
                 type="button"
-                className="file-tree-search-clear"
-                title={t("fileTree.clearSearch")}
-                aria-label={t("fileTree.clearSearch")}
-                onClick={() => setSearch("")}
+                className={`file-tree-up file-tree-search-toggle${searchOpen ? " active" : ""}`}
+                aria-pressed={searchOpen}
+                aria-expanded={searchOpen}
+                onClick={() => setSearchOpen(!searchOpen)}
+                title={searchOpen ? t("fileTree.hideSearch") : t("fileTree.showSearch")}
+                aria-label={searchOpen ? t("fileTree.hideSearch") : t("fileTree.showSearch")}
               >
-                ×
+                🔍
               </button>
+            )}
+            {searchOpen && (
+              <>
+                <input
+                  type="text"
+                  className="file-tree-search-input"
+                  value={search}
+                  autoFocus
+                  placeholder={
+                    searchMode === "name"
+                      ? searchScope
+                        ? t("fileTree.findFilesInScope", { scope: scopeLabel })
+                        : t("fileTree.findFiles")
+                      : searchScope
+                        ? t("fileTree.searchInScope", { scope: scopeLabel })
+                        : t("fileTree.searchInFiles")
+                  }
+                  spellCheck={false}
+                  autoComplete="off"
+                  onChange={(e) => setSearch(e.target.value)}
+                  onKeyDown={(e) => {
+                    // Keep the tree's Enter/Escape handler out of the input.
+                    e.stopPropagation();
+                    // Escape clears a query, and folds the box away once it is
+                    // already empty — the same two-step every find bar uses.
+                    if (e.key === "Escape") {
+                      if (search) setSearch("");
+                      else setSearchOpen(false);
+                    }
+                  }}
+                />
+                {search && (
+                  <button
+                    type="button"
+                    className="file-tree-search-clear"
+                    title={t("fileTree.clearSearch")}
+                    aria-label={t("fileTree.clearSearch")}
+                    onClick={() => setSearch("")}
+                  >
+                    ×
+                  </button>
+                )}
+              </>
             )}
             {/* A local listing has an fs watcher, so it does not normally need a
                 manual refresh. This is still the escape hatch for the Run-gate
                 re-check when a same-second, same-size write leaves its persisted
-                stamp untouched. It is part of the search row rather than a row
-                of its own. */}
-            <button
-              className="file-tree-up file-tree-refresh"
-              onClick={refreshListing}
-              disabled={loading}
-              title={t("fileTree.refreshTitle")}
-              aria-label={t("common.refresh")}
-            >
-              ↻
-            </button>
-          </div>
-          <div className="file-tree-search-modes">
-            <button
-              type="button"
-              className={`file-tree-search-mode${searchMode === "name" ? " active" : ""}`}
-              aria-pressed={searchMode === "name"}
-              onClick={() => setSearchMode("name")}
-              title={t("fileTree.searchNamesTitle")}
-            >
-              {t("fileTree.searchName")}
-            </button>
-            <button
-              type="button"
-              className={`file-tree-search-mode${searchMode === "content" ? " active" : ""}`}
-              aria-pressed={searchMode === "content"}
-              onClick={() => setSearchMode("content")}
-              title={t("fileTree.searchContentTitle")}
-            >
-              {t("fileTree.searchContent")}
-            </button>
-            {searchMode === "content" && (
+                stamp untouched. Under a host that owns the chrome it is the ↻ in
+                the toolbar (reaching this tree as `refreshNonce`), so the tree
+                does not draw a second one. */}
+            {!hostOwnsSearchChrome && (
               <button
-                type="button"
-                className={`file-tree-search-mode${searchCase ? " active" : ""}`}
-                aria-pressed={searchCase}
-                onClick={() => setSearchCase((v) => !v)}
-                title={t("search.caseSensitive")}
+                className="file-tree-up file-tree-refresh"
+                onClick={refreshListing}
+                disabled={loading}
+                title={t("fileTree.refreshTitle")}
+                aria-label={t("common.refresh")}
               >
-                Aa
+                ↻
               </button>
             )}
-            {/* Scope: search under the browsed folder (default) or the whole
-                project. Only shown in a subfolder — at the root they're the same. */}
-            {relPath && (
-              <span className="file-tree-search-scope">
-                <button
-                  type="button"
-                  className={`file-tree-search-mode file-tree-search-scope-folder${!searchRoot ? " active" : ""}`}
-                  aria-pressed={!searchRoot}
-                  onClick={() => setSearchRoot(false)}
-                  title={t("fileTree.searchUnderScope", { scope: relPath })}
-                >
-                  {scopeLabel}
-                </button>
-                <button
-                  type="button"
-                  className={`file-tree-search-mode${searchRoot ? " active" : ""}`}
-                  aria-pressed={searchRoot}
-                  onClick={() => setSearchRoot(true)}
-                  title={t("fileTree.searchWholeProject")}
-                >
-                  {t("fileTree.searchRoot")}
-                </button>
-              </span>
-            )}
           </div>
+          {searchOpen && (
+            <div className="file-tree-search-modes">
+              <button
+                type="button"
+                className={`file-tree-search-mode${searchMode === "name" ? " active" : ""}`}
+                aria-pressed={searchMode === "name"}
+                onClick={() => setSearchMode("name")}
+                title={t("fileTree.searchNamesTitle")}
+              >
+                {t("fileTree.searchName")}
+              </button>
+              <button
+                type="button"
+                className={`file-tree-search-mode${searchMode === "content" ? " active" : ""}`}
+                aria-pressed={searchMode === "content"}
+                onClick={() => setSearchMode("content")}
+                title={t("fileTree.searchContentTitle")}
+              >
+                {t("fileTree.searchContent")}
+              </button>
+              {searchMode === "content" && (
+                <button
+                  type="button"
+                  className={`file-tree-search-mode${searchCase ? " active" : ""}`}
+                  aria-pressed={searchCase}
+                  onClick={() => setSearchCase((v) => !v)}
+                  title={t("search.caseSensitive")}
+                >
+                  Aa
+                </button>
+              )}
+              {/* Scope: search under the browsed folder (default) or the whole
+                  project. Only shown in a subfolder — at the root they're the same. */}
+              {relPath && (
+                <span className="file-tree-search-scope">
+                  <button
+                    type="button"
+                    className={`file-tree-search-mode file-tree-search-scope-folder${!searchRoot ? " active" : ""}`}
+                    aria-pressed={!searchRoot}
+                    onClick={() => setSearchRoot(false)}
+                    title={t("fileTree.searchUnderScope", { scope: relPath })}
+                  >
+                    {scopeLabel}
+                  </button>
+                  <button
+                    type="button"
+                    className={`file-tree-search-mode${searchRoot ? " active" : ""}`}
+                    aria-pressed={searchRoot}
+                    onClick={() => setSearchRoot(true)}
+                    title={t("fileTree.searchWholeProject")}
+                  >
+                    {t("fileTree.searchRoot")}
+                  </button>
+                </span>
+              )}
+            </div>
+          )}
         </div>
       )}
       {/* Search backends walk the canonical local path, so a remote-source
