@@ -812,6 +812,10 @@ pub fn up(
                 .into_iter()
                 .map(|(src, dst)| format!("{src}:{dst}")),
         );
+        rw_mounts.extend(
+            staged_claude_json_mount(&home, &stage, &[project_dir.to_string()])
+                .map(|(src, dst)| format!("{src}:{dst}")),
+        );
     }
     let ro_mounts = if strict_trash {
         Vec::new()
@@ -1879,6 +1883,50 @@ pub(crate) fn staged_config_mounts(home: &str, stage: &Path) -> Vec<(String, Str
     mounts
 }
 
+/// Stage `~/.claude.json` and mount the copy at the real path.
+///
+/// This top-level file is Claude's identity and onboarding state: without it a
+/// fenced/contained tab looks like a fresh install and demands login **every
+/// tab**, even though `.credentials.json` itself is mounted. It is also
+/// cross-project state — a `projects` map keyed by cwd holding every project's
+/// prompt history and `allowedTools` — so neither hiding it nor mounting the
+/// host original writable is acceptable: the former breaks login, the latter
+/// would let a boxed agent read every project's history and write standing
+/// permissions for *uncontained* sessions of other projects (the same class of
+/// hole as [`CLAUDE_UNMOUNTED`]'s `plugins`/`agents`).
+///
+/// So: a per-project **copy**, with the `projects` map filtered to entries at
+/// or under this box's own `roots`. Login and onboarding survive, foreign
+/// history stays invisible, and writes die with the stage. Refreshed in place
+/// at every up, like [`staged_config_mounts`]. A missing or unparsable host
+/// file stages `{}` (fresh-install behavior, which is then accurate).
+pub(crate) fn staged_claude_json_mount(
+    home: &str,
+    stage: &Path,
+    roots: &[String],
+) -> Option<(String, String)> {
+    let src_path = Path::new(home).join(".claude.json");
+    let src = src_path.to_string_lossy().into_owned();
+    let leaf = src
+        .trim_start_matches(['/', '\\'])
+        .replace(['/', '\\', ':'], "_");
+    let dst = stage.join(&leaf);
+    let mut value: serde_json::Value = std::fs::read(&src_path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    if let Some(projects) = value.get_mut("projects").and_then(|v| v.as_object_mut()) {
+        projects.retain(|cwd, _| {
+            roots
+                .iter()
+                .any(|root| Path::new(cwd).starts_with(root))
+        });
+    }
+    let body = serde_json::to_vec(&value).ok()?;
+    std::fs::write(&dst, body).ok()?;
+    Some((dst.to_string_lossy().into_owned(), src))
+}
+
 /// Placeholder content for a shadowed agent-config file the host does not have
 /// yet: a JSON file needs to parse, a TOML file may be empty.
 fn default_agent_config(rel: &str) -> &'static [u8] {
@@ -2323,6 +2371,58 @@ mod tests {
             3,
             "one staged copy per file, refreshed in place"
         );
+
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn staged_claude_json_keeps_login_and_filters_foreign_projects() {
+        let base = std::env::temp_dir().join(format!("eldrun-sbx-cj-{}", std::process::id()));
+        let home = base.join("home");
+        let stage = base.join("stage");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&stage).unwrap();
+        let root = home.join("work/p").to_string_lossy().into_owned();
+        let host = home.join(".claude.json");
+        std::fs::write(
+            &host,
+            serde_json::json!({
+                "oauthAccount": {"emailAddress": "u@example.org"},
+                "hasCompletedOnboarding": true,
+                "projects": {
+                    root.clone(): {"allowedTools": ["Bash"]},
+                    format!("{root}/sub"): {"history": ["own subdir survives"]},
+                    "/elsewhere/secret": {"history": ["other project's prompts"]},
+                },
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let home_str = home.to_string_lossy().into_owned();
+        let (src, dst) =
+            staged_claude_json_mount(&home_str, &stage, std::slice::from_ref(&root)).unwrap();
+        assert_eq!(dst, host.to_string_lossy());
+        assert!(Path::new(&src).starts_with(&stage));
+        let staged: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&src).unwrap()).unwrap();
+        // Login + onboarding survive; foreign project entries do not.
+        assert_eq!(
+            staged["oauthAccount"]["emailAddress"], "u@example.org",
+            "login state must survive into the box"
+        );
+        assert_eq!(staged["hasCompletedOnboarding"], true);
+        let projects = staged["projects"].as_object().unwrap();
+        assert_eq!(projects.len(), 2, "got: {projects:?}");
+        assert!(projects.contains_key(&root));
+        assert!(projects.contains_key(&format!("{root}/sub")));
+
+        // Missing host file: an empty object is staged, the original not created.
+        std::fs::remove_file(&host).unwrap();
+        let (src2, _) = staged_claude_json_mount(&home_str, &stage, &[root]).unwrap();
+        assert_eq!(src2, src, "refreshed in place, not a second copy");
+        assert_eq!(std::fs::read(&src2).unwrap(), b"{}");
+        assert!(!host.exists(), "staging must never create the host original");
 
         std::fs::remove_dir_all(&base).ok();
     }

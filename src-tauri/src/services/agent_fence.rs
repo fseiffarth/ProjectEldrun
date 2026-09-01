@@ -411,6 +411,18 @@ fn agent_state_mounts(scope_id: &str, roots: &[PathBuf]) -> Vec<BindMount> {
         .iter()
         .map(|p| p.to_string_lossy().into_owned())
         .collect();
+    // Without `~/.claude.json` (oauthAccount, onboarding) every fenced tab
+    // demands a fresh login; see `staged_claude_json_mount` for why it is a
+    // filtered copy rather than the host original.
+    if let Some((src, dst)) =
+        crate::services::sandbox::staged_claude_json_mount(&home, &stage, &roots_as_strings)
+    {
+        mounts.push(BindMount {
+            src,
+            dst,
+            read_only: false,
+        });
+    }
     let (tx_rw, tx_ro) = crate::services::sandbox::claude_transcript_mounts(
         &home,
         &roots_as_strings,
