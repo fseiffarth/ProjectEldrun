@@ -784,7 +784,7 @@ export async function renderPdfPagesToImages(
     canvas.height = Math.ceil(viewport.height);
     const ctx = canvas.getContext("2d");
     if (!ctx) continue;
-    await page.render({ canvasContext: ctx, viewport }).promise;
+    await page.render({ canvas, canvasContext: ctx, viewport }).promise;
     if (ref.marks?.length) {
       ctx.fillStyle = "#000000";
       for (const m of ref.marks) ctx.fillRect(m.x * scale, m.y * scale, m.w * scale, m.h * scale);

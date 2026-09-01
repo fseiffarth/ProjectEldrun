@@ -341,6 +341,7 @@ export async function rasterizeRedactedPage(
   // ignore the suppression, bake the file's copy into the pixels, and leave the
   // flattened sheet wearing every highlight twice.
   await page.render({
+    canvas,
     canvasContext: ctx,
     viewport,
     annotationMode: pdfjs.AnnotationMode.ENABLE_STORAGE,

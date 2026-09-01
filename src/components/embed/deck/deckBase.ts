@@ -136,7 +136,7 @@ export function renderPage(
       canvas.style.height = `${viewport.height / dpr}px`;
       const ctx = canvas.getContext("2d");
       if (!ctx || cancelled) return;
-      task = page.render({ canvasContext: ctx, viewport });
+      task = page.render({ canvas, canvasContext: ctx, viewport });
       await (task as unknown as { promise: Promise<void> }).promise;
     } catch {
       // A cancelled render rejects; so does a page that disappeared under a
@@ -187,11 +187,11 @@ export async function renderPdfPageToPng(bytes: Uint8Array): Promise<RasterizedF
     canvas.height = Math.max(1, Math.ceil(viewport.height));
     const ctx = canvas.getContext("2d");
     if (!ctx) return null;
-    await page.render({ canvasContext: ctx, viewport }).promise;
+    await page.render({ canvas, canvasContext: ctx, viewport }).promise;
     const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
     if (!blob) return null;
     return { png: new Uint8Array(await blob.arrayBuffer()), width: canvas.width, height: canvas.height };
   } finally {
-    await doc.destroy();
+    await doc.loadingTask.destroy();
   }
 }

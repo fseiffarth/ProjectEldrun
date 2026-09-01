@@ -633,7 +633,7 @@ function PdfPageCanvas({
       if (off && offCtx) {
         off.width = w;
         off.height = h;
-        task = page.render({ canvasContext: offCtx, viewport, annotationMode: ANNOT_MODE });
+        task = page.render({ canvas: off, canvasContext: offCtx, viewport, annotationMode: ANNOT_MODE });
         try {
           await task.promise;
         } catch {
@@ -661,7 +661,7 @@ function PdfPageCanvas({
         canvas.height = h;
         canvas.style.width = `${viewport.width / dpr}px`;
         canvas.style.height = `${viewport.height / dpr}px`;
-        task = page.render({ canvasContext: ctx, viewport, annotationMode: ANNOT_MODE });
+        task = page.render({ canvas, canvasContext: ctx, viewport, annotationMode: ANNOT_MODE });
         try {
           await task.promise;
         } catch {
@@ -1350,7 +1350,7 @@ function OutlinePreview({
         canvas.height = Math.max(1, Math.floor(viewport.height));
         const ctx = canvas.getContext("2d");
         if (!ctx) return;
-        await p.render({ canvasContext: ctx, viewport }).promise;
+        await p.render({ canvas, canvasContext: ctx, viewport }).promise;
         if (cancelled) return;
         const data = canvas.toDataURL("image/png");
         cache.set(page, data);
@@ -3233,7 +3233,7 @@ function PdfCanvas({
     // recompile) leave the old pages painted until the new ones are ready.
     const prevSources = sourcesRef.current;
     const freePrev = () => {
-      for (const s of prevSources.values()) s.doc.destroy();
+      for (const s of prevSources.values()) s.doc.loadingTask.destroy();
     };
     // Whether a failure may stay silent: only when a last good document is
     // actually on screen to fall back on. `samePathReload` alone is not that —
@@ -3276,7 +3276,7 @@ function PdfCanvas({
             reread: () => readFileBytes(path, scope),
           });
           if (cancelled) {
-            src.doc.destroy();
+            src.doc.loadingTask.destroy();
             return;
           }
           // A load is a fresh start: one source, the identity arrangement, no
@@ -3344,7 +3344,7 @@ function PdfCanvas({
   // never tears down the document that is still on screen.
   useEffect(
     () => () => {
-      for (const s of sourcesRef.current.values()) s.doc.destroy();
+      for (const s of sourcesRef.current.values()) s.doc.loadingTask.destroy();
       sourcesRef.current = new Map();
     },
     [],

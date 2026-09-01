@@ -362,7 +362,7 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
         if (!cancelled) setNotice(t("deckView.basePdfError", { msg: describeFileError(e) }));
       }
       if (cancelled) {
-        opened?.destroy();
+        opened?.loadingTask.destroy();
         return;
       }
 
@@ -407,7 +407,7 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
 
     return () => {
       cancelled = true;
-      opened?.destroy();
+      opened?.loadingTask.destroy();
       setDoc(null);
     };
   }, [path, scope, reloadNonce]);
