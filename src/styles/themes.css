@@ -160,8 +160,17 @@
   --success: #7ee787;
   --warning: #ffd166;
   --danger: #ff5c8a;
-  /* Helix signature hues for the pill/tab labels (apricot + green). */
-  --helix-orange: #f47868;
+  /* THE PROJECT NAME on a pill. The name is historical — it was a Helix
+     signature apricot, and being declared only here it was inherited by every
+     theme that did not think to override it, which put one reddish tint over
+     navy chrome, over neutral gray and over a lavender light theme alike. It is
+     a per-theme colour now: every theme below declares its own, chosen out of
+     its own palette, and this value is fancy_dark's rather than a house default
+     (it is the white `.project-pill-label` used to be forced to in onboarding.css,
+     which outranked the token and left the customizer's knob wired to nothing).
+     Keep it declared in every theme block — a theme that omits it falls back to
+     this one and inherits a colour picked for navy. */
+  --helix-orange: #ffffff;
   --pill-bg: transparent;
   /* SECONDARY CHROME HEADERS — the subwindow tab bars and the file panel's own
      header rows. They read as a THIRD surface, distinct from both the window's
@@ -200,6 +209,51 @@
   --bg-side-panel: var(--bg-panel);
   --bg-side-panel-header: var(--bg-subheader);
   --side-panel-border: var(--border-color);
+  /* THE TOP FRAME — the app's own title bar (`.app-header`, shell.css), as
+     three tokens instead of a look assembled from three shared ones. It is a
+     composite: a fill (a gradient in the fancy themes, a frosted layer in the
+     glass pair), a translucent accent wash laid over it, and the 1px seam that
+     separates the app's chrome from its content. None of that could be moved
+     before without moving the accent — and the accent paints half the window.
+     A theme redeclares these only where its own header departs from the
+     derivation: the achromatic pair and soft_dark drop the wash, the glass
+     pair swap the fill (all below). The dialog title band (apps.css) and the
+     popover menus (projects-tabs.css) reproduce the DEFAULT wash from the
+     accent and deliberately do not follow this group: they are other surfaces
+     that happen to start out matching the top bar, not the top bar. */
+  --top-frame-bg: var(--bg-header);
+  --top-frame-wash: color-mix(in srgb, var(--accent) 32%, transparent);
+  --top-frame-seam: var(--accent);
+  --top-frame-text: var(--text-primary);
+  --top-frame-text-secondary: var(--text-secondary);
+  --top-frame-text-muted: var(--text-muted);
+  /* A SUBWINDOW'S HEADER — the per-group tab bar. It reads --bg-subheader, the
+     shared secondary-chrome surface, which is also every file-panel header row
+     in the app; and its two markers (the active tab's underline, the focused
+     subwindow's outline) read the bare --accent, which paints buttons, links,
+     the scrollbar and the top frame's own seam besides. So the tab bar had no
+     look of its own to move. These follow exactly what those rules used to
+     read; the glass pair swaps the fill below. */
+  --subwindow-header-bg: var(--bg-subheader);
+  --subwindow-header-border: var(--border-color);
+  --subwindow-header-text: var(--text-primary);
+  --subwindow-header-text-secondary: var(--text-secondary);
+  --subwindow-header-text-muted: var(--text-muted);
+  --subwindow-tab-active: var(--accent);
+  --subwindow-focus-frame: var(--accent);
+  /* The three text tiers as the THEME states them, under names nothing
+     remaps. A surface that takes text of its own — the top frame, a
+     subwindow's header — does it by redeclaring --text-primary & co. for its
+     whole subtree, which is what lets one knob reach the forty rules that
+     paint text there without any of them being rewritten to expect it. These
+     are how the elevated surfaces nested INSIDE such a subtree hand the
+     theme's value back: a menu dropping out of the top bar sits on
+     --bg-elevated and is not part of the frame, so it must not take the
+     frame's ink with it. Substituted at :root, so what inherits down is the
+     resolved color and the remap below is not a cycle. */
+  --text-primary-base: var(--text-primary);
+  --text-secondary-base: var(--text-secondary);
+  --text-muted-base: var(--text-muted);
   /* Derived from the theme's own --accent (lazy var() resolution, like the
      scrollbar pair above) — a theme only redeclares these to be softer or
      grayer than the accent wash, not to restate it. */
@@ -272,7 +326,7 @@
       palette at the top of this file resolves against them — working, waiting
       on you, and finished are read as green/amber at a glance, and a greyscale
       lamp would say only "a lamp". Everything decorative goes neutral with the
-      rest: --helix-orange (a signature label tint), the --wm-* window controls
+      rest: --helix-orange (the project-name label), the --wm-* window controls
       (a close button is chrome, not an alarm) and the --activity-* heatmap,
       whose green ramp becomes the grey ramp light→dark it always logically was.
    ───────────────────────────────────────────────────────────────────────── */
@@ -387,7 +441,7 @@
 }
 
 /* ── The achromatic pair's header ───────────────────────────────────────
-   `.app-header`'s accent wash (`shell.css`'s `::before`, --accent at 0.32)
+   The top frame's accent wash (--top-frame-wash, 32% accent by default)
    exists to make the top bar read as themed rather than as a neutral panel.
    In a theme whose accent IS the ink it does the opposite: white at 32% over
    black, or black over white, is a mid-grey band — the one surface in the
@@ -396,15 +450,19 @@
    wash and take their separation from the edge alone, which is what rule 1
    says carries depth here.
 
-   They keep the shared accent seam under the header (`shell.css`), which here
-   resolves to the **ink** — these two themes' accent IS --text-primary. That
-   is the whole of what says where the header stops once the wash is gone, and
-   it is a step stronger than the borders inside the window: those separate two
-   panels of the same surface, this one separates the app's chrome from its
-   content. */
-[data-theme="dark"] .app-header::before,
-[data-theme="light"] .app-header::before {
-  content: none;
+   They keep the shared accent seam under the header (--top-frame-seam), which
+   here resolves to the **ink** — these two themes' accent IS --text-primary.
+   That is the whole of what says where the header stops once the wash is gone,
+   and it is a step stronger than the borders inside the window: those separate
+   two panels of the same surface, this one separates the app's chrome from its
+   content.
+
+   Clearing the token rather than the `::before` it paints: the layer stays in
+   the markup, so setting a wash from the Theme Customizer brings one back on
+   these two themes as well instead of landing on a rule that isn't there. */
+[data-theme="dark"],
+[data-theme="light"] {
+  --top-frame-wash: transparent;
 }
 
 /* ── Theme: fancy_light ─────────────────────────────────────────────── */
@@ -434,7 +492,11 @@
   --success: #1a7f37;
   --warning: #9a6700;
   --danger: #d1242f;
-  --helix-orange: #d6492f;
+  /* The project name: this theme's own ink, i.e. fancy_dark's white mirrored
+     onto light paper. It was a brick red (#d6492f) — the one theme where the
+     inherited apricot had been darkened for contrast rather than replaced, so
+     the project strip read as a row of warnings against blue-tinted chrome. */
+  --helix-orange: #1f2937;
   --pill-bg: transparent;
   /* -active-bg/-active-border derive from --accent (base block); only the
      hover keeps its own hue — the teal secondary, not the blue accent. */
@@ -476,7 +538,11 @@
   --success: #2e7d5b;
   --warning: #9a6700;
   --danger: #d1242f;
-  --helix-orange: #d6492f;
+  /* The project name: a dark lavender, in-palette with this theme's accent and
+     dark enough to hold on its near-white paper. It lived in apps.css as a
+     hardcoded `.project-pill-label` override — the token underneath it still
+     said brick red, so the customizer's knob for this label did nothing here. */
+  --helix-orange: #5d3eb8;
   --pill-bg: transparent;
   /* -active-bg derives from --accent (base block). The border stays a soft
      wash rather than the derived solid accent, and hover stays a neutral
@@ -525,6 +591,11 @@
   --accent: #6c9bf0;
   --accent-secondary: #9d8cff;
   --info: #7fb3f5;
+  /* The project name: this theme's own ink, declared rather than inherited.
+     Omitting it was how the one theme built to have NO tint ended up with a
+     salmon project strip — it fell through to the :root value, which is picked
+     for navy chrome. Neutral here for the reason every surface above is. */
+  --helix-orange: #e8eaf0;
   --control-bg: #202329;
   --control-hover-bg: #282b33;
   --control-border: #363a43;
@@ -535,9 +606,10 @@
 
 /* No accent wash over soft_dark's header: a 32% blue band over neutral gray
    chrome is exactly the tint this theme exists to not have. Separation comes
-   from the header's ordinary border shadow, which the gray surfaces catch. */
-[data-theme="soft_dark"] .app-header::before {
-  content: none;
+   from the header's ordinary border shadow, which the gray surfaces catch.
+   Cleared through the token, for the reason the achromatic pair's is. */
+[data-theme="soft_dark"] {
+  --top-frame-wash: transparent;
 }
 
 /* ── Derived tokens (one definition for every theme) ──────────────────────
@@ -634,13 +706,23 @@
   -webkit-backdrop-filter: blur(var(--glass-blur-strong)) saturate(var(--glass-saturate));
 }
 
+/* The glass pair's top-frame fill. Set on the THEME rather than on
+   `.app-header` itself: the header reads --top-frame-bg (shell.css), and a
+   value declared on the element would sit below the root's inline style in the
+   cascade — i.e. exactly where a Theme Customizer override lands, which would
+   then do nothing on the default theme. Declared here so it beats the base
+   block above and loses to that override. */
+[data-theme="fancy_dark"],
+[data-theme="light_lavender"] {
+  --top-frame-bg: var(--glass-header);
+}
+
 [data-theme="fancy_dark"] .app-header,
 [data-theme="light_lavender"] .app-header {
-  background: var(--glass-header);
-  /* Keeps the shared accent seam (shell.css) and adds the glass drop shadow
-     under it — this rule replaces the base box-shadow wholesale, so the seam
-     has to be restated here or these two themes lose it. */
-  box-shadow: 0 1px 0 var(--accent), 0 8px 24px -16px rgba(0, 0, 0, 0.4);
+  /* Keeps the shared seam (shell.css) and adds the glass drop shadow under it
+     — this rule replaces the base box-shadow wholesale, so the seam has to be
+     restated here or these two themes lose it. */
+  box-shadow: 0 1px 0 var(--top-frame-seam), 0 8px 24px -16px rgba(0, 0, 0, 0.4);
 }
 
 /* The right-side file panel is fully opaque even in the glass themes: it floats
@@ -658,10 +740,14 @@
    translucent counterpart (--glass-subheader) — same 14% accent tint, over
    --glass-panel instead of --bg-elevated. The panel header rows keep the
    opaque token: `.side-panel` itself opts out of the glass treatment (above),
-   so a frosted header inside an opaque panel would frost nothing. */
-[data-theme="fancy_dark"] .tab-bar,
-[data-theme="light_lavender"] .tab-bar {
-  background-color: var(--glass-subheader);
+   so a frosted header inside an opaque panel would frost nothing.
+   Set on the THEME rather than on `.tab-bar`, for the reason --top-frame-bg is
+   (above): a value declared on the element outranks the root inline style a
+   Theme Customizer override lands in, and the knob would do nothing on the
+   default theme. */
+[data-theme="fancy_dark"],
+[data-theme="light_lavender"] {
+  --subwindow-header-bg: var(--glass-subheader);
 }
 
 [data-theme="fancy_dark"] .subwindow-files,

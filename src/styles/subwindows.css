@@ -618,7 +618,10 @@
   z-index: 5;
   pointer-events: none;
   background: rgba(0, 0, 0, 0.28);
-  outline: 2px solid var(--accent);
+  /* The same outline the focus frame draws, from the same token: this preview
+     is the frame of the subwindow the drop would create, and the two are on
+     screen back-to-back during a drag. */
+  outline: 2px solid var(--subwindow-focus-frame);
   outline-offset: -2px;
   transition: left var(--transition), top var(--transition), width var(--transition), height var(--transition);
 }
@@ -633,7 +636,7 @@
   position: absolute;
   z-index: 3;
   pointer-events: none;
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--subwindow-focus-frame);
   outline-offset: -2px;
   border-radius: 2px;
   transition: left var(--transition), top var(--transition), width var(--transition), height var(--transition);
@@ -653,7 +656,7 @@
   font-weight: 600;
   line-height: 1;
   color: var(--bg-main);
-  background: var(--accent);
+  background: var(--subwindow-focus-frame);
   border-radius: var(--radius);
 }
 

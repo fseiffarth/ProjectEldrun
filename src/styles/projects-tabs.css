@@ -928,9 +928,29 @@
      The bottom border + the active tab's `--bg-main` blend keep the divide to
      the pane crisp. The old inline `::before` accent wash (0.12) folded into
      the token, so the tint now lives in one place for every chrome header. */
-  background-color: var(--bg-subheader);
-  border-bottom: 1px solid var(--border-color);
+  background-color: var(--subwindow-header-bg);
+  border-bottom: 1px solid var(--subwindow-header-border);
   position: relative;
+  /* The bar's own ink, the same remap the app header takes (shell.css): the
+     tab labels, the grip, the scroll chevrons, the locality/mode chips and the
+     + button all read shared text tiers, so one knob for "the text on a
+     subwindow's header" has to be the tiers themselves, redeclared for this
+     subtree. */
+  --text-primary: var(--subwindow-header-text);
+  --text-secondary: var(--subwindow-header-text-secondary);
+  --text-muted: var(--subwindow-header-text-muted);
+}
+
+/* The bar's own popovers — the + menu, a tab's context menu — portal to body,
+   so they escape the remap above by construction rather than by this rule.
+   It stands as the guard for the day one of them renders in place instead:
+   they are elevated surfaces over the app's content, not part of the bar, and
+   must keep the theme's ink. The app header's live twin is in shell.css. */
+.tab-bar .tab-new-menu,
+.tab-bar .context-menu {
+  --text-primary: var(--text-primary-base);
+  --text-secondary: var(--text-secondary-base);
+  --text-muted: var(--text-muted-base);
 }
 
 /* Explicit drag grip pinned at the far left of every subwindow bar. It sits
@@ -1047,7 +1067,7 @@
      It is ALSO the only tab with a side 3D shadow, so it reads as a raised chip
      lifted off the flat, shadowless neighbours. */
   color: var(--text-primary);
-  border-bottom-color: var(--tab-accent, var(--accent));
+  border-bottom-color: var(--tab-accent, var(--subwindow-tab-active));
   box-shadow: 2px 0 3px -2px rgba(0, 0, 0, 0.4), -2px 0 3px -2px rgba(0, 0, 0, 0.4);
 }
 

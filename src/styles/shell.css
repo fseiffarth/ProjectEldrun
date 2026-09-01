@@ -94,31 +94,63 @@ select option {
 .app-header {
   height: 40px;
   min-height: 40px;
-  background: var(--bg-header);
+  background: var(--top-frame-bg);
   /* The one edge that separates the app's chrome from its content is drawn in
      the theme accent, not --border-color: it is the window's top-level seam
-     and reads as deliberate rather than as one more panel divider. */
-  box-shadow: 0 1px 0 var(--accent);
+     and reads as deliberate rather than as one more panel divider. Its own
+     token, so the seam can be retoned without moving every accent in the
+     window (the glass pair restates this shadow — see themes.css). */
+  box-shadow: 0 1px 0 var(--top-frame-seam);
   display: flex;
   align-items: stretch;
   position: relative;
   z-index: 80;
+  /* THE TOP FRAME'S OWN INK. The clock, the project pills, the box chip, the
+     right-hand cluster and the version label are painted by some forty rules
+     across four stylesheets, each reading a shared text tier — so a knob for
+     "the text on the top bar" cannot be a token those rules opt into one by
+     one. It is this: the three tiers are remapped for the header's subtree,
+     and every rule inside picks up the frame's value without knowing it
+     exists. Not a cycle — --top-frame-text is substituted at :root and what
+     inherits here is the resolved color, never a reference back to this. */
+  --text-primary: var(--top-frame-text);
+  --text-secondary: var(--top-frame-text-secondary);
+  --text-muted: var(--top-frame-text-muted);
+}
+
+/* …but a menu dropping out of the bar is its own surface, not the frame: it
+   sits on --bg-elevated over the app's content, so it takes the theme's ink
+   back (--text-*-base, themes.css). The header's popovers render INSIDE it
+   rather than through a portal (the app launcher, the indicator menus, the
+   local-model list) and every one of them is built on the shared
+   `.tab-new-menu` class, so this one pair of selectors covers the set — and a
+   new header menu on that base is covered the day it lands. `.context-menu`
+   joins it as a guard: those portal to body today, and this is what keeps the
+   rule true if one ever stops. */
+.app-header .tab-new-menu,
+.app-header .context-menu {
+  --text-primary: var(--text-primary-base);
+  --text-secondary: var(--text-secondary-base);
+  --text-muted: var(--text-muted-base);
 }
 
 /* A soft theme-accent wash over the header bar (lavender in light_lavender,
    cyan-blue in fancy_dark, etc.) so the top bar reads as themed, not just a
-   neutral panel. A translucent overlay rather than recoloring --bg-header
-   directly, since that variable is a plain color in some themes and a
-   gradient in others (fancy_dark/fancy_light) — an overlay works over either
-   with no per-theme branching. Negative z-index keeps it under the header's
-   own (unpositioned, normal-flow) children within .app-header's own stacking
+   neutral panel. A translucent overlay rather than recoloring --top-frame-bg
+   directly, since that variable is a plain color in some themes, a gradient in
+   others (fancy_dark/fancy_light) and a frosted layer in the glass pair — an
+   overlay works over any of them with no per-theme branching. The translucency
+   lives in the token (32% accent by default) rather than in an `opacity` here,
+   so one hex with an alpha channel from the Theme Customizer can set both the
+   hue and how far it carries; the themes that want no wash set it to
+   `transparent`. Negative z-index keeps it under the header's own
+   (unpositioned, normal-flow) children within .app-header's own stacking
    context. */
 .app-header::before {
   content: "";
   position: absolute;
   inset: 0;
-  background: var(--accent);
-  opacity: 0.32;
+  background: var(--top-frame-wash);
   pointer-events: none;
   z-index: -1;
 }

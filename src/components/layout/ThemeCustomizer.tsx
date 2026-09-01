@@ -715,7 +715,20 @@ export function ThemeCustomizerDialog({
           {THEME_TOKEN_GROUPS.map((group) => (
             <SettingsSection
               key={group.id}
-              title={t(`theme.group.${group.id}` as "theme.group.surfaces")}
+              title={
+                <>
+                  {t(`theme.group.${group.id}` as "theme.group.surfaces")}
+                  {/* The two groups nobody has seen paint yet; drop the pill
+                      once the top bar and a tab bar have been recolored
+                      live. */}
+                  {(group.id === "topframe" || group.id === "subwindow") && (
+                    <>
+                      {" "}
+                      <UntestedTag />
+                    </>
+                  )}
+                </>
+              }
               help={t(`theme.group.${group.id}.help` as "theme.group.surfaces.help")}
             >
               <SettingsCard className="theme-var-card">

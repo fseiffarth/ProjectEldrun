@@ -154,6 +154,52 @@ describe("the token catalog", () => {
     const names = THEME_TOKENS.map((tk) => tk.name);
     expect(new Set(names).size).toBe(names.length);
   });
+
+  // The top frame and a subwindow's header take text of their own by
+  // REMAPPING the shared tiers for their whole subtree — the only way one knob
+  // reaches the forty rules painting a clock, a pill label or a tab caption,
+  // none of which was written to read a frame-specific token. The cost is that
+  // everything nested there follows, including the menus that drop out of the
+  // bar onto their own elevated surface. Those hand the theme's ink back
+  // through the --text-*-base snapshot, and every header popover in the app is
+  // built on `.tab-new-menu`, so one selector pair covers them.
+  //
+  // Both halves are silent when broken: a remap without its undo tints menu
+  // text off its own surface, and the snapshot resolving to nothing would make
+  // the undo itself the bug. Hence this.
+  it("hands the theme's own ink back to a menu nested in a remapped scope", () => {
+    const css = readAppStylesheet();
+    for (const tier of ["primary", "secondary", "muted"] as const) {
+      expect(css).toContain(`--text-${tier}-base: var(--text-${tier});`);
+    }
+    // Every scope that remaps a tier for its subtree, and the undo beside it.
+    for (const scope of [".app-header", ".tab-bar"]) {
+      const undo = new RegExp(
+        `\\${scope} \\.tab-new-menu,\\s*\\${scope} \\.context-menu \\{[^}]*` +
+          `--text-primary: var\\(--text-primary-base\\);[^}]*` +
+          `--text-secondary: var\\(--text-secondary-base\\);[^}]*` +
+          `--text-muted: var\\(--text-muted-base\\);`,
+      );
+      expect(css).toMatch(undo);
+    }
+  });
+
+  it("remaps a text tier only in a scope that undoes it for its menus", () => {
+    const css = readAppStylesheet();
+    // Theme blocks declare the tiers outright; a rule that points one at
+    // another token is a subtree remap and owes the undo above.
+    const remaps = [...css.matchAll(/--text-(?:primary|secondary|muted): var\(--(.+?)\);/g)]
+      .map((m) => m[1])
+      .filter((source) => !source.endsWith("-base"));
+    expect([...new Set(remaps)].sort()).toEqual([
+      "subwindow-header-text",
+      "subwindow-header-text-muted",
+      "subwindow-header-text-secondary",
+      "top-frame-text",
+      "top-frame-text-muted",
+      "top-frame-text-secondary",
+    ]);
+  });
 });
 
 describe("cssColorToHex", () => {

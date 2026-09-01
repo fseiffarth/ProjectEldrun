@@ -63,6 +63,41 @@ export const THEME_TOKEN_GROUPS: readonly ThemeTokenGroup[] = [
       { name: "--bg-header-solid" },
     ],
   },
+  // The top frame gets a section of its own for the reason the side panel and
+  // the alerts strip do: its look is a composite of tokens that paint half the
+  // window besides (--bg-header, --accent twice over), so before these three
+  // existed the only way to retone the app's title bar was to move everything
+  // it borrows from. `--top-frame-bg` follows --bg-header in most themes and
+  // the frosted --glass-header in the two glass ones, which is why the swatch
+  // probes the solid twin.
+  {
+    id: "topframe",
+    tokens: [
+      { name: "--top-frame-bg", probe: "--bg-header-solid" },
+      { name: "--top-frame-wash" },
+      { name: "--top-frame-seam" },
+      { name: "--top-frame-text" },
+      { name: "--top-frame-text-secondary" },
+      { name: "--top-frame-text-muted" },
+    ],
+  },
+  // A subwindow's header, on the same footing. Its three text tiers are not a
+  // second name for the shared ones: they are remapped for the bar's subtree
+  // (projects-tabs.css), which is the only way one knob can reach every rule
+  // that paints a tab label, a chip or a chevron — none of which was written
+  // to read a subwindow-specific token.
+  {
+    id: "subwindow",
+    tokens: [
+      { name: "--subwindow-header-bg" },
+      { name: "--subwindow-header-border" },
+      { name: "--subwindow-header-text" },
+      { name: "--subwindow-header-text-secondary" },
+      { name: "--subwindow-header-text-muted" },
+      { name: "--subwindow-tab-active" },
+      { name: "--subwindow-focus-frame" },
+    ],
+  },
   // The side panel gets a section of its own rather than three more rows among
   // the surfaces: its tokens each FOLLOW a shared one (--bg-panel,
   // --bg-subheader, --border-color) and exist only so this one panel can be

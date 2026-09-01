@@ -29,6 +29,23 @@
   z-index: 15;
 }
 
+/* Panel-toned surfaces INSIDE the panel follow the panel's OWN token instead
+   of the app-wide one. --bg-side-panel starts out as var(--bg-panel), so this
+   changes nothing until the Theme Customizer pins the panel to its own color —
+   and that was exactly when the panel body moved while everything painted with
+   --bg-panel in here (the sticky file-tree head: search box, breadcrumb; the
+   git action footer; the commit box) stayed behind and struck a seam across
+   the panel. Remapping the variable for the subtree keeps them all on the
+   panel's color at once, instead of restating a background per surface and
+   missing the next one added.
+   It reaches no further than this panel: `.side-panel` is set on the one
+   container (layout/SidePanel.tsx) and portaled dialogs render outside it. Not
+   a cycle either — --bg-side-panel is not declared on this element, so the
+   value read here is the one inherited from :root. */
+.side-panel {
+  --bg-panel: var(--bg-side-panel);
+}
+
 .side-panel:not(.open) {
   transform: translateX(calc(100% + 2px));
   border-left-color: transparent;
@@ -705,7 +722,15 @@
   align-items: center;
   flex-wrap: wrap;
   gap: 2px;
-  padding: 4px 12px;
+  /* Left padding is 6px, not the block's 12px, ON PURPOSE: every child here is
+     a `.toolbar-btn` carrying its own 6px inner padding, so 12px would push the
+     first LABEL to 18px while the project name one row up and the file names
+     below both start at 12px — the row read as indented against its own panel.
+     6px + the button's 6px puts the glyphs back on that 12px line; the button's
+     box (hover/active fill) then starts at 6px, between the header text and the
+     file rows' 4px hover fill. Right side keeps the full 12px — nothing there
+     has to line up with anything. */
+  padding: 4px 12px 4px 6px;
   /* Second row of the same header block — shares `.side-panel-header`'s fill. */
   background-color: var(--bg-subheader);
   border-bottom: 1px solid var(--border-subtle);

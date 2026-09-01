@@ -750,8 +750,11 @@
    plain white (below), fancy_light labels fall through to the theme foreground.
    (No accent gradient on the active tab; the top/bottom rail carries the kind.) */
 
-/* Keep project and tab names plain white in fancy dark mode. */
-[data-theme="fancy_dark"] .project-pill-label,
+/* Keep tab names plain white in fancy dark mode. The project PILL label is not
+   here any more: it reads --helix-orange, and this rule outranked that token, so
+   the knob was wired to nothing in this theme while the token's own apricot went
+   on tinting every theme that had no override. The white lives on the token now
+   (themes.css), which paints the same pixels and leaves it adjustable. */
 [data-theme="fancy_dark"] .tab-label {
   color: #fff;
 }

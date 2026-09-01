@@ -587,15 +587,19 @@
 .project-pill-label {
   overflow: hidden;
   text-overflow: ellipsis;
-  /* Helix apricot for the project name; inactive pills dim a touch so the active
-     scope still reads as foremost (its background/stripe also signal it). */
+  /* --helix-orange is THE project-name colour, and every theme declares its own
+     value for it (see the token's block in themes.css). The name is historical:
+     it was one signature apricot inherited by every theme, which is exactly the
+     bug — the same reddish tint over navy chrome, over neutral gray and over a
+     lavender light theme, in-palette with none of them. Two themes had already
+     opted out with a hardcoded label rule of their own, which left the token
+     painting nothing where it was overridden and a stray red everywhere else.
+     Those overrides are folded back into the token so there is ONE definition
+     per theme, in the file where a theme's colours live, and so the Theme
+     Customizer's knob for it actually moves this label in every theme.
+     Inactive pills dim a touch so the active scope still reads as foremost
+     (its background/stripe also signal it). */
   color: var(--helix-orange);
-}
-
-/* In the lavender theme the project name reads as dark lavender rather than
-   the default Helix apricot, so it stays in-palette with the rest of the UI. */
-[data-theme="light_lavender"] .project-pill-label {
-  color: #5d3eb8;
 }
 
 .pill-folder-icon {
