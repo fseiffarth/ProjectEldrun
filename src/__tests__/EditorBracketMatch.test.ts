@@ -5,7 +5,11 @@
  * Mirrors the search-decoration tests.
  */
 import { describe, it, expect } from "vitest";
-import { findMatchingBracket, decorateBracketMatch } from "../components/embed/FileViewerPane";
+import {
+  findMatchingBracket,
+  decorateBracketMatch,
+  decorateUnclosedBrackets,
+} from "../components/embed/FileViewerPane";
 
 /** A single-character range at `i`, for terser expectations below. */
 function at(i: number) {
@@ -118,6 +122,15 @@ describe("decorateBracketMatch", () => {
     expect(html).toBe(
       '<span class="file-viewer-bracket-match">\\[</span>x' +
         '<span class="file-viewer-bracket-match">\\]</span>',
+    );
+  });
+});
+
+describe("decorateUnclosedBrackets", () => {
+  it("repaints every unmatched opener while escaping the surrounding source", () => {
+    expect(decorateUnclosedBrackets("{a<b>(", [at(0), at(5)])).toBe(
+      '<span class="file-viewer-unclosed-bracket">{</span>a&lt;b&gt;' +
+        '<span class="file-viewer-unclosed-bracket">(</span>',
     );
   });
 });

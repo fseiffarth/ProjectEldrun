@@ -10,6 +10,7 @@ import {
   findTexEnvDelimiterMatch,
   findTexDelimiterMatch,
   findTexEnvNameMatch,
+  findUnclosedTexBrackets,
   syncTexEnvRename,
   texEnvNameRangeAt,
 } from "../lib/viewers/tex";
@@ -17,6 +18,34 @@ import {
 function at(i: number, len = 1) {
   return { start: i, end: i + len };
 }
+
+describe("findUnclosedTexBrackets", () => {
+  it("returns only opening ordinary brackets still missing their end", () => {
+    const text = "\\section{closed}\nouter{inner{ok}\nvalue[done]\ncall(";
+    expect(findUnclosedTexBrackets(text)).toEqual([
+      at(text.indexOf("outer{") + "outer".length),
+      at(text.lastIndexOf("(")),
+    ]);
+  });
+
+  it("ignores commented and escaped literal brackets", () => {
+    const text = "\\{printed\\} % { commented\n\\command{closed}";
+    expect(findUnclosedTexBrackets(text)).toEqual([]);
+  });
+
+  it("includes unmatched math and environment opening delimiters", () => {
+    const text = "\\[display\n\\begin{itemize}\n$inline";
+    expect(findUnclosedTexBrackets(text)).toEqual([
+      at(text.indexOf("\\["), 2),
+      at(text.indexOf("\\begin"), "\\begin{itemize}".length),
+      at(text.indexOf("$")),
+    ]);
+  });
+
+  it("ignores extra closing delimiters because only missing ends are diagnosed", () => {
+    expect(findUnclosedTexBrackets(")]}\\)\\]\\end{itemize}")).toEqual([]);
+  });
+});
 
 describe("findTexMathDelimiterMatch", () => {
   it("matches inline math $…$ from either $ and from inside the math", () => {

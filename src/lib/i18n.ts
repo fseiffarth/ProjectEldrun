@@ -4638,6 +4638,7 @@ export const en = {
   "fileViewer.removeFromContext": "Remove {file} from context",
   "fileViewer.removeBreakpoint": "Remove breakpoint on line {line}",
   "fileViewer.addBreakpoint": "Break on line {line}",
+  "fileViewer.unclosedBracketHint": "Opening delimiter is missing its closing partner.",
   "fileViewer.grammarFix": "Fix →",
   "fileViewer.blameAgo": "{time} ago",
   "fileViewer.hideReplace": "Hide replace",

@@ -2453,6 +2453,16 @@
   border-radius: 2px;
 }
 
+/* TeX missing-end diagnostic: the line number stays red even when it is also
+   the caret/search row, so the structural error does not disappear on focus. */
+.file-viewer-gutter-line.has-unclosed-bracket {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+  box-shadow: inset 2px 0 0 var(--danger);
+  border-radius: 2px;
+  font-weight: 600;
+}
+
 /* Hidden mirror that measures each logical line's wrapped height so the wrap-mode
    gutter (LaTeX viewer) can size its cells to match. Shares the editor's font
    metrics, padding and wrap rules; its width is set inline to the textarea's
@@ -2640,6 +2650,7 @@
 .file-viewer-delete-layer,
 .file-viewer-grammar-layer,
 .file-viewer-bracket-layer,
+.file-viewer-unclosed-layer,
 .file-viewer-ghost {
   position: absolute;
   inset: 0;
@@ -2669,7 +2680,8 @@
 .file-viewer-change-layer,
 .file-viewer-delete-layer,
 .file-viewer-grammar-layer,
-.file-viewer-bracket-layer {
+.file-viewer-bracket-layer,
+.file-viewer-unclosed-layer {
   inset: auto;
   top: 0;
   left: 0;
@@ -3252,6 +3264,35 @@
   background: rgba(88, 166, 255, 0.18);
 }
 
+/* Keep the source glyph readable in its syntax colour: only a red meandering
+   underline paints from this otherwise-transparent diagnostic layer. */
+.file-viewer-unclosed-layer .file-viewer-unclosed-bracket {
+  text-decoration-line: underline;
+  text-decoration-style: wavy;
+  text-decoration-color: var(--danger);
+  text-decoration-thickness: 1.5px;
+  text-decoration-skip-ink: none;
+  text-underline-offset: 2px;
+}
+
+.file-viewer-unclosed-tip {
+  position: fixed;
+  z-index: 60;
+  transform: translateY(-100%);
+  margin-top: -7px;
+  max-width: 280px;
+  padding: 5px 8px;
+  border-radius: var(--radius);
+  border: 1px solid color-mix(in srgb, var(--danger) 55%, var(--border-color));
+  border-left: 3px solid var(--danger);
+  background: var(--bg-main);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-2);
+  font-size: 11px;
+  line-height: 1.4;
+  pointer-events: none;
+}
+
 /* Change-tint trail: tint recently typed runs so the latest edits stand out,
    sequenced new→old across tiers (.tier-0 newest … .tier-17 oldest). Each tier
    shifts hue green→teal→blue and fades, so the freshest keystrokes read brightest
@@ -3532,6 +3573,7 @@
 .file-viewer-code-area.is-wrapped .file-viewer-delete-layer,
 .file-viewer-code-area.is-wrapped .file-viewer-grammar-layer,
 .file-viewer-code-area.is-wrapped .file-viewer-bracket-layer,
+.file-viewer-code-area.is-wrapped .file-viewer-unclosed-layer,
 .file-viewer-code-area.is-wrapped .file-viewer-ghost {
   white-space: pre-wrap;
   overflow-wrap: normal;
@@ -3548,6 +3590,7 @@
 .file-viewer-code-area.is-wrapped .file-viewer-delete-layer,
 .file-viewer-code-area.is-wrapped .file-viewer-grammar-layer,
 .file-viewer-code-area.is-wrapped .file-viewer-bracket-layer,
+.file-viewer-code-area.is-wrapped .file-viewer-unclosed-layer,
 .file-viewer-code-area.is-wrapped .file-viewer-ghost {
   min-width: 0;
   right: auto;

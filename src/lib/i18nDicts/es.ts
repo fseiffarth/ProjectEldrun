@@ -4468,6 +4468,7 @@ export const dict: Dict = {
   "fileViewer.removeFromContext": "Quitar {file} del contexto",
   "fileViewer.removeBreakpoint": "Quitar punto de interrupción en la línea {line}",
   "fileViewer.addBreakpoint": "Interrumpir en la línea {line}",
+  "fileViewer.unclosedBracketHint": "Al delimitador de apertura le falta su par de cierre.",
   "fileViewer.grammarFix": "Corregir →",
   "fileViewer.blameAgo": "hace {time}",
   "fileViewer.hideReplace": "Ocultar reemplazar",

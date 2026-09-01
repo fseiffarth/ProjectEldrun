@@ -4470,6 +4470,7 @@ export const dict: Dict = {
   "fileViewer.removeFromContext": "Retirer {file} du contexte",
   "fileViewer.removeBreakpoint": "Retirer le point d'arrêt à la ligne {line}",
   "fileViewer.addBreakpoint": "S'arrêter à la ligne {line}",
+  "fileViewer.unclosedBracketHint": "Le délimiteur ouvrant n’a pas de délimiteur fermant correspondant.",
   "fileViewer.grammarFix": "Corriger →",
   "fileViewer.blameAgo": "il y a {time}",
   "fileViewer.hideReplace": "Masquer le remplacement",

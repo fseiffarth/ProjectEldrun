@@ -10,7 +10,7 @@
  * module registry and re-imports FileViewerPane to get a fresh probe.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, act, waitFor } from "@testing-library/react";
+import { render, screen, act, waitFor, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 const { mockInvoke } = vi.hoisted(() => ({ mockInvoke: vi.fn() }));
@@ -88,6 +88,35 @@ describe("TexView", () => {
     // No compile affordance.
     expect(screen.queryByRole("button", { name: /compile/i })).toBeNull();
     expect(mockInvoke).not.toHaveBeenCalledWith("compile_tex", expect.anything());
+  });
+
+  it("marks an opening bracket and its source line red until its end is typed", async () => {
+    setupInvoke(false);
+    await renderTexView();
+
+    const textarea = (await screen.findByRole("textbox")) as HTMLTextAreaElement;
+    await waitFor(() => expect(textarea.value).toBe(TEX_SOURCE));
+    const line = 3;
+    const caret = TEX_SOURCE.indexOf("Hi") + 2;
+    textarea.focus();
+    textarea.setSelectionRange(caret, caret);
+
+    const unclosed = TEX_SOURCE.slice(0, caret) + "{" + TEX_SOURCE.slice(caret);
+    fireEvent.change(textarea, { target: { value: unclosed } });
+    await waitFor(() => {
+      expect(document.querySelector(".file-viewer-unclosed-bracket")?.textContent).toBe("{");
+      expect(
+        document.querySelector(".file-viewer-gutter-line.has-unclosed-bracket")?.textContent,
+      ).toBe(String(line));
+    });
+
+    fireEvent.change(textarea, {
+      target: { value: unclosed.slice(0, caret + 1) + "}" + unclosed.slice(caret + 1) },
+    });
+    await waitFor(() => {
+      expect(document.querySelector(".file-viewer-unclosed-bracket")).toBeNull();
+      expect(document.querySelector(".file-viewer-gutter-line.has-unclosed-bracket")).toBeNull();
+    });
   });
 
   it("shows a Compile button when an engine is available, and saving+compiling on click", async () => {

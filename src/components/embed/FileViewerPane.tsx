@@ -163,6 +163,7 @@ import {
   offsetToLineCol,
   phraseAt,
   findTexDelimiterMatch,
+  findUnclosedTexBrackets,
   findTexEnvNameMatch,
   syncTexEnvRename,
   texEnvNameRangeAt,
@@ -1663,6 +1664,32 @@ export function decorateBracketMatch(source: string, match: BracketMatch): strin
 }
 
 /**
+ * Build the persistent TeX missing-end overlay. Every unmatched opening
+ * delimiter gets a danger-coloured wavy underline; source stays transparent so
+ * the syntax layer keeps the glyph itself readable.
+ * Ranges are sorted and overlap-pruned defensively (the TeX scanner normally
+ * emits disjoint ranges). SECURITY: all source runs are HTML-escaped.
+ */
+export function decorateUnclosedBrackets(source: string, ranges: BracketSide[]): string {
+  const sorted = [...ranges].sort((a, b) => a.start - b.start || a.end - b.end);
+  let out = "";
+  let pos = 0;
+  for (const range of sorted) {
+    const start = Math.max(0, Math.min(range.start, source.length));
+    const end = Math.max(start, Math.min(range.end, source.length));
+    if (end <= start || start < pos) continue;
+    out += escapeHtmlText(source.slice(pos, start));
+    out +=
+      '<span class="file-viewer-unclosed-bracket">' +
+      escapeHtmlText(source.slice(start, end)) +
+      "</span>";
+    pos = end;
+  }
+  out += escapeHtmlText(source.slice(pos));
+  return out;
+}
+
+/**
  * The `{start, end}` (in `next` coordinates) of the run of text that differs
  * between `prev` and `next`, found by trimming the common prefix and suffix.
  * Used to tint the most-recent edit. Returns `null` when nothing was inserted
@@ -2193,6 +2220,7 @@ function CodeEditor({
   const deleteLayerRef = useRef<HTMLPreElement>(null);
   const grammarLayerRef = useRef<HTMLPreElement>(null);
   const bracketLayerRef = useRef<HTMLPreElement>(null);
+  const unclosedLayerRef = useRef<HTMLPreElement>(null);
   const ghostRef = useRef<HTMLPreElement>(null);
   const measureRef = useRef<HTMLPreElement>(null);
   const findInputRef = useRef<HTMLInputElement>(null);
@@ -2438,6 +2466,7 @@ function CodeEditor({
       deleteLayerRef,
       grammarLayerRef,
       bracketLayerRef,
+      unclosedLayerRef,
     ]) {
       if (ref.current) ref.current.style.transform = transform;
     }
@@ -2528,6 +2557,29 @@ function CodeEditor({
     const m = matches[current];
     return m ? offsetToLineCol(draft, m.start).line : 0;
   }, [matches, current, draft]);
+
+  // TeX missing-end diagnostics are persistent rather than caret-local: every
+  // unmatched opening delimiter is red, and every logical line holding one is
+  // marked in the gutter. Other editor languages keep their existing behaviour.
+  const unclosedBrackets = useMemo(
+    () => (loaded && lang === "tex" ? findUnclosedTexBrackets(draft) : []),
+    [loaded, lang, draft],
+  );
+  const unclosedHtml = useMemo(
+    () =>
+      unclosedBrackets.length > 0
+        ? decorateUnclosedBrackets(draft, unclosedBrackets)
+        : null,
+    [draft, unclosedBrackets],
+  );
+  const unclosedLineSet = useMemo(() => {
+    const set = new Set<number>();
+    for (const range of unclosedBrackets) {
+      set.add(offsetToLineCol(draft, range.start).line);
+    }
+    return set;
+  }, [draft, unclosedBrackets]);
+  const [unclosedTip, setUnclosedTip] = useState<{ left: number; top: number } | null>(null);
 
   // Bracket-match highlight: whichever bracket the caret sits just before/after
   // gets its partner highlighted too (`findMatchingBracket`/`decorateBracketMatch`
@@ -3014,6 +3066,13 @@ function CodeEditor({
     if (bracketHtml) syncScroll();
   }, [bracketHtml, syncScroll]);
 
+  // This layer mounts/unmounts as the document becomes balanced. Align a fresh
+  // layer immediately when the editor is already scrolled.
+  useEffect(() => {
+    if (unclosedHtml) syncScroll();
+    else setUnclosedTip(null);
+  }, [unclosedHtml, syncScroll]);
+
   // Apply a single issue's suggested fix: replace its resolved range with the
   // suggestion and drop the issue so its mark clears (the rest re-resolve against
   // the new draft). Leaves the caret after the inserted text.
@@ -3051,6 +3110,18 @@ function CodeEditor({
     },
     [grammarRanges],
   );
+
+  // The textarea owns pointer events, so hover-test the scroll-aligned diagnostic
+  // layer's span boxes (the same technique used for grammar marks and links).
+  const unclosedTipAt = useCallback((x: number, y: number): { left: number; top: number } | null => {
+    const layer = unclosedLayerRef.current;
+    if (!layer) return null;
+    for (const span of layer.querySelectorAll<HTMLElement>(".file-viewer-unclosed-bracket")) {
+      const r = span.getBoundingClientRect();
+      if (linkRectHit(r, x, y)) return { left: x, top: r.top };
+    }
+    return null;
+  }, []);
 
   // Replace the current match (#67). We re-place the textarea selection on the
   // match first so the change history records a single, intelligible edit, then
@@ -3746,6 +3817,7 @@ function CodeEditor({
   const onMouseMove = (e: React.MouseEvent<HTMLTextAreaElement>) => {
     lastMouse.current = { x: e.clientX, y: e.clientY };
     updateLinkHover(e.clientX, e.clientY, e.ctrlKey || e.metaKey);
+    setUnclosedTip(unclosedBrackets.length ? unclosedTipAt(e.clientX, e.clientY) : null);
     // Grammar tooltip: open it over a hovered mark, else schedule a close so the
     // pointer can still reach the open tooltip's Apply button.
     if (grammarRanges.length) {
@@ -3857,6 +3929,7 @@ function CodeEditor({
                   ? "file-viewer-gutter-line has-match"
                   : "file-viewer-gutter-line") +
               (n === caretLine ? " caret" : "") +
+              (unclosedLineSet.has(n) ? " has-unclosed-bracket" : "") +
               (onToggleBreakpoint ? " is-breakable" : "") +
               (broken ? " has-breakpoint" : "");
             const style = h != null ? { height: h } : undefined;
@@ -3929,6 +4002,15 @@ function CodeEditor({
             dangerouslySetInnerHTML={{ __html: bracketHtml + "\n" }}
           />
         )}
+        {unclosedHtml != null && (
+          <pre
+            ref={unclosedLayerRef}
+            className="file-viewer-unclosed-layer"
+            aria-hidden="true"
+            style={overlayWidthStyle}
+            dangerouslySetInnerHTML={{ __html: unclosedHtml + "\n" }}
+          />
+        )}
         {changeHtml != null && (
           <pre
             ref={changeLayerRef}
@@ -3995,9 +4077,9 @@ function CodeEditor({
           onChange={onTextChange}
           onKeyDown={onKeyDown}
           onKeyUp={(e) => { if (!(e.ctrlKey || e.metaKey)) setLinkHover(false); emitCaret(); }}
-          onBlur={() => { setLinkHover(false); setLinkTip(null); dismissSuggestion(); setCompl(null); }}
+          onBlur={() => { setLinkHover(false); setLinkTip(null); setUnclosedTip(null); dismissSuggestion(); setCompl(null); }}
           onMouseMove={onMouseMove}
-          onMouseLeave={() => { setLinkHover(false); setLinkTip(null); scheduleGrammarTipClose(); }}
+          onMouseLeave={() => { setLinkHover(false); setLinkTip(null); setUnclosedTip(null); scheduleGrammarTipClose(); }}
           onClick={onClick}
           onSelect={emitCaret}
           onScroll={onScroll}
@@ -4017,6 +4099,15 @@ function CodeEditor({
         )}
       </div>
       {onFollowLink && <LinkOpenHint at={linkTip} />}
+      {unclosedTip && (
+        <div
+          className="file-viewer-unclosed-tip"
+          style={{ left: unclosedTip.left, top: unclosedTip.top }}
+          role="tooltip"
+        >
+          {t("fileViewer.unclosedBracketHint")}
+        </div>
+      )}
       {acStatus && (
         <div className="file-viewer-ac-status" role="status">
           {/* A trailing "…" marks an in-flight request — show a spinner. */}

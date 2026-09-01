@@ -2,7 +2,6 @@ import { useCallback, useMemo, useState } from "react";
 import type { InternalViewer } from "../../../lib/viewers/fileUtils";
 import { fileIcon } from "../../../lib/viewers/fileUtils";
 import type { TexFileNode, TexGraphicNode, TexStructure } from "../../../lib/viewers/tex";
-import { UntestedTag } from "../../common/UntestedTag";
 import { useT } from "../../../lib/i18n";
 
 /**
@@ -226,7 +225,6 @@ export function TexStructureSidebar({
       <div className="tex-structure-header">
         <TexBackButton onBack={onBack} backLabel={backLabel} />
         <span className="tex-structure-title">{t("texWorkspace.structureTitle")}</span>
-        <UntestedTag />
         <button
           type="button"
           className="tex-structure-chrome-btn tex-structure-fold"

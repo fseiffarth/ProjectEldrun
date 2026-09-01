@@ -4473,6 +4473,7 @@ export const dict: Dict = {
   "fileViewer.removeFromContext": "{file} aus dem Kontext entfernen",
   "fileViewer.removeBreakpoint": "Haltepunkt in Zeile {line} entfernen",
   "fileViewer.addBreakpoint": "Haltepunkt in Zeile {line} setzen",
+  "fileViewer.unclosedBracketHint": "Für dieses öffnende Zeichen fehlt das passende schließende Zeichen.",
   "fileViewer.grammarFix": "Korrigieren →",
   "fileViewer.blameAgo": "vor {time}",
   "fileViewer.hideReplace": "Ersetzen ausblenden",

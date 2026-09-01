@@ -983,6 +983,90 @@ function pairTexMathTokens(tokens: MathToken[]): TexDelimiterMatch[] {
 }
 
 /**
+ * Opening TeX delimiters that never receive a closing partner. This is the
+ * document-wide diagnostic counterpart of the caret-local match helpers below:
+ * ordinary parentheses/brackets/braces, math delimiters, and \begin{...} blocks
+ * all use the same ranges the editor can paint. Comments are blanked first and
+ * escaped ordinary brackets are left to TeX's math-token scan or treated as
+ * literals, so commented examples and printed braces do not turn a source line
+ * red. Extra closing delimiters are deliberately ignored: the diagnostic
+ * answers only which opening token is still missing its end.
+ */
+export function findUnclosedTexBrackets(source: string): TexDelimiterSide[] {
+  const text = blankTexComments(source);
+  const unclosed: TexDelimiterSide[] = [];
+
+  // Ordinary groups pair independently by kind, matching the existing plain
+  // bracket matcher. LIFO leaves the outer opener behind in a nested group.
+  const ordinary = new Map<string, number[]>([
+    ["(", []],
+    ["[", []],
+    ["{", []],
+  ]);
+  const openFor: Record<string, string> = { ")": "(", "]": "[", "}": "{" };
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if ((ordinary.has(ch) || openFor[ch]) && isBackslashEscaped(text, i)) continue;
+    const stack = ordinary.get(ch);
+    if (stack) {
+      stack.push(i);
+      continue;
+    }
+    const open = openFor[ch];
+    if (open) ordinary.get(open)?.pop();
+  }
+  for (const stack of ordinary.values()) {
+    for (const start of stack) unclosed.push({ start, end: start + 1 });
+  }
+
+  // TeX math pairs: \(...\) and \[...\] are stacks; $ and $$ toggle.
+  const parenMath: MathToken[] = [];
+  const bracketMath: MathToken[] = [];
+  let dollar: MathToken | null = null;
+  let doubleDollar: MathToken | null = null;
+  for (const tok of texMathTokens(text)) {
+    switch (tok.kind) {
+      case "pOpen":
+        parenMath.push(tok);
+        break;
+      case "pClose":
+        parenMath.pop();
+        break;
+      case "bOpen":
+        bracketMath.push(tok);
+        break;
+      case "bClose":
+        bracketMath.pop();
+        break;
+      case "dollar":
+        dollar = dollar ? null : tok;
+        break;
+      case "ddollar":
+        doubleDollar = doubleDollar ? null : tok;
+        break;
+    }
+  }
+  for (const tok of [...parenMath, ...bracketMath]) {
+    unclosed.push({ start: tok.start, end: tok.end });
+  }
+  if (dollar) unclosed.push({ start: dollar.start, end: dollar.end });
+  if (doubleDollar) unclosed.push({ start: doubleDollar.start, end: doubleDollar.end });
+
+  // Environment blocks use the same name-agnostic depth pairing as the
+  // caret-local matcher. Paint the complete begin token so it reads as the
+  // missing-end diagnostic, rather than making its already-closed braces look
+  // like the problem.
+  const environments: EnvToken[] = [];
+  for (const tok of texEnvTokens(text)) {
+    if (tok.kind === "begin") environments.push(tok);
+    else environments.pop();
+  }
+  for (const tok of environments) unclosed.push({ start: tok.start, end: tok.end });
+
+  return unclosed.sort((a, b) => a.start - b.start || a.end - b.end);
+}
+
+/**
  * The math-delimiter pair (`$…$`, `$$…$$`, `\(…\)`, `\[…\]`) the caret is
  * touching, if any — for the bracket-match overlay's LaTeX extras. `null` when
  * the caret touches none, or touches an unmatched one. Pure / unit-tested.
