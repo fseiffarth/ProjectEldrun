@@ -2,27 +2,53 @@
 
 Referenced from `AGENTS.md`.
 
-**Agent authority has four axes**, and they compose: the project container
-`sandbox` (OS containment), the tab's `location` (where the process runs), the
-default-on local-agent filesystem `fence`, and — behind the
-experimental `agent_mode_toggle` setting, default off — its `agentMode`: **Plan**
-vs **Auto** (Claude `--permission-mode plan`/`acceptEdits`; Gemini
-`--approval-mode plan`/`auto_edit`). The mode is a *launch flag*, so flipping it
-rewrites the tab's `args`, which respawns the PTY (`TerminalView`'s spawn effect
-keys on them) — non-destructive only because the tab resumes its conversation on
-respawn. That is exactly why `components/tabs/agentModes.ts` is a **capability
-table, not a universal field**: an agent belongs in it only if it has both an
-absolute mode flag *and* a working resume. Claude (resume-by-id) and Gemini
-(continue-last) both qualify; Codex resumes but has no plan mode. Gemini's
-continue-last resume carries one accepted caveat — with two Gemini tabs in a
-project a respawn reattaches to the project's latest session, not necessarily
-this tab's (the same ambiguity their ordinary restore already has). The mode
-is persisted per tab, and re-applied onto the rebuilt args in `loadFromLayout` —
-args are NOT persisted, so without that the split would silently die on restart.
+**Agent authority has three axes Eldrun owns**, and they compose: the project
+container `sandbox` (OS containment), the tab's `location` (where the process
+runs), and the default-on local-agent filesystem `fence`. All three are
+properties of the *process* — where it runs and what it can reach — which is
+what makes them Eldrun's to decide.
+
+## The permission mode is not one of them
+
+An agent's permission mode — Claude's plan / accept-edits / bypass, Codex's
+sandbox and approval policy, Gemini's approval mode — belongs to the agent, and
+is set inside the agent's own CLI. Eldrun launches the plain command and passes
+no mode flag.
+
+There was a fourth axis here: an experimental per-tab **Plan/Auto** toggle
+(`agent_mode_toggle`, `components/tabs/agentModes.ts`, `TabEntry.agentMode`),
+which folded `--permission-mode`/`--approval-mode` into the tab's `args`. It is
+gone, and the two reasons it went are worth keeping written down, because they
+are what a reimplementation would run into again:
+
+- **A mode was a launch flag, so every flip respawned the PTY.** Changing a
+  running session's mode meant killing it and relaunching it on `--resume`,
+  which is survivable for the conversation and not for the terminal scrollback
+  or a turn in flight. The agent's own in-TUI switch (Claude's shift+tab) costs
+  none of that, because it never restarts anything.
+- **It made the tab layout a second authority record.** A user who set a mode
+  inside the CLI and a `TabEntry.agentMode` saying otherwise are two answers to
+  one question, and the layout's answer is the one that got re-applied on
+  restart — so Eldrun could quietly put a resumed session into a mode nobody
+  had asked for.
+
+The mode a user sets in-session still survives a relaunch, but through the
+agent rather than through the layout: `services::agent_session` re-applies the
+mode Claude's own Stop hook recorded onto the `--resume` respawn (a shift+tab
+cycle fires no hook event, which is why the record exists at all). An explicit
+`--permission-mode` on a custom agent's argv outranks it, and anything outside
+the known mode set is discarded.
+
+Eldrun Mobile is unaffected: the phone's mode sheet
+(`mobile-web/src/terminal/agentModes.ts`) never used launch flags. It presses
+Shift+Tab and verifies each step against the mode the TUI itself prints — which
+is the same thing a person does, through the CLI. The desktop bridge's
+`modes` list is now always empty, so a phone can no longer request a *launch*
+mode; changing a running session's mode is untouched.
 
 ## The local-agent filesystem fence
 
-`services::agent_fence` is the fourth axis. On Linux, a locally-running agent
+`services::agent_fence` is the third axis. On Linux, a locally-running agent
 that is not already in a project container is launched under an outer
 `bubblewrap` boundary. The host root remains visible read-only so compilers and
 system tools still work, while `$HOME`, `/tmp`, and `/run` are replaced with
@@ -50,6 +76,12 @@ read-only (`command_bind_paths`): the native Claude installer leaves
 only `~/.local/bin` restored the link dangles inside the sandbox and bubblewrap
 fails with `execvp claude: No such file or directory`. Allowlisting the binary's
 home is therefore never required, only a way to expose more of an install dir.
+Login state gets the same treatment: `~/.claude.json` (oauthAccount +
+onboarding) is staged as a per-project **copy** with its cross-project
+`projects` map filtered to the box's own roots — without it every fenced tab
+demanded a fresh login, and mounting the host original writable would hand a
+boxed agent every project's history plus a place to write `allowedTools` for
+uncontained sessions. The same staged mount goes into project containers.
 
 Composition is explicit:
 
@@ -72,14 +104,9 @@ config, and per-root Claude transcript permissions. That keeps the hook-repointi
 and cross-project transcript protections identical across the two containment
 mechanisms.
 
-**Unset is a third mode, and it restores as itself.** The badge reads `◇`/`⏸`/`⚡`,
-and `◇` is not a missing value: it is a tab launched with no mode flag at all, i.e.
-the agent's own default, which is what every agent tab nobody clicked the badge on
-is running in. `loadFromLayout` used to fail *closed* into Plan for a mode-capable
-tab with no persisted `agentMode`, which meant a resumed Claude session changed
-mode on every relaunch. Both halves of that rationale have since stopped holding:
-the layout is read from `<state_dir>/sessions/<id>/terminals.json` and no longer
-from the project tree (`sandbox_hardening_plan` Phase 1 / #142), and against a
-layout that genuinely is attacker-written the default was never the gate anyway —
-`sanitize_tab_layout` keeps `agentMode` for a known `cmd`, so such a file writes
-`"agentMode":"auto"` outright and never takes the absent branch.
+**A layout written before the toggle was removed still carries its `agentMode`,
+and `loadFromLayout` ignores it.** No migration strips the field: the frontend
+no longer projects it, so the next layout save overwrites the entry without it.
+Nothing reads it in the meantime, so a stale `"agentMode":"auto"` in an old
+`terminals.json` cannot put a restored tab into a mode — which is the property
+the removal was for.

@@ -76,7 +76,7 @@ area you're touching; never read speculatively.
 | `tmux_sessions.md` | Shell/script tabs surviving SSH drops and crashes; Sessions view. |
 | `docker_containers.md` | Per-project session container: toggle semantics, lifecycle. |
 | `vm_projects.md` | The VM trust tier: no shared fs, inverse sync posture, egress knob. |
-| `agent_authority.md` | How sandbox / tab location / agentMode compose. |
+| `agent_authority.md` | How sandbox and tab location compose; why the permission mode is the agent's own. |
 | `hpc_careful_mode.md` | What probes stop collecting on a login node; host classification. |
 | `mail_encryption.md` | The sealed local store and the OpenPGP track: what each protects. |
 | `caldav.md` | Why a sync merges by resource URL instead of replacing. |
@@ -246,13 +246,14 @@ loopback port, and from there is an ordinary `RemoteSpec` with `vm: true`.
   limited unless the code says otherwise.
 - Eldrun installs Claude/Codex session hooks and also has hook-free Codex
   binding. Codex user hooks may need one-time trust via `/hooks`.
-- Agent authority has three axes: project container sandbox, tab location
-  (local/primary/worker), and optional Plan/Auto agent mode.
-- `components/tabs/agentModes.ts` is a capability table. Add an agent there only
-  if it has an absolute mode flag and a working resume path for the respawn that
-  mode switching causes.
-- Plan/Auto is a launch flag, persisted per tab and re-applied when args are
-  rebuilt from layout state. Do not persist raw args as the source of truth.
+- Agent authority has two axes Eldrun owns: project container sandbox and tab
+  location (local/primary/worker).
+- **An agent's permission mode is the agent's own, set through its own CLI.**
+  Eldrun launches the plain command and injects no mode flag — there is no
+  Plan/Auto toggle, and nothing persists a per-tab mode. The one thing that
+  carries a mode across a respawn is `services::agent_session`, which re-applies
+  the mode Claude's own hook recorded onto the `--resume` line; that preserves
+  what the user set in-session and must not grow into a mode Eldrun chooses.
 - Terminal `kill`/`kill_all` must reap the child process subtree, not just the
   shell leader.
 

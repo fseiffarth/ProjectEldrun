@@ -231,4 +231,34 @@ correctness/UX work atop the same layout model #42 detaches.*
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work
 
+217. **Live-QA the TeX ⇄ PDF tab coupling mark.**
+    ✅ Implemented · 🧪 Awaiting live QA. A compiled PDF opens in its own tab
+    beside the LaTeX source, so the two halves of one document sat in the strip
+    looking unrelated. Both tabs now carry a small accent **⇄** badge naming the
+    other half in its tooltip; clicking it activates that tab — across
+    subwindows, via the store's `setActive`. The coupling is **derived** from the
+    paths (`<dir>/<stem>.tex` ↔ `<dir>/<stem>.pdf`, case-insensitively), not
+    stored on the tab: nothing to persist, nothing to clean up when either tab
+    closes, and a PDF opened by hand next to an open source is marked exactly
+    like a freshly compiled one. Both `.tex` halves count — the single-tab
+    workspace and a standalone `.tex` editor tab. Verify: compiling from a TeX
+    workspace makes ⇄ appear on **both** tabs; the tooltip names the partner;
+    clicking jumps to it (including when the partner lives in another
+    subwindow); closing one half removes the mark from the other; an unrelated
+    PDF (`notes.pdf` next to `paper.tex`) is never marked; the badge is muted on
+    an inactive tab and full-strength on the hovered/active one; a popout's
+    strip shows the same badge for a pair that is fully inside that window.
+    *Files: `src/lib/texPdfLink.ts`,
+    `src/components/tabs/TabLocalityBadges.tsx`,
+    `src/components/tabs/TabBar.tsx`,
+    `src/components/layout/DetachedCenterPanel.tsx`,
+    `src/styles/projects-tabs.css`, `src/lib/i18n.ts` (+ the four dictionaries).*
+    - [x] 🤖 Automated test — `src/__tests__/texPdfLink.test.ts` (both
+      directions, the standalone `.tex` editor, one-half-open, stem and
+      directory mismatches, non-viewer/other-viewer tabs, case-insensitive
+      pairing, never returning the tab itself).
+    - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
 ---

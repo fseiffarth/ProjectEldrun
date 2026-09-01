@@ -398,7 +398,7 @@ Dark, Plain Light, Fancy Light, and Light Lavender.
 
 **Experimental flags** (`src/lib/experimental.ts`) gate surfaces that are not
 finished: `mail_client`, `web_browser`, `deck_presenter`, `python_run_debug`,
-`agent_mode_toggle`, and `terminal_webgl`. An unset flag falls back to
+and `terminal_webgl`. An unset flag falls back to
 `settings.debug`, so everything is on in a development build and off in a
 release one — except `terminal_webgl`, which stays opt-in because WebGL can fall
 back to software rendering while DMABUF is disabled, making a visible terminal
@@ -777,14 +777,19 @@ the project; nothing else about working in it changes.
 
 **Agent authority** has three axes that compose: the project container sandbox
 (OS containment), the tab's `location` (local / primary host / `host:<id>`
-worker), and — behind `agent_mode_toggle` — its `agentMode`, **Plan** or
-**Auto** (Claude `--permission-mode plan`/`acceptEdits`, Gemini
-`--approval-mode plan`/`auto_edit`). The mode is a *launch flag*, so flipping it
-rewrites the tab's `args` and respawns the PTY; that is non-destructive only
-because the tab resumes its conversation, which is why
-`components/tabs/agentModes.ts` admits an agent only if it has both an absolute
-mode flag and a working resume path. Args are never persisted as the source of
-truth — they are rebuilt from layout state.
+worker), and the default-on local-agent filesystem fence. All three are
+properties of the *process* — where it runs and what it can reach.
+
+An agent's **permission mode** is deliberately not among them. Claude's
+plan/accept-edits, Codex's sandbox and approval policy, Gemini's approval mode:
+each is set inside that agent's own CLI, and Eldrun launches the plain command
+with no mode flag. A per-tab Plan/Auto toggle existed and was removed — a mode
+is a *launch* flag, so every flip respawned the PTY (losing the scrollback and
+any turn in flight), and a persisted per-tab mode became a second authority
+record that could override, on restart, whatever the user had set in-session.
+What survives a relaunch is the agent's own answer: the backend re-applies the
+mode Claude's Stop hook recorded onto the `--resume` line. Args are never
+persisted as the source of truth — they are rebuilt from layout state.
 
 ### Remote, Sync, and Multi-Host
 

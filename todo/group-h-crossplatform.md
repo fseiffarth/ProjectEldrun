@@ -562,6 +562,39 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     - [ ] ✅ Works
     - [ ] ❌ Doesn't work
 
+- [~] **31o — Mobile names which machine failed, instead of "Host unavailable"**
+  (2026-09-01; ✅ Code-complete, ⚠️ needs live QA on a phone — and a rebuild +
+  restart first, since the phone serves the bundle baked into the binary).
+  Prompted by a real outage: the phone had dropped off the tailnet for a day,
+  and the only thing the app could say was "Host unavailable" with a Retry
+  button, which is equally true when the sidecar is dead, when Eldrun itself is
+  closed, and when the browser blocked the key store — four different fixes
+  behind one sentence.
+  - `mobile-web/src/connection.ts` classifies a failed request into one of nine
+    reasons and pairs each with copy that names the machine to go and fix. The
+    split that carries it: `api()` reports a transport failure as status `0`
+    (nothing answered — off the tailnet, or the desktop is asleep), while an
+    HTTP error means something *did* answer, and only the sidecar sends a JSON
+    `error` code — so a gateway status carrying the bare `request_failed`
+    fallback is the proxy's, i.e. the sidecar is not listening, whereas a `503`
+    reading `desktop_unavailable` is the sidecar's own report that Eldrun is
+    closed. Where the phone genuinely cannot tell two causes apart it names
+    both rather than blaming one.
+  - Shown on the unavailable splash (title + what to do + the raw `status code`
+    for a bug report) and on the Home list's error line.
+  - Fixes a real bug found on the way: `resumeAuth` treated *any* 403 as a
+    rejected device, so a rejected **origin** — the host refusing the address
+    the app was opened from, which re-pairing cannot fix — sent the reader to a
+    pairing screen that could only fail again.
+  - Tested in `src/__tests__/MobileConnectionError.test.ts` (10 cases).
+  - [ ] 🖐️ Manual test — on the phone: turn Tailscale off → "Can't reach your
+    desktop" naming Tailscale *and* a sleeping desktop, not "Host unavailable";
+    turn airplane mode on → "This phone is offline" instead; with Tailscale up
+    but Eldrun closed on the desktop → an error naming *Eldrun Mobile* /
+    *Eldrun* rather than the phone; each shows a `status code` line
+    - [ ] ✅ Works
+    - [ ] ❌ Doesn't work
+
 - [~] **31k — Mobile fingerprint unlock is the default** (2026-08-28;
   ✅ Code-complete, ⚠️ needs live QA on a phone).
   The local lock used to demand PIN *then* biometric; now the enrolled

@@ -448,6 +448,10 @@ unchanged; the new agents are additive.
       - [ ] Fenced Claude starts at all (fixed 2026-08-31: the fence now binds
         the binary's symlink-chain dirs, e.g. `~/.local/share/claude/versions`,
         instead of dying with `bwrap: execvp claude: No such file or directory`).
+      - [ ] Fenced Claude starts **logged in**, no per-tab login/onboarding
+        (fixed 2026-08-31: `~/.claude.json` staged as a filtered per-project
+        copy — login/onboarding kept, foreign projects' history/allowedTools
+        stripped, writes die with the stage; containers get the same mount).
       - [ ] Plain local Claude: `~/.ssh` and another project are absent; edits
         inside its project work; `/rename`/SessionStart resume survives respawn.
       - [ ] Repeat the boundary/edit check in Codex and Gemini.
@@ -460,5 +464,22 @@ unchanged; the new agents are additive.
       - [ ] Missing bubblewrap gives the readable fail-closed error and the
         install row; after install/recheck the row disappears.
       - [ ] A shell tab in the same project remains unfenced.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+- [ ] **Shift+Tab reaches a Codex tab.** xterm.js has no kitty keyboard
+  protocol and no `modifyOtherKeys`, so Shift+Tab left it as the legacy backtab
+  `ESC [ Z` — which codex-cli 0.151.0 does not bind to anything, so the key was
+  inert in every Eldrun Codex tab while its own footer advertised "shift+tab to
+  cycle". Fixed 2026-08-31: `terminalControl.shiftTabForAgent` re-encodes it as
+  the CSI-u form `ESC [ 9 ; 2 u` for Codex panes only (Claude/Qwen read the
+  backtab), on the desktop pane and on Eldrun Mobile's mode walk alike. Verified
+  in a bare PTY: `ESC [ Z` changed nothing, `ESC [ 9 ; 2 u` stepped the mode.
+  QA:
+      - [ ] Shift+Tab in a Codex tab steps to Plan mode and back.
+      - [ ] Shift+Tab in a Claude tab still cycles its own modes.
+      - [ ] Shift+Tab in a plain shell tab still sends a backtab (readline
+        completion, `less`, an ncurses form).
+      - [ ] The phone's mode chip lands on the mode it was asked for.
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work

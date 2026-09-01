@@ -103,3 +103,21 @@
     - [ ] 🖐️ Manual test
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work
+
+69. **Fold the tree's search away, and move 🔍 / ↻ into the Files/Git/Apps row.**
+    The search box + its mode pills cost two permanent rows of every surface that
+    renders `FileTree` — worst in the side panel, where they are rows of files
+    not shown. Search now starts CLOSED and its chrome lives in the view
+    toolbar: `ProjectFilesView` owns the fold (`searchOpen`) and a re-list
+    counter (`refreshNonce`), `ProjectFilesPane` forwards both to every tree
+    below it (a box's N roots fold as one), and `FileTree` draws neither button
+    when a host passes them — so closed, it spends no row at all. The refresh
+    button moved up with it: it shared the search row, and leaving it behind
+    would have kept that row alive for one button. Closing clears the query (an
+    effect on the fold, since the toolbar closes it without calling into the
+    tree); Escape clears, then folds. A bare `<FileTree>` with neither prop keeps
+    its own inline toggle. Implemented 2026-08-31.
+    - [x] 🤖 Automated test
+    - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work

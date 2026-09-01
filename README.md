@@ -433,8 +433,8 @@ external app when it is not.
 
 **Several of these are experimental and off by default** in a release build —
 mail (`mail_client`), the browser (`web_browser`), the deck presenter
-(`deck_presenter`), Python run/debug (`python_run_debug`), and agent modes
-(`agent_mode_toggle`). Turn them on under Settings → Experimental; an unset flag
+(`deck_presenter`), and Python run/debug (`python_run_debug`). Turn them on
+under Settings → Experimental; an unset flag
 follows debug mode, so they are all on in a development build.
 
 - **Mail** *(IMAP/SMTP)*: a full client over the whole window — folders, message

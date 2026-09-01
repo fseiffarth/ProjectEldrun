@@ -353,6 +353,88 @@ screen is not.*
       accent row it sets the accent.
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work
+    - **Top frame** (2026-08-31): a section of its own for Eldrun's title bar,
+      the group the customizer was missing most. The bar is a composite — a
+      fill (`--bg-header`, a gradient in the fancy themes, `--glass-header` in
+      the glass pair), a 32%-accent wash laid over it, and the 1px seam under
+      it — assembled from tokens that paint half the window besides, so before
+      this the only way to retone the top bar was to move the accent
+      everywhere. `--top-frame-bg` / `--top-frame-wash` / `--top-frame-seam`
+      each follow what they used to read, exactly as `--bg-side-panel` and the
+      `--alerts-*` family do. Two consequences worth naming: the wash's
+      translucency moved out of `opacity` and **into the token**, so one
+      8-digit hex sets hue and strength together and the three themes that want
+      no wash (Plain Dark, Plain Light, soft_dark) now set it to `transparent`
+      instead of `content: none` — which means a wash can be given *back* to
+      them from this window. And the glass pair's fill moved from
+      `.app-header`'s own `background` to the theme's `--top-frame-bg`: a value
+      declared on the element sits *below* the root inline style where an
+      override lands, so on the default theme the knob would have done nothing.
+      The dialog title band and the popover menus keep reproducing the default
+      wash from the accent and deliberately do not follow this group.
+    - [ ] 🖐️ Manual test (top frame) — on Fancy Dark (the default), set
+      `--top-frame-bg`: the top bar's fill changes and no other surface moves.
+      Set `--top-frame-wash` to an 8-digit hex (e.g. `#ff008040`): the bar takes
+      that tint at that strength; `#00000000` clears it. Set
+      `--top-frame-seam`: only the line under the bar moves — buttons, links
+      and the scrollbar keep the accent. Switch to Plain Dark: the bar is
+      unwashed until you set a wash, and then it takes one. Switch to
+      Light Lavender: the fill knob still works over the frosted glass and the
+      drop shadow under the seam survives. Reset each, and the bar returns to
+      its theme's own look.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+    - **Subwindows, and the ink on both headers** (2026-08-31): the same
+      treatment for a subwindow's own header. `--subwindow-header-bg` /
+      `--subwindow-header-border` (the tab bar and the line under it; the bar
+      shared `--bg-subheader` with every file-panel header row in the app, so
+      moving it moved those too), `--subwindow-tab-active` (the current tab's
+      underline — a tab *kind*'s own `--tab-accent` still wins over it) and
+      `--subwindow-focus-frame` (the focused subwindow's outline, its Shift-nav
+      number badge, and the split preview a drag paints, which is the same
+      outline one moment later). The glass pair's `--glass-subheader` fill moved
+      off `.tab-bar` onto the theme, for the cascade reason the top frame's did.
+    - **Header text is a subtree remap, not a token rules opt into.** The clock,
+      the project pills, the box chip, the right-hand cluster, the tab labels,
+      the grips, the chevrons and the locality/mode chips are painted by ~40
+      rules across four stylesheets, each reading a shared text tier — so
+      "the text on the top bar" cannot be a token each of them is rewritten to
+      read. `.app-header` and `.tab-bar` instead **redeclare `--text-primary`,
+      `--text-secondary` and `--text-muted` for their own subtree**, pointing
+      at `--top-frame-text*` / `--subwindow-header-text*`; every rule inside
+      picks the frame's value up without knowing the token exists. Not a cycle:
+      the source tokens are substituted at `:root`, so what inherits into the
+      scope is a resolved color, never a reference back.
+      The cost is that everything nested follows, **including the popovers that
+      render inside the header** (the app launcher and the indicator menus are
+      not portaled) — they sit on `--bg-elevated` over the app's content and are
+      not part of the frame, so they hand the theme's ink back through a
+      `--text-{primary,secondary,muted}-base` snapshot taken at `:root`. Every
+      header popover is built on `.tab-new-menu`, so one selector pair covers
+      the set. Both halves fail silently, so `ThemeVars.test.ts` now pins them:
+      the snapshot must exist, each remapping scope must carry its undo, and the
+      list of tiers-pointed-at-another-token is asserted whole, so a third scope
+      cannot start remapping text without joining the contract.
+    - [ ] 🖐️ Manual test (subwindows) — split a project into two
+      subwindows. Set `--subwindow-header-bg`: **both** tab bars change and the
+      file panel's header rows do not (they keep `--bg-subheader`). Set
+      `--subwindow-header-text` and `--subwindow-header-text-muted`: the active
+      tab's label and the inactive ones move, and the + menu that drops out of
+      the bar keeps the theme's own text color. Set `--subwindow-tab-active`:
+      only the underline under the current tab moves — a Claude tab still shows
+      its own kind color. Set `--subwindow-focus-frame`: the outline round the
+      focused subwindow follows, so does its Shift+↑/↓ number, and so does the
+      split preview while dragging a tab across.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+    - [ ] 🖐️ Manual test (top-bar ink) — set `--top-frame-text` to
+      something obvious: the clock, the project pill labels and the box chip all
+      take it in one go. Open the app-launcher (▦) and an indicator menu from
+      the same bar: **their** text is still the theme's, not the bar's. Set
+      `--top-frame-text-muted`: the drag grip and the version dim to it. Reset,
+      and every one of them returns to the theme's tiers.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 ---
 
@@ -441,5 +523,117 @@ screen is not.*
     - [ ] 🖐️ Manual test (no pointless fold) — on a desktop with no battery, no
       VPN, no machines and the resource rows switched off, the toggle must not
       render at all rather than hiding a single lamp behind a chevron.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+---
+
+223. **The renderer memory watchdog is per window and cannot loop.** ✅ Done
+    2026-09-01, code-complete; the loop guard is **live-verified** (it
+    hot-reloaded into the running window and ended the loop at 08:03Z), the
+    per-window attribution is **live-unverified** (two new backend commands,
+    needs a restart). Reported as "Eldrun restarts suddenly" every 30–60 s
+    while a Codex tab was failing to resume. crash.log showed the restarts
+    were the watchdog's own `location.reload()`: it read the **largest**
+    renderer under the app but always reloaded the **main** window, and the
+    large one was a popout's (`Eldrun win-1`, 4.7 GB of JS heap against main's
+    1.4 GB) — so the reload freed nothing and fired again at every poll. The
+    Codex `already has an active writer` error was the restore churn's
+    symptom, not the cause.
+
+    Frontend (`lib/rendererWatchdog.ts`): mounted in `AppShell` *and*
+    `DetachedApp`, each window acts on its own renderer and reloads only
+    itself (a popout re-seeds from main, as it does after a crash-reload).
+    Which renderer is "ours" is **probed**, since no engine we ship on says
+    (WebKitGTK 2.52 no longer exports `webkit_web_view_get_web_process_identifier`
+    — the extern compiles and fails to *link*): sample every renderer's RSS,
+    allocate + touch 192 MiB, sample again; the pid that grew is ours. Once per
+    window, cached across the window's own reloads, claimed with the backend so
+    other windows can name it; ambiguous → retried three times, then the old
+    largest-renderer fallback. And a **10-min reload cooldown** per window
+    (`sessionStorage`): still over the ceiling right after a watchdog reload
+    means the memory is not that window's heap, so it holds and logs once. The
+    debug footer (DEV only) now shows `RSS main 0.9 GB · win-1 4.6 GB` beside
+    the `TTY chars/s` meter.
+    Backend: `commands::debug::{webview_renderer_rss, webview_renderer_claim}`;
+    `webview_rss_kib` kept as the fallback for a frontend ahead of its backend.
+
+    - [ ] 🖐️ Manual test (attribution) — after a restart, open the side panel
+      in the dev build with one popout open: the footer reads `RSS main …` and
+      `win-1 …` (not `pid …`) within a few seconds, and the two numbers match
+      `ps -o rss -p <WebKitWebProcess pids>` to within a few MB.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+    - [ ] 🖐️ Manual test (right window reloads) — temporarily set
+      `RENDERER_CEILING_MB` to 512 in `rendererWatchdog.ts` (hot-reloads) with a
+      popout open: within a minute the **popout** blinks and comes back with its
+      tabs, the main window does not; crash.log names the popout's label. Set
+      the ceiling back.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+    - [x] 🔍 What the popout held: **two PDF viewers** — `talk/main.pdf`
+      (57 pages, 135 images, 97 of them over a megapixel, recompiled at 09:46
+      that morning) and the poster. Measured headlessly with the installed
+      pdf.js (`pdfjs-dist` 6.3, `node --expose-gc`): decoding every page of
+      that deck once costs **~660 MB** (RSS 239 → 898 MB), and six
+      load/decode/destroy cycles plateau rather than climb, so pdf.js itself
+      frees on `destroy()`. The holder was the **page rail**: `PdfThumb`
+      rendered each page and never called `page.cleanup()`, so every
+      thumbnailed page's decoded bitmaps stayed alive for the document's whole
+      life — re-paid in full at every recompile, since a reload is a fresh
+      document and the rail repaints each page. Fixed: the thumbnail hands
+      the page back the moment its pixels are on the canvas (pdf.js closes the
+      bitmaps in `PDFObjects.clear()`). The 44 GB main-window leak of
+      2026-07-31 is still unattributed.
+    - [ ] 🖐️ Manual test (rail no longer holds the deck) — after a restart,
+      open `talk/main.pdf` in a popout with the rail open, scroll the rail to
+      the end so every thumbnail paints, then watch the footer's `win-1` RSS
+      settle: it should stay in the hundreds of MB, not climb past 1.5 GB,
+      and recompiling the talk a few times should not ratchet it upwards.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+---
+
+821. **The project name is a per-theme colour, not one apricot everywhere.**
+    ✅ Done 2026-08-31, code-complete and **live-unverified**. Reported as the
+    pill label reading "reddish everywhere". `--helix-orange` was a Helix
+    signature apricot (`#f47868`) declared **only** in the `:root`/`fancy_dark`
+    block, so every theme that did not think to override it inherited a tint
+    picked for navy chrome — most visibly `soft_dark`, the one theme built to
+    have no tint at all, whose project strip came out salmon, and `fancy_light`,
+    where the inherited hue had been *darkened* for contrast rather than
+    replaced (`#d6492f`) so the strip read as a row of warnings.
+    Two themes had already opted out with a hardcoded `.project-pill-label`
+    rule of their own — `fancy_dark` forcing `#fff` in `onboarding.css` and
+    `light_lavender` forcing `#5d3eb8` in `apps.css` — which is the other half
+    of the bug: where an override won, the token painted nothing, so the Theme
+    Customizer's knob for this label was wired to nothing in those themes while
+    its value went on tinting the ones with no override.
+    Both overrides are folded back into the token, and every theme block now
+    declares its own value out of its own palette: `fancy_dark` white,
+    `soft_dark` `#e8eaf0`, `fancy_light` `#1f2937`, `light_lavender` `#5d3eb8`,
+    and the achromatic pair's greys unchanged (they were already their own
+    `--text-secondary`). One definition per theme, in the file where a theme's
+    colours live. The token keeps its historical name so saved presets and
+    `ui_theme_vars` overrides — both keyed by CSS variable name — survive; its
+    Theme Customizer description no longer says "apricot".
+    Frontend: `styles/themes.css`, `styles/apps.css`, `styles/onboarding.css`,
+    `lib/i18n.ts` + the four dictionaries.
+
+    - [ ] 🖐️ Manual test — walk all six themes in Settings → Theme and look at
+      the project pills: no theme shows a reddish or salmon project name any
+      more. `soft_dark` reads neutral light gray like the rest of its chrome,
+      `fancy_light` reads the same near-black as its body text, `light_lavender`
+      stays dark lavender and `fancy_dark` stays white — the last two exactly as
+      before, since their hardcoded rules already painted those pixels.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+    - [ ] 🖐️ Manual test (the knob now works) — Settings → *Theme colors* →
+      Customize, find `--helix-orange` under "Other": its swatch shows the
+      **current theme's** project-name colour rather than a fixed apricot, and
+      editing the hex moves the project pill labels in every theme, including
+      `fancy_dark` and `light_lavender`, where it previously did nothing. Reset
+      the row and each theme returns to its own value.
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work
