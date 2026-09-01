@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import { EldrunMark } from "./EldrunMark";
 import { hasPairedDevice, logoutAuth, resumeAuth } from "./auth";
 import { setUnauthorizedHandler, type TabRow } from "./api";
+import { classifyUnavailable, describeUnavailable, unavailableDetail, type UnavailableReason } from "./connection";
 import { forgetLastTab, rememberLastTab, restoreLastTab } from "./lastTab";
 import { hasLocalUnlock } from "./localLock";
 import { Pair } from "./screens/Pair";
@@ -65,9 +66,9 @@ function forgetUnlockedSession(): void {
  * while a real round trip to the sidecar is outstanding, so a fast answer
  * should reach the user at once rather than be held behind a flourish.
  */
-function Splash({ message, progress, children }: { message: string; progress?: boolean; children?: ReactNode }) {
+function Splash({ message, progress, tone, children }: { message: string; progress?: boolean; tone?: "error"; children?: ReactNode }) {
   return (
-    <main className="screen splash" role="status" aria-live="polite">
+    <main className={`screen splash${tone === "error" ? " splash-failed" : ""}`} role="status" aria-live="polite">
       <div className="splash-mark" aria-hidden="true">
         <span className="splash-orbit splash-orbit-one" />
         <span className="splash-orbit splash-orbit-two" />
@@ -98,6 +99,8 @@ export function App() {
   const [projectView, setProjectView] = useState<ProjectView>({ kind: "home" });
   const [terminal, setTerminal] = useState<{ project: string; tab: TabRow } | null>(null);
   const [todoCard, setTodoCard] = useState<string | undefined>(undefined);
+  /** Why the last attempt failed, shown on the `unavailable` splash. */
+  const [unavailable, setUnavailable] = useState<{ reason: UnavailableReason; detail?: string }>({ reason: "unreachable" });
   const authRef = useRef(auth);
   useEffect(() => {
     authRef.current = auth;
@@ -111,10 +114,15 @@ export function App() {
     setTerminal(null);
     setTodoCard(undefined);
   }, []);
+  const fail = useCallback((reason: UnavailableReason, detail?: string) => {
+    setUnavailable({ reason, detail });
+    setAuth("unavailable");
+  }, []);
+
   const resume = useCallback(() => {
     setAuth("loading");
     void resumeAuth().then(async (result) => {
-      if (result === "paired") {
+      if (result.kind === "paired") {
         rememberUnlockedSession();
         const restored = await restoreLastTab();
         reset();
@@ -125,13 +133,16 @@ export function App() {
           setProjectView({ kind: "project", id: restored.projectId });
           setTerminal({ project: restored.projectId, tab: restored.tab });
         }
-      } else if (result === "unpaired") {
+      } else if (result.kind === "unpaired") {
         forgetUnlockedSession();
         forgetLastTab();
+      } else {
+        fail(result.reason, result.detail);
+        return;
       }
-      setAuth(result);
-    }).catch(() => setAuth("unavailable"));
-  }, [reset]);
+      setAuth(result.kind);
+    }).catch((error: unknown) => fail(classifyUnavailable(error), unavailableDetail(error)));
+  }, [reset, fail]);
 
   const begin = useCallback(() => {
     setAuth("loading");
@@ -145,8 +156,10 @@ export function App() {
       } else {
         setAuth(locked ? "locked" : "setup");
       }
-    }).catch(() => setAuth("unavailable"));
-  }, [resume]);
+    // Both reads above are the phone's own key store, never the network, so a
+    // rejection here is a blocked browser store rather than an absent host.
+    }).catch(() => fail("storage_blocked"));
+  }, [resume, fail]);
   useEffect(() => begin(), [begin]);
 
   useEffect(() => {
@@ -243,11 +256,17 @@ export function App() {
     setTab(next);
   };
   if (auth === "loading") return <Splash message="Connecting to your workspace…" progress />;
-  if (auth === "unavailable") return (
-    <Splash message="Host unavailable. No project or terminal data is loaded from cache.">
-      <button className="primary" onClick={begin}>Retry</button>
-    </Splash>
-  );
+  if (auth === "unavailable") {
+    const { title, hint } = describeUnavailable(unavailable.reason);
+    return (
+      <Splash message={title} tone="error">
+        <p className="splash-hint">{hint}</p>
+        <p className="splash-hint muted">No project or terminal data is loaded from cache.</p>
+        {unavailable.detail && <p className="splash-detail">{unavailable.detail}</p>}
+        <button className="primary" onClick={begin}>Retry</button>
+      </Splash>
+    );
+  }
   if (auth === "unpaired") return <Pair onDone={begin} />;
   if (auth === "setup") return <LocalUnlock setup onUnlocked={() => setAuth("locked")} />;
   if (auth === "locked") return <LocalUnlock setup={false} onUnlocked={resume} />;

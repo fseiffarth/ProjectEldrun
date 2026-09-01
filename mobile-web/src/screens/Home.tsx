@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, type MobileAlertItem, type MobileAlerts, type ProjectRow } from "../api";
+import { classifyUnavailable, describeUnavailable, type UnavailableReason } from "../connection";
 // Kept in lockstep with the desktop and mobile-host package versions by the
 // release bump, so the phone always reports the build it is running.
 import { version as APP_VERSION } from "../../../package.json";
@@ -61,7 +62,8 @@ export function Home({ open, todo, mail }: { open: (id: string) => void; todo: (
   const [view, setView] = useState<"active" | "search">("active");
   const [query, setQuery] = useState("");
   const [rows, setRows] = useState<ProjectRow[]>([]);
-  const [offline, setOffline] = useState(false);
+  /** Null while the list is loading fine; otherwise why it is not. */
+  const [offline, setOffline] = useState<UnavailableReason | null>(null);
   const [alerts, setAlerts] = useState<MobileAlerts | null>(null);
   useEffect(() => {
     // Without an abort, typing "ab" then "abc" on mobile data could land the
@@ -70,8 +72,8 @@ export function Home({ open, todo, mail }: { open: (id: string) => void; todo: (
     const timer = window.setTimeout(() => {
       const suffix = view === "search" ? `?view=search&q=${encodeURIComponent(query)}` : "?view=active";
       void api<{ projects: ProjectRow[] }>(`/api/v1/projects${suffix}`, { signal: controller.signal })
-        .then((body) => { setRows(body.projects); setOffline(false); })
-        .catch(() => { if (!controller.signal.aborted) setOffline(true); });
+        .then((body) => { setRows(body.projects); setOffline(null); })
+        .catch((error: unknown) => { if (!controller.signal.aborted) setOffline(classifyUnavailable(error)); });
     }, view === "search" ? 180 : 0);
     return () => {
       clearTimeout(timer);
@@ -109,7 +111,11 @@ export function Home({ open, todo, mail }: { open: (id: string) => void; todo: (
     </div>
     <nav><button className={view === "active" ? "selected" : ""} onClick={() => setView("active")}>Active</button><button className={view === "search" ? "selected" : ""} onClick={() => setView("search")}>Search</button></nav>
     {view === "search" && <input className="search" placeholder="Project name" value={query} autoFocus onChange={(event) => setQuery(event.target.value)} />}
-    {offline && <p className="error">Host unavailable{rows.length ? " — showing the last list this session loaded." : ". Project data is never loaded from cache."}</p>}
+    {offline && <p className="error connection-error">
+      <strong>{describeUnavailable(offline).title}</strong>
+      <span>{describeUnavailable(offline).hint}</span>
+      <span>{rows.length ? "Showing the last list this session loaded." : "Project data is never loaded from cache."}</span>
+    </p>}
     <section className="cards">{rows.map((project) => <button className="card" key={project.id} onClick={() => open(project.id)}><span><strong>{project.label}</strong><small>{project.status}</small></span><span className="count">{project.live_sessions}</span></button>)}</section>
     {alerts && <AlertRows alerts={alerts} todo={todo} mail={mail} />}
   </main>;

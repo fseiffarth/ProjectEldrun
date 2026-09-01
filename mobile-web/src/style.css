@@ -40,6 +40,10 @@ small { color:#9498aa; }
 .notice,.error { padding:12px; border-radius:10px; }
 .notice { background:#29253d; color:#d6d0ff; }
 .error { background:#3b2027; color:#ffb4c0; }
+/* Scoped rather than added to `.error`, which is also worn by single-line
+   notes in the terminal, mail sheets and the inbox uploader. */
+.connection-error strong,.connection-error span { display:block; }
+.connection-error span { margin-top:4px; color:#e2bcc5; font-size:.78rem; font-weight:400; line-height:1.45; }
 .lamp { width:10px; height:10px; border-radius:50%; background:#55d187; box-shadow:0 0 10px #55d187; }
 .lamp.off { background:#d15b66; box-shadow:none; }
 .create { display:grid; gap:9px; margin-top:22px; }
@@ -342,6 +346,13 @@ button.mobile-alert-row { cursor:pointer; }
 .splash-orbit-two { inset:14px; border-color:rgba(199,154,69,.6); animation-direction:reverse; animation-duration:1.8s; }
 .splash-name { font-size:17px; font-weight:650; letter-spacing:.3em; padding-left:.3em; animation:splash-arrive 600ms 80ms cubic-bezier(.22,1,.36,1) both; }
 .splash-message { max-width:34ch; min-height:18px; color:#9498aa; font-size:.82rem; letter-spacing:.03em; animation:splash-arrive 600ms 140ms cubic-bezier(.22,1,.36,1) both; }
+/* A failed connect is the one splash carrying something to read and act on, so
+   its message stops being the dim status whisper the loading state wants. */
+.splash-failed .splash-message { color:#ffb4c0; font-size:.98rem; font-weight:640; letter-spacing:0; }
+.splash-hint { max-width:34ch; color:#c8ccdb; font-size:.82rem; line-height:1.5; }
+.splash-hint.muted { color:#767a8b; font-size:.76rem; }
+/* The status/code pair, for reading back into a bug report. */
+.splash-detail { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:.7rem; color:#6a6e7f; letter-spacing:.04em; }
 .splash-progress { width:148px; height:2px; overflow:hidden; border-radius:999px; background:rgba(56,60,77,.8); }
 .splash-progress span { display:block; width:48%; height:100%; border-radius:inherit; background:linear-gradient(90deg,transparent,#7c6cff,#c79a45,transparent); animation:splash-progress 1.25s ease-in-out infinite; }
 @keyframes splash-arrive { from { opacity:0; transform:translateY(10px) scale(.96); } to { opacity:1; transform:none; } }
