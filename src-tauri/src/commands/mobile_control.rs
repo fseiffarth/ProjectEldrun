@@ -199,6 +199,40 @@ fn systemd_unit(binary: &Path, state_dir: &Path) -> Result<String, String> {
     Ok(format!("[Unit]\nDescription=Eldrun Mobile Host\nAfter=network-online.target\nStartLimitIntervalSec=0\n\n[Service]\nType=simple\nExecStart={} --mobile-host\nRestart=on-failure\nRestartSec=5\nNoNewPrivileges=true\nProtectSystem=strict\nProtectHome=read-only\nReadWritePaths={}\n\n[Install]\nWantedBy=default.target\n", systemd_path(binary)?, systemd_path(state_dir)?))
 }
 
+/// Delete every `bin/<version>/` directory except `keep`.
+///
+/// The sidecar is versioned per directory so an install can never write over the
+/// executable a running host is executing (see [`install_mobile_binary`]) — but
+/// nothing removed the superseded ones, so every Eldrun version the user has
+/// ever enabled Mobile under left a full copy of the binary behind forever. On a
+/// packaged build that is ~40 MB apiece; in a dev session it is whatever
+/// `target/debug/eldrun` weighs, because [`mobile_binary_source`] is
+/// `current_exe` and a debug binary carries its DWARF — 700 MB each, three of
+/// them, 2.0 GB of the 3.3 GB state dir measured on 2026-09-01.
+///
+/// Called **after** the install succeeded, never before: a failed install must
+/// leave the previous version's directory exactly where it is, because that is
+/// the copy the currently-running host is executing from. Best-effort by
+/// construction — a directory that will not delete (a host still running out of
+/// it, a permissions oddity) is left for the next install to retry, and must
+/// never turn a working install into an error.
+fn prune_old_versions(bin_root: &Path, keep: &str) {
+    let Ok(entries) = std::fs::read_dir(bin_root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let Ok(name) = entry.file_name().into_string() else {
+            continue;
+        };
+        if name == keep {
+            continue;
+        }
+        if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
+}
+
 /// Replace the installed sidecar without opening its live executable for
 /// writing. A service-manager restart leaves the old process running until
 /// after this install, so copying directly over the target intermittently
@@ -647,7 +681,8 @@ pub async fn mobile_host_apply(enabled: bool) -> Result<(), String> {
     verify_tailscale_serve(&config.origin, config.host.port)?;
     let source = mobile_binary_source()?;
     let version = env!("CARGO_PKG_VERSION");
-    let target_dir = config.control_dir.join("bin").join(version);
+    let bin_root = config.control_dir.join("bin");
+    let target_dir = bin_root.join(version);
     // Windows locks a running executable's file: the live host must be gone
     // before its same-version copy can be replaced. The Unix installs rename
     // atomically and restart through the service manager instead.
@@ -655,6 +690,7 @@ pub async fn mobile_host_apply(enabled: bool) -> Result<(), String> {
     stop_running_host().await;
     std::fs::create_dir_all(&target_dir).map_err(|e| e.to_string())?;
     let target = install_mobile_binary(&source, &target_dir)?;
+    prune_old_versions(&bin_root, version);
     enable_host_service(&target, &config).await
 }
 
@@ -959,3 +995,36 @@ pub fn start_desktop_bridge(app: AppHandle, state: MobileDesktopState) {
 
 #[cfg(not(any(unix, windows)))]
 pub fn start_desktop_bridge(_: AppHandle, _: MobileDesktopState) {}
+
+#[cfg(test)]
+mod prune_tests {
+    use super::prune_old_versions;
+
+    #[test]
+    fn prune_keeps_the_installed_version_and_removes_every_other() {
+        let temp = tempfile::tempdir().expect("temp directory");
+        let bin = temp.path().join("bin");
+        for version in ["0.1.52", "0.1.57", "0.1.58"] {
+            let dir = bin.join(version);
+            std::fs::create_dir_all(&dir).expect("version directory");
+            std::fs::write(dir.join("eldrun-mobile-host"), b"host").expect("binary");
+        }
+        // A stray file beside the version directories — the control dir also
+        // holds sockets and json, and a sweep here must not reach outside its
+        // own shape.
+        std::fs::write(bin.join("notes.txt"), b"x").expect("stray");
+
+        prune_old_versions(&bin, "0.1.58");
+
+        assert!(bin.join("0.1.58").exists(), "the installed version stays");
+        assert!(!bin.join("0.1.52").exists());
+        assert!(!bin.join("0.1.57").exists());
+        assert!(bin.join("notes.txt").exists(), "files are not version dirs");
+    }
+
+    #[test]
+    fn prune_is_a_no_op_when_the_store_does_not_exist_yet() {
+        let temp = tempfile::tempdir().expect("temp directory");
+        prune_old_versions(&temp.path().join("nope"), "0.1.58");
+    }
+}

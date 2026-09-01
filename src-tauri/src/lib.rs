@@ -454,7 +454,21 @@ pub fn run() {
         std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
     }
 
+    // Before the logger appends this run's `=== STARTED … ===` line, so the cap
+    // is enforced against what previous runs left rather than a moment later.
+    services::state_gc::cap_crash_log();
     install_crash_logger();
+
+    // The webview's data directory is `<data dir>/<identifier>` on Linux, and
+    // the identifier is the Tauri config's — asked for rather than hardcoded, so
+    // a rename cannot leave this sweeping a directory nothing writes to any
+    // more. Built here, at the top of `run`, because the cache has to be judged
+    // and dropped BEFORE wry constructs the WebContext that opens it; the
+    // context is handed to `build` unchanged at the bottom of the chain.
+    let context = tauri::generate_context!();
+    if let Some(root) = services::state_gc::webview_data_root(&context.config().identifier) {
+        services::state_gc::trim_webview_cache(&root);
+    }
 
     // More than one crate in the tree can supply a rustls `CryptoProvider`, and
     // rustls refuses to guess — it panics at the *first handshake* instead, i.e.
@@ -666,6 +680,12 @@ pub fn run() {
             // that target, quietly turning every later channel into its own login.
             // Off-thread: one cheap local `ssh -O check` per file.
             std::thread::spawn(services::ssh_exec::sweep_stale_control_sockets);
+            // Remove askpass shims a previous run left behind. Same posture as
+            // the socket sweep above and for the same reason: the `Askpass`
+            // guard deletes its own file, so anything still there belongs to a
+            // process that died before it could. Off-thread — one `kill(pid, 0)`
+            // per file, and the directory can hold thousands.
+            std::thread::spawn(services::ssh_common::sweep_stale_askpass);
             // Re-adopt OpenVPN tunnels a previous run left running (a crash, an OOM
             // kill, a refused quit-time prompt): the daemon runs as root and outlives
             // the app, still rerouting the machine, but the live-tunnel registries are
@@ -1297,7 +1317,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_drag::init())
         .plugin(tauri_plugin_notification::init())
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building tauri application")
         .run(|_app, event| {
             // A detached popout can die WITHOUT going through `attach_subwindow`

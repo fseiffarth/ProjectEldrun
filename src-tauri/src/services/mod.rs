@@ -53,6 +53,7 @@ pub mod sftp;
 pub mod skills;
 pub mod ssh_common;
 pub mod ssh_exec;
+pub mod state_gc;
 pub mod sync_auto;
 pub mod terminal_service;
 pub mod tmux_local;

@@ -1007,6 +1007,89 @@ impl Drop for Askpass {
     }
 }
 
+/// The pid stamped into an askpass shim's name (`ap-<pid>-<seq>.{sh,cmd}`, plus
+/// its `.reject`/`.tally` siblings), or `None` for anything else in the
+/// directory.
+///
+/// Deliberately strict about the whole shape rather than just taking the digits
+/// after `ap-`: this is the sole input to a delete, and a name that does not
+/// parse must fall through to "leave it alone" instead of being attributed to a
+/// pid that happens to be dead.
+fn askpass_owner_pid(name: &str) -> Option<u32> {
+    let rest = name.strip_prefix("ap-")?;
+    let (pid, seq) = rest.split_once('-')?;
+    if pid.is_empty() || !pid.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let seq = seq.split('.').next()?;
+    if seq.is_empty() || !seq.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    pid.parse().ok()
+}
+
+/// Remove askpass shims whose owning process is gone.
+///
+/// [`Askpass`]'s `Drop` deletes its own files, so **every** shim still on disk is
+/// the residue of a process that never got to run it: a crash, an OOM kill, a
+/// `kill -9`, a dev-launcher Ctrl+C before the signal routing landed. Nothing
+/// swept them, so they accumulated for the life of the installation — 2137 files
+/// across 144 dead pids on the machine this was written for.
+///
+/// The bytes are irrelevant (8 MB). What matters is that the directory is
+/// secret-*adjacent*: a shim holds no password (the value arrives through
+/// `ELDRUN_ASKPASS` at run time, which is the whole design) but its presence and
+/// its `.tally` say that a password path was used and how often it answered, and
+/// a growing pile of 0700 scripts is exactly the kind of thing that is
+/// individually harmless and collectively worth not leaving behind.
+///
+/// **Only the pid licenses the delete.** A shim whose name does not parse, or
+/// whose pid is still alive, is left where it is: a live ssh may be moments away
+/// from execing it, and deleting one out from under OpenSSH turns a working
+/// connection into an unexplained "Permission denied". Our own pid is skipped
+/// explicitly — this runs at startup, before any shim of ours exists, but the
+/// guarantee should not depend on when it is called.
+#[cfg(unix)]
+pub fn sweep_stale_askpass() {
+    let dir = crate::storage::state_dir().join("ssh-askpass");
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return;
+    };
+    let self_pid = std::process::id();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(pid) = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .and_then(askpass_owner_pid)
+        else {
+            continue;
+        };
+        if pid == self_pid {
+            continue;
+        }
+        // SAFETY: `kill` takes no pointers; signal 0 performs the permission and
+        // existence check without delivering anything.
+        //
+        // **Only `ESRCH` licenses the delete**, not "the call failed". A living
+        // process we may not signal answers `EPERM`, and a `!= 0` test would
+        // read that as gone — which is the difference between a sweep and a
+        // sweep that deletes shims out from under running processes. `EINVAL`
+        // (a pid too large for `pid_t`) is likewise not evidence of an exit.
+        let gone = unsafe { libc::kill(pid as libc::pid_t, 0) } != 0
+            && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
+        if gone {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+}
+
+/// Windows has no cheap "is this pid alive" that is worth a startup walk, and
+/// its shims are `.cmd` files written on the same rare password path — left to
+/// the `Drop` guard, as before.
+#[cfg(not(unix))]
+pub fn sweep_stale_askpass() {}
+
 /// Flatten an untrusted prompt into something safe to put in an error message: no
 /// control characters (a server-supplied prompt could carry ANSI escapes, and this
 /// text lands in a terminal-adjacent UI), collapsed whitespace, length-capped.
@@ -1756,6 +1839,69 @@ pub fn trust_host_key(scan: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn askpass_owner_pid_reads_every_shape_the_shim_writer_produces() {
+        // The three files one `Askpass` guard creates, plus the Windows shim.
+        assert_eq!(askpass_owner_pid("ap-990069-5.sh"), Some(990069));
+        assert_eq!(askpass_owner_pid("ap-990069-5.tally"), Some(990069));
+        assert_eq!(askpass_owner_pid("ap-990069-5.reject"), Some(990069));
+        assert_eq!(askpass_owner_pid("ap-1234-0.cmd"), Some(1234));
+    }
+
+    #[test]
+    fn askpass_owner_pid_refuses_anything_it_cannot_fully_account_for() {
+        // The sweep deletes what this attributes, so "not sure" must be `None`
+        // rather than a pid guessed out of a partial match.
+        for name in [
+            "notes.txt",
+            "ap-.sh",
+            "ap-12.sh",       // no sequence
+            "ap-abc-1.sh",    // non-numeric pid
+            "ap-12-x.sh",     // non-numeric sequence
+            "ap--1.sh",       // empty pid
+            "helper-12-1.sh", // not ours
+        ] {
+            assert_eq!(askpass_owner_pid(name), None, "{name} must not parse");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_sweep_takes_dead_pids_and_leaves_live_ones() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let askpass = dir.path().join("ssh-askpass");
+        std::fs::create_dir_all(&askpass).expect("mkdir");
+        // Pid 1 always exists; a live shim must survive even though this process
+        // does not own it (`kill` answers EPERM, which is not "gone").
+        let live = askpass.join("ap-1-0.sh");
+        // Our own pid, which the sweep skips by name rather than by liveness.
+        let mine = askpass.join(format!("ap-{}-0.sh", std::process::id()));
+        // A pid the kernel positively reports as gone — `ESRCH`, not merely a
+        // failed `kill` (an out-of-range pid answers `EINVAL`, which the sweep
+        // deliberately does not treat as an exit).
+        let dead_pid = (1..=100_000)
+            .rev()
+            .find(|p| {
+                (unsafe { libc::kill(*p as libc::pid_t, 0) }) != 0
+                    && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+            })
+            .expect("a free pid");
+        let dead = askpass.join(format!("ap-{dead_pid}-0.sh"));
+        let stranger = askpass.join("README");
+        for p in [&live, &mine, &dead, &stranger] {
+            std::fs::write(p, b"x").expect("write");
+        }
+
+        std::env::set_var("ELDRUN_STATE_DIR", dir.path());
+        sweep_stale_askpass();
+        std::env::remove_var("ELDRUN_STATE_DIR");
+
+        assert!(!dead.exists(), "a shim whose owner is gone must be removed");
+        assert!(live.exists(), "a live process's shim must survive");
+        assert!(mine.exists(), "our own shim must survive");
+        assert!(stranger.exists(), "an unrecognized name must be left alone");
+    }
 
     #[test]
     fn target_key_matches_frontend() {
