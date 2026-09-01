@@ -1333,6 +1333,13 @@ export const en = {
   "detachedTabs.closeTab": "Close tab",
   "detachedTabs.newTab": "New tab",
   "detachedTabs.hideWindow": "Hide this window into the side panel (bring it back from there)",
+  "detachedTabs.dockWindow": "Put these tabs back in the main window",
+  "detachedTabs.renamePrompt": "Rename this tab",
+  "detachedClose.title": "Close this window?",
+  "detachedClose.body":
+    "Its tabs can go back into the main window, or be closed for good — closing ends their terminals and they will not come back at the next launch.",
+  "detachedClose.dock": "Put the tabs back",
+  "detachedClose.closeTabs": "Close the tabs",
   "tour.skip": "Skip tour",
   "tour.back": "Back",
   "tour.yourTurn": "Your turn",

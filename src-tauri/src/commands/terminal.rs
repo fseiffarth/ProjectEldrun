@@ -696,13 +696,31 @@ pub async fn pty_resize(
 #[tauri::command]
 pub async fn pty_set_visible(
     app: AppHandle,
+    window: tauri::Window,
     id: String,
     viewer_id: String,
     visible: bool,
     update_seq: u64,
 ) -> Result<(), String> {
-    crate::terminal::route_set_visible(&app, &id, &viewer_id, visible, update_seq);
+    // The window label comes from the CALLING window, never from the payload —
+    // a view may only ever speak for itself (the rule `webview_renderer_claim`
+    // follows). It is what lets the `Destroyed` hook drop the registrations of a
+    // window that died without unmounting (Group B #238).
+    crate::terminal::route_set_visible(&app, &id, &viewer_id, visible, update_seq, window.label());
     Ok(())
+}
+
+/// The retained tail of a PTY's output (Group B #235).
+///
+/// A second viewer — a tab popped out into its own window, a pane remounted by
+/// a reseed — opens a fresh xterm on a PTY that may have been running for hours,
+/// and used to render blank until the program next drew. This is the catch-up:
+/// the router keeps a bounded tail of everything it routed (visible or not) and
+/// hands it back here, to be written into the new terminal before its first live
+/// byte. A read, not a drain: a third window attaching later gets it too.
+#[tauri::command]
+pub async fn pty_scrollback(id: String) -> Result<String, String> {
+    Ok(crate::terminal::route_scrollback(&id))
 }
 
 #[tauri::command]

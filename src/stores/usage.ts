@@ -1,8 +1,14 @@
 import { invoke } from "@tauri-apps/api/core";
+import { emit } from "@tauri-apps/api/event";
 import { create } from "zustand";
 
 import type { BucketReport, Counters, Period } from "../lib/usageRollup";
 import { countersForPeriod, dayKey } from "../lib/usageRollup";
+import { isDetachedWindow } from "./detachedContext";
+
+/** Mirrors `DETACHED_USAGE` in stores/detached (spelled here to keep this module
+ *  free of that import: detached.ts imports this one). */
+const DETACHED_USAGE_EVENT = "detached-usage";
 
 /**
  * The usage counters behind the daily recap.
@@ -44,6 +50,13 @@ const activeSeen = new Set<string>();
  */
 export function bumpUsage(scope: string, key: string, n = 1): void {
   if (!scope || !key || !Number.isFinite(n) || n <= 0) return;
+  // Group B #234: a popout's accumulator is never flushed (only the main shell
+  // runs the interval and the quit flush), so a prompt typed in a popped-out
+  // agent never reached the recap. Hand the bump to the main window instead.
+  if (isDetachedWindow()) {
+    void emit(DETACHED_USAGE_EVENT, { scope, key, n });
+    return;
+  }
   const counters = (pending[scope] ??= {});
   counters[key] = (counters[key] ?? 0) + n;
 }

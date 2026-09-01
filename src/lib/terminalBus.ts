@@ -64,6 +64,7 @@ function ensureStarted() {
     if (!set) return;
     for (const h of set) h(ev.payload.code);
   }).catch(() => {});
+
 }
 
 function subscribe<H>(registry: Map<string, Set<H>>, id: string, handler: H): () => void {

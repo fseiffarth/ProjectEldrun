@@ -481,7 +481,17 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
     // timeout: a live query written afterwards is parsed after the callback, and
     // its reply still reaches the program that asked for it.
     let staleParse = 0;
+    // Group B #235: an ATTACH-ONLY view opens a fresh xterm on a PTY that has
+    // been running without it — a tab just popped out into its own window, or a
+    // pane remounted by a reseed. Until its history has been fetched, nothing
+    // may reach the terminal: live chunks are buffered like any catch-up so the
+    // fetched tail can be PREPENDED to them (everything that arrives during the
+    // round trip is by definition newer than the snapshot). Cleared by the fetch
+    // in either direction — a backend too old to answer must not leave a pane
+    // permanently mute.
+    let historyPending = attachOnly;
     const flushPending = () => {
+      if (historyPending) return;
       const buffered = pendingOutput.current;
       if (!buffered) return;
       pendingOutput.current = "";
@@ -500,7 +510,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
     // keeps ordering safe even if a chunk lands between the visibility flip
     // and the flush-on-show in doFit.
     const writeTerm = (data: string) => {
-      if (openedRef.current && visibleRef.current) {
+      if (openedRef.current && visibleRef.current && !historyPending) {
         flushPending();
         term.write(data);
       } else {
@@ -838,7 +848,32 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       // The PTY already exists, spawned by the main window's pane; pty_spawn with
       // a duplicate id would kill+respawn it, destroying scrollback / the agent
       // session. We only subscribe to the broadcast output/input by id.
-      if (attachOnly) return;
+      if (attachOnly) {
+        // …but it does ask for what the terminal has already shown (#235). The
+        // backend keeps a bounded tail of everything it routed for this PTY, so
+        // a freshly popped-out shell renders its history instead of a blank
+        // pane that stays blank until the program next draws. Prepended to
+        // whatever streamed in during the round trip, then trimmed to the same
+        // cap the buffer uses; routed through `flushPending`'s query guard like
+        // every other late write.
+        let tail = "";
+        try {
+          tail = (await invoke<string>("pty_scrollback", { id })) ?? "";
+        } catch {
+          // An older backend has no such command — open blank, as before.
+        }
+        if (cancelled) return;
+        if (tail) {
+          pendingOutput.current = tail + pendingOutput.current;
+          if (pendingOutput.current.length > PENDING_OUTPUT_CAP * 2) {
+            pendingOutput.current = pendingOutput.current.slice(-PENDING_OUTPUT_CAP);
+          }
+          if (firstOutputAt.current === null) firstOutputAt.current = Date.now();
+        }
+        historyPending = false;
+        if (openedRef.current && visibleRef.current) flushPending();
+        return;
+      }
 
       // Register this view with the visible-only output router *before* starting
       // the child. The ordinary visibility effect below also keeps that state in

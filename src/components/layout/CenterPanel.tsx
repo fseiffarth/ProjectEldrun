@@ -49,6 +49,7 @@ import {
   startDetachedDropSession,
   reseedDetached,
 } from "../tabs/detachedDropTargets";
+import { createDetachedDragNet } from "../tabs/detachedDragNet";
 import {
   snapshotFrame,
   physToClient,
@@ -614,12 +615,33 @@ export function CenterPanel() {
     let session: ReturnType<typeof startDetachedDropSession> | null = null;
     let dragSrcGroupId: string | null = null;
     let dragLabel: string | undefined;
+    // #238: the net under a lost END. START makes every pane pointer-events:none
+    // (so the drop preview can hit-test the bars underneath) and only END or an
+    // Escape pressed IN THIS WINDOW takes it back out — the main window's own
+    // release handlers deliberately never end a detached drag. So a popout
+    // destroyed mid-gesture, or an engine that swallows the terminal event, left
+    // the main window ignoring every click with nothing on screen saying why.
+    // Two observable facts end it: MOVEs stopping (the popout polls the cursor
+    // at frame rate while the gesture is live) and a press landing here.
+    const expire = () => {
+      if (useDragStore.getState().drag?.kind !== "detached") return;
+      endSession();
+      useDragStore.getState().end();
+    };
+    const net = createDetachedDragNet(expire);
     const endSession = () => {
+      net.stop();
       session?.dispose();
       session = null;
       dragSrcGroupId = null;
       dragLabel = undefined;
     };
+    // A real press in the main window means the popout no longer owns the
+    // pointer — whatever happened to its END, the gesture is over.
+    const onMainPointerDown = () => {
+      if (net.armed()) expire();
+    };
+    window.addEventListener("pointerdown", onMainPointerDown, true);
     // The sibling popout under the physical cursor, or null (none, or it's the
     // source popout — a self-drop is handled locally in the popout).
     const siblingAt = (phys: PhysPoint | null) => {
@@ -646,9 +668,16 @@ export function CenterPanel() {
         // scope become live drop targets (highlight on MOVE, dock on END) — the
         // same machinery `TabBar` uses for main→popout drags.
         endSession();
-        session = startDetachedDropSession();
+        // The drag's OWN scope decides which popouts are targets (#238): a root
+        // or box popout is never parked, so a tab can be dragged out of one
+        // while a project is active — and it must light up and land in a sibling
+        // of its own scope, never in the active project's popouts (where the
+        // move then silently no-ops because the two records live under different
+        // scope keys).
+        session = startDetachedDropSession({ scope: dScope });
         dragSrcGroupId = groupId;
         dragLabel = label;
+        net.start();
         void session.resolve();
         // Start the drag synchronously so the high-frequency MOVE poll that
         // follows isn't dropped by its `kind !== "detached"` guard while we await
@@ -677,6 +706,7 @@ export function CenterPanel() {
     reg(
       listen<DetachedDragMove>(DETACHED_DRAG_MOVE, (ev) => {
         if (useDragStore.getState().drag?.kind !== "detached") return;
+        net.touch();
         const phys: PhysPoint = {
           x: ev.payload.cursorPhysX,
           y: ev.payload.cursorPhysY,
@@ -885,6 +915,7 @@ export function CenterPanel() {
     return () => {
       cancelled = true;
       endSession();
+      window.removeEventListener("pointerdown", onMainPointerDown, true);
       for (const fn of unsubs) fn();
     };
   }, []);
@@ -1169,16 +1200,15 @@ export function CenterPanel() {
             >
               {/* The shared per-tab render switch (`components/tabs/TabPane`), the
                   SAME one every detached popout renders. The main window owns the
-                  tab store (`ownsTabs`) and the projects store, so it resolves the
-                  mirror/sandbox/hold props the popout can't. New pane kinds/props
-                  go in TabPane so they reach both windows at once. */}
+                  projects store, so it resolves the mirror/sandbox/hold props the
+                  popout can't. New pane kinds/props go in TabPane so they reach
+                  both windows at once. */}
               <TabPane
                 tab={tab}
                 scope={scopeKey}
                 visible={visible}
                 focused={visible && windowFocused && groupId === focusedGroupId}
                 groupId={groupId}
-                ownsTabs
                 onConnect={getConnect(scopeKey)}
                 holdRemoteTerminal={holdRemoteTerminal}
                 remoteHost={paneHostLabel}

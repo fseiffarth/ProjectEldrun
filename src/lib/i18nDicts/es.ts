@@ -1241,6 +1241,13 @@ export const dict: Dict = {
   "detachedTabs.closeTab": "Cerrar pestaña",
   "detachedTabs.newTab": "Nueva pestaña",
   "detachedTabs.hideWindow": "Ocultar esta ventana en el panel derecho (recupérala desde ahí)",
+  "detachedTabs.dockWindow": "Devolver estas pestañas a la ventana principal",
+  "detachedTabs.renamePrompt": "Renombrar esta pestaña",
+  "detachedClose.title": "¿Cerrar esta ventana?",
+  "detachedClose.body":
+    "Sus pestañas pueden volver a la ventana principal o cerrarse definitivamente: al cerrarlas terminan sus terminales y no volverán en el próximo inicio.",
+  "detachedClose.dock": "Devolver las pestañas",
+  "detachedClose.closeTabs": "Cerrar las pestañas",
   "tour.skip": "Omitir recorrido",
   "tour.back": "Atrás",
   "tour.rewardGotIt": "Hecho.",

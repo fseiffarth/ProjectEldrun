@@ -1245,6 +1245,13 @@ export const dict: Dict = {
   "detachedTabs.closeTab": "Tab schließen",
   "detachedTabs.newTab": "Neuer Tab",
   "detachedTabs.hideWindow": "Dieses Fenster in das rechte Panel verstecken (von dort wiederherstellbar)",
+  "detachedTabs.dockWindow": "Diese Tabs zurück ins Hauptfenster holen",
+  "detachedTabs.renamePrompt": "Tab umbenennen",
+  "detachedClose.title": "Dieses Fenster schließen?",
+  "detachedClose.body":
+    "Die Tabs können zurück ins Hauptfenster wandern oder endgültig geschlossen werden — Schließen beendet ihre Terminals, und sie kommen beim nächsten Start nicht wieder.",
+  "detachedClose.dock": "Tabs zurückholen",
+  "detachedClose.closeTabs": "Tabs schließen",
   "tour.skip": "Tour überspringen",
   "tour.back": "Zurück",
   "tour.rewardGotIt": "Geschafft.",

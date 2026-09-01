@@ -70,7 +70,11 @@ import {
 } from "../../stores/projects";
 import { useRemoteStatusStore } from "../../stores/remoteStatus";
 import { disconnectAllTunnelsOnQuit } from "../../stores/vpnStatus";
-import { listenDetachedHost, shutdownDetachedWindows } from "../../stores/detached";
+import {
+  closeOrphanedPopouts,
+  listenDetachedHost,
+  shutdownDetachedWindows,
+} from "../../stores/detached";
 import { listenPdfReveal } from "../../stores/pdfSync";
 import { listenSyncProgress } from "../../stores/sync";
 import { autoConnectVpnOnLaunch } from "../../lib/vpnAutoConnect";
@@ -81,7 +85,7 @@ import { installWindowsEvents } from "../../stores/windows";
 import { listenEditorJump } from "../../stores/editorJump";
 import { listenSourceJump } from "../embed/FileViewerPane";
 import { BOX_SCOPE_PREFIX, useBoxesStore } from "../../stores/boxes";
-import { useSettingsStore } from "../../stores/settings";
+import { listenSettingsChanged, useSettingsStore } from "../../stores/settings";
 import { ROOT_SCOPE, useTabsStore } from "../../stores/tabs";
 import { useTimerStore } from "../../stores/timer";
 import { flushUsage } from "../../stores/usage";
@@ -538,6 +542,26 @@ export function AppShell() {
         if (cancelled) fn();
         else unlisten = fn;
       })
+      .catch(() => {});
+    // Group B #225: a reload of THIS window leaves its popouts on screen as
+    // zombies — they re-request a seed forever while the restored layout opens
+    // fresh ones beside them under new labels. Take them down before the restore
+    // respawns; run once, here, where the store is still empty and every live
+    // popout is therefore known to be a leftover.
+    void closeOrphanedPopouts();
+    return () => { cancelled = true; unlisten?.(); };
+  }, []);
+
+  // Group B #226: adopt settings written in another window. The main window is
+  // usually the writer, but a popout writes too (an alert mute, a careful-mode
+  // toggle, a custom agent, a Python run-args edit) — and without this its write
+  // would be invisible here until the next launch, while this window's own next
+  // write would silently spread its stale copy back over the popout's change.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    listenSettingsChanged()
+      .then((fn) => { if (cancelled) fn(); else unlisten = fn; })
       .catch(() => {});
     return () => { cancelled = true; unlisten?.(); };
   }, []);

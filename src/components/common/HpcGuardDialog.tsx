@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { useHpcGuardStore, type HpcGuardKind } from "../../stores/hpcGuardPrompt";
 import { UntestedTag } from "./UntestedTag";
 
@@ -44,6 +45,10 @@ export function HpcGuardDialog() {
   const pending = useHpcGuardStore((s) => s.pending);
   const proceed = useHpcGuardStore((s) => s.proceed);
   const cancel = useHpcGuardStore((s) => s.cancel);
+  const registerHost = useHpcGuardStore((s) => s.registerHost);
+  // Tell the store a dialog is here to answer with — mounted once per window
+  // (AppShell and DetachedApp), so a request made in a popout has a host too.
+  useEffect(() => registerHost(), [registerHost]);
 
   if (!pending) return null;
   const copy = COPY[pending.kind] ?? COPY["login-node-run"];

@@ -11,6 +11,7 @@ import { newTmuxSessionName } from "../lib/tmuxSession";
 import { useRunHostPrefStore } from "./runHostPref";
 import { withdrawnTabKinds } from "../lib/experimental";
 import { useSettingsStore } from "./settings";
+import { getDetachedWindowContext } from "./detachedContext";
 
 /** A shell tab, or a remote agent tab (Claude/Codex/…), gets a stable persisted
  *  tmux session name at creation (TODO #85), so a persistent remote run reattaches
@@ -718,8 +719,22 @@ export type DetachedEditPayload =
   | { kind: "close"; key: string }
   | { kind: "reorder"; tabKeys: string[] }
   // Multi-pane popouts: split `key` out into a new pane at `edge` of
-  // `targetGroupId` (a group within the popout's subtree).
-  | { kind: "split"; key: string; targetGroupId: string; edge: DropEdge }
+  // `targetGroupId` (a group within the popout's subtree). `newGroupId` /
+  // `newSplitId` are the ids the POPOUT minted when it applied the split
+  // optimistically; the main store adopts them so both windows name the new
+  // pane identically. Without them each window's own id counter produced two
+  // different ids for one pane, and every later message about that pane from
+  // the popout (a drop target it reported, a divider it resized) named a group
+  // the main store had never heard of — a file dropped on such a pane fell back
+  // to the popout's first pane or did nothing at all.
+  | {
+      kind: "split";
+      key: string;
+      targetGroupId: string;
+      edge: DropEdge;
+      newGroupId?: string;
+      newSplitId?: string;
+    }
   // Multi-pane popouts: resize the divider between children `dividerIndex`/
   // `dividerIndex+1` of the split `splitId` within the popout's subtree.
   | { kind: "resize"; splitId: string; dividerIndex: number; fraction: number }
@@ -729,7 +744,15 @@ export type DetachedEditPayload =
   // Toggle/resize a popout group's docked file-viewer column (the per-subwindow
   // right file viewer), or record the folder it browsed to. Applied to the group
   // node inside the popout's subtree.
-  | { kind: "files"; groupId: string; open?: boolean; width?: number; folder?: string };
+  | { kind: "files"; groupId: string; open?: boolean; width?: number; folder?: string }
+  // Group B #231 — pane writes forwarded from a popout's empty store. Each is the
+  // popout-side twin of one payload write the main store already knows how to
+  // make; the seam in the store actions below emits them instead of touching the
+  // popout's own (empty) `tabsByScope`.
+  | { kind: "setViewerState"; key: string; patch: ViewerState }
+  | { kind: "setTmuxName"; key: string; name: string }
+  | { kind: "setFolder"; key: string; folder: string }
+  | { kind: "setUrl"; key: string; url: string };
 
 /** Flat tab shape as persisted in project.json's `tab_layout`. */
 export interface SavedTabEntry {
@@ -1054,11 +1077,15 @@ interface TabsStore {
   // `detachGroup` removes the group from the in-window tree, records it in
   // `detachedGroupsByScope`, and (unless `skipBackend`) spawns the detached
   // OS window via the `detach_subwindow` command. Refuses to detach the lone
-  // group (can't empty the in-window layout) UNLESS `allowLastGroup` is set —
-  // used by the restart respawn path, where a popout may be the only group left
-  // (its in-window siblings held only non-restorable tabs) yet must still re-open
-  // as its own window, leaving the main center empty. Returns the detached
-  // group's label, or null if refused / not found.
+  // group (can't empty the in-window layout) UNLESS `allowLastGroup` is set.
+  // Both live callers set it: the restart respawn path, where a popout may be the
+  // only group left (its in-window siblings held only non-restorable tabs) yet
+  // must still re-open as its own window; and the tab bar's detach grip, because
+  // popping the only subwindow onto a second monitor is an ordinary thing to want
+  // and refusing it made the gesture a silent no-op. The refusal is kept as the
+  // default only so a future caller has to say it means to empty the scope — the
+  // resulting state is a valid resting one (`hideGroup` produces the same, and
+  // says so). Returns the detached group's label, or null if refused / not found.
   detachGroup: (
     groupId: string,
     opts?: {
@@ -1252,7 +1279,17 @@ interface TabsStore {
   // persist normally, then drop the detached record. The detached OS window is
   // closed via `attach_subwindow`. Used by the host's cross-scope
   // `DETACHED_DOCK` path; the active-scope path goes through `attachGroup`.
-  dropDetachedGroup: (scope: string, groupId: string) => void;
+  dropDetachedGroup: (scope: string, groupId: string, opts?: { skipBackend?: boolean }) => void;
+  // Group B #224: a popout that never came up (its OS window failed to build,
+  // it timed out waiting for a seed, or it was destroyed behind the store's
+  // back — `xkill`, a renderer crash) must not take its tabs with it. Re-dock
+  // the record into the scope's layout — the live one when the scope is active
+  // (`attachGroup`), the stored one otherwise (`dropDetachedGroup`) — so the
+  // tabs are visible again and, crucially, no longer persisted `detached:true`
+  // (which would repeat the failure at every launch). No-op without a record.
+  // Never invokes the backend: the window is already gone, and the two
+  // dock paths' `attach_subwindow` is idempotent anyway.
+  recoverDetachedGroup: (scope: string, groupId: string) => void;
   // #42: WM-close of a popout closes its tabs for good instead of docking them
   // back: kills each tab's PTY (the popout's panes are NOT mounted in the main
   // window and the detached viewer is attach-only, so nothing else tears them
@@ -1539,6 +1576,23 @@ export function moveKeyInTree(
   });
 }
 
+/** Ids a caller may pre-mint for the nodes a split creates: the new pane's
+ *  group, and the split node that wraps it when the target's parent runs the
+ *  other axis (unused when the pane just joins an existing split). A detached
+ *  popout mints these so the main store's copy of its tree uses the same names —
+ *  see `DetachedEditPayload`'s `split`. An id already present in the tree is
+ *  ignored (a fresh one is minted instead) so a bad value can't corrupt it. */
+export interface SplitNodeIds {
+  groupId?: string;
+  splitId?: string;
+}
+
+/** Does any node in `node` carry `id`? */
+function treeHasId(node: LayoutNode, id: string): boolean {
+  if (node.id === id) return true;
+  return node.type === "split" && node.children.some((c) => treeHasId(c, id));
+}
+
 /** Split `key` out of its group into a new pane at `edge` of `targetGroupId`,
  *  within `node`. Pure; mirrors `splitWithTab`'s algorithm but on an arbitrary
  *  subtree so the in-window layout AND a detached popout's subtree share it.
@@ -1548,6 +1602,7 @@ export function splitSubtree(
   key: string,
   targetGroupId: string,
   edge: DropEdge,
+  ids?: SplitNodeIds,
 ): LayoutNode | null {
   if (edge === "center") return null; // center merges, it isn't a split
   const source = findGroupOfTab(node, key);
@@ -1559,15 +1614,21 @@ export function splitSubtree(
   }
   const cleaned = removeKeyFromTree(node, key);
   if (!cleaned || !findGroup(cleaned, targetGroupId)) return null;
+  const groupId =
+    ids?.groupId && !treeHasId(cleaned, ids.groupId) ? ids.groupId : nextGroupId();
+  const splitId =
+    ids?.splitId && !treeHasId(cleaned, ids.splitId) && ids.splitId !== groupId
+      ? ids.splitId
+      : undefined;
   const newGroup: GroupNode = {
     type: "group",
-    id: nextGroupId(),
+    id: groupId,
     tabKeys: [key],
     activeKey: key,
   };
   const dir: SplitDir = edge === "left" || edge === "right" ? "row" : "column";
   const before = edge === "left" || edge === "top";
-  return insertAdjacent(cleaned, targetGroupId, newGroup, dir, before);
+  return insertAdjacent(cleaned, targetGroupId, newGroup, dir, before, splitId);
 }
 
 /** The first group reached by descending `node` (depth-first, left-to-right). */
@@ -1673,10 +1734,12 @@ function insertAdjacent(
   newGroup: LayoutNode,
   dir: SplitDir,
   before: boolean,
+  // Id for the split node this may have to create (see `SplitNodeIds`).
+  splitId?: string,
 ): LayoutNode {
   // Root itself is the target → wrap into a split.
   if (root.type === "group" && root.id === targetId) {
-    return makeSplit(dir, before ? [newGroup, root] : [root, newGroup]);
+    return makeSplit(dir, before ? [newGroup, root] : [root, newGroup], splitId);
   }
 
   function recurse(node: LayoutNode): LayoutNode {
@@ -1709,6 +1772,7 @@ function insertAdjacent(
       children[childIdx] = makeSplit(
         dir,
         before ? [newGroup, target] : [target, newGroup],
+        splitId,
       );
       return { ...node, children };
     }
@@ -1720,11 +1784,11 @@ function insertAdjacent(
   return recurse(root);
 }
 
-function makeSplit(dir: SplitDir, children: LayoutNode[]): SplitNode {
+function makeSplit(dir: SplitDir, children: LayoutNode[], id?: string): SplitNode {
   const n = children.length;
   return {
     type: "split",
-    id: nextSplitId(),
+    id: id ?? nextSplitId(),
     dir,
     children,
     sizes: children.map(() => 1 / n),
@@ -1782,6 +1846,14 @@ export function dividerFraction(
   const leftSize = wholeFraction - before;
   const minFrac = Math.min(minPx / total, pair / 2);
   return Math.min(Math.max(leftSize, minFrac), pair - minFrac);
+}
+
+/** Every node id in a tree — groups AND splits. Used by a popout to mint split
+ *  ids that cannot collide with what it already renders (#227). */
+export function allNodeIds(node: LayoutNode | null): string[] {
+  if (!node) return [];
+  if (node.type === "group") return [node.id];
+  return [node.id, ...node.children.flatMap(allNodeIds)];
 }
 
 /** Deep-clone a layout tree, regenerating all group/split ids. */
@@ -2046,6 +2118,13 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
   },
 
   setActive: (key) => {
+    // Popout heap (#231): the layout lives in the main window — stream the
+    // activation there. The popout's strip re-renders from the reseed.
+    const ctx = getDetachedWindowContext();
+    if (ctx) {
+      ctx.pushEdit({ kind: "activate", key });
+      return;
+    }
     set((s) => {
       const { tabs, layout } = currentScopeState(s);
       const found = findGroupOfTab(layout, key);
@@ -2096,6 +2175,22 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
   addTab: (tab, opts) => get().addTabToScope(get().scope, tab, opts),
 
   addTabToScope: (scope, tab, opts) => {
+    // Popout heap (#231): this store owns no layout, so a tab minted here would
+    // sit in a phantom root group nobody renders. Ship the resolved payload to
+    // the main window instead — it mints the key, owns the PTY and reseeds the
+    // popout — the same path the popout's own "+" menu takes. A tab bound for
+    // ANOTHER scope (an install command's root tab) is added to that scope's
+    // layout in the main window. The returned entry is a placeholder: its key
+    // is not a real tab, so a follow-up `setActive` on it is a clean no-op.
+    const ctx = getDetachedWindowContext();
+    if (ctx) {
+      if (scope === ctx.scope) {
+        ctx.pushEdit({ kind: "add", tab, targetGroupId: ctx.targetGroupId() });
+      } else {
+        ctx.pushEdit({ kind: "addToScope", scope, tab });
+      }
+      return { ...tab, key: nextKey(`pending-${tab.kind}`), scope };
+    }
     const key = nextKey(tab.kind);
     // Spread first so a stray `key` on the payload can't shadow the minted one.
     const entry: TabEntry = {
@@ -2179,6 +2274,11 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
   renameTab: (key, label) => {
     const nextLabel = label.trim();
     if (!nextLabel) return;
+    const ctx = getDetachedWindowContext();
+    if (ctx) {
+      ctx.pushEdit({ kind: "rename", key, label: nextLabel });
+      return;
+    }
     set((s) => {
       const { tabs, layout, focusedGroupId } = currentScopeState(s);
       const nextTabs = tabs.map((t) =>
@@ -2248,6 +2348,13 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
   },
 
   removeTab: (key) => {
+    // Popout heap (#231): route through the popout's own close (its × path), so
+    // closing the last tab closes the window exactly as the button does.
+    const ctx = getDetachedWindowContext();
+    if (ctx) {
+      ctx.closeTab(key);
+      return;
+    }
     // Discard any session-only link routes that pointed FROM this tab (#50).
     useLinkRoutingStore.getState().purgeForTab(key);
     bumpUsage(get().scope, METRIC.TAB_CLOSED);
@@ -2302,17 +2409,55 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
   },
 
   closeAllTabs: (scope) => {
+    const target = scope ?? get().scope;
+    const before = get();
+    const tabs = before.tabsByScope[target] ?? [];
+    if (tabs.length === 0) return;
+    // Group B #228: a scope being emptied takes its POPOUTS with it, the way
+    // `unloadScope` does. Emptying only the payloads left the detached record
+    // standing: the main panes unmounted while `isDetachedPtyId` still said
+    // "detached", so they skipped `pty_kill` and the shells ran on orphaned; the
+    // popout kept rendering keys with no payload; its × was a no-op. So, BEFORE
+    // the payloads go: kill each popout tab's PTY explicitly (mirrors
+    // `closeDetachedGroup`), close the OS window, and drop the record — then
+    // the unmount below sees no record and its own kill is a harmless repeat.
+    const detached = before.detachedGroupsByScope[target] ?? [];
+    const byKey = new Map(tabs.map((t) => [t.key, t] as const));
+    for (const entry of detached) {
+      for (const key of orderedTabKeys(entry.subtree)) {
+        const tab = byKey.get(key);
+        if (tab && isPtyTabKind(tab.kind)) {
+          invoke("pty_kill", { id: `${target}:${key}` }).catch(() => {});
+        }
+      }
+      invoke("attach_subwindow", { registryId: entry.label }).catch(() => {});
+    }
+    // Discard any session-only link routes from the closing tabs (#50), and the
+    // half-typed-prompt state a recycled id must never inherit.
+    const purge = useLinkRoutingStore.getState().purgeForTab;
+    for (const t of tabs) {
+      purge(t.key);
+      forgetPty(`${target}:${t.key}`);
+    }
     set((s) => {
-      const target = scope ?? s.scope;
-      const tabs = s.tabsByScope[target] ?? [];
-      if (tabs.length === 0) return {};
-      // Discard any session-only link routes from the closing tabs (#50).
-      const purge = useLinkRoutingStore.getState().purgeForTab;
-      tabs.forEach((t) => purge(t.key));
-      // Empty the scope entirely: no tabs, no layout. writeScope mirrors the
-      // flat shortcuts when target is current; the flat pane layer then unmounts
-      // every pane for this scope, killing its PTYs (same path as closeGroup).
-      return writeScope(s, target, [], null, null);
+      // Empty the scope entirely: no tabs, no layout, no detached/hidden records
+      // (a hidden group's keys would otherwise dangle against dropped payloads).
+      // writeScope mirrors the flat shortcuts when target is current; the flat
+      // pane layer then unmounts every pane for this scope, killing its PTYs
+      // (same path as closeGroup).
+      const base = writeScope(s, target, [], null, null);
+      const without = <T,>(record: Record<string, T>): Record<string, T> => {
+        if (!Object.prototype.hasOwnProperty.call(record, target)) return record;
+        const next = { ...record };
+        delete next[target];
+        return next;
+      };
+      return {
+        ...base,
+        detachedGroupsByScope: without(s.detachedGroupsByScope),
+        hiddenGroupsByScope: without(s.hiddenGroupsByScope),
+        pendingRespawnByScope: without(s.pendingRespawnByScope),
+      };
     });
   },
 
@@ -2321,13 +2466,6 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     const tabs = state.tabsByScope[scope] ?? [];
     const detached = state.detachedGroupsByScope[scope] ?? [];
 
-    // Close native popouts first. A missing/already-closed window is harmless;
-    // the scope teardown below remains the source of truth.
-    await Promise.allSettled(
-      detached.map((entry) =>
-        invoke("attach_subwindow", { registryId: entry.label }),
-      ),
-    );
     const purge = useLinkRoutingStore.getState().purgeForTab;
     for (const tab of tabs) {
       purge(tab.key);
@@ -2360,6 +2498,16 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
           : {}),
       };
     });
+
+    // Close the native popouts AFTER their records are gone: the backend's
+    // `Destroyed` hook tells the host about every popout death, and a record
+    // still standing at that moment reads as a crash to dock back from (#224).
+    // A missing/already-closed window is harmless.
+    await Promise.allSettled(
+      detached.map((entry) =>
+        invoke("attach_subwindow", { registryId: entry.label }),
+      ),
+    );
   },
 
   updateTabEnv: (key, env) => {
@@ -2371,6 +2519,13 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
   },
 
   setTabTmuxName: (scope, key, name) => {
+    // Popout heap (#231): the payload lives in the main store; without the
+    // forward a renamed session reattached to its OLD name at the next launch.
+    const ctx = getDetachedWindowContext();
+    if (ctx) {
+      ctx.pushEdit({ kind: "setTmuxName", key, name });
+      return;
+    }
     set((s) => {
       const tabs = s.tabsByScope[scope] ?? [];
       const nextTabs = tabs.map((t) =>
@@ -2446,6 +2601,13 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
   },
 
   setTabFolder: (key, folder) => {
+    // Popout heap (#231/#239): a Files (Project) tab's browsed folder persists
+    // on the payload in the main store.
+    const ctx = getDetachedWindowContext();
+    if (ctx) {
+      ctx.pushEdit({ kind: "setFolder", key, folder });
+      return;
+    }
     set((s) => {
       const { tabs, layout, focusedGroupId } = currentScopeState(s);
       const tab = tabs.find((t) => t.key === key);
@@ -2458,6 +2620,13 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
   },
 
   setTabUrl: (key, url) => {
+    // Popout heap (#239): a browser tab's address persists on the main payload,
+    // so a popped-out reader tab restores holding the page it was left on.
+    const ctx = getDetachedWindowContext();
+    if (ctx) {
+      ctx.pushEdit({ kind: "setUrl", key, url });
+      return;
+    }
     set((s) => {
       const { tabs, layout, focusedGroupId } = currentScopeState(s);
       const tab = tabs.find((t) => t.key === key);
@@ -2608,6 +2777,14 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
   },
 
   splitWithNewTab: (tab, targetGroupId, edge) => {
+    // Popout heap (#231): `openLinkedFile` lands a link in the linking tab's own
+    // group through this — forward it as the popout's `add` edit, which carries
+    // the same target-group + edge semantics (center appends, a side carves).
+    const ctx = getDetachedWindowContext();
+    if (ctx) {
+      ctx.pushEdit({ kind: "add", tab, targetGroupId, edge });
+      return { ...tab, key: nextKey(`pending-${tab.kind}`), scope: ctx.scope };
+    }
     const key = nextKey(tab.kind);
     // Spread first so a stray `key` on the payload can't shadow the minted one.
     // Mint a persistent tmux session name like addTab/addTabToScope, so a shell
@@ -2744,9 +2921,12 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
 
     if (!opts?.skipBackend) {
       // Spawn the detached OS window. The store mutation + IPC live in one
-      // action so they can't drift. Best-effort: a backend failure leaves the
-      // group recorded as detached (the user can dock it back). `bounds` (when
-      // restoring a popout on restart) reopens it at its prior place/size.
+      // action so they can't drift. `bounds` (when restoring a popout on
+      // restart) reopens it at its prior place/size. A backend failure (#224)
+      // must NOT leave the group recorded as detached — there is no window to
+      // dock it back from, and the record would persist `detached:true` and
+      // repeat the failure at every launch — so the record is re-docked into the
+      // layout it just left.
       const b = opts?.bounds;
       invoke("detach_subwindow", {
         projectId: scope,
@@ -2755,7 +2935,9 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
         y: b?.y ?? null,
         width: b?.w ?? null,
         height: b?.h ?? null,
-      }).catch(() => {});
+      }).catch(() => {
+        get().recoverDetachedGroup(scope, groupId);
+      });
     }
     return label;
   },
@@ -3405,10 +3587,62 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
           break;
         }
         case "close": {
+          // Only a key still IN this popout's subtree is closed (#238): a
+          // `close` that raced a dock — the tab already moved to the main
+          // layout or a sibling popout before the popout's reseed landed —
+          // must not delete a payload another node now references.
+          if (!findGroupOfTab(sub, edit.key)) break;
           nextSub = removeKeyFromTree(sub, edit.key);
           // Drop the closed tab's payload (its pane in the detached window
           // unmounted; the PTY is killed there by the spawning pane's lifetime).
           if (nextTabs) nextTabs = nextTabs.filter((t) => t.key !== edit.key);
+          break;
+        }
+        case "setViewerState": {
+          // #231: viewer state written in a popout persists on the main payload,
+          // with the same shallow no-op rule `setViewerState` applies locally.
+          if (nextTabs) {
+            nextTabs = nextTabs.map((t) => {
+              if (t.key !== edit.key) return t;
+              const merged = { ...t.viewerState, ...edit.patch };
+              const cur = (t.viewerState ?? {}) as Record<string, unknown>;
+              const mergedRec = merged as Record<string, unknown>;
+              const changed = [...new Set([...Object.keys(cur), ...Object.keys(mergedRec)])].some(
+                (k) => cur[k] !== mergedRec[k],
+              );
+              return changed ? { ...t, viewerState: merged } : t;
+            });
+          }
+          break;
+        }
+        case "setTmuxName": {
+          if (nextTabs) {
+            nextTabs = nextTabs.map((t) =>
+              t.key === edit.key
+                ? t.tmuxAttach
+                  ? { ...t, tmuxAttach: edit.name }
+                  : { ...t, tmuxSession: edit.name }
+                : t,
+            );
+          }
+          break;
+        }
+        case "setFolder": {
+          if (nextTabs) {
+            nextTabs = nextTabs.map((t) =>
+              t.key === edit.key && (t.folder ?? "") !== edit.folder
+                ? { ...t, folder: edit.folder }
+                : t,
+            );
+          }
+          break;
+        }
+        case "setUrl": {
+          if (nextTabs) {
+            nextTabs = nextTabs.map((t) =>
+              t.key === edit.key && (t.url ?? "") !== edit.url ? { ...t, url: edit.url } : t,
+            );
+          }
           break;
         }
         case "reorder": {
@@ -3427,8 +3661,13 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
         }
         case "split":
           // A pane split inside the popout: split the subtree, or no-op if the
-          // split is invalid (keeps the popout unchanged).
-          nextSub = splitSubtree(sub, edit.key, edit.targetGroupId, edit.edge) ?? sub;
+          // split is invalid (keeps the popout unchanged). The popout's own ids
+          // for the new nodes are adopted so both windows agree on them.
+          nextSub =
+            splitSubtree(sub, edit.key, edit.targetGroupId, edit.edge, {
+              groupId: edit.newGroupId,
+              splitId: edit.newSplitId,
+            }) ?? sub;
           break;
         case "resize":
           // A divider drag inside a multi-pane popout: adjust the targeted
@@ -3506,9 +3745,16 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       // does writeScope's scope-stamp itself). Mint the tmux session name like the
       // in-window adds, so a Python/shell run STREAMED into a detached popout (its
       // Run button places the tab here, not via addTabToScope) is persistence-
-      // eligible instead of silently skipping the tmux wrap.
+      // eligible instead of silently skipping the tmux wrap — and apply the
+      // project's run-host preference the same way (#238: "+ Shell" in a popout
+      // used to ignore the machine every other shell was sent to).
       const key = nextKey(tab.kind);
-      const entry: TabEntry = { ...withTmuxSession(tab, scope), key, scope };
+      const entry: TabEntry = {
+        ...withTmuxSession(withRunHostDefault(scope, tab), scope),
+        key,
+        scope,
+      };
+      countTabOpen(scope, entry);
       // Land the tab in the requested pane; fall back to the popout's first group
       // (a single-pane popout, or a stale target id).
       const target = findGroup(rec.subtree, targetGroupId) ?? allGroups(rec.subtree)[0];
@@ -3542,9 +3788,14 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     const key = nextKey(tab.kind);
     // Spread first so a stray `key` can't shadow the minted one; stamp the scope
     // (this path never touches the in-window layout, so no writeScope to do it).
-    // Mint the tmux session name too (see addDetachedTab) so a shell tab streamed
-    // into a popout via a split-drop is persistence-eligible.
-    const entry: TabEntry = { ...withTmuxSession(tab, scope), key, scope };
+    // Mint the tmux session name and the run-host default too (see
+    // addDetachedTab) so a shell tab streamed into a popout via a split-drop is
+    // persistence-eligible and lands on the project's chosen machine.
+    const entry: TabEntry = {
+      ...withTmuxSession(withRunHostDefault(scope, tab), scope),
+      key,
+      scope,
+    };
     let created: string | null = null;
     set((s) => {
       const entries = s.detachedGroupsByScope[scope] ?? [];
@@ -3555,6 +3806,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       // the target's own tabs untouched — mirrors `splitWithNewTab`'s edge
       // branch, but on the popout's subtree. A stale target id → no split.
       if (!findGroup(rec.subtree, targetGroupId)) return {};
+      countTabOpen(scope, entry);
       const newGroup: GroupNode = {
         type: "group",
         id: nextGroupId(),
@@ -3594,7 +3846,17 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     });
   },
 
-  dropDetachedGroup: (scope, groupId) => {
+  recoverDetachedGroup: (scope, groupId) => {
+    const entry = (get().detachedGroupsByScope[scope] ?? []).find((d) => d.id === groupId);
+    if (!entry) return;
+    if (get().scope === scope) {
+      get().attachGroup(groupId, { skipBackend: true });
+    } else {
+      get().dropDetachedGroup(scope, groupId, { skipBackend: true });
+    }
+  },
+
+  dropDetachedGroup: (scope, groupId, opts) => {
     const entries = get().detachedGroupsByScope[scope] ?? [];
     const entry = entries.find((d) => d.id === groupId);
     if (!entry) return;
@@ -3623,7 +3885,9 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     });
 
     // Close the detached OS window + drop the parkable override / registry entry.
-    invoke("attach_subwindow", { registryId: entry.label }).catch(() => {});
+    if (!opts?.skipBackend) {
+      invoke("attach_subwindow", { registryId: entry.label }).catch(() => {});
+    }
   },
 
   hideDetachedGroup: (scope, groupId) => {

@@ -59,6 +59,7 @@ import {
   allGroups,
   dividerFraction,
   findGroup,
+  isPtyTabKind,
   type DropEdge,
   type GroupNode,
   type LayoutNode,
@@ -66,14 +67,17 @@ import {
   type TabEntry,
   type TabLocation,
 } from "../../stores/tabs";
+import { useActivityStore } from "../../stores/activity";
 import type { DetachedRemoteInfo } from "../../stores/detached";
 import {
   TabSourceBadge,
+  TabTexLinkBadge,
   TabLocalityBadge,
   LocalityMenu,
   tabLocation,
   type LocalityMenuState,
 } from "../tabs/TabLocalityBadges";
+import { texPdfPartner } from "../../lib/texPdfLink";
 import { useT } from "../../lib/i18n";
 import { StarIcon } from "./StarIcon";
 
@@ -236,8 +240,19 @@ interface Props {
    *  the seed. Drives the per-tab locality badge/menu; undefined = local project
    *  (no locality axis, no badge — parity with a local main-window strip). */
   remoteInfo?: DetachedRemoteInfo;
+  /** Whether this OS window is on screen at all (#239). A parked or minimised
+   *  popout must stop streaming its terminals and polling its file views — panes
+   *  compose their own visibility with this. */
+  windowVisible?: boolean;
+  /** Report which pane is current, so the window's store seam can land a new tab
+   *  (a Ctrl+clicked link, an install) in the pane the user is working in. */
+  onFocusedGroup?: (groupId: string | null) => void;
   onActivate: (key: string) => void;
   onClose: (key: string) => void;
+  /** Dock the WHOLE popout back into the main window's tiled layout (#237) —
+   *  the ⤓ in the title bar. Closes this OS window; the tabs return live, PTYs
+   *  intact. Undefined ⇒ no dock affordance. */
+  onDockWindow?: () => void;
   /** Hide the WHOLE popout into the main window's side-panel "Hidden subwindows"
    *  list (the detached twin of a main-window subwindow's "–" hide). Closes this
    *  OS window; the group is parked with its tabs mounted and restored from there.
@@ -249,6 +264,9 @@ interface Props {
   /** Reorder a bar's tabs (a tab dragged + dropped back onto its own bar). The
    *  main store resolves WHICH group from the key set. */
   onReorder: (tabKeys: string[]) => void;
+  /** Rename a tab (right-click on the strip) — the `rename` edit, which existed
+   *  from the start with nothing emitting it (#239). */
+  onRename?: (key: string, label: string) => void;
   /** Split `key` into a new pane at `edge` of `targetGroupId`, inside the popout
    *  (a tab dragged onto a group BODY's edge). */
   onSplit: (key: string, targetGroupId: string, edge: DropEdge) => void;
@@ -284,11 +302,15 @@ export function DetachedCenterPanel({
   tree,
   tabs,
   remoteInfo,
+  windowVisible = true,
+  onFocusedGroup,
   onActivate,
   onClose,
+  onDockWindow,
   onHideWindow,
   onSetLocation,
   onReorder,
+  onRename,
   onSplit,
   onResize,
   onMove,
@@ -374,6 +396,17 @@ export function DetachedCenterPanel({
     const ids = allGroups(tree).map((g) => g.id);
     setFocusedGroupId((cur) => (cur && ids.includes(cur) ? cur : (ids[0] ?? null)));
   }, [tree]);
+  // Publish it to the window's store seam (#231), so a link opened from a pane
+  // lands in the pane it was opened from rather than always in the first one.
+  useEffect(() => {
+    onFocusedGroup?.(focusedGroupId);
+  }, [focusedGroupId, onFocusedGroup]);
+
+  // Per-tab lamps (#234), mirrored from the main window's classifier — the same
+  // two maps `TabBar` reads, keyed by the composed PTY id.
+  const busyByTab = useActivityStore((s) => s.busyByTab);
+  const attentionByTab = useActivityStore((s) => s.attentionByTab);
+  const clearAttention = useActivityStore((s) => s.clearAttention);
 
   // ── Keyboard shortcuts (parity with the main window) ──────────────────────
   // The popout is a separate JS heap, inert to the tabs store, so the main
@@ -1196,7 +1229,8 @@ export function DetachedCenterPanel({
   const onTitlebarPointerDown = (e: React.PointerEvent) => {
     if (e.button !== 0) return;
     const target = e.target as HTMLElement;
-    if (target.closest(".detached-titlebar-controls, button, .no-drag")) return;
+    if (target.closest(".detached-titlebar-controls, .detached-titlebar-actions, button, .no-drag"))
+      return;
     e.preventDefault();
     // Move the whole popout window natively on every platform (see
     // `beginNativeWindowMove`) — no streamed dock gesture, so dragging the
@@ -1308,17 +1342,59 @@ export function DetachedCenterPanel({
             const showMarkerBefore = isDropTarget && localReorder === index;
             // A tab freshly dropped into this bar plays the drop-in landing once.
             const landing = !isDragging && landedKey === tab.key;
+            // The same status ring the main-window strip draws, from the same
+            // two maps and by the same rules (#234) — working wins; working and
+            // finished are about unread output so they never show on the tab you
+            // are looking at; a pending decision does, because the agent stays
+            // blocked whether or not anyone is watching. The maps here are what
+            // the main window mirrored over (`applyDetachedStatus`); before this
+            // group the popout's strip rendered no state at all, so a popped-out
+            // agent finishing its turn said nothing in either window.
+            const ptyId = `${scope}:${tab.key}`;
+            const working = isPtyTabKind(tab.kind) && !isActive && !!busyByTab[ptyId];
+            const rawAttn =
+              tab.kind === "agent" || tab.kind === "local_agent"
+                ? attentionByTab[ptyId] ?? null
+                : null;
+            const attn = !isActive || rawAttn === "decision" ? rawAttn : null;
+            const stateClass = working
+              ? " working"
+              : attn === "decision"
+                ? " needs-decision"
+                : attn === "done"
+                  ? " finished"
+                  : "";
             return (
               <Fragment key={tab.key}>
                 {showMarkerBefore && dropPlaceholder}
                 <div
-                  className={`tab ${isActive ? "active" : ""}${isDragging ? " dragging" : ""}${landing ? " landing" : ""}`}
+                  className={`tab ${isActive ? "active" : ""}${stateClass}${isDragging ? " dragging" : ""}${landing ? " landing" : ""}`}
                   onPointerDown={(e) => onTabPointerDown(e, group, tab)}
+                  onContextMenu={(e) => {
+                    // Rename, the one main-window tab action the popout's strip
+                    // was missing (#239): the `rename` edit already existed and
+                    // nothing emitted it. A prompt rather than an inline field —
+                    // this strip has no editing state, and a rename in a popout
+                    // is rare enough that borrowing the main window's inline
+                    // editor would be more machinery than the gesture is worth.
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const next = window.prompt(t("detachedTabs.renamePrompt"), tab.label);
+                    if (next != null && next.trim() && next !== tab.label) {
+                      onRename?.(tab.key, next.trim());
+                    }
+                  }}
                   // Styled hover card (same one the main window's TabBar shows —
                   // this strip is bespoke, so it anchors the shared card itself).
                   onMouseEnter={(e) => {
                     const r = e.currentTarget.getBoundingClientRect();
                     setHoverTab({ key: tab.key, x: r.left + r.width / 2, y: r.bottom });
+                  }}
+                  // Looking at a tab marks its output read, exactly as the main
+                  // window's strip does — the popout forwards it, so the main
+                  // window's classifier (and the project pill) agree (#234).
+                  onMouseDown={() => {
+                    if (isActive) clearAttention(ptyId);
                   }}
                   onMouseLeave={() =>
                     setHoverTab((h) => (h?.key === tab.key ? null : h))
@@ -1340,6 +1416,14 @@ export function DetachedCenterPanel({
                       window's fileSources store; the locality badge/menu use the
                       streamed host list and route changes through onSetLocation. */}
                   <TabSourceBadge tabKey={tab.key} />
+                  {/* TeX ⇄ PDF coupling mark — parity with the main-window
+                      TabBar. Searched over THIS window's tabs: a partner left
+                      behind in the main window isn't reachable from here, and a
+                      mark whose click does nothing would be worse than none. */}
+                  <TabTexLinkBadge
+                    partner={texPdfPartner(tabs, tab)}
+                    onFocus={onActivate}
+                  />
                   {isRemote && (
                     <TabLocalityBadge
                       tab={tab}
@@ -1461,7 +1545,13 @@ export function DetachedCenterPanel({
           >
           <div className="pane-layer">
             {orderedTabs.map((tab) => {
-              const visible = tab.key === group.activeKey;
+              // #239: a parked or minimised popout is not showing anything, so
+              // its panes must report themselves hidden — otherwise every one of
+              // its terminals streams over IPC and every file view keeps polling
+              // for a window that is off screen. The pane still MOUNTS (the tab
+              // must come back instantly, and an attach-only terminal owns no
+              // PTY to lose); it just stops being fed.
+              const visible = tab.key === group.activeKey && windowVisible;
               const style: React.CSSProperties = visible
                 ? { display: "flex", left: 0, top: 0, right: 0, bottom: 0 }
                 : { display: "none" };
@@ -1469,10 +1559,10 @@ export function DetachedCenterPanel({
                 <div key={tab.key} className="center-pane" data-tab-key={tab.key} style={style}>
                   {/* The shared per-tab render switch (`components/tabs/TabPane`),
                       the SAME one the main window uses. A popout is attach-only (the
-                      main window owns the PTY) and doesn't own the tab store, so it
-                      passes no `ownsTabs`/`onConnect`/mirror props — the cwd is just
-                      the tab's, since the projects store the mirror-swap needs isn't
-                      here. See TabPane for why each prop differs between windows. */}
+                      main window owns the PTY), so it passes no `onConnect`/mirror
+                      props — the cwd is just the tab's, since the projects store the
+                      mirror-swap needs isn't here. Tab-state writes DO happen here
+                      and are forwarded by the store seam (#231). See TabPane. */}
                   <TabPane
                     tab={tab}
                     scope={scope}
@@ -1598,6 +1688,31 @@ export function DetachedCenterPanel({
         <span className="detached-titlebar-logo" aria-hidden="true">
           <StarIcon />
         </span>
+        {/* #237: dock the whole window back into the main layout. The gesture
+            that used to do this (drag the popout onto the main window) went with
+            the 2026-07-19 move-only rework — titlebar and grip drags are native
+            OS moves now, which is what the user asked for — and nothing replaced
+            it, so the only way back was dragging tabs out one at a time and the
+            WM ✕ threw them away. A button restores the escape hatch without
+            taking back native snapping. Sits with the window controls (right,
+            before them) because that is where window-level actions live; it is
+            `no-drag` so the press never starts a window move. */}
+        {onDockWindow && (
+          <div className="detached-titlebar-actions no-drag">
+            <button
+              className="detached-dock-btn"
+              title={t("detachedTabs.dockWindow")}
+              aria-label={t("detachedTabs.dockWindow")}
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation();
+                onDockWindow();
+              }}
+            >
+              ⤓
+            </button>
+          </div>
+        )}
         {PLATFORM !== "macos" && (
           <div className="detached-titlebar-controls no-drag">
             <WindowControls />

@@ -1132,6 +1132,7 @@ pub fn run() {
             commands::terminal::pty_kill_scope,
             commands::terminal::pty_set_visible,
             commands::terminal::pty_remove_view,
+            commands::terminal::pty_scrollback,
             commands::terminal::pty_watch,
             commands::terminal::pty_unwatch,
             commands::terminal::local_tmux_list,
@@ -1362,11 +1363,31 @@ pub fn run() {
                             let ws = _app.state::<commands::workspace::WorkspaceStateArc>();
                             ws.lock().unwrap().backend.unset_parkable(wid);
                         }
+                        // Group B #224: tell the frontend a popout died. A
+                        // legitimate teardown drops the store record BEFORE the
+                        // window goes, so the host finds none and does nothing;
+                        // a record still standing means the window died behind
+                        // the store's back (xkill, a renderer crash, the
+                        // seed-timeout self-destroy) — and without this its tabs
+                        // were stranded in a `detached: true` record with no
+                        // window, no dock-back path, their PTYs running hidden,
+                        // and the failure repeated at every launch.
+                        let _ = _app.emit(
+                            "detached-window-destroyed",
+                            serde_json::json!({ "label": label }),
+                        );
                     }
                 }
             }
             if let tauri::RunEvent::Exit = event {
                 use tauri::Manager;
+                // Stop the Eldrun Mobile host first: its lifetime is the app's
+                // (started again at the next launch, see `setup`), and once the
+                // desktop is gone it can neither create tabs nor reach the
+                // sessions reaped below, so a host left running would only be a
+                // listener with nothing behind it. Bounded (admin-socket
+                // timeouts), best-effort, and a no-op when Mobile is off.
+                tauri::async_runtime::block_on(commands::mobile_control::stop_host_for_exit());
                 // Abort every terminal's process subtree so no inner process (a
                 // dev server, a build, a training run) outlives Eldrun. Runs
                 // before the container teardown below, since a containerized

@@ -21,7 +21,9 @@ class ResizeObserverStub {
   ResizeObserverStub;
 
 const { invoke } = vi.hoisted(() => ({
-  invoke: vi.fn((..._a: unknown[]) => Promise.resolve(undefined)),
+  // `unknown` rather than `undefined`: `pty_scrollback` answers with a string
+  // (Group B #235), so the default must not narrow the mock's return type.
+  invoke: vi.fn((..._a: unknown[]): Promise<unknown> => Promise.resolve(undefined)),
 }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: (...a: unknown[]) => invoke(...a) }));
 vi.mock("@tauri-apps/api/event", () => ({
@@ -77,6 +79,36 @@ function names(): string[] {
 
 describe("TerminalView — attach-only (#42)", () => {
   beforeEach(() => invoke.mockClear());
+
+  it("attachOnly asks for the terminal's history so it doesn't open blank", async () => {
+    // Group B #235: an attach-only view opens a fresh xterm on a PTY that has
+    // been running without it — a tab just popped out into its own window. It
+    // used to render empty until the program next drew (a TUI recovers via the
+    // fit's SIGWINCH; a plain shell's history existed only in the main window's
+    // hidden xterm), and every seed-driven remount blanked it again.
+    invoke.mockImplementation((cmd: unknown) =>
+      Promise.resolve(cmd === "pty_scrollback" ? "$ ls -la\r\ntotal 0\r\n" : undefined),
+    );
+    await act(async () => {
+      render(<TerminalView id="p:hist" cmd="bash" cwd="/p" visible focused attachOnly />);
+    });
+
+    expect(names()).toContain("pty_scrollback");
+    // …and it is still the PTY's own history it asks for, never a spawn.
+    expect(names()).not.toContain("pty_spawn");
+    invoke.mockImplementation(() => Promise.resolve(undefined));
+  });
+
+  it("a normal terminal spawns instead of asking for history", async () => {
+    // The main window's pane is the one that STARTS the program, so there is no
+    // history to catch up on — asking would be a round trip per tab at launch.
+    await act(async () => {
+      render(<TerminalView id="p:fresh" cmd="bash" cwd="/p" visible focused />);
+    });
+
+    expect(names()).toContain("pty_spawn");
+    expect(names()).not.toContain("pty_scrollback");
+  });
 
   it("attachOnly never spawns the PTY and never kills it on unmount", async () => {
     let unmount = () => {};

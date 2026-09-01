@@ -1,7 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { emit } from "@tauri-apps/api/event";
+import { emit, listen } from "@tauri-apps/api/event";
 import { create } from "zustand";
+import { isDetachedWindow } from "./detachedContext";
 import {
   THEMES,
   type Settings,
@@ -25,6 +26,31 @@ export const THEME_CHANGED_EVENT = "eldrun:theme-changed";
  *  window (including detached popouts, which each hold their own i18n store)
  *  re-applies the new language. See the listener in `DetachedApp`. */
 export const LANGUAGE_CHANGED_EVENT = "eldrun:language-changed";
+
+/**
+ * Group B #226: the whole settings object, broadcast after every write, so every
+ * window's STORE follows — not only its DOM. The theme/language/appearance
+ * events above repaint a popout, but its `useSettingsStore` kept the snapshot
+ * it loaded at mount: its xterm palette stayed on the old scheme after a theme
+ * switch, a rebound shortcut or Fast mode never reached it, and its next write
+ * spread that stale snapshot back over the file. Every window (the sender
+ * included — a redundant `set` of equal content) applies the payload via
+ * `listenSettingsChanged`.
+ */
+export const SETTINGS_CHANGED_EVENT = "eldrun:settings-changed";
+
+/** Subscribe this window's settings store to writes made in any window. Register
+ *  once per window (AppShell and DetachedApp); returns the unlisten. Only the
+ *  store moves — the per-document appliers (theme, language, zoom) keep their
+ *  own dedicated events, because a popout must NOT inherit the main window's
+ *  zoom and must not re-apply a theme it already painted. */
+export async function listenSettingsChanged(): Promise<() => void> {
+  return listen<Settings>(SETTINGS_CHANGED_EVENT, (e) => {
+    if (e.payload && typeof e.payload === "object") {
+      useSettingsStore.setState({ settings: e.payload, loaded: true });
+    }
+  });
+}
 
 /** The "system" pseudo-theme resolved to a real one via the OS light/dark
  *  preference. It exists only in settings and the picker — the CSS knows
@@ -408,7 +434,14 @@ export function whenSettingsLoaded(timeoutMs = 5000): Promise<void> {
  */
 async function baseForWrite(): Promise<Partial<Settings>> {
   const cached = useSettingsStore.getState().settings;
-  if (cached) return cached;
+  // A detached popout (#226) re-reads the file on EVERY write. Its cache is a
+  // snapshot taken at its own mount, and the main window — which owns most
+  // settings writes — keeps changing the file underneath it; the cross-window
+  // broadcast below narrows that window but cannot close it (the popout might
+  // be mid-write when the broadcast lands). A popout writes rarely (an alert
+  // mute, a careful-mode toggle, a custom agent), so one extra read per write is
+  // nothing next to silently rewriting settings.json from a stale copy.
+  if (cached && !isDetachedWindow()) return cached;
   // Deliberately not `load()`: that re-applies the theme, language and this
   // window's zoom as a side effect, which a background writer must not do.
   const fresh = await invoke<Settings>("get_settings");
@@ -440,6 +473,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     applyTheme(theme);
     void emit(THEME_CHANGED_EVENT, theme);
     set({ settings: updated as Settings });
+    void emit(SETTINGS_CHANGED_EVENT, updated);
   },
 
   setLanguage: async (lang) => {
@@ -449,12 +483,14 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     applyLanguage(lang);
     void emit(LANGUAGE_CHANGED_EVENT, lang);
     set({ settings: updated as Settings });
+    void emit(SETTINGS_CHANGED_EVENT, updated);
   },
 
   updateSettings: async (patch) => {
     const current = await baseForWrite();
     const updated = { ...current, ...patch };
     await invoke<void>("save_settings", { settings: updated });
+    void emit(SETTINGS_CHANGED_EVENT, updated);
     if (typeof updated.color_scheme === "string") {
       applyTheme(updated.color_scheme);
       if ("color_scheme" in patch) {

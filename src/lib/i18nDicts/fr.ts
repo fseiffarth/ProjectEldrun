@@ -1243,6 +1243,13 @@ export const dict: Dict = {
   "detachedTabs.closeTab": "Fermer l'onglet",
   "detachedTabs.newTab": "Nouvel onglet",
   "detachedTabs.hideWindow": "Masquer cette fenêtre dans le panneau de droite (la récupérer depuis là)",
+  "detachedTabs.dockWindow": "Remettre ces onglets dans la fenêtre principale",
+  "detachedTabs.renamePrompt": "Renommer cet onglet",
+  "detachedClose.title": "Fermer cette fenêtre ?",
+  "detachedClose.body":
+    "Ses onglets peuvent retourner dans la fenêtre principale ou être fermés définitivement — les fermer met fin à leurs terminaux et ils ne reviendront pas au prochain lancement.",
+  "detachedClose.dock": "Remettre les onglets",
+  "detachedClose.closeTabs": "Fermer les onglets",
   "tour.skip": "Ignorer la visite",
   "tour.back": "Retour",
   "tour.rewardGotIt": "C'est fait.",

@@ -1311,6 +1311,27 @@
   animation-play-state: paused !important;
 }
 
+/* …with ONE exemption, and it is the case the rule above cannot see: a
+   CROSS-WINDOW tab drop. Dragging a tab out of a popout and into the main
+   window (#42) ends with the pointer over a window that does NOT have focus —
+   the popout still holds it — so the destination is `[data-blurred]` at exactly
+   the moment it has to show what just happened. Both of these animations open
+   from nothing (`tab-drop-slot` from zero width, `tab-land`/`tab-land-fade`
+   from `opacity: 0`), so pausing them at 0% does not freeze a mid-state
+   visual — it leaves the slot invisible and the docked tab a blank gap holding
+   its place, which reads as a tab that arrived without its name. It stays that
+   way until the window is focused (clicking the blank tab resumes the paused
+   animation, which is what makes the label "come back"). The blanket pause's
+   own reasoning does not apply here either: these are one-shot animations of
+   0.16s and 0.34s, not a loop keeping the rasterizer thread runnable, and the
+   window is being watched — the user is looking straight at the drop they just
+   made. Class selectors, so they outrank the `*` rule above at equal
+   importance. */
+:root[data-blurred] .tab.landing,
+:root[data-blurred] .tab-drop-placeholder {
+  animation-play-state: running !important;
+}
+
 /* Fast mode: no animation, and no transition either — the deliberate
    difference from the blur rule above, which only *pauses* what is running.
    That is right for a window nobody is looking at, where the mid-state visual
@@ -1540,7 +1561,6 @@
    overflowing tabs from showing through. (Dock-back is done by Ctrl+dragging the
    tab bar onto the main window, #42.) */
 .detached-titlebar-controls {
-  margin-left: auto;
   align-self: center;
   position: sticky;
   right: 0;
@@ -1551,6 +1571,66 @@
   gap: 10px;
   padding: 0 8px;
   background: var(--bg-panel);
+}
+
+/* #237: the dock-back (⤓) cluster, pushed to the right end of the title bar so
+   the window-level actions read as one group. It carries the `margin-left:auto`
+   the controls used to own, so the two sit together whether or not the platform
+   draws its own window controls (macOS does). */
+.detached-titlebar-actions {
+  margin-left: auto;
+  align-self: center;
+  z-index: 12;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  padding: 0 2px 0 8px;
+  background: var(--bg-panel);
+}
+/* Without the actions cluster the controls keep the right edge themselves. */
+.detached-titlebar-actions + .detached-titlebar-controls {
+  margin-left: 0;
+}
+.detached-titlebar-controls:first-of-type {
+  margin-left: auto;
+}
+
+.detached-dock-btn {
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+  border-radius: var(--radius-sm, 4px);
+}
+.detached-dock-btn:hover {
+  background: var(--pill-hover-bg);
+  color: var(--text-primary);
+}
+
+/* #237: the WM ✕'s dock-or-close question. Ordinary dialog chrome — the popout
+   is its own document, so it must state a colour rather than inherit `body`'s
+   (which has none). */
+.detached-close-choice {
+  width: min(460px, calc(100vw - 32px));
+  color: var(--text-primary);
+}
+.detached-close-title {
+  margin: 0 0 10px;
+  font-size: 15px;
+  color: var(--text-primary);
+}
+.detached-close-body {
+  margin: 0 0 18px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-muted);
 }
 
 /* The dragged tab collapses out of the row so its old slot closes and the only

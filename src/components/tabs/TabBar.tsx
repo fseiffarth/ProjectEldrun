@@ -1082,10 +1082,22 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
       };
       // Send-off animation at the grab point, then create the OS window at the drop
       // (no `startDragging`: the window appears already positioned, so there is no
-      // handoff to miss and no second drag needed). `detachGroup` refuses a lone
-      // group (returns null) — a harmless no-op here.
+      // handoff to miss and no second drag needed).
+      //
+      // `allowLastGroup` because popping out the ONLY subwindow is a thing people
+      // do — it is how a single-subwindow scope gets onto a second monitor — and
+      // without it this gesture was a silent no-op: `detachGroup` returned null
+      // while the fly-out (played one line above, before the call) still ran, so
+      // the send-off animation reported a detach that never happened. The
+      // refusal's stated reason, that the in-window layout must keep a body, is
+      // not an invariant this codebase actually holds: `hideGroup` permits the
+      // identical end state in as many words ("a valid resting state"), and the
+      // restart-respawn path already reaches it whenever a popout is the scope's
+      // only group. What is left behind is the empty subwindow's own "+" bar, or
+      // the center placeholder — both recoverable, and both what hiding the last
+      // subwindow has always produced.
       playDetachFlyOut(lastClient.x, lastClient.y, activeLabel);
-      detachGroup(groupId, { bounds });
+      detachGroup(groupId, { bounds, allowLastGroup: true });
     };
 
     const onAbort = () => cleanup();

@@ -1241,6 +1241,13 @@ export const dict: Dict = {
   "detachedTabs.closeTab": "Chiudi scheda",
   "detachedTabs.newTab": "Nuova scheda",
   "detachedTabs.hideWindow": "Nascondi questa finestra nel pannello destro (recuperala da lì)",
+  "detachedTabs.dockWindow": "Riporta queste schede nella finestra principale",
+  "detachedTabs.renamePrompt": "Rinomina questa scheda",
+  "detachedClose.title": "Chiudere questa finestra?",
+  "detachedClose.body":
+    "Le sue schede possono tornare nella finestra principale o essere chiuse definitivamente: chiuderle termina i loro terminali e non torneranno al prossimo avvio.",
+  "detachedClose.dock": "Riporta le schede",
+  "detachedClose.closeTabs": "Chiudi le schede",
   "tour.skip": "Salta il tour",
   "tour.back": "Indietro",
   "tour.rewardGotIt": "Fatto.",

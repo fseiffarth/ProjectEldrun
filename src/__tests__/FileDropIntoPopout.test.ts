@@ -13,7 +13,13 @@ const { invokeMock, emitMock } = vi.hoisted(() => ({
   emitMock: vi.fn((..._a: unknown[]) => Promise.resolve(undefined)),
 }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: (...a: unknown[]) => invokeMock(...a) }));
-vi.mock("@tauri-apps/api/event", () => ({ emit: (...a: unknown[]) => emitMock(...a) }));
+vi.mock("@tauri-apps/api/event", () => ({
+  emit: (...a: unknown[]) => emitMock(...a),
+  // The detached store now listens as well as emits (Group B: the settings,
+  // status and activity channels), and a named import missing from a mock is an
+  // import-time failure, not a runtime one.
+  listen: () => Promise.resolve(() => {}),
+}));
 // detachedDropTargets imports WebviewWindow at module load; it is only exercised
 // by the live drag session (not this commit path), so a bare stub is enough.
 vi.mock("@tauri-apps/api/webviewWindow", () => ({ WebviewWindow: {} }));

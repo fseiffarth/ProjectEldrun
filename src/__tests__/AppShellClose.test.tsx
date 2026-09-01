@@ -76,6 +76,10 @@ vi.mock("../stores/settings", () => {
       { getState: () => state, subscribe: () => () => {} },
     ),
     whenSettingsLoaded: () => Promise.resolve(),
+    // Group B #226: the shell subscribes every window's settings store to
+    // writes made in any window. Nothing is written here, so a no-op unlisten
+    // is all this test needs.
+    listenSettingsChanged: () => Promise.resolve(() => {}),
   };
 });
 // AppShell loads boxes once projects are loaded; provide a no-op so the effect
