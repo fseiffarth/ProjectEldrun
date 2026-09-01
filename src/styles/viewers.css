@@ -4864,6 +4864,24 @@
 .file-viewer-pdf-link.is-external {
   --pdf-link-color: #7c3aed;
 }
+/* The document's own CHROME — beamer's running title, its navigation-symbol bar,
+   its section strip. Unpainted at rest, and it is the one place the argument at
+   the top of this block does not hold: that argument is about a mark the reader
+   cannot otherwise find, made once, where the author wrote it. Beamer's furniture
+   is the opposite on both counts. It is already visible as a link (a theme sets
+   its own colour for it), and it repeats at the same two centimetres of EVERY
+   sheet — in a 57-slide deck, 56 of 131 links — so painting it buys a coloured
+   bar under the footer of the whole talk in exchange for nothing.
+
+   Unpainted, not dropped: the navigation bar is genuinely clickable and the
+   footer link is a real destination, so the box keeps its hover, its focus ring
+   and its click. What goes is only the resting mark — hence the `:not()`s rather
+   than a bare `.is-nav`, which carries the same specificity as the hover rule
+   above and, being later in the file, would win the tie and flatten it. */
+.file-viewer-pdf-link.is-nav:not(:hover):not(:focus-visible) {
+  background: transparent;
+  box-shadow: none;
+}
 /* While reverse search is armed (Ctrl/⌘ held) a click on a link box performs the
    SyncTeX jump instead of following the link, so the boxes must not go on
    promising a link cursor. The canvas carries the armed marker and the boxes are

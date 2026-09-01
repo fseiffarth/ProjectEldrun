@@ -350,6 +350,14 @@ export interface ViewerState {
   scrollTop?: number;
   scrollLeft?: number;
   scale?: number;
+  // Whether the persisted PDF `scale` is the fit-to-width baseline rather than a
+  // zoom the reader chose (#viewerpos). The viewer persists its scale on every
+  // change, so most saved values are just "whatever fit the pane last time" —
+  // restoring one of those as an absolute zoom into a pane of a different width
+  // is how a PDF came back badly rescaled after a restart, with the resize
+  // re-fit disabled for the rest of the session. Absent means "not known to be a
+  // deliberate zoom": state written before this flag existed re-fits.
+  pdfFitted?: boolean;
   offsetX?: number;
   offsetY?: number;
   // Tab-local editor text size (#48). When set it overrides the per-type

@@ -96,6 +96,7 @@ import {
   type PdfDest,
 } from "./outline";
 import { loadPageLinks, destTopInBigPoints, type PdfLink } from "./links";
+import { pageTextItemBoxes } from "./pageText";
 import { HIGHLIGHT_COLORS, loadPageNotes } from "./notes";
 import {
   PdfNoteLayer,
@@ -180,6 +181,47 @@ const PDF_MAX_SCALE = 8;
 const PDF_ZOOM_STEP = 1.2;
 const clampPdfScale = (s: number) => Math.min(PDF_MAX_SCALE, Math.max(PDF_MIN_SCALE, s));
 
+/**
+ * How a reopened PDF should start: the zoom to seed, and whether that zoom is the
+ * fit-to-width baseline (so the pane's width, not the saved number, has the last
+ * word).
+ *
+ * The viewer persists its scale on EVERY change, so most saved values are not a
+ * zoom the reader chose — they are whatever fit the pane the document was last
+ * read in. Restoring one of those as a deliberate zoom is how a PDF came back
+ * badly rescaled after a restart: a pane even slightly narrower than last time
+ * left the pages overflowing it, and treating the value as manual also disabled
+ * the re-fit that would have corrected it, so it stayed wrong for the session.
+ *
+ * `pdfFitted === false` is the only evidence of a deliberate zoom. State written
+ * before the flag existed has none, so it re-fits.
+ */
+export function restoredPdfZoom(
+  init: { scale?: number; pdfFitted?: boolean } | undefined,
+): { scale: number; fitted: boolean } {
+  return {
+    // 1.2 is only the pre-load placeholder; the load effect fits or restores.
+    scale: init?.scale != null ? clampPdfScale(init.scale) : 1.2,
+    fitted: init?.pdfFitted !== false,
+  };
+}
+
+/**
+ * A pending scroll-restore target re-expressed at a new zoom. A saved offset is
+ * CSS pixels at the scale of the session that wrote it, so when the initial fit
+ * lands on a different zoom the target has to move with it — otherwise restoring
+ * a re-fitted document drops the reader at the wrong part of it.
+ */
+export function rescaleScrollTarget(
+  target: { top: number; left: number },
+  from: number,
+  to: number,
+): { top: number; left: number } {
+  if (!(from > 0) || !(to > 0)) return target;
+  const ratio = to / from;
+  return { top: target.top * ratio, left: target.left * ratio };
+}
+
 /** The eight standard `/Info` field names, bound to their wording (#pdf-meta). A
  *  map rather than a derived key, because these are the only names in the dict that
  *  belong to the format: everything else is the producer's own invention, and the
@@ -194,56 +236,6 @@ const META_FIELD_KEYS: Record<string, TranslationKey> = {
   CreationDate: "pdfMeta.field.CreationDate",
   ModDate: "pdfMeta.field.ModDate",
 };
-
-/**
- * Extract a PDF page's positioned text runs as {@link TextItemBox}es in big
- * points (scale-1 viewport, top-left origin). Each box hugs the glyph band
- * (ascender→descender, ≈0.8 em up / 0.2 em down of the baseline) so an overlay
- * sits on the text rather than riding high over it. Shared by SyncTeX word
- * refinement and Ctrl+F search so both box the text identically.
- *
- * `rot` is the turn the viewer has applied to this sheet. The boxes are measured in
- * the SAME rotated space the canvas is painted in, so a search hit still lands on its
- * word after the page has been turned.
- */
-async function pageTextItemBoxes(
-  doc: PDFDocumentProxy,
-  pageNumber: number,
-  rot = 0,
-): Promise<TextItemBox[]> {
-  const page = await doc.getPage(pageNumber);
-  const viewport = page.getViewport({
-    scale: 1,
-    rotation: (((page.rotate + rot) % 360) + 360) % 360,
-  });
-  const content = await page.getTextContent();
-  const items: TextItemBox[] = [];
-  for (const it of content.items) {
-    // Skip marked-content markers (no `str`/`transform`).
-    if (!("str" in it) || typeof it.str !== "string") continue;
-    if (!it.str) {
-      // An empty run is pdf.js's bare end-of-line marker. It has no geometry to keep,
-      // but the fact that a line ended there is exactly what the search needs to join
-      // a word split across two lines — so it is folded into the run before it rather
-      // than dropped with the rest of the empty runs.
-      if (it.hasEOL && items.length > 0) items[items.length - 1].eol = true;
-      continue;
-    }
-    const tx = pdfjs.Util.transform(viewport.transform, it.transform);
-    const em = Math.hypot(tx[2], tx[3]); // scaled font size (em) in big points
-    const ascent = em * 0.8;
-    const descent = em * 0.2;
-    items.push({
-      str: it.str,
-      x: tx[4],
-      y: tx[5] - ascent,
-      w: it.width,
-      h: ascent + descent,
-      ...(it.hasEOL ? { eol: true } : {}),
-    });
-  }
-  return items;
-}
 
 /**
  * How every page in this viewer is rendered, thumbnails and rasters included.
@@ -327,11 +319,28 @@ function PdfThumb({
       if (!canvas || !ctx) return;
       canvas.width = Math.max(1, Math.floor(viewport.width));
       canvas.height = Math.max(1, Math.floor(viewport.height));
-      task = p.render({ canvasContext: ctx, viewport });
+      task = p.render({ canvas, canvasContext: ctx, viewport });
+      let painted = false;
       try {
         await task.promise;
+        painted = true;
       } catch {
         /* superseded by a newer render — ignore */
+      }
+      if (painted && !cancelled) {
+        // Hand the page's parse back now that the thumbnail has its pixels. A
+        // render decodes every image on the page at full size and caches the
+        // bitmaps on the page object until something asks for them back — and
+        // for the rail nothing ever did, so a thumbnailed deck kept every page's
+        // decoded images alive for the document's whole life: measured at
+        // ~660 MB for a 57-page talk with 97 megapixel-plus figures, re-paid on
+        // every recompile (a fresh document, the rail repainting each page).
+        // That is what a popout showing such a deck was at 4.7 GB of (2026-09-01).
+        // A page the main view is rendering right now is left alone by pdf.js
+        // (the cleanup is refused and retried once that render completes) — it
+        // then re-decodes on its next repaint, a one-time cost, since the rail
+        // paints each thumbnail once.
+        p.cleanup();
       }
       if (cancelled || !marks?.length) return;
       ctx.fillStyle = "#000000";
@@ -1021,7 +1030,14 @@ function PdfPageCanvas({
           `\ref` points at should not have to sweep the pointer across the page
           to find out that the number is one. The class carries the link's *role*
           (`ref` / `cite` / external) because that is what the colour says —
-          the same three-way split `hyperref`'s own `colorlinks` makes. */}
+          the same three-way split `hyperref`'s own `colorlinks` makes.
+
+          The exception is `nav`, the document's own chrome (beamer's running
+          title and navigation bar), which is unpainted at rest: that argument is
+          about a mark the reader cannot otherwise find, made once where the
+          author wrote it, and a theme's furniture is neither — it is already
+          coloured by the theme and it repeats on every sheet. Same box, same
+          hover, same click; only the resting mark goes. */}
       {links.map((l) => {
         const css = bigPointsToCssRect(l.rect, scale);
         return (
@@ -2115,13 +2131,14 @@ function PdfCanvas({
    *  all: deleting the last remark on a page leaves nothing to count and still has to
    *  be written. */
   const notedSheets = notedSheetCount(pages);
-  // Restore the saved zoom if there is one; otherwise the load effect fits the
-  // page width. `1.2` is only the pre-load placeholder.
-  const [scale, setScale] = useState(viewPos.initial?.scale ?? 1.2);
+  // How this reopen starts — the seeded zoom and whether it is the fit baseline.
+  // Decided once, by `restoredPdfZoom`, which is where the rule is documented.
+  const restored = useState(() => restoredPdfZoom(viewPos.initial))[0];
+  const [scale, setScale] = useState(restored.scale);
   // True while the PDF is at the fit-to-width baseline, so a pane/tab resize
   // re-fits. A manual zoom (buttons / Ctrl+wheel) clears it; the "Fit width"
   // button and the initial fit restore it. Mirrors ImageViewer's `fittedRef`.
-  const fittedRef = useRef(viewPos.initial?.scale == null);
+  const fittedRef = useRef(restored.fitted);
   const scrollRef = useRef<HTMLDivElement>(null);
   // Proportional scroll-link to a paired subwindow (no-op unless linked).
   const reportScrollSync = useScrollSync(groupId, scrollRef);
@@ -2143,6 +2160,12 @@ function PdfCanvas({
   // same path (a recompile bumped `diskVersion`) should preserve the reader's
   // scroll position; switching to a different file should not.
   const loadedPath = useRef<string | null>(null);
+  // The zoom the pending `restoreScroll` target was measured at. A saved scroll
+  // offset is CSS pixels at the scale of the session that wrote it, so if the
+  // initial fit lands on a different zoom (a pane of a different width), the
+  // target has to be re-expressed in the new scale or the reader is restored to
+  // the wrong part of the document. Null whenever no rescaling is owed.
+  const restoreScale = useRef<number | null>(null);
   // Scroll target to restore after a same-path reload (a recompile). The page
   // canvases re-render asynchronously, so the content grows over several frames;
   // the ResizeObserver below re-applies this until the position is reachable.
@@ -3206,6 +3229,7 @@ function PdfCanvas({
       const init = viewPos.initial;
       if (init && ((init.scrollTop ?? 0) > 0 || (init.scrollLeft ?? 0) > 0)) {
         firstRestore = { top: init.scrollTop ?? 0, left: init.scrollLeft ?? 0 };
+        restoreScale.current = init.scale ?? null;
       }
     }
     const samePathReload = loadedPath.current === path;
@@ -3406,20 +3430,28 @@ function PdfCanvas({
     if (avail > 0 && vp.width > 0) {
       setScale(clampPdfScale(avail / vp.width));
       fittedRef.current = true;
+      // Record the baseline here rather than leaving it to the scale-persist
+      // effect: fitting when the view is already AT the fit (the "Fit width"
+      // button on an untouched document) changes no scale, so that effect never
+      // fires — and the flag is the whole point. `viewPos.persist` dedups.
+      viewPos.persist({ pdfFitted: true });
     }
-  }, []);
+  }, [viewPos]);
 
-  // Fit to width when a document loads — UNLESS this is the first load and a zoom
-  // was persisted from a prior session, in which case honour the saved scale
-  // (already seeded into `scale`). A same-path reload (a recompile rewrote this
-  // PDF) keeps the reader's current zoom rather than snapping back to fit-width;
-  // only a genuine switch to a different file refits.
+  // Fit to width when a document loads — UNLESS this is the first load and a
+  // DELIBERATE zoom was persisted from a prior session, in which case honour the
+  // saved scale (already seeded into `scale`). A saved scale that was merely the
+  // previous session's fit is re-fitted to THIS pane instead: the pane it was
+  // measured in is gone, and its width is what the number encoded. A same-path
+  // reload (a recompile rewrote this PDF) keeps the reader's current zoom rather
+  // than snapping back to fit-width; only a genuine switch to a different file
+  // refits.
   const didInitialFit = useRef(false);
   useEffect(() => {
     if (!doc) return;
     if (!didInitialFit.current) {
       didInitialFit.current = true;
-      if (viewPos.initial?.scale != null) return;
+      if (viewPos.initial?.scale != null && !fittedRef.current) return;
     } else if (reloadKeepZoom.current) {
       return;
     }
@@ -3445,9 +3477,28 @@ function PdfCanvas({
   // so the pre-load placeholder scale is never written). setViewerState dedups,
   // so re-persisting an unchanged scale is a no-op.
   useEffect(() => {
-    if (doc) viewPos.persist({ scale });
+    // `pdfFitted` rides along with every scale write so the next session can tell
+    // the reader's zoom from a fit of a pane that no longer exists. Both setters
+    // update `fittedRef` synchronously with their `setScale`, so by the time this
+    // commit effect runs the ref describes the scale being written.
+    if (doc) viewPos.persist({ scale, pdfFitted: fittedRef.current });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scale, doc]);
+
+  // Keep a pending session restore addressed to the right part of the document
+  // when the initial fit moves the zoom out from under it (see `restoreScale`).
+  // Pixels scale with the zoom, so the target does too.
+  useEffect(() => {
+    const from = restoreScale.current;
+    if (from == null || from === scale) return;
+    restoreScale.current = scale;
+    const target = restoreScroll.current;
+    if (!target) {
+      restoreScale.current = null;
+      return;
+    }
+    restoreScroll.current = rescaleScrollTarget(target, from, scale);
+  }, [scale]);
 
   // "Page X / N" toolbar readout: the page occupying the viewport. The anchor
   // is a third of the way down the viewport (typical PDF-viewer feel); the page
