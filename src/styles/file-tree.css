@@ -1815,6 +1815,19 @@
   opacity: 0.85;
 }
 
+/* THE file-operation overlay. Every prompt that acts on a file or folder wears
+   it — delete, rename, paste, the import collision, "send to project", the
+   screenshot save, the sync transfer confirm — because they are one family of
+   question ("about to touch these bytes; go ahead?") and a prompt that looks
+   different depending on which gesture opened it is exactly the drift the
+   shared-viewer rule exists to stop. (The class is named for the delete confirm
+   that came first; the chrome is the family's.)
+
+   Its surface is the app's canonical dialog surface, not a second one: accent
+   top rail, no boxed border, the shared radius and elevation — the same rule
+   `.project-dialog`/`.settings-dialog` follow in apps.css. It stays a separate
+   selector only because these prompts are short, fixed-size and never scroll,
+   so they want none of that rule's overflow/frame machinery. */
 .file-delete-dialog {
   width: min(360px, calc(100vw - 32px));
   display: flex;
@@ -1822,7 +1835,9 @@
   gap: 12px;
   padding: 18px;
   background: var(--bg-elevated);
-  border: 1px solid var(--border-color);
+  border: 0;
+  border-top: 3px solid var(--accent);
+  border-radius: var(--radius-lg);
   /* Portaled into <body>, which sets no text color (defaults to black); set it
      here so bare descendants (h2 title, the diff <pre>, tables) stay readable in
      dark themes instead of inheriting black. */
@@ -1845,6 +1860,43 @@
   margin: 0;
   font-size: 13px;
   color: var(--text-primary);
+  /* `break-word` and not `anywhere`: it breaks only a word that would not fit on
+     a line of its own, so the prose stays intact. The dialogs that name a file
+     inline used to carry `word-break: break-all` on the whole paragraph, which
+     broke the sentence itself — "(t" ending one line and "he" starting the next.
+     A file name is the one token here long enough to need it, so it asks for
+     itself. */
+  overflow-wrap: break-word;
+}
+
+.file-delete-dialog p strong,
+.file-delete-dialog p code {
+  overflow-wrap: anywhere;
+}
+
+/* THE name field of a file-operation overlay — rename, paste-rename, and the
+   import collision's "keep both, as". Was hand-rolled as the same nine-property
+   inline style in each of them, which is how two of the three ended up a pixel
+   apart; declared once here so a fourth prompt inherits it by naming the class. */
+.file-paste-name {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 4px 6px;
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  font-family: inherit;
+  font-size: 12px;
+}
+
+.file-paste-name:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.file-paste-name:disabled {
+  opacity: 0.6;
 }
 
 .file-delete-path {
@@ -1854,6 +1906,42 @@
   color: var(--text-muted);
   font-size: 11px;
   word-break: break-all;
+}
+
+/* A failed operation, reported in the path box's shape because it is about the
+   same thing the path box names. Three overlays spelled this as an inline
+   `color: var(--danger)` on `.file-delete-path`; it is a state these prompts
+   share, so it is a modifier. */
+.file-delete-error {
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 40%, var(--border-subtle));
+}
+
+/* A yes/no that qualifies the operation rather than answering it — the import
+   collision's "apply to the remaining files". Not a `ToggleRow`: that is the
+   settings design system's row, sized for a settings card, and these overlays
+   are deliberately not built out of it. */
+.file-delete-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.file-delete-check input {
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+/* A caveat about the operation, sitting under the control it qualifies. */
+.file-delete-note {
+  margin: -4px 0 0;
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--text-muted);
 }
 
 .file-delete-actions {

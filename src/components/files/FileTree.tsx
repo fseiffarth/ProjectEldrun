@@ -72,6 +72,7 @@ import { normalizeScanPath } from "./ProjectFilesSettings";
 import { FileTreeSearch } from "./FileTreeSearch";
 import { useClampToViewport } from "../../hooks/useClampToViewport";
 import { UntestedTag } from "../common/UntestedTag";
+import { RenameDialog, containingFolderLabel } from "./RenameDialog";
 import { Dropdown } from "../common/Dropdown";
 import { useT, type TranslationKey } from "../../lib/i18n";
 
@@ -201,6 +202,10 @@ type DeleteConfirm = { entries: FileEntry[] } | null;
  *  clipboard or a system-clipboard image (screenshot); `name` is the name being
  *  chosen for the pasted result in the current folder. */
 type PastePrompt = { kind: "file" | "image"; name: string; error: string | null };
+/** The entry whose rename dialog is open (`RenameDialog` owns the typed name).
+ *  Replaces a `window.prompt`, which WebKitGTK draws as a browser alert titled
+ *  with the dev-server origin ("localhost:1420 says"). */
+type RenamePrompt = { entry: FileEntry } | null;
 /** A folder whose auto-sync toggle would pull enough from the host to be worth
  *  confirming first (`AUTO_SYNC_WARN_*`), with what it priced. */
 type AutoConfirm = { entry: FileEntry; files: number; bytes: number } | null;
@@ -552,6 +557,7 @@ export function FileTree({
   const remarkCounts = useProjectRemarksStore((s) => projectId ? s.byProject[projectId]?.countsByFile : undefined);
   const [pastePrompt, setPastePrompt] = useState<PastePrompt | null>(null);
   const [pasteBusy, setPasteBusy] = useState(false);
+  const [renamePrompt, setRenamePrompt] = useState<RenamePrompt>(null);
   // SSH-sync Phase 2: project-relative paths whose push was blocked by a stale
   // host base, awaiting the user's keep-local / take-host / skip choice. The
   // first is shown in the conflict modal; resolving advances the queue.
@@ -2660,29 +2666,32 @@ export function FileTree({
     if (targets.length > 0) setDeleteConfirm({ entries: targets });
   }
 
-  async function renameEntry(entry: FileEntry) {
+  function renameEntry(entry: FileEntry) {
     setContextMenu(null);
-    const nextName = window.prompt(t("fileTree.renameToPrompt"), entry.name);
-    if (!nextName?.trim() || nextName.trim() === entry.name) return;
+    setRenamePrompt({ entry });
+  }
+
+  /** The dialog's action. Throws on failure so the dialog keeps the typed name
+   *  and shows the reason; the tab retarget and the reload only run on success. */
+  async function confirmRename(entry: FileEntry, nextName: string) {
     setLoading(true);
     setError(null);
-    try {
-      await invoke("rename_path", {
-        projectDir,
-        oldRel: relForEntry(entry),
-        newName: nextName.trim(),
-      });
-      // Retarget any open viewer tab of this file (main + detached) to the new
-      // path. Derive the new absolute path by swapping the basename on the entry's
-      // own absolute path (== embedPath), so it holds for local and remote alike.
-      const oldAbs = entry.path;
-      const newAbs = `${oldAbs.slice(0, oldAbs.lastIndexOf("/") + 1)}${nextName.trim()}`;
-      retargetTabsForRenamedPath(oldAbs, newAbs);
-      await load(relPath);
-    } catch (err) {
-      setError(String(err));
+    await invoke("rename_path", {
+      projectDir,
+      oldRel: relForEntry(entry),
+      newName: nextName,
+    }).catch((err) => {
       setLoading(false);
-    }
+      throw err;
+    });
+    // Retarget any open viewer tab of this file (main + detached) to the new
+    // path. Derive the new absolute path by swapping the basename on the entry's
+    // own absolute path (== embedPath), so it holds for local and remote alike.
+    const oldAbs = entry.path;
+    const newAbs = `${oldAbs.slice(0, oldAbs.lastIndexOf("/") + 1)}${nextName}`;
+    retargetTabsForRenamedPath(oldAbs, newAbs);
+    setRenamePrompt(null);
+    await load(relPath);
   }
 
   /**
@@ -4567,23 +4576,9 @@ export function FileTree({
                 if (e.key === "Enter") void confirmPaste();
                 if (e.key === "Escape") setPastePrompt(null);
               }}
-              style={{
-                width: "100%",
-                boxSizing: "border-box",
-                marginTop: 6,
-                fontSize: 12,
-                background: "var(--bg-panel)",
-                color: "var(--text-primary)",
-                border: "1px solid var(--border-color)",
-                borderRadius: "var(--radius-sm)",
-                padding: "4px 6px",
-                fontFamily: "inherit",
-              }}
             />
             {pastePrompt.error && (
-              <div className="file-delete-path" style={{ color: "var(--danger)" }}>
-                {pastePrompt.error}
-              </div>
+              <div className="file-delete-path file-delete-error">{pastePrompt.error}</div>
             )}
             <div className="file-delete-actions">
               <button type="button" onClick={() => setPastePrompt(null)} disabled={pasteBusy}>{t("common.cancel")}</button>
@@ -4594,6 +4589,15 @@ export function FileTree({
           </div>
         </div>,
         document.body,
+      )}
+      {renamePrompt && (
+        <RenameDialog
+          entryName={renamePrompt.entry.name}
+          isDir={renamePrompt.entry.is_dir}
+          folder={containingFolderLabel(renamePrompt.entry.path, t("fileTree.projectRootFolder"))}
+          onCancel={() => setRenamePrompt(null)}
+          onRename={(next) => confirmRename(renamePrompt.entry, next)}
+        />
       )}
       {defaultAppFor && defaultAppFor.extension && (
         <SetDefaultAppDialog

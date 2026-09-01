@@ -25,6 +25,7 @@ import { openFileEntry } from "./openFileEntry";
 import { useExperimental } from "../../lib/experimental";
 import { createDeckFile } from "../../lib/viewers/deck/create";
 import { UntestedTag } from "../common/UntestedTag";
+import { RenameDialog, containingFolderLabel } from "./RenameDialog";
 import { useT, type TranslationKey } from "../../lib/i18n";
 
 type ProjectJson = Record<string, unknown>;
@@ -79,6 +80,8 @@ export function FileBrowser({ projectDir, projectId, active }: Props) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
+  /** The entry whose rename dialog is open; `RenameDialog` owns the typed name. */
+  const [renameTarget, setRenameTarget] = useState<FileEntry | null>(null);
   const deckEnabled = useExperimental("deck_presenter");
 
   const localFile = projects.find((p) => p.id === projectId)?.local_file ?? null;
@@ -270,26 +273,30 @@ export function FileBrowser({ projectDir, projectId, active }: Props) {
     }
   }
 
-  async function renameSelected() {
+  function renameSelected() {
     const target = selectedEntries()[0];
     if (!target) return;
-    const nextName = window.prompt(t("fileBrowser.renameToPrompt"), target.name);
-    if (!nextName?.trim() || nextName.trim() === target.name) return;
-    try {
-      await invoke("rename_path", {
-        projectDir,
-        oldRel: relFromAbs(projectDir, target.path),
-        newName: nextName.trim(),
-      });
-      // Retarget any open viewer tab of this file (main + detached) to the new
-      // path — swap the basename on the entry's own absolute path (== embedPath).
-      const oldAbs = target.path;
-      const newAbs = `${oldAbs.slice(0, oldAbs.lastIndexOf("/") + 1)}${nextName.trim()}`;
-      retargetTabsForRenamedPath(oldAbs, newAbs);
-      await load(relPath, { replace: true });
-    } catch (e) {
-      setError(String(e));
-    }
+    // Same dialog the tree uses (`RenameDialog`) — a rename must not look or
+    // behave differently depending on which pane it was started from.
+    setRenameTarget(target);
+  }
+
+  /** The dialog's action. Throws on failure so the dialog keeps the typed name
+   *  and shows the reason next to the field. */
+  async function confirmRename(target: FileEntry, nextName: string) {
+    setError(null);
+    await invoke("rename_path", {
+      projectDir,
+      oldRel: relFromAbs(projectDir, target.path),
+      newName: nextName,
+    });
+    // Retarget any open viewer tab of this file (main + detached) to the new
+    // path — swap the basename on the entry's own absolute path (== embedPath).
+    const oldAbs = target.path;
+    const newAbs = `${oldAbs.slice(0, oldAbs.lastIndexOf("/") + 1)}${nextName}`;
+    retargetTabsForRenamedPath(oldAbs, newAbs);
+    setRenameTarget(null);
+    await load(relPath, { replace: true });
   }
 
   async function deleteSelected() {
@@ -567,6 +574,16 @@ export function FileBrowser({ projectDir, projectId, active }: Props) {
           )}
         </div>
       </div>
+
+      {renameTarget && (
+        <RenameDialog
+          entryName={renameTarget.name}
+          isDir={renameTarget.is_dir}
+          folder={containingFolderLabel(renameTarget.path, t("fileTree.projectRootFolder"))}
+          onCancel={() => setRenameTarget(null)}
+          onRename={(next) => confirmRename(renameTarget, next)}
+        />
+      )}
 
       <footer className="file-browser-status">
         {t(
