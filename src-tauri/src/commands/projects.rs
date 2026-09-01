@@ -2461,7 +2461,10 @@ pub const SCAFFOLD_FILES: &[(&str, &str)] = &[
     ("DOCUMENTATION.md", "# Documentation\n"),
 ];
 
-pub const GITIGNORE_DEFAULT: &str = "__pycache__/\n*.pyc\n.venv/\nnode_modules/\ntarget/\ndist/\nbuild/\n.env\n.env.local\n.DS_Store\n*.log\n*.swp\n*.swo\n.idea/\n.eldrun/\nproject.json\n";
+// `screenshots/` is ignored by default because a screen grab holds whatever
+// happened to be on the screen — mail, tokens, another project's window — and
+// a project with a public remote is one `git add -A` away from publishing it.
+pub const GITIGNORE_DEFAULT: &str = "__pycache__/\n*.pyc\n.venv/\nnode_modules/\ntarget/\ndist/\nbuild/\n.env\n.env.local\n.DS_Store\n*.log\n*.swp\n*.swo\n.idea/\n.eldrun/\nscreenshots/\nproject.json\n";
 
 pub const CLAUDE_SETTINGS: &str = r#"{"permissions":{"allow":[],"deny":[]}}"#;
 
@@ -4810,6 +4813,17 @@ mod tests {
             assert!(tmp.path().join(name).exists(), "missing: {name}");
         }
         assert!(tmp.path().join(".claude/settings.json").exists());
+    }
+
+    /// A screen grab holds whatever was on the screen, and a project with a
+    /// public remote is one `git add -A` away from publishing it. The default
+    /// is what makes a saved shot ignored rather than staged.
+    #[test]
+    fn scaffold_project_gitignores_screenshots() {
+        let dir = tempfile::tempdir().unwrap();
+        scaffold_project(dir.path(), true).unwrap();
+        let gitignore = fs::read_to_string(dir.path().join(".gitignore")).unwrap();
+        assert!(gitignore.lines().any(|line| line == "screenshots/"));
     }
 
     #[test]

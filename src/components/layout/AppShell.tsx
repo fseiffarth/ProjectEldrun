@@ -29,6 +29,7 @@ import { HeaderBar } from "./HeaderBar";
 import { SidePanel } from "./SidePanel";
 import { LogoIcon } from "./LogoIcon";
 import { MobileBridgeHost } from "../mobile/MobileBridgeHost";
+import { ScreenshotSaveOverlay } from "./ScreenshotSaveOverlay";
 import { VpnPasswordPrompt } from "./VpnPasswordPrompt";
 import { AlarmPopup } from "../calendar/AlarmPopup";
 import { SteeringLegend } from "./SteeringLegend";
@@ -939,6 +940,12 @@ export function AppShell() {
         )}
       </div>
       <VpnPasswordPrompt />
+      {/* "Where should this screenshot go?" — the consent step between a capture
+          and any project write. At the shell because the capture can come from the
+          header's global-app menu or from any visible PDF viewer, and because the
+          backend reports OS-tool captures as an app-wide event with no component of
+          its own to land in. */}
+      <ScreenshotSaveOverlay />
       {/* "Is this the right machine?" — shown before a password is sent to a host
           whose SSH key has never been accepted here. At the shell because it can be
           raised by any connect surface (the Connect modal, a create/extend dialog,

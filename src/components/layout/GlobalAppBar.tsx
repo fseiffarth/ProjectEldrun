@@ -4,9 +4,13 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { useProjectsStore } from "../../stores/projects";
 import { useSettingsStore } from "../../stores/settings";
 import type { GlobalAppEntry } from "../../types";
-import { resolveProjectDirectory } from "../../types";
 import { basename, IS_WINDOWS } from "../../lib/paths";
-import { requestInAppCapture } from "../../lib/screenshot";
+import {
+  cancelDelayedCapture,
+  requestInAppCapture,
+  SCREENSHOT_DELAY_MS,
+  startDelayedCapture,
+} from "../../lib/screenshot";
 import { useT, type TranslationKey } from "../../lib/i18n";
 
 // A platform-appropriate example path for the executable-picker placeholder
@@ -69,12 +73,9 @@ type EditState = {
 export function GlobalAppBar() {
   const t = useT();
   const { settings, updateSettings } = useSettingsStore();
-  const { projects, activeId } = useProjectsStore();
   const [edit, setEdit] = useState<EditState | null>(null);
   const [iconDataUrls, setIconDataUrls] = useState<Record<string, string | null>>({});
   const popoverRef = useRef<HTMLDivElement>(null);
-  const activeProject = projects.find((p) => p.id === activeId);
-  const activeDir = resolveProjectDirectory(activeProject) || undefined;
 
   const apps = useMemo(
     () => orderedGlobalApps(settings?.global_apps ?? {}).filter(([, app]) => app.visible !== false),
@@ -119,34 +120,47 @@ export function GlobalAppBar() {
 
   if (apps.length === 0) return null;
 
-  const launch = (role: string, exec: string) => {
+  const launch = (role: string, exec: string, delayed = false) => {
     if (role === "screenshot") {
+      // A pending countdown belongs to the press that started it: pressing again
+      // restarts (or, for a plain click, replaces) it rather than queueing a
+      // second capture behind the one about to fire.
+      cancelDelayedCapture();
+      if (delayed) {
+        // Shift+click: wait, so the user can Alt+Tab to the window they actually
+        // want. A region tool grabs the pointer AND the keyboard for the whole
+        // of its selection, so once its overlay is up there is no switching
+        // windows — the delay is the only place that switch can happen. An
+        // in-app claimant is deliberately not offered the shot here: the point
+        // of the wait is to capture something that is not this window.
+        startDelayedCapture({
+          delayMs: SCREENSHOT_DELAY_MS,
+          tick: (secs) =>
+            useProjectsStore.setState({
+              switchToast: t("globalApp.screenshotCountdown", { secs }),
+            }),
+          capture: () => captureScreenshot(exec),
+        });
+        return;
+      }
       // A visible PDF viewer claims the shot first: the region is then captured
       // from the rendered document itself (sharper than a screen grab, pending
-      // blackouts burned in) and lands on the clipboard + the project's
-      // screenshots/ folder — no OS tool involved. See `lib/screenshot`.
+      // blackouts burned in) and goes to the clipboard + the save overlay — no
+      // OS tool involved. See `lib/screenshot`.
       if (requestInAppCapture()) return;
-      // Capture a region into the active project's screenshots/ folder, driving
-      // the configured tool's output path (or a native fallback) there. Without
-      // an active project there's nowhere to file the shot, so fall back to
-      // plainly launching the configured tool.
-      if (activeDir) {
-        invoke("capture_project_screenshot", { projectDir: activeDir, exec: exec || null }).catch(
-          () => {},
-        );
-      } else if (exec) {
-        invoke("launch_app", {
-          exec,
-          args: screenshotRegionArgs(exec),
-          file: null,
-          projectId: null,
-          role,
-        }).catch(() => {});
-      }
+      captureScreenshot(exec);
       return;
     }
     if (!exec) return;
     invoke("launch_app", { exec, args: [], file: null, projectId: null, role }).catch(() => {});
+  };
+
+  /** Spawn the OS region tool. The PNG lands in the staging area and comes back
+   *  as a `screenshot-captured` event that raises `ScreenshotSaveOverlay`; no
+   *  project is written to until that overlay is answered, which is why this
+   *  needs no active project any more. */
+  const captureScreenshot = (exec: string) => {
+    invoke("capture_screenshot", { exec: exec || null }).catch(() => {});
   };
 
   const updateGlobalApp = async (role: string, patch: Partial<GlobalAppEntry>) => {
@@ -181,9 +195,13 @@ export function GlobalAppBar() {
           <button
             key={role}
             className="tab-new-menu-item global-app-menu-row"
-            title={`${label}${app.exec ? `: ${app.exec}` : ""} · ${t("globalApp.rightClickConfigure")}`}
+            title={`${label}${app.exec ? `: ${app.exec}` : ""} · ${t("globalApp.rightClickConfigure")}${
+              role === "screenshot"
+                ? ` · ${t("globalApp.screenshotDelayHint", { secs: Math.round(SCREENSHOT_DELAY_MS / 1000) })}`
+                : ""
+            }`}
             aria-disabled={role !== "screenshot" && !app.exec}
-            onClick={() => launch(role, app.exec)}
+            onClick={(event) => launch(role, app.exec, role === "screenshot" && event.shiftKey)}
             onContextMenu={(event) => {
               event.preventDefault();
               event.stopPropagation();
@@ -245,23 +263,3 @@ export function orderedGlobalApps(apps: Record<string, GlobalAppEntry>): Array<[
   ];
 }
 
-// Flags that make a screenshot tool begin interactive rectangular-region
-// selection immediately on launch, keyed by the executable's basename. Tools we
-// don't recognize fall through to launching with no extra arguments.
-const SCREENSHOT_REGION_ARGS: Record<string, string[]> = {
-  spectacle: ["--region"],
-  flameshot: ["gui"],
-  "gnome-screenshot": ["--area"],
-  scrot: ["--select"],
-  maim: ["--select"],
-  "xfce4-screenshooter": ["--region"],
-  ksnip: ["--rectarea"],
-  shutter: ["--select"],
-  // macOS built-in: `screencapture -i <outfile>` starts interactive selection,
-  // letting the user drag a rectangular region (or spacebar to grab a window).
-  screencapture: ["-i"],
-};
-
-function screenshotRegionArgs(exec: string): string[] {
-  return SCREENSHOT_REGION_ARGS[basename(exec).toLowerCase()] ?? [];
-}

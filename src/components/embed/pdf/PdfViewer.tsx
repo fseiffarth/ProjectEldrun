@@ -121,6 +121,7 @@ import { UntestedTag } from "../../common/UntestedTag";
 import { subscribePageDragActive, type PageTransfer } from "../../../stores/pdfDrag";
 import { ContextFilePicker } from "../ContextFilePicker";
 import { useProjectsStore } from "../../../stores/projects";
+import { useScreenshotPendingStore } from "../../../stores/screenshotPending";
 import { BOX_SCOPE_PREFIX, boxMembersOfScope, boxScopeId, useBoxesStore } from "../../../stores/boxes";
 import { resolveProjectDirectory } from "../../../types";
 import { basename, dirname, isPathWithin } from "../../../lib/paths";
@@ -1681,24 +1682,19 @@ function PdfCanvas({
       setCopyNotice(null);
       try {
         await invoke("copy_png_bytes_to_clipboard", { png: Array.from(png) });
-        // The global screenshot's contract: the file in screenshots/ is the
-        // product, the clipboard the convenience. A PDF outside any project has
-        // nowhere to file the shot, and a failed write must not fail a capture
-        // whose clipboard copy already landed — the notice just claims less.
-        let saved = false;
-        if (pdfProjectDir) {
-          try {
-            await invoke("write_project_file_bytes", {
-              projectDir: pdfProjectDir,
-              relPath: `screenshots/${screenshotFilename()}`,
-              content: Array.from(png),
-            });
-            saved = true;
-          } catch {
-            /* clipboard copy stands on its own */
-          }
-        }
-        setCopyNotice(t(saved ? "pdfViewer.copySelectionSaved" : "pdfViewer.copySelectionDone"));
+        // The clipboard copy is unconditional; filing the PNG is not. The crop
+        // is handed to the save overlay, which asks for a destination before
+        // anything is written — the same consent step an OS-tool capture goes
+        // through, and for the same reason: a PDF's project may well have a
+        // public remote (see `stores/screenshotPending`). The overlay opens on
+        // this PDF's own project, since that is the one it documents.
+        useScreenshotPendingStore.getState().show({
+          kind: "bytes",
+          png,
+          name: screenshotFilename(),
+          hintDir: pdfProjectDir || null,
+        });
+        setCopyNotice(t("pdfViewer.copySelectionDone"));
         if (copyNoticeTimer.current != null) window.clearTimeout(copyNoticeTimer.current);
         copyNoticeTimer.current = window.setTimeout(() => setCopyNotice(null), 2500);
         // One press of Screenshot is one shot, like every OS region tool this

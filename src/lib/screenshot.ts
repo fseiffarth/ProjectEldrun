@@ -38,3 +38,68 @@ export function screenshotFilename(now: Date = new Date()): string {
     `-${p(now.getUTCHours())}${p(now.getUTCMinutes())}${p(now.getUTCSeconds())}.png`
   );
 }
+
+/**
+ * How long Shift+click waits before the capture actually fires.
+ *
+ * A region tool takes an exclusive pointer/keyboard grab for the whole of its
+ * selection, so Alt+Tab during the overlay goes to the overlay, not the window
+ * manager — there is no way to bring another window forward once the tool is
+ * up. The delay is that missing step: press, switch windows, *then* the overlay
+ * appears over whatever is now on top.
+ */
+export const SCREENSHOT_DELAY_MS = 5000;
+
+/** The pending countdown's interval id, or null when none is running. Module
+ *  state rather than component state because `GlobalAppBar` unmounts the moment
+ *  the hover menu closes — which is immediately after the click that starts the
+ *  countdown. */
+let countdownTimer: number | null = null;
+
+/** Stop a running countdown (nothing is captured). Safe to call when idle;
+ *  returns whether one was actually cancelled. */
+export function cancelDelayedCapture(): boolean {
+  if (countdownTimer === null) return false;
+  window.clearInterval(countdownTimer);
+  countdownTimer = null;
+  return true;
+}
+
+/**
+ * Count down `delayMs`, then fire `capture`.
+ *
+ * Driven off a wall-clock deadline rather than a single `setTimeout` because
+ * the window is *meant* to lose focus during the wait (that is the whole
+ * point), and an occluded WebKitGTK page has its timers throttled to ~1s
+ * buckets: a deadline comparison re-checked often simply fires on the first
+ * tick past the deadline instead of drifting. `tick` is called once per whole
+ * second remaining, for the countdown toast.
+ *
+ * A second call replaces the first — pressing Screenshot again restarts the
+ * countdown rather than queueing two captures.
+ */
+export function startDelayedCapture(opts: {
+  delayMs: number;
+  tick: (secondsLeft: number) => void;
+  capture: () => void;
+}): void {
+  const { delayMs, tick, capture } = opts;
+  cancelDelayedCapture();
+  const deadline = Date.now() + delayMs;
+  let shown = -1;
+  const step = () => {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) {
+      cancelDelayedCapture();
+      capture();
+      return;
+    }
+    const secs = Math.ceil(remaining / 1000);
+    if (secs !== shown) {
+      shown = secs;
+      tick(secs);
+    }
+  };
+  step();
+  countdownTimer = window.setInterval(step, 200);
+}

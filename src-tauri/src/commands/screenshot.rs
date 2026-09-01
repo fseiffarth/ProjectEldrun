@@ -1,31 +1,55 @@
-//! Project-scoped screenshots: capture the screen and write the PNG into the
-//! active project's `screenshots/` folder.
+//! Screenshots: capture the screen into a staging area and let the user decide
+//! where — or whether — the PNG is filed.
 //!
 //! Eldrun's global "Screenshot" app already launches a region-capture tool, but
-//! each tool otherwise saves to its own default location (`~/Pictures`, a prompt,
-//! …). This command instead drives the capture's *output path* into the project
-//! so the shot lands beside the code it documents. The destination is confined
-//! to the project root, mirroring `clipboard`/`fs`.
+//! each tool otherwise saves to its own default location (`~/Pictures`, a
+//! prompt, …). This command instead drives the capture's *output path* into a
+//! staging directory under the state dir, then reports the shot to the frontend
+//! so `ScreenshotSaveOverlay` can ask for a destination.
+//!
+//! **Nothing is written into a project without that answer.** An earlier version
+//! filed every shot straight into the active project's `screenshots/` folder,
+//! which for a project with a public remote is a private-data leak one `git add
+//! -A` away — a screen grab holds whatever happened to be on the screen. The
+//! overlay is the consent step, and `screenshots/` is in `GITIGNORE_DEFAULT` so
+//! a saved shot is ignored by default even after the user picks a project.
 //!
 //! The shot is *also* put on the system clipboard, so it can be pasted straight
 //! into a chat or an agent tab without going hunting for the file (see
-//! [`clipboard::copy_image_to_clipboard`]). Copying is best-effort and off the
-//! critical path: the file is the product, the clipboard is a convenience.
+//! [`clipboard::copy_image_to_clipboard`]). That is why Discard is a safe
+//! answer: the pixels are still on the clipboard, only the file is dropped.
 //!
-//! The platform-neutral layer (destination dir + timestamped filename) is shared;
-//! the actual capture is delegated to a per-OS [`platform`] backend:
+//! The platform-neutral layer (staging dir + timestamped filename + reporting)
+//! is shared; the actual capture is delegated to a per-OS [`platform`] backend:
 //! - **Linux** spawns an interactive native region tool (`spectacle`/`grim`/…),
-//!   directed to write its PNG into the project's `screenshots/` folder.
+//!   directed to write its PNG into the staging folder.
 //! - **Windows** grabs the whole virtual screen natively via GDI and encodes it
 //!   to PNG with the `png` crate — no external tool required.
 //! - **macOS** drives the built-in `screencapture` CLI in interactive region
-//!   mode, writing the PNG into the project's `screenshots/` folder.
+//!   mode, writing the PNG into the staging folder.
 //! - **Any other OS** returns an error rather than failing to build.
 
-use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use serde::Serialize;
+use tauri::{AppHandle, Emitter};
 
 use crate::commands::fs::enforce_confinement;
+use crate::services::remote::RemotePoolState;
+
+/// Emitted once a capture's PNG is on disk in the staging area. The frontend
+/// answers with `save_pending_screenshot` or `discard_pending_screenshot`.
+const EV_CAPTURED: &str = "screenshot-captured";
+
+/// A staged shot is abandoned when the overlay never gets an answer (a crash, a
+/// relaunch). Anything older than this is swept on the next capture.
+const PENDING_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// What a capture hands back once its PNG exists: copy it to the clipboard and
+/// report it. Boxed because each backend reaches it from a different place —
+/// the Linux/macOS poll thread, or straight-line on Windows.
+type OnShot = Box<dyn FnOnce(&Path) + Send + 'static>;
 
 /// How long, after the capture tool exits, we keep looking for the PNG it was
 /// supposed to write before giving up on the clipboard copy.
@@ -34,31 +58,136 @@ const SHOT_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 const SHOT_POLL: std::time::Duration = std::time::Duration::from_millis(100);
 
-/// Capture a screenshot into `<project_dir>/screenshots/`.
+/// One staged shot, as reported to the frontend.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CapturedShot {
+    /// Absolute path in the staging area — the handle for save/discard.
+    path: String,
+    /// The suggested file name, pre-filled in the overlay's name field.
+    name: String,
+}
+
+/// Capture a screenshot into the staging area.
 ///
 /// `exec` is the command configured for the global Screenshot app (a full path
 /// or bare name); the Linux backend uses it to pick a tool it can direct, while
-/// the Windows backend ignores it (it always does a native grab). Returns the
-/// directory the shot lands in; the project's filesystem watch surfaces the new
-/// PNG in the file tree.
+/// the Windows backend ignores it (it always does a native grab). Returns as
+/// soon as the tool is launched — region selection blocks the *tool*, not
+/// Eldrun — and the shot itself arrives later as an [`EV_CAPTURED`] event. A
+/// cancelled capture writes no file and so reports nothing, which is normal.
 #[tauri::command]
-pub fn capture_project_screenshot(
-    project_dir: String,
-    exec: Option<String>,
-) -> Result<String, String> {
-    let dir = ensure_screenshots_dir(&project_dir)?;
-    platform::capture(&dir, exec.as_deref())?;
-    Ok(dir.to_string_lossy().to_string())
+pub fn capture_screenshot(app: AppHandle, exec: Option<String>) -> Result<(), String> {
+    let dir = ensure_pending_dir()?;
+    prune_stale_pending(&dir);
+    let report: OnShot = Box::new(move |shot: &Path| {
+        let _ = app.emit(
+            EV_CAPTURED,
+            CapturedShot {
+                path: shot.to_string_lossy().to_string(),
+                name: shot
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(screenshot_filename),
+            },
+        );
+    });
+    platform::capture(&dir, exec.as_deref(), report)
 }
 
-/// Create (and confine) `<project_dir>/screenshots/`, returning its canonical path.
-fn ensure_screenshots_dir(project_dir: &str) -> Result<PathBuf, String> {
-    let root = std::fs::canonicalize(project_dir).map_err(|e| e.to_string())?;
-    let dir = root.join("screenshots");
+/// The bytes of a staged shot, for the overlay's preview. Confined to the
+/// staging area: this is the one command that reads a path outside every
+/// project tree, so it must never be talked into reading anything else.
+#[tauri::command]
+pub fn read_pending_screenshot(path: String) -> Result<tauri::ipc::Response, String> {
+    let shot = pending_shot(&path)?;
+    std::fs::read(&shot)
+        .map(tauri::ipc::Response::new)
+        .map_err(|e| e.to_string())
+}
+
+/// File a staged shot into a project at `rel_path`, and drop the staged copy.
+///
+/// The write goes through `fs::write_project_file_bytes`, so it is confined to
+/// the project root exactly like every other project write — and reaches a
+/// remote project's host over SFTP rather than writing a local orphan.
+#[tauri::command]
+pub async fn save_pending_screenshot(
+    path: String,
+    project_dir: String,
+    rel_path: String,
+    pool: tauri::State<'_, RemotePoolState>,
+) -> Result<String, String> {
+    let shot = pending_shot(&path)?;
+    let bytes = std::fs::read(&shot).map_err(|e| e.to_string())?;
+    crate::commands::fs::write_project_file_bytes(
+        project_dir.clone(),
+        rel_path.clone(),
+        bytes,
+        pool,
+    )
+    .await?;
+    // The staged copy has served its purpose. A failed cleanup must not fail a
+    // save whose bytes landed — the sweep catches it later.
+    let _ = std::fs::remove_file(&shot);
+    Ok(format!(
+        "{}/{}",
+        project_dir.trim_end_matches(['/', '\\']),
+        rel_path.trim_start_matches('/')
+    ))
+}
+
+/// Drop a staged shot the user chose not to file. The clipboard copy stands.
+#[tauri::command]
+pub fn discard_pending_screenshot(path: String) -> Result<(), String> {
+    let shot = pending_shot(&path)?;
+    std::fs::remove_file(&shot).map_err(|e| e.to_string())
+}
+
+/// `<state_dir>/screenshots-pending/`, created if missing.
+///
+/// Deliberately outside every project tree: a shot that has not been filed yet
+/// must not be visible to a file watcher, a git status, or a sync loop.
+fn ensure_pending_dir() -> Result<PathBuf, String> {
+    let dir = crate::storage::state_dir().join("screenshots-pending");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let dir_c = std::fs::canonicalize(&dir).map_err(|e| e.to_string())?;
-    enforce_confinement(&root, &dir_c)?;
-    Ok(dir_c)
+    std::fs::canonicalize(&dir).map_err(|e| e.to_string())
+}
+
+/// Resolve a caller-supplied path to a staged PNG, or refuse it. Canonicalized
+/// before the check so `..` and symlinks cannot walk out of the staging area.
+fn pending_shot(path: &str) -> Result<PathBuf, String> {
+    let root = ensure_pending_dir()?;
+    let shot = std::fs::canonicalize(path).map_err(|e| e.to_string())?;
+    enforce_confinement(&root, &shot)?;
+    if !shot.is_file() {
+        return Err("not a file".to_string());
+    }
+    if !shot
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("png"))
+    {
+        return Err("not a PNG".to_string());
+    }
+    Ok(shot)
+}
+
+/// Sweep shots the overlay never answered for (a crash, a relaunch), so an
+/// abandoned capture does not sit in the state dir forever.
+fn prune_stale_pending(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let stale = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .map(|m| m.elapsed().map(|age| age > PENDING_TTL).unwrap_or(false))
+            .unwrap_or(false);
+        if stale {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
 }
 
 /// `Screenshot-YYYYMMDD-HHMMSS.png` in UTC — sortable and collision-resistant.
@@ -74,7 +203,7 @@ fn screenshot_filename() -> String {
 }
 
 /// Spawn a capture tool detached and, once it exits, copy the PNG it produced
-/// onto the clipboard.
+/// onto the clipboard and hand it to `on_shot`.
 ///
 /// Region selection blocks the *tool*, not Eldrun, so the shot does not exist
 /// until the child is gone — the wait therefore happens on a background thread,
@@ -82,12 +211,13 @@ fn screenshot_filename() -> String {
 /// the path the tool was directed at, or `None` for tools that name the file
 /// themselves (flameshot), where the newest PNG to appear is taken instead. A
 /// cancelled capture writes no file at all, so finding nothing is a normal
-/// outcome and stays silent.
+/// outcome and stays silent — no event, no overlay.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-fn spawn_and_copy(
+fn spawn_and_report(
     mut cmd: std::process::Command,
     dir: &std::path::Path,
     expected: Option<PathBuf>,
+    on_shot: OnShot,
 ) -> std::io::Result<()> {
     // Filesystem mtimes can be coarser than `SystemTime::now()`, so leave slack
     // rather than let a just-written file look older than the spawn.
@@ -103,13 +233,22 @@ fn spawn_and_copy(
         // The PNG lands as the tool exits; poll briefly for it to appear (and to
         // be readable — a decode can lose a race with the tool's final flush).
         let polls = SHOT_WAIT.as_millis() / SHOT_POLL.as_millis();
+        let mut found: Option<PathBuf> = None;
         for _ in 0..polls {
             if let Some(shot) = locate_shot(&dir, expected.as_deref(), since) {
                 if crate::commands::clipboard::copy_png_file_to_clipboard(&shot).is_ok() {
+                    on_shot(&shot);
                     return;
                 }
+                found = Some(shot);
             }
             std::thread::sleep(SHOT_POLL);
+        }
+        // The file is the product, the clipboard the convenience: a shot whose
+        // copy never took still has to reach the overlay, or it is stranded in
+        // the staging area with nothing to answer for it.
+        if let Some(shot) = found {
+            on_shot(&shot);
         }
     });
     Ok(())
@@ -162,9 +301,9 @@ fn civil_from_days(z: i64) -> (i64, i64, i64) {
 #[cfg(target_os = "linux")]
 mod platform {
     //! Spawns the user-configured (or first available) native region-capture
-    //! tool, routing its output into the project's `screenshots/` folder. The
-    //! tool is spawned detached — region selection blocks the *tool*, not Eldrun
-    //! — and the project's filesystem watch surfaces the new PNG.
+    //! tool, routing its output into the staging folder. The tool is spawned
+    //! detached — region selection blocks the *tool*, not Eldrun — and the shot
+    //! reaches the save overlay through `on_shot` once it lands.
 
     use std::path::{Path, PathBuf};
     use std::process::{Command, Stdio};
@@ -187,7 +326,7 @@ mod platform {
 
     /// Pick a tool (configured `exec` if directable, else the first native one on
     /// `PATH`) and spawn it detached, writing into `dir`.
-    pub fn capture(dir: &Path, exec: Option<&str>) -> Result<(), String> {
+    pub fn capture(dir: &Path, exec: Option<&str>, on_shot: super::OnShot) -> Result<(), String> {
         let configured = exec
             .map(str::trim)
             .filter(|e| !e.is_empty())
@@ -205,7 +344,8 @@ mod platform {
             .stdout(Stdio::null())
             .stderr(Stdio::null());
         crate::paths::augment_command_path(&mut cmd);
-        super::spawn_and_copy(cmd, dir, expected).map_err(|e| format!("launch {program}: {e}"))?;
+        super::spawn_and_report(cmd, dir, expected, on_shot)
+            .map_err(|e| format!("launch {program}: {e}"))?;
         Ok(())
     }
 
@@ -309,12 +449,12 @@ mod platform {
         SM_YVIRTUALSCREEN,
     };
 
-    /// Grab the virtual screen, write the PNG into `dir`, and put the same pixels
-    /// on the clipboard. Unlike the spawn-a-tool backends, the buffer is already
-    /// in hand here, so the copy needs no wait — and a clipboard failure must not
-    /// fail a capture whose file landed fine. `_exec` is unused on Windows (the
-    /// native grab is always preferred).
-    pub fn capture(dir: &Path, _exec: Option<&str>) -> Result<(), String> {
+    /// Grab the virtual screen, write the PNG into `dir`, put the same pixels on
+    /// the clipboard, and report the shot. Unlike the spawn-a-tool backends, the
+    /// buffer is already in hand here, so neither the copy nor the report needs a
+    /// wait — and a clipboard failure must not fail a capture whose file landed
+    /// fine. `_exec` is unused on Windows (the native grab is always preferred).
+    pub fn capture(dir: &Path, _exec: Option<&str>, on_shot: super::OnShot) -> Result<(), String> {
         let (width, height, rgba) = grab_virtual_screen()?;
         let file = dir.join(super::screenshot_filename());
         encode_png_file(&file, width, height, &rgba)?;
@@ -323,6 +463,7 @@ mod platform {
             height as usize,
             rgba,
         );
+        on_shot(&file);
         Ok(())
     }
 
@@ -433,17 +574,17 @@ mod platform {
 #[cfg(target_os = "macos")]
 mod platform {
     //! Drives macOS's built-in `screencapture` in interactive region mode,
-    //! routing its output into the project's `screenshots/` folder. Like the Linux
-    //! backend, the tool is spawned detached — region selection blocks the *tool*,
-    //! not Eldrun — and the project's filesystem watch surfaces the new PNG. The
-    //! configured `exec` is ignored (the OS tool is always used).
+    //! routing its output into the staging folder. Like the Linux backend, the
+    //! tool is spawned detached — region selection blocks the *tool*, not Eldrun
+    //! — and the shot reaches the save overlay through `on_shot` once it lands.
+    //! The configured `exec` is ignored (the OS tool is always used).
 
     use std::path::Path;
     use std::process::{Command, Stdio};
 
     /// Spawn `screencapture -i <file>` (interactive region capture) writing into
     /// `dir`. `_exec` is unused on macOS.
-    pub fn capture(dir: &Path, _exec: Option<&str>) -> Result<(), String> {
+    pub fn capture(dir: &Path, _exec: Option<&str>, on_shot: super::OnShot) -> Result<(), String> {
         let file = dir.join(super::screenshot_filename());
         let mut cmd = crate::paths::command_no_window("screencapture");
         cmd.arg("-i")
@@ -451,7 +592,7 @@ mod platform {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
-        super::spawn_and_copy(cmd, dir, Some(file))
+        super::spawn_and_report(cmd, dir, Some(file), on_shot)
             .map_err(|e| format!("launch screencapture: {e}"))?;
         Ok(())
     }
@@ -464,7 +605,11 @@ mod platform {
 mod platform {
     use std::path::Path;
 
-    pub fn capture(_dir: &Path, _exec: Option<&str>) -> Result<(), String> {
+    pub fn capture(
+        _dir: &Path,
+        _exec: Option<&str>,
+        _on_shot: super::OnShot,
+    ) -> Result<(), String> {
         Err("screenshot capture is not supported on this platform".to_string())
     }
 }
@@ -481,6 +626,61 @@ mod tests {
         assert!(name.ends_with(".png"));
         // Screenshot-YYYYMMDD-HHMMSS.png == 11 + 8 + 1 + 6 + 4
         assert_eq!(name.len(), 30);
+    }
+
+    /// The staging area is the one path outside every project tree that a
+    /// command here will read or delete, so the confinement on it is the whole
+    /// of that command's safety.
+    #[test]
+    fn pending_shot_refuses_paths_outside_the_staging_area() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("ELDRUN_STATE_DIR", tmp.path());
+        let dir = ensure_pending_dir().unwrap();
+
+        let shot = dir.join("Screenshot-20260101-000000.png");
+        std::fs::write(&shot, b"png").unwrap();
+        assert_eq!(pending_shot(&shot.to_string_lossy()).unwrap(), shot);
+
+        // A file that is simply elsewhere, and the same file reached through a
+        // traversal out of the staging area and back to it.
+        let outside = tmp.path().join("elsewhere.png");
+        std::fs::write(&outside, b"png").unwrap();
+        assert!(pending_shot(&outside.to_string_lossy()).is_err());
+        let traversal = dir.join("..").join("elsewhere.png");
+        assert!(pending_shot(&traversal.to_string_lossy()).is_err());
+
+        // Not a PNG, and not a file at all.
+        let txt = dir.join("notes.txt");
+        std::fs::write(&txt, b"txt").unwrap();
+        assert!(pending_shot(&txt.to_string_lossy()).is_err());
+        assert!(pending_shot(&dir.to_string_lossy()).is_err());
+        assert!(pending_shot(&dir.join("gone.png").to_string_lossy()).is_err());
+
+        std::env::remove_var("ELDRUN_STATE_DIR");
+    }
+
+    /// An overlay that never got an answer (a crash, a relaunch) must not leave
+    /// its shot in the state dir forever — but a fresh one has an overlay open
+    /// on it and must survive the next capture's sweep.
+    #[test]
+    fn prune_stale_pending_drops_only_the_abandoned_ones() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let fresh = dir.join("fresh.png");
+        let stale = dir.join("stale.png");
+        std::fs::write(&fresh, b"png").unwrap();
+        std::fs::write(&stale, b"png").unwrap();
+        let old = std::time::SystemTime::now() - PENDING_TTL - Duration::from_secs(60);
+        std::fs::File::options()
+            .write(true)
+            .open(&stale)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+
+        prune_stale_pending(dir);
+        assert!(fresh.is_file());
+        assert!(!stale.exists());
     }
 
     #[test]
