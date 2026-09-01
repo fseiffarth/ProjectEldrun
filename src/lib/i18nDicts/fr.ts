@@ -950,6 +950,7 @@ export const dict: Dict = {
   "scrollLink.unlink": "Dissocier le défilement",
   "scrollLink.link": "Lier le défilement de ces sous-fenêtres",
   "sidePanel.ttyRateTitle": "Sortie brute des terminaux visibles de ce projet pendant la dernière seconde (séquences ANSI/de contrôle comprises)",
+  "sidePanel.rendererRssTitle": "Mémoire résidente du moteur de rendu webview de chaque fenêtre Eldrun — la mesure sur laquelle le garde-fou mémoire recharge une fenêtre au-delà de 4 Go",
   "sidePanel.resizeTitle": "Faites glisser pour redimensionner le panneau",
   "sidePanel.moveRight": "Déplacer le panneau vers le bord droit",
   "sidePanel.moveLeft": "Déplacer le panneau vers le bord gauche",

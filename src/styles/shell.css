@@ -450,6 +450,22 @@ select option {
   white-space: nowrap;
 }
 
+/* The per-window renderer memory readout beside the TTY meter: same voice,
+   but it warns — a renderer past half the watchdog's 4 GB ceiling is the
+   number the user wants to see turning amber before the window reloads. */
+.renderer-rss {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.renderer-rss.hot {
+  color: var(--warning);
+}
+
 .app-resource-display {
   height: 32px;
   min-width: 82px;

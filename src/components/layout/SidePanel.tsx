@@ -14,6 +14,14 @@ import { useActivityStore, type AttentionKind } from "../../stores/activity";
 import { resolveProjectDirectory } from "../../types";
 import { useT } from "../../lib/i18n";
 import { terminalCharsPerSecond } from "../../dev/terminalOutputRate";
+import {
+  RENDERER_CEILING_MB,
+  ensureOwnRendererPid,
+  formatRssKib,
+  readRendererRss,
+  rendererName,
+  type RendererRss,
+} from "../../lib/rendererWatchdog";
 // Single source of truth for the displayed version: package.json is kept in
 // lockstep with the Tauri manifests on each version bump.
 import { version as APP_VERSION } from "../../../package.json";
@@ -92,6 +100,44 @@ function TerminalOutputRate({ ptyIds }: { ptyIds: readonly string[] }) {
       title={t("sidePanel.ttyRateTitle")}
     >
       TTY {rate.toLocaleString()} chars/s
+    </span>
+  );
+}
+
+/** Debug-only: every Eldrun window's webview renderer and its resident size —
+ * the number the memory watchdog reloads a window on, shown where the TTY meter
+ * already is. Per window because that is the unit that leaks and the unit that
+ * reloads: a 4.7 GB popout is invisible from the main window otherwise, and it
+ * was (2026-09-01). Turns amber past half the ceiling. */
+function RendererRssDisplay() {
+  const t = useT();
+  const [rows, setRows] = useState<RendererRss[]>([]);
+
+  useEffect(() => {
+    let live = true;
+    const update = async () => {
+      const next = await readRendererRss();
+      if (live) setRows(next);
+    };
+    // Make sure this window has claimed its own renderer, so the row reads
+    // "main", not "pid 3715771" (each popout claims its own via its watchdog).
+    void ensureOwnRendererPid().then(update);
+    void update();
+    const timer = window.setInterval(() => void update(), 2000);
+    return () => {
+      live = false;
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  if (rows.length === 0) return null;
+  const hot = rows.some((r) => r.rss_kib / 1024 >= RENDERER_CEILING_MB / 2);
+  return (
+    <span
+      className={hot ? "renderer-rss hot" : "renderer-rss"}
+      title={t("sidePanel.rendererRssTitle")}
+    >
+      RSS {rows.map((r) => `${rendererName(r)} ${formatRssKib(r.rss_kib)}`).join(" · ")}
     </span>
   );
 }
@@ -306,6 +352,7 @@ export function SidePanel({
       {import.meta.env.DEV && (
         <>
           <TerminalOutputRate ptyIds={scopePtyIds} />
+          <RendererRssDisplay />
           <span className="debug-badge">DEBUG</span>
         </>
       )}

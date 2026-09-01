@@ -1040,6 +1040,7 @@ export const en = {
   "scrollLink.unlink": "Unlink scrolling",
   "scrollLink.link": "Link scrolling of these subwindows",
   "sidePanel.ttyRateTitle": "Raw output from visible terminals in this project over the last second (ANSI/control sequences included)",
+  "sidePanel.rendererRssTitle": "Resident memory of each Eldrun window's webview renderer — the reading the memory watchdog reloads a window on once it passes 4 GB",
   "sidePanel.resizeTitle": "Drag to resize panel",
   "sidePanel.moveRight": "Move panel to the right edge",
   "sidePanel.moveLeft": "Move panel to the left edge",

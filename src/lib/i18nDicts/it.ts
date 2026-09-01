@@ -948,6 +948,7 @@ export const dict: Dict = {
   "scrollLink.unlink": "Scollega lo scorrimento",
   "scrollLink.link": "Collega lo scorrimento di queste sottofinestre",
   "sidePanel.ttyRateTitle": "Output grezzo dei terminali visibili di questo progetto nell'ultimo secondo (sequenze ANSI/di controllo incluse)",
+  "sidePanel.rendererRssTitle": "Memoria residente del renderer webview di ogni finestra di Eldrun — la lettura con cui il watchdog della memoria ricarica una finestra oltre i 4 GB",
   "sidePanel.resizeTitle": "Trascina per ridimensionare il pannello",
   "sidePanel.moveRight": "Sposta il pannello sul bordo destro",
   "sidePanel.moveLeft": "Sposta il pannello sul bordo sinistro",

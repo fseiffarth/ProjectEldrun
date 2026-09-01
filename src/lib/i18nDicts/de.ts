@@ -952,6 +952,7 @@ export const dict: Dict = {
   "scrollLink.unlink": "Scrollen entkoppeln",
   "scrollLink.link": "Scrollen dieser Unterfenster koppeln",
   "sidePanel.ttyRateTitle": "Rohausgabe der sichtbaren Terminals dieses Projekts in der letzten Sekunde (inklusive ANSI-/Steuersequenzen)",
+  "sidePanel.rendererRssTitle": "Residenter Speicher des Webview-Renderers jedes Eldrun-Fensters — der Messwert, bei dem der Speicher-Watchdog ein Fenster ab 4 GB neu lädt",
   "sidePanel.resizeTitle": "Ziehen, um das Panel zu skalieren",
   "sidePanel.moveRight": "Panel an den rechten Rand verschieben",
   "sidePanel.moveLeft": "Panel an den linken Rand verschieben",

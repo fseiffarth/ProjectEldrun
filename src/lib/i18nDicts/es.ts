@@ -948,6 +948,7 @@ export const dict: Dict = {
   "scrollLink.unlink": "Desvincular el desplazamiento",
   "scrollLink.link": "Vincular el desplazamiento de estas subventanas",
   "sidePanel.ttyRateTitle": "Salida en bruto de los terminales visibles de este proyecto durante el último segundo (secuencias ANSI/de control incluidas)",
+  "sidePanel.rendererRssTitle": "Memoria residente del renderizador webview de cada ventana de Eldrun: la lectura con la que el vigilante de memoria recarga una ventana al superar los 4 GB",
   "sidePanel.resizeTitle": "Arrastra para redimensionar el panel",
   "sidePanel.moveRight": "Mover el panel al borde derecho",
   "sidePanel.moveLeft": "Mover el panel al borde izquierdo",
