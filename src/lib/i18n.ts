@@ -313,7 +313,7 @@ export const en = {
   // on purpose: both surfaces raise the same destructive question and their
   // wording must never drift apart.
   "mobile.title": "Eldrun Mobile",
-  "mobile.settingsHelp": "Private project terminal access through Tailscale Serve. The host listens on loopback only and every browser must be paired.",
+  "mobile.settingsHelp": "Private project terminal access through Tailscale Serve. The host listens on loopback only and every browser must be paired. It runs while Eldrun runs: started with the app, stopped when the app quits.",
   "mobile.healthOffTitle": "Mobile is off",
   "mobile.healthOffDetail": "No Eldrun Mobile host is currently published.",
   "mobile.healthStoppedTitle": "Host is stopped",

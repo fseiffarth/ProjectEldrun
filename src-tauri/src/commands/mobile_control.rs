@@ -482,6 +482,162 @@ async fn enable_host_service(target: &Path, _config: &HostConfig) -> Result<(), 
     Err("the Eldrun Mobile host did not start".into())
 }
 
+/// The Mobile host's lifetime is the app's, and these two are the pair that
+/// make it so. The service manager still supervises the sidecar *while Eldrun
+/// runs* (a Tailscale Serve verification failure exits non-zero and
+/// `Restart=on-failure` brings it back), but a host with no desktop behind it
+/// can create no tab and — since the clean quit now reaps every local tmux
+/// session too — has no session left to attach a phone to. It used to keep
+/// listening after the window was gone anyway, one of several leftovers a quit
+/// left running on the machine.
+///
+/// Stop is best-effort and bounded: the cooperative admin `Shutdown` (the
+/// sidecar exits 0, which `on-failure` does not restart), then the platform's
+/// own stop as the net for a wedged host. The `enable` (login autostart) is
+/// deliberately left as the Settings toggle set it — it is the user's stated
+/// choice, and the next launch's [`start_host_on_launch`] starts the host
+/// whether or not the login did.
+pub async fn stop_host_for_exit() {
+    // A missing socket answers immediately (ENOENT / connection refused);
+    // only a live-but-wedged host costs the admin timeouts.
+    let shutdown = mobile_admin(AdminRequest::Shutdown).await;
+    if HostConfig::load(&storage::state_dir()).is_err() {
+        return;
+    }
+    stop_installed_host(shutdown.is_ok()).await;
+}
+
+/// Start the Mobile host at launch when the configuration says it should be
+/// running — the counterpart of [`stop_host_for_exit`], without which the
+/// first quit would leave Mobile down until the next login. Off the main
+/// thread; a no-op when Mobile is off (`HostConfig::load` refuses a disabled
+/// or absent configuration) or the host already answers on its socket.
+pub fn start_host_on_launch() {
+    tauri::async_runtime::spawn(async {
+        let Ok(config) = HostConfig::load(&storage::state_dir()) else {
+            return;
+        };
+        if mobile_admin(AdminRequest::Status).await.is_ok() {
+            return;
+        }
+        if let Err(error) = start_installed_host(&config).await {
+            eprintln!("mobile host: start at launch: {error}");
+        }
+    });
+}
+
+#[cfg(target_os = "linux")]
+async fn stop_installed_host(_shutdown_ok: bool) {
+    // `--no-block`: the unit is normally already inactive after the admin
+    // shutdown, and a wedged one should not hold the app's exit for systemd's
+    // stop timeout.
+    let _ = crate::paths::command_no_window("systemctl")
+        .args(["--user", "stop", "--no-block", "eldrun-mobile-host.service"])
+        .status();
+}
+
+#[cfg(target_os = "linux")]
+async fn start_installed_host(_config: &HostConfig) -> Result<(), String> {
+    // `start`, not `restart`: idempotent against a host the login already
+    // brought up between the status probe and here.
+    let status = crate::paths::command_no_window("systemctl")
+        .args(["--user", "start", "eldrun-mobile-host.service"])
+        .status()
+        .map_err(|e| e.to_string())?;
+    if !status.success() {
+        return Err("systemctl --user start failed (Settings → Mobile can reinstall the service)".into());
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+async fn stop_installed_host(shutdown_ok: bool) {
+    if shutdown_ok {
+        return;
+    }
+    let uid = unsafe { libc::getuid() };
+    let _ = crate::paths::command_no_window("launchctl")
+        .args(["kill", "TERM", &format!("gui/{uid}/{LAUNCHD_LABEL}")])
+        .status();
+}
+
+#[cfg(target_os = "macos")]
+async fn start_installed_host(_config: &HostConfig) -> Result<(), String> {
+    let uid = unsafe { libc::getuid() };
+    let service_target = format!("gui/{uid}/{LAUNCHD_LABEL}");
+    // A loaded agent that exited 0 stays loaded and idle; `kickstart` runs it
+    // again. One that was never bootstrapped this login is loaded from its
+    // plist instead.
+    let kicked = crate::paths::command_no_window("launchctl")
+        .args(["kickstart", &service_target])
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false);
+    if kicked {
+        return Ok(());
+    }
+    let plist = crate::paths::home_dir()
+        .join("Library/LaunchAgents")
+        .join(format!("{LAUNCHD_LABEL}.plist"));
+    if !plist.exists() {
+        return Err("launch agent is not installed (Settings → Mobile can reinstall it)".into());
+    }
+    let bootstrap = crate::paths::command_no_window("launchctl")
+        .args(["bootstrap", &format!("gui/{uid}")])
+        .arg(&plist)
+        .status()
+        .map_err(|e| e.to_string())?;
+    if !bootstrap.success() {
+        return Err("launchctl bootstrap failed".into());
+    }
+    Ok(())
+}
+
+/// No service manager to ask on Windows: the cooperative shutdown already sent
+/// is the whole stop, and waiting for the process to be gone (what
+/// `stop_running_host` adds for a reinstall) is nothing an exit needs.
+#[cfg(windows)]
+async fn stop_installed_host(_shutdown_ok: bool) {}
+
+/// Windows has no service manager holding the binary's path, so the launch
+/// start looks in the install directory itself: this version's copy first,
+/// else the newest one present (an older host still serves; the Settings
+/// panel offers the update).
+#[cfg(windows)]
+async fn start_installed_host(config: &HostConfig) -> Result<(), String> {
+    let bin_dir = config.control_dir.join("bin");
+    let current = bin_dir
+        .join(env!("CARGO_PKG_VERSION"))
+        .join("eldrun-mobile-host.exe");
+    let target = if current.is_file() {
+        current
+    } else {
+        let mut candidates: Vec<PathBuf> = std::fs::read_dir(&bin_dir)
+            .map_err(|e| format!("mobile host is not installed: {e}"))?
+            .flatten()
+            .map(|entry| entry.path().join("eldrun-mobile-host.exe"))
+            .filter(|path| path.is_file())
+            .collect();
+        candidates.sort();
+        candidates
+            .pop()
+            .ok_or("mobile host is not installed (Settings → Mobile can install it)")?
+    };
+    crate::paths::command_no_window(&target)
+        .arg("--mobile-host")
+        .spawn()
+        .map_err(|e| format!("start mobile host: {e}"))?;
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+async fn stop_installed_host(_shutdown_ok: bool) {}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+async fn start_installed_host(_config: &HostConfig) -> Result<(), String> {
+    Err("unsupported platform".into())
+}
+
 #[tauri::command]
 pub async fn mobile_host_apply(enabled: bool) -> Result<(), String> {
     if !enabled {

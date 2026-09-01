@@ -250,7 +250,7 @@ export const dict: Dict = {
     "Muestra el estado del host de Eldrun Mobile y los controles de reconexión rápida junto al indicador de batería.",
 
   "mobile.title": "Eldrun Mobile",
-  "mobile.settingsHelp": "Acceso privado a los terminales de proyecto a través de Tailscale Serve. El host escucha solo en loopback y cada navegador debe emparejarse.",
+  "mobile.settingsHelp": "Acceso privado a los terminales de proyecto a través de Tailscale Serve. El host escucha solo en loopback y cada navegador debe emparejarse. Funciona mientras Eldrun funciona: se inicia con la aplicación y se detiene al cerrarla.",
   "mobile.healthOffTitle": "Mobile está apagado",
   "mobile.healthOffDetail": "Actualmente no hay ningún host de Eldrun Mobile publicado.",
   "mobile.healthStoppedTitle": "El host está detenido",

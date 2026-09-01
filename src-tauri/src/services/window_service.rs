@@ -24,6 +24,36 @@ pub fn monitor_rects(
         .collect()
 }
 
+/// The Tauri label of Eldrun's primary window (`tauri.conf.json`).
+pub const MAIN_WINDOW_LABEL: &str = "main";
+
+/// Labels of the windows that must be torn down when the MAIN window closes.
+///
+/// Every secondary window Eldrun opens — a detached popout (`detached-*`), the
+/// deck presenter (`present-*`), a live browser page (`browser-*`) — is a
+/// SIBLING of the main window in the same process, not a child of it: neither
+/// the OS nor Tauri closes it when `main` goes away. Left alone it strands on
+/// screen *and* keeps the process alive, because Tauri only exits once the LAST
+/// window is gone — so quitting Eldrun would leave an unreachable popout and a
+/// live headless app behind it. The main window's own close path
+/// (`shutdownDetachedWindows` in the shell) already does this for popouts it
+/// still tracks, and does it *before* `destroy()` so bounds reach project.json;
+/// this is the choke point behind it, catching the windows that path misses
+/// (presenter/browser windows, a popout the store lost track of) and the case
+/// where it never ran at all (a hung or crashed renderer, a WM kill).
+///
+/// Pure over its input so the "everything but `main`" rule is unit-tested; the
+/// caller does the destroying. Order is stable (sorted) for the same reason.
+pub fn windows_closed_with_main<'a>(labels: impl IntoIterator<Item = &'a str>) -> Vec<String> {
+    let mut out: Vec<String> = labels
+        .into_iter()
+        .filter(|l| *l != MAIN_WINDOW_LABEL)
+        .map(String::from)
+        .collect();
+    out.sort();
+    out
+}
+
 pub fn hide_windows(backend: &dyn WorkspaceBackend, window_ids: &[u64]) {
     for &wid in window_ids {
         if let Err(e) = backend.hide_window(wid) {
@@ -184,6 +214,32 @@ mod tests {
 
     fn registry(wins: Vec<TrackedWindow>) -> HashMap<String, TrackedWindow> {
         wins.into_iter().map(|w| (w.id.clone(), w)).collect()
+    }
+
+    #[test]
+    fn closing_main_takes_every_other_eldrun_window_with_it() {
+        // Popouts, the presenter and live browser pages are siblings of `main`,
+        // so all three must be in the teardown set — and `main` itself never is
+        // (it is already gone by the time this runs).
+        let labels = [
+            "main",
+            "detached-p1-g1",
+            "detached-p2-g3",
+            "present-deck-1",
+            "browser-2",
+        ];
+        assert_eq!(
+            windows_closed_with_main(labels),
+            vec![
+                "browser-2".to_string(),
+                "detached-p1-g1".to_string(),
+                "detached-p2-g3".to_string(),
+                "present-deck-1".to_string(),
+            ],
+        );
+        // A lone main window leaves nothing to close.
+        assert!(windows_closed_with_main(["main"]).is_empty());
+        assert!(windows_closed_with_main([]).is_empty());
     }
 
     #[test]

@@ -528,6 +528,38 @@ pub fn run() {
                 _app.handle().clone(),
                 mobile_desktop.clone(),
             );
+            // The Mobile host's lifetime is the app's: `RunEvent::Exit` stops
+            // it, so an enabled configuration has to bring it back here rather
+            // than waiting for the next login. Off the main thread, bounded,
+            // and a no-op when Mobile is off or the host is already up.
+            commands::mobile_control::start_host_on_launch();
+            // A SIGTERM/SIGINT (the dev launcher's Ctrl+C, a `kill`, a session
+            // logout) used to end the process with none of the teardown the
+            // window's × runs: PTY subtrees, local tmux sessions, the Mobile
+            // host, containers, VMs and tunnels all outlived it. Route the
+            // signal into the ordinary exit instead, so `RunEvent::Exit` runs
+            // the same cleanup for every clean exit. `AppHandle::exit` from a
+            // runtime thread goes through the event-loop proxy, which is what
+            // makes the exit events deliverable at all. Unix only: Windows has
+            // no signals, and its console close is a hard kill either way.
+            #[cfg(unix)]
+            {
+                let handle = _app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    use tokio::signal::unix::{signal, SignalKind};
+                    let (Ok(mut term), Ok(mut int)) = (
+                        signal(SignalKind::terminate()),
+                        signal(SignalKind::interrupt()),
+                    ) else {
+                        return;
+                    };
+                    tokio::select! {
+                        _ = term.recv() => {}
+                        _ = int.recv() => {}
+                    }
+                    handle.exit(0);
+                });
+            }
             // Announce window-registry mutations made outside a frontend command
             // (a launched app exiting) so every window's Apps view refreshes.
             {
@@ -1278,8 +1310,42 @@ pub fn run() {
                 ..
             } = &event
             {
+                use tauri::{Emitter, Manager};
+                // The main window going away must take every other Eldrun window
+                // with it. Popouts, the deck presenter and live browser pages are
+                // siblings of `main` in this process, not children of it, so
+                // nothing closes them on their own: they would strand on screen
+                // and — since Tauri exits only on the LAST window — keep a
+                // windowless Eldrun running behind them. The shell's own
+                // `shutdownDetachedWindows` already tears popouts down (before
+                // `destroy()`, so their bounds are persisted first); this is the
+                // net under it, for the windows it does not cover and for the
+                // quits it never runs on (hung/crashed renderer, WM kill).
+                if label == services::window_service::MAIN_WINDOW_LABEL {
+                    let open: Vec<String> = _app.webview_windows().into_keys().collect();
+                    for other in services::window_service::windows_closed_with_main(
+                        open.iter().map(String::as_str),
+                    ) {
+                        if let Some(win) = _app.get_webview_window(&other) {
+                            if let Err(e) = win.destroy() {
+                                eprintln!("close with main: destroy {other}: {e}");
+                            }
+                        }
+                    }
+                }
+                // Group B #238: every teardown of a secondary window uses
+                // `destroy()`, which runs no renderer cleanup — so its panes
+                // never call `pty_remove_view` and the output router keeps a
+                // `visible: true` viewer under a dead window's uuid. The PTY
+                // then streams over IPC for the rest of the session, for every
+                // tab that ever lived in that window. Drop the whole window's
+                // registrations here, the one choke point every death passes.
+                // Not limited to popouts: the presenter and live browser
+                // windows are destroyed the same way.
+                if label != services::window_service::MAIN_WINDOW_LABEL {
+                    crate::terminal::route_drop_window_views(label);
+                }
                 if label.starts_with("detached-") {
-                    use tauri::Manager;
                     // Guard against a same-label window already re-created
                     // (rapid destroy → re-detach): only clean up when no live
                     // window holds the label, else we'd free the NEW window's
@@ -1306,6 +1372,17 @@ pub fn run() {
                 // container. Dropping the registry alone would kill only the
                 // shell leaders and orphan everything they spawned.
                 _app.state::<RegistryState>().lock().unwrap().kill_all();
+                // The local tmux servers those PTYs were clients of survive the
+                // clients by design (that is what makes a crash resumable), so a
+                // clean quit ends Eldrun's own sessions explicitly. The window's
+                // close handler already does this before `destroy()`; repeating
+                // it here is what covers the exits that never run frontend code
+                // — the dev launcher's Ctrl+C (SIGINT/SIGTERM → `app.exit`),
+                // an `app.exit()` from the backend. Idempotent: a second pass
+                // finds no server and returns.
+                if let Err(e) = services::tmux_local::kill_eldrun_sessions() {
+                    eprintln!("tmux_local: quit reap: {e}");
+                }
                 // Stop the Ollama server *this run started* — the spawned
                 // `ollama serve` (with the runner child holding the weights) or
                 // the systemd unit that was inactive until Eldrun asked for it.

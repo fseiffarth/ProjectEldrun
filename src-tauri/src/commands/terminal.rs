@@ -623,79 +623,19 @@ pub async fn local_tmux_kill(session: String) -> Result<(), String> {
 }
 
 /// End every tmux session Eldrun created on the local machine during a clean
-/// application quit. This deliberately lists the daemon rather than only the
-/// tabs currently hydrated in the frontend: a session recovered from an earlier
-/// crash may belong to an inactive project and therefore have no mounted tab in
-/// this run yet. The `eldrun-` prefix is reserved for sessions Eldrun mints, so
-/// user-managed sessions are never affected.
-///
-/// This command is called only by the frontend's normal close path. A renderer
-/// or process crash never reaches it, leaving the sessions alive for restore.
+/// application quit — the frontend close handler's half of
+/// `services::tmux_local::kill_eldrun_sessions`, which owns the rule (every
+/// `eldrun-` session, no foreign one) and is also run by `RunEvent::Exit` as
+/// the net for exits that never reach frontend code. A renderer or process
+/// crash reaches neither, leaving the sessions alive for restore.
 #[tauri::command]
 pub async fn local_tmux_kill_eldrun_sessions() -> Result<(), String> {
     if !crate::services::tmux_local::tmux_available() {
         return Ok(());
     }
-    tauri::async_runtime::spawn_blocking(|| {
-        let listed = crate::paths::command_no_window("tmux")
-            .args(crate::services::tmux_local::local_tmux_ls_args())
-            .output()
-            .map_err(|e| format!("could not list tmux sessions: {e}"))?;
-        // `tmux ls` returns non-zero when no server is running, which is already
-        // the desired end state for the quit path.
-        if !listed.status.success() {
-            return Ok(());
-        }
-        let sessions =
-            crate::services::ssh_exec::parse_tmux_ls(&String::from_utf8_lossy(&listed.stdout));
-        let mut failures = Vec::new();
-        for session in sessions {
-            // Trash sessions are deliberately mobile-persistent. Their host
-            // tmux owns the attach point while the strictly isolated container
-            // remains the process/filesystem boundary, so a clean Eldrun quit
-            // must not turn a phone detach into an agent kill.
-            if session
-                .name
-                .starts_with(&format!("eldrun-{}--", crate::paths::TRASH_PROJECT_ID))
-            {
-                continue;
-            }
-            if !crate::services::tmux_local::is_eldrun_local_tmux_session(&session.name) {
-                continue;
-            }
-            let output = crate::paths::command_no_window("tmux")
-                .args(crate::services::tmux_local::local_tmux_kill_args(
-                    &session.name,
-                ))
-                .output()
-                .map_err(|e| format!("could not run tmux: {e}"))?;
-            if !output.status.success() {
-                let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
-                // A session can exit between `ls` and `kill-session`; that is
-                // indistinguishable from a successful cleanup.
-                if !detail.contains("can't find session")
-                    && !detail.contains("no server running")
-                    && !detail.contains("failed to connect to server")
-                {
-                    failures.push(if detail.is_empty() {
-                        session.name
-                    } else {
-                        format!("{}: {detail}", session.name)
-                    });
-                }
-            }
-        }
-        if failures.is_empty() {
-            Ok(())
-        } else {
-            Err(format!(
-                "could not stop every Eldrun local tmux session: {}",
-                failures.join("; ")
-            ))
-        }
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(crate::services::tmux_local::kill_eldrun_sessions)
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 /// Rename a **local** tmux session (TODO #85). `new_name` must be a safe tmux name.
