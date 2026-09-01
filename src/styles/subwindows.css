@@ -46,11 +46,11 @@
 }
 .split-divider-row {
   width: 5px;
-  cursor: col-resize;
+  cursor: var(--cur-col-resize, col-resize);
 }
 .split-divider-column {
   height: 5px;
-  cursor: row-resize;
+  cursor: var(--cur-row-resize, row-resize);
 }
 .split-divider:hover,
 .split-divider:active {
@@ -77,7 +77,7 @@
   border: 1px solid var(--control-border);
   background: var(--bg-panel);
   color: var(--text-muted);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   opacity: 0.55;
   transition: opacity var(--transition), color var(--transition), background-color var(--transition), border-color var(--transition);
 }
@@ -157,7 +157,7 @@
   top: 0;
   bottom: 0;
   width: 5px;
-  cursor: col-resize;
+  cursor: var(--cur-col-resize, col-resize);
   z-index: 13;
 }
 .subwindow-files-resize:hover {
@@ -216,13 +216,13 @@
   background:
     radial-gradient(circle at 50% 42%, color-mix(in srgb, var(--accent) 12%, transparent) 0%, transparent 60%),
     var(--bg-main);
-  cursor: grab;
+  cursor: var(--cur-grab, grab);
   user-select: none;
   touch-action: none;
   perspective: 1100px;
 }
 .blob-viewport:active {
-  cursor: grabbing;
+  cursor: var(--cur-grabbing, grabbing);
 }
 .blob-empty {
   display: flex;
@@ -263,7 +263,7 @@
   background: transparent;
   color: var(--text-secondary);
   font-size: 12px;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 .blob-crumb:hover {
   background: color-mix(in srgb, var(--accent) 22%, transparent);
@@ -319,7 +319,7 @@
   background: transparent;
   color: var(--text-secondary);
   font-size: 11px;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 .blob-view-toggle button:hover {
   color: var(--text-primary);
@@ -330,7 +330,7 @@
 }
 /* Pie mode: flat chart, so drop the grab cursor + 3D perspective. */
 .blob-viewport-pie {
-  cursor: default;
+  cursor: var(--cur-default, default);
   perspective: none;
 }
 .blob-pie-stage {
@@ -351,7 +351,7 @@
 .blob-pie-slice path {
   stroke: var(--bg-main);
   stroke-width: 2;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   transition: opacity var(--transition);
 }
 .blob-pie-slice:hover path {
@@ -417,7 +417,7 @@
   background: color-mix(in srgb, var(--bg-panel) 92%, transparent);
   color: var(--text-primary);
   font-size: 12px;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   will-change: transform;
   transition: border-color var(--transition), box-shadow var(--transition), background var(--transition);
 }

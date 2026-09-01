@@ -1,6 +1,7 @@
 import type { LinkOpenTarget } from "./browser";
 import type { PyMainVerdict } from "../lib/pythonMainCache";
 import type { AgentCron } from "../lib/agentCron";
+import type { CursorPack } from "../lib/cursorPacks";
 
 export interface GlobalAppEntry {
   exec: string;
@@ -151,6 +152,18 @@ export interface Settings {
   /** Corner style override: `"square"` or `"rounded"`; unset = the active
    *  theme's own radius tokens. Applied by `stores/settings.applyCorners`. */
   ui_corners?: CornerStyle;
+  /** Custom mouse-cursor pack (`lib/cursorPacks`); unset = the system cursors.
+   *  Applied by `stores/settings.applyCursor`, which draws the art from the
+   *  LIVE theme — so the pointer follows the theme, the custom accent and the
+   *  Theme Customizer's token overrides rather than being a fixed asset.
+   *  Round-trips through the backend's `extra` catch-all — no Rust field
+   *  needed, like `ui_theme_vars`.
+   *
+   *  `null`, not `undefined`, is how the pack is switched back OFF: a patch
+   *  crosses the IPC as JSON, which drops an `undefined` property outright, so
+   *  the key would simply not be in the patch and the stored pack would stand
+   *  (`ollama_models_path` clears itself the same way). */
+  ui_cursor?: CursorPack | null;
   /** Per-token color overrides from the Theme Customizer, keyed by CSS custom
    *  property (`{"--bg-panel": "#101820"}`). Only the `lib/themeTokens` catalog
    *  names, holding `#rrggbb`/`#rrggbbaa`, are honoured — see
@@ -1414,6 +1427,8 @@ export interface ThemePreset {
   accent?: string;
   /** Corner style at save time; unset = the base theme's own radii. */
   corners?: CornerStyle;
+  /** Cursor pack at save time; unset = the system cursors. */
+  cursor?: CursorPack;
   /** The per-token overrides, in `ui_theme_vars`' shape. */
   vars: Record<string, string>;
   /** Epoch ms the preset was written, for the "saved <date>" line. */

@@ -16,6 +16,12 @@ import {
   themeTokenExampleKey,
   type ThemeToken,
 } from "../../lib/themeTokens";
+import {
+  buildCursorPreview,
+  CURSOR_PACKS,
+  CURSOR_SIZE,
+  type CursorPack,
+} from "../../lib/cursorPacks";
 import { useT } from "../../lib/i18n";
 import {
   THEMES,
@@ -463,6 +469,16 @@ export function ThemeCustomizerDialog({
     }, 400);
   };
 
+  /** The active pack's own art, as plain images. It is the same render (and
+   *  the same cache) the pointer itself uses, so the strip cannot show one
+   *  thing while the cursor is another — and it is keyed on `tick` as well as
+   *  the pack, because the art is drawn from the palette this window edits. */
+  const cursorPreview = useMemo(
+    () => buildCursorPreview(settings?.ui_cursor ?? null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `tick` is the palette's change signal
+    [settings?.ui_cursor, tick],
+  );
+
   const overrideCount = Object.keys(vars).length + (accent ? 1 : 0);
 
   /** The look as it stands, ready to be stored: the base theme it sits on, the
@@ -476,6 +492,7 @@ export function ThemeCustomizerDialog({
     if (known) entry.theme = known.value;
     if (accent) entry.accent = accent;
     if (settings?.ui_corners) entry.corners = settings.ui_corners;
+    if (settings?.ui_cursor) entry.cursor = settings.ui_cursor;
     return entry;
   };
 
@@ -514,6 +531,7 @@ export function ThemeCustomizerDialog({
     const patch: Partial<Settings> = {
       ui_accent: preset.accent,
       ui_corners: preset.corners,
+      ui_cursor: preset.cursor ?? null,
       ui_theme_vars: Object.keys(preset.vars).length > 0 ? preset.vars : undefined,
     };
     if (preset.theme) patch.color_scheme = preset.theme;
@@ -709,6 +727,50 @@ export function ThemeCustomizerDialog({
                   { value: "rounded", label: t("settings.corners.rounded") },
                 ]}
               />
+            }
+          />
+
+          <SettingRow
+            label={
+              <>
+                {t("settings.cursor")} <UntestedTag />
+              </>
+            }
+            help={t("settings.cursor.help")}
+            control={
+              <div className="cursor-setting">
+                <Dropdown
+                  value={settings?.ui_cursor ?? "system"}
+                  onChange={(v) =>
+                    void updateSettings({
+                      // `null`, never `undefined`: an undefined property is
+                      // dropped by the JSON that carries the patch, so "System"
+                      // would leave the stored pack in place.
+                      ui_cursor: v === "system" ? null : (v as CursorPack),
+                    })
+                  }
+                  options={[
+                    { value: "system", label: t("settings.cursor.system") },
+                    ...CURSOR_PACKS.map((pack) => ({
+                      value: pack,
+                      label: t(`settings.cursor.${pack}` as "settings.cursor.aurora"),
+                    })),
+                  ]}
+                />
+                {cursorPreview.length > 0 && (
+                  <div className="cursor-preview" aria-hidden="true">
+                    {cursorPreview.map((src) => (
+                      <img
+                        key={src.slice(-24)}
+                        src={src}
+                        alt=""
+                        width={CURSOR_SIZE}
+                        height={CURSOR_SIZE}
+                      />
+                    ))}
+                  </div>
+                )}
+              </div>
             }
           />
 

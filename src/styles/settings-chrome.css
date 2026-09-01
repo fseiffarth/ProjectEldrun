@@ -39,7 +39,7 @@
   font-size: var(--text-base);
   line-height: 1.2;
   white-space: nowrap;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   padding: 7px 10px;
   transition: background var(--transition), border-color var(--transition);
 }
@@ -63,7 +63,7 @@
 .remote-host-settings-row button:not(.dialog-close-btn):disabled,
 .ollama-action-btn:disabled {
   opacity: 0.5;
-  cursor: default;
+  cursor: var(--cur-default, default);
 }
 
 /* Compact size for dense action rows. */
@@ -175,7 +175,7 @@ button.settings-btn.danger:hover:not(:disabled),
   border-radius: var(--radius-sm);
   background: var(--accent);
   color: var(--bg-panel);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   padding: 7px 14px;
   font-weight: 600;
 }
@@ -184,7 +184,7 @@ button.settings-btn.danger:hover:not(:disabled),
 }
 .print-preview-print:disabled {
   opacity: 0.6;
-  cursor: default;
+  cursor: var(--cur-default, default);
 }
 .print-preview-print .file-viewer-save-spinner {
   border-top-color: var(--bg-panel);
@@ -214,11 +214,11 @@ button.settings-btn.danger:hover:not(:disabled),
   white-space: nowrap;
 }
 .print-opt-check {
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 .print-opt:has(:disabled) {
   opacity: 0.5;
-  cursor: default;
+  cursor: var(--cur-default, default);
 }
 .print-opt-label {
   color: var(--text-secondary);
@@ -238,7 +238,7 @@ button.settings-btn.danger:hover:not(:disabled),
 .print-opt-select:disabled,
 .print-opt-range:disabled {
   opacity: 0.5;
-  cursor: default;
+  cursor: var(--cur-default, default);
 }
 
 /* Page strip: drag-to-reorder / delete, shown only for paged documents. */
@@ -264,13 +264,13 @@ button.settings-btn.danger:hover:not(:disabled),
   border-radius: var(--radius-sm);
   background: var(--control-bg);
   color: var(--text-primary);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   padding: 3px 10px;
   font-size: 11px;
 }
 .print-strip-reset:disabled {
   opacity: 0.45;
-  cursor: default;
+  cursor: var(--cur-default, default);
 }
 /* The host the print preview mounts its <PageStrip> into. Layout lives on the
    strip's own root (.page-strip-row), so this only carries the thumbnail vars. */
@@ -306,7 +306,7 @@ button.settings-btn.danger:hover:not(:disabled),
   border: 1px solid var(--border-color);
   background: #fff;
   overflow: hidden;
-  cursor: grab;
+  cursor: var(--cur-grab, grab);
   touch-action: none; /* pointer drag owns the gesture */
   user-select: none;
 }
@@ -350,7 +350,7 @@ button.settings-btn.danger:hover:not(:disabled),
   outline-offset: -2px;
 }
 .page-strip-card.is-dragging {
-  cursor: grabbing;
+  cursor: var(--cur-grabbing, grabbing);
   outline: 2px solid var(--accent);
   opacity: 0.85;
 }
@@ -373,7 +373,7 @@ button.settings-btn.danger:hover:not(:disabled),
   border: none;
   background: rgba(0, 0, 0, 0.55);
   color: #fff;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   padding: 0 4px;
   font-size: 11px;
   line-height: 16px;
@@ -474,14 +474,14 @@ button.settings-btn.danger:hover:not(:disabled),
   border: none;
   background: transparent;
   color: var(--text-secondary, var(--text-muted));
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   font-size: 10px;
   line-height: 1.2;
 }
 /* A leaf row's per-level sign, standing in the caret column: a dot for the top
    tiers, a dash deeper down (a branch shows the ▸/▾ triangle here instead). */
 .file-viewer-pdf-outline-caret.is-sign {
-  cursor: default;
+  cursor: var(--cur-default, default);
   color: var(--text-secondary, var(--text-muted));
   text-align: center;
   font-size: 11px;
@@ -494,7 +494,7 @@ button.settings-btn.danger:hover:not(:disabled),
   border: none;
   background: transparent;
   color: var(--text-primary);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   font: inherit;
   line-height: 1.3;
   overflow-wrap: anywhere;
@@ -507,7 +507,7 @@ button.settings-btn.danger:hover:not(:disabled),
   font-weight: 700;
 }
 .file-viewer-pdf-outline-title:disabled {
-  cursor: default;
+  cursor: var(--cur-default, default);
   color: var(--text-secondary, var(--text-muted));
 }
 
@@ -614,7 +614,7 @@ button.settings-btn.danger:hover:not(:disabled),
   border-radius: var(--radius-sm);
   background: var(--bg-panel);
   color: var(--text-primary);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   padding: 2px 8px;
   font-size: 11px;
 }
@@ -665,7 +665,7 @@ button.settings-btn.danger:hover:not(:disabled),
    a click on its text; a row holding a Dropdown must not pretend to. */
 label.settings-card-row,
 label.settings-toggle-card-row {
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 .settings-row > label,
@@ -778,7 +778,7 @@ label.settings-toggle-card-row {
   color: var(--text-primary);
   font-family: var(--font-mono, monospace);
   font-size: 12px;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 .shortcut-capture-btn:hover:not(:disabled) {
@@ -957,7 +957,7 @@ label.settings-toggle-card-row {
   border: 1px solid var(--border-color);
   background: var(--bg-panel);
   color: var(--text-primary);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   transition: border-color var(--transition), background var(--transition);
 }
 
@@ -1065,7 +1065,7 @@ label.settings-toggle-card-row {
 .mobile-settings-guide summary {
   color: var(--text-primary);
   font-weight: 600;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 .mobile-settings-guide-body {
@@ -1116,7 +1116,7 @@ label.settings-toggle-card-row {
   border-radius: var(--radius-sm);
   background: var(--bg-panel);
   color: var(--text-primary);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 .mobile-settings-guide-actions button:hover {
@@ -1145,7 +1145,7 @@ label.settings-toggle-card-row {
 .settings-guide > summary {
   color: var(--text-primary);
   font-weight: 600;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 .settings-guide-body {
@@ -1376,7 +1376,7 @@ label.settings-toggle-card-row {
   border-radius: var(--radius-sm);
   background: var(--control-bg);
   color: var(--text-primary);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   padding: 7px 10px;
 }
 
@@ -1410,7 +1410,7 @@ label.settings-toggle-card-row {
   border-radius: var(--radius-sm);
   background: var(--control-bg);
   color: var(--text-primary);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   padding: 6px 8px;
   font-family: inherit;
   font-size: 12px;
@@ -1591,13 +1591,13 @@ label.settings-toggle-card-row {
   grid-template-columns: auto 1fr;
   align-items: start;
   gap: 8px;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 .project-dialog label.container-scope-option input[type="radio"] {
   width: auto;
   margin: 2px 0 0;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 .project-dialog label.container-scope-option > span {
@@ -1702,13 +1702,13 @@ label.settings-toggle-card-row {
   border: none;
   background: transparent;
   color: var(--text-secondary);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 .password-reveal-btn:hover {
   color: var(--text-primary);
 }
 .password-reveal-btn:disabled {
-  cursor: default;
+  cursor: var(--cur-default, default);
   opacity: 0.5;
 }
 
@@ -1764,7 +1764,7 @@ label.settings-toggle-card-row {
   padding: 7px 12px;
   background: var(--control-bg);
   color: var(--text-primary);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 .vpn-prompt-actions button.primary {
@@ -1823,7 +1823,7 @@ label.settings-toggle-card-row {
 
 .vpn-prompt-actions button.vpn-prompt-terminal-btn:disabled {
   opacity: 0.5;
-  cursor: default;
+  cursor: var(--cur-default, default);
 }
 
 .folder-picker-row span {
@@ -1842,7 +1842,7 @@ label.settings-toggle-card-row {
   padding: 7px 10px;
   background: var(--control-bg);
   color: var(--text-primary);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 .folder-picker-row button:hover {
@@ -1865,7 +1865,7 @@ label.settings-toggle-card-row {
 
 .project-dialog-actions button:disabled {
   opacity: 0.55;
-  cursor: default;
+  cursor: var(--cur-default, default);
 }
 
 /* Destructive confirm (e.g. delete git history) — overrides the accent style
@@ -1952,7 +1952,7 @@ label.settings-toggle-card-row {
   background: var(--control-bg);
   color: var(--text-primary);
   font-size: 12px;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 .remote-machine-actions button:hover:not(:disabled) {
@@ -1962,7 +1962,7 @@ label.settings-toggle-card-row {
 
 .remote-machine-actions button:disabled {
   opacity: 0.55;
-  cursor: default;
+  cursor: var(--cur-default, default);
 }
 
 .remote-machine-actions button.danger {
@@ -2076,7 +2076,7 @@ label.settings-toggle-card-row {
   color: var(--text-primary);
   font-size: 11px;
   white-space: nowrap;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 .remote-machine-global-row button:hover:not(:disabled) {
@@ -2160,7 +2160,7 @@ label.settings-toggle-card-row {
   border-radius: var(--radius);
   background: var(--bg-panel);
   color: var(--text-primary);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 .remote-change-folder-btn:hover:not(:disabled) {
@@ -2170,7 +2170,7 @@ label.settings-toggle-card-row {
 
 .remote-change-folder-btn:disabled {
   opacity: 0.5;
-  cursor: default;
+  cursor: var(--cur-default, default);
 }
 
 .project-dialog-error {
@@ -2822,7 +2822,7 @@ label.settings-toggle-card-row {
 
 .scaffold-row select:disabled {
   opacity: 0.62;
-  cursor: default;
+  cursor: var(--cur-default, default);
 }
 
 .scaffold-row-status {
@@ -2860,7 +2860,7 @@ label.settings-toggle-card-row {
   padding: 11px 13px;
   border: 1px solid var(--border-subtle);
   background: var(--control-bg);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   transition: border-color var(--transition), background var(--transition);
 }
 
@@ -2928,7 +2928,7 @@ label.settings-toggle-card-row {
   margin: 0;
   padding: 0;
   opacity: 0;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   z-index: 1;
 }
 
@@ -3035,7 +3035,7 @@ label.settings-toggle-card-row {
 
 /* "Recently used…" picker reuses the address-input look but is a real select. */
 .vpn-config-recent {
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 /* The OpenVPN config a remote project currently uses: label + file name + the
@@ -3137,7 +3137,7 @@ label.settings-toggle-card-row {
   background: var(--accent);
   border: 1px solid var(--accent);
   border-radius: var(--radius);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   transition: background var(--transition), border-color var(--transition), opacity var(--transition);
 }
 
@@ -3147,7 +3147,7 @@ label.settings-toggle-card-row {
 }
 
 .dialog-connect-btn:disabled {
-  cursor: default;
+  cursor: var(--cur-default, default);
   opacity: 0.55;
 }
 
@@ -3174,7 +3174,7 @@ label.settings-toggle-card-row {
   border-radius: var(--radius);
   font-weight: 600;
   color: var(--bg-main);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   transition: background var(--transition), border-color var(--transition), opacity var(--transition), transform var(--transition);
 }
 
@@ -3209,7 +3209,7 @@ label.settings-toggle-card-row {
 .btn-primary:disabled,
 .btn-danger:disabled {
   opacity: 0.55;
-  cursor: default;
+  cursor: var(--cur-default, default);
 }
 
 .btn-block {
@@ -3492,7 +3492,7 @@ label.settings-toggle-card-row {
   flex: none;
   padding: 2px 8px;
   font-size: 11px;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 .sshfs-install-guide-btn {
@@ -3541,7 +3541,7 @@ label.settings-toggle-card-row {
   padding: 5px 9px;
   background: var(--control-bg);
   color: var(--text-primary);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 .remote-browser-header button:hover {
@@ -3574,7 +3574,7 @@ label.settings-toggle-card-row {
   padding: 5px 9px;
   background: var(--control-bg);
   color: var(--text-primary);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 .remote-newfolder button:hover:not(:disabled) {
@@ -3584,7 +3584,7 @@ label.settings-toggle-card-row {
 
 .remote-newfolder button:disabled {
   opacity: 0.5;
-  cursor: default;
+  cursor: var(--cur-default, default);
 }
 
 .remote-list {
@@ -3610,7 +3610,7 @@ label.settings-toggle-card-row {
 
 .remote-entry.is-dir {
   color: var(--text-primary);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 .remote-entry.is-dir:hover {
@@ -3619,7 +3619,7 @@ label.settings-toggle-card-row {
 
 .remote-entry.is-file {
   color: var(--text-muted);
-  cursor: default;
+  cursor: var(--cur-default, default);
 }
 
 .remote-entry-icon {
@@ -3659,7 +3659,7 @@ label.settings-toggle-card-row {
   padding: 0;
   border: 1px solid var(--border-color);
   border-radius: var(--radius-sm);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   transition: transform var(--transition);
 }
 
@@ -3682,7 +3682,7 @@ label.settings-toggle-card-row {
   border: 1px solid var(--control-border);
   border-radius: var(--radius-sm);
   background: var(--control-bg);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 /* ── Theme customizer (Settings → Theme colors) ──────────────────────────

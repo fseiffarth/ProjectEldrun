@@ -33,7 +33,7 @@ select {
   border: 1px solid var(--control-border);
   border-radius: var(--radius-sm);
   padding: 4px 28px 4px 9px;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   background-image:
     linear-gradient(45deg, transparent 50%, var(--text-primary) 50%),
     linear-gradient(135deg, var(--text-primary) 50%, transparent 50%);
@@ -196,14 +196,14 @@ select option {
   line-height: 1;
   user-select: none;
   opacity: 0.6;
-  cursor: grab;
+  cursor: var(--cur-grab, grab);
   transition: opacity var(--transition), color var(--transition);
 }
 .app-drag-grip:hover {
   opacity: 1;
   color: var(--text-primary);
 }
-.app-drag-grip:active { cursor: grabbing; }
+.app-drag-grip:active { cursor: var(--cur-grabbing, grabbing); }
 
 /* The project strip's track, and now nothing else's: the global buttons that
    used to share it moved to .header-right, so the one elastic thing in the bar
@@ -262,7 +262,7 @@ select option {
   border-radius: var(--radius-sm);
   border: 1px solid transparent;
   background: transparent;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   flex-shrink: 0;
   display: flex;
   align-items: center;
@@ -406,7 +406,7 @@ select option {
   border-radius: 0;
   background: transparent;
   color: var(--text-secondary);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   transition: color var(--transition), border-color var(--transition);
 }
 
@@ -422,7 +422,7 @@ select option {
   border: none;
   background: transparent;
   color: inherit;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 .root-pill:hover {
@@ -604,7 +604,7 @@ select option {
   gap: 4px;
   background: none;
   border: none;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   color: var(--text-secondary);
   font-size: 11px;
   font-weight: 700;

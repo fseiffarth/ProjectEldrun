@@ -190,7 +190,7 @@
   padding: 3px 9px;
   border-radius: var(--radius-full);
   font-size: 12px;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   color: var(--text-secondary);
   background: var(--control-bg);
   border: 1px solid var(--control-border);
@@ -237,7 +237,7 @@
   border: none;
   color: inherit;
   font: inherit;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   flex: 1;
   min-width: 0;
 }
@@ -254,7 +254,7 @@
   color: var(--text-muted);
   font-size: 14px;
   line-height: 1;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   border-radius: var(--radius-sm);
   opacity: 0;
   transition: opacity var(--transition), background-color var(--transition);
@@ -284,7 +284,7 @@
   color: var(--text-muted);
   font-size: 11px;
   line-height: 1;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   border-radius: var(--radius-sm);
   transition: background-color var(--transition), color var(--transition);
   flex-shrink: 0;
@@ -331,7 +331,7 @@
   color: inherit;
   font: inherit;
   font-size: 12px;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 .box-chip-label {
@@ -416,7 +416,7 @@
   font: inherit;
   font-size: 12px;
   text-align: left;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 .box-chip-menu button:hover {
@@ -530,7 +530,7 @@
   align-items: center;
   gap: 8px;
   padding: 2px 4px;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 .box-editor .box-editor-empty {
@@ -570,7 +570,7 @@
   font: inherit;
   font-size: 12px;
   padding: 4px 8px;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   text-align: left;
   white-space: nowrap;
 }
@@ -588,7 +588,7 @@
   background: var(--control-bg);
   color: var(--text-secondary);
   border: 1px solid var(--control-border);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   font-size: 12px;
 }
 
@@ -631,7 +631,7 @@
   font: inherit;
   font-size: 11px;
   font-weight: 600;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   position: sticky;
   top: 0;
   z-index: 1;
@@ -891,7 +891,7 @@
   padding: 6px 8px;
   border-radius: var(--radius-sm);
   border: none;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   font-size: 12px;
   background: transparent;
   color: var(--text-primary);
@@ -971,14 +971,14 @@
   line-height: 1;
   user-select: none;
   opacity: 0.6;
-  cursor: grab;
+  cursor: var(--cur-grab, grab);
   transition: opacity var(--transition), color var(--transition);
 }
 .tab-drag-grip:hover {
   opacity: 1;
   color: var(--text-primary);
 }
-.tab-drag-grip:active { cursor: grabbing; }
+.tab-drag-grip:active { cursor: var(--cur-grabbing, grabbing); }
 
 /* The horizontally-scrolling tab container, holding the tabs and nothing else;
    its scrollbar is hidden (chevrons + wheel drive the scroll instead).
@@ -1013,7 +1013,7 @@
   border-radius: var(--radius-sm);
   background: transparent;
   color: var(--text-muted);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   font-size: 16px;
   line-height: 1;
   z-index: 12;
@@ -1030,7 +1030,7 @@
   gap: 6px;
   padding: 0 12px;
   height: 30px;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   font-size: 12px;
   color: var(--text-muted);
   white-space: nowrap;
@@ -1233,7 +1233,7 @@
   appearance: none;
   border: none;
   padding: 0;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   /* Re-enable the pointer the strip switched off, for the bars only. */
   pointer-events: auto;
   transition: filter var(--transition);
@@ -1364,7 +1364,7 @@
   border: none;
   background: transparent;
   color: var(--text-muted);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   font-size: 14px;
   line-height: 1;
   flex-shrink: 0;
@@ -1400,8 +1400,8 @@
   flex-shrink: 0;
   transition: background-color var(--transition), color var(--transition);
 }
-.tab-locality { cursor: pointer; }
-.tab-source { cursor: default; }
+.tab-locality { cursor: var(--cur-pointer, pointer); }
+.tab-source { cursor: var(--cur-default, default); }
 .tab-locality.local,
 .tab-source.local { color: var(--success); }
 .tab-locality.remote,
@@ -1410,9 +1410,9 @@
 /* A file-source badge is a clickable toggle when the file exists on both sides
    (the viewer published a Local/Remote switch); otherwise it stays the plain
    read-only glyph above. `disabled` = the host has no counterpart to switch to. */
-.tab-source.clickable { cursor: pointer; }
+.tab-source.clickable { cursor: var(--cur-pointer, pointer); }
 .tab-source.clickable:hover { background-color: var(--pill-hover-bg); }
-.tab-source.clickable.disabled { cursor: default; opacity: 0.45; }
+.tab-source.clickable.disabled { cursor: var(--cur-default, default); opacity: 0.45; }
 .tab-source.clickable.disabled:hover { background-color: transparent; }
 
 /* TeX ⇄ PDF coupling mark (lib/texPdfLink): a compiled PDF tab and the `.tex`
@@ -1435,7 +1435,7 @@
   font-size: 11px;
   line-height: 1;
   flex-shrink: 0;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   opacity: 0.55;
   transition: background-color var(--transition), opacity var(--transition);
 }
@@ -1463,7 +1463,7 @@
   border: none;
   background: var(--bg-panel);
   color: var(--text-muted);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   font-size: 15px;
 }
 .subwindow-close:hover {
@@ -1489,7 +1489,7 @@
   border: none;
   background: var(--bg-panel);
   color: var(--text-muted);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   font-size: 17px;
   line-height: 1;
 }
@@ -1520,7 +1520,7 @@
   border: none;
   background: var(--bg-panel);
   color: var(--text-muted);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   font-size: 14px;
   line-height: 1;
 }
@@ -1604,7 +1604,7 @@
   border: none;
   background: transparent;
   color: var(--text-muted);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   font-size: 15px;
   line-height: 1;
   border-radius: var(--radius-sm, 4px);
@@ -1769,7 +1769,7 @@
   border-bottom: none;
   background: transparent;
   color: var(--text-muted);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   font-size: 18px;
   line-height: 1;
   display: flex;
@@ -1942,7 +1942,7 @@
   border-radius: var(--radius-sm);
   background: var(--control-bg);
   color: var(--text-primary);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   font-size: 12px;
   text-align: left;
   transition: background-color var(--transition);
@@ -1954,7 +1954,7 @@
 
 .tab-new-menu-item:disabled {
   opacity: 0.45;
-  cursor: default;
+  cursor: var(--cur-default, default);
 }
 
 .tab-new-menu-item:disabled:hover {
@@ -2067,7 +2067,7 @@
   border-radius: var(--radius-sm);
   padding: 3px 8px;
   font-size: 11px;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 .file-run-args-btn:hover {
   color: var(--text-primary);
@@ -2167,7 +2167,7 @@
   color: var(--text-primary);
   text-align: left;
   font-size: 12px;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 .context-menu button:hover {
@@ -2183,7 +2183,7 @@
    looking clickable or it reads as a broken button. */
 .context-menu button:disabled {
   opacity: 0.5;
-  cursor: default;
+  cursor: var(--cur-default, default);
 }
 .context-menu button:disabled:hover {
   background: var(--control-bg);
@@ -2307,7 +2307,7 @@
   background: var(--control-bg);
   color: var(--text-primary);
   font-size: 12px;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 .dropdown-trigger:hover:not(:disabled),
@@ -2318,7 +2318,7 @@
 
 .dropdown-trigger:disabled {
   opacity: 0.6;
-  cursor: default;
+  cursor: var(--cur-default, default);
 }
 
 .dropdown-caret {

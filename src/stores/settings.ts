@@ -13,6 +13,12 @@ import {
 import { applyLanguage, type Language } from "../lib/i18n";
 import { mergeVerdicts, verdictsUnchanged, type PyMainCache } from "../lib/pythonMainCache";
 import { THEME_COLOR_RE, THEME_VAR_NAMES } from "../lib/themeTokens";
+import {
+  buildCursorVars,
+  CURSOR_VAR_NAMES,
+  normalizeCursorPack,
+  type CursorPack,
+} from "../lib/cursorPacks";
 
 /** Each Tauri window is its own JS runtime with its own copy of this store, so
  *  a theme change made in one (normally the main window's Settings dialog)
@@ -129,6 +135,9 @@ export function applyTheme(scheme: string) {
   } catch {
     // localStorage unavailable — worst case is the old one-frame flash.
   }
+  // The cursor art is painted from this theme's colors, so a scheme change is a
+  // cursor change. See `refreshCursors`.
+  refreshCursors();
 }
 
 /** Like THEME_CHANGED_EVENT, for the appearance overrides (accent color,
@@ -142,6 +151,9 @@ export interface AppearancePayload {
   corners: string | null;
   /** Absent from an older window's payload; treated as "no overrides". */
   themeVars?: Record<string, string>;
+  /** The custom cursor pack, or null for the system cursors. Absent from an
+   *  older window's payload, which `applyCursor` reads as "off". */
+  cursor?: string | null;
 }
 
 /** A user accent must be a full hex color — anything else (an empty string, a
@@ -190,6 +202,7 @@ export function applyAccent(accent: string | null | undefined) {
   } catch {
     // localStorage unavailable — worst case is a one-frame accent flash.
   }
+  refreshCursors();
 }
 
 /** Keep only what may safely reach the root style: a catalog token name
@@ -242,6 +255,7 @@ export function applyThemeVars(vars: Record<string, string> | null | undefined) 
   } catch {
     // localStorage unavailable — worst case is a one-frame palette flash.
   }
+  refreshCursors();
 }
 
 /** How many saved looks `ui_theme_presets` may hold, and how long a name may
@@ -286,6 +300,8 @@ export function normalizeThemePresets(
     const accent = normalizeAccent(p.accent as string | undefined);
     if (accent) entry.accent = accent;
     if (p.corners === "square" || p.corners === "rounded") entry.corners = p.corners;
+    const cursor = normalizeCursorPack(p.cursor as string | undefined);
+    if (cursor) entry.cursor = cursor;
     if (typeof p.saved === "number" && Number.isFinite(p.saved)) entry.saved = p.saved;
     out.push(entry);
     if (out.length >= THEME_PRESET_LIMIT) break;
@@ -325,6 +341,57 @@ export function applyCorners(corners: string | null | undefined) {
   } catch {
     // localStorage unavailable — worst case is a one-frame corner flash.
   }
+}
+
+/** The pack THIS window is painting. Module-level for the same reason
+ *  `systemThemeMedia` is: the appliers are plain functions each window calls,
+ *  and the colour appliers below have to be able to redraw the art without
+ *  every one of them being handed the setting. */
+let activeCursorPack: CursorPack | null = null;
+
+function paintCursorVars(pack: CursorPack | null) {
+  const root = document.documentElement;
+  const style = root.style;
+  // Every var is cleared first, `applyThemeVars`' rule: an inline root var
+  // outranks every stylesheet, so a leftover from the previous pack would keep
+  // painting with no UI pointing at it.
+  for (const name of CURSOR_VAR_NAMES) style.removeProperty(name);
+  const vars = pack ? buildCursorVars(pack) : {};
+  const names = Object.keys(vars);
+  if (names.length === 0) {
+    // No pack, or nothing could be drawn (no canvas backend). The attribute is
+    // what arms `styles/cursors.css`, so leaving it off is what makes a failed
+    // render a complete no-op rather than a root arrow over a page with no
+    // cursor art behind it.
+    root.removeAttribute("data-cursor");
+    return;
+  }
+  for (const name of names) style.setProperty(name, vars[name]);
+  root.setAttribute("data-cursor", pack as string);
+}
+
+/** Apply (or with null/undefined/unknown, clear) the custom cursor pack on THIS
+ *  window's root element: the twelve `--cur-*` images plus the `data-cursor`
+ *  attribute that arms `styles/cursors.css`.
+ *
+ *  Deliberately NOT pre-painted from `index.html` the way the accent, the
+ *  corners and the token map are: those are one `setProperty` each off a cached
+ *  string, while this is twelve canvas renders, and a frame of the system arrow
+ *  at launch costs nothing worth that. */
+export function applyCursor(pack: string | null | undefined) {
+  activeCursorPack = normalizeCursorPack(pack);
+  paintCursorVars(activeCursorPack);
+}
+
+/** Redraw the active pack because the palette moved. Called by `applyTheme`,
+ *  `applyAccent` and `applyThemeVars` — the three things that can change the
+ *  colours the art is built from — so a theme switch or an accent edit repaints
+ *  the pointer along with everything else it recolors. A no-op for the default
+ *  (packless) user, and free for the rest: `buildCursorVars` caches by pack and
+ *  palette, so the two appliers that follow a theme change hit the cache the
+ *  first one filled. */
+export function refreshCursors() {
+  if (activeCursorPack) paintCursorVars(activeCursorPack);
 }
 
 /** UI zoom (4K-monitor scaling). `1` is 100% (the current/default look); higher
@@ -495,6 +562,8 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     applyAccent(settings.ui_accent);
     applyThemeVars(settings.ui_theme_vars);
     applyCorners(settings.ui_corners);
+    // After the colour appliers: the art is drawn from the palette they set.
+    applyCursor(settings.ui_cursor);
     applyLanguage(settings.language);
     // `ui_zoom` is the MAIN window's own zoom. A popout skips it and applies its
     // own persisted zoom from its seed instead (zoom is per window, not global).

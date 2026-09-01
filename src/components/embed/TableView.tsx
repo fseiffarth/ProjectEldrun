@@ -747,7 +747,7 @@ export function TableView({
             title={t("tableView.appendRowTitle")}
             style={{
               all: "unset",
-              cursor: "pointer",
+              cursor: "var(--cur-pointer, pointer)",
               padding: "2px 8px",
               borderRadius: "var(--radius-sm)",
               fontSize: 12,
@@ -838,7 +838,7 @@ export function TableView({
                       width: "100%",
                       boxSizing: "border-box",
                       padding: "5px 6px",
-                      cursor: "pointer",
+                      cursor: "var(--cur-pointer, pointer)",
                       userSelect: "none",
                       fontSize: 11,
                       fontWeight: gutterSorted ? 700 : 600,
@@ -896,7 +896,7 @@ export function TableView({
                             width: "100%",
                             boxSizing: "border-box",
                             padding: "5px 10px",
-                            cursor: "pointer",
+                            cursor: "var(--cur-pointer, pointer)",
                             userSelect: "none",
                             fontWeight: active ? 700 : 600,
                             color: active ? "var(--text-primary)" : "var(--text-secondary)",
@@ -939,7 +939,7 @@ export function TableView({
                           right: 0,
                           width: 7,
                           height: "100%",
-                          cursor: "col-resize",
+                          cursor: "var(--cur-col-resize, col-resize)",
                           zIndex: 3,
                           touchAction: "none",
                           userSelect: "none",
@@ -998,7 +998,7 @@ export function TableView({
                           aria-label={t("tableView.deleteRowTitle", { n: row.index })}
                           style={{
                             all: "unset",
-                            cursor: "pointer",
+                            cursor: "var(--cur-pointer, pointer)",
                             padding: "0 2px",
                             color: "var(--text-primary)",
                           }}

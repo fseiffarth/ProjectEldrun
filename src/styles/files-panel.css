@@ -106,7 +106,7 @@
   bottom: 0;
   left: -3px;
   width: 7px;
-  cursor: ew-resize;
+  cursor: var(--cur-ew-resize, ew-resize);
   z-index: 30;
   touch-action: none;
 }
@@ -255,7 +255,7 @@
   border: 1px solid var(--accent);
   background: transparent;
   color: var(--accent);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   font-size: 0.78em;
   line-height: 1;
   padding: 3px 8px;
@@ -276,7 +276,7 @@
   border: none;
   background: transparent;
   color: var(--text-muted);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   font-size: 1.05em;
   line-height: 1;
   padding: 2px 6px;
@@ -333,11 +333,11 @@
   display: flex;
   align-items: center;
   gap: 5px;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 .set-default-app-scope label.disabled {
   opacity: 0.5;
-  cursor: not-allowed;
+  cursor: var(--cur-not-allowed, not-allowed);
 }
 .set-default-app-search,
 .set-default-app-manual input {
@@ -367,7 +367,7 @@
   border: none;
   color: var(--text-primary);
   padding: 4px 8px;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   font-size: 12px;
 }
 /* --bg-hover, not --bg-panel. A hover expressed as another surface's tone only
@@ -432,7 +432,7 @@
   padding: 5px 12px;
   background: var(--control-bg);
   color: var(--text-primary);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 .set-default-app-manual button {
   flex-shrink: 0;
@@ -454,7 +454,7 @@
 }
 .set-default-app-actions button:disabled {
   opacity: 0.55;
-  cursor: default;
+  cursor: var(--cur-default, default);
 }
 .set-default-app-actions {
   display: flex;
@@ -483,7 +483,7 @@
   padding: 4px 10px;
   background: var(--control-bg);
   color: var(--text-primary);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   font-size: 12px;
 }
 .folder-picker-nav button:not(:disabled):hover {
@@ -492,7 +492,7 @@
 }
 .folder-picker-nav button:disabled {
   opacity: 0.55;
-  cursor: default;
+  cursor: var(--cur-default, default);
 }
 .folder-picker-cur {
   flex: 1;
@@ -522,7 +522,7 @@
   border: none;
   color: var(--text-primary);
   padding: 5px 8px;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   font-size: 12px;
 }
 .folder-picker-item:hover {
@@ -579,7 +579,7 @@
   padding: 5px 12px;
   background: var(--control-bg);
   color: var(--text-primary);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 .folder-picker-actions button:not(:disabled):hover {
   background: var(--control-hover-bg);
@@ -592,7 +592,7 @@
 }
 .folder-picker-actions button:disabled {
   opacity: 0.55;
-  cursor: default;
+  cursor: var(--cur-default, default);
 }
 
 /* Send-to-project dialog (file-tree right-click → copy into another project).
@@ -605,7 +605,7 @@
 }
 .send-to-project-item:disabled {
   opacity: 0.5;
-  cursor: default;
+  cursor: var(--cur-default, default);
 }
 .send-to-project-tag {
   flex-shrink: 0;
@@ -677,7 +677,7 @@
   background: transparent;
   color: var(--text-tertiary);
   opacity: 0.7;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   transition: color var(--transition), background var(--transition), border-color var(--transition), opacity var(--transition);
 }
 
@@ -690,7 +690,7 @@
 
 .side-panel-mobile-btn:disabled {
   opacity: 0.4;
-  cursor: default;
+  cursor: var(--cur-default, default);
 }
 
 .side-panel-mobile-btn.on {
@@ -793,7 +793,7 @@
   font-weight: 600;
   letter-spacing: 0.02em;
   text-transform: uppercase;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 .hidden-sw-header:hover {
   color: var(--text-primary);
@@ -884,7 +884,7 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 /* Same ring as `.tab.working`/`.needs-decision`/`.finished` — a hidden tab's PTY
    is still mounted and running, so its chip keeps reporting status, and it has
@@ -922,7 +922,7 @@
   border-radius: var(--radius-sm);
   background: transparent;
   color: var(--text-muted);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   font-size: 13px;
 }
 .hidden-sw-btn:hover {
@@ -955,7 +955,7 @@
   border-radius: var(--radius);
   background: transparent;
   color: var(--text-secondary);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   /* Dim the unpinned pin with plain opacity, NOT a CSS filter. Applying `filter`
      (grayscale/opacity) to the 📌 color-emoji glyph makes it render invisible in
      WebView2 on Windows — the color glyph doesn't compose through the filter
@@ -1122,7 +1122,7 @@
   border: 1px solid color-mix(in srgb, var(--git-btn-accent) 55%, transparent);
   color: var(--git-btn-accent);
   border-radius: var(--radius-sm);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   padding: 1px 6px;
   height: 20px;
   font-size: 10px;
@@ -1144,7 +1144,7 @@
 
 .git-action-btn:disabled {
   opacity: 0.4;
-  cursor: not-allowed;
+  cursor: var(--cur-not-allowed, not-allowed);
 }
 
 /* Action-specific accents, matched to the inline status dots. Set on the
@@ -1176,7 +1176,7 @@
   border-left: none;
   color: var(--git-btn-accent);
   border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   padding: 0 5px;
   height: 20px;
   font-size: var(--text-xs);
@@ -1194,7 +1194,7 @@
 
 .git-action-toggle:disabled {
   opacity: 0.4;
-  cursor: not-allowed;
+  cursor: var(--cur-not-allowed, not-allowed);
 }
 
 /* The label is always shown now (not hover-only) so each action reads clearly
@@ -1269,7 +1269,7 @@
 }
 
 .git-change-row.is-dir {
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   color: var(--text-secondary);
 }
 
@@ -1352,7 +1352,7 @@
   border-radius: var(--radius-lg);
   padding: 1px 8px;
   font-size: 10px;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   font-family: inherit;
   white-space: nowrap;
 }
@@ -1375,7 +1375,7 @@
   border-color: var(--accent);
   background: var(--pill-active-bg);
   color: var(--accent);
-  cursor: default;
+  cursor: var(--cur-default, default);
 }
 
 .git-branch-pill.remote {
@@ -1429,7 +1429,7 @@
 }
 
 .git-worktree-pill {
-  cursor: default;
+  cursor: var(--cur-default, default);
   gap: 3px;
 }
 
@@ -1466,7 +1466,7 @@
   font-family: inherit;
   font-size: 10px;
   line-height: 1;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 .git-worktree-btn:hover:not(:disabled) {
@@ -1476,7 +1476,7 @@
 
 .git-worktree-btn:disabled {
   opacity: 0.4;
-  cursor: default;
+  cursor: var(--cur-default, default);
 }
 
 .git-worktree-remove:hover:not(:disabled) {
@@ -1516,7 +1516,7 @@
   font-size: 10px;
   color: var(--text-muted);
   white-space: nowrap;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 /* The resolved path, shown rather than chosen: there is exactly one legal
@@ -1556,7 +1556,7 @@
   border: none;
   border-bottom: 1px solid var(--border-color);
   color: var(--text-primary);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   font-family: inherit;
   font-size: 11px;
   text-align: left;
@@ -1667,7 +1667,7 @@
   border-radius: var(--radius);
   padding: 4px 10px;
   font-size: 11px;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   font-family: inherit;
 }
 
@@ -1691,5 +1691,5 @@
 
 .commit-window-actions button:disabled {
   opacity: 0.4;
-  cursor: not-allowed;
+  cursor: var(--cur-not-allowed, not-allowed);
 }

@@ -44,7 +44,7 @@
   border-radius: var(--radius);
   min-width: 26px;
   height: 26px;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   font-size: 13px;
   line-height: 1;
 }
@@ -53,7 +53,7 @@
 }
 .browser-icon-btn:disabled {
   opacity: 0.45;
-  cursor: default;
+  cursor: var(--cur-default, default);
 }
 
 .browser-btn {
@@ -66,7 +66,7 @@
   background: var(--bg-input);
   color: var(--text-primary);
   font-size: 12px;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   white-space: nowrap;
 }
 .browser-btn:hover:not(:disabled) {
@@ -74,7 +74,7 @@
 }
 .browser-btn:disabled {
   opacity: 0.5;
-  cursor: default;
+  cursor: var(--cur-default, default);
 }
 .browser-btn-primary {
   background: var(--accent);
@@ -112,7 +112,7 @@
   color: var(--text-primary);
   font: 12px/1.6 var(--font-mono, ui-monospace, Menlo, Consolas, monospace);
   text-align: left;
-  cursor: text;
+  cursor: var(--cur-text, text);
   overflow-x: auto;
   white-space: nowrap;
   /* A one-line address strip: it pans, it never shows a bar or a thumb. */
@@ -183,7 +183,7 @@
   background: transparent;
   color: var(--text-muted);
   font-size: 11px;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   padding: 1px 4px;
   border-radius: var(--radius);
 }
@@ -512,14 +512,14 @@
   background: var(--bg-input);
   color: var(--text-primary);
   font-size: 12px;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 .print-btn:hover:not(:disabled) {
   border-color: var(--accent);
 }
 .print-btn:disabled {
   opacity: 0.5;
-  cursor: default;
+  cursor: var(--cur-default, default);
 }
 .print-btn.danger {
   border-color: var(--danger);
@@ -713,14 +713,14 @@
   background: var(--bg-input);
   color: var(--text-primary);
   font-size: 12px;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 .skills-btn:hover:not(:disabled) {
   border-color: var(--accent);
 }
 .skills-btn:disabled {
   opacity: 0.5;
-  cursor: default;
+  cursor: var(--cur-default, default);
 }
 .skills-btn.small {
   padding: 2px 7px;
@@ -784,7 +784,7 @@
   border: none;
   padding: 3px 10px;
   font-size: 12px;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 .skills-scope-btn + .skills-scope-btn {
   border-left: 1px solid var(--border-color);
@@ -894,7 +894,7 @@
   border-radius: var(--radius);
   padding: 6px 8px;
   background: var(--bg-input);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 .skills-catalog-row:hover {
   border-color: var(--accent);
@@ -1036,7 +1036,7 @@
   color: var(--text-secondary, var(--text-primary));
   font-size: 13px;
   line-height: 1;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 .tex-structure-chrome-btn:hover:not(:disabled) {
@@ -1046,7 +1046,7 @@
 
 .tex-structure-chrome-btn:disabled {
   opacity: 0.35;
-  cursor: default;
+  cursor: var(--cur-default, default);
 }
 
 /* Push the fold button to the header's right edge, whatever sits before it. */
@@ -1108,7 +1108,7 @@
   color: var(--text-primary);
   font-size: 12px;
   text-align: left;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 .tex-structure-row:hover {
@@ -1146,7 +1146,7 @@
   right: 0;
   width: 5px;
   height: 100%;
-  cursor: col-resize;
+  cursor: var(--cur-col-resize, col-resize);
   touch-action: none;
   background: transparent;
 }

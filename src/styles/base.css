@@ -250,10 +250,10 @@ html, body, #root {
 /* #42: the detached window's tab bar doubles as a drag handle — its empty area
    drags the whole popout back onto the main window (or repositions it). */
 .detached-drag-handle {
-  cursor: grab;
+  cursor: var(--cur-grab, grab);
 }
 .detached-drag-handle:active {
-  cursor: grabbing;
+  cursor: var(--cur-grabbing, grabbing);
 }
 
 /* #42: drop-target frame painted while a tab/file dragged out of the main window

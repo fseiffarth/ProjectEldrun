@@ -56,7 +56,7 @@
   margin-right: 2px;
   background: transparent;
   border: none;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   font-size: 12px;
   color: var(--text-secondary);
   border-radius: var(--radius-sm);
@@ -102,7 +102,7 @@
   background: transparent;
   border: none;
   color: var(--text-secondary);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   border-radius: var(--radius-sm);
 }
 .file-tree-search-clear:hover { background-color: var(--pill-hover-bg); }
@@ -143,7 +143,7 @@
   color: var(--text-secondary);
   border: 1px solid var(--border-color);
   border-radius: var(--radius-sm);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 .file-tree-search-mode:hover { background-color: var(--pill-hover-bg); }
 .file-tree-search-mode.active {
@@ -170,7 +170,7 @@
   padding: 4px 8px 2px;
 }
 
-.file-search-row { cursor: pointer; }
+.file-search-row { cursor: var(--cur-pointer, pointer); }
 
 .file-search-path {
   overflow: hidden;
@@ -196,7 +196,7 @@
   background: transparent;
   border: none;
   color: var(--text-secondary);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   border-radius: var(--radius-sm);
 }
 .file-search-act:hover {
@@ -245,7 +245,7 @@
   margin-left: auto;
 }
 
-.file-tree-refresh:disabled { opacity: 0.5; cursor: default; }
+.file-tree-refresh:disabled { opacity: 0.5; cursor: var(--cur-default, default); }
 
 .file-tree-remote-label {
   font-size: 10px;
@@ -352,14 +352,14 @@
   letter-spacing: 0.04em;
   text-transform: uppercase;
   line-height: 1;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 .side-panel-source-switch .source-seg:hover:not(.active):not(:disabled) {
   color: var(--text-primary);
 }
 .side-panel-source-switch .source-seg:disabled {
   opacity: 0.4;
-  cursor: not-allowed;
+  cursor: var(--cur-not-allowed, not-allowed);
 }
 .side-panel-source-switch .source-seg.active {
   /* Not a fixed white: the active fill is --success/--warning, which in
@@ -396,7 +396,7 @@
   letter-spacing: 0.04em;
   text-transform: uppercase;
   line-height: 1;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 .side-panel-run-host:hover { color: var(--text-primary); }
 .side-panel-run-host .run-host-label {
@@ -432,7 +432,7 @@
   letter-spacing: 0.04em;
   text-transform: uppercase;
   line-height: 1;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 .side-panel-conn-logout:hover {
   border-color: color-mix(in srgb, var(--danger) 45%, transparent);
@@ -444,7 +444,7 @@
   padding: 2px 4px;
   background: transparent;
   border: none;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   font-size: 12px;
   color: var(--text-secondary);
   border-radius: var(--radius-sm);
@@ -458,7 +458,7 @@
 
 .file-tree-crumb.current {
   color: var(--text-primary);
-  cursor: default;
+  cursor: var(--cur-default, default);
 }
 
 .file-tree-crumb.current:hover { background-color: transparent; }
@@ -513,7 +513,7 @@
   gap: 6px;
   padding: 3px 8px;
   border-radius: var(--radius-sm);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   font-size: 12px;
   color: var(--text-primary);
   user-select: none;
@@ -599,7 +599,7 @@
 .downloads-resize {
   height: 6px;
   margin-top: -3px;
-  cursor: ns-resize;
+  cursor: var(--cur-ns-resize, ns-resize);
   flex: 0 0 auto;
   background: transparent;
 }
@@ -632,7 +632,7 @@
   border-radius: var(--radius-sm);
   background: transparent;
   color: var(--text-secondary, var(--text-primary));
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 .downloads-win-btn.active {
   color: var(--accent);
@@ -659,7 +659,7 @@
   min-height: 40px;
 }
 .downloads-row {
-  cursor: grab;
+  cursor: var(--cur-grab, grab);
 }
 .downloads-meta {
   font-size: 10px;
@@ -707,7 +707,7 @@
 .alerts-resize {
   height: 6px;
   margin-top: -3px;
-  cursor: ns-resize;
+  cursor: var(--cur-ns-resize, ns-resize);
   flex: 0 0 auto;
   background: transparent;
 }
@@ -768,7 +768,7 @@
   background: transparent;
   color: var(--text-primary);
   font: inherit;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 .alerts-row:hover:not(:disabled) {
   background: var(--bg-hover);
@@ -776,7 +776,7 @@
 /* A surface that is switched off still shows its rows: the alert is real, only
    the way in is missing, and the row's tooltip says which switch. */
 .alerts-row:disabled {
-  cursor: default;
+  cursor: var(--cur-default, default);
   opacity: 0.7;
 }
 .alerts-dot {
@@ -865,7 +865,7 @@
   border-radius: var(--radius-sm);
   background: color-mix(in srgb, var(--accent) 18%, transparent);
   color: var(--text-primary);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   font-size: 10px;
   font-weight: 600;
   line-height: 1.4;
@@ -887,7 +887,7 @@
     linear-gradient(135deg, transparent 3px, color-mix(in srgb, var(--success) 10%, transparent) 0)
     top left;
   color: var(--success);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   font-size: 12px;
   font-weight: 700;
   line-height: 18px;
@@ -918,7 +918,7 @@
   font-size: 10px;
   line-height: 1;
   padding: 2px 6px;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   opacity: 0;
 }
 .alerts-row-wrap:hover .alerts-mute,
@@ -942,7 +942,7 @@
   border: 1px solid var(--border-color);
   background: transparent;
   color: var(--text-muted, var(--text-secondary));
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 .alerts-muted-chip.active,
 .alerts-muted-chip:hover {
@@ -968,7 +968,7 @@
   color: var(--accent);
   font: inherit;
   font-size: 10px;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   padding: 0;
 }
 .alerts-muted-all:hover {
@@ -1012,11 +1012,11 @@
 }
 .file-entry.file.embeddable:hover {
   z-index: 2;
-  cursor: grab;
+  cursor: var(--cur-grab, grab);
   transform: translateY(-2px) scale(1.02);
 }
 .file-entry.file.embeddable:active {
-  cursor: grabbing;
+  cursor: var(--cur-grabbing, grabbing);
   transform: translateY(0) scale(1.0);
 }
 /* Pressed: the row settles back down, so fade the same shadow rather than
@@ -1039,7 +1039,7 @@
   color: var(--success);
   font-size: 10px;
   line-height: 1;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 .file-run-btn:hover {
@@ -1053,7 +1053,7 @@
    only "still going" about a thing the user just started and is watching. The
    detached `.sh` path also sets `disabled`, hence the default cursor. */
 .file-run-btn.running {
-  cursor: default;
+  cursor: var(--cur-default, default);
   color: var(--success);
   animation: file-run-pulse 1.5s ease-in-out infinite;
 }
@@ -1112,7 +1112,7 @@
   background: transparent;
   font-size: var(--text-xs);
   line-height: 1;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 .file-diff-btn {
@@ -1126,7 +1126,7 @@
 }
 
 .file-diff-btn:disabled {
-  cursor: default;
+  cursor: var(--cur-default, default);
   opacity: 0.5;
 }
 
@@ -1270,7 +1270,7 @@
   color: var(--text-primary);
   border: 1px solid var(--border-color);
   border-radius: var(--radius-sm);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 /* Bulk "…for all" resolution bar atop the diverged list. */
@@ -1313,11 +1313,11 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 .orange-file-name:disabled {
-  cursor: default;
+  cursor: var(--cur-default, default);
 }
 
 .orange-file-name:hover:not(:disabled) {
@@ -1459,13 +1459,13 @@
   padding: 4px 7px 6px;
   color: var(--text-secondary, var(--text-primary));
   font-size: 10px;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   user-select: none;
 }
 
 .tmux-scope-toggle input {
   margin: 0;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 .tmux-machine-group .orange-file-row {
@@ -1489,7 +1489,7 @@
   color: var(--text-muted);
   font-size: var(--text-xs);
   padding: 1px 5px;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 .orange-file-act:hover:not(:disabled) {
@@ -1498,7 +1498,7 @@
 }
 
 .orange-file-act:disabled {
-  cursor: default;
+  cursor: var(--cur-default, default);
   opacity: 0.5;
 }
 
@@ -1611,7 +1611,7 @@
   color: var(--text-muted);
   font-size: 10px;
   padding: 2px 6px;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1626,7 +1626,7 @@
   color: var(--text-primary);
   border-color: var(--accent);
   background: color-mix(in srgb, var(--accent) 18%, transparent);
-  cursor: default;
+  cursor: var(--cur-default, default);
 }
 
 .file-tree-section-divider {
@@ -1652,7 +1652,7 @@
   background: none;
   border: none;
   border-top: 1px solid var(--border-color, rgba(255,255,255,0.12));
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   text-align: left;
 }
 
@@ -1669,7 +1669,7 @@
   background: none;
   border: none;
   border-top: 1px solid var(--border-color, rgba(255,255,255,0.12));
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   color: var(--accent);
 }
 
@@ -1740,7 +1740,7 @@
   line-height: 1;
   min-height: 18px;
   padding: 0 4px;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 .file-tree-sort-dir:hover {
@@ -1954,13 +1954,13 @@
   gap: 8px;
   font-size: 12px;
   color: var(--text-primary);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 .file-delete-check input {
   margin: 0;
   accent-color: var(--accent);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 /* A caveat about the operation, sitting under the control it qualifies. */
@@ -1982,7 +1982,7 @@
   padding: 7px 10px;
   background: var(--control-bg);
   color: var(--text-primary);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 .file-delete-actions button:hover {

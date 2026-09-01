@@ -63,7 +63,7 @@
 
 .file-browser-toolbar button,
 .file-browser-actions button {
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 .file-browser-toolbar button:hover:not(:disabled),
@@ -77,7 +77,7 @@
 .file-browser-toolbar button:disabled,
 .file-browser-actions button:disabled {
   opacity: 0.45;
-  cursor: default;
+  cursor: var(--cur-default, default);
 }
 
 .file-browser-actions label {
@@ -135,7 +135,7 @@
   border: 1px solid transparent;
   background: transparent;
   color: var(--text-secondary);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   font-size: 12px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -214,7 +214,7 @@
 }
 
 .file-browser-row {
-  cursor: default;
+  cursor: var(--cur-default, default);
   color: var(--text-primary);
 }
 
@@ -277,7 +277,7 @@
   justify-content: center;
   gap: 8px;
   padding: 8px;
-  cursor: default;
+  cursor: var(--cur-default, default);
 }
 
 .file-browser-tile b {
@@ -334,7 +334,7 @@
   border: 1px solid transparent;
   background: transparent;
   color: var(--text-secondary);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   font-size: 14px;
   transition: background var(--transition), border-color var(--transition), color var(--transition);
 }
@@ -351,7 +351,7 @@
    dropdowns) — an icon (real app icon, or the role's fallback glyph) followed
    by the program's label, instead of the old icon-only tile grid. */
 .global-app-menu-row[aria-disabled="true"] {
-  cursor: default;
+  cursor: var(--cur-default, default);
   opacity: 0.55;
 }
 
@@ -425,7 +425,7 @@
   height: 40px;
   border-radius: var(--radius-sm);
   border: 1px solid var(--control-border);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   flex-shrink: 0;
   background: var(--control-bg);
   color: var(--text-secondary);
@@ -461,7 +461,7 @@
   border: 1px solid transparent;
   background: transparent;
   color: var(--text-secondary);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   flex-shrink: 0;
   font-size: 14px;
   transition: background var(--transition), border-color var(--transition), color var(--transition);
@@ -521,7 +521,7 @@
   padding: 0;
   border: none;
   border-radius: var(--radius-sm);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   font-size: 20px;
   line-height: 1;
   color: var(--text-secondary);
@@ -727,7 +727,7 @@
   background: var(--control-bg);
   color: var(--text-primary);
   text-align: left;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 .project-search-row:hover,
@@ -845,7 +845,7 @@
   color: var(--text-primary) !important;
   -webkit-text-fill-color: var(--text-primary);
   text-align: left;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 .project-switcher-add-menu button:hover {

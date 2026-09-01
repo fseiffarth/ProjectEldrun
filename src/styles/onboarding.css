@@ -209,7 +209,7 @@
   color: var(--text-muted);
   font-size: 15px;
   line-height: 1;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 .hint-bubble-close:hover {
@@ -238,7 +238,7 @@
   background: transparent;
   color: var(--text-muted);
   font-size: 11px;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   padding: 0;
 }
 
@@ -255,7 +255,7 @@
   color: var(--accent-contrast);
   font-size: 11px;
   padding: 4px 12px;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 .hint-bubble-got-it:hover {
@@ -324,7 +324,7 @@
   color: var(--text-secondary);
   font-size: 13px;
   line-height: 1;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   opacity: 0.8;
   /* Tops the layering contract: it competes in the root stacking context
      (`.app-body` sets no z-index), where the header (80), menus (1000) and
@@ -452,7 +452,7 @@
   background: transparent;
   color: var(--text-muted);
   font-size: 11px;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   padding: 0;
 }
 
@@ -468,12 +468,12 @@
   color: var(--text-primary);
   font-size: 11px;
   padding: 4px 12px;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 .tour-bubble-back:disabled {
   opacity: 0.4;
-  cursor: default;
+  cursor: var(--cur-default, default);
 }
 
 .tour-bubble-next {
@@ -483,7 +483,7 @@
   color: var(--accent-contrast);
   font-size: 11px;
   padding: 4px 14px;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 .tour-bubble-next:hover {
@@ -589,7 +589,7 @@
   color: var(--text-secondary);
   font-size: 11px;
   padding: 3px 9px;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 .tour-hint-btn:hover {
@@ -656,7 +656,7 @@
   border: 1px solid var(--border-color);
   background: var(--bg-panel);
   color: var(--text-primary);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   transition: border-color var(--transition), background var(--transition);
 }
 

@@ -83,7 +83,7 @@
   border: 1px solid var(--border-color);
   background: var(--bg-elevated, var(--bg-panel));
   color: var(--text-primary);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   border-radius: var(--radius);
 }
 
@@ -124,7 +124,7 @@
 
 .presentation-tool:disabled {
   opacity: 0.4;
-  cursor: default;
+  cursor: var(--cur-default, default);
 }
 
 .presentation-tool.on {
@@ -152,7 +152,7 @@
   height: 18px;
   border-radius: 50%;
   border: 2px solid transparent;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   padding: 0;
 }
 
@@ -203,7 +203,7 @@
 .presentation-slider input[type="range"] {
   width: 100%;
   accent-color: var(--accent);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 .presentation-preview {
@@ -239,7 +239,7 @@
   height: 18px;
   font-size: 13px;
   line-height: 1;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 .file-viewer-open-external:hover {
@@ -261,7 +261,7 @@
   height: 18px;
   font-size: 12px;
   line-height: 1;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 .file-viewer-print:hover:not(:disabled) {
@@ -271,7 +271,7 @@
 
 .file-viewer-print:disabled {
   opacity: 0.5;
-  cursor: default;
+  cursor: var(--cur-default, default);
 }
 
 .file-viewer-print svg {
@@ -294,7 +294,7 @@
   height: 18px;
   font-size: 12px;
   line-height: 1;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 .file-viewer-autosync:hover:not(:disabled) {
@@ -309,7 +309,7 @@
 }
 
 .file-viewer-autosync:disabled {
-  cursor: default;
+  cursor: var(--cur-default, default);
   opacity: 0.45;
 }
 
@@ -326,7 +326,7 @@
   padding: 0;
   font-size: 12px;
   line-height: 1;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   border-radius: var(--radius-sm);
   color: var(--warning);
   border: 1px solid color-mix(in srgb, var(--warning) 55%, transparent);
@@ -353,7 +353,7 @@
   border: 0;
   padding: 1px 8px;
   font-size: 10px;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 .file-viewer-mode + .file-viewer-mode {
@@ -377,7 +377,7 @@
   width: 22px;
   height: 18px;
   line-height: 1;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 .file-viewer-save svg {
@@ -393,7 +393,7 @@
 
 .file-viewer-save:disabled {
   opacity: 0.6;
-  cursor: default;
+  cursor: var(--cur-default, default);
 }
 
 .file-viewer-save:not(:disabled):hover {
@@ -413,12 +413,12 @@
   border-radius: var(--radius-sm);
   padding: 1px 8px;
   font-size: 10px;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 .file-viewer-format-btn:disabled {
   opacity: 0.5;
-  cursor: default;
+  cursor: var(--cur-default, default);
 }
 
 .file-viewer-format-btn:not(:disabled):hover {
@@ -642,7 +642,7 @@
   border-radius: var(--radius-sm);
   padding: 1px 8px;
   font-size: 10px;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 .file-viewer-ai-btn:hover {
   color: var(--text-primary);
@@ -660,7 +660,7 @@
   border-radius: var(--radius-sm);
   padding: 1px 4px;
   font-size: 10px;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 /* Markdown formatting toolbar (bold/italic/heading/link/list/TOC). */
@@ -684,7 +684,7 @@
   border: 0;
   font-size: 11px;
   line-height: 1;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 .file-viewer-md-btn + .file-viewer-md-btn {
@@ -745,7 +745,7 @@
   border-radius: var(--radius-sm);
   padding: 0 6px;
   font-size: 10px;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 .file-viewer-validation-jump:hover {
@@ -800,7 +800,7 @@
   padding: 0 5px;
   font-size: 12px;
   line-height: 1;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 .file-viewer-zoom-btn.file-viewer-zoom-text {
@@ -809,7 +809,7 @@
 
 .file-viewer-zoom-btn:disabled {
   opacity: 0.5;
-  cursor: default;
+  cursor: var(--cur-default, default);
 }
 
 .file-viewer-zoom-btn:not(:disabled):hover {
@@ -855,7 +855,7 @@
   background: transparent;
   border: 0;
   padding: 0 2px;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 .file-viewer-fontsize-level:hover {
@@ -873,7 +873,7 @@
   width: 100%;
   height: 100%;
   overflow: hidden;
-  cursor: grab;
+  cursor: var(--cur-grab, grab);
   touch-action: none;
   background-color: var(--bg-panel);
   background-image:
@@ -886,7 +886,7 @@
 }
 
 .file-viewer-image-viewport.dragging {
-  cursor: grabbing;
+  cursor: var(--cur-grabbing, grabbing);
 }
 
 .file-viewer-image {
@@ -997,7 +997,7 @@
   color: var(--text-muted);
   font-size: 10px;
   line-height: 1;
-  cursor: grab;
+  cursor: var(--cur-grab, grab);
   opacity: 0;
   touch-action: none;
 }
@@ -1008,7 +1008,7 @@
 }
 
 .yaml-grip-empty {
-  cursor: default;
+  cursor: var(--cur-default, default);
 }
 
 .yaml-row-dragging {
@@ -1019,7 +1019,7 @@
 }
 
 .yaml-row-dragging .yaml-grip {
-  cursor: grabbing;
+  cursor: var(--cur-grabbing, grabbing);
 }
 
 .yaml-row-drop-before {
@@ -1171,7 +1171,7 @@
   color: var(--text-muted);
   font: inherit;
   opacity: 0.7;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 .yaml-note:hover {
@@ -1206,11 +1206,11 @@
   color: var(--text-muted);
   font-size: 10px;
   line-height: 1;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 .yaml-caret-empty {
-  cursor: default;
+  cursor: var(--cur-default, default);
 }
 
 .yaml-key {
@@ -1220,7 +1220,7 @@
   padding: 1px 2px;
   color: var(--accent);
   font: inherit;
-  cursor: text;
+  cursor: var(--cur-text, text);
   /* Sibling keys are padded to one column (see keyWidth in YamlTree), so the
      key must hug its left edge for the values to land on a shared one. */
   text-align: left;
@@ -1278,7 +1278,7 @@
   max-width: none;
   background: transparent;
   border-color: transparent;
-  cursor: text;
+  cursor: var(--cur-text, text);
 }
 
 .yaml-value-input:hover:not(:focus) {
@@ -1336,7 +1336,7 @@
   border: 0;
   background: transparent;
   color: var(--accent);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   padding: 0 2px;
   font-size: 13px;
   line-height: 1;
@@ -1344,7 +1344,7 @@
 
 .yaml-list-chevron:disabled {
   opacity: 0.25;
-  cursor: default;
+  cursor: var(--cur-default, default);
 }
 
 .yaml-key-input:focus,
@@ -1401,7 +1401,7 @@
   border-radius: var(--radius-sm);
   padding: 2px 4px;
   font: inherit;
-  cursor: text;
+  cursor: var(--cur-text, text);
 }
 
 .yaml-block-input:hover:not(:focus) {
@@ -1421,7 +1421,7 @@
   border-radius: var(--radius-sm);
   padding: 0 2px;
   font: inherit;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 /* Row actions stay out of the way until the row is hovered — but never hide from
@@ -1484,7 +1484,7 @@
   padding: 0 5px;
   font-size: 10px;
   line-height: 16px;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 .yaml-act:not(:disabled):hover,
@@ -1496,7 +1496,7 @@
 .yaml-act:disabled,
 .yaml-add:disabled {
   opacity: 0.4;
-  cursor: default;
+  cursor: var(--cur-default, default);
 }
 
 .yaml-act-del:not(:disabled):hover {
@@ -1628,7 +1628,7 @@
   padding: 1px 2px;
   color: inherit;
   font: inherit;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   text-align: left;
 }
 
@@ -1761,7 +1761,7 @@
    card header's hover but keeps its width always, so no header shifts when it does. */
 .yaml-card-grip {
   flex: none;
-  cursor: grab;
+  cursor: var(--cur-grab, grab);
   opacity: 0;
   touch-action: none; /* the pointer drag owns the gesture, not the scroller */
 }
@@ -1778,7 +1778,7 @@
 }
 
 .yaml-card-dragging .yaml-card-grip {
-  cursor: grabbing;
+  cursor: var(--cur-grabbing, grabbing);
 }
 
 .yaml-card-drop {
@@ -1826,7 +1826,7 @@
   border-radius: var(--radius-sm);
   color: var(--text-muted);
   font: inherit;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 .yaml-crumb:hover {
@@ -1916,7 +1916,7 @@
   color: var(--accent);
   font: inherit;
   font-size: 11px;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 .yaml-card-drill:hover {
@@ -2032,7 +2032,7 @@
   padding: 0;
   color: var(--text-muted);
   font: inherit;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 /* `@` is chrome, the type is a field: the sigil stays a static glyph so the
@@ -2407,7 +2407,7 @@
   font: inherit;
   font-variant-numeric: tabular-nums;
   text-align: right;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 /* The dot lives in the gutter's left padding, clear of the numbers. Shown faint
@@ -2524,7 +2524,7 @@
    referenced file is discoverable. Gated on hover so only the link reads as
    clickable, not the whole editor. */
 .file-viewer-code-area.link-hover .file-viewer-code-editor {
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 /* With a highlight layer present, hide the textarea's own glyphs (keeping the
@@ -2753,7 +2753,7 @@
   background: var(--bg-panel);
   color: var(--text-primary);
   font-size: 11px;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2782,7 +2782,7 @@
   background: var(--bg-panel);
   border-right: 1px solid var(--border-subtle);
   user-select: none;
-  cursor: default;
+  cursor: var(--cur-default, default);
 }
 /* Scroll-locked as a block, mirroring the number gutter (see syncScroll). */
 .file-viewer-blame-inner {
@@ -3076,7 +3076,7 @@
 .file-viewer-compare-take {
   position: absolute;
   pointer-events: auto;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   height: 18px;
   display: inline-flex;
   align-items: center;
@@ -3157,7 +3157,7 @@
 }
 .file-viewer-compare-take.disabled {
   opacity: 0.3;
-  cursor: default;
+  cursor: var(--cur-default, default);
   box-shadow: none;
 }
 .file-viewer-compare-take.disabled:hover {
@@ -3189,7 +3189,7 @@
 }
 .file-viewer-compare-ruler-mark.clickable {
   pointer-events: auto;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 .file-viewer-compare-ruler-mark.clickable:hover {
   opacity: 1;
@@ -3222,7 +3222,7 @@
   gap: 3px;
 }
 .file-viewer-compare-chip {
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   border-radius: var(--radius-sm);
   padding: 0 5px;
   font-size: 10px;
@@ -3239,7 +3239,7 @@
 }
 .file-viewer-compare-chip.disabled {
   opacity: 0.4;
-  cursor: default;
+  cursor: var(--cur-default, default);
 }
 
 /* #67 in-editor search: the match spans paint a translucent highlight behind the
@@ -3457,7 +3457,7 @@
   padding: 1px 4px;
   font-size: 11px;
   line-height: 1.2;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 .file-viewer-find-toggle:hover,
 .file-viewer-find-toggle.active { color: var(--text-primary); }
@@ -3489,13 +3489,13 @@
   padding: 1px 6px;
   font-size: 12px;
   line-height: 1.2;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 .file-viewer-find-btn:hover:not(:disabled) {
   color: var(--text-primary);
   border-color: var(--border-color);
 }
-.file-viewer-find-btn:disabled { opacity: 0.4; cursor: default; }
+.file-viewer-find-btn:disabled { opacity: 0.4; cursor: var(--cur-default, default); }
 .file-viewer-find-btn.active {
   color: var(--accent);
   border-color: var(--accent);
@@ -3526,7 +3526,7 @@
   gap: 8px;
   padding: 3px 8px;
   border-radius: var(--radius-sm);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   white-space: nowrap;
 }
 .file-viewer-tex-compl-item.active {
@@ -3712,7 +3712,7 @@
   background: var(--bg-panel);
   border: 1px solid var(--border-color);
   border-radius: var(--radius-sm);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   opacity: 0.75;
 }
 .file-viewer-ac-context-add:hover {
@@ -3750,7 +3750,7 @@
   background: transparent;
   border: none;
   border-radius: var(--radius-sm);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 .file-viewer-ac-context-chip > button:hover {
   color: var(--text-primary);
@@ -3787,9 +3787,9 @@
   padding: 1px 6px;
   font-size: 11px;
   line-height: 1;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
-.file-viewer-history-btn:disabled { opacity: 0.45; cursor: default; }
+.file-viewer-history-btn:disabled { opacity: 0.45; cursor: var(--cur-default, default); }
 .file-viewer-history-btn:not(:disabled):hover {
   color: var(--text-primary);
   border-color: var(--text-muted);
@@ -3813,7 +3813,7 @@
   border-radius: var(--radius-sm);
   padding: 1px 8px;
   font-size: 11px;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 .file-viewer-reload-btn:hover { border-color: var(--accent); }
 
@@ -4135,7 +4135,7 @@
 }
 .file-viewer-pdf-redact-box.is-armed {
   pointer-events: auto;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   outline: 1px dashed color-mix(in srgb, var(--accent) 80%, transparent);
   outline-offset: 1px;
 }
@@ -4150,7 +4150,7 @@
 .file-viewer-pdf-redact-layer {
   position: absolute;
   inset: 0;
-  cursor: crosshair;
+  cursor: var(--cur-crosshair, crosshair);
   touch-action: none;
   /* Over everything on the page, the text layer included. An armed tool owns the
      plain drag — that is what arming it means — and the drag it owns is the same one
@@ -4172,7 +4172,7 @@
   position: absolute;
   top: 0;
   left: 0;
-  cursor: crosshair;
+  cursor: var(--cur-crosshair, crosshair);
   touch-action: none;
   /* The blackout surface's reason: an armed tool owns the plain drag. */
   z-index: 5;
@@ -4289,7 +4289,7 @@
   line-height: 1;
   /* `grab`, not `pointer`: the marker both opens its card and drags to a new spot,
      and the drag is the half nothing else on the page would ever suggest. */
-  cursor: grab;
+  cursor: var(--cur-grab, grab);
   border: 1px solid rgba(120, 90, 0, 0.65);
   border-radius: 4px 4px 4px 0;
   background: #ffd75e;
@@ -4308,7 +4308,7 @@
 }
 /* Being dragged. No transition on the position, or the pin would lag the cursor. */
 .file-viewer-pdf-note.is-dragging {
-  cursor: grabbing;
+  cursor: var(--cur-grabbing, grabbing);
   opacity: 0.85;
   box-shadow: 0 4px 10px rgba(0, 0, 0, 0.45);
 }
@@ -4415,7 +4415,7 @@
   margin: 0;
   border: 0;
   border-radius: 1px;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   mix-blend-mode: multiply;
   /* Above the text layer (1), below the links (3) and the markers (4). */
   z-index: 2;
@@ -4472,7 +4472,7 @@
   padding: 0;
   border: 1px solid rgba(0, 0, 0, 0.35);
   border-radius: 3px;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 .file-viewer-pdf-sel-swatch:hover,
 .file-viewer-pdf-sel-swatch:focus-visible {
@@ -4561,7 +4561,7 @@
   color: var(--text-primary);
   font: inherit;
   text-align: left;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 .file-viewer-pdf-notes-body:hover {
   color: var(--accent);
@@ -4669,7 +4669,7 @@
   color: transparent;
   position: absolute;
   white-space: pre;
-  cursor: text;
+  cursor: var(--cur-text, text);
   transform-origin: 0% 0%;
 }
 .file-viewer-pdf-text-layer > :not(.markedContent),
@@ -4683,7 +4683,7 @@
 /* A figure's alt text is not text on the page; it must not join a selection. */
 .file-viewer-pdf-text-layer span[role="img"] {
   user-select: none;
-  cursor: default;
+  cursor: var(--cur-default, default);
 }
 /* The selection is the one part of this layer that is visible at all, so it is
    drawn in the app's accent rather than the engine's default — over white paper,
@@ -4728,12 +4728,12 @@
   border-radius: var(--radius-sm);
   padding: 2px 10px;
   font-size: 11px;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 .file-viewer-tex-compile:disabled {
   opacity: 0.6;
-  cursor: default;
+  cursor: var(--cur-default, default);
 }
 
 /* Inherits the shared Dropdown look; only the toolbar's compact sizing differs. */
@@ -4806,7 +4806,7 @@
 }
 
 .file-viewer-pdf-page.is-syncable {
-  cursor: crosshair;
+  cursor: var(--cur-crosshair, crosshair);
 }
 
 .file-viewer-pdf-sync-highlight {
@@ -4878,7 +4878,7 @@
   margin: 0;
   border: 0;
   border-radius: 2px;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   background: color-mix(in srgb, var(--pdf-link-color) 9%, transparent);
   box-shadow: inset 0 -1.5px 0 color-mix(in srgb, var(--pdf-link-color) 62%, transparent);
   transition: background-color 90ms ease-out, box-shadow 90ms ease-out;
@@ -4930,7 +4930,7 @@
    promising a link cursor. The canvas carries the armed marker and the boxes are
    its later siblings. */
 .file-viewer-pdf-page.is-syncable ~ .file-viewer-pdf-link {
-  cursor: crosshair;
+  cursor: var(--cur-crosshair, crosshair);
 }
 
 /* Where an internal link just landed: a band across the page at the destination's
@@ -5069,7 +5069,7 @@
   border-radius: var(--radius-sm);
   padding: 1px 6px;
   font-size: 10px;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 /* Jump-to-error list under a failed compile. Each row is a button: a
@@ -5093,7 +5093,7 @@
   border: 1px solid transparent;
   border-radius: var(--radius-sm);
   padding: 2px 6px;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   color: var(--text-primary);
   font-size: 11px;
 }
@@ -5284,7 +5284,7 @@
   margin: 0.32em 0 0;
   accent-color: var(--accent);
   flex: 0 0 auto;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 .markdown-body hr {
@@ -5394,7 +5394,7 @@
   border: 1px solid var(--border-color);
   border-radius: var(--radius-sm);
   color: var(--text-muted);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   font-size: 13px;
   line-height: 1;
   padding: 3px 8px;
@@ -5417,7 +5417,7 @@
   stroke-width: 1.4;
 }
 .md-graph-node {
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 .md-graph-node circle {
   fill: color-mix(in srgb, var(--accent) 22%, var(--bg-panel));
@@ -5449,7 +5449,7 @@
 }
 /* The viewed document itself: the ring center, not a click target. */
 .md-graph-node-current {
-  cursor: default;
+  cursor: var(--cur-default, default);
 }
 .md-graph-node-current circle {
   fill: var(--accent);

@@ -49,7 +49,7 @@
   padding: 5px 0;
   border-bottom: 1px solid var(--border-subtle, var(--border-color));
   font-size: 12px;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 .big-folder-row:hover {
   background: var(--bg-hover);
@@ -87,13 +87,13 @@
   font: inherit;
   color: var(--accent, var(--text-primary));
   text-decoration: underline;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 .big-folder-note .link-button:disabled {
   color: var(--text-muted);
   text-decoration: none;
-  cursor: default;
+  cursor: var(--cur-default, default);
 }
 
 /* A hint sentence's inline action (e.g. "Create a GitHub access token…") —
@@ -106,7 +106,7 @@
   font: inherit;
   color: var(--accent, var(--text-primary));
   text-decoration: underline;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 /* ── Orbit spinner (active-tracking indicator) ───────────────────────── */
@@ -161,7 +161,7 @@
   background: var(--control-bg);
   color: var(--text-secondary);
   font-size: 11px;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   border-radius: var(--radius-sm);
   transition: background var(--transition), border-color var(--transition), color var(--transition);
 }
@@ -278,7 +278,7 @@
   flex-shrink: 0;
   font-size: 11px;
   color: var(--text-secondary);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 /* Scheduled warm-up (Manage CLIs): the global block at the top of the panel and
    the per-agent row inside each installed agent's card. Both are built out of
@@ -334,13 +334,13 @@
   border: none;
   background: none;
   color: var(--text-muted);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   font-size: 12px;
   line-height: 1;
   padding: 1px 2px;
 }
 .agent-cron-chip-remove:hover:not(:disabled) { color: var(--danger); }
-.agent-cron-chip-remove:disabled { cursor: default; opacity: 0.5; }
+.agent-cron-chip-remove:disabled { cursor: var(--cur-default, default); opacity: 0.5; }
 .agent-cron-add {
   display: flex;
   align-items: center;
@@ -361,7 +361,7 @@
 /* The agent grid is the endings grid (`settings-chrome.css`), short enough to
    never need its own scrollbar: the schedule card already sits in a scroll. */
 .agent-cron-grid { max-height: none; margin-top: 6px; }
-.project-ending-toggle:disabled { cursor: default; opacity: 0.45; }
+.project-ending-toggle:disabled { cursor: var(--cur-default, default); opacity: 0.45; }
 .project-ending-toggle:disabled:hover { background: var(--control-bg); border-color: var(--control-border); }
 .project-ending-toggle.is-hidden:disabled:hover { background: var(--bg-main); border-color: var(--border-subtle); }
 .agent-cron-empty,
@@ -805,7 +805,7 @@
   border: 1px solid var(--control-border);
   background: var(--control-bg);
   color: var(--text-secondary);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   transition: background-color var(--transition), border-color var(--transition), color var(--transition);
 }
 .local-model-role-chip:hover {
@@ -843,7 +843,7 @@
 }
 .local-model-role-chip.local-model-unload:disabled {
   opacity: 0.6;
-  cursor: default;
+  cursor: var(--cur-default, default);
 }
 
 /* ── Update checks ────────────────────────────────────────────────────────
@@ -859,7 +859,7 @@
 }
 .local-model-role-chip.local-model-update-action:disabled {
   opacity: 0.6;
-  cursor: default;
+  cursor: var(--cur-default, default);
 }
 /* "couldn't check" — a fact about the *check*, not about the model, so it is
    plain muted text and never a button: there is nothing here to click. */
@@ -943,7 +943,7 @@
 .local-model-version-note.has-update {
   opacity: 1;
   border-radius: var(--radius-sm);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   transition: background-color var(--transition), border-color var(--transition);
 }
 .local-model-version-note.has-update:hover,
@@ -1008,7 +1008,7 @@
   color: var(--text-muted);
   font-size: 10px;
   line-height: 1;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 .local-model-autostart-dismiss:hover {
   background: var(--control-hover-bg);
@@ -1112,7 +1112,7 @@
   color: var(--text-secondary);
   font-size: 10px;
   padding: 1px 6px;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 .local-model-download-action:hover {
   color: var(--text-primary);
@@ -1342,7 +1342,7 @@
   background: var(--control-bg);
   border: 1px solid var(--control-border);
   color: var(--text-primary);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 .ollama-catalog-sort:focus {
   outline: none;
@@ -1377,7 +1377,7 @@
   border-radius: var(--radius-lg);
   background: var(--control-bg);
   color: var(--text-secondary);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   text-transform: capitalize;
 }
 .ollama-chip:hover {
@@ -1438,7 +1438,7 @@
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius);
   background: var(--control-bg);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   transition: background-color var(--transition), border-color var(--transition);
 }
 .ollama-autostart-row:hover {
@@ -1706,7 +1706,7 @@
   border-radius: var(--radius-sm);
   background: var(--control-bg);
   color: var(--text-primary);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   font-family: ui-monospace, monospace;
   line-height: 1.4;
 }
@@ -1718,7 +1718,7 @@
   border-color: var(--success);
   color: var(--success);
 }
-.ollama-tag-btn:disabled { opacity: 0.6; cursor: default; }
+.ollama-tag-btn:disabled { opacity: 0.6; cursor: var(--cur-default, default); }
 
 /* ── Activity window (modal) ─────────────────────────────────────────── */
 .activity-window {
@@ -1853,7 +1853,7 @@
   border: none;
   border-radius: var(--radius-sm);
   background: transparent;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 .header-conn-lamps:hover {
   background: color-mix(in srgb, var(--text-secondary) 16%, transparent);
@@ -2222,14 +2222,14 @@
   background: transparent;
   color: var(--danger, var(--text-primary));
   font-size: 11px;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 .vpn-indicator-disconnect:hover:not(:disabled) {
   background: color-mix(in srgb, var(--danger, var(--text-secondary)) 14%, transparent);
 }
 .vpn-indicator-disconnect:disabled {
   opacity: 0.5;
-  cursor: default;
+  cursor: var(--cur-default, default);
 }
 /* Connect: the header can bring a tunnel *up*, not just take one down — a VPN is
    something you use, not only a precondition for an SSH project. */
@@ -2242,7 +2242,7 @@
   background: transparent;
   color: var(--accent, var(--text-primary));
   font-size: 11px;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 .vpn-indicator-connect:hover {
   background: color-mix(in srgb, var(--accent, var(--text-secondary)) 14%, transparent);
@@ -2267,7 +2267,7 @@
   background: transparent;
   color: var(--danger, var(--text-primary));
   font-size: 11px;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 .vpn-indicator-remove:hover {
   background: color-mix(in srgb, var(--danger, var(--text-secondary)) 14%, transparent);
@@ -2282,10 +2282,10 @@
   margin-top: 4px;
   font-size: 11px;
   color: var(--text-secondary);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 .vpn-indicator-auto:has(input:disabled) {
-  cursor: default;
+  cursor: var(--cur-default, default);
   opacity: 0.6;
 }
 /* The Save-password toggle row sits inside a `.menu-form` (the add-machine form),
@@ -2347,10 +2347,10 @@
      right cluster's (see `.header-right .global-apps-menu > .tab-new-menu`). */
 }
 .machines-indicator-row {
-  cursor: grab;
+  cursor: var(--cur-grab, grab);
 }
 .machines-indicator-row:active {
-  cursor: grabbing;
+  cursor: var(--cur-grabbing, grabbing);
 }
 /* Per-row expand toggle: keeps a row to one line (lamp + label + actions) by
    default, with address/system-monitor/auto-connect behind it — a long machine
@@ -2369,7 +2369,7 @@
   color: var(--text-secondary);
   font-size: 10px;
   line-height: 1;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   border-radius: var(--radius-sm);
 }
 .machines-row-expand-btn:hover {
@@ -2415,7 +2415,7 @@
   color: var(--text-secondary);
   font-size: 12px;
   line-height: 1;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 .machines-row-action:hover {
   color: var(--text-primary);
@@ -2423,7 +2423,7 @@
 }
 .machines-row-action:disabled {
   opacity: 0.5;
-  cursor: default;
+  cursor: var(--cur-default, default);
 }
 .machines-row-action.is-accent {
   border-color: var(--accent, var(--text-secondary));
@@ -2459,7 +2459,7 @@
   font-size: 12px;
   line-height: 1;
   opacity: 0.5;
-  cursor: grab;
+  cursor: var(--cur-grab, grab);
   touch-action: none;
 }
 .machines-row-grip:hover,
@@ -2468,7 +2468,7 @@
   color: var(--text-primary);
 }
 .machines-row-grip:active {
-  cursor: grabbing;
+  cursor: var(--cur-grabbing, grabbing);
 }
 
 /* The row being dragged: it follows the cursor (an inline translateY set by
@@ -2704,7 +2704,7 @@
   gap: 6px;
   font-size: 12px;
   color: var(--text-secondary);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 .remote-connect-remember input {
   width: auto;

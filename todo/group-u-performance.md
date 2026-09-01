@@ -637,3 +637,48 @@ screen is not.*
       the row and each theme returns to its own value.
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work
+
+250. **Custom mouse cursors: three packs, drawn from the live theme.** ✅ Done
+    2026-09-01, code-complete and **live-unverified**. `Settings.ui_cursor`,
+    beside the accent and corner knobs in the Theme Customizer: **Aurora**
+    (accent body, contrast outline, soft halo), **Pixel** (the same shapes on a
+    16-pixel grid, upscaled with smoothing off) and **Ink** (monochrome, text
+    colour on the window's own ground); unset is the system cursors.
+    - **The art is drawn at runtime, not shipped.** `lib/cursorPacks.ts`
+      rasterises twelve shapes (arrow, hand, I-beam, open hand, fist, move, the
+      two resize axes and their `col`/`row` twins, crosshair, deny) onto a
+      canvas and emits `data:image/png` URLs, so the pointer takes the live
+      `--accent`/`--text-primary`/`--bg-main` and recolors with the theme, a
+      custom accent and every Theme Customizer edit. PNG rather than SVG because
+      WebKit has never supported an SVG image as a CSS cursor — the Linux window
+      would have fallen back to the keyword and shown nothing.
+    - **How it reaches the app**: `stores/settings.applyCursor` writes the
+      twelve `--cur-*` vars onto the root element and stamps `data-cursor`;
+      every rule in the corpus was rewritten to
+      `cursor: var(--cur-pointer, pointer)` (443 declarations across 16 files,
+      plus a handful of inline styles), so with no pack active the declaration
+      is exactly the keyword it always was. `styles/cursors.css` holds the root
+      arrow, the text surfaces (fields, xterm, pdf.js's text layer) and the
+      settings preview chrome.
+    - **A failed render applies nothing**: no canvas backend means no vars *and*
+      no attribute, so the keyword fallbacks stand and the system cursors are
+      what is left — never a page with no pointer.
+    - Persistence rides the backend's `extra` catch-all like `ui_theme_vars`
+      (**no Rust change, no backend restart**). Cross-window via
+      `APPEARANCE_CHANGED_EVENT`; a saved Theme Customizer preset carries the
+      pack. Deliberately *not* pre-painted from `index.html` — twelve canvas
+      renders is not what a pre-paint script is for, and a frame of the system
+      arrow at launch costs nothing.
+    - [x] 🤖 Automated test — `src/__tests__/CursorPacks.test.ts` (normalize,
+      every shape emitted with its hotspot and keyword fallback, both clear
+      paths, the no-canvas no-op, and a corpus scan that fails on a bare
+      `cursor: pointer;` anywhere in the stylesheet).
+    - [ ] 🖐️ Manual test — Settings → *Theme colors* → Customize → Mouse
+      cursor: pick Aurora and check the preview strip matches the pointer on
+      screen; hover a button (hand), a text field and a terminal (I-beam), a
+      tab bar grip (open hand, then fist while dragging) and a pane divider
+      (double arrow). Switch the theme and change the accent — the pointer
+      recolors with them. Check a popout window follows live, then set it back
+      to System and confirm the desktop's own cursors return everywhere.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work

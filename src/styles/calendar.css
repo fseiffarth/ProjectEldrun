@@ -91,7 +91,7 @@
   color: var(--text-primary);
   border: 1px solid var(--control-border);
   border-radius: var(--radius);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 .cal-nav-btn {
@@ -109,7 +109,7 @@
 
 .cal-btn:disabled {
   opacity: 0.5;
-  cursor: default;
+  cursor: var(--cur-default, default);
 }
 
 .cal-btn-primary {
@@ -153,7 +153,7 @@
   color: var(--text-secondary);
   border: 1px solid var(--control-border);
   border-radius: var(--radius);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 .cal-chip:hover {
@@ -173,7 +173,7 @@
   padding: 2px 4px;
   font-size: 11px;
   color: var(--accent);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 .cal-link-btn:hover {
@@ -219,7 +219,7 @@
   display: inline-flex;
   align-items: center;
   padding: 0 6px;
-  cursor: text;
+  cursor: var(--cur-text, text);
   /* `.cal-input`'s height is a control's, and a flex box has to be told to fill
      it or the segments sit on the baseline. */
   box-sizing: border-box;
@@ -280,7 +280,7 @@
   background: none;
   color: inherit;
   font: inherit;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 .time-field-mer:focus-visible,
@@ -292,7 +292,7 @@
 
 .time-field.is-disabled {
   opacity: 0.45;
-  cursor: default;
+  cursor: var(--cur-default, default);
 }
 
 .cal-textarea {
@@ -326,7 +326,7 @@
   color: var(--text-primary);
   background: var(--control-bg);
   border-bottom: 1px solid var(--accent);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   flex: 0 0 auto;
 }
 
@@ -395,7 +395,7 @@
   border: 1px solid transparent;
   border-radius: var(--radius);
   color: var(--text-secondary);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 .cal-mini-day:hover {
@@ -488,7 +488,7 @@
   padding: 0;
   border: 1px solid var(--control-border);
   background: none;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   flex: 0 0 auto;
 }
 
@@ -506,7 +506,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  cursor: default;
+  cursor: var(--cur-default, default);
 }
 
 .cal-list-name-off {
@@ -568,7 +568,7 @@
   top: 0;
   bottom: 0;
   border-right: 1px solid var(--border-subtle);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 .cal-month-day:hover {
@@ -607,7 +607,7 @@
   left: 5px;
   font-size: var(--text-xs);
   color: var(--text-muted);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 .cal-month-more:hover {
@@ -628,7 +628,7 @@
   white-space: nowrap;
   overflow: hidden;
   border-radius: var(--radius);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   color: var(--accent);
 }
 
@@ -722,7 +722,7 @@
   min-width: 0;
   padding: 3px;
   border-left: 1px solid var(--border-subtle);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 .cal-allday-col-selected {
@@ -764,7 +764,7 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 /* ── Day / week: the hour grid ───────────────────────────────────────────── */
@@ -858,7 +858,7 @@
   border-left: 3px solid currentColor;
   background: color-mix(in srgb, currentColor 72%, transparent);
   color: var(--accent);
-  cursor: grab;
+  cursor: var(--cur-grab, grab);
   z-index: 2;
 }
 
@@ -867,7 +867,7 @@
 }
 
 .cal-block-dragging {
-  cursor: grabbing;
+  cursor: var(--cur-grabbing, grabbing);
   opacity: 0.85;
   z-index: 4;
 }
@@ -923,7 +923,7 @@
   right: 0;
   bottom: 0;
   height: 6px;
-  cursor: ns-resize;
+  cursor: var(--cur-ns-resize, ns-resize);
 }
 
 /* The preview drawn while dragging out a new event. */
@@ -980,7 +980,7 @@
   gap: 8px;
   padding: 4px 6px;
   font-size: 12px;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 .cal-agenda-row:hover {
@@ -1066,7 +1066,7 @@
 
 .cal-task-check {
   flex: 0 0 auto;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 .cal-task-swatch {
@@ -1207,7 +1207,7 @@
   gap: 6px;
   font-size: 12px;
   color: var(--text-primary);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 .cal-section {
@@ -1250,7 +1250,7 @@
   color: var(--text-secondary);
   border: 1px solid var(--control-border);
   border-radius: var(--radius);
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 
 .cal-weekday-btn:hover {
