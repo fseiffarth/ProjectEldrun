@@ -3,7 +3,7 @@ import { useMemo } from "react";
 import { create } from "zustand";
 import type { ProjectBox } from "../types";
 import { resolveProjectDirectory } from "../types";
-import { useProjectsStore } from "./projects";
+import { restoreProjectScope, useProjectsStore } from "./projects";
 import { cmdToKind, hydrateScopeFromDisk, useTabsStore } from "./tabs";
 
 /** Scope-id prefix for box-rooted tabs, disjoint from project ids and "root". */
@@ -82,7 +82,9 @@ interface BoxesStore {
     ids: string[],
     target: { name?: string; boxId?: string },
   ) => Promise<ProjectBox | null>;
-  /** Open a box: ensure its folder exists and activate its persisted scope. */
+  /** Open a box: restore closed members' tabs (box-local — persisted status
+   *  untouched), ensure the box folder exists, and activate the box's
+   *  persisted scope. */
   openBox: (boxId: string) => Promise<void>;
 }
 
@@ -229,6 +231,25 @@ export const useBoxesStore = create<BoxesStore>((set, get) => ({
   openBox: async (boxId) => {
     const box = get().boxes.find((b) => b.id === boxId);
     if (!box) return;
+    // Reopen closed members BOX-LOCALLY: entering a box restores the tabs of
+    // members the user closed in the general pill strip, so their work is
+    // reachable from the slice again — but it never flips their persisted
+    // status. A project appears in the general strip only if it was already
+    // there; globally it stays closed until an explicit activation. The slice
+    // shows members regardless of status (ProjectSwitcher.visibleProjects).
+    // `restoreProjectScope` is idempotent (existing scope key and in-flight
+    // claims both no-op), sequential and fire-and-forget: nothing about
+    // entering the box waits on a member's pty_spawns.
+    {
+      const closed = useProjectsStore
+        .getState()
+        .projects.filter((p) => p.status === "inactive" && box.member_ids.includes(p.id));
+      if (closed.length > 0) {
+        void (async () => {
+          for (const p of closed) await restoreProjectScope(p).catch(() => {});
+        })();
+      }
+    }
     // Flush the OUTGOING scope's layout before the switch: entering a box
     // cancels CenterPanel's 300 ms persist debounce (its cleanup clears the
     // timer and re-schedules for the box scope), so a tab opened/closed/moved

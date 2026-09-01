@@ -162,6 +162,62 @@ describe("boxFolderOfScope — new-tab cwd in a box scope", () => {
   });
 });
 
+describe("openBox — reopening closed members box-locally", () => {
+  it("restores a closed member's tabs without reopening it globally", async () => {
+    useProjectsStore.setState({
+      projects: [
+        { id: "p", name: "P", status: "current", position: 10, local_file: "/p/project.json" },
+        {
+          id: "q",
+          name: "Q",
+          status: "inactive",
+          position: 20,
+          local_file: "/q/project.json",
+          directory: "/q",
+        },
+      ] as never,
+      activeId: "p",
+    });
+    useBoxesStore.setState({ boxes: [box("b1", "/boxes/b1", ["p", "q"])], loaded: true });
+    mockInvoke.mockImplementation((cmd: string) =>
+      Promise.resolve(
+        cmd === "ensure_box_folder"
+          ? "/boxes/b1"
+          : cmd === "load_tab_session"
+            ? { tabLayout: [{ key: "t1", label: "sh", cmd: "", cwd: "/q", kind: "shell" }] }
+            : undefined,
+      ),
+    );
+    await useBoxesStore.getState().openBox("b1");
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    // The closed member's tabs are back (reachable from the box slice) …
+    expect(useTabsStore.getState().tabsByScope["q"]).toHaveLength(1);
+    // … but its persisted status is untouched: it joins the general strip only
+    // if it was already there. No save_projects, no status flip, no focus steal.
+    const statusById = new Map(
+      useProjectsStore.getState().projects.map((p) => [p.id, p.status]),
+    );
+    expect(statusById.get("q")).toBe("inactive");
+    expect(statusById.get("p")).toBe("current");
+    expect(useProjectsStore.getState().activeId).toBe("p");
+    expect(useTabsStore.getState().scope).toBe("box:b1");
+    expect(mockInvoke.mock.calls.some(([cmd]) => cmd === "save_projects")).toBe(false);
+  });
+
+  it("leaves a box with no closed members alone", async () => {
+    await useBoxesStore.getState().openBox("b1");
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    // The only member is open already: nothing restored, nothing persisted.
+    expect(useTabsStore.getState().tabsByScope["p"]).toBeUndefined();
+    expect(mockInvoke.mock.calls.some(([cmd]) => cmd === "save_projects")).toBe(false);
+    expect(useTabsStore.getState().scope).toBe("box:b1");
+  });
+});
+
 describe("CenterPanel — leaving a box scope", () => {
   it("a pill click on the already-active project (switchGeneration bump) leaves the box", async () => {
     render(<CenterPanel />);

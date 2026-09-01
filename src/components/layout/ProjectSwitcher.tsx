@@ -260,10 +260,19 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
   // The pills the strip renders. A slice shows its box's members — plus the
   // project currently in scope even when it is not one, since a strip that
   // hides the project you are working in is a strip that has lost you.
+  // Members show REGARDLESS of status: a member closed in the general strip is
+  // still open inside its box (openBox restored its tabs box-locally), so the
+  // slice keeps its pill while the general strip — activeProjects — does not.
   const visibleProjects = useMemo<ProjectEntry[]>(() => {
     if (!currentBox) return activeProjects;
-    return activeProjects.filter((p) => currentBoxMemberIds.has(p.id) || p.id === scope);
-  }, [activeProjects, currentBox, currentBoxMemberIds, scope]);
+    return projects
+      .filter(
+        (p) =>
+          p.id !== TRASH_PROJECT_ID &&
+          (currentBoxMemberIds.has(p.id) || p.id === scope),
+      )
+      .sort((a, b) => a.position - b.position);
+  }, [activeProjects, currentBox, currentBoxMemberIds, projects, scope]);
 
   const boxCandidates = useMemo(() => {
     if (!currentBox) return [];

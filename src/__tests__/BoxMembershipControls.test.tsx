@@ -166,6 +166,33 @@ describe("Box membership controls", () => {
     expect(pill(container, "open-non-member").querySelector(".pill-close-btn")).toBeNull();
   });
 
+  it("keeps a closed member's pill in the slice", async () => {
+    // A member closed in the general strip stays open inside its box: openBox
+    // restores its tabs box-locally, and the slice keeps showing its pill.
+    const container = await renderBoxSlice(
+      [project("member", 0), project("closed", 1, { status: "inactive" })],
+      ["member", "closed"],
+    );
+    expect(pillNames(container)).toEqual(["member", "closed"]);
+  });
+
+  it("keeps a closed member out of the general strip (no slice selected)", async () => {
+    useProjectsStore.setState({
+      projects: [project("member", 0), project("closed", 1, { status: "inactive" })],
+      activeId: null,
+      loaded: true,
+    });
+    useBoxesStore.setState({ boxes: [box(["member", "closed"])], loaded: true });
+    useTabsStore.setState({ scope: "root" });
+    let container!: HTMLElement;
+    await act(async () => {
+      ({ container } = render(<ProjectSwitcher open />));
+    });
+    // Box-local reopening never adds the project here: it shows in the general
+    // strip only if it was already open there.
+    expect(pillNames(container)).toEqual(["member"]);
+  });
+
   it("retains ordinary + and × behavior outside a Box slice", async () => {
     const deactivateProject = vi.fn().mockResolvedValue(undefined);
     useProjectsStore.setState({
