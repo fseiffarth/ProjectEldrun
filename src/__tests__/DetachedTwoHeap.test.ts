@@ -8,6 +8,7 @@
  * because a single store cannot disagree with itself.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { waitFor } from "@testing-library/react";
 
 import {
   installPopoutContext,
@@ -295,7 +296,7 @@ describe("Group B — two heaps, one protocol", () => {
   });
 
   // ── #226: settings written in one window do not clobber the other ───────
-  it("a popout's settings write merges with what the main window wrote meanwhile", async () => {
+  it("a popout sends an atomic patch and adopts the backend's merged settings", async () => {
     const { groupId, label } = await setup();
     const popout = await popoutHeapFor("p", groupId, label);
 
@@ -306,9 +307,10 @@ describe("Group B — two heaps, one protocol", () => {
       loaded: true,
     });
     // The main window then changed the theme and added an HPC host.
-    shared.answers.set("get_settings", {
+    shared.answers.set("patch_settings", {
       color_scheme: "soft_dark",
       hpc_hosts: ["login.example"],
+      files_alerts_muted: ["m1"],
     });
 
     // Now the popout mutes one alert. Before #226 this spread its own stale
@@ -317,11 +319,16 @@ describe("Group B — two heaps, one protocol", () => {
       .getState()
       .updateSettings({ files_alerts_muted: ["m1"] } as never);
 
-    const write = [...shared.calls].reverse().find((c) => c.cmd === "save_settings");
-    const written = (write!.args as { settings: Record<string, unknown> }).settings;
-    expect(written.files_alerts_muted).toEqual(["m1"]);
-    expect(written.color_scheme).toBe("soft_dark");
-    expect(written.hpc_hosts).toEqual(["login.example"]);
+    const write = [...shared.calls].reverse().find((c) => c.cmd === "patch_settings");
+    expect((write!.args as { patch: Record<string, unknown> }).patch).toEqual({
+      files_alerts_muted: ["m1"],
+    });
+    expect(shared.calls.some((call) => call.cmd === "save_settings")).toBe(false);
+    expect(popout.settings.useSettingsStore.getState().settings).toMatchObject({
+      files_alerts_muted: ["m1"],
+      color_scheme: "soft_dark",
+      hpc_hosts: ["login.example"],
+    });
   });
 
   it("the settings broadcast updates every window's store, not just its DOM", async () => {
@@ -330,12 +337,15 @@ describe("Group B — two heaps, one protocol", () => {
     const un = await other.settings.listenSettingsChanged();
     teardown.push(un);
 
-    shared.answers.set("get_settings", { color_scheme: "fancy_dark" });
+    shared.answers.set("patch_settings", { color_scheme: "soft_dark" });
+    shared.answers.set("get_settings", { color_scheme: "soft_dark" });
     await main.settings.useSettingsStore.getState().setTheme("soft_dark");
 
     // The other window's STORE follows — which is what its xterm palette, its
     // shortcut map and its Fast-mode read all key off.
-    expect(other.settings.useSettingsStore.getState().settings?.color_scheme).toBe("soft_dark");
+    await waitFor(() => {
+      expect(other.settings.useSettingsStore.getState().settings?.color_scheme).toBe("soft_dark");
+    });
   });
 
   // ── #224: a popout's death, and a detach that never opened ──────────────
@@ -459,6 +469,48 @@ describe("Group B — two heaps, one protocol", () => {
     // Apps/Sessions, no remarks, no type tags.
     expect(info?.project?.id).toBe("p");
     expect(info?.primaryHost).toBeUndefined();
+  });
+
+  it("a box seed carries both its record and its member projects", async () => {
+    const main = await loadHeap();
+    main.projects.useProjectsStore.setState({
+      projects: [
+        { id: "p1", name: "one", status: "active", position: 1, local_file: "/p1/project.json" },
+        { id: "p2", name: "two", status: "active", position: 2, local_file: "/p2/project.json" },
+      ] as never,
+    });
+    main.boxes.useBoxesStore.setState({
+      boxes: [{ id: "b1", name: "box", member_ids: ["p1", "p2"], position: 1 }],
+      loaded: true,
+    });
+
+    const info = main.detached.projectInfoForScope("box:b1");
+
+    expect(info?.box?.id).toBe("b1");
+    expect(info?.boxMembers?.map((project) => project.id)).toEqual(["p1", "p2"]);
+  });
+
+  it("a worker status change is included in the next automatic reseed", async () => {
+    vi.useFakeTimers();
+    const { main, groupId, label } = await setup({
+      id: "p",
+      name: "p",
+      status: "active",
+      position: 1,
+      local_file: "/p/project.json",
+      remote: { host: "host.example", user: "u", path: "/remote/p" },
+      compute_hosts: [
+        { id: "worker-1", host: "worker.example", remote_path: "/remote/p", label: "GPU" },
+      ],
+    });
+    const view = await mountFakePopout(main, bus, { scope: "p", groupId, label });
+    teardown.push(view.dispose);
+    await view.requestSeed();
+
+    main.remoteStatus.useRemoteStatusStore.getState().setSsh("p", "connected", "worker-1");
+    await vi.advanceTimersByTimeAsync(151);
+
+    expect(view.remote?.hostStates?.["worker-1"]?.ssh).toBe("connected");
   });
 
   // ── #227: both windows name a popout-side split identically ─────────────

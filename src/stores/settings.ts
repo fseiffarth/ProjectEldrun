@@ -39,16 +39,36 @@ export const LANGUAGE_CHANGED_EVENT = "eldrun:language-changed";
  */
 export const SETTINGS_CHANGED_EVENT = "eldrun:settings-changed";
 
+// Serialize refreshes inside each JS heap. Two backend patches are serialized,
+// but their IPC responses/broadcasts can be delivered in the opposite order;
+// applying event payloads verbatim would then leave a window on the older
+// snapshot even though disk is correct. Reading after each notification, in
+// notification order, makes the last completed refresh observe the latest file.
+let settingsRefresh: Promise<void> = Promise.resolve();
+
 /** Subscribe this window's settings store to writes made in any window. Register
- *  once per window (AppShell and DetachedApp); returns the unlisten. Only the
- *  store moves — the per-document appliers (theme, language, zoom) keep their
- *  own dedicated events, because a popout must NOT inherit the main window's
- *  zoom and must not re-apply a theme it already painted. */
+ *  once per window (AppShell and DetachedApp); returns the unlisten. A broadcast
+ *  is a refresh signal rather than an authoritative snapshot: IPC replies from
+ *  concurrent writers can arrive out of order, so each heap rereads the latest
+ *  file through the serialized queue above. Per-document appliers (theme,
+ *  language, zoom) keep their dedicated events because a popout must NOT inherit
+ *  the main window's zoom or repaint a theme it already applied. */
 export async function listenSettingsChanged(): Promise<() => void> {
   return listen<Settings>(SETTINGS_CHANGED_EVENT, (e) => {
-    if (e.payload && typeof e.payload === "object") {
-      useSettingsStore.setState({ settings: e.payload, loaded: true });
-    }
+    settingsRefresh = settingsRefresh
+      .catch(() => {})
+      .then(async () => {
+        try {
+          const latest = await invoke<Settings>("get_settings");
+          useSettingsStore.setState({ settings: latest, loaded: true });
+        } catch {
+          // A readable event payload is still better than a permanently stale
+          // cache when a transient read fails. The next notification retries.
+          if (e.payload && typeof e.payload === "object") {
+            useSettingsStore.setState({ settings: e.payload, loaded: true });
+          }
+        }
+      });
   });
 }
 
@@ -413,9 +433,8 @@ export function whenSettingsLoaded(timeoutMs = 5000): Promise<void> {
 /**
  * The object a write must merge its patch onto — **never `{}`**.
  *
- * Every writer here is a read-modify-write of the WHOLE settings object
- * (`save_settings` replaces the file; only `save_window_state` touches a single
- * field). They all used to spread `get().settings ?? {}`, and that `?? {}` is a
+ * The compatibility writer and map-building helpers below need a complete
+ * settings object. They used to spread `get().settings ?? {}`, and that `?? {}` is a
  * silent factory reset: `settings` is null until `load()` resolves, so a write
  * that lands before then persists the patch ALONE and every key not mentioned in
  * it — the theme, the header's CPU/RAM/GPU toggles, the Ollama host, every
@@ -434,19 +453,36 @@ export function whenSettingsLoaded(timeoutMs = 5000): Promise<void> {
  */
 async function baseForWrite(): Promise<Partial<Settings>> {
   const cached = useSettingsStore.getState().settings;
-  // A detached popout (#226) re-reads the file on EVERY write. Its cache is a
-  // snapshot taken at its own mount, and the main window — which owns most
-  // settings writes — keeps changing the file underneath it; the cross-window
-  // broadcast below narrows that window but cannot close it (the popout might
-  // be mid-write when the broadcast lands). A popout writes rarely (an alert
-  // mute, a careful-mode toggle, a custom agent), so one extra read per write is
-  // nothing next to silently rewriting settings.json from a stale copy.
+  // A detached popout (#226) re-reads for nested-map construction and for the
+  // backend-stale whole-object fallback. Ordinary writes use `patch_settings`
+  // below and never rely on this snapshot for unrelated keys.
   if (cached && !isDetachedWindow()) return cached;
   // Deliberately not `load()`: that re-applies the theme, language and this
   // window's zoom as a side effect, which a background writer must not do.
   const fresh = await invoke<Settings>("get_settings");
   useSettingsStore.setState({ settings: fresh, loaded: true });
   return fresh;
+}
+
+/** Persist one shallow settings patch against the backend's latest snapshot.
+ * The backend performs read + merge + write under one mutation lock, so two
+ * windows changing different keys cannot overwrite one another. During a
+ * backend-stale development session, fall back to the former whole-object
+ * command only when the new command is genuinely unavailable. */
+async function persistSettingsPatch(patch: Partial<Settings>): Promise<Settings> {
+  try {
+    const updated = await invoke<Settings | undefined>("patch_settings", { patch });
+    if (updated) return updated;
+  } catch (err) {
+    const message = String(err);
+    if (!/(?:command.*patch_settings.*not found|patch_settings.*not found|unknown command)/i.test(message)) {
+      throw err;
+    }
+  }
+  const current = await baseForWrite();
+  const updated = { ...current, ...patch } as Settings;
+  await invoke<void>("save_settings", { settings: updated });
+  return updated;
 }
 
 export const useSettingsStore = create<SettingsStore>((set, get) => ({
@@ -467,29 +503,23 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
   },
 
   setTheme: async (theme) => {
-    const current = await baseForWrite();
-    const updated = { ...current, color_scheme: theme };
-    await invoke<void>("save_settings", { settings: updated });
+    const updated = await persistSettingsPatch({ color_scheme: theme });
     applyTheme(theme);
     void emit(THEME_CHANGED_EVENT, theme);
-    set({ settings: updated as Settings });
+    set({ settings: updated });
     void emit(SETTINGS_CHANGED_EVENT, updated);
   },
 
   setLanguage: async (lang) => {
-    const current = await baseForWrite();
-    const updated = { ...current, language: lang };
-    await invoke<void>("save_settings", { settings: updated });
+    const updated = await persistSettingsPatch({ language: lang });
     applyLanguage(lang);
     void emit(LANGUAGE_CHANGED_EVENT, lang);
-    set({ settings: updated as Settings });
+    set({ settings: updated });
     void emit(SETTINGS_CHANGED_EVENT, updated);
   },
 
   updateSettings: async (patch) => {
-    const current = await baseForWrite();
-    const updated = { ...current, ...patch };
-    await invoke<void>("save_settings", { settings: updated });
+    const updated = await persistSettingsPatch(patch);
     void emit(SETTINGS_CHANGED_EVENT, updated);
     if (typeof updated.color_scheme === "string") {
       applyTheme(updated.color_scheme);
@@ -497,22 +527,29 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
         void emit(THEME_CHANGED_EVENT, updated.color_scheme);
       }
     }
-    if ("ui_accent" in patch || "ui_corners" in patch || "ui_theme_vars" in patch) {
+    if (
+      "ui_accent" in patch ||
+      "ui_corners" in patch ||
+      "ui_theme_vars" in patch ||
+      "ui_cursor" in patch
+    ) {
       applyAccent(updated.ui_accent);
       // After the accent: a hand-picked token beats the accent's derivation.
       applyThemeVars(updated.ui_theme_vars);
       applyCorners(updated.ui_corners);
+      applyCursor(updated.ui_cursor);
       const payload: AppearancePayload = {
         accent: updated.ui_accent ?? null,
         corners: updated.ui_corners ?? null,
         themeVars: normalizeThemeVars(updated.ui_theme_vars),
+        cursor: updated.ui_cursor ?? null,
       };
       void emit(APPEARANCE_CHANGED_EVENT, payload);
     }
     if ("ui_zoom" in patch) {
       applyZoom(updated.ui_zoom);
     }
-    set({ settings: updated as Settings });
+    set({ settings: updated });
   },
 
   // Persist the main window's geometry through its OWN command rather than
@@ -522,10 +559,8 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
   // file on every window nudge and clobber anything changed elsewhere meanwhile.
   // `save_window_state` read-modify-writes the single field on disk.
   //
-  // The local cache is still updated, for two reasons: the debounced save diffs
-  // against it to skip no-op writes, and a later `updateSettings` spreads this
-  // cache — a stale `window_state` here would be written straight back over the
-  // fresh one on disk.
+  // The local cache is still updated so the debounced save can skip no-op writes
+  // and every geometry reader in this window sees the committed value.
   saveWindowState: async (ws) => {
     const current = get().settings;
     if (!current) return;

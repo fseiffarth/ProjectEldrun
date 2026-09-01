@@ -122,6 +122,8 @@ export interface Heap {
   activity: typeof import("../stores/activity");
   context: typeof import("../stores/detachedContext");
   projects: typeof import("../stores/projects");
+  boxes: typeof import("../stores/boxes");
+  remoteStatus: typeof import("../stores/remoteStatus");
   usage: typeof import("../stores/usage");
   runHostPref: typeof import("../stores/runHostPref");
 }
@@ -135,7 +137,7 @@ export interface Heap {
  */
 export async function loadHeap(): Promise<Heap> {
   vi.resetModules();
-  const [tabs, detached, settings, activity, context, projects, usage, runHostPref] =
+  const [tabs, detached, settings, activity, context, projects, boxes, remoteStatus, usage, runHostPref] =
     await Promise.all([
       import("../stores/tabs"),
       import("../stores/detached"),
@@ -143,10 +145,23 @@ export async function loadHeap(): Promise<Heap> {
       import("../stores/activity"),
       import("../stores/detachedContext"),
       import("../stores/projects"),
+      import("../stores/boxes"),
+      import("../stores/remoteStatus"),
       import("../stores/usage"),
       import("../stores/runHostPref"),
     ]);
-  return { tabs, detached, settings, activity, context, projects, usage, runHostPref };
+  return {
+    tabs,
+    detached,
+    settings,
+    activity,
+    context,
+    projects,
+    boxes,
+    remoteStatus,
+    usage,
+    runHostPref,
+  };
 }
 
 /** Reset a heap's tab store to an empty scope. */
@@ -209,7 +224,7 @@ export interface FakePopout {
   groupId: string;
   subtree: import("../stores/tabs").LayoutNode | null;
   tabs: import("../stores/tabs").TabEntry[];
-  remote: unknown;
+  remote: import("../stores/detached").DetachedRemoteInfo | undefined;
   seeds: number;
   landedKeys: string[];
   /** Ask the host for a seed, as the real popout does on mount. */

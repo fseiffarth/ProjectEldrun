@@ -7,6 +7,7 @@ import {
   applyTheme,
   applyAccent,
   applyCorners,
+  applyCursor,
   applyThemeVars,
   applyZoom,
   clampZoom,
@@ -38,7 +39,11 @@ import {
   type DetachedSeed,
   type DetachedStatusPayload,
 } from "../../stores/detached";
-import { setDetachedWindowContext } from "../../stores/detachedContext";
+import {
+  installDetachedWindowContext,
+  setDetachedWindowContext,
+  type DetachedWindowContext,
+} from "../../stores/detachedContext";
 import { applyDetachedStatus } from "../../stores/activity";
 import {
   allGroups,
@@ -57,9 +62,11 @@ import { usePresentationStore } from "../../stores/presentation";
 import { applyFastModeAttribute, useFastMode } from "../../lib/fastMode";
 import { useRemoteStatusStore } from "../../stores/remoteStatus";
 import { useProjectsStore } from "../../stores/projects";
+import { useBoxesStore } from "../../stores/boxes";
 import { installWindowsEvents } from "../../stores/windows";
 import { listenPdfReveal } from "../../stores/pdfSync";
 import { listenEditorJump } from "../../stores/editorJump";
+import { listenTexCenter } from "../../stores/texCenter";
 import { DetachedCenterPanel } from "./DetachedCenterPanel";
 import { BrowserDownloadHost } from "../browser/BrowserDownloadHost";
 import { SyncConfirmDialog } from "../common/SyncConfirmDialog";
@@ -294,7 +301,8 @@ export function DetachedApp({ param }: Props) {
     return () => { cancelled = true; unlisten?.(); };
   }, []);
 
-  // Same story for the appearance overrides (custom accent + corner style):
+  // Same story for the appearance overrides (custom accent, corner style, the
+  // cursor pack):
   // they are inline vars on each window's own root element, so a change in the
   // main window's Settings needs the broadcast to reach this document too. The
   // initial values arrive with the settings load above.
@@ -307,6 +315,8 @@ export function DetachedApp({ param }: Props) {
       // over the value applyAccent derives from the accent.
       applyThemeVars(e.payload.themeVars);
       applyCorners(e.payload.corners);
+      // Last: the cursor art is drawn from the palette the three above set.
+      applyCursor(e.payload.cursor);
     })
       .then((fn) => { if (cancelled) fn(); else unlisten = fn; })
       .catch(() => {});
@@ -348,6 +358,20 @@ export function DetachedApp({ param }: Props) {
     let unlisten: (() => void) | undefined;
     let cancelled = false;
     listenEditorJump()
+      .then((fn) => { if (cancelled) fn(); else unlisten = fn; })
+      .catch(() => {});
+    return () => { cancelled = true; unlisten?.(); };
+  }, []);
+
+  // #42: a reverse-search center switch aimed at a TeX workspace popped out into
+  // THIS window. The main window cannot switch our center itself — this heap's
+  // workspace renders its ViewerState from a one-time seed, so a main-side
+  // `setViewerState` write never reaches it; it broadcasts, and the registry
+  // this listener consults holds the mounted workspace's own goTo.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    listenTexCenter()
       .then((fn) => { if (cancelled) fn(); else unlisten = fn; })
       .catch(() => {});
     return () => { cancelled = true; unlisten?.(); };
@@ -516,15 +540,24 @@ export function DetachedApp({ param }: Props) {
       setGroup(ev.payload.subtree);
       setTabs(ev.payload.tabs);
       setRemoteInfo(ev.payload.remote);
-      // Seed THIS window's (otherwise empty) remoteStatus store with the primary
-      // host's SSH state from the seed, so the docked file viewer's Local/Remote
-      // hooks (`useRemoteBlocked`/`useIndependentFileSource`) resolve the same way
-      // they do in the main window — the SFTP pool itself is shared across
-      // windows, so a Remote read works once the status here says connected. Runs
-      // on every seed (initial + re-seeds), so a later connect refreshes it.
+      // Seed THIS window's otherwise-empty remoteStatus store with every host's
+      // live state. The SFTP/SSH pools are process-wide, but the lamps and host
+      // gates read this per-window Zustand heap; primary-only seeding made every
+      // worker look disconnected in a popout forever.
       const remote = ev.payload.remote;
-      if (remote?.project?.remote && remote.primarySsh) {
-        useRemoteStatusStore.getState().setSsh(remote.project.id, remote.primarySsh);
+      if (remote?.project?.remote) {
+        const projectId = remote.project.id;
+        const status = useRemoteStatusStore.getState();
+        status.clear(projectId);
+        for (const [hostId, state] of Object.entries(remote.hostStates ?? {})) {
+          status.setSsh(projectId, state.ssh, hostId);
+          status.setVpn(projectId, state.vpn, hostId);
+        }
+        // Compatibility with a seed from a backend/frontend heap that predates
+        // `hostStates` during a backend-stale development session.
+        if (!remote.hostStates && remote.primarySsh) {
+          status.setSsh(projectId, remote.primarySsh);
+        }
       }
       // …and seed the PROJECTS store the same way (#232). A popout is inert to
       // project switching, but dozens of panes ask that store who this project
@@ -544,6 +577,12 @@ export function DetachedApp({ param }: Props) {
           projects: members?.length ? members : entry ? [entry] : [],
           ...(entry ? { activeId: entry.id } : {}),
         });
+      }
+      // `boxMembersOfScope` resolves membership through the box record first;
+      // projects alone cannot identify which streamed members belong to this
+      // scope. Seed the minimal owning box alongside its projects.
+      if (remote?.box) {
+        useBoxesStore.setState({ boxes: [remote.box], loaded: true });
       }
       // A tab docked INTO this popout from another window arrives on a seed
       // tagged with its key — play the same drop-in landing as an in-popout
@@ -628,13 +667,13 @@ export function DetachedApp({ param }: Props) {
   // window has nothing to render (it would strand on "Loading subwindow…").
   // Route it through the same teardown as a WM/title-bar close (DETACHED_CLOSE):
   // the main window kills the remaining tab's PTY, drops the group, and persists.
-  // We then destroy this OS window directly (destroy() bypasses our own
-  // onCloseRequested, so it won't re-emit DETACHED_CLOSE).
+  // The main store removes the record first, then `attach_subwindow` destroys
+  // the OS window. Keeping teardown host-owned is what distinguishes an asked-
+  // for close from the Destroyed hook's crash recovery.
   const handleClose = (key: string) => {
     const isLastTab = !group || orderedTabKeys(group).length <= 1;
     if (isLastTab) {
       void emit(DETACHED_CLOSE, { scope: param.scope, groupId: param.groupId });
-      void getCurrentWindow().destroy();
       return;
     }
     pushEdit({ kind: "close", key });
@@ -649,7 +688,6 @@ export function DetachedApp({ param }: Props) {
   // main-side ladder was already there; this is the caller it was missing.
   const handleDock = () => {
     void emit(DETACHED_DOCK, { scope: param.scope, groupId: param.groupId });
-    void getCurrentWindow().destroy();
   };
 
   // The store seam (#231): while this heap is a popout, tabs-store writes made
@@ -665,9 +703,10 @@ export function DetachedApp({ param }: Props) {
   // Installed during RENDER, not in an effect: child effects run before the
   // parent's, so a pane that writes to the tabs store as it mounts (a viewer
   // restoring its state) would find no context and write into the void. The
-  // effect below only removes it.
-  useMemo(() => {
-    setDetachedWindowContext({
+  // effect below repeats the install after StrictMode cleanup and removes it on
+  // a real unmount.
+  const detachedContext = useMemo<DetachedWindowContext>(
+    () => ({
       scope: param.scope,
       groupId: param.groupId,
       label,
@@ -684,9 +723,17 @@ export function DetachedApp({ param }: Props) {
       },
       pushEdit: (edit) => seamRef.current.pushEdit(edit as DetachedEdit),
       closeTab: (key) => seamRef.current.handleClose(key),
-    });
-  }, [label, param.scope, param.groupId]);
-  useEffect(() => () => setDetachedWindowContext(null), []);
+    }),
+    [label, param.scope, param.groupId],
+  );
+  // Render-time installation is deliberate: child effects run before parent
+  // effects. The effect repeats it so StrictMode's synthetic cleanup is followed
+  // by a real reinstall instead of leaving this heap classified as the main one.
+  setDetachedWindowContext(detachedContext);
+  useEffect(
+    () => installDetachedWindowContext(detachedContext),
+    [detachedContext],
+  );
 
   // Withdraw the tabs of an experiment that was switched off — the popout's half
   // of `lib/experimentalSweep`. This window runs its own store and its own
@@ -706,7 +753,6 @@ export function DetachedApp({ param }: Props) {
     if (doomed.length === 0) return;
     if (doomed.length === inGroup.size) {
       void emit(DETACHED_CLOSE, { scope: param.scope, groupId: param.groupId });
-      void getCurrentWindow().destroy();
       return;
     }
     for (const tab of doomed) pushEdit({ kind: "close", key: tab.key });
@@ -721,7 +767,6 @@ export function DetachedApp({ param }: Props) {
   // emit DETACHED_CLOSE (which would drop the tabs).
   const handleHideWindow = () => {
     void emit(DETACHED_HIDE, { scope: param.scope, groupId: param.groupId });
-    void getCurrentWindow().destroy();
   };
 
   // Closing this OS window via the WM/title-bar ASKS what to do with the tabs

@@ -1,6 +1,7 @@
 use crate::schema::settings::WindowState;
 use crate::schema::Settings;
 use crate::storage;
+use serde_json::{Map, Value};
 
 #[tauri::command]
 pub fn get_settings() -> Result<Settings, String> {
@@ -17,6 +18,11 @@ pub fn get_settings() -> Result<Settings, String> {
     // populated them, leaving the toolbar blank. Detection runs at read time and
     // is not persisted, so the bar appears immediately; the first edit in the
     // Global Apps settings panel writes the merged set back to disk.
+    seed_default_global_apps(&mut settings);
+    Ok(settings)
+}
+
+fn seed_default_global_apps(settings: &mut Settings) {
     if settings
         .global_apps
         .as_ref()
@@ -26,7 +32,6 @@ pub fn get_settings() -> Result<Settings, String> {
             settings.global_apps = Some(defaults);
         }
     }
-    Ok(settings)
 }
 
 #[tauri::command]
@@ -35,16 +40,39 @@ pub fn save_settings(settings: Settings) -> Result<(), String> {
     storage::write_json_atomic(&path, &settings).map_err(|e| e.to_string())
 }
 
+/// Atomically merge a frontend settings patch against the latest file.
+///
+/// Every webview has its own JS heap and therefore its own settings cache. A
+/// frontend read followed by `save_settings` is two independent transactions:
+/// another window can commit between them and have its unrelated change
+/// overwritten by the stale whole object. This command keeps read + shallow
+/// merge + write under `storage`'s process-wide JSON mutation lock and returns
+/// the exact object that won, so every sender can broadcast the same snapshot.
+#[tauri::command]
+pub fn patch_settings(patch: Map<String, Value>) -> Result<Settings, String> {
+    let path = storage::state_dir().join("settings.json");
+    storage::patch_json(&path, Settings::default(), |settings| {
+        seed_default_global_apps(settings);
+        merge_settings_patch(settings, patch)?;
+        Ok(settings.clone())
+    })
+}
+
+fn merge_settings_patch(settings: &mut Settings, patch: Map<String, Value>) -> Result<(), String> {
+    let mut value = serde_json::to_value(&*settings).map_err(|e| e.to_string())?;
+    let current = value
+        .as_object_mut()
+        .ok_or_else(|| "settings must serialize as an object".to_string())?;
+    current.extend(patch);
+    *settings = serde_json::from_value(value).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// Persist only the main window's geometry, leaving every other setting on disk
 /// untouched.
 ///
-/// Deliberately NOT routed through `save_settings`: the frontend's
-/// `updateSettings` writes the *whole* settings object back from its in-memory
-/// cache, and this is called on a debounce every time the user drags or resizes
-/// the window. Going through the full object would rewrite the entire
-/// user-facing settings file on every window nudge, and would clobber any setting
-/// changed elsewhere since the cache was filled. Read-modify-write of the single
-/// field here keeps a window drag from ever touching an unrelated setting.
+/// Kept as a dedicated patch because this fires on a debounce every time the
+/// user drags or resizes the main window; it must never replace unrelated keys.
 #[tauri::command]
 pub fn save_window_state(state: WindowState) -> Result<(), String> {
     let path = storage::state_dir().join("settings.json");
@@ -288,5 +316,30 @@ fn detect_macos_global_apps(
         None
     } else {
         Some(detected)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn settings_patch_is_shallow_and_preserves_unrelated_fields() {
+        let mut settings = Settings {
+            color_scheme: Some("fancy_dark".into()),
+            language: Some("de".into()),
+            ..Settings::default()
+        };
+        let patch = serde_json::from_value::<Map<String, Value>>(serde_json::json!({
+            "color_scheme": "soft_dark",
+            "files_alerts_muted": ["one"]
+        }))
+        .unwrap();
+
+        merge_settings_patch(&mut settings, patch).unwrap();
+
+        assert_eq!(settings.color_scheme.as_deref(), Some("soft_dark"));
+        assert_eq!(settings.language.as_deref(), Some("de"));
+        assert_eq!(settings.files_alerts_muted, Some(vec!["one".into()]));
     }
 }

@@ -3918,8 +3918,9 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       };
     });
 
-    // Close the detached OS window + drop the backend registry entry (best-effort;
-    // the popout also destroys its own window). Mirrors dropDetachedGroup.
+    // Close the detached OS window + drop the backend registry entry. The host
+    // owns this destruction so the record is gone before Destroyed crash
+    // recovery inspects it.
     invoke("attach_subwindow", { registryId: entry.label }).catch(() => {});
   },
 
@@ -3959,7 +3960,8 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       return patch;
     });
 
-    // Close the detached OS window (best-effort; the window also self-destroys).
+    // Close the detached OS window after the record is gone; the popout does not
+    // self-destroy on an ordinary close because that would race crash recovery.
     invoke("attach_subwindow", { registryId: entry.label }).catch(() => {});
   },
 

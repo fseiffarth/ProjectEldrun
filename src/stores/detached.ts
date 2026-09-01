@@ -35,13 +35,20 @@ import {
   type WindowBounds,
 } from "./tabs";
 import { useProjectsStore } from "./projects";
-import { sshOf, useRemoteStatusStore, type ConnState } from "./remoteStatus";
+import {
+  PRIMARY_HOST,
+  hostStateOf,
+  sshOf,
+  useRemoteStatusStore,
+  type ConnState,
+  type HostConnState,
+} from "./remoteStatus";
 import { BOX_SCOPE_PREFIX, useBoxesStore } from "./boxes";
 import { useActivityStore, noteUserInput } from "./activity";
 import { bumpUsage } from "./usage";
 import { useRemoteMachinesStore } from "./remoteMachines";
 import { useBigFoldersStore } from "./bigFolders";
-import type { ProjectEntry } from "../types";
+import type { ProjectBox, ProjectEntry } from "../types";
 
 /** Parsed `?detached=<scope>:<groupId>` query. */
 export interface DetachedParam {
@@ -352,6 +359,8 @@ export interface DetachedRemoteInfo {
    * window's `ProjectFilesTab` does from the projects store.
    */
   boxMembers?: ProjectEntry[];
+  /** The owning box record required by box-scoped selectors in the popout. */
+  box?: ProjectBox;
   /**
    * The owning project entry, streamed because the popout is inert to the
    * projects store. Without it a docked (or popped-out) file viewer can't render
@@ -370,6 +379,8 @@ export interface DetachedRemoteInfo {
    * Stale between re-seeds (a connect made after pop-out lands at the next seed).
    */
   primarySsh?: ConnState;
+  /** Live primary + worker connection state, keyed by host id. */
+  hostStates?: Record<string, HostConnState>;
 }
 
 /** Build a seed payload from a detached popout's tabs + subtree. Pure. The
@@ -721,11 +732,16 @@ export function projectInfoForScope(scope: string): DetachedRemoteInfo | undefin
     const boxMembers = box.member_ids
       .map((id) => projects.find((p) => p.id === id))
       .filter((p): p is ProjectEntry => !!p);
-    return { boxMembers };
+    return { box, boxMembers };
   }
   const project = projects.find((p) => p.id === scope);
   if (!project) return undefined;
   if (!project.remote) return { project };
+  const remoteStatus = useRemoteStatusStore.getState();
+  const hostIds = [PRIMARY_HOST, ...(project.compute_hosts ?? []).map((host) => host.id)];
+  const hostStates = Object.fromEntries(
+    hostIds.map((hostId) => [hostId, hostStateOf(remoteStatus, project.id, hostId)]),
+  );
   return {
     primaryHost: project.remote.host,
     computeHosts: project.compute_hosts,
@@ -733,7 +749,8 @@ export function projectInfoForScope(scope: string): DetachedRemoteInfo | undefin
     // viewer can render the source switch + run-host picker and actually read the
     // host tree over the shared SFTP pool (see DetachedRemoteInfo).
     project,
-    primarySsh: sshOf(useRemoteStatusStore.getState(), project.id),
+    primarySsh: sshOf(remoteStatus, project.id),
+    hostStates,
   };
 }
 
@@ -809,8 +826,14 @@ export function statusForEntry(
  * a combined unlisten. The detached window never calls this — it is inert.
  */
 export async function listenDetachedHost(): Promise<() => void> {
-  const unSeed = await listen<DetachedSeedRequest>(DETACHED_REQUEST_SEED, (ev) => {
-    const { label, scope, groupId } = ev.payload;
+  // Registering Tauri listeners requires an IPC round trip apiece. A popout may
+  // request its seed after the first listener is live but before the edit/close
+  // listeners are; answering then lets it render and speak a protocol the host
+  // cannot yet hear. Queue seeds until the complete host is ready.
+  let hostReady = false;
+  const queuedSeeds: DetachedSeedRequest[] = [];
+  let publishStatus = (_force = false) => {};
+  const answerSeed = ({ label, scope, groupId }: DetachedSeedRequest) => {
     const store = useTabsStore.getState();
     const entry = (store.detachedGroupsByScope[scope] ?? []).find(
       (d) => d.id === groupId,
@@ -825,10 +848,15 @@ export async function listenDetachedHost(): Promise<() => void> {
       projectInfoForScope(scope),
     );
     void emit(detachedSeedEvent(label), seed);
-    // The popout's strip renders lamps only from what the host mirrors over, so
-    // a freshly-seeded (or re-seeded after a reload) popout gets the current
-    // verdict at once rather than at the next state change.
     publishStatus(true);
+  };
+
+  const unSeed = await listen<DetachedSeedRequest>(DETACHED_REQUEST_SEED, (ev) => {
+    if (!hostReady) {
+      queuedSeeds.push(ev.payload);
+      return;
+    }
+    answerSeed(ev.payload);
   });
 
   const unEdit = await listen<DetachedEditEnvelope>(DETACHED_EDIT, (ev) => {
@@ -1018,10 +1046,15 @@ export async function listenDetachedHost(): Promise<() => void> {
   };
   const contextSig = (scope: string): string => {
     const project = useProjectsStore.getState().projects.find((p) => p.id === scope);
-    const ssh = project?.remote ? sshOf(useRemoteStatusStore.getState(), project.id) : null;
+    const remoteStatus = useRemoteStatusStore.getState();
+    const states = project?.remote
+      ? [PRIMARY_HOST, ...(project.compute_hosts ?? []).map((host) => host.id)]
+          .map((hostId) => `${hostId}:${JSON.stringify(hostStateOf(remoteStatus, project.id, hostId))}`)
+          .join(",")
+      : "-";
     // Reference identity of the entry is the cheapest "did it change" — the
     // projects store replaces an entry object on every edit — plus the SSH word.
-    return `${project ? projectRefs.id(project) : "-"}|${ssh ?? "-"}`;
+    return `${project ? projectRefs.id(project) : "-"}|${states}`;
   };
   const sweep = () => {
     const store = useTabsStore.getState();
@@ -1062,7 +1095,7 @@ export async function listenDetachedHost(): Promise<() => void> {
 
   // #234: mirror each popout's tab statuses whenever the classifier moves.
   const lastStatus = new Map<string, string>();
-  const publishStatus = (force = false) => {
+  publishStatus = (force = false) => {
     const store = useTabsStore.getState();
     const { busyByTab, attentionByTab } = useActivityStore.getState();
     for (const [scope, entries] of Object.entries(store.detachedGroupsByScope)) {
@@ -1082,6 +1115,13 @@ export async function listenDetachedHost(): Promise<() => void> {
       publishStatus();
     }
   });
+
+  // Prime signatures before the first real change. Without this, the first SSH
+  // or project update after an initial seed was mistaken for "first sight" and
+  // deliberately skipped; only the second update reached the popout.
+  sweep();
+  hostReady = true;
+  for (const request of queuedSeeds.splice(0)) answerSeed(request);
 
   return () => {
     unSeed();

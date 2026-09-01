@@ -46,6 +46,23 @@ export function setDetachedWindowContext(next: DetachedWindowContext | null): vo
   ctx = next;
 }
 
+/**
+ * Install one popout context and return an ownership-aware cleanup.
+ *
+ * React development StrictMode deliberately runs an effect setup, cleanup and
+ * setup again on first mount.  `DetachedApp` also installs during render so a
+ * child mount effect can forward immediately; repeating the install here makes
+ * the second StrictMode setup restore what its synthetic cleanup removed.  The
+ * identity check prevents an old cleanup (HMR, or a replaced binding) from
+ * clearing a newer context.
+ */
+export function installDetachedWindowContext(next: DetachedWindowContext): () => void {
+  ctx = next;
+  return () => {
+    if (ctx === next) ctx = null;
+  };
+}
+
 export function getDetachedWindowContext(): DetachedWindowContext | null {
   return ctx;
 }

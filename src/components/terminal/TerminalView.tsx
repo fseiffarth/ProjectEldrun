@@ -15,7 +15,13 @@ import { useAgentTaskStore } from "../../stores/agentTask";
 import { noteInput } from "../../lib/promptCount";
 import { METRIC, agentPromptLeaf, sub } from "../../lib/usageMetrics";
 import { ROOT_SCOPE, bumpUsage, markAgentActive } from "../../stores/usage";
-import { onTerminalExit, onTerminalOutput, onTerminalReady, onTerminalReplay } from "../../lib/terminalBus";
+import {
+  onTerminalExit,
+  onTerminalOutput,
+  onTerminalReady,
+  onTerminalReplay,
+  type TerminalOutputRange,
+} from "../../lib/terminalBus";
 import { hpcGuardRefusal } from "../../lib/hpcGuard";
 import { useHpcGuardStore } from "../../stores/hpcGuardPrompt";
 import { CSI_U_SHIFT_TAB, claimInitialInput, decodeOsc52Clipboard, initialInputForPty, isCodexCommand, isTerminalIdentityResponse, isTerminalReport, stripTerminalQueries } from "../../lib/terminalControl";
@@ -27,6 +33,26 @@ import "@xterm/xterm/css/xterm.css";
 // resulting `Uint8Array` is passed straight to `pty_write` (Tauri v2 ships typed
 // arrays to a `Vec<u8>` command directly), avoiding the per-key `Array.from`.
 const PTY_ENCODER = new TextEncoder();
+const PTY_DECODER = new TextDecoder();
+
+interface PtyScrollback {
+  data: string;
+  startOffset: number;
+  endOffset: number;
+}
+
+/** Keep only bytes newer than an atomic backend scrollback snapshot. */
+export function outputAfterScrollback(
+  data: string,
+  range: TerminalOutputRange | undefined,
+  snapshotEnd: number | undefined,
+): string {
+  if (!range || snapshotEnd === undefined) return data;
+  if (range.endOffset <= snapshotEnd) return "";
+  if (range.startOffset >= snapshotEnd) return data;
+  const cut = snapshotEnd - range.startOffset;
+  return PTY_DECODER.decode(PTY_ENCODER.encode(data).slice(cut));
+}
 
 interface Props {
   id: string;
@@ -485,11 +511,13 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
     // been running without it — a tab just popped out into its own window, or a
     // pane remounted by a reseed. Until its history has been fetched, nothing
     // may reach the terminal: live chunks are buffered like any catch-up so the
-    // fetched tail can be PREPENDED to them (everything that arrives during the
-    // round trip is by definition newer than the snapshot). Cleared by the fetch
-    // in either direction — a backend too old to answer must not leave a pane
-    // permanently mute.
+    // fetched tail can be prepended to them. The backend tags both snapshots and
+    // events with byte offsets: an event may be delivered during the round trip
+    // even though its bytes are already IN the snapshot, so offset filtering is
+    // what makes the handoff exactly-once. Cleared by the fetch in either
+    // direction — a backend too old to answer must not leave a pane mute.
     let historyPending = attachOnly;
+    const historyOutput: Array<{ data: string; range?: TerminalOutputRange }> = [];
     const flushPending = () => {
       if (historyPending) return;
       const buffered = pendingOutput.current;
@@ -768,12 +796,13 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
     // The bus does that dispatch once, in O(1) per id, no matter how many panes
     // are mounted. Subscribing is synchronous, so these are wired up before
     // `setupAndSpawn` below ever awaits `pty_spawn` — no output can arrive first.
-    unlistenOutput.current = onTerminalOutput(id, (data) => {
+    unlistenOutput.current = onTerminalOutput(id, (data, range) => {
       // Record when the spawned program first produces output — used to tell
       // when an agent TUI has actually started so we don't type the
       // initialInput before it can accept keystrokes (see below).
       if (firstOutputAt.current === null) firstOutputAt.current = Date.now();
-      writeTerm(data);
+      if (historyPending) historyOutput.push({ data, range });
+      else writeTerm(data);
     });
 
     // The backend's replay of what streamed while this pane was hidden
@@ -783,8 +812,12 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
     // flushPending's stripTerminalQueries guard, never a bare term.write — a
     // terminal query in it would be answered on parse and typed into the
     // shell (the tmux attach-probe bug flushPending documents).
-    unlistenReplay.current = onTerminalReplay(id, (data) => {
+    unlistenReplay.current = onTerminalReplay(id, (data, range) => {
       if (firstOutputAt.current === null) firstOutputAt.current = Date.now();
+      if (historyPending) {
+        historyOutput.push({ data, range });
+        return;
+      }
       pendingOutput.current += data;
       if (pendingOutput.current.length > PENDING_OUTPUT_CAP * 2) {
         pendingOutput.current = pendingOutput.current.slice(-PENDING_OUTPUT_CAP);
@@ -853,18 +886,30 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
         // backend keeps a bounded tail of everything it routed for this PTY, so
         // a freshly popped-out shell renders its history instead of a blank
         // pane that stays blank until the program next draws. Prepended to
-        // whatever streamed in during the round trip, then trimmed to the same
-        // cap the buffer uses; routed through `flushPending`'s query guard like
-        // every other late write.
+        // whatever streamed after the snapshot boundary, then trimmed to the
+        // same cap the buffer uses. Byte ranges discard events already included
+        // in the snapshot (including an overlapping replay); all of it still
+        // goes through `flushPending`'s query guard like every other late write.
         let tail = "";
+        let snapshotEnd: number | undefined;
         try {
-          tail = (await invoke<string>("pty_scrollback", { id })) ?? "";
+          const snapshot = await invoke<string | PtyScrollback>("pty_scrollback", { id });
+          if (typeof snapshot === "string") {
+            // Backend-stale development session: retain the old response shape.
+            tail = snapshot;
+          } else if (snapshot) {
+            tail = snapshot.data;
+            snapshotEnd = snapshot.endOffset;
+          }
         } catch {
           // An older backend has no such command — open blank, as before.
         }
         if (cancelled) return;
-        if (tail) {
-          pendingOutput.current = tail + pendingOutput.current;
+        const live = historyOutput
+          .map((chunk) => outputAfterScrollback(chunk.data, chunk.range, snapshotEnd))
+          .join("");
+        if (tail || live) {
+          pendingOutput.current = tail + live + pendingOutput.current;
           if (pendingOutput.current.length > PENDING_OUTPUT_CAP * 2) {
             pendingOutput.current = pendingOutput.current.slice(-PENDING_OUTPUT_CAP);
           }

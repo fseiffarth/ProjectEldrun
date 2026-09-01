@@ -135,6 +135,12 @@ struct OutputRoute {
     /// `ROUTE_SCROLLBACK_CAP`), so a viewer attaching to an already-running
     /// terminal can catch up instead of opening blank.
     retained: String,
+    /// Absolute UTF-8 byte offset of `retained[0]` in this spawn's output.
+    retained_start: u64,
+    /// Absolute UTF-8 byte offset of `pending[0]`.
+    pending_start: u64,
+    /// Absolute UTF-8 byte offset immediately after the latest routed chunk.
+    output_offset: u64,
     /// Output since the last activity digest (tail-capped).
     digest: String,
     /// UTF-8 decoder state shared by every output chunk for this spawn.
@@ -156,19 +162,41 @@ impl OutputRoute {
     /// Append to the always-on catch-up tail. Called for every routed chunk,
     /// visible or not — that is the point: the question it answers is "what has
     /// this terminal shown", which does not depend on who was watching.
-    fn retain(&mut self, text: &str) {
+    fn retain(&mut self, text: &str) -> OutputSlice {
+        let start_offset = self.output_offset;
+        self.output_offset += text.len() as u64;
         self.retained.push_str(text);
-        trim_with_hysteresis(&mut self.retained, ROUTE_SCROLLBACK_CAP);
+        self.retained_start += trim_with_hysteresis(&mut self.retained, ROUTE_SCROLLBACK_CAP) as u64;
+        OutputSlice {
+            text: text.to_string(),
+            start_offset,
+            end_offset: self.output_offset,
+        }
+    }
+
+    fn push_pending(&mut self, slice: &OutputSlice) {
+        if self.pending.is_empty() {
+            self.pending_start = slice.start_offset;
+        }
+        self.pending.push_str(&slice.text);
+        self.pending_start += trim_with_hysteresis(&mut self.pending, ROUTE_PENDING_CAP) as u64;
     }
 
     /// Drain the hidden-spell buffer for a replay emit. Also drops the digest:
     /// its bytes are a subset of `pending` and have just been delivered.
-    fn take_pending(&mut self) -> Option<String> {
+    fn take_pending(&mut self) -> Option<OutputSlice> {
         self.digest.clear();
         if self.pending.is_empty() {
             return None;
         }
-        Some(std::mem::take(&mut self.pending))
+        let text = std::mem::take(&mut self.pending);
+        let start_offset = self.pending_start;
+        self.pending_start = self.output_offset;
+        Some(OutputSlice {
+            text,
+            start_offset,
+            end_offset: self.output_offset,
+        })
     }
 }
 
@@ -237,20 +265,30 @@ static ROUTE_SEQ: AtomicU64 = AtomicU64::new(0);
 /// grow to 2× and cutting back costs one copy per cap's worth of new output.
 /// The buffer already contains decoded text, so advance the cut to a character
 /// boundary rather than creating replacement characters during replay.
-fn trim_with_hysteresis(buf: &mut String, cap: usize) {
+fn trim_with_hysteresis(buf: &mut String, cap: usize) -> usize {
     if buf.len() > cap * 2 {
         let mut cut = buf.len() - cap;
         while cut < buf.len() && !buf.is_char_boundary(cut) {
             cut += 1;
         }
         buf.drain(..cut);
+        return cut;
     }
+    0
+}
+
+#[derive(Debug)]
+struct OutputSlice {
+    text: String,
+    start_offset: u64,
+    end_offset: u64,
 }
 
 /// What the batcher should do with one flushed chunk.
+#[derive(Debug)]
 enum Routed {
     /// Subscribed: emit as ordinary `terminal-output`.
-    Data(String),
+    Data(OutputSlice),
     /// Hidden, digest due: emit as `terminal-activity`.
     Activity(String),
     /// Hidden, inside the digest window: spawn a trailing flush for this
@@ -267,12 +305,11 @@ fn route_chunk_at(id: &str, bytes: &[u8], now: Instant) -> Routed {
     if text.is_empty() {
         return Routed::Quiet;
     }
-    route.retain(&text);
+    let slice = route.retain(&text);
     if route.subscribed() {
-        return Routed::Data(text);
+        return Routed::Data(slice);
     }
-    route.pending.push_str(&text);
-    trim_with_hysteresis(&mut route.pending, ROUTE_PENDING_CAP);
+    route.push_pending(&slice);
     route.digest.push_str(&text);
     trim_with_hysteresis(&mut route.digest, ACTIVITY_TAIL_CAP);
     let due = route
@@ -307,12 +344,11 @@ fn route_finish(id: &str) -> Routed {
     if text.is_empty() {
         return Routed::Quiet;
     }
-    route.retain(&text);
+    let slice = route.retain(&text);
     if route.subscribed() {
-        return Routed::Data(text);
+        return Routed::Data(slice);
     }
-    route.pending.push_str(&text);
-    trim_with_hysteresis(&mut route.pending, ROUTE_PENDING_CAP);
+    route.push_pending(&slice);
     route.digest.push_str(&text);
     trim_with_hysteresis(&mut route.digest, ACTIVITY_TAIL_CAP);
     route.last_activity = Some(Instant::now());
@@ -349,6 +385,9 @@ fn route_open(id: &str) -> u64 {
     // A respawn is a new program: its predecessor's screen is not this one's
     // catch-up. (Same reason the pending buffer is cleared.)
     route.retained.clear();
+    route.retained_start = 0;
+    route.pending_start = 0;
+    route.output_offset = 0;
     route.decoder = Utf8StreamDecoder::default();
     route.last_activity = None;
     route.seq = seq;
@@ -358,13 +397,16 @@ fn route_open(id: &str) -> u64 {
 /// The retained catch-up tail for `id` (Group B #235), or an empty string when
 /// nothing is known about that PTY. Read-only: a replay does NOT consume it, so
 /// a second window attaching later gets the same history.
-pub fn route_scrollback(id: &str) -> String {
-    routes()
-        .lock()
-        .unwrap()
-        .get(id)
-        .map(|r| r.retained.clone())
-        .unwrap_or_default()
+pub fn route_scrollback(id: &str) -> TerminalScrollback {
+    let map = routes().lock().unwrap();
+    match map.get(id) {
+        Some(route) => TerminalScrollback {
+            data: route.retained.clone(),
+            start_offset: route.retained_start,
+            end_offset: route.output_offset,
+        },
+        None => TerminalScrollback::default(),
+    }
 }
 
 /// Task-end cleanup, guarded by generation so an old spawn's exit can never
@@ -392,12 +434,14 @@ fn route_close(id: &str, seq: u64) -> bool {
 /// chunk emit also takes this lock first (`route_chunk`), so the replay is
 /// guaranteed to precede any output produced after the flip.
 fn emit_replay(app: &AppHandle, id: &str, route: &mut OutputRoute) {
-    if let Some(text) = route.take_pending() {
+    if let Some(slice) = route.take_pending() {
         let _ = app.emit(
             "terminal-replay",
             TerminalOutput {
                 id: id.to_string(),
-                data: text,
+                data: slice.text,
+                start_offset: Some(slice.start_offset),
+                end_offset: Some(slice.end_offset),
             },
         );
     }
@@ -587,9 +631,22 @@ pub struct PtyOptions {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TerminalOutput {
     pub id: String,
     pub data: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub start_offset: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub end_offset: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalScrollback {
+    pub data: String,
+    pub start_offset: u64,
+    pub end_offset: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -993,12 +1050,14 @@ pub fn spawn_pty(
     tokio::spawn(async move {
         let emitter = app.clone();
         batch_output(rx, |bytes| match route_chunk(&id, bytes) {
-            Routed::Data(text) => {
+            Routed::Data(slice) => {
                 let _ = emitter.emit(
                     "terminal-output",
                     TerminalOutput {
                         id: id.clone(),
-                        data: text,
+                        data: slice.text,
+                        start_offset: Some(slice.start_offset),
+                        end_offset: Some(slice.end_offset),
                     },
                 );
             }
@@ -1008,6 +1067,8 @@ pub fn spawn_pty(
                     TerminalOutput {
                         id: id.clone(),
                         data: text,
+                        start_offset: None,
+                        end_offset: None,
                     },
                 );
             }
@@ -1025,6 +1086,8 @@ pub fn spawn_pty(
                             TerminalOutput {
                                 id: id2,
                                 data: text,
+                                start_offset: None,
+                                end_offset: None,
                             },
                         );
                     }
@@ -1034,12 +1097,14 @@ pub fn spawn_pty(
         })
         .await;
         match route_finish(&id) {
-            Routed::Data(text) => {
+            Routed::Data(slice) => {
                 let _ = emitter.emit(
                     "terminal-output",
                     TerminalOutput {
                         id: id.clone(),
-                        data: text,
+                        data: slice.text,
+                        start_offset: Some(slice.start_offset),
+                        end_offset: Some(slice.end_offset),
                     },
                 );
             }
@@ -1049,6 +1114,8 @@ pub fn spawn_pty(
                     TerminalOutput {
                         id: id.clone(),
                         data: text,
+                        start_offset: None,
+                        end_offset: None,
                     },
                 );
             }
@@ -1340,7 +1407,7 @@ mod route_tests {
             .visible_viewers
             .insert("test-view".to_string(), viewer(visible, "main"));
         if !was && route.subscribed() {
-            route.take_pending()
+            route.take_pending().map(|slice| slice.text)
         } else {
             None
         }
@@ -1363,7 +1430,7 @@ mod route_tests {
         set_visible(id, true);
         assert!(matches!(
             route_chunk_at(id, b"hello", Instant::now()),
-            Routed::Data(t) if t == "hello"
+            Routed::Data(t) if t.text == "hello"
         ));
         set_visible(id, false);
         route_remove_view(id, "test-view", 2);
@@ -1415,7 +1482,7 @@ mod route_tests {
         // And streaming resumes.
         assert!(matches!(
             route_chunk_at(id, b"live", Instant::now()),
-            Routed::Data(t) if t == "live"
+            Routed::Data(t) if t.text == "live"
         ));
         // No leftover digest fires after the drain.
         assert_eq!(route_digest_take_at(id, t0 + ACTIVITY_INTERVAL), None);
@@ -1437,12 +1504,12 @@ mod route_tests {
             let was = route.subscribed();
             route.watchers += 1;
             assert!(!was);
-            assert_eq!(route.take_pending().as_deref(), Some("early"));
+            assert_eq!(route.take_pending().map(|slice| slice.text).as_deref(), Some("early"));
         }
         // … then the hidden PTY streams like a visible one.
         assert!(matches!(
             route_chunk_at(id, b"marker", Instant::now()),
-            Routed::Data(t) if t == "marker"
+            Routed::Data(t) if t.text == "marker"
         ));
         route_unwatch(id);
         // Released: back to buffering (leading-edge digest again).
@@ -1485,7 +1552,7 @@ mod route_tests {
         }
         assert!(matches!(
             route_chunk_at(id, b"still-live", Instant::now()),
-            Routed::Data(t) if t == "still-live"
+            Routed::Data(t) if t.text == "still-live"
         ));
         {
             let mut map = routes().lock().unwrap();
@@ -1557,8 +1624,8 @@ mod route_tests {
         route_chunk_at(id, b"$ echo hi\r\nhi\r\n", Instant::now());
 
         let tail = route_scrollback(id);
-        assert!(tail.contains("total 0"), "output from before any viewer");
-        assert!(tail.contains("hi"), "and output produced while visible");
+        assert!(tail.data.contains("total 0"), "output from before any viewer");
+        assert!(tail.data.contains("hi"), "and output produced while visible");
         assert_eq!(route_scrollback(id), tail, "a read, never a drain");
 
         set_visible(id, false);
@@ -1570,8 +1637,35 @@ mod route_tests {
         // A respawn under the same id is a NEW program: its predecessor's screen
         // is not this one's catch-up.
         let seq2 = route_open(id);
-        assert_eq!(route_scrollback(id), "");
+        assert_eq!(route_scrollback(id).data, "");
         route_close(id, seq2);
+    }
+
+    #[test]
+    fn scrollback_and_live_events_share_one_byte_offset_timeline() {
+        let id = "route-t-scrollback-offset";
+        let seq = route_open(id);
+        set_visible(id, true);
+        let first = match route_chunk_at(id, "aé".as_bytes(), Instant::now()) {
+            Routed::Data(slice) => slice,
+            other => panic!("expected live data, got {other:?}"),
+        };
+        let snapshot = route_scrollback(id);
+        let second = match route_chunk_at(id, b"z", Instant::now()) {
+            Routed::Data(slice) => slice,
+            other => panic!("expected live data, got {other:?}"),
+        };
+
+        assert_eq!((first.start_offset, first.end_offset), (0, 3));
+        assert_eq!(snapshot.end_offset, first.end_offset);
+        assert_eq!(
+            (second.start_offset, second.end_offset),
+            (snapshot.end_offset, snapshot.end_offset + 1)
+        );
+
+        set_visible(id, false);
+        route_remove_view(id, "test-view", 2);
+        route_close(id, seq);
     }
 
     #[test]
@@ -1584,9 +1678,9 @@ mod route_tests {
         }
         let tail = route_scrollback(id);
         assert!(
-            tail.len() <= ROUTE_SCROLLBACK_CAP * 2,
+            tail.data.len() <= ROUTE_SCROLLBACK_CAP * 2,
             "trimmed with hysteresis, so bounded at 2x the cap: {}",
-            tail.len()
+            tail.data.len()
         );
         route_close(id, seq);
     }

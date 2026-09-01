@@ -719,7 +719,9 @@ pub async fn pty_set_visible(
 /// hands it back here, to be written into the new terminal before its first live
 /// byte. A read, not a drain: a third window attaching later gets it too.
 #[tauri::command]
-pub async fn pty_scrollback(id: String) -> Result<String, String> {
+pub async fn pty_scrollback(
+    id: String,
+) -> Result<crate::terminal::TerminalScrollback, String> {
     Ok(crate::terminal::route_scrollback(&id))
 }
 

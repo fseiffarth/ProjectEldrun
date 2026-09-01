@@ -722,6 +722,7 @@ pub fn run() {
             // Settings
             commands::settings::get_settings,
             commands::settings::save_settings,
+            commands::settings::patch_settings,
             commands::settings::save_window_state,
             // Updates (Settings → Updates): check the GitHub releases page,
             // download this platform's artifact, hand it to its installer.

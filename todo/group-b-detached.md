@@ -10,6 +10,13 @@ group has been run live, and the backend half needs a restart to be in the
 window at all. #239 is a decision list and is **partly** done: the items worth
 building are built and ticked individually; the rest are documented in place.*
 
+*Review hardening integrated 2026-09-01: StrictMode now preserves the popout
+store seam; close/hide/dock destruction is host-owned; settings patches are an
+atomic backend transaction with ordered refreshes; terminal scrollback and live
+events share byte offsets; box records plus primary/worker status are seeded;
+and seed replies wait until the complete host protocol is registered. Automated
+gates are green; live boxes remain open.*
+
 *Files: `src/stores/detached.ts`, `src/stores/tabs.ts` (the `*Detached*`
 actions), **`src/stores/detachedContext.ts`** (new — the popout's store seam),
 `src/components/layout/DetachedApp.tsx`,

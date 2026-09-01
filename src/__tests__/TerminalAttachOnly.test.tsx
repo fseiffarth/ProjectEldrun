@@ -71,7 +71,10 @@ vi.mock("../stores/settings", () => ({
   resolveTheme: (s: string) => s,
 }));
 
-import { TerminalView } from "../components/terminal/TerminalView";
+import {
+  TerminalView,
+  outputAfterScrollback,
+} from "../components/terminal/TerminalView";
 
 function names(): string[] {
   return invoke.mock.calls.map((c) => c[0] as unknown as string);
@@ -180,5 +183,25 @@ describe("TerminalView — attach-only (#42)", () => {
     });
     const call = invoke.mock.calls.find((entry) => entry[0] === "pty_spawn");
     expect((call?.[1] as { opts: { agent: boolean } }).opts.agent).toBe(true);
+  });
+});
+
+describe("attach-only scrollback boundary", () => {
+  it("drops a live event already included in the snapshot", () => {
+    expect(
+      outputAfterScrollback("duplicate", { startOffset: 10, endOffset: 19 }, 19),
+    ).toBe("");
+  });
+
+  it("keeps output emitted after the snapshot", () => {
+    expect(
+      outputAfterScrollback("new", { startOffset: 19, endOffset: 22 }, 19),
+    ).toBe("new");
+  });
+
+  it("cuts an overlapping replay at a UTF-8 byte boundary", () => {
+    expect(
+      outputAfterScrollback("aéz", { startOffset: 10, endOffset: 14 }, 13),
+    ).toBe("z");
   });
 });

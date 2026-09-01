@@ -115,6 +115,34 @@ describe("detached host (#42)", () => {
     expect(handlers.has(DETACHED_HIDE)).toBe(true);
   });
 
+  it("does not answer a seed until every protocol listener is registered", async () => {
+    const { groupId, label } = detachSecond();
+    let releaseEdit!: (unlisten: () => boolean) => void;
+    listen
+      .mockImplementationOnce((event: string, handler: Handler) => {
+        handlers.set(event, handler);
+        return Promise.resolve(() => handlers.delete(event));
+      })
+      .mockImplementationOnce((event: string, handler: Handler) => {
+        handlers.set(event, handler);
+        return new Promise<() => boolean>((resolve) => {
+          releaseEdit = resolve;
+        });
+      });
+
+    const hosting = listenDetachedHost();
+    await vi.waitFor(() => expect(handlers.has(DETACHED_REQUEST_SEED)).toBe(true));
+    handlers.get(DETACHED_REQUEST_SEED)!({
+      payload: { label, scope: "p", groupId },
+    });
+    expect(emitted.some((entry) => entry.event === detachedSeedEvent(label))).toBe(false);
+
+    releaseEdit(() => handlers.delete(DETACHED_EDIT));
+    const unlisten = await hosting;
+    expect(emitted.some((entry) => entry.event === detachedSeedEvent(label))).toBe(true);
+    unlisten();
+  });
+
   it("a seed request emits the group's tabs + subtree to the requesting label", async () => {
     const { groupId, label, bKey } = detachSecond();
     await listenDetachedHost();
