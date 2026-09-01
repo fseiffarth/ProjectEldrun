@@ -11,6 +11,7 @@
  */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { emit, listen } from "@tauri-apps/api/event";
 import * as pdfjs from "pdfjs-dist";
 import type { PDFDocumentProxy } from "pdfjs-dist";
 import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
@@ -107,7 +108,15 @@ import { PdfNotesPane } from "./PdfNotesPane";
 import { PdfTextLayer } from "./PdfTextLayer";
 import { PdfSelectionBar, selectionBarPos } from "./PdfSelectionBar";
 import { readViewerSelection, type ViewerSelection } from "./selection";
+import { scrollIntoPdfBox } from "./scrollBox";
 import { PdfLinkConfirmDialog } from "./PdfLinkDialog";
+import {
+  type PdfPresentReady,
+  type PdfPresentSeed,
+  PDF_PRESENT_READY,
+  pdfPresentLabel,
+  pdfPresentSeedEvent,
+} from "./present";
 import { openRoutedUri } from "../../../lib/linkTarget";
 import {
   SCREENSHOT_CAPTURE_EVENT,
@@ -181,6 +190,16 @@ const PDF_MIN_SCALE = 0.1;
 const PDF_MAX_SCALE = 8;
 const PDF_ZOOM_STEP = 1.2;
 const clampPdfScale = (s: number) => Math.min(PDF_MAX_SCALE, Math.max(PDF_MIN_SCALE, s));
+
+/** Is the key going to somewhere that types? The host div wraps the find bar, the
+ *  go-to-page box and every remark card, so the page-stepping arrow keys have to
+ *  leave the caret alone wherever one of those has focus. */
+const isTextEntry = (target: EventTarget | null): boolean => {
+  const el = target as HTMLElement | null;
+  if (!el || typeof el.tagName !== "string") return false;
+  const tag = el.tagName.toLowerCase();
+  return tag === "input" || tag === "textarea" || tag === "select" || el.isContentEditable;
+};
 
 /**
  * How a reopened PDF should start: the zoom to seed, and whether that zoom is the
@@ -781,11 +800,15 @@ function PdfPageCanvas({
 
   // Scroll a forward-search target into view on a new nonce. Center the
   // highlight *box*, not the whole page — on a tall page the target line can sit
-  // far from page-center, which is what made the jump feel imprecise.
+  // far from page-center, which is what made the jump feel imprecise. Scoped to
+  // the reader's own scroller (`scrollIntoPdfBox`): `scrollIntoView` also scrolls
+  // the `overflow: hidden` pane and tab hosts above it, which is what displaced
+  // the whole pane — and the fit-to-width page inside it — on a jump.
   useEffect(() => {
     if (!highlight) return;
     onReveal?.();
-    (boxRef.current ?? wrapRef.current)?.scrollIntoView({ block: "center", inline: "nearest" });
+    const target = boxRef.current ?? wrapRef.current;
+    if (target) scrollIntoPdfBox(target, "center");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [highlight?.nonce]);
 
@@ -794,7 +817,7 @@ function PdfPageCanvas({
   // box is always present to scroll to.
   useEffect(() => {
     if (!searchScrollNonce) return;
-    searchCurrentRef.current?.scrollIntoView({ block: "center", inline: "nearest" });
+    if (searchCurrentRef.current) scrollIntoPdfBox(searchCurrentRef.current, "center");
   }, [searchScrollNonce]);
 
   // Reverse search, by client coordinates rather than by the event's own target:
@@ -1606,6 +1629,11 @@ function PdfCanvas({
   // (rather than beside `updateVisiblePage` below) so the go-to-page control,
   // which seeds its input from the current value, can read it too.
   const [visiblePage, setVisiblePage] = useState(1);
+  // The same number as a ref, because ← / → step off the *previous* page rather
+  // than off a rendered one: two presses inside one frame both read the same
+  // stale state and would advance a single page. The scroll listener writes
+  // both, so the ref is only ever ahead of the state, never wrong about it.
+  const visiblePageRef = useRef(1);
   // Undo/redo: the arrangement is a small immutable list, so history is just a
   // stack of them.
   const [past, setPast] = useState<PageList[]>([]);
@@ -1765,6 +1793,71 @@ function PdfCanvas({
   // the LIVE dirty flag to decide whether an on-disk change may auto-reload.
   const dirtyRef = useRef(false);
   dirtyRef.current = dirty;
+
+  // ── Presenting this PDF fullscreen (`present.ts`) ────────────────────────
+  //
+  // A window of its own showing the sheet and nothing else — the toolbar, the
+  // tab bar and the desktop all gone. It opens the file itself from `path`, so
+  // what it shows is the file AS SAVED: an unsaved page arrangement stays in this
+  // tab, which the button's tooltip says while there is one.
+  const presentLabel = useMemo(() => pdfPresentLabel(path), [path]);
+  /** This tab has opened the present window (and so answers its seed requests).
+   *  Not proof it is still on screen — the reader may have closed it with Esc —
+   *  which costs nothing: an emit at a label with no listener is a no-op. */
+  const [presentOpen, setPresentOpen] = useState(false);
+  const seedPresent = useCallback(() => {
+    const payload: PdfPresentSeed = {
+      path,
+      scope,
+      // Where the reader is now, so Present picks up the sheet on screen — and so
+      // pressing it again with the window already open moves it here rather than
+      // doing nothing visible.
+      page: visiblePage,
+    };
+    void emit(pdfPresentSeedEvent(presentLabel), payload);
+  }, [presentLabel, path, scope, visiblePage]);
+  // Read by the subscription below through a ref: `listen()` is async, so
+  // re-subscribing drops any request that lands during the round trip — and this
+  // one would otherwise re-subscribe on every scroll that changes the sheet
+  // number, which is the trap `DeckPresenter` documents.
+  const seedPresentRef = useRef(seedPresent);
+  seedPresentRef.current = seedPresent;
+  const openPresentWindow = useCallback(() => {
+    void (async () => {
+      try {
+        // `fullscreen: true` is what makes this different from the deck's
+        // audience window: that one only takes over a SECOND monitor and stays
+        // windowed on a single-monitor machine, which is the right default for a
+        // talk with a notes view but not for "show me this PDF fullscreen".
+        // Opening is idempotent by label, so a second press re-focuses the window
+        // already up and the seed below moves it to this sheet.
+        await invoke("open_presenter_window", { label: presentLabel, fullscreen: true });
+        setPresentOpen(true);
+        seedPresent();
+      } catch (e) {
+        setError(describeFileError(e));
+      }
+    })();
+  }, [presentLabel, seedPresent]);
+
+  // The present window asks until it is answered (it and this listener race on
+  // open). Subscribed only once this tab has opened one: a listener per PDF tab
+  // for a window nobody asked for is a subscription that never pays for itself.
+  useEffect(() => {
+    if (!presentOpen) return;
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    void listen<PdfPresentReady>(PDF_PRESENT_READY, (e) => {
+      if (e.payload.label === presentLabel) seedPresentRef.current();
+    }).then((fn) => {
+      if (cancelled) fn();
+      else unlisten = fn;
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [presentOpen, presentLabel]);
 
   /** A metadata field's name. Only the eight standard `/Info` keys are translated —
    *  everything else is a name the producer invented, and printing an i18n key back
@@ -2921,8 +3014,22 @@ function PdfCanvas({
     if (count === 0) return;
     const idx = Math.min(Math.max(Math.trunc(pos), 1), count) - 1;
     const wrap = contentRef.current?.children[idx] as HTMLElement | undefined;
-    wrap?.scrollIntoView({ block: "start", inline: "nearest" });
+    if (wrap) scrollIntoPdfBox(wrap, "start");
   }, []);
+  /** ← / → : one sheet per press, the way a deck of slides is read. Returns
+   *  false at either end of the document, where the caller leaves the key to the
+   *  scroller rather than yanking the reader back to the top of the page they
+   *  are already at the bottom of. */
+  const stepPage = useCallback(
+    (delta: number) => {
+      const target = visiblePageRef.current + delta;
+      if (target < 1 || target > pagesRef.current.length) return false;
+      visiblePageRef.current = target;
+      jumpToArrangementIndex(target);
+      return true;
+    },
+    [jumpToArrangementIndex],
+  );
   const openPageJump = useCallback(() => {
     if (pages.length === 0) return;
     setPageJumpValue(String(visiblePage));
@@ -2993,7 +3100,7 @@ function PdfCanvas({
       const top = srcDoc ? await destTopInBigPoints(srcDoc, dest, list[idx].rot ?? 0) : null;
       if (top == null) {
         // A whole-page destination (`/Fit`) names no line to land on.
-        wrap.scrollIntoView({ block: "start", inline: "nearest" });
+        scrollIntoPdfBox(wrap, "start");
         return true;
       }
       // Measured rather than read off `offsetTop`: the page stack's offset parent
@@ -3093,6 +3200,18 @@ function PdfCanvas({
         // return from the link you just followed.
         e.preventDefault();
         linkGoBack();
+      } else if (
+        (e.key === "ArrowRight" || e.key === "ArrowLeft") &&
+        !mod &&
+        !e.altKey &&
+        !e.shiftKey &&
+        !isTextEntry(e.target)
+      ) {
+        // Next/previous sheet — a beamer deck is a page per slide, and the arrow
+        // keys are what it is read with in every other reader. Bare keys only:
+        // Alt+← is already "back" above, and Shift+← extends a text selection.
+        // At either end nothing is claimed, so the scroller keeps the key.
+        if (stepPage(e.key === "ArrowRight" ? 1 : -1)) e.preventDefault();
       } else if (e.key === "Escape" && pageJumpOpen) {
         e.preventDefault();
         closePageJump();
@@ -3123,6 +3242,7 @@ function PdfCanvas({
       redacting,
       copySelecting,
       linkGoBack,
+      stepPage,
     ],
   );
   const onFindKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -3508,13 +3628,18 @@ function PdfCanvas({
     const pages = content.children;
     for (let i = 0; i < pages.length; i++) {
       if (pages[i].getBoundingClientRect().bottom >= anchor) {
+        visiblePageRef.current = i + 1;
         setVisiblePage(i + 1);
         return;
       }
     }
-    if (pages.length > 0) setVisiblePage(pages.length);
+    if (pages.length > 0) {
+      visiblePageRef.current = pages.length;
+      setVisiblePage(pages.length);
+    }
   }, []);
   useEffect(() => {
+    visiblePageRef.current = 1;
     setVisiblePage(1);
     if (doc) updateVisiblePage();
   }, [doc, updateVisiblePage]);
@@ -3605,7 +3730,7 @@ function PdfCanvas({
     const idx = pagesRef.current.findIndex((r) => r.src === SELF && r.page === filePage);
     if (idx < 0) return;
     const wrap = contentRef.current?.children[idx] as HTMLElement | undefined;
-    wrap?.scrollIntoView({ block: "start", inline: "nearest" });
+    if (wrap) scrollIntoPdfBox(wrap, "start");
   }, []);
 
   // The outline entry to highlight: the last chapter (in document order) whose
@@ -3968,6 +4093,23 @@ function PdfCanvas({
             <PrinterIcon />
           )}
         </button>
+        {/* Fullscreen present: this PDF in a window of its own, with nothing else
+            on the screen. Beside Print because the two are the same job aimed at
+            the two audiences a document has — the room and the page. */}
+        <button
+          className="file-viewer-zoom-btn file-viewer-zoom-text"
+          onClick={openPresentWindow}
+          disabled={!doc}
+          title={
+            dirty
+              ? t("pdfViewer.fullscreenPresentDirtyTitle")
+              : t("pdfViewer.fullscreenPresentTitle")
+          }
+          aria-label={t("pdfViewer.fullscreenPresentLabel")}
+        >
+          ▶ {t("pdfViewer.fullscreenPresentBtn")}
+        </button>
+        <UntestedTag />
         {deckEnabled && (
           <button
             className="file-viewer-zoom-btn file-viewer-zoom-text"
