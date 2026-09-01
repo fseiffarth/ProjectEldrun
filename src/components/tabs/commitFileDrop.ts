@@ -2,6 +2,8 @@ import { type TabDrag, type FileDragItem } from "../../stores/drag";
 import {
   EMPTY_GROUP_ID,
   findGroup,
+  findGroupOfTab,
+  orderedTabKeys,
   useTabsStore,
   type DetachedDockTarget,
   type DropEdge,
@@ -85,6 +87,133 @@ export function fileDropGoesToNewWindow(opts: {
 }
 
 /**
+ * Where a file drop lands, in the shape a relocation needs: the same four
+ * destinations `commitFileDrop` resolves for a NEW tab, kept as data so an
+ * EXISTING tab can be sent to the same place.
+ */
+export type FileDropDestination =
+  | { kind: "detached"; scope: string; groupId: string; target?: DetachedDockTarget }
+  | { kind: "newWindow"; bounds: WindowBounds }
+  | { kind: "bar"; groupId: string; index: number }
+  | { kind: "split"; groupId: string; edge: DropEdge }
+  // The scope has no layout yet (the +-placeholder): a tab living in a popout
+  // docks back as the first in-window pane; there is nothing else to aim at.
+  | { kind: "empty" };
+
+/**
+ * Move an already-open tab of the current scope to a drop destination. The tab
+ * may currently sit in the in-window layout or inside any popout of the scope;
+ * each combination has an existing store op, and this is the one place that
+ * picks it — so `openTexWorkspace`'s single-tab rule (never a second workspace)
+ * and a drop's rule (it lands where it was dropped) stop contradicting each
+ * other. A home this can't see (a hidden subwindow) falls back to focusing the
+ * tab, the pre-relocation behaviour. Exported for tests.
+ */
+export function relocateExistingTab(key: string, dest: FileDropDestination): void {
+  const store = useTabsStore.getState();
+  const scope = store.scope;
+  const inLayout = !!findGroupOfTab(store.layout, key);
+  const popout =
+    (store.detachedGroupsByScope[scope] ?? []).find((d) =>
+      orderedTabKeys(d.subtree).includes(key),
+    ) ?? null;
+  if (!inLayout && !popout) {
+    store.setActive(key);
+    return;
+  }
+
+  switch (dest.kind) {
+    case "detached": {
+      if (inLayout) {
+        store.dockTabIntoDetached(dest.scope, dest.groupId, key, dest.target);
+        reseedDetached(dest.scope, dest.groupId, key);
+        return;
+      }
+      const src = popout!.id;
+      if (src === dest.groupId) {
+        // Already in this popout: move it to the pane it was dropped on (a side
+        // edge carves a pane, a bar/centre merges), then activate it. The
+        // activate is separate because a `move` into the tab's OWN pane is a
+        // documented no-op (a within-pane reorder), which would otherwise leave
+        // the drop with no visible effect at all.
+        const t = dest.target;
+        if (t && "index" in t) {
+          store.applyDetachedEdit(dest.scope, dest.groupId, {
+            kind: "move",
+            key,
+            targetGroupId: t.groupId,
+            index: t.index,
+          });
+        } else if (t && t.edge !== "center") {
+          store.applyDetachedEdit(dest.scope, dest.groupId, {
+            kind: "split",
+            key,
+            targetGroupId: t.groupId,
+            edge: t.edge,
+          });
+        } else if (t) {
+          store.applyDetachedEdit(dest.scope, dest.groupId, {
+            kind: "move",
+            key,
+            targetGroupId: t.groupId,
+          });
+        }
+        store.applyDetachedEdit(dest.scope, dest.groupId, { kind: "activate", key });
+        reseedDetached(dest.scope, dest.groupId, key);
+        return;
+      }
+      // Popout → another popout: the source is re-seeded too (or, if this
+      // emptied it, its record is already gone and the re-seed is a no-op).
+      store.moveTabBetweenDetached(dest.scope, src, dest.groupId, key, dest.target);
+      reseedDetached(dest.scope, dest.groupId, key);
+      reseedDetached(dest.scope, src);
+      return;
+    }
+    case "newWindow": {
+      if (inLayout) {
+        store.detachTab(key, dest.bounds);
+        return;
+      }
+      // Refused (null) for a lone-tab popout — that popout already is the tab's
+      // own window, so there is nothing to do.
+      const label = store.detachTabToNewWindow(scope, popout!.id, key, dest.bounds);
+      if (label) reseedDetached(scope, popout!.id);
+      return;
+    }
+    case "bar": {
+      if (inLayout) {
+        store.moveTab(key, dest.groupId, dest.index);
+        return;
+      }
+      store.attachDetachedTab(scope, popout!.id, key, { targetGroupId: dest.groupId, edge: "center" });
+      reseedDetached(scope, popout!.id);
+      store.setActive(key);
+      return;
+    }
+    case "split": {
+      if (inLayout) {
+        store.splitWithTab(key, dest.groupId, dest.edge);
+        return;
+      }
+      store.attachDetachedTab(scope, popout!.id, key, { targetGroupId: dest.groupId, edge: dest.edge });
+      reseedDetached(scope, popout!.id);
+      store.setActive(key);
+      return;
+    }
+    case "empty": {
+      if (inLayout) {
+        store.setActive(key);
+        return;
+      }
+      store.attachDetachedTab(scope, popout!.id, key);
+      reseedDetached(scope, popout!.id);
+      store.setActive(key);
+      return;
+    }
+  }
+}
+
+/**
  * Commit a finished FILE drag (a file row dragged from the FileTree onto a tab
  * bar). Like commitDrop, this is the SINGLE drop authority for file drags and
  * lives outside any component so it can be called from FileTree's own pointerup
@@ -145,27 +274,36 @@ export function commitFileDrop(
   const items: (FileDragItem | null)[] = multi ?? [null];
   const payloadFor = (f: FileDragItem | null) => fileEmbedPayload(d, f, projectCwd);
 
-  // A single `.tex` drop becomes (or focuses) the ONE TeX workspace tab for its
-  // document rather than a bare editor embed — the same one-tab policy the
-  // FileTree double-click uses. Resolving the build root is async, so we hand
+  // A single `.tex` drop becomes the ONE TeX workspace tab for its document
+  // rather than a bare editor embed — the same one-tab policy the FileTree
+  // double-click uses. Resolving the build root is async, so we hand
   // `openTexWorkspace` a `place` seam matching whichever drop target resolved
-  // below and let it dedupe on the root (an already-open workspace is focused,
-  // `place` unused). A multi-file drag keeps the per-file embed path; a graphics
-  // drop from a link-follow is not a `.tex` and is untouched.
+  // below and let it dedupe on the root. An already-open workspace is not
+  // duplicated: a drop of the ROOT file RELOCATES it to the drop target
+  // (`relocateExistingTab`), a drop of a CHILD file opens that child as its own
+  // editor tab there (see `openTexWorkspace`). Merely focusing the existing tab
+  // wherever it was — the previous behaviour — made a `.tex` dropped onto a
+  // popout look like a dead drop whenever its workspace was already open. A
+  // multi-file drag keeps the per-file embed path; a graphics drop from a
+  // link-follow is not a `.tex` and is untouched.
   if (!multi && d.viewer === "tex" && d.filePath) {
     const texPath = d.filePath;
     const store = useTabsStore.getState();
     let place: ((tab: Omit<TabEntry, "key">) => void) | null;
+    let dest: FileDropDestination;
     if (detachedTarget) {
+      dest = { kind: "detached", ...detachedTarget };
       place = (tab) => {
         const e = store.addTab(tab);
         store.dockTabIntoDetached(detachedTarget.scope, detachedTarget.groupId, e.key, detachedTarget.target);
         reseedDetached(detachedTarget.scope, detachedTarget.groupId, e.key);
       };
     } else if (detachBounds) {
+      dest = { kind: "newWindow", bounds: detachBounds };
       place = (tab) => { store.detachNewTab(tab, detachBounds); };
     } else if (!store.layout) {
       if (d.reorderGroup === EMPTY_GROUP_ID || d.overGroup === EMPTY_GROUP_ID) {
+        dest = { kind: "empty" };
         place = (tab) => { store.addTab(tab); };
       } else {
         return; // empty scope, no drop target
@@ -174,6 +312,7 @@ export function commitFileDrop(
       const targetGroup = d.reorderGroup as string;
       if (!findGroup(store.layout, targetGroup)) return;
       const slot = d.reorderIndex as number;
+      dest = { kind: "bar", groupId: targetGroup, index: slot };
       place = (tab) => {
         store.focusGroup(targetGroup);
         const e = store.addTab(tab);
@@ -182,11 +321,15 @@ export function commitFileDrop(
     } else if (overSplit) {
       const targetGroup = d.overGroup as string;
       if (!findGroup(store.layout, targetGroup)) return;
-      place = (tab) => { store.splitWithNewTab(tab, targetGroup, d.edge as DropEdge); };
+      const edge = d.edge as DropEdge;
+      dest = { kind: "split", groupId: targetGroup, edge };
+      place = (tab) => { store.splitWithNewTab(tab, targetGroup, edge); };
     } else {
       return; // no valid target — a stray drop opens nothing
     }
-    void openTexWorkspace(texPath, place);
+    void openTexWorkspace(texPath, place, {
+      relocate: (key) => relocateExistingTab(key, dest),
+    });
     return;
   }
 

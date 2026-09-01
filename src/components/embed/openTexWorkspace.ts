@@ -22,12 +22,32 @@ import { basename, dirname } from "../../lib/paths";
  * `place` is the detached-popout / drop-target seam (like `openFileEntry`'s
  * `placeTab`): when given AND no existing workspace is found, it is handed the
  * fresh tab payload to place (into a popout, a split, a drop slot) instead of the
- * default `addTab` into the focused subwindow. An existing workspace is always
- * focused in place, since a workspace is a single-tab concept.
+ * default `addTab` into the focused subwindow.
+ *
+ * `drop` marks a DROP rather than a click, for the existing-workspace case. A
+ * workspace is a single-tab concept, so an already-open one is never duplicated —
+ * but a drop names a destination, and "focus it wherever it already is" is not
+ * an answer to "put it here": a `.tex` dragged from the side panel onto a popout
+ * while its workspace was open in the main window lit the popout's split preview
+ * and then visibly did nothing (the existing tab was focused in the main window,
+ * or — when it lived in a popout, where `setActive` cannot see it — nowhere at
+ * all). So a drop of the document's ROOT hands the existing tab to
+ * `drop.relocate` to be MOVED to the target; a drop of a CHILD (a file the root
+ * `\input`s, which the build-root resolver folds into the same document) opens
+ * that child as its own editor tab at the target through `place`, leaving the
+ * workspace where it is — the user dragged a distinct file to a specific place,
+ * and moving the whole document there, or nothing at all, is not what a drop
+ * of that file asked for. A plain open (a click, no destination) still focuses
+ * the workspace in place and centers it on the clicked file.
  */
+export interface TexWorkspaceDrop {
+  relocate: (existingKey: string) => void;
+}
+
 export async function openTexWorkspace(
   clickedPath: string,
   place?: (tab: Omit<TabEntry, "key">) => void,
+  drop?: TexWorkspaceDrop,
 ): Promise<void> {
   const root = await resolveTexRoot(clickedPath);
   const store = useTabsStore.getState();
@@ -41,8 +61,26 @@ export async function openTexWorkspace(
     (t) => t.kind === "embed" && t.viewer === "texworkspace" && t.embedPath === root,
   );
   if (existing) {
-    store.setActive(existing.key);
+    if (drop && clickedPath !== root) {
+      // A child dropped somewhere specific while its document is open: a plain
+      // editor tab for THAT file, there. The workspace is left untouched.
+      const child: Omit<TabEntry, "key"> = {
+        label: basename(clickedPath) || clickedPath,
+        cmd: "",
+        cwd: dirname(clickedPath) || "/",
+        kind: "embed",
+        embedPath: clickedPath,
+        viewer: "tex",
+      };
+      if (place) place(child);
+      else store.setActive(store.addTab(child).key);
+      return;
+    }
+    // Center first, then move/focus: the relocation may re-seed a popout, and
+    // the seed should already carry the centered path.
     store.setViewerState(existing.key, { texActivePath: activePath });
+    if (drop) drop.relocate(existing.key);
+    else store.setActive(existing.key);
     return;
   }
 
