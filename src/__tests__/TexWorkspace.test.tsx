@@ -66,18 +66,32 @@ const CHILD_SRC = "\\section{Chapter}\nchild body\n";
 /** Wire the backend mock for a compilable one-child document. */
 function setupInvoke(
   syncRects: Array<{ page: number; x: number; y: number; w: number; h: number }> = [],
+  engines: string[] = ["pdflatex"],
 ) {
   const files: Record<string, string> = { [MAIN]: MAIN_SRC, [CHILD]: CHILD_SRC };
-  mockInvoke.mockImplementation((cmd: string, args?: Record<string, unknown>) => {
+  mockInvoke.mockImplementation((
+    cmd: string,
+    args?: Record<string, unknown>,
+    opts?: { headers?: Record<string, string> },
+  ) => {
     switch (cmd) {
       case "tex_capability":
-        return Promise.resolve({ available: true, engines: ["pdflatex"], bibtex: false, latexmk: false });
+        return Promise.resolve({ available: true, engines, bibtex: false, latexmk: false });
       case "read_file_text": {
         const text = files[(args?.path as string) ?? ""];
         return text != null ? Promise.resolve(text) : Promise.reject(new Error("missing"));
       }
-      case "write_file_text":
+      case "write_file_text": {
+        // Recorded, so the ＋ (new file) test can assert the spliced \input.
+        files[(args?.path as string) ?? ""] = (args?.content as string) ?? "";
         return Promise.resolve(null);
+      }
+      case "write_file_bytes": {
+        // Bytes ride as the raw body; the path is a header (see fileAccess.ts).
+        const p = decodeURIComponent(opts?.headers?.["x-eldrun-path"] ?? "");
+        files[p] = "";
+        return Promise.resolve(null);
+      }
       case "resolve_tex_root":
         // A child resolves to the main; the main resolves to itself.
         return Promise.resolve((args?.path as string) === CHILD ? MAIN : (args?.path as string));
@@ -93,14 +107,19 @@ function setupInvoke(
         return Promise.resolve(syncRects);
       case "synctex_edit":
         return Promise.resolve(null);
-      case "file_mtime":
-        return Promise.resolve(1);
+      case "file_mtime": {
+        // Answers only for files that exist — texPathExists reads a failed stat
+        // as absence, which is what lets the ＋ create a missing child.
+        const p = (args?.path as string) ?? "";
+        return files[p] != null ? Promise.resolve(1) : Promise.reject(new Error("missing"));
+      }
       case "list_dir":
         return Promise.resolve([]);
       default:
         return Promise.resolve(null);
     }
   });
+  return files;
 }
 
 async function resetStores() {
@@ -247,6 +266,40 @@ describe("TeX workspace — center switching + SyncTeX", () => {
         rect: { page: 1, x: 10, y: 20, w: 100, h: 12 },
       }),
     );
+  });
+
+  it("(i) the engine chosen on the main file compiles every file in the structure", async () => {
+    // Two engines, so the selector is offered at all (one installed ⇒ hidden).
+    setupInvoke([], ["pdflatex", "lualatex"]);
+    await renderWorkspace();
+
+    // Choose lualatex on the main file — the only pane mounted so far.
+    const trigger = await screen.findByTitle(/LaTeX engine/i);
+    await act(async () => {
+      await userEvent.click(trigger);
+    });
+    await act(async () => {
+      await userEvent.click(screen.getByRole("option", { name: "lualatex" }));
+    });
+
+    // Center the child and build from THERE. A child compiles its root, so the
+    // engine it builds with is the document's, not the backend's default.
+    const childRow = await screen.findByRole("button", { name: /chap\.tex/i });
+    await act(async () => {
+      await userEvent.click(childRow);
+    });
+    const childCompile = await screen.findByRole("button", { name: /compile main\.tex/i });
+    await act(async () => {
+      await userEvent.click(childCompile);
+    });
+
+    await waitFor(() => {
+      const call = mockInvoke.mock.calls.find((c) => c[0] === "compile_tex");
+      expect(call?.[1]).toMatchObject({ path: MAIN, engine: "lualatex" });
+    });
+    // And the child's own toolbar says so: one choice, shown by every pane.
+    for (const el of screen.getAllByTitle(/LaTeX engine/i))
+      expect(el.textContent).toContain("lualatex");
   });
 
   it("(d) reverse search routes back into the workspace, switching the center", async () => {
@@ -438,5 +491,30 @@ describe("TeX workspace — center switching + SyncTeX", () => {
       ),
     );
     expect(useTabsStore.getState().tabs).toHaveLength(1);
+  });
+
+  it("(j) the sidebar's ＋ creates a child file, \\inputs it, and centers it", async () => {
+    const files = setupInvoke();
+    const { tabKey, useTabsStore } = await renderWorkspace();
+    await screen.findByRole("button", { name: /chap\.tex/i });
+
+    await act(async () => {
+      await userEvent.click(await screen.findByRole("button", { name: /new file/i }));
+    });
+    const input = await screen.findByRole("textbox", { name: /file name/i });
+    await act(async () => {
+      await userEvent.type(input, "notes{enter}");
+    });
+
+    // The file exists, the main document gained its \input above \end{document},
+    // and the re-gathered structure lists + centers the new child.
+    await waitFor(() =>
+      expect(
+        useTabsStore.getState().tabs.find((t) => t.key === tabKey)?.viewerState?.texActivePath,
+      ).toBe("/p/notes.tex"),
+    );
+    expect(files["/p/notes.tex"]).toBe("");
+    expect(files[MAIN]).toMatch(/\\input\{notes\}\n\\end\{document\}/);
+    await screen.findByRole("button", { name: /notes\.tex/i });
   });
 });

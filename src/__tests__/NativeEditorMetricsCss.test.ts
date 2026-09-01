@@ -84,7 +84,6 @@ const OVERLAY_SELECTORS = [
   ".file-viewer-link-layer",
   ".file-viewer-search-layer",
   ".file-viewer-change-layer",
-  ".file-viewer-delete-layer",
   ".file-viewer-grammar-layer",
   ".file-viewer-bracket-layer",
   ".file-viewer-unclosed-layer",

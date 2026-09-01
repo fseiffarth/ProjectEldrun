@@ -275,6 +275,13 @@ pub struct Settings {
     /// has never heard of.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ollama_roles: Option<HashMap<String, String>>,
+    /// Hunspell dictionary code (e.g. `en_US`) for the editors' dictionary
+    /// spell check (`services::spell`). Unset means the default — an installed
+    /// English variant when there is one, else the first dictionary found.
+    /// One machine-wide choice (the language you write in is not per project);
+    /// per-type enablement lives in `ViewerPref::spell_check`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spell_language: Option<String>,
     /// Preserved for Python rollback; not used by the Tauri app.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ollama_autostart: Option<bool>,
@@ -685,6 +692,19 @@ pub struct ViewerPref {
     /// Like `autocomplete`, defaults OFF (no model call unless explicitly on).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grammar_check: Option<bool>,
+    /// Whether the dictionary (Hunspell) spell check is enabled for this type.
+    /// Defaults OFF like its siblings — not for privacy (it calls no model),
+    /// but because red underlines nobody asked for are noise in a code editor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spell_check: Option<bool>,
+    /// Whether the TeX editor typesets the snippet under the pointer and shows
+    /// it in a hover card (#tex-hover-preview). Only the `"tex"` entry reads it.
+    /// Absent means ON — unlike `autocomplete`/`grammar_check` above, which are
+    /// opt-in because they call a model; this runs the local TeX engine the
+    /// viewer is already built around, on a fragment, only after the pointer has
+    /// rested. Set `false` to stop hovering from compiling anything.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hover_preview: Option<bool>,
     /// Editor font size in px for this type's in-app code editor. Adjusted from
     /// the viewer's A−/A+ controls (or Ctrl +/−/0). Unset falls back to the
     /// frontend default (12px).

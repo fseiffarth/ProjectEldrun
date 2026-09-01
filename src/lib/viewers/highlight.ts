@@ -211,6 +211,20 @@ export function languageForPath(path: string): Lang {
   return "plain";
 }
 
+/**
+ * The marker that comments out one whole line in `lang`, or `null` when the
+ * language has none (JSON, markdown, plain text) or comments only in blocks
+ * (HTML/XML — a linewise toggle would have to wrap every line in `<!-- -->`,
+ * which is not the same gesture). Drives the editor's Ctrl+Shift+C toggle, so it
+ * deliberately reports the *first* of a language's markers: the one written back
+ * when commenting, while uncommenting only has to recognise what is there.
+ */
+export function lineCommentMarker(lang: Lang): string | null {
+  if (lang === "tex") return "%";
+  if (lang === "markup" || lang === "markdown" || lang === "plain") return null;
+  return SPECS[lang].line[0] ?? null;
+}
+
 const isIdentStart = (c: string) => /[A-Za-z_$]/.test(c);
 const isIdentPart = (c: string) => /[A-Za-z0-9_$]/.test(c);
 const isDigit = (c: string) => c >= "0" && c <= "9";
@@ -491,10 +505,34 @@ function texArgGroups(code: string, from: number, depth: number): { html: string
   return took ? { html, next: i } : null;
 }
 
-/** Tokenize LaTeX/TeX: `%` line comments, `\control` sequences, the environment
- *  name inside `\begin{…}`/`\end{…}`, a command's brace arguments (italic), and
- *  bare numbers. Math stays plain text so commands inside `$…$` (e.g. `\frac`)
- *  still colour as commands. `depth` is the brace-nesting level the argument
+/** Environments the compiler throws away wholesale — `comment`, from the
+ *  `comment`/`verbatim` packages. Their body is not LaTeX at all, so the
+ *  highlighter greys the whole block instead of tokenizing inside it. */
+const TEX_COMMENT_ENVS = new Set(["comment"]);
+
+/**
+ * When the `\begin` ending at `afterCmd` opens a comment environment, the offset
+ * just past its matching `\end{…}` — or the end of the file when it is never
+ * closed, so an unterminated block greys out to the bottom instead of silently
+ * reading as ordinary source (which is also what the compiler does with it).
+ * `null` when this is any other environment, leaving the normal `\begin{env}`
+ * path to colour it.
+ */
+function texCommentEnvEnd(code: string, afterCmd: number): number | null {
+  if (code[afterCmd] !== "{") return null;
+  const close = code.indexOf("}", afterCmd + 1);
+  if (close === -1) return null;
+  const name = code.slice(afterCmd + 1, close);
+  if (!TEX_COMMENT_ENVS.has(name)) return null;
+  const closer = `\\end{${name}}`;
+  const end = code.indexOf(closer, close + 1);
+  return end === -1 ? code.length : end + closer.length;
+}
+
+/** Tokenize LaTeX/TeX: `%` line comments and `\begin{comment}` blocks, `\control`
+ *  sequences, the environment name inside `\begin{…}`/`\end{…}`, a command's
+ *  brace arguments (italic), and bare numbers. Math stays plain text so commands
+ *  inside `$…$` (e.g. `\frac`) still colour as commands. `depth` is the brace-nesting level the argument
  *  scanner recurses at — callers outside this file always start at 0. */
 function scanTex(code: string, depth = 0): string {
   let out = "";
@@ -526,6 +564,20 @@ function scanTex(code: string, depth = 0): string {
         j = Math.min(j + 1, n);
       }
       const cmd = code.slice(i, j);
+
+      // `\begin{comment}` … `\end{comment}`: the body is not typeset, so the
+      // whole block — delimiters included — greys out as one comment, the way a
+      // `%` line does. Checked before the keyword span so nothing inside is
+      // tokenized.
+      if (cmd === "\\begin") {
+        const stop = texCommentEnvEnd(code, j);
+        if (stop !== null) {
+          out += span("comment", code.slice(i, stop));
+          i = stop;
+          continue;
+        }
+      }
+
       out += span("keyword", cmd);
       i = j;
 

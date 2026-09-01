@@ -92,6 +92,12 @@ bytes = "1"
 # (`/sys/class/power_supply`), Windows (`GetSystemPowerStatus`), and macOS
 # (IOKit), so it needs no cfg-gating here.
 starship-battery = "0.10"
+# Hunspell-compatible spell checking (`services/spell.rs`) for the native
+# editors' dictionary provider — pure Rust (helix's checker), so no C
+# dependency and the Windows/macOS builds stay toolchain-free. Reads the
+# system's own `.aff`/`.dic` pairs (`/usr/share/hunspell` on Linux) plus any
+# dropped into `<state_dir>/dictionaries/`.
+spellbook = "0.4"
 
 # ── Mail (see docs/mail_client_plan_b.md) ────────────────────────────────────
 # MIME parsing of untrusted network input. Chosen over hand-rolling because it is

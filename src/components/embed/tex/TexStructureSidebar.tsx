@@ -118,6 +118,7 @@ export function TexStructureSidebar({
   onSelect,
   onResize,
   onHide,
+  onNewFile,
   onBack,
   backLabel,
 }: {
@@ -132,6 +133,9 @@ export function TexStructureSidebar({
   onResize: (width: number) => void;
   /** Fold the sidebar away to its rail. */
   onHide: () => void;
+  /** Open the host's "add a file to this document" prompt (#tex-structure-newfile).
+   *  Absent = the host has nowhere to create one, and the button is not shown. */
+  onNewFile?: () => void;
   /** Go back to the previously centered file; absent = nothing to go back to. */
   onBack?: () => void;
   /** Basename of what `onBack` would return to, for the button's title. */
@@ -225,6 +229,17 @@ export function TexStructureSidebar({
       <div className="tex-structure-header">
         <TexBackButton onBack={onBack} backLabel={backLabel} />
         <span className="tex-structure-title">{t("texWorkspace.structureTitle")}</span>
+        {onNewFile && (
+          <button
+            type="button"
+            className="tex-structure-chrome-btn tex-structure-new"
+            title={t("texWorkspace.newFile")}
+            aria-label={t("texWorkspace.newFile")}
+            onClick={onNewFile}
+          >
+            ＋
+          </button>
+        )}
         <button
           type="button"
           className="tex-structure-chrome-btn tex-structure-fold"

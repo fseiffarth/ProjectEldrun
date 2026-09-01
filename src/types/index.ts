@@ -44,6 +44,11 @@ export interface GrammarIssue {
   suggestion: string;
   category: GrammarCategory;
   message: string;
+  /** Which provider produced the issue — set frontend-side on receipt, never on
+   *  the wire. `"dict"` (the Hunspell `spell_check` command) adds the
+   *  "Add to dictionary" action to the tooltip; absent/`"model"` is the LLM
+   *  `check_grammar` provider. */
+  source?: "model" | "dict";
 }
 
 export interface ViewerPref {
@@ -58,6 +63,15 @@ export interface ViewerPref {
   /** Whether the local-model grammar/spelling check is enabled for this type.
    *  Local-only (Ollama) and opt-in; default OFF. */
   grammar_check?: boolean;
+  /** Whether the dictionary (Hunspell) spell check is enabled for this type.
+   *  Needs no model — deterministic, milliseconds, offline. Default OFF: red
+   *  underlines nobody asked for are noise in a code editor. */
+  spell_check?: boolean;
+  /** Whether the TeX editor typesets the snippet under the pointer and shows it
+   *  in a hover card (#tex-hover-preview). Read only for the `"tex"` entry, and
+   *  absent means ON — the opposite default to the two toggles above, which are
+   *  opt-in because they call a model. */
+  hover_preview?: boolean;
   /** Editor font size in px for this type's in-app code editor. Adjusted from
    *  the viewer's A−/A+ controls (or Ctrl +/−/0); unset falls back to 12px. */
   font_size?: number;
@@ -374,6 +388,11 @@ export interface Settings {
    *  mail — and is the kind of thing to have answered before the feature runs,
    *  not after; the chip's tooltip says nothing reads it so far. */
   ollama_roles?: Record<string, string>;
+  /** Hunspell dictionary code (e.g. `en_US`) for the editors' dictionary spell
+   *  check. Unset means the default — an installed English variant when there
+   *  is one. Machine-wide (the language you write in is not per project);
+   *  per-type enablement is `ViewerPref.spell_check`. */
+  spell_language?: string;
   /** The **Mail AI (local)** global master switch (Group Q, #203–#208) —
    *  "Allow Mail AI features", **default off**. The per-feature toggles now live
    *  **per account** (`MailAiPrefs` in `types/mail`); this one global flag gates

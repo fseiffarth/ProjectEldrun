@@ -34,7 +34,13 @@ import { matchAnchorId, renderMarkdown, splitLineHint, toggleTaskCheckbox } from
 import { useMdAnchorStore } from "../../stores/mdAnchor";
 import { useProjectRemarksStore } from "../../stores/projectRemarks";
 import { MdGraphView } from "./MdGraphView";
-import { highlight, languageForPath, escapeHtml } from "../../lib/viewers/highlight";
+import {
+  highlight,
+  languageForPath,
+  escapeHtml,
+  lineCommentMarker,
+  type Lang,
+} from "../../lib/viewers/highlight";
 import { useOllamaStatus } from "../../lib/ollamaStatus";
 import {
   printDocument,
@@ -65,6 +71,7 @@ import {
   isPythonPath,
   isPythonMainScript,
   pythonLinkRanges,
+  pythonStringEnd,
   remapBreakpoints,
   resolvePythonDefinition,
   snapBreakpointLine,
@@ -152,8 +159,25 @@ import {
   texKeyRefRanges,
   findTexComplAt,
   parseTexLabels,
+  parseTexDefinedCommands,
+  parseTexDocumentEnvironments,
+  insertTexCommand,
+  insertTexEnvironment,
+  TEX_STANDARD_COMMANDS,
+  TEX_STANDARD_ENVIRONMENTS,
+  type TexCommandEntry,
+  type TexEnvEntry,
+  type TexWarning,
+  parseTexWarnings,
+  gatherTexWordCount,
+  type TexWordCount,
   gatherTexCompletions,
   resolveTexRefAsync,
+  texRefCreation,
+  texPathExists,
+  createTexRefFile,
+  addTexChildFile,
+  type TexRefCreation,
   texRefRanges,
   synctexViewBest,
   pickSyncRect,
@@ -168,11 +192,22 @@ import {
   syncTexEnvRename,
   texEnvNameRangeAt,
   gatherTexStructure,
+  hasMatchingTexEnd,
   type TexStructure,
   type TexFileNode,
+  texSnippetRanges,
+  texPreamble,
+  type TexSnippetRange,
 } from "../../lib/viewers/tex";
+import {
+  renderTexPreview,
+  cachedTexPreview,
+  type TexPreview,
+} from "../../lib/viewers/texPreview";
 import { TexStructureRail, TexStructureSidebar } from "./tex/TexStructureSidebar";
+import { useDialogs } from "../common/PromptDialogs";
 import { focusTexWorkspaceForSource } from "./openTexWorkspace";
+import { registerTexWorkspace, unregisterTexWorkspace } from "../../stores/texCenter";
 import { YamlTree } from "./YamlTree";
 import { YamlGrid } from "./YamlGrid";
 import { BibCards } from "./BibCards";
@@ -326,8 +361,9 @@ interface Props {
  * inside the tab using a built-in viewer — independent of any external default
  * app:
  *   - "text"     → an editable code editor: a monospace textarea with a
- *                  line-number gutter, Tab/Shift+Tab indent, and Ctrl+S save back
- *                  to disk (Python, Rust, JSON, config files, …).
+ *                  line-number gutter, Tab/Shift+Tab indent, Ctrl+Shift+C
+ *                  linewise comment toggle, and Ctrl+S save back to disk
+ *                  (Python, Rust, JSON, config files, …).
  *   - "markdown" → rendered HTML via renderMarkdown, with an Edit/Preview toggle
  *                  that lets you edit the source and save it back to disk.
  *   - "yaml"     → YAML **and JSON** (which is YAML's flow syntax): the same
@@ -1132,6 +1168,10 @@ const AUTO_AC_DEBOUNCE_MS = 600;
 // document check is heavier, and grammar marks needn't track every keystroke.
 const GRAMMAR_DEBOUNCE_MS = 2500;
 
+// Dictionary spell check (the Hunspell `spell_check` command): a lookup, not a
+// model call, so it can afford a shorter idle than the LLM check above.
+const SPELL_DEBOUNCE_MS = 800;
+
 // #45 completion-length modes. Cycle order for the live Shift+Tab toggle (while
 // a ghost suggestion is showing) and human labels for the status line / settings
 // dropdown. Kept in sync with the Rust `CompletionMode`.
@@ -1420,9 +1460,410 @@ export function applyIndent(
   };
 }
 
+/**
+ * Toggle line comments over every line the selection touches (Ctrl+Shift+C),
+ * using `marker` — `%` in a `.tex` file, `//`, `#`, … elsewhere. Returns the next
+ * value + selection, or null when there is nothing to toggle.
+ *
+ * Comment or uncomment is decided by what is already there: the block
+ * UNcomments only when every non-blank line it covers is already commented, so a
+ * partially-commented block commutes to fully commented first (the same rule the
+ * common editors use — pressing twice always round-trips). Commenting inserts at
+ * the block's shallowest indent so relative indentation survives, and skips
+ * blank lines rather than leaving stranded markers; uncommenting drops the
+ * marker plus at most one following space, so `% x` → `x` while `%% x` keeps the
+ * second percent — a deliberate double-comment is not this gesture's to undo.
+ */
+export function applyLineComment(
+  el: HTMLTextAreaElement,
+  marker: string,
+): { value: string; selStart: number; selEnd: number } | null {
+  if (!marker) return null;
+  const { value, selectionStart: start, selectionEnd: end } = el;
+  const from = value.lastIndexOf("\n", start - 1) + 1;
+  // A selection ending exactly at a line start stops at the newline before it —
+  // it does not reach into the line it merely touches with its tail.
+  const probe = end > start ? end - 1 : end;
+  const nl = value.indexOf("\n", probe);
+  const to = nl === -1 ? value.length : nl;
+
+  const lines = value.slice(from, to).split("\n");
+  const blank = (line: string) => line.trim() === "";
+  // A selection of nothing but blank lines still comments them — there is no
+  // "meaningful" line to skip in favour of.
+  const skipBlanks = lines.some((line) => !blank(line));
+  const body = skipBlanks ? lines.filter((line) => !blank(line)) : lines;
+  const uncomment = body.every((line) => line.trimStart().startsWith(marker));
+  const col = uncomment
+    ? 0
+    : Math.min(...body.map((line) => line.length - line.trimStart().length));
+
+  let firstDelta = 0;
+  let totalDelta = 0;
+  const next = lines
+    .map((line, i) => {
+      if (skipBlanks && blank(line)) return line;
+      if (uncomment) {
+        const at = line.indexOf(marker);
+        const after = at + marker.length;
+        const drop = marker.length + (line[after] === " " ? 1 : 0);
+        if (i === 0) firstDelta = -drop;
+        totalDelta -= drop;
+        return line.slice(0, at) + line.slice(at + drop);
+      }
+      const add = marker.length + 1;
+      if (i === 0) firstDelta = add;
+      totalDelta += add;
+      return line.slice(0, col) + marker + " " + line.slice(col);
+    })
+    .join("\n");
+
+  if (totalDelta === 0) return null;
+  return {
+    value: value.slice(0, from) + next + value.slice(to),
+    selStart: Math.max(from, start + firstDelta),
+    selEnd: Math.max(from, end + totalDelta),
+  };
+}
+
 /** The one HTML escaper (`lib/viewers/highlight`, §9.2), under the name this
  *  file's overlay builders and their importers (odt, notebook) already use. */
 export const escapeHtmlText = escapeHtml;
+
+/** How wide a tab renders in the editor and every overlay layer — `tab-size: 4`
+ *  in `viewers.css`. Column arithmetic here has to agree with what the reader
+ *  sees, so the two are one number and this comment is the link between them. */
+const TAB_WIDTH = 4;
+
+/** One indentation level, as the file itself writes it. */
+export interface IndentUnit {
+  /** The characters one level is made of — `"  "`, `"    "`, `"\t"`. */
+  text: string;
+  /** How many columns that is, once tabs are expanded. */
+  width: number;
+}
+
+/** What a file with nothing to learn from indents by, and what the Tab key
+ *  writes (see {@link INDENT}). */
+const DEFAULT_INDENT_UNIT: IndentUnit = { text: INDENT, width: INDENT.length };
+
+/** How far into a file the unit is sampled from. A file indents the same way
+ *  throughout or it has no unit worth finding, so reading all of a 40k-line
+ *  generated JSON on every keystroke buys nothing. */
+const INDENT_SAMPLE_LINES = 2000;
+
+/**
+ * How much one indentation level is worth **in this file** — read out of the
+ * text rather than assumed, because the editor's own 4 spaces are a house style
+ * and the file being edited is somebody else's.
+ *
+ * Measured as the step between successive lines' indentation (the way an editor
+ * infers it): a run of `0, 4, 8` says four, `0, 2, 4` says two. Only 2/3/4/8 are
+ * admitted — every other step is a continuation line or a wrapped argument list,
+ * not a level — and a file whose lines lead with tabs is a tab file whatever
+ * those steps say, since one tab is one level by definition. Falls back to the
+ * editor's own {@link INDENT} when the text says nothing.
+ */
+export function detectIndentUnit(source: string): IndentUnit {
+  let tabbed = 0;
+  let spaced = 0;
+  const steps = new Map<number, number>();
+  let prev = -1;
+  let seen = 0;
+  let i = 0;
+  for (;;) {
+    if (seen >= INDENT_SAMPLE_LINES) break;
+    const nl = source.indexOf("\n", i);
+    const to = nl < 0 ? source.length : nl;
+    let width = 0;
+    let sawTab = false;
+    let j = i;
+    for (; j < to; j++) {
+      const ch = source[j];
+      if (ch === "\t") {
+        sawTab = true;
+        width += TAB_WIDTH - (width % TAB_WIDTH);
+      } else if (ch === " ") {
+        width += 1;
+      } else break;
+    }
+    // A blank line has no indentation to speak of and must not break the run:
+    // it neither votes nor resets `prev`.
+    if (j < to) {
+      if (width > 0) {
+        if (sawTab) tabbed++;
+        else spaced++;
+      }
+      if (prev >= 0 && width > prev) {
+        const step = width - prev;
+        if (step === 2 || step === 3 || step === 4 || step === 8) {
+          steps.set(step, (steps.get(step) ?? 0) + 1);
+        }
+      }
+      prev = width;
+    }
+    seen++;
+    if (nl < 0) break;
+    i = nl + 1;
+  }
+  if (tabbed > spaced) return { text: "\t", width: TAB_WIDTH };
+  let best = 0;
+  let bestCount = 0;
+  for (const [step, count] of steps) {
+    // Ties go to the narrower step: `0, 4, 8` is also two steps of two, and the
+    // finer reading is the one that draws a guide at every level that exists.
+    if (count > bestCount || (count === bestCount && step < best)) {
+      best = step;
+      bestCount = count;
+    }
+  }
+  return best > 0 ? { text: " ".repeat(best), width: best } : DEFAULT_INDENT_UNIT;
+}
+
+/** The column `pos` sits at on its own line, tabs expanded to the next
+ *  {@link TAB_WIDTH} stop — the advance the monospace layers actually paint. */
+function columnAt(source: string, pos: number): number {
+  const from = source.lastIndexOf("\n", pos - 1) + 1;
+  let col = 0;
+  for (let i = from; i < pos; i++) {
+    col += source[i] === "\t" ? TAB_WIDTH - (col % TAB_WIDTH) : 1;
+  }
+  return col;
+}
+
+/** The leading whitespace of the line `pos` sits on. */
+function lineIndentAt(source: string, pos: number): string {
+  const from = source.lastIndexOf("\n", pos - 1) + 1;
+  let i = from;
+  while (i < source.length && (source[i] === " " || source[i] === "\t")) i++;
+  return source.slice(from, i);
+}
+
+/** One indentation level off the end of `lead`, never past column 0. */
+function dedentOnce(lead: string, unit: IndentUnit): string {
+  if (unit.text === "\t") return lead.endsWith("\t") ? lead.slice(0, -1) : lead;
+  return lead.length >= unit.width ? lead.slice(0, lead.length - unit.width) : "";
+}
+
+/** The rest of `from`'s line, minus a trailing `#` comment — what decides
+ *  whether an open bracket has arguments on its own line to align under. */
+function pyCodeAfter(source: string, from: number): string {
+  const nl = source.indexOf("\n", from);
+  const line = source.slice(from, nl < 0 ? source.length : nl);
+  const hash = line.indexOf("#");
+  return hash < 0 ? line : line.slice(0, hash);
+}
+
+/** `line` up to the `%` that starts its comment (a `\%` is a percent sign, not
+ *  a comment) — TeX's equivalent of {@link pyCodeAfter}. */
+function texCodePrefix(line: string): string {
+  for (let i = 0; i < line.length; i++) {
+    if (line[i] === "\\") {
+      i++;
+      continue;
+    }
+    if (line[i] === "%") return line.slice(0, i);
+  }
+  return line;
+}
+
+/**
+ * What Python's Enter needs to know at `caret`: whether it lands inside a string
+ * literal (where the text is data and nothing should be inferred from it), which
+ * brackets are still open in front of it (implicit line continuation — the
+ * openers can be lines above, which is why this scans from the top rather than
+ * from the caret's own line), and the caret's own line with strings and comments
+ * blanked out, so a trailing `:` is only read when it really is one.
+ *
+ * A lexer, not a parser — the buffer under an editing caret is regularly not
+ * valid Python, and an unterminated literal is its normal state.
+ */
+function pythonIndentState(
+  source: string,
+  caret: number,
+): { inString: boolean; openers: number[]; lineCode: string } {
+  const openers: number[] = [];
+  let lineCode = "";
+  let i = 0;
+  while (i < caret) {
+    const c = source[i];
+    if (c === "\n") {
+      lineCode = "";
+      i++;
+      continue;
+    }
+    if (c === "#") {
+      while (i < caret && source[i] !== "\n") {
+        lineCode += " ";
+        i++;
+      }
+      continue;
+    }
+    if (c === '"' || c === "'") {
+      const to = pythonStringEnd(source, i);
+      if (to > caret) return { inString: true, openers, lineCode };
+      for (let j = i; j < to; j++) {
+        // A triple-quoted literal spans lines, and the line the caret is on is
+        // still the one after the last newline inside it.
+        lineCode = source[j] === "\n" ? "" : lineCode + " ";
+      }
+      i = to;
+      continue;
+    }
+    if (c === "(" || c === "[" || c === "{") openers.push(i);
+    else if (c === ")" || c === "]" || c === "}") openers.pop();
+    lineCode += c;
+    i++;
+  }
+  return { inString: false, openers, lineCode };
+}
+
+/** The languages whose Enter is aligned rather than dropped to column 0. Both
+ *  put their structure in the indentation, and both have a block opener the next
+ *  line is expected to sit inside; every other language keeps the plain
+ *  newline the engine writes. */
+const AUTO_INDENT_LANGS: ReadonlySet<Lang> = new Set<Lang>(["python", "tex"]);
+
+/** Python statements that end a block: the line after one starts a level out. */
+const PY_BLOCK_EXIT = /^(?:return|raise|pass|break|continue)\b/;
+
+/**
+ * Enter, aligned with the code it continues (Python and TeX). Returns the next
+ * value + caret, or **null** to let the engine insert the newline itself — which
+ * is deliberate rather than lazy: a plain newline through the browser keeps the
+ * textarea's own undo entry, so the only keystrokes this intercepts are the ones
+ * that genuinely add something.
+ *
+ * What it adds, in the order the rules are tried:
+ *
+ *  - the current line's indentation, always, so a block does not fall out from
+ *    under the caret;
+ *  - **inside brackets** (Python's implicit continuation) the new line aligns
+ *    under the first argument, or one level in when the opener ends its line —
+ *    and when the caret sits directly between a pair, the closer is pushed onto
+ *    its own line so `foo(|)` opens into a block;
+ *  - **after a `:`** one level in, and after `return`/`raise`/`pass`/`break`/
+ *    `continue` one level out, since that statement ended the block;
+ *  - **after `\begin{env}`** one level in, plus the matching `\end{env}` below
+ *    when the document does not already have one waiting (`hasMatchingTexEnd` —
+ *    the same test the environment completion makes, so typing a `\begin` out by
+ *    hand and completing it cannot disagree).
+ *
+ * A caret inside a string literal gets the plain carry and nothing else: the
+ * text there is data, and a `:` at the end of a sentence is not a block.
+ */
+export function applyAutoIndent(
+  el: HTMLTextAreaElement,
+  lang: Lang,
+  unit: IndentUnit = DEFAULT_INDENT_UNIT,
+): { value: string; selStart: number; selEnd: number } | null {
+  if (!AUTO_INDENT_LANGS.has(lang)) return null;
+  const { value, selectionStart: start, selectionEnd: end } = el;
+  const lineStart = value.lastIndexOf("\n", start - 1) + 1;
+  // Only the part of the line being LEFT BEHIND decides the new line: a caret
+  // parked inside the indentation splits it rather than copying it whole.
+  const head = value.slice(lineStart, start);
+  const lead = /^[ \t]*/.exec(head)?.[0] ?? "";
+
+  let indent = lead;
+  let tail = ""; // a further line written BELOW the new one (a closer)
+
+  if (lang === "python") {
+    const st = pythonIndentState(value, start);
+    const open = st.openers.length > 0 ? st.openers[st.openers.length - 1] : -1;
+    if (st.inString) {
+      // Carry the indentation and infer nothing from the prose.
+    } else if (open >= 0) {
+      const openIndent = lineIndentAt(value, open);
+      if (value[end] === BRACKET_CLOSE_FOR[value[open]]) {
+        indent = openIndent + unit.text;
+        tail = "\n" + openIndent;
+      } else if (/\S/.test(pyCodeAfter(value, open + 1))) {
+        indent = " ".repeat(columnAt(value, open) + 1);
+      } else {
+        indent = openIndent + unit.text;
+      }
+    } else {
+      const code = st.lineCode.trim();
+      if (code.endsWith(":")) indent = lead + unit.text;
+      else if (PY_BLOCK_EXIT.test(code)) indent = dedentOnce(lead, unit);
+    }
+  } else {
+    const begun = /\\begin\s*\{([^{}]+)\}\s*$/.exec(texCodePrefix(head));
+    if (begun) {
+      indent = lead + unit.text;
+      if (!hasMatchingTexEnd(value.slice(end), begun[1])) {
+        tail = `\n${lead}\\end{${begun[1]}}`;
+      }
+    }
+  }
+
+  const insert = "\n" + indent + tail;
+  if (insert === "\n") return null; // nothing to add — leave it to the engine
+  const caret = start + 1 + indent.length;
+  return {
+    value: value.slice(0, start) + insert + value.slice(end),
+    selStart: caret,
+    selEnd: caret,
+  };
+}
+
+/**
+ * Build the indent-guide overlay: each line's leading whitespace is cut into
+ * whole indentation levels and every level's first column wears a hairline, so
+ * the nesting a file expresses through blank space becomes something to read
+ * rather than something to count.
+ *
+ * Two rules keep it honest. The **file's own characters** are what the spans
+ * wrap — never a tab rewritten as four spaces — because this layer sits on top
+ * of the textarea's glyphs and one substituted character puts every guide after
+ * it on the wrong column. And a **partial** level (an indentation of six with a
+ * unit of four) still gets its guide at column four, where the level genuinely
+ * starts, and nothing at all for the two spaces that follow.
+ *
+ * Returns null when no line in the file is indented — there is nothing to draw,
+ * and the layer is then not rendered at all. SECURITY: every run of source text
+ * is HTML-escaped before output, exactly as {@link decorateSearchRanges} does.
+ */
+export function decorateIndentGuides(source: string, unit: IndentUnit): string | null {
+  if (unit.width <= 0) return null;
+  let any = false;
+  const out = source.split("\n").map((line) => {
+    let w = 0;
+    while (w < line.length && (line[w] === " " || line[w] === "\t")) w++;
+    if (w === 0) return escapeHtmlText(line);
+    any = true;
+    let html = "";
+    let col = 0;
+    let chunk = "";
+    let chunkCol = 0;
+    const flush = () => {
+      if (chunk === "") return;
+      html +=
+        chunkCol % unit.width === 0
+          ? `<span class="file-viewer-indent-guide">${escapeHtmlText(chunk)}</span>`
+          : escapeHtmlText(chunk);
+      chunk = "";
+    };
+    for (let i = 0; i < w; i++) {
+      const ch = line[i];
+      if (chunk !== "" && col % unit.width === 0) {
+        flush();
+        chunkCol = col;
+      }
+      chunk += ch;
+      col += ch === "\t" ? TAB_WIDTH - (col % TAB_WIDTH) : 1;
+    }
+    flush();
+    return html + escapeHtmlText(line.slice(w));
+  });
+  return any ? out.join("\n") : null;
+}
+
+/** Where the indent guides are drawn: the languages that put meaning in leading
+ *  whitespace, which is every one the editor highlights except the two that are
+ *  prose — a stray indent in a paragraph is not a level of anything. */
+const INDENT_GUIDE_LANGS = (lang: Lang) => lang !== "plain" && lang !== "markdown";
 
 /**
  * Read-only sibling of `useEditableFile` for the table/notebook/diff viewers
@@ -1498,6 +1939,35 @@ export function decorateLinkRanges(source: string, ranges: { start: number; end:
     out += `<span class="file-link" data-off="${r.start}">${escapeHtmlText(source.slice(r.start, r.end))}</span>`;
     pos = r.end;
   }
+  out += escapeHtmlText(source.slice(pos));
+  return out;
+}
+
+/**
+ * Build the hover-preview hit layer (#tex-hover-preview): the previewable TeX
+ * fragments are wrapped in `<span class="file-viewer-tex-snippet">` carrying
+ * their index, the rest emitted plain. The spans paint nothing until one is
+ * hovered — this layer exists to be *hit-tested*, since the textarea owns pointer
+ * events and a scroll-synced overlay's span boxes are the only thing in the
+ * editor that knows where a character actually landed on screen (the same
+ * technique the link, grammar and unclosed-bracket layers use). SECURITY: every
+ * run of source text is HTML-escaped before output.
+ */
+export function decorateSnippetRanges(
+  source: string,
+  ranges: { start: number; end: number }[],
+): string {
+  if (ranges.length === 0) return escapeHtmlText(source);
+  let out = "";
+  let pos = 0;
+  ranges.forEach((r, i) => {
+    if (r.start < pos || r.start >= r.end) return; // skip overlaps / empties
+    out += escapeHtmlText(source.slice(pos, r.start));
+    out += `<span class="file-viewer-tex-snippet" data-si="${i}">${escapeHtmlText(
+      source.slice(r.start, r.end),
+    )}</span>`;
+    pos = r.end;
+  });
   out += escapeHtmlText(source.slice(pos));
   return out;
 }
@@ -1734,66 +2204,13 @@ export const CHANGE_TIERS = 18;
  *  the trail fades a tier at a time over CHANGE_TIERS × this. */
 const CHANGE_DECAY_MS = 1800;
 
-/** How long a red strike-through ghost of just-deleted text lingers before it
- *  fades out and is dropped, in ms. Must match the `fv-delete-fade` animation
- *  duration in `themes.css` — the CSS drives the visual fade, this drives the
- *  state cleanup, and they retire the ghost together. */
-export const DELETE_GHOST_MS = 2600;
-
-/** A run of text that was just removed from the draft, kept around briefly so it
- *  can be shown struck-through in red at the spot it vanished from before fading
- *  out. `pos` is the anchor in *current* draft coordinates (re-mapped through
- *  later edits like a change range); `text` is the removed characters; `born` is
- *  the `Date.now()` clock the fade animation is offset against so it keeps
- *  elapsing correctly even as the overlay is rebuilt on each keystroke. */
-export interface DeleteGhost {
-  id: number;
-  pos: number;
-  text: string;
-  born: number;
-}
-
-/**
- * Build the transparent deletion overlay: the removed text of each ghost is
- * *injected* back into the source at its anchor, wrapped in
- * `<span class="file-viewer-delete-mark">`, so it paints a red strike-through
- * (over an opaque background that masks the live text it now overlays) right
- * where it was deleted. The surrounding source is emitted plain/transparent —
- * like the autocomplete ghost, this layer intentionally reflows: only the
- * injected marks are meant to show. Each mark's `animation-delay` is set to the
- * negative elapsed time so its fade resumes at the right point across rebuilds.
- * SECURITY: every run (source and injected text) is HTML-escaped.
- */
-export function decorateDeleteRanges(
-  source: string,
-  ghosts: DeleteGhost[],
-  now: number,
-): string {
-  const sorted = ghosts
-    .map((g) => ({ ...g, pos: Math.max(0, Math.min(g.pos, source.length)) }))
-    .sort((a, b) => a.pos - b.pos || a.born - b.born);
-  let out = "";
-  let pos = 0;
-  for (const g of sorted) {
-    out += escapeHtmlText(source.slice(pos, g.pos));
-    pos = g.pos;
-    const elapsed = Math.max(0, now - g.born);
-    out += `<span class="file-viewer-delete-mark" style="animation-delay:-${elapsed}ms">${escapeHtmlText(
-      g.text,
-    )}</span>`;
-  }
-  out += escapeHtmlText(source.slice(pos));
-  return out;
-}
-
-/** The text a deletion ghost should strike through for a removed run: the run
- *  with surrounding whitespace trimmed off, or null when it was whitespace-only
- *  (nothing visible to cross out — a lingering space-only strike would just read
- *  as invisible text). Pure — exported for tests. */
-export function deletionGhostText(removed: string): string | null {
-  const trimmed = removed.trim();
-  return trimmed.length > 0 ? trimmed : null;
-}
+/* The deletion ghosts that used to live here — just-deleted text injected back
+   into a transparent overlay in red strike-through, then faded away — are gone
+   (2026-09-01). The animation was the expensive half: `fv-delete-fade` animated
+   `font-size` down to 0, which is a full relayout of a whole-document <pre> on
+   every frame of every deletion, and the overlay itself was re-escaped and
+   rebuilt on each keystroke while any ghost lived. The green change trail below
+   is the surviving half; it tints ranges that exist, so it never reflows. */
 
 /** One run of recently typed text in the change-tint trail. `tier` is its age:
  *  0 is the newest edit, higher tiers are progressively older (and fainter). */
@@ -1915,6 +2332,22 @@ export function resolveGrammarRanges(text: string, issues: GrammarIssue[]): Gram
     lastEnd = r.end;
   }
   return pruned;
+}
+
+/**
+ * Merge dictionary-provider issues with model-provider ones into the one list
+ * the overlay resolves: dictionary issues first (their tooltip carries the
+ * add-to-dictionary action, and a dictionary hit is exact), and a model issue
+ * naming the same `(line, bad)` pair is dropped — otherwise the resolver's
+ * per-line cursor would walk the duplicate onto the NEXT occurrence of the word
+ * and underline a spot with nothing wrong at it. Pure — exported for tests.
+ */
+export function mergeSpellIssues(dict: GrammarIssue[], model: GrammarIssue[]): GrammarIssue[] {
+  if (dict.length === 0) return model;
+  return [
+    ...dict,
+    ...model.filter((m) => !dict.some((d) => d.line === m.line && d.bad === m.bad)),
+  ];
 }
 
 /**
@@ -2053,10 +2486,17 @@ const NO_SPACE_BEFORE = new Set([".", ",", ";", ":", "!", "?", ")", "]", "}"]);
  *  Shift held to type `?` doesn't prematurely commit the space. */
 const MODIFIER_KEYS = new Set(["Shift", "Control", "Alt", "Meta", "CapsLock"]);
 
-/** One row of the `\ref`/`\cite` completion dropdown. */
+/** One row of the TeX completion dropdown. `entry` carries the table row a
+ *  command/environment candidate came from, so accepting can seed its arguments
+ *  and close its block; a key candidate has none — its `value` is the whole
+ *  answer. */
 interface TexComplItem {
   value: string;
   detail?: string;
+  /** True for a candidate the DOCUMENT defines, which the row marks: a local
+   *  macro is the one candidate whose meaning is not general knowledge. */
+  local?: boolean;
+  entry?: TexCommandEntry | TexEnvEntry;
 }
 
 /** Compact one-line description of a bib entry for the dropdown's second column:
@@ -2087,6 +2527,33 @@ function linkRectHit(r: DOMRect, x: number, y: number): boolean {
   return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
 }
 
+/** What the TeX viewer hands the editor to make hovering typeset something
+ *  (#tex-hover-preview). Split this way so the editor stays document-agnostic:
+ *  it never learns what a preamble is, and the viewer never learns where a span
+ *  landed on screen. */
+export interface HoverPreviewConfig {
+  /** The previewable fragments of the current draft, as source ranges. */
+  ranges: (source: string) => TexSnippetRange[];
+  /** Typeset one fragment. `stillWanted` is polled by the compile queue, so a
+   *  fragment the pointer has left is dropped before it reaches the engine;
+   *  `undefined` back means exactly that and nothing should be shown. */
+  render: (body: string, stillWanted: () => boolean) => Promise<TexPreview | undefined>;
+  /** An already-rendered result for this fragment, if there is one — painted
+   *  immediately, so a re-hover never shows a spinner it is about to replace. */
+  cached: (body: string) => TexPreview | undefined;
+}
+
+/** How long the pointer must rest on a fragment before it is compiled. Long
+ *  enough that crossing a page of equations on the way somewhere else starts
+ *  nothing, short enough to feel like an answer to the hover rather than an
+ *  event of its own. */
+const HOVER_PREVIEW_DWELL_MS = 400;
+
+/** How wide the hover card may get, and how far down the window an anchor may
+ *  sit before the card opens upwards instead. */
+const HOVER_PREVIEW_MAX_W = 520;
+const HOVER_PREVIEW_FLIP_AT = 0.6;
+
 function CodeEditor({
   error,
   draft,
@@ -2100,7 +2567,9 @@ function CodeEditor({
   redo,
   autocomplete,
   grammarCheck,
+  spellCheck,
   texCompletions,
+  hoverPreview,
   fontSize,
   lineHeight,
   incFont,
@@ -2166,10 +2635,23 @@ function CodeEditor({
    *  pause; issues are underlined (colour by category) with a hover tooltip and
    *  one-click fix. `preferred` is the user's active local model (🧠 menu). */
   grammarCheck?: { enabled: boolean; preferred?: string };
+  /** Opt-in dictionary (Hunspell) spell check — the model-free provider beside
+   *  `grammarCheck`. When enabled the draft is checked by the backend's loaded
+   *  dictionary after a short idle; `language` is the dictionary code (unset →
+   *  the backend's default). Issues merge into the same overlay/tooltip. */
+  spellCheck?: { enabled: boolean; language?: string };
   /** Opt-in `\ref`/`\cite` key completion (LaTeX viewer only). When supplied, a
    *  dropdown of `\label` keys (refs) or `.bib` entry keys (cites) appears while
    *  typing inside a recognised command's braces; Enter/Tab accepts. */
   texCompletions?: TexCompletions;
+  /** Opt-in hover preview of the TeX snippet under the pointer
+   *  (#tex-hover-preview, LaTeX viewer only). When supplied, resting the pointer
+   *  on a formula or a previewable environment typesets that fragment and shows
+   *  it in a card over the source. The editor owns the *gesture* — which
+   *  fragments are hit boxes, the dwell, the card — and the caller owns the
+   *  *compile*, because only the viewer knows the document's preamble, its
+   *  folder and the chosen engine. */
+  hoverPreview?: HoverPreviewConfig;
   /** Editor font metrics (text-size control). Default 12px / 18px when unset. */
   fontSize?: number;
   lineHeight?: number;
@@ -2213,14 +2695,15 @@ function CodeEditor({
   const gutterInnerRef = useRef<HTMLDivElement>(null);
   const blameInnerRef = useRef<HTMLDivElement>(null);
   const blameInlineRef = useRef<HTMLDivElement>(null);
+  const indentLayerRef = useRef<HTMLPreElement>(null);
   const highlightRef = useRef<HTMLPreElement>(null);
   const linkLayerRef = useRef<HTMLPreElement>(null);
   const searchLayerRef = useRef<HTMLPreElement>(null);
   const changeLayerRef = useRef<HTMLPreElement>(null);
-  const deleteLayerRef = useRef<HTMLPreElement>(null);
   const grammarLayerRef = useRef<HTMLPreElement>(null);
   const bracketLayerRef = useRef<HTMLPreElement>(null);
   const unclosedLayerRef = useRef<HTMLPreElement>(null);
+  const snippetLayerRef = useRef<HTMLPreElement>(null);
   const ghostRef = useRef<HTMLPreElement>(null);
   const measureRef = useRef<HTMLPreElement>(null);
   const findInputRef = useRef<HTMLInputElement>(null);
@@ -2430,6 +2913,17 @@ function CodeEditor({
     [loaded, draft, linkRanges],
   );
 
+  // #tex-hover-preview: the previewable fragments, and the transparent layer
+  // whose span boxes are their on-screen hit targets.
+  const snippetRanges = useMemo(
+    () => (loaded && hoverPreview ? hoverPreview.ranges(draft) : []),
+    [loaded, draft, hoverPreview],
+  );
+  const snippetHtml = useMemo(
+    () => (snippetRanges.length ? decorateSnippetRanges(draft, snippetRanges) : null),
+    [draft, snippetRanges],
+  );
+
   // Keep the gutter and the overlay (highlight/link) layers aligned with the
   // textarea scroll. Reads the live textarea so it can be re-run on events that
   // move the scroll WITHOUT firing a scroll event — notably a resize.
@@ -2459,14 +2953,15 @@ function CodeEditor({
     }
     const transform = `translate(${-scrollLeft}px, ${-scrollTop}px)`;
     for (const ref of [
+      indentLayerRef,
       highlightRef,
       linkLayerRef,
       searchLayerRef,
       changeLayerRef,
-      deleteLayerRef,
       grammarLayerRef,
       bracketLayerRef,
       unclosedLayerRef,
+      snippetLayerRef,
     ]) {
       if (ref.current) ref.current.style.transform = transform;
     }
@@ -2557,6 +3052,19 @@ function CodeEditor({
     const m = matches[current];
     return m ? offsetToLineCol(draft, m.start).line : 0;
   }, [matches, current, draft]);
+
+  // Indent guides: one hairline at the start of every indentation level the file
+  // actually uses. The unit is read out of the text (`detectIndentUnit`) rather
+  // than assumed, and is the same one Enter indents by, so what the reader sees
+  // and what typing produces cannot disagree. Both memos are keyed on `draft`,
+  // which the whole-document `highlight` pass already is — this costs a single
+  // extra walk per keystroke, not a new order of work.
+  const indentUnit = useMemo(() => detectIndentUnit(draft), [draft]);
+  const indentHtml = useMemo(
+    () =>
+      loaded && INDENT_GUIDE_LANGS(lang) ? decorateIndentGuides(draft, indentUnit) : null,
+    [loaded, lang, draft, indentUnit],
+  );
 
   // TeX missing-end diagnostics are persistent rather than caret-local: every
   // unmatched opening delimiter is red, and every logical line holding one is
@@ -2762,70 +3270,28 @@ function CodeEditor({
   const changeTintRef = useRef(changeTint);
   changeTintRef.current = changeTint;
   const [changes, setChanges] = useState<ChangeRange[]>([]);
-  // Red strike-through ghosts of just-deleted text (mirrors the green change
-  // trail on the removal side). Each is retired on its own timer after
-  // DELETE_GHOST_MS; `deleteIdRef` mints ids and `deleteTimersRef` tracks the
-  // pending timeouts so they can be cleared on unmount / trail reset.
-  const [deletes, setDeletes] = useState<DeleteGhost[]>([]);
-  const deleteIdRef = useRef(0);
-  const deleteTimersRef = useRef<number[]>([]);
-  const clearDeleteTimers = useCallback(() => {
-    deleteTimersRef.current.forEach((timer) => window.clearTimeout(timer));
-    deleteTimersRef.current = [];
-  }, []);
-  const scheduleDeleteRemoval = useCallback((id: number) => {
-    const timer = window.setTimeout(() => {
-      setDeletes((prev) => prev.filter((g) => g.id !== id));
-    }, DELETE_GHOST_MS);
-    deleteTimersRef.current.push(timer);
-  }, []);
-  useEffect(() => () => clearDeleteTimers(), [clearDeleteTimers]);
   const lastEditRef = useRef<string | null>(null);
-  // Record ONE changed run in the trail (tint + deletion ghost). Split out of
-  // `edit` because a coupled `\begin`/`\end` rename changes the document in two
-  // places at once, and `editSpan` — which pares off a common prefix and suffix —
-  // can only report ONE run: for the two it would hand back everything between
-  // them, tinting the whole environment body and ghosting it as deleted text. So
-  // such an edit is booked as its two real runs in sequence, each against the
-  // text the previous one produced.
-  const noteChangeTrail = useCallback(
-    (prevText: string, nextText: string) => {
-      const span = editSpan(prevText, nextText);
-      if (span) {
-        setChanges((prev) => {
-          const remapped = prev
-            .map((r) => remapChangeRange(r, span))
-            .filter((r): r is { start: number; end: number } => r != null);
-          const merged =
-            span.endNext > span.start
-              ? [{ start: span.start, end: span.endNext }, ...remapped]
-              : remapped;
-          // newest-first → re-index so tier === age (0 = newest).
-          return merged.slice(0, CHANGE_TIERS).map((r, i) => ({ ...r, tier: i }));
-        });
-        // Removed text (if any) becomes a red strike-through ghost anchored
-        // where it vanished; existing ghosts are re-mapped through this edit
-        // (dropped if their anchor sat inside the edited run) so they keep
-        // pointing at the right spot.
-        const removed = deletionGhostText(prevText.slice(span.start, span.endPrev));
-        const ghost: DeleteGhost | null =
-          removed !== null
-            ? { id: deleteIdRef.current++, pos: span.endNext, text: removed, born: Date.now() }
-            : null;
-        if (ghost) scheduleDeleteRemoval(ghost.id);
-        setDeletes((prev) => {
-          const remapped = prev
-            .map((g) => {
-              const r = remapChangeRange({ start: g.pos, end: g.pos }, span);
-              return r ? { ...g, pos: r.start } : null;
-            })
-            .filter((g): g is DeleteGhost => g != null);
-          return ghost ? [...remapped, ghost] : remapped;
-        });
-      }
-    },
-    [scheduleDeleteRemoval],
-  );
+  // Record ONE changed run in the trail. Split out of `edit` because a coupled
+  // `\begin`/`\end` rename changes the document in two places at once, and
+  // `editSpan` — which pares off a common prefix and suffix — can only report ONE
+  // run: for the two it would hand back everything between them, tinting the
+  // whole environment body. So such an edit is booked as its two real runs in
+  // sequence, each against the text the previous one produced.
+  const noteChangeTrail = useCallback((prevText: string, nextText: string) => {
+    const span = editSpan(prevText, nextText);
+    if (!span) return;
+    setChanges((prev) => {
+      const remapped = prev
+        .map((r) => remapChangeRange(r, span))
+        .filter((r): r is { start: number; end: number } => r != null);
+      const merged =
+        span.endNext > span.start
+          ? [{ start: span.start, end: span.endNext }, ...remapped]
+          : remapped;
+      // newest-first → re-index so tier === age (0 = newest).
+      return merged.slice(0, CHANGE_TIERS).map((r, i) => ({ ...r, tier: i }));
+    });
+  }, []);
   // Commit a new draft. `via` is the intermediate text an edit passed through
   // when it landed in two places — the document with only the user's own
   // keystroke in it — so the trail books "what was typed" and "what was mirrored"
@@ -2892,18 +3358,12 @@ function CodeEditor({
   useEffect(() => {
     if (lastEditRef.current !== null && draft !== lastEditRef.current) {
       setChanges([]);
-      setDeletes([]);
-      clearDeleteTimers();
       lastEditRef.current = null;
     }
-  }, [draft, clearDeleteTimers]);
+  }, [draft]);
   useEffect(() => {
-    if (!changeTint) {
-      setChanges([]);
-      setDeletes([]);
-      clearDeleteTimers();
-    }
-  }, [changeTint, clearDeleteTimers]);
+    if (!changeTint) setChanges([]);
+  }, [changeTint]);
   // Idle decay: each keystroke resets this timer (re-runs on every `changes`
   // update), so while typing the trail stays; once typing stops it retires the
   // oldest run every CHANGE_DECAY_MS until the trail is gone.
@@ -2918,13 +3378,6 @@ function CodeEditor({
     () => (loaded && changeTint && changes.length ? decorateChangeRanges(draft, changes) : null),
     [loaded, draft, changes, changeTint],
   );
-  // Companion overlay for the red deletion ghosts. `Date.now()` here stamps each
-  // mark's fade offset; it re-evaluates on every draft/deletes change (i.e. every
-  // keystroke), which is exactly when the layer is rebuilt.
-  const deleteHtml = useMemo(
-    () => (loaded && changeTint && deletes.length ? decorateDeleteRanges(draft, deletes, Date.now()) : null),
-    [loaded, draft, deletes, changeTint],
-  );
 
   // ── #45 follow-up: local-model grammar/spelling check ──────────────────────
   // The whole draft is checked against the currently-loaded local model after an
@@ -2932,6 +3385,12 @@ function CodeEditor({
   // (so they self-heal across small edits) and underlined, colour by category. A
   // short status mirrors the autocomplete one. Disabled unless `grammarCheck`.
   const [grammarIssues, setGrammarIssues] = useState<GrammarIssue[]>([]);
+  // Dictionary spell check: its own list so a model re-check never wipes
+  // dictionary marks (and vice versa); the two merge in `mergedIssues` below.
+  const [spellIssues, setSpellIssues] = useState<GrammarIssue[]>([]);
+  // One status report per session for a failing/missing dictionary — an error
+  // on every idle pause would be noise; markless is the steady signal.
+  const spellReported = useRef(false);
   const [grammarStatus, setGrammarStatus] = useState<string | null>(null);
   const [grammarTip, setGrammarTip] = useState<
     { left: number; top: number; range: GrammarRange } | null
@@ -2955,9 +3414,13 @@ function CodeEditor({
   }, [cancelGrammarTipClose]);
   useEffect(() => () => cancelGrammarTipClose(), [cancelGrammarTipClose]);
 
+  const mergedIssues = useMemo(
+    () => mergeSpellIssues(spellIssues, grammarIssues),
+    [spellIssues, grammarIssues],
+  );
   const grammarRanges = useMemo(
-    () => (loaded && grammarIssues.length ? resolveGrammarRanges(draft, grammarIssues) : []),
-    [loaded, draft, grammarIssues],
+    () => (loaded && mergedIssues.length ? resolveGrammarRanges(draft, mergedIssues) : []),
+    [loaded, draft, mergedIssues],
   );
   const grammarHtml = useMemo(
     () => (grammarRanges.length ? decorateGrammarRanges(draft, grammarRanges) : null),
@@ -2966,7 +3429,7 @@ function CodeEditor({
 
   // Re-apply the scroll transform whenever an overlay layer's presence changes.
   // syncScroll only runs on scroll events and the one-shot restore, but the
-  // change/delete trails (and the search layer) mount lazily — only once there's
+  // change trail (and the search layer) mounts lazily — only once there's
   // an edit or an active find. A layer that first mounts while the textarea is
   // already scrolled starts at translate(0,0), i.e. `scrollTop` px too low, and
   // stays out of register until the next scroll. Syncing on mount pins it to the
@@ -2979,7 +3442,6 @@ function CodeEditor({
     linkHtml,
     searchHtml,
     changeHtml,
-    deleteHtml,
     grammarHtml,
     syncScroll,
   ]);
@@ -3054,6 +3516,39 @@ function CodeEditor({
     return () => window.clearTimeout(id);
   }, [grammarCheck?.enabled, loaded, draft, runGrammarCheck]);
 
+  // Dictionary spell check: re-check the draft a short while after the user
+  // stops typing. A lookup rather than a model call, so it affords the shorter
+  // debounce; marks clear the moment the feature is turned off. A missing
+  // dictionary reports through the shared status line, once per session.
+  useEffect(() => {
+    if (!spellCheck?.enabled || !loaded) {
+      setSpellIssues([]);
+      return;
+    }
+    const id = window.setTimeout(async () => {
+      try {
+        const issues = await invoke<GrammarIssue[]>("spell_check", {
+          text: draftRef.current,
+          language: spellCheck.language ?? "",
+          doc: lang === "plain" ? "" : lang,
+        });
+        setSpellIssues(issues.map((i) => ({ ...i, source: "dict" as const })));
+      } catch (e) {
+        setSpellIssues([]);
+        if (!spellReported.current) {
+          spellReported.current = true;
+          setGrammarStatus(
+            String(e).includes("no_dictionary")
+              ? t("fileViewer.spellingUnavailable")
+              : t("fileViewer.spellingFailed"),
+          );
+        }
+      }
+    }, SPELL_DEBOUNCE_MS);
+    return () => window.clearTimeout(id);
+    // Primitive deps for the config object, mirroring the grammar effect above.
+  }, [spellCheck?.enabled, spellCheck?.language, loaded, draft, lang, t]);
+
   // Keep the grammar overlay aligned after it mounts/changes.
   useEffect(() => {
     if (grammarHtml) syncScroll();
@@ -3073,6 +3568,12 @@ function CodeEditor({
     else setUnclosedTip(null);
   }, [unclosedHtml, syncScroll]);
 
+  // The indent layer mounts the moment the first line is indented — align it
+  // straight away, for the reason the two layers above are aligned.
+  useEffect(() => {
+    if (indentHtml) syncScroll();
+  }, [indentHtml, syncScroll]);
+
   // Apply a single issue's suggested fix: replace its resolved range with the
   // suggestion and drop the issue so its mark clears (the rest re-resolve against
   // the new draft). Leaves the caret after the inserted text.
@@ -3081,6 +3582,7 @@ function CodeEditor({
       const repl = range.issue.suggestion;
       edit(applyReplacements(draftRef.current, [{ start: range.start, end: range.end }], repl));
       setGrammarIssues((prev) => prev.filter((i) => i !== range.issue));
+      setSpellIssues((prev) => prev.filter((i) => i !== range.issue));
       setGrammarTip(null);
       const caret = range.start + repl.length;
       requestAnimationFrame(() => {
@@ -3122,6 +3624,125 @@ function CodeEditor({
     }
     return null;
   }, []);
+
+  // ── #tex-hover-preview: the hover card ────────────────────────────────────
+  // The pointer resting on a fragment typesets it. Three pieces of state, and
+  // the split matters: `hoveredBody` is what the POINTER is on right now (a ref,
+  // because the compile queue polls it to decide whether its run is still
+  // wanted, and a state read inside a closure would be the value at hover time),
+  // while `preview` is what the CARD is showing.
+  const [preview, setPreview] = useState<{
+    body: string;
+    anchor: { left: number; top: number; bottom: number };
+    result: TexPreview | null; // null = still compiling
+  } | null>(null);
+  const hoveredBody = useRef<string | null>(null);
+  const previewTimer = useRef<number | null>(null);
+
+  // Wash the fragment being previewed. Toggled on the element rather than by a
+  // `:hover` rule, because the layer takes no pointer events and an element that
+  // is never hit-tested is never `:hover`ed — and rather than by re-rendering the
+  // layer with the index in it, which would rebuild the whole document's HTML on
+  // every pointer move. A stale ref left by a re-render is harmless: removing a
+  // class from a detached node does nothing, and the next move re-marks.
+  const hoveredSpan = useRef<HTMLElement | null>(null);
+  const markHoveredSpan = useCallback((el: HTMLElement | null) => {
+    if (hoveredSpan.current === el) return;
+    hoveredSpan.current?.classList.remove("is-hovered");
+    hoveredSpan.current = el;
+    el?.classList.add("is-hovered");
+  }, []);
+
+  const cancelPreviewTimer = useCallback(() => {
+    if (previewTimer.current != null) {
+      window.clearTimeout(previewTimer.current);
+      previewTimer.current = null;
+    }
+  }, []);
+  const closePreview = useCallback(() => {
+    cancelPreviewTimer();
+    hoveredBody.current = null;
+    markHoveredSpan(null);
+    setPreview(null);
+  }, [cancelPreviewTimer, markHoveredSpan]);
+  useEffect(() => () => cancelPreviewTimer(), [cancelPreviewTimer]);
+
+  // Hit-test the snippet layer at a screen point: its spans carry `data-si`, an
+  // index into `snippetRanges`. This runs on EVERY pointer move, so it must not
+  // do what the (rarer) link/grammar hit-tests do — measure every span in the
+  // layer — which on a page of equations is hundreds of getBoundingClientRect
+  // calls per move. Instead the layer is hit-testable (see its pointer-events
+  // note in viewers.css: the textarea above it still receives every real event)
+  // and one `elementsFromPoint` asks the engine, which already knows the answer.
+  // Plural, because `elementFromPoint` would only ever return the textarea on top.
+  const snippetHitAt = useCallback(
+    (x: number, y: number): { range: TexSnippetRange; rect: DOMRect; span: HTMLElement } | null => {
+      const layer = snippetLayerRef.current;
+      if (!layer) return null;
+      if (typeof document.elementsFromPoint === "function") {
+        for (const el of document.elementsFromPoint(x, y)) {
+          if (el === layer) break; // reached the layer itself: no span here
+          if (!(el instanceof HTMLElement) || !layer.contains(el)) continue;
+          if (!el.classList.contains("file-viewer-tex-snippet")) continue;
+          const range = snippetRanges[Number(el.dataset.si)];
+          return range ? { range, rect: el.getBoundingClientRect(), span: el } : null;
+        }
+        return null;
+      }
+      // jsdom lays nothing out and has no elementsFromPoint; keep the measured
+      // scan so the tests exercise the same downstream path.
+      for (const span of layer.querySelectorAll<HTMLElement>(".file-viewer-tex-snippet")) {
+        const r = span.getBoundingClientRect();
+        if (linkRectHit(r, x, y)) {
+          const range = snippetRanges[Number(span.dataset.si)];
+          if (range) return { range, rect: r, span };
+        }
+      }
+      return null;
+    },
+    [snippetRanges],
+  );
+
+
+  const updateSnippetHover = useCallback(
+    (x: number, y: number) => {
+      if (!hoverPreview) return;
+      const hit = snippetHitAt(x, y);
+      if (!hit) {
+        // Leaving the fragment closes the card AND cancels the pending compile —
+        // a preview nobody is waiting for is the one case this feature must not
+        // pay the engine for.
+        if (hoveredBody.current != null) closePreview();
+        return;
+      }
+      markHoveredSpan(hit.span);
+      const body = draftRef.current.slice(hit.range.start, hit.range.end);
+      // The same fragment: the card is already open (or on its way) and must not
+      // be re-anchored under the pointer as it drifts across the formula.
+      if (hoveredBody.current === body) return;
+      cancelPreviewTimer();
+      hoveredBody.current = body;
+      const at = { left: hit.rect.left, top: hit.rect.top, bottom: hit.rect.bottom };
+      const cached = hoverPreview.cached(body);
+      if (cached) {
+        setPreview({ body, anchor: at, result: cached });
+        return;
+      }
+      setPreview(null);
+      previewTimer.current = window.setTimeout(() => {
+        previewTimer.current = null;
+        if (hoveredBody.current !== body) return;
+        setPreview({ body, anchor: at, result: null });
+        void hoverPreview
+          .render(body, () => hoveredBody.current === body)
+          .then((out) => {
+            if (hoveredBody.current !== body || !out) return;
+            setPreview((cur) => (cur && cur.body === body ? { ...cur, result: out } : cur));
+          });
+      }, HOVER_PREVIEW_DWELL_MS);
+    },
+    [hoverPreview, snippetHitAt, cancelPreviewTimer, closePreview, markHoveredSpan],
+  );
 
   // Replace the current match (#67). We re-place the textarea selection on the
   // match first so the change history records a single, intelligible edit, then
@@ -3553,6 +4174,24 @@ function CodeEditor({
             e.author?.toLowerCase().includes(q),
         )
         .map((e) => ({ value: e.key, detail: citeDetail(e) }));
+    } else if (ctx.kind === "cmd") {
+      // #245: a command is matched by PREFIX only. A substring match over a table
+      // of two hundred names offers `\varepsilon` for `\ps`, which is noise on
+      // every keystroke — a key list is browsed, a command name is typed.
+      items = texCompletions.commands
+        .filter((c) => !q || c.name.toLowerCase().startsWith(q))
+        .map((c) => ({
+          value: c.name,
+          // The signature, not a description: it is the one thing about a command
+          // that is not in its name, and it needs no translation.
+          detail: c.args > 0 ? "{…}".repeat(c.args) : undefined,
+          local: c.local,
+          entry: c,
+        }));
+    } else if (ctx.kind === "env") {
+      items = texCompletions.envs
+        .filter((e) => !q || e.name.toLowerCase().includes(q))
+        .map((e) => ({ value: e.name, detail: e.seed, local: e.local, entry: e }));
     } else {
       items = texCompletions.labels
         .filter(
@@ -3586,9 +4225,28 @@ function CodeEditor({
   // a multi-key list (\cite{a,b}) it stays just after the inserted key instead.
   // `complClosedAt` keeps the dropdown from instantly reopening on that caret.
   const acceptCompl = useCallback(
-    (value: string) => {
+    (item: TexComplItem) => {
       const el = textareaRef.current;
       if (!el || !compl) return;
+      const value = item.value;
+      // #245: a command and an environment are not keys, so neither is accepted
+      // the way one is — the decision (seed the arguments, open the block) is a
+      // pure function in `tex.ts`, and this only splices its answer in.
+      if (compl.ctx.kind === "cmd" || compl.ctx.kind === "env") {
+        const applied =
+          compl.ctx.kind === "cmd"
+            ? insertTexCommand(draft, compl.ctx, (item.entry as TexCommandEntry) ?? { name: value, args: 0 })
+            : insertTexEnvironment(draft, compl.ctx, (item.entry as TexEnvEntry) ?? { name: value });
+        autoSpace.current = null;
+        complClosedAt.current = applied.caret;
+        setCompl(null);
+        edit(applied.text);
+        requestAnimationFrame(() => {
+          el.focus();
+          el.selectionStart = el.selectionEnd = applied.caret;
+        });
+        return;
+      }
       const { start, end } = compl.ctx;
       const head = draft.slice(0, start) + value;
       const rest = draft.slice(end);
@@ -3680,7 +4338,7 @@ function CodeEditor({
       }
       if (e.key === "Tab") {
         e.preventDefault();
-        acceptCompl(compl.items[compl.index].value);
+        acceptCompl(compl.items[compl.index]);
         return;
       }
       if (e.key === "Escape") {
@@ -3767,6 +4425,39 @@ function CodeEditor({
         return;
       }
     }
+    // Ctrl/Cmd+Shift+C — comment out the touched lines, or uncomment them when
+    // they already are. `%` in TeX, the language's own marker elsewhere; falls
+    // through untouched in a language with no line comment.
+    if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "c") {
+      const marker = lineCommentMarker(lang);
+      if (!marker) return;
+      const toggled = applyLineComment(e.currentTarget, marker);
+      if (!toggled) return;
+      e.preventDefault();
+      edit(toggled.value);
+      const ta = e.currentTarget;
+      requestAnimationFrame(() => {
+        ta.selectionStart = toggled.selStart;
+        ta.selectionEnd = toggled.selEnd;
+      });
+      return;
+    }
+    // Enter, aligned with the block it continues (Python and TeX — see
+    // `applyAutoIndent`). Modified Enter is left alone: Ctrl/Cmd+Enter and
+    // Alt+Enter are other surfaces' gestures, and Shift+Enter is the plain
+    // newline every editor keeps as the way out of a rule that guessed wrong.
+    if (e.key === "Enter" && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      const next = applyAutoIndent(e.currentTarget, lang, indentUnit);
+      if (!next) return;
+      e.preventDefault();
+      edit(next.value);
+      const el = e.currentTarget;
+      requestAnimationFrame(() => {
+        el.selectionStart = next.selStart;
+        el.selectionEnd = next.selEnd;
+      });
+      return;
+    }
     if (e.key === "Tab") {
       const next = applyIndent(e.currentTarget, e.shiftKey);
       if (!next) return;
@@ -3818,6 +4509,7 @@ function CodeEditor({
     lastMouse.current = { x: e.clientX, y: e.clientY };
     updateLinkHover(e.clientX, e.clientY, e.ctrlKey || e.metaKey);
     setUnclosedTip(unclosedBrackets.length ? unclosedTipAt(e.clientX, e.clientY) : null);
+    updateSnippetHover(e.clientX, e.clientY);
     // Grammar tooltip: open it over a hovered mark, else schedule a close so the
     // pointer can still reach the open tooltip's Apply button.
     if (grammarRanges.length) {
@@ -3984,6 +4676,17 @@ function CodeEditor({
             ))}
           </pre>
         )}
+        {/* Indent guides. First of the layers, so the hairlines sit behind the
+            coloured glyphs rather than across them. */}
+        {indentHtml != null && (
+          <pre
+            ref={indentLayerRef}
+            className="file-viewer-indent-layer"
+            aria-hidden="true"
+            style={overlayWidthStyle}
+            dangerouslySetInnerHTML={{ __html: indentHtml + "\n" }}
+          />
+        )}
         {highlighted != null && (
           <pre
             ref={highlightRef}
@@ -4038,6 +4741,15 @@ function CodeEditor({
             dangerouslySetInnerHTML={{ __html: grammarHtml + "\n" }}
           />
         )}
+        {snippetHtml != null && (
+          <pre
+            ref={snippetLayerRef}
+            className="file-viewer-tex-snippet-layer"
+            aria-hidden="true"
+            style={overlayWidthStyle}
+            dangerouslySetInnerHTML={{ __html: snippetHtml + "\n" }}
+          />
+        )}
         {linkHtml != null && (
           <pre
             ref={linkLayerRef}
@@ -4045,15 +4757,6 @@ function CodeEditor({
             aria-hidden="true"
             style={overlayWidthStyle}
             dangerouslySetInnerHTML={{ __html: linkHtml + "\n" }}
-          />
-        )}
-        {deleteHtml != null && (
-          <pre
-            ref={deleteLayerRef}
-            className="file-viewer-delete-layer"
-            aria-hidden="true"
-            style={overlayWidthStyle}
-            dangerouslySetInnerHTML={{ __html: deleteHtml + "\n" }}
           />
         )}
         {hasGhost && (
@@ -4077,9 +4780,9 @@ function CodeEditor({
           onChange={onTextChange}
           onKeyDown={onKeyDown}
           onKeyUp={(e) => { if (!(e.ctrlKey || e.metaKey)) setLinkHover(false); emitCaret(); }}
-          onBlur={() => { setLinkHover(false); setLinkTip(null); setUnclosedTip(null); dismissSuggestion(); setCompl(null); }}
+          onBlur={() => { setLinkHover(false); setLinkTip(null); setUnclosedTip(null); dismissSuggestion(); setCompl(null); closePreview(); }}
           onMouseMove={onMouseMove}
-          onMouseLeave={() => { setLinkHover(false); setLinkTip(null); setUnclosedTip(null); scheduleGrammarTipClose(); }}
+          onMouseLeave={() => { setLinkHover(false); setLinkTip(null); setUnclosedTip(null); scheduleGrammarTipClose(); closePreview(); }}
           onClick={onClick}
           onSelect={emitCaret}
           onScroll={onScroll}
@@ -4125,6 +4828,60 @@ function CodeEditor({
           {grammarStatus}
         </div>
       )}
+      {/* #tex-hover-preview: the typeset fragment, over the source. Never takes
+          the pointer (`pointer-events: none` in CSS) — the card sits ON the
+          text the pointer is resting on, so anything it could catch would be a
+          gesture aimed at the editor underneath. It opens under the fragment and
+          flips above it in the lower part of the window, the rule the remark
+          card and the selection bar already flip by. */}
+      {preview && (
+        <div
+          className={`file-viewer-tex-preview${preview.result?.error ? " is-error" : ""}`}
+          role="status"
+          style={
+            preview.anchor.bottom > window.innerHeight * HOVER_PREVIEW_FLIP_AT
+              ? {
+                  left: Math.max(8, Math.min(preview.anchor.left, window.innerWidth - HOVER_PREVIEW_MAX_W - 8)),
+                  bottom: window.innerHeight - preview.anchor.top + 8,
+                }
+              : {
+                  left: Math.max(8, Math.min(preview.anchor.left, window.innerWidth - HOVER_PREVIEW_MAX_W - 8)),
+                  top: preview.anchor.bottom + 8,
+                }
+          }
+        >
+          {preview.result == null ? (
+            <span className="file-viewer-tex-preview-busy">
+              <span className="file-viewer-tex-spinner" aria-hidden="true" />
+              {t("fileViewer.texPreviewCompiling")}
+            </span>
+          ) : preview.result.url ? (
+            <>
+              {/* Half the raster's pixels: it is typeset at 4x its point size so
+                  the formula stays crisp, and 2x natural is the size it is
+                  actually readable at over 12px source. */}
+              <img
+                className="file-viewer-tex-preview-img"
+                src={preview.result.url}
+                alt={t("fileViewer.texPreviewAlt")}
+                style={{ width: Math.min((preview.result.width ?? 0) / 2, HOVER_PREVIEW_MAX_W) }}
+              />
+              {preview.result.fallback && (
+                <div className="file-viewer-tex-preview-note">
+                  {t("fileViewer.texPreviewFallback")}
+                </div>
+              )}
+            </>
+          ) : (
+            <div className="file-viewer-tex-preview-error">
+              <span className="file-viewer-tex-preview-error-head">
+                {t("fileViewer.texPreviewFailed")}
+              </span>
+              <span className="file-viewer-tex-preview-error-msg">{preview.result.error}</span>
+            </div>
+          )}
+        </div>
+      )}
       {grammarTip && (
         <div
           className={`file-viewer-grammar-tip cat-${grammarTip.range.issue.category}`}
@@ -4145,6 +4902,23 @@ function CodeEditor({
               onMouseDown={(e) => { e.preventDefault(); applyGrammarFix(grammarTip.range); }}
             >
               {t("fileViewer.grammarFix")} <span className="file-viewer-grammar-tip-sugg">{grammarTip.range.issue.suggestion}</span>
+            </button>
+          )}
+          {grammarTip.range.issue.source === "dict" && (
+            <button
+              type="button"
+              className="file-viewer-grammar-tip-fix"
+              // mousedown keeps the textarea from stealing focus before the click.
+              onMouseDown={(e) => {
+                e.preventDefault();
+                const word = grammarTip.range.issue.bad;
+                void invoke("spell_add_word", { word }).catch(() => undefined);
+                // Every mark of the same word clears — the word is now known.
+                setSpellIssues((prev) => prev.filter((i) => i.bad !== word));
+                setGrammarTip(null);
+              }}
+            >
+              {t("fileViewer.addToDictionary")}
             </button>
           )}
         </div>
@@ -4217,10 +4991,17 @@ function CodeEditor({
               className={`file-viewer-tex-compl-item${i === compl.index ? " active" : ""}`}
               // mousedown (not click) + preventDefault so the textarea keeps focus
               // — otherwise the blur handler would close the dropdown first.
-              onMouseDown={(e) => { e.preventDefault(); acceptCompl(it.value); }}
+              onMouseDown={(e) => { e.preventDefault(); acceptCompl(it); }}
               onMouseEnter={() => setCompl((c) => (c ? { ...c, index: i } : c))}
             >
-              <span className="file-viewer-tex-compl-key">{it.value}</span>
+              <span className="file-viewer-tex-compl-key">
+                {compl.ctx.kind === "cmd" ? `\\${it.value}` : it.value}
+              </span>
+              {it.local && (
+                <span className="file-viewer-tex-compl-local" title={t("fileViewer.complLocalTitle")}>
+                  {t("fileViewer.complLocalTag")}
+                </span>
+              )}
               {it.detail && <span className="file-viewer-tex-compl-detail">{it.detail}</span>}
             </li>
           ))}
@@ -4691,11 +5472,14 @@ function useViewerPref(type: InternalViewer) {
 export interface TabAiPrefs {
   ac: { enabled: boolean; preferred?: string; mode: AutocompleteMode };
   gc: { enabled: boolean; preferred?: string };
+  sc: { enabled: boolean; language?: string };
   autocomplete: boolean;
   grammar: boolean;
+  spelling: boolean;
   mode: AutocompleteMode;
   toggleAutocomplete: () => void;
   toggleGrammar: () => void;
+  toggleSpelling: () => void;
   setMode: (m: AutocompleteMode) => void;
 }
 
@@ -4720,8 +5504,14 @@ function useTabAiPrefs(tabKey: string | undefined, type: InternalViewer): TabAiP
   const gcRole = useSettingsStore((s) => s.settings?.ollama_roles?.grammar as string | undefined);
   const acPreferred = acRole ?? defaultModel;
   const gcPreferred = gcRole ?? defaultModel;
+  // Dictionary spell check: no model involved — its one setting is which
+  // Hunspell dictionary, machine-wide (unset lets the backend pick).
+  const spellLanguage = useSettingsStore(
+    (s) => s.settings?.spell_language as string | undefined,
+  );
   const defAutocomplete = pref?.autocomplete === true;
   const defGrammar = pref?.grammar_check === true;
+  const defSpelling = pref?.spell_check === true;
   const defMode: AutocompleteMode = AC_MODES.includes(pref?.autocomplete_mode as AutocompleteMode)
     ? (pref!.autocomplete_mode as AutocompleteMode)
     : "sentence";
@@ -4731,10 +5521,16 @@ function useTabAiPrefs(tabKey: string | undefined, type: InternalViewer): TabAiP
   const [override, setOverride] = useState<{
     autocomplete?: boolean;
     grammar?: boolean;
+    spelling?: boolean;
     mode?: AutocompleteMode;
   }>(() => {
     const vs = seedViewerState(tabKey);
-    return { autocomplete: vs?.autocomplete, grammar: vs?.grammarCheck, mode: vs?.autocompleteMode };
+    return {
+      autocomplete: vs?.autocomplete,
+      grammar: vs?.grammarCheck,
+      spelling: vs?.spellCheck,
+      mode: vs?.autocompleteMode,
+    };
   });
 
   const persist = useCallback(
@@ -4746,6 +5542,7 @@ function useTabAiPrefs(tabKey: string | undefined, type: InternalViewer): TabAiP
 
   const autocomplete = override.autocomplete ?? defAutocomplete;
   const grammar = override.grammar ?? defGrammar;
+  const spelling = override.spelling ?? defSpelling;
   const mode = override.mode ?? defMode;
 
   const toggleAutocomplete = useCallback(() => {
@@ -4762,6 +5559,13 @@ function useTabAiPrefs(tabKey: string | undefined, type: InternalViewer): TabAiP
       return { ...o, grammar: next };
     });
   }, [persist, defGrammar]);
+  const toggleSpelling = useCallback(() => {
+    setOverride((o) => {
+      const next = !(o.spelling ?? defSpelling);
+      persist({ spellCheck: next });
+      return { ...o, spelling: next };
+    });
+  }, [persist, defSpelling]);
   const setMode = useCallback(
     (m: AutocompleteMode) => {
       persist({ autocompleteMode: m });
@@ -4773,13 +5577,42 @@ function useTabAiPrefs(tabKey: string | undefined, type: InternalViewer): TabAiP
   return {
     ac: { enabled: autocomplete, preferred: acPreferred, mode },
     gc: { enabled: grammar, preferred: gcPreferred },
+    sc: { enabled: spelling, language: spellLanguage },
     autocomplete,
     grammar,
+    spelling,
     mode,
     toggleAutocomplete,
     toggleGrammar,
+    toggleSpelling,
     setMode,
   };
+}
+
+/** The hover preview's on/off for THIS tab (#tex-hover-preview): tab-local like
+ *  the AI-assist toggles, seeded from the per-type `viewer_prefs.tex` default and
+ *  written back to the tab's persisted `viewerState`, so a tab that had it off
+ *  still has it off after a reopen and a relaunch.
+ *
+ *  Unlike autocomplete and grammar it defaults **ON** (absent ⇒ on), and the
+ *  difference is what the two cost: those call a language model, this runs the
+ *  TeX engine the viewer is already built around — on a fragment, once per
+ *  distinct fragment, and only after the pointer has rested. */
+function useTexHoverPreview(tabKey: string | undefined): { on: boolean; toggle: () => void } {
+  const pref = useViewerPref("tex");
+  const def = pref?.hover_preview !== false;
+  const [override, setOverride] = useState<boolean | undefined>(
+    () => seedViewerState(tabKey)?.texHoverPreview,
+  );
+  const on = override ?? def;
+  const toggle = useCallback(() => {
+    setOverride((cur) => {
+      const next = !(cur ?? def);
+      if (tabKey) useTabsStore.getState().setViewerState(tabKey, { texHoverPreview: next });
+      return next;
+    });
+  }, [tabKey, def]);
+  return { on, toggle };
 }
 
 /**
@@ -4810,48 +5643,66 @@ function useLocalModelLoaded(): boolean {
 function EditorAiControls({ ai }: { ai: TabAiPrefs }) {
   const t = useT();
   const modelLoaded = useLocalModelLoaded();
-  if (!modelLoaded) return null;
   return (
     <div className="file-viewer-ai-controls" role="group" aria-label={t("fileViewer.aiAssistGroup")}>
+      {/* Dictionary spelling needs no model, so it is offered regardless —
+          only the two model-backed controls hide while nothing is loaded. */}
       <button
         type="button"
-        className={`file-viewer-ai-btn${ai.autocomplete ? " active" : ""}`}
-        onClick={ai.toggleAutocomplete}
-        aria-pressed={ai.autocomplete}
+        className={`file-viewer-ai-btn${ai.spelling ? " active" : ""}`}
+        onClick={ai.toggleSpelling}
+        aria-pressed={ai.spelling}
         title={
-          ai.autocomplete
-            ? t("fileViewer.autocompleteOnHint")
-            : t("fileViewer.autocompleteOffHint")
+          ai.spelling
+            ? t("fileViewer.spellingOnHint")
+            : t("fileViewer.spellingOffHint")
         }
       >
-        {t("fileViewer.autocompleteLabel")}
+        {t("fileViewer.spellingLabel")}
       </button>
-      {ai.autocomplete && (
-        <Dropdown
-          className="file-viewer-ai-mode"
-          value={ai.mode}
-          title={t("fileViewer.completionLengthTitle")}
-          onChange={(v) => ai.setMode(v as AutocompleteMode)}
-          options={[
-            { value: "sentence", label: t("projectSettings.sentence") },
-            { value: "block", label: t("projectSettings.block") },
-            { value: "scope", label: t("projectSettings.scope") },
-          ]}
-        />
+      {modelLoaded && (
+        <>
+          <button
+            type="button"
+            className={`file-viewer-ai-btn${ai.autocomplete ? " active" : ""}`}
+            onClick={ai.toggleAutocomplete}
+            aria-pressed={ai.autocomplete}
+            title={
+              ai.autocomplete
+                ? t("fileViewer.autocompleteOnHint")
+                : t("fileViewer.autocompleteOffHint")
+            }
+          >
+            {t("fileViewer.autocompleteLabel")}
+          </button>
+          {ai.autocomplete && (
+            <Dropdown
+              className="file-viewer-ai-mode"
+              value={ai.mode}
+              title={t("fileViewer.completionLengthTitle")}
+              onChange={(v) => ai.setMode(v as AutocompleteMode)}
+              options={[
+                { value: "sentence", label: t("projectSettings.sentence") },
+                { value: "block", label: t("projectSettings.block") },
+                { value: "scope", label: t("projectSettings.scope") },
+              ]}
+            />
+          )}
+          <button
+            type="button"
+            className={`file-viewer-ai-btn${ai.grammar ? " active" : ""}`}
+            onClick={ai.toggleGrammar}
+            aria-pressed={ai.grammar}
+            title={
+              ai.grammar
+                ? t("fileViewer.grammarOnHint")
+                : t("fileViewer.grammarOffHint")
+            }
+          >
+            {t("fileViewer.grammarLabel")}
+          </button>
+        </>
       )}
-      <button
-        type="button"
-        className={`file-viewer-ai-btn${ai.grammar ? " active" : ""}`}
-        onClick={ai.toggleGrammar}
-        aria-pressed={ai.grammar}
-        title={
-          ai.grammar
-            ? t("fileViewer.grammarOnHint")
-            : t("fileViewer.grammarOffHint")
-        }
-      >
-        {t("fileViewer.grammarLabel")}
-      </button>
     </div>
   );
 }
@@ -5694,6 +6545,7 @@ function TextView({
   const ai = useTabAiPrefs(tabKey, type);
   const ac = ai.ac;
   const gc = ai.gc;
+  const sc = ai.sc;
   const font = useEditorFontSize(tabKey, type);
   const jump = useEditorJump(path);
   const [showBlame, setShowBlame] = useState(false);
@@ -6194,6 +7046,7 @@ function TextView({
             redo={redo}
             autocomplete={ac}
             grammarCheck={gc}
+            spellCheck={sc}
             fontSize={font.fontSize}
             lineHeight={font.lineHeight}
             incFont={font.inc}
@@ -6267,6 +7120,7 @@ function MarkdownView({
   const ai = useTabAiPrefs(tabKey, "markdown");
   const ac = ai.ac;
   const gc = ai.gc;
+  const sc = ai.sc;
   const fmt = useFormatter(path, draft, setDraft);
   // Imperative editor handle the formatting toolbar drives (bold/italic/TOC/…).
   const editorApi = useRef<EditorApi | null>(null);
@@ -6594,6 +7448,7 @@ function MarkdownView({
             redo={redo}
             autocomplete={ac}
             grammarCheck={gc}
+            spellCheck={sc}
             fontSize={font.fontSize}
             lineHeight={font.lineHeight}
             incFont={font.inc}
@@ -6761,6 +7616,11 @@ function texWorkspaceContains(structure: TexStructure, path: string): boolean {
   return walk(structure.root);
 }
 
+/** How a `.tex` is built: the engine (`""` = let the backend pick) and the #54
+ *  options. One value per *document*, not per file — see `TexView.compileOpts`. */
+type TexCompileOpts = { engine: string; outDir: string; extraFlags: string };
+const EMPTY_TEX_COMPILE_OPTS: TexCompileOpts = { engine: "", outDir: "", extraFlags: "" };
+
 // The most panes kept mounted in the workspace center at once. Switching between
 // them is display:none, not remount, so an unsaved draft / undo / scroll of a
 // file you flipped away from survives — the same guarantee two standalone `.tex`
@@ -6894,6 +7754,27 @@ function TexWorkspaceView({
     setActivePath(backTarget);
   }, [backTarget, setActivePath]);
 
+  // Advertise this workspace to SyncTeX reverse search (#42): a reverse click's
+  // `focusTexWorkspaceForSource` centers it through the `texCenter` registry —
+  // the ONLY route that reaches a popout, whose tabs store holds no entry a
+  // `setViewerState(texActivePath)` could land in (the one-time `localVs` seed
+  // above never re-reads the store, which is why the store-write route left a
+  // popped-out workspace's center pinned and pdf→tex sync looking dead). Routed
+  // through `goTo`, so the back stack records the step; `setActive` brings the
+  // tab to the front of its group (in a popout it is forwarded as an ordinary
+  // detached "activate" edit). The callback rides a ref so the registration is
+  // one per mainPath, not one per render.
+  const centerRef = useRef<(source: string) => void>(() => {});
+  centerRef.current = (source: string) => {
+    if (tabKey) useTabsStore.getState().setActive(tabKey);
+    goTo(source);
+  };
+  useEffect(() => {
+    const center = (source: string) => centerRef.current(source);
+    registerTexWorkspace(mainPath, center);
+    return () => unregisterTexWorkspace(mainPath, center);
+  }, [mainPath]);
+
   // Keep-mounted center: the LRU list of mounted paths (most-recent last). The
   // active file is always mounted; the main file is pinned; a dirty pane is never
   // evicted (its unsaved draft would be lost).
@@ -6969,6 +7850,20 @@ function TexWorkspaceView({
     [openPdfTab],
   );
 
+  // How this document is compiled, shared by every `.tex` pane in the workspace.
+  // Every one of them builds the SAME main file (`resolve_tex_root` redirects a
+  // child fragment to its parent), so the engine is a property of the document:
+  // per-pane state meant compiling from a chapter rebuilt the parent under the
+  // backend's default engine while the main file's own toolbar still read
+  // `xelatex`. Held here rather than persisted, matching what a standalone `.tex`
+  // tab does with the same choice — and the host outlives an evicted pane, so the
+  // setting survives the center switching away and back.
+  const [compileOpts, setCompileOpts] = useState<TexCompileOpts>(EMPTY_TEX_COMPILE_OPTS);
+  const patchCompileOpts = useCallback(
+    (patch: Partial<TexCompileOpts>) => setCompileOpts((prev) => ({ ...prev, ...patch })),
+    [],
+  );
+
   // In-structure link/error targets switch the center; out-of-tree ones fall back
   // to the standalone tab open (a `.bib` → bib cards, an external file).
   const onFollowChild = useCallback(
@@ -7004,6 +7899,43 @@ function TexWorkspaceView({
   const hideSidebar = useCallback(() => patchViewerState({ texSidebarHidden: true }), [patchViewerState]);
   const showSidebar = useCallback(() => patchViewerState({ texSidebarHidden: false }), [patchViewerState]);
 
+  // The sidebar's ＋ (#tex-structure-newfile): name a file, get it created and
+  // `\input` into the document, then centered. The reference lands in the file
+  // currently being edited when that is a `.tex` (a chapter grows its own
+  // sections), else in the main document — and a parent with unsaved edits is
+  // refused up front, because splicing it on disk would be undone by the next
+  // save of the older draft (`addTexChildFile` documents the precondition).
+  const { promptText, dialogs } = useDialogs();
+  const onNewFile = useCallback(() => {
+    const parent = viewerForPath(activePath) === "tex" ? activePath : mainPath;
+    const parentName = basename(parent);
+    const disabled = disabledViewers(useSettingsStore.getState().settings?.viewer_prefs);
+    void promptText(
+      {
+        title: (
+          <>
+            {t("texWorkspace.newFileTitle")} <UntestedTag />
+          </>
+        ),
+        body: t("texWorkspace.newFileBody", { name: parentName }),
+        label: t("texWorkspace.newFileLabel"),
+        confirmLabel: t("common.create"),
+        validate: (value) => {
+          if (dirtyRef.current.get(parent)) return t("texWorkspace.newFileDirty", { name: parentName });
+          return texRefCreation(parent, { command: "input", token: value }, disabled)
+            ? null
+            : t("texWorkspace.newFileInvalid");
+        },
+      },
+      async (value) => {
+        const added = await addTexChildFile(parent, value, projectId, disabled);
+        if (!added) return; // validate already refused this shape
+        setStructureVersion((v) => v + 1);
+        goTo(added.path);
+      },
+    );
+  }, [activePath, mainPath, projectId, promptText, goTo, t]);
+
   const centerFor = (p: string) => {
     const v = viewerForPath(p);
     const paneKey = p === mainPath ? tabKey : tabKey ? `${tabKey}#${p}` : undefined;
@@ -7018,6 +7950,8 @@ function TexWorkspaceView({
           onJumpToSource={onJumpToSource}
           onDirtyChange={dirtyHandlerFor(p)}
           onCompiled={onCompiled}
+          compileOpts={compileOpts}
+          onCompileOptsChange={patchCompileOpts}
         />
       );
     }
@@ -7043,6 +7977,7 @@ function TexWorkspaceView({
           onSelect={(p) => goTo(p)}
           onResize={onResizeSidebar}
           onHide={hideSidebar}
+          onNewFile={onNewFile}
           onBack={backTarget ? goBack : undefined}
           backLabel={backLabel}
         />
@@ -7076,6 +8011,63 @@ function TexWorkspaceView({
           </div>
         ))}
       </div>
+      {dialogs}
+    </div>
+  );
+}
+
+/**
+ * "That file isn't there yet — make it?" — the answer to a Ctrl/⌘+click on an
+ * `\input{…}` naming a file that does not exist (#tex-create-ref).
+ *
+ * A banner rather than a modal, deliberately: this is an offer, not a question
+ * that has to be answered before anything else can happen. The click was aimed at
+ * the editor, the caret is still where the user left it, and declining has to
+ * cost nothing — a modal would take the keyboard away from a document somebody is
+ * in the middle of typing. It wears the pane's own notice chrome
+ * (`tex-install-banner`), which is what this viewer already uses to say
+ * "something is missing, here is the button that fixes it".
+ */
+function TexCreateRefBanner({
+  creation,
+  newFolder,
+  busy,
+  error,
+  onCreate,
+  onDismiss,
+}: {
+  creation: TexRefCreation;
+  /** The file's folder is missing too and would be created along with it. */
+  newFolder: boolean;
+  busy: boolean;
+  error: string | null;
+  onCreate: () => void;
+  onDismiss: () => void;
+}) {
+  const t = useT();
+  return (
+    <div className="tex-install-banner" role="alert">
+      <span className="tex-install-banner-text">
+        {newFolder && creation.folder
+          ? t("fileViewer.texMissingRefFolderMsg", {
+              name: creation.rel,
+              folder: creation.folder.rel,
+            })
+          : t("fileViewer.texMissingRefMsg", { name: creation.rel })}
+        {error ? ` ${error}` : ""}
+      </span>
+      <UntestedTag />
+      <button
+        type="button"
+        className="ollama-action-btn primary"
+        onClick={onCreate}
+        disabled={busy}
+      >
+        {busy ? t("fileViewer.texCreatingRef") : t("fileViewer.texCreateRefBtn")}
+      </button>
+      <button type="button" className="ollama-action-btn" onClick={onDismiss} disabled={busy}>
+        {t("common.cancel")}
+      </button>
     </div>
   );
 }
@@ -7089,6 +8081,8 @@ function TexView({
   onJumpToSource,
   onDirtyChange,
   onCompiled,
+  compileOpts,
+  onCompileOptsChange,
 }: {
   path: string;
   onOpenExternally: () => void;
@@ -7116,6 +8110,16 @@ function TexView({
   /** A successful compile finished: the actual output PDF and the bumped version.
    *  Opens/refocuses the PDF tab and drives a structure re-gather. */
   onCompiled?: (info: { pdfPath: string; pdfVersion: number }) => void;
+  /** The compile configuration, OWNED BY THE HOST. Every `.tex` in a workspace
+   *  builds the same main document (`resolve_tex_root`), so which engine — and
+   *  which out-dir and extra flags — that build runs with is a property of the
+   *  DOCUMENT, not of whichever file happens to be centered: per-pane state meant
+   *  a child fragment silently rebuilt the parent under the backend's default
+   *  engine while the main file's own tab still showed `lualatex`. Absent ⇒ the
+   *  standalone tab keeps its own local copy (there is no document to share). */
+  compileOpts?: TexCompileOpts;
+  /** Patch the shared configuration. Present exactly when `compileOpts` is. */
+  onCompileOptsChange?: (patch: Partial<TexCompileOpts>) => void;
 }) {
   const t = useT();
   const texInstallLabel = IS_WINDOWS ? t("fileViewer.texInstallMiktex") : t("fileViewer.texInstallLatex");
@@ -7127,6 +8131,7 @@ function TexView({
   const ai = useTabAiPrefs(tabKey, "tex");
   const ac = ai.ac;
   const gc = ai.gc;
+  const sc = ai.sc;
   const [compareOpen, setCompareOpen] = useState(false);
   const font = useEditorFontSize(tabKey, "tex");
   const viewPos = useViewerState(tabKey);
@@ -7153,6 +8158,34 @@ function TexView({
     return () => { cancelled = true; };
   }, []);
 
+  // A `\input{…}`-style reference whose file isn't there yet, waiting on the
+  // user's answer (#tex-create-ref). `newFolder` records that the file's folder
+  // is missing as well, so the offer can say the folder is made too rather than
+  // creating a directory nobody was told about.
+  const [createRef, setCreateRef] =
+    useState<{ creation: TexRefCreation; newFolder: boolean } | null>(null);
+  const [creatingRef, setCreatingRef] = useState(false);
+  const [createRefError, setCreateRefError] = useState<string | null>(null);
+  // The offer belongs to the file it was made in — a workspace re-uses this pane
+  // for whichever `.tex` it centres next.
+  useEffect(() => {
+    setCreateRef(null);
+    setCreateRefError(null);
+  }, [path]);
+
+  // Put a resolved reference on screen: in a workspace an in-structure
+  // child/graphic switches the center view instead of opening a tab; the host
+  // returns false for an out-of-tree target (a `.bib` → bib cards, an external
+  // file), which falls through to the standalone tab open so nothing dead-ends.
+  // Shared by following an existing reference and by opening one just created.
+  const openTexRef = useCallback(
+    (resolved: { path: string; viewer: InternalViewer; label: string }) => {
+      if (onFollowChild?.(resolved)) return;
+      openLinkedFile(tabKey, dirname(path) || "/", resolved);
+    },
+    [onFollowChild, tabKey, path],
+  );
+
   // Ctrl/Cmd+Click a `\input{…}` (or \include/\subfile/\bibliography/
   // \includegraphics/…) to open the referenced file in its own tab, resolved
   // relative to this file. By default it opens in the SAME subwindow as this tab
@@ -7164,15 +8197,24 @@ function TexView({
       );
       const target = findTexRefAt(draft, caret);
       if (target) {
+        // A reference naming a file that isn't there yet is an ordinary state of
+        // a document being written, so offer to CREATE it (#tex-create-ref)
+        // rather than opening a tab whose only content is a read error. Only for
+        // a reference an empty file is a valid first version of — see
+        // `texRefCreation`; everything else keeps the plain open below.
+        const creation = texRefCreation(path, target, disabled);
+        if (creation && !(await texPathExists(creation.path, scope))) {
+          setCreateRefError(null);
+          setCreateRef({
+            creation,
+            newFolder:
+              !!creation.folder && !(await texPathExists(dirname(creation.path), scope)),
+          });
+          return true;
+        }
         const resolved = await resolveTexRefAsync(path, target, disabled);
         if (!resolved) return false;
-        // In a workspace, an in-structure child/graphic switches the center view
-        // instead of opening a tab; the host returns false for an out-of-tree
-        // target (a `.bib` → bib cards, an external file), which falls through to
-        // the standalone tab open so nothing dead-ends.
-        if (onFollowChild?.(resolved)) return true;
-        const dir = dirname(path) || "/";
-        openLinkedFile(tabKey, dir, resolved);
+        openTexRef(resolved);
         return true;
       }
       // A `\ref`/`\cite` (#tex-ref-jump): the target is a POSITION — the
@@ -7200,8 +8242,28 @@ function TexView({
       useEditorJumpStore.getState().requestJump(loc.path, loc.line, loc.column);
       return true;
     },
-    [draft, path, tabKey, scope, onFollowChild],
+    [draft, path, tabKey, scope, onFollowChild, openTexRef],
   );
+
+  // The offer's yes: make the file (and its folder, when the reference named one
+  // that doesn't exist yet) and open it. `createTexRefFile` re-checks first and
+  // simply reports "it was already there" — either way the click ends with the
+  // file on screen, which is what it asked for.
+  const createMissingRef = useCallback(async () => {
+    if (!createRef || creatingRef) return;
+    const { creation } = createRef;
+    setCreatingRef(true);
+    setCreateRefError(null);
+    try {
+      await createTexRefFile(creation, scope);
+      setCreateRef(null);
+      openTexRef({ path: creation.path, viewer: creation.viewer, label: creation.label });
+    } catch (e) {
+      setCreateRefError(String(e));
+    } finally {
+      setCreatingRef(false);
+    }
+  }, [createRef, creatingRef, scope, openTexRef]);
 
   // #49 + #tex-ref-jump: decorate every `\input{…}`/`\includegraphics{…}` path and
   // every `\ref{…}`/`\cite{…}` key so both read as the clickable links they are.
@@ -7210,8 +8272,20 @@ function TexView({
     [],
   );
 
-  // Chosen engine (only when >1 is available); "" means "let the backend pick".
-  const [engine, setEngine] = useState("");
+  // The compile configuration: the chosen engine (only offered when >1 is
+  // available; "" means "let the backend pick") plus the #54 options. Held by the
+  // workspace host when there is one — see `compileOpts` — so every file in one
+  // structure builds its shared main document the same way; a standalone tab owns
+  // the same shape locally.
+  const [localOpts, setLocalOpts] = useState<TexCompileOpts>(EMPTY_TEX_COMPILE_OPTS);
+  const { engine, outDir, extraFlags } = compileOpts ?? localOpts;
+  const patchOpts = useCallback(
+    (patch: Partial<TexCompileOpts>) => {
+      if (onCompileOptsChange) onCompileOptsChange(patch);
+      else setLocalOpts((prev) => ({ ...prev, ...patch }));
+    },
+    [onCompileOptsChange],
+  );
   const [compiling, setCompiling] = useState(false);
   const [compileError, setCompileError] = useState<string | null>(null);
   // True when the last compile ran with shell-escape (`\write18`) active despite
@@ -7237,12 +8311,30 @@ function TexView({
   // case that used to masquerade as a miss. Auto-cleared by the effect below.
   const [syncNote, setSyncNote] = useState<null | "miss" | "unavail">(null);
 
+  // #245 warnings: what the build reported that did NOT stop it. This is where
+  // nearly everything worth fixing lives — an undefined `\ref` prints `??` in the
+  // PDF and compiles happily — so the list is raised on a SUCCESSFUL build too,
+  // which is the case the error card can never cover. Collapsed by default: a
+  // warning is not a failure, and a package's forty font substitutions must not
+  // push the document off screen.
+  const [warnings, setWarnings] = useState<TexWarning[]>([]);
+  const [showWarnings, setShowWarnings] = useState(false);
+  // #245 word count: on demand, never on a timer — it walks every `.tex` the
+  // document reaches, and nobody wants that on each keystroke.
+  const [wordCount, setWordCount] = useState<(TexWordCount & { files: number }) | null>(null);
+  const [counting, setCounting] = useState(false);
+
   // \ref/\cite key completion: `\label` keys across the document and entry keys
   // from the connected `.bib` file(s), gathered from disk on load. Re-gathered
   // after each compile (a build may add labels / change bib resources). The
   // current file's labels are merged live from the editor draft below so a label
   // just typed is offered without waiting for a re-gather.
-  const [gathered, setGathered] = useState<TexCompletions>({ labels: [], cites: [] });
+  const [gathered, setGathered] = useState<TexCompletions>({
+    labels: [],
+    cites: [],
+    commands: TEX_STANDARD_COMMANDS,
+    envs: TEX_STANDARD_ENVIRONMENTS,
+  });
   useEffect(() => {
     let cancelled = false;
     gatherTexCompletions(path, scope)
@@ -7257,15 +8349,29 @@ function TexView({
       seen.add(l.key);
       return true;
     });
-    return { labels, cites: gathered.cites };
+    // #245: the same live merge for the draft's own macros and environments — a
+    // `\newcommand` typed a minute ago, or a `\begin{wrapfigure}` opened in this
+    // file, is offered without waiting for the next re-gather.
+    const seenCmd = new Set<string>();
+    const commands = [...parseTexDefinedCommands(draft), ...gathered.commands].filter((c) => {
+      if (seenCmd.has(c.name)) return false;
+      seenCmd.add(c.name);
+      return true;
+    });
+    const seenEnv = new Set<string>();
+    const envs = [...parseTexDocumentEnvironments(draft), ...gathered.envs].filter((e) => {
+      if (seenEnv.has(e.name)) return false;
+      seenEnv.add(e.name);
+      return true;
+    });
+    return { labels, cites: gathered.cites, commands, envs };
   }, [draft, gathered]);
 
   // #54 compiler options: an optional output folder (relative to the source or
-  // absolute) and extra engine flags (space-separated). The backend filters the
-  // flags so none can ever enable shell-escape. UI starts collapsed.
+  // absolute) and extra engine flags (space-separated), both above with the
+  // engine. The backend filters the flags so none can ever enable shell-escape.
+  // Only the disclosure is per pane — it is chrome, not configuration.
   const [showOptions, setShowOptions] = useState(false);
-  const [outDir, setOutDir] = useState("");
-  const [extraFlags, setExtraFlags] = useState("");
 
   // SyncTeX reverse-search target (PDF → here) and the live caret (for forward
   // search on compile). draftRef keeps the latest text for the compile closure.
@@ -7292,6 +8398,47 @@ function TexView({
   const rootName = basename(root);
   // Directory the build runs in — error paths in the log are relative to it.
   const rootDir = dirname(root) || "/";
+
+  // ── #tex-hover-preview ────────────────────────────────────────────────────
+  // Hovering a formula typesets it. The compile itself is `lib/viewers/texPreview`;
+  // what lives here is the two things only this viewer knows — WHICH preamble the
+  // fragment is typeset with, and WHERE the engine has to run for that preamble's
+  // own `\usepackage{mystyle}` / `\input{macros}` to resolve.
+  //
+  // The preamble comes from the draft when this file has one, and otherwise from
+  // the build root's text: an `\input`ed chapter is a real `.tex` with no preamble
+  // at all, and previewing its formulas without the macros they use would report
+  // "Undefined control sequence" for every one of them. Read once per root (and
+  // again after a compile, which may have just recorded a different root), never
+  // per hover.
+  const [rootPreamble, setRootPreamble] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    if (root === path) {
+      setRootPreamble(null);
+      return () => { cancelled = true; };
+    }
+    readFileText(root, scope)
+      .then((text) => { if (!cancelled) setRootPreamble(texPreamble(text) ?? ""); })
+      .catch(() => { if (!cancelled) setRootPreamble(null); });
+    return () => { cancelled = true; };
+  }, [root, path, scope]);
+
+  const hoverPref = useTexHoverPreview(tabKey);
+  const hoverPreview = useMemo<HoverPreviewConfig | undefined>(() => {
+    if (!hoverPref.on || !cap?.available) return undefined;
+    // Read the draft through the ref, not the closure: the config is memoized on
+    // the *document's* identity (its root, its preamble, its engine), so it must
+    // not be rebuilt on every keystroke — every rebuild would re-run the range
+    // scan for the whole file and re-anchor an open card.
+    const preambleOf = () => texPreamble(draftRef.current) ?? rootPreamble ?? "";
+    return {
+      ranges: texSnippetRanges,
+      cached: (body) => cachedTexPreview(preambleOf(), body),
+      render: (body, stillWanted) =>
+        renderTexPreview(rootDir, preambleOf(), body, engine || null, stillWanted),
+    };
+  }, [hoverPref.on, cap?.available, rootPreamble, rootDir, engine]);
 
   // Open the compiled PDF as its own tab (it is a real file), reusing the embed
   // viewer. openLinkedFile dedupes against an already-open PDF tab for the same
@@ -7361,6 +8508,7 @@ function TexView({
     setCompiling(true);
     setCompileError(null);
     setErrors([]);
+    setWarnings([]);
     setSyncNote(null);
     // Snapshot the caret synchronously, before any await can let focus change or
     // a blur reset it: prefer the editor's live cursor, falling back to the last
@@ -7382,6 +8530,9 @@ function TexView({
         extraFlags: flags.length > 0 ? flags : null,
       });
       setLog(res.log);
+      // The warnings are read whether or not the build succeeded: a document that
+      // failed usually has both, and one that succeeded still has these.
+      setWarnings(parseTexWarnings(res.log));
       // Surface a shell-escape warning regardless of build success — an external
       // command may have run even if the document then failed to compile.
       setShellEscape(res.shell_escape);
@@ -7432,6 +8583,21 @@ function TexView({
     }
   }, [compiling, save, path, engine, outDir, extraFlags, openPdf, rootDir, t, onCompiled]);
 
+  // #245: count the whole document on demand. Reading the draft rather than the
+  // file is the point — the count is asked for while writing, and one that lags
+  // the last save by a paragraph is the wrong number.
+  const runWordCount = useCallback(async () => {
+    if (counting) return;
+    setCounting(true);
+    try {
+      setWordCount(await gatherTexWordCount(path, scope, { currentText: draftRef.current }));
+    } catch {
+      setWordCount(null);
+    } finally {
+      setCounting(false);
+    }
+  }, [counting, path, scope]);
+
   // Auto-dismiss the forward-search notice a few seconds after it appears.
   useEffect(() => {
     if (!syncNote) return;
@@ -7463,6 +8629,16 @@ function TexView({
         </ViewerHeader>
         {externalChange && <ExternalChangeBanner onReload={reloadFromDisk} onKeep={keepMine} />}
         {saveError && <div className="file-viewer-error">{saveError}</div>}
+        {createRef && (
+          <TexCreateRefBanner
+            creation={createRef.creation}
+            newFolder={createRef.newFolder}
+            busy={creatingRef}
+            error={createRefError}
+            onCreate={() => void createMissingRef()}
+            onDismiss={() => setCreateRef(null)}
+          />
+        )}
         {cap && !cap.available && (
           <div className="tex-install-banner" role="note">
             <span className="tex-install-banner-text">
@@ -7514,6 +8690,7 @@ function TexView({
               redo={redo}
               autocomplete={ac}
               grammarCheck={gc}
+              spellCheck={sc}
               texCompletions={completions}
               fontSize={font.fontSize}
               lineHeight={font.lineHeight}
@@ -7562,9 +8739,14 @@ function TexView({
         {cap.engines.length > 1 && (
           <Dropdown
             className="file-viewer-tex-engine"
-            title={t("fileViewer.latexEngineTitle")}
+            title={t(
+              // In a workspace the choice is the whole document's, so say so —
+              // otherwise a dropdown that moves in every other pane reads as one
+              // of them having lost its setting.
+              onCompileOptsChange ? "fileViewer.latexEngineSharedTitle" : "fileViewer.latexEngineTitle",
+            )}
             value={engine}
-            onChange={setEngine}
+            onChange={(v) => patchOpts({ engine: v })}
             disabled={compiling}
             options={[
               // "" lets the backend pick; label it with the engine it would use
@@ -7583,6 +8765,18 @@ function TexView({
         >
           {t("fileViewer.optionsBtn")}
         </button>
+        <button
+          className={`file-viewer-tex-preview-toggle${hoverPref.on ? " active" : ""}`}
+          onClick={hoverPref.toggle}
+          aria-pressed={hoverPref.on}
+          title={
+            hoverPref.on
+              ? t("fileViewer.texPreviewOnHint")
+              : t("fileViewer.texPreviewOffHint")
+          }
+        >
+          {t("fileViewer.texPreviewLabel")} <UntestedTag />
+        </button>
         {pdfVersion > 0 && pdfPath && (
           <button
             className="file-viewer-tex-open-pdf"
@@ -7592,6 +8786,16 @@ function TexView({
             {t("fileViewer.openPdfBtn")}
           </button>
         )}
+        <button
+          className="file-viewer-tex-wordcount-btn"
+          // The draft is handed in so the number answers for what is on screen,
+          // not for what was last saved.
+          onClick={() => void runWordCount()}
+          disabled={counting || !loaded}
+          title={t("fileViewer.wordCountTitle")}
+        >
+          {counting ? t("fileViewer.wordCountBusy") : t("fileViewer.wordCountBtn")}
+        </button>
         <FontSizeControls fontSize={font.fontSize} inc={font.inc} dec={font.dec} reset={font.reset} />
         <EditorAiControls ai={ai} />
         <CompareButton active={compareOpen} toggle={() => setCompareOpen((v) => !v)} />
@@ -7612,7 +8816,7 @@ function TexView({
               type="text"
               value={outDir}
               placeholder={t("fileViewer.outputFolderPlaceholder")}
-              onChange={(e) => setOutDir(e.target.value)}
+              onChange={(e) => patchOpts({ outDir: e.target.value })}
             />
           </label>
           <label className="file-viewer-tex-option">
@@ -7621,7 +8825,7 @@ function TexView({
               type="text"
               value={extraFlags}
               placeholder="e.g. -synctex=1 -file-line-error"
-              onChange={(e) => setExtraFlags(e.target.value)}
+              onChange={(e) => patchOpts({ extraFlags: e.target.value })}
             />
           </label>
           <p className="file-viewer-tex-options-note">
@@ -7630,6 +8834,16 @@ function TexView({
         </div>
       )}
       {externalChange && <ExternalChangeBanner onReload={reloadFromDisk} onKeep={keepMine} />}
+      {createRef && (
+        <TexCreateRefBanner
+          creation={createRef.creation}
+          newFolder={createRef.newFolder}
+          busy={creatingRef}
+          error={createRefError}
+          onCreate={() => void createMissingRef()}
+          onDismiss={() => setCreateRef(null)}
+        />
+      )}
       {syncNote && (
         <div className="file-viewer-tex-sync-miss" role="status">
           {t(syncNote === "unavail" ? "fileViewer.syncUnavailMsg" : "fileViewer.syncMissMsg")}
@@ -7693,6 +8907,84 @@ function TexView({
           {showLog && log && <pre className="file-viewer-tex-log">{log}</pre>}
         </div>
       )}
+      {warnings.length > 0 && (
+        <div className="file-viewer-tex-warn-card" role="status">
+          <button
+            className="file-viewer-tex-warn-head"
+            onClick={() => setShowWarnings((v) => !v)}
+            aria-expanded={showWarnings}
+          >
+            <span className="file-viewer-tex-warn-icon" aria-hidden="true">⚑</span>
+            <span className="file-viewer-tex-warn-title">{t("fileViewer.warningsTitle")}</span>
+            <span className="file-viewer-tex-warn-count">{warnings.length}</span>
+            <span className="file-viewer-tex-warn-caret" aria-hidden="true">
+              {showWarnings ? "▾" : "▸"}
+            </span>
+          </button>
+          {showWarnings && (
+            <ul className="file-viewer-tex-warns">
+              {warnings.map((w, i) => (
+                <li key={`${w.file ?? ""}:${w.line ?? ""}:${i}`} className={`is-${w.kind}`}>
+                  {/* A warning carries a line but often no file: only TeX's own
+                      `(file … )` nesting names one, so a warning it could not
+                      place falls back to the built root rather than guessing. */}
+                  <button
+                    className="file-viewer-tex-warn-jump"
+                    disabled={!w.line}
+                    title={
+                      w.line
+                        ? t("fileViewer.jumpToLocation", {
+                            location: `${w.file ?? rootName}:${w.line}`,
+                          })
+                        : undefined
+                    }
+                    onClick={() =>
+                      w.line &&
+                      jumpToError(resolveTexErrorPath(rootDir, w.file ?? root), w.line, 1)
+                    }
+                  >
+                    <span className="file-viewer-tex-warn-loc">
+                      {w.line
+                        ? `${(w.file ?? rootName).split("/").pop()}:${w.line}`
+                        : t("fileViewer.warningNoLocation")}
+                    </span>
+                    <span className="file-viewer-tex-warn-msg">{w.message}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+      {wordCount && (
+        <div className="file-viewer-tex-wordcount" role="status">
+          <span className="file-viewer-tex-wordcount-main">
+            {t("fileViewer.wordCountWords", { n: String(wordCount.words) })}
+          </span>
+          <span className="file-viewer-tex-wordcount-detail">
+            {t("fileViewer.wordCountDetail", {
+              headers: String(wordCount.headerWords),
+              captions: String(wordCount.captionWords),
+              characters: String(wordCount.characters),
+            })}
+          </span>
+          <span className="file-viewer-tex-wordcount-detail">
+            {t("fileViewer.wordCountObjects", {
+              files: String(wordCount.files),
+              floats: String(wordCount.floats),
+              inline: String(wordCount.inlineMath),
+              display: String(wordCount.displayMath),
+            })}
+          </span>
+          <button
+            className="file-viewer-tex-wordcount-close"
+            onClick={() => setWordCount(null)}
+            aria-label={t("common.close")}
+          >
+            ✕
+          </button>
+        </div>
+      )}
       <div className="file-viewer-body file-viewer-code-body">
         {compareOpen ? (
           <CompareView
@@ -7720,7 +9012,9 @@ function TexView({
             redo={redo}
             autocomplete={ac}
             grammarCheck={gc}
+            spellCheck={sc}
             texCompletions={completions}
+            hoverPreview={hoverPreview}
             fontSize={font.fontSize}
             lineHeight={font.lineHeight}
             incFont={font.inc}

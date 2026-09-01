@@ -2644,13 +2644,14 @@
 /* #49 link-decoration + #45 ghost overlays: transparent <pre> layers aligned to
    the textarea exactly like .file-viewer-highlight, so only their styled spans
    paint. They sit ABOVE the highlight layer but below the textarea caret. */
+.file-viewer-indent-layer,
 .file-viewer-link-layer,
 .file-viewer-search-layer,
 .file-viewer-change-layer,
-.file-viewer-delete-layer,
 .file-viewer-grammar-layer,
 .file-viewer-bracket-layer,
 .file-viewer-unclosed-layer,
+.file-viewer-tex-snippet-layer,
 .file-viewer-ghost {
   position: absolute;
   inset: 0;
@@ -2675,13 +2676,14 @@
 /* The link layer is scroll-synced with a transform like .file-viewer-highlight,
    so it is sized to its own content and clipped by the parent (not inset to the
    box). The ghost layer keeps the inset/overflow model above. */
+.file-viewer-indent-layer,
 .file-viewer-link-layer,
 .file-viewer-search-layer,
 .file-viewer-change-layer,
-.file-viewer-delete-layer,
 .file-viewer-grammar-layer,
 .file-viewer-bracket-layer,
-.file-viewer-unclosed-layer {
+.file-viewer-unclosed-layer,
+.file-viewer-tex-snippet-layer {
   inset: auto;
   top: 0;
   left: 0;
@@ -2764,6 +2766,91 @@
 .file-viewer-grammar-tip-sugg {
   font-family: var(--font-mono, ui-monospace, Menlo, Consolas, monospace);
   color: var(--accent);
+}
+
+/* ── TeX snippet hover preview (#tex-hover-preview) ─────────────────────────
+   The layer is a HIT TEST, not a decoration: the textarea owns pointer events,
+   so a scroll-synced overlay's span boxes are the only thing that knows where a
+   fragment landed on screen. It therefore paints nothing at rest — a formula is
+   not a link and must not read as one — and only picks up a faint wash while the
+   pointer is on it, which is the one moment the mark says something ("this is
+   what is being typeset").
+
+   Unlike its sibling layers this one is `pointer-events: auto`, overriding the
+   shared group rule — NOT so it receives events (it never does: the textarea
+   sits above it in paint order and catches every real pointer event first), but
+   so `document.elementsFromPoint` can see its spans. That is how the editor
+   finds the fragment under the pointer in one engine query instead of measuring
+   every span on every move (see snippetHitAt). The wash stays a class the
+   editor toggles, NOT `:hover`: only the topmost element and its ancestors are
+   ever :hover, and the topmost here is always the textarea. */
+.file-viewer-tex-snippet-layer {
+  pointer-events: auto;
+}
+.file-viewer-tex-snippet-layer .file-viewer-tex-snippet {
+  border-radius: var(--radius-sm);
+  transition: background-color 90ms ease;
+}
+.file-viewer-tex-snippet-layer .file-viewer-tex-snippet.is-hovered {
+  background: var(--bg-hover);
+}
+
+/* The card. `position: fixed` off the anchor's own rect (the component picks
+   top-or-bottom), and NEVER interactive — it sits on the text the pointer is
+   resting on, so anything it caught would be a gesture aimed at the editor. */
+.file-viewer-tex-preview {
+  position: fixed;
+  z-index: 60;
+  pointer-events: none;
+  max-width: 536px;
+  padding: 8px;
+  border-radius: var(--radius);
+  background: var(--bg-main);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  border-left: 3px solid var(--accent);
+  font-size: 11px;
+  line-height: 1.45;
+  box-shadow: var(--shadow-2);
+}
+.file-viewer-tex-preview.is-error {
+  border-left-color: var(--danger);
+}
+.file-viewer-tex-preview-busy {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-muted);
+}
+/* The formula is typeset as black ink on a transparent page, so the card
+   supplies the paper — a fixed near-white plate rather than a theme colour,
+   because the ink is not the theme's to recolour and dark-on-dark is unreadable. */
+.file-viewer-tex-preview-img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  background: #fff;
+  border-radius: var(--radius-sm);
+  padding: 4px 6px;
+}
+.file-viewer-tex-preview-note {
+  margin-top: 5px;
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+}
+.file-viewer-tex-preview-error {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  max-width: 420px;
+}
+.file-viewer-tex-preview-error-head {
+  color: var(--danger);
+}
+.file-viewer-tex-preview-error-msg {
+  font-family: var(--font-mono, ui-monospace, Menlo, Consolas, monospace);
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
 }
 
 /* ── Git blame (#blame) ─────────────────────────────────────────────────────
@@ -3264,6 +3351,22 @@
   background: rgba(88, 166, 255, 0.18);
 }
 
+/* Indent guides: a hairline down the first column of every indentation level a
+   line actually occupies. Painted as a gradient rather than a border-left,
+   because these spans wrap the file's own whitespace inside a layer that has to
+   stay glyph-for-glyph under the textarea — a border would add a pixel of width
+   and slide every guide after it off its column. Fixed rgba (like the search and
+   bracket marks) so it reads on both light and dark themes; faint on purpose,
+   since it is scaffolding behind the code and not part of it. */
+.file-viewer-indent-layer .file-viewer-indent-guide {
+  background-image: linear-gradient(
+    to right,
+    rgba(128, 145, 170, 0.34) 0 1px,
+    transparent 1px
+  );
+  background-repeat: no-repeat;
+}
+
 /* Keep the source glyph readable in its syntax colour: only a red meandering
    underline paints from this otherwise-transparent diagnostic layer. */
 .file-viewer-unclosed-layer .file-viewer-unclosed-bracket {
@@ -3358,39 +3461,11 @@
   background: rgba(78, 116, 210, 0.09);
 }
 
-/* Deletion ghosts: the counterpart to the green change trail on the removal
-   side. Just-deleted text is injected back at the spot it vanished and shown in
-   red with a strike-through, then fades out over DELETE_GHOST_MS (kept in sync
-   with `fv-delete-fade` below). The mark carries an OPAQUE panel background so it
-   cleanly masks whatever live text now occupies that position (the rest of the
-   injected layer reflows transparently and never paints). The danger token,
-   matching the grammar spelling squiggle — red in every theme. */
-.file-viewer-delete-layer .file-viewer-delete-mark {
-  color: var(--danger);
-  background: var(--bg-panel);
-  text-decoration: line-through;
-  text-decoration-color: var(--danger);
-  border-radius: 2px;
-  animation: fv-delete-fade 2600ms ease-out forwards;
-}
-/* Retire the ghost by both fading it AND collapsing its width to nothing:
-   animating font-size shrinks the inline glyph advances (and the opaque
-   background + strike-through that scale with them) to 0, so the red run
-   shrivels toward its anchor instead of sitting — translucent — on top of the
-   live text once the opacity drops. `1em` is the inherited --code-font-size, so
-   it tracks the editor's current zoom. Held full for the first ~55% ("after some
-   time"), then shrunk away. Duration stays in sync with DELETE_GHOST_MS. */
-@keyframes fv-delete-fade {
-  0%,
-  55% {
-    opacity: 1;
-    font-size: 1em;
-  }
-  100% {
-    opacity: 0;
-    font-size: 0;
-  }
-}
+/* The deletion ghosts (`.file-viewer-delete-layer` / `fv-delete-fade`) that used
+   to sit here are gone (2026-09-01): the fade animated `font-size` to 0, i.e. a
+   relayout of a whole-document <pre> on every frame, and the layer itself was
+   re-escaped and rebuilt on every keystroke while a ghost lived. The green
+   change trail above tints text that is still there, so it never reflows. */
 
 /* #49: recognised file links read as clickable — a dotted underline in the link
    accent colour. Applies in both the code editor overlay and rendered markdown. */
@@ -3570,10 +3645,10 @@
 .file-viewer-code-area.is-wrapped .file-viewer-link-layer,
 .file-viewer-code-area.is-wrapped .file-viewer-search-layer,
 .file-viewer-code-area.is-wrapped .file-viewer-change-layer,
-.file-viewer-code-area.is-wrapped .file-viewer-delete-layer,
 .file-viewer-code-area.is-wrapped .file-viewer-grammar-layer,
 .file-viewer-code-area.is-wrapped .file-viewer-bracket-layer,
 .file-viewer-code-area.is-wrapped .file-viewer-unclosed-layer,
+.file-viewer-code-area.is-wrapped .file-viewer-tex-snippet-layer,
 .file-viewer-code-area.is-wrapped .file-viewer-ghost {
   white-space: pre-wrap;
   overflow-wrap: normal;
@@ -3587,10 +3662,10 @@
 .file-viewer-code-area.is-wrapped .file-viewer-link-layer,
 .file-viewer-code-area.is-wrapped .file-viewer-search-layer,
 .file-viewer-code-area.is-wrapped .file-viewer-change-layer,
-.file-viewer-code-area.is-wrapped .file-viewer-delete-layer,
 .file-viewer-code-area.is-wrapped .file-viewer-grammar-layer,
 .file-viewer-code-area.is-wrapped .file-viewer-bracket-layer,
 .file-viewer-code-area.is-wrapped .file-viewer-unclosed-layer,
+.file-viewer-code-area.is-wrapped .file-viewer-tex-snippet-layer,
 .file-viewer-code-area.is-wrapped .file-viewer-ghost {
   min-width: 0;
   right: auto;
@@ -3850,20 +3925,29 @@
   font-size: 10px;
 }
 .file-viewer-tex-options-toggle,
-.file-viewer-tex-open-pdf {
+.file-viewer-tex-preview-toggle,
+.file-viewer-tex-open-pdf,
+.file-viewer-tex-wordcount-btn {
   background: transparent;
   color: var(--text-muted);
   border: 1px solid var(--border-color);
   border-radius: var(--radius-sm);
   padding: 1px 8px;
   font-size: 10px;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
 }
 .file-viewer-tex-options-toggle.active,
 .file-viewer-tex-options-toggle:hover,
-.file-viewer-tex-open-pdf:hover {
+.file-viewer-tex-preview-toggle.active,
+.file-viewer-tex-preview-toggle:hover,
+.file-viewer-tex-open-pdf:hover,
+.file-viewer-tex-wordcount-btn:hover:not(:disabled) {
   color: var(--text-primary);
   border-color: var(--text-muted);
+}
+.file-viewer-tex-wordcount-btn:disabled {
+  opacity: 0.5;
+  cursor: var(--cur-default, default);
 }
 
 /* #48 per-type native-viewer settings section. */
@@ -3880,7 +3964,7 @@
   /* Sized to the HEADER captions, not to the switches: a 34px column fits a
      toggle and nothing else, and the captions above then ran into each other.
      The controls centre inside whatever their caption needs. */
-  grid-template-columns: minmax(0, 1fr) 60px 98px 84px 68px;
+  grid-template-columns: minmax(0, 1fr) 60px 98px 84px 68px 84px;
   align-items: center;
   gap: 8px;
   font-size: var(--text-md);
@@ -3950,11 +4034,11 @@
   white-space: nowrap;
 }
 
-/* Narrow dialog: the four control columns no longer fit beside the label, so
+/* Narrow dialog: the five control columns no longer fit beside the label, so
    the row becomes label-over-controls instead of overflowing. */
 @media (max-width: 480px) {
   .viewer-prefs-list.boxed > .viewer-pref-row {
-    grid-template-columns: 60px 98px 84px 68px;
+    grid-template-columns: 60px 98px 84px 68px 84px;
     justify-content: end;
     gap: 6px 8px;
   }
@@ -5129,6 +5213,188 @@
   color: var(--text-primary);
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+/* ── Compile WARNINGS (#245) ──────────────────────────────────────────────
+   The error card in a warning tone, and deliberately built from the same
+   parts: the two lists say the same kind of thing about the same build, and
+   a second look for one of them would read as a different feature. What
+   differs is that the whole card FOLDS — a warning is not a failure and this
+   one appears on a successful build, so it opens as one line. */
+.file-viewer-tex-warn-card {
+  flex-shrink: 0;
+  margin: 8px 10px;
+  padding: 6px 12px;
+  max-height: 40%;
+  overflow: auto;
+  background: color-mix(in srgb, var(--warning) 8%, var(--bg-panel));
+  border: 1px solid color-mix(in srgb, var(--warning) 40%, transparent);
+  border-left: 3px solid var(--warning);
+  border-radius: var(--radius);
+}
+
+.file-viewer-tex-warn-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 2px 0;
+  background: transparent;
+  border: 0;
+  cursor: var(--cur-pointer, pointer);
+  text-align: left;
+}
+
+.file-viewer-tex-warn-icon {
+  flex-shrink: 0;
+  font-size: 13px;
+  line-height: 1;
+  color: var(--warning);
+}
+
+.file-viewer-tex-warn-title {
+  font-weight: 600;
+  font-size: 12px;
+  color: var(--warning);
+}
+
+.file-viewer-tex-warn-count {
+  min-width: 18px;
+  height: 18px;
+  padding: 0 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--bg-main);
+  background: var(--warning);
+  border-radius: 999px;
+}
+
+.file-viewer-tex-warn-caret {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.file-viewer-tex-warns {
+  list-style: none;
+  margin: 6px 0 2px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.file-viewer-tex-warn-jump {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  padding: 2px 6px;
+  cursor: var(--cur-pointer, pointer);
+  color: var(--text-primary);
+  font-size: 11px;
+}
+
+.file-viewer-tex-warn-jump:disabled {
+  cursor: var(--cur-default, default);
+}
+
+.file-viewer-tex-warn-jump:hover:not(:disabled) {
+  background: var(--bg-hover);
+  border-color: var(--border-color);
+}
+
+.file-viewer-tex-warn-loc {
+  flex-shrink: 0;
+  font-family: var(--font-mono, ui-monospace, "SF Mono", Menlo, Consolas, monospace);
+  font-weight: 600;
+  color: var(--accent, var(--text-primary));
+}
+
+.file-viewer-tex-warn-jump:disabled .file-viewer-tex-warn-loc {
+  color: var(--text-muted);
+  font-weight: 400;
+}
+
+.file-viewer-tex-warn-msg {
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* An undefined reference or citation is the one warning class that prints
+   visible nonsense into the PDF (`??`, `[?]`), so it carries the card's own
+   colour where a box or a font substitution stays muted. */
+.file-viewer-tex-warns li.is-reference .file-viewer-tex-warn-msg,
+.file-viewer-tex-warns li.is-citation .file-viewer-tex-warn-msg {
+  color: var(--text-primary);
+}
+
+/* ── Document word count (#245) ───────────────────────────────────────────
+   One line under the toolbar, dismissed by its own ✕: a count is read once
+   and then in the way. */
+.file-viewer-tex-wordcount {
+  flex-shrink: 0;
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin: 8px 10px;
+  padding: 6px 12px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  font-size: 11px;
+}
+
+.file-viewer-tex-wordcount-main {
+  font-weight: 600;
+  font-size: 12px;
+  color: var(--text-primary);
+}
+
+.file-viewer-tex-wordcount-detail {
+  color: var(--text-muted);
+}
+
+.file-viewer-tex-wordcount-close {
+  margin-left: auto;
+  background: transparent;
+  border: 0;
+  color: var(--text-muted);
+  cursor: var(--cur-pointer, pointer);
+  font-size: 11px;
+}
+
+.file-viewer-tex-wordcount-close:hover {
+  color: var(--text-primary);
+}
+
+/* The completion dropdown's "this document defines it" tag (#245). A local
+   macro is the one candidate whose meaning nobody can look up, so the row
+   says where it came from. */
+.file-viewer-tex-compl-local {
+  flex-shrink: 0;
+  padding: 0 5px;
+  border-radius: 999px;
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--accent-contrast);
+  background: var(--accent);
+}
+
+.file-viewer-tex-compl-item.active .file-viewer-tex-compl-local {
+  color: var(--accent);
+  background: var(--accent-contrast);
 }
 
 /* Rendered markdown. Fills the full pane width — paragraphs reflow to the

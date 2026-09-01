@@ -1237,3 +1237,502 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       inert on the main document, and that a resize still works after unfolding.
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work
+
+241. **PDF viewer: present the file fullscreen in a window of its own.** ✅
+    Implemented (2026-09-01, untested live) · `▶ Fullscreen` in the PDF toolbar
+    opens the PDF as a window with nothing else on it — no tab bar, no toolbar,
+    one sheet fitted to the screen on black. For reading a beamer deck off a
+    projector without popping the whole workspace out.
+    - **The window** is the deck presenter's own
+      (`commands/presenter.rs::open_presenter_window`) under a `present-pdf-<hash
+      of path>` label, so it inherits the placement, the WebKitGTK/WebView2
+      first-paint kick, the second-monitor takeover and the idempotent
+      open-or-focus for free — and, being inside the `present-*` glob, the window
+      capabilities. The one thing added for it is `fullscreen: Option<bool>`:
+      **the deck's audience window stays windowed on a single-monitor machine**
+      (the speaker drags it onto the projector, keeping the notes view), which is
+      exactly wrong here, where the screen becoming the sheet *is* the button.
+      **Backend restart** for that argument; without it the window opens
+      windowed and the renderer's own post-paint assert fullscreens it.
+    - **`App` routes on the label**, not on a second query parameter: a deck
+      label carries exactly one hyphen, so `present-pdf-` can never collide with
+      one. Both branches are lazy — pdfjs-dist has no business in another
+      window's startup chunk.
+    - **The seed carries the path, the scope and the sheet**, never bytes: the
+      window opens the file itself over the confined file commands, so a 130 MB
+      thesis is not an event payload. It therefore shows the file **as saved** —
+      an unsaved page arrangement stays in the tab, which the button's tooltip
+      says while there is one. Once seeded the window navigates **itself** (a
+      talk has two displays that must agree; this is one), and pressing Present
+      again re-seeds it to the sheet now on screen.
+    - Keys: `←`/`→` (also `↑`/`↓`, PgUp/PgDn, Space, `n`/`p`, click and wheel)
+      turn a sheet, digits + `Enter` go to one, Home/End jump to the ends, `F11`
+      windows it, `Esc` closes it. Holds the deck presenter's sleep inhibitor
+      while it is up, so the projector does not blank in a long Q&A.
+    - i18n: `pdfViewer.fullscreenPresent{Title,DirtyTitle,Label,Btn}` and
+      `pdfPresent.{waiting,opening,loadError,keyHint}`, 8 strings × 5 languages.
+    - [x] 🤖 Automated test (`src/__tests__/PdfPresent.test.ts`: one label per
+      path, never confused with a deck label, valid as a window label and through
+      `?present=`, page clamped before the document is open)
+    - [ ] 🖐️ Manual test — open a PDF, scroll to a middle sheet and press
+      `▶ Fullscreen`: the sheet appears fullscreen on black with the page counter
+      bottom-right. Turn pages with the arrows, a click and the wheel; type a
+      number + Enter; press Esc. Press Present again from a different sheet and
+      confirm the same window comes back to the front on that sheet rather than a
+      second one opening. On a two-monitor machine, confirm it takes the *other*
+      screen. With unsaved page changes, confirm the tooltip says so and the
+      window shows the saved file.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+242. **TeX editor: grey out `comment` blocks, and a linewise comment toggle.** ✅
+    Implemented (2026-09-01, untested live) · Two halves of the same gesture —
+    seeing what is commented out, and commenting it out.
+    - **`\begin{comment}` … `\end{comment}`** (the `comment`/`verbatim` package)
+      now greys out as one `tok-comment` span, delimiters included, the way a `%`
+      line does. Nothing inside is tokenized: the body is not LaTeX any more, it
+      is text the compiler throws away, so a `\section` in there must not read as
+      a live one. An unclosed block greys to the end of the file — again what the
+      compiler does with it. Only the `comment` environment: every other
+      environment keeps its `tok-type` name (`scanTex`/`texCommentEnvEnd` in
+      `lib/viewers/highlight.ts`).
+    - **Ctrl/Cmd+Shift+C** toggles line comments over every line the selection
+      touches, in the *native editor generally*, not just TeX: `%` in a `.tex`
+      file, `//`, `#`, `--`, … elsewhere from the highlighter's own language table
+      (`lineCommentMarker`), and a no-op where the language has none (JSON,
+      markdown, HTML — wrapping every line in `<!-- -->` is a different gesture).
+    - Comment-or-uncomment is decided by what is already there: it uncomments
+      only when **every** non-blank line is already commented, so a
+      partially-commented block commutes to fully commented first and a second
+      press always round-trips. The marker goes in at the block's *shallowest*
+      indent (relative indentation survives), blank lines are skipped rather than
+      left holding stranded markers, and uncommenting drops the marker plus at
+      most one following space — `%% x` keeps its second percent, since a
+      deliberate double-comment is not this gesture's to undo.
+    - Commits through the ordinary `edit()` path, so undo/redo, the dirty mark
+      and the syntax overlay all stay consistent, and the selection is restored
+      over the same text afterwards.
+    - [x] 🤖 Automated test (`src/__tests__/EditorLineComment.test.ts`: markers
+      per language, round-trip, partial→full, indent alignment, blank-line skip,
+      selection ending at a line start; `Highlight.test.ts`: the comment block,
+      an unclosed one, and other environments unaffected)
+    - [ ] 🖐️ Manual test — open a `.tex` file, wrap a few lines in
+      `\begin{comment}`/`\end{comment}` and confirm the whole block greys out
+      while the text after it colours normally. Select a few lines and press
+      Ctrl+Shift+C: each gets `% ` at the common indent, the selection still
+      covers them; press again and the text comes back exactly as it was. Try it
+      with the caret on a single line, on a block that is already half
+      commented, and in a `.py`/`.ts` file (`#`/`//`).
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+243. **TeX editor: Ctrl+click an `\input{…}` that isn't there yet offers to
+    create it.** ✅ Implemented (2026-09-01, untested live) · Following a
+    reference to a file that does not exist opened a tab whose only content was
+    "This file no longer exists" — but a `\input{chapters/intro}` written before
+    the chapter is an ordinary state of a document being written, not a broken
+    link. The click now raises a one-line offer in the viewer's own notice
+    chrome (`tex-install-banner`): *chapters/intro.tex doesn't exist yet* ·
+    **Create the file** · **Cancel**. Creating writes an empty file and opens it
+    exactly as an existing target opens — the workspace centre for an
+    in-structure child, its own tab otherwise.
+    - A banner, not a modal: the click was aimed at the editor, the caret is
+      still where it was, and declining must cost nothing.
+    - Offered only for a reference an *empty file* is a valid first version of —
+      `\input`/`\include`/`\subfile` (`.tex`) and
+      `\bibliography`/`\addbibresource` (`.bib`), i.e. the commands whose default
+      extension the viewer already assumes. Never a `\includegraphics` (there is
+      no format to invent, and an empty one breaks the build rather than waiting
+      to be written), never an extension the command does not assume
+      (`\input{fig.png}` is a mistake, not a new file), never an absolute token.
+    - A reference naming a subfolder of the document's own (`chapters/`) creates
+      that folder too, and the offer *says so* before it does. A `../` token
+      creates no folder — that tree is outside the document's own and not this
+      offer's to build.
+    - **The write overwrites, so the existence check is re-taken at the moment it
+      is acted on** (`createTexRefFile`): a stat that does not answer reads as
+      absent, which is usually true and is not always, so the one reading that
+      could empty somebody's chapter must not be a stale one. A file that turned
+      out to be there is simply opened.
+    - Existence is stat'd through **`file_mtime`**, the scope-confined
+      absolute-path read the editor's reload poll already makes, and that is what
+      keeps a *remote* project working: `project_path_exists` canonicalizes a
+      local path and cannot see a host tree, and a `list_dir` of the parent only
+      routes over SFTP for a project's own registered directory — either would
+      have called every existing `\input` of a remote document missing and
+      offered to overwrite it. The create is `write_file_bytes` for the same
+      reason (the one create that routes over SFTP). The folder step is the
+      exception, project-addressed `create_dir`, so a remote project fails it
+      with the host's own message rather than silently.
+    - [x] 🤖 Automated test (`src/__tests__/TexLinks.test.ts`: what each command
+      would create, the declines, the folder pair, `texPathExists` and the
+      command it stats with, folder-then-file creation, an existing folder left
+      alone, and the re-check writing nothing when the file was there)
+    - [ ] 🖐️ Manual test — in a `.tex` file type `\input{chapters/intro}` for a
+      chapter that does not exist and Ctrl+click it: the banner names
+      `chapters/intro.tex` and says the folder would be created too; press Create
+      and the empty file opens (in a TeX workspace, in the centre). Repeat with a
+      sibling `\input{notes}` (no folder line), with `\bibliography{refs}` (opens
+      the bib cards), and Ctrl+click a `\includegraphics{figs/plot}` that is
+      missing — no offer, as before. Cancel must leave the document untouched.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+245. **LaTeX editor: the standard features it was still missing.** ✅
+    Implemented (2026-09-01, untested live) · The TeX viewer could compile,
+    jump both ways through SyncTeX, follow an `\input`, complete a `\ref` and a
+    `\cite`, and list a build's errors — and could not do the four things every
+    other LaTeX editor does. Four separable additions, one number because they
+    are the same complaint: the parts of writing LaTeX the editor left to the
+    typist.
+    - **Command completion.** Typing `\se` offers `\section`, `\setlength`, …
+      from a **curated standard table** (`TEX_STANDARD_COMMANDS`, ~200 entries:
+      structure, text, references, floats, math, the definition forms) rather
+      than a parse of the installed distribution — reading `texmf` would offer
+      thousands of commands from packages the document never loads, and the
+      value of a completion list is entirely in what it leaves out. Accepting
+      seeds the mandatory `{}` arguments with the caret inside the first
+      (`\frac` → `\frac{|}{}`), and adds none when the text already continues
+      with a brace, i.e. when the name of an existing command is being
+      corrected. Matched by **prefix only**: a substring match over two hundred
+      names offers `\varepsilon` for `\ps` on every keystroke.
+    - **Environment completion, and `\end{…}` written for you.** Inside
+      `\begin{`/`\end{` the same dropdown offers the standard environments plus
+      every one this document defines (`\newenvironment`, `\newtheorem`) or
+      already uses — using one is evidence enough, since the table cannot know
+      which packages were loaded. Accepting a `\begin{align}` on a line with
+      nothing after it **opens the block**: `\end{align}` on its own line at the
+      `\begin`'s indent, a body line between them (carrying `\item ` for a
+      list), and an argument the environment cannot compile without seeded with
+      the caret in it (`tabular` → `{|}`). It never does so when a matching
+      `\end` is already ahead (nesting counted), when text remains inside the
+      braces, or when the line continues past them — restructuring a line
+      somebody is in the middle of is the one thing an autocomplete must not do.
+    - **The build's warnings, not just its errors.** A LaTeX build that
+      *succeeds* is the normal case and is where nearly everything worth fixing
+      is reported: an undefined `\ref` prints a bold `??` in the PDF and
+      compiles happily, a missing citation `[?]`, an overfull `\hbox` a line in
+      the margin. The viewer parsed errors and nothing else, so the reader found
+      the `??` by reading the output — exactly the trip to the PDF the SyncTeX
+      work exists to save. `parseTexWarnings` reads the `… Warning: …` family
+      (continuation lines folded in, a package's `(name)` gutter marker
+      stripped, `on input line N` picked up wherever it landed) and the bare
+      `Overfull/Underfull \hbox` reports, into a collapsed card with jump-to-line
+      per row.
+    - **Which file a warning is in is *tracked*, not guessed.**
+      `-file-line-error` applies to errors only, so a warning carries a line and
+      no file; the file comes from following the `(path … )` nesting TeX prints
+      as it opens and closes each source — parens counted for depth whatever
+      they hold (`(12.3pt too wide)` and a hundred other asides), only
+      source-extension paths remembered, closing a depth forgetting every file
+      at or below it. A warning the nesting could not place carries **no file**
+      and falls back to the build root rather than naming a guessed one. The
+      tracking is only as good as the log's line breaking, so `run_in` now sets
+      `max_print_line`/`error_line`/`half_error_line` in the compile
+      environment — the engine's own knobs against the 79-column wrap that
+      splits a path across two lines. A backend test tripwires those three,
+      because deleting them breaks the attribution with nothing failing.
+    - **A word count that means something.** "How long is it?" is asked of every
+      piece of academic writing by something with a limit attached, and a `.tex`
+      answers it worst: `wc -w` counts
+      `\includegraphics[width=0.8\textwidth]{figures/plot.pdf}` as four words.
+      `texWordCount` reads the source the way `texcount` does — the preamble is
+      not text, a control sequence is not a word, a formula is one object,
+      verbatim and `tikzpicture` are not prose, headings and captions are
+      counted **apart** (that is how a limit is normally written) — and
+      `gatherTexWordCount` sums it over every `.tex` the document reaches, from
+      the *draft* of the file on screen rather than its last save. Deliberately
+      shallow like the rest of the module: it does not expand macros, so a
+      `\newcommand` producing three words counts as none. That is the right side
+      to be wrong on — a count that silently inflates is worse than one the
+      writer knows is a floor.
+    - **A local macro is marked as one.** A candidate the document itself
+      defines sorts first and wears a `local` pill: it is the one entry in the
+      list whose meaning nobody can look up.
+    - **The completion trigger learned two refusals it should always have had**:
+      nothing is offered inside a `%` comment (a `\sec` in a note about the
+      document is prose), and a bare `\` opens nothing — it is the first
+      keystroke of `\\`, `\[` and `\%`, and a list of every command over it
+      would fight the typist.
+    - [x] 🤖 Automated tests (`src/__tests__/TexCompletions.test.ts` — the two
+      new contexts and their refusals, the `\newcommand`-family and
+      environment parsers, and every branch of both inserts including the
+      nested-`\end` case; `src/__tests__/TexLogWarnings.test.ts` — a realistic
+      two-file log: kinds, lines from both spellings, file attribution across a
+      close, a wrapped warning, a package marker, deduplication, and errors not
+      being read as warnings; `src/__tests__/TexWordCount.test.ts` — body vs.
+      preamble, headings/captions counted apart, math as objects, verbatim and
+      machinery arguments skipped, and the unterminated-group cases;
+      `commands::tex::tests::compile_env_disables_log_line_wrapping`)
+    - [ ] 🖐️ Manual test — **needs a restart** (the compile-environment change
+      is backend). In a `.tex` file type `\se` and confirm the dropdown offers
+      `\section` with a `{…}` signature; Tab, and the caret lands inside the
+      braces. Type `\begin{ite` and Tab: the block closes itself with an
+      indented `\item ` and the caret on it. Do the same for `\begin{tabular}` —
+      the caret should be inside the seeded `{}`. Add a `\newcommand{\R}{...}`
+      in the preamble and confirm `\R` is offered with a **local** pill from
+      another file of the same document. Type `%` and then `\sec` — no
+      dropdown. Compile a document with a `\ref` to a label that does not exist:
+      the build succeeds, and a collapsed **Warnings** card appears; open it,
+      and the row names the right file and line and jumps there. Press
+      **Words** and check the count against `texcount` if it is installed.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+246. **The native editor aligns its own Enter, and marks the indents it draws.**
+    ✅ Implemented (2026-09-01, untested live) · The code editor had a Tab that
+    indents and a Shift+Tab that outdents, and an **Enter that dropped the caret
+    to column 0** — so every line of a Python block or a LaTeX environment was
+    re-indented by hand. Two halves, sharing one reading of the file.
+    - **The unit is read out of the text**, never assumed
+      (`detectIndentUnit`): the step between successive lines' indentation, with
+      only 2/3/4/8 admitted (every other step is a wrapped argument list, not a
+      level), and a file whose lines lead with tabs is a tab file whatever those
+      steps say. Both halves below use that one answer, so what the reader sees
+      and what typing produces cannot disagree.
+    - **Enter, aligned** (`applyAutoIndent`, Python and TeX — the two languages
+      that put their structure in the indentation). It carries the current
+      line's indent; inside brackets (Python's implicit continuation) it aligns
+      under the first argument, or one level in when the opener ends its line,
+      and pushes the closer onto its own line when the caret sits directly
+      between a pair; one level in after a `:`, one level out after
+      `return`/`raise`/`pass`/`break`/`continue`; and after `\begin{env}` one
+      level in **plus the matching `\end{env}`** — guarded by `hasMatchingTexEnd`,
+      the same test the environment completion makes, so a `\begin` typed out by
+      hand and one completed cannot disagree about writing a second `\end`.
+    - A caret inside a **string literal** gets the plain carry and nothing else
+      (`pythonIndentState` scans from the top, since an unclosed bracket can be
+      lines above): a `:` at the end of a sentence is not a block.
+    - It **declines** whenever there is nothing to add — a plain newline goes
+      through the engine, which is what keeps the textarea's own undo entry for
+      an ordinary Enter. Shift+Enter is left as the deliberate way out of a rule
+      that guessed wrong.
+    - **Indent guides** (`decorateIndentGuides`): a hairline down the first
+      column of every level a line occupies, on its own overlay layer beneath
+      the syntax colours, in every language the editor highlights except the two
+      that are prose (plain, markdown — a stray indent in a paragraph is not a
+      level of anything). The spans wrap the **file's own** whitespace, never a
+      tab rewritten as spaces, because one substituted character would slide
+      every guide after it off its column; painted as a gradient rather than a
+      `border-left`, which would add a pixel of width and do the same.
+    - [x] 🤖 Automated test (`src/__tests__/EditorAutoIndent.test.ts`: the carry,
+      block openers and exits, the file's own unit, strings and comments not
+      read as code, continuation alignment across lines, the between-a-pair
+      case, `\begin` with and without a waiting `\end`, nesting, a `\begin`
+      inside a comment, other languages untouched; unit detection incl. tabs and
+      blank lines; guide chunking, tab preservation, partial levels, escaping)
+    - [ ] 🖐️ Manual test — open a `.py` file: press Enter after a `def f():`
+      and the caret lands one level in; after a `return` it lands one level out;
+      inside `foo(a,` it lands under the `a`; with the caret between `foo(` and
+      `)` the closer moves to its own line. Type a `:` inside a docstring and
+      press Enter — nothing deepens. Open a 2-space-indented file and confirm it
+      indents by two, not four. In a `.tex` file type `\begin{itemize}` by hand
+      and press Enter: an indented body line with `\end{itemize}` below it, and
+      pressing Enter on an existing `\begin` whose `\end` is already there adds
+      no second one. Check the guides line up with the text in a tab-indented
+      file and in the wrapped LaTeX editor, and that Shift+Enter still writes a
+      plain newline.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+247. **TeX editor: hover a snippet, see it typeset.** ✅ Implemented
+    (2026-09-01, untested live) · The viewer could compile the whole document
+    and show the PDF in its own tab, which answers "is the paper right" and
+    never "is *this* formula right" — the question actually asked while writing
+    one, and asked dozens of times per page. Resting the pointer on a fragment
+    now typesets that fragment alone and shows it over the source.
+    - **What counts as a snippet** (`texSnippetRanges`, `lib/viewers/tex.ts`):
+      inline math, display math, and a **whitelist** of self-contained
+      environments (`equation`/`align`/`gather`/`multline`/`cases`/the matrix
+      family/`array`/`tabular`/`tikzpicture`/…) **plus `figure` and `table`
+      floats**. Floats needed their own wrapping rather than their own excuse:
+      `\begin{figure}` demands outer par mode while `\begin{preview}` has
+      already boxed TeX, so a float wrapped like everything else dies with "Not
+      in outer par mode" — `preview.sty`'s own `floats` option makes the
+      environment itself the preview instead. Placement is the one thing such a
+      preview cannot show, and it is not what the hover is asked for: whether
+      the graphic is the right size and where the caption wraps is, and both
+      come out. The floats left out were each tried against a real engine and
+      each failed — a `wrapfigure` is not a `\@float` and previews to no pages,
+      an `algorithm` (a `float`-package float) dies inside preview's own float
+      fixup — as is anything that only means something inside the document
+      around it (`frame`, `abstract`). Comments are blanked before the scan, so a
+      `%`-ed example is not a hover target and its stray `$` cannot pair with
+      real math half a page away; a nested fragment is dropped, since the
+      `\begin{align}` around a `$…$` is the thing to typeset and two
+      overlapping hit boxes would make which one you get depend on layout order.
+    - **The author's own preamble is what it is typeset with**, and for an
+      `\input`ed chapter — which has no preamble of its own — the build root's
+      is read instead. Without that, every formula using the paper's own
+      `\newcommand` would preview as "Undefined control sequence", i.e. the
+      feature would work on toy documents and fail on real ones.
+    - **Nothing is written where the document lives.** The backend
+      (`tex_preview_snippet`) puts the wrapper `.tex` and every artefact in a
+      scratch dir under the state dir and removes it before returning, while
+      running the engine **in the document's own folder** so a preamble's
+      relative `\usepackage{mystyle}` / `\input{macros}` still resolve. The PDF
+      comes back as bytes rather than a path, because the confined viewer file
+      commands cannot read the state dir and must not learn to. Cropping is
+      `preview.sty`'s `[active,tightpage]` (the AUCTeX mechanism), so the card
+      gets a formula rather than a formula adrift on A4.
+    - **What keeps it from being expensive**: a 400 ms dwell (crossing a page of
+      equations on the way somewhere else starts nothing), one engine run at a
+      time with a superseded hover cancelled *before* it starts, a single pass
+      of the engine rather than latexmk (a fragment has no bibliography to
+      settle), a 25 s ceiling rather than the build's ten minutes, and a cache
+      keyed by preamble+snippet that also **remembers failures** — a snippet
+      with a typo is hovered repeatedly while it is being fixed, which is
+      exactly when recompiling it would cost most and say least.
+    - **When the preamble is the problem**, a second pass without it
+      (`standalone` + AMS) renders the formula and the card says the document's
+      macros are not applied — an honest degraded answer rather than a red
+      error for a `preview.sty` that is merely not installed. A failure the
+      *snippet* caused fails once and shows TeX's own error line.
+    - On by default, per tab, with a **Preview** toggle in the compile toolbar
+      (persisted in the tab's `viewerState`, seeded from
+      `viewer_prefs.tex.hover_preview`). Absent from a machine with no TeX
+      engine, like the rest of the compile UI.
+    - [x] 🤖 Automated test (`src/__tests__/TexHoverPreview.test.ts`: what is and
+      is not a previewable fragment, delimiters included in the range, nesting,
+      commented-out math, `\$` and `\\[2mm]` left alone, offset lookup, preamble
+      slicing and the null for a child file, cache-key identity, error-line
+      reading; `commands::tex` tests: the wrapper keeps the preamble and drops a
+      stray document body, a preamble-less fragment still gets a class, no
+      option clash for a document that already loads `preview`, a float goes
+      through the `floats` option unwrapped, only the four float names preview
+      actually fixes up count as floats, a float's fallback is an `article`
+      rather than `standalone`, "not in outer par mode" earns the second pass,
+      the fallback carries no preamble, only a preamble failure earns it, no
+      shell-escape in the preview's own argument list, oversized/empty snippets
+      refused, stale scratch dirs swept and fresh ones kept; the 2026-09-01
+      speed pass: the scratch sweep spares the format cache, a format key names
+      the dumped wrapper head and nothing else — two snippets share one, a
+      float or a changed preamble/engine does not — a dead format is told apart
+      from a broken snippet, and old/surplus formats are swept oldest-first)
+    - [ ] 🖐️ Manual test — open a `.tex` with some maths in it and rest the
+      pointer on a `$…$`: after a moment a card appears under it with the
+      formula typeset. Move along the line — the card follows fragment to
+      fragment and never appears over prose. Hover an `align` or a
+      `tikzpicture`: the whole environment renders as one image. Hover a formula
+      that uses one of the document's own `\newcommand`s and confirm the macro
+      is applied; do the same in a chapter file that is `\input`ed by the main
+      document. Hover a `figure` with a real `\includegraphics` in it: the
+      graphic appears at its true width with the caption under it, and the image
+      path resolves the same way it does in a build (including through a
+      `\graphicspath`). Hover a `table` and confirm the caption and rules come
+      out. Confirm no `.aux`/`.log` appears beside the document afterwards. Break a formula (`\frac{1}{`) and hover it: an error card
+      naming TeX's own message, not a spinner. Hover the same formula again —
+      it answers instantly (cached). Sweep the pointer quickly across a page of
+      equations and confirm nothing stacks up. Click **Preview** in the toolbar
+      to switch it off, confirm hovering does nothing, reopen the tab and
+      confirm it is still off. Speed pass (2026-09-01, needs backend restart):
+      hover a SECOND, different formula under the same preamble — it should
+      render clearly faster than the first (the preamble is now precompiled
+      into a cached format on pdflatex; `<state>/tex-preview/fmt/` should hold
+      a `.fmt` afterwards). Also confirm the hovered fragment still picks up
+      its wash exactly under the pointer after scrolling and in wrap mode (the
+      hit layer was missing from the overlay alignment CSS and is now
+      hit-tested via elementsFromPoint).
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+248. **Dictionary spell check in the native editors.** ✅ Implemented (untested
+    live). A deterministic, model-free spelling provider beside the #45 LLM
+    grammar check: `services::spell` (the pure-Rust Hunspell checker
+    `spellbook`) reads the system's own dictionaries (`/usr/share/hunspell` on
+    Linux) plus any `.aff`/`.dic` pair dropped into `<state_dir>/dictionaries/`,
+    and the editor underlines misspellings on an 800 ms idle — no resident
+    model, milliseconds per check, offline. The document is **masked** first so
+    only prose is checked: LaTeX commands/math/comments/key arguments
+    (`\ref`/`\cite`/`\input`/… — but `\textbf{...}`, captions and `\href` link
+    text stay prose), Markdown fences/inline code/link targets/HTML tags, and
+    URLs/emails everywhere; the tokenizer additionally skips identifiers
+    (CamelCase, `snake_case` halves, digit-glued tokens). Issues reuse the LLM
+    provider's wire shape (`GrammarIssue`), so one overlay, one tooltip and one
+    Fix button serve both — the tooltip additionally offers **Add to
+    dictionary** (append-only `personal.dic`, folded into every language) for
+    dictionary hits, and a model duplicate of a dictionary hit is dropped
+    (`mergeSpellIssues`) so the per-line resolver cannot walk it onto the next
+    occurrence. Opt-in per viewer type (`ViewerPref.spell_check`, Project
+    Settings table's new Spelling column) with a per-tab override in the editor
+    header — offered without a loaded model, unlike its two siblings — and one
+    machine-wide dictionary choice (`Settings.spell_language`, defaulting to an
+    installed English variant).
+    - [x] 🤖 Automated test (Rust `services::spell`: flags a misspelling with
+      its line, suggests a close correction, accepts sentence case, skips
+      identifiers/CamelCase/single letters, keeps apostrophe words, masking
+      preserves length + lines, LaTeX masks commands/math/comments/keys but
+      keeps prose and `\href` link text, masks math-environment bodies,
+      Markdown masks fences/inline code/link targets, URLs/emails masked in
+      plain text, discovery pairs `.aff`/`.dic` and skips orphans + the
+      personal list, English-preferring default, Latin-1 fallback decode, the
+      issue cap; TS `GrammarCheck.test.ts`: `mergeSpellIssues` passthrough,
+      ordering, same-line dedupe, different-line keep)
+    - [ ] 🖐️ Manual test — turn Spelling on for Markdown in Project Settings
+      (Native viewers table) and open a `.md`: typos get red wavy underlines
+      within a second of pausing; code fences, inline code and link URLs are
+      never marked. Hover a mark: the tooltip offers "Fix → <word>" and "Add to
+      dictionary" — Fix replaces the word, Add clears every mark of that word
+      and it stays unmarked after a restart. In a `.tex`, confirm `\commands`,
+      math, comments and `\cite`/`\ref` keys are never marked while prose in
+      `\textbf{...}` and captions is. Toggle the Spelling chip in the editor
+      header off for one tab and confirm the other tabs keep their marks. Pick
+      a different dictionary in Project Settings (with two installed) and
+      confirm the marks re-judge. Remove all dictionaries and confirm the
+      status line names the missing dictionary once instead of erroring
+      repeatedly.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+248. **TeX workspace: the structure sidebar can add a file to the document.** ✅
+    Implemented (2026-09-01, untested live) · The sidebar listed what a document
+    pulls in and offered no way to grow it: a new chapter meant the file tree's
+    New File, then typing the `\input` by hand — in the one tab whose whole point
+    is that the document is worked on as a single thing. A ＋ in the sidebar
+    header now asks for a name (`chapters/intro` — relative, `.tex` only),
+    creates the file when it is missing, adds an `\input` line to the document,
+    re-gathers the structure and centers the new file.
+    - #243 (#tex-create-ref) run in the other direction, on the SAME machinery
+      (`texRefCreation`/`createTexRefFile`), so the two gestures cannot disagree
+      about what a name means or overwrite an existing file: a name that is
+      already a file is *adopted* — only the `\input` is added, and a parent that
+      already references the file (however the token is spelled — `intro` vs
+      `intro.tex`, `\input` vs `\include`) is left alone.
+    - The reference lands in the file currently centered when that is a `.tex`
+      (a chapter grows its own sections), else in the main document; the line
+      goes directly above `\end{document}` (looked up comment-blanked, so a
+      commented-out one does not attract it) or at the end of a fragment.
+    - A parent with unsaved edits is refused in the dialog rather than spliced
+      on disk — the editor's next save would write the older draft over the
+      reference. A clean open editor needs nothing: its mtime poll reloads the
+      spliced line on its own.
+    - Asked in the app's own prompt chrome (`useDialogs`), so a failed create or
+      splice keeps the typed name with the reason beside it (#244's rule).
+    - [x] 🤖 Automated test (`src/__tests__/TexLinks.test.ts`: the splice above
+      `\end{document}` / past a commented one / onto a fragment / into an empty
+      parent; create+insert, adopt-without-second-`\input`, spelled-differently
+      matching, exists-but-unreferenced, the declines touching nothing;
+      `TexWorkspace.test.tsx` (j): the ＋ end to end — file created, `\input`
+      written above `\end{document}`, structure re-listed, new file centered)
+    - [ ] 🖐️ Manual test — open a multi-file `.tex` workspace and press the
+      sidebar's ＋; type `chapters/notes`: the file appears in the structure,
+      opens in the centre, and the main file gains `\input{chapters/notes}`
+      just above `\end{document}`. Press ＋ again with the same name — no
+      duplicate `\input`, the file simply opens. Type `/tmp/x` or `fig.png` —
+      refused with the reason, the typed name kept. With unsaved edits in the
+      main file the dialog refuses until you save. Center a chapter first and
+      add a file — the `\input` lands in the chapter, not the main.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+249. **Editor overlays: make the link/grammar/unclosed hover hit-tests O(1) like
+    the snippet layer's.** The 2026-09-01 hover-preview speed pass replaced the
+    snippet layer's per-mousemove scan (querySelectorAll + one
+    getBoundingClientRect per span, hundreds of rect reads per move on a page
+    of equations) with a single `document.elementsFromPoint` query against a
+    hit-testable layer. `updateLinkHover`, `grammarHitAt` and `unclosedTipAt`
+    still run the measured scan on every mousemove of the same textarea; the
+    same technique applies (flip the layer to `pointer-events: auto` — the
+    textarea above it still catches every real event — and keep the measured
+    scan as the jsdom fallback). Worth doing next time an editor feels sluggish
+    under the pointer in a link-dense or heavily-annotated document.

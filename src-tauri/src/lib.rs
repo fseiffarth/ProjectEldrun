@@ -1138,6 +1138,7 @@ pub fn run() {
             // LaTeX view / compile (gated on a TeX engine being on PATH)
             commands::tex::tex_capability,
             commands::tex::compile_tex,
+            commands::tex::tex_preview_snippet,
             commands::tex::synctex_edit,
             commands::tex::synctex_view,
             commands::tex::synctex_page_lines,
@@ -1314,6 +1315,10 @@ pub fn run() {
             commands::ollama::complete_text,
             // Local grammar/spelling check (opt-in, local-only)
             commands::ollama::check_grammar,
+            // Dictionary spell check (Hunspell dictionaries, local-only)
+            commands::spell::spell_check,
+            commands::spell::spell_languages,
+            commands::spell::spell_add_word,
         ])
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_drag::init())

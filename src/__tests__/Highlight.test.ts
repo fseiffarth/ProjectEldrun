@@ -75,6 +75,30 @@ describe("highlight", () => {
     expect(html).toContain('<span class="tok-type">itemize</span>');
   });
 
+  it("greys a whole \\begin{comment} block, delimiters included", () => {
+    const html = highlight(
+      "\\begin{comment}\n\\section{Dropped}\n\\end{comment}\n\\section{Kept}",
+      "tex",
+    )!;
+    expect(html).toContain(
+      '<span class="tok-comment">\\begin{comment}\n\\section{Dropped}\n\\end{comment}</span>',
+    );
+    // Nothing inside is tokenized; the section AFTER the block still is.
+    expect(html).not.toContain('<span class="tok-arg">Dropped</span>');
+    expect(html).toContain('<span class="tok-arg">Kept</span>');
+  });
+
+  it("greys an unclosed comment block to the end of the file", () => {
+    const html = highlight("a\n\\begin{comment}\n\\section{x}", "tex")!;
+    expect(html).toBe('a\n<span class="tok-comment">\\begin{comment}\n\\section{x}</span>');
+  });
+
+  it("colours other environments as before — only `comment` greys out", () => {
+    const html = highlight("\\begin{itemize}\n\\item a\n\\end{itemize}", "tex")!;
+    expect(html).toContain('<span class="tok-type">itemize</span>');
+    expect(html).not.toContain("tok-comment");
+  });
+
   it("treats an escaped percent as a command, not a comment", () => {
     const html = highlight("50\\% done", "tex")!;
     expect(html).toContain('<span class="tok-keyword">\\%</span>');

@@ -83,6 +83,7 @@ import { initExperimentalSweep } from "../../lib/experimentalSweep";
 import { initMachineSync } from "../../lib/machineSync";
 import { installWindowsEvents } from "../../stores/windows";
 import { listenEditorJump } from "../../stores/editorJump";
+import { listenTexCenter } from "../../stores/texCenter";
 import { listenSourceJump } from "../embed/FileViewerPane";
 import { BOX_SCOPE_PREFIX, useBoxesStore } from "../../stores/boxes";
 import { listenSettingsChanged, useSettingsStore } from "../../stores/settings";
@@ -597,6 +598,18 @@ export function AppShell() {
     let unlisten: (() => void) | undefined;
     let cancelled = false;
     listenEditorJump()
+      .then((fn) => { if (cancelled) fn(); else unlisten = fn; })
+      .catch(() => {});
+    return () => { cancelled = true; unlisten?.(); };
+  }, []);
+
+  // #42: a reverse-search center switch aimed at a TeX workspace mounted in THIS
+  // window (e.g. a popped-out PDF's click resolved in its own window, which does
+  // not render the workspace). The registry-side twin of the two listeners above.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    listenTexCenter()
       .then((fn) => { if (cancelled) fn(); else unlisten = fn; })
       .catch(() => {});
     return () => { cancelled = true; unlisten?.(); };

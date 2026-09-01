@@ -1054,6 +1054,16 @@
   margin-left: auto;
 }
 
+/* The ＋ (new file) sits with the fold at the right edge; when it is present it
+   takes over the auto margin so the pair stays adjacent (two auto margins would
+   split the free space and strand the ＋ mid-header). */
+.tex-structure-new {
+  margin-left: auto;
+}
+.tex-structure-new + .tex-structure-fold {
+  margin-left: 0;
+}
+
 /* The folded sidebar: a rail wide enough for the two buttons and nothing else,
    so the fold never leaves a bare pane edge with no way back. */
 .tex-structure-rail {

@@ -51,6 +51,9 @@ pub mod restore_service;
 pub mod sandbox;
 pub mod sftp;
 pub mod skills;
+// Dictionary-backed (Hunspell/spellbook) spell check for the native editors —
+// the deterministic provider beside the opt-in LLM grammar check.
+pub mod spell;
 pub mod ssh_common;
 pub mod ssh_exec;
 pub mod state_gc;

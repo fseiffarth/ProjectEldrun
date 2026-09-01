@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { internalViewerFor, type FileEntry, type InternalViewer } from "./fileUtils";
 import { bibPlainValue, parseBib } from "./bib";
 import { basename, dirname, isAbsolute, normalizePath, resolvePath } from "../paths";
+import { fileMtime, writeFileBytes, writeFileText } from "../../components/embed/fileAccess";
 
 /** Which TeX tools are on PATH; mirrors the backend `TexCapability`. */
 export type TexCapability = {
@@ -100,6 +101,178 @@ export function resolveTexErrorPath(rootDir: string, file: string): string {
   if (isAbsolute(file)) return file;
   const rel = file.replace(/^\.[/\\]+/, "");
   return rootDir ? resolvePath(rootDir, rel) : rel;
+}
+
+// --- Compile WARNINGS (#245) -------------------------------------------------
+//
+// A LaTeX build that *succeeds* is the normal case and is also where nearly
+// everything worth fixing is reported: an undefined `\ref` prints as a bold `??`
+// in the PDF, a missing citation as `[?]`, an overfull `\hbox` as a line running
+// into the margin. The viewer parsed errors and nothing else, so a document that
+// compiled showed no notice at all and the reader found the `??` by reading the
+// output — which is exactly the trip to the PDF the SyncTeX work exists to save.
+//
+// Warnings are harder to place than errors, because `-file-line-error` only
+// applies to errors: a warning carries `on input line N` and no file at all. The
+// file therefore comes from TRACKING the `(path … )` nesting TeX prints as it
+// opens and closes each source, which is what every LaTeX IDE does and is only
+// as reliable as the log's line breaking — hence `max_print_line` in the
+// backend's compile environment. When the stack is empty the warning is
+// attributed to nothing and the caller resolves it against the build root.
+
+/** What kind of thing a warning is about — the dropdown's grouping and the only
+ *  thing the viewer tones on. */
+export type TexWarningKind = "reference" | "citation" | "box" | "font" | "other";
+
+/** One warning TeX or a package reported, with wherever it can be placed. */
+export interface TexWarning {
+  kind: TexWarningKind;
+  /** The message, without the `LaTeX Warning:` lead-in. */
+  message: string;
+  /** The source file the log was reading at the time, when the `(…)` nesting
+   *  gave one. Relative to the build directory, like {@link TexError.file}. */
+  file?: string;
+  /** 1-based source line, from `on input line N` or `at lines N--M`. */
+  line?: number;
+}
+
+/** `LaTeX Warning: …`, `Package xcolor Warning: …`, `LaTeX Font Warning: …` — the
+ *  one shape every warning-emitting macro in the ecosystem prints. */
+const WARNING_HEAD = /^(?:(LaTeX|pdfTeX|LuaTeX|XeTeX|Package|Class|Module)\s+)?(?:(\S+)\s+)?Warning:\s*(.*)$/;
+/** The gutter marker a package prints on its warning's continuation lines
+ *  (`(hyperref)                removing …`). A bare `(word)` only — anything
+ *  holding a `/`, a `.` or a space is a file being opened, not a marker. */
+const WARN_CONT_MARKER = /^\([A-Za-z][\w-]*\)\s+/;
+/** `Overfull \hbox (12.3pt too wide) in paragraph at lines 12--14`. */
+const BOX_WARNING = /^(Over|Under)full \\[hv]box \(([^)]*)\)(.*?)(?:at lines (\d+)--(\d+)|at line (\d+))?\.?$/;
+/** A file being opened in the log, matched right after its `(`. Only paths
+ *  carrying a recognised source extension count — TeX prints `(` for a great many
+ *  things that are not files, and a bogus entry would misattribute every warning
+ *  after it. */
+const LOG_FILE_OPEN = /^[^()\s]*\.(?:tex|ltx|sty|cls|def|clo|fd)\b/i;
+
+/** The `(file … )` nesting a log line advances. Parens are counted for DEPTH
+ *  regardless of what they hold — TeX prints `(12.3pt too wide)` and a hundred
+ *  other bracketed asides — and only the ones that open a source file are
+ *  remembered, at the depth they opened at. Closing a depth forgets every file at
+ *  or below it, so an unbalanced aside cannot silently pop a real file off. */
+interface TexLogFiles {
+  depth: number;
+  open: Array<{ depth: number; file: string }>;
+}
+
+/** The file the log is currently inside, if the nesting named one. */
+function currentLogFile(state: TexLogFiles): string | undefined {
+  return state.open[state.open.length - 1]?.file;
+}
+
+/** Advance the nesting over one log line. */
+function advanceLogFiles(state: TexLogFiles, line: string): void {
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === "(") {
+      state.depth++;
+      const m = LOG_FILE_OPEN.exec(line.slice(i + 1));
+      if (m) {
+        state.open.push({ depth: state.depth, file: m[0] });
+        i += m[0].length;
+      }
+    } else if (ch === ")") {
+      while (state.open.length && state.open[state.open.length - 1].depth >= state.depth) {
+        state.open.pop();
+      }
+      state.depth = Math.max(0, state.depth - 1);
+    }
+  }
+}
+
+/** Classify a warning by its text. The families are the ones a reader acts on
+ *  differently: a missing reference is fixed in the source, an overfull box is a
+ *  typesetting decision, a font substitution is usually accepted. */
+function classifyTexWarning(message: string): TexWarningKind {
+  const m = message.toLowerCase();
+  if (m.startsWith("reference ") || m.includes("undefined references")) return "reference";
+  if (m.startsWith("citation ") || m.includes("undefined citations")) return "citation";
+  if (m.includes("font")) return "font";
+  return "other";
+}
+
+/**
+ * Parse the warnings out of a compile log, in order and de-duplicated. Handles
+ * the `… Warning: …` family (whose message may continue on the following
+ * indented lines, which is where `on input line N` usually ends up) and the
+ * bare `Overfull/Underfull \hbox` lines, which follow no such shape.
+ *
+ * The `(file … )` nesting is tracked while scanning so each warning can name the
+ * source TeX was reading. That tracking is best-effort by construction — a log
+ * line wrapped mid-path breaks it — so a warning it cannot place carries no
+ * `file` rather than a guessed one: the caller falls back to the build root,
+ * which is right for a single-file document and honestly unknown for the rest.
+ * Pure.
+ */
+export function parseTexWarnings(log: string): TexWarning[] {
+  const out: TexWarning[] = [];
+  const seen = new Set<string>();
+  const files: TexLogFiles = { depth: 0, open: [] };
+
+  const push = (w: TexWarning) => {
+    const key = `${w.kind}:${w.file ?? ""}:${w.line ?? ""}:${w.message}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(w);
+  };
+
+  const lines = log.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i].trimEnd();
+    // The file a warning on THIS line belongs to is the one open before the line
+    // is scanned: a warning printed on the same line as a `(file` opening came
+    // from the file that was already open, not the one being entered.
+    const fileHere = currentLogFile(files);
+    advanceLogFiles(files, raw);
+
+    const box = BOX_WARNING.exec(raw.trim());
+    if (box) {
+      const line = Number(box[4] ?? box[6]);
+      push({
+        kind: "box",
+        message: `${box[1]}full box (${box[2]})${box[3].trimEnd()}`.trim(),
+        file: fileHere,
+        line: Number.isFinite(line) && line > 0 ? line : undefined,
+      });
+      continue;
+    }
+
+    const head = WARNING_HEAD.exec(raw.trim());
+    if (!head) continue;
+    // TeX wraps a warning over the following indented/continuation lines, and
+    // `on input line N` is regularly on one of them — so the message is the head
+    // plus the run of non-blank lines under it that start no new report. Each
+    // consumed line still advances the nesting; only this loop reads it.
+    let message = head[3].trim();
+    for (let j = i + 1; j < lines.length; j++) {
+      const cont = lines[j].trim();
+      if (!cont || WARNING_HEAD.test(cont) || BOX_WARNING.test(cont)) break;
+      // A package continues its own warning behind a `(name)` gutter marker,
+      // which is a continuation to keep (with the marker stripped) — while a
+      // line that OPENS a file, or a `!` error, ends the warning. Telling them
+      // apart is what `WARN_CONT_MARKER` is for: only a bare `(word)` counts.
+      const marker = WARN_CONT_MARKER.exec(cont);
+      if (!marker && /^[(!)]/.test(cont)) break;
+      message = `${message} ${marker ? cont.slice(marker[0].length) : cont}`.trim();
+      advanceLogFiles(files, lines[j].trimEnd());
+      i = j;
+    }
+    const at = /on input line (\d+)/.exec(message);
+    const source = head[1] === "Package" || head[1] === "Class" ? `${head[2]}: ` : "";
+    push({
+      kind: classifyTexWarning(message),
+      message: (source + message).replace(/\s+/g, " ").trim(),
+      file: fileHere,
+      line: at ? Number(at[1]) : undefined,
+    });
+  }
+  return out;
 }
 
 // --- SyncTeX forward/reverse search -----------------------------------------
@@ -909,18 +1082,30 @@ export function blankTexComments(source: string): string {
  * escaped `\$`) and the literal 2-character sequences `\(`/`\)`/`\[`/`\]`. Not
  * TeX-verbatim/comment-aware (a `%` comment or a verbatim block can contain a
  * bare `$` that isn't really math) — the same "plain scan, no deep parsing"
- * level the rest of this module's regex-based helpers work at. Pure.
+ * level the rest of this module's regex-based helpers work at.
+ *
+ * A backslash ALWAYS consumes the character after it, and that single step is
+ * what keeps the line break out of the scan: `\\[2mm]` is `\\` followed by an
+ * ordinary optional argument, not a `\[` opening display math — which is how a
+ * table row spacing its lines used to be diagnosed as an unclosed delimiter
+ * (every `\\[…]` in the document painted red, for the whole rest of the file).
+ * The same step covers `\$`, `\\)` and every other escaped delimiter, so the
+ * parity rule {@link isBackslashEscaped} states is enforced by the walk itself
+ * rather than re-tested per token. Pure.
  */
 function texMathTokens(text: string): MathToken[] {
   const out: MathToken[] = [];
   for (let i = 0; i < text.length; i++) {
-    const two = text.slice(i, i + 2);
-    if (two === "\\(") { out.push({ kind: "pOpen", start: i, end: i + 2 }); i++; continue; }
-    if (two === "\\)") { out.push({ kind: "pClose", start: i, end: i + 2 }); i++; continue; }
-    if (two === "\\[") { out.push({ kind: "bOpen", start: i, end: i + 2 }); i++; continue; }
-    if (two === "\\]") { out.push({ kind: "bClose", start: i, end: i + 2 }); i++; continue; }
+    if (text[i] === "\\") {
+      const two = text.slice(i, i + 2);
+      if (two === "\\(") out.push({ kind: "pOpen", start: i, end: i + 2 });
+      else if (two === "\\)") out.push({ kind: "pClose", start: i, end: i + 2 });
+      else if (two === "\\[") out.push({ kind: "bOpen", start: i, end: i + 2 });
+      else if (two === "\\]") out.push({ kind: "bClose", start: i, end: i + 2 });
+      i++;
+      continue;
+    }
     if (text[i] === "$") {
-      if (isBackslashEscaped(text, i)) continue;
       if (text[i + 1] === "$") { out.push({ kind: "ddollar", start: i, end: i + 2 }); i++; continue; }
       out.push({ kind: "dollar", start: i, end: i + 1 });
     }
@@ -1194,6 +1379,161 @@ function texEnvNameTokens(text: string): EnvNameToken[] {
     });
   }
   return out;
+}
+
+// ── Hover-preview snippets (#tex-hover-preview) ──────────────────────────────
+//
+// What the editor's hover preview may typeset. Deliberately a *narrow* set: a
+// snippet qualifies only when compiling it on its own means the same thing it
+// means in the document — a formula, a matrix, a picture, a table. A `figure`
+// float or a `\section` does not (its meaning is where it lands, and its body is
+// usually a `\includegraphics` this preview would have to resolve), and prose is
+// not a snippet at all.
+
+/** What kind of fragment a previewable range is, for the hover card's label. */
+export type TexSnippetKind = "inline" | "display" | "env";
+
+/** A previewable fragment of the source: `[start,end)` covering the WHOLE thing
+ *  including its delimiters, since that is what has to be handed to the engine —
+ *  `x^2` alone is not a document, `$x^2$` is. */
+export interface TexSnippetRange {
+  start: number;
+  end: number;
+  kind: TexSnippetKind;
+  /** The environment name for `kind: "env"`, else the delimiter (`$`, `\[`). */
+  label: string;
+}
+
+/**
+ * Environments the hover preview will typeset. Each one is self-contained: it
+ * renders to the same thing beside the paper as it does inside it.
+ *
+ * **`figure` and `table` are here**, and the four names are exactly the ones
+ * `preview.sty`'s `floats` option fixes up (`figure`, `table` and their starred
+ * twins) — the backend wraps a float differently for that reason, see
+ * `commands/tex.rs`'s `body_is_float`. A float's *placement* is the one thing a
+ * preview genuinely cannot show, which is not much of a loss: what is worth
+ * seeing before a build is whether the graphic is the right size and where the
+ * caption wraps, and both are exactly what comes out.
+ *
+ * The floats that are NOT here were each tried against a real engine and each
+ * failed: a `wrapfigure` is not a `\@float` and previews to no pages at all, and
+ * a `float`-package custom float — `algorithm`, `listing`, anything from
+ * `\newfloat` — redefines `\end@float` past what the option patches and dies. So
+ * is anything that only means something inside the document around it (`frame`,
+ * `abstract`, `thebibliography`). The starred forms are matched by stripping the
+ * `*`, so `align*` and `align` are one entry.
+ */
+const PREVIEWABLE_TEX_ENVS = new Set([
+  "align",
+  "alignat",
+  "array",
+  "bmatrix",
+  "cases",
+  "displaymath",
+  "eqnarray",
+  "equation",
+  "figure",
+  "flalign",
+  "gather",
+  "math",
+  "matrix",
+  "multline",
+  "pmatrix",
+  "smallmatrix",
+  "split",
+  "table",
+  "tabular",
+  "tabularx",
+  "tikzcd",
+  "tikzpicture",
+  "vmatrix",
+  "Vmatrix",
+  "Bmatrix",
+]);
+
+/** Is `name` (with any trailing `*`) an environment worth previewing? */
+export function isPreviewableTexEnv(name: string): boolean {
+  return PREVIEWABLE_TEX_ENVS.has(name.trim().replace(/\*$/, ""));
+}
+
+/**
+ * Every previewable fragment in `source`, in document order, non-overlapping and
+ * outermost-first.
+ *
+ * Two rules earn their keep. **Comments are blanked before the scan** (the same
+ * `blankTexComments` the link layer uses), so a commented-out `$…$` is not a
+ * hover target and a stray `%` full of dollars cannot pair with real math half a
+ * page away. And **a nested fragment is dropped**: the `\begin{align}` around a
+ * `$…$` is the thing to typeset, and two overlapping hit boxes would make which
+ * one you get depend on which span the browser laid out last. Pure / unit-tested.
+ */
+export function texSnippetRanges(source: string): TexSnippetRange[] {
+  const text = blankTexComments(source);
+  const out: TexSnippetRange[] = [];
+
+  for (const p of pairTexMathTokens(texMathTokens(text))) {
+    const open = text.slice(p.open.start, p.open.end);
+    out.push({
+      start: p.open.start,
+      end: p.close.end,
+      kind: open === "$" ? "inline" : "display",
+      label: open,
+    });
+  }
+
+  const envs = texEnvNameTokens(text);
+  for (let i = 0; i < envs.length; i++) {
+    const tok = envs[i];
+    if (tok.kind !== "begin") continue;
+    const name = text.slice(tok.nameStart, tok.nameEnd);
+    if (!isPreviewableTexEnv(name)) continue;
+    // The partner is found by nesting depth, exactly as findTexEnvDelimiterMatch
+    // does — a well-formed document nests its environments regardless of name.
+    let depth = 1;
+    for (let j = i + 1; j < envs.length; j++) {
+      if (envs[j].kind === "begin") depth++;
+      else if (--depth === 0) {
+        out.push({ start: tok.start, end: envs[j].end, kind: "env", label: name });
+        break;
+      }
+    }
+  }
+
+  // Outermost-first: sort by start, then by the LONGER range, and keep only what
+  // does not sit inside something already kept.
+  out.sort((a, b) => a.start - b.start || b.end - a.end);
+  const kept: TexSnippetRange[] = [];
+  let covered = -1;
+  for (const r of out) {
+    if (r.start < covered) continue;
+    kept.push(r);
+    covered = r.end;
+  }
+  return kept;
+}
+
+/** The previewable fragment containing `offset`, or null. Pure. */
+export function texSnippetAt(source: string, offset: number): TexSnippetRange | null {
+  for (const r of texSnippetRanges(source)) {
+    if (offset >= r.start && offset < r.end) return r;
+  }
+  return null;
+}
+
+/**
+ * The preamble of `source` — everything before `\begin{document}` — or null when
+ * this file has none.
+ *
+ * Null is the answer that matters: a `\input`ed chapter is a real `.tex` with no
+ * preamble of its own, and the preview has to go and read the build root's
+ * instead (which is where the `\newcommand` the chapter's formula uses lives).
+ * Returning `""` for that case would silently preview every macro-using formula
+ * in a multi-file paper as an "Undefined control sequence". Pure.
+ */
+export function texPreamble(source: string): string | null {
+  const i = source.indexOf("\\begin{document}");
+  return i < 0 ? null : source.slice(0, i);
 }
 
 /**
@@ -1560,6 +1900,225 @@ export async function resolveTexRefAsync(
   return { path: best.entry.path, viewer, label: best.entry.name };
 }
 
+// --- Creating a reference's file when it isn't there yet (#tex-create-ref) ---
+//
+// `\input{chapters/intro}` written before `chapters/intro.tex` exists is the
+// ordinary state of a document being written, not a mistake — so Ctrl/⌘+click on
+// one offers to create the file instead of opening a tab that can only report a
+// read error. The offer is deliberately narrow: only a command whose default
+// extension we already assume (`\input`/`\include`/`\subfile` → `.tex`,
+// `\bibliography`/`\addbibresource` → `.bib`), i.e. exactly the references whose
+// file an EMPTY file is a valid first version of. A `\includegraphics` is never
+// offered — there is no format to invent, and an empty file there would be a
+// figure that breaks the build rather than one waiting to be written.
+
+/** A missing reference target, as something a click can offer to create. */
+export interface TexRefCreation {
+  /** Absolute path of the file the reference names. */
+  path: string;
+  /** Its basename — the tab label once it opens. */
+  label: string;
+  /** Viewer the created file opens in. */
+  viewer: InternalViewer;
+  /** The reference as it will read on disk, relative to the referencing file's
+   *  own folder (`chapters/intro.tex`) — what the prompt shows, since that is
+   *  how the user wrote it. */
+  rel: string;
+  /** The subfolder the file needs, when the reference names one *inside* the
+   *  referencing file's folder — `create_dir`'s `(projectDir, relPath)` pair.
+   *  Null when the file lands beside the referencing one, or above it: a `../`
+   *  token points outside the document's own folder, which is not a tree this
+   *  offer may build. */
+  folder: { dir: string; rel: string } | null;
+}
+
+/**
+ * The file a reference names, as something creatable — or null when this is not
+ * a reference whose file we can honestly make (see the note above).
+ *
+ * Pure: it decides *what* would be created, never whether it is missing.
+ */
+export function texRefCreation(
+  currentPath: string,
+  target: TexRefTarget,
+  disabled?: ReadonlySet<InternalViewer>,
+): TexRefCreation | null {
+  const def = TEX_REF_COMMANDS[target.command] ?? null;
+  if (def == null) return null;
+  const token = target.token.trim();
+  // An absolute token names a file outside the document's folder entirely; it
+  // resolves and opens fine, but creating one is not this offer's business.
+  if (!token || isAbsolute(token)) return null;
+
+  const base = basename(token);
+  const dot = base.lastIndexOf(".");
+  const hasExt = dot > 0 && dot < base.length - 1;
+  // An explicit extension has to be the one the command assumes: `\input{fig.png}`
+  // is somebody's mistake, not a file to create.
+  if (hasExt && base.slice(dot).toLowerCase() !== def) return null;
+
+  const rel = hasExt ? token : token + def;
+  const home = dirname(currentPath);
+  const path = resolvePath(home, rel);
+  const ref = viewerRefFor(path, disabled);
+  if (!ref) return null;
+
+  const slash = rel.lastIndexOf("/");
+  const sub = slash > 0 ? rel.slice(0, slash) : "";
+  const climbs = rel.split("/").includes("..");
+  return {
+    path,
+    label: ref.label,
+    viewer: ref.viewer,
+    rel,
+    folder: sub && !climbs ? { dir: home, rel: sub } : null,
+  };
+}
+
+/**
+ * Is this path — a file or a folder — there?
+ *
+ * Stat'd through `file_mtime`, the scope-confined absolute-path read the editor's
+ * own reload poll already uses, which is what makes the answer true for a remote
+ * (SFTP) project as well as a local one. The two obvious alternatives are not:
+ * `project_path_exists` canonicalizes a *local* path and cannot see a host tree,
+ * and a `list_dir` of the parent only routes over SFTP for a project's own
+ * registered directory — so both would report every existing `\input` of a remote
+ * document as missing.
+ *
+ * `false` therefore means "this stat did not answer", which is *usually* absence
+ * but also covers a path outside the viewer's scope or a folder it may not read.
+ * The one place that distinction could cost something is the create — see
+ * {@link createTexRefFile}.
+ */
+export async function texPathExists(path: string, projectId: string | null): Promise<boolean> {
+  try {
+    await fileMtime(path, projectId);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Create the file a reference names, empty, and say whether it made one.
+ *
+ * The existence check is re-taken here rather than trusted from the prompt, and
+ * that is the load-bearing part: the write below **overwrites**, so the one
+ * reading that could empty somebody's chapter is taken at the moment it is acted
+ * on. `false` (it was there after all) sends the caller on to simply open it.
+ *
+ * The write goes through the absolute-path `write_file_bytes` because that is the
+ * one create that routes a remote project's path over SFTP. It does not make
+ * parent directories, so a reference naming a folder that isn't there yet gets
+ * the folder first — that one is addressed project-style (`create_dir`) and so is
+ * the single step here a remote project cannot take; it fails with the host's own
+ * message rather than silently, and the folder can be made in the file tree.
+ */
+export async function createTexRefFile(
+  creation: TexRefCreation,
+  projectId: string | null,
+): Promise<boolean> {
+  if (await texPathExists(creation.path, projectId)) return false;
+  if (creation.folder && !(await texPathExists(dirname(creation.path), projectId))) {
+    await invoke("create_dir", {
+      projectDir: creation.folder.dir,
+      relPath: creation.folder.rel,
+    });
+  }
+  await writeFileBytes(creation.path, new Uint8Array(), projectId);
+  return true;
+}
+
+// --- Adding a child file from the structure sidebar (#tex-structure-newfile) --
+//
+// The sidebar's ＋ is #tex-create-ref run in the other direction: there the
+// reference existed and the file was missing; here the user names the file first
+// and the reference is written for them. Both halves ride the same machinery —
+// `texRefCreation` decides what an `\input` token would create (and refuses the
+// same absolute/wrong-extension tokens), `createTexRefFile` makes the file with
+// the re-checked, never-overwriting write — so the two gestures cannot disagree
+// about what a name means. What is new is only the splice: without an `\input`
+// naming it, the created file would never appear in the structure the button
+// lives in, which would make "new file" a button that visibly does nothing.
+
+/**
+ * Splice an `\input{token}` line into `source`: directly above `\end{document}`
+ * when the document has one (new material belongs inside the document body, and
+ * the end of it is the one position that is correct for any document), else
+ * appended at the end (a child fragment has no `\end{document}` and reads top to
+ * bottom). Pure; returns the new text and the 1-based line the reference landed
+ * on. The `\end{document}` is looked up on a comment-blanked scan, so a
+ * commented-out one does not attract the insert.
+ */
+export function insertTexInputLine(
+  source: string,
+  token: string,
+): { text: string; line: number } {
+  const ref = `\\input{${token}}`;
+  const scan = blankTexComments(source);
+  const m = /\\end\s*\{document\}/.exec(scan);
+  if (m) {
+    let at = source.lastIndexOf("\n", m.index);
+    at = at < 0 ? 0 : at + 1;
+    const line = source.slice(0, at).split("\n").length;
+    return { text: source.slice(0, at) + ref + "\n" + source.slice(at), line };
+  }
+  const base = source.length === 0 || source.endsWith("\n") ? source : source + "\n";
+  return { text: base + ref + "\n", line: base.split("\n").length };
+}
+
+/** What {@link addTexChildFile} did, so the caller can center the file. */
+export interface TexChildAdd {
+  /** Absolute path of the child file (created, or already there). */
+  path: string;
+  /** Viewer it opens in. */
+  viewer: InternalViewer;
+  /** True when the file was written (false: it already existed — adopting an
+   *  existing file into the document is a valid use of the same gesture). */
+  created: boolean;
+  /** True when an `\input` line was spliced into the parent (false: the parent
+   *  already referenced the file, however the token was spelled). */
+  inserted: boolean;
+}
+
+/**
+ * Create `token`'s `.tex` file under `parentPath`'s folder (when missing) and
+ * add an `\input{token}` to `parentPath` (when it does not already reference the
+ * file). Null when the token is not one an `\input` could honestly create — the
+ * caller's validate should have said so already.
+ *
+ * The file is made first: it is the thing the user asked for, and a parent
+ * splice that then fails leaves a created file with no reference (harmless, and
+ * the retry adopts it) rather than a reference to nothing — though even that is
+ * exactly what the #tex-create-ref banner exists to answer. The parent is
+ * written through the same scope-aware `write_file_text` the editor saves with,
+ * so a remote document routes over SFTP like everything else here. The caller
+ * owns the one precondition this cannot see: a parent with unsaved edits in an
+ * open editor must not be spliced on disk (the next save would write the older
+ * draft over the reference).
+ */
+export async function addTexChildFile(
+  parentPath: string,
+  token: string,
+  projectId: string | null = null,
+  disabled?: ReadonlySet<InternalViewer>,
+): Promise<TexChildAdd | null> {
+  const trimmed = token.trim();
+  const creation = texRefCreation(parentPath, { command: "input", token: trimmed }, disabled);
+  if (!creation) return null;
+  const created = await createTexRefFile(creation, projectId);
+  const text = await invoke<string>("read_file_text", { path: parentPath, projectId });
+  const already = texCommandTokens(blankTexComments(text), TEX_INPUT_CMDS).some(
+    (tk) => resolveSibling(parentPath, tk, ".tex") === creation.path,
+  );
+  if (!already) {
+    const { text: next } = insertTexInputLine(text, trimmed);
+    await writeFileText(parentPath, next, projectId);
+  }
+  return { path: creation.path, viewer: creation.viewer, created, inserted: !already };
+}
+
 // --- \ref / \cite key autocomplete (#cite-ref-complete) ---------------------
 //
 // As the user types inside a reference-family command (`\ref{`, `\cref{`,
@@ -1569,8 +2128,17 @@ export async function resolveTexRefAsync(
 // `.bib` file(s) for cites. These helpers are pure (or invoke-only) so they can
 // be unit-tested independently of the React editor.
 
-/** Which kind of key a completion context expects. */
-export type TexComplKind = "ref" | "cite";
+/** Which kind of *key* a reference command takes. These two families are the
+ *  ones that resolve to a definition somewhere in the document, which is why the
+ *  jump (`findTexKeyRefAt`/`resolveTexKeyRef`) is typed on this narrower union
+ *  rather than on {@link TexComplKind}: a `\begin{figure}` is not a key that
+ *  anything defines, and Ctrl+clicking it must not start a search for one. */
+export type TexKeyKind = "ref" | "cite";
+
+/** What a completion dropdown is offering. The two key families above, plus the
+ *  two structural ones (#245): an environment name inside `\begin{…}`/`\end{…}`,
+ *  and a control sequence being typed after a bare `\`. */
+export type TexComplKind = TexKeyKind | "env" | "cmd";
 
 /** A reference/cite command's open brace under the caret, plus the partial key
  *  token being typed (`query`) and the `[start, end)` source range to replace on
@@ -1594,11 +2162,56 @@ const REF_COMPL_CMDS = new Set([
 /** Classify the command preceding a brace: any command containing "cite" is a
  *  citation (covers natbib/biblatex variants — citep/citet/parencite/…), the
  *  fixed `REF_COMPL_CMDS` set is a reference. Returns null otherwise. */
-function classifyComplCmd(cmd: string): TexComplKind | null {
+function classifyComplCmd(cmd: string): TexKeyKind | null {
   const lower = cmd.toLowerCase();
   if (lower.includes("cite")) return "cite";
   if (REF_COMPL_CMDS.has(lower)) return "ref";
   return null;
+}
+
+/** Commands whose brace argument is an ENVIRONMENT name rather than a key.
+ *  `\newenvironment`/`\renewenvironment` are deliberately absent: their first
+ *  argument is the name being *defined*, and offering the existing names there
+ *  would suggest redefining `itemize` rather than naming something new. */
+const ENV_COMPL_CMDS = new Set(["begin", "end"]);
+
+/** Classify a brace argument's command for completion: the key families, or an
+ *  environment name. Kept separate from {@link classifyComplCmd} so widening it
+ *  never widens what Ctrl+click treats as a resolvable key. */
+function classifyComplBrace(cmd: string): TexComplKind | null {
+  const key = classifyComplCmd(cmd);
+  if (key) return key;
+  return ENV_COMPL_CMDS.has(cmd.toLowerCase()) ? "env" : null;
+}
+
+/** True when `caret` sits after an unescaped `%` on its own line — inside a TeX
+ *  comment. Completion stays shut there: a `\se` written in a note about the
+ *  document is prose, not a control sequence being typed. Scans only the current
+ *  line, so this is O(line) rather than O(document). */
+function caretInTexComment(source: string, caret: number): boolean {
+  let lineStart = source.lastIndexOf("\n", Math.max(0, caret - 1)) + 1;
+  if (lineStart < 0) lineStart = 0;
+  for (let i = lineStart; i < caret; i++) {
+    if (source[i] === "%" && !isBackslashEscaped(source, i)) return true;
+  }
+  return false;
+}
+
+/** A control sequence being typed at the caret (`\se|`), as a completion
+ *  context. `start` is the backslash, `query` the letters after it, so accepting
+ *  replaces the whole `\name`. Requires at least one letter — a bare `\` is the
+ *  first keystroke of `\\`, `\[`, `\%` and everything else that is not a word,
+ *  and popping a list of every command over it would fight the typist. Returns
+ *  null when the run is not a command (no backslash, an escaped one, a digit
+ *  in the middle). Pure. */
+function findTexCommandAt(source: string, caret: number): TexComplContext | null {
+  let i = caret;
+  while (i > 0 && /[a-zA-Z]/.test(source[i - 1])) i--;
+  if (i === caret) return null; // no letters typed yet
+  const slash = i - 1;
+  if (slash < 0 || source[slash] !== "\\") return null;
+  if (isBackslashEscaped(source, slash)) return null; // `\\se` — the `\\` is a break
+  return { kind: "cmd", start: slash, end: caret, query: source.slice(i, caret) };
 }
 
 /**
@@ -1613,6 +2226,14 @@ function classifyComplCmd(cmd: string): TexComplKind | null {
  */
 export function findTexComplAt(source: string, caret: number): TexComplContext | null {
   if (caret < 0 || caret > source.length) return null;
+  // A comment is prose: neither a command nor a key is being typed in one.
+  if (caretInTexComment(source, caret)) return null;
+  // A control sequence being typed (#245) is checked FIRST: it is the only
+  // context whose caret sits outside any brace, so it can never be confused with
+  // the argument scan below, and checking it first keeps that scan's 600-char
+  // look-back off the common keystroke.
+  const cmd = findTexCommandAt(source, caret);
+  if (cmd) return cmd;
   let braceStart = -1;
   const limit = Math.max(0, caret - 600);
   for (let i = caret - 1; i >= limit; i--) {
@@ -1625,7 +2246,7 @@ export function findTexComplAt(source: string, caret: number): TexComplContext |
   const tail = source.slice(Math.max(0, braceStart - 80), braceStart);
   const m = /\\([a-zA-Z]+)\*?\s*(?:\[[^\]]*\]\s*)*$/.exec(tail);
   if (!m) return null;
-  const kind = classifyComplCmd(m[1]);
+  const kind = classifyComplBrace(m[1]);
   if (!kind) return null;
   const bodyStart = braceStart + 1;
   const segment = source.slice(bodyStart, caret);
@@ -1790,11 +2411,335 @@ function resolveSibling(fromFile: string, token: string, defExt: string): string
 const TEX_INPUT_CMDS = ["input", "include", "subfile", "subfileinclude"];
 const TEX_BIB_CMDS = ["bibliography", "addbibresource"];
 
+// --- Command and environment completion (#245) -------------------------------
+//
+// The dropdown answered two of the four questions a LaTeX editor is asked while
+// typing — which label, which citation key — and neither of the two asked far
+// more often: what is this command called, and what is this environment called.
+// Those are the ones every other LaTeX editor answers, and their absence is felt
+// hardest by the people the rest of this viewer is for: `\includegraphics` has
+// eight more letters than anyone types correctly first time, and an
+// `\begin{align}` written without its `\end{align}` is a compile error whose log
+// line names the end of the file.
+//
+// The tables below are deliberately a CURATED standard set rather than a parse of
+// the installed distribution: reading `texmf` would offer thousands of commands
+// from packages the document never loads, and the value of a completion list is
+// entirely in what it leaves out. What the document itself defines is added on
+// top, from its own text, so a `\newcommand{\R}` is offered beside `\ref`.
+
+/** One command the dropdown can offer. `args` is how many mandatory `{}`
+ *  arguments to seed on accept — 0 leaves the caret after the name. */
+export interface TexCommandEntry {
+  /** The name WITHOUT its backslash (`section`, not `\section`). */
+  name: string;
+  /** Mandatory brace arguments seeded on accept. */
+  args: number;
+  /** True when it came from the document's own definitions rather than the
+   *  standard table — the dropdown says so, since a local macro is the one
+   *  candidate whose meaning is not general knowledge. */
+  local?: boolean;
+}
+
+/** One environment the dropdown can offer. */
+export interface TexEnvEntry {
+  name: string;
+  /** Extra argument text seeded after `\begin{name}` — `tabular` and friends do
+   *  not compile without one, so the caret lands inside it. */
+  seed?: string;
+  /** First body line, for an environment whose body is a list of items. */
+  item?: string;
+  /** Defined by, or already used in, this document rather than standard. */
+  local?: boolean;
+}
+
+/** Build a plain `{name, args}` table from a compact `name:args` spelling, so the
+ *  list below reads as a list of commands rather than of object literals. */
+function texCmdTable(spec: string): TexCommandEntry[] {
+  return spec
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((tok) => {
+      const [name, args] = tok.split(":");
+      return { name, args: args ? Number(args) : 0 };
+    });
+}
+
+/**
+ * The standard LaTeX commands offered when a `\` is being typed. Chosen for what
+ * a document actually contains — structure, text, references, floats, math and
+ * the definition forms — not for coverage: a list nobody can scan is a list
+ * nobody reads. The `:n` suffix is the number of mandatory brace arguments.
+ */
+export const TEX_STANDARD_COMMANDS: TexCommandEntry[] = texCmdTable(`
+  documentclass:1 usepackage:1 begin:1 end:1 title:1 author:1 date:1 maketitle
+  tableofcontents listoffigures listoftables appendix newpage clearpage
+  part:1 chapter:1 section:1 subsection:1 subsubsection:1 paragraph:1 subparagraph:1
+  textbf:1 textit:1 texttt:1 textsc:1 textsf:1 textrm:1 textnormal:1 emph:1
+  underline:1 textsuperscript:1 textsubscript:1 footnote:1 marginpar:1
+  url:1 href:2 texorpdfstring:2 verb
+  label:1 ref:1 cref:1 Cref:1 autoref:1 eqref:1 pageref:1 nameref:1
+  cite:1 citep:1 citet:1 citeauthor:1 citeyear:1 parencite:1 textcite:1
+  bibliography:1 bibliographystyle:1 addbibresource:1 printbibliography
+  input:1 include:1 includeonly:1 subfile:1 includegraphics:1 graphicspath:1
+  caption:1 captionof:2 item subitem centering raggedright raggedleft
+  hline cline:1 toprule midrule bottomrule multicolumn:3 multirow:3
+  newcommand:2 renewcommand:2 providecommand:2 newenvironment:3 renewenvironment:3
+  DeclareMathOperator:2 newtheorem:2 setlength:2 addtolength:2 newcounter:1
+  setcounter:2 definecolor:3 textcolor:2 colorbox:2
+  noindent indent linebreak newline pagebreak smallskip medskip bigskip
+  hspace:1 vspace:1 hfill vfill rule:2
+  tiny scriptsize footnotesize small normalsize large Large LARGE huge Huge
+  frac:2 dfrac:2 tfrac:2 binom:2 sqrt:1 sum prod int iint oint lim
+  log ln exp sin cos tan arcsin arccos arctan sinh cosh tanh
+  min max inf sup det dim ker deg gcd arg bmod pmod:1
+  mathbb:1 mathcal:1 mathbf:1 mathrm:1 mathit:1 mathsf:1 mathtt:1 mathfrak:1
+  boldsymbol:1 operatorname:1 text:1 overline:1 hat:1 bar:1 tilde:1 vec:1
+  dot:1 ddot:1 widehat:1 widetilde:1 substack:1 left right
+  quad qquad cdot cdots ldots dots vdots ddots
+  times div pm mp leq geq neq approx equiv sim simeq cong propto
+  in notin subset subseteq supset supseteq cup cap setminus emptyset
+  forall exists nexists neg land lor implies iff to mapsto
+  rightarrow leftarrow Rightarrow Leftarrow leftrightarrow Leftrightarrow
+  infty partial nabla ell aleph Re Im
+  alpha beta gamma delta epsilon varepsilon zeta eta theta vartheta iota kappa
+  lambda mu nu xi pi rho sigma tau upsilon phi varphi chi psi omega
+  Gamma Delta Theta Lambda Xi Pi Sigma Upsilon Phi Psi Omega
+`);
+
+/** The standard environments offered inside `\begin{…}`/`\end{…}`. `seed` is the
+ *  argument an environment cannot compile without; `item` the first body line for
+ *  a list. */
+export const TEX_STANDARD_ENVIRONMENTS: TexEnvEntry[] = [
+  { name: "document" },
+  { name: "abstract" },
+  { name: "itemize", item: "\\item " },
+  { name: "enumerate", item: "\\item " },
+  { name: "description", item: "\\item[] " },
+  { name: "figure", seed: "[htbp]" },
+  { name: "figure*", seed: "[htbp]" },
+  { name: "table", seed: "[htbp]" },
+  { name: "table*", seed: "[htbp]" },
+  { name: "tabular", seed: "{}" },
+  { name: "tabularx", seed: "{\\textwidth}{}" },
+  { name: "array", seed: "{}" },
+  { name: "center" },
+  { name: "flushleft" },
+  { name: "flushright" },
+  { name: "quote" },
+  { name: "quotation" },
+  { name: "verbatim" },
+  { name: "lstlisting" },
+  { name: "minipage", seed: "{0.5\\textwidth}" },
+  { name: "equation" },
+  { name: "equation*" },
+  { name: "align" },
+  { name: "align*" },
+  { name: "gather" },
+  { name: "gather*" },
+  { name: "multline" },
+  { name: "split" },
+  { name: "cases" },
+  { name: "matrix" },
+  { name: "pmatrix" },
+  { name: "bmatrix" },
+  { name: "vmatrix" },
+  { name: "theorem" },
+  { name: "lemma" },
+  { name: "proposition" },
+  { name: "corollary" },
+  { name: "definition" },
+  { name: "remark" },
+  { name: "example" },
+  { name: "proof" },
+  { name: "thebibliography", seed: "{9}" },
+  { name: "frame" },
+  { name: "columns" },
+  { name: "column", seed: "{0.5\\textwidth}" },
+  { name: "tikzpicture" },
+  { name: "algorithm" },
+  { name: "algorithmic" },
+];
+
+/** The definition forms whose first argument names a new command. `\def` is
+ *  included even though its syntax is plain TeX's — a document that uses it uses
+ *  it a lot, and the name is what the dropdown needs, not the parameter text. */
+const TEX_NEWCMD_RE =
+  /\\(?:newcommand|renewcommand|providecommand)\*?\s*\{?\s*\\([a-zA-Z@]+)\s*\}?(?:\s*\[(\d+)\])?|\\DeclareMathOperator\*?\s*\{?\s*\\([a-zA-Z@]+)|\\def\s*\\([a-zA-Z@]+)/g;
+
+/**
+ * Every command `source` defines: `\newcommand`/`\renewcommand`/
+ * `\providecommand` (whose `[n]` says how many arguments it takes),
+ * `\DeclareMathOperator` and plain `\def`. Comments are blanked first, so a
+ * commented-out definition is not offered — the same rule every other reader in
+ * this module follows. Pure.
+ */
+export function parseTexDefinedCommands(source: string): TexCommandEntry[] {
+  const out: TexCommandEntry[] = [];
+  const seen = new Set<string>();
+  const scan = blankTexComments(source);
+  TEX_NEWCMD_RE.lastIndex = 0;
+  for (let m = TEX_NEWCMD_RE.exec(scan); m; m = TEX_NEWCMD_RE.exec(scan)) {
+    const name = m[1] ?? m[3] ?? m[4];
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    out.push({ name, args: m[2] ? Number(m[2]) : 0, local: true });
+  }
+  return out;
+}
+
+/** `\newenvironment{name}` / `\newtheorem{name}` — the two ways a document adds
+ *  an environment of its own. */
+const TEX_NEWENV_RE = /\\(?:re)?newenvironment\*?\s*\{([^{}]+)\}|\\newtheorem\*?\s*\{([^{}]+)\}/g;
+/** Every `\begin{name}` in a file, for the "already used here" candidates. */
+const TEX_BEGIN_RE = /\\begin\s*\{([^{}]+)\}/g;
+
+/**
+ * Every environment `source` defines (`\newenvironment`, `\newtheorem`) or
+ * already uses (`\begin{…}`). Using one is evidence enough to offer it: a
+ * document that opens a `wrapfigure` once will open a second, and the standard
+ * table cannot know which packages it loaded. Comments blanked. Pure.
+ */
+export function parseTexDocumentEnvironments(source: string): TexEnvEntry[] {
+  const out: TexEnvEntry[] = [];
+  const seen = new Set<string>();
+  const scan = blankTexComments(source);
+  const add = (raw: string | undefined) => {
+    const name = raw?.trim();
+    if (!name || seen.has(name)) return;
+    seen.add(name);
+    out.push({ name, local: true });
+  };
+  TEX_NEWENV_RE.lastIndex = 0;
+  for (let m = TEX_NEWENV_RE.exec(scan); m; m = TEX_NEWENV_RE.exec(scan)) add(m[1] ?? m[2]);
+  TEX_BEGIN_RE.lastIndex = 0;
+  for (let m = TEX_BEGIN_RE.exec(scan); m; m = TEX_BEGIN_RE.exec(scan)) add(m[1]);
+  return out;
+}
+
+/** The document with a completion applied, and where the caret goes afterwards.
+ *  Returned rather than applied so the whole decision stays pure and testable —
+ *  the editor only splices the text in and moves the cursor. */
+export interface TexComplEdit {
+  text: string;
+  caret: number;
+}
+
+/** Which of `\begin`/`\end` an environment-completion context belongs to. Read
+ *  back off the source rather than carried on the context, so it cannot disagree
+ *  with the text the insert is about to splice. */
+export function texEnvComplCommand(source: string, ctx: TexComplContext): "begin" | "end" | null {
+  const open = source.lastIndexOf("{", Math.max(0, ctx.start - 1));
+  if (open < 0) return null;
+  const m = /\\(begin|end)\*?\s*$/.exec(source.slice(Math.max(0, open - 40), open));
+  return m ? (m[1] as "begin" | "end") : null;
+}
+
+/** The leading whitespace of the line containing `pos`. */
+function lineIndentAt(source: string, pos: number): string {
+  const start = source.lastIndexOf("\n", Math.max(0, pos - 1)) + 1;
+  const m = /^[ \t]*/.exec(source.slice(start, pos));
+  return m ? m[0] : "";
+}
+
+/** Does an unmatched `\end{name}` already follow `after`? Nested `\begin{name}`s
+ *  are counted, so completing the outer `\begin{align}` of a nested pair still
+ *  sees the outer `\end`. This is what stops an accept from inserting a second
+ *  `\end` into a block the user is merely re-typing the name of — and, exported,
+ *  what stops the editor's Enter from doing the same when the `\begin` was typed
+ *  out by hand rather than completed. */
+export function hasMatchingTexEnd(after: string, name: string): boolean {
+  const esc = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const re = new RegExp(`\\\\(begin|end)\\s*\\{${esc}\\}`, "g");
+  let depth = 0;
+  for (let m = re.exec(after); m; m = re.exec(after)) {
+    if (m[1] === "begin") depth++;
+    else if (depth === 0) return true;
+    else depth--;
+  }
+  return false;
+}
+
+/**
+ * Accept a command completion: replace the `\query` under the caret with
+ * `\name`, and seed its mandatory `{}` arguments with the caret inside the first
+ * one. Braces are NOT added when the text already continues with one — the user
+ * is correcting the name of a command they have already written out. Pure.
+ */
+export function insertTexCommand(
+  source: string,
+  ctx: TexComplContext,
+  entry: TexCommandEntry,
+): TexComplEdit {
+  const head = `${source.slice(0, ctx.start)}\\${entry.name}`;
+  const rest = source.slice(ctx.end);
+  if (entry.args < 1 || /^\s*[{[]/.test(rest)) {
+    return { text: head + rest, caret: head.length };
+  }
+  const braces = "{}".repeat(entry.args);
+  return { text: head + braces + rest, caret: head.length + 1 };
+}
+
+/**
+ * Accept an environment completion. In an `\end{…}` it just writes the name and
+ * steps past the brace. In a `\begin{…}` on a line with nothing after it, and
+ * with no unmatched `\end{name}` already ahead, it also opens the block —
+ * `\end{name}` on its own line at the `\begin`'s indent, a body line between
+ * them (carrying `\item ` for a list), and the caret waiting in the body or,
+ * where the environment takes one, inside its seeded argument.
+ *
+ * Anything less certain than that degrades to writing the name alone: leftover
+ * text inside the braces, a line that continues after them, or no closing brace
+ * on the line at all. Restructuring a line the user is in the middle of is the
+ * one thing an autocomplete must not do. Pure.
+ */
+export function insertTexEnvironment(
+  source: string,
+  ctx: TexComplContext,
+  entry: TexEnvEntry,
+): TexComplEdit {
+  const name = entry.name;
+  const head = source.slice(0, ctx.start) + name;
+  const rest = source.slice(ctx.end);
+  const nl = rest.indexOf("\n");
+  const lineRest = nl < 0 ? rest : rest.slice(0, nl);
+  const afterLine = nl < 0 ? "" : rest.slice(nl);
+  const closeRel = lineRest.indexOf("}");
+  const inner = closeRel < 0 ? lineRest : lineRest.slice(0, closeRel);
+  // No `}` on this line, or something else still inside the braces → name only.
+  if (closeRel < 0 || /\S/.test(inner)) return { text: head + rest, caret: head.length };
+
+  const tail = lineRest.slice(closeRel + 1);
+  const closed = `${head}}`;
+  const which = texEnvComplCommand(source, ctx);
+  if (which !== "begin" || /\S/.test(tail) || hasMatchingTexEnd(rest, name)) {
+    return { text: closed + tail + afterLine, caret: closed.length };
+  }
+
+  const indent = lineIndentAt(source, ctx.start);
+  const seed = entry.seed ?? "";
+  const body = `${indent}  ${entry.item ?? ""}`;
+  const text = `${closed}${seed}\n${body}\n${indent}\\end{${name}}${afterLine}`;
+  // A seeded argument is the one thing that must be filled in before the block
+  // compiles, so the caret goes inside it rather than into the body.
+  const braceInSeed = seed.lastIndexOf("{");
+  const caret =
+    braceInSeed >= 0
+      ? closed.length + braceInSeed + 1
+      : closed.length + seed.length + 1 + body.length;
+  return { text, caret };
+}
+
 /** Candidate keys for the ref/cite dropdown: `\label` keys across the document
- *  and bib entries from the connected `.bib` file(s). */
+ *  and bib entries from the connected `.bib` file(s) — plus (#245) the commands
+ *  and environments offered while one is being typed. */
 export interface TexCompletions {
   labels: TexLabelEntry[];
   cites: BibEntry[];
+  /** The standard command table plus the document's own `\newcommand` family. */
+  commands: TexCommandEntry[];
+  /** The standard environment table plus the ones this document defines or uses. */
+  envs: TexEnvEntry[];
 }
 
 /**
@@ -1861,16 +2806,40 @@ async function walkTexSources(
 export async function gatherTexCompletions(
   currentPath: string,
   projectId: string | null = null,
+  options: { currentText?: string } = {},
 ): Promise<TexCompletions> {
   const labels: TexLabelEntry[] = [];
   const seenLabel = new Set<string>();
-  const bibPaths = await walkTexSources(currentPath, projectId, (_file, text) => {
-    for (const l of parseTexLabels(text)) {
-      if (seenLabel.has(l.key)) continue;
-      seenLabel.add(l.key);
-      labels.push(l);
-    }
-  });
+  // #245: the document's own macros and environments ride the SAME walk as its
+  // labels — a second walk would be a second answer to "what is this document",
+  // and the preamble that defines the macros is regularly a file the editor is
+  // not currently in.
+  const commands: TexCommandEntry[] = [];
+  const seenCmd = new Set(TEX_STANDARD_COMMANDS.map((c) => c.name));
+  const envs: TexEnvEntry[] = [];
+  const seenEnv = new Set(TEX_STANDARD_ENVIRONMENTS.map((e) => e.name));
+  const bibPaths = await walkTexSources(
+    currentPath,
+    projectId,
+    (_file, text) => {
+      for (const l of parseTexLabels(text)) {
+        if (seenLabel.has(l.key)) continue;
+        seenLabel.add(l.key);
+        labels.push(l);
+      }
+      for (const c of parseTexDefinedCommands(text)) {
+        if (seenCmd.has(c.name)) continue;
+        seenCmd.add(c.name);
+        commands.push(c);
+      }
+      for (const e of parseTexDocumentEnvironments(text)) {
+        if (seenEnv.has(e.name)) continue;
+        seenEnv.add(e.name);
+        envs.push(e);
+      }
+    },
+    { currentText: options.currentText },
+  );
 
   const cites: BibEntry[] = [];
   const seenKey = new Set<string>();
@@ -1888,7 +2857,14 @@ export async function gatherTexCompletions(
     }
   }
 
-  return { labels, cites };
+  // The document's own definitions come FIRST in each list: a `\newcommand` is
+  // the one candidate a reader cannot look up, and it is the one they meant.
+  return {
+    labels,
+    cites,
+    commands: [...commands, ...TEX_STANDARD_COMMANDS],
+    envs: [...envs, ...TEX_STANDARD_ENVIRONMENTS],
+  };
 }
 
 // --- \ref / \cite jump-to-definition (#tex-ref-jump) ------------------------
@@ -1908,7 +2884,7 @@ export async function gatherTexCompletions(
 /** A `\ref`/`\cite`-family key under the caret: which family, and the single
  *  comma-separated key the caret falls on (`\cite{a,b}` picks one). */
 export interface TexKeyRef {
-  kind: TexComplKind;
+  kind: TexKeyKind;
   key: string;
 }
 
@@ -1973,7 +2949,7 @@ export function texKeyRefRanges(source: string): TexRefRange[] {
 /** Where a key is defined: the file to open (as something openable, so the
  *  caller reuses one open path) plus the 1-based line/column of the definition. */
 export interface TexKeyLocation extends ResolvedTexRef {
-  kind: TexComplKind;
+  kind: TexKeyKind;
   key: string;
   line: number;
   column: number;
@@ -2193,4 +3169,304 @@ export async function gatherTexStructure(
 
   const root = await build(rootPath, undefined);
   return { root };
+}
+
+// --- Word count (#245) -------------------------------------------------------
+//
+// "How long is it?" is a question every piece of academic writing is asked by
+// something with a limit attached — a page budget, an abstract cap, a reviewer's
+// word count — and it is the one question a `.tex` file answers worst. `wc -w`
+// counts `\includegraphics[width=0.8\textwidth]{figures/plot.pdf}` as four
+// words, and opening the PDF to count from there is not counting at all.
+//
+// So the scanner below reads the source the way `texcount` does: the preamble is
+// not text, a control sequence is not a word, a formula is one object rather than
+// a handful of them, a verbatim block is not prose, and a heading and a caption
+// are counted apart from the body because that is how a limit is usually
+// written. It is deliberately shallow, like the rest of this module — it does not
+// expand macros, so a `\newcommand` that produces three words counts as none —
+// and that is the right side to be wrong on: a count that silently inflates is
+// worse than one a writer knows is a floor.
+
+/** A TeX-aware count of one document. Body, headings and captions are separate
+ *  totals because that is how a length limit is normally stated. */
+export interface TexWordCount {
+  /** Words in the body text — headings and captions excluded. */
+  words: number;
+  /** Words in sectioning titles (`\section{…}` and friends) and `\title`. */
+  headerWords: number;
+  /** Words inside `\caption{…}`/`\captionof{…}{…}`. */
+  captionWords: number;
+  /** Characters in the counted words, spaces and markup excluded. */
+  characters: number;
+  /** Sectioning commands encountered. */
+  headers: number;
+  /** `figure`/`table` environments (starred variants included). */
+  floats: number;
+  /** `$…$` and `\(…\)` groups — one each, not their contents. */
+  inlineMath: number;
+  /** Display-math groups: `\[…\]`, `$$…$$` and the amsmath environments. */
+  displayMath: number;
+}
+
+/** An empty count, so a caller can fold several files together from a base. */
+const ZERO_COUNT: TexWordCount = {
+  words: 0, headerWords: 0, captionWords: 0, characters: 0,
+  headers: 0, floats: 0, inlineMath: 0, displayMath: 0,
+};
+
+/** Environments whose body is display math: counted as one display each, their
+ *  contents never counted as words. */
+const MATH_ENVS = new Set([
+  "equation", "equation*", "align", "align*", "alignat", "alignat*", "gather",
+  "gather*", "multline", "multline*", "flalign", "flalign*", "displaymath",
+  "eqnarray", "eqnarray*", "split", "cases", "IEEEeqnarray", "IEEEeqnarray*",
+]);
+
+/** Environments whose body is not prose at all — skipped whole, counted as
+ *  nothing. A `tikzpicture` is a drawing and `lstlisting` is code. */
+const SKIP_ENVS = new Set([
+  "verbatim", "verbatim*", "lstlisting", "minted", "Verbatim", "alltt",
+  "tikzpicture", "pgfpicture", "filecontents", "filecontents*", "comment",
+]);
+
+/** Environments that are floats — counted, and still read inside for the
+ *  caption they exist to carry. */
+const FLOAT_ENVS = new Set(["figure", "figure*", "table", "table*", "wrapfigure", "algorithm"]);
+
+/** Commands whose arguments are machinery rather than prose: their brace and
+ *  bracket groups are skipped whole. Sectioning, `\caption` and the text-styling
+ *  commands are deliberately absent — their arguments ARE the text. */
+const COUNT_SKIP_CMDS = new Set([
+  "label", "ref", "cref", "Cref", "autoref", "eqref", "pageref", "nameref",
+  "input", "include", "subfile", "includegraphics", "usepackage", "documentclass",
+  "bibliography", "bibliographystyle", "addbibresource", "printbibliography",
+  "graphicspath", "newcommand", "renewcommand", "providecommand", "newenvironment",
+  "renewenvironment", "DeclareMathOperator", "newtheorem", "setlength",
+  "addtolength", "definecolor", "setcounter", "newcounter", "hspace", "vspace",
+  "url", "bibitem", "cite", "citep", "citet", "parencite", "textcite", "footcite",
+]);
+
+/** Sectioning commands whose title is counted as a heading. */
+const COUNT_HEADER_CMDS = new Set([
+  "part", "chapter", "section", "subsection", "subsubsection", "paragraph",
+  "subparagraph", "title", "frametitle", "subtitle",
+]);
+
+/** A word: a run of letters/digits with internal apostrophes or hyphens. Counted
+ *  only when it holds a letter or a digit, so a stray `--` is not a word. */
+const COUNT_WORD_RE = /[\p{L}\p{N}][\p{L}\p{N}'’-]*/gu;
+
+/** Count the words (and their characters) in a fragment of already-extracted
+ *  prose. Shared by the body, heading and caption tallies. */
+function countWordsIn(text: string): { words: number; characters: number } {
+  let words = 0;
+  let characters = 0;
+  COUNT_WORD_RE.lastIndex = 0;
+  for (let m = COUNT_WORD_RE.exec(text); m; m = COUNT_WORD_RE.exec(text)) {
+    words++;
+    characters += m[0].length;
+  }
+  return { words, characters };
+}
+
+/** The `[start, end)` of the balanced `{…}` group beginning at `open` (which must
+ *  be the `{`), or null when it never closes. Escaped braces do not nest. */
+function braceGroupEnd(text: string, open: number): number | null {
+  let depth = 0;
+  for (let i = open; i < text.length; i++) {
+    const c = text[i];
+    if (c === "\\") { i++; continue; }
+    if (c === "{") depth++;
+    else if (c === "}" && --depth === 0) return i;
+  }
+  return null;
+}
+
+/** Skip the optional `[…]` and mandatory `{…}` groups following `pos`, returning
+ *  the offset after them. Whitespace between groups is stepped over. */
+function skipArgGroups(text: string, pos: number, mandatory: number): number {
+  let i = pos;
+  let taken = 0;
+  for (;;) {
+    while (i < text.length && /\s/.test(text[i])) i++;
+    if (text[i] === "[") {
+      const close = text.indexOf("]", i);
+      if (close < 0) return text.length;
+      i = close + 1;
+      continue;
+    }
+    if (text[i] === "{" && taken < mandatory) {
+      const close = braceGroupEnd(text, i);
+      if (close == null) return text.length;
+      i = close + 1;
+      taken++;
+      continue;
+    }
+    return i;
+  }
+}
+
+/**
+ * Count one `.tex` source, TeX-aware. Comments are blanked first; when the file
+ * carries a `\begin{document}` only the body between it and `\end{document}` is
+ * read, so a preamble's package options are never prose (a child file has no
+ * `\begin{document}` and is read whole, which is exactly right — it *is* body).
+ * Pure, and the single definition of what counts — {@link gatherTexWordCount}
+ * only adds the walk over a multi-file document.
+ */
+export function texWordCount(source: string): TexWordCount {
+  const out: TexWordCount = { ...ZERO_COUNT };
+  let text = blankTexComments(source);
+  const begin = text.indexOf("\\begin{document}");
+  if (begin >= 0) {
+    const end = text.indexOf("\\end{document}", begin);
+    text = text.slice(begin + "\\begin{document}".length, end < 0 ? text.length : end);
+  }
+
+  // Prose is accumulated rather than counted per character, so a word split by a
+  // `\emph{…}` in its middle is not counted as two.
+  let body = "";
+  const addProse = (into: "words" | "headerWords" | "captionWords", s: string) => {
+    const { words, characters } = countWordsIn(s);
+    out[into] += words;
+    out.characters += characters;
+  };
+  const flushBody = () => {
+    if (!body) return;
+    addProse("words", body);
+    body = "";
+  };
+
+  let i = 0;
+  while (i < text.length) {
+    const c = text[i];
+
+    // Display math: `$$…$$` and `\[…\]`. Checked before inline `$`.
+    if (c === "$" && text[i + 1] === "$") {
+      const close = text.indexOf("$$", i + 2);
+      out.displayMath++;
+      i = close < 0 ? text.length : close + 2;
+      continue;
+    }
+    if (c === "$") {
+      let j = i + 1;
+      while (j < text.length && !(text[j] === "$" && !isBackslashEscaped(text, j))) j++;
+      out.inlineMath++;
+      i = j + 1;
+      continue;
+    }
+    if (c === "\\" && (text[i + 1] === "[" || text[i + 1] === "(")) {
+      const closer = text[i + 1] === "[" ? "\\]" : "\\)";
+      const close = text.indexOf(closer, i + 2);
+      if (text[i + 1] === "[") out.displayMath++;
+      else out.inlineMath++;
+      i = close < 0 ? text.length : close + 2;
+      continue;
+    }
+
+    if (c !== "\\") {
+      // A group delimiter is markup, not a space: `super\emph{script}` is one
+      // word to a reader (and to `wc -w`), so the braces are dropped rather than
+      // kept as separators that would split it into two.
+      if (c !== "{" && c !== "}") body += c;
+      i++;
+      continue;
+    }
+
+    const m = /^\\([a-zA-Z]+)\*?/.exec(text.slice(i));
+    if (!m) { i += 2; continue; } // `\%`, `\&`, `\\` — punctuation, not a word
+    const cmd = m[1];
+    let after = i + m[0].length;
+
+    if (cmd === "begin" || cmd === "end") {
+      const open = text.indexOf("{", after);
+      const close = open >= 0 ? text.indexOf("}", open) : -1;
+      const env = close >= 0 ? text.slice(open + 1, close) : "";
+      if (cmd === "end") { i = close < 0 ? text.length : close + 1; continue; }
+      flushBody();
+      const endToken = `\\end{${env}}`;
+      if (MATH_ENVS.has(env) || SKIP_ENVS.has(env)) {
+        if (MATH_ENVS.has(env)) out.displayMath++;
+        const stop = text.indexOf(endToken, close);
+        i = stop < 0 ? text.length : stop + endToken.length;
+        continue;
+      }
+      if (FLOAT_ENVS.has(env)) out.floats++;
+      i = close < 0 ? text.length : close + 1;
+      continue;
+    }
+
+    if (COUNT_HEADER_CMDS.has(cmd)) {
+      flushBody();
+      out.headers++;
+      after = skipArgGroups(text, after, 0); // step over `[short title]`
+      if (text[after] === "{") {
+        const close = braceGroupEnd(text, after);
+        if (close != null) {
+          addProse("headerWords", text.slice(after + 1, close));
+          i = close + 1;
+          continue;
+        }
+      }
+      i = after;
+      continue;
+    }
+
+    if (cmd === "caption" || cmd === "captionof") {
+      flushBody();
+      // `\captionof{figure}{…}` — the first group names the float type.
+      after = skipArgGroups(text, after, cmd === "captionof" ? 1 : 0);
+      if (text[after] === "{") {
+        const close = braceGroupEnd(text, after);
+        if (close != null) {
+          addProse("captionWords", text.slice(after + 1, close));
+          i = close + 1;
+          continue;
+        }
+      }
+      i = after;
+      continue;
+    }
+
+    if (COUNT_SKIP_CMDS.has(cmd)) {
+      // Skip its groups whole. Two mandatory ones covers `\newcommand{\x}{…}`
+      // and `\href{url}{text}`-shaped machinery; the extra group a command does
+      // not have is simply not there to take.
+      i = skipArgGroups(text, after, 2);
+      continue;
+    }
+
+    // Any other command: the NAME is markup, whatever it wraps is text. A word
+    // interrupted by `\emph{…}` therefore stays one word, since `body` is only
+    // flushed at a real boundary.
+    i = after;
+  }
+  flushBody();
+  return out;
+}
+
+/**
+ * Count a whole document: {@link texWordCount} over every `.tex`
+ * {@link walkTexSources} reaches from the build root, summed. The file being
+ * edited is read from the caller's draft when one is given, so the number
+ * answers for what is on screen rather than what was last saved.
+ */
+export async function gatherTexWordCount(
+  currentPath: string,
+  projectId: string | null = null,
+  options: { currentText?: string } = {},
+): Promise<TexWordCount & { files: number }> {
+  const total: TexWordCount & { files: number } = { ...ZERO_COUNT, files: 0 };
+  await walkTexSources(
+    currentPath,
+    projectId,
+    (_file, text) => {
+      const one = texWordCount(text);
+      total.files++;
+      for (const k of Object.keys(ZERO_COUNT) as Array<keyof TexWordCount>) total[k] += one[k];
+    },
+    { currentText: options.currentText },
+  );
+  return total;
 }

@@ -297,6 +297,16 @@ export function ProjectFilesSettingsDialog({
   const [showPython, setShowPython] = useState(false);
   const [showMigrate, setShowMigrate] = useState(false);
 
+  // Installed Hunspell dictionary codes for the spelling-language dropdown —
+  // read once per dialog open (a local directory listing, no network). `null`
+  // until the answer lands, so "none installed" is never shown prematurely.
+  const [spellLangs, setSpellLangs] = useState<string[] | null>(null);
+  useEffect(() => {
+    invoke<string[]>("spell_languages")
+      .then(setSpellLangs)
+      .catch(() => setSpellLangs([]));
+  }, []);
+
   const alertsOn = settings?.files_alerts ?? true;
   const alertSources = settings?.files_alerts_sources ?? {};
   const mutedCount = settings?.files_alerts_muted?.length ?? 0;
@@ -451,6 +461,34 @@ export function ProjectFilesSettingsDialog({
             checked={settings?.change_tint !== false}
             onChange={(e) => void updateSettings({ change_tint: e.target.checked })}
           />
+          {/* Which Hunspell dictionary the editors' spelling check reads —
+              machine-wide, since the language you write in is not per project.
+              The list is what is actually installed; an empty one names the
+              fix instead of offering a dropdown of nothing. */}
+          <SettingRow
+            label={
+              <>
+                {t("projectSettings.spellLanguage")} <UntestedTag />
+              </>
+            }
+            help={t("projectSettings.spellLanguageHelp")}
+            control={
+              spellLangs !== null && spellLangs.length === 0 ? (
+                <span className="settings-help">{t("projectSettings.spellNoDicts")}</span>
+              ) : (
+                <Dropdown
+                  value={
+                    settings?.spell_language ??
+                    spellLangs?.find((l) => l.startsWith("en")) ??
+                    spellLangs?.[0] ??
+                    ""
+                  }
+                  options={(spellLangs ?? []).map((l) => ({ value: l, label: l }))}
+                  onChange={(v) => void updateSettings({ spell_language: v })}
+                />
+              )
+            }
+          />
         </SettingsCard>
 
         {/* A real table, header row and all. Every row is the SAME four-column
@@ -466,6 +504,7 @@ export function ProjectFilesSettingsDialog({
             <span>{t("localModel.role.autocomplete")}</span>
             <span>{t("projectSettings.completionLength")}</span>
             <span>{t("localModel.role.grammar")}</span>
+            <span>{t("fileViewer.spellingLabel")}</span>
           </div>
           {VIEWER_PREF_TYPES.map((vt) => {
             const pref: ViewerPref = settings?.viewer_prefs?.[vt.id] ?? {};
@@ -523,11 +562,21 @@ export function ProjectFilesSettingsDialog({
                       onChange={(e) => patch({ grammar_check: e.target.checked })}
                       aria-label={`${vt.label} — ${t("localModel.role.grammar")}`}
                     />
+                    {/* Dictionary (Hunspell) spell check — deterministic and
+                        model-free, red-underlines typos in the editor. */}
+                    <Toggle
+                      size="sm"
+                      checked={pref.spell_check === true}
+                      disabled={!enabled}
+                      onChange={(e) => patch({ spell_check: e.target.checked })}
+                      aria-label={`${vt.label} — ${t("fileViewer.spellingLabel")}`}
+                    />
                   </>
                 ) : (
-                  /* Three empty cells, so this row's Enabled toggle still sits
+                  /* Four empty cells, so this row's Enabled toggle still sits
                      in the same column as every other row's. */
                   <>
+                    <span className="viewer-pref-na">–</span>
                     <span className="viewer-pref-na">–</span>
                     <span className="viewer-pref-na">–</span>
                     <span className="viewer-pref-na">–</span>

@@ -8,6 +8,7 @@ import { describe, it, expect } from "vitest";
 import {
   resolveGrammarRanges,
   decorateGrammarRanges,
+  mergeSpellIssues,
   type GrammarRange,
 } from "../components/embed/FileViewerPane";
 import type { GrammarIssue } from "../types";
@@ -113,5 +114,39 @@ describe("decorateGrammarRanges", () => {
     expect(decorateGrammarRanges("<x>", [r(0, 3, "style")])).toBe(
       '<span class="file-viewer-grammar-mark cat-style" data-gi="0">&lt;x&gt;</span>',
     );
+  });
+});
+
+describe("mergeSpellIssues", () => {
+  it("passes the model list through when the dictionary found nothing", () => {
+    const model = [issue({ line: 1, bad: "teh" })];
+    expect(mergeSpellIssues([], model)).toBe(model);
+  });
+
+  it("puts dictionary issues first and keeps distinct model issues", () => {
+    const dict = [issue({ line: 1, bad: "speling", source: "dict" })];
+    const model = [issue({ line: 2, bad: "is is", category: "grammar" })];
+    const merged = mergeSpellIssues(dict, model);
+    expect(merged).toHaveLength(2);
+    expect(merged[0].source).toBe("dict");
+    expect(merged[1].bad).toBe("is is");
+  });
+
+  it("drops a model duplicate of a dictionary hit on the same line", () => {
+    // Without the dedupe the resolver's per-line cursor would walk the model
+    // copy onto the NEXT occurrence of the word and mark a correct spot.
+    const dict = [issue({ line: 3, bad: "teh", source: "dict" })];
+    const model = [
+      issue({ line: 3, bad: "teh" }),
+      issue({ line: 3, bad: "wrogn" }),
+    ];
+    const merged = mergeSpellIssues(dict, model);
+    expect(merged.map((i) => i.bad)).toEqual(["teh", "wrogn"]);
+  });
+
+  it("keeps a model issue for the same word on a different line", () => {
+    const dict = [issue({ line: 1, bad: "teh", source: "dict" })];
+    const model = [issue({ line: 4, bad: "teh" })];
+    expect(mergeSpellIssues(dict, model)).toHaveLength(2);
   });
 });

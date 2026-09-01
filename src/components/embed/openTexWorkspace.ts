@@ -1,4 +1,5 @@
-import { useTabsStore, type TabEntry } from "../../stores/tabs";
+import { orderedTabKeys, useTabsStore, type TabEntry } from "../../stores/tabs";
+import { centerTexWorkspace, requestTexCenter } from "../../stores/texCenter";
 import { resolveTexRoot } from "../../lib/viewers/tex";
 import { basename, dirname } from "../../lib/paths";
 
@@ -116,14 +117,32 @@ export async function openTexWorkspace(
  * tab: reverse search is a navigation into an existing surface, so a PDF whose
  * workspace the user has closed should reopen the source the ordinary way, not
  * resurrect the whole workspace.
+ *
+ * #42 cross-window, in escalation order:
+ *  1. A workspace MOUNTED IN THIS WINDOW is centered through the `texCenter`
+ *     registry — the only probe that works in a popout (whose tabs store holds
+ *     no tabs), and in the main window it also routes through the workspace's
+ *     own `goTo`, so the back stack records the step.
+ *  2. A workspace tab in this window's store that is DETACHED (rendered in a
+ *     popout) gets the switch broadcast to the window that renders it: a
+ *     `setViewerState` here would write a field the popout's one-time-seeded
+ *     local mirror never re-reads — the write that used to make pdf→tex sync
+ *     look dead for a popped-out workspace.
+ *  3. An in-layout tab keeps the direct store write.
  */
 export async function focusTexWorkspaceForSource(sourcePath: string): Promise<boolean> {
   const root = await resolveTexRoot(sourcePath);
+  if (centerTexWorkspace(root, sourcePath)) return true;
   const store = useTabsStore.getState();
   const existing = store.tabs.find(
     (t) => t.kind === "embed" && t.viewer === "texworkspace" && t.embedPath === root,
   );
   if (!existing) return false;
+  const detachedGroups = store.detachedGroupsByScope[existing.scope ?? store.scope] ?? [];
+  if (detachedGroups.some((g) => orderedTabKeys(g.subtree).includes(existing.key))) {
+    requestTexCenter(root, sourcePath);
+    return true;
+  }
   store.setActive(existing.key);
   // "center on the main" is represented as texActivePath === root, matching
   // `openTexWorkspace`, so nothing has to special-case the main document.

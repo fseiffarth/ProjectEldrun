@@ -45,6 +45,21 @@ describe("findUnclosedTexBrackets", () => {
   it("ignores extra closing delimiters because only missing ends are diagnosed", () => {
     expect(findUnclosedTexBrackets(")]}\\)\\]\\end{itemize}")).toEqual([]);
   });
+
+  it("reads a line break's optional spacing as a bracket, never as \\[ display math", () => {
+    // `\\[2mm]` is a row break plus an ordinary optional argument. Reading its
+    // second backslash as the start of `\[` made every spaced table row an
+    // unclosed display-math opener.
+    const text = "\\begin{tabular}{ll}\na & b \\\\[2mm]\nc & d \\\\\n\\end{tabular}";
+    expect(findUnclosedTexBrackets(text)).toEqual([]);
+  });
+
+  it("still diagnoses a real \\[ that follows an escaped backslash", () => {
+    // `\\\[` is a line break followed by a genuine display-math opener — the
+    // parity rule, so consuming the escaped character must not swallow it.
+    const text = "row \\\\\\[x";
+    expect(findUnclosedTexBrackets(text)).toEqual([at(text.indexOf("\\[", 4), 2)]);
+  });
 });
 
 describe("findTexMathDelimiterMatch", () => {
