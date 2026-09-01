@@ -2,9 +2,9 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { SettingsCard, SettingsHeader, ToggleRow } from "../layout/settingsUi";
 import { basename, fromFileUri } from "../../lib/paths";
 import { useT } from "../../lib/i18n";
+import { UntestedTag } from "../common/UntestedTag";
 
 /**
  * Importing OS files into a project by dropping them onto a file view — shared
@@ -13,6 +13,16 @@ import { useT } from "../../lib/i18n";
  */
 
 type ConflictChoice = "replace" | "rename" | "skip";
+
+interface ConflictAnswer {
+  choice: ConflictChoice;
+  /** Apply the *choice* to every remaining collision. Deliberately carries no
+   *  name: one typed name cannot serve N files, so the rest keep both under the
+   *  automatic " (n)" — which the prompt says on its face. */
+  all: boolean;
+  /** The name a "keep both" was given, when the user changed the suggestion. */
+  name?: string;
+}
 
 /** Heuristic: is this drag an external OS file drag (vs. an internal pill/text
  *  drag)? `dragDropEnabled` stays false so HTML5 DnD keeps working for the
@@ -56,6 +66,46 @@ export function parseDroppedFilePaths(dataTransfer: DataTransfer): string[] {
   return paths;
 }
 
+/** A name's stem and extension, split the way Rust's `Path::extension` does —
+ *  a leading-dot name with no other dot (".gitignore") has none, so a suffix
+ *  lands at the end rather than inside it. Kept in step with `unique_dest` so
+ *  the suggested "keep both" name is the one the backend would have picked. */
+export function splitFileName(name: string): { stem: string; ext: string | null } {
+  const dot = name.lastIndexOf(".");
+  if (dot <= 0 || dot === name.length - 1) return { stem: name, ext: null };
+  return { stem: name.slice(0, dot), ext: name.slice(dot + 1) };
+}
+
+/** `stem (n).ext` — the shape the backend's own collision fallback produces. */
+export function suffixedName(name: string, n: number): string {
+  const { stem, ext } = splitFileName(name);
+  return ext ? `${stem} (${n}).${ext}` : `${stem} (${n})`;
+}
+
+/** The first free " (n)" name in the destination folder, probed rather than
+ *  assumed so the prompt's field opens on the name Keep both would actually
+ *  produce. Bounded far below the backend's own 10k because this is a
+ *  suggestion, not the decision: the import re-runs `unique_dest` on whatever
+ *  is typed, so a suggestion that has gone stale by the time the button is
+ *  pressed is suffixed again rather than overwriting anything. */
+async function suggestKeepBothName(
+  projectDir: string,
+  destRel: string,
+  name: string,
+): Promise<string> {
+  for (let n = 1; n <= 50; n++) {
+    const candidate = suffixedName(name, n);
+    const rel = destRel ? `${destRel}/${candidate}` : candidate;
+    const exists = await invoke<boolean>("project_path_exists", {
+      projectDir,
+      relPath: rel,
+    }).catch(() => null);
+    if (exists === null) break; // probe failed — offer the first form and let the backend decide
+    if (!exists) return candidate;
+  }
+  return suffixedName(name, 1);
+}
+
 interface Options {
   /** Destination project root. Empty disables the drop. */
   projectDir: string;
@@ -77,10 +127,17 @@ export function useImportDrop({ projectDir, enabled, destRel, onImported }: Opti
   const t = useT();
   const [dropActive, setDropActive] = useState(false);
   const [dropFlash, setDropFlash] = useState(false);
-  const [conflict, setConflict] = useState<
-    { name: string; remaining: number; resolve: (r: { choice: ConflictChoice; all: boolean }) => void } | null
-  >(null);
+  const [conflict, setConflict] = useState<{
+    name: string;
+    /** Destination folder, named so the user can see *which* copy collided. */
+    folder: string;
+    remaining: number;
+    resolve: (r: ConflictAnswer) => void;
+  } | null>(null);
   const [conflictAll, setConflictAll] = useState(false);
+  /** The "keep both, as" field — pre-filled with the free " (n)" name. */
+  const [conflictName, setConflictName] = useState("");
+  const [conflictError, setConflictError] = useState<string | null>(null);
   const dropFlashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const canImport = enabled && !!projectDir;
@@ -107,11 +164,14 @@ export function useImportDrop({ projectDir, enabled, destRel, onImported }: Opti
   };
 
   // Ask the user how to resolve a name collision; resolves via the modal's
-  // buttons. Returns the choice plus whether to apply it to all remaining.
-  const askConflict = (name: string, remaining: number) =>
-    new Promise<{ choice: ConflictChoice; all: boolean }>((resolve) => {
+  // buttons. Returns the choice, whether to apply it to all remaining, and the
+  // name a "keep both" was given.
+  const askConflict = (name: string, folder: string, remaining: number, suggested: string) =>
+    new Promise<ConflictAnswer>((resolve) => {
       setConflictAll(false);
-      setConflict({ name, remaining, resolve });
+      setConflictName(suggested);
+      setConflictError(null);
+      setConflict({ name, folder, remaining, resolve });
     });
 
   // Copy each absolute source path into the project, prompting on collisions.
@@ -126,14 +186,20 @@ export function useImportDrop({ projectDir, enabled, destRel, onImported }: Opti
         const name = basename(sourcePath) || sourcePath;
         const rel = destRelAtDrop ? `${destRelAtDrop}/${name}` : name;
         let choice: ConflictChoice = "rename";
+        // Only ever set by the prompt, so a blanket "keep both" over the rest of
+        // the batch falls back to the automatic " (n)" rather than reusing one
+        // typed name for every file.
+        let destName: string | undefined;
         const exists = await invoke<boolean>("project_path_exists", { projectDir, relPath: rel }).catch(() => false);
         if (exists) {
           if (blanket) {
             choice = blanket;
           } else {
-            const res = await askConflict(name, paths.length - 1 - i);
+            const suggested = await suggestKeepBothName(projectDir, destRelAtDrop, name);
+            const res = await askConflict(name, destRelAtDrop, paths.length - 1 - i, suggested);
             setConflict(null);
             choice = res.choice;
+            destName = res.name;
             if (res.all) blanket = res.choice;
           }
         }
@@ -144,6 +210,7 @@ export function useImportDrop({ projectDir, enabled, destRel, onImported }: Opti
             sourcePath,
             destRel: destRelAtDrop,
             replace: choice === "replace",
+            destName: destName ?? null,
           });
         } catch (err) {
           console.error("import_external_file", sourcePath, err);
@@ -196,49 +263,98 @@ export function useImportDrop({ projectDir, enabled, destRel, onImported }: Opti
     importPaths(Array.isArray(picked) ? picked : [picked]);
   };
 
+  // The name a "keep both" would land under. Trimmed here rather than at the
+  // button, so the disabled state and what is sent cannot disagree.
+  const keepBothName = conflictName.trim();
+
+  const skip = () => conflict?.resolve({ choice: "skip", all: conflictAll });
+
+  const keepBoth = () => {
+    if (!conflict || !keepBothName) return;
+    // A separator would place the copy outside the folder that was dropped
+    // onto — refused here rather than left to the backend, so the message lands
+    // next to the field that caused it. (The backend refuses it again.)
+    if (keepBothName.includes("/") || keepBothName.includes("\\")) {
+      setConflictError(t("fileTree.invalidFileName"));
+      return;
+    }
+    conflict.resolve({ choice: "rename", all: conflictAll, name: keepBothName });
+  };
+
   const conflictModal = conflict
     ? createPortal(
-        <div
-          className="modal-backdrop"
-          onMouseDown={() => conflict.resolve({ choice: "skip", all: conflictAll })}
-        >
-          <div className="settings-dialog" style={{ maxWidth: 380 }} onMouseDown={(e) => e.stopPropagation()}>
-            <SettingsHeader title={t("importDrop.title")} />
-            <p className="settings-help" style={{ wordBreak: "break-all" }}>
-              <code>{conflict.name}</code> {t("importDrop.bodyPost")}
+        <div className="modal-backdrop" onMouseDown={skip}>
+          {/* Wears the file-operation overlay every other prompt in these views
+              wears (delete, rename, paste) — this one used to be built out of
+              the settings design system instead, which is why it sat flush
+              against its own edges: `.settings-dialog` carries no padding of its
+              own, expecting a `.dialog-scroll` child this dialog never had. */}
+          <div className="file-delete-dialog" onMouseDown={(e) => e.stopPropagation()}>
+            <h2>
+              {t("importDrop.title")} <UntestedTag />
+            </h2>
+            <p>
+              <strong>{conflict.name}</strong> {t("importDrop.existsIn")}{" "}
+              <strong>{conflict.folder || t("fileTree.projectRootFolder")}</strong>
+              {t("importDrop.existsPost")}
             </p>
-            {conflict.remaining > 0 && (
-              <SettingsCard>
-                <ToggleRow
-                  label={t(
-                    conflict.remaining > 1
-                      ? "importDrop.applyToRemainingMany"
-                      : "importDrop.applyToRemainingOne",
-                    { count: conflict.remaining },
-                  )}
-                  checked={conflictAll}
-                  onChange={(e) => setConflictAll(e.target.checked)}
-                />
-              </SettingsCard>
+            <input
+              className="file-paste-name"
+              autoFocus
+              spellCheck={false}
+              aria-label={t("importDrop.keepBothAs")}
+              value={conflictName}
+              onChange={(e) => {
+                setConflictName(e.target.value);
+                setConflictError(null);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") keepBoth();
+                if (e.key === "Escape") skip();
+              }}
+              // Selects the stem, not the extension — the rename dialog's rule,
+              // and here the stem is the half the " (n)" was appended to.
+              onFocus={(e) => {
+                const dot = conflictName.lastIndexOf(".");
+                e.currentTarget.setSelectionRange(0, dot > 0 ? dot : conflictName.length);
+              }}
+            />
+            {conflictError && (
+              <div className="file-delete-path file-delete-error">{conflictError}</div>
             )}
-            <div className="settings-link-row settings-link-row-end">
-              <button
-                type="button"
-                className="settings-btn"
-                onClick={() => conflict.resolve({ choice: "skip", all: conflictAll })}
-              >
+            {conflict.remaining > 0 && (
+              <>
+                <label className="file-delete-check">
+                  <input
+                    type="checkbox"
+                    checked={conflictAll}
+                    onChange={(e) => setConflictAll(e.target.checked)}
+                  />
+                  <span>
+                    {t(
+                      conflict.remaining > 1
+                        ? "importDrop.applyToRemainingMany"
+                        : "importDrop.applyToRemainingOne",
+                      { count: conflict.remaining },
+                    )}
+                  </span>
+                </label>
+                {/* Said on its face rather than by disabling the box: the
+                    checkbox carries the *choice*, and one typed name cannot
+                    serve N files. */}
+                <p className="file-delete-note">{t("importDrop.applyNameCaveat")}</p>
+              </>
+            )}
+            <div className="file-delete-actions">
+              <button type="button" onClick={skip}>
                 {t("importDrop.skip")}
               </button>
-              <button
-                type="button"
-                className="settings-btn"
-                onClick={() => conflict.resolve({ choice: "rename", all: conflictAll })}
-              >
+              <button type="button" onClick={keepBoth} disabled={!keepBothName}>
                 {t("importDrop.keepBoth")}
               </button>
               <button
                 type="button"
-                className="settings-btn danger"
+                className="danger"
                 onClick={() => conflict.resolve({ choice: "replace", all: conflictAll })}
               >
                 {t("importDrop.replace")}

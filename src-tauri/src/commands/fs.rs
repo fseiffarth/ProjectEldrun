@@ -1086,15 +1086,23 @@ pub fn move_path_blocking(
 /// true` overwrites the existing entry. Returns the final project-relative path
 /// of the imported copy. Callers prompt the user (see `project_path_exists`)
 /// before passing `replace=true`.
+///
+/// `dest_name` renames the copy on the way in — the collision prompt's "keep
+/// both, as <name>", where the user names the second copy instead of accepting
+/// " (n)". It is the *name* only, never a path (see `validate_import_name`), so
+/// it can redirect the copy within the dropped-on folder and nowhere else; and
+/// it still goes through `unique_dest` unless `replace`, so a chosen name that
+/// also collides is suffixed rather than overwriting something.
 #[tauri::command]
 pub async fn import_external_file(
     project_dir: String,
     source_path: String,
     dest_rel: String,
     replace: bool,
+    dest_name: Option<String>,
 ) -> Result<String, String> {
     run_off_thread(move || {
-        import_external_file_blocking(project_dir, source_path, dest_rel, replace)
+        import_external_file_blocking(project_dir, source_path, dest_rel, replace, dest_name)
     })
     .await
 }
@@ -1104,6 +1112,7 @@ pub fn import_external_file_blocking(
     source_path: String,
     dest_rel: String,
     replace: bool,
+    dest_name: Option<String>,
 ) -> Result<String, String> {
     let src = canonical(&source_path)?;
     let root = canonical(&project_dir)?;
@@ -1121,10 +1130,14 @@ pub fn import_external_file_blocking(
         return Err("cannot copy a folder into itself".to_string());
     }
 
-    let file_name = src
+    let source_name = src
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .ok_or_else(|| "source has no file name".to_string())?;
+    let file_name = match dest_name.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
+        Some(n) => validate_import_name(n)?,
+        None => source_name,
+    };
     let dest = if replace {
         dest_dir_c.join(&file_name)
     } else {
@@ -1237,6 +1250,18 @@ pub fn extract_archive_blocking(project_dir: String, rel_path: String) -> Result
 
 /// Pick a non-colliding destination path in `dir` for `file_name`, appending
 /// " (1)", " (2)", … before the extension until a free name is found.
+/// A caller-chosen import name is one path component and nothing else. A
+/// separator would place the copy outside the folder that was dropped onto,
+/// and `.`/`..` name a directory rather than a new entry in it — so both are
+/// refused here, before `enforce_confinement` gets a chance to be the only
+/// thing standing between a typed name and an arbitrary write.
+fn validate_import_name(name: &str) -> Result<String, String> {
+    if name.contains('/') || name.contains('\\') || name == "." || name == ".." {
+        return Err(format!("invalid file name: {name}"));
+    }
+    Ok(name.to_string())
+}
+
 fn unique_dest(dir: &Path, file_name: &str) -> PathBuf {
     let direct = dir.join(file_name);
     if !direct.exists() {
@@ -2617,6 +2642,7 @@ mod tests {
             ext.path().join("photo.png").to_string_lossy().to_string(),
             "assets".into(),
             false,
+            None,
         )
         .unwrap();
 
@@ -2641,6 +2667,7 @@ mod tests {
             ext.path().join("a.txt").to_string_lossy().to_string(),
             "".into(),
             false,
+            None,
         )
         .unwrap();
 
@@ -2668,6 +2695,7 @@ mod tests {
             ext.path().join("a.txt").to_string_lossy().to_string(),
             "".into(),
             true,
+            None,
         )
         .unwrap();
 
@@ -2678,6 +2706,100 @@ mod tests {
             "new"
         );
         assert!(!proj.path().join("a (1).txt").exists());
+    }
+
+    #[test]
+    fn import_external_file_honours_a_chosen_name() {
+        let ext = tempfile::tempdir().unwrap();
+        std::fs::write(ext.path().join("a.txt"), "new").unwrap();
+        let proj = tempfile::tempdir().unwrap();
+        std::fs::write(proj.path().join("a.txt"), "old").unwrap();
+
+        // The collision prompt's "keep both, as …": the second copy is named by
+        // the user rather than suffixed.
+        let rel = import_external_file_blocking(
+            proj.path().to_string_lossy().to_string(),
+            ext.path().join("a.txt").to_string_lossy().to_string(),
+            "".into(),
+            false,
+            Some("  a-draft.txt  ".into()),
+        )
+        .unwrap();
+
+        assert_eq!(rel, "a-draft.txt");
+        assert_eq!(
+            std::fs::read_to_string(proj.path().join("a.txt")).unwrap(),
+            "old"
+        );
+        assert_eq!(
+            std::fs::read_to_string(proj.path().join("a-draft.txt")).unwrap(),
+            "new"
+        );
+    }
+
+    #[test]
+    fn chosen_name_that_also_collides_is_suffixed_not_overwritten() {
+        let ext = tempfile::tempdir().unwrap();
+        std::fs::write(ext.path().join("a.txt"), "new").unwrap();
+        let proj = tempfile::tempdir().unwrap();
+        std::fs::write(proj.path().join("a.txt"), "old").unwrap();
+        std::fs::write(proj.path().join("taken.txt"), "mine").unwrap();
+
+        // Without `replace`, a name is a request and never an overwrite — the
+        // prompt's suggestion can be stale by the time the copy runs.
+        let rel = import_external_file_blocking(
+            proj.path().to_string_lossy().to_string(),
+            ext.path().join("a.txt").to_string_lossy().to_string(),
+            "".into(),
+            false,
+            Some("taken.txt".into()),
+        )
+        .unwrap();
+
+        assert_eq!(rel, "taken (1).txt");
+        assert_eq!(
+            std::fs::read_to_string(proj.path().join("taken.txt")).unwrap(),
+            "mine"
+        );
+    }
+
+    #[test]
+    fn import_external_file_rejects_a_chosen_name_with_a_separator() {
+        let ext = tempfile::tempdir().unwrap();
+        std::fs::write(ext.path().join("a.txt"), "x").unwrap();
+        let proj = tempfile::tempdir().unwrap();
+        std::fs::create_dir(proj.path().join("sub")).unwrap();
+
+        for name in ["../escape.txt", "sub/a.txt", "..", "."] {
+            let err = import_external_file_blocking(
+                proj.path().to_string_lossy().to_string(),
+                ext.path().join("a.txt").to_string_lossy().to_string(),
+                "".into(),
+                false,
+                Some(name.into()),
+            )
+            .unwrap_err();
+            assert!(err.contains("invalid file name"), "{name}: {err}");
+        }
+        // Nothing landed anywhere.
+        assert!(!proj.path().join("sub/a.txt").exists());
+    }
+
+    #[test]
+    fn blank_chosen_name_falls_back_to_the_source_name() {
+        let ext = tempfile::tempdir().unwrap();
+        std::fs::write(ext.path().join("a.txt"), "x").unwrap();
+        let proj = tempfile::tempdir().unwrap();
+
+        let rel = import_external_file_blocking(
+            proj.path().to_string_lossy().to_string(),
+            ext.path().join("a.txt").to_string_lossy().to_string(),
+            "".into(),
+            false,
+            Some("   ".into()),
+        )
+        .unwrap();
+        assert_eq!(rel, "a.txt");
     }
 
     #[test]
@@ -2701,6 +2823,7 @@ mod tests {
             ext.path().join("pkg").to_string_lossy().to_string(),
             "".into(),
             false,
+            None,
         )
         .unwrap();
 
@@ -2722,6 +2845,7 @@ mod tests {
             ext.path().join("a.txt").to_string_lossy().to_string(),
             "../escape".into(),
             false,
+            None,
         )
         .unwrap_err();
         assert!(err.contains("invalid path component"), "{err}");
