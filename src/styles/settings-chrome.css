@@ -2410,6 +2410,115 @@ label.settings-toggle-card-row {
   color: var(--text-secondary);
 }
 
+/* Closing a project — the app's own confirmation, replacing the native
+   `confirm()` that was the one dialog in Eldrun the theme could not reach.
+   Rides the shared `.project-dialog` surface (accent rail, wash, shadow) and
+   adds only what is specific to it: the two counts, and the list of tabs that
+   turns "3 terminal tabs" back into named work. */
+.stop-project-dialog {
+  width: min(460px, calc(100vw - 32px));
+}
+.stop-project-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 650;
+  color: var(--text-primary);
+}
+.stop-project-lede {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-primary);
+}
+/* The two figures, read as one row of facts rather than a sentence: the number
+   is what the eye lands on, the clause beside it says what it costs. */
+.stop-project-counts {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.stop-project-count {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.stop-project-num {
+  min-width: 22px;
+  text-align: right;
+  font-size: 17px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--danger);
+}
+.stop-project-what {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+/* The inventory. Scrolls rather than growing the dialog past its buttons; the
+   tail is summed by `.stop-project-more` when it does not fit. */
+.stop-project-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 168px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 8px 10px;
+  list-style: none;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  background: var(--bg-panel);
+}
+.stop-project-tab {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 20px;
+  color: var(--text-primary);
+}
+.stop-project-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-muted);
+}
+/* An agent tab is the one whose loss is least likely to be in the user's head —
+   it may have been working unattended for an hour — so it is the one marked. */
+.stop-project-dot-agent {
+  background: var(--accent);
+}
+.stop-project-tab-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Locality chip: only ever drawn for a tab that is NOT on this machine. */
+.stop-project-where {
+  flex: none;
+  margin-left: auto;
+  padding: 0 5px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
+  line-height: 15px;
+  color: var(--text-secondary);
+}
+.stop-project-more {
+  font-size: 11px;
+  line-height: 20px;
+  color: var(--text-muted);
+}
+.stop-project-keep {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
 /* The HPC-host note: why this section lists only the user's own sessions and
    processes. Informational, so it is toned down against the reasons list above
    it — it explains the reading, it is not one of the warnings. */

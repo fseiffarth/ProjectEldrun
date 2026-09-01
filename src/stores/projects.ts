@@ -1374,15 +1374,18 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
       const tmuxTargets = projectTmuxTargets(project, tabs, localPersistenceEnabled);
 
       if (ptyTabs.length > 0 || tmuxTargets.length > 0) {
-        const { confirm } = await import("@tauri-apps/plugin-dialog");
-        const lang = useI18nStore.getState().lang;
-        const ok = await confirm(
-          translate(lang, "projectSwitcher.stopBody", {
-            name: project.name,
-            terminals: ptyTabs.length,
-            sessions: tmuxTargets.length,
-          }),
-          { title: translate(lang, "projectSwitcher.stopTitle"), kind: "warning" },
+        // Eldrun's own dialog, not the platform's: it wears the theme, and it
+        // lists the tabs instead of counting them (stores/stopProjectPrompt).
+        const { useStopProjectStore } = await import("./stopProjectPrompt");
+        const ok = await useStopProjectStore.getState().request(
+          project.name,
+          ptyTabs.map((tab) => ({
+            key: tab.key,
+            label: tab.label,
+            kind: tab.kind,
+            location: effectiveTabLocation(tab, { vmProject: !!project.vm?.enabled }),
+          })),
+          tmuxTargets.length,
         );
         if (!ok) return;
       }

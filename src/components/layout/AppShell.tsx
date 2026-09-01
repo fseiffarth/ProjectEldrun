@@ -52,6 +52,7 @@ import { InstallOverlayHost } from "./InstallOverlay";
 import { LocalLossDialog } from "../common/LocalLossDialog";
 import { HostKeyConfirmDialog } from "../common/HostKeyConfirmDialog";
 import { HpcGuardDialog } from "../common/HpcGuardDialog";
+import { StopProjectDialog } from "../common/StopProjectDialog";
 import { SyncConfirmDialog } from "../common/SyncConfirmDialog";
 import { RemoteUsageWarningDialog } from "../common/RemoteUsageWarningDialog";
 import { QuickOpen } from "../files/QuickOpen";
@@ -955,6 +956,7 @@ export function AppShell() {
           here for the same reason the host-key prompt is: the caller is a lib
           function with no component of its own to render into. */}
       <HpcGuardDialog />
+      <StopProjectDialog />
       {/* "This will overwrite that side" — the confirmation every byte-sync
           transfer asks for. Here for the same reason as the two above: a pull or
           push can be started from the file tree, the file view's toolbar or the
