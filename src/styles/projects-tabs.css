@@ -1374,11 +1374,14 @@
 .tab-source.clickable.disabled { cursor: default; opacity: 0.45; }
 .tab-source.clickable.disabled:hover { background-color: transparent; }
 
-/* Planner/doer badge (experimental `agent_mode_toggle`) — same 16px badge box as
-   the locality toggle, sitting beside it on agent tabs. Three states, two of them
-   wired: `unset` (the agent's own ask-each-time default, muted so it reads as
-   "nothing imposed"), `plan` (restrained), `auto` (edits flow). */
-.tab-agent-mode {
+/* TeX ⇄ PDF coupling mark (lib/texPdfLink): a compiled PDF tab and the `.tex`
+   tab that produces it each carry this badge, pointing at the other half. Same
+   16px badge box as the locality/source badges — a coupled pair is one more fact
+   about the tab, not a new kind of chrome — but in the accent hue, since it
+   marks a relationship between two of the user's tabs rather than a local/remote
+   state. Muted until the tab is hovered or active, so a strip full of pairs
+   stays calm and the mark still reads at a glance on the tab being used. */
+.tab-texlink {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1387,16 +1390,17 @@
   border-radius: var(--radius-sm);
   border: none;
   background: transparent;
+  color: var(--accent);
   font-size: 11px;
   line-height: 1;
   flex-shrink: 0;
   cursor: pointer;
-  transition: background-color var(--transition), color var(--transition);
+  opacity: 0.55;
+  transition: background-color var(--transition), opacity var(--transition);
 }
-.tab-agent-mode.unset { color: var(--text-muted); opacity: 0.6; }
-.tab-agent-mode.plan { color: var(--info); }
-.tab-agent-mode.auto { color: var(--warning); }
-.tab-agent-mode:hover { background-color: var(--pill-hover-bg); opacity: 1; }
+.tab:hover .tab-texlink,
+.tab.active .tab-texlink { opacity: 1; }
+.tab-texlink:hover { background-color: var(--pill-hover-bg); opacity: 1; }
 
 /* Per-subwindow close (×), shown in the tab bar when >1 subwindow exists.
    The bar scrolls horizontally when tabs overflow; pin this button to the right

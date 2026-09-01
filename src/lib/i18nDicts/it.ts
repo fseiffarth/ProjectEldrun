@@ -2501,6 +2501,8 @@ export const dict: Dict = {
   "tabLocality.readingLocalTitle": "Lettura della copia del mirror locale — clicca per leggere dall'host tramite SFTP.",
   "tabLocality.remoteNativeTitle": "Nativo remoto: legge direttamente dall'host tramite SFTP (nessuna copia locale).",
   "tabLocality.localMirrorTitle": "Mirror locale: legge dalla copia locale sincronizzata di questo progetto del file dell'host.",
+  "tabLocality.texLinkToPdfTitle": "Collegata al PDF compilato «{name}»: fai clic per aprire quella scheda.",
+  "tabLocality.texLinkToTexTitle": "Collegata al sorgente LaTeX «{name}»: fai clic per aprire quella scheda.",
   "tabLocality.runsOnClickTitle": "Eseguito su: {label} — clicca per cambiare dove viene eseguita questa scheda",
   "tabLocality.localMirrorItem": "Locale (mirror)",
   "tabLocality.remoteEllipsis": "Remoto…",

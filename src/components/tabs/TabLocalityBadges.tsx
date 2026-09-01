@@ -85,6 +85,60 @@ export function TabSourceBadge({ tabKey }: { tabKey: string }) {
   );
 }
 
+/**
+ * The TeX ⇄ PDF coupling mark: on a compiled-PDF tab it points back at the open
+ * `.tex` that produces it, and on that source tab it points at the PDF — one
+ * component for both halves, so the pair can never be marked asymmetrically.
+ *
+ * Deliberately the SAME 16px badge box as the locality/source badges rather than
+ * a new visual language: the tab strip already reads left-to-right as
+ * label → badges → close, and a coupled pair is one more fact about the tab, not
+ * a new kind of chrome. The glyph is the mark and the button is the jump — a
+ * click activates the partner tab (in whatever subwindow it lives), which is the
+ * only thing anyone wants to do once they have noticed the pair.
+ *
+ * Renders nothing when the partner is not open, so an ordinary PDF tab and a
+ * `.tex` with no build are untouched. `partner` is computed by the host from the
+ * tab list it owns (`lib/texPdfLink`'s `texPdfPartner`), keeping this leaf pure
+ * and usable from both the main-window bar and a popout's strip.
+ */
+export function TabTexLinkBadge({
+  partner,
+  onFocus,
+}: {
+  /** The coupled tab, or null when this tab has no open counterpart. */
+  partner: TabEntry | null;
+  /** Activate the partner tab (main window: the store's `setActive`; a popout:
+   *  its streamed activate). */
+  onFocus: (key: string) => void;
+}) {
+  const t = useT();
+  if (!partner) return null;
+  const toPdf = partner.viewer === "pdf";
+  return (
+    <button
+      className={`tab-texlink ${toPdf ? "pdf" : "tex"}`}
+      title={
+        toPdf
+          ? t("tabLocality.texLinkToPdfTitle", { name: partner.label })
+          : t("tabLocality.texLinkToTexTitle", { name: partner.label })
+      }
+      aria-label={
+        toPdf
+          ? t("tabLocality.texLinkToPdfTitle", { name: partner.label })
+          : t("tabLocality.texLinkToTexTitle", { name: partner.label })
+      }
+      onPointerDown={(e) => e.stopPropagation()}
+      onClick={(e) => {
+        e.stopPropagation();
+        onFocus(partner.key);
+      }}
+    >
+      ⇄
+    </button>
+  );
+}
+
 /** The locality badge (⌂ local / ☁ remote) on an agent/shell tab of a remote
  *  project — click to open the machine menu. Renders nothing for a non-locatable
  *  tab kind. Callers gate on the project being remote before rendering it. */

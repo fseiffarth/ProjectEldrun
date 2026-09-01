@@ -2646,6 +2646,8 @@ export const en = {
   "tabLocality.readingLocalTitle": "Reading the local mirror copy — click to read from the host over SFTP.",
   "tabLocality.remoteNativeTitle": "Remote-native: read directly from the host over SFTP (no local copy).",
   "tabLocality.localMirrorTitle": "Local mirror: read from this project's local synced copy of the host file.",
+  "tabLocality.texLinkToPdfTitle": "Coupled to the compiled PDF “{name}” — click to open that tab.",
+  "tabLocality.texLinkToTexTitle": "Coupled to the LaTeX source “{name}” — click to open that tab.",
   "tabLocality.runsOnClickTitle": "Runs on: {label} — click to change where this tab runs",
   "tabLocality.localMirrorItem": "Local (mirror)",
   "tabLocality.remoteEllipsis": "Remote…",

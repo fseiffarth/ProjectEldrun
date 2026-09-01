@@ -43,11 +43,13 @@ import { TabHoverCard } from "./TabHoverCard";
 import { useFastMode } from "../../lib/fastMode";
 import {
   TabSourceBadge,
+  TabTexLinkBadge,
   TabLocalityBadge,
   LocalityMenu,
   tabLocation,
   type LocalityMenuState,
 } from "./TabLocalityBadges";
+import { texPdfPartner, useTexPdfCandidates } from "../../lib/texPdfLink";
 import { useClampToViewport } from "../../hooks/useClampToViewport";
 import { startCursorPoll, desktopCursor, type PhysPoint } from "../../lib/coords";
 import { bindDragRelease, dragPlatform } from "../../lib/dragPlatform";
@@ -140,6 +142,12 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
   // a single boolean rather than the full tab array so it doesn't widen the bar's
   // subscription back out to every tab.
   const hasAnyTabs = useTabsStore((s) => s.tabs.length > 0);
+  // The scope's `.tex`/`.pdf` viewer tabs, for the TeX ⇄ PDF coupling mark. A
+  // pair very often straddles two subwindows (the workspace here, its compiled
+  // PDF beside it), so the search runs over the scope rather than this group —
+  // behind a shallow guard that keeps the bar's subscription narrow (see
+  // lib/texPdfLink).
+  const texPdfTabs = useTexPdfCandidates();
   // The 3D project-blob tab is a root-scope feature, offered only once at least
   // one project exists (it has nothing to show otherwise).
   const scope = useTabsStore((s) => s.scope);
@@ -148,6 +156,11 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
   const showBlobItem = scope === "root" && hasProjects;
   const focusGroup = useTabsStore((s) => s.focusGroup);
   const setGroupActive = useTabsStore((s) => s.setGroupActive);
+  // Cross-group activation, for the TeX ⇄ PDF jump: the partner tab usually
+  // lives in ANOTHER subwindow, so this uses the store's `setActive` (activate
+  // in whatever group owns it, and focus that group) rather than this bar's
+  // group-scoped `setGroupActive`.
+  const setActive = useTabsStore((s) => s.setActive);
   const renameTab = useTabsStore((s) => s.renameTab);
   const addTab = useTabsStore((s) => s.addTab);
   const duplicateTab = useTabsStore((s) => s.duplicateTab);
