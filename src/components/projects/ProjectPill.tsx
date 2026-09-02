@@ -18,7 +18,7 @@ import { PillStatusBars } from "./PillStatusBars";
 import { useProjectsStore } from "../../stores/projects";
 import { useSettingsStore } from "../../stores/settings";
 import { cmdToKind, isResumableAgentTab, isRestorableTab, useTabsStore } from "../../stores/tabs";
-import { IS_WINDOWS } from "../../lib/platform";
+import { IS_LINUX, IS_WINDOWS } from "../../lib/platform";
 import { runInstallInTab, PROVIDER_CLI_INSTALL, providerAuthLoginCmd } from "../../lib/installCommand";
 import { PythonInterpreterWindow } from "./PythonInterpreterWindow";
 import { useGitDirtyStore, type GitDirtyState } from "../../stores/gitDirty";
@@ -41,16 +41,27 @@ import { RemoteConnMenu } from "../header/RemoteConnMenu";
 import { VmSettingsDialog } from "./VmSettingsDialog";
 import { categoryColor, primaryCategoryColor, projectCategories } from "../../lib/categoryColor";
 import { usePillDragStore } from "../../stores/pillDrag";
+import { usePillSelectionStore } from "../../stores/pillSelection";
+import { useBoxEditorStore } from "../../stores/boxEditor";
+import { useBoxesStore } from "../../stores/boxes";
 import { bindDragRelease, dragPlatform } from "../../lib/dragPlatform";
 import { useT, type TranslationKey } from "../../lib/i18n";
 import { isTrashProject } from "../../lib/trashProject";
 import { TrashProjectIcon } from "./TrashProjectIcon";
+import {
+  agentFenceLabelKey,
+  agentFenceReasonKey,
+  type AgentFenceStatus,
+} from "../../lib/agentFence";
 
 interface Props {
   project: ProjectEntry;
   active: boolean;
   onClick: () => void;
-  onClose: () => void;
+  /** Omit when the pill is visible but has no close/remove action in this view. */
+  onClose?: () => void;
+  /** Localized tooltip override for views where × means something other than close. */
+  closeTitle?: string;
   onReorder: (fromId: string, toId: string) => void;
   /** Alt-drop one pill onto another: box the two projects together. */
   onGroup?: (fromId: string, toId: string) => void;
@@ -67,6 +78,13 @@ interface Props {
   shiftPx?: number;
   /** An Alt-drag is hovering THIS pill as a group (new-box) target. */
   groupHintActive?: boolean;
+  /** Names of the boxes this project is in (N:M overlay model): renders the
+   *  small box badge on the pill, tooltip naming them. Empty/absent = no badge. */
+  boxNames?: string[];
+  /** Keyboard-steering station number (the digit that jumps here while the
+   *  mode is active). Renders a small overlay chip — absolutely positioned so
+   *  showing it never shifts the strip. Absent outside steering mode. */
+  station?: number;
 }
 
 /** File endings that mark a project as holding Python — the "Python interpreter…"
@@ -1235,13 +1253,16 @@ export function ProjectPill({
   active,
   onClick,
   onClose,
+  closeTitle,
   onReorder,
   onGroup,
   onAssignToBox,
+  boxNames,
   isDragged,
   dragDx,
   shiftPx,
   groupHintActive,
+  station,
 }: Props) {
   const t = useT();
   // Shared hover card (identical popup in the right file-viewer). Owns the
@@ -1251,6 +1272,12 @@ export function ProjectPill({
   // mounted and simply never opens, since it arms nothing until `open`.
   const fastMode = useFastMode();
   const [contextMenu, setContextMenu] = useState<ContextMenuPos | null>(null);
+  // Multi-select (3b): Ctrl/Cmd-click toggles membership in the shared pill
+  // selection; the ring (`is-selected`) and the "Box these (N)…" menu entry
+  // both read it. A plain activation click clears it (see the switcher).
+  const selectedPills = usePillSelectionStore((s) => s.selected);
+  const isSelected = selectedPills.includes(project.id);
+  const boxesForMenu = useBoxesStore((s) => s.boxes);
   // With `connections_headless` off Eldrun handles no passwords at all, so neither
   // key auth nor a saved password can ever be the answer — auto-connect there means
   // the login opens in the root terminal instead (see `autoConnectInteractive` in
@@ -1293,6 +1320,22 @@ export function ProjectPill({
   const moveRemoteMirror = useProjectsStore((s) => s.moveRemoteMirror);
   const setProjectSandbox = useProjectsStore((s) => s.setProjectSandbox);
   const setProjectRemoteControl = useProjectsStore((s) => s.setProjectRemoteControl);
+  const setProjectAgentFence = useProjectsStore((s) => s.setProjectAgentFence);
+  const [agentFenceStatus, setAgentFenceStatus] = useState<AgentFenceStatus | null>(null);
+  useEffect(() => {
+    if (!contextMenu) return;
+    let cancelled = false;
+    invoke<AgentFenceStatus>("agent_fence_status", { projectId: project.id })
+      .then((status) => {
+        if (!cancelled) setAgentFenceStatus(status);
+      })
+      .catch(() => {
+        if (!cancelled) setAgentFenceStatus(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [contextMenu, project.id, project.agent_fence]);
   const [showContainerSettings, setShowContainerSettings] = useState(false);
   // VM tier (`docs/vm_projects_plan.md`): the settings dialog, plus a light
   // running/off poll for the pill's VM glyph — a local registry read, only
@@ -1353,8 +1396,10 @@ export function ProjectPill({
   // Flip the project-container toggle. The flag is in every TerminalView's
   // spawn deps, so flipping respawns each live tab of this project —
   // Claude/Codex resume across the respawn, but a live NON-resumable agent
-  // (Gemini/Vibe/…) would lose its conversation: confirm before destroying it
-  // (the same hazard class tabs/agentModes.ts exists for). On enable, run the
+  // (Gemini/Vibe/…) would lose its conversation: confirm before destroying it.
+  // (The retired Plan/Auto toggle was the same hazard class, and respawning a
+  // live session on a settings flip is what retired it — see
+  // docs/context/agent_authority.md.) On enable, run the
   // docker preflight right away so a missing image becomes a one-click build
   // running in a fresh terminal tab (house convention — never a
   // copy-it-yourself message) instead of an error at the next tab spawn.
@@ -1590,7 +1635,7 @@ export function ProjectPill({
    *
    * Sibling rects are measured ONCE, at the moment the drag threshold is
    * crossed — the DOM order is frozen for the gesture (only `transform`
-   * changes, via `shiftPx`/`groupHintActive`/BoxPill's forced hover, all read
+   * changes, via `shiftPx`/`groupHintActive`/the box chip's forced hover, all read
    * from `usePillDragStore` by ProjectSwitcher), so the rects stay valid for
    * its whole duration. `onClick` is never wired natively on `pill-main` for
    * the mouse path — `e.preventDefault()` below suppresses the compatibility
@@ -1601,8 +1646,23 @@ export function ProjectPill({
    */
   const startPillDrag = (e: React.PointerEvent) => {
     if (e.button !== 0) return;
+    // The Trash workspace is PINNED (ProjectSwitcher renders it outside the
+    // scrolling strip, in the row's fixed leading segment): there is no slot
+    // for it to be dragged into, its position is rewritten by the backend
+    // before every save, and boxing or multi-selecting a workspace that cannot
+    // be closed buys nothing. Returning before `preventDefault` leaves the
+    // native click intact, so `pill-main`'s own onClick still activates it.
+    if (trashProject) return;
     const pressed = e.target as HTMLElement;
     if (pressed.closest(".pill-close-btn, .header-conn-lamps")) return;
+    // Ctrl/Cmd-click toggles the multi-selection (3b): no drag, no activation —
+    // the whole gesture is the selection toggle. The suppressed native click
+    // never reaches pill-main's onClick, so nothing else fires.
+    if (e.ctrlKey || e.metaKey) {
+      e.preventDefault();
+      usePillSelectionStore.getState().toggle(project.id);
+      return;
+    }
     e.preventDefault();
     const startX = e.clientX;
     const pointerId = e.pointerId;
@@ -1620,6 +1680,34 @@ export function ProjectPill({
 
     const dropSlot = (clientX: number) =>
       projectRects.filter((r) => clientX > r.left + r.width / 2).length;
+
+    /**
+     * Box drop targets, swept from the whole DOCUMENT rather than from the
+     * pills strip: boxes left the strip for the pinned chip beside the root
+     * pill, and the chip springs its list open for the duration of this drag
+     * (BoxScopeChip) — that list is portaled to <body>, so every box stays
+     * droppable even though none of them is in the row.
+     *
+     * Unlike the sibling pill rects, these are NOT frozen at drag-start: the
+     * list appears *because* the drag started, one render after the rects
+     * would have been taken. The re-measure is gated on the target count
+     * changing, so a steady-state move costs one `querySelectorAll` and no
+     * layout read at all.
+     */
+    const measureBoxes = () => {
+      const els = document.querySelectorAll<HTMLElement>("[data-box-id]");
+      if (els.length === boxRects.length) return;
+      boxRects = Array.from(els).map((el) => {
+        const r = el.getBoundingClientRect();
+        return {
+          id: el.dataset.boxId!,
+          left: r.left,
+          top: r.top,
+          right: r.right,
+          bottom: r.bottom,
+        };
+      });
+    };
 
     const onMove = (ev: PointerEvent) => {
       if (!dragging) {
@@ -1639,18 +1727,6 @@ export function ProjectPill({
               })
           : [];
         fromIdx = projectRects.filter((r) => r.left < selfLeft).length;
-        boxRects = container
-          ? Array.from(container.querySelectorAll<HTMLElement>("[data-box-id]")).map((el) => {
-              const r = el.getBoundingClientRect();
-              return {
-                id: el.dataset.boxId!,
-                left: r.left,
-                top: r.top,
-                right: r.right,
-                bottom: r.bottom,
-              };
-            })
-          : [];
         if (dragPlatform.needsPointerCapture) {
           try {
             captureEl.setPointerCapture(pointerId);
@@ -1660,6 +1736,7 @@ export function ProjectPill({
         }
         usePillDragStore.getState().start(project.id, width, dropSlot(ev.clientX));
       }
+      measureBoxes();
       const overBoxId =
         boxRects.find(
           (r) =>
@@ -1835,6 +1912,69 @@ export function ProjectPill({
             )}
           </div>
 
+          {/* Boxes (3a): checkbox row per box (toggle add/remove, additive N:M),
+              "Box these (N)…" when a multi-selection includes this pill, "New
+              box with ⟨project⟩…" into the editor, and — past ~6 boxes — an
+              "Edit boxes…" overflow into the same editor. */}
+          <div className="context-menu-group">
+            <div className="context-menu-group-label">{t("pill.boxesGroup")}</div>
+            {selectedPills.length >= 2 && isSelected && (
+              <button
+                className="untested"
+                onClick={() => {
+                  setContextMenu(null);
+                  useBoxEditorStore.getState().openCreate(selectedPills);
+                }}
+              >
+                {t("pill.boxTheseEllipsis", { count: selectedPills.length })}
+                <UntestedTag />
+              </button>
+            )}
+            {boxesForMenu.slice(0, 6).map((b) => {
+              const member = b.member_ids.includes(project.id);
+              return (
+                <button
+                  key={b.id}
+                  className="context-menu-check"
+                  onClick={() => {
+                    setContextMenu(null);
+                    const store = useBoxesStore.getState();
+                    if (member) void store.removeFromBox(project.id, b.id);
+                    else void store.addToBox(project.id, b.id);
+                  }}
+                  title={t(member ? "pill.leaveBoxTitle" : "pill.joinBoxTitle", { name: b.name })}
+                >
+                  <span className="context-menu-checkmark" aria-hidden>
+                    {member ? "☑" : "☐"}
+                  </span>
+                  {b.name}
+                </button>
+              );
+            })}
+            <button
+              className="untested"
+              onClick={() => {
+                setContextMenu(null);
+                useBoxEditorStore.getState().openCreate([project.id]);
+              }}
+            >
+              {t("pill.newBoxWithEllipsis", { name: project.name })}
+              <UntestedTag />
+            </button>
+            {boxesForMenu.length > 6 && (
+              <button
+                className="untested"
+                onClick={() => {
+                  setContextMenu(null);
+                  useBoxEditorStore.getState().openEditor(null);
+                }}
+              >
+                {t("pill.editBoxesEllipsis")}
+                <UntestedTag />
+              </button>
+            )}
+          </div>
+
           {/* Git */}
           <div className="context-menu-group">
             <div className="context-menu-group-label">{t("pill.gitGroup")}</div>
@@ -2005,6 +2145,49 @@ export function ProjectPill({
                     : "pill.remoteControlOff",
               )}
             </button>
+            <button
+              className="untested"
+              onClick={() => {
+                setContextMenu(null);
+                void setProjectAgentFence(
+                  project.id,
+                  project.agent_fence === undefined
+                    ? false
+                    : project.agent_fence === false
+                      ? true
+                      : null,
+                );
+              }}
+              title={t("pill.agentFenceMenuTitle")}
+            >
+              {t(agentFenceLabelKey(project.agent_fence))}
+              {agentFenceStatus &&
+                !agentFenceStatus.enforced &&
+                agentFenceReasonKey(agentFenceStatus.reason) && (
+                  <span>
+                    {t("pill.agentFenceNotEnforced", {
+                      reason: t(agentFenceReasonKey(agentFenceStatus.reason)!),
+                    })}
+                  </span>
+                )}
+              <UntestedTag />
+            </button>
+            {IS_LINUX && agentFenceStatus?.bwrap_available === false && (
+                <button
+                  className="untested"
+                  onClick={() => {
+                    setContextMenu(null);
+                    runInstallInTab(
+                      t("pill.agentFenceInstall"),
+                      "sudo apt install -y bubblewrap",
+                      "bash",
+                    );
+                  }}
+                >
+                  {t("pill.agentFenceInstall")}
+                  <UntestedTag />
+                </button>
+              )}
             {project.remote && (
               <button
                 disabled={!autoConnectEligible}
@@ -2347,7 +2530,7 @@ export function ProjectPill({
       <div
         ref={pillRef}
         data-pill-id={project.id}
-        className={`project-pill${trashProject ? " trash-project-pill" : ""}${active ? " active" : ""}${timerPaused ? " timer-paused" : ""}${groupHintActive ? " drag-group" : ""}${isDragged ? " dragging" : ""}${!isDragged && shiftPx ? " reorder-parting" : ""}${catColor ? " has-category" : ""}`}
+        className={`project-pill${trashProject ? " trash-project-pill" : ""}${active ? " active" : ""}${isSelected ? " is-selected" : ""}${timerPaused ? " timer-paused" : ""}${groupHintActive ? " drag-group" : ""}${isDragged ? " dragging" : ""}${!isDragged && shiftPx ? " reorder-parting" : ""}${catColor ? " has-category" : ""}`}
         style={{
           ...(catColor ? { "--cat-color": catColor } : {}),
           ...(isDragged
@@ -2361,6 +2544,13 @@ export function ProjectPill({
         onContextMenu={handleContextMenu}
         onPointerDown={startPillDrag}
       >
+        {/* Steering-mode station number (digit → jump target). aria-hidden:
+            purely a visual echo of the transient keyboard mode. */}
+        {station != null && (
+          <span className="steering-station-chip" aria-hidden>
+            {station}
+          </span>
+        )}
         <button
           className="pill-main"
           onClick={onClick}
@@ -2388,6 +2578,14 @@ export function ProjectPill({
                 {timerPaused && <span className="pill-folder-pause">⏸</span>}
               </span>
               <span className="project-pill-label">{project.name}</span>
+              {boxNames && boxNames.length > 0 && (
+                <span
+                  className="project-pill-boxdot"
+                  title={t("pill.inBoxes", { list: boxNames.join(", ") })}
+                >
+                  ▣
+                </span>
+              )}
             </>
           )}
         </button>
@@ -2418,10 +2616,10 @@ export function ProjectPill({
           </button>
         )}
         {project.remote && <RemoteConnMenu project={project} compact />}
-        {!trashProject && (
+        {!trashProject && onClose && (
           <button
             className="pill-close-btn"
-            title={t("pill.closeProject")}
+            title={closeTitle ?? t("pill.closeProject")}
             onClick={(e) => { e.stopPropagation(); onClose(); }}
           >
             ×

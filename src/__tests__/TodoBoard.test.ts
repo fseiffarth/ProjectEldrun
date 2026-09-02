@@ -16,6 +16,7 @@ import {
   subtaskProgress,
   toggleSubtask,
   toggleTaskDone,
+  taskFromRemark,
 } from "../lib/todoBoard";
 import type { CalendarTask, TaskColumn } from "../types";
 
@@ -80,6 +81,19 @@ describe("columnOf", () => {
 
   it("keeps an incomplete card in the archive too", () => {
     expect(columnOf(task({ column: "archived", percent: 0 }), COLUMNS)).toBe("archived");
+  });
+});
+
+describe("taskFromRemark", () => {
+  it("freezes the source and uses the first text line as the title", () => {
+    const card = taskFromRemark({
+      file: "src/a.ts", line: 12, text: "Explain this\nMore detail", done: false,
+      srcStart: 3, srcEnd: 5, invalidPath: false,
+    }, "p1", { calendarId: "work", columnId: "backlog", now: new Date("2026-01-02T03:04:00") });
+    expect(card).toMatchObject({
+      title: "Explain this", notes: "📌 src/a.ts:12", project_id: "p1",
+      file: { project_id: "p1", path: "src/a.ts", line: 12, text: "Explain this\nMore detail" },
+    });
   });
 });
 

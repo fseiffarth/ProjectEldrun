@@ -415,7 +415,7 @@ describe("reading the file's own remarks", () => {
         name: "Comment",
         color: new Uint8ClampedArray([255, 0, 0]),
       },
-      { convertToViewportRectangle: (r) => [r[0], 400 - r[3], r[2], 400 - r[1]] },
+      { convertToViewportPoint: (x: number, y: number) => [x, 400 - y] },
     );
 
     expect(read).toMatchObject({
@@ -430,7 +430,7 @@ describe("reading the file's own remarks", () => {
   });
 
   it("reads only the two subtypes a remark can be", () => {
-    const vp = { convertToViewportRectangle: (r: number[]) => r };
+    const vp = { convertToViewportPoint: (x: number, y: number) => [x, y] };
     // A link is the sibling module's business; an underline, a stamp or an ink
     // scribble is the page render's, and a save must not rewrite what it cannot edit.
     expect(noteFromAnnotation({ subtype: "Link", rect: [0, 0, 10, 10] }, vp)).toBeNull();
@@ -442,7 +442,7 @@ describe("reading the file's own remarks", () => {
   });
 
   it("keeps an empty remark, because it is in the file and has to be deletable", () => {
-    const vp = { convertToViewportRectangle: (r: number[]) => r };
+    const vp = { convertToViewportPoint: (x: number, y: number) => [x, y] };
     expect(noteFromAnnotation({ subtype: "Text", rect: [0, 0, 22, 22] }, vp)?.text).toBe("");
   });
 
@@ -522,7 +522,7 @@ describe("a highlight is a remark over words", () => {
 
 describe("reading the file's own highlights", () => {
   // A page 400 tall: pdf.js's viewport flips y and leaves x alone.
-  const vp = { convertToViewportRectangle: (r: number[]) => [r[0], 400 - r[3], r[2], 400 - r[1]] };
+  const vp = { convertToViewportPoint: (x: number, y: number) => [x, 400 - y] };
 
   it("turns each quad into a box in the sheet's own space", () => {
     // pdf.js normalises the corners to TL, TR, BL, BR before we ever see them.

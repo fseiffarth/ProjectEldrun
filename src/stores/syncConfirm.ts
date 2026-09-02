@@ -91,6 +91,8 @@ export interface SyncTransferPreview {
   destructiveTotal: number;
   /** Push only, non-forced: files that would be blocked as stale instead. */
   conflicts: number;
+  /** Git-tracked files omitted from byte-sync because lockstep owns them. */
+  tracked: number;
   /** False when the receiving side was too large to inspect up front — the
    *  overwrite/destructive counts are then *unknown*, not zero. */
   exact: boolean;

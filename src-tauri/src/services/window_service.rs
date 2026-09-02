@@ -1,9 +1,6 @@
 use std::collections::HashMap;
 
-use crate::commands::apps::{
-    TrackedWindow, ORIGIN_DETACHED_SUBWINDOW, ORIGIN_MIDDLE_FILE_BROWSER, ORIGIN_RESTORED,
-    ORIGIN_RIGHT_FILE_TREE,
-};
+use crate::commands::apps::{TrackedWindow, ORIGIN_DETACHED_SUBWINDOW};
 use crate::platform::WorkspaceBackend;
 use crate::schema::session::WindowSession;
 use crate::services::terminal_service::eldrun_sessions_dir;
@@ -25,6 +22,36 @@ pub fn monitor_rects(
             h: m.size().height,
         })
         .collect()
+}
+
+/// The Tauri label of Eldrun's primary window (`tauri.conf.json`).
+pub const MAIN_WINDOW_LABEL: &str = "main";
+
+/// Labels of the windows that must be torn down when the MAIN window closes.
+///
+/// Every secondary window Eldrun opens — a detached popout (`detached-*`), the
+/// deck presenter (`present-*`), a live browser page (`browser-*`) — is a
+/// SIBLING of the main window in the same process, not a child of it: neither
+/// the OS nor Tauri closes it when `main` goes away. Left alone it strands on
+/// screen *and* keeps the process alive, because Tauri only exits once the LAST
+/// window is gone — so quitting Eldrun would leave an unreachable popout and a
+/// live headless app behind it. The main window's own close path
+/// (`shutdownDetachedWindows` in the shell) already does this for popouts it
+/// still tracks, and does it *before* `destroy()` so bounds reach project.json;
+/// this is the choke point behind it, catching the windows that path misses
+/// (presenter/browser windows, a popout the store lost track of) and the case
+/// where it never ran at all (a hung or crashed renderer, a WM kill).
+///
+/// Pure over its input so the "everything but `main`" rule is unit-tested; the
+/// caller does the destroying. Order is stable (sorted) for the same reason.
+pub fn windows_closed_with_main<'a>(labels: impl IntoIterator<Item = &'a str>) -> Vec<String> {
+    let mut out: Vec<String> = labels
+        .into_iter()
+        .filter(|l| *l != MAIN_WINDOW_LABEL)
+        .map(String::from)
+        .collect();
+    out.sort();
+    out
 }
 
 pub fn hide_windows(backend: &dyn WorkspaceBackend, window_ids: &[u64]) {
@@ -147,14 +174,11 @@ pub fn resolve_missing_window_ids(
     }
 }
 
+/// Everything the Apps view lists (`is_project_opened_origin`) parks on a
+/// project switch, plus detached subwindows — which park but are never listed
+/// (they are Eldrun's own windows, not launched apps).
 fn is_project_owned(origin: &str) -> bool {
-    matches!(
-        origin,
-        ORIGIN_RIGHT_FILE_TREE
-            | ORIGIN_MIDDLE_FILE_BROWSER
-            | ORIGIN_RESTORED
-            | ORIGIN_DETACHED_SUBWINDOW
-    )
+    crate::commands::apps::is_project_opened_origin(origin) || origin == ORIGIN_DETACHED_SUBWINDOW
 }
 
 fn project_owned_windows<'a, 'b>(
@@ -171,7 +195,7 @@ fn project_owned_windows<'a, 'b>(
 mod tests {
     use super::*;
     use crate::commands::apps::{
-        ORIGIN_DETACHED_SUBWINDOW, ORIGIN_GLOBAL_APP, ORIGIN_RIGHT_FILE_TREE,
+        ORIGIN_DETACHED_SUBWINDOW, ORIGIN_GLOBAL_APP, ORIGIN_SIDE_FILE_TREE,
     };
 
     fn tracked(id: &str, project: Option<&str>, origin: &str, wid: Option<u64>) -> TrackedWindow {
@@ -193,10 +217,59 @@ mod tests {
     }
 
     #[test]
+    fn closing_main_takes_every_other_eldrun_window_with_it() {
+        // Popouts, the presenter and live browser pages are siblings of `main`,
+        // so all three must be in the teardown set — and `main` itself never is
+        // (it is already gone by the time this runs).
+        let labels = [
+            "main",
+            "detached-p1-g1",
+            "detached-p2-g3",
+            "present-deck-1",
+            "browser-2",
+        ];
+        assert_eq!(
+            windows_closed_with_main(labels),
+            vec![
+                "browser-2".to_string(),
+                "detached-p1-g1".to_string(),
+                "detached-p2-g3".to_string(),
+                "present-deck-1".to_string(),
+            ],
+        );
+        // A lone main window leaves nothing to close.
+        assert!(windows_closed_with_main(["main"]).is_empty());
+        assert!(windows_closed_with_main([]).is_empty());
+    }
+
+    #[test]
     fn detached_subwindow_origin_is_project_owned() {
         assert!(is_project_owned(ORIGIN_DETACHED_SUBWINDOW));
-        assert!(is_project_owned(ORIGIN_RIGHT_FILE_TREE));
+        assert!(is_project_owned(ORIGIN_SIDE_FILE_TREE));
         assert!(!is_project_owned(ORIGIN_GLOBAL_APP));
+    }
+
+    #[test]
+    fn apps_view_origins_all_park_on_project_switch() {
+        // The parking set is the Apps-view set plus detached subwindows, so
+        // everything the view lists is hidden/shown with its project.
+        use crate::commands::apps::{
+            ORIGIN_BLOB_FILE_VIEWER, ORIGIN_DOWNLOADS, ORIGIN_MANUAL_LAUNCH,
+            ORIGIN_MIDDLE_FILE_BROWSER, ORIGIN_RESTORED,
+        };
+        for origin in [
+            ORIGIN_SIDE_FILE_TREE,
+            ORIGIN_MIDDLE_FILE_BROWSER,
+            ORIGIN_RESTORED,
+            ORIGIN_DOWNLOADS,
+            ORIGIN_BLOB_FILE_VIEWER,
+            ORIGIN_DETACHED_SUBWINDOW,
+        ] {
+            assert!(is_project_owned(origin), "{origin} must park");
+        }
+        for origin in [ORIGIN_GLOBAL_APP, ORIGIN_MANUAL_LAUNCH] {
+            assert!(!is_project_owned(origin), "{origin} must not park");
+        }
     }
 
     #[test]
@@ -235,10 +308,10 @@ mod tests {
     #[test]
     fn resolve_missing_window_ids_back_populates_only_unresolved_project_owned() {
         let mut wins = registry(vec![
-            tracked("a", Some("p1"), ORIGIN_RIGHT_FILE_TREE, None), // pid 10
-            tracked("b", Some("p1"), ORIGIN_RIGHT_FILE_TREE, Some(5)), // pid 11
+            tracked("a", Some("p1"), ORIGIN_SIDE_FILE_TREE, None), // pid 10
+            tracked("b", Some("p1"), ORIGIN_SIDE_FILE_TREE, Some(5)), // pid 11
             tracked("c", Some("p1"), ORIGIN_GLOBAL_APP, None),      // pid 12
-            tracked("d", Some("p2"), ORIGIN_RIGHT_FILE_TREE, None), // pid 13
+            tracked("d", Some("p2"), ORIGIN_SIDE_FILE_TREE, None), // pid 13
         ]);
         // Give each a distinct pid so the fake resolver can be asserted per-window.
         wins.get_mut("a").unwrap().pid = 10;
@@ -260,7 +333,7 @@ mod tests {
 
     #[test]
     fn resolve_missing_window_ids_leaves_none_when_resolver_fails() {
-        let mut wins = registry(vec![tracked("a", Some("p1"), ORIGIN_RIGHT_FILE_TREE, None)]);
+        let mut wins = registry(vec![tracked("a", Some("p1"), ORIGIN_SIDE_FILE_TREE, None)]);
         // A window the OS could not map (e.g. opener::open pid=0) stays unparked.
         resolve_missing_window_ids(&mut wins, Some("p1"), |_pid| None);
         assert_eq!(wins["a"].window_id, None);
@@ -305,7 +378,7 @@ mod tests {
                 ORIGIN_DETACHED_SUBWINDOW,
                 Some(202),
             ),
-            tracked("file-p1", Some("p1"), ORIGIN_RIGHT_FILE_TREE, Some(303)),
+            tracked("file-p1", Some("p1"), ORIGIN_SIDE_FILE_TREE, Some(303)),
         ]);
         let p1 = project_detached_labels(&wins, Some("p1"));
         assert_eq!(p1, vec!["detached-p1-g3".to_string()]);

@@ -1,5 +1,5 @@
 /**
- * A file dragged from the right panel and released OVER an open popout must dock
+ * A file dragged from the side panel and released OVER an open popout must dock
  * into it as an embed tab — mirroring a tab dragged onto a popout — instead of
  * spawning a new standalone window. commitFileDrop's `detachedTarget` branch
  * creates the embed tab in the scope, moves it into the popout's subtree
@@ -13,7 +13,13 @@ const { invokeMock, emitMock } = vi.hoisted(() => ({
   emitMock: vi.fn((..._a: unknown[]) => Promise.resolve(undefined)),
 }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: (...a: unknown[]) => invokeMock(...a) }));
-vi.mock("@tauri-apps/api/event", () => ({ emit: (...a: unknown[]) => emitMock(...a) }));
+vi.mock("@tauri-apps/api/event", () => ({
+  emit: (...a: unknown[]) => emitMock(...a),
+  // The detached store now listens as well as emits (Group B: the settings,
+  // status and activity channels), and a named import missing from a mock is an
+  // import-time failure, not a runtime one.
+  listen: () => Promise.resolve(() => {}),
+}));
 // detachedDropTargets imports WebviewWindow at module load; it is only exercised
 // by the live drag session (not this commit path), so a bare stub is enough.
 vi.mock("@tauri-apps/api/webviewWindow", () => ({ WebviewWindow: {} }));

@@ -109,8 +109,11 @@ fn tmux_attach_command(tmux_name: &str) -> CommandBuilder {
 
 /// A tmux attach only redraws its current screen. Capture the pane first so a
 /// phone's xterm buffer actually contains the shell history it is asked to
-/// scroll. Keep this equal to the browser terminal's `scrollback` setting.
-const MOBILE_SCROLLBACK_LINES: usize = 4_000;
+/// scroll. One number with the tmux retention Eldrun sets on its sessions
+/// (`ssh_exec::TMUX_HISTORY_LINES`) and the browser terminal's `scrollback`
+/// (`PHONE_SCROLLBACK` in `mobile-web`): what tmux retains is what the replay
+/// carries and what the phone can hold.
+const MOBILE_SCROLLBACK_LINES: usize = crate::services::ssh_exec::TMUX_HISTORY_LINES as usize;
 
 fn tmux_capture_command(tmux_name: &str) -> Command {
     let mut command = Command::new("tmux");

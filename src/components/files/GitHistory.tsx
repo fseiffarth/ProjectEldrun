@@ -5,6 +5,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Dropdown } from "../common/Dropdown";
 import { UntestedTag } from "../common/UntestedTag";
+import { useDialogs } from "../common/PromptDialogs";
 import { useTabsStore } from "../../stores/tabs";
 import { useT, type TranslationKey } from "../../lib/i18n";
 
@@ -308,6 +309,11 @@ const LOCKSTEP_STATUS_KEY: Record<LockstepStatus, TranslationKey> = {
 
 export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) {
   const t = useT();
+  // Every destructive git question below is asked in the panel's own dialog —
+  // the native `confirm()` these used arrives themeless, titled with the page
+  // origin, and (worse for a `reset --hard` warning that *lists paths*) collapses
+  // to one unreadable line.
+  const { promptText, confirmAction, dialogs } = useDialogs();
   const [commits, setCommits] = useState<GitCommit[]>([]);
   const [branches, setBranches] = useState<GitBranch[]>([]);
   const [worktrees, setWorktrees] = useState<Worktree[]>([]);
@@ -440,12 +446,13 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
       const other = t(
         authority === "local" ? "gitHistory.authorityRemoteHost" : "gitHistory.authorityLocalMirror",
       );
-      if (
-        !window.confirm(
-          t("gitHistory.confirmResolve", { authority: authorityLabel, other }),
-        )
-      )
-        return;
+      const ok = await confirmAction({
+        title: t("gitHistory.resolveTitle"),
+        body: t("gitHistory.confirmResolve", { authority: authorityLabel, other }),
+        confirmLabel: t("gitHistory.resolveAction", { authority: authorityLabel }),
+        danger: true,
+      });
+      if (!ok) return;
       setLockstepBusy(true);
       setError(null);
       try {
@@ -462,7 +469,7 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
         setLockstepBusy(false);
       }
     },
-    [projectId, load, onChanged, t],
+    [projectId, load, onChanged, t, confirmAction],
   );
 
   // #28p D3: pairing refused because the empty side holds files that differ from what
@@ -479,17 +486,18 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
       conflict.paths.length > 10
         ? t("gitHistory.andMore", { count: conflict.paths.length - 10 })
         : "";
-    if (
-      !window.confirm(
-        t("gitHistory.confirmOverwritePair", {
-          count: conflict.paths.length,
-          side,
-          list,
-          more,
-        }),
-      )
-    )
-      return;
+    const ok = await confirmAction({
+      title: t("gitHistory.overwritePairDialogTitle"),
+      body: t("gitHistory.confirmOverwritePair", {
+        count: conflict.paths.length,
+        side,
+        list,
+        more,
+      }),
+      confirmLabel: t("gitHistory.overwritePairAction"),
+      danger: true,
+    });
+    if (!ok) return;
     setLockstepBusy(true);
     setError(null);
     try {
@@ -502,7 +510,7 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
     } finally {
       setLockstepBusy(false);
     }
-  }, [projectId, lockstep?.pairingConflict, load, onChanged, t]);
+  }, [projectId, lockstep?.pairingConflict, load, onChanged, t, confirmAction]);
 
   // #28p D6: the backup refs every resolve/restore creates were write-only — they
   // pinned objects forever and nothing could list or restore them, which also hollowed
@@ -524,17 +532,18 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
   const restoreBackup = useCallback(
     async (b: BackupRef) => {
       if (!projectId) return;
-      if (
-        !window.confirm(
-          t("gitHistory.confirmRestore", {
-            peer: b.peer,
-            branch: b.branch,
-            sha: b.sha.slice(0, 7),
-            subject: b.subject || t("gitHistory.noSubject"),
-          }),
-        )
-      )
-        return;
+      const ok = await confirmAction({
+        title: t("gitHistory.restoreDialogTitle"),
+        body: t("gitHistory.confirmRestore", {
+          peer: b.peer,
+          branch: b.branch,
+          sha: b.sha.slice(0, 7),
+          subject: b.subject || t("gitHistory.noSubject"),
+        }),
+        confirmLabel: t("gitHistory.restoreAction"),
+        danger: true,
+      });
+      if (!ok) return;
       setLockstepBusy(true);
       setError(null);
       try {
@@ -553,7 +562,7 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
         setLockstepBusy(false);
       }
     },
-    [projectId, load, loadBackups, onChanged, t],
+    [projectId, load, loadBackups, onChanged, t, confirmAction],
   );
 
   // #28p D8: a genuine two-sided divergence used to offer only "pick a winner". Open a
@@ -649,7 +658,13 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
    */
   async function removeWorktree(wt: Worktree, force = 0) {
     if (force === 0) {
-      if (!window.confirm(t("gitHistory.confirmRemoveWorktree", { path: wt.path }))) return;
+      const ok = await confirmAction({
+        title: t("gitHistory.removeWorktreeDialogTitle"),
+        body: t("gitHistory.confirmRemoveWorktree", { path: wt.path }),
+        confirmLabel: t("common.remove"),
+        danger: true,
+      });
+      if (!ok) return;
     }
     setLoading(true);
     setError(null);
@@ -669,7 +684,13 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
       if (next > force) {
         const key =
           next === 2 ? "gitHistory.confirmForceRemoveLocked" : "gitHistory.confirmForceRemoveDirty";
-        if (window.confirm(t(key, { path: wt.path }))) {
+        const forced = await confirmAction({
+          title: t("gitHistory.removeWorktreeDialogTitle"),
+          body: t(key, { path: wt.path }),
+          confirmLabel: t("gitHistory.removeWorktreeForceAction"),
+          danger: true,
+        });
+        if (forced) {
           await removeWorktree(wt, next);
           return;
         }
@@ -683,7 +704,15 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
     setError(null);
     try {
       if (lock) {
-        const reason = window.prompt(t("gitHistory.lockReasonPrompt", { path: wt.path }), "");
+        // Empty is a legitimate answer — git locks without a reason — so the
+        // dialog accepts a blank field; only dismissing it cancels.
+        const reason = await promptText({
+          title: t("gitHistory.lockDialogTitle"),
+          body: t("gitHistory.lockReasonPrompt", { path: wt.path }),
+          label: t("gitHistory.lockReasonLabel"),
+          confirmLabel: t("gitHistory.lockWorktreeAction"),
+          allowEmpty: true,
+        });
         if (reason === null) {
           setLoading(false);
           return;
@@ -759,19 +788,20 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
 
   return (
     <div className="git-history">
+      {dialogs}
       <div className="git-history-toolbar">
         <span className="git-history-branch" title={t("gitHistory.currentBranchTitle")}>
           ⎇ {current ?? t("gitHistory.detached")}
         </span>
         <button
-          className={`tab-add-btn git-history-mode${graphMode ? " active" : ""}`}
+          className={`toolbar-btn git-history-mode${graphMode ? " active" : ""}`}
           onClick={toggleGraphMode}
           aria-pressed={graphMode}
           title={t(graphMode ? "gitHistory.switchToListView" : "gitHistory.switchToGraphView")}
         >
           {t(graphMode ? "gitHistory.graphModeGraph" : "gitHistory.graphModeList")}
         </button>
-        <button className="tab-add-btn git-history-refresh" onClick={load} title={t("common.refresh")} disabled={loading}>
+        <button className="toolbar-btn git-history-refresh" onClick={load} title={t("common.refresh")} disabled={loading}>
           ⟳
         </button>
       </div>
@@ -779,7 +809,7 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
       {lockstepEligible && (
         <div className="git-lockstep-bar" style={{ display: "flex", alignItems: "center", gap: 6, padding: "3px 6px", borderBottom: "1px solid var(--border-color)", fontSize: 10 }}>
           <button
-            className={`tab-add-btn${lockstep?.enabled ? " active" : ""}`}
+            className={`toolbar-btn${lockstep?.enabled ? " active" : ""}`}
             onClick={toggleLockstep}
             disabled={lockstepBusy}
             aria-pressed={!!lockstep?.enabled}
@@ -794,21 +824,21 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
                 style={{
                   padding: "1px 6px",
                   borderRadius: "var(--radius)",
-                  color: "#fff",
+                  color: "var(--accent-contrast)",
                   background:
                     lockstep.status === "synchronized"
-                      ? "var(--success, #3fb950)"
+                      ? "var(--success)"
                       : lockstep.status === "syncing"
-                        ? "var(--warning, #e3b341)"
+                        ? "var(--warning)"
                         : lockstep.status === "disconnected"
-                          ? "var(--text-muted, #8b949e)"
-                          : "var(--danger, #f85149)",
+                          ? "var(--text-muted)"
+                          : "var(--danger)",
                 }}
               >
                 {t(LOCKSTEP_STATUS_KEY[lockstep.status])}
               </span>
               <button
-                className="tab-add-btn"
+                className="toolbar-btn"
                 onClick={lockstepSyncNow}
                 // Nothing to sync against without a connection — the button would only
                 // produce another "disconnected" (#28p D4).
@@ -826,7 +856,7 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
                 // it would destroy (#28p D3) — Use-local/Use-remote would be meaningless
                 // here (there is nothing paired yet to pick a winner between).
                 <button
-                  className="tab-add-btn"
+                  className="toolbar-btn"
                   onClick={lockstepPairConfirm}
                   disabled={lockstepBusy}
                   title={t("gitHistory.overwritePairTitle", {
@@ -839,7 +869,7 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
                 lockstep.status === "desynchronized" && (
                   <>
                     <button
-                      className="tab-add-btn"
+                      className="toolbar-btn"
                       onClick={() => lockstepResolve("local")}
                       disabled={lockstepBusy}
                       title={t("gitHistory.useLocalTitle")}
@@ -847,7 +877,7 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
                       {t("gitHistory.useLocal")}
                     </button>
                     <button
-                      className="tab-add-btn"
+                      className="toolbar-btn"
                       onClick={() => lockstepResolve("remote")}
                       disabled={lockstepBusy}
                       title={t("gitHistory.useRemoteTitle")}
@@ -855,7 +885,7 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
                       {t("gitHistory.useRemote")}
                     </button>
                     <button
-                      className="tab-add-btn"
+                      className="toolbar-btn"
                       onClick={resolveInTerminal}
                       disabled={lockstepBusy}
                       title={t("gitHistory.resolveInTerminalTitle")}
@@ -866,7 +896,7 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
                 )
               )}
               <button
-                className="tab-add-btn"
+                className="toolbar-btn"
                 onClick={() => (backups ? setBackups(null) : loadBackups())}
                 disabled={lockstepBusy || lockstep.status === "disconnected"}
                 aria-pressed={!!backups}
@@ -875,7 +905,7 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
                 {t("gitHistory.backups")}
               </button>
               {lockstep.status === "desynchronized" && lockstep.detail && (
-                <span style={{ color: "var(--danger, #f85149)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={lockstep.detail}>
+                <span style={{ color: "var(--danger)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={lockstep.detail}>
                   {lockstep.detail}
                 </span>
               )}
@@ -908,7 +938,7 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
                   {new Date(b.ts * 1000).toLocaleString()}
                 </span>
                 <button
-                  className="tab-add-btn"
+                  className="toolbar-btn"
                   onClick={() => restoreBackup(b)}
                   disabled={lockstepBusy}
                   title={t("gitHistory.restoreTitle", { peer: b.peer, branch: b.branch })}
@@ -979,7 +1009,7 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
           <span className="git-worktree-spacer" />
           {worktrees.some((w) => w.is_prunable) && (
             <button
-              className="tab-add-btn"
+              className="toolbar-btn"
               onClick={pruneWorktrees}
               disabled={loading}
               title={t("gitHistory.pruneWorktreesTitle")}
@@ -988,7 +1018,7 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
             </button>
           )}
           <button
-            className="tab-add-btn"
+            className="toolbar-btn"
             onClick={() =>
               setWtForm((f) =>
                 f
@@ -1144,7 +1174,7 @@ export function GitHistory({ projectDir, projectId, remote, onChanged }: Props) 
               aria-label={t("gitHistory.worktreeNamePlaceholder")}
             />
             <button
-              className="tab-add-btn"
+              className="toolbar-btn"
               onClick={createWorktree}
               disabled={loading || !wtForm.branch.trim()}
             >

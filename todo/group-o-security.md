@@ -55,35 +55,34 @@ auth) and the local/remote git push axis (#21).*
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work
 
-87. **Per-tab Plan/Auto agent mode. (DONE ✅ · 🧪 Untested)** *(This is group-O's
-    #87; group-M has a different #87.)* A third authority axis
-    beside the Docker sandbox (OS containment) and tab locality (where it runs):
-    how much authority the *agent* has. An agent tab carries an optional
-    `agentMode` — **Plan** (`--permission-mode plan`: reads and proposes, never
-    edits) or **Auto** (`acceptEdits`: edits apply, shell/network still ask) —
-    surfaced as a clickable badge in the tab strip, so one tab plans while another
-    does the work and each comes back in its mode after a restart. Absent = the
-    agent's own ask-each-time default, which is every pre-existing tab.
-    - Behind the experimental global setting `agent_mode_toggle` (default **off**).
-    - **Claude *and Gemini*** — this bullet used to say "Claude only, by
-      construction… a toggle on Gemini would silently destroy the chat", which
-      the code has since overtaken. `components/tabs/agentModes.ts:46-56` ships
-      Gemini via `--approval-mode` (deliberately `auto_edit`, **not** `yolo`),
-      with the continue-last ambiguity accepted and documented in code.
-      The mode is a launch flag, so switching one respawns the agent
-      (`resolve_claude_session_impl` rewrites `--session-id` → `--resume`).
-      **Codex remains the deliberate absence**: it resumes but has no plan mode,
-      only a read-only sandbox that approximates one. That capability table is
-      still the single gate for adding more.
-    - Known cost: the respawn loses xterm scrollback (the conversation is resumed,
-      the terminal's raw history is not). A busy tab confirms before restarting.
-    - Follow-ups: an `agent_default_mode` setting so new tabs *start* in Plan or
-      Auto (would make the badge purely two-state); Codex once `--sandbox
-      read-only`/`--full-auto` are verified to be accepted on `codex resume`.
-    - [x] 🤖 Automated test (`src/__tests__/AgentMode.test.ts`)
-    - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+87. **Per-tab Plan/Auto agent mode. (REMOVED — the mode is the agent's own.)**
+    *(This is group-O's #87; group-M has a different #87.)* Built, then taken
+    back out: an agent tab carried an optional `agentMode` (**Plan** =
+    `--permission-mode plan`, **Auto** = `acceptEdits`; Gemini via
+    `--approval-mode plan`/`auto_edit`) behind the experimental
+    `agent_mode_toggle`, surfaced as a clickable badge in the tab strip. Gone
+    with it: `components/tabs/agentModes.ts`, `TabEntry.agentMode`, the setting
+    on both sides, the badge, and `src/__tests__/AgentMode{,Badge}.test.ts{,x}`.
+
+    Everything now goes through the agent's own CLI. Two things drove that, and
+    both are properties of the design rather than bugs in it:
+    - **The mode was a launch flag, so a flip respawned the PTY** — the
+      conversation resumed, the scrollback and any turn in flight did not. The
+      agent's own in-TUI switch restarts nothing.
+    - **It made the tab layout a second authority record.** A mode set inside
+      the CLI and a persisted `agentMode` are two answers to one question, and
+      the layout's was the one re-applied on restart.
+
+    What is kept: `services::agent_session` still re-applies the mode Claude's
+    Stop hook recorded onto the `--resume` respawn, so a mode set *in-session*
+    survives a relaunch. That is the CLI's answer being preserved, not Eldrun
+    choosing one. Eldrun Mobile's mode sheet is untouched — it presses Shift+Tab
+    and verifies against the TUI's own status line
+    (`mobile-web/src/terminal/agentModes.ts`), never a launch flag; only the
+    desktop bridge's launch-`modes` list went (now always empty).
+
+    Not reopening this without a mechanism that does not restart the session.
+    See `docs/context/agent_authority.md`.
 
 60. **Never manipulate the browser download path. (DONE — removed.)** Eldrun must
     not touch any browser's download directory. The `commands/downloads.rs` module
@@ -482,6 +481,65 @@ intent. What is left is listed here.
       hand-typing the path.
     - [x] 🤖 Automated test
     - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+---
+
+153. **Harden Eldrun Mobile's local unlock into a cryptographic gate (PROPOSED
+     — needs sign-off).** From the 2026-08-28 mobile security re-review. Today
+     the phone's app lock (`mobile-web/src/localLock.ts`) is a UI gate: the
+     device signing key is a non-exportable `CryptoKey` in IndexedDB usable by
+     any script in the Serve origin, and the PIN is a PBKDF2 verifier that
+     wraps nothing — so an unlocked, running phone plus origin script (remote
+     debugging, or setting the `sessionStorage` unlock flag) bypasses the lock.
+     Not a bug: the UI states this posture honestly ("protects against casual
+     access to an unlocked phone"). The proposed enhancement uses the WebAuthn
+     **PRF extension** to derive a wrapping key from a platform-authenticator
+     assertion and store the device key **encrypted at rest**, so no usable key
+     exists without a biometric/device-lock assertion where PRF is supported;
+     PIN-only and PRF-incapable phones keep today's behavior (no lockout).
+     Full spec — enrollment/unlock/migration, the extractable-key tradeoff, and
+     the residual it does *not* close (unlocked-and-running) — in
+     [`docs/eldrun_mobile_future_plan.md`](../docs/eldrun_mobile_future_plan.md)
+     §G. Needs the user's sign-off on the extractable-key tradeoff before any
+     implementation.
+    - [ ] 🤖 Automated test
+    - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+154. **Screenshots ask before they land in a project — and never auto-file.**
+     ✅ Implemented · needs live QA. A capture used to be written straight into
+     the active project's `screenshots/` folder, which for a project with a
+     public git remote is a private-data leak one `git add -A` away: a screen
+     grab holds whatever was on screen (another project's window, mail, a token
+     in a terminal), not just the thing being documented. Now the OS region
+     tool is directed at a **staging area** outside every project tree
+     (`<state_dir>/screenshots-pending/`, so no file watch, git status or sync
+     loop sees it), the backend reports the PNG as a `screenshot-captured`
+     event, and `layout/ScreenshotSaveOverlay` asks for project / folder / name
+     before anything is written (`save_pending_screenshot` moves it,
+     `discard_pending_screenshot` deletes it, a 24h sweep collects shots whose
+     overlay never got an answer). The clipboard copy is unchanged and
+     unconditional — that is what makes Discard cheap. The PDF viewer's in-app
+     region crop goes through the same overlay instead of writing itself.
+     `screenshots/` is now in `GITIGNORE_DEFAULT`, so scaffold repair adds it to
+     existing projects too. Also **Shift+click on the Screenshot button waits
+     5 s** before the tool starts (`SCREENSHOT_DELAY_MS`): a region overlay
+     grabs the pointer *and* the keyboard, so Alt+Tab is impossible once it is
+     up — the delay is the only window in which the target window can be
+     brought forward. Countdown rides the existing switch toast.
+     - Audit at the time (2026-08-31): no auto-named `Screenshot-*.png` was ever
+       committed in any Eldrun project; the only screenshots in this public
+       repo's history are the deliberate README assets.
+    - [x] 🤖 Automated test — `src/__tests__/ScreenshotDelay.test.ts` (countdown,
+      throttled-timer firing, restart, cancel), `commands::screenshot` staging
+      confinement + TTL sweep, `scaffold_project_gitignores_screenshots`.
+    - [ ] 🖐️ Manual test — needs a backend restart. Press Screenshot: the
+      overlay should open on the crop with a preview, Save should land it where
+      named, Discard should leave the clipboard paste working. Shift+click
+      should count down and let an Alt+Tab land first.
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work
 

@@ -1,5 +1,5 @@
 ## Group F — Session Restore
-*Files: `src-tauri/src/schema/active_session.rs` (defined but unused), `services/project_runtime.rs`, `terminal_service.rs`, `src/stores/tabs.ts`, `CenterPanel.tsx`.*
+*Files: `services/project_runtime.rs`, `terminal_service.rs`, `src/stores/tabs.ts`, `CenterPanel.tsx`.*
 
 24. **Restore/resume agent sessions.** Terminal/tab layout persistence already
     exists (`.eldrun/sessions/terminals.json`), but app-startup restore via
@@ -20,9 +20,10 @@
       "solve per-tab session tracking before relying on `--resume`" no longer
       applies — this item is unblocked and ready to build.
     - **Residual scope is now narrow:** only `active_session.json` startup
-      restore (active project + windows). It remains genuinely unwired —
-      `schema/active_session.rs:1-4` still says nothing reads or writes it, and
-      its only reference is `schema/mod.rs:1,18`.
+      restore (active project + windows). The never-wired
+      `schema/active_session.rs` stub was deleted (codebase review §10.2,
+      2026-08-28) — recover it from git history, or redefine the schema, when
+      this lands.
 
 39. **Per-tab agent session restore — stepwise.** Concrete, incremental path to
     #24's hard part (per-tab session tracking), built one step at a time so each

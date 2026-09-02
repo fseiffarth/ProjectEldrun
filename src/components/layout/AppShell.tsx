@@ -26,26 +26,34 @@ import { useOllamaAutoloadOnLaunch } from "../../stores/ollamaAutoload";
 import { useRendererWatchdog } from "../../lib/rendererWatchdog";
 import { CenterPanel } from "./CenterPanel";
 import { HeaderBar } from "./HeaderBar";
-import { RightPanel } from "./RightPanel";
+import { SidePanel } from "./SidePanel";
 import { LogoIcon } from "./LogoIcon";
 import { MobileBridgeHost } from "../mobile/MobileBridgeHost";
+import { ScreenshotSaveOverlay } from "./ScreenshotSaveOverlay";
 import { VpnPasswordPrompt } from "./VpnPasswordPrompt";
 import { AlarmPopup } from "../calendar/AlarmPopup";
+import { SteeringLegend } from "./SteeringLegend";
+import { ShortcutHelpOverlay } from "./ShortcutHelpOverlay";
 import { RemoteConnectDialog } from "../projects/RemoteConnectDialog";
 import { RemoteMachinesDialogHost } from "../projects/RemoteMachinesWindow";
 import { GlobalMachineMonitorDialogHost } from "../monitoring/GlobalMachineMonitorDialog";
 import { HpcPipelineWizardHost } from "../projects/HpcPipelineWizard";
 import { BigFolderDialogHost } from "../projects/BigFolderExcludeDialog";
+import { BoxEditorHost } from "../projects/BoxEditorDialog";
 import { BrowserDownloadHost } from "../browser/BrowserDownloadHost";
 import { MailOverlayHost } from "../mail/MailOverlay";
 import { CalendarOverlayHost } from "../calendar/CalendarOverlay";
 import { CalDavSyncHost } from "../calendar/CalDavSyncHost";
+import { AgentCronHost } from "./AgentCronHost";
+import { AgentScheduleHost } from "./AgentScheduleHost";
 import { CalDavConflictDialog } from "../calendar/CalDavConflictDialog";
 import { TodoOverlayHost } from "../todo/TodoOverlay";
 import { SkillsOverlayHost } from "../skills/SkillsOverlay";
+import { InstallOverlayHost } from "./InstallOverlay";
 import { LocalLossDialog } from "../common/LocalLossDialog";
 import { HostKeyConfirmDialog } from "../common/HostKeyConfirmDialog";
 import { HpcGuardDialog } from "../common/HpcGuardDialog";
+import { StopProjectDialog } from "../common/StopProjectDialog";
 import { SyncConfirmDialog } from "../common/SyncConfirmDialog";
 import { RemoteUsageWarningDialog } from "../common/RemoteUsageWarningDialog";
 import { QuickOpen } from "../files/QuickOpen";
@@ -63,17 +71,23 @@ import {
 } from "../../stores/projects";
 import { useRemoteStatusStore } from "../../stores/remoteStatus";
 import { disconnectAllTunnelsOnQuit } from "../../stores/vpnStatus";
-import { listenDetachedHost, shutdownDetachedWindows } from "../../stores/detached";
+import {
+  closeOrphanedPopouts,
+  listenDetachedHost,
+  shutdownDetachedWindows,
+} from "../../stores/detached";
 import { listenPdfReveal } from "../../stores/pdfSync";
 import { listenSyncProgress } from "../../stores/sync";
 import { autoConnectVpnOnLaunch } from "../../lib/vpnAutoConnect";
 import { initRemoteAutoReconnect } from "../../lib/remoteAutoReconnect";
 import { initExperimentalSweep } from "../../lib/experimentalSweep";
 import { initMachineSync } from "../../lib/machineSync";
+import { installWindowsEvents } from "../../stores/windows";
 import { listenEditorJump } from "../../stores/editorJump";
+import { listenTexCenter } from "../../stores/texCenter";
 import { listenSourceJump } from "../embed/FileViewerPane";
 import { BOX_SCOPE_PREFIX, useBoxesStore } from "../../stores/boxes";
-import { useSettingsStore } from "../../stores/settings";
+import { listenSettingsChanged, useSettingsStore } from "../../stores/settings";
 import { ROOT_SCOPE, useTabsStore } from "../../stores/tabs";
 import { useTimerStore } from "../../stores/timer";
 import { flushUsage } from "../../stores/usage";
@@ -88,7 +102,7 @@ const DevPerfHost = import.meta.env.DEV
   ? lazy(() => import("../../dev/DevPerfHost").then((m) => ({ default: m.DevPerfHost })))
   : null;
 
-// Width of the right-edge band that reveals the (unpinned) right panel on hover.
+// Width of the right-edge band that reveals the (unpinned) side panel on hover.
 // Kept wide because on Windows/WebView2 the window often isn't true-fullscreen
 // (the Windows platform backend is a stub, so setFullscreen may not take) and
 // the OS resize border swallows mousemove events for the last few edge pixels —
@@ -96,14 +110,14 @@ const DevPerfHost = import.meta.env.DEV
 // crossed on the way to the edge, so the reveal fires before the dead-zone.
 const REVEAL_EDGE_PX = 8;
 
-// Right-panel width bounds. The default matches the historical fixed 280px so
+// Side-panel width bounds. The default matches the historical fixed 280px so
 // existing installs (no stored width) look unchanged; the max is capped against
 // the live window so the panel can never swallow the whole workspace.
-const RIGHT_PANEL_MIN = 220;
-const RIGHT_PANEL_DEFAULT = 280;
-function clampRightWidth(px: number): number {
-  const max = Math.max(RIGHT_PANEL_MIN, Math.min(900, window.innerWidth - 240));
-  return Math.round(Math.max(RIGHT_PANEL_MIN, Math.min(max, px)));
+const SIDE_PANEL_MIN = 220;
+const SIDE_PANEL_DEFAULT = 280;
+function clampPanelWidth(px: number): number {
+  const max = Math.max(SIDE_PANEL_MIN, Math.min(900, window.innerWidth - 240));
+  return Math.round(Math.max(SIDE_PANEL_MIN, Math.min(max, px)));
 }
 
 /**
@@ -183,9 +197,18 @@ export function AppShell() {
   const t = useT();
   const loadSettings = useSettingsStore((s) => s.load);
   const settingsLoaded = useSettingsStore((s) => s.loaded);
-  const pinnedSetting = useSettingsStore((s) => s.settings?.right_panel_pinned ?? false);
-  const widthSetting = useSettingsStore((s) => s.settings?.right_panel_width ?? RIGHT_PANEL_DEFAULT);
-  const panelSide = useSettingsStore((s) => s.settings?.right_panel_side ?? "right");
+  // Each read falls back to the pre-rename `right_panel_*` spelling so an install
+  // that last wrote settings.json under the old name keeps its pin state, width
+  // and edge. Only the `side_panel_*` keys are ever written back.
+  const pinnedSetting = useSettingsStore(
+    (s) => s.settings?.side_panel_pinned ?? s.settings?.right_panel_pinned ?? false,
+  );
+  const widthSetting = useSettingsStore(
+    (s) => s.settings?.side_panel_width ?? s.settings?.right_panel_width ?? SIDE_PANEL_DEFAULT,
+  );
+  const panelSide = useSettingsStore(
+    (s) => s.settings?.side_panel_edge ?? s.settings?.right_panel_side ?? "right",
+  );
   const updateSettings = useSettingsStore((s) => s.updateSettings);
   const loadProjects = useProjectsStore((s) => s.load);
   const projectsLoaded = useProjectsStore((s) => s.loaded);
@@ -198,7 +221,7 @@ export function AppShell() {
   const activeId = useProjectsStore((s) => s.activeId);
   const rootDir = useProjectsStore((s) => s.rootDir);
   const scope = useTabsStore((s) => s.scope);
-  // The right panel also opens for an active box scope (multi-root file view),
+  // The side panel also opens for an active box scope (multi-root file view),
   // even when no project is the current activeId — and for the ROOT scope, whose
   // `~/eldrun/root` is the app's unfiled/scratch area: the place data lands while
   // it is only being looked at, or before it belongs to any one project. That
@@ -222,11 +245,11 @@ export function AppShell() {
   // webview (a 44 GB leak was observed 2026-07-31). See lib/rendererWatchdog.
   useRendererWatchdog();
   const [panelsHidden, setPanelsHidden] = useState(false);
-  const [rightOpen, setRightOpen] = useState(false);
-  const [rightPinned, setRightPinned] = useState(false);
-  const [rightWidth, setRightWidth] = useState(RIGHT_PANEL_DEFAULT);
-  const [resizingRight, setResizingRight] = useState(false);
-  const latestRightWidth = useRef(RIGHT_PANEL_DEFAULT);
+  const [panelOpen, setPanelOpen] = useState(false);
+  const [panelPinned, setRightPinned] = useState(false);
+  const [panelWidth, setPanelWidth] = useState(SIDE_PANEL_DEFAULT);
+  const [resizingPanel, setResizingPanel] = useState(false);
+  const latestPanelWidth = useRef(SIDE_PANEL_DEFAULT);
   const [showHowToStart, setShowHowToStart] = useState(false);
   const [showRemoteFeaturesPrompt, setShowRemoteFeaturesPrompt] = useState(false);
   // Set only on the fresh-install path, where HowToStart takes the screen
@@ -234,7 +257,7 @@ export function AppShell() {
   // instead of stacking two modals on the very first launch.
   const [pendingRemoteFeaturesPrompt, setPendingRemoteFeaturesPrompt] = useState(false);
   const [showLessons, setShowLessons] = useState(false);
-  const rightCloseTimer = useRef<number | null>(null);
+  const panelCloseTimer = useRef<number | null>(null);
 
   useEffect(() => {
     loadSettings();
@@ -332,9 +355,9 @@ export function AppShell() {
   // window so a width saved on a wider monitor can't strand the panel off-screen).
   useEffect(() => {
     if (settingsLoaded) {
-      const w = clampRightWidth(widthSetting);
-      latestRightWidth.current = w;
-      setRightWidth(w);
+      const w = clampPanelWidth(widthSetting);
+      latestPanelWidth.current = w;
+      setPanelWidth(w);
     }
   }, [settingsLoaded, widthSetting]);
 
@@ -387,22 +410,22 @@ export function AppShell() {
   useEffect(() => {
     const openLessons = () => setShowLessons(true);
     const revealPanel = () => {
-      if (rightCloseTimer.current !== null) {
-        window.clearTimeout(rightCloseTimer.current);
-        rightCloseTimer.current = null;
+      if (panelCloseTimer.current !== null) {
+        window.clearTimeout(panelCloseTimer.current);
+        panelCloseTimer.current = null;
       }
-      setRightOpen(true);
+      setPanelOpen(true);
     };
     window.addEventListener("eldrun:open-lessons", openLessons);
-    window.addEventListener("eldrun:reveal-right-panel", revealPanel);
+    window.addEventListener("eldrun:reveal-side-panel", revealPanel);
     return () => {
       window.removeEventListener("eldrun:open-lessons", openLessons);
-      window.removeEventListener("eldrun:reveal-right-panel", revealPanel);
+      window.removeEventListener("eldrun:reveal-side-panel", revealPanel);
     };
   }, []);
 
-  // Load boxes once projects are in memory so deriving each project's box_id
-  // (from the authoritative member_ids) runs over the loaded project list.
+  // Load boxes once projects are in memory so the stale-`box_id` strip (see
+  // boxes store `load`) runs over the loaded project list.
   useEffect(() => {
     if (projectsLoaded) void loadBoxes();
   }, [projectsLoaded, loadBoxes]);
@@ -421,6 +444,8 @@ export function AppShell() {
   useEffect(() => {
     initRemoteAutoReconnect();
     initMachineSync();
+    // App-registry changes (a launched app exiting) → scoped Apps-view refresh.
+    installWindowsEvents();
   }, []);
 
   // Withdraw the tabs (and live browser windows) of any experiment that is
@@ -433,7 +458,7 @@ export function AppShell() {
   const togglePin = () => {
     setRightPinned((v) => {
       const next = !v;
-      void updateSettings({ right_panel_pinned: next });
+      void updateSettings({ side_panel_pinned: next });
       return next;
     });
   };
@@ -442,7 +467,7 @@ export function AppShell() {
   // inset, slide direction, resize math, reveal edge) reads `panelSide`, so no
   // local mirror state is needed.
   const toggleSide = () => {
-    void updateSettings({ right_panel_side: panelSide === "left" ? "right" : "left" });
+    void updateSettings({ side_panel_edge: panelSide === "left" ? "right" : "left" });
   };
 
   // Drag the panel's left border to resize. The panel is absolutely positioned
@@ -457,34 +482,34 @@ export function AppShell() {
     } catch {
       /* capture is best-effort */
     }
-    setResizingRight(true);
+    setResizingPanel(true);
   };
 
   const onResizeMove = (e: ReactPointerEvent<HTMLDivElement>) => {
-    if (!resizingRight) return;
+    if (!resizingPanel) return;
     // The grip straddles the panel's inner edge — on the right that's the left
     // border (width = innerWidth - cursorX); flipped to the left it's the right
     // border (width = cursorX).
-    const w = clampRightWidth(panelSide === "left" ? e.clientX : window.innerWidth - e.clientX);
-    latestRightWidth.current = w;
-    setRightWidth(w);
+    const w = clampPanelWidth(panelSide === "left" ? e.clientX : window.innerWidth - e.clientX);
+    latestPanelWidth.current = w;
+    setPanelWidth(w);
   };
 
   const onResizeEnd = (e: ReactPointerEvent<HTMLDivElement>) => {
-    if (!resizingRight) return;
-    setResizingRight(false);
+    if (!resizingPanel) return;
+    setResizingPanel(false);
     try {
       e.currentTarget.releasePointerCapture(e.pointerId);
     } catch {
       /* ignore */
     }
-    void updateSettings({ right_panel_width: latestRightWidth.current });
+    void updateSettings({ side_panel_width: latestPanelWidth.current });
     // Terminals and other panes refit off the DOM resize event; the docked body
     // inset just changed, so nudge them to remeasure at the new width.
     window.dispatchEvent(new Event("resize"));
   };
 
-  // Apply tab layout / right-panel restores emitted by the backend's
+  // Apply tab layout / side-panel restores emitted by the backend's
   // project-runtime switch (which runs off the UI thread).
   useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -519,6 +544,26 @@ export function AppShell() {
         if (cancelled) fn();
         else unlisten = fn;
       })
+      .catch(() => {});
+    // Group B #225: a reload of THIS window leaves its popouts on screen as
+    // zombies — they re-request a seed forever while the restored layout opens
+    // fresh ones beside them under new labels. Take them down before the restore
+    // respawns; run once, here, where the store is still empty and every live
+    // popout is therefore known to be a leftover.
+    void closeOrphanedPopouts();
+    return () => { cancelled = true; unlisten?.(); };
+  }, []);
+
+  // Group B #226: adopt settings written in another window. The main window is
+  // usually the writer, but a popout writes too (an alert mute, a careful-mode
+  // toggle, a custom agent, a Python run-args edit) — and without this its write
+  // would be invisible here until the next launch, while this window's own next
+  // write would silently spread its stale copy back over the popout's change.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    listenSettingsChanged()
+      .then((fn) => { if (cancelled) fn(); else unlisten = fn; })
       .catch(() => {});
     return () => { cancelled = true; unlisten?.(); };
   }, []);
@@ -559,6 +604,18 @@ export function AppShell() {
     return () => { cancelled = true; unlisten?.(); };
   }, []);
 
+  // #42: a reverse-search center switch aimed at a TeX workspace mounted in THIS
+  // window (e.g. a popped-out PDF's click resolved in its own window, which does
+  // not render the workspace). The registry-side twin of the two listeners above.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    listenTexCenter()
+      .then((fn) => { if (cancelled) fn(); else unlisten = fn; })
+      .catch(() => {});
+    return () => { cancelled = true; unlisten?.(); };
+  }, []);
+
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     const win = getCurrentWindow();
@@ -591,7 +648,7 @@ export function AppShell() {
       // Flush the active scope's tab layout for the same reason: CenterPanel
       // debounces its persistScope by 300ms, so a quit right after navigating a
       // Files (Project) tab into a subfolder (or any tab/split change) would drop
-      // it and the tab would reopen at the project root. The right-panel folder
+      // it and the tab would reopen at the project root. The side-panel folder
       // is saved eagerly and needs no flush; only the tab layout is debounced.
       const { activeId, projects } = useProjectsStore.getState();
       const localFile = activeId
@@ -719,7 +776,7 @@ export function AppShell() {
       // The chunk itself rides along: the store classifies a quiet agent tab —
       // finished vs blocked on a prompt — off its tail.
       notePtyOutput(ev.payload.id, ev.payload.data);
-      // Development-only transport-rate readout in the right-panel footer.
+      // Development-only transport-rate readout in the side-panel footer.
       // Count here because this is already the one app-wide listener: adding a
       // second listener just for profiling would add dispatch work to the hot
       // path being measured. Vite folds this branch away in production.
@@ -829,17 +886,17 @@ export function AppShell() {
     },
   });
 
-  const revealRight = panelTarget && !panelsHidden && (rightOpen || rightPinned);
+  const revealPanel = panelTarget && !panelsHidden && (panelOpen || panelPinned);
 
   const handleBodyMouseMove = (event: ReactMouseEvent<HTMLDivElement>) => {
-    if (!panelTarget || panelsHidden || rightOpen) return;
+    if (!panelTarget || panelsHidden || panelOpen) return;
     const nearEdge =
       panelSide === "left"
         ? event.clientX <= REVEAL_EDGE_PX
         : window.innerWidth - event.clientX <= REVEAL_EDGE_PX;
     if (nearEdge) {
       useHintsStore.getState().markSeen("file-tree");
-      reveal(rightCloseTimer, setRightOpen);
+      reveal(panelCloseTimer, setPanelOpen);
     }
   };
 
@@ -858,31 +915,31 @@ export function AppShell() {
         <div key={connToast} className="project-switch-toast conn-toast">{connToast}</div>
       )}
       <div
-        className={`app-body${revealRight && rightPinned ? (panelSide === "left" ? " left-docked" : " right-docked") : ""}${resizingRight ? " resizing" : ""}`}
+        className={`app-body${revealPanel && panelPinned ? (panelSide === "left" ? " left-docked" : " right-docked") : ""}${resizingPanel ? " resizing" : ""}`}
         style={
-          revealRight && rightPinned
+          revealPanel && panelPinned
             ? panelSide === "left"
-              ? { paddingLeft: rightWidth }
-              : { paddingRight: rightWidth }
+              ? { paddingLeft: panelWidth }
+              : { paddingRight: panelWidth }
             : undefined
         }
         onMouseMove={handleBodyMouseMove}
       >
         <CenterPanel />
         {panelTarget && !panelsHidden && (
-          <RightPanel
-            open={revealRight}
-            pinned={rightPinned}
+          <SidePanel
+            open={revealPanel}
+            pinned={panelPinned}
             side={panelSide}
-            width={rightWidth}
-            resizing={resizingRight}
+            width={panelWidth}
+            resizing={resizingPanel}
             onResizeStart={onResizeStart}
             onResizeMove={onResizeMove}
             onResizeEnd={onResizeEnd}
             onTogglePin={togglePin}
             onToggleSide={toggleSide}
-            onMouseEnter={() => reveal(rightCloseTimer, setRightOpen)}
-            onMouseLeave={() => !rightPinned && scheduleClose(rightCloseTimer, setRightOpen)}
+            onMouseEnter={() => reveal(panelCloseTimer, setPanelOpen)}
+            onMouseLeave={() => !panelPinned && scheduleClose(panelCloseTimer, setPanelOpen)}
           />
         )}
         {/* Invisible marker at the reveal band so the guided tour has a stable
@@ -902,21 +959,32 @@ export function AppShell() {
             border swallows them. That left no way to open the panel at all, and so
             no way to reach the pin that lives inside it. A click is delivered even
             where the mousemove stream isn't, so this is the reliable path; it
-            unmounts the moment the panel is open (revealRight). */}
-        {panelTarget && !panelsHidden && !revealRight && (
+            unmounts the moment the panel is open (revealPanel). It doubles as
+            the *edge marker*: unpinned, the panel is invisible, so this labelled
+            tab is the only thing saying which side it will slide in from. */}
+        {panelTarget && !panelsHidden && !revealPanel && (
           <button
             type="button"
-            className={`right-panel-reveal-handle${panelSide === "left" ? " left" : ""}`}
+            className={`side-panel-reveal-handle${panelSide === "left" ? " left" : ""}`}
             aria-label={t("appShell.showFilesPanel")}
             title={t("appShell.showFilesPanel")}
-            onClick={() => reveal(rightCloseTimer, setRightOpen)}
-            onMouseEnter={() => reveal(rightCloseTimer, setRightOpen)}
+            onClick={() => reveal(panelCloseTimer, setPanelOpen)}
+            onMouseEnter={() => reveal(panelCloseTimer, setPanelOpen)}
           >
-            <span aria-hidden="true">{panelSide === "left" ? "›" : "‹"}</span>
+            <span className="srh-chevron" aria-hidden="true">
+              {panelSide === "left" ? "›" : "‹"}
+            </span>
+            <span className="srh-label" aria-hidden="true">{t("appShell.filesEdgeLabel")}</span>
           </button>
         )}
       </div>
       <VpnPasswordPrompt />
+      {/* "Where should this screenshot go?" — the consent step between a capture
+          and any project write. At the shell because the capture can come from the
+          header's global-app menu or from any visible PDF viewer, and because the
+          backend reports OS-tool captures as an app-wide event with no component of
+          its own to land in. */}
+      <ScreenshotSaveOverlay />
       {/* "Is this the right machine?" — shown before a password is sent to a host
           whose SSH key has never been accepted here. At the shell because it can be
           raised by any connect surface (the Connect modal, a create/extend dialog,
@@ -926,6 +994,7 @@ export function AppShell() {
           here for the same reason the host-key prompt is: the caller is a lib
           function with no component of its own to render into. */}
       <HpcGuardDialog />
+      <StopProjectDialog />
       {/* "This will overwrite that side" — the confirmation every byte-sync
           transfer asks for. Here for the same reason as the two above: a pull or
           push can be started from the file tree, the file view's toolbar or the
@@ -946,6 +1015,8 @@ export function AppShell() {
           above does: the project that asked may not be the active one by the time
           its census (local walk + one host `du`) comes back. */}
       <BigFolderDialogHost />
+      {/* Box editor (#41): rename / member list / explicit dissolve. */}
+      <BoxEditorHost />
       {/* Same reason as the alarm below: lockstep/sync can delete a file from the local
           mirror during a background pass, and the user must hear about it wherever they
           are — including when the file panel it happened in is closed (#28q). */}
@@ -972,6 +1043,15 @@ export function AppShell() {
           calendar pane, so refreshing only while that pane is open would leave
           the calendar stale exactly where it is looked at. */}
       <CalDavSyncHost />
+      {/* The agent warm-up cron (Manage CLIs → Scheduled warm-up). Renders
+          nothing and starts no timer until an agent is scheduled — at the shell
+          for `CalDavSyncHost`'s reason turned around: the panel that configures
+          it is precisely the surface nobody has open at 06:00, so a timer living
+          there would only ever fire while its own settings page was being read.
+          Main window only, so two windows cannot both send the morning's
+          message. */}
+          <AgentCronHost />
+          <AgentScheduleHost />
       {/* The push half's one question (Phase 3): a `412` means the resource
           changed elsewhere, which is the user's decision and not the app's. Here
           rather than in the calendar pane because the conflicting edit can come
@@ -988,6 +1068,18 @@ export function AppShell() {
           the window and must survive a project switch), and after the three
           above because it is opened from a header menu that sits over them. */}
       <SkillsOverlayHost />
+      {/* One-click installs' terminal (`runInstallInTab`): a centered attach-only
+          view of the root-scope install tab, so the install is watched — and its
+          prompts answered — where it was clicked. After the overlay family and
+          the settings surfaces in DOM order so it lands on top of the dialog the
+          install was started from; closing it leaves the install running in the
+          root terminal. */}
+      <InstallOverlayHost />
+      {/* The shortcut cheat sheet (F1, `?` in steering mode, or the ⚙ menu) —
+          after the overlay family above so the sheet, openable from the
+          keyboard while any of them is up, lands on top (same z-index, DOM
+          order is the tie-break). */}
+      <ShortcutHelpOverlay />
       {/* Fires once per connect (manual or silent auto-connect): warns that the
           host's load/memory/logged-in sessions suggest it's already in use. */}
       <RemoteUsageWarningDialog />
@@ -995,6 +1087,9 @@ export function AppShell() {
           must reach the user whatever tab they are on — and even if they have
           never opened a calendar tab this session. */}
       <AlarmPopup />
+      {/* Keyboard steering mode's bottom legend — display-only echo of the
+          swallowed keys, mounted at the shell like the other overlays. */}
+      <SteeringLegend />
       <QuickOpen />
       <HintHost />
       <TourHost />

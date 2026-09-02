@@ -2,8 +2,7 @@ import { describe, it, expect } from "vitest";
 // Read the stylesheet at test time, the way `NativeEditorMetricsCss.test.ts`
 // does: a `?raw` import yields "" under the config's `css: false`, which would
 // make every assertion below pass vacuously. Vitest runs from the repo root.
-// @ts-expect-error node:fs has no type declarations in this project (no @types/node)
-import { readFileSync } from "node:fs";
+import { readAppStylesheet } from "./cssCorpus";
 import { thumbGeometry, scrollFromDrag, type TrackMetrics } from "../lib/customScrollbar";
 
 /**
@@ -121,12 +120,10 @@ describe("scrollFromDrag", () => {
  * exactly how the two-scrollbars bug survived a round of fixing, so the rule is
  * asserted rather than left to memory.
  */
-describe("themes.css scrollbar invariants", () => {
+describe("stylesheet scrollbar invariants", () => {
   // Comments are prose about scrollbars, including the values banned below.
-  const css: string = readFileSync("src/styles/themes.css", "utf8").replace(
-    /\/\*[\s\S]*?\*\//g,
-    "",
-  );
+  // The whole split corpus, in import order — one offender anywhere counts.
+  const css: string = readAppStylesheet().replace(/\/\*[\s\S]*?\*\//g, "");
 
   it("hides every native bar from the baseline, where it still counts", () => {
     // Also the guard against these assertions passing vacuously: an empty or

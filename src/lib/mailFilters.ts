@@ -135,10 +135,6 @@ export function ruleProblems(rule: MailFilterRule): string[] {
   return problems;
 }
 
-export function ruleIsUsable(rule: MailFilterRule): boolean {
-  return ruleProblems(rule).length === 0;
-}
-
 /** The name to show for a rule that has none — its first few terms, which is
  *  what the user would have typed anyway. Never an id: an unnamed rule still has
  *  to be recognizable in a list of them. */

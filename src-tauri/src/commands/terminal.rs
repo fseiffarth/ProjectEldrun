@@ -270,25 +270,42 @@ pub async fn pty_spawn(
     // its `cwd` names a path on the far host, which this process has no way to
     // check (the ssh-wrapped command below does the `cd` on that side).
     if let Some(pid) = opts.project_id.clone() {
-        let is_remote = crate::services::remote::remote_target_for(&pid).is_some();
-        if !is_remote || opts.local_only {
-            let allowed: std::path::PathBuf = if is_remote {
-                // local_only tab of a remote project: cwd was just resolved
-                // above to exactly this, so this only ever rejects a caller
-                // that skipped that resolution and supplied its own cwd.
-                crate::services::remote_sync::mirror_dir(&pid)
-            } else {
-                crate::services::sandbox::project_dir_for(&pid)
-                    .map(std::path::PathBuf::from)
-                    .ok_or_else(|| format!("terminal: project '{pid}' has no known directory"))?
-            };
-            if !cwd_within(&opts.cwd, &allowed) {
+        // Box scope (`box:<id>`): the tab may live in the box folder, any member
+        // project's root, or a remote member's local mirror — the co-accessible
+        // set the box exists to create. An unknown box fails closed, same
+        // posture as an unknown project below.
+        if let Some(box_id) = crate::commands::boxes::box_id_of_scope(&pid) {
+            let roots = crate::commands::boxes::box_allowed_roots(box_id)
+                .ok_or_else(|| format!("terminal: unknown box scope '{pid}'"))?;
+            if !roots.iter().any(|root| cwd_within(&opts.cwd, root)) {
                 return Err(format!(
-                    "terminal: refusing to spawn tab '{}' at '{}' — outside project '{pid}''s directory ({})",
-                    opts.id,
-                    opts.cwd,
-                    allowed.display()
+                    "terminal: refusing to spawn tab '{}' at '{}' — outside box scope '{pid}' (allowed: box folder + member roots)",
+                    opts.id, opts.cwd
                 ));
+            }
+        } else {
+            let is_remote = crate::services::remote::remote_target_for(&pid).is_some();
+            if !is_remote || opts.local_only {
+                let allowed: std::path::PathBuf = if is_remote {
+                    // local_only tab of a remote project: cwd was just resolved
+                    // above to exactly this, so this only ever rejects a caller
+                    // that skipped that resolution and supplied its own cwd.
+                    crate::services::remote_sync::mirror_dir(&pid)
+                } else {
+                    crate::services::sandbox::project_dir_for(&pid)
+                        .map(std::path::PathBuf::from)
+                        .ok_or_else(|| {
+                            format!("terminal: project '{pid}' has no known directory")
+                        })?
+                };
+                if !cwd_within(&opts.cwd, &allowed) {
+                    return Err(format!(
+                        "terminal: refusing to spawn tab '{}' at '{}' — outside project '{pid}''s directory ({})",
+                        opts.id,
+                        opts.cwd,
+                        allowed.display()
+                    ));
+                }
             }
         }
     }
@@ -303,6 +320,49 @@ pub async fn pty_spawn(
     // resolution `spawn_pty` used to do; it no longer does, to avoid resolving
     // twice.)
     opts = crate::services::agent_session::resolve_agent_session(opts);
+
+    // Resolve the fourth authority axis while cmd/cwd still describe the agent
+    // itself.  A local project member gets its own root plus the union of every
+    // box it belongs to; a box-scoped tab gets that box's roots.  Remote agents
+    // are reported as not applicable (local paths mean nothing on the far host).
+    // Root resolution is backend-owned and unknown scopes fail closed.
+    let remote_agent_run = !opts.local_only
+        && opts
+            .project_id
+            .as_deref()
+            .is_some_and(|id| crate::services::remote::remote_target_for(id).is_some());
+    let agent_spawn = crate::services::agent_fence::is_agent(&opts);
+    let fence_roots = if agent_spawn && !remote_agent_run {
+        Some(
+            crate::services::agent_fence::roots_for_scope(
+                opts.project_id.as_deref(),
+                opts.local_only,
+            )
+            .ok_or_else(|| {
+                format!(
+                    "Agent fence: unknown project or box scope '{}'; agent '{}' was not started.",
+                    opts.project_id.as_deref().unwrap_or("root"),
+                    opts.id
+                )
+            })?,
+        )
+    } else {
+        None
+    };
+
+    // Agent-native working-root flags are portable metadata, not the OS
+    // boundary: pass them on every platform for local multi-root runs.  Pick the
+    // root containing cwd as "own" so box-scoped member tabs do not receive a
+    // redundant flag for the directory they already started in.
+    if let Some(roots) = fence_roots.as_deref() {
+        let own = roots
+            .iter()
+            .filter(|root| std::path::Path::new(&opts.cwd).starts_with(root))
+            .max_by_key(|root| root.components().count())
+            .cloned()
+            .unwrap_or_else(|| std::path::PathBuf::from(&opts.cwd));
+        crate::services::agent_fence::add_box_root_args(&mut opts, roots, &own);
+    }
 
     // Codex resume, without the hook. Codex will not run Eldrun's SessionStart
     // hook until the user trusts it (`/hooks`), and an untrusted hook fails
@@ -428,6 +488,40 @@ pub async fn pty_spawn(
         crate::services::ssh_exec::wrap_pty_options(&mut opts)?;
     }
 
+    // Apply the outer bubblewrap boundary after docker/ssh selection but before
+    // local tmux.  This keeps the tmux server on the host while the command
+    // *inside* its session is fenced.  A missing/blocked bwrap fails closed.
+    let mut fenced_registration: Option<(String, String)> = None;
+    if let Some(roots) = fence_roots.as_deref() {
+        let decision = crate::services::agent_fence::decide(
+            &opts,
+            roots.to_vec(),
+            remote_agent_run,
+            crate::services::agent_fence::policy_enabled(opts.project_id.as_deref()),
+            cfg!(target_os = "linux"),
+            crate::services::agent_fence::bwrap_available(),
+        );
+        match decision {
+            crate::services::agent_fence::FenceDecision::Fenced { .. }
+                if opts.cmd != "ssh" && opts.cmd != "docker" =>
+            {
+                let scope_id = opts
+                    .project_id
+                    .clone()
+                    .unwrap_or_else(|| "root".to_string());
+                #[cfg(target_os = "linux")]
+                crate::services::agent_fence::wrap_pty_options_bwrap(&mut opts, roots, &scope_id)?;
+                fenced_registration = Some((opts.id.clone(), scope_id));
+            }
+            crate::services::agent_fence::FenceDecision::Unavailable { install_hint } => {
+                return Err(format!(
+                    "Agent fence: bubblewrap is unavailable, so this agent was not started. Install it with `{install_hint}`, or turn the Agent fence off for this project."
+                ));
+            }
+            _ => {}
+        }
+    }
+
     // Persistent LOCAL (tmux) sessions (TODO #85): a tab that resolved to a LOCAL
     // spawn — i.e. ssh/docker wrapping did NOT rewrite it — and carries a
     // `tmux_session` name is wrapped in a tmux session on this machine, so the run
@@ -457,7 +551,21 @@ pub async fn pty_spawn(
         }
     }
 
-    crate::terminal::spawn_pty(app, registry.inner().clone(), opts)
+    let result = crate::terminal::spawn_pty(app, registry.inner().clone(), opts);
+    if result.is_ok() {
+        if let Some((tab_id, scope_id)) = fenced_registration {
+            crate::services::agent_fence::register_tab(&tab_id, &scope_id);
+        }
+    }
+    result
+}
+
+/// Honest per-scope fence status for the project-pill menu.  This performs no
+/// spawn and uses the same cached bubblewrap probe and backend authority inputs
+/// as `pty_spawn`.
+#[tauri::command]
+pub fn agent_fence_status(project_id: String) -> crate::services::agent_fence::AgentFenceStatus {
+    crate::services::agent_fence::status_for_scope(&project_id)
 }
 
 /// List the tmux sessions running on the **local** machine (TODO #85), for a local
@@ -515,79 +623,19 @@ pub async fn local_tmux_kill(session: String) -> Result<(), String> {
 }
 
 /// End every tmux session Eldrun created on the local machine during a clean
-/// application quit. This deliberately lists the daemon rather than only the
-/// tabs currently hydrated in the frontend: a session recovered from an earlier
-/// crash may belong to an inactive project and therefore have no mounted tab in
-/// this run yet. The `eldrun-` prefix is reserved for sessions Eldrun mints, so
-/// user-managed sessions are never affected.
-///
-/// This command is called only by the frontend's normal close path. A renderer
-/// or process crash never reaches it, leaving the sessions alive for restore.
+/// application quit — the frontend close handler's half of
+/// `services::tmux_local::kill_eldrun_sessions`, which owns the rule (every
+/// `eldrun-` session, no foreign one) and is also run by `RunEvent::Exit` as
+/// the net for exits that never reach frontend code. A renderer or process
+/// crash reaches neither, leaving the sessions alive for restore.
 #[tauri::command]
 pub async fn local_tmux_kill_eldrun_sessions() -> Result<(), String> {
     if !crate::services::tmux_local::tmux_available() {
         return Ok(());
     }
-    tauri::async_runtime::spawn_blocking(|| {
-        let listed = crate::paths::command_no_window("tmux")
-            .args(crate::services::tmux_local::local_tmux_ls_args())
-            .output()
-            .map_err(|e| format!("could not list tmux sessions: {e}"))?;
-        // `tmux ls` returns non-zero when no server is running, which is already
-        // the desired end state for the quit path.
-        if !listed.status.success() {
-            return Ok(());
-        }
-        let sessions =
-            crate::services::ssh_exec::parse_tmux_ls(&String::from_utf8_lossy(&listed.stdout));
-        let mut failures = Vec::new();
-        for session in sessions {
-            // Trash sessions are deliberately mobile-persistent. Their host
-            // tmux owns the attach point while the strictly isolated container
-            // remains the process/filesystem boundary, so a clean Eldrun quit
-            // must not turn a phone detach into an agent kill.
-            if session
-                .name
-                .starts_with(&format!("eldrun-{}--", crate::paths::TRASH_PROJECT_ID))
-            {
-                continue;
-            }
-            if !crate::services::tmux_local::is_eldrun_local_tmux_session(&session.name) {
-                continue;
-            }
-            let output = crate::paths::command_no_window("tmux")
-                .args(crate::services::tmux_local::local_tmux_kill_args(
-                    &session.name,
-                ))
-                .output()
-                .map_err(|e| format!("could not run tmux: {e}"))?;
-            if !output.status.success() {
-                let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
-                // A session can exit between `ls` and `kill-session`; that is
-                // indistinguishable from a successful cleanup.
-                if !detail.contains("can't find session")
-                    && !detail.contains("no server running")
-                    && !detail.contains("failed to connect to server")
-                {
-                    failures.push(if detail.is_empty() {
-                        session.name
-                    } else {
-                        format!("{}: {detail}", session.name)
-                    });
-                }
-            }
-        }
-        if failures.is_empty() {
-            Ok(())
-        } else {
-            Err(format!(
-                "could not stop every Eldrun local tmux session: {}",
-                failures.join("; ")
-            ))
-        }
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(crate::services::tmux_local::kill_eldrun_sessions)
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 /// Rename a **local** tmux session (TODO #85). `new_name` must be a safe tmux name.
@@ -648,13 +696,33 @@ pub async fn pty_resize(
 #[tauri::command]
 pub async fn pty_set_visible(
     app: AppHandle,
+    window: tauri::Window,
     id: String,
     viewer_id: String,
     visible: bool,
     update_seq: u64,
 ) -> Result<(), String> {
-    crate::terminal::route_set_visible(&app, &id, &viewer_id, visible, update_seq);
+    // The window label comes from the CALLING window, never from the payload —
+    // a view may only ever speak for itself (the rule `webview_renderer_claim`
+    // follows). It is what lets the `Destroyed` hook drop the registrations of a
+    // window that died without unmounting (Group B #238).
+    crate::terminal::route_set_visible(&app, &id, &viewer_id, visible, update_seq, window.label());
     Ok(())
+}
+
+/// The retained tail of a PTY's output (Group B #235).
+///
+/// A second viewer — a tab popped out into its own window, a pane remounted by
+/// a reseed — opens a fresh xterm on a PTY that may have been running for hours,
+/// and used to render blank until the program next drew. This is the catch-up:
+/// the router keeps a bounded tail of everything it routed (visible or not) and
+/// hands it back here, to be written into the new terminal before its first live
+/// byte. A read, not a drain: a third window attaching later gets it too.
+#[tauri::command]
+pub async fn pty_scrollback(
+    id: String,
+) -> Result<crate::terminal::TerminalScrollback, String> {
+    Ok(crate::terminal::route_scrollback(&id))
 }
 
 #[tauri::command]
@@ -684,6 +752,7 @@ pub async fn pty_kill(registry: State<'_, RegistryState>, id: String) -> Result<
     // future PTY that reuses the id.
     crate::commands::credentials::forget_login_pty(&id);
     registry.lock().unwrap().kill(&id);
+    crate::services::agent_fence::on_tab_gone(&id);
     Ok(())
 }
 
@@ -700,6 +769,7 @@ pub async fn pty_kill_scope(
         crate::commands::credentials::forget_login_pty(id);
         crate::terminal::route_remove_all_views(id);
         registry.lock().unwrap().kill(id);
+        crate::services::agent_fence::on_tab_gone(id);
     }
     Ok(ids)
 }

@@ -163,7 +163,7 @@ export function pythonTokens(source: string): PyToken[] {
     }
 
     if (c === '"' || c === "'") {
-      i = skipString(source, i);
+      i = pythonStringEnd(source, i);
       prevIdent = null;
       continue;
     }
@@ -179,7 +179,7 @@ export function pythonTokens(source: string): PyToken[] {
       // A string prefix (`f"…"`) is part of the literal, not a name.
       const next = source[end];
       if ((next === '"' || next === "'") && STRING_PREFIX.has(name.toLowerCase())) {
-        i = skipString(source, end);
+        i = pythonStringEnd(source, end);
         prevIdent = null;
         continue;
       }
@@ -211,8 +211,10 @@ export function pythonTokens(source: string): PyToken[] {
 
 /** Index just past the string literal starting at `i` (which is on its quote).
  *  Handles triple quotes and backslash escapes; an unterminated literal (the
- *  normal state of a buffer being typed into) consumes to EOF. */
-function skipString(source: string, i: number): number {
+ *  normal state of a buffer being typed into) consumes to EOF — which is also
+ *  what makes it answer "is this offset inside a literal?" for the editor's
+ *  auto-indent, the one caller outside this module. */
+export function pythonStringEnd(source: string, i: number): number {
   const q = source[i];
   const triple = source.startsWith(q.repeat(3), i);
   const close = triple ? q.repeat(3) : q;
@@ -371,7 +373,7 @@ function stripCommentsAndStrings(source: string): string {
       continue;
     }
     if (c === '"' || c === "'") {
-      const end = skipString(source, i);
+      const end = pythonStringEnd(source, i);
       for (let j = i; j < end; j++) if (chars[j] !== "\n") chars[j] = " ";
       i = end;
       continue;

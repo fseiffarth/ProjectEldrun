@@ -25,7 +25,7 @@ export const shownAllDayEnd = (start: string, end: string) => { const last = add
 export const storedAllDayEnd = (day: string) => addDays(day, 1);
 type Editing = { event?: MobileCalendarEvent; draft: MobileCalendarEventInput } | null;
 
-export function Calendar({ back }: { back: () => void }) {
+export function Calendar() {
   const [month, setMonth] = useState(monthOf); const [selected, setSelected] = useState(today);
   const [data, setData] = useState<MobileCalendar | null>(null); const [editing, setEditing] = useState<Editing>(null);
   const [manage, setManage] = useState(false); const [busy, setBusy] = useState(false); const [error, setError] = useState("");
@@ -38,7 +38,7 @@ export function Calendar({ back }: { back: () => void }) {
   const label = useMemo(() => new Intl.DateTimeFormat(undefined, { month: "long", year: "numeric" }).format(new Date(`${month}-01T12:00`)), [month]);
   const open = (event: MobileCalendarEvent) => { if (event.calendar_id) setEditing({ event, draft: inputOf(event, event.calendar_id) }); };
   return <main className="screen mobile-calendar-screen">
-    <header><button className="back" onClick={back}>‹</button><h1>Calendar</h1><button onClick={() => void load()} disabled={busy}>↻</button></header>
+    <header><h1>Calendar</h1><button onClick={() => void load()} disabled={busy}>↻</button></header>
     <div className="mobile-calendar-actions"><button className="primary" disabled={busy || !data?.calendars.some((c) => !c.readonly)} onClick={() => setEditing({ draft: blankEvent(selected, data?.calendars ?? []) })}>+ Event</button><button disabled={busy} onClick={() => setManage(true)}>Calendars</button></div>
     {error && <p className="error">{error}</p>}
     <div className="mobile-calendar-nav"><button onClick={() => setMonth((m) => addMonths(m, -1))} disabled={busy}>‹</button><strong>{label}</strong><button onClick={() => setMonth((m) => addMonths(m, 1))} disabled={busy}>›</button></div>

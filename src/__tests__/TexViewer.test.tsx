@@ -10,7 +10,7 @@
  * module registry and re-imports FileViewerPane to get a fresh probe.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, act, waitFor } from "@testing-library/react";
+import { render, screen, act, waitFor, fireEvent, cleanup } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 const { mockInvoke } = vi.hoisted(() => ({ mockInvoke: vi.fn() }));
@@ -90,6 +90,56 @@ describe("TexView", () => {
     expect(mockInvoke).not.toHaveBeenCalledWith("compile_tex", expect.anything());
   });
 
+  it("accepts the highlighted TeX completion with Enter", async () => {
+    setupInvoke(false);
+    await renderTexView();
+
+    const textarea = (await screen.findByRole("textbox")) as HTMLTextAreaElement;
+    await waitFor(() => expect(textarea.value).toBe(TEX_SOURCE));
+    const typed = "\\beg";
+    textarea.setSelectionRange(typed.length, typed.length);
+    fireEvent.change(textarea, { target: { value: typed } });
+    fireEvent.select(textarea);
+
+    await screen.findByRole("option", { name: /\\begin/ });
+    fireEvent.keyDown(textarea, { key: "Enter" });
+
+    await waitFor(() => {
+      expect(textarea.value).toBe("\\begin{}");
+      expect(textarea.selectionStart).toBe("\\begin{".length);
+      expect(textarea.selectionEnd).toBe("\\begin{".length);
+    });
+  });
+
+  it("marks an opening bracket and its source line red until its end is typed", async () => {
+    setupInvoke(false);
+    await renderTexView();
+
+    const textarea = (await screen.findByRole("textbox")) as HTMLTextAreaElement;
+    await waitFor(() => expect(textarea.value).toBe(TEX_SOURCE));
+    const line = 3;
+    const caret = TEX_SOURCE.indexOf("Hi") + 2;
+    textarea.focus();
+    textarea.setSelectionRange(caret, caret);
+
+    const unclosed = TEX_SOURCE.slice(0, caret) + "{" + TEX_SOURCE.slice(caret);
+    fireEvent.change(textarea, { target: { value: unclosed } });
+    await waitFor(() => {
+      expect(document.querySelector(".file-viewer-unclosed-bracket")?.textContent).toBe("{");
+      expect(
+        document.querySelector(".file-viewer-gutter-line.has-unclosed-bracket")?.textContent,
+      ).toBe(String(line));
+    });
+
+    fireEvent.change(textarea, {
+      target: { value: unclosed.slice(0, caret + 1) + "}" + unclosed.slice(caret + 1) },
+    });
+    await waitFor(() => {
+      expect(document.querySelector(".file-viewer-unclosed-bracket")).toBeNull();
+      expect(document.querySelector(".file-viewer-gutter-line.has-unclosed-bracket")).toBeNull();
+    });
+  });
+
   it("shows a Compile button when an engine is available, and saving+compiling on click", async () => {
     setupInvoke(true, ["pdflatex"]);
     await renderTexView();
@@ -132,6 +182,59 @@ describe("TexView", () => {
     const engine = screen.getByTitle("LaTeX engine");
     expect(engine).toBeTruthy();
     expect(engine.textContent).toContain("pdflatex (default)");
+  });
+
+  it("remembers the chosen engine on the tab, so a restart still builds under it", async () => {
+    setupInvoke(true, ["pdflatex", "xelatex"]);
+    // One module registry for the whole test: `renderTexView` resets modules to
+    // get a fresh capability probe, and a reset store is a DIFFERENT store from
+    // the one the mounted pane writes to. So reset once, then hold both.
+    vi.resetModules();
+    const { useTabsStore } = await import("../stores/tabs");
+    const { FileViewerPane } = await import("../components/embed/FileViewerPane");
+    const mount = async (key: string) => {
+      await act(async () => {
+        render(<FileViewerPane viewer="tex" path="/p/paper.tex" projectId="proj" tabKey={key} />);
+      });
+    };
+    useTabsStore.getState().setScope("proj");
+    const tab = useTabsStore.getState().addTab({
+      label: "paper.tex",
+      cmd: "",
+      cwd: "/p",
+      kind: "embed",
+      embedPath: "/p/paper.tex",
+      viewer: "tex",
+    });
+    await mount(tab.key);
+
+    await act(async () => {
+      await userEvent.click(await screen.findByTitle("LaTeX engine"));
+    });
+    await act(async () => {
+      await userEvent.click(await screen.findByRole("option", { name: "xelatex" }));
+    });
+    await waitFor(() =>
+      expect(
+        useTabsStore.getState().tabs.find((t) => t.key === tab.key)?.viewerState?.texEngine,
+      ).toBe("xelatex"),
+    );
+
+    // The restart: a fresh pane bound to the same restored tab comes back on
+    // xelatex and compiles with it, instead of silently reverting to the
+    // backend's default.
+    cleanup();
+    await mount(tab.key);
+    expect((await screen.findByTitle("LaTeX engine")).textContent).toContain("xelatex");
+    await act(async () => {
+      await userEvent.click(await screen.findByRole("button", { name: /^compile/i }));
+    });
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenCalledWith(
+        "compile_tex",
+        expect.objectContaining({ path: "/p/paper.tex", engine: "xelatex" }),
+      ),
+    );
   });
 
   it("#54: passes compiler options and offers Open PDF after a successful compile", async () => {

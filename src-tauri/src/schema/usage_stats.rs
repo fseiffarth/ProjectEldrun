@@ -20,6 +20,7 @@
 //! the one unit convention in this file.
 
 use std::collections::HashMap;
+use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 
@@ -250,6 +251,8 @@ fn stats_path() -> std::path::PathBuf {
     storage::state_dir().join(STATS_FILE)
 }
 
+static USAGE_STATS_LOCK: Mutex<()> = Mutex::new(());
+
 /// Load the counter store, defaulting to empty when the file is absent or
 /// unparseable (a brand-new install, or a partial write) rather than erroring.
 pub fn load() -> UsageStats {
@@ -258,6 +261,15 @@ pub fn load() -> UsageStats {
         storage::read_json(&path).unwrap_or_default()
     } else {
         UsageStats::default()
+    }
+}
+
+fn load_strict() -> Result<UsageStats, String> {
+    let path = stats_path();
+    if path.exists() {
+        storage::read_json(&path).map_err(|e| e.to_string())
+    } else {
+        Ok(UsageStats::default())
     }
 }
 
@@ -277,21 +289,24 @@ pub fn save(stats: &mut UsageStats) -> Result<(), String> {
 /// Fold a batch of counters for `project_id` into the current UTC hour (and
 /// thereby the current UTC day). O(map) read-modify-write of a bounded file. An
 /// empty batch is skipped without touching disk.
-pub fn record(project_id: &str, counters: &Counters) {
+pub fn record(project_id: &str, counters: &Counters) -> Result<(), String> {
     if project_id.is_empty() || counters.is_empty() {
-        return;
+        return Ok(());
     }
-    let mut stats = load();
+    let _guard = USAGE_STATS_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut stats = load_strict()?;
     stats.add_many(project_id, &storage::hour_utc(), counters);
-    let _ = save(&mut stats);
+    save(&mut stats)
 }
 
 /// Fold a single counter — the convenience path for backend-side one-shot events
 /// (a tab spawn).
-pub fn record_one(project_id: &str, key: &str, n: u64) {
+pub fn record_one(project_id: &str, key: &str, n: u64) -> Result<(), String> {
     let mut counters = Counters::new();
     counters.insert(key.to_string(), n);
-    record(project_id, &counters);
+    record(project_id, &counters)
 }
 
 #[cfg(test)]

@@ -89,7 +89,7 @@ export function itemLabel(item: StaticMenuItem, t: (key: TranslationKey) => stri
 
 /** The pure-frontend file panes kept to one tab per cwd (see TabBar.handleAdd).
  *  "projectfiles" is no longer offered as a standalone new-tab entry (it merely
- *  duplicated the right panel), but the kind still exists — a folder's "Open in
+ *  duplicated the side panel), but the kind still exists — a folder's "Open in
  *  a new tab" action creates one, and persisted ones restore — so it stays in
  *  the dedup predicate. */
 export function isFileTabKind(kind: TabKind): boolean {
@@ -106,8 +106,8 @@ export const TAB_ACCENT: Record<TabKind, string> = {
   embed: "var(--info, #4aa3df)",
   projects3d: "var(--accent-secondary)",
   network: "var(--info, #4aa3df)",
-  monitor: "var(--success, #3fb950)",
-  diskusage: "var(--warning, #e3b341)",
+  monitor: "var(--success)",
+  diskusage: "var(--warning)",
   calendar: "var(--accent)",
   browser: "var(--accent-secondary)",
   printing: "var(--text-muted)",

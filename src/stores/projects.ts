@@ -19,11 +19,13 @@ import {
 import {
   cmdToKind,
   effectiveTabLocation,
+  hydrateScopeFromDisk,
   isPtyTabKind,
   isRestorableTab,
   isResumableAgentTab,
   remoteHostIdOf,
   ROOT_SCOPE,
+  toSavedTabEntry,
   useTabsStore,
   type SavedLayoutTree,
   type TabKind,
@@ -32,7 +34,6 @@ import {
   type ViewerState,
 } from "./tabs";
 import { useRunHostPrefStore } from "./runHostPref";
-import { type AgentMode } from "../components/tabs/agentModes";
 import { useTimerStore } from "./timer";
 import { useSettingsStore, whenSettingsLoaded } from "./settings";
 import { mayAutoTouch, targetOfSpec } from "../lib/hpcHost";
@@ -777,7 +778,6 @@ interface ProjectRuntimeSwitchedPayload {
     viewer?: "pdf" | "image" | "markdown" | "text";
     viewerState?: ViewerState;
     location?: "local" | "remote";
-    agentMode?: AgentMode;
     /** A "projectfiles" tab's browsed folder (see TabEntry.folder). */
     folder?: string;
     /** A "browser" tab's committed address (see TabEntry.url). */
@@ -799,7 +799,7 @@ interface ProjectRuntimeSwitchedPayload {
   tabGroups: SavedLayoutTree | null;
   activeTabIndex: number;
   fileTabs: unknown[];
-  rightPanelFolder: string | null;
+  sidePanelFolder: string | null;
   openedWindowIds: string[];
 }
 
@@ -813,13 +813,13 @@ interface ProjectsStore {
    *  repair summary). Kept separate from `switchToast` so a project switch
    *  doesn't clobber it (and vice-versa). */
   connToast: string | null;
-  rightPanelFolderByProject: Record<string, string>;
+  sidePanelFolderByProject: Record<string, string>;
   /** Incremented only on explicit setActive calls, never by load(). */
   switchGeneration: number;
   load: () => Promise<void>;
   setActive: (id: string | null) => Promise<void>;
   reorderProjects: (fromId: string, toId: string) => Promise<void>;
-  setRightPanelFolder: (projectId: string, folder: string) => void;
+  setSidePanelFolder: (projectId: string, folder: string) => void;
   clearSwitchToast: () => void;
   clearConnToast: () => void;
   addProject: (project: ProjectEntry) => Promise<void>;
@@ -859,6 +859,9 @@ interface ProjectsStore {
    *  (`true`/`false`), or clear the override (`null`) to inherit the global
    *  `agent_remote_control` setting. */
   setProjectRemoteControl: (id: string, remoteControl: boolean | null) => Promise<void>;
+  /** Force the local-agent filesystem fence on/off, or clear to inherit the
+   * global default. Running tabs keep their current boundary until respawn. */
+  setProjectAgentFence: (id: string, agentFence: boolean | null) => Promise<void>;
   /** Opt a remote project in/out of auto-connect (connect it silently on launch
    *  and activation). Only offered once the connect can complete with no prompt —
    *  a saved SSH password, or a host recorded as `key_auth`; `autoConnectRemote`
@@ -928,6 +931,117 @@ interface ProjectsStore {
   ) => Promise<GitHostingInfo>;
 }
 
+/**
+ * Restore ONE project's saved tabs into its own scope **without making it
+ * current**. The scope key is the project id, so the tabs land in
+ * `tabsByScope[id]` and `CenterPanel`'s flat pane layer mounts them hidden:
+ * PTYs spawn, tmux sessions reattach, resumable agent tabs come back with
+ * their `--resume` — exactly what happens the moment the user switches to that
+ * project, minus the switch.
+ *
+ * Guards, in order, and each of them load-bearing:
+ *  - a project with no `local_file` isn't ready to restore yet;
+ *  - a scope already in `tabsByScope` was initialized this session, so its
+ *    in-memory state wins — re-reading disk would resurrect tabs the user
+ *    deliberately closed;
+ *  - a layout with nothing restorable in it creates NO key, because an absent
+ *    key is exactly what tells `persistScope` "this scope was never hydrated"
+ *    (its `hydrated` guard), which is what keeps an unvisited project's saved
+ *    layout from being erased by a later empty save.
+ * The in-memory guard is re-checked after the read: the user can switch to the
+ * project — or Mobile can hydrate it — while the IPC is in flight.
+ *
+ * The layout comes from `<state_dir>/sessions/<id>/`, never from the project's
+ * own `project.json` (see AGENTS.md "Persistence"): everything restored here
+ * becomes a `pty_spawn`.
+ */
+export async function restoreProjectScope(project: ProjectEntry): Promise<void> {
+  const scope = project.id;
+  if (!project.local_file) return;
+  if (scope in useTabsStore.getState().tabsByScope) return;
+  // Two concurrent restores of the SAME scope would both clear the guard above
+  // (neither has written the key yet) and both call `loadFromLayout` — every tab
+  // twice, each with its own freshly minted key, i.e. two PTYs per tab. The
+  // switch-driven restore and this startup pass genuinely can overlap: clicking a
+  // pill during launch is exactly that. The claim closes the window the in-flight
+  // read leaves open; the synchronous restore in `listenProjectRuntimeSwitched`
+  // needs no claim, since it writes the key before it can yield.
+  if (restoringScopes.has(scope)) return;
+  restoringScopes.add(scope);
+  try {
+    // A failed read restores nothing (and seeds nothing): the layout may still
+    // be there on the next attempt. `hydrateScopeFromDisk` owns the guards this
+    // doc comment describes (in-memory state wins; nothing restorable creates
+    // NO key).
+    await hydrateScopeFromDisk(scope, resolveProjectDirectory(project)).catch(() => {});
+  } finally {
+    restoringScopes.delete(scope);
+  }
+}
+
+/** In-flight `restoreProjectScope` calls, keyed by scope. */
+const restoringScopes = new Set<string>();
+
+/** Project scopes this session has already tried to restore in the background.
+ *  Tried, not restored: a project whose saved layout held nothing restorable
+ *  creates no `tabsByScope` key (see `restoreProjectScope`), so without this it
+ *  would be re-read from disk on every projects-list change. */
+const backgroundRestored = new Set<string>();
+
+/**
+ * Restore every **active** project's tabs, current or not.
+ *
+ * "Active" is not a decoration: `deactivateProject` is the gesture that *stops*
+ * a project's terminals (it confirms, kills the PTYs and the tmux sessions, and
+ * only then writes `inactive`), so a project that survived a quit as "active"
+ * is one whose terminals the user never stopped. Restoring them lazily — on the
+ * first switch to each pill — meant a relaunch came back with only the current
+ * project running and every other pill's work suspended until it was clicked,
+ * which is what this pass fixes.
+ *
+ * Sequential on purpose: each entry is one `load_tab_session` IPC followed by a
+ * burst of `pty_spawn`s, and launch is already the busiest moment in the app.
+ * Fire-and-forget everywhere it is called — nothing waits on a background
+ * project's tabs.
+ *
+ * NOT included, deliberately: remote auto-connect (`autoConnectRemote` is
+ * current-project-scoped and abandons its lamp when the user switches away), so
+ * an active remote project restores its tabs with the remote panes held until
+ * its pool comes up, exactly as it does on a switch today.
+ */
+export async function restoreActiveProjectScopes(): Promise<void> {
+  for (const project of useProjectsStore.getState().projects) {
+    if (project.status !== "active") continue;
+    if (backgroundRestored.has(project.id)) continue;
+    backgroundRestored.add(project.id);
+    await restoreProjectScope(project).catch(() => {});
+  }
+}
+
+/** §9.5: the ONE "patch one project entry in local state" helper behind every
+ *  per-field setter — invoke the backend, then mirror its answer through this,
+ *  instead of ~15 hand-rolled `set(state => ({projects: state.projects.map(…)}))`
+ *  bodies that drift. Untouched entries keep their identity, so unrelated
+ *  pill/selector subscribers don't re-render. */
+function patchProject(id: string, patch: (project: ProjectEntry) => ProjectEntry): void {
+  useProjectsStore.setState((state) => ({
+    projects: state.projects.map((project) => (project.id === id ? patch(project) : project)),
+  }));
+}
+
+/** [`patchProject`] scoped to the remote (SSH) spec — a no-op for a project
+ *  that has none, which is what every remote-field setter wants: the backend
+ *  already refused the write for a non-remote project. */
+function patchProjectRemote(id: string, patch: (remote: RemoteSpec) => RemoteSpec): void {
+  useProjectsStore.setState((state) => ({
+    projects: state.projects.map((project) =>
+      project.id === id && project.remote
+        ? { ...project, remote: patch(project.remote) }
+        : project,
+    ),
+  }));
+}
+
 export const useProjectsStore = create<ProjectsStore>((set, get) => ({
   projects: [],
   activeId: null,
@@ -935,7 +1049,7 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
   rootDir: null,
   switchToast: null,
   connToast: null,
-  rightPanelFolderByProject: {},
+  sidePanelFolderByProject: {},
   switchGeneration: 0,
 
   load: async () => {
@@ -956,26 +1070,26 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
     // pill in the strip at all. A fresh install has no projects and lands on the
     // root scope by the same rule rather than by a special case.
     const activeId = projects.find((p) => p.status === "current")?.id ?? null;
-    // Restore the active project's right-panel subfolder before any component
+    // Restore the active project's side-panel subfolder before any component
     // mounts, so the file tree opens straight to the saved folder on startup.
     // (Switching projects already restores via switch_project_runtime; this
     // covers the initially-active project, which never triggers a switch.)
-    const rightPanelFolderByProject: Record<string, string> = {};
+    const sidePanelFolderByProject: Record<string, string> = {};
     const activeLocalFile = activeId
       ? projects.find((p) => p.id === activeId)?.local_file
       : undefined;
     if (activeId && activeLocalFile) {
-      const folder = await invoke<string | null>("load_right_panel_folder", {
+      const folder = await invoke<string | null>("load_side_panel_folder", {
         localFile: activeLocalFile,
       }).catch(() => null);
-      if (folder) rightPanelFolderByProject[activeId] = folder;
+      if (folder) sidePanelFolderByProject[activeId] = folder;
     }
     set({
       projects,
       loaded: true,
       rootDir,
       activeId,
-      rightPanelFolderByProject,
+      sidePanelFolderByProject,
     });
     // Re-hydrate the run-host preference (which machine shells run on) from each
     // project's persisted `run_host`, so a choice made in a previous session still
@@ -1017,6 +1131,17 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
     // is also the window in which the gate could once fail *open*.) Fire-and-forget
     // still: nothing about the project list waits on a connect.
     if (activeId) void whenSettingsLoaded().then(() => autoConnectRemote(activeId));
+    // Bring the OTHER active projects' tabs back too — the pills that are not the
+    // current one. Their terminals were never stopped (that is what "inactive"
+    // means and what `deactivateProject` does), so a relaunch must resume them
+    // rather than wait for a click on each pill. CenterPanel restores the CURRENT
+    // scope on its own; this pass covers every scope no switch will ever visit.
+    //
+    // Waits for settings for the same reason the auto-connect above does, plus one
+    // of its own: `loadFromLayout` asks `withdrawnTabKinds` which experimental tab
+    // kinds to drop, and an unloaded settings store answers "drop nothing" — firing
+    // before that read lands would restore tabs belonging to a switched-off flag.
+    void whenSettingsLoaded().then(() => restoreActiveProjectScopes());
   },
 
   setActive: async (id) => {
@@ -1107,56 +1232,24 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
     const activated = nextProjects.find((p) => p.id === id);
     if (activated?.remote) void autoConnectRemote(activated.id);
     // Fire-and-forget: the switch runs on a backend worker thread and returns
-    // immediately. The resulting tab layout / right-panel folder arrives via the
+    // immediately. The resulting tab layout / side-panel folder arrives via the
     // `project-runtime-switched` event, handled by listenProjectRuntimeSwitched.
     invoke("switch_project_runtime", {
       projectId: id,
       previousProjectId: previousId,
       previousSnapshot: {
-        // Keep in step with the canonical persist in `tabs.ts` (persistScope):
-        // this snapshot OVERWRITES the previous project's project.json on switch,
-        // so any field dropped here is lost on a switch even though the debounced
-        // save wrote it. That is how a Files (Project) tab's browsed `folder` (and
-        // a viewer's scroll position / an agent's plan-mode) went missing on
-        // switch-away.
-        tabLayout: tabs.map((t) => ({
-          key: t.key,
-          label: t.label,
-          cmd: t.cmd,
-          cwd: t.cwd,
-          kind: t.kind,
-          env: t.env ?? {},
-          sessionId: t.sessionId,
-          embedPath: t.embedPath,
-          embedExec: t.embedExec,
-          viewer: t.viewer,
-          viewerState: t.viewerState,
-          location: t.location,
-          agentMode: t.agentMode,
-          folder: t.folder,
-          // A "browser" tab's committed address.
-          url: t.url,
-          // A restart-resumable custom agent's resume flag.
-          resumeArgs: t.resumeArgs,
-          // The stable tmux session name + any Sessions-view attach target. Without
-          // these the previous project's persisted session name is WIPED on every
-          // switch-away (this snapshot overwrites its terminals.json), so on the
-          // next relaunch `loadFromLayout` mints a fresh name and `tmux new-session
-          // -A` FORKS a second remote session instead of reattaching the running one.
-          tmuxSession: t.tmuxSession,
-          tmuxAttach: t.tmuxAttach,
-          // The host-bound marker id (#150), so a local-model tab keeps its
-          // container exemption across a switch.
-          hostBoundUid: t.hostBoundUid,
-          mobileRequestHash: t.mobileRequestHash,
-          // The no-tmux marker, so a SLURM log tab is not re-wrapped in tmux (and
-          // left leaking a `tail -F` daemon) after a switch-away + relaunch.
-          ephemeral: t.ephemeral,
-        })),
+        // This snapshot OVERWRITES the previous project's project.json on
+        // switch, so any field dropped here is lost even though the debounced
+        // save wrote it — which is how a Files (Project) tab's browsed `folder`
+        // (and a viewer's scroll position / an agent's plan-mode / the tmux
+        // session names) each went missing while the shape was maintained
+        // field-for-field in two places. `toSavedTabEntry` is now the ONE
+        // enumeration of the persisted shape, shared with `persistScope`.
+        tabLayout: tabs.map(toSavedTabEntry),
         tabGroups,
         activeTabIndex,
         fileTabs: [],
-        rightPanelFolder: previousId ? get().rightPanelFolderByProject[previousId] ?? null : null,
+        sidePanelFolder: previousId ? get().sidePanelFolderByProject[previousId] ?? null : null,
         activeLayoutMetadata: null,
         flushSecs: 0.0,
       },
@@ -1202,10 +1295,10 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
     }
   },
 
-  setRightPanelFolder: (projectId, folder) => {
+  setSidePanelFolder: (projectId, folder) => {
     set((state) => ({
-      rightPanelFolderByProject: {
-        ...state.rightPanelFolderByProject,
+      sidePanelFolderByProject: {
+        ...state.sidePanelFolderByProject,
         [projectId]: folder,
       },
     }));
@@ -1214,7 +1307,7 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
     // project switch is harmless and idempotent.
     const localFile = get().projects.find((p) => p.id === projectId)?.local_file;
     if (localFile) {
-      void invoke("save_right_panel_folder", { localFile, folder }).catch(() => {});
+      void invoke("save_side_panel_folder", { localFile, folder }).catch(() => {});
     }
   },
 
@@ -1250,6 +1343,16 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
     if (changed) {
       await invoke<void>("save_projects", { projects: nextProjects });
     }
+    // Activating is the inverse of `deactivateProject`, which STOPS this project's
+    // terminals — so it starts them: restore the saved tabs into the project's own
+    // scope, hidden, without touching activeId. That is also what makes an
+    // activated-from-Mobile project report its agent tabs (`agentStatuses` reads
+    // `tabsByScope[id]`) before anyone opens it on the desktop.
+    const activated = get().projects.find((p) => p.id === id);
+    if (activated?.status === "active" && !backgroundRestored.has(id)) {
+      backgroundRestored.add(id);
+      void restoreProjectScope(activated).catch(() => {});
+    }
   },
 
   deactivateProject: async (id) => {
@@ -1271,15 +1374,18 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
       const tmuxTargets = projectTmuxTargets(project, tabs, localPersistenceEnabled);
 
       if (ptyTabs.length > 0 || tmuxTargets.length > 0) {
-        const { confirm } = await import("@tauri-apps/plugin-dialog");
-        const lang = useI18nStore.getState().lang;
-        const ok = await confirm(
-          translate(lang, "projectSwitcher.stopBody", {
-            name: project.name,
-            terminals: ptyTabs.length,
-            sessions: tmuxTargets.length,
-          }),
-          { title: translate(lang, "projectSwitcher.stopTitle"), kind: "warning" },
+        // Eldrun's own dialog, not the platform's: it wears the theme, and it
+        // lists the tabs instead of counting them (stores/stopProjectPrompt).
+        const { useStopProjectStore } = await import("./stopProjectPrompt");
+        const ok = await useStopProjectStore.getState().request(
+          project.name,
+          ptyTabs.map((tab) => ({
+            key: tab.key,
+            label: tab.label,
+            kind: tab.kind,
+            location: effectiveTabLocation(tab, { vmProject: !!project.vm?.enabled }),
+          })),
+          tmuxTargets.length,
         );
         if (!ok) return;
       }
@@ -1339,6 +1445,9 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
       // setActive must snapshot the old scope while its saved tabs still exist;
       // only then may we remove the scope's in-memory maps and native popouts.
       await tabsStore.unloadScope(id);
+      // The scope is unloaded, so a later re-activation must be free to restore it
+      // again — leaving the id marked would make that second activation a no-op.
+      backgroundRestored.delete(id);
       if (project.remote) dropRemotePool(id);
     } catch (error) {
       const { message } = await import("@tauri-apps/plugin-dialog");
@@ -1373,10 +1482,16 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
     releaseVpn(id, entry.remote?.openvpn?.config);
     // Drop its tabs/PTYs/sessions (in memory; the folder move discards the file).
     useTabsStore.getState().closeAllTabs(id);
-    // Remove it from any box (clears box_id on it + dissolves a now-singleton box).
-    if (entry.box_id) {
+    backgroundRestored.delete(id);
+    // Remove it from every box holding it (membership is N:M — the boxes
+    // themselves survive; a box left with one or zero members still renders).
+    {
       const { useBoxesStore } = await import("./boxes");
-      await useBoxesStore.getState().assignToBox(id, null);
+      const boxesStore = useBoxesStore.getState();
+      const holding = boxesStore.boxes.filter((b) => b.member_ids.includes(id));
+      for (const b of holding) {
+        await boxesStore.removeFromBox(id, b.id);
+      }
     }
 
     // ── Move it into the archive + drop it from projects.json ────────────────
@@ -1404,11 +1519,7 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
       projectId: id,
       description,
     });
-    set((state) => ({
-      projects: state.projects.map((project) =>
-        project.id === id ? { ...project, description: cleaned ?? undefined } : project,
-      ),
-    }));
+    patchProject(id, (project) => ({ ...project, description: cleaned ?? undefined }));
   },
 
   renameProject: async (id, name) => {
@@ -1418,11 +1529,7 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
       projectId: id,
       name,
     });
-    set((state) => ({
-      projects: state.projects.map((project) =>
-        project.id === id ? { ...project, name: cleaned } : project,
-      ),
-    }));
+    patchProject(id, (project) => ({ ...project, name: cleaned }));
   },
 
   moveRemoteMirror: async (id, name, parentDir) => {
@@ -1432,11 +1539,7 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
     // it in memory too — otherwise the switch toast, the disconnected file-browser
     // pane, and local tab titles keep the old path until the next reload.
     const newPath = await invoke<string>("move_remote_mirror", { projectId: id, name, parentDir });
-    set((state) => ({
-      projects: state.projects.map((project) =>
-        project.id === id ? { ...project, mirror: newPath } : project,
-      ),
-    }));
+    patchProject(id, (project) => ({ ...project, mirror: newPath }));
     return newPath;
   },
 
@@ -1449,9 +1552,7 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
     const updated = await invoke<ProjectEntry>("extend_project_to_remote", {
       req: { projectId: id, remote },
     });
-    set((state) => ({
-      projects: state.projects.map((project) => (project.id === id ? updated : project)),
-    }));
+    patchProject(id, () => updated);
   },
 
   setProjectSandbox: async (id, enabled, sourceDecision) => {
@@ -1467,11 +1568,7 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
       sourceDecision: sourceDecision ?? null,
     });
     if (outcome.outcome === "applied") {
-      set((state) => ({
-        projects: state.projects.map((project) =>
-          project.id === id ? { ...project, sandbox: outcome.spec } : project,
-        ),
-      }));
+      patchProject(id, (project) => ({ ...project, sandbox: outcome.spec }));
     }
     return outcome;
   },
@@ -1481,11 +1578,7 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
       projectId: id,
       spec,
     });
-    set((state) => ({
-      projects: state.projects.map((project) =>
-        project.id === id ? { ...project, sandbox: saved } : project,
-      ),
-    }));
+    patchProject(id, (project) => ({ ...project, sandbox: saved }));
   },
 
   setProjectPython: async (id, interpreter) => {
@@ -1495,13 +1588,7 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
       projectId: id,
       interpreter,
     });
-    set((state) => ({
-      projects: state.projects.map((project) =>
-        project.id === id
-          ? { ...project, python_interpreter: saved ?? undefined }
-          : project,
-      ),
-    }));
+    patchProject(id, (project) => ({ ...project, python_interpreter: saved ?? undefined }));
   },
 
   setProjectRemoteControl: async (id, remoteControl) => {
@@ -1512,13 +1599,15 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
       projectId: id,
       remoteControl,
     });
-    set((state) => ({
-      projects: state.projects.map((project) =>
-        project.id === id
-          ? { ...project, remote_control: saved ?? undefined }
-          : project,
-      ),
-    }));
+    patchProject(id, (project) => ({ ...project, remote_control: saved ?? undefined }));
+  },
+
+  setProjectAgentFence: async (id, agentFence) => {
+    const saved = await invoke<boolean | null>("set_project_agent_fence", {
+      projectId: id,
+      agentFence,
+    });
+    patchProject(id, (project) => ({ ...project, agent_fence: saved ?? undefined }));
   },
 
   setProjectAutoConnect: async (id, enabled) => {
@@ -1529,13 +1618,7 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
       projectId: id,
       enabled,
     });
-    set((state) => ({
-      projects: state.projects.map((project) =>
-        project.id === id && project.remote
-          ? { ...project, remote: { ...project.remote, auto_connect: result || undefined } }
-          : project,
-      ),
-    }));
+    patchProjectRemote(id, (remote) => ({ ...remote, auto_connect: result || undefined }));
   },
 
   setProjectPersistSessions: async (id, enabled) => {
@@ -1547,15 +1630,9 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
       projectId: id,
       enabled,
     });
-    set((state) => ({
-      projects: state.projects.map((project) =>
-        project.id === id && project.remote
-          ? {
-              ...project,
-              remote: { ...project.remote, persist_sessions: result ? undefined : false },
-            }
-          : project,
-      ),
+    patchProjectRemote(id, (remote) => ({
+      ...remote,
+      persist_sessions: result ? undefined : false,
     }));
   },
 
@@ -1564,13 +1641,7 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
       projectId: id,
       enabled,
     });
-    set((state) => ({
-      projects: state.projects.map((project) =>
-        project.id === id
-          ? { ...project, eldrun_mobile_access: result || undefined }
-          : project,
-      ),
-    }));
+    patchProject(id, (project) => ({ ...project, eldrun_mobile_access: result || undefined }));
   },
 
   setProjectRemoteLabel: async (id, label) => {
@@ -1578,13 +1649,7 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
       projectId: id,
       label,
     });
-    set((state) => ({
-      projects: state.projects.map((project) =>
-        project.id === id && project.remote
-          ? { ...project, remote: { ...project.remote, label: result ?? undefined } }
-          : project,
-      ),
-    }));
+    patchProjectRemote(id, (remote) => ({ ...remote, label: result ?? undefined }));
   },
 
   setProjectRemoteUser: async (id, user) => {
@@ -1592,22 +1657,13 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
       projectId: id,
       user,
     });
-    set((state) => ({
-      projects: state.projects.map((project) =>
-        project.id === id && project.remote
-          ? {
-              ...project,
-              remote: {
-                ...project.remote,
-                user: result ?? undefined,
-                // The backend drops `key_auth` with the login name; mirror that
-                // rather than leave a stale "this host needs no password" claim
-                // driving the Auto-connect toggle for an account that never proved it.
-                key_auth: undefined,
-              },
-            }
-          : project,
-      ),
+    patchProjectRemote(id, (remote) => ({
+      ...remote,
+      user: result ?? undefined,
+      // The backend drops `key_auth` with the login name; mirror that
+      // rather than leave a stale "this host needs no password" claim
+      // driving the Auto-connect toggle for an account that never proved it.
+      key_auth: undefined,
     }));
   },
 
@@ -1623,18 +1679,9 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
       config: config && config.trim() ? config : null,
       username: cleanUser ?? null,
     });
-    set((state) => ({
-      projects: state.projects.map((project) =>
-        project.id === id && project.remote
-          ? {
-              ...project,
-              remote: {
-                ...project.remote,
-                openvpn: stored ? { config: stored, username: cleanUser } : undefined,
-              },
-            }
-          : project,
-      ),
+    patchProjectRemote(id, (remote) => ({
+      ...remote,
+      openvpn: stored ? { config: stored, username: cleanUser } : undefined,
     }));
   },
 
@@ -1646,12 +1693,9 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
       projectId: id,
       categories,
     });
-    set((state) => ({
-      projects: state.projects.map((project) =>
-        project.id === id
-          ? { ...project, categories: cleaned.length > 0 ? cleaned : undefined }
-          : project,
-      ),
+    patchProject(id, (project) => ({
+      ...project,
+      categories: cleaned.length > 0 ? cleaned : undefined,
     }));
   },
 
@@ -1663,11 +1707,7 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
       projectId: id,
       disabled,
     });
-    set((state) => ({
-      projects: state.projects.map((project) =>
-        project.id === id ? { ...project, git_type: gitType } : project,
-      ),
-    }));
+    patchProject(id, (project) => ({ ...project, git_type: gitType }));
   },
 
   repairProjectScaffold: async (id) => {
@@ -1689,13 +1729,7 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
       publishFrom,
     });
     const gitType = `remote-${visibility}`;
-    set((state) => ({
-      projects: state.projects.map((project) =>
-        project.id === id
-          ? { ...project, git_type: gitType, git_provider: provider }
-          : project,
-      ),
-    }));
+    patchProject(id, (project) => ({ ...project, git_type: gitType, git_provider: provider }));
     return output;
   },
 
@@ -1705,9 +1739,7 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
     // local entry. Replace the whole entry so the pill lamp + file tree update.
     const oldDir = get().projects.find((p) => p.id === id)?.directory ?? "";
     const updated = await invoke<ProjectEntry>("detach_project_from_remote", { projectId: id });
-    set((state) => ({
-      projects: state.projects.map((project) => (project.id === id ? updated : project)),
-    }));
+    patchProject(id, () => updated);
 
     // Re-point the tabs. `directory` just changed out from under them: it was the remote
     // state dir, and it is now the promoted mirror. Every tab still holds the old one as
@@ -1731,22 +1763,14 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
     // push target to local, leaving history + the hosted repo intact. Mirror the
     // git_type/provider reset into local state.
     await invoke("unpublish_project", { projectId: id });
-    set((state) => ({
-      projects: state.projects.map((project) =>
-        project.id === id ? { ...project, git_type: "local", git_provider: undefined } : project,
-      ),
-    }));
+    patchProject(id, (project) => ({ ...project, git_type: "local", git_provider: undefined }));
   },
 
   setProjectVisibility: async (id, visibility) => {
     // Backend flips visibility in place via the provider CLI (`gh/glab repo
     // edit`), locally or over ssh, and writes the new remote-<vis> git_type.
     const output = await invoke<string>("set_project_visibility", { projectId: id, visibility });
-    set((state) => ({
-      projects: state.projects.map((project) =>
-        project.id === id ? { ...project, git_type: `remote-${visibility}` } : project,
-      ),
-    }));
+    patchProject(id, (project) => ({ ...project, git_type: `remote-${visibility}` }));
     return output;
   },
 
@@ -1761,12 +1785,10 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
       visibility,
       publishFrom,
     });
-    set((state) => ({
-      projects: state.projects.map((project) =>
-        project.id === id
-          ? { ...project, git_type: `remote-${visibility}`, git_provider: provider }
-          : project,
-      ),
+    patchProject(id, (project) => ({
+      ...project,
+      git_type: `remote-${visibility}`,
+      git_provider: provider,
     }));
     return output;
   },
@@ -1785,19 +1807,13 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
       token: args.token ?? null,
       clearToken: args.clearToken ?? false,
     });
-    set((state) => ({
-      projects: state.projects.map((project) =>
-        project.id === id
-          ? { ...project, git_profile_url: info.profile_url ?? undefined }
-          : project,
-      ),
-    }));
+    patchProject(id, (project) => ({ ...project, git_profile_url: info.profile_url ?? undefined }));
     return info;
   },
 }));
 
 /// Listen for the backend's `project-runtime-switched` event and apply the
-/// restored tab layout + right-panel folder. The switch runs on a backend
+/// restored tab layout + side-panel folder. The switch runs on a backend
 /// worker thread (see `switch_project_runtime`), so its result arrives here
 /// asynchronously rather than as the return value of the invoke in setActive.
 /// Register once at app startup; returns an unlisten function.
@@ -1817,6 +1833,10 @@ export function listenProjectRuntimeSwitched(): Promise<() => void> {
         kind: t.kind ?? cmdToKind(t.cmd),
         cmd: t.cmd,
         sessionId: t.sessionId,
+        // A custom agent is restorable only via `resumeArgs?.length` — omitting
+        // it here dropped such tabs on a runtime switch (the same drift the
+        // root/box restore copies had before `hydrateScopeFromDisk`).
+        resumeArgs: t.resumeArgs,
         viewer: t.viewer,
       }),
     );
@@ -1845,8 +1865,8 @@ export function listenProjectRuntimeSwitched(): Promise<() => void> {
         payload.tabGroups ?? undefined,
       );
     }
-    if (payload.projectId && payload.rightPanelFolder !== null) {
-      useProjectsStore.getState().setRightPanelFolder(payload.projectId, payload.rightPanelFolder);
+    if (payload.projectId && payload.sidePanelFolder !== null) {
+      useProjectsStore.getState().setSidePanelFolder(payload.projectId, payload.sidePanelFolder);
     }
   });
 }

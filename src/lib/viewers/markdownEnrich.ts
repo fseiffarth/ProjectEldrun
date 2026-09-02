@@ -30,6 +30,7 @@
 import mermaid from "mermaid";
 import katex from "katex";
 import "katex/dist/katex.min.css";
+import { escapeHtml } from "./highlight";
 
 // Initialize mermaid once at module load. `startOnLoad:false` keeps mermaid from
 // scanning the DOM on its own — we drive rendering explicitly per <pre> node.
@@ -40,12 +41,6 @@ mermaid.initialize({ startOnLoad: false, securityLevel: "strict", theme: "defaul
 // unique id per render). A monotonic counter avoids Date.now()/random collisions.
 let mermaidSeq = 0;
 
-function escapeText(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
-}
 
 async function renderMermaid(container: HTMLElement): Promise<void> {
   const blocks = container.querySelectorAll<HTMLElement>(
@@ -65,7 +60,7 @@ async function renderMermaid(container: HTMLElement): Promise<void> {
     } catch (err) {
       // Leave a small, escaped error note in place of the diagram.
       const msg = err instanceof Error ? err.message : String(err);
-      div.innerHTML = `<span class="md-mermaid-error">Mermaid error: ${escapeText(msg)}</span>`;
+      div.innerHTML = `<span class="md-mermaid-error">Mermaid error: ${escapeHtml(msg)}</span>`;
     }
     pre.replaceWith(div);
   }

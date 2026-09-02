@@ -1,9 +1,8 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { GitHistory } from "./GitHistory";
 import { GitChangeTree, type ChangeScope } from "./GitChangeTree";
-import { SearchPanel } from "./SearchPanel";
 import {
   FileSourceSwitch,
   ProjectFilesPane,
@@ -15,18 +14,27 @@ import { ProjectFilesSettingsDialog, useProjectFileFilters } from "./ProjectFile
 import { useImportDrop } from "./importDrop";
 import { logoutRemote, useProjectsStore } from "../../stores/projects";
 import { isTrashProject } from "../../lib/trashProject";
+import { GIT_STATE_COLOR } from "../../lib/gitColors";
+import { ContextMenuPortal } from "../common/ContextMenuPortal";
 import { useSyncStore, amberPaths, localNewPaths } from "../../stores/sync";
 import { confirmSyncTransfer } from "../../stores/syncConfirm";
 import { openLinkedFile, viewerForPath } from "../embed/FileViewerPane";
 import { useWindowsStore } from "../../stores/windows";
 import { useGitDirtyStore, gitDirtyState } from "../../stores/gitDirty";
-import { resolveLocalMirror, type ProjectEntry } from "../../types";
+import { resolveLocalMirror, type FilesPanelView, type ProjectEntry } from "../../types";
 import { fmtModified, type SortKey } from "../../lib/viewers/fileUtils";
+import {
+  readGitBarSnapshot,
+  writeGitBarSnapshot,
+  type GitStatus,
+} from "../../lib/fileViewSnapshots";
 import { basename, dirname } from "../../lib/paths";
 import { projectTypeTags } from "../projects/projectTypeTags";
 import { ProjectHoverCard, useProjectHoverCard } from "../projects/ProjectHoverCard";
 import { useRemoteMachinesStore } from "../../stores/remoteMachines";
 import { UntestedTag } from "../common/UntestedTag";
+import { AgentSchedulesView } from "../agents/AgentSchedulesView";
+import { useDialogs } from "../common/PromptDialogs";
 import { ROOT_SCOPE, useTabsStore, type TabEntry } from "../../stores/tabs";
 import { persistentSessionOf } from "../../lib/closeRemoteTab";
 import { sessionKindFromName, type TmuxSessionKind } from "../../lib/tmuxSession";
@@ -65,6 +73,9 @@ import {
   type HpcWorkspace,
 } from "../../lib/hpcWorkspace";
 import { useT, type TranslationKey } from "../../lib/i18n";
+import { useExperimental } from "../../lib/experimental";
+import { useProjectRemarksStore } from "../../stores/projectRemarks";
+import { RemarksPane } from "./RemarksPane";
 
 /** How long the pointer must rest on a session row before its stats card opens
  *  (TODO #85) — same value and rationale as `FileTree`'s `TOOLTIP_DWELL_MS`:
@@ -84,7 +95,7 @@ interface MobileHostStatus {
 function MobileAccessIcon({ on }: { on: boolean }) {
   return (
     <svg
-      className="right-panel-mobile-btn-icon"
+      className="side-panel-mobile-btn-icon"
       viewBox="0 0 16 16"
       fill="none"
       xmlns="http://www.w3.org/2000/svg"
@@ -217,15 +228,8 @@ export function mtimeDivergenceCue(
   return { text: t("projectFilesView.sameTime"), tone: "neutral", title };
 }
 
-interface GitStatus {
-  staged: number;
-  unstaged: number;
-  untracked: number;
-  has_remote: boolean;
-  is_repo: boolean;
-}
 
-type View = "files" | "windows" | "git" | "search" | "orange" | "sessions" | "jobs";
+type View = FilesPanelView;
 
 // A single shared empty array for scopes with no registered tabs. Must be a
 // stable reference — a Zustand selector that returned a fresh `[]` here would
@@ -233,9 +237,9 @@ type View = "files" | "windows" | "git" | "search" | "orange" | "sessions" | "jo
 const EMPTY_SCOPE_TABS: TabEntry[] = [];
 
 /**
- * The shared file view rendered by BOTH the right panel (`RightPanel`) and the
+ * The shared file view rendered by BOTH the side panel (`SidePanel`) and the
  * Files (Project) tab (`ProjectFilesTab`) — the view switcher (Files / Git /
- * Search / Apps / Orange), the inline git action bar, the git history, search,
+ * Apps / Orange), the inline git action bar, the git history,
  * the tracked-windows list, the diverged (orange) list, the type tags, hover
  * card and SSH logout, plus the settings dialog. One component, so the panel and
  * the tab can never drift into two different file *viewers* of the same project
@@ -277,12 +281,12 @@ export interface ProjectFilesViewProps {
   mountTree: boolean;
 
   /** Compact mode: strip the project-name/tags/source-switch/git-bar header row
-   *  and the Alerts group (with its 🔔) — the view-switcher toolbar (Files/Git/
+   *  and the Alerts group — the view-switcher toolbar (Files/Git/
    *  Search/Apps/±/sessions/jobs/import/etc.) and every view it switches to
    *  render identically to the full chrome. The sync + sort rows
    *  (`ProjectFilesPane`) are still stripped, so the tree's find-files search
    *  stays topmost there. Set only by the docked subwindow viewer
-   *  (`SubwindowFilesSidebar`); the right panel and the Files (Project) tab
+   *  (`SubwindowFilesSidebar`); the side panel and the Files (Project) tab
    *  leave it unset and keep the full chrome. */
   compact?: boolean;
 
@@ -303,6 +307,15 @@ export interface ProjectFilesViewProps {
   hidden?: React.ReactNode;
   /** Panel-only bottom frame chrome, rendered outside the scrollable viewer. */
   footer?: React.ReactNode;
+
+  /** Host-owned view switcher selection. The side panel passes these so the view
+   *  survives what remounts this component — a project switch (the panel is keyed
+   *  by project id) and a relaunch (it lands in `settings.side_panel_view`). A
+   *  host that passes neither keeps the view in local state, defaulting to Files,
+   *  which is what a Files (Project) tab and the docked subwindow sidebar want:
+   *  each of those is opened for a folder, not resumed. */
+  view?: View;
+  onViewChange?: (view: View) => void;
 }
 
 export function ProjectFilesView({
@@ -325,30 +338,107 @@ export function ProjectFilesView({
   hidden,
   footer,
   compact,
+  view: hostView,
+  onViewChange,
 }: ProjectFilesViewProps) {
   const t = useT();
-  const { windows, refresh, untrack } = useWindowsStore();
-  const [view, setView] = useState<View>("files");
+  // Sessions/Jobs/workspaces ask their questions in the panel's own chrome, the
+  // one the file tree below them already uses — not in WebKitGTK's native boxes,
+  // which arrive themeless and titled with the page origin.
+  const { promptText, confirmAction, showMessage, dialogs } = useDialogs();
+  const { windows, refresh, closeApp } = useWindowsStore();
+  // The Apps view shows THIS scope's launches only — the store holds every
+  // scope's slice (it is shared by all mounted viewers), so filter per render.
+  const scopedWindows = useMemo(
+    () =>
+      windows
+        .filter((w) => (w.project_id ?? null) === (projectId ?? null))
+        .sort((a, b) => a.opened_at - b.opened_at),
+    [windows, projectId],
+  );
+  const remarksEnabled = useExperimental("project_remarks");
+  // A box scope shows a multi-root file view (the box folder + every member
+  // project's root) instead of one project tree; the pane renders it. Read here
+  // rather than beside the tree because the view switcher below gates half its
+  // buttons on it.
+  const { activeBox } = useBoxRoots(scope);
+  // Whether the primary host has SLURM — the Jobs button's gate. Declared up
+  // here with the other view gates; the probe that sets it lives with the rest
+  // of the Jobs code further down.
+  const [slurmSupported, setSlurmSupported] = useState(false);
+  // The view switcher's selection. Held here even when a host persists it (the
+  // `view`/`onViewChange` props) so a click paints immediately rather than after
+  // the host's write has come back — the host's value is folded in whenever it
+  // CHANGES, which covers both a settings load that lands after this mounted and
+  // the write-back of a click.
+  const [localView, setLocalView] = useState<View>(hostView ?? "files");
+  const [seenHostView, setSeenHostView] = useState(hostView);
+  if (hostView !== seenHostView) {
+    setSeenHostView(hostView);
+    if (hostView !== undefined) setLocalView(hostView);
+  }
+  const requestedView = localView;
+  const setView = useCallback(
+    (next: View) => {
+      setLocalView(next);
+      onViewChange?.(next);
+    },
+    [onViewChange],
+  );
+  // What is actually shown. A stored view whose toolbar button this project
+  // doesn't have — Orange/Sessions off a remote project, Jobs off a SLURM host,
+  // Remarks with the flag off — would otherwise be a room with no door out, and
+  // SLURM support in particular is only known one async probe after mount. So
+  // the unavailable view *renders* as Files while the stored value stays put:
+  // switch back to a remote project, or let the probe land, and it returns.
+  const viewAvailable = (candidate: View): boolean => {
+    switch (candidate) {
+      case "orange":
+      case "sessions":
+        return !activeBox && !!project?.remote && !!projectId;
+      case "jobs":
+        return !activeBox && slurmSupported && !!projectId;
+      case "remarks":
+        return !activeBox && remarksEnabled && !!projectId;
+      default:
+        return true;
+    }
+  };
+  const view: View = viewAvailable(requestedView) ? requestedView : "files";
+  useEffect(() => {
+    if (active && remarksEnabled && projectId && projectDir) {
+      void useProjectRemarksStore.getState().load(projectId, projectDir);
+    }
+  }, [active, remarksEnabled, projectId, projectDir]);
   const [showSettings, setShowSettings] = useState(false);
   // Toggles the Downloads section stacked below the file tree (fast-copy of
   // recent downloads into the project). Toolbar ⬇⬇ button; files view only.
   const [showDownloads, setShowDownloads] = useState(false);
+  // The in-tree search box's fold, hoisted out of FileTree so its 🔍 can live in
+  // the toolbar row beside Files/Git/Apps: closed (the default) the tree spends
+  // no row at all on search chrome, which in the side panel's width is the
+  // difference between seeing three more files and not. ↻ moved up with it —
+  // the two shared the tree's row, and leaving refresh behind would have kept
+  // that row alive for one button. It reaches the tree as a bumped counter.
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [refreshNonce, setRefreshNonce] = useState(0);
   // The Alerts group stacked below the file tree (urgent mail, the next
   // appointments, due/overdue cards). Unlike Downloads there is no local shown
   // flag: `files_alerts` IS the visibility, which is what lets the × stick — the
   // group is on by default, so a close that came back at the next remount (and
   // this viewer is mounted many times over) would be a control that doesn't work.
-  // Being the same switch the Settings dialog writes, the two can't disagree.
+  // It is one machine-wide key, so the header's 🔔 (`header/AlertsToggle`), this
+  // group's ×, and the Project Settings checkbox are three faces of one switch
+  // and cannot disagree.
   const alertsEnabled = useSettingsStore((s) => s.settings?.files_alerts ?? true);
   const mobileHostEnabled = useSettingsStore((s) => s.settings?.eldrun_mobile_host?.enabled ?? false);
   // ...but never in the docked subwindow column (`compact`), whatever the
   // setting says: that viewer is a ~300px sidebar beside a terminal, where a
   // strip of mail/appointment/card rows takes the space the tree is there for
   // — and it is the surface mounted many times over at once, so one alert
-  // would be repeated once per open subwindow. Its 🔔 goes with it: a toggle
-  // that writes a setting whose group can never appear here is a dead control
-  // (and would silently arm the group in the panel and every Files tab).
-  // The right panel and the Files (Project) tab are unaffected.
+  // would be repeated once per open subwindow. The header's 🔔 still reads as
+  // on, correctly: it is the machine's switch, and the group it arms is showing
+  // in the side panel and every Files tab — this one column is the exception.
   const alertsHere = alertsEnabled && !compact;
   const updateSettings = useSettingsStore((s) => s.updateSettings);
   const setProjectMobileAccess = useProjectsStore((s) => s.setProjectMobileAccess);
@@ -406,8 +496,17 @@ export function ProjectFilesView({
       .finally(() => setMobileAccessBusy(false));
   };
 
-  const [gitStatus, setGitStatus] = useState<GitStatus | null>(null);
-  const [unpushedCommits, setUnpushedCommits] = useState<string[]>([]);
+  // Seeded from the last snapshot of this repo so a reveal (the whole view is
+  // unmounted by the `panelsHidden` toggle) shows the action bar populated on
+  // the first frame instead of an empty one that fills in a `git status` later.
+  // Keyed by `projectDir`, which is what `effectiveGitRoot` is until nested-repo
+  // detection says otherwise — and that detection refreshes the bar itself.
+  const [gitStatus, setGitStatus] = useState<GitStatus | null>(
+    () => readGitBarSnapshot(projectDir)?.status ?? null,
+  );
+  const [unpushedCommits, setUnpushedCommits] = useState<string[]>(
+    () => readGitBarSnapshot(projectDir)?.unpushed ?? [],
+  );
   const [openTree, setOpenTree] = useState<"add" | "commit" | "push" | null>(null);
   const [commitMsg, setCommitMsg] = useState<string | null>(null);
   const [gitBusy, setGitBusy] = useState(false);
@@ -432,7 +531,7 @@ export function ProjectFilesView({
   // project is connected. Local projects are never blocked.
   const { remoteSshState, remoteBlocked } = useRemoteBlocked(projectId, !!project?.remote);
   // Which endings/paths the tree hides, from the project's own project.json —
-  // shared with the right panel, so both views hide the same files.
+  // shared with the side panel, so both views hide the same files.
   const filters = useProjectFileFilters({ localFile, projectDir, remoteBlocked });
 
   // Run both git probes concurrently (Eff #9): they hit independent
@@ -445,6 +544,7 @@ export function ProjectFilesView({
     ]).then(([status, unpushed]) => {
       setGitStatus(status);
       setUnpushedCommits(unpushed);
+      writeGitBarSnapshot(dir, { status, unpushed });
       // Keep the project's pill dot in sync from the data we just fetched (no
       // extra git subprocesses), so edits/commits/pushes reflect immediately
       // instead of waiting for the switcher's periodic poll.
@@ -557,7 +657,7 @@ export function ProjectFilesView({
   // each host's pooled ControlMaster). An absent tmux / no server yields nothing.
   //
   // The list, its poll and its toggle all live in `stores/hostSessions`, NOT
-  // here: this component is rendered by the right panel, by every Files (Project)
+  // here: this component is rendered by the side panel, by every Files (Project)
   // tab and by every subwindow's docked column at once, and a per-instance poll
   // meant one `tmux ls` per host per surface every 7s — and, worse, that a
   // session killed in one surface sat on in the others until their own interval
@@ -707,9 +807,15 @@ export function ProjectFilesView({
   // poll reconciles. Unlike a tab close (which merely detaches), a kill terminates
   // the session, so the tab that owns it — now attached to a dead session — is
   // closed too rather than left showing a defunct terminal.
-  const killSession = (hostId: string, name: string) => {
+  const killSession = async (hostId: string, name: string) => {
     if (!projectId) return;
-    if (!window.confirm(t("projectFilesView.confirmKillSession", { name }))) return;
+    const ok = await confirmAction({
+      title: t("projectFilesView.killSessionDialogTitle"),
+      body: t("projectFilesView.confirmKillSession", { name }),
+      confirmLabel: t("projectFilesView.killSessionAction"),
+      danger: true,
+    });
+    if (!ok) return;
     const ownerKey = sessionOwners.get(`${hostId} ${name}`);
     invoke("remote_tmux_kill", { projectId, hostId, session: name })
       .then(() => {
@@ -724,23 +830,32 @@ export function ProjectFilesView({
   // Rename a host session (per-row). The name must be tmux-safe; on success the
   // owning tab's persisted name is updated too, so it reattaches to the renamed
   // session after a restart (the live client stays attached — rename never drops it).
-  const renameSession = (hostId: string, oldName: string) => {
+  const renameSession = async (hostId: string, oldName: string) => {
     if (!projectId) return;
-    const proposed = window.prompt(t("projectFilesView.renameSessionPrompt"), oldName);
-    if (proposed === null) return;
-    const next = proposed.trim();
-    if (!next || next === oldName) return;
-    if (!/^[A-Za-z0-9_-]+$/.test(next)) {
-      window.alert(t("projectFilesView.sessionNameInvalid"));
-      return;
-    }
-    invoke("remote_tmux_rename", { projectId, hostId, session: oldName, newName: next })
-      .then(() => {
+    await promptText(
+      {
+        title: t("projectFilesView.renameSessionDialogTitle"),
+        label: t("projectFilesView.renameSessionPrompt"),
+        initial: oldName,
+        confirmLabel: t("common.rename"),
+        unchanged: oldName,
+        // The tmux-safe check was an alert that threw the typed name away; as a
+        // validator it lands under the field, with the name still in it.
+        validate: (next) =>
+          /^[A-Za-z0-9_-]+$/.test(next) ? null : t("projectFilesView.sessionNameInvalid"),
+      },
+      async (next) => {
+        await invoke("remote_tmux_rename", {
+          projectId,
+          hostId,
+          session: oldName,
+          newName: next,
+        });
         const ownerKey = sessionOwners.get(`${hostId} ${oldName}`);
         if (ownerKey) useTabsStore.getState().setTabTmuxName(scope, ownerKey, next);
         useHostSessionsStore.getState().renameRow(projectId, hostId, oldName, next);
-      })
-      .catch((e) => window.alert(t("projectFilesView.renameSessionFailed", { error: String(e) })));
+      },
+    );
   };
 
   // ── SLURM jobs (HPC) ──────────────────────────────────────────────────────
@@ -749,7 +864,6 @@ export function ProjectFilesView({
   // only while the view is active (like Sessions). A local project with SLURM (a
   // login node) also gets it. The session store carries just-submitted jobs so a
   // Watch can resolve their log path without a fresh scontrol.
-  const [slurmSupported, setSlurmSupported] = useState(false);
   const [jobRows, setJobRows] = useState<SlurmJob[]>([]);
   const sessionJobs = useHpcJobsStore((s) =>
     projectId ? s.byProject[projectId] : undefined,
@@ -802,7 +916,11 @@ export function ProjectFilesView({
         isRemote: !!project?.remote,
       });
     } catch (e) {
-      window.alert(t("projectFilesView.watchJobResolveFailed", { jobId, error: String(e) }));
+      void showMessage({
+        title: t("projectFilesView.watchJobDialogTitle"),
+        body: t("projectFilesView.watchJobResolveFailed", { jobId, error: String(e) }),
+        error: true,
+      });
     }
   };
 
@@ -852,16 +970,30 @@ export function ProjectFilesView({
   // to be repeated, so the row's own value is passed straight back.
   const extendWs = async (ws: HpcWorkspace) => {
     if (!projectDir) return;
-    const answer = window.prompt(t("projectFilesView.extendWorkspacePrompt", { id: ws.id }), "30");
-    if (!answer) return;
-    const days = Number(answer.trim());
-    if (!Number.isFinite(days) || days < 1) return;
-    try {
-      const next = await wsExtend(wsTargetForProject(projectDir), ws.id, days, ws.filesystem);
-      setWsRows((rs) => rs.map((r) => (r.id === ws.id ? { ...r, ...next } : r)));
-    } catch (e) {
-      window.alert(t("projectFilesView.extendWorkspaceFailed", { id: ws.id, error: String(e) }));
-    }
+    await promptText(
+      {
+        title: t("projectFilesView.extendWorkspaceDialogTitle"),
+        body: t("projectFilesView.extendWorkspacePrompt", { id: ws.id }),
+        label: t("projectFilesView.extendWorkspaceDaysLabel"),
+        initial: "30",
+        confirmLabel: t("projectFilesView.extendWorkspaceAction"),
+        // A day count, so a non-number is refused where it was typed rather
+        // than silently dropping the click on the floor as the prompt did.
+        validate: (answer) =>
+          Number.isFinite(Number(answer)) && Number(answer) >= 1
+            ? null
+            : t("projectFilesView.extendWorkspaceDaysInvalid"),
+      },
+      async (answer) => {
+        const next = await wsExtend(
+          wsTargetForProject(projectDir),
+          ws.id,
+          Number(answer),
+          ws.filesystem,
+        );
+        setWsRows((rs) => rs.map((r) => (r.id === ws.id ? { ...r, ...next } : r)));
+      },
+    );
   };
 
   // Move the project's host tree into another workspace — the escape hatch an
@@ -874,7 +1006,12 @@ export function ProjectFilesView({
     if (!projectId || !project?.remote) return;
     const folder = basename(project.remote.remote_path.replace(/\/+$/, "")) || projectId;
     const dest = projectPathIn(ws, folder);
-    const ok = window.confirm(t("projectFilesView.confirmMoveProject", { dest }));
+    const ok = await confirmAction({
+      title: t("projectFilesView.moveProjectTitle"),
+      body: t("projectFilesView.confirmMoveProject", { dest }),
+      confirmLabel: t("projectFilesView.moveProjectAction"),
+      danger: true,
+    });
     if (!ok) return;
     setWsBusy(true);
     try {
@@ -926,7 +1063,11 @@ export function ProjectFilesView({
         logs_dir: logsDir,
       }).catch(() => {});
     } catch (e) {
-      window.alert(t("projectFilesView.moveProjectFailed", { error: String(e) }));
+      void showMessage({
+        title: t("projectFilesView.moveProjectTitle"),
+        body: t("projectFilesView.moveProjectFailed", { error: String(e) }),
+        error: true,
+      });
     } finally {
       setWsBusy(false);
     }
@@ -939,31 +1080,43 @@ export function ProjectFilesView({
     if (!projectId || !dir) return;
     try {
       const n = await pullLogs(projectId, dir);
-      window.alert(
-        n > 0
-          ? t(n === 1 ? "projectFilesView.pulledLogsOne" : "projectFilesView.pulledLogsMany", { count: n })
-          : t("projectFilesView.noLogsYet"),
-      );
+      await showMessage({
+        title: t("projectFilesView.pullLogsDialogTitle"),
+        body:
+          n > 0
+            ? t(n === 1 ? "projectFilesView.pulledLogsOne" : "projectFilesView.pulledLogsMany", { count: n })
+            : t("projectFilesView.noLogsYet"),
+      });
     } catch (e) {
-      window.alert(t("projectFilesView.copyLogsFailed", { error: String(e) }));
+      await showMessage({
+        title: t("projectFilesView.pullLogsDialogTitle"),
+        body: t("projectFilesView.copyLogsFailed", { error: String(e) }),
+        error: true,
+      });
     }
   };
 
   // Cancel a job (confirmed). Drops the row optimistically; the poll reconciles.
-  const cancelJob = (jobId: string, name: string) => {
+  const cancelJob = async (jobId: string, name: string) => {
     if (!projectDir) return;
-    if (
-      !window.confirm(
-        t("projectFilesView.confirmCancelJob", { jobId, name: name ? ` (${name})` : "" }),
-      )
-    )
-      return;
-    slurmCancel(projectDir, jobId)
-      .then(() => {
-        setJobRows((rs) => rs.filter((r) => r.id !== jobId));
-        if (projectId) useHpcJobsStore.getState().remove(projectId, jobId, "primary");
-      })
-      .catch((e) => window.alert(t("projectFilesView.cancelJobFailed", { error: String(e) })));
+    const ok = await confirmAction({
+      title: t("projectFilesView.cancelJobDialogTitle"),
+      body: t("projectFilesView.confirmCancelJob", { jobId, name: name ? ` (${name})` : "" }),
+      confirmLabel: t("projectFilesView.cancelJobAction"),
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await slurmCancel(projectDir, jobId);
+      setJobRows((rs) => rs.filter((r) => r.id !== jobId));
+      if (projectId) useHpcJobsStore.getState().remove(projectId, jobId, "primary");
+    } catch (e) {
+      await showMessage({
+        title: t("projectFilesView.cancelJobDialogTitle"),
+        body: t("projectFilesView.cancelJobFailed", { error: String(e) }),
+        error: true,
+      });
+    }
   };
 
   // Resolve the scaffold-missing flag whenever the project changes. Failures
@@ -995,11 +1148,8 @@ export function ProjectFilesView({
   // Same hover card as the project pill, shown when hovering the project name
   // here — minus the type tags, which already sit beside the name below.
   const nameHover = useProjectHoverCard(project ?? undefined);
-  const leftDockedPanel = containerClassName.includes("right-panel left");
+  const leftDockedPanel = containerClassName.includes("side-panel left");
 
-  // A box scope shows a multi-root file view (the box folder + every member
-  // project's root) instead of one project tree; the pane renders it.
-  const { activeBox } = useBoxRoots(scope);
   // The root scope's own tree (`~/eldrun/root`): a real folder with no project
   // record behind it — no project.json, no git provider, no settings dialog — so
   // it is named for what it is rather than falling back to a bare "Files". The
@@ -1026,17 +1176,24 @@ export function ProjectFilesView({
     onImported: () => refreshGit(effectiveGitRoot),
   });
 
+  // Refresh THIS scope's slice of the windows store (root/box scope included:
+  // projectId null is a real scope holding its own null-project launches).
   useEffect(() => {
-    if (active && projectId) {
-      refresh(projectId);
+    if (active) {
+      refresh(projectId ?? undefined);
     }
   }, [active, projectId]);
 
   useEffect(() => {
     if (active && effectiveGitRoot && !remoteBlocked) {
       refreshGit(effectiveGitRoot);
-    } else {
+    } else if (!effectiveGitRoot || remoteBlocked) {
+      // No repo to describe, or a remote pool that can't be asked — those are
+      // real "we don't know" states, so the bar clears. Merely going inactive is
+      // not: the counts stay put so the next reveal has something to show, and
+      // the branch above refreshes them the moment it comes back.
       setGitStatus(null);
+      setUnpushedCommits([]);
     }
   }, [active, effectiveGitRoot, remoteBlocked]);
 
@@ -1109,6 +1266,19 @@ export function ProjectFilesView({
     }
   };
 
+  // Keep pending Git work visible from the Files view without keeping the
+  // action controls in a separate header row. The colour matches the next
+  // actionable step: add, then commit, then push.
+  const gitPendingColor = !gitStatus?.is_repo
+    ? null
+    : gitStatus.unstaged + gitStatus.untracked > 0
+      ? GIT_STATE_COLOR.modified
+      : gitStatus.staged > 0
+        ? GIT_STATE_COLOR.staged
+        : unpushedCommits.length > 0
+          ? GIT_STATE_COLOR.unpushed
+          : null;
+
   return (
     <div
       className={`${containerClassName}${importDrop.dropActive ? " drop-active" : ""}${importDrop.dropFlash ? " drop-flash" : ""}`}
@@ -1118,14 +1288,15 @@ export function ProjectFilesView({
     >
       {resizeHandle}
       {importDrop.conflictModal}
+      {dialogs}
       {/* Compact (docked subwindow) viewer: only the project-name/tags/source-
           switch/git-bar header is stripped — the tree's find-files search stays
           topmost. The Files/Git/Search/Apps toolbar (± diverged, sessions, jobs,
           import, open-in-OS, downloads, settings) renders in both modes, so a
-          subwindow file viewer behaves identically to the right panel / Files
+          subwindow file viewer behaves identically to the side panel / Files
           (Project) tab except for that header row. */}
       {!compact && (
-      <div className="right-panel-header">
+      <div className="side-panel-header">
         {pin}
         <span
           style={{
@@ -1166,7 +1337,7 @@ export function ProjectFilesView({
             labels only — no interactivity — so they deliberately look nothing
             like the source switch below. */}
         {!activeBox && typeTags.length > 0 && (
-          <span className="right-panel-type-tags">
+          <span className="side-panel-type-tags">
             {typeTags.map((tag) => {
               // The SSH tag carries a right-click menu (connect / manage · remote
               // machines); the rest stay pure labels.
@@ -1210,7 +1381,7 @@ export function ProjectFilesView({
         {mobileHostConnected && mobileEligible && (
           <button
             type="button"
-            className={`right-panel-mobile-btn${mobileAccessOn ? " on" : ""}`}
+            className={`side-panel-mobile-btn${mobileAccessOn ? " on" : ""}`}
             disabled={mobileAccessBusy}
             aria-pressed={mobileAccessOn}
             aria-label={t("projectFilesView.mobileAccessAria", { name: project?.name ?? "" })}
@@ -1225,23 +1396,14 @@ export function ProjectFilesView({
           </button>
         )}
         {mobileAccessError && (
-          <div className="right-panel-mobile-access-error" role="alert">{mobileAccessError}</div>
+          <div className="side-panel-mobile-access-error" role="alert">{mobileAccessError}</div>
         )}
-        {sshTagMenu && projectId && createPortal(
-          <>
-            <div
-              style={{ position: "fixed", inset: 0, zIndex: 200 }}
-              onPointerDown={() => setSshTagMenu(null)}
-              onContextMenu={(e) => {
-                e.preventDefault();
-                setSshTagMenu(null);
-              }}
-            />
-            <div
-              className="context-menu"
-              style={{ left: sshTagMenu.x, top: sshTagMenu.y, zIndex: 201 }}
-              onPointerDown={(e) => e.stopPropagation()}
-            >
+        {sshTagMenu && projectId && (
+          <ContextMenuPortal
+            x={sshTagMenu.x}
+            y={sshTagMenu.y}
+            onClose={() => setSshTagMenu(null)}
+          >
               <div className="context-menu-group">
                 <div className="context-menu-group-label">
                   {project?.remote?.host ?? t("projectFilesView.remoteFallback")}
@@ -1259,9 +1421,7 @@ export function ProjectFilesView({
                   <UntestedTag />
                 </button>
               </div>
-            </div>
-          </>,
-          document.body,
+          </ContextMenuPortal>
         )}
         {/* Remote/Local file-source switch (remote SSH projects only). A live
             segmented control — NOT a tag — that flips the files view between the
@@ -1294,7 +1454,7 @@ export function ProjectFilesView({
           {remoteSshState === "connected" && (
             <button
               type="button"
-              className="right-panel-conn-logout"
+              className="side-panel-conn-logout"
               aria-label={t("projectFilesView.logoutAriaLabel", { host: project.remote.host })}
               title={t("projectFilesView.logoutTitle", {
                 host: project.remote.host,
@@ -1307,133 +1467,6 @@ export function ProjectFilesView({
           )}
           </>
         )}
-        {/* Git status/action buttons drop to their own row below the project name
-            (forced by the flex-basis breaker) instead of crowding it. Only
-            rendered when there's something to do (or we're mid-commit) — an
-            empty strip with no actions just wastes space. */}
-        {!activeBox && gitStatus?.is_repo &&
-          (commitMsg !== null ||
-            gitStatus.unstaged + gitStatus.untracked > 0 ||
-            gitStatus.staged > 0 ||
-            unpushedCommits.length > 0) && (
-          <>
-            <span style={{ flexBasis: "100%", width: 0, height: 0 }} />
-            <div ref={actionBarRef} className="git-action-bar git-action-bar--inline" style={{ position: "relative" }}>
-            {commitMsg !== null ? (
-              <>
-                <button
-                  className="git-action-btn git-action-btn--commit"
-                  disabled={gitBusy}
-                  onClick={handleCommitConfirm}
-                  title={t("projectFilesView.confirmCommitTitle")}
-                >
-                  <span data-testid="commit-bar" style={{ width: 7, height: 7, borderRadius: "50%", marginRight: 5, flexShrink: 0, background: "#e3b341" }} />
-                  <span>↵</span>
-                  <span className="git-btn-label">{t("projectFilesView.confirm")}</span>
-                </button>
-                <button
-                  className="git-action-btn git-action-btn--back"
-                  disabled={gitBusy}
-                  onClick={() => setCommitMsg(null)}
-                  title={t("projectFilesView.goBackTitle")}
-                >
-                  <span>←</span>
-                  <span className="git-btn-label">{t("projectFilesView.back")}</span>
-                </button>
-              </>
-            ) : (
-              <>
-                {/* Each action only appears when it has work to do: Add when there
-                    are unstaged/untracked changes, Commit when something is staged,
-                    Push when commits are ahead of the remote. A clean, pushed repo
-                    shows no buttons. The caret beside each action opens a
-                    navigable folder tree of the files it touches, with line
-                    stats. */}
-                {gitStatus.unstaged + gitStatus.untracked > 0 && (
-                  <div className="git-action git-action--add">
-                    <button
-                      className="git-action-btn git-action-btn--add"
-                      disabled={gitBusy}
-                      onClick={handleAdd}
-                      title={t("projectFilesView.stageAllTitle", { count: gitStatus.unstaged + gitStatus.untracked })}
-                    >
-                      <span data-testid="add-bar" style={{ width: 7, height: 7, borderRadius: "50%", marginRight: 5, flexShrink: 0, background: "#f85149" }} />
-                      <span>⊕</span>
-                      <span className="git-btn-label">{t("projectFilesView.add", { count: gitStatus.unstaged + gitStatus.untracked })}</span>
-                    </button>
-                    <button
-                      className="git-action-toggle"
-                      disabled={gitBusy}
-                      aria-label={t("projectFilesView.showChangedFiles")}
-                      aria-expanded={openTree === "add"}
-                      title={t("projectFilesView.showChangedFiles")}
-                      onClick={() => setOpenTree((prev) => (prev === "add" ? null : "add"))}
-                    >
-                      {openTree === "add" ? "▴" : "▾"}
-                    </button>
-                  </div>
-                )}
-                {gitStatus.staged > 0 && (
-                  <div className="git-action git-action--commit">
-                    <button
-                      className="git-action-btn git-action-btn--commit"
-                      disabled={gitBusy}
-                      onClick={handleCommitOpen}
-                      title={t("projectFilesView.commitStagedTitle", { count: gitStatus.staged })}
-                    >
-                      <span data-testid="commit-bar" style={{ width: 7, height: 7, borderRadius: "50%", marginRight: 5, flexShrink: 0, background: "#e3b341" }} />
-                      <span>✔</span>
-                      <span className="git-btn-label">{t("projectFilesView.commit", { count: gitStatus.staged })}</span>
-                    </button>
-                    <button
-                      className="git-action-toggle"
-                      disabled={gitBusy}
-                      aria-label={t("projectFilesView.showStagedFiles")}
-                      aria-expanded={openTree === "commit"}
-                      title={t("projectFilesView.showStagedFiles")}
-                      onClick={() => setOpenTree((prev) => (prev === "commit" ? null : "commit"))}
-                    >
-                      {openTree === "commit" ? "▴" : "▾"}
-                    </button>
-                  </div>
-                )}
-                {unpushedCommits.length > 0 && (
-                  <div className="git-action git-action--push">
-                    <button
-                      className="git-action-btn git-action-btn--push"
-                      disabled={gitBusy}
-                      onClick={handlePush}
-                      title={t(
-                        unpushedCommits.length === 1
-                          ? "projectFilesView.pushCommitOneTitle"
-                          : "projectFilesView.pushCommitManyTitle",
-                        { count: unpushedCommits.length },
-                      )}
-                    >
-                      <span data-testid="push-bar" style={{ width: 7, height: 7, borderRadius: "50%", marginRight: 5, flexShrink: 0, background: "#3fb950" }} />
-                      <span>⬆</span>
-                      <span className="git-btn-label">{t("projectFilesView.push", { count: unpushedCommits.length })}</span>
-                    </button>
-                    <button
-                      className="git-action-toggle"
-                      disabled={gitBusy}
-                      aria-label={t("projectFilesView.showUnpushedFiles")}
-                      aria-expanded={openTree === "push"}
-                      title={t("projectFilesView.showUnpushedFiles")}
-                      onClick={() => setOpenTree((prev) => (prev === "push" ? null : "push"))}
-                    >
-                      {openTree === "push" ? "▴" : "▾"}
-                    </button>
-                  </div>
-                )}
-                {treeScope && projectDir && (
-                  <GitChangeTree projectDir={projectDir} scope={treeScope} />
-                )}
-              </>
-            )}
-          </div>
-          </>
-          )}
       </div>
       )}
 
@@ -1444,12 +1477,12 @@ export function ProjectFilesView({
           project still needs it here to flip the tree between host and mirror.
           It gets its own row in the header's place: ABOVE the Files/Git/Search/
           Apps toolbar, so the compact viewer stacks source-switch → view row →
-          content in the same order the right panel does. Deliberately NOT gated
-          on the files view — the right panel's switch is always up, and a row
+          content in the same order the side panel does. Deliberately NOT gated
+          on the files view — the side panel's switch is always up, and a row
           that appeared only under "Files" would shove the toolbar up and down on
           every view change. */}
       {compact && !activeBox && project?.remote && projectId && (
-        <div className="right-panel-source right-panel-source--compact">
+        <div className="side-panel-source side-panel-source--compact">
           <FileSourceSwitch source={source} onChange={setSource} />
           {/* Remote side only, same reason as the full header's copy above — and
               this is the compact (docked subwindow) viewer, where the switch and
@@ -1465,11 +1498,14 @@ export function ProjectFilesView({
         </div>
       )}
 
-      <div className="right-panel-toolbar">
-        {(["files", "git", "search", "windows"] as View[]).map((v) => (
+      <div className="side-panel-toolbar">
+        {/* Agents (#249): every agent tab of this scope that can carry
+            schedules, plus the scope's collected prompts. Same row as Apps so
+            the side panel and the Files tab offer it alike. */}
+        {(["files", "git", "windows", "agents"] as View[]).map((v) => (
           <button
             key={v}
-            className={`tab-add-btn${view === v ? " active" : ""}`}
+            className={`toolbar-btn${view === v ? " active" : ""}${v === "git" && gitPendingColor ? " toolbar-btn--flagged" : ""}`}
             style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: v === "files" ? 0 : 2 }}
             aria-pressed={view === v}
             onClick={() => setView(v)}
@@ -1479,9 +1515,16 @@ export function ProjectFilesView({
                 ? "projectFilesView.tabFiles"
                 : v === "git"
                   ? "projectFilesView.tabGit"
-                  : v === "search"
-                    ? "projectFilesView.tabSearch"
+                  : v === "agents"
+                    ? "projectFilesView.tabAgents"
                     : "projectFilesView.tabApps",
+            )}
+            {v === "git" && gitPendingColor && (
+              <span
+                className="toolbar-btn-flag"
+                style={{ backgroundColor: gitPendingColor }}
+                aria-hidden="true"
+              />
             )}
           </button>
         ))}
@@ -1493,16 +1536,16 @@ export function ProjectFilesView({
             first shows up at all. */}
         {!activeBox && project?.remote && projectId && (
           <button
-            className={`tab-add-btn right-panel-orange-btn${view === "orange" ? " active" : ""}`}
+            className={`toolbar-btn side-panel-orange-btn${view === "orange" ? " active" : ""}`}
             style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: 2 }}
             aria-pressed={view === "orange"}
-            onClick={() => setView((v) => (v === "orange" ? "files" : "orange"))}
+            onClick={() => setView(view === "orange" ? "files" : "orange")}
             title={t("projectFilesView.divergedFilesTitle", {
               count: orangeFiles.length + newLocalFiles.length,
             })}
           >
             ± {orangeFiles.length + newLocalFiles.length > 0 && (
-              <span className="right-panel-orange-count">
+              <span className="side-panel-orange-count">
                 {orangeFiles.length + newLocalFiles.length}
               </span>
             )}
@@ -1513,31 +1556,70 @@ export function ProjectFilesView({
             click from being reattached. */}
         {!activeBox && project?.remote && projectId && (
           <button
-            className={`tab-add-btn right-panel-orange-btn${view === "sessions" ? " active" : ""}`}
+            className={`toolbar-btn side-panel-orange-btn${view === "sessions" ? " active" : ""}`}
             style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: 2 }}
             aria-pressed={view === "sessions"}
-            onClick={() => setView((v) => (v === "sessions" ? "files" : "sessions"))}
+            onClick={() => setView(view === "sessions" ? "files" : "sessions")}
             title={t("projectFilesView.persistentSessionsTitle", { count: sessionRows.length })}
           >
-            ☰ {sessionRows.length > 0 && <span className="right-panel-orange-count">{sessionRows.length}</span>}
+            ☰ {sessionRows.length > 0 && <span className="side-panel-orange-count">{sessionRows.length}</span>}
           </button>
         )}
         {/* SLURM jobs (HPC): shown only when the host actually has SLURM, so the
             toggle never appears off-cluster. Badged with the live queue count. */}
         {!activeBox && slurmSupported && projectId && (
           <button
-            className={`tab-add-btn right-panel-orange-btn${view === "jobs" ? " active" : ""}`}
+            className={`toolbar-btn side-panel-orange-btn${view === "jobs" ? " active" : ""}`}
             style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: 2 }}
             aria-pressed={view === "jobs"}
-            onClick={() => setView((v) => (v === "jobs" ? "files" : "jobs"))}
+            onClick={() => setView(view === "jobs" ? "files" : "jobs")}
             title={t("projectFilesView.slurmJobsTitle", { count: jobRows.length })}
           >
-            ⚙ {jobRows.length > 0 && <span className="right-panel-orange-count">{jobRows.length}</span>}
+            ⚙ {jobRows.length > 0 && <span className="side-panel-orange-count">{jobRows.length}</span>}
+          </button>
+        )}
+        {!activeBox && remarksEnabled && projectId && (
+          <button
+            className={`toolbar-btn side-panel-orange-btn${view === "remarks" ? " active" : ""}`}
+            style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: 2 }}
+            aria-pressed={view === "remarks"}
+            onClick={() => setView(view === "remarks" ? "files" : "remarks")}
+            title={t("projectRemarks.view")}
+          >
+            💬
+          </button>
+        )}
+        {/* The tree's search + refresh, hoisted out of the tree itself. Files
+            view only: both act on the tree, and the tree is only mounted there
+            (a ↻ in the Git view would bump a counter nothing is listening to).
+            Same chrome as every other toolbar button — see `toolbar-btn`. */}
+        {view === "files" && (
+          <button
+            className={`toolbar-btn${searchOpen ? " active" : ""}`}
+            style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: 2 }}
+            aria-pressed={searchOpen}
+            aria-expanded={searchOpen}
+            onClick={() => setSearchOpen((v) => !v)}
+            title={searchOpen ? t("fileTree.hideSearch") : t("fileTree.showSearch")}
+            aria-label={searchOpen ? t("fileTree.hideSearch") : t("fileTree.showSearch")}
+          >
+            🔍
+          </button>
+        )}
+        {view === "files" && (
+          <button
+            className="toolbar-btn"
+            style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: 2 }}
+            onClick={() => setRefreshNonce((n) => n + 1)}
+            title={t("fileTree.refreshTitle")}
+            aria-label={t("common.refresh")}
+          >
+            ↻
           </button>
         )}
         {importDrop.canImport && (
           <button
-            className="tab-add-btn"
+            className="toolbar-btn"
             style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: 2 }}
             onClick={(e) => {
               const r = e.currentTarget.getBoundingClientRect();
@@ -1548,17 +1630,12 @@ export function ProjectFilesView({
             ⬇
           </button>
         )}
-        {importMenu && createPortal(
-          <>
-            <div
-              style={{ position: "fixed", inset: 0, zIndex: 200 }}
-              onPointerDown={() => setImportMenu(null)}
-            />
-            <div
-              className="context-menu"
-              style={{ left: importMenu.x, top: importMenu.y, zIndex: 201 }}
-              onPointerDown={(e) => e.stopPropagation()}
-            >
+        {importMenu && (
+          <ContextMenuPortal
+            x={importMenu.x}
+            y={importMenu.y}
+            onClose={() => setImportMenu(null)}
+          >
               <button
                 onClick={() => {
                   setImportMenu(null);
@@ -1575,13 +1652,11 @@ export function ProjectFilesView({
               >
                 {t("projectFilesView.importFolder")}
               </button>
-            </div>
-          </>,
-          document.body,
+          </ContextMenuPortal>
         )}
         {projectDir && (
           <button
-            className="tab-add-btn"
+            className="toolbar-btn"
             style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: 2 }}
             onClick={openInOsBrowser}
             title={t("projectFilesView.openInFileManagerTitle")}
@@ -1591,7 +1666,7 @@ export function ProjectFilesView({
         )}
         {!activeBox && projectDir && (
           <button
-            className={`tab-add-btn${showDownloads ? " active" : ""}`}
+            className={`toolbar-btn${showDownloads ? " active" : ""}`}
             style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: 2 }}
             aria-pressed={showDownloads}
             onClick={() => {
@@ -1604,29 +1679,15 @@ export function ProjectFilesView({
             📥
           </button>
         )}
-        {/* Always offered, never gated on the setting it writes: the button IS
-            the way back, so hiding it whenever the group is off would leave the
-            × a one-way door out of a default-on feature, reopenable only from
-            the Project Settings dialog. A box's multi-root view is excluded for
-            the Downloads group's reason — it has no single project below. */}
-        {!activeBox && !compact && (
-          <button
-            className={`tab-add-btn${alertsEnabled ? " active" : ""}`}
-            style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: 2 }}
-            aria-pressed={alertsEnabled}
-            onClick={() => {
-              void updateSettings({ files_alerts: !alertsEnabled });
-              // The group lives in the files view; jump there when revealing it.
-              if (!alertsEnabled) setView("files");
-            }}
-            title={t("filesAlerts.toolbarTitle")}
-          >
-            🔔
-          </button>
-        )}
+        {/* The Alerts group's 🔔 used to sit here, between 📥 and ⚙. It is now the
+            header's (`header/AlertsToggle`), beside the ☑ board: `files_alerts`
+            is one machine-wide setting and the group draws the same rows in
+            every project, so a per-project toolbar rendered one switch once per
+            open file viewer and made a global thing look like this project's.
+            The group itself stays below the tree — only its switch moved. */}
         {projectId && (
           <button
-            className="tab-add-btn"
+            className="toolbar-btn"
             style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: 2 }}
             onClick={() => setShowSettings(true)}
             title={t("projectFilesView.projectSettingsTitle")}
@@ -1665,40 +1726,9 @@ export function ProjectFilesView({
         </div>
       )}
 
-      {!compact && !activeBox && gitStatus?.is_repo && (
-        <>
-          {commitMsg !== null && (
-            <div style={{ padding: "4px 6px", borderBottom: "1px solid var(--border-color)" }}>
-              <textarea
-                ref={commitRef}
-                value={commitMsg}
-                onChange={(e) => setCommitMsg(e.target.value)}
-                rows={3}
-                style={{
-                  width: "100%",
-                  fontSize: 11,
-                  background: "var(--bg-panel)",
-                  color: "var(--text-primary)",
-                  border: "1px solid var(--border-color)",
-                  borderRadius: "var(--radius-sm)",
-                  padding: "3px 5px",
-                  resize: "vertical",
-                  boxSizing: "border-box",
-                  fontFamily: "inherit",
-                }}
-              />
-            </div>
-          )}
-          {gitError && (
-            <div style={{ fontSize: 10, color: "var(--danger, #f85149)", wordBreak: "break-all", padding: "2px 6px 4px", borderBottom: "1px solid var(--border-color)" }}>
-              {gitError}
-            </div>
-          )}
-        </>
-      )}
-
       {view === "git" && (
-        <div className="right-panel-scroll" style={{ flex: 1, overflowY: "auto" }}>
+        <>
+        <div className="side-panel-scroll" style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
           {nestedRoot && (
             <div className="nested-repo-toggle" role="group" aria-label={t("projectFilesView.gitRepositoryAriaLabel")}>
               <button
@@ -1726,16 +1756,83 @@ export function ProjectFilesView({
             onChanged={() => effectiveGitRoot && refreshGit(effectiveGitRoot)}
           />
         </div>
-      )}
-
-      {view === "search" && (
-        <SearchPanel projectDir={projectDir} linkingTabKey={undefined} />
+        {/* Add / Commit / Push live at the FOOT of the panel, below the history
+            they act on — the same place every other "do it" control in the app
+            sits, and out of the scroll area so they stay reachable however far
+            down the log you are. The commit box is rendered above the buttons
+            for that reason too: the footer grows upward, so the confirm stays
+            the bottom-most thing. Its change-tree popover opens upward
+            (`.git-action-bar` in files-panel.css). */}
+        {!activeBox && gitStatus?.is_repo && (
+          <div ref={actionBarRef} className="git-action-bar">
+            {gitPendingColor && <UntestedTag />}
+            {commitMsg !== null && (
+              <textarea
+                ref={commitRef}
+                value={commitMsg}
+                onChange={(e) => setCommitMsg(e.target.value)}
+                rows={7}
+                className="git-commit-input"
+              />
+            )}
+            {commitMsg !== null ? (
+              <>
+                <button className="git-action-btn git-action-btn--commit" disabled={gitBusy} onClick={handleCommitConfirm} title={t("projectFilesView.confirmCommitTitle")}>
+                  <span data-testid="commit-bar" className="git-step-dot" style={{ background: GIT_STATE_COLOR.staged }} />
+                  <span className="git-btn-glyph">↵</span><span className="git-btn-label">{t("projectFilesView.confirm")}</span>
+                </button>
+                <button className="git-action-btn git-action-btn--back" disabled={gitBusy} onClick={() => setCommitMsg(null)} title={t("projectFilesView.goBackTitle")}>
+                  <span className="git-btn-glyph">←</span><span className="git-btn-label">{t("projectFilesView.back")}</span>
+                </button>
+              </>
+            ) : (
+              <>
+                {gitStatus.unstaged + gitStatus.untracked > 0 && (
+                  <div className="git-action git-action--add">
+                    <button className="git-action-btn git-action-btn--add" disabled={gitBusy} onClick={handleAdd} title={t("projectFilesView.stageAllTitle", { count: gitStatus.unstaged + gitStatus.untracked })}>
+                      <span data-testid="add-bar" className="git-step-dot" style={{ background: GIT_STATE_COLOR.modified }} />
+                      <span className="git-btn-glyph">⊕</span><span className="git-btn-label">{t("projectFilesView.add", { count: gitStatus.unstaged + gitStatus.untracked })}</span>
+                    </button>
+                    <button className="git-action-toggle" disabled={gitBusy} aria-label={t("projectFilesView.showChangedFiles")} aria-expanded={openTree === "add"} title={t("projectFilesView.showChangedFiles")} onClick={() => setOpenTree((prev) => (prev === "add" ? null : "add"))}>
+                      {openTree === "add" ? "▾" : "▴"}
+                    </button>
+                  </div>
+                )}
+                {gitStatus.staged > 0 && (
+                  <div className="git-action git-action--commit">
+                    <button className="git-action-btn git-action-btn--commit" disabled={gitBusy} onClick={handleCommitOpen} title={t("projectFilesView.commitStagedTitle", { count: gitStatus.staged })}>
+                      <span data-testid="commit-bar" className="git-step-dot" style={{ background: GIT_STATE_COLOR.staged }} />
+                      <span className="git-btn-glyph">✔</span><span className="git-btn-label">{t("projectFilesView.commit", { count: gitStatus.staged })}</span>
+                    </button>
+                    <button className="git-action-toggle" disabled={gitBusy} aria-label={t("projectFilesView.showStagedFiles")} aria-expanded={openTree === "commit"} title={t("projectFilesView.showStagedFiles")} onClick={() => setOpenTree((prev) => (prev === "commit" ? null : "commit"))}>
+                      {openTree === "commit" ? "▾" : "▴"}
+                    </button>
+                  </div>
+                )}
+                {unpushedCommits.length > 0 && (
+                  <div className="git-action git-action--push">
+                    <button className="git-action-btn git-action-btn--push" disabled={gitBusy} onClick={handlePush} title={t(unpushedCommits.length === 1 ? "projectFilesView.pushCommitOneTitle" : "projectFilesView.pushCommitManyTitle", { count: unpushedCommits.length })}>
+                      <span data-testid="push-bar" className="git-step-dot" style={{ background: GIT_STATE_COLOR.unpushed }} />
+                      <span className="git-btn-glyph">⬆</span><span className="git-btn-label">{t("projectFilesView.push", { count: unpushedCommits.length })}</span>
+                    </button>
+                    <button className="git-action-toggle" disabled={gitBusy} aria-label={t("projectFilesView.showUnpushedFiles")} aria-expanded={openTree === "push"} title={t("projectFilesView.showUnpushedFiles")} onClick={() => setOpenTree((prev) => (prev === "push" ? null : "push"))}>
+                      {openTree === "push" ? "▾" : "▴"}
+                    </button>
+                  </div>
+                )}
+                {treeScope && projectDir && <GitChangeTree projectDir={projectDir} scope={treeScope} />}
+              </>
+            )}
+            {gitError && <div className="git-action-error">{gitError}</div>}
+          </div>
+        )}
+        </>
       )}
 
       {view === "orange" && (
-        <div className="right-panel-scroll right-panel-orange" style={{ flex: 1, overflowY: "auto" }}>
+        <div className="side-panel-scroll side-panel-orange" style={{ flex: 1, overflowY: "auto" }}>
           {orangeFiles.length === 0 && newLocalFiles.length === 0 ? (
-            <div className="right-panel-orange-empty">{t("projectFilesView.noDivergedFiles")}</div>
+            <div className="side-panel-orange-empty">{t("projectFilesView.noDivergedFiles")}</div>
           ) : (
             <>
               {/* Bulk "…for all" resolution: take one side for every diverged
@@ -2100,7 +2197,7 @@ export function ProjectFilesView({
       )}
 
       {view === "sessions" && (
-        <div className="right-panel-scroll right-panel-orange" style={{ flex: 1, overflowY: "auto" }}>
+        <div className="side-panel-scroll side-panel-orange" style={{ flex: 1, overflowY: "auto" }}>
           {!remoteBlocked && (
             <label
               className="tmux-scope-toggle"
@@ -2115,7 +2212,7 @@ export function ProjectFilesView({
             </label>
           )}
           {sessionRows.length === 0 ? (
-            <div className="right-panel-orange-empty">
+            <div className="side-panel-orange-empty">
               {t(
                 remoteBlocked
                   ? "projectFilesView.connectToListSessions"
@@ -2167,7 +2264,7 @@ export function ProjectFilesView({
                               type="button"
                               className="orange-file-act"
                               title={t("projectFilesView.renameSessionTitle")}
-                              onClick={() => renameSession(hostId, s.name)}
+                              onClick={() => void renameSession(hostId, s.name)}
                             >
                               {t("projectFilesView.rename")}
                             </button>
@@ -2176,7 +2273,7 @@ export function ProjectFilesView({
                               className="orange-file-act"
                               title={t("projectFilesView.killSessionTitle")}
                               aria-label={t("projectFilesView.killSessionAria", { name: s.name })}
-                              onClick={() => killSession(hostId, s.name)}
+                              onClick={() => void killSession(hostId, s.name)}
                             >
                               ×
                             </button>
@@ -2252,13 +2349,13 @@ export function ProjectFilesView({
       })()}
 
       {view === "jobs" && (
-        <div className="right-panel-scroll right-panel-orange" style={{ flex: 1, overflowY: "auto" }}>
-          <div className="right-panel-jobs-head">
+        <div className="side-panel-scroll side-panel-orange" style={{ flex: 1, overflowY: "auto" }}>
+          <div className="side-panel-jobs-head">
             <UntestedTag />
           </div>
           {wsRows.length > 0 && (
             <>
-              <div className="right-panel-orange-note">
+              <div className="side-panel-orange-note">
                 {t("projectFilesView.workspacesNote")}
                 {project?.hpc?.logs_dir && (
                   <button
@@ -2275,7 +2372,7 @@ export function ProjectFilesView({
                 const here = projectWs?.id === ws.id && projectWs?.path === ws.path;
                 return (
                   <div key={`${ws.filesystem ?? ""}/${ws.id}`} className="orange-file-row" title={ws.path}>
-                    <span className="orange-file-name" style={{ cursor: "default" }}>
+                    <span className="orange-file-name" style={{ cursor: "var(--cur-default, default)" }}>
                       <span className="orange-file-dot" aria-hidden="true">{here ? "●" : "○"}</span>
                       {ws.id}
                       <span className={`tmux-session-meta hpc-ws-remaining tone-${expiryTone(ws)}`}>
@@ -2315,7 +2412,7 @@ export function ProjectFilesView({
             </>
           )}
           {jobRows.length === 0 ? (
-            <div className="right-panel-orange-empty">
+            <div className="side-panel-orange-empty">
               {t(
                 remoteBlocked
                   ? "projectFilesView.connectToListJobs"
@@ -2356,7 +2453,7 @@ export function ProjectFilesView({
                     className="orange-file-act"
                     title={t("projectFilesView.cancelJobTitle")}
                     aria-label={t("projectFilesView.cancelJobAria", { id: j.id })}
-                    onClick={() => cancelJob(j.id, j.name)}
+                    onClick={() => void cancelJob(j.id, j.name)}
                   >
                     ×
                   </button>
@@ -2381,6 +2478,8 @@ export function ProjectFilesView({
           shownPaths={filters.shownPaths}
           scanExcluded={filters.scanExcluded}
           onToggleScanExcluded={filters.toggleScanExcluded}
+          separateScaffold={filters.separateScaffold}
+          separateGitignored={filters.separateGitignored}
           sortKey={sortKey}
           descending={descending}
           onSortChange={(key, desc) => {
@@ -2391,21 +2490,37 @@ export function ProjectFilesView({
           onCloseDownloads={() => setShowDownloads(false)}
           showAlerts={alertsHere}
           onCloseAlerts={() => void updateSettings({ files_alerts: false })}
+          // The host's frame footer belongs to the panel, not to the global
+          // Alerts group stacked under the tree, so in the files view the pane
+          // places it ABOVE that group. Every other view renders it at the
+          // bottom (below) — there is no section down there to be mistaken for.
+          frameFooter={footer}
           // Right-click → "Open in a new tab": the same file view, on that
           // folder, as a Files (Project) tab in this project's scope.
           onOpenFolderTab={onOpenFolderTab}
           // A closed panel keeps no tree mounted (and so no fs-watch).
           mountTree={mountTree}
           compact={compact}
+          searchOpen={searchOpen}
+          onSearchOpenChange={setSearchOpen}
+          refreshNonce={refreshNonce}
         />
       )}
+      {view === "remarks" && projectId && (
+        <RemarksPane projectId={projectId} projectDir={projectDir} visible={active} />
+      )}
+
+      {view === "agents" && <AgentSchedulesView scope={scope} active={active} />}
 
       {view === "windows" && (
-        <div className="right-panel-scroll" style={{ flex: 1, overflowY: "auto", padding: 4 }}>
-          {windows.length === 0 ? (
+        <div className="side-panel-scroll" style={{ flex: 1, overflowY: "auto", padding: 4 }}>
+          <div className="file-tree-empty" style={{ paddingBottom: 4 }}>
+            <UntestedTag />
+          </div>
+          {scopedWindows.length === 0 ? (
             <div className="file-tree-empty">{t("projectFilesView.noOpenedWindows")}</div>
           ) : (
-            windows.map((w) => (
+            scopedWindows.map((w) => (
               <div key={w.id} className="file-entry">
                 <span className="file-icon">🪟</span>
                 <span className="file-name" title={w.exec}>
@@ -2414,8 +2529,8 @@ export function ProjectFilesView({
                 </span>
                 <button
                   className="tab-close"
-                  onClick={() => untrack(w.id)}
-                  title={t("projectFilesView.untrackTitle")}
+                  onClick={() => closeApp(w.id)}
+                  title={t(w.pid > 0 ? "projectFilesView.closeAppTitle" : "projectFilesView.untrackTitle")}
                 >
                   ×
                 </button>
@@ -2424,7 +2539,7 @@ export function ProjectFilesView({
           )}
         </div>
       )}
-      {footer}
+      {view !== "files" && footer}
       {showSettings && project && localFile && (
         <ProjectFilesSettingsDialog
           localFile={localFile}

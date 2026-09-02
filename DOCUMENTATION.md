@@ -118,8 +118,12 @@ sources. `scripts/guard-single-instance.sh` (wired into both `pretauri:dev`
 hooks) refuses a second session, including one that would silently attach to an
 orphaned vite on port 1420 and render its stale module graph.
 
-The desktop launchers are `docs/Eldrun.desktop` for the packaged app and
-`docs/EldrunHotReload.desktop` for the hot-reload dev server; both carry a
+The desktop launchers are `docs/Eldrun.desktop` for the packaged app,
+`docs/EldrunHotReload.desktop` for the hot-reload dev server, and
+`docs/EldrunDev.desktop` for a frozen release build of the working tree
+(`npm run package:dev` builds and installs it — real state, no hot reload;
+it and the hot-reload window run one at a time, each launcher refusing while
+the other is up); all carry a
 `/path/to/projecteldrun/...` placeholder to point at your checkout.
 
 ### Staying Current
@@ -398,7 +402,7 @@ Dark, Plain Light, Fancy Light, and Light Lavender.
 
 **Experimental flags** (`src/lib/experimental.ts`) gate surfaces that are not
 finished: `mail_client`, `web_browser`, `deck_presenter`, `python_run_debug`,
-`agent_mode_toggle`, and `terminal_webgl`. An unset flag falls back to
+and `terminal_webgl`. An unset flag falls back to
 `settings.debug`, so everything is on in a development build and off in a
 release one — except `terminal_webgl`, which stays opt-in because WebGL can fall
 back to software rendering while DMABUF is disabled, making a visible terminal
@@ -410,7 +414,8 @@ unknown must not read as off.
 ### Eldrun Mobile
 
 Eldrun Mobile provides tailnet-only access to explicitly opted-in local project
-sessions. The independently installed `eldrun-mobile-host` binds to loopback;
+sessions. The independently installed sidecar — a copy of the Eldrun binary
+running `--mobile-host` — binds to loopback;
 an existing, non-Funnel Tailscale Serve HTTPS root handler must be verified as
 an exact proxy to that port before Eldrun saves or starts it. Each browser pairs
 with a short-lived code and a device-held P-256 key and can be revoked
@@ -684,35 +689,63 @@ The root terminal also gets context files in `~/eldrun/root/`:
 
 ### Project Boxes (meta-project grouping)
 
-A *box* groups related projects and appears as its own pill in the switcher
-(`BoxPill.tsx`, `stores/boxes.ts`, `commands/boxes.rs`). Backend commands:
+A *box* temporarily joins two or more projects for side-by-side work — the box
+folder plus every member root in one file view, cross-project copy-paste, PDF
+merges across members, and box-rooted agent tabs (`BoxPill.tsx`,
+`BoxEditorDialog.tsx`, `stores/boxes.ts`, `commands/boxes.rs`;
+`docs/context/project_boxes.md` holds the design rationale). Backend commands:
 `get_boxes`, `save_boxes`, `create_box`, `rename_box`, `delete_box`,
 `set_box_members`, `ensure_box_folder`, `refresh_box_agent_docs`,
 `set_box_relations`.
 
-- **Data model.** Boxes live in their own `~/.local/share/eldrun/boxes.json`
+- **Data model (N:M).** Boxes live in their own `~/.local/share/eldrun/boxes.json`
   (`Vec<ProjectBox>` = `{id, name, member_ids, position, folder?, relations}`)
   so `projects.json` stays byte-compatible. The box's ordered `member_ids` is
-  authoritative; a per-project `box_id` back-reference is a denormalized inverse
-  the frontend derives from `member_ids` on load (in memory only — never written
-  back on load). `get_boxes` reconciles away member ids that no longer reference
-  a known project.
-- **Membership.** Dropping a project pill on a box calls `assignToBox`, which
-  rewrites the affected boxes' `member_ids` and persists both files. A box left
-  with a single member dissolves (its lone member is ungrouped), so dragging a
-  project out of a two-member box tears the box down.
-- **Box folder + agent docs.** Opening a box (`openBox` → `ensure_box_folder`)
-  lazily creates a folder under `~/.local/share/eldrun/boxes/<name>/` (unique
-  name resolved against other boxes and existing dirs) and writes/refreshes
-  managed `CLAUDE.md`/`GEMINI.md`/`AGENTS.md` link blocks pointing at each
-  member's root and same-named agent doc. Only the text between the
-  `<!-- eldrun:box-links:start -->` / `…:end -->` markers is regenerated, so
-  user edits outside the block survive. `refresh_box_agent_docs` re-runs this for
-  an already-opened box after membership changes.
-- **Box scope (session-only).** Opening a box activates a `box:<id>` tab scope
-  rooted in the box folder (disjoint from project ids and `"root"`) and opens a
-  shell tab. Box scopes are **not** persisted or restored — they are dropped on
-  project switch / restart (full box activation is a follow-on).
+  the ONLY membership record, and membership is non-exclusive — a project may
+  sit in several boxes at once. The old per-project `box_id` back-reference is
+  retired; a stale persisted key is stripped in-memory on load and dropped from
+  disk by the next ordinary `save_projects`. `get_boxes` reconciles away member
+  ids that no longer reference a known project.
+- **Switcher (overlay model).** Member pills always render individually (with a
+  small ▣ badge naming their boxes); each box is its own `BoxPill` placed by
+  the box's `position`. Empty and one-member boxes survive and render (dimmed
+  when empty) — the ONLY way a box disappears is the box editor's explicit,
+  confirmed **Dissolve** (the folder and agent docs stay on disk).
+- **Box/unbox gestures.** Four ways in/out: the pill context menu's *Boxes*
+  group (checkbox row per box, additive toggle), Ctrl/Cmd-click multi-select →
+  "Box these (N)…", the box editor dialog (rename, full member list, dissolve;
+  opened from a BoxPill's menu, the pill menu, multi-select, or the switcher
+  "+"), and drag-and-drop (plain or Alt drop on a BoxPill = additive add;
+  Alt-drop one pill on another = new box of the two). The box pill's hover
+  dropdown lists members (click to switch, ✕ removes from that box only).
+- **Box folder, agent docs + member symlinks.** Opening a box (`openBox` →
+  `ensure_box_folder`) lazily creates a folder under `~/eldrun/boxes/<name>/`
+  (unique name resolved against other boxes and existing dirs) and
+  writes/refreshes managed `CLAUDE.md`/`GEMINI.md`/`AGENTS.md` link blocks
+  pointing at each member's root and same-named agent doc; only the text
+  between the `<!-- eldrun:box-links:start -->` / `…:end -->` markers is
+  regenerated, so user edits outside the block survive. Beside the docs, one
+  **symlink per member** (Unix; skipped on Windows) makes each member root
+  reachable as `./<member>/`, so agent CLIs launched in the box folder can
+  traverse into every member. Ownership is recorded in
+  `.eldrun-box-links.json`: regeneration only ever removes links Eldrun itself
+  created, never a user file shadowing a member's name (the member re-links
+  under a `-1` suffix instead). Eldrun's own file confinement deliberately does
+  NOT follow the links — the multi-root Files view is Eldrun's file surface.
+  `refresh_box_agent_docs` re-runs both after membership changes.
+- **Box scope (persisted).** Opening a box activates a `box:<id>` tab scope
+  (disjoint from project ids and `"root"`). The scope is first-class now: its
+  tabs persist under `<state_dir>/sessions/box_<id>/terminals.json` and restore
+  lazily on the next open (nothing restorable seeds one shell at the box
+  folder). New tabs default to the box folder; the box "+" menu also offers
+  per-member rows ("Files — ⟨m⟩" / "Shell — ⟨m⟩" / "Claude — ⟨m⟩") whose tabs
+  land at the member root — resume-safe, since Claude keys history by cwd. The
+  spawn gate (`pty_spawn`) and file confinement (`compute_allowed_roots`)
+  accept the box folder ∪ member roots ∪ remote members' mirrors, and fail
+  closed on an unknown box. Local shells in a box scope get tmux persistence
+  like root/project shells. **Trust (v1):** box tabs run local + uncontained —
+  a member's container/VM boundary does not extend to the shared scope; the box
+  editor shows a notice when a member is containerized/VM.
 
 ### Trust Tiers
 
@@ -748,14 +781,19 @@ the project; nothing else about working in it changes.
 
 **Agent authority** has three axes that compose: the project container sandbox
 (OS containment), the tab's `location` (local / primary host / `host:<id>`
-worker), and — behind `agent_mode_toggle` — its `agentMode`, **Plan** or
-**Auto** (Claude `--permission-mode plan`/`acceptEdits`, Gemini
-`--approval-mode plan`/`auto_edit`). The mode is a *launch flag*, so flipping it
-rewrites the tab's `args` and respawns the PTY; that is non-destructive only
-because the tab resumes its conversation, which is why
-`components/tabs/agentModes.ts` admits an agent only if it has both an absolute
-mode flag and a working resume path. Args are never persisted as the source of
-truth — they are rebuilt from layout state.
+worker), and the default-on local-agent filesystem fence. All three are
+properties of the *process* — where it runs and what it can reach.
+
+An agent's **permission mode** is deliberately not among them. Claude's
+plan/accept-edits, Codex's sandbox and approval policy, Gemini's approval mode:
+each is set inside that agent's own CLI, and Eldrun launches the plain command
+with no mode flag. A per-tab Plan/Auto toggle existed and was removed — a mode
+is a *launch* flag, so every flip respawned the PTY (losing the scrollback and
+any turn in flight), and a persisted per-tab mode became a second authority
+record that could override, on restart, whatever the user had set in-session.
+What survives a relaunch is the agent's own answer: the backend re-applies the
+mode Claude's Stop hook recorded onto the `--resume` line. Args are never
+persisted as the source of truth — they are rebuilt from layout state.
 
 ### Remote, Sync, and Multi-Host
 
@@ -889,7 +927,7 @@ All global data is under `~/.local/share/eldrun/`.
 | `crash.log` | Appended on Rust panics. |
 | `sessions/<project id>/terminals.json` | **Tab layout and `open_apps`**, keyed by project id — outside the project tree. |
 | `mail/` | Sealed mail store: SQLite index, blobs, `accounts.json.enc`, `filters.json.enc`. |
-| `browser/`, `vm/`, `remote-projects/`, `skills_cache/`, `boxes/<name>/` | Per-subsystem state. |
+| `browser/`, `vm/`, `remote-projects/`, `skills_cache/` | Per-subsystem state. Box *folders* live under `~/eldrun/boxes/<name>/` (outside the state dir); a box scope's tab layout persists under `sessions/box_<id>/`. |
 | `vibe_local/` | Per-model Vibe homes for local Ollama agent tabs. |
 
 `active_session.json` no longer exists; orphan-session recovery is handled
@@ -1141,7 +1179,7 @@ When a file is opened:
 1. Backend resolves the app command (per-project → global → MIME → `xdg-open`).
 2. Backend launches the process via `xdg-open` or the resolved command.
 3. The opened window is tracked by PID in `project.json["open_apps"]` and shown
-   in the right panel's Windows view.
+   in the side panel's Windows view.
 
 There is no X11 window embedding in the Tauri WebView. All file-opened apps run
 as external processes tracked by PID.
@@ -1296,9 +1334,12 @@ Ollama integration test skips itself when no local server or model is available.
   been run live (no VM has been booted), CalDAV has never been pointed at a real
   server, and SLURM/HPC awaits real-cluster QA. Such items carry an `UntestedTag`
   pill in the UI.
-- Eldrun Mobile is Linux-only (the macOS LaunchAgent phase is the follow-up),
-  requires Tailscale on both ends, and its real-phone security and acceptance QA
-  is open.
+- Eldrun Mobile hosts on all three OSes — systemd user service on Linux,
+  launchd LaunchAgent on macOS, Run-key autostart plus a named-pipe control
+  plane on Windows, where terminal attach still requires tmux so only the
+  desktop-mediated surfaces (mail, calendar, to-dos, pairing) work. Tailscale
+  is required on both ends; the macOS/Windows host paths and the real-phone
+  security and acceptance QA are unverified.
 - Containerized projects are local-only and hidden or refused where Docker is
   unavailable; VM projects need QEMU/KVM.
 - The Agent Skills library is Claude-only, with no manifest, versioning, or

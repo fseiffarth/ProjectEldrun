@@ -1870,9 +1870,14 @@ pub struct SvcResponse {
 /// Parse a service reply. `None` when the bytes aren't the expected shape —
 /// the caller reports an unrecognized reply rather than inventing a verdict.
 pub fn svc_parse_response(bytes: &[u8]) -> Option<SvcResponse> {
+    // `as_chunks::<2>` hands `from_le_bytes` the `[u8; 2]` it wants directly,
+    // instead of a slice that has to be re-assembled per code unit. `.0` drops a
+    // trailing odd byte, exactly as `chunks_exact(2)` did.
     let units: Vec<u16> = bytes
-        .chunks_exact(2)
-        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|c| u16::from_le_bytes(*c))
         .collect();
     let text = String::from_utf16_lossy(&units);
     let text = text.trim_end_matches('\0');
@@ -3060,8 +3065,10 @@ mod tests {
         let msg = svc_startup_message("C:\\wä", "--config a.ovpn", "");
         assert_eq!(msg.len() % 2, 0);
         let units: Vec<u16> = msg
-            .chunks_exact(2)
-            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|c| u16::from_le_bytes(*c))
             .collect();
         // Exactly three NULs, one terminating each string (the last is empty).
         assert_eq!(units.iter().filter(|&&u| u == 0).count(), 3);

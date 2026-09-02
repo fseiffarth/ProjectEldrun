@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ChangeEventHandler, type ReactNode } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
@@ -14,6 +14,7 @@ import { usePowerStore, useEnergySaver } from "../../stores/power";
 import { useProjectsStore } from "../../stores/projects";
 import { DEFAULT_MIN_SUBWINDOW_PX } from "../../stores/tabs";
 import { DEFAULT_MAIL_CHECK_MIN } from "../../lib/mail";
+import { ThemeCustomizerDialog } from "./ThemeCustomizer";
 import type {
   ArchivedProject,
   CalendarViewKind,
@@ -27,15 +28,18 @@ import { THEMES } from "../../types";
 import type { LinkOpenTarget } from "../../types/browser";
 import { summarizeScaffoldRepair, type ProjectScaffoldRepair } from "../projects/scaffold";
 import { providerName } from "../projects/projectTypeTags";
-import { Toggle } from "../common/Toggle";
 import { GitTokenScopes, tokenPageUrl } from "../common/GitTokenScopes";
 import { OPEN_STATS_EVENT } from "../stats/StatsRecapHost";
 import {
   SHORTCUT_DEFS,
+  SHORTCUT_GROUPS,
   chordFromEvent,
   chordLabel,
+  findConflicts,
+  isFixedChord,
   resolveChord,
   type ShortcutAction,
+  type ShortcutDef,
   type ShortcutMap,
 } from "../../lib/shortcuts";
 import {
@@ -56,6 +60,15 @@ import { setVpnAutoConnect, vpnUsernameFor } from "../../lib/vpnAutoConnect";
 import type { StoredVpnConfig } from "../../types";
 import { MobileSettings } from "../mobile/MobileSettings";
 import { UpdatesPanel } from "./UpdatesPanel";
+import {
+  SettingRow,
+  SettingsCard,
+  SettingsHeader,
+  SettingsList,
+  SettingsSection,
+  ToggleCard,
+  ToggleRow,
+} from "./settingsUi";
 
 // The workspace-layout help text. On Linux a lone Super toggles the panels; on
 // Windows it's F9 (the lone Win key is OS-reserved — Start opens on release, see
@@ -68,30 +81,12 @@ function workspaceLayoutIntro(t: ReturnType<typeof useT>): string {
     : t("help.workspaceLayout.introOther", { key: IS_WINDOWS ? "F9" : "Super" });
 }
 
-/** A toggle with an explanatory paragraph, as one card (matches .settings-nav-item
- *  / .lesson-item) instead of a bare switch-row bleeding into a trailing paragraph. */
-function ToggleCard({
-  label,
-  checked,
-  onChange,
-  help,
-}: {
-  /** `ReactNode`, not `string`: a card's label may carry an `<UntestedTag />`
-   *  beside its text, the way the rows outside this component do. */
-  label: ReactNode;
-  checked: boolean;
-  onChange: ChangeEventHandler<HTMLInputElement>;
-  help?: ReactNode;
-}) {
-  return (
-    <div className="settings-toggle-card">
-      <label className="settings-toggle-card-row">
-        <span>{label}</span>
-        <Toggle checked={checked} onChange={onChange} />
-      </label>
-      {help && <p className="settings-help">{help}</p>}
-    </div>
-  );
+/** Every sub-panel takes the same two: `onBack` returns to the main panel,
+ *  `onClose` dismisses the whole dialog. Optional because the panels are also
+ *  rendered standalone in tests. */
+interface SubPanelProps {
+  onBack: () => void;
+  onClose?: () => void;
 }
 
 interface HelpItem {
@@ -183,12 +178,16 @@ const HELP_SECTIONS: HelpSection[] = [
 ];
 
 /**
- * Group L / #62 — let the user rebind the eight navigation chords. Click a
- * row's chord button to enter capture mode; the next non-modifier keydown is
- * stored as the override (persisted to `settings.keyboard_shortcuts`). "Reset"
- * clears an override back to its built-in default.
+ * Group L / #62 — let the user rebind the navigation chords, one boxed list
+ * per `SHORTCUT_GROUPS` section (the cheat sheet's grouping, driven entirely
+ * by each def's `group`). Click a row's chord button to enter capture mode;
+ * the next non-modifier keydown is stored as the override (persisted to
+ * `settings.keyboard_shortcuts`). "Reset" clears an override back to its
+ * built-in default; "Reset all" clears the whole map. A colliding capture is
+ * still stored — the user may mean to fix the other action next — and both
+ * rows wear the warning until one moves (`findConflicts`).
  */
-function ShortcutsSettings({ onBack }: { onBack: () => void }) {
+function ShortcutsSettings({ onBack, onClose }: SubPanelProps) {
   const t = useT();
   const { settings, updateSettings } = useSettingsStore();
   const overrides = (settings?.keyboard_shortcuts ?? {}) as ShortcutMap;
@@ -207,6 +206,11 @@ function ShortcutsSettings({ onBack }: { onBack: () => void }) {
     delete next[action];
     saveMap(next);
   };
+
+  const hasOverrides = Object.keys(overrides).length > 0;
+  const conflicts = findConflicts(overrides);
+  const labelOf = (action: ShortcutAction) =>
+    SHORTCUT_DEFS.find((d) => d.action === action)?.label ?? action;
 
   // While capturing, the next real key sets the chord. Capture at the window
   // level so the keystroke is grabbed even though our hidden field, not a
@@ -231,41 +235,76 @@ function ShortcutsSettings({ onBack }: { onBack: () => void }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [capturing, overrides]);
 
+  // One boxed-list entry: the capture/reset row, plus the conflict/fixed-key
+  // warning line when its effective chord cannot work as bound.
+  const renderRow = (def: ShortcutDef) => {
+    const active = capturing === def.action;
+    const effective = resolveChord(def.action, overrides);
+    const isCustom = !!overrides[def.action];
+    const clash = conflicts.get(def.action);
+    const fixed = isFixedChord(effective);
+    return (
+      <div className="shortcut-entry" key={def.action}>
+        <div className="settings-row shortcut-row">
+          <span className="settings-role-label">
+            {def.label}
+            {def.untested && <> <UntestedTag /></>}
+          </span>
+          <button
+            type="button"
+            className={`shortcut-capture-btn${active ? " capturing" : ""}`}
+            onClick={() => setCapturing(active ? null : def.action)}
+            title={t("shortcuts.captureTitle")}
+          >
+            {active ? t("shortcuts.pressKeys") : chordLabel(effective)}
+          </button>
+          <button
+            type="button"
+            className="settings-btn sm"
+            disabled={!isCustom}
+            onClick={() => reset(def.action)}
+            title={t("shortcuts.resetTitle")}
+          >
+            {t("common.reset")}
+          </button>
+        </div>
+        {fixed && (
+          <div className="shortcut-conflict">
+            ⚠ {t("shortcuts.fixedConflict", { chord: chordLabel(effective) })}
+          </div>
+        )}
+        {clash && (
+          <div className="shortcut-conflict">
+            ⚠ {t("shortcuts.conflict", { actions: clash.map(labelOf).join(", ") })}
+          </div>
+        )}
+      </div>
+    );
+  };
+
   return (
     <>
-      <div className="settings-title-row">
-        <h2>{t("nav.shortcuts.title")}</h2>
-        <button type="button" onClick={onBack}>{t("common.back")}</button>
-      </div>
+      <SettingsHeader title={t("nav.shortcuts.title")} onBack={onBack} onClose={onClose} />
+      <div className="dialog-scroll">
       <p className="settings-help">{t("shortcuts.help")}</p>
-      <div className="settings-list">
-        {SHORTCUT_DEFS.map((def) => {
-          const active = capturing === def.action;
-          const effective = resolveChord(def.action, overrides);
-          const isCustom = !!overrides[def.action];
-          return (
-            <div className="settings-row shortcut-row" key={def.action}>
-              <span className="settings-role-label">{def.label}</span>
-              <button
-                type="button"
-                className={`shortcut-capture-btn${active ? " capturing" : ""}`}
-                onClick={() => setCapturing(active ? null : def.action)}
-                title={t("shortcuts.captureTitle")}
-              >
-                {active ? t("shortcuts.pressKeys") : chordLabel(effective)}
-              </button>
-              <button
-                type="button"
-                className="settings-back-btn"
-                disabled={!isCustom}
-                onClick={() => reset(def.action)}
-                title={t("shortcuts.resetTitle")}
-              >
-                {t("common.reset")}
-              </button>
-            </div>
-          );
-        })}
+      <div className="settings-link-row">
+        <button
+          type="button"
+          className="settings-btn sm"
+          disabled={!hasOverrides}
+          onClick={() => saveMap({})}
+          title={t("shortcuts.resetAllTitle")}
+        >
+          {t("shortcuts.resetAll")}
+        </button>
+      </div>
+      {SHORTCUT_GROUPS.map((g) => (
+        <SettingsSection title={t(g.labelKey)} key={g.id}>
+          <SettingsList boxed>
+            {SHORTCUT_DEFS.filter((d) => d.group === g.id).map(renderRow)}
+          </SettingsList>
+        </SettingsSection>
+      ))}
       </div>
     </>
   );
@@ -276,7 +315,7 @@ function ShortcutsSettings({ onBack }: { onBack: () => void }) {
  * into its own sub-menu. Manages its own draft state (mirroring the saved
  * settings) and persists on blur / Enter, same as it did inline.
  */
-function GitHostingSettings({ onBack }: { onBack: () => void }) {
+function GitHostingSettings({ onBack, onClose }: SubPanelProps) {
   const t = useT();
   const { settings, updateSettings } = useSettingsStore();
   const [gitProfileUrl, setGitProfileUrl] = useState(settings?.git_profile_url ?? "");
@@ -304,11 +343,10 @@ function GitHostingSettings({ onBack }: { onBack: () => void }) {
 
   return (
     <>
-      <div className="settings-title-row">
-        <h2>{t("nav.git.title")}</h2>
-        <button type="button" onClick={onBack}>{t("common.back")}</button>
-      </div>
+      <SettingsHeader title={t("nav.git.title")} onBack={onBack} onClose={onClose} />
+      <div className="dialog-scroll">
       <p className="settings-help">{t("git.help")}</p>
+      <SettingsCard>
       <label className="settings-field">
         {t("git.profileUrl")}
         <input
@@ -345,7 +383,9 @@ function GitHostingSettings({ onBack }: { onBack: () => void }) {
           {t("pill.getTokenCta", { provider: providerName(provider) })}
         </button>
       </span>
+      </SettingsCard>
       <GitTokenScopes provider={provider} />
+      </div>
     </>
   );
 }
@@ -355,7 +395,7 @@ function GitHostingSettings({ onBack }: { onBack: () => void }) {
  * see `lib/vpnAutoConnect.ts`) — surfaced here too since the header menu only shows
  * up once a tunnel exists, which makes this opt-in easy to miss.
  */
-function VpnAutoConnectSettings({ onBack }: { onBack: () => void }) {
+function VpnAutoConnectSettings({ onBack, onClose }: SubPanelProps) {
   const t = useT();
   const { settings } = useSettingsStore();
   const armed = settings?.vpn_auto_connect ?? null;
@@ -385,30 +425,26 @@ function VpnAutoConnectSettings({ onBack }: { onBack: () => void }) {
 
   return (
     <>
-      <div className="settings-title-row">
-        <h2>{t("nav.vpn.title")}</h2>
-        <button type="button" onClick={onBack}>{t("common.back")}</button>
-      </div>
+      <SettingsHeader title={t("nav.vpn.title")} onBack={onBack} onClose={onClose} />
+      <div className="dialog-scroll">
       <p className="settings-help">{t("vpn.autoConnectHelp")}</p>
       {configs === null ? (
         <p className="settings-help">{t("common.loading")}</p>
       ) : configs.length === 0 ? (
         <div className="settings-empty">{t("vpn.noConfig")}</div>
       ) : (
-        <div className="settings-list">
+        <SettingsList>
           {configs.map((c) => {
             const on = armed === c.path;
             const eligible = !headless || silent[c.path] === true;
             return (
-              <div key={c.path} className="settings-toggle-card">
-                <label className="settings-toggle-card-row">
-                  <span title={c.path}>{c.name}</span>
-                  <Toggle
-                    checked={on}
-                    disabled={!eligible && !on}
-                    onChange={(e) => void setVpnAutoConnect(c.path, e.target.checked)}
-                  />
-                </label>
+              <SettingsCard key={c.path}>
+                <ToggleRow
+                  label={<span title={c.path}>{c.name}</span>}
+                  checked={on}
+                  disabled={!eligible && !on}
+                  onChange={(e) => void setVpnAutoConnect(c.path, e.target.checked)}
+                />
                 {!eligible && !on && (
                   <p className="settings-help">
                     {t("vpn.needsSavedPre")} <b>{t("vpn.needsSavedBold")}</b>{" "}
@@ -421,16 +457,17 @@ function VpnAutoConnectSettings({ onBack }: { onBack: () => void }) {
                     {headless ? "" : ` ${t("vpn.waitsInRootTerminal")}`}.
                   </p>
                 )}
-              </div>
+              </SettingsCard>
             );
           })}
-        </div>
+        </SettingsList>
       )}
+      </div>
     </>
   );
 }
 
-function ArchivedProjectsPanel({ onBack }: { onBack: () => void }) {
+function ArchivedProjectsPanel({ onBack, onClose }: SubPanelProps) {
   const t = useT();
   const [items, setItems] = useState<ArchivedProject[] | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -530,10 +567,8 @@ function ArchivedProjectsPanel({ onBack }: { onBack: () => void }) {
 
   return (
     <>
-      <div className="settings-title-row">
-        <h2>{t("nav.archive.title")}</h2>
-        <button type="button" onClick={onBack}>{t("common.back")}</button>
-      </div>
+      <SettingsHeader title={t("nav.archive.title")} onBack={onBack} onClose={onClose} />
+      <div className="dialog-scroll">
       <p className="settings-help">{t("archive.help")}</p>
       {error && <div className="project-dialog-error">{error}</div>}
       {items === null ? (
@@ -577,10 +612,10 @@ function ArchivedProjectsPanel({ onBack }: { onBack: () => void }) {
                         if (e.key === "Escape") resetConfirm();
                       }}
                     />
-                    <button type="button" onClick={resetConfirm} disabled={rowBusy}>{t("common.cancel")}</button>
+                    <button type="button" className="settings-btn sm" onClick={resetConfirm} disabled={rowBusy}>{t("common.cancel")}</button>
                     <button
                       type="button"
-                      className="danger"
+                      className="settings-btn sm danger"
                       disabled={rowBusy || typed.trim() !== a.name.trim()}
                       onClick={() => void deleteForever(a)}
                     >
@@ -590,12 +625,12 @@ function ArchivedProjectsPanel({ onBack }: { onBack: () => void }) {
                   </div>
                 ) : (
                   <div className="archived-project-actions">
-                    <button type="button" disabled={rowBusy} onClick={() => void restore(a)}>
+                    <button type="button" className="settings-btn sm" disabled={rowBusy} onClick={() => void restore(a)}>
                       {rowBusy ? t("archive.restoring") : t("archive.restore")}
                     </button>
                     <button
                       type="button"
-                      className="danger"
+                      className="settings-btn sm danger"
                       disabled={rowBusy}
                       onClick={() => armDelete(a)}
                     >
@@ -621,10 +656,10 @@ function ArchivedProjectsPanel({ onBack }: { onBack: () => void }) {
                 if (e.key === "Escape") { setClearing(false); setClearTyped(""); }
               }}
             />
-            <button type="button" onClick={() => { setClearing(false); setClearTyped(""); }}>{t("common.cancel")}</button>
+            <button type="button" className="settings-btn sm" onClick={() => { setClearing(false); setClearTyped(""); }}>{t("common.cancel")}</button>
             <button
               type="button"
-              className="danger"
+              className="settings-btn sm danger"
               disabled={busyId === "__all__" || clearTyped.trim().toLowerCase() !== "delete"}
               onClick={() => void clearAll()}
             >
@@ -639,11 +674,12 @@ function ArchivedProjectsPanel({ onBack }: { onBack: () => void }) {
           </div>
         )
       )}
+      </div>
     </>
   );
 }
 
-function ScaffoldRepairPanel({ onBack }: { onBack: () => void }) {
+function ScaffoldRepairPanel({ onBack, onClose }: SubPanelProps) {
   const t = useT();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -664,16 +700,18 @@ function ScaffoldRepairPanel({ onBack }: { onBack: () => void }) {
 
   return (
     <>
-      <div className="settings-title-row">
-        {/* The repair now *rewrites* untouched legacy agent stubs, not just
-            fills gaps — new behavior, never run in a live window. */}
-        <h2>{t("nav.scaffoldRepair.title")} <UntestedTag /></h2>
-        <button type="button" onClick={onBack}>{t("common.back")}</button>
-      </div>
+      {/* The repair now *rewrites* untouched legacy agent stubs, not just fills
+          gaps — new behavior, never run in a live window. */}
+      <SettingsHeader
+        title={<>{t("nav.scaffoldRepair.title")} <UntestedTag /></>}
+        onBack={onBack}
+        onClose={onClose}
+      />
+      <div className="dialog-scroll">
       <p className="settings-help">{t("scaffoldRepair.help")}</p>
       {error && <div className="project-dialog-error">{error}</div>}
       <div className="settings-link-row">
-        <button type="button" disabled={busy} onClick={() => void run()}>
+        <button type="button" className="settings-btn primary" disabled={busy} onClick={() => void run()}>
           {busy ? t("scaffoldRepair.running") : t("scaffoldRepair.runNow")}
         </button>
       </div>
@@ -693,25 +731,26 @@ function ScaffoldRepairPanel({ onBack }: { onBack: () => void }) {
           </ul>
         )
       )}
+      </div>
     </>
   );
 }
 
-function HelpPanel({ onBack }: { onBack: () => void }) {
+function HelpPanel({ onBack, onClose }: SubPanelProps) {
   const t = useT();
   return (
     <>
-      <div className="settings-title-row">
-        <h2>{t("help.title")}</h2>
-        <button type="button" onClick={onBack}>{t("common.back")}</button>
-      </div>
+      <SettingsHeader title={t("help.title")} onBack={onBack} onClose={onClose} />
+      <div className="dialog-scroll">
 
       <p className="settings-help">{t("help.intro")}</p>
 
       {HELP_SECTIONS.map((section) => (
         <div key={section.titleKey} className="help-section">
-          <div className="settings-section-title">{t(section.titleKey)}</div>
-          {section.hasIntro && <p className="settings-help">{workspaceLayoutIntro(t)}</p>}
+          <SettingsSection
+            title={t(section.titleKey)}
+            help={section.hasIntro ? workspaceLayoutIntro(t) : undefined}
+          />
           <dl className="help-list">
             {section.items.map((item) => (
               <div key={item.termKey} className="help-row">
@@ -722,6 +761,7 @@ function HelpPanel({ onBack }: { onBack: () => void }) {
           </dl>
         </div>
       ))}
+      </div>
     </>
   );
 }
@@ -754,6 +794,10 @@ export function SettingsDialog({
 }) {
   const { settings, setTheme, setLanguage, updateSettings } = useSettingsStore();
   const [panel, setPanel] = useState<SettingsPanelKind>(initialPanel);
+  // The theme customizer is a window of its own, not a sub-panel: it is opened
+  // INSTEAD of this dialog (‹ Back returns here), so the palette it edits is
+  // not judged through the settings scroll sitting on top of it.
+  const [showCustomizer, setShowCustomizer] = useState(false);
   const t = useT();
 
   const currentTheme = (settings?.color_scheme ?? "fancy_dark") as Theme;
@@ -781,37 +825,59 @@ export function SettingsDialog({
     return energyMode === "off" ? t("settings.energyOff") : t("settings.energyInactive");
   })();
 
+  if (showCustomizer) {
+    return (
+      <ThemeCustomizerDialog
+        onClose={onClose}
+        onBack={() => setShowCustomizer(false)}
+      />
+    );
+  }
+
   return (
     <div className="modal-backdrop how-to-start-backdrop" onMouseDown={onClose}>
       <div className="settings-dialog" onMouseDown={(e) => e.stopPropagation()}>
-       <div className="dialog-scroll">
         {panel === "main" && (
           <>
-            <div className="settings-title-row">
-              <h2>{t("settings.title")}</h2>
-              <button type="button" className="dialog-close-btn" onClick={onClose}>×</button>
-            </div>
+            <SettingsHeader title={t("settings.title")} onClose={onClose} />
+            <div className="dialog-scroll">
 
-            <div className="settings-row">
-              <label>{t("settings.theme")}</label>
-              <Dropdown
-                value={currentTheme}
-                onChange={(v) => void setTheme(v as Theme)}
-                options={THEMES.map((theme) => ({ value: theme.value, label: theme.label }))}
-              />
-            </div>
+            <SettingRow
+              label={t("settings.theme")}
+              control={
+                <Dropdown
+                  value={currentTheme}
+                  onChange={(v) => void setTheme(v as Theme)}
+                  options={THEMES.map((theme) => ({ value: theme.value, label: theme.label }))}
+                />
+              }
+            />
 
-            <div className="settings-row">
-              <label>
-                {t("settings.language")} <UntestedTag />
-              </label>
-              <Dropdown
-                value={currentLang}
-                onChange={(v) => void setLanguage(v as Language)}
-                options={LANGUAGES.map((l) => ({ value: l.value, label: l.label }))}
-              />
-            </div>
-            <p className="settings-help">{t("settings.language.help")}</p>
+            <SettingRow
+              label={<>{t("settings.themeVars")} <UntestedTag /></>}
+              help={t("settings.themeVars.help")}
+              control={
+                <button
+                  type="button"
+                  className="settings-btn"
+                  onClick={() => setShowCustomizer(true)}
+                >
+                  {t("settings.themeVars.open")}
+                </button>
+              }
+            />
+
+            <SettingRow
+              label={<>{t("settings.language")} <UntestedTag /></>}
+              help={t("settings.language.help")}
+              control={
+                <Dropdown
+                  value={currentLang}
+                  onChange={(v) => void setLanguage(v as Language)}
+                  options={LANGUAGES.map((l) => ({ value: l.value, label: l.label }))}
+                />
+              }
+            />
 
             <ToggleCard
               label={t("settings.runScriptsBg")}
@@ -842,52 +908,47 @@ export function SettingsDialog({
 
             {!IS_WINDOWS && (
               <>
-                <div className="settings-section-title">Mobile</div>
+                <SettingsSection title={t("settings.mobile")} />
                 <MobileSettings />
                 <ToggleCard
-                  label="Show Mobile connection in header"
+                  label={t("settings.mobileIndicator")}
                   checked={settings?.mobile_indicator ?? true}
                   onChange={(e) => void updateSettings({ mobile_indicator: e.target.checked })}
-                  help="Shows the Eldrun Mobile host status and quick reconnect controls beside the battery indicator."
+                  help={t("settings.mobileIndicatorHelp")}
                 />
               </>
             )}
 
-            <div className="settings-section-title">{t("settings.remoteFeatures")}</div>
-            <div className="settings-toggle-card">
-              <label className="settings-toggle-card-row">
-                <span>{t("settings.vpnEnabled")}</span>
-                <Toggle
-                  checked={settings?.vpn_enabled ?? false}
-                  onChange={(e) => void updateSettings({ vpn_enabled: e.target.checked })}
-                />
-              </label>
-              <label className="settings-toggle-card-row">
-                <span>{t("settings.machinesEnabled")}</span>
-                <Toggle
-                  checked={settings?.machines_enabled ?? false}
-                  onChange={(e) => void updateSettings({ machines_enabled: e.target.checked })}
-                />
-              </label>
-              <p className="settings-help">{t("settings.remoteFeaturesHelp")}</p>
-            </div>
-
-            <div className="settings-row">
-              <label>{t("settings.energySaver")}</label>
-              <Dropdown
-                value={energyMode}
-                onChange={(v) => void updateSettings({ energy_saver: v as "off" | "battery" | "always" })}
-                options={[
-                  { value: "off", label: t("energy.off") },
-                  { value: "battery", label: t("energy.battery") },
-                  { value: "always", label: t("energy.always") },
-                ]}
+            <SettingsSection title={t("settings.remoteFeatures")} />
+            <SettingsCard>
+              <ToggleRow
+                label={t("settings.vpnEnabled")}
+                checked={settings?.vpn_enabled ?? false}
+                onChange={(e) => void updateSettings({ vpn_enabled: e.target.checked })}
               />
-            </div>
-            <p className="settings-help">
-              {t("settings.energyHelp")}
-              {" "}{energyStatus}
-            </p>
+              <ToggleRow
+                label={t("settings.machinesEnabled")}
+                checked={settings?.machines_enabled ?? false}
+                onChange={(e) => void updateSettings({ machines_enabled: e.target.checked })}
+              />
+              <p className="settings-help">{t("settings.remoteFeaturesHelp")}</p>
+            </SettingsCard>
+
+            <SettingRow
+              label={t("settings.energySaver")}
+              help={<>{t("settings.energyHelp")} {energyStatus}</>}
+              control={
+                <Dropdown
+                  value={energyMode}
+                  onChange={(v) => void updateSettings({ energy_saver: v as "off" | "battery" | "always" })}
+                  options={[
+                    { value: "off", label: t("energy.off") },
+                    { value: "battery", label: t("energy.battery") },
+                    { value: "always", label: t("energy.always") },
+                  ]}
+                />
+              }
+            />
 
             {/* Beside Energy Saver rather than folded into it: that one widens
                 timers off a live battery reading, this removes features off a
@@ -911,21 +972,13 @@ export function SettingsDialog({
               onChange={(e) => void updateSettings({ debug: e.target.checked })}
             />
 
-            <div className="settings-section-title">{t("settings.experimental")}</div>
-            <p className="settings-help">
-              {t("settings.experimentalHelp1")}{" "}
-              <b>{t("settings.experimentalHelpBold")}</b> {t("settings.experimentalHelp2")}{" "}
-              {t("settings.experimentalHelp3")}
-            </p>
-
-            <ToggleCard
-              label={t("settings.agentModeToggle")}
-              checked={experimentalEnabled(settings, "agent_mode_toggle")}
-              onChange={(e) => void updateSettings({ agent_mode_toggle: e.target.checked })}
+            <SettingsSection
+              title={t("settings.experimental")}
               help={
                 <>
-                  {t("settings.agentModeHelp1")} <b>Plan</b> {t("settings.agentModeHelp2")}{" "}
-                  <b>Auto</b> {t("settings.agentModeHelp3")}
+                  {t("settings.experimentalHelp1")}{" "}
+                  <b>{t("settings.experimentalHelpBold")}</b> {t("settings.experimentalHelp2")}{" "}
+                  {t("settings.experimentalHelp3")}
                 </>
               }
             />
@@ -935,18 +988,26 @@ export function SettingsDialog({
                 content, renderer crash — docs/typing_latency_plan.md Step 4):
                 canvas is the safe renderer, and a terminal whose WebGL fails
                 demotes itself back to it (TerminalView's renderer ladder). */}
-            <div className="settings-toggle-card">
-              <label className="settings-toggle-card-row">
-                <span>
-                  {t("settings.terminalWebgl")} <UntestedTag />
-                </span>
-                <Toggle
-                  checked={experimentalEnabled(settings, "terminal_webgl")}
-                  onChange={(e) => void updateSettings({ terminal_webgl: e.target.checked })}
-                />
-              </label>
-              <p className="settings-help">{t("settings.terminalWebglHelp")}</p>
-            </div>
+            <ToggleCard
+              label={<>{t("settings.terminalWebgl")} <UntestedTag /></>}
+              checked={experimentalEnabled(settings, "terminal_webgl")}
+              onChange={(e) => void updateSettings({ terminal_webgl: e.target.checked })}
+              help={t("settings.terminalWebglHelp")}
+            />
+
+            <ToggleCard
+              label={<>{t("settings.mdGraph")} <UntestedTag /></>}
+              checked={experimentalEnabled(settings, "md_graph")}
+              onChange={(e) => void updateSettings({ md_graph: e.target.checked })}
+              help={t("settings.mdGraphHelp")}
+            />
+
+            <ToggleCard
+              label={<>{t("settings.projectRemarks")} <UntestedTag /></>}
+              checked={experimentalEnabled(settings, "project_remarks")}
+              onChange={(e) => void updateSettings({ project_remarks: e.target.checked })}
+              help={t("settings.projectRemarksHelp")}
+            />
 
             {/* Mail is ONE switch. It used to be two — this gate plus a
                 `mail_global_app` sub-toggle deciding whether the header button
@@ -958,21 +1019,17 @@ export function SettingsDialog({
                 network without a click. The browser below still owns a whole TAB,
                 so switching *it* off closes what it opened — see
                 lib/experimentalSweep. */}
-            <div className="settings-toggle-card">
-              <label className="settings-toggle-card-row">
-                <span>
-                  {t("settings.mailClient")} <UntestedTag />
-                </span>
-                <Toggle
-                  checked={experimentalEnabled(settings, "mail_client")}
-                  onChange={(e) => void updateSettings({ mail_client: e.target.checked })}
-                />
-              </label>
+            <SettingsCard>
+              <ToggleRow
+                label={<>{t("settings.mailClient")} <UntestedTag /></>}
+                checked={experimentalEnabled(settings, "mail_client")}
+                onChange={(e) => void updateSettings({ mail_client: e.target.checked })}
+              />
               <p className="settings-help">{t("settings.mailClientHelp")}</p>
               {experimentalEnabled(settings, "mail_client") && (
                 <>
-                  <div className="settings-row">
-                    <label>{t("settings.mailCheckInterval")}</label>
+                  <div className="settings-card-row">
+                    <span>{t("settings.mailCheckInterval")}</span>
                     <Dropdown
                       value={String(
                         settings?.mail_check_interval_min ?? DEFAULT_MAIL_CHECK_MIN,
@@ -993,7 +1050,7 @@ export function SettingsDialog({
                   <p className="settings-help">{t("settings.mailCheckIntervalHelp")}</p>
                 </>
               )}
-            </div>
+            </SettingsCard>
 
             <ToggleCard
               label={t("settings.webBrowser")}
@@ -1026,43 +1083,51 @@ export function SettingsDialog({
                 master switch and per-account quick-toggle tags), not here. There
                 are deliberately no global per-feature toggles in this panel. */}
 
-            <div className="settings-section-title">{t("settings.resourceMonitor")}</div>
-            <div className="settings-toggle-card">
-              <label className="settings-toggle-card-row">
-                <span>{t("settings.showCpu")}</span>
-                <Toggle
-                  checked={settings?.show_cpu_usage ?? true}
-                  onChange={(e) => void updateSettings({ show_cpu_usage: e.target.checked })}
-                />
-              </label>
-              <label className="settings-toggle-card-row">
-                <span>{t("settings.showRam")}</span>
-                <Toggle
-                  checked={settings?.show_ram_usage ?? true}
-                  onChange={(e) => void updateSettings({ show_ram_usage: e.target.checked })}
-                />
-              </label>
-              <label className="settings-toggle-card-row">
-                <span>{t("settings.showGpu")}</span>
-                <Toggle
-                  checked={settings?.show_gpu_usage ?? true}
-                  onChange={(e) => void updateSettings({ show_gpu_usage: e.target.checked })}
-                />
-              </label>
+            <SettingsSection title={t("settings.resourceMonitor")} />
+            <SettingsCard>
+              <ToggleRow
+                label={t("settings.showCpu")}
+                checked={settings?.show_cpu_usage ?? true}
+                onChange={(e) => void updateSettings({ show_cpu_usage: e.target.checked })}
+              />
+              <ToggleRow
+                label={t("settings.showRam")}
+                checked={settings?.show_ram_usage ?? true}
+                onChange={(e) => void updateSettings({ show_ram_usage: e.target.checked })}
+              />
+              <ToggleRow
+                label={t("settings.showGpu")}
+                checked={settings?.show_gpu_usage ?? true}
+                onChange={(e) => void updateSettings({ show_gpu_usage: e.target.checked })}
+              />
               <p className="settings-help">{t("settings.resourceMonitorHelp")}</p>
-            </div>
+              {/* The fold is normally driven by the ‹/› in the header itself;
+                  this row is here so it is findable, and so the default can be
+                  turned off by someone who wants every lamp out permanently. */}
+              <ToggleRow
+                label={
+                  <>
+                    {t("statusCluster.settingLabel")} <UntestedTag />
+                  </>
+                }
+                title={t("statusCluster.settingHelp")}
+                checked={!(settings?.header_status_expanded ?? false)}
+                onChange={(e) =>
+                  void updateSettings({ header_status_expanded: !e.target.checked })
+                }
+              />
+              <p className="settings-help">{t("statusCluster.settingHelp")}</p>
+            </SettingsCard>
 
             {/* The clock lives in its own section, not under Resource monitor:
                 seconds and the 12/24-hour face are time, not CPU/RAM/GPU. */}
-            <div className="settings-section-title">{t("settings.clock")}</div>
-            <div className="settings-toggle-card">
-              <label className="settings-toggle-card-row">
-                <span>{t("settings.showClockSeconds")}</span>
-                <Toggle
-                  checked={settings?.show_clock_seconds ?? false}
-                  onChange={(e) => void updateSettings({ show_clock_seconds: e.target.checked })}
-                />
-              </label>
+            <SettingsSection title={t("settings.clock")} />
+            <SettingsCard>
+              <ToggleRow
+                label={t("settings.showClockSeconds")}
+                checked={settings?.show_clock_seconds ?? false}
+                onChange={(e) => void updateSettings({ show_clock_seconds: e.target.checked })}
+              />
               {/* App-wide, and here rather than under Calendar (where it used to
                   live as a calendar-only switch): a clock is not a property of
                   one feature, and reading 17:00 in the calendar beside 5:00 PM
@@ -1070,152 +1135,150 @@ export function SettingsDialog({
                   follows the UI language, which is why the help line says what
                   the default is rather than leaving the off position to imply
                   it — see `lib/timeFormat.ts`. */}
-              <label className="settings-toggle-card-row">
-                <span>{t("settings.clock24")}</span>
-                <Toggle
-                  checked={use24h}
-                  onChange={(e) => void updateSettings({ time_format_24h: e.target.checked })}
-                />
-              </label>
+              <ToggleRow
+                label={t("settings.clock24")}
+                checked={use24h}
+                onChange={(e) => void updateSettings({ time_format_24h: e.target.checked })}
+              />
               <p className="settings-help">{t("settings.clock24Help")}</p>
-            </div>
+            </SettingsCard>
 
-            <div className="settings-section-title">{t("settings.calendar")}</div>
+            <SettingsSection title={t("settings.calendar")} />
 
             {/* The calendar's twin of "Mail in the header". Not nested under
                 anything: the calendar is shipped, not experimental. */}
-            <div className="settings-toggle-card">
-              <label className="settings-toggle-card-row">
-                <span>
-                  {t("settings.calendarGlobalApp")} <UntestedTag />
-                </span>
-                <Toggle
-                  checked={settings?.calendar_global_app ?? false}
-                  onChange={(e) => void updateSettings({ calendar_global_app: e.target.checked })}
-                />
-              </label>
-              <p className="settings-help">{t("settings.calendarGlobalAppHelp")}</p>
-            </div>
+            <ToggleCard
+              label={<>{t("settings.calendarGlobalApp")} <UntestedTag /></>}
+              checked={settings?.calendar_global_app ?? false}
+              onChange={(e) => void updateSettings({ calendar_global_app: e.target.checked })}
+              help={t("settings.calendarGlobalAppHelp")}
+            />
 
             {/* The to-do board sits under Calendar because that is literally
                 where its cards live: they ARE this calendar's tasks, so the
                 board is a second view of the store above, not a second store. */}
-            <div className="settings-toggle-card">
-              <label className="settings-toggle-card-row">
-                <span>
-                  {t("settings.todoBoard")} <UntestedTag />
-                </span>
-                <Toggle
-                  checked={settings?.todo_board ?? false}
-                  onChange={(e) => void updateSettings({ todo_board: e.target.checked })}
-                />
-              </label>
-              <p className="settings-help">{t("settings.todoBoardHelp")}</p>
-            </div>
+            <ToggleCard
+              label={<>{t("settings.todoBoard")} <UntestedTag /></>}
+              checked={settings?.todo_board ?? false}
+              onChange={(e) => void updateSettings({ todo_board: e.target.checked })}
+              help={t("settings.todoBoardHelp")}
+            />
 
-            <div className="settings-row">
-              <label>{t("settings.weekStartsOn")}</label>
-              <Dropdown
-                value={String(settings?.calendar_week_start ?? 0)}
-                onChange={(v) =>
-                  void updateSettings({ calendar_week_start: Number(v) === 1 ? 1 : 0 })
-                }
-                options={[
-                  { value: "0", label: t("day.sunday") },
-                  { value: "1", label: t("day.monday") },
-                ]}
-              />
-            </div>
-            <div className="settings-row">
-              <label>{t("settings.defaultView")}</label>
-              <Dropdown
-                value={settings?.calendar_default_view ?? "month"}
-                onChange={(v) =>
-                  void updateSettings({ calendar_default_view: v as CalendarViewKind })
-                }
-                options={[
-                  { value: "day", label: t("view.day") },
-                  { value: "week", label: t("view.week") },
-                  { value: "multiweek", label: t("view.multiweek") },
-                  { value: "month", label: t("view.month") },
-                  { value: "agenda", label: t("view.agenda") },
-                  { value: "tasks", label: t("view.tasks") },
-                ]}
-              />
-            </div>
-            <div className="settings-row">
-              <label>{t("settings.dayGridStart")}</label>
-              <Dropdown
-                value={String(settings?.calendar_day_start_hour ?? 8)}
-                onChange={(v) => void updateSettings({ calendar_day_start_hour: Number(v) })}
-                options={Array.from({ length: 24 }, (_, h) => ({
-                  value: String(h),
-                  label: `${String(h).padStart(2, "0")}:00`,
-                }))}
-              />
-            </div>
-            <div className="settings-row">
-              <label>{t("settings.defaultReminder")}</label>
-              <Dropdown
-                value={String(settings?.calendar_default_reminder_minutes ?? 0)}
-                onChange={(v) =>
-                  void updateSettings({ calendar_default_reminder_minutes: Number(v) })
-                }
-                options={[
-                  { value: "0", label: t("reminder.none") },
-                  { value: "5", label: t("reminder.5") },
-                  { value: "15", label: t("reminder.15") },
-                  { value: "30", label: t("reminder.30") },
-                  { value: "60", label: t("reminder.60") },
-                  { value: "1440", label: t("reminder.1440") },
-                ]}
-              />
-            </div>
-            <p className="settings-help">{t("settings.reminderHelp")}</p>
+            {/* The four calendar defaults are one question ("how should the
+                calendar open?"), so they share a card and read as a group. */}
+            <SettingsCard>
+              <div className="settings-card-row">
+                <span>{t("settings.weekStartsOn")}</span>
+                <Dropdown
+                  value={String(settings?.calendar_week_start ?? 0)}
+                  onChange={(v) =>
+                    void updateSettings({ calendar_week_start: Number(v) === 1 ? 1 : 0 })
+                  }
+                  options={[
+                    { value: "0", label: t("day.sunday") },
+                    { value: "1", label: t("day.monday") },
+                  ]}
+                />
+              </div>
+              <div className="settings-card-row">
+                <span>{t("settings.defaultView")}</span>
+                <Dropdown
+                  value={settings?.calendar_default_view ?? "month"}
+                  onChange={(v) =>
+                    void updateSettings({ calendar_default_view: v as CalendarViewKind })
+                  }
+                  options={[
+                    { value: "day", label: t("view.day") },
+                    { value: "week", label: t("view.week") },
+                    { value: "multiweek", label: t("view.multiweek") },
+                    { value: "month", label: t("view.month") },
+                    { value: "agenda", label: t("view.agenda") },
+                    { value: "tasks", label: t("view.tasks") },
+                  ]}
+                />
+              </div>
+              <div className="settings-card-row">
+                <span>{t("settings.dayGridStart")}</span>
+                <Dropdown
+                  value={String(settings?.calendar_day_start_hour ?? 8)}
+                  onChange={(v) => void updateSettings({ calendar_day_start_hour: Number(v) })}
+                  options={Array.from({ length: 24 }, (_, h) => ({
+                    value: String(h),
+                    label: `${String(h).padStart(2, "0")}:00`,
+                  }))}
+                />
+              </div>
+              <div className="settings-card-row">
+                <span>{t("settings.defaultReminder")}</span>
+                <Dropdown
+                  value={String(settings?.calendar_default_reminder_minutes ?? 0)}
+                  onChange={(v) =>
+                    void updateSettings({ calendar_default_reminder_minutes: Number(v) })
+                  }
+                  options={[
+                    { value: "0", label: t("reminder.none") },
+                    { value: "5", label: t("reminder.5") },
+                    { value: "15", label: t("reminder.15") },
+                    { value: "30", label: t("reminder.30") },
+                    { value: "60", label: t("reminder.60") },
+                    { value: "1440", label: t("reminder.1440") },
+                  ]}
+                />
+              </div>
+              <p className="settings-help">{t("settings.reminderHelp")}</p>
+            </SettingsCard>
 
             {/* The in-app browser (#61). Everything here is a *preference*; the
                 navigation policy, the permission defaults and the download rule
                 are the backend's and are not configurable — a "trusted sites"
                 list or an "ignore certificate errors" switch is exactly the kind
                 of relaxation that outlives the reason for it, so none exists. */}
-            <div className="settings-section-title">
-              {t("settings.browser")} <UntestedTag />
-            </div>
-            <div className="settings-row">
-              <label>{t("settings.browserHome")}</label>
-              <input
-                type="text"
-                value={settings?.browser_home_url ?? ""}
-                placeholder={t("settings.browserHomePlaceholder")}
-                onChange={(e) => void updateSettings({ browser_home_url: e.target.value })}
-              />
-            </div>
-            <p className="settings-help">{t("settings.browserHomeHelp")}</p>
-            <div className="settings-row">
-              <label>{t("settings.browserSearch")}</label>
-              <input
-                type="text"
-                value={settings?.browser_search_template ?? ""}
-                placeholder="https://duckduckgo.com/?q=%s"
-                onChange={(e) => void updateSettings({ browser_search_template: e.target.value })}
-              />
-            </div>
-            <p className="settings-help">{t("settings.browserSearchHelp")}</p>
-            <div className="settings-row">
-              <label>{t("settings.browserLinkTarget")}</label>
-              <Dropdown
-                value={settings?.browser_link_target ?? "external"}
-                onChange={(v) =>
-                  void updateSettings({ browser_link_target: v as LinkOpenTarget })
-                }
-                options={[
-                  { value: "external", label: t("settings.browserLinkTargetExternal") },
-                  { value: "in_app", label: t("settings.browserLinkTargetInApp") },
-                  { value: "ask", label: t("settings.browserLinkTargetAsk") },
-                ]}
-              />
-            </div>
-            <p className="settings-help">{t("settings.browserLinkTargetHelp")}</p>
+            <SettingsSection title={<>{t("settings.browser")} <UntestedTag /></>} />
+            <SettingRow
+              htmlFor="browser-home-url"
+              label={t("settings.browserHome")}
+              help={t("settings.browserHomeHelp")}
+              control={
+                <input
+                  id="browser-home-url"
+                  type="text"
+                  value={settings?.browser_home_url ?? ""}
+                  placeholder={t("settings.browserHomePlaceholder")}
+                  onChange={(e) => void updateSettings({ browser_home_url: e.target.value })}
+                />
+              }
+            />
+            <SettingRow
+              htmlFor="browser-search-template"
+              label={t("settings.browserSearch")}
+              help={t("settings.browserSearchHelp")}
+              control={
+                <input
+                  id="browser-search-template"
+                  type="text"
+                  value={settings?.browser_search_template ?? ""}
+                  placeholder="https://duckduckgo.com/?q=%s"
+                  onChange={(e) => void updateSettings({ browser_search_template: e.target.value })}
+                />
+              }
+            />
+            <SettingRow
+              label={t("settings.browserLinkTarget")}
+              help={t("settings.browserLinkTargetHelp")}
+              control={
+                <Dropdown
+                  value={settings?.browser_link_target ?? "external"}
+                  onChange={(v) =>
+                    void updateSettings({ browser_link_target: v as LinkOpenTarget })
+                  }
+                  options={[
+                    { value: "external", label: t("settings.browserLinkTargetExternal") },
+                    { value: "in_app", label: t("settings.browserLinkTargetInApp") },
+                    { value: "ask", label: t("settings.browserLinkTargetAsk") },
+                  ]}
+                />
+              }
+            />
             <ToggleCard
               label={t("settings.browserRestoreNavigate")}
               checked={settings?.browser_restore_navigate ?? false}
@@ -1233,7 +1296,7 @@ export function SettingsDialog({
               help={t("settings.browserLivePagesHelp")}
             />
 
-            <div className="settings-section-title">{t("settings.hintsOnboarding")}</div>
+            <SettingsSection title={t("settings.hintsOnboarding")} />
             <ToggleCard
               label={t("settings.showHints")}
               checked={settings?.hints_enabled ?? true}
@@ -1242,6 +1305,7 @@ export function SettingsDialog({
             <div className="settings-link-row">
               <button
                 type="button"
+                className="settings-btn"
                 onClick={() => {
                   onClose();
                   window.dispatchEvent(new Event("eldrun:open-how-to-start"));
@@ -1251,6 +1315,7 @@ export function SettingsDialog({
               </button>
               <button
                 type="button"
+                className="settings-btn"
                 onClick={() => {
                   onClose();
                   window.dispatchEvent(new Event("eldrun:start-tour"));
@@ -1260,6 +1325,7 @@ export function SettingsDialog({
               </button>
               <button
                 type="button"
+                className="settings-btn"
                 onClick={() => {
                   onClose();
                   window.dispatchEvent(new Event("eldrun:start-advanced-tour"));
@@ -1269,6 +1335,7 @@ export function SettingsDialog({
               </button>
               <button
                 type="button"
+                className="settings-btn"
                 onClick={() => {
                   onClose();
                   window.dispatchEvent(new Event("eldrun:open-lessons"));
@@ -1276,96 +1343,108 @@ export function SettingsDialog({
               >
                 {t("settings.lessons")}
               </button>
-              <button type="button" onClick={() => useHintsStore.getState().reset()}>
+              <button
+                type="button"
+                className="settings-btn"
+                onClick={() => useHintsStore.getState().reset()}
+              >
                 {t("settings.resetHints")}
               </button>
             </div>
 
-            <div className="settings-section-title">{t("settings.layout")}</div>
-            <p className="settings-help">
-              {t("settings.zoomHelp1")} <strong>{t("settings.zoomHelpBold")}</strong>
-              {t("settings.zoomHelp2")} <UntestedTag />
-            </p>
-            <div className="settings-row">
-              <label>{t("settings.windowZoom")}</label>
-              <Dropdown
-                value={String(clampZoom(settings?.ui_zoom))}
-                onChange={(v) => {
-                  const z = parseFloat(v);
-                  void updateSettings({
-                    ui_zoom: z === 1 ? undefined : clampZoom(z),
-                  });
-                }}
-                options={ZOOM_STEPS.filter(
-                  (z) => z >= MIN_UI_ZOOM && z <= MAX_UI_ZOOM,
-                ).map((z) => ({
-                  value: String(z),
-                  label: `${Math.round(z * 100)}%${z === 1 ? ` (${t("common.default")})` : ""}`,
-                }))}
-              />
-            </div>
-            <p className="settings-help">
-              {t("settings.minSubwindowHelp", { px: DEFAULT_MIN_SUBWINDOW_PX })}
-            </p>
-            <div className="settings-row">
-              <label htmlFor="min-subwindow-width">{t("settings.minSubWidth")}</label>
-              <input
-                id="min-subwindow-width"
-                type="number"
-                min={20}
-                step={10}
-                placeholder={String(DEFAULT_MIN_SUBWINDOW_PX)}
-                value={settings?.min_subwindow_width ?? ""}
-                onChange={(e) => {
-                  const v = parseInt(e.target.value, 10);
-                  void updateSettings({
-                    min_subwindow_width: Number.isFinite(v) && v >= 20 ? v : undefined,
-                  });
-                }}
-              />
-            </div>
-            <div className="settings-row">
-              <label htmlFor="min-subwindow-height">{t("settings.minSubHeight")}</label>
-              <input
-                id="min-subwindow-height"
-                type="number"
-                min={20}
-                step={10}
-                placeholder={String(DEFAULT_MIN_SUBWINDOW_PX)}
-                value={settings?.min_subwindow_height ?? ""}
-                onChange={(e) => {
-                  const v = parseInt(e.target.value, 10);
-                  void updateSettings({
-                    min_subwindow_height: Number.isFinite(v) && v >= 20 ? v : undefined,
-                  });
-                }}
-              />
-            </div>
+            <SettingsSection
+              title={<>{t("settings.layout")} <UntestedTag /></>}
+              help={
+                <>
+                  {t("settings.zoomHelp1")} <strong>{t("settings.zoomHelpBold")}</strong>
+                  {t("settings.zoomHelp2")}
+                </>
+              }
+            />
+            <SettingRow
+              label={t("settings.windowZoom")}
+              control={
+                <Dropdown
+                  value={String(clampZoom(settings?.ui_zoom))}
+                  onChange={(v) => {
+                    const z = parseFloat(v);
+                    void updateSettings({
+                      ui_zoom: z === 1 ? undefined : clampZoom(z),
+                    });
+                  }}
+                  options={ZOOM_STEPS.filter(
+                    (z) => z >= MIN_UI_ZOOM && z <= MAX_UI_ZOOM,
+                  ).map((z) => ({
+                    value: String(z),
+                    label: `${Math.round(z * 100)}%${z === 1 ? ` (${t("common.default")})` : ""}`,
+                  }))}
+                />
+              }
+            />
+            {/* Both minimums answer one question, so one card holds them and
+                the help line that explains the pair sits at its foot. */}
+            <SettingsCard>
+              <div className="settings-card-row">
+                <label className="settings-card-label" htmlFor="min-subwindow-width">
+                  {t("settings.minSubWidth")}
+                </label>
+                <input
+                  id="min-subwindow-width"
+                  type="number"
+                  min={20}
+                  step={10}
+                  placeholder={String(DEFAULT_MIN_SUBWINDOW_PX)}
+                  value={settings?.min_subwindow_width ?? ""}
+                  onChange={(e) => {
+                    const v = parseInt(e.target.value, 10);
+                    void updateSettings({
+                      min_subwindow_width: Number.isFinite(v) && v >= 20 ? v : undefined,
+                    });
+                  }}
+                />
+              </div>
+              <div className="settings-card-row">
+                <label className="settings-card-label" htmlFor="min-subwindow-height">
+                  {t("settings.minSubHeight")}
+                </label>
+                <input
+                  id="min-subwindow-height"
+                  type="number"
+                  min={20}
+                  step={10}
+                  placeholder={String(DEFAULT_MIN_SUBWINDOW_PX)}
+                  value={settings?.min_subwindow_height ?? ""}
+                  onChange={(e) => {
+                    const v = parseInt(e.target.value, 10);
+                    void updateSettings({
+                      min_subwindow_height: Number.isFinite(v) && v >= 20 ? v : undefined,
+                    });
+                  }}
+                />
+              </div>
+              <p className="settings-help">
+                {t("settings.minSubwindowHelp", { px: DEFAULT_MIN_SUBWINDOW_PX })}
+              </p>
+            </SettingsCard>
 
-            <div className="settings-section-title">{t("settings.downloads")}</div>
-            <p className="settings-help">{t("settings.downloadsHelp")}</p>
-            <div className="settings-list">
+            <SettingsSection
+              title={t("settings.downloads")}
+              help={t("settings.downloadsHelp")}
+            />
+            <SettingsList boxed>
               {(settings?.download_sources ?? []).length === 0 ? (
                 <div className="settings-empty">
                   {t("settings.noDownloadFolders")}
                 </div>
               ) : (
                 (settings?.download_sources ?? []).map((dir) => (
-                  <div key={dir} className="settings-row" style={{ gap: 6 }}>
-                    <span
-                      style={{
-                        flex: 1,
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                        whiteSpace: "nowrap",
-                        fontSize: 12,
-                      }}
-                      title={dir}
-                    >
+                  <div key={dir} className="settings-row">
+                    <span className="settings-list-label" title={dir}>
                       {dir}
                     </span>
                     <button
                       type="button"
+                      className="settings-btn sm"
                       onClick={() =>
                         void updateSettings({
                           download_sources: (settings?.download_sources ?? []).filter(
@@ -1380,10 +1459,11 @@ export function SettingsDialog({
                   </div>
                 ))
               )}
-            </div>
+            </SettingsList>
             <div className="settings-link-row">
               <button
                 type="button"
+                className="settings-btn"
                 onClick={() => {
                   void (async () => {
                     const picked = await openDialog({
@@ -1401,25 +1481,27 @@ export function SettingsDialog({
               </button>
             </div>
 
-            <div className="settings-section-title">{t("settings.usageStats")}</div>
+            <SettingsSection title={t("settings.usageStats")} />
             <ToggleCard
               label={t("settings.dailyRecap")}
               checked={settings?.daily_stats_recap ?? true}
               onChange={(e) => void updateSettings({ daily_stats_recap: e.target.checked })}
               help={t("settings.dailyRecapHelp")}
             />
-            <button
-              type="button"
-              className="btn-primary btn-block"
-              onClick={() => {
-                onClose();
-                window.dispatchEvent(new CustomEvent(OPEN_STATS_EVENT));
-              }}
-            >
-              {t("settings.openUsageStats")}
-            </button>
+            <div className="settings-link-row">
+              <button
+                type="button"
+                className="settings-btn primary"
+                onClick={() => {
+                  onClose();
+                  window.dispatchEvent(new CustomEvent(OPEN_STATS_EVENT));
+                }}
+              >
+                {t("settings.openUsageStats")}
+              </button>
+            </div>
 
-            <div className="settings-section-title">{t("settings.moreSettings")}</div>
+            <SettingsSection title={t("settings.moreSettings")} />
             <div className="settings-nav-list">
               {SETTINGS_NAV.map((panelKind) => (
                 <button
@@ -1437,21 +1519,21 @@ export function SettingsDialog({
                 </button>
               ))}
             </div>
+            </div>
           </>
         )}
-        {panel === "global" && <GlobalAppsSettings onBack={() => setPanel("main")} />}
-        {panel === "filetypes" && <FileTypeSettings onBack={() => setPanel("main")} />}
-        {panel === "ollama" && <OllamaPanel onBack={() => setPanel("main")} />}
-        {panel === "agents" && <AgentsPanel onBack={() => setPanel("main")} />}
-        {panel === "shortcuts" && <ShortcutsSettings onBack={() => setPanel("main")} />}
-        {panel === "git" && <GitHostingSettings onBack={() => setPanel("main")} />}
-        {panel === "vpn" && <VpnAutoConnectSettings onBack={() => setPanel("main")} />}
-        {panel === "remoteHosts" && <RemoteHostsSettings onBack={() => setPanel("main")} />}
-        {panel === "archive" && <ArchivedProjectsPanel onBack={() => setPanel("main")} />}
-        {panel === "scaffoldRepair" && <ScaffoldRepairPanel onBack={() => setPanel("main")} />}
-        {panel === "updates" && <UpdatesPanel onBack={() => setPanel("main")} />}
-        {panel === "help" && <HelpPanel onBack={() => setPanel("main")} />}
-       </div>
+        {panel === "global" && <GlobalAppsSettings onBack={() => setPanel("main")} onClose={onClose} />}
+        {panel === "filetypes" && <FileTypeSettings onBack={() => setPanel("main")} onClose={onClose} />}
+        {panel === "ollama" && <OllamaPanel onBack={() => setPanel("main")} onClose={onClose} />}
+        {panel === "agents" && <AgentsPanel onBack={() => setPanel("main")} onClose={onClose} />}
+        {panel === "shortcuts" && <ShortcutsSettings onBack={() => setPanel("main")} onClose={onClose} />}
+        {panel === "git" && <GitHostingSettings onBack={() => setPanel("main")} onClose={onClose} />}
+        {panel === "vpn" && <VpnAutoConnectSettings onBack={() => setPanel("main")} onClose={onClose} />}
+        {panel === "remoteHosts" && <RemoteHostsSettings onBack={() => setPanel("main")} onClose={onClose} />}
+        {panel === "archive" && <ArchivedProjectsPanel onBack={() => setPanel("main")} onClose={onClose} />}
+        {panel === "scaffoldRepair" && <ScaffoldRepairPanel onBack={() => setPanel("main")} onClose={onClose} />}
+        {panel === "updates" && <UpdatesPanel onBack={() => setPanel("main")} onClose={onClose} />}
+        {panel === "help" && <HelpPanel onBack={() => setPanel("main")} onClose={onClose} />}
       </div>
     </div>
   );

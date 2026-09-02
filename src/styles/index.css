@@ -1,0 +1,24 @@
+/* The app's stylesheet, split from the old 28k-line monolithic themes.css
+   into per-area files. THE @import ORDER IS LOAD-BEARING: it reproduces the
+   monolith's source order, which equal-specificity rules rely on — append new
+   files at the end unless a rule genuinely must sit earlier in the cascade.
+   Vite inlines these at build time; the emitted bundle is identical to the
+   monolith's. */
+@import "./base.css";
+@import "./themes.css";
+@import "./shell.css";
+@import "./viewers.css";
+@import "./subwindows.css";
+@import "./files-panel.css";
+@import "./projects-tabs.css";
+@import "./file-tree.css";
+@import "./apps.css";
+@import "./settings-chrome.css";
+@import "./header-menus.css";
+@import "./onboarding.css";
+@import "./monitoring.css";
+@import "./calendar.css";
+@import "./stats-deck.css";
+@import "./mail-todo.css";
+@import "./browser-print-tex.css";
+@import "./cursors.css";

@@ -408,7 +408,7 @@ export function MailComposeDialog({
                 </label>
                 <button
                   type="button"
-                  className="mail-btn"
+                  className="settings-btn"
                   disabled={drafting || !notes.trim()}
                   onClick={() => void draftFromNotes()}
                 >
@@ -427,7 +427,7 @@ export function MailComposeDialog({
           <div className="mail-attach-row">
             <button
               type="button"
-              className="mail-btn"
+              className="settings-btn"
               disabled={busy !== ""}
               onClick={() => void doAttach()}
             >
@@ -489,12 +489,12 @@ export function MailComposeDialog({
           {error && <div className="project-dialog-error">{error}</div>}
 
           <div className="mail-dialog-actions">
-            <button type="button" className="mail-btn" onClick={onClose}>
+            <button type="button" className="settings-btn" onClick={onClose}>
               {t("common.cancel")}
             </button>
             <button
               type="button"
-              className="mail-btn"
+              className="settings-btn"
               disabled={busy !== ""}
               onClick={() => void doSaveDraft()}
             >
@@ -502,7 +502,7 @@ export function MailComposeDialog({
             </button>
             <button
               type="button"
-              className="mail-btn mail-btn-primary"
+              className="settings-btn primary"
               disabled={busy !== ""}
               onClick={() => void doSend()}
             >

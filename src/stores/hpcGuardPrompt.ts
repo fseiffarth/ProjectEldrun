@@ -30,20 +30,37 @@ interface Pending {
 
 interface HpcGuardState {
   pending: Pending | null;
+  /** How many `HpcGuardDialog`s are mounted in THIS window. A request with no
+   *  host to answer it is refused at once rather than parked on a Promise
+   *  nobody can resolve (Group B #233: a ▶ run from a popout on an HPC-tagged
+   *  host used to hang forever, silently, because the dialog lived only in the
+   *  main window's shell). The dialog registers itself on mount. */
+  hosts: number;
   /** Ask about `kind` on `target`. Resolves `true` only if the user chose to go
-   *  ahead anyway, `false` on cancel. */
+   *  ahead anyway, `false` on cancel — or immediately when no dialog is mounted
+   *  in this window to ask with. */
   request: (kind: HpcGuardKind, target: string) => Promise<boolean>;
   /** Go ahead regardless — the user's call to make. */
   proceed: () => void;
   /** Back out; nothing runs. */
   cancel: () => void;
+  /** `HpcGuardDialog` mount/unmount bookkeeping. */
+  registerHost: () => () => void;
 }
 
 export const useHpcGuardStore = create<HpcGuardState>((set, get) => ({
   pending: null,
+  hosts: 0,
 
   request: (kind, target) =>
     new Promise<boolean>((resolve) => {
+      // No dialog in this window: refusing is the only honest answer. The
+      // caller's ordinary "the user backed out" path runs, which is exactly the
+      // safe direction for a gate.
+      if (get().hosts === 0) {
+        resolve(false);
+        return;
+      }
       // A second ask while one is open answers the newcomer "no" rather than
       // stacking modals or silently replacing the question being read.
       if (get().pending) {
@@ -52,6 +69,11 @@ export const useHpcGuardStore = create<HpcGuardState>((set, get) => ({
       }
       set({ pending: { kind, target, resolve } });
     }),
+
+  registerHost: () => {
+    set((s) => ({ hosts: s.hosts + 1 }));
+    return () => set((s) => ({ hosts: Math.max(0, s.hosts - 1) }));
+  },
 
   proceed: () => {
     const p = get().pending;

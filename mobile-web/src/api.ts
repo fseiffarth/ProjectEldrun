@@ -2,8 +2,25 @@ export interface ProjectRow { id: string; label: string; status: string; live_se
 export type AgentStatus = "working" | "question" | "done";
 export interface TabRow { id: string; label: string; kind: "shell" | "agent"; agent_label?: string; agent_status?: AgentStatus; available: boolean; viewer_busy: boolean; last_activity?: number }
 export interface AgentRow { id: string; label: string; modes: ("plan" | "auto")[] }
+export type ScheduleRule =
+  | { type: "once"; at: string }
+  | { type: "daily"; time: string }
+  | { type: "weekdays"; weekdays: number[]; time: string };
+export interface ScheduledPrompt {
+  id: string;
+  enabled: boolean;
+  message: string;
+  rule: ScheduleRule;
+  last?: { occurrence: string; result: "delivered" | "missed" | "failed"; at: string };
+}
+export interface ScheduledPromptInput { enabled: boolean; message: string; rule: ScheduleRule }
+export interface ScheduledPromptList { schedules: ScheduledPrompt[]; time_zone: string; next_runs: Record<string, string> }
+/** A prompt collected for a project without a tab. Ids and timestamps are the
+ * desktop's; the phone only ever sends the text. */
+export interface ProjectPrompt { id: string; message: string; created_at: string; updated_at: string }
+export interface ProjectPromptList { prompts: ProjectPrompt[] }
 export interface ProjectDetail { project: ProjectRow; tabs: TabRow[]; desktop_available: boolean; agents: AgentRow[] }
-export interface TodoColumn { id: string; name: string; position: number; done: boolean; color?: string }
+export interface TodoColumn { id: string; name: string; position: number; done: boolean; archived: boolean; color?: string }
 export interface TodoSubtask { id: string; title: string; done: boolean }
 export interface TodoTaskInput {
   title: string;
@@ -36,7 +53,10 @@ export interface TodoBoard {
 export function normalizeTodoBoard(board: TodoBoard): TodoBoard {
   return {
     ...board,
-    columns: board.columns ?? [],
+    // `archived` is the newest of these fields, so a desktop older than it sends
+    // a column without one; false is the honest reading — a board that has no
+    // archive column has nothing for "hide archived" to hide.
+    columns: (board.columns ?? []).map((column) => ({ ...column, archived: column.archived ?? false })),
     tasks: (board.tasks ?? []).map((task) => ({
       ...task,
       notes: task.notes ?? "",
@@ -60,6 +80,9 @@ export interface MobileAlertItem {
   all_day: boolean;
   minutes_away?: number;
   days_away?: number;
+  /** `kind === "task"` only: the board's own opaque card id, so tapping the row
+   * can open that card rather than dropping the reader at the whole board. */
+  task_id?: string;
 }
 export interface MobileAlerts { enabled: boolean; items: MobileAlertItem[] }
 /** A bounded, read-only occurrence expanded by the connected desktop. It never
@@ -183,4 +206,89 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   // which then read `undefined.map` and white-screened the whole app.
   if (body === undefined) throw new ApiError(response.status, "malformed_response");
   return body as T;
+}
+
+const schedulePath = (tabId: string) => `/api/v1/tabs/${encodeURIComponent(tabId)}/schedules`;
+
+export function getSchedules(tabId: string): Promise<ScheduledPromptList> {
+  return api(schedulePath(tabId));
+}
+
+export function createSchedule(tabId: string, schedule: ScheduledPromptInput): Promise<ScheduledPromptList> {
+  return api(schedulePath(tabId), { method: "POST", body: JSON.stringify(schedule) });
+}
+
+export function updateSchedule(tabId: string, scheduleId: string, schedule: ScheduledPromptInput): Promise<ScheduledPromptList> {
+  return api(`${schedulePath(tabId)}/${encodeURIComponent(scheduleId)}`, {
+    method: "PUT",
+    body: JSON.stringify(schedule),
+  });
+}
+
+export function deleteSchedule(tabId: string, scheduleId: string): Promise<ScheduledPromptList> {
+  return api(`${schedulePath(tabId)}/${encodeURIComponent(scheduleId)}`, { method: "DELETE" });
+}
+
+/** A file the phone dropped into the tab's project inbox. `reference` is
+ * project-relative (`.eldrun/inbox/<file>`) — the one path shape that crosses
+ * this boundary, because it carries no host component and is exactly what the
+ * agent needs after an `@`. */
+export interface InboxAttachment { name: string; reference: string; size: number }
+/** Mirrors the desktop's `inbox::MAX_INBOX_FILE`; checked here first so an
+ * oversized pick fails before any bytes leave the phone. */
+export const MAX_INBOX_FILE = 24 * 1024 * 1024;
+/** A photo over a cellular link is not a 10-second request. */
+const UPLOAD_TIMEOUT = 120_000;
+
+/** `POST /api/v1/tabs/{id}/inbox` — the raw file as the body, its name in the
+ * query (a header cannot carry a non-Latin-1 photo-library name). */
+const promptsPath = (projectId: string) => `/api/v1/projects/${encodeURIComponent(projectId)}/prompts`;
+
+export function getPrompts(projectId: string): Promise<ProjectPromptList> {
+  return api(promptsPath(projectId));
+}
+
+export function createPrompt(projectId: string, message: string): Promise<ProjectPromptList> {
+  return api(promptsPath(projectId), { method: "POST", body: JSON.stringify({ message }) });
+}
+
+export function updatePrompt(projectId: string, promptId: string, message: string): Promise<ProjectPromptList> {
+  return api(`${promptsPath(projectId)}/${encodeURIComponent(promptId)}`, { method: "PUT", body: JSON.stringify({ message }) });
+}
+
+export function deletePrompt(projectId: string, promptId: string): Promise<ProjectPromptList> {
+  return api(`${promptsPath(projectId)}/${encodeURIComponent(promptId)}`, { method: "DELETE" });
+}
+
+/** Send-now: the desktop turns the prompt into a one-time schedule at its own
+ * current minute for `tabId`, delivered at that tab's next safe idle point. */
+export function sendPrompt(projectId: string, promptId: string, tabId: string): Promise<ProjectPromptList> {
+  return api(`${promptsPath(projectId)}/${encodeURIComponent(promptId)}/send`, { method: "POST", body: JSON.stringify({ tab_id: tabId }) });
+}
+
+export async function uploadToInbox(tabId: string, file: Blob, name: string): Promise<InboxAttachment> {
+  let response: Response;
+  try {
+    response = await fetch(`/api/v1/tabs/${encodeURIComponent(tabId)}/inbox?name=${encodeURIComponent(name)}`, {
+      method: "POST",
+      body: file,
+      credentials: "same-origin",
+      cache: "no-store",
+      signal: AbortSignal.timeout(UPLOAD_TIMEOUT),
+      headers: { "Content-Type": file.type || "application/octet-stream" },
+    });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") throw new ApiError(0, "timeout");
+    throw new ApiError(0, "offline");
+  }
+  let body: { error?: string; attachment?: InboxAttachment } | undefined;
+  try {
+    body = await response.json() as typeof body;
+  } catch {
+    body = undefined;
+  }
+  if (response.status === 401) onUnauthorized?.();
+  if (!response.ok) throw new ApiError(response.status, body?.error ?? "request_failed");
+  if (!body?.attachment?.reference) throw new ApiError(response.status, "malformed_response");
+  return body.attachment;
 }

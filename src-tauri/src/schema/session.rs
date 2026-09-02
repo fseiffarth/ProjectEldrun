@@ -46,13 +46,19 @@ pub struct WindowSession {
     pub extra: HashMap<String, Value>,
 }
 
-/// `.eldrun/sessions/filetabs.json` — file browser tab state and right panel.
+/// `.eldrun/sessions/filetabs.json` — file browser tab state and side panel.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct FileTabSession {
     pub file_tabs: Vec<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub right_panel_folder: Option<String>,
+    /// The folder the side panel was browsing. Serialized as `sidePanelFolder`;
+    /// the alias reads back the `rightPanelFolder` every build before the panel
+    /// was renamed wrote, so an existing `filetabs.json` keeps its folder. Only
+    /// the new spelling is ever written — and an older Eldrun reading a new file
+    /// merely opens the panel at the project root, which is what it does for a
+    /// project that never had one.
+    #[serde(alias = "rightPanelFolder", skip_serializing_if = "Option::is_none")]
+    pub side_panel_folder: Option<String>,
     #[serde(flatten)]
     pub extra: HashMap<String, Value>,
 }

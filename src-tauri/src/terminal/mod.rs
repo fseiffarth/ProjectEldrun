@@ -79,22 +79,68 @@ const ACTIVITY_INTERVAL: Duration = Duration::from_millis(500);
 /// Mirrors the frontend's PENDING_OUTPUT_CAP.
 const ROUTE_PENDING_CAP: usize = 1_000_000;
 
+/// How much of a PTY's output is retained for a LATER viewer to catch up on
+/// (Group B #235).
+///
+/// `pending` above answers "what did this pane miss while it was hidden"; this
+/// answers "what has this terminal shown at all", which is a different question
+/// and the one a SECOND viewer asks. A tab popped out into its own window opens
+/// a fresh xterm on a PTY that has been running for an hour: it used to render
+/// empty until the program next drew (a TUI recovers via the fit's SIGWINCH, a
+/// plain shell's history existed only in the main window's hidden xterm), and
+/// every seed-driven remount blanked it again. So the router keeps a bounded
+/// tail of everything it routed — visible or not — and a new attach replays it
+/// before its first live byte.
+///
+/// Deliberately smaller than the hidden-spell buffer: this one is retained for
+/// EVERY live PTY rather than only for hidden ones, and a screenful of context
+/// is what the reader actually wants. A TUI repaints its whole frame, so the
+/// replay converges on the current screen either way.
+const ROUTE_SCROLLBACK_CAP: usize = 256_000;
+
 /// How much tail one `terminal-activity` digest carries — enough for the
 /// activity store's 8 KB decision-prompt scan.
 const ACTIVITY_TAIL_CAP: usize = 8192;
+
+/// One TerminalView instance's registration with the router.
+#[derive(Clone, Debug)]
+struct ViewerReg {
+    visible: bool,
+    /// The view's own monotonic update counter, so a late report cannot
+    /// overwrite a newer one.
+    seq: u64,
+    /// The Tauri window this view lives in. Recorded so a window that dies
+    /// without unmounting its React tree can have its registrations dropped
+    /// (Group B #238): every popout teardown uses `destroy()`, which runs no
+    /// cleanup, so the popout's `pty_remove_view` never fired and the route kept
+    /// a `visible: true` viewer under a random uuid forever — every tab that had
+    /// ever been popped out streamed over IPC for the rest of the session,
+    /// undoing the visible-only streaming work.
+    window: String,
+}
 
 /// Per-PTY routing state. Fresh output buffers until a concrete TerminalView
 /// reports itself visible; this avoids a spawn race without inventing a global
 /// last-writer-wins view.
 #[derive(Default)]
 struct OutputRoute {
-    /// Stable TerminalView instances currently reporting themselves visible.
-    /// A PTY can be rendered in both the main and a detached webview, so a
-    /// single last-writer-wins boolean is not sufficient.
-    visible_viewers: HashMap<String, (bool, u64)>,
+    /// Stable TerminalView instances currently registered, by viewer id. A PTY
+    /// can be rendered in both the main and a detached webview, so a single
+    /// last-writer-wins boolean is not sufficient.
+    visible_viewers: HashMap<String, ViewerReg>,
     watchers: u32,
     /// Output accumulated while unsubscribed, replayed on the next rising edge.
     pending: String,
+    /// A bounded tail of everything routed for this PTY (see
+    /// `ROUTE_SCROLLBACK_CAP`), so a viewer attaching to an already-running
+    /// terminal can catch up instead of opening blank.
+    retained: String,
+    /// Absolute UTF-8 byte offset of `retained[0]` in this spawn's output.
+    retained_start: u64,
+    /// Absolute UTF-8 byte offset of `pending[0]`.
+    pending_start: u64,
+    /// Absolute UTF-8 byte offset immediately after the latest routed chunk.
+    output_offset: u64,
     /// Output since the last activity digest (tail-capped).
     digest: String,
     /// UTF-8 decoder state shared by every output chunk for this spawn.
@@ -110,17 +156,47 @@ struct OutputRoute {
 
 impl OutputRoute {
     fn subscribed(&self) -> bool {
-        self.visible_viewers.values().any(|(visible, _)| *visible) || self.watchers > 0
+        self.visible_viewers.values().any(|v| v.visible) || self.watchers > 0
+    }
+
+    /// Append to the always-on catch-up tail. Called for every routed chunk,
+    /// visible or not — that is the point: the question it answers is "what has
+    /// this terminal shown", which does not depend on who was watching.
+    fn retain(&mut self, text: &str) -> OutputSlice {
+        let start_offset = self.output_offset;
+        self.output_offset += text.len() as u64;
+        self.retained.push_str(text);
+        self.retained_start += trim_with_hysteresis(&mut self.retained, ROUTE_SCROLLBACK_CAP) as u64;
+        OutputSlice {
+            text: text.to_string(),
+            start_offset,
+            end_offset: self.output_offset,
+        }
+    }
+
+    fn push_pending(&mut self, slice: &OutputSlice) {
+        if self.pending.is_empty() {
+            self.pending_start = slice.start_offset;
+        }
+        self.pending.push_str(&slice.text);
+        self.pending_start += trim_with_hysteresis(&mut self.pending, ROUTE_PENDING_CAP) as u64;
     }
 
     /// Drain the hidden-spell buffer for a replay emit. Also drops the digest:
     /// its bytes are a subset of `pending` and have just been delivered.
-    fn take_pending(&mut self) -> Option<String> {
+    fn take_pending(&mut self) -> Option<OutputSlice> {
         self.digest.clear();
         if self.pending.is_empty() {
             return None;
         }
-        Some(std::mem::take(&mut self.pending))
+        let text = std::mem::take(&mut self.pending);
+        let start_offset = self.pending_start;
+        self.pending_start = self.output_offset;
+        Some(OutputSlice {
+            text,
+            start_offset,
+            end_offset: self.output_offset,
+        })
     }
 }
 
@@ -189,20 +265,30 @@ static ROUTE_SEQ: AtomicU64 = AtomicU64::new(0);
 /// grow to 2× and cutting back costs one copy per cap's worth of new output.
 /// The buffer already contains decoded text, so advance the cut to a character
 /// boundary rather than creating replacement characters during replay.
-fn trim_with_hysteresis(buf: &mut String, cap: usize) {
+fn trim_with_hysteresis(buf: &mut String, cap: usize) -> usize {
     if buf.len() > cap * 2 {
         let mut cut = buf.len() - cap;
         while cut < buf.len() && !buf.is_char_boundary(cut) {
             cut += 1;
         }
         buf.drain(..cut);
+        return cut;
     }
+    0
+}
+
+#[derive(Debug)]
+struct OutputSlice {
+    text: String,
+    start_offset: u64,
+    end_offset: u64,
 }
 
 /// What the batcher should do with one flushed chunk.
+#[derive(Debug)]
 enum Routed {
     /// Subscribed: emit as ordinary `terminal-output`.
-    Data(String),
+    Data(OutputSlice),
     /// Hidden, digest due: emit as `terminal-activity`.
     Activity(String),
     /// Hidden, inside the digest window: spawn a trailing flush for this
@@ -219,11 +305,11 @@ fn route_chunk_at(id: &str, bytes: &[u8], now: Instant) -> Routed {
     if text.is_empty() {
         return Routed::Quiet;
     }
+    let slice = route.retain(&text);
     if route.subscribed() {
-        return Routed::Data(text);
+        return Routed::Data(slice);
     }
-    route.pending.push_str(&text);
-    trim_with_hysteresis(&mut route.pending, ROUTE_PENDING_CAP);
+    route.push_pending(&slice);
     route.digest.push_str(&text);
     trim_with_hysteresis(&mut route.digest, ACTIVITY_TAIL_CAP);
     let due = route
@@ -258,11 +344,11 @@ fn route_finish(id: &str) -> Routed {
     if text.is_empty() {
         return Routed::Quiet;
     }
+    let slice = route.retain(&text);
     if route.subscribed() {
-        return Routed::Data(text);
+        return Routed::Data(slice);
     }
-    route.pending.push_str(&text);
-    trim_with_hysteresis(&mut route.pending, ROUTE_PENDING_CAP);
+    route.push_pending(&slice);
     route.digest.push_str(&text);
     trim_with_hysteresis(&mut route.digest, ACTIVITY_TAIL_CAP);
     route.last_activity = Some(Instant::now());
@@ -296,10 +382,31 @@ fn route_open(id: &str) -> u64 {
     let route = map.entry(id.to_string()).or_default();
     route.pending.clear();
     route.digest.clear();
+    // A respawn is a new program: its predecessor's screen is not this one's
+    // catch-up. (Same reason the pending buffer is cleared.)
+    route.retained.clear();
+    route.retained_start = 0;
+    route.pending_start = 0;
+    route.output_offset = 0;
     route.decoder = Utf8StreamDecoder::default();
     route.last_activity = None;
     route.seq = seq;
     seq
+}
+
+/// The retained catch-up tail for `id` (Group B #235), or an empty string when
+/// nothing is known about that PTY. Read-only: a replay does NOT consume it, so
+/// a second window attaching later gets the same history.
+pub fn route_scrollback(id: &str) -> TerminalScrollback {
+    let map = routes().lock().unwrap();
+    match map.get(id) {
+        Some(route) => TerminalScrollback {
+            data: route.retained.clone(),
+            start_offset: route.retained_start,
+            end_offset: route.output_offset,
+        },
+        None => TerminalScrollback::default(),
+    }
 }
 
 /// Task-end cleanup, guarded by generation so an old spawn's exit can never
@@ -327,24 +434,31 @@ fn route_close(id: &str, seq: u64) -> bool {
 /// chunk emit also takes this lock first (`route_chunk`), so the replay is
 /// guaranteed to precede any output produced after the flip.
 fn emit_replay(app: &AppHandle, id: &str, route: &mut OutputRoute) {
-    if let Some(text) = route.take_pending() {
+    if let Some(slice) = route.take_pending() {
         let _ = app.emit(
             "terminal-replay",
             TerminalOutput {
                 id: id.to_string(),
-                data: text,
+                data: slice.text,
+                start_offset: Some(slice.start_offset),
+                end_offset: Some(slice.end_offset),
             },
         );
     }
 }
 
-/// One TerminalView instance's visibility report (`pty_set_visible`).
+/// One TerminalView instance's visibility report (`pty_set_visible`). `window`
+/// is the label of the Tauri window the view lives in, taken from the CALLING
+/// window rather than from the payload, so a view can only ever speak for
+/// itself — and so `route_drop_window_views` can clean up after a window that
+/// died without unmounting.
 pub fn route_set_visible(
     app: &AppHandle,
     id: &str,
     viewer_id: &str,
     visible: bool,
     update_seq: u64,
+    window: &str,
 ) {
     let mut map = routes().lock().unwrap();
     let route = map.entry(id.to_string()).or_default();
@@ -352,14 +466,19 @@ pub fn route_set_visible(
     let current_seq = route
         .visible_viewers
         .get(viewer_id)
-        .map(|(_, seq)| *seq)
+        .map(|v| v.seq)
         .unwrap_or(0);
     if update_seq < current_seq {
         return;
     }
-    route
-        .visible_viewers
-        .insert(viewer_id.to_string(), (visible, update_seq));
+    route.visible_viewers.insert(
+        viewer_id.to_string(),
+        ViewerReg {
+            visible,
+            seq: update_seq,
+            window: window.to_string(),
+        },
+    );
     if !was && route.subscribed() {
         emit_replay(app, id, route);
     }
@@ -372,7 +491,7 @@ pub fn route_remove_view(id: &str, viewer_id: &str, update_seq: u64) {
     if route
         .visible_viewers
         .get(viewer_id)
-        .is_some_and(|(_, seq)| *seq > update_seq)
+        .is_some_and(|v| v.seq > update_seq)
     {
         return;
     }
@@ -380,6 +499,36 @@ pub fn route_remove_view(id: &str, viewer_id: &str, update_seq: u64) {
     if route.seq == 0 && route.visible_viewers.is_empty() && route.watchers == 0 {
         map.remove(id);
     }
+}
+
+/// Drop every view registered from `window`, across every PTY (Group B #238).
+///
+/// The counterpart to `route_remove_view` for a window that never gets to run
+/// its cleanup: every popout teardown in the app uses `destroy()`, deliberately
+/// (it bypasses the popout's own close handler), so its React tree is torn down
+/// without effects running and its `pty_remove_view` never fires. The route then
+/// holds a `visible: true` viewer for a window that no longer exists, and the
+/// PTY streams over IPC forever — for every tab that was ever popped out. Called
+/// from the `WindowEvent::Destroyed` hook. Returns how many were dropped, so a
+/// caller can log/test it.
+pub fn route_drop_window_views(window: &str) -> usize {
+    let mut map = routes().lock().unwrap();
+    let mut dropped = 0usize;
+    let mut empty: Vec<String> = Vec::new();
+    for (id, route) in map.iter_mut() {
+        let before = route.visible_viewers.len();
+        route.visible_viewers.retain(|_, v| v.window != window);
+        dropped += before - route.visible_viewers.len();
+        // Same collection rule `route_remove_view` applies: a route whose spawn
+        // has already ended and that nothing watches any more is dead weight.
+        if route.seq == 0 && route.visible_viewers.is_empty() && route.watchers == 0 {
+            empty.push(id.clone());
+        }
+    }
+    for id in empty {
+        map.remove(&id);
+    }
+    dropped
 }
 
 /// Scope teardown owns the PTY, so no view registration may keep its route
@@ -431,6 +580,11 @@ pub struct PtyOptions {
     /// of a project whose sandbox toggle is enabled. See `services::sandbox`.
     #[serde(default)]
     pub sandbox: bool,
+    /// Restriction-only declaration that this renderer tab is an agent.  The
+    /// backend also recognises known agent binaries; this covers custom/local
+    /// agent launchers whose command name alone is not classifiable.
+    #[serde(default)]
+    pub agent: bool,
     /// The owning project's id, set by the frontend for tabs that belong to a
     /// project scope (not the root scope). It makes remoteness **explicit**: the
     /// ssh-wrap spawn path resolves the project's `RemoteSpec` from this id (via
@@ -477,9 +631,22 @@ pub struct PtyOptions {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TerminalOutput {
     pub id: String,
     pub data: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub start_offset: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub end_offset: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalScrollback {
+    pub data: String,
+    pub start_offset: u64,
+    pub end_offset: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -713,6 +880,7 @@ impl PtyRegistry {
             // `docker exec` CLIENT — TERM the process inside the container too
             // (best-effort, no-op for tabs that never containerized).
             crate::services::sandbox::kill_tab_process(id);
+            crate::services::agent_fence::on_tab_gone(id);
         }
     }
 
@@ -738,6 +906,7 @@ impl PtyRegistry {
             // Containerized tab: also TERM the in-container process (the docker
             // exec client we just killed is not it).
             crate::services::sandbox::kill_tab_process(&id);
+            crate::services::agent_fence::on_tab_gone(&id);
         }
         reap_pids(subtree, ReapMode::Immediate);
         invalidate_proc_tree_cache();
@@ -881,12 +1050,14 @@ pub fn spawn_pty(
     tokio::spawn(async move {
         let emitter = app.clone();
         batch_output(rx, |bytes| match route_chunk(&id, bytes) {
-            Routed::Data(text) => {
+            Routed::Data(slice) => {
                 let _ = emitter.emit(
                     "terminal-output",
                     TerminalOutput {
                         id: id.clone(),
-                        data: text,
+                        data: slice.text,
+                        start_offset: Some(slice.start_offset),
+                        end_offset: Some(slice.end_offset),
                     },
                 );
             }
@@ -896,6 +1067,8 @@ pub fn spawn_pty(
                     TerminalOutput {
                         id: id.clone(),
                         data: text,
+                        start_offset: None,
+                        end_offset: None,
                     },
                 );
             }
@@ -913,6 +1086,8 @@ pub fn spawn_pty(
                             TerminalOutput {
                                 id: id2,
                                 data: text,
+                                start_offset: None,
+                                end_offset: None,
                             },
                         );
                     }
@@ -922,12 +1097,14 @@ pub fn spawn_pty(
         })
         .await;
         match route_finish(&id) {
-            Routed::Data(text) => {
+            Routed::Data(slice) => {
                 let _ = emitter.emit(
                     "terminal-output",
                     TerminalOutput {
                         id: id.clone(),
-                        data: text,
+                        data: slice.text,
+                        start_offset: Some(slice.start_offset),
+                        end_offset: Some(slice.end_offset),
                     },
                 );
             }
@@ -937,6 +1114,8 @@ pub fn spawn_pty(
                     TerminalOutput {
                         id: id.clone(),
                         data: text,
+                        start_offset: None,
+                        end_offset: None,
                     },
                 );
             }
@@ -954,6 +1133,7 @@ pub fn spawn_pty(
             crate::services::codex_bind::untrack(&id, seq);
         }
         if current_spawn_ended {
+            crate::services::agent_fence::on_tab_gone(&id);
             let _ = app.emit("terminal-exit", TerminalExit { id, code: None });
         }
     });
@@ -1223,19 +1403,23 @@ mod route_tests {
         let mut map = routes().lock().unwrap();
         let route = map.entry(id.to_string()).or_default();
         let was = route.subscribed();
-        if visible {
-            route
-                .visible_viewers
-                .insert("test-view".to_string(), (true, 1));
-        } else {
-            route
-                .visible_viewers
-                .insert("test-view".to_string(), (false, 1));
-        }
+        route
+            .visible_viewers
+            .insert("test-view".to_string(), viewer(visible, "main"));
         if !was && route.subscribed() {
-            route.take_pending()
+            route.take_pending().map(|slice| slice.text)
         } else {
             None
+        }
+    }
+
+    /// A viewer registration for the tests (the window label only matters to
+    /// `route_drop_window_views`).
+    fn viewer(visible: bool, window: &str) -> ViewerReg {
+        ViewerReg {
+            visible,
+            seq: 1,
+            window: window.to_string(),
         }
     }
 
@@ -1246,7 +1430,7 @@ mod route_tests {
         set_visible(id, true);
         assert!(matches!(
             route_chunk_at(id, b"hello", Instant::now()),
-            Routed::Data(t) if t == "hello"
+            Routed::Data(t) if t.text == "hello"
         ));
         set_visible(id, false);
         route_remove_view(id, "test-view", 2);
@@ -1298,7 +1482,7 @@ mod route_tests {
         // And streaming resumes.
         assert!(matches!(
             route_chunk_at(id, b"live", Instant::now()),
-            Routed::Data(t) if t == "live"
+            Routed::Data(t) if t.text == "live"
         ));
         // No leftover digest fires after the drain.
         assert_eq!(route_digest_take_at(id, t0 + ACTIVITY_INTERVAL), None);
@@ -1320,12 +1504,12 @@ mod route_tests {
             let was = route.subscribed();
             route.watchers += 1;
             assert!(!was);
-            assert_eq!(route.take_pending().as_deref(), Some("early"));
+            assert_eq!(route.take_pending().map(|slice| slice.text).as_deref(), Some("early"));
         }
         // … then the hidden PTY streams like a visible one.
         assert!(matches!(
             route_chunk_at(id, b"marker", Instant::now()),
-            Routed::Data(t) if t == "marker"
+            Routed::Data(t) if t.text == "marker"
         ));
         route_unwatch(id);
         // Released: back to buffering (leading-edge digest again).
@@ -1359,20 +1543,145 @@ mod route_tests {
         {
             let mut map = routes().lock().unwrap();
             let route = map.get_mut(id).unwrap();
-            route.visible_viewers.insert("main".to_string(), (false, 1));
             route
                 .visible_viewers
-                .insert("detached".to_string(), (true, 1));
+                .insert("main".to_string(), viewer(false, "main"));
+            route
+                .visible_viewers
+                .insert("detached".to_string(), viewer(true, "detached-p-g-1"));
         }
         assert!(matches!(
             route_chunk_at(id, b"still-live", Instant::now()),
-            Routed::Data(t) if t == "still-live"
+            Routed::Data(t) if t.text == "still-live"
         ));
         {
             let mut map = routes().lock().unwrap();
             map.get_mut(id).unwrap().visible_viewers.remove("detached");
             map.get_mut(id).unwrap().visible_viewers.remove("main");
         }
+        route_close(id, seq);
+    }
+
+    /// Group B #238: a popout is always torn down with `destroy()`, which runs
+    /// no renderer cleanup — so its panes never call `pty_remove_view` and the
+    /// route was left holding a `visible: true` viewer for a window that no
+    /// longer exists. The PTY then streams over IPC forever. The `Destroyed`
+    /// hook drops the whole window's registrations instead.
+    #[test]
+    fn dropping_a_dead_windows_views_unsubscribes_its_ptys() {
+        let id = "route-t-window-drop";
+        let seq = route_open(id);
+        {
+            let mut map = routes().lock().unwrap();
+            let route = map.get_mut(id).unwrap();
+            route
+                .visible_viewers
+                .insert("main-view".to_string(), viewer(false, "main"));
+            route
+                .visible_viewers
+                .insert("popout-view".to_string(), viewer(true, "detached-p-g-1"));
+        }
+        // While the popout's view is registered the PTY streams…
+        assert!(matches!(
+            route_chunk_at(id, b"live", Instant::now()),
+            Routed::Data(_)
+        ));
+
+        assert_eq!(route_drop_window_views("detached-p-g-1"), 1);
+
+        // …and once its window is gone it goes back to buffering, exactly as it
+        // would have if the pane had unmounted properly. The main window's own
+        // (hidden) view is untouched.
+        assert!(!matches!(
+            route_chunk_at(id, b"after", Instant::now()),
+            Routed::Data(_)
+        ));
+        {
+            let map = routes().lock().unwrap();
+            let route = map.get(id).unwrap();
+            assert!(route.visible_viewers.contains_key("main-view"));
+            assert!(!route.visible_viewers.contains_key("popout-view"));
+        }
+        {
+            let mut map = routes().lock().unwrap();
+            map.get_mut(id).unwrap().visible_viewers.remove("main-view");
+        }
+        route_close(id, seq);
+    }
+
+    /// Group B #235: a viewer attaching to a PTY that has already produced
+    /// output gets that output, rather than a blank pane that stays blank until
+    /// the program next draws. Retained whether or not anyone was watching —
+    /// the question is what the terminal has SHOWN, not who saw it — and a read
+    /// rather than a drain, so a third window attaching later gets it too.
+    #[test]
+    fn a_later_viewer_can_catch_up_on_what_already_ran() {
+        let id = "route-t-scrollback";
+        let seq = route_open(id);
+        // Nobody is watching: this is the case that used to leave a popout blank.
+        route_chunk_at(id, b"$ ls -la\r\ntotal 0\r\n", Instant::now());
+        set_visible(id, true);
+        route_chunk_at(id, b"$ echo hi\r\nhi\r\n", Instant::now());
+
+        let tail = route_scrollback(id);
+        assert!(tail.data.contains("total 0"), "output from before any viewer");
+        assert!(tail.data.contains("hi"), "and output produced while visible");
+        assert_eq!(route_scrollback(id), tail, "a read, never a drain");
+
+        set_visible(id, false);
+        {
+            let mut map = routes().lock().unwrap();
+            map.get_mut(id).unwrap().visible_viewers.remove("test-view");
+        }
+        route_close(id, seq);
+        // A respawn under the same id is a NEW program: its predecessor's screen
+        // is not this one's catch-up.
+        let seq2 = route_open(id);
+        assert_eq!(route_scrollback(id).data, "");
+        route_close(id, seq2);
+    }
+
+    #[test]
+    fn scrollback_and_live_events_share_one_byte_offset_timeline() {
+        let id = "route-t-scrollback-offset";
+        let seq = route_open(id);
+        set_visible(id, true);
+        let first = match route_chunk_at(id, "aé".as_bytes(), Instant::now()) {
+            Routed::Data(slice) => slice,
+            other => panic!("expected live data, got {other:?}"),
+        };
+        let snapshot = route_scrollback(id);
+        let second = match route_chunk_at(id, b"z", Instant::now()) {
+            Routed::Data(slice) => slice,
+            other => panic!("expected live data, got {other:?}"),
+        };
+
+        assert_eq!((first.start_offset, first.end_offset), (0, 3));
+        assert_eq!(snapshot.end_offset, first.end_offset);
+        assert_eq!(
+            (second.start_offset, second.end_offset),
+            (snapshot.end_offset, snapshot.end_offset + 1)
+        );
+
+        set_visible(id, false);
+        route_remove_view(id, "test-view", 2);
+        route_close(id, seq);
+    }
+
+    #[test]
+    fn the_scrollback_tail_is_bounded() {
+        let id = "route-t-scrollback-cap";
+        let seq = route_open(id);
+        let chunk = "x".repeat(100_000);
+        for _ in 0..8 {
+            route_chunk_at(id, chunk.as_bytes(), Instant::now());
+        }
+        let tail = route_scrollback(id);
+        assert!(
+            tail.data.len() <= ROUTE_SCROLLBACK_CAP * 2,
+            "trimmed with hysteresis, so bounded at 2x the cap: {}",
+            tail.data.len()
+        );
         route_close(id, seq);
     }
 

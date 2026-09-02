@@ -1,10 +1,16 @@
-//! The deck presenter's **audience window** (TODO M#90, `docs/deck_presenter_plan.md`).
+//! The presentation windows: the deck presenter's **audience window** (TODO
+//! M#90, `docs/deck_presenter_plan.md`) and the PDF viewer's **fullscreen present
+//! window** (`src/components/embed/pdf/present.ts`).
 //!
 //! A talk wants two surfaces: the slide the room sees, and the notes/timer the
 //! speaker sees. The second one is an OS window rendering the same React bundle
 //! under `?present=<label>`, which the frontend drives entirely over Tauri events
 //! (`src/lib/viewers/deck/present.ts`) — this module only opens it, puts it on
-//! the right monitor, and closes it.
+//! the right monitor, and closes it. The PDF present window is that same window
+//! under a `present-pdf-` label, and differs in the one thing this module decides:
+//! it asks to be fullscreen even on a single-monitor machine. A talk keeps a
+//! notes view on the laptop, so an audience window has somewhere else to be; a PDF
+//! shown fullscreen has not — the screen becoming the sheet IS the button.
 //!
 //! Deliberately NOT a detached subwindow (#42): a popout is a tab group with a
 //! layout, a seed protocol, dock-back, parking and persistence. None of that
@@ -71,7 +77,12 @@ pub fn choose_audience_monitor(
     }
 }
 
-/// Open (or focus) the audience window for a deck.
+/// Open (or focus) a presentation window.
+///
+/// `fullscreen` forces the takeover even when there is only one monitor. Left
+/// unset (the deck's audience window), a lone monitor yields an ordinary windowed
+/// surface the speaker can drag onto a projector by hand; with a second monitor
+/// both callers get the same fullscreen takeover of it either way.
 ///
 /// MUST be `async`, for the same reason `detach_subwindow` is: a synchronous
 /// Tauri command runs on the main thread, and `WebviewWindowBuilder::build()` on
@@ -79,7 +90,11 @@ pub fn choose_audience_monitor(
 /// callback — which the in-flight sync command is itself blocking (wry#583 /
 /// tauri#4121), surfacing as a blank window that never renders.
 #[tauri::command]
-pub async fn open_presenter_window(app: AppHandle, label: String) -> Result<String, String> {
+pub async fn open_presenter_window(
+    app: AppHandle,
+    label: String,
+    fullscreen: Option<bool>,
+) -> Result<String, String> {
     if !valid_presenter_label(&label) {
         return Err("invalid presenter window label".into());
     }
@@ -140,7 +155,10 @@ pub async fn open_presenter_window(app: AppHandle, label: String) -> Result<Stri
     // blank WHITE one until it is shown/focused.
     let nudge_app = app.clone();
     let nudge_label = label.clone();
-    let go_fullscreen = target.is_some();
+    // A second monitor is a takeover either way; a single one only when the caller
+    // asked for it. Both go through the deferred kick below rather than happening
+    // here — see the placement note above.
+    let go_fullscreen = target.is_some() || fullscreen.unwrap_or(false);
     std::thread::spawn(move || {
         let kick = |app: AppHandle, label: String, reveal: bool| {
             let app_main = app.clone();
@@ -326,6 +344,9 @@ mod tests {
     fn labels_are_validated() {
         assert!(valid_presenter_label("present-1a2b3c"));
         assert!(valid_presenter_label("present-A_b-9"));
+        // The PDF present window shares the prefix — and must, since that prefix
+        // is what `capabilities/default.json` grants window permissions by.
+        assert!(valid_presenter_label("present-pdf-1a2b3c"));
         // Not a presenter window at all.
         assert!(!valid_presenter_label("main"));
         assert!(!valid_presenter_label("detached-p-g1"));

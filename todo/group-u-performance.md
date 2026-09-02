@@ -79,3 +79,644 @@ screen is not.*
       that into a number.
 
 ---
+
+214. **The side panel repopulates from a snapshot.** ✅ Done 2026-08-30,
+    code-complete and **live-unverified**. A closed panel does not hide its
+    tree, it unmounts it (`SidePanel` passes `mountTree={open}`, so a closed
+    panel holds no fs-watch and runs no probes; the `panelsHidden` toggle
+    unmounts the whole panel). Everything the view had paid for died with it,
+    so every reveal rebuilt from nothing — a `list_dir`, then a
+    `git_file_statuses` behind it, then one recursive walk per visible folder,
+    then the repo's own `git status` — and the panel visibly filled itself in
+    for as long as that took. On a remote project each of those is an SFTP or
+    SSH round trip, so the wait was the *point* at which the panel was least
+    usable.
+
+    `src/lib/fileViewSnapshots.ts` keeps the last state of each (project, root
+    dir, folder) — entries, per-file git statuses, folder sizes and their
+    ignored split — plus the git bar's counts per repo, in module scope, where
+    they outlive the components. A reveal seeds every one of those from the
+    snapshot in its `useState` initializers, so the **first committed frame is
+    already populated**, and the upgrade goes out one frame later (the listing
+    commands are synchronous main-thread calls; issuing one inside that commit
+    would stall exactly the frame the seed exists to make instant). The upgrade
+    is the same quiet, diffing refresh the fs-watcher uses, so nothing repaints
+    where nothing changed, and the folder sizes are re-walked from scratch —
+    the dedupe set is empty on a mount — so no figure on screen stays a stale
+    one. Navigating into a previously-visited folder seeds the same way.
+
+    This group's rule holds: nothing on screen is untrue for longer than a
+    round trip, and the two states where the answer is genuinely unknown — a
+    listing that FAILS (the snapshot is dropped, so the error shows rather than
+    resurrected rows) and a remote pool that cannot be asked (the git bar
+    clears) — are not seeded at all.
+    - [x] 🤖 Automated test — `src/__tests__/SidePanelReveal.test.tsx` (9: a
+      cold first frame is empty, a revealed one is not; the stale seed upgrades
+      to what the folder now holds; the git counts survive a close; plus the
+      LRU bounds and read-as-use on both snapshot maps).
+    - [ ] 🖐️ Manual test — open a project with a sizeable tree, close the panel
+      and reveal it again: the tree, its git colours and the folder sizes are
+      there on the first frame, with no empty-then-fill. Change a file from a
+      terminal while the panel is closed and reveal it: the change is on screen
+      a moment later. Worth repeating on a remote project, where the round
+      trips this skips are the expensive ones.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+    - [ ] **Open:** in memory only, deliberately — a listing must not survive a
+      relaunch, after which the filesystem has had unbounded time to move on.
+      Whether the *folder sizes* are worth persisting (they are the expensive
+      half, and a walk's answer ages more slowly than a listing's) is a
+      separate question and not answered here.
+
+---
+
+217. **Theme modernization pass.** ✅ Done 2026-08-30, code-complete and
+    **live-unverified**. Five changes to `src/styles/themes.css` and its
+    consumers, from a comparison against current desktop-app design practice:
+    - **Derived accent/pill tokens** — `--accent-hover`/`--accent-active` and
+      the pill washes now derive from each theme's own `--accent` via
+      `color-mix` toward `--text-primary` (right direction in dark *and* light
+      themes); the achromatic pair keeps its explicit overrides. A minimal
+      theme is now surfaces + borders + text tiers + one accent.
+    - **`soft_dark` theme** — the neutral dark-gray theme (no navy tint, no
+      colored borders, restrained blue accent), the one theme that opts back
+      into rounded corners via its own radius tokens. Its own xterm palette in
+      `TerminalView.terminalTheme`.
+    - **`system` pseudo-theme** — follows the OS light/dark preference
+      (`fancy_light`/`fancy_dark`), resolved in `stores/settings.resolveTheme`
+      with a `matchMedia` listener for live OS flips; never reaches
+      `data-theme` or the terminal palette unresolved. The pre-paint
+      localStorage cache stores the *resolved* theme.
+    - **Contrast fixes** — `--text-muted` lifted to ≥4.5:1 on resting surfaces
+      in `fancy_dark` (#8091a9), `fancy_light` (#5f6e84) and `light_lavender`
+      (#746d8f).
+    - **Token hygiene** — type-scale tokens (`--text-xs`…`--text-lg`, 10px
+      floor; every ≤9px and half-pixel font-size migrated), spacing tokens
+      (`--space-1..4`), `--ease-out`, status washes (`--success/warning/
+      danger-soft`); ~140 dead `var(--x, #hex)` fallbacks stripped (one live
+      phantom found: `var(--border, …)` — no such token); git/status chrome in
+      `viewers.css`/`file-tree.css` moved onto `--success/--warning/--danger`,
+      with filled status chips taking `--bg-main` text (the `.btn-primary`
+      rule) instead of fixed white.
+    - [x] 🤖 Automated test — the existing corpus: `TerminalThemeRenderer`,
+      `TerminalAttachOnly` (mocks extended with `resolveTheme`),
+      `GitStatusColors`; `npm run build` + full vitest green.
+    - [ ] 🖐️ Manual test — walk all seven themes in Settings → Theme: chrome,
+      pills, menus, dialogs, terminal palette each time. Check `soft_dark`'s
+      rounded corners and neutral header, `system` following an OS light/dark
+      flip live, muted text legibility in the three tinted themes, and the
+      compare-view take/chip colors in a diff on a light theme.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+218. **Accent color + corner style overrides.** ✅ Done 2026-08-30,
+    code-complete and **live-unverified**. The payoff of #217's derived
+    tokens: two appearance overrides in Settings, above the theme row.
+    - **Accent color** — preset swatches + a native color input + "Theme
+      default". Applied as inline root CSS vars
+      (`stores/settings.applyAccent`): `--accent` plus the five derived
+      hover/active/pill formulas restated inline, so the override outranks the
+      achromatic pair's explicit literals and behaves exactly like a theme's
+      own accent everywhere (focus rings, scrollbar thumb, pills, buttons).
+      The color input live-previews and persists debounced (400 ms) — a GTK
+      color chooser fires input events per drag tick, and each commit is a
+      settings.json write plus a broadcast.
+    - **Corners** — Theme default / Square / Rounded (`applyCorners`, the
+      three radius tokens; "rounded" = soft_dark's 4/8/12 ladder).
+    - Persistence: `Settings.ui_accent` / `ui_corners`
+      (`schema/settings.rs` round-trips them — **backend restart needed** for
+      persistence; the frontend applies live regardless). Cross-window:
+      `APPEARANCE_CHANGED_EVENT` (DetachedApp listener) + the popout's own
+      settings load. Pre-paint: `index.html` re-applies validated
+      `eldrun-accent`/`eldrun-corners` localStorage caches before first paint.
+    - [x] 🤖 Automated test — `src/__tests__/Appearance.test.ts` (normalize/
+      apply/clear/invalid-input for both overrides; "system" resolution).
+    - [ ] 🖐️ Manual test — pick a swatch: pills, focus rings, scrollbar and
+      buttons recolor at once, in every theme including Plain Dark/Light;
+      drag the custom color wheel (no save-storm jank); "Theme default"
+      restores each theme's own accent. Flip Corners to Rounded on fancy_dark
+      and Square on Soft Dark; check a popout follows live and a relaunch
+      paints the override before first frame (after a backend restart).
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+219. **Accent-colored chrome seam + a third chrome surface.** ✅ Done
+    2026-08-31, code-complete and **live-unverified**. Two changes to how the
+    window's chrome layers read apart, on the same idea: the boundaries between
+    them should be a decision, not a leftover.
+    - **The top bar's bottom edge is the accent** (`shell.css`'s `.app-header`
+      box-shadow, was `--border-color`). The two theme overrides that replace
+      that shadow had to follow: the achromatic pair's explicit
+      `--text-primary` line is now redundant (their accent *is* the ink) and
+      was dropped, and the glass pair (`fancy_dark`/`light_lavender`), which
+      replaces the box-shadow wholesale with a drop shadow, restates the seam
+      beside it — otherwise those two silently lose it.
+    - **`--bg-subheader`** — one shared secondary-chrome surface for the
+      subwindow tab bars (`.tab-bar`) and the file panel's own two header rows
+      (`.side-panel-header` + `.side-panel-toolbar`), so they read apart from
+      both the app header above and the content below. Derived per theme
+      (`accent 14% over --bg-elevated`), with `--glass-subheader` for the glass
+      pair and a near-neutral literal for `dark`/`light`, whose accent is the
+      ink and for which the shared derivation would be the mid-grey band their
+      "resting surfaces are pure" rule exists to forbid. The tab bar's old
+      inline `::before` accent wash (0.12) folded into the token.
+    - **Correction 2026-08-31**: the achromatic pair's step was #101010/#f0f0f0
+      — technically off the pure tone, invisible in practice, which is the same
+      as not doing it (reported on Plain Dark). Raised to #1e1e1e / #ebebeb:
+      still neutral, so nothing there acquires a hue, but the header actually
+      reads apart from the pane. A distinction nobody can see is not one.
+    - [ ] 🖐️ Manual test — in every theme: the header's bottom edge is the
+      accent (and still visible on fancy_dark/light_lavender, which draw a
+      drop shadow there); a subwindow's tab bar and the file panel's header
+      block are each distinguishable from the top bar AND from the pane/panel
+      under them — **Plain Dark and Plain Light included**.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+220. **Theme Customizer — every color variable, in its own window.** ✅ Done
+    2026-08-31, code-complete and **live-unverified**. Settings → *Theme
+    colors* → "Customize…" opens a window of its own (opened instead of the
+    Settings dialog, ‹ Back returns) listing the whole palette grouped by what
+    it paints — surfaces, text, borders, accent, controls, status, pills,
+    window buttons, the activity ramp, everything else — one row per CSS
+    variable: swatch, the token name, an editable hex, and a per-token reset.
+    **The corner style and the accent picker both moved in here** from the main
+    Settings panel — #218's two knobs shape and color the same chrome, and the
+    accent is a theme color like the rest — beside a "Reset all". Settings keeps
+    one row: *Theme colors* → "Customize…". The accent's row keeps its swatch
+    strip rather than becoming a plain hex field (the presets are the control
+    most of the time) and its "Theme default" doubles as that row's reset.
+    - Persistence: `Settings.ui_theme_vars` (a `{token: "#rrggbb"}` map),
+      riding the backend's `extra` catch-all — **no Rust field, so no backend
+      restart**. Cross-theme like the accent and applied *after* it, so a
+      hand-picked `--accent-hover` beats the one derived from the accent.
+    - Safety: `lib/themeTokens` is an allow-list and
+      `stores/settings.normalizeThemeVars` the gate — these values are written
+      as inline custom properties, so an unvalidated pair from a hand-edited
+      settings.json would be an arbitrary-CSS write. `--accent` is rejected
+      from the map on purpose: it keeps its own setting (`ui_accent`), which
+      the accent row here writes, so one color never has two writers.
+    - The "current value" of a token cannot be read (`getComputedStyle` hands
+      back the token stream — a `color-mix`, a `var()` chain, a gradient), so
+      each swatch is resolved by *painting* it on a hidden probe and reading
+      the computed `color` back; a sentinel catches the values that are not
+      colors at all (the fancy themes' gradient `--bg-header`), which fall back
+      to a twin token.
+    - Cross-window via `APPEARANCE_CHANGED_EVENT` (payload grew `themeVars`);
+      pre-paint via a validated `eldrun-theme-vars` localStorage cache in
+      `index.html`.
+    - **Per-token examples** (2026-08-31): every row carries a line under the
+      variable name saying what *visibly* changes when it does ("Menus,
+      dropdowns and dialog surfaces"), keyed off the name via
+      `themeTokenExampleKey` so a catalog entry cannot arrive without one — the
+      name says where a value sits in the design system, which is not the
+      question anyone at this panel is asking. 50 strings × 5 languages.
+    - **`--bg-side-panel`** (2026-08-31): recoloring the side panel through
+      `--bg-panel` repainted every other panel-toned surface with it (settings
+      sections, the file browser, popovers — ~100 rules). The panel now reads
+      its own token, which follows `--bg-panel` until something sets it, so the
+      customizer can give the panel a tone of its own. Not a rename: the
+      general token still means what it meant, and its example line says so.
+    - **Group order** (2026-08-31): Accent leads, above Surfaces — the color
+      most people open this window for, and the fastest thing in it to try.
+    - **Two derived surfaces got sections of their own** (2026-08-31), on one
+      idea: a surface whose look is *derived* cannot be recolored without
+      moving everything it derives from, so each gets tokens that follow the
+      shared ones until set.
+      - **Side panel** — `--bg-side-panel` (follows `--bg-panel`),
+        `--bg-side-panel-header` (follows `--bg-subheader`) and
+        `--side-panel-border` (follows `--border-color`). The header pair
+        applies only *inside* `.side-panel`: the same header markup renders in
+        the Files (Project) tab and the docked file column, which stay on the
+        shared token, so retoning the panel's header leaves the subwindow tab
+        bars alone.
+      - **Alerts strip** — `--alerts-bg`, `--alerts-header-bg`,
+        `--alerts-border` (the three accent-over-ground mixes, moved out of
+        `file-tree.css` into `themes.css`) plus the urgency ramp
+        `--alerts-overdue`/`--alerts-now`/`--alerts-soon`, which followed
+        `--danger`/`--warning`/`--accent` inline and now follow them as
+        tokens.
+    - **Saved themes + "Colors in this theme"** (2026-08-31): the customizer
+      can now *store and load* a look. A save line at the top of the window
+      takes a name and puts the whole appearance away —
+      `Settings.ui_theme_presets`, an array of `{id, name, theme, accent,
+      corners, vars}` riding the same `extra` catch-all, **no Rust field and no
+      backend restart**. The base theme travels with the palette because a set
+      of overrides built on Fancy Dark reads as somebody else's look on Plain
+      Light; Load writes theme + accent + vars + corners in **one**
+      `updateSettings` patch (so the accent's derived family and the
+      hand-picked tokens land in the order they expect, and the popouts get one
+      broadcast) and drops any color edit still sitting on the 400 ms debounce,
+      since that edit belongs to the look being replaced. Saving under an
+      existing name replaces that entry rather than growing a second one
+      claiming to be it; ⭮ overwrites a row with the current look; × asks once
+      before deleting, because a hand-built palette has no undo. Presets are
+      validated on **read** (`stores/settings.normalizeThemePresets`, capped at
+      40 × 60 chars) for `normalizeThemeVars`' reason turned up one notch: a
+      preset sits inert in a hand-editable settings.json until somebody presses
+      Load, which would otherwise be an arbitrary-CSS-variable write with a
+      friendly button in front of it.
+      Beside it, every color row (and the accent's) grew a ▤ button opening
+      **"Colors in this theme"**: the painted palette deduplicated
+      (`paletteFromColors`) — every distinct color the document shows right
+      now, your own overrides included — so a new value can be matched to one
+      already on screen instead of guessed next to it. It expands the row
+      rather than floating over it: the card scrolls, and a popover would be
+      one scroll from being clipped. A palette pick reaches the accent
+      6-digit — `ui_accent` has no alpha channel and a translucent accent would
+      fade every control derived from it.
+    - [x] 🤖 Automated test — `src/__tests__/ThemeVars.test.ts` (the allow-list
+      gate, hex validation incl. the 8-digit alpha form, clearing an override
+      really clears it, the pre-paint cache holds only validated values, every
+      catalog token exists in the stylesheet **and has an example string**, the
+      computed-color → hex reader, **preset normalization** — vars gate, known
+      theme/accent/corner values only, id/name/duplicate drops, the caps — and
+      **`paletteFromColors`** deduplicating in catalog order).
+    - [ ] 🖐️ Manual test — change `--bg-panel` and `--text-secondary`: the app
+      repaints live while dragging, a popout follows, and the values survive a
+      relaunch (painted before the first frame). Reset one token and then all.
+      Set `--accent-hover` by hand, then change the accent — the hand-picked
+      value must win. Switch themes: the overrides ride along. Check the
+      corner control and the accent swatches still work from their new home,
+      and that Settings itself no longer carries either. Check `--bg-side-panel`
+      moves the side panel and nothing else, and that `--bg-panel` still moves
+      the rest.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+    - [ ] 🖐️ Manual test (saved themes) — build a look (theme + accent + a
+      couple of tokens + corners), name it, Save. Change everything, then Load
+      it back: theme, accent, colors and corners all return, in the popouts
+      too, and survive a relaunch. Save under the same name again — one row,
+      not two. ⭮ on a row picks up the current look; × asks before deleting.
+      Open ▤ on a row: the strip shows the colors currently on screen (an
+      override you just made included) and picking one sets that token; on the
+      accent row it sets the accent.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+    - **Top frame** (2026-08-31): a section of its own for Eldrun's title bar,
+      the group the customizer was missing most. The bar is a composite — a
+      fill (`--bg-header`, a gradient in the fancy themes, `--glass-header` in
+      the glass pair), a 32%-accent wash laid over it, and the 1px seam under
+      it — assembled from tokens that paint half the window besides, so before
+      this the only way to retone the top bar was to move the accent
+      everywhere. `--top-frame-bg` / `--top-frame-wash` / `--top-frame-seam`
+      each follow what they used to read, exactly as `--bg-side-panel` and the
+      `--alerts-*` family do. Two consequences worth naming: the wash's
+      translucency moved out of `opacity` and **into the token**, so one
+      8-digit hex sets hue and strength together and the three themes that want
+      no wash (Plain Dark, Plain Light, soft_dark) now set it to `transparent`
+      instead of `content: none` — which means a wash can be given *back* to
+      them from this window. And the glass pair's fill moved from
+      `.app-header`'s own `background` to the theme's `--top-frame-bg`: a value
+      declared on the element sits *below* the root inline style where an
+      override lands, so on the default theme the knob would have done nothing.
+      The dialog title band and the popover menus keep reproducing the default
+      wash from the accent and deliberately do not follow this group.
+    - [ ] 🖐️ Manual test (top frame) — on Fancy Dark (the default), set
+      `--top-frame-bg`: the top bar's fill changes and no other surface moves.
+      Set `--top-frame-wash` to an 8-digit hex (e.g. `#ff008040`): the bar takes
+      that tint at that strength; `#00000000` clears it. Set
+      `--top-frame-seam`: only the line under the bar moves — buttons, links
+      and the scrollbar keep the accent. Switch to Plain Dark: the bar is
+      unwashed until you set a wash, and then it takes one. Switch to
+      Light Lavender: the fill knob still works over the frosted glass and the
+      drop shadow under the seam survives. Reset each, and the bar returns to
+      its theme's own look.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+    - **Subwindows, and the ink on both headers** (2026-08-31): the same
+      treatment for a subwindow's own header. `--subwindow-header-bg` /
+      `--subwindow-header-border` (the tab bar and the line under it; the bar
+      shared `--bg-subheader` with every file-panel header row in the app, so
+      moving it moved those too), `--subwindow-tab-active` (the current tab's
+      underline — a tab *kind*'s own `--tab-accent` still wins over it) and
+      `--subwindow-focus-frame` (the focused subwindow's outline, its Shift-nav
+      number badge, and the split preview a drag paints, which is the same
+      outline one moment later). The glass pair's `--glass-subheader` fill moved
+      off `.tab-bar` onto the theme, for the cascade reason the top frame's did.
+    - **Header text is a subtree remap, not a token rules opt into.** The clock,
+      the project pills, the box chip, the right-hand cluster, the tab labels,
+      the grips, the chevrons and the locality/mode chips are painted by ~40
+      rules across four stylesheets, each reading a shared text tier — so
+      "the text on the top bar" cannot be a token each of them is rewritten to
+      read. `.app-header` and `.tab-bar` instead **redeclare `--text-primary`,
+      `--text-secondary` and `--text-muted` for their own subtree**, pointing
+      at `--top-frame-text*` / `--subwindow-header-text*`; every rule inside
+      picks the frame's value up without knowing the token exists. Not a cycle:
+      the source tokens are substituted at `:root`, so what inherits into the
+      scope is a resolved color, never a reference back.
+      The cost is that everything nested follows, **including the popovers that
+      render inside the header** (the app launcher and the indicator menus are
+      not portaled) — they sit on `--bg-elevated` over the app's content and are
+      not part of the frame, so they hand the theme's ink back through a
+      `--text-{primary,secondary,muted}-base` snapshot taken at `:root`. Every
+      header popover is built on `.tab-new-menu`, so one selector pair covers
+      the set. Both halves fail silently, so `ThemeVars.test.ts` now pins them:
+      the snapshot must exist, each remapping scope must carry its undo, and the
+      list of tiers-pointed-at-another-token is asserted whole, so a third scope
+      cannot start remapping text without joining the contract.
+    - [ ] 🖐️ Manual test (subwindows) — split a project into two
+      subwindows. Set `--subwindow-header-bg`: **both** tab bars change and the
+      file panel's header rows do not (they keep `--bg-subheader`). Set
+      `--subwindow-header-text` and `--subwindow-header-text-muted`: the active
+      tab's label and the inactive ones move, and the + menu that drops out of
+      the bar keeps the theme's own text color. Set `--subwindow-tab-active`:
+      only the underline under the current tab moves — a Claude tab still shows
+      its own kind color. Set `--subwindow-focus-frame`: the outline round the
+      focused subwindow follows, so does its Shift+↑/↓ number, and so does the
+      split preview while dragging a tab across.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+    - [ ] 🖐️ Manual test (top-bar ink) — set `--top-frame-text` to
+      something obvious: the clock, the project pill labels and the box chip all
+      take it in one go. Open the app-launcher (▦) and an indicator menu from
+      the same bar: **their** text is still the theme's, not the bar's. Set
+      `--top-frame-text-muted`: the drag grip and the version dim to it. Reset,
+      and every one of them returns to the theme's tiers.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+---
+
+221. **The project root no longer re-lists itself forever.** ✅ Done
+    2026-08-31, code-complete and **live-unverified** (the backend half needs a
+    restart). Reported as the side panel "flickering between two paths" and
+    `.idea` "appearing then disappearing continuously" in a local project. A
+    file-backed trace of the live window showed the root folder in a closed
+    loop: `refresh()` → `git_file_statuses` → `git status` opportunistically
+    rewrote `.git/index` → `.git`'s mtime bumped → the tree's non-recursive
+    root watch reported the `.git` entry as changed → 250 ms later `refresh()`
+    again, about once a second for as long as the root was on screen. The
+    visible part was a piled-up status probe failing now and then: a failure
+    was applied as an EMPTY map, which promoted every gitignored folder out of
+    the collapsed gitignored section into the regular list for a frame.
+
+    Backend: `hardened_git_command` sets `GIT_OPTIONAL_LOCKS=0`, git's own
+    switch for "read-only commands must not write the repo" — output of every
+    status/log/rev-list is unchanged, mutating commands keep their mandatory
+    locks, and the loop cannot close. Frontend (`FileTree`): a failed status
+    probe keeps the last good letters, and a listing/status result for a folder
+    the tree has since left is discarded (`loadTargetRef`, seeded from the
+    saved folder so the seeded reveal's refresh passes) — with the seeded
+    `load` of #214 painting the new folder at once, a slow result for the old
+    one used to flash in over it. Tests: `FileTreeRefreshRaces.test.tsx` (all
+    three fail against the previous `FileTree`).
+
+    - [ ] 🖐️ Manual test — after a restart, open a local git project's side
+      panel at the project root and leave it for a minute: `.git`'s mtime
+      (`stat .git`) must stop advancing every second, no row may appear or
+      disappear on its own, and the gitignored section must keep its members.
+      Then `touch` a file in the root and commit it from a terminal tab: the
+      tree still re-lists on the touch and its git letters still update after
+      the commit (mutating git commands still take their locks and still fire
+      the watch).
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+    - [ ] 🖐️ Manual test (stale result) — click ↻ at the root and immediately
+      enter a subfolder: the subfolder's rows and crumb stay; the root's rows
+      never flash back in.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+222. **The top bar's status readouts collapse into one lamp; every global
+    button moved right of the project strip.** ✅ Done 2026-08-31,
+    code-complete and **live-unverified** (the settings field is a backend
+    change, so the toggle needs a restart; the header itself hot-reloads).
+    Reported as the main top frame being too crowded. It was: ~22 slots in a
+    40 px row, of which exactly one — the project pill strip — is elastic, so
+    every fixed control was taken out of the app's primary navigation all day.
+    Six of them (connection, battery, Mobile, OpenVPN, Machines, CPU/RAM/GPU)
+    were roughly a third of the bar's width saying "still fine" six times over.
+
+    Frontend: new `stores/headerStatus.ts` (each widget self-reports a tone +
+    one tooltip line, so the cluster re-derives nothing) and
+    `header/StatusCluster.tsx`, which folds the six behind a summary lamp and a
+    `‹`/`›` toggle persisted as `header_status_expanded` (default collapsed).
+    Folding is `display: none`, never unmounting — a folded widget has to keep
+    polling to be able to **escalate** itself: a member reporting
+    `attention`/`alert` renders in the bar regardless of the fold, and the
+    escalating set is deliberately narrow (offline · battery ≤ 15 % on its own
+    power · Mobile error · VPN mid-connect · a machine in the error bucket) so
+    nothing pops in and out during ordinary work. Members keep a fixed DOM
+    order, so escalating never re-orders the survivors, and the fold is skipped
+    entirely when fewer than two members would fold. `HeaderBar` now holds the
+    project strip alone in the centre; ✉ 🗓 ☑ (kept as their own buttons — each
+    carries a live badge a launcher menu would hide), then 🧠 ▦ ⚙, then the
+    cluster, sit right of it in three gap-separated groups.
+    Backend: `Settings.header_status_expanded`.
+
+    - [ ] 🖐️ Manual test — with Machines/VPN/Mobile enabled, look at the bar:
+      the right side is ✉ 🗓 ☑ · 🧠 ▦ ⚙ · one lamp + `‹` · window controls, and
+      the project pills have visibly more room. Hovering the lamp lists every
+      folded member's state. Click `‹`: all six come back inline and each one's
+      own hover menu still opens flush with the bar's bottom edge. Click `›`
+      and relaunch — it is still collapsed.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+    - [ ] 🖐️ Manual test (escalation) — while collapsed, pull the network cable
+      (or disconnect WiFi): the connection icon appears in the bar on its own
+      and the summary lamp turns red. Reconnect: it folds away again. Same with
+      a VPN connect (amber while connecting, folds once green) and a global
+      machine that fails to connect (stays out until it is fixed or removed).
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+    - [ ] 🖐️ Manual test (no pointless fold) — on a desktop with no battery, no
+      VPN, no machines and the resource rows switched off, the toggle must not
+      render at all rather than hiding a single lamp behind a chevron.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+---
+
+223. **The renderer memory watchdog is per window and cannot loop.** ✅ Done
+    2026-09-01, code-complete; the loop guard is **live-verified** (it
+    hot-reloaded into the running window and ended the loop at 08:03Z), the
+    per-window attribution is **live-unverified** (two new backend commands,
+    needs a restart). Reported as "Eldrun restarts suddenly" every 30–60 s
+    while a Codex tab was failing to resume. crash.log showed the restarts
+    were the watchdog's own `location.reload()`: it read the **largest**
+    renderer under the app but always reloaded the **main** window, and the
+    large one was a popout's (`Eldrun win-1`, 4.7 GB of JS heap against main's
+    1.4 GB) — so the reload freed nothing and fired again at every poll. The
+    Codex `already has an active writer` error was the restore churn's
+    symptom, not the cause.
+
+    Frontend (`lib/rendererWatchdog.ts`): mounted in `AppShell` *and*
+    `DetachedApp`, each window acts on its own renderer and reloads only
+    itself (a popout re-seeds from main, as it does after a crash-reload).
+    Which renderer is "ours" is **probed**, since no engine we ship on says
+    (WebKitGTK 2.52 no longer exports `webkit_web_view_get_web_process_identifier`
+    — the extern compiles and fails to *link*): sample every renderer's RSS,
+    allocate + touch 192 MiB, sample again; the pid that grew is ours. Once per
+    window, cached across the window's own reloads, claimed with the backend so
+    other windows can name it; ambiguous → retried three times, then the old
+    largest-renderer fallback. And a **10-min reload cooldown** per window
+    (`sessionStorage`): still over the ceiling right after a watchdog reload
+    means the memory is not that window's heap, so it holds and logs once. The
+    debug footer (DEV only) now shows `RSS main 0.9 GB · win-1 4.6 GB` beside
+    the `TTY chars/s` meter.
+    Backend: `commands::debug::{webview_renderer_rss, webview_renderer_claim}`;
+    `webview_rss_kib` kept as the fallback for a frontend ahead of its backend.
+
+    - [ ] 🖐️ Manual test (attribution) — after a restart, open the side panel
+      in the dev build with one popout open: the footer reads `RSS main …` and
+      `win-1 …` (not `pid …`) within a few seconds, and the two numbers match
+      `ps -o rss -p <WebKitWebProcess pids>` to within a few MB.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+    - [ ] 🖐️ Manual test (right window reloads) — temporarily set
+      `RENDERER_CEILING_MB` to 512 in `rendererWatchdog.ts` (hot-reloads) with a
+      popout open: within a minute the **popout** blinks and comes back with its
+      tabs, the main window does not; crash.log names the popout's label. Set
+      the ceiling back.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+    - [x] 🔍 What the popout held: **two PDF viewers** — `talk/main.pdf`
+      (57 pages, 135 images, 97 of them over a megapixel, recompiled at 09:46
+      that morning) and the poster. Measured headlessly with the installed
+      pdf.js (`pdfjs-dist` 6.3, `node --expose-gc`): decoding every page of
+      that deck once costs **~660 MB** (RSS 239 → 898 MB), and six
+      load/decode/destroy cycles plateau rather than climb, so pdf.js itself
+      frees on `destroy()`. The holder was the **page rail**: `PdfThumb`
+      rendered each page and never called `page.cleanup()`, so every
+      thumbnailed page's decoded bitmaps stayed alive for the document's whole
+      life — re-paid in full at every recompile, since a reload is a fresh
+      document and the rail repaints each page. Fixed: the thumbnail hands
+      the page back the moment its pixels are on the canvas (pdf.js closes the
+      bitmaps in `PDFObjects.clear()`). The 44 GB main-window leak of
+      2026-07-31 is still unattributed.
+    - [ ] 🖐️ Manual test (rail no longer holds the deck) — after a restart,
+      open `talk/main.pdf` in a popout with the rail open, scroll the rail to
+      the end so every thumbnail paints, then watch the footer's `win-1` RSS
+      settle: it should stay in the hundreds of MB, not climb past 1.5 GB,
+      and recompiling the talk a few times should not ratchet it upwards.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+    - [x] 🔍 **2026-09-02, the popout again at 4.1–7.2 GB across six ceiling
+      reports while the talk was being recompiled — and this time a watchdog
+      reload did NOT free it** ("4744 MB still ≥ ceiling 271 s after a reload").
+      Reproduced NOTHING headlessly: the real `PdfView` + TeX workspace,
+      compiled through the actual `compile` closure in an offscreen WebKitGTK
+      2.52 WebView (scratch Vite bundle with Tauri stubbed), stays flat over 20
+      recompiles of an 82 MB / 42-page PDF — same file, alternating content,
+      StrictMode, rail + contents open, a beamer deck with drawn links, a
+      16-page 12-megapixel JPEG deck, and at `GDK_SCALE=2`. pdf.js alone
+      (load/render/fingerprint/text/links/destroy, destroy mid-render) plateaus
+      too, as does an 80 MB `ipc://` fetch. The one thing that DOES produce the
+      observed shape is Tauri's **postMessage IPC fallback**: a window whose
+      custom-protocol fetch once rejected delivers every raw-bytes response as
+      a `runCallback(id, [37,80,…])` script, and evaluating one 82 MB PDF that
+      way takes the renderer to 2.8–6 GB and leaves ≥ 1.9 GB behind — per
+      reload. Not proven to be the trigger (nothing in the logs says the
+      fallback armed); now detectable: `readFileBytes` writes an `ipc-fallback`
+      line to crash.log the first time a raw read arrives as a number array in
+      a real window. Also new: the ceiling and hold reports carry the memory
+      KIND (`webview_renderer_memory`: RssAnon/File/Shmem + the largest
+      mappings from smaps), because "a reload does not free it" means it is not
+      the page's garbage and the total alone cannot say what it is. Small
+      certain wins landed alongside: an unchanged page's fingerprint compare
+      now hands its parse back (`page.cleanup()` — `getOperatorList` had
+      decoded every image on the page into the fresh document for nothing),
+      the link layer's ink probe cleans up after its render, and a mid-compile
+      `getPage` rejection no longer surfaces as an unhandled rejection per page.
+    - [ ] 🖐️ Manual test (what is the 4 GB) — after a backend restart, work as
+      before with the talk in a popout until the footer's `win-1` reading
+      climbs; then read the newest `renderer-watchdog` entry in
+      `~/.local/share/eldrun/crash.log`: it now ends in `[anon … MB, file … MB,
+      shmem … MB; largest mappings: …]`. Anon ≈ total means JS heap / decoded
+      images; a large `memfd:` or shmem share means compositor or IPC buffers;
+      an `ipc-fallback` entry above it means the fallback theory is confirmed.
+      Also open the popout's devtools console once and look for "IPC custom
+      protocol failed".
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+---
+
+821. **The project name is a per-theme colour, not one apricot everywhere.**
+    ✅ Done 2026-08-31, code-complete and **live-unverified**. Reported as the
+    pill label reading "reddish everywhere". `--helix-orange` was a Helix
+    signature apricot (`#f47868`) declared **only** in the `:root`/`fancy_dark`
+    block, so every theme that did not think to override it inherited a tint
+    picked for navy chrome — most visibly `soft_dark`, the one theme built to
+    have no tint at all, whose project strip came out salmon, and `fancy_light`,
+    where the inherited hue had been *darkened* for contrast rather than
+    replaced (`#d6492f`) so the strip read as a row of warnings.
+    Two themes had already opted out with a hardcoded `.project-pill-label`
+    rule of their own — `fancy_dark` forcing `#fff` in `onboarding.css` and
+    `light_lavender` forcing `#5d3eb8` in `apps.css` — which is the other half
+    of the bug: where an override won, the token painted nothing, so the Theme
+    Customizer's knob for this label was wired to nothing in those themes while
+    its value went on tinting the ones with no override.
+    Both overrides are folded back into the token, and every theme block now
+    declares its own value out of its own palette: `fancy_dark` white,
+    `soft_dark` `#e8eaf0`, `fancy_light` `#1f2937`, `light_lavender` `#5d3eb8`,
+    and the achromatic pair's greys unchanged (they were already their own
+    `--text-secondary`). One definition per theme, in the file where a theme's
+    colours live. The token keeps its historical name so saved presets and
+    `ui_theme_vars` overrides — both keyed by CSS variable name — survive; its
+    Theme Customizer description no longer says "apricot".
+    Frontend: `styles/themes.css`, `styles/apps.css`, `styles/onboarding.css`,
+    `lib/i18n.ts` + the four dictionaries.
+
+    - [ ] 🖐️ Manual test — walk all six themes in Settings → Theme and look at
+      the project pills: no theme shows a reddish or salmon project name any
+      more. `soft_dark` reads neutral light gray like the rest of its chrome,
+      `fancy_light` reads the same near-black as its body text, `light_lavender`
+      stays dark lavender and `fancy_dark` stays white — the last two exactly as
+      before, since their hardcoded rules already painted those pixels.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+    - [ ] 🖐️ Manual test (the knob now works) — Settings → *Theme colors* →
+      Customize, find `--helix-orange` under "Other": its swatch shows the
+      **current theme's** project-name colour rather than a fixed apricot, and
+      editing the hex moves the project pill labels in every theme, including
+      `fancy_dark` and `light_lavender`, where it previously did nothing. Reset
+      the row and each theme returns to its own value.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+250. **Custom mouse cursors: three packs, drawn from the live theme.** ✅ Done
+    2026-09-01, code-complete and **live-unverified**. `Settings.ui_cursor`,
+    beside the accent and corner knobs in the Theme Customizer: **Aurora**
+    (accent body, contrast outline, soft halo), **Pixel** (the same shapes on a
+    16-pixel grid, upscaled with smoothing off) and **Ink** (monochrome, text
+    colour on the window's own ground); unset is the system cursors.
+    - **The art is drawn at runtime, not shipped.** `lib/cursorPacks.ts`
+      rasterises twelve shapes (arrow, hand, I-beam, open hand, fist, move, the
+      two resize axes and their `col`/`row` twins, crosshair, deny) onto a
+      canvas and emits `data:image/png` URLs, so the pointer takes the live
+      `--accent`/`--text-primary`/`--bg-main` and recolors with the theme, a
+      custom accent and every Theme Customizer edit. PNG rather than SVG because
+      WebKit has never supported an SVG image as a CSS cursor — the Linux window
+      would have fallen back to the keyword and shown nothing.
+    - **How it reaches the app**: `stores/settings.applyCursor` writes the
+      twelve `--cur-*` vars onto the root element and stamps `data-cursor`;
+      every rule in the corpus was rewritten to
+      `cursor: var(--cur-pointer, pointer)` (443 declarations across 16 files,
+      plus a handful of inline styles), so with no pack active the declaration
+      is exactly the keyword it always was. `styles/cursors.css` holds the root
+      arrow, the text surfaces (fields, xterm, pdf.js's text layer) and the
+      settings preview chrome.
+    - **A failed render applies nothing**: no canvas backend means no vars *and*
+      no attribute, so the keyword fallbacks stand and the system cursors are
+      what is left — never a page with no pointer.
+    - Persistence rides the backend's `extra` catch-all like `ui_theme_vars`
+      (**no Rust change, no backend restart**). Cross-window via
+      `APPEARANCE_CHANGED_EVENT`; a saved Theme Customizer preset carries the
+      pack. Deliberately *not* pre-painted from `index.html` — twelve canvas
+      renders is not what a pre-paint script is for, and a frame of the system
+      arrow at launch costs nothing.
+    - [x] 🤖 Automated test — `src/__tests__/CursorPacks.test.ts` (normalize,
+      every shape emitted with its hotspot and keyword fallback, both clear
+      paths, the no-canvas no-op, and a corpus scan that fails on a bare
+      `cursor: pointer;` anywhere in the stylesheet).
+    - [ ] 🖐️ Manual test — Settings → *Theme colors* → Customize → Mouse
+      cursor: pick Aurora and check the preview strip matches the pointer on
+      screen; hover a button (hand), a text field and a terminal (I-beam), a
+      tab bar grip (open hand, then fist while dragging) and a pane divider
+      (double arrow). Switch the theme and change the accent — the pointer
+      recolors with them. Check a popout window follows live, then set it back
+      to System and confirm the desktop's own cursors return everywhere.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work

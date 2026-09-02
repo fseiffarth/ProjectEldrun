@@ -1,7 +1,7 @@
 import { useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 
 /**
- * Drag-to-resize height for a right-panel section (Downloads, Alerts): grab
+ * Drag-to-resize height for a side-panel section (Downloads, Alerts): grab
  * the top handle to grow the section into the panel above, clamped to the
  * panel's height. Shared so every section that wants this grows the same way.
  */

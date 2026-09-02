@@ -274,8 +274,14 @@ pub async fn remote_connect(
 /// the Connect dialog both keep reporting "connected" from stale frontend
 /// state while every read that actually asks the pool (like the network-
 /// traffic pane) correctly reports disconnected.
+///
+/// The `Result` is Tauri's requirement for an async command borrowing `State`,
+/// not a failure mode — this reads an in-process map and cannot fail. The error
+/// type is `String` rather than `()` because every other command here uses
+/// `String` (and `clippy::result_unit_err` asks for a nameable error either way);
+/// nothing ever constructs one.
 #[tauri::command]
-pub async fn remote_connected_ids(pool: State<'_, RemotePoolState>) -> Result<Vec<String>, ()> {
+pub async fn remote_connected_ids(pool: State<'_, RemotePoolState>) -> Result<Vec<String>, String> {
     Ok(remote::connected_ids(pool.inner()).await)
 }
 
@@ -328,7 +334,7 @@ pub async fn remote_disconnect_all_hosts(
 #[tauri::command]
 pub async fn remote_connected_targets(
     pool: State<'_, RemotePoolState>,
-) -> Result<Vec<(String, String)>, ()> {
+) -> Result<Vec<(String, String)>, String> {
     Ok(remote::connected_targets(pool.inner()).await)
 }
 
@@ -337,13 +343,22 @@ pub async fn remote_connected_targets(
 /// already at HEAD. Emits a `worker-sync-report` and returns the same report.
 #[tauri::command]
 pub async fn worker_sync_now(
+    app: AppHandle,
     pool: State<'_, RemotePoolState>,
+    worker_sync: State<'_, crate::services::worker_sync::WorkerSyncState>,
     project_id: String,
     host_id: String,
 ) -> Result<crate::services::worker_sync::WorkerSyncReport, String> {
     let _dial = user_dial_for_host(&project_id, &host_id);
-    let report =
-        crate::services::worker_sync::sync_worker(pool.inner(), &project_id, &host_id, true).await;
+    let report = crate::services::worker_sync::sync_worker_guarded(
+        &app,
+        pool.inner(),
+        worker_sync.inner(),
+        &project_id,
+        &host_id,
+        true,
+    )
+    .await;
     Ok(report)
 }
 

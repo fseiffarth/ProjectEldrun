@@ -1,0 +1,690 @@
+/* monitoring.css — split from the old monolithic themes.css (order-preserving).
+   Network traffic tab, disk usage analyzer.
+   IMPORT ORDER IS LOAD-BEARING: these files are @imported in sequence from
+   styles/index.css; equal-specificity rules rely on source order exactly as
+   they did in the monolith, so never reorder the imports or move rules
+   between files without checking the cascade. */
+
+/* ── Network traffic monitoring tab ─────────────────────────────────────── */
+.network-pane {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  gap: 14px;
+  overflow: auto;
+  padding: 18px;
+  color: var(--text-primary);
+  background: var(--bg-main);
+}
+
+.network-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.network-heading {
+  font-size: 18px;
+  font-weight: 700;
+  /* Pane section header → accent, like the canonical dialog/menu titles. */
+  color: var(--accent);
+}
+
+.network-subheading {
+  margin-top: 3px;
+  color: var(--text-muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.network-view-tabs {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  background: var(--bg-panel);
+}
+
+.network-view-tabs button {
+  border: 0;
+  border-radius: var(--radius);
+  padding: 6px 10px;
+  color: var(--text-secondary);
+  background: transparent;
+  cursor: var(--cur-pointer, pointer);
+}
+
+.network-view-tabs button:hover,
+.network-view-tabs button.active {
+  color: var(--text-primary);
+  background: var(--control-hover-bg);
+}
+
+.network-view-tabs button.active {
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+.network-interface-select {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-left: auto;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.network-interface-select select,
+.network-connection-filters select,
+.network-connection-filters input {
+  min-width: 0;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  padding: 6px 8px;
+  color: var(--text-primary);
+  background: var(--bg-panel);
+}
+
+.network-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.network-metric {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 13px 15px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  background: var(--bg-panel);
+}
+
+.network-metric span,
+.network-metric small {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.network-metric strong {
+  overflow: hidden;
+  font-size: clamp(18px, 3vw, 26px);
+  line-height: 1.2;
+  text-overflow: ellipsis;
+}
+
+.network-metric.receive strong,
+.network-graph-legend .receive {
+  color: var(--accent);
+}
+
+.network-metric.transmit strong,
+.network-graph-legend .transmit {
+  color: var(--success);
+}
+
+.network-usage-totals {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 16px;
+  padding: 9px 15px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  background: var(--bg-panel);
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.network-usage-totals .network-usage-label {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.network-usage-totals .rx {
+  color: var(--accent);
+}
+
+.network-usage-totals .tx {
+  color: var(--success);
+}
+
+.network-graph-wrap {
+  position: relative;
+  padding: 12px 12px 8px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  background: var(--bg-panel);
+}
+
+.network-graph {
+  display: block;
+  width: 100%;
+  height: 160px;
+  overflow: visible;
+}
+
+.network-grid-line {
+  stroke: var(--border-subtle);
+  stroke-width: 1;
+}
+
+.network-line {
+  fill: none;
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+
+.network-line.receive {
+  stroke: var(--accent);
+}
+
+.network-line.transmit {
+  stroke: var(--success);
+}
+
+.network-graph-scale {
+  position: absolute;
+  top: 8px;
+  right: 12px;
+  color: var(--text-muted, var(--text-secondary));
+  font-size: 10px;
+}
+
+.network-graph-legend {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  font-size: 11px;
+}
+
+.network-history-label {
+  margin-left: auto;
+  color: var(--text-secondary);
+}
+
+.network-connections {
+  display: flex;
+  min-height: 190px;
+  flex: 1;
+  flex-direction: column;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--bg-panel);
+}
+
+.network-connections-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 11px 12px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.network-connections-head h3 {
+  display: inline;
+  margin: 0 8px 0 0;
+  font-size: 14px;
+}
+
+.network-connections-head span,
+.network-table-note {
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.network-connection-filters {
+  display: flex;
+  gap: 8px;
+  min-width: min(100%, 360px);
+}
+
+.network-connection-filters input {
+  flex: 1;
+}
+
+.network-table-wrap {
+  min-height: 0;
+  flex: 1;
+  overflow: auto;
+}
+
+.network-table-wrap table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.network-table-wrap th,
+.network-table-wrap td {
+  max-width: 260px;
+  padding: 7px 10px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border-subtle) 70%, transparent);
+  overflow: hidden;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.network-table-wrap th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  color: var(--text-secondary);
+  background: var(--bg-panel);
+}
+
+.network-table-wrap tbody tr:hover {
+  background: var(--control-hover-bg);
+}
+
+.network-empty-row {
+  padding: 28px !important;
+  color: var(--text-secondary);
+  text-align: center !important;
+}
+
+.network-table-note,
+.network-link-note {
+  padding: 8px 12px;
+}
+
+.network-link-note,
+.network-warning {
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  color: var(--text-secondary);
+  background: var(--bg-panel);
+  font-size: 11px;
+}
+
+.network-warning {
+  padding: 8px 10px;
+  color: var(--warning);
+}
+
+.network-status-panel {
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 9px;
+  min-height: 260px;
+  flex: 1;
+  text-align: center;
+}
+
+.network-status-title {
+  font-size: 17px;
+  font-weight: 700;
+}
+
+.network-status-message {
+  max-width: 520px;
+  color: var(--text-muted);
+}
+
+@media (max-width: 700px) {
+  .network-pane {
+    padding: 12px;
+  }
+
+  .network-interface-select {
+    width: 100%;
+    margin-left: 0;
+  }
+
+  .network-interface-select select {
+    flex: 1;
+  }
+
+  .network-connections-head,
+  .network-connection-filters {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}
+
+/* ── Disk usage analyzer tab ──────────────────────────────────────────────── */
+
+.du-root {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  font-size: 12px;
+  overflow: hidden;
+}
+
+.du-centered {
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+}
+
+.du-error {
+  color: var(--danger);
+  padding: 8px 0;
+}
+
+/* ── Home screen ─────────────────────────────────────────────────────────── */
+
+.du-home {
+  padding: 28px 32px;
+  overflow: auto;
+}
+
+.du-home-title {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0 0 16px;
+}
+
+.du-targets {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 12px;
+  max-width: 900px;
+}
+
+.du-target {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  padding: 14px 16px;
+  text-align: left;
+  background: var(--control-bg);
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius);
+  color: var(--text-primary);
+  cursor: var(--cur-pointer, pointer);
+}
+
+.du-target:hover:not(:disabled) {
+  background: var(--control-hover-bg);
+  border-color: var(--accent);
+}
+
+.du-target:disabled {
+  opacity: 0.55;
+  cursor: var(--cur-default, default);
+}
+
+.du-target-label {
+  font-weight: 600;
+}
+
+.du-target-path,
+.du-target-caption {
+  color: var(--text-muted);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.du-capacity {
+  display: block;
+  height: 6px;
+  margin-top: 4px;
+  background: var(--bg-main);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.du-capacity-fill {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+}
+
+/* ── Scanning ────────────────────────────────────────────────────────────── */
+
+.du-scanning-title {
+  font-weight: 600;
+}
+
+.du-scanning-stats {
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.du-scanning-path {
+  color: var(--text-muted);
+  font-size: 11px;
+  max-width: 70%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl; /* keep the deepest, most informative part of the path visible */
+}
+
+/* ── Toolbar ─────────────────────────────────────────────────────────────── */
+
+.du-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border-color);
+  flex: 0 0 auto;
+}
+
+.du-btn {
+  background: var(--control-bg);
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius);
+  color: var(--text-primary);
+  padding: 3px 9px;
+  font-size: 12px;
+  cursor: var(--cur-pointer, pointer);
+}
+
+.du-btn:hover {
+  background: var(--control-hover-bg);
+}
+
+.du-btn.active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.du-crumbs {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.du-crumb {
+  background: none;
+  border: none;
+  color: var(--accent);
+  padding: 2px 3px;
+  font-size: 12px;
+  cursor: var(--cur-pointer, pointer);
+  white-space: nowrap;
+}
+
+.du-crumb:disabled {
+  color: var(--text-primary);
+  font-weight: 600;
+  cursor: var(--cur-default, default);
+}
+
+.du-crumb-sep {
+  color: var(--text-muted);
+}
+
+.du-total {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.du-stats {
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.du-chart-toggle {
+  display: flex;
+  gap: 4px;
+}
+
+/* ── Body: treeview | chart ──────────────────────────────────────────────── */
+
+.du-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.du-tree {
+  flex: 0 0 42%;
+  min-width: 260px;
+  max-width: 560px;
+  overflow: auto;
+  border-right: 1px solid var(--border-color);
+}
+
+.du-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-right: 10px;
+  cursor: var(--cur-default, default);
+  white-space: nowrap;
+}
+
+.du-row.dir {
+  cursor: var(--cur-pointer, pointer);
+}
+
+.du-row:hover {
+  background: var(--pill-hover-bg);
+}
+
+.du-row-caret {
+  width: 10px;
+  color: var(--text-muted);
+  flex: 0 0 auto;
+}
+
+.du-row-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.du-row.dir .du-row-name {
+  font-weight: 600;
+}
+
+.du-row.file .du-row-name {
+  color: var(--text-secondary);
+}
+
+.du-row-bar {
+  flex: 0 0 64px;
+  height: 6px;
+  background: var(--control-bg);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.du-row-bar-fill {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+}
+
+.du-row-size {
+  flex: 0 0 62px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+}
+
+.du-chart {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+}
+
+.du-svg-wrap {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+/* Slices are separated by a hairline of the pane background rather than a stroke
+   colour, so the ring reads as segmented in every theme (same trick as the commit
+   graph's dot halos). */
+.du-arc,
+.du-cell {
+  stroke: var(--bg-panel);
+  stroke-width: 1;
+  cursor: var(--cur-pointer, pointer);
+}
+
+.du-arc:hover,
+.du-cell:hover {
+  stroke: var(--text-primary);
+  stroke-width: 1.5;
+}
+
+.du-centre {
+  fill: var(--bg-panel);
+  stroke: var(--border-color);
+}
+
+.du-centre.up {
+  cursor: var(--cur-pointer, pointer);
+}
+
+.du-centre.up:hover {
+  stroke: var(--accent);
+}
+
+.du-centre-name,
+.du-centre-size,
+.du-cell-label {
+  pointer-events: none;
+  user-select: none;
+}
+
+.du-centre-name {
+  fill: var(--text-primary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.du-centre-size {
+  fill: var(--text-muted);
+  font-size: 11px;
+}
+
+.du-cell-label {
+  fill: #0b0b0b; /* the slice fills are mid-to-light HSL in every theme */
+  font-size: 11px;
+  font-weight: 600;
+}
+

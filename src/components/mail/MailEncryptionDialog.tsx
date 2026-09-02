@@ -236,12 +236,12 @@ export function MailEncryptionDialog({ state, onChanged, onClose }: MailEncrypti
           <div className="mail-dialog-actions">
             {face === "unlock" && (
               <>
-                <button type="button" className="mail-btn" onClick={onClose} disabled={busy}>
+                <button type="button" className="settings-btn" onClick={onClose} disabled={busy}>
                   {t("common.cancel")}
                 </button>
                 <button
                   type="button"
-                  className="mail-btn mail-btn-primary"
+                  className="settings-btn primary"
                   disabled={busy || !passphrase}
                   onClick={() => void run(() => mailEncryptionUnlock(passphrase))}
                 >
@@ -254,7 +254,7 @@ export function MailEncryptionDialog({ state, onChanged, onClose }: MailEncrypti
               <>
                 <button
                   type="button"
-                  className="mail-btn"
+                  className="settings-btn"
                   disabled={busy}
                   onClick={() => {
                     void mailEncryptionDecline().finally(onClose);
@@ -265,7 +265,7 @@ export function MailEncryptionDialog({ state, onChanged, onClose }: MailEncrypti
                 {state.has_existing_mail && (
                   <button
                     type="button"
-                    className="mail-btn mail-btn-danger"
+                    className="settings-btn danger"
                     disabled={busy || !passphraseReady}
                     title={t("mail.encryption.resetHint")}
                     onClick={() =>
@@ -279,7 +279,7 @@ export function MailEncryptionDialog({ state, onChanged, onClose }: MailEncrypti
                 )}
                 <button
                   type="button"
-                  className="mail-btn mail-btn-primary"
+                  className="settings-btn primary"
                   disabled={busy || !passphraseReady}
                   onClick={() =>
                     void run(() =>
@@ -295,7 +295,7 @@ export function MailEncryptionDialog({ state, onChanged, onClose }: MailEncrypti
             )}
 
             {face === "status" && (
-              <button type="button" className="mail-btn mail-btn-primary" onClick={onClose}>
+              <button type="button" className="settings-btn primary" onClick={onClose}>
                 {t("common.close")}
               </button>
             )}

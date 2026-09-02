@@ -5,6 +5,7 @@ import {
   DEFAULT_ALERT_LIMIT,
   DEFAULT_LOOKAHEAD_DAYS,
   addMutedAlert,
+  alertGates,
   selectAlerts,
   selectMutedAlerts,
 } from "../../lib/alerts";
@@ -14,12 +15,15 @@ import { addDays, datePart, toStamp } from "../../lib/calendarTime";
 import { expandEvents } from "../../lib/recurrence";
 import { useExperimental } from "../../lib/experimental";
 import { useCalendarStore } from "../../stores/calendar";
-import { useMailStore } from "../../stores/mail";
 import { useSettingsStore } from "../../stores/settings";
-import { useTodoStore } from "../../stores/todo";
+import {
+  releaseUrgentMailPoll,
+  retainUrgentMailPoll,
+  useTodoStore,
+} from "../../stores/todo";
 
 /**
- * **The data feed behind the right panel's opt-in "Alerts" group.**
+ * **The data feed behind the side panel's opt-in "Alerts" group.**
  *
  * It owns the *reads*; `lib/alerts`' `selectAlerts` owns the merging, and the
  * two stores that already hold this data (`stores/calendar` for events and
@@ -32,26 +36,22 @@ import { useTodoStore } from "../../stores/todo";
  * only. So every effect returns on `!enabled` before it does anything, every
  * store selector collapses to a frozen empty constant (so a calendar write in
  * another window cannot even re-render the panel), and the memo that would call
- * `selectAlerts` short-circuits. The one thing left subscribed is `newCount`,
- * which is a number already in memory and reaches nothing.
+ * `selectAlerts` short-circuits.
  *
  * The mail source carries a **second** gate, `mail_client`, and it is checked
  * before the invoke rather than around the rendering — opening the mail store
  * creates `~/.local/share/eldrun/mail/` as a side effect, and a file viewer must
  * not materialize a mail database for someone who has mail switched off. This is
- * `TodoMailRail`'s rule, verbatim, and the polling interval below is its
- * interval for its reason.
+ * `TodoMailRail`'s rule, verbatim — and both now share the one refcounted poll
+ * in `stores/todo` behind that same gate.
  */
 
 /**
- * How often the feed re-reads.
- *
- * The same 60 s both to-do rails use, and defensible for the same two reasons:
- * `mail_priority_page` is a read of the **local** SQLite index and opens no
- * socket, and the clock has to move on its own anyway — nothing in either store
- * changes when 15:00 simply passes, but an event that was `soon` at 14:00 is
- * `now` at 15:00. If the mail read ever stops being local, this timer is the
- * thing that has to go.
+ * How often the severity clock re-stamps `now`. The clock has to move on its
+ * own — nothing in either store changes when 15:00 simply passes, but an event
+ * that was `soon` at 14:00 is `now` at 15:00. The mail re-read is NOT this
+ * timer's any more: it rides the shared refcounted poll in `stores/todo`
+ * (`retainUrgentMailPoll`), one interval however many viewers are mounted.
  */
 const TICK_MS = 60_000;
 
@@ -72,8 +72,9 @@ const NO_MUTED: string[] = [];
 
 /** What the panel renders from. */
 export interface AlertsFeed {
-  /** The group is on **and** at least one source survived its own gates. All-off
-   *  is reported as disabled rather than as an empty list: an empty strip reads
+  /** The group is on **and** at least one source survived its own gates — with
+   *  the visibility half skippable per caller (`AlertsFeedOptions`). All-off is
+   *  reported as disabled rather than as an empty list: an empty strip reads
    *  as "nothing is due", which is a different and possibly wrong statement. */
   enabled: boolean;
   items: AlertItem[];
@@ -128,9 +129,23 @@ function occurrenceEnded(occ: Occurrence, now: string): boolean {
   return occ.allDay ? occ.end <= datePart(now) : occ.end <= now;
 }
 
-export function useAlertsFeed(): AlertsFeed {
+/** What a caller other than the file viewer may say about the gates. */
+export interface AlertsFeedOptions {
+  /**
+   * Read the feed *without* the file viewer's 🔔 visibility key. Eldrun Mobile
+   * asks for this: `files_alerts` is the desktop group's visibility, so closing
+   * the strip beside the tree on the laptop would otherwise blank the phone's
+   * Alerts screen — a control on one surface silently switching off another.
+   * Everything that says which alerts exist (the source switches, the
+   * lookahead, the mutes) still applies.
+   */
+  ignoreVisibility?: boolean;
+}
+
+export function useAlertsFeed(options?: AlertsFeedOptions): AlertsFeed {
   // ── The gates ─────────────────────────────────────────────────────────────
-  const alertsOn = useSettingsStore((s) => s.settings?.files_alerts ?? true);
+  const ignoreVisibility = options?.ignoreVisibility === true;
+  const groupVisible = useSettingsStore((s) => s.settings?.files_alerts ?? true);
   const rawDays = useSettingsStore(
     (s) => s.settings?.files_alerts_days ?? DEFAULT_LOOKAHEAD_DAYS,
   );
@@ -140,16 +155,20 @@ export function useAlertsFeed(): AlertsFeed {
   const mailClient = useExperimental("mail_client");
   // The muted ids live in `settings.json` rather than in this hook, and that is
   // load-bearing twice over: the file viewer is mounted many times at once (the
-  // right panel plus every Files tab), so per-instance state would silence a row
+  // side panel plus every Files tab), so per-instance state would silence a row
   // in one and leave it shouting in the next — and a mute that came back at the
   // next launch would be a control that doesn't work, the same trap `files_alerts`
   // itself avoids by being the visibility rather than a preference above one.
   const mutedIds = useSettingsStore((s) => s.settings?.files_alerts_muted);
 
-  const wantMail = alertsOn && sourceMail && mailClient;
-  const wantEvents = alertsOn && sourceEvents;
-  const wantTasks = alertsOn && sourceTasks;
-  const enabled = wantMail || wantEvents || wantTasks;
+  const { wantMail, wantEvents, wantTasks, enabled } = alertGates({
+    visible: groupVisible,
+    ignoreVisible: ignoreVisibility,
+    mail: sourceMail,
+    events: sourceEvents,
+    tasks: sourceTasks,
+    mailClient,
+  });
 
   const lookaheadDays = Math.min(
     MAX_LOOKAHEAD_DAYS,
@@ -172,17 +191,17 @@ export function useAlertsFeed(): AlertsFeed {
   const now = useMemo(() => toStamp(new Date()), [tick]);
 
   // ── The reads ─────────────────────────────────────────────────────────────
-  // `newCount` is the arrival signal. The `mail:new` listener itself belongs to
-  // `MailIndicator`, mounted once per window; a second one here would
-  // double-count a delivery.
-  const newCount = useMailStore((s) => s.newCount);
-
+  // The mail read joins the refcounted module-level poll (`stores/todo`'s
+  // retain/release, the `stores/hostSessions` pattern): this hook is mounted
+  // many times at once, and a per-instance interval — worse, one keyed on
+  // `newCount` — meant N identical queries per minute and N more per delivery.
+  // The poll itself re-reads on arrival, so no `newCount` subscription is left
+  // here at all.
   useEffect(() => {
     if (!wantMail) return; // includes the `mail_client` gate — before the invoke.
-    void useTodoStore.getState().loadUrgentMail();
-    const id = setInterval(() => void useTodoStore.getState().loadUrgentMail(), TICK_MS);
-    return () => clearInterval(id);
-  }, [wantMail, newCount]);
+    retainUrgentMailPoll();
+    return releaseUrgentMailPoll;
+  }, [wantMail]);
 
   useEffect(() => {
     if (!wantEvents && !wantTasks) return;

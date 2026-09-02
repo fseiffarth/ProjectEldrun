@@ -105,7 +105,7 @@ See [VISION.md](docs/VISION.md) for the full strategy and platform rationale.
 desktop swaps to it. **②** inside, a tiling tab layout hosts agent terminals
 (26 built-in CLIs plus your own, resumable, with a per-tab Plan/Auto mode),
 shells, native file viewers, and the app tabs Eldrun renders itself instead of
-sending you to another window. Alongside them sit the right panel (Files · Git
+sending you to another window. Alongside them sit the side panel (Files · Git
 · Search · Apps) and the header, where mail, the calendar, the to-do board, the
 machine hub, and the VPN live next to the global app toolbar. **③** the
 project-desktop layer — window parking, default-app mapping, time tracking and
@@ -164,6 +164,10 @@ Prebuilt packages are published on the
 grab the `.AppImage` (portable Linux) or `.deb` (Debian/Ubuntu), or the `.exe`
 installer on Windows. To build from source instead, follow the requirements
 below.
+
+The Linux packages are built on Ubuntu 24.04, so they need glibc 2.39 or newer
+(Ubuntu 24.04+, Debian 13+, Fedora 40+). On an older distro the loader fails
+with `GLIBC_2.39 not found` — build from source there instead.
 
 Once it is installed, **Settings → Updates** checks the same releases page from
 inside the app and can download and install a newer build for you. It only
@@ -228,7 +232,7 @@ update-desktop-database ~/.local/share/applications/
   visible across all project switches.
 - **External window tracking**: file opens use `xdg-open` (Linux) / the shell
   open verb (Windows); launched windows are tracked by PID — found via
-  `EnumWindows` on Windows — and shown in the right panel instead of embedded in
+  `EnumWindows` on Windows — and shown in the side panel instead of embedded in
   the UI.
 - **Default app mapping**: file extensions use per-project overrides, global
   defaults, system MIME defaults, or a manual "Open With" picker.
@@ -302,16 +306,21 @@ without an sshfs/FUSE mount anywhere.
   Dock it back with the ⤓ button (re-docks into the main layout; session-only, so
   it re-docks on restart too). Closing the popped-out window instead closes its
   tabs for good — they are not docked back and do not restore on next launch.
-- **Project boxes (meta-project grouping)**: group related projects into a *box*
-  that appears as its own pill in the project switcher. Drop a project pill onto a
-  box to add it; click the box to open a box-scoped shell rooted in a per-box
-  folder under `~/.local/share/eldrun/boxes/<name>/`; hover to list members and
-  click one to jump to it. Opening a box writes/refreshes managed
-  `CLAUDE.md`/`GEMINI.md`/`AGENTS.md` link blocks in the box folder pointing at
-  each member's root and matching agent doc (edits outside the managed markers are
-  preserved). Box membership lives in a sibling `boxes.json`, so `projects.json`
-  is untouched. Box scopes are session-only for now — a box's tabs are not
-  restored across project switch or restart.
+- **Project boxes (meta-project grouping)**: temporarily join two or more
+  projects into a *box* — its own pill in the switcher — for side-by-side file
+  work, cross-project copy-paste, PDF merges across members, and box-rooted
+  agent tabs. Membership is non-exclusive (a project can sit in several boxes);
+  member pills keep rendering individually with a small ▣ badge. Add via the
+  pill menu's Boxes group, Ctrl-click multi-select → "Box these…", the box
+  editor, or by dropping a pill on a box; a box only ever disappears through
+  the editor's explicit, confirmed Dissolve. Opening a box lands in a per-box
+  folder under `~/eldrun/boxes/<name>/`, which carries managed
+  `CLAUDE.md`/`GEMINI.md`/`AGENTS.md` link blocks plus one symlink per member
+  (Unix), so agent CLIs can traverse into every member's tree; hover the pill
+  to list members and click one to jump to it. Box membership lives in a
+  sibling `boxes.json`, so `projects.json` is untouched. Box tab scopes
+  persist and restore like a project's; box tabs run locally and uncontained
+  in v1.
 - **Root control terminal**: opens in `~/eldrun/root/` with workspace-level
   context files.
 - **Project terminals**: each active project gets a PTY tab scoped to its
@@ -380,7 +389,7 @@ without an sshfs/FUSE mount anywhere.
   catalog install, update, unload, and delete controls.
 - **Hover-revealed panels**: the global app bar and right file panel appear on
   pointer hover and disappear when the pointer leaves, keeping the center
-  terminal unobstructed; the right panel can also be pinned permanently open.
+  terminal unobstructed; the side panel can also be pinned permanently open.
 
 ### Isolation tiers: container, VM, and the Trash workspace
 
@@ -424,8 +433,8 @@ external app when it is not.
 
 **Several of these are experimental and off by default** in a release build —
 mail (`mail_client`), the browser (`web_browser`), the deck presenter
-(`deck_presenter`), Python run/debug (`python_run_debug`), and agent modes
-(`agent_mode_toggle`). Turn them on under Settings → Experimental; an unset flag
+(`deck_presenter`), and Python run/debug (`python_run_debug`). Turn them on
+under Settings → Experimental; an unset flag
 follows debug mode, so they are all on in a development build.
 
 - **Mail** *(IMAP/SMTP)*: a full client over the whole window — folders, message

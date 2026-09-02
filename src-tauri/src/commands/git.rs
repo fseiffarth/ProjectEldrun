@@ -129,6 +129,20 @@ pub(crate) fn hardened_git_args<S: AsRef<str>>(args: &[S]) -> Vec<String> {
 pub(crate) fn hardened_git_command<S: AsRef<str>>(args: &[S]) -> std::process::Command {
     let mut cmd = crate::paths::command_no_window("git");
     cmd.args(hardened_git_args(args));
+    // Read-only commands must not write the repo. `git status` (and everything
+    // that runs it: the file tree's per-entry letters, the git bar, the pill's
+    // dirty poll) opportunistically REWRITES `.git/index` when stat data looks
+    // stale — an `index.lock` create + rename that bumps `.git`'s mtime, which the
+    // file tree's non-recursive watch on the project root sees as a change to the
+    // `.git` entry. That re-listed the folder, which ran `git status`, which
+    // rewrote the index, which… — a closed loop that kept the root folder
+    // re-listing about once a second for as long as it was on screen, and rows
+    // flickering between sections whenever one of the piled-up probes failed.
+    // `GIT_OPTIONAL_LOCKS=0` is git's own switch for exactly this ("don't take
+    // optional locks, don't do the optional index refresh"): the output of every
+    // read command is unchanged, and the mutating commands (add, commit, …) take
+    // their mandatory locks regardless.
+    cmd.env("GIT_OPTIONAL_LOCKS", "0");
     cmd
 }
 
@@ -479,9 +493,45 @@ fn git_status_blocking(project_dir: String) -> Result<GitStatus, String> {
     })
 }
 
+/// One probe behind the project switcher's per-pill git dot.
+#[derive(serde::Serialize)]
+pub struct GitDirtyProbe {
+    pub status: GitStatus,
+    /// Commits ahead of the upstream — computed **only when the working tree is
+    /// clean**, `0` otherwise (the dot never consults it while anything is
+    /// dirty or staged, so probing it unconditionally paid a second git spawn
+    /// per project per poll tick for an answer that was then discarded).
+    pub unpushed: usize,
+}
+
+/// `git_status` + the unpushed-commit count as ONE command, for the switcher's
+/// 12 s per-project dot poll: one git spawn and one IPC round trip in the
+/// common (dirty, non-repo, or no-upstream-relevant) case instead of two each.
+#[tauri::command]
+pub async fn git_dirty_probe(project_dir: String) -> Result<GitDirtyProbe, String> {
+    run_off_thread(move || {
+        let status = git_status_blocking(project_dir.clone())?;
+        let clean = status.is_repo
+            && status.staged == 0
+            && status.unstaged == 0
+            && status.untracked == 0;
+        let unpushed = if clean {
+            // Best-effort, like the frontend's old `.catch(() => [])`: a failed
+            // unpushed read must not blank a dot the status half already earned.
+            git_unpushed_commits_blocking(project_dir)
+                .map(|v| v.len())
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        Ok(GitDirtyProbe { status, unpushed })
+    })
+    .await
+}
+
 /// Resolve the git top-level enclosing `project_dir`/`rel_path` (the folder the
 /// user is currently browsing in the file tree). Returns the absolute repo root
-/// path, or `None` when the folder isn't inside any git repo. The right panel
+/// path, or `None` when the folder isn't inside any git repo. The side panel
 /// uses this to detect a **nested** repo — a subfolder that is its own git repo
 /// distinct from the project's repo — and re-root its git section at it.
 ///
@@ -2353,7 +2403,7 @@ pub struct DetectedOrigin {
 /// Returns `{ project_id -> { provider, url } }` only for projects whose origin
 /// resolves to a recognized provider. Published (`remote-*`) local projects are
 /// included too, so their git address shows in the hover even though their badge
-/// already rides on `git_type`. Used to decorate pill/right-panel hovers for
+/// already rides on `git_type`. Used to decorate pill/side-panel hovers for
 /// repos pushed to a host — including ones published outside Eldrun's own
 /// Publish flow (the sole writer of the `remote-*` `git_type`).
 #[tauri::command]

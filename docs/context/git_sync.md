@@ -19,8 +19,8 @@ Referenced from `AGENTS.md`.
   untracked ones outright. Correct, git-recoverable, and *silent* — which is the problem,
   because it happens during background passes nobody triggered. Each site now files a
   warning that `LocalLossDialog` raises. The exception that is **not** recoverable, and is
-  labelled as such: `sync_now`/`sync_pull` overwriting a mirror file that held unsynced
-  local edits ("clears amber → green" means the host wins). It is a **log file**, not an
+  labelled as such: a confirmed manual pull overwriting a mirror file that held
+  unsynced local edits (resolving amber by choosing the host). It is a **log file**, not an
   event: the services are `AppHandle`-free and a background pass can delete with no window
   listening, so a loss recorded while the app was closed still surfaces on next launch.
 - **Every manual transfer asks first** (`stores/syncConfirm` → `SyncConfirmDialog`,
@@ -40,6 +40,11 @@ Referenced from `AGENTS.md`.
   ⇄ button and its sync/push menu items, the file view's whole-project "Sync all" in both
   directions, and the diverged-files list's per-row and bulk take-a-side actions (which
   are force transfers, and are labelled as such).
+  - **The tracked-tree split applies to manual transfers too.** Preview, pull, and
+    push all subtract the lockstep-owned tracked set before moving bytes. The
+    confirmation names how many files were withheld and explains that they travel
+    after commit, so a whole-project byte push cannot dirty the peer and wedge the
+    next fast-forward.
   - **A conflict queue can be dropped whole ("Skip all").** A push that a host change
     would clobber is blocked per file and queued for a keep-local/take-host answer; over
     a folder or a whole project that queue can be hundreds long, and answering it file by
@@ -97,3 +102,20 @@ Referenced from `AGENTS.md`.
     path the user explicitly asked to transfer), and it makes the rsync fast path
     stand down, since a whole-subtree rsync cannot honour a carve-out. Byte-side
     only — a **git-tracked** file in an excluded folder still travels as a commit.
+  - **The rsync pull path is only a transport optimisation.** It consumes the
+    host walker's exact regular-file list (NUL-delimited), rather than widening
+    a folder pull back to the raw subtree. That keeps the confirmation preview,
+    manifest accounting, and transferred bytes on the same path set: `.git`,
+    `.eldrun`, nested repositories, and symlinks remain outside byte-sync even
+    when rsync is available on both ends. If that allowlist cannot be confined
+    to the requested subtree, the transfer falls back to the SFTP path.
+- **Concurrent writers are serialized at their ownership boundary.** Every
+  lockstep reconcile—poll, watcher, retry, checkout, pairing, resolve, or backup
+  restore—takes the same per-project async guard before touching bundle paths or
+  `git_peer.json`. Worker fan-out has the equivalent per-project/host in-flight
+  guard, including its manual button. The local-loss journal locks its complete
+  read-modify-write so simultaneous warnings cannot erase one another.
+- **Byte pulls replace local files atomically.** Host bytes are fully read and
+  staged beside the mirror destination before rename, matching the push side's
+  temp-and-rename rule. A crash therefore leaves an old or new complete mirror
+  file, not a truncated file that masquerades as a divergence.

@@ -152,4 +152,113 @@ correctness/UX work atop the same layout model #42 detaches.*
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work
 
+213. **Live-QA the keyboard steering system (#62 follow-on).** ✅ Implemented ·
+    🧪 Awaiting live QA. Verify the four new surfaces together: steering mode
+    (Ctrl+Shift+Space toggles it, even from a focused terminal; digit stations
+    1 = root / 2+ = pills incl. Trash, arrow-key subwindow focus with the
+    relative ↓/↑ badges, Tab/Shift+Tab tab cycling, F/P/W toggles, S/?/Esc/Enter
+    exits, bottom-center legend + station chips on the pills), the F1 shortcut
+    cheat sheet (grouped bindings, "customized" marks, fixed keys, ⚙ menu
+    entry), Settings → Keyboard Shortcuts (grouped rows, conflict warning on
+    colliding chords, Reset all, the new Ctrl+Shift+← cycle-back), and the
+    "Steer with the keyboard" lesson (basics tier — its enter-mode task must
+    complete when the legend appears).
+    *Files: `src/lib/shortcuts.ts`, `src/hooks/useKeyboard.ts`,
+    `src/stores/keyboardSteering.ts`, `src/components/layout/SteeringLegend.tsx`
+    / `ShortcutHelpOverlay.tsx`, `src/lib/lessons.ts`.*
+    - [x] 🤖 Automated test — `src/__tests__/Shortcuts.test.ts` (chord helpers,
+      grouping, conflicts, fixed chords); the i18n parity tests cover the
+      lesson keys.
+    - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+215. **Live-QA the install overlay terminal.** ✅ Implemented · 🧪 Awaiting live
+    QA. Every one-click install (`runInstallInTab`: Ollama/agent CLI installs,
+    the LaTeX/MiKTeX prompt, `gh`/`glab` install + auth login, custom-agent
+    install commands) now also opens a centered overlay terminal attached to
+    the same root-scope PTY, replacing the open-time toast. Verify: the
+    overlay shows the install live and accepts input (a sudo password);
+    closing it (×, backdrop, Escape outside the terminal) leaves the install
+    running in the root tab and raises the "still running in the root
+    terminal" toast; the root tab shows the full output when opened later
+    (client buffer + backend replay); closing the root tab while the overlay
+    is up takes the overlay down silently; Escape typed into the terminal does
+    NOT close the overlay.
+    *Files: `src/lib/installCommand.ts`, `src/stores/installOverlay.ts`,
+    `src/components/layout/InstallOverlay.tsx`, `src/components/layout/AppShell.tsx`,
+    `src/styles/settings-chrome.css`.*
+    - [x] 🤖 Automated test — `src/__tests__/InstallOverlay.test.tsx` (tab+PTY
+      wiring, attach-only props, close hand-off toast, dead-tab silent close).
+    - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+216. **Live-QA the scheduled agent warm-up (Manage CLIs → Scheduled warm-up).**
+    ✅ Implemented · 🧪 Awaiting live QA. An agent CLI's allowance is a window
+    that opens on the first message (Claude's is five hours), so this sends one
+    `Test` at times the user picks, **in the background** — the CLI's own
+    one-shot mode (`claude -p`, `codex exec`, `gemini -p`, …) as a detached,
+    windowless process run by `agent_warmup` in `<state_dir>/agent-cron/`, no
+    tab, no terminal, no project (it used to type into a Trash agent tab;
+    reworked 2026-08-31) — to put the window where they want it. Settings → Manage CLIs carries one card: master switch, a
+    global time list, an **All agents** toggle (default off, a bulk flip of the
+    per-agent flags), and a **button grid** of every installed agent (the
+    file-hiding endings grid — pressed = participates, greyed = no
+    non-interactive mode); an agent that is on gets a row below the grid for
+    its own times (override the global list) and "Next: 06:00 tomorrow". The scheduler is `AgentCronHost` at the shell —
+    main window only, one-minute tick, a 5-minute grace after each slot and
+    **never** a late fire, with the fired slots in localStorage so a reload does
+    not resend. Verify: the grid buttons press/unpress and the All toggle
+    reads on only when every capable agent is on (and one unpress turns it
+    off again); agents without a recipe (aider, cline, …) are disabled with
+    the reason in their tip; a time two minutes out fires once
+    and only once (a `claude -p Test` process appears in `ps` and exits within
+    seconds; no tab or window opens; `claude /usage` afterwards shows the
+    session window running); a second window (popout) sends nothing; a slot
+    missed while the app was closed is skipped, not sent at launch; the chips read in the user's 12/24-hour setting; the panel's warnings
+    render for "armed with no times" and "master switch off". Settings ride the
+    backend `extra` catch-all, so **no backend restart is needed**.
+    *Files: `src/lib/agentCron.ts`, `src/lib/agentCronRun.ts`,
+    `src/components/layout/AgentCronHost.tsx`,
+    `src/components/layout/SettingsSubPanels.tsx`, `src/styles/header-menus.css`,
+    `src/types/index.ts`, `src/lib/i18n.ts` (+ the four dictionaries).*
+    - [x] 🤖 Automated test — `src/__tests__/AgentCron.test.ts` (parse/format,
+      per-agent override vs. the global list, the three conditions for being
+      scheduled, the grace window and the never-fire-late rule, the fired-slot
+      key across midnight, next-run, and the config editors).
+    - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+217. **Live-QA the TeX ⇄ PDF tab coupling mark.**
+    ✅ Implemented · 🧪 Awaiting live QA. A compiled PDF opens in its own tab
+    beside the LaTeX source, so the two halves of one document sat in the strip
+    looking unrelated. Both tabs now carry a small accent **⇄** badge naming the
+    other half in its tooltip; clicking it activates that tab — across
+    subwindows, via the store's `setActive`. The coupling is **derived** from the
+    paths (`<dir>/<stem>.tex` ↔ `<dir>/<stem>.pdf`, case-insensitively), not
+    stored on the tab: nothing to persist, nothing to clean up when either tab
+    closes, and a PDF opened by hand next to an open source is marked exactly
+    like a freshly compiled one. Both `.tex` halves count — the single-tab
+    workspace and a standalone `.tex` editor tab. Verify: compiling from a TeX
+    workspace makes ⇄ appear on **both** tabs; the tooltip names the partner;
+    clicking jumps to it (including when the partner lives in another
+    subwindow); closing one half removes the mark from the other; an unrelated
+    PDF (`notes.pdf` next to `paper.tex`) is never marked; the badge is muted on
+    an inactive tab and full-strength on the hovered/active one; a popout's
+    strip shows the same badge for a pair that is fully inside that window.
+    *Files: `src/lib/texPdfLink.ts`,
+    `src/components/tabs/TabLocalityBadges.tsx`,
+    `src/components/tabs/TabBar.tsx`,
+    `src/components/layout/DetachedCenterPanel.tsx`,
+    `src/styles/projects-tabs.css`, `src/lib/i18n.ts` (+ the four dictionaries).*
+    - [x] 🤖 Automated test — `src/__tests__/texPdfLink.test.ts` (both
+      directions, the standalone `.tex` editor, one-half-open, stem and
+      directory mismatches, non-viewer/other-viewer tabs, case-insensitive
+      pairing, never returning the tab itself).
+    - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
 ---

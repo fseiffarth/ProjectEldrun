@@ -10,7 +10,7 @@ import { useT } from "../../lib/i18n";
 import { useResizableSection } from "./useResizableSection";
 
 /**
- * The right-panel Downloads section (fast-copy of freshly downloaded files into a
+ * The side-panel Downloads section (fast-copy of freshly downloaded files into a
  * project). Rendered directly BELOW the project file tree, so the source
  * (downloads) and destination (the tree above) are co-visible: a download can be
  * dragged straight onto a folder row in the tree — the same `[data-move-rel]`
@@ -219,7 +219,7 @@ export function DownloadsSection({
         // the downloads list itself, or outside the panel, is a no-op.
         const treeArea =
           !overEl?.closest(".downloads-section")
-            ? (overEl?.closest<HTMLElement>(".right-panel-scroll") ?? null)
+            ? (overEl?.closest<HTMLElement>(".side-panel-scroll") ?? null)
             : null;
         dropDest = treeArea ? targetFolder : null;
         setHi(treeArea);
@@ -276,7 +276,7 @@ export function DownloadsSection({
           ))}
         </div>
         <button
-          className="tab-add-btn"
+          className="toolbar-btn"
           style={{ fontSize: 10, padding: "1px 6px", height: 20 }}
           onClick={() => void refresh()}
           title={t("common.refresh")}
@@ -284,7 +284,7 @@ export function DownloadsSection({
           ⟳
         </button>
         <button
-          className="tab-add-btn"
+          className="toolbar-btn"
           style={{ fontSize: 10, padding: "1px 6px", height: 20 }}
           onClick={onClose}
           title={t("downloads.hide")}
@@ -336,7 +336,7 @@ export function DownloadsSection({
                 ) : (
                   !isRemote && (
                     <button
-                      className="tab-add-btn dl-copy-btn"
+                      className="toolbar-btn dl-copy-btn"
                       style={{ fontSize: 10, padding: "1px 6px", height: 20 }}
                       onClick={(ev) => {
                         ev.stopPropagation();

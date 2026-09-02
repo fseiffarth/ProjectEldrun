@@ -199,7 +199,7 @@ human (Eldrun is not launched from an agent).
   `pull_file`, manifest type + 3-way base compare. Single-writer manifest state
   (G7).
 - New `commands/sync.rs`: `sync_mark_selected`, `sync_pull`, `sync_status`,
-  `sync_now` (reconcile selected), `sync_whole_project` (optional full pull);
+  `sync_whole_project` (optional full pull);
   injected with `RemotePoolState`; registered in `lib.rs`. Emit `sync-progress`.
 - Resolve G2: `source` param / path-prefix routing on the file readers so the
   local view reads the mirror.
@@ -247,7 +247,7 @@ Phases 0–3 are implemented and gated (`npx tsc --noEmit`, `npx vitest run`,
   toggle in `TabBar`. Tests: `TabLocality.test.ts`.
 - **Phase 1 (done).** `services/remote_sync.rs` (manifest type + IO, lstat host
   walker G3, `pull_file`, 3-way `compute_state`, single-writer `SyncManifestState`
-  G7); `commands/sync.rs` (`sync_pull`/`sync_whole_project`/`sync_now`/
+  G7); `commands/sync.rs` (`sync_pull`/`sync_whole_project`/
   `sync_mark_selected`/`sync_status`, `sync-progress` events); G2 mirror-path
   routing on the `fs.rs` readers/writers; mirror minted at create + on connect;
   `FileTree` green/amber overlay + select-to-sync; `RightPanel` local/remote

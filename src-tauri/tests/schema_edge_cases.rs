@@ -6,8 +6,7 @@
 
 use eldrun_lib::schema::project::TabEntry;
 use eldrun_lib::schema::{
-    ActiveSession, DefaultApps, Project, ProjectEntry, Settings, TerminalSession, TimeLogEntry,
-    WindowSession,
+    DefaultApps, Project, ProjectEntry, Settings, TerminalSession, TimeLogEntry, WindowSession,
 };
 
 // ── helpers ────────────────────────────────────────────────────────────────
@@ -244,32 +243,6 @@ fn time_log_entry_unknown_fields_preserved() {
     }"#,
     );
     assert_eq!(e.extra["end_iso"].as_str(), Some("2026-01-01T00:00:01Z"));
-}
-
-// ── ActiveSession ─────────────────────────────────────────────────────────
-
-#[test]
-fn active_session_parses_required_fields() {
-    let s: ActiveSession = parse(
-        r#"{
-        "project_id": "my-proj",
-        "start_real": "2026-06-03T08:00:00+00:00"
-    }"#,
-    );
-    assert_eq!(s.project_id, "my-proj");
-    assert!(!s.start_real.is_empty());
-}
-
-#[test]
-fn active_session_unknown_fields_preserved() {
-    let s: ActiveSession = parse(
-        r#"{
-        "project_id":"p","start_real":"2026-01-01T00:00:00Z","hostname":"mybox"
-    }"#,
-    );
-    assert_eq!(s.extra["hostname"].as_str(), Some("mybox"));
-    let back = roundtrip(&s);
-    assert_eq!(back.extra["hostname"].as_str(), Some("mybox"));
 }
 
 // ── TerminalSession ────────────────────────────────────────────────────────

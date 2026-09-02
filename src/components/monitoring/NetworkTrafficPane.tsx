@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Dropdown } from "../common/Dropdown";
 import { isoWeekKeys, summarizeBuckets } from "../../lib/usageRollup";
+import { formatBytes } from "../../lib/formatBytes";
 import { useProjectsStore } from "../../stores/projects";
 import { useRemoteStatusStore } from "../../stores/remoteStatus";
 import { useSettingsStore } from "../../stores/settings";
@@ -210,13 +211,9 @@ export function formatFileCount(value: number): string {
   return value.toLocaleString();
 }
 
-export function formatBytes(value: number): string {
-  if (!Number.isFinite(value) || value <= 0) return "0 B";
-  const units = ["B", "KiB", "MiB", "GiB", "TiB"];
-  const index = Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1);
-  const scaled = value / 1024 ** index;
-  return `${scaled >= 100 || index === 0 ? scaled.toFixed(0) : scaled.toFixed(1)} ${units[index]}`;
-}
+// Re-exported from the one canonical formatter (§9.1) — this pane used to keep
+// its own KiB-labelled ladder, the only surface with binary unit names.
+export { formatBytes };
 
 function formatRate(value: number): string {
   return `${formatBytes(value)}/s`;

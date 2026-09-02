@@ -11,6 +11,7 @@
  */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { emit, listen } from "@tauri-apps/api/event";
 import * as pdfjs from "pdfjs-dist";
 import type { PDFDocumentProxy } from "pdfjs-dist";
 import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
@@ -29,6 +30,7 @@ import { useExperimental } from "../../../lib/experimental";
 import { emptyDeck } from "../../../lib/viewers/deck/model";
 import { deckPathForPdf, serializeDeck } from "../../../lib/viewers/deck/sidecar";
 import { jumpToSource, SaveButton, useViewerState } from "../FileViewerPane";
+import { canRecompileTexSource, recompileTexSource } from "../openTexWorkspace";
 import {
   renderPdfPagesToImages,
   printHtmlBody,
@@ -96,6 +98,7 @@ import {
   type PdfDest,
 } from "./outline";
 import { loadPageLinks, destTopInBigPoints, type PdfLink } from "./links";
+import { pageTextItemBoxes } from "./pageText";
 import { HIGHLIGHT_COLORS, loadPageNotes } from "./notes";
 import {
   PdfNoteLayer,
@@ -106,8 +109,21 @@ import { PdfNotesPane } from "./PdfNotesPane";
 import { PdfTextLayer } from "./PdfTextLayer";
 import { PdfSelectionBar, selectionBarPos } from "./PdfSelectionBar";
 import { readViewerSelection, type ViewerSelection } from "./selection";
+import { scrollIntoPdfBox } from "./scrollBox";
 import { PdfLinkConfirmDialog } from "./PdfLinkDialog";
+import {
+  type PdfPresentReady,
+  type PdfPresentSeed,
+  PDF_PRESENT_READY,
+  pdfPresentLabel,
+  pdfPresentSeedEvent,
+} from "./present";
 import { openRoutedUri } from "../../../lib/linkTarget";
+import {
+  SCREENSHOT_CAPTURE_EVENT,
+  screenshotFilename,
+  type ScreenshotCaptureDetail,
+} from "../../../lib/screenshot";
 import { useSettingsStore } from "../../../stores/settings";
 import { PageStrip } from "../../common/PageStrip";
 import { PrinterIcon } from "../../common/PrinterIcon";
@@ -115,6 +131,8 @@ import { UntestedTag } from "../../common/UntestedTag";
 import { subscribePageDragActive, type PageTransfer } from "../../../stores/pdfDrag";
 import { ContextFilePicker } from "../ContextFilePicker";
 import { useProjectsStore } from "../../../stores/projects";
+import { useScreenshotPendingStore } from "../../../stores/screenshotPending";
+import { BOX_SCOPE_PREFIX, boxMembersOfScope, boxScopeId, useBoxesStore } from "../../../stores/boxes";
 import { resolveProjectDirectory } from "../../../types";
 import { basename, dirname, isPathWithin } from "../../../lib/paths";
 import {
@@ -122,8 +140,11 @@ import {
   pdfPointToBigPoints,
   bigPointsToCssRect,
   synctexEdit,
+  synctexStatus,
+  syncNoticeKind,
   resolveTexRoot,
   refineToWord,
+  type SyncNoticeKind,
   type SyncRect,
   type SyncSource,
   type TextItemBox,
@@ -174,6 +195,71 @@ const PDF_MAX_SCALE = 8;
 const PDF_ZOOM_STEP = 1.2;
 const clampPdfScale = (s: number) => Math.min(PDF_MAX_SCALE, Math.max(PDF_MIN_SCALE, s));
 
+/** Is the key going to somewhere that types? The host div wraps the find bar, the
+ *  go-to-page box and every remark card, so the page-stepping arrow keys have to
+ *  leave the caret alone wherever one of those has focus. */
+const isTextEntry = (target: EventTarget | null): boolean => {
+  const el = target as HTMLElement | null;
+  if (!el || typeof el.tagName !== "string") return false;
+  const tag = el.tagName.toLowerCase();
+  return tag === "input" || tag === "textarea" || tag === "select" || el.isContentEditable;
+};
+
+/**
+ * How a reopened PDF should start: the zoom to seed, and whether that zoom is the
+ * fit-to-width baseline (so the pane's width, not the saved number, has the last
+ * word).
+ *
+ * The viewer persists its scale on EVERY change, so most saved values are not a
+ * zoom the reader chose — they are whatever fit the pane the document was last
+ * read in. Restoring one of those as a deliberate zoom is how a PDF came back
+ * badly rescaled after a restart: a pane even slightly narrower than last time
+ * left the pages overflowing it, and treating the value as manual also disabled
+ * the re-fit that would have corrected it, so it stayed wrong for the session.
+ *
+ * `pdfFitted === false` is the only evidence of a deliberate zoom. State written
+ * before the flag existed has none, so it re-fits.
+ */
+export function restoredPdfZoom(
+  init: { scale?: number; pdfFitted?: boolean } | undefined,
+): { scale: number; fitted: boolean } {
+  return {
+    // 1.2 is only the pre-load placeholder; the load effect fits or restores.
+    scale: init?.scale != null ? clampPdfScale(init.scale) : 1.2,
+    fitted: init?.pdfFitted !== false,
+  };
+}
+
+/**
+ * A pending scroll-restore target re-expressed at a new zoom. A saved offset is
+ * CSS pixels at the scale of the session that wrote it, so when the initial fit
+ * lands on a different zoom the target has to move with it — otherwise restoring
+ * a re-fitted document drops the reader at the wrong part of it.
+ */
+export function rescaleScrollTarget(
+  target: { top: number; left: number },
+  from: number,
+  to: number,
+): { top: number; left: number } {
+  if (!(from > 0) || !(to > 0)) return target;
+  const ratio = to / from;
+  return { top: target.top * ratio, left: target.left * ratio };
+}
+
+/**
+ * A restore target may only time out while the reader is actually on screen.
+ * Hidden tabs have no scrollable layout (`display:none`), so their scrollTop is
+ * clamped to zero no matter how complete the PDF is. TeX-linked PDFs commonly
+ * restart behind their editor tab; expiring the target there turns a valid saved
+ * position into a jump to the top before the reader has even opened the tab.
+ */
+export function shouldArmPdfRestoreDeadline(
+  paneVisible: boolean,
+  target: { top: number; left: number } | null,
+): boolean {
+  return paneVisible && target != null;
+}
+
 /** The eight standard `/Info` field names, bound to their wording (#pdf-meta). A
  *  map rather than a derived key, because these are the only names in the dict that
  *  belong to the format: everything else is the producer's own invention, and the
@@ -188,56 +274,6 @@ const META_FIELD_KEYS: Record<string, TranslationKey> = {
   CreationDate: "pdfMeta.field.CreationDate",
   ModDate: "pdfMeta.field.ModDate",
 };
-
-/**
- * Extract a PDF page's positioned text runs as {@link TextItemBox}es in big
- * points (scale-1 viewport, top-left origin). Each box hugs the glyph band
- * (ascender→descender, ≈0.8 em up / 0.2 em down of the baseline) so an overlay
- * sits on the text rather than riding high over it. Shared by SyncTeX word
- * refinement and Ctrl+F search so both box the text identically.
- *
- * `rot` is the turn the viewer has applied to this sheet. The boxes are measured in
- * the SAME rotated space the canvas is painted in, so a search hit still lands on its
- * word after the page has been turned.
- */
-async function pageTextItemBoxes(
-  doc: PDFDocumentProxy,
-  pageNumber: number,
-  rot = 0,
-): Promise<TextItemBox[]> {
-  const page = await doc.getPage(pageNumber);
-  const viewport = page.getViewport({
-    scale: 1,
-    rotation: (((page.rotate + rot) % 360) + 360) % 360,
-  });
-  const content = await page.getTextContent();
-  const items: TextItemBox[] = [];
-  for (const it of content.items) {
-    // Skip marked-content markers (no `str`/`transform`).
-    if (!("str" in it) || typeof it.str !== "string") continue;
-    if (!it.str) {
-      // An empty run is pdf.js's bare end-of-line marker. It has no geometry to keep,
-      // but the fact that a line ended there is exactly what the search needs to join
-      // a word split across two lines — so it is folded into the run before it rather
-      // than dropped with the rest of the empty runs.
-      if (it.hasEOL && items.length > 0) items[items.length - 1].eol = true;
-      continue;
-    }
-    const tx = pdfjs.Util.transform(viewport.transform, it.transform);
-    const em = Math.hypot(tx[2], tx[3]); // scaled font size (em) in big points
-    const ascent = em * 0.8;
-    const descent = em * 0.2;
-    items.push({
-      str: it.str,
-      x: tx[4],
-      y: tx[5] - ascent,
-      w: it.width,
-      h: ascent + descent,
-      ...(it.hasEOL ? { eol: true } : {}),
-    });
-  }
-  return items;
-}
 
 /**
  * How every page in this viewer is rendered, thumbnails and rasters included.
@@ -308,7 +344,15 @@ function PdfThumb({
     let cancelled = false;
     let task: { cancel: () => void; promise: Promise<void> } | null = null;
     void (async () => {
-      const p = await doc.getPage(page);
+      let p;
+      try {
+        p = await doc.getPage(page);
+      } catch {
+        // A page tree the compiler has not finished writing ("Page dictionary kid
+        // reference points to wrong type of object"): the next mtime poll brings
+        // the finished file, and an unpainted thumbnail is the right face for now.
+        return;
+      }
       if (cancelled) return;
       const rotation = (((p.rotate + rot) % 360) + 360) % 360;
       const base = p.getViewport({ scale: 1, rotation });
@@ -321,11 +365,28 @@ function PdfThumb({
       if (!canvas || !ctx) return;
       canvas.width = Math.max(1, Math.floor(viewport.width));
       canvas.height = Math.max(1, Math.floor(viewport.height));
-      task = p.render({ canvasContext: ctx, viewport });
+      task = p.render({ canvas, canvasContext: ctx, viewport });
+      let painted = false;
       try {
         await task.promise;
+        painted = true;
       } catch {
         /* superseded by a newer render — ignore */
+      }
+      if (painted && !cancelled) {
+        // Hand the page's parse back now that the thumbnail has its pixels. A
+        // render decodes every image on the page at full size and caches the
+        // bitmaps on the page object until something asks for them back — and
+        // for the rail nothing ever did, so a thumbnailed deck kept every page's
+        // decoded images alive for the document's whole life: measured at
+        // ~660 MB for a 57-page talk with 97 megapixel-plus figures, re-paid on
+        // every recompile (a fresh document, the rail repainting each page).
+        // That is what a popout showing such a deck was at 4.7 GB of (2026-09-01).
+        // A page the main view is rendering right now is left alone by pdf.js
+        // (the cleanup is refused and retried once that render completes) — it
+        // then re-decodes on its next repaint, a one-time cost, since the rail
+        // paints each thumbnail once.
+        p.cleanup();
       }
       if (cancelled || !marks?.length) return;
       ctx.fillStyle = "#000000";
@@ -463,7 +524,8 @@ function PdfPageCanvas({
   onNeedNotes?: () => void;
   /** The blackout tool is armed: a drag over the page marks an area. */
   redacting?: boolean;
-  /** The image-copy tool is armed: a drag copies that page region as a PNG. */
+  /** The region-capture mode is armed (by the global Screenshot app): a drag
+   *  copies that page region as a PNG. */
   copySelecting?: boolean;
   /** The ids of the file's own highlight annotations on this sheet that the viewer
    *  is drawing itself, joined — so the canvas repaints when the set changes. The
@@ -580,7 +642,14 @@ function PdfPageCanvas({
     let cancelled = false;
     let task: { cancel: () => void; promise: Promise<void> } | null = null;
     (async () => {
-      const page = await doc.getPage(pageNumber);
+      let page;
+      try {
+        page = await doc.getPage(pageNumber);
+      } catch {
+        // Mid-compile read (see PdfThumb): keep the old pixels, the next reload
+        // paints the real page. This was an unhandled rejection per page per build.
+        return;
+      }
       if (cancelled) return;
       const dpr = window.devicePixelRatio || 1;
       const viewport = page.getViewport({
@@ -608,6 +677,16 @@ function PdfPageCanvas({
       if (sameGeometry && samePage(fp, prev.fp)) {
         // Already on screen, at this size, drawing this. Nothing to do — which is
         // the whole point: no clear, no repaint, no flash.
+        //
+        // Except to hand back what the comparison cost: `getOperatorList()` is the
+        // parse half of a render, and it decoded every image on this page into the
+        // NEW document's page object on the way to its answer. Nothing will ever
+        // paint from that parse — the pixels it matches are already on the canvas
+        // — so without this every recompile of an unchanged deck left the fresh
+        // document holding the decoded images of every page near the viewport,
+        // for the life of that document. (Refused while a render is in flight,
+        // which cannot be this effect's — it has not started one.)
+        page.cleanup();
         return;
       }
       // From here the canvas is going to change, and any interruption (a zoom
@@ -626,7 +705,7 @@ function PdfPageCanvas({
       if (off && offCtx) {
         off.width = w;
         off.height = h;
-        task = page.render({ canvasContext: offCtx, viewport, annotationMode: ANNOT_MODE });
+        task = page.render({ canvas: off, canvasContext: offCtx, viewport, annotationMode: ANNOT_MODE });
         try {
           await task.promise;
         } catch {
@@ -654,7 +733,7 @@ function PdfPageCanvas({
         canvas.height = h;
         canvas.style.width = `${viewport.width / dpr}px`;
         canvas.style.height = `${viewport.height / dpr}px`;
-        task = page.render({ canvasContext: ctx, viewport, annotationMode: ANNOT_MODE });
+        task = page.render({ canvas, canvasContext: ctx, viewport, annotationMode: ANNOT_MODE });
         try {
           await task.promise;
         } catch {
@@ -764,11 +843,15 @@ function PdfPageCanvas({
 
   // Scroll a forward-search target into view on a new nonce. Center the
   // highlight *box*, not the whole page — on a tall page the target line can sit
-  // far from page-center, which is what made the jump feel imprecise.
+  // far from page-center, which is what made the jump feel imprecise. Scoped to
+  // the reader's own scroller (`scrollIntoPdfBox`): `scrollIntoView` also scrolls
+  // the `overflow: hidden` pane and tab hosts above it, which is what displaced
+  // the whole pane — and the fit-to-width page inside it — on a jump.
   useEffect(() => {
     if (!highlight) return;
     onReveal?.();
-    (boxRef.current ?? wrapRef.current)?.scrollIntoView({ block: "center", inline: "nearest" });
+    const target = boxRef.current ?? wrapRef.current;
+    if (target) scrollIntoPdfBox(target, "center");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [highlight?.nonce]);
 
@@ -777,7 +860,7 @@ function PdfPageCanvas({
   // box is always present to scroll to.
   useEffect(() => {
     if (!searchScrollNonce) return;
-    searchCurrentRef.current?.scrollIntoView({ block: "center", inline: "nearest" });
+    if (searchCurrentRef.current) scrollIntoPdfBox(searchCurrentRef.current, "center");
   }, [searchScrollNonce]);
 
   // Reverse search, by client coordinates rather than by the event's own target:
@@ -1014,7 +1097,14 @@ function PdfPageCanvas({
           `\ref` points at should not have to sweep the pointer across the page
           to find out that the number is one. The class carries the link's *role*
           (`ref` / `cite` / external) because that is what the colour says —
-          the same three-way split `hyperref`'s own `colorlinks` makes. */}
+          the same three-way split `hyperref`'s own `colorlinks` makes.
+
+          The exception is `nav`, the document's own chrome (beamer's running
+          title and navigation bar), which is unpainted at rest: that argument is
+          about a mark the reader cannot otherwise find, made once where the
+          author wrote it, and a theme's furniture is neither — it is already
+          coloured by the theme and it repeats on every sheet. Same box, same
+          hover, same click; only the resting mark goes. */}
       {links.map((l) => {
         const css = bigPointsToCssRect(l.rect, scale);
         return (
@@ -1343,7 +1433,7 @@ function OutlinePreview({
         canvas.height = Math.max(1, Math.floor(viewport.height));
         const ctx = canvas.getContext("2d");
         if (!ctx) return;
-        await p.render({ canvasContext: ctx, viewport }).promise;
+        await p.render({ canvas, canvasContext: ctx, viewport }).promise;
         if (cancelled) return;
         const data = canvas.toDataURL("image/png");
         cache.set(page, data);
@@ -1582,6 +1672,11 @@ function PdfCanvas({
   // (rather than beside `updateVisiblePage` below) so the go-to-page control,
   // which seeds its input from the current value, can read it too.
   const [visiblePage, setVisiblePage] = useState(1);
+  // The same number as a ref, because ← / → step off the *previous* page rather
+  // than off a rendered one: two presses inside one frame both read the same
+  // stale state and would advance a single page. The scroll listener writes
+  // both, so the ref is only ever ahead of the state, never wrong about it.
+  const visiblePageRef = useRef(1);
   // Undo/redo: the arrangement is a small immutable list, so history is just a
   // stack of them.
   const [past, setPast] = useState<PageList[]>([]);
@@ -1622,9 +1717,12 @@ function PdfCanvas({
   // all until Save. These four are only the tool's own state.
   /** The blackout tool is armed — a drag over a page marks an area. */
   const [redacting, setRedacting] = useState(false);
-  /** The image-copy tool is armed — a drag over a page writes that crop to the
-   *  native system clipboard. Mutually exclusive with redaction because both
-   *  tools own the same plain drag gesture. */
+  /** The region-capture mode is armed — a drag over a page writes that crop to
+   *  the native system clipboard (and into the project's screenshots/ folder).
+   *  Armed by the global Screenshot app rather than a toolbar button: pressing
+   *  Screenshot while a PDF is on screen means this document, at document
+   *  sharpness, not a grab of the screen around it. Mutually exclusive with
+   *  redaction because both modes own the same plain drag gesture. */
   const [copySelecting, setCopySelecting] = useState(false);
   const [copyBusy, setCopyBusy] = useState(false);
   const [copyNotice, setCopyNotice] = useState<string | null>(null);
@@ -1635,23 +1733,70 @@ function PdfCanvas({
     },
     [],
   );
+  // The project the viewed file belongs to (the longest project directory that is
+  // a prefix of `path`), so a capture files its PNG into the right screenshots/
+  // folder and the merge picker lists the right tree even in a detached window.
+  // It must stay project-scoped: the backend confines every write and read to the
+  // scope's tree, so an arbitrary path would simply be refused.
+  const pdfProjectDir = useMemo(() => {
+    const { projects } = useProjectsStore.getState();
+    let best = "";
+    for (const p of projects) {
+      const dir = resolveProjectDirectory(p);
+      if (dir && isPathWithin(path, dir) && dir.length > best.length) best = dir;
+    }
+    return best;
+  }, [path]);
   const copySelection = useCallback(
     async (png: Uint8Array) => {
       setCopyBusy(true);
       setCopyNotice(null);
       try {
         await invoke("copy_png_bytes_to_clipboard", { png: Array.from(png) });
+        // The clipboard copy is unconditional; filing the PNG is not. The crop
+        // is handed to the save overlay, which asks for a destination before
+        // anything is written — the same consent step an OS-tool capture goes
+        // through, and for the same reason: a PDF's project may well have a
+        // public remote (see `stores/screenshotPending`). The overlay opens on
+        // this PDF's own project, since that is the one it documents.
+        useScreenshotPendingStore.getState().show({
+          kind: "bytes",
+          png,
+          name: screenshotFilename(),
+          hintDir: pdfProjectDir || null,
+        });
         setCopyNotice(t("pdfViewer.copySelectionDone"));
         if (copyNoticeTimer.current != null) window.clearTimeout(copyNoticeTimer.current);
         copyNoticeTimer.current = window.setTimeout(() => setCopyNotice(null), 2500);
+        // One press of Screenshot is one shot, like every OS region tool this
+        // stands in for — disarm rather than wait for an Esc.
+        setCopySelecting(false);
       } catch (e) {
         setEditError(t("pdfViewer.copySelectionFailed", { msg: String(e) }));
       } finally {
         setCopyBusy(false);
       }
     },
-    [t],
+    [t, pdfProjectDir],
   );
+  // The global Screenshot app offers the shot to visible viewers before it
+  // spawns the OS region tool (see `lib/screenshot`). Claim it while this pane
+  // is the one on screen: `paneVisible` is false for every hidden tab, so of
+  // the many mounted viewers only the visible one(s) even listen, and the
+  // `claimed` flag keeps two side-by-side PDFs from both arming.
+  useEffect(() => {
+    if (!paneVisible || !doc) return;
+    const onCapture = (e: Event) => {
+      const detail = (e as CustomEvent<ScreenshotCaptureDetail>).detail;
+      if (!detail || detail.claimed || copyBusy) return;
+      detail.claimed = true;
+      setRedacting(false);
+      setCopyNotice(null);
+      setCopySelecting(true);
+    };
+    window.addEventListener(SCREENSHOT_CAPTURE_EVENT, onCapture);
+    return () => window.removeEventListener(SCREENSHOT_CAPTURE_EVENT, onCapture);
+  }, [paneVisible, doc, copyBusy]);
   /** Grow each drawn box out to the words it touches. On by default: a box drawn by
    *  eye clips ascenders and word ends, and the burn-in is pixel-exact, so an
    *  unsnapped mark is how a legible sliver of the redacted word survives. */
@@ -1691,6 +1836,71 @@ function PdfCanvas({
   // the LIVE dirty flag to decide whether an on-disk change may auto-reload.
   const dirtyRef = useRef(false);
   dirtyRef.current = dirty;
+
+  // ── Presenting this PDF fullscreen (`present.ts`) ────────────────────────
+  //
+  // A window of its own showing the sheet and nothing else — the toolbar, the
+  // tab bar and the desktop all gone. It opens the file itself from `path`, so
+  // what it shows is the file AS SAVED: an unsaved page arrangement stays in this
+  // tab, which the button's tooltip says while there is one.
+  const presentLabel = useMemo(() => pdfPresentLabel(path), [path]);
+  /** This tab has opened the present window (and so answers its seed requests).
+   *  Not proof it is still on screen — the reader may have closed it with Esc —
+   *  which costs nothing: an emit at a label with no listener is a no-op. */
+  const [presentOpen, setPresentOpen] = useState(false);
+  const seedPresent = useCallback(() => {
+    const payload: PdfPresentSeed = {
+      path,
+      scope,
+      // Where the reader is now, so Present picks up the sheet on screen — and so
+      // pressing it again with the window already open moves it here rather than
+      // doing nothing visible.
+      page: visiblePage,
+    };
+    void emit(pdfPresentSeedEvent(presentLabel), payload);
+  }, [presentLabel, path, scope, visiblePage]);
+  // Read by the subscription below through a ref: `listen()` is async, so
+  // re-subscribing drops any request that lands during the round trip — and this
+  // one would otherwise re-subscribe on every scroll that changes the sheet
+  // number, which is the trap `DeckPresenter` documents.
+  const seedPresentRef = useRef(seedPresent);
+  seedPresentRef.current = seedPresent;
+  const openPresentWindow = useCallback(() => {
+    void (async () => {
+      try {
+        // `fullscreen: true` is what makes this different from the deck's
+        // audience window: that one only takes over a SECOND monitor and stays
+        // windowed on a single-monitor machine, which is the right default for a
+        // talk with a notes view but not for "show me this PDF fullscreen".
+        // Opening is idempotent by label, so a second press re-focuses the window
+        // already up and the seed below moves it to this sheet.
+        await invoke("open_presenter_window", { label: presentLabel, fullscreen: true });
+        setPresentOpen(true);
+        seedPresent();
+      } catch (e) {
+        setError(describeFileError(e));
+      }
+    })();
+  }, [presentLabel, seedPresent]);
+
+  // The present window asks until it is answered (it and this listener race on
+  // open). Subscribed only once this tab has opened one: a listener per PDF tab
+  // for a window nobody asked for is a subscription that never pays for itself.
+  useEffect(() => {
+    if (!presentOpen) return;
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    void listen<PdfPresentReady>(PDF_PRESENT_READY, (e) => {
+      if (e.payload.label === presentLabel) seedPresentRef.current();
+    }).then((fn) => {
+      if (cancelled) fn();
+      else unlisten = fn;
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [presentOpen, presentLabel]);
 
   /** A metadata field's name. Only the eight standard `/Info` keys are translated —
    *  everything else is a name the producer invented, and printing an i18n key back
@@ -2053,13 +2263,18 @@ function PdfCanvas({
    *  all: deleting the last remark on a page leaves nothing to count and still has to
    *  be written. */
   const notedSheets = notedSheetCount(pages);
-  // Restore the saved zoom if there is one; otherwise the load effect fits the
-  // page width. `1.2` is only the pre-load placeholder.
-  const [scale, setScale] = useState(viewPos.initial?.scale ?? 1.2);
+  // How this reopen starts — the seeded zoom and whether it is the fit baseline.
+  // Decided once, by `restoredPdfZoom`, which is where the rule is documented.
+  const restored = useState(() => restoredPdfZoom(viewPos.initial))[0];
+  const [scale, setScale] = useState(restored.scale);
+  // A fit-baseline restore is not addressable until this sitting's pane width is
+  // known and `fitWidth` has expressed the saved offset at that zoom. In
+  // particular, a PDF loaded behind its TeX editor starts with width zero.
+  const [initialZoomReady, setInitialZoomReady] = useState(false);
   // True while the PDF is at the fit-to-width baseline, so a pane/tab resize
   // re-fits. A manual zoom (buttons / Ctrl+wheel) clears it; the "Fit width"
   // button and the initial fit restore it. Mirrors ImageViewer's `fittedRef`.
-  const fittedRef = useRef(viewPos.initial?.scale == null);
+  const fittedRef = useRef(restored.fitted);
   const scrollRef = useRef<HTMLDivElement>(null);
   // Proportional scroll-link to a paired subwindow (no-op unless linked).
   const reportScrollSync = useScrollSync(groupId, scrollRef);
@@ -2081,6 +2296,12 @@ function PdfCanvas({
   // same path (a recompile bumped `diskVersion`) should preserve the reader's
   // scroll position; switching to a different file should not.
   const loadedPath = useRef<string | null>(null);
+  // The zoom the pending `restoreScroll` target was measured at. A saved scroll
+  // offset is CSS pixels at the scale of the session that wrote it, so if the
+  // initial fit lands on a different zoom (a pane of a different width), the
+  // target has to be re-expressed in the new scale or the reader is restored to
+  // the wrong part of the document. Null whenever no rescaling is owed.
+  const restoreScale = useRef<number | null>(null);
   // Scroll target to restore after a same-path reload (a recompile). The page
   // canvases re-render asynchronously, so the content grows over several frames;
   // the ResizeObserver below re-applies this until the position is reachable.
@@ -2111,6 +2332,25 @@ function PdfCanvas({
       window.removeEventListener("blur", clear);
     };
   }, [syncable]);
+
+  // Why a reverse-search click did nothing, or may have landed on the wrong
+  // line — worded from `synctexStatus` after every click (see `syncNoticeKind`).
+  // A Ctrl-click used to fail silently in every one of these cases, which read
+  // as "click-to-source is broken" when the answer was "you haven't recompiled".
+  // `source` is the file the Recompile button builds from (the resolved input on
+  // a hit, the PDF's sibling `.tex` otherwise); `canRecompile` gates the button,
+  // since a PDF opened on its own has no workspace to hand the build to.
+  const [syncNotice, setSyncNotice] = useState<{
+    kind: SyncNoticeKind;
+    source: string;
+    sources: string[];
+    canRecompile: boolean;
+  } | null>(null);
+  useEffect(() => {
+    if (!syncNotice) return;
+    const id = window.setTimeout(() => setSyncNotice(null), 10000);
+    return () => window.clearTimeout(id);
+  }, [syncNotice]);
 
   // SyncTeX forward search: a pending reveal/highlight request for this PDF.
   // Copied into local state so we can consume the store request immediately
@@ -2160,6 +2400,26 @@ function PdfCanvas({
     });
     setReloadReveal(null);
   }, [doc, loadedDiskVersion, reloadReveal]);
+
+  // A plain re-read request (a compile with nothing to reveal — see
+  // `requestReload`): re-read the bytes now rather than wait for an mtime
+  // advance that, after a latexmk "up-to-date" no-op, never comes. Skipped while
+  // the first load is still in flight (it is reading those bytes already) and
+  // routed through the stale banner when page edits are pending, exactly like
+  // the poll — a reload replaces the arrangement.
+  const reloadNonce = usePdfSyncStore((s) => s.reloadByPath[path] ?? 0);
+  useEffect(() => {
+    if (!reloadNonce || (!doc && !error)) return;
+    if (dirtyRef.current) {
+      setStaleOnDisk(true);
+      return;
+    }
+    void fileMtime(path, scope)
+      .then((mtime) => { lastMtime.current = mtime; })
+      .catch(() => {});
+    setDiskVersion((v) => v + 1);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reloadNonce]);
 
   // A SyncTeX reveal names a page of the FILE, but the reader shows an arrangement —
   // that page may have been moved, or dropped. Resolve it to the sheet currently
@@ -2479,19 +2739,26 @@ function PdfCanvas({
   noteSaveRef.current = () => void handleSave(false, true);
 
   // ── Merge: splice another PDF's pages into this arrangement ──────────────
-  // The project the viewed file belongs to (the longest project directory that is a
-  // prefix of `path`), so the picker lists the right tree even in a detached window.
-  // It must stay project-scoped: the backend confines every read to the scope's tree,
-  // so an arbitrary path from an OS file dialog would simply be refused.
-  const pdfProjectDir = useMemo(() => {
+  // (`pdfProjectDir` — the project tree the picker lists — is declared beside the
+  // region-capture mode above, which files its screenshots by the same answer.)
+
+  // BOX scope (#41 Phase 5): the merge picker offers EVERY root the scope can
+  // read — the box folder plus each member project's tree — with a root
+  // selector row, so a merge can pull pages from another member's PDF.
+  // Single-project scopes get no `roots` and are unchanged.
+  const pdfPickerRoots = useMemo(() => {
+    if (!scope || !scope.startsWith(BOX_SCOPE_PREFIX)) return null;
+    const { boxes } = useBoxesStore.getState();
     const { projects } = useProjectsStore.getState();
-    let best = "";
-    for (const p of projects) {
-      const dir = resolveProjectDirectory(p);
-      if (dir && isPathWithin(path, dir) && dir.length > best.length) best = dir;
+    const box = boxes.find((b) => boxScopeId(b.id) === scope);
+    if (!box) return null;
+    const roots: { label: string; dir: string }[] = [];
+    if (box.folder) roots.push({ label: box.name, dir: box.folder });
+    for (const m of boxMembersOfScope(scope, boxes, projects)) {
+      roots.push({ label: m.name, dir: m.dir });
     }
-    return best;
-  }, [path]);
+    return roots.length > 0 ? roots : null;
+  }, [scope]);
 
   /** Where an insert lands: after the last selected sheet, else at the end. */
   const insertAt = useCallback(() => {
@@ -2833,8 +3100,22 @@ function PdfCanvas({
     if (count === 0) return;
     const idx = Math.min(Math.max(Math.trunc(pos), 1), count) - 1;
     const wrap = contentRef.current?.children[idx] as HTMLElement | undefined;
-    wrap?.scrollIntoView({ block: "start", inline: "nearest" });
+    if (wrap) scrollIntoPdfBox(wrap, "start");
   }, []);
+  /** ← / → : one sheet per press, the way a deck of slides is read. Returns
+   *  false at either end of the document, where the caller leaves the key to the
+   *  scroller rather than yanking the reader back to the top of the page they
+   *  are already at the bottom of. */
+  const stepPage = useCallback(
+    (delta: number) => {
+      const target = visiblePageRef.current + delta;
+      if (target < 1 || target > pagesRef.current.length) return false;
+      visiblePageRef.current = target;
+      jumpToArrangementIndex(target);
+      return true;
+    },
+    [jumpToArrangementIndex],
+  );
   const openPageJump = useCallback(() => {
     if (pages.length === 0) return;
     setPageJumpValue(String(visiblePage));
@@ -2905,7 +3186,7 @@ function PdfCanvas({
       const top = srcDoc ? await destTopInBigPoints(srcDoc, dest, list[idx].rot ?? 0) : null;
       if (top == null) {
         // A whole-page destination (`/Fit`) names no line to land on.
-        wrap.scrollIntoView({ block: "start", inline: "nearest" });
+        scrollIntoPdfBox(wrap, "start");
         return true;
       }
       // Measured rather than read off `offsetTop`: the page stack's offset parent
@@ -3005,6 +3286,18 @@ function PdfCanvas({
         // return from the link you just followed.
         e.preventDefault();
         linkGoBack();
+      } else if (
+        (e.key === "ArrowRight" || e.key === "ArrowLeft") &&
+        !mod &&
+        !e.altKey &&
+        !e.shiftKey &&
+        !isTextEntry(e.target)
+      ) {
+        // Next/previous sheet — a beamer deck is a page per slide, and the arrow
+        // keys are what it is read with in every other reader. Bare keys only:
+        // Alt+← is already "back" above, and Shift+← extends a text selection.
+        // At either end nothing is claimed, so the scroller keeps the key.
+        if (stepPage(e.key === "ArrowRight" ? 1 : -1)) e.preventDefault();
       } else if (e.key === "Escape" && pageJumpOpen) {
         e.preventDefault();
         closePageJump();
@@ -3035,6 +3328,7 @@ function PdfCanvas({
       redacting,
       copySelecting,
       linkGoBack,
+      stepPage,
     ],
   );
   const onFindKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -3064,21 +3358,34 @@ function PdfCanvas({
   // Resolve the clicked source's root (the main `.tex` that produces this PDF) and
   // pass it as the routing anchor, so a subfile with no tab yet opens in the
   // subwindow that already holds the main `.tex` rather than the focused group.
+  //
+  // Every outcome is worded: no map beside the PDF (compile with SyncTeX first),
+  // a map the PDF or a source outgrew (recompile — the jump still happens, a
+  // nearby line beats nothing), or an honest miss on a current map. The status
+  // probe runs after the resolve, not before, so a clean hit on a current map
+  // costs one extra command answered from the map cache and a few stats.
   const onSyncClick = useCallback(
     async (page: number, x: number, y: number) => {
-      const src = await synctexEdit(path, page, x, y);
-      if (!src) return;
-      const anchor = await resolveTexRoot(src.input).catch(() => src.input);
-      // In a TeX workspace the host handles reverse search itself (it switches
-      // the docked editor's center to the producing child); standalone falls
-      // back to the module jump (open/focus the source tab).
-      if (onReverseSource) {
-        onReverseSource(src, anchor);
-        return;
+      setSyncNotice(null);
+      const src = syncable ? await synctexEdit(path, page, x, y) : null;
+      if (src) {
+        const anchor = await resolveTexRoot(src.input).catch(() => src.input);
+        // In a TeX workspace the host handles reverse search itself (it switches
+        // the docked editor's center to the producing child); standalone falls
+        // back to the module jump (open/focus the source tab).
+        if (onReverseSource) onReverseSource(src, anchor);
+        else jumpToSource(src.input, src.line, src.column, anchor);
       }
-      jumpToSource(src.input, src.line, src.column, anchor);
+      const status = syncable ? await synctexStatus(path) : null;
+      const kind = syncable
+        ? syncNoticeKind(status, src != null)
+        : ("noMap" satisfies SyncNoticeKind);
+      if (!kind) return;
+      const source = src?.input ?? path.replace(/\.pdf$/i, ".tex");
+      const canRecompile = await canRecompileTexSource(source).catch(() => false);
+      setSyncNotice({ kind, source, sources: status?.newer_sources ?? [], canRecompile });
     },
-    [path, onReverseSource],
+    [path, syncable, onReverseSource],
   );
 
   // Seed the mtime baseline once per file, visible or not, so it pairs with the
@@ -3137,6 +3444,7 @@ function PdfCanvas({
       const init = viewPos.initial;
       if (init && ((init.scrollTop ?? 0) > 0 || (init.scrollLeft ?? 0) > 0)) {
         firstRestore = { top: init.scrollTop ?? 0, left: init.scrollLeft ?? 0 };
+        restoreScale.current = init.scale ?? null;
       }
     }
     const samePathReload = loadedPath.current === path;
@@ -3164,7 +3472,7 @@ function PdfCanvas({
     // recompile) leave the old pages painted until the new ones are ready.
     const prevSources = sourcesRef.current;
     const freePrev = () => {
-      for (const s of prevSources.values()) s.doc.destroy();
+      for (const s of prevSources.values()) s.doc.loadingTask.destroy();
     };
     // Whether a failure may stay silent: only when a last good document is
     // actually on screen to fall back on. `samePathReload` alone is not that —
@@ -3182,16 +3490,6 @@ function PdfCanvas({
       setError(null);
     }
     const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
-    // Safety net: stop re-applying the restore target once the pages have had
-    // time to lay out, so a target the (re)loaded PDF can't reach — a recompile
-    // shortened it, or the file changed on disk while Eldrun was closed — never
-    // keeps yanking the scroll back and fighting the reader. Armed only AFTER
-    // the document loads (below), not here at effect start: the byte read +
-    // parse can itself take seconds for a large PDF (a LaTeX thesis on a busy
-    // restart), and a clock started before that would expire before the content
-    // ever reached its full height — dropping the restore for exactly the big
-    // documents where a remembered position matters most.
-    let restoreDeadline: ReturnType<typeof setTimeout> | null = null;
     (async () => {
       for (let attempt = 0; ; attempt++) {
         try {
@@ -3207,7 +3505,7 @@ function PdfCanvas({
             reread: () => readFileBytes(path, scope),
           });
           if (cancelled) {
-            src.doc.destroy();
+            src.doc.loadingTask.destroy();
             return;
           }
           // A load is a fresh start: one source, the identity arrangement, no
@@ -3235,13 +3533,6 @@ function PdfCanvas({
           setLoadedDiskVersion(diskVersion);
           setDoc(src.doc);
           freePrev();
-          // Start the give-up clock now that the pages are about to lay out —
-          // see the note where `restoreDeadline` is declared.
-          if (restoreScroll.current) {
-            restoreDeadline = setTimeout(() => {
-              restoreScroll.current = null;
-            }, 4000);
-          }
           return;
         } catch (e) {
           if (cancelled) return;
@@ -3265,9 +3556,23 @@ function PdfCanvas({
     })();
     return () => {
       cancelled = true;
-      if (restoreDeadline) clearTimeout(restoreDeadline);
     };
   }, [path, scope, diskVersion]);
+
+  // Safety net: stop re-applying an unreachable target once the VISIBLE pages
+  // have had time to lay out. A hidden tab is not merely off screen: its
+  // `display:none` scroller has no reachable range, so starting this clock at
+  // document load discarded TeX-linked PDFs' saved positions four seconds into
+  // startup, while they were still sitting behind the restored editor tab.
+  useEffect(() => {
+    const target = restoreScroll.current;
+    if (!shouldArmPdfRestoreDeadline(paneVisible, target)) return;
+    const id = window.setTimeout(() => {
+      restoreScroll.current = null;
+      restoreScale.current = null;
+    }, 4000);
+    return () => window.clearTimeout(id);
+  }, [doc, paneVisible]);
 
   // Release the open source documents when the viewer unmounts. This is its own
   // effect (not the load effect's cleanup) because the load effect now hands its
@@ -3275,7 +3580,7 @@ function PdfCanvas({
   // never tears down the document that is still on screen.
   useEffect(
     () => () => {
-      for (const s of sourcesRef.current.values()) s.doc.destroy();
+      for (const s of sourcesRef.current.values()) s.doc.loadingTask.destroy();
       sourcesRef.current = new Map();
     },
     [],
@@ -3335,28 +3640,60 @@ function PdfCanvas({
     const vp = page.getViewport({ scale: 1 });
     const avail = el.clientWidth - 24; // leave room for page margins
     if (avail > 0 && vp.width > 0) {
-      setScale(clampPdfScale(avail / vp.width));
+      const nextScale = clampPdfScale(avail / vp.width);
+      // Re-express the pending target BEFORE announcing that zoom is ready: the
+      // restore layout effect runs before ordinary effects, so leaving this to
+      // the scale effect below could apply (and clear) the old-scale offset one
+      // frame too early.
+      const from = restoreScale.current;
+      if (from != null && restoreScroll.current) {
+        restoreScroll.current = rescaleScrollTarget(restoreScroll.current, from, nextScale);
+        restoreScale.current = nextScale;
+      }
+      setScale(nextScale);
       fittedRef.current = true;
+      setInitialZoomReady(true);
+      // Record the baseline here rather than leaving it to the scale-persist
+      // effect: fitting when the view is already AT the fit (the "Fit width"
+      // button on an untouched document) changes no scale, so that effect never
+      // fires — and the flag is the whole point. `viewPos.persist` dedups.
+      viewPos.persist({ pdfFitted: true });
     }
-  }, []);
+  }, [viewPos]);
 
-  // Fit to width when a document loads — UNLESS this is the first load and a zoom
-  // was persisted from a prior session, in which case honour the saved scale
-  // (already seeded into `scale`). A same-path reload (a recompile rewrote this
-  // PDF) keeps the reader's current zoom rather than snapping back to fit-width;
-  // only a genuine switch to a different file refits.
+  // Fit to width when a document loads — UNLESS this is the first load and a
+  // DELIBERATE zoom was persisted from a prior session, in which case honour the
+  // saved scale (already seeded into `scale`). A saved scale that was merely the
+  // previous session's fit is re-fitted to THIS pane instead: the pane it was
+  // measured in is gone, and its width is what the number encoded. A same-path
+  // reload (a recompile rewrote this PDF) keeps the reader's current zoom rather
+  // than snapping back to fit-width; only a genuine switch to a different file
+  // refits.
   const didInitialFit = useRef(false);
   useEffect(() => {
     if (!doc) return;
     if (!didInitialFit.current) {
       didInitialFit.current = true;
-      if (viewPos.initial?.scale != null) return;
+      if (viewPos.initial?.scale != null && !fittedRef.current) {
+        setInitialZoomReady(true);
+        return;
+      }
     } else if (reloadKeepZoom.current) {
+      setInitialZoomReady(true);
       return;
     }
     void fitWidth(doc);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [doc, fitWidth]);
+
+  // A hidden first load has width zero, so the attempt above intentionally does
+  // nothing. Retry on reveal even in engines/tests where ResizeObserver does not
+  // report the display:none → visible transition; only a successful fit marks
+  // the saved scroll target ready to apply.
+  useEffect(() => {
+    if (!doc || !paneVisible || initialZoomReady || !fittedRef.current) return;
+    void fitWidth(doc);
+  }, [doc, paneVisible, initialZoomReady, fitWidth]);
 
   // Re-fit to width when the pane/tab resizes, but only while at the fit
   // baseline — a manual zoom opts out. Same contract as ImageViewer's resize
@@ -3376,9 +3713,28 @@ function PdfCanvas({
   // so the pre-load placeholder scale is never written). setViewerState dedups,
   // so re-persisting an unchanged scale is a no-op.
   useEffect(() => {
-    if (doc) viewPos.persist({ scale });
+    // `pdfFitted` rides along with every scale write so the next session can tell
+    // the reader's zoom from a fit of a pane that no longer exists. Both setters
+    // update `fittedRef` synchronously with their `setScale`, so by the time this
+    // commit effect runs the ref describes the scale being written.
+    if (doc) viewPos.persist({ scale, pdfFitted: fittedRef.current });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scale, doc]);
+
+  // Keep a pending session restore addressed to the right part of the document
+  // when the initial fit moves the zoom out from under it (see `restoreScale`).
+  // Pixels scale with the zoom, so the target does too.
+  useEffect(() => {
+    const from = restoreScale.current;
+    if (from == null || from === scale) return;
+    restoreScale.current = scale;
+    const target = restoreScroll.current;
+    if (!target) {
+      restoreScale.current = null;
+      return;
+    }
+    restoreScroll.current = rescaleScrollTarget(target, from, scale);
+  }, [scale]);
 
   // "Page X / N" toolbar readout: the page occupying the viewport. The anchor
   // is a third of the way down the viewport (typical PDF-viewer feel); the page
@@ -3392,13 +3748,18 @@ function PdfCanvas({
     const pages = content.children;
     for (let i = 0; i < pages.length; i++) {
       if (pages[i].getBoundingClientRect().bottom >= anchor) {
+        visiblePageRef.current = i + 1;
         setVisiblePage(i + 1);
         return;
       }
     }
-    if (pages.length > 0) setVisiblePage(pages.length);
+    if (pages.length > 0) {
+      visiblePageRef.current = pages.length;
+      setVisiblePage(pages.length);
+    }
   }, []);
   useEffect(() => {
+    visiblePageRef.current = 1;
     setVisiblePage(1);
     if (doc) updateVisiblePage();
   }, [doc, updateVisiblePage]);
@@ -3489,7 +3850,7 @@ function PdfCanvas({
     const idx = pagesRef.current.findIndex((r) => r.src === SELF && r.page === filePage);
     if (idx < 0) return;
     const wrap = contentRef.current?.children[idx] as HTMLElement | undefined;
-    wrap?.scrollIntoView({ block: "start", inline: "nearest" });
+    if (wrap) scrollIntoPdfBox(wrap, "start");
   }, []);
 
   // The outline entry to highlight: the last chapter (in document order) whose
@@ -3581,11 +3942,14 @@ function PdfCanvas({
   useLayoutEffect(() => {
     const el = scrollRef.current;
     const target = restoreScroll.current;
-    if (!doc || !el || !target) return;
+    if (!doc || !paneVisible || !initialZoomReady || !el || !target) return;
     el.scrollTop = target.top;
     el.scrollLeft = target.left;
-    if (el.scrollTop >= target.top - 1) restoreScroll.current = null;
-  }, [doc]);
+    if (el.scrollTop >= target.top - 1) {
+      restoreScroll.current = null;
+      restoreScale.current = null;
+    }
+  }, [doc, paneVisible, initialZoomReady]);
 
   // Apply a pending cursor-anchored scroll target once the page content has
   // resized after a zoom (the observer fires when the canvases repaint).
@@ -3609,7 +3973,10 @@ function PdfCanvas({
       if (restore) {
         el.scrollTop = restore.top;
         el.scrollLeft = restore.left;
-        if (el.scrollTop >= restore.top - 1) restoreScroll.current = null;
+        if (el.scrollTop >= restore.top - 1) {
+          restoreScroll.current = null;
+          restoreScale.current = null;
+        }
       }
       // A layout-height change (zoom re-render, pages appearing) moves which
       // page sits under the anchor even without a scroll event.
@@ -3745,20 +4112,10 @@ function PdfCanvas({
           ▮
         </button>
         <UntestedTag />
-        <button
-          className={`file-viewer-zoom-btn${copySelecting ? " active" : ""}`}
-          onClick={() => {
-            setCopySelecting((v) => !v);
-            setRedacting(false);
-            setCopyNotice(null);
-          }}
-          disabled={!doc || copyBusy}
-          title={t("pdfViewer.copySelectionTitle")}
-          aria-label={t("pdfViewer.copySelectionLabel")}
-          aria-pressed={copySelecting}
-        >
-          ✂
-        </button>
+        {/* There is deliberately no ✂ copy-region button any more either: the
+            region capture is armed by the header's global Screenshot app, which
+            hands the shot to a visible PDF viewer before it would spawn an OS
+            region tool — one capture entry point instead of two. */}
         {/* The remarks panel (#pdf-notes) — the document's comments as a list, and
             the way to walk them. A panel rather than a mode: reading the remarks is
             not a thing you stop doing to the page, so it arms nothing and turns
@@ -3862,6 +4219,23 @@ function PdfCanvas({
             <PrinterIcon />
           )}
         </button>
+        {/* Fullscreen present: this PDF in a window of its own, with nothing else
+            on the screen. Beside Print because the two are the same job aimed at
+            the two audiences a document has — the room and the page. */}
+        <button
+          className="file-viewer-zoom-btn file-viewer-zoom-text"
+          onClick={openPresentWindow}
+          disabled={!doc}
+          title={
+            dirty
+              ? t("pdfViewer.fullscreenPresentDirtyTitle")
+              : t("pdfViewer.fullscreenPresentTitle")
+          }
+          aria-label={t("pdfViewer.fullscreenPresentLabel")}
+        >
+          ▶ {t("pdfViewer.fullscreenPresentBtn")}
+        </button>
+        <UntestedTag />
         {deckEnabled && (
           <button
             className="file-viewer-zoom-btn file-viewer-zoom-text"
@@ -3938,15 +4312,19 @@ function PdfCanvas({
           <span className="file-viewer-pdf-redact-warn">{t("pdfRedact.flattenWarning")}</span>
         </div>
       )}
-      {copySelecting && (
+      {/* A successful shot disarms the mode, so the bar outlives it just long
+          enough to carry the busy/"copied" feedback the disarm would otherwise
+          swallow. */}
+      {(copySelecting || copyBusy || copyNotice) && (
         <div
           className="file-viewer-pdf-copy-bar"
           role="status"
           aria-live="polite"
         >
-          <span>{t("pdfViewer.copySelectionHint")}</span>
+          {copySelecting && <span>{t("pdfViewer.copySelectionHint")}</span>}
           {copyBusy && <span>{t("pdfViewer.copySelectionWorking")}</span>}
           {copyNotice && <span className="file-viewer-pdf-copy-success">{copyNotice}</span>}
+          <UntestedTag />
         </div>
       )}
       {metaOpen && doc && (
@@ -4086,6 +4464,40 @@ function PdfCanvas({
           <button onClick={() => setStaleOnDisk(false)}>{t("pdfViewer.keepChangesButton")}</button>
         </div>
       )}
+      {syncNotice && (
+        // A reverse-search click that could not be honoured, or was honoured
+        // from a build the source has since moved past. Names the edited files
+        // on a stale map so the reader can tell "I forgot to recompile" from
+        // "someone else's build".
+        <div className="file-viewer-banner" role="status">
+          <span>
+            {t(
+              syncNotice.kind === "noMap"
+                ? "pdfViewer.syncNoMapMsg"
+                : syncNotice.kind === "pdfNewer"
+                  ? "pdfViewer.syncPdfNewerMsg"
+                  : syncNotice.kind === "stale"
+                    ? "pdfViewer.syncStaleMsg"
+                    : "pdfViewer.syncMissMsg",
+              {
+                files: syncNotice.sources.map((f) => basename(f)).join(", "),
+              },
+            )}
+          </span>
+          {syncNotice.canRecompile && (
+            <button
+              onClick={() => {
+                const { source } = syncNotice;
+                setSyncNotice(null);
+                void recompileTexSource(source);
+              }}
+            >
+              {t("pdfViewer.syncRecompileButton")}
+            </button>
+          )}
+          <button onClick={() => setSyncNotice(null)}>{t("common.close")}</button>
+        </div>
+      )}
       {editError && (
         <div className="file-viewer-banner is-error" role="alert">
           <span>{editError}</span>
@@ -4186,7 +4598,10 @@ function PdfCanvas({
                     cssSize={pageSizes?.[i]}
                     // SyncTeX only means anything for pages of the file itself: a
                     // page merged in from another PDF has no line in this source.
-                    onSyncClick={syncable && ref.src === SELF ? onSyncClick : undefined}
+                    // Wired whether or not a map exists: without one the click
+                    // explains itself (a "recompile" notice) instead of doing
+                    // nothing. The crosshair cursor still only arms with a map.
+                    onSyncClick={ref.src === SELF ? onSyncClick : undefined}
                     syncArmed={syncArmed}
                     highlight={highlight && i === syncSheetIndex ? highlight : null}
                     onReveal={() => { restoreScroll.current = null; }}
@@ -4263,9 +4678,11 @@ function PdfCanvas({
         // would be refused anyway — better to only offer what can actually be read.
         <ContextFilePicker
           projectDir={pdfProjectDir}
+          roots={pdfPickerRoots ?? undefined}
           attached={[]}
-          onPick={(rel) => {
-            const abs = `${pdfProjectDir}/${rel}`;
+          onPick={(rel, dir) => {
+            const base = dir ?? pdfProjectDir;
+            const abs = `${base}/${rel}`;
             if (!/\.pdf$/i.test(abs)) {
               setEditError(t("pdfViewer.notAPdf", { name: basename(abs) }));
               return;

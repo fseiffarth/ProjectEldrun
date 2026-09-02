@@ -17,10 +17,9 @@ import {
   type DueDelta,
 } from "../../lib/todoBoard";
 import { useT, type TranslationKey } from "../../lib/i18n";
-import { UntestedTag } from "../common/UntestedTag";
 
 /**
- * The right-panel **Alerts** group: urgent mail, the next appointments, and the
+ * The side-panel **Alerts** group: urgent mail, the next appointments, and the
  * to-do cards whose due date is here or past — one time-ordered strip, rendered
  * directly BELOW the project file tree, the same slot `DownloadsSection` uses.
  *
@@ -31,12 +30,23 @@ import { UntestedTag } from "../common/UntestedTag";
  * costs no window and no gesture, and a row is one click from the surface that
  * actually owns the thing.
  *
- * **Opt-in, and deliberately so.** The toolbar button that reveals this group is
- * only rendered when `files_alerts` is on (see `ProjectFilesView`), because the
- * feature reads three unrelated stores and puts deadlines in the corner of a
- * pane whose job is files. That is a strong opinion about how somebody works,
- * not a default: a file viewer that starts telling you about your mail is a
- * change to the app nobody asked for.
+ * **Switchable, and deliberately so.** The group is rendered only while
+ * `files_alerts` is on, because the feature reads three unrelated stores and
+ * puts deadlines in the corner of a pane whose job is files. That is a strong
+ * opinion about how somebody works: a file viewer that starts telling you about
+ * your mail is a change to the app nobody asked for. Its switch is the header's
+ * 🔔 (`header/AlertsToggle`), beside the ☑ board — not a button in the project
+ * file toolbar, where it once was: one machine-wide key belongs with the global
+ * apps, not in a row that is redrawn per project and per open viewer.
+ *
+ * **It is chromed as the machine's, not the project's.** Every other group in
+ * this panel is swapped out when the project is switched — the tree, the git
+ * bar, the downloads — while these rows are the same ones whichever project is
+ * open, so wearing the panel's own ground made a global strip read as one more
+ * section of the project on screen. It carries its own **ground** instead — an
+ * accent-tinted surface behind an accent-toned seal (`.alerts-section` in
+ * `styles/file-tree.css`) — which is the whole of the distinction: no badge, no
+ * label, nothing that costs a row of the twelve.
  *
  * Rows come from `useAlertsFeed`, whose selectors are `lib/alerts`' pure ones;
  * this component does not keep a second copy of alert state. Opening a row hands
@@ -341,9 +351,7 @@ export function AlertsSection({ onClose }: AlertsSectionProps) {
         title={t("filesAlerts.resizeHint")}
       />
       <div className="alerts-header">
-        <span className="alerts-title">
-          🔔 {t("filesAlerts.title")} <UntestedTag />
-        </span>
+        <span className="alerts-title">🔔 {t("filesAlerts.title")}</span>
         {items.length > 0 && (
           <span
             className={"alerts-count" + (counts.overdue > 0 ? " overdue" : "")}
@@ -371,7 +379,7 @@ export function AlertsSection({ onClose }: AlertsSectionProps) {
           </button>
         )}
         <button
-          className="tab-add-btn"
+          className="toolbar-btn"
           style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: "auto" }}
           onClick={refresh}
           title={t("filesAlerts.refresh")}
@@ -379,7 +387,7 @@ export function AlertsSection({ onClose }: AlertsSectionProps) {
           ⟳
         </button>
         <button
-          className="tab-add-btn"
+          className="toolbar-btn"
           style={{ fontSize: 10, padding: "1px 6px", height: 20 }}
           onClick={onClose}
           title={t("filesAlerts.hide")}

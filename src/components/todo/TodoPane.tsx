@@ -82,6 +82,21 @@ export function TodoPane() {
     [tasks, pendingOrder],
   );
   const visible = useMemo(() => visibleCalendarIds(calendars), [calendars]);
+  // Keep the column badges useful when completed cards are hidden.  The board
+  // gets this matching set for its counts, while `shown` below remains the
+  // smaller set it actually renders.
+  const counted = useMemo(
+    () =>
+      filterTasks(withPending, {
+        search,
+        project: projectFilter,
+        tag: tagFilter,
+        hideDone: false,
+        visibleCalendars: visible,
+        archived,
+      }),
+    [withPending, search, projectFilter, tagFilter, visible, archived],
+  );
   const shown = useMemo(
     () =>
       filterTasks(withPending, {
@@ -208,6 +223,7 @@ export function TodoPane() {
         <TodoBoard
           columns={columns}
           tasks={shown}
+          countTasks={counted}
           defaultCalendarId={defaultCalendarId}
           inheritProjectId={
             projectFilter && projectFilter !== "none" ? projectFilter : null

@@ -56,8 +56,19 @@ fn cell_to_string(cell: &Data) -> String {
 
 /// Read one sheet of a spreadsheet workbook. When `sheet` is `None`, returns the
 /// first sheet.
+///
+/// Async + `spawn_blocking`: calamine loads the whole workbook, so a large
+/// `.xlsx` (or one on a network mount) run synchronously froze the window (the
+/// main-thread freeze class `commands::git`'s `run_off_thread` doc describes).
+/// The sync body stays directly unit-testable.
 #[tauri::command]
-pub fn read_spreadsheet(path: String, sheet: Option<String>) -> Result<SheetData, String> {
+pub async fn read_spreadsheet(path: String, sheet: Option<String>) -> Result<SheetData, String> {
+    tokio::task::spawn_blocking(move || read_spreadsheet_blocking(path, sheet))
+        .await
+        .map_err(|e| format!("spreadsheet task failed: {e}"))?
+}
+
+pub fn read_spreadsheet_blocking(path: String, sheet: Option<String>) -> Result<SheetData, String> {
     let mut workbook =
         open_workbook_auto(&path).map_err(|e| format!("Failed to open workbook: {e}"))?;
 
@@ -97,7 +108,7 @@ mod tests {
 
     #[test]
     fn nonexistent_path_is_err() {
-        let res = read_spreadsheet("/no/such/file/definitely-missing.xlsx".into(), None);
+        let res = read_spreadsheet_blocking("/no/such/file/definitely-missing.xlsx".into(), None);
         assert!(res.is_err());
     }
 

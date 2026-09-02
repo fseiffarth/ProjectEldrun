@@ -1,4 +1,4 @@
-//! Filesystem watcher for the right-panel file tree.
+//! Filesystem watcher for the side-panel file tree.
 //!
 //! The tree renders one directory level at a time, so we watch exactly that
 //! directory (non-recursively) and emit `fs-change` whenever it changes. The
@@ -70,13 +70,25 @@ pub fn watch_dir(
         let generation = Arc::clone(&generation);
         std::thread::spawn(move || {
             // Ends when the watcher (and with it the sender) is dropped.
-            while let Ok(seen) = rx.recv() {
-                std::thread::sleep(DEBOUNCE);
-                // Only the last event of a burst still matches — the rest have been
-                // superseded, and their queued messages are drained by this same
-                // check on the next iterations.
-                if generation.load(Ordering::SeqCst) == seen {
-                    let _ = app.emit("fs-change", &emit_path);
+            while let Ok(mut seen) = rx.recv() {
+                // Greedily drain the queue to the newest generation before (and
+                // after) each sleep. The previous shape slept once PER QUEUED
+                // MESSAGE (recv → sleep → generation check), i.e. drained a burst
+                // at 5 events/second — 600 raw events from an archive extraction
+                // or a `git checkout` meant ~2 minutes with no emit, presenting
+                // as "the file tree stopped updating". Draining first costs one
+                // sleep per burst instead of one per event.
+                loop {
+                    while let Ok(newer) = rx.try_recv() {
+                        seen = newer;
+                    }
+                    std::thread::sleep(DEBOUNCE);
+                    // Only the last event of a burst still matches; anything newer
+                    // means the burst is still going — drain and wait again.
+                    if generation.load(Ordering::SeqCst) == seen {
+                        let _ = app.emit("fs-change", &emit_path);
+                        break;
+                    }
                 }
             }
         });

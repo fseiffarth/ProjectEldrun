@@ -2,7 +2,7 @@
  * The persistent-session list is ONE reading shared by every surface that shows
  * it (`stores/hostSessions`), not a private copy per `ProjectFilesView`.
  *
- * The same viewer is rendered by the right panel, by every Files (Project) tab
+ * The same viewer is rendered by the side panel, by every Files (Project) tab
  * and by every subwindow's docked file column at once. When each owned its own
  * `tmux ls` poll, the cost was N SSH round trips per host per tick and — the part
  * the user sees — the surfaces disagreed: a session killed in one sat on in the
@@ -101,7 +101,7 @@ describe("sessionHostsOf", () => {
 describe("the shared session poll", () => {
   it("runs ONCE for two surfaces, not once each", async () => {
     const { retain, release } = useHostSessionsStore.getState();
-    retain(PID); // right panel
+    retain(PID); // side panel
     retain(PID); // docked subwindow column
     await settle();
     expect(listCalls()).toBe(1);

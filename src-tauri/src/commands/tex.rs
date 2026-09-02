@@ -7,11 +7,19 @@
 //! `latexmk` (which drives bibtex + the needed reruns itself) when present.
 //! Without `latexmk` it falls back to running the engine directly, slotting a
 //! `bibtex` pass in between runs when the generated `.aux` shows citations.
+//!
+//! On pdflatex, both paths ride the cached-preamble fast path: the document's
+//! preamble is dumped once into a `.fmt` (`mylatexformat`, the same trick the
+//! hover preview uses) and every later compile loads the dump instead of
+//! re-reading fifty packages — which is most of a large document's recompile
+//! time. See the "Precompiled document preambles" section; any format failure
+//! falls back to the plain compile, so the fast path can only be faster.
 
 use std::fs;
 use std::path::Path;
 use std::process::Stdio;
 
+use base64::Engine as _;
 use serde::Serialize;
 
 /// Engines we know how to drive, in preference order. Each is a `pdf`-producing
@@ -131,9 +139,52 @@ const RUN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
 /// than with `output()` so the wait can time out at all: `output()` blocks until
 /// the pipes close, which a wedged child never does.
 fn run_in<S: AsRef<std::ffi::OsStr>>(dir: &Path, bin: &str, args: &[S]) -> Result<RunOut, String> {
-    let mut child = crate::paths::command_no_window(bin)
-        .args(args)
+    run_in_within(dir, bin, args, RUN_TIMEOUT)
+}
+
+/// {@link run_in} with an explicit ceiling. Split out for the hover preview
+/// (`tex_preview_snippet`), whose whole point is an answer while the pointer is
+/// still resting on the snippet: a preview that takes ten minutes is not a
+/// preview, and one wedged snippet must not tie up a worker thread for the rest
+/// of the session while the reader has long since moved on.
+fn run_in_within<S: AsRef<std::ffi::OsStr>>(
+    dir: &Path,
+    bin: &str,
+    args: &[S],
+    timeout: std::time::Duration,
+) -> Result<RunOut, String> {
+    run_in_within_env(dir, bin, args, timeout, &[])
+}
+
+/// {@link run_in_within} with extra environment variables. Exists for the
+/// cached-preamble compile path, which points the engine's format search at the
+/// document-format cache via `TEXFORMATS` rather than embedding an absolute
+/// path in a command string latexmk would re-split on whitespace.
+fn run_in_within_env<S: AsRef<std::ffi::OsStr>>(
+    dir: &Path,
+    bin: &str,
+    args: &[S],
+    timeout: std::time::Duration,
+    envs: &[(String, String)],
+) -> Result<RunOut, String> {
+    let mut cmd = crate::paths::command_no_window(bin);
+    cmd.args(args)
         .current_dir(dir)
+        // TeX hard-wraps its log at 79 columns, which breaks a path across two
+        // lines and makes the `(file … )` nesting unreadable — and that nesting is
+        // the ONLY thing that says which source a *warning* came from
+        // (`-file-line-error` covers errors and nothing else). These three are the
+        // engine's own knobs for that wrapping, and raising them is what lets
+        // `parseTexWarnings` (#245) name a file at all in a multi-file document.
+        // Harmless where they are not understood: an unknown TeX environment
+        // variable is ignored.
+        .env("max_print_line", "1000")
+        .env("error_line", "254")
+        .env("half_error_line", "238");
+    for (k, v) in envs {
+        cmd.env(k, v);
+    }
+    let mut child = cmd
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -160,7 +211,12 @@ fn run_in<S: AsRef<std::ffi::OsStr>>(dir: &Path, bin: &str, args: &[S]) -> Resul
         buf
     });
 
-    let deadline = std::time::Instant::now() + RUN_TIMEOUT;
+    let deadline = std::time::Instant::now() + timeout;
+    // Poll fast at first and back off: a fixed 50ms tick added up to 50ms of
+    // pure waiting to every short run, which the hover preview pays per hover —
+    // twice when it also rebuilds a preamble format. A run that is going to take
+    // seconds anyway ends up on the 50ms tick after the first few polls.
+    let mut poll = std::time::Duration::from_millis(2);
     let status = loop {
         match child.try_wait().map_err(|e| format!("wait {bin}: {e}"))? {
             Some(s) => break Some(s),
@@ -169,7 +225,10 @@ fn run_in<S: AsRef<std::ffi::OsStr>>(dir: &Path, bin: &str, args: &[S]) -> Resul
                 let _ = child.wait();
                 break None;
             }
-            None => std::thread::sleep(std::time::Duration::from_millis(50)),
+            None => {
+                std::thread::sleep(poll);
+                poll = (poll * 2).min(std::time::Duration::from_millis(50));
+            }
         }
     };
 
@@ -186,7 +245,7 @@ fn run_in<S: AsRef<std::ffi::OsStr>>(dir: &Path, bin: &str, args: &[S]) -> Resul
         None => {
             text.push_str(&format!(
                 "\n! Eldrun stopped {bin} after {} seconds — the build appears to be stuck.\n",
-                RUN_TIMEOUT.as_secs()
+                timeout.as_secs()
             ));
             Ok(RunOut { ok: false, text })
         }
@@ -252,11 +311,21 @@ fn filter_extra_flags(extra: &[String]) -> Vec<String> {
 ///
 /// `out_dir`, when set, becomes latexmk's `-outdir=<dir>` so artefacts (incl. the
 /// PDF) land there. `extra` carries already-filtered user flags (#54).
+///
+/// `fmt_key`, when set, is a cached-preamble format name from
+/// {@link ensure_doc_fmt}: the engine command is overridden to load that dump
+/// (`-pdflatex=pdflatex -fmt=<key> %O %S`), which is what skips re-reading the
+/// whole preamble on every recompile. The key is a fixed `doc-…` charset — never
+/// a path — because latexmk re-splits this string on whitespace before running
+/// it; the *directory* the key resolves in travels separately, via `TEXFORMATS`
+/// ({@link texformats_search_path}). Placed before `extra`, so a user-supplied
+/// `-pdflatex=` still wins (latexmk: last one counts).
 fn latexmk_args(
     engine: Option<&str>,
     file_name: &str,
     out_dir: Option<&str>,
     extra: &[String],
+    fmt_key: Option<&str>,
 ) -> Vec<String> {
     let mut args: Vec<String> = vec![
         latexmk_flag(engine).to_string(),
@@ -270,6 +339,9 @@ fn latexmk_args(
         // this through to the engine.
         "-file-line-error".to_string(),
     ];
+    if let Some(key) = fmt_key {
+        args.push(format!("-pdflatex=pdflatex -fmt={key} %O %S"));
+    }
     if let Some(dir) = out_dir {
         args.push(format!("-outdir={dir}"));
     }
@@ -312,6 +384,254 @@ fn log_shows_shell_escape(log: &str) -> bool {
         (l.contains("write18 enabled") && !l.contains("restricted"))
             || (l.contains("runsystem(") && l.contains("executed"))
     })
+}
+
+// ── Precompiled document preambles (full compiles) ───────────────────────────
+//
+// The hover preview's biggest win — dumping the preamble into a `.fmt` via
+// `mylatexformat` and loading the dump instead of re-reading fifty packages —
+// applied to the *full* compile. On a large document nearly all of a routine
+// recompile's engine time is the preamble: the body's pages typeset in a
+// fraction of it, and latexmk's dependency machinery cannot help because the
+// engine re-loads every package on every pass regardless. With the dump, a
+// body edit costs (roughly) only the body's own typesetting.
+//
+// Same constraints as the preview cache, for the same measured reasons:
+// pdflatex only (`mylatexformat` is documented-unreliable under LuaTeX/XeTeX
+// font loading — a cached build with the wrong fonts is worse than a slow
+// one), an age bound because the dump freezes whatever the preamble's inputs
+// held at build time, and a `.bad` marker so a preamble that *cannot* be
+// dumped (packages doing real work at `\begin{document}` exist) costs one
+// failed attempt per age window, not one per compile.
+//
+// What the preview cannot get wrong but a full build can — the preamble's own
+// local files changing under the dump — is keyed for: {@link doc_fmt_key}
+// content-hashes every `\input`/`\usepackage`/`\documentclass` target that
+// resolves to a file in the document's folder, so editing `macros.tex` or a
+// local `.sty` mints a new key and rebuilds the dump. (TeX-tree packages are
+// not hashed; those change on a distribution upgrade, which the age bound and
+// the "made by different version" retry already cover.)
+//
+// Every failure degrades to today's plain compile: a format that will not
+// build is marked `.bad` and skipped, a format that will not *load* is
+// discarded and the run repeated without it (see the retry in
+// `compile_tex_blocking`), so the fast path can never make a document fail
+// that would have built before.
+
+/// Where the full-compile preamble formats live: `<state_dir>/tex-fmt`.
+/// Separate from the preview cache — different producers, one sweep rule.
+fn doc_fmt_root() -> std::path::PathBuf {
+    crate::storage::state_dir().join("tex-fmt")
+}
+
+/// How long one preamble dump may take. Longer than the preview's ceiling —
+/// nobody is holding a pointer still, and a TikZ-heavy preamble can genuinely
+/// take a minute — but far under {@link RUN_TIMEOUT}: a dump slower than this
+/// would eat the very time it exists to save.
+const DOC_FMT_BUILD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// Everything before `\begin{document}`, or `None` for a file that has no body
+/// marker at all (a fragment — nothing to split, nothing to dump) or whose
+/// preamble is implausibly huge (a generated file; hashing it per compile would
+/// cost more than the dump saves).
+fn doc_preamble_head(text: &str) -> Option<&str> {
+    const MAX_HEAD: usize = 1024 * 1024;
+    let i = text.find("\\begin{document}")?;
+    if i > MAX_HEAD {
+        return None;
+    }
+    Some(&text[..i])
+}
+
+/// Candidate *local* files the preamble reads, as names relative to the
+/// document's folder: `\input{macros}` → `macros.tex`, `\usepackage{a,b}` →
+/// `a.sty`+`b.sty`, `\documentclass{x}` → `x.cls`. Pure — the caller decides
+/// which of them actually exist beside the document; a name that resolves only
+/// in the TeX tree simply won't. Bounded, so a pathological preamble cannot
+/// turn key derivation into a filesystem scan.
+fn preamble_local_dep_names(head: &str) -> Vec<String> {
+    const MAX_DEPS: usize = 64;
+    let mut out: Vec<String> = Vec::new();
+    let bytes = head.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() && out.len() < MAX_DEPS {
+        if bytes[i] != b'\\' {
+            i += 1;
+            continue;
+        }
+        let mut j = i + 1;
+        while j < bytes.len() && (bytes[j] as char).is_ascii_alphabetic() {
+            j += 1;
+        }
+        let cmd = &head[i + 1..j];
+        let ext = match cmd {
+            "input" => Some("tex"),
+            "usepackage" | "RequirePackage" => Some("sty"),
+            "documentclass" | "LoadClass" => Some("cls"),
+            _ => None,
+        };
+        let Some(ext) = ext else {
+            i = j.max(i + 1);
+            continue;
+        };
+        // Skip an optional `[...]` argument between the command and its brace.
+        let mut k = j;
+        while k < bytes.len() && (bytes[k] as char).is_ascii_whitespace() {
+            k += 1;
+        }
+        if k < bytes.len() && bytes[k] == b'[' {
+            match head[k..].find(']') {
+                Some(close) => k += close + 1,
+                None => {
+                    i = j.max(i + 1);
+                    continue;
+                }
+            }
+        }
+        if k < bytes.len() && bytes[k] == b'{' {
+            if let Some(close) = head[k + 1..].find('}') {
+                for arg in head[k + 1..k + 1 + close].split(',') {
+                    let arg = arg.trim();
+                    if arg.is_empty() || out.len() >= MAX_DEPS {
+                        continue;
+                    }
+                    if Path::new(arg).extension().is_some() {
+                        out.push(arg.to_string());
+                    } else {
+                        out.push(format!("{arg}.{ext}"));
+                    }
+                }
+                i = k + 1 + close + 1;
+                continue;
+            }
+        }
+        i = j.max(i + 1);
+    }
+    out
+}
+
+/// The cache key (and jobname, and file stem) for one document's preamble
+/// format: engine + the preamble text + the content of every preamble
+/// dependency that resolves to a file in `dir`. The local-dep hashing is what
+/// the preview key doesn't need and a full build does: the dump freezes
+/// `\input{macros}` / a local `.sty` at build time, and a *build* rendered
+/// against stale macros is a wrong PDF, not a wrong hover card.
+fn doc_fmt_key(engine: &str, head: &str, dir: &Path) -> String {
+    let mut h = fnv64(head);
+    for name in preamble_local_dep_names(head) {
+        let p = dir.join(&name);
+        // `is_file` first: a name like `article.sty` that only resolves in the
+        // TeX tree simply isn't here, and that absence must not be an error.
+        if p.is_file() {
+            if let Ok(bytes) = fs::read(&p) {
+                h = h.rotate_left(7) ^ fnv64(&name);
+                h = h.rotate_left(7) ^ fnv64_bytes(&bytes);
+            }
+        }
+    }
+    format!("doc-{engine}-{h:016x}-{}", head.len())
+}
+
+/// The `TEXFORMATS` value pointing the engine's format search at the document
+/// cache. The trailing separator is load-bearing: an empty element in a
+/// kpathsea path means "insert the compile-time default here", so the engine
+/// still finds everything it normally would.
+fn texformats_search_path() -> String {
+    let sep = if cfg!(windows) { ';' } else { ':' };
+    format!("{}{sep}", doc_fmt_root().display())
+}
+
+/// The precompiled format for this document's preamble, building it if need be
+/// — or `None`, in which case the caller compiles the old way and loses nothing
+/// but the speedup. Returns the *key* (resolved via `TEXFORMATS` /
+/// {@link doc_fmt_root}), not a path — see {@link latexmk_args} for why.
+///
+/// The dump is `mylatexformat` driven over the **document itself** (its
+/// documented usage: everything up to `\begin{document}` is frozen, and later
+/// `-fmt` runs of the same file skip that whole stretch). Run exactly like a
+/// compile — the document's dir as cwd so relative `\input`s resolve — with
+/// artefacts to a scratch dir and the finished format renamed into the cache,
+/// so a compile racing this one never sees a half-written file.
+fn ensure_doc_fmt(dir: &Path, src: &Path, head: &str) -> Option<String> {
+    if !mylatexformat_available(dir) {
+        return None;
+    }
+    let root = doc_fmt_root();
+    let key = doc_fmt_key("pdflatex", head, dir);
+    let fmt = root.join(format!("{key}.fmt"));
+    // Freshness checked at reuse, not only by the sweep — the sweep runs on
+    // cache misses, so a format reused continuously would otherwise never age
+    // out ({@link ensure_preview_fmt} has the same rule for the same reason).
+    if let Ok(meta) = fmt.metadata() {
+        let fresh = meta
+            .modified()
+            .ok()
+            .and_then(|m| std::time::SystemTime::now().duration_since(m).ok())
+            .map(|age| age <= PREVIEW_FMT_MAX_AGE)
+            .unwrap_or(true);
+        if fresh {
+            return Some(key);
+        }
+        let _ = fs::remove_file(&fmt);
+    }
+    if root.join(format!("{key}.bad")).is_file() {
+        return None;
+    }
+    fs::create_dir_all(&root).ok()?;
+    sweep_preview_fmts(&root, std::time::SystemTime::now());
+
+    let scratch = make_preview_scratch().ok()?;
+    // SECURITY: a fixed argument list — no user flags reach a format build, so
+    // it can no more enable shell-escape than the compile itself can.
+    let args = vec![
+        "-ini".to_string(),
+        "-interaction=nonstopmode".to_string(),
+        format!("-output-directory={}", scratch.display()),
+        format!("-jobname={key}"),
+        "&pdflatex".to_string(),
+        "mylatexformat.ltx".to_string(),
+        src.to_string_lossy().into_owned(),
+    ];
+    // A spawn failure is the machine's problem, not this preamble's: no marker.
+    let built = match run_in_within(dir, "pdflatex", &args, DOC_FMT_BUILD_TIMEOUT) {
+        Ok(b) => b,
+        Err(_) => {
+            let _ = fs::remove_dir_all(&scratch);
+            return None;
+        }
+    };
+    let out_fmt = scratch.join(format!("{key}.fmt"));
+    let ok = built.ok && out_fmt.is_file() && fs::rename(&out_fmt, &fmt).is_ok();
+    let _ = fs::remove_dir_all(&scratch);
+    if ok {
+        Some(key)
+    } else {
+        let _ = fs::write(root.join(format!("{key}.bad")), b"");
+        None
+    }
+}
+
+/// Did this compile die on the *format* — dead dump, engine upgraded under it,
+/// or the format not found at all — rather than on the document? Decides
+/// whether a failed fmt run is retried without the format. The not-found shape
+/// is the one the preview can never hit (it passes a path; the full compile
+/// resolves a key through `TEXFORMATS`, which an engine is free to ignore).
+fn compile_log_is_format_error(log: &str) -> bool {
+    preview_log_is_format_error(log) || log.contains("find the format file")
+}
+
+/// Drop a format the engine rejected. A dump that would not *load* ("made by
+/// different version", corruption) is only deleted — a rebuild fixes those. A
+/// format the engine could not *find* is a search-path problem a rebuild
+/// cannot fix (an engine that ignores `TEXFORMATS`), so it also gets the
+/// `.bad` marker: the next compiles inside the age window go straight to the
+/// plain path instead of paying a doomed run each.
+fn discard_doc_fmt(key: &str, log: &str) {
+    let root = doc_fmt_root();
+    let _ = fs::remove_file(root.join(format!("{key}.fmt")));
+    if log.contains("find the format file") {
+        let _ = fs::write(root.join(format!("{key}.bad")), b"");
+    }
 }
 
 /// Compile a `.tex`.
@@ -412,13 +732,48 @@ fn compile_tex_blocking(
     };
     let mut log = String::new();
 
+    // The cached-preamble fast path (see the "Precompiled document preambles"
+    // section): pdflatex only — the engine `mylatexformat` is reliable under —
+    // and only for a file with a `\begin{document}` to split at. `None` on any
+    // other engine, a missing `mylatexformat`, or a preamble that cannot be
+    // dumped: the compile then runs exactly as before.
+    let wants_pdflatex = matches!(engine.as_deref(), None | Some("pdflatex"))
+        && cap.engines.iter().any(|e| e == "pdflatex");
+    let mut fmt_key: Option<String> = None;
+    if wants_pdflatex {
+        if let Ok(text) = fs::read_to_string(&src) {
+            if let Some(head) = doc_preamble_head(&text) {
+                fmt_key = ensure_doc_fmt(dir, &src, head);
+            }
+        }
+    }
+
     if cap.latexmk {
         let flag = latexmk_flag(engine.as_deref());
-        let out = run_in(
-            dir,
-            "latexmk",
-            &latexmk_args(engine.as_deref(), file_name, out_arg.as_deref(), &extra),
-        )?;
+        let run_latexmk = |fmt: Option<&str>| -> Result<RunOut, String> {
+            let args = latexmk_args(engine.as_deref(), file_name, out_arg.as_deref(), &extra, fmt);
+            let envs: Vec<(String, String)> = match fmt {
+                // The key resolves in the cache dir via TEXFORMATS; latexmk
+                // passes its environment through to the engine.
+                Some(_) => vec![("TEXFORMATS".to_string(), texformats_search_path())],
+                None => Vec::new(),
+            };
+            run_in_within_env(dir, "latexmk", &args, RUN_TIMEOUT, &envs)
+        };
+        let mut used_fmt = fmt_key.is_some();
+        let mut out = run_latexmk(fmt_key.as_deref())?;
+        // A format the engine rejected must cost one retry, not the build: drop
+        // it and compile the old way. A document's own error is NOT this case
+        // and gets no second run — doubling every typo's feedback loop would
+        // cost more than the cache saves ({@link compile_log_is_format_error}).
+        if used_fmt && !(out.ok && pdf.exists()) && compile_log_is_format_error(&out.text) {
+            if let Some(key) = fmt_key.as_deref() {
+                discard_doc_fmt(key, &out.text);
+            }
+            log.push_str(&out.text);
+            out = run_latexmk(None)?;
+            used_fmt = false;
+        }
         log.push_str(&out.text);
         let success = out.ok && pdf.exists();
         if success {
@@ -429,7 +784,11 @@ fn compile_tex_blocking(
         return Ok(TexCompileResult {
             success,
             pdf_path: pdf.exists().then(|| pdf.to_string_lossy().into_owned()),
-            engine: format!("latexmk {flag}"),
+            engine: if used_fmt {
+                format!("latexmk {flag} +preamble-cache")
+            } else {
+                format!("latexmk {flag}")
+            },
             shell_escape: log_shows_shell_escape(&log),
             log: tail(&log),
         });
@@ -438,9 +797,36 @@ fn compile_tex_blocking(
     // No latexmk: drive the engine directly. First pass, then a bibtex pass when
     // the aux shows citations, then reruns to settle references / ToC.
     let eng = engine.unwrap_or_else(|| cap.engines[0].clone());
-    let engine_args = engine_args(file_name, out_arg.as_deref(), &extra);
+    // The fast path only fires when pdflatex is what actually runs; `fmt_key`
+    // was resolved for pdflatex above and is None otherwise.
+    let fmt_key = fmt_key.filter(|_| eng == "pdflatex");
+    let build_args = |fmt: Option<&str>| -> Vec<String> {
+        let mut a = engine_args(file_name, out_arg.as_deref(), &extra);
+        if let Some(key) = fmt {
+            // The direct spawn takes argv, so the absolute path form is safe
+            // here (no latexmk re-splitting the string on whitespace).
+            a.insert(
+                0,
+                format!("-fmt={}", doc_fmt_root().join(format!("{key}.fmt")).display()),
+            );
+        }
+        a
+    };
+    let mut used_fmt = fmt_key.is_some();
+    let mut engine_args = build_args(fmt_key.as_deref());
 
-    let first = run_in(dir, &eng, &engine_args)?;
+    let mut first = run_in(dir, &eng, &engine_args)?;
+    // Same retry rule as the latexmk path: only a *format* failure earns a
+    // second run, and the reruns below then stay on the plain arguments too.
+    if used_fmt && !first.ok && compile_log_is_format_error(&first.text) {
+        if let Some(key) = fmt_key.as_deref() {
+            discard_doc_fmt(key, &first.text);
+        }
+        log.push_str(&first.text);
+        engine_args = build_args(None);
+        used_fmt = false;
+        first = run_in(dir, &eng, &engine_args)?;
+    }
     log.push_str(&first.text);
 
     // The aux lands in the output dir too when one is set.
@@ -469,9 +855,592 @@ fn compile_tex_blocking(
     Ok(TexCompileResult {
         success,
         pdf_path: pdf.exists().then(|| pdf.to_string_lossy().into_owned()),
-        engine: eng,
+        engine: if used_fmt {
+            format!("{eng} +preamble-cache")
+        } else {
+            eng
+        },
         shell_escape: log_shows_shell_escape(&log),
         log: tail(&log),
+    })
+}
+
+// ── Snippet hover preview ────────────────────────────────────────────────────
+//
+// The TeX editor's hover preview (#tex-hover-preview): rest the pointer on a
+// `$…$`, a `\[…\]` or an `equation`/`align`/`tikzpicture` body and Eldrun
+// typesets *that fragment alone* and shows the result over the source. It is the
+// same question a full Compile answers, asked about two lines instead of forty
+// pages — so it is deliberately NOT the same code path:
+//
+//  - **The engine directly, one pass.** A fragment has no bibliography, no table
+//    of contents and no cross-references to settle, so `latexmk`'s dependency
+//    machinery (and its reruns) is pure latency here. `compile_tex` keeps it; this
+//    does not.
+//  - **Bounded by {@link PREVIEW_TIMEOUT}, not `RUN_TIMEOUT`.** A preview that
+//    arrives ten minutes later is not a preview.
+//  - **Nothing is written where the document lives.** The wrapper `.tex` and every
+//    artefact go to a scratch dir under the state dir, which is removed before the
+//    call returns; the compile's *working directory* is the document's own folder
+//    so a preamble's `\usepackage{mystyle}` / `\input{macros}` still resolve.
+//    That split is what makes a preview of a real paper's macros work at all
+//    without leaving a single `.aux` beside the paper.
+//  - **The PDF comes back as bytes, not as a path.** The frontend rasterizes it
+//    with pdf.js, and the confined file commands (`commands/fs.rs`) do not — and
+//    must not — reach into the state dir to read one.
+//  - **The preamble is precompiled into a format file and reused.** Almost all
+//    of an uncached hover's engine time goes to re-loading the same preamble —
+//    the fragment itself typesets in milliseconds — so on pdflatex the preamble
+//    is dumped once into a `.fmt` (via `mylatexformat`, the same trick AUCTeX's
+//    preview-latex uses) and every later snippet under that preamble loads the
+//    dump instead of compiling fifty packages again. See {@link ensure_preview_fmt}.
+
+/// How long one preview pass may run. Short on purpose: the reader is holding a
+/// pointer still, waiting. A document whose preamble genuinely takes longer than
+/// this to load is one the preview cannot serve, and saying so beats hanging.
+const PREVIEW_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(25);
+
+/// Largest snippet body we will typeset. A hover preview is a fragment; anything
+/// past this is a document, and the Compile button is the tool for those.
+const MAX_PREVIEW_BODY: usize = 32 * 1024;
+
+/// Largest preamble we will copy into the wrapper. Generous — a real paper's
+/// preamble with fifty `\newcommand`s is a few KB — and only here so a
+/// pathological file cannot turn each hover into a megabyte of IPC and I/O.
+const MAX_PREVIEW_PREAMBLE: usize = 256 * 1024;
+
+/// Scratch dirs older than this are leftovers from a crash (the happy path
+/// removes its own before returning) and are swept on the next preview.
+const PREVIEW_SCRATCH_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(3600);
+
+/// How many precompiled preamble formats to keep. A format is a few MB and a
+/// writing session touches a handful of documents; the count is a cap on disk,
+/// not a working-set tuning knob.
+const PREVIEW_FMT_MAX: usize = 16;
+
+/// How old a format may get before it is rebuilt. The bound is *correctness*,
+/// not disk: the dump froze whatever a preamble's relative `\input{macros}`
+/// contained at build time, and the key only hashes the preamble text — the same
+/// blind spot the frontend's render cache has. An hour keeps that staleness in
+/// the same league as a session's, at the cost of one preamble compile per hour
+/// per document.
+const PREVIEW_FMT_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(3600);
+
+/// Outcome of `tex_preview_snippet`.
+#[derive(Debug, Clone, Serialize)]
+pub struct TexPreviewResult {
+    /// True when a PDF was produced.
+    pub success: bool,
+    /// Tail of the build log — shown in the hover card when the snippet does not
+    /// typeset, so a stray `\frac{1}{}` reads as an error and not as a hang.
+    pub log: String,
+    /// The one-page PDF, base64, when the build produced one. Bytes rather than a
+    /// path because the file lives in the state dir, which the confined viewer
+    /// file commands cannot read (and must not learn to).
+    pub pdf_b64: Option<String>,
+    /// True when the document's own preamble could not typeset the snippet and
+    /// the minimal standalone fallback did — the preview is then honest about
+    /// being rendered without the author's macros.
+    pub fallback: bool,
+}
+
+/// Is this fragment a **float** — a `figure`/`table` (or its starred form)?
+///
+/// It decides how the fragment is wrapped, and getting it wrong is a hard error
+/// rather than a bad-looking preview: `\begin{figure}` demands outer par mode,
+/// and `\begin{preview}` has already put TeX in a box, so a float wrapped like
+/// every other snippet fails with `! LaTeX Error: Not in outer par mode.` and
+/// produces nothing. Floats are previewed through `preview.sty`'s own `floats`
+/// option instead (see {@link preview_document}).
+///
+/// **Exactly these four names**, measured rather than assumed: the option's body
+/// fixes up `\endfigure`, `\endtable` and their starred twins by name and snarfs
+/// LaTeX's `@float`/`@dblfloat`. A `wrapfigure` is not a `\@float` at all and
+/// yields "No pages of output"; a `float`-package custom float (which is what
+/// `algorithm` is) redefines `\end@float` past what the option patches and dies
+/// with "Extra }, or forgotten \endgroup". Both were tried; neither is offered.
+fn body_is_float(body: &str) -> bool {
+    let b = body.trim_start();
+    ["\\begin{figure}", "\\begin{figure*}", "\\begin{table}", "\\begin{table*}"]
+        .iter()
+        .any(|p| b.starts_with(p))
+}
+
+/// Everything before `\begin{document}` — the preamble, whatever the caller sent.
+/// Defensive: the frontend already slices this, and a whole document handed in by
+/// mistake must not become a wrapper with two `\begin{document}`s.
+fn preamble_head(preamble: &str) -> &str {
+    match preamble.find("\\begin{document}") {
+        Some(i) => &preamble[..i],
+        None => preamble,
+    }
+}
+
+/// The wrapper document for a snippet: the author's own preamble, the `preview`
+/// package, and the fragment inside a `preview` environment.
+///
+/// `preview` with `[active,tightpage]` is what crops the page down to the
+/// fragment's own ink — the same mechanism AUCTeX's preview-latex uses — so the
+/// hover card gets a formula and not a formula adrift on A4. Wrapping the body in
+/// an explicit `\begin{preview}` rather than using the package's `displaymath` /
+/// `textmath` options means one wrapper serves every snippet kind: inline math, a
+/// display, an `align`, a `tikzpicture`, a `tabular`.
+///
+/// A preamble that already loads `preview` is left alone — loading it twice with
+/// different options is an option clash, i.e. a preview that fails for a document
+/// that was *more* prepared for previewing than most. Pure / unit-tested.
+fn preview_document(preamble: &str, body: &str) -> String {
+    let head = preamble_head(preamble).trim_end();
+    let is_float = body_is_float(body);
+    let mut out = String::with_capacity(head.len() + body.len() + 256);
+    // A child `.tex` has no preamble of its own; give it a plausible one rather
+    // than handing the engine a document with no class at all.
+    if !head.contains("\\documentclass") {
+        out.push_str("\\documentclass[12pt]{article}\n");
+    }
+    out.push_str(head);
+    out.push('\n');
+    if !head.contains("{preview}") {
+        out.push_str(if is_float {
+            "\\usepackage[active,tightpage,floats]{preview}\n"
+        } else {
+            "\\usepackage[active,tightpage]{preview}\n"
+        });
+    }
+    out.push_str("\\begin{document}\n");
+    if is_float {
+        // A float is NOT wrapped: `floats` makes the `figure`/`table` environment
+        // itself the preview, and wrapping it would be the outer-par-mode error
+        // {@link body_is_float} exists to avoid.
+        out.push_str(body);
+        out.push('\n');
+    } else {
+        out.push_str("\\begin{preview}\n");
+        out.push_str(body);
+        out.push_str("\n\\end{preview}\n");
+    }
+    out.push_str("\\end{document}\n");
+    out
+}
+
+/// The fallback wrapper: `standalone` plus the AMS math packages, and none of the
+/// author's preamble. Used only when the real one could not be loaded — a missing
+/// `.sty`, a `preview.sty` this TeX install does not ship — so a formula still
+/// previews in a document whose macros the fragment happens not to use. Pure.
+fn fallback_preview_document(body: &str) -> String {
+    // A float cannot live in `standalone` for the reason it cannot live inside
+    // `\begin{preview}` — it needs outer par mode and a class with a float
+    // mechanism — so its fallback is a plain `article` driven by the same `floats`
+    // option, minus the author's preamble.
+    if body_is_float(body) {
+        return format!(
+            "\\documentclass[12pt]{{article}}\n\
+             \\usepackage{{amsmath,amssymb,amsfonts}}\n\
+             \\usepackage{{graphicx}}\n\
+             \\usepackage[active,tightpage,floats]{{preview}}\n\
+             \\begin{{document}}\n{body}\n\\end{{document}}\n"
+        );
+    }
+    format!(
+        "\\documentclass[preview,border=4pt]{{standalone}}\n\
+         \\usepackage{{amsmath,amssymb,amsfonts}}\n\
+         \\usepackage{{graphicx}}\n\
+         \\begin{{document}}\n{body}\n\\end{{document}}\n"
+    )
+}
+
+/// Is this failure the *preamble's* rather than the snippet's — i.e. worth a
+/// second pass without the author's preamble?
+///
+/// The distinction matters because the fallback is a whole extra engine run on
+/// every hover that trips it. A snippet with a real typo (`\frac{1}{`) must fail
+/// once and report; a document whose `preview.sty` is not installed, or whose
+/// preamble pulls a `.sty` living somewhere this compile cannot see, is worth
+/// retrying without it. Pure / unit-tested.
+fn preview_needs_fallback(log: &str) -> bool {
+    let l = log.to_ascii_lowercase();
+    // "Not in outer par mode" is a *preamble* failure here, not the fragment's:
+    // it means a float could not be given `preview`'s `floats` option, which
+    // happens exactly when the document's own preamble already loaded the package
+    // (an option cannot be added to a package that is loaded). The fallback drops
+    // that preamble and sets the option itself.
+    l.contains("not in outer par mode")
+        || l.contains("preview.sty")
+        || l.contains("option clash")
+        || l.contains("unknown option")
+        || ((l.contains(".sty") || l.contains(".cls") || l.contains("\\usepackage"))
+            && (l.contains("not found") || l.contains("file not found")))
+}
+
+/// The preview scratch root: `<state_dir>/tex-preview`.
+fn preview_scratch_root() -> std::path::PathBuf {
+    crate::storage::state_dir().join("tex-preview")
+}
+
+/// Delete scratch dirs left behind by a crashed or killed run. The happy path
+/// removes its own, so anything older than {@link PREVIEW_SCRATCH_MAX_AGE} is a
+/// leftover. Every failure here is silent: a scratch dir that could not be tidied
+/// is not a reason a preview should not render.
+///
+/// `now` is a parameter so the age rule can be tested without reaching for a
+/// crate that can backdate a directory's mtime.
+fn sweep_preview_scratch(root: &Path, now: std::time::SystemTime) {
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let Ok(meta) = entry.metadata() else { continue };
+        if !meta.is_dir() {
+            continue;
+        }
+        // The format cache lives under the same root but is not run scratch: it
+        // is *supposed* to outlive the run that built it, and has its own sweep
+        // ({@link sweep_preview_fmts}) with its own age rule.
+        if entry.file_name() == "fmt" {
+            continue;
+        }
+        let stale = meta
+            .modified()
+            .ok()
+            .and_then(|m| now.duration_since(m).ok())
+            .map(|age| age > PREVIEW_SCRATCH_MAX_AGE)
+            .unwrap_or(false);
+        if stale {
+            let _ = fs::remove_dir_all(entry.path());
+        }
+    }
+}
+
+/// A fresh scratch dir for one preview run, under the swept root.
+fn make_preview_scratch() -> Result<std::path::PathBuf, String> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+
+    let root = preview_scratch_root();
+    fs::create_dir_all(&root).map_err(|e| format!("create {}: {e}", root.display()))?;
+    sweep_preview_scratch(&root, std::time::SystemTime::now());
+    let dir = root.join(format!(
+        "{}-{}",
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+    Ok(dir)
+}
+
+// ── Precompiled preamble formats ─────────────────────────────────────────────
+
+/// Where the preamble formats live: `<state_dir>/tex-preview/fmt`.
+fn preview_fmt_root() -> std::path::PathBuf {
+    preview_scratch_root().join("fmt")
+}
+
+/// FNV-1a, 64 bit. A cache key, not a security hash — same reasoning as the
+/// frontend's `texPreviewKey`, and like it the key below also carries the input
+/// length, which no cheap hash can be made to collide with by accident.
+fn fnv64(s: &str) -> u64 {
+    fnv64_bytes(s.as_bytes())
+}
+
+/// {@link fnv64} over raw bytes — the document-format key hashes local `.sty`/
+/// `.tex` dependency *files*, which need not be UTF-8.
+fn fnv64_bytes(bytes: &[u8]) -> u64 {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for &b in bytes {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    h
+}
+
+/// The cache key (and jobname, and file stem) for one preamble format: engine +
+/// the wrapper's whole head — everything {@link preview_document} put before
+/// `\begin{document}`, which is the exact text the dump freezes. Hashing the
+/// *wrapper* head rather than the caller's preamble is deliberate: the head also
+/// encodes the injected `\documentclass` and which `preview` option line was
+/// chosen (`floats` for a figure/table), so a float and a formula under one
+/// preamble get the two different formats they need. Pure / unit-tested.
+fn preview_fmt_key(engine: &str, wrapper: &str) -> String {
+    let head = match wrapper.find("\\begin{document}") {
+        Some(i) => &wrapper[..i],
+        None => wrapper,
+    };
+    format!("{engine}-{:016x}-{}", fnv64(head), head.len())
+}
+
+/// Is `mylatexformat.ltx` installed? Probed once per app run — it is a TeX Live
+/// / MiKTeX package that either is or is not there, and a `kpsewhich` per hover
+/// would be a process spawn spent re-learning the same answer.
+fn mylatexformat_available(cwd: &Path) -> bool {
+    static AVAILABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *AVAILABLE.get_or_init(|| {
+        run_in_within(
+            cwd,
+            "kpsewhich",
+            &["mylatexformat.ltx"],
+            std::time::Duration::from_secs(10),
+        )
+        .map(|o| o.ok && !o.text.trim().is_empty())
+        .unwrap_or(false)
+    })
+}
+
+/// Drop format-cache files that are too old to trust ({@link PREVIEW_FMT_MAX_AGE})
+/// and, past {@link PREVIEW_FMT_MAX} survivors, the oldest of the rest. Applies
+/// to everything in the dir — the `.bad` markers age out on the same clock,
+/// which is also what gives a preamble whose format build failed transiently
+/// (a timeout, a package being installed) its retry. Silent like the scratch
+/// sweep: an untidied cache is not a reason a preview should not render.
+fn sweep_preview_fmts(root: &Path, now: std::time::SystemTime) {
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+    let mut files: Vec<(std::path::PathBuf, std::time::SystemTime)> = Vec::new();
+    for entry in entries.flatten() {
+        let Ok(meta) = entry.metadata() else { continue };
+        if !meta.is_file() {
+            continue;
+        }
+        let modified = meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        let stale = now
+            .duration_since(modified)
+            .map(|age| age > PREVIEW_FMT_MAX_AGE)
+            .unwrap_or(false);
+        if stale {
+            let _ = fs::remove_file(entry.path());
+        } else {
+            files.push((entry.path(), modified));
+        }
+    }
+    if files.len() > PREVIEW_FMT_MAX {
+        files.sort_by_key(|(_, m)| *m);
+        for (path, _) in &files[..files.len() - PREVIEW_FMT_MAX] {
+            let _ = fs::remove_file(path);
+        }
+    }
+}
+
+/// The precompiled format for this wrapper's preamble, building it if need be —
+/// or `None`, in which case the caller compiles the old way and loses nothing
+/// but the speedup.
+///
+/// pdflatex only, measured rather than assumed: `mylatexformat` documents itself
+/// as unreliable under LuaTeX (fonts loaded by `luaotfload` do not survive a
+/// dump) and XeTeX has the same problem via `fontspec`, so on those engines a
+/// "cached" preview could silently render with the wrong fonts — worse than
+/// slow. A failed build writes a `.bad` marker beside where the format would
+/// live, so a preamble that *cannot* be dumped (packages doing real work at
+/// `\begin{document}` exist) costs one failed attempt per
+/// {@link PREVIEW_FMT_MAX_AGE}, not one per hover.
+///
+/// The build itself is `pdflatex -ini &pdflatex mylatexformat.ltx <wrapper>`,
+/// run exactly like a preview pass (document's dir as cwd so the preamble's
+/// relative `\input`s resolve, artefacts to the scratch dir) with the finished
+/// format renamed into the cache — rename, so a preview racing this one never
+/// sees a half-written file. Loading the dump also *skips* the wrapper's
+/// preamble lines on the later run; that is `mylatexformat`'s contract, not an
+/// assumption.
+fn ensure_preview_fmt(
+    cwd: &Path,
+    engine: &str,
+    wrapper: &str,
+    scratch: &Path,
+    tex: &Path,
+    out_arg: &str,
+) -> Option<std::path::PathBuf> {
+    if engine != "pdflatex" || !mylatexformat_available(cwd) {
+        return None;
+    }
+    let root = preview_fmt_root();
+    let key = preview_fmt_key(engine, wrapper);
+    let fmt = root.join(format!("{key}.fmt"));
+    // The age bound is checked here, at reuse, not only by the sweep — the sweep
+    // runs on cache *misses*, so a format reused continuously would otherwise
+    // never age out and its frozen `\input{macros}` would go stale forever.
+    if let Ok(meta) = fmt.metadata() {
+        let fresh = meta
+            .modified()
+            .ok()
+            .and_then(|m| std::time::SystemTime::now().duration_since(m).ok())
+            .map(|age| age <= PREVIEW_FMT_MAX_AGE)
+            .unwrap_or(true);
+        if fresh {
+            return Some(fmt);
+        }
+        let _ = fs::remove_file(&fmt);
+    }
+    if root.join(format!("{key}.bad")).is_file() {
+        return None;
+    }
+    fs::create_dir_all(&root).ok()?;
+    sweep_preview_fmts(&root, std::time::SystemTime::now());
+
+    fs::write(tex, wrapper).ok()?;
+    // SECURITY: a fixed argument list — no user flags reach a format build, so
+    // it can no more enable shell-escape than the preview pass can.
+    let args = vec![
+        "-ini".to_string(),
+        "-interaction=nonstopmode".to_string(),
+        format!("-output-directory={out_arg}"),
+        format!("-jobname={key}"),
+        format!("&{engine}"),
+        "mylatexformat.ltx".to_string(),
+        tex.to_string_lossy().into_owned(),
+    ];
+    // A spawn failure is the machine's problem, not this preamble's: no marker.
+    let built = run_in_within(cwd, engine, &args, PREVIEW_TIMEOUT).ok()?;
+    let out_fmt = scratch.join(format!("{key}.fmt"));
+    if built.ok && out_fmt.is_file() && fs::rename(&out_fmt, &fmt).is_ok() {
+        return Some(fmt);
+    }
+    let _ = fs::write(root.join(format!("{key}.bad")), b"");
+    None
+}
+
+/// Did this run die loading the *format itself* — a cache corrupted on disk, or
+/// a dump left behind by a since-upgraded engine ("format made by different
+/// version") — rather than typesetting the snippet? That distinction decides
+/// whether a failed fmt run is retried without the format (and the format
+/// discarded) or reported as the snippet's own error, no second run. Pure /
+/// unit-tested.
+fn preview_log_is_format_error(log: &str) -> bool {
+    log.contains("Fatal format file error") || log.contains("made by different")
+}
+
+/// Typeset one snippet for the editor's hover preview.
+///
+/// `dir` is the document's own folder — the *working directory* of the run, so a
+/// preamble's relative `\input`/`\usepackage` still resolves — and nothing is
+/// written there: the wrapper and every artefact live in a scratch dir that is
+/// removed before this returns. See the section comment above for the rest.
+///
+/// `async` for the same reason `compile_tex` is: a synchronous command runs on
+/// the main thread, and a preview must never be able to freeze the window.
+#[tauri::command]
+pub async fn tex_preview_snippet(
+    dir: String,
+    preamble: String,
+    body: String,
+    engine: Option<String>,
+) -> Result<TexPreviewResult, String> {
+    tauri::async_runtime::spawn_blocking(move || preview_snippet_blocking(dir, preamble, body, engine))
+        .await
+        .map_err(|e| format!("preview task failed: {e}"))?
+}
+
+fn preview_snippet_blocking(
+    dir: String,
+    preamble: String,
+    body: String,
+    engine: Option<String>,
+) -> Result<TexPreviewResult, String> {
+    if body.trim().is_empty() {
+        return Err("empty snippet".to_string());
+    }
+    if body.len() > MAX_PREVIEW_BODY {
+        return Err(format!(
+            "snippet too large to preview ({} bytes; limit {MAX_PREVIEW_BODY})",
+            body.len()
+        ));
+    }
+    if preamble.len() > MAX_PREVIEW_PREAMBLE {
+        return Err(format!(
+            "preamble too large to preview ({} bytes; limit {MAX_PREVIEW_PREAMBLE})",
+            preamble.len()
+        ));
+    }
+    let cwd = fs::canonicalize(&dir).map_err(|e| format!("canonicalize {dir}: {e}"))?;
+    if !cwd.is_dir() {
+        return Err(format!("not a directory: {}", cwd.display()));
+    }
+
+    let cap = detect_capability();
+    // latexmk alone cannot serve this path: the preview runs the engine itself.
+    let eng = engine
+        .filter(|e| cap.engines.iter().any(|g| g == e))
+        .or_else(|| cap.engines.first().cloned())
+        .ok_or_else(|| "no TeX engine found on PATH".to_string())?;
+
+    let scratch = make_preview_scratch()?;
+    let stem = "eldrun-preview";
+    let tex = scratch.join(format!("{stem}.tex"));
+    let pdf = scratch.join(format!("{stem}.pdf"));
+    let out_arg = scratch.to_string_lossy().into_owned();
+
+    // One pass per attempt: a fragment has nothing to settle over a rerun.
+    let run = |source: &str, fmt: Option<&Path>| -> Result<String, String> {
+        let _ = fs::remove_file(&pdf);
+        fs::write(&tex, source).map_err(|e| format!("write {}: {e}", tex.display()))?;
+        // SECURITY: the same argument builder the full compile uses, so a preview
+        // can no more enable shell-escape than a build can (no `extra` flags are
+        // accepted here at all).
+        let mut args = engine_args(&tex.to_string_lossy(), Some(&out_arg), &[]);
+        // …minus SyncTeX: nothing forward-searches into a hover card, and a
+        // `.synctex.gz` written and thrown away per hover is pure latency.
+        args.retain(|a| a != "-synctex=1");
+        if let Some(f) = fmt {
+            args.insert(0, format!("-fmt={}", f.display()));
+        }
+        let out = run_in_within(&cwd, &eng, &args, PREVIEW_TIMEOUT)?;
+        Ok(out.text)
+    };
+
+    let wrapper = preview_document(&preamble, &body);
+    let fmt = ensure_preview_fmt(&cwd, &eng, &wrapper, &scratch, &tex, &out_arg);
+    let first = run(&wrapper, fmt.as_deref());
+    let mut fallback = false;
+    let mut log = match first {
+        Ok(text) => text,
+        Err(e) => {
+            let _ = fs::remove_dir_all(&scratch);
+            return Err(e);
+        }
+    };
+    // A cached format that no longer *loads* — corrupted on disk, or the engine
+    // was upgraded under it — must cost one retry, not the preview: discard it
+    // and compile the old way. A snippet's own error is NOT this case and gets
+    // no second run (see {@link preview_log_is_format_error}).
+    if !pdf.exists() && fmt.is_some() && preview_log_is_format_error(&log) {
+        if let Some(f) = &fmt {
+            let _ = fs::remove_file(f);
+        }
+        match run(&wrapper, None) {
+            Ok(text) => log = text,
+            Err(e) => {
+                let _ = fs::remove_dir_all(&scratch);
+                return Err(e);
+            }
+        }
+    }
+    if !pdf.exists() && preview_needs_fallback(&log) {
+        // Keep the FIRST log: it names what went wrong with the real preamble,
+        // which is what the reader can act on. The fallback's own output only
+        // matters if it, too, fails to produce anything.
+        match run(&fallback_preview_document(&body), None) {
+            Ok(text) => {
+                if pdf.exists() {
+                    fallback = true;
+                } else {
+                    log = text;
+                }
+            }
+            Err(e) => {
+                let _ = fs::remove_dir_all(&scratch);
+                return Err(e);
+            }
+        }
+    }
+
+    let pdf_b64 = fs::read(&pdf)
+        .ok()
+        .map(|bytes| base64::engine::general_purpose::STANDARD.encode(bytes));
+    let _ = fs::remove_dir_all(&scratch);
+    Ok(TexPreviewResult {
+        success: pdf_b64.is_some(),
+        log: tail(&log),
+        pdf_b64,
+        fallback,
     })
 }
 
@@ -867,6 +1836,20 @@ pub async fn synctex_edit(
     .map_err(|e| format!("synctex task failed: {e}"))?
 }
 
+/// Why a reverse-search click did nothing, or landed on the wrong line: whether
+/// a map exists beside `pdf`, whether the PDF outgrew it, and which local
+/// sources were saved after it ({@link crate::commands::synctex::MapStatus}).
+/// The viewer asks after a miss — and after a hit, to warn that the line it just
+/// jumped to belongs to the build before the edit — and words a "recompile"
+/// notice from the answer. Off the main thread for the same reason as
+/// `synctex_edit`: the first call after a compile inflates the map.
+#[tauri::command]
+pub async fn synctex_status(pdf: String) -> Result<crate::commands::synctex::MapStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || crate::commands::synctex::status(Path::new(&pdf)))
+        .await
+        .map_err(|e| format!("synctex task failed: {e}"))
+}
+
 /// Parse the `synctex view` stdout into every record block it emitted, in order.
 /// A forward query returns ONE block per node the source position maps to — one
 /// per horizontal box on the line, and one per visual line when a source line
@@ -1215,6 +2198,242 @@ Count:2
 ";
 
     #[test]
+    fn a_preview_wrapper_keeps_the_authors_preamble_and_crops_to_the_snippet() {
+        let doc = preview_document(
+            "\\documentclass{article}\n\\newcommand{\\R}{\\mathbb{R}}\n\\begin{document}\nbody\n\\end{document}\n",
+            "$x \\in \\R$",
+        );
+        // The author's macro survives; the document body does not (a whole file
+        // handed in by mistake must not become two \begin{document}s).
+        assert!(doc.contains("\\newcommand{\\R}"));
+        assert_eq!(doc.matches("\\begin{document}").count(), 1);
+        assert!(!doc.contains("\nbody\n"));
+        // Cropping is the whole point of the wrapper.
+        assert!(doc.contains("\\usepackage[active,tightpage]{preview}"));
+        assert!(doc.contains("\\begin{preview}\n$x \\in \\R$\n\\end{preview}"));
+    }
+
+    #[test]
+    fn a_preamble_less_fragment_still_gets_a_class() {
+        // A child `.tex` (`\input`ed by the main file) has no preamble at all.
+        let doc = preview_document("\\newcommand{\\R}{\\mathbb{R}}\n", "$\\R$");
+        assert!(doc.contains("\\documentclass"));
+        assert!(doc.contains("\\newcommand{\\R}"));
+    }
+
+    #[test]
+    fn a_preamble_that_already_loads_preview_is_not_made_to_clash() {
+        // Loading `preview` twice with different options is an option clash —
+        // i.e. the preview would fail for exactly the documents most prepared
+        // for previewing.
+        let doc = preview_document("\\documentclass{article}\n\\usepackage{preview}\n", "$x$");
+        assert_eq!(doc.matches("\\usepackage").count(), 1);
+        assert!(!doc.contains("[active,tightpage]"));
+    }
+
+    #[test]
+    fn a_float_is_previewed_through_previews_own_float_option() {
+        // Measured, not assumed: `\begin{figure}` demands outer par mode, so a
+        // float wrapped in `\begin{preview}` dies with "Not in outer par mode"
+        // and writes no PDF. `floats` makes the environment itself the preview.
+        let doc = preview_document(
+            "\\documentclass{article}\n\\usepackage{graphicx}\n",
+            "\\begin{figure}\n\\includegraphics{fig/a}\n\\caption{A}\n\\end{figure}",
+        );
+        assert!(doc.contains("\\usepackage[active,tightpage,floats]{preview}"));
+        assert!(!doc.contains("\\begin{preview}"));
+        assert!(doc.contains("\\begin{figure}"));
+    }
+
+    #[test]
+    fn only_the_four_float_names_preview_takes_are_treated_as_floats() {
+        for body in [
+            "\\begin{figure}x\\end{figure}",
+            "  \\begin{figure*}x\\end{figure*}",
+            "\\begin{table}x\\end{table}",
+            "\\begin{table*}x\\end{table*}",
+        ] {
+            assert!(body_is_float(body), "{body}");
+        }
+        // A `wrapfigure` is not a `\@float` (it previews to no pages at all) and a
+        // `float`-package custom float — which `algorithm` is — redefines
+        // `\end@float` past what the option patches ("Extra }, or forgotten
+        // \endgroup"). Both were tried against a real engine; neither is offered,
+        // so neither may be wrapped as though it worked.
+        for body in [
+            "\\begin{wrapfigure}{r}{2cm}x\\end{wrapfigure}",
+            "\\begin{algorithm}x\\end{algorithm}",
+            "$x$",
+            "\\begin{align}x\\end{align}",
+        ] {
+            assert!(!body_is_float(body), "{body}");
+        }
+    }
+
+    #[test]
+    fn a_floats_fallback_is_an_article_rather_than_standalone() {
+        // `standalone` cannot host a float for the same reason `\begin{preview}`
+        // cannot, so the float fallback has to be a class that has floats at all.
+        let doc = fallback_preview_document("\\begin{table}x\\end{table}");
+        assert!(doc.contains("{article}"));
+        assert!(doc.contains("[active,tightpage,floats]{preview}"));
+        assert!(!doc.contains("standalone"));
+    }
+
+    #[test]
+    fn a_float_that_could_not_get_the_option_falls_back() {
+        // The one case the option cannot be set: the document's own preamble
+        // already loaded `preview`, and options cannot be added to a loaded
+        // package. That is a preamble failure, so it earns the second pass.
+        assert!(preview_needs_fallback("! LaTeX Error: Not in outer par mode."));
+    }
+
+    #[test]
+    fn the_fallback_carries_no_preamble_of_the_authors() {
+        let doc = fallback_preview_document("$x$");
+        assert!(doc.contains("{standalone}"));
+        assert!(doc.contains("amsmath"));
+        assert!(doc.contains("$x$"));
+    }
+
+    #[test]
+    fn only_a_preamble_failure_earns_the_second_pass() {
+        // A missing style file / class, or a `preview.sty` this install lacks:
+        // retry without the author's preamble.
+        assert!(preview_needs_fallback(
+            "! LaTeX Error: File `preview.sty' not found."
+        ));
+        assert!(preview_needs_fallback(
+            "! LaTeX Error: File `mystyle.sty' not found."
+        ));
+        assert!(preview_needs_fallback("! LaTeX Error: Option clash for package preview."));
+        // A typo in the fragment is the fragment's problem: fail once, report it,
+        // and don't pay for a second engine run on every hover.
+        assert!(!preview_needs_fallback(
+            "! Missing } inserted.\nl.5 $\\frac{1}{"
+        ));
+        assert!(!preview_needs_fallback("! Undefined control sequence."));
+    }
+
+    #[test]
+    fn a_preview_never_enables_shell_escape() {
+        // Same invariant as the full compile, asserted separately because the
+        // preview builds its own argument list rather than going through
+        // `compile_tex` (see `compile_args_never_enable_shell_escape`).
+        let args = engine_args("/scratch/eldrun-preview.tex", Some("/scratch"), &[]);
+        assert!(!args.iter().any(|a| flag_enables_shell_escape(a)));
+    }
+
+    #[test]
+    fn an_oversized_snippet_is_refused_rather_than_typeset() {
+        let big = "x".repeat(MAX_PREVIEW_BODY + 1);
+        let err = preview_snippet_blocking(".".into(), String::new(), big, None).unwrap_err();
+        assert!(err.contains("too large"), "{err}");
+        let err = preview_snippet_blocking(".".into(), String::new(), "  \n ".into(), None)
+            .unwrap_err();
+        assert!(err.contains("empty"), "{err}");
+    }
+
+    #[test]
+    fn stale_scratch_dirs_are_swept_and_fresh_ones_kept() {
+        let root = std::env::temp_dir().join(format!("eldrun-prevsweep-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("run-1")).unwrap();
+        fs::write(root.join("stray.txt"), b"x").unwrap();
+
+        // "Now" as of creation: nothing is old enough to sweep.
+        sweep_preview_scratch(&root, std::time::SystemTime::now());
+        assert!(root.join("run-1").exists());
+
+        // An hour and a bit later, the same dir is a leftover from a crashed run.
+        let later = std::time::SystemTime::now()
+            + PREVIEW_SCRATCH_MAX_AGE
+            + std::time::Duration::from_secs(60);
+        sweep_preview_scratch(&root, later);
+        assert!(!root.join("run-1").exists());
+        // Only directories are ours to remove.
+        assert!(root.join("stray.txt").exists());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_scratch_sweep_spares_the_format_cache() {
+        let root = std::env::temp_dir().join(format!("eldrun-fmtspare-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("fmt")).unwrap();
+        fs::write(root.join("fmt").join("k.fmt"), b"x").unwrap();
+        // Way past the scratch age: a run dir this old would be swept, but the
+        // format cache is supposed to outlive the run that built it.
+        let later = std::time::SystemTime::now()
+            + PREVIEW_SCRATCH_MAX_AGE
+            + std::time::Duration::from_secs(60);
+        sweep_preview_scratch(&root, later);
+        assert!(root.join("fmt").join("k.fmt").exists());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_format_key_names_the_dumped_head_and_nothing_else() {
+        let a = preview_document("\\documentclass{article}\n\\usepackage{amsmath}", "$x$");
+        let b = preview_document("\\documentclass{article}\n\\usepackage{amsmath}", "$y+z$");
+        // Two snippets under one preamble share a format…
+        assert_eq!(preview_fmt_key("pdflatex", &a), preview_fmt_key("pdflatex", &b));
+        // …a changed preamble does not, and neither does a changed engine.
+        let c = preview_document("\\documentclass{article}\n\\usepackage{amssymb}", "$x$");
+        assert_ne!(preview_fmt_key("pdflatex", &a), preview_fmt_key("pdflatex", &c));
+        assert_ne!(preview_fmt_key("pdflatex", &a), preview_fmt_key("xelatex", &a));
+        // A float's wrapper head carries the `floats` preview option, so it gets
+        // its own format rather than sharing (and mis-loading) the formula one.
+        let f = preview_document(
+            "\\documentclass{article}\n\\usepackage{amsmath}",
+            "\\begin{figure}x\\end{figure}",
+        );
+        assert_ne!(preview_fmt_key("pdflatex", &a), preview_fmt_key("pdflatex", &f));
+    }
+
+    #[test]
+    fn a_dead_format_is_told_apart_from_a_broken_snippet() {
+        // The two shapes pdfTeX actually prints for a bad dump…
+        assert!(preview_log_is_format_error("(Fatal format file error; I'm stymied)"));
+        assert!(preview_log_is_format_error(
+            "---! /x/k.fmt was made by different (pdf)tex version"
+        ));
+        // …and a snippet's own failure, which must NOT trigger a second run.
+        assert!(!preview_log_is_format_error(
+            "! File ended while scanning use of \\frac.\n!  ==> Fatal error occurred, no output PDF file produced!"
+        ));
+    }
+
+    #[test]
+    fn old_and_surplus_formats_are_swept_oldest_first() {
+        let root = std::env::temp_dir().join(format!("eldrun-fmtsweep-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let now = std::time::SystemTime::now();
+        // One over the cap, with strictly increasing mtimes so "oldest" is
+        // well-defined even on a coarse-mtime filesystem.
+        for i in 0..=PREVIEW_FMT_MAX {
+            let p = root.join(format!("k{i}.fmt"));
+            fs::write(&p, b"x").unwrap();
+            let f = fs::File::options().append(true).open(&p).unwrap();
+            f.set_modified(now - std::time::Duration::from_secs(600 - i as u64))
+                .unwrap();
+        }
+        sweep_preview_fmts(&root, now);
+        assert!(!root.join("k0.fmt").exists(), "the oldest goes");
+        assert!(root.join(format!("k{PREVIEW_FMT_MAX}.fmt")).exists());
+        assert_eq!(fs::read_dir(&root).unwrap().count(), PREVIEW_FMT_MAX);
+
+        // Past the age bound everything goes, `.bad` markers included — that is
+        // what re-arms a preamble whose build failed transiently.
+        fs::write(root.join("k1.bad"), b"").unwrap();
+        let later = now + PREVIEW_FMT_MAX_AGE + std::time::Duration::from_secs(60);
+        sweep_preview_fmts(&root, later);
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn font_names_are_readable_in_a_picker() {
         assert_eq!(
             font_display_name("LiberationSerif-BoldItalic"),
@@ -1320,11 +2539,13 @@ Count:2
         // by `compile_tex` (its single source of truth) across every engine.
         let no_extra: Vec<String> = vec![];
         for engine in [None, Some("pdflatex"), Some("lualatex"), Some("xelatex")] {
-            let args = latexmk_args(engine, "doc.tex", None, &no_extra);
-            assert!(
-                !args.iter().any(|a| flag_enables_shell_escape(a)),
-                "latexmk args for {engine:?} enable shell-escape: {args:?}",
-            );
+            for fmt in [None, Some("doc-pdflatex-0a-12")] {
+                let args = latexmk_args(engine, "doc.tex", None, &no_extra, fmt);
+                assert!(
+                    !args.iter().any(|a| flag_enables_shell_escape(a)),
+                    "latexmk args for {engine:?} enable shell-escape: {args:?}",
+                );
+            }
         }
 
         let direct = engine_args("doc.tex", None, &no_extra);
@@ -1357,7 +2578,7 @@ Count:2
 
         // And the filtered flags, when fed into the arg builders, keep the
         // shell-escape invariant — even alongside the benign ones.
-        let args = latexmk_args(None, "doc.tex", Some("build"), &kept);
+        let args = latexmk_args(None, "doc.tex", Some("build"), &kept, None);
         assert!(!args.iter().any(|a| flag_enables_shell_escape(a)));
     }
 
@@ -1365,7 +2586,7 @@ Count:2
     fn out_dir_maps_to_correct_engine_args() {
         let no_extra: Vec<String> = vec![];
         // latexmk uses -outdir; the engine uses -output-directory.
-        let mk = latexmk_args(None, "doc.tex", Some("/tmp/out"), &no_extra);
+        let mk = latexmk_args(None, "doc.tex", Some("/tmp/out"), &no_extra, None);
         assert!(
             mk.iter().any(|a| a == "-outdir=/tmp/out"),
             "latexmk should set -outdir: {mk:?}",
@@ -1376,7 +2597,7 @@ Count:2
             "engine should set -output-directory: {eng:?}",
         );
         // No out_dir → neither flag appears.
-        let mk2 = latexmk_args(None, "doc.tex", None, &no_extra);
+        let mk2 = latexmk_args(None, "doc.tex", None, &no_extra, None);
         assert!(!mk2.iter().any(|a| a.contains("outdir")));
     }
 
@@ -1418,6 +2639,24 @@ Count:2
         let _ = fs::remove_dir_all(&dir);
     }
 
+    /// The compile environment must keep TeX from hard-wrapping its log at 79
+    /// columns. That wrapping breaks a source path across two lines, and the
+    /// `(file … )` nesting is the ONLY thing that says which file a *warning*
+    /// came from (`-file-line-error` covers errors and nothing else) — so
+    /// dropping these silently makes every warning in a multi-file document
+    /// unplaceable in the viewer, with nothing failing. A tripwire over this
+    /// file's own source, the shape `mail.rs`'s path check already uses.
+    #[test]
+    fn compile_env_disables_log_line_wrapping() {
+        let src = include_str!("tex.rs");
+        for var in ["max_print_line", "error_line", "half_error_line"] {
+            assert!(
+                src.contains(&format!("\"{var}\"")),
+                "run_in must set {var} so the log's (file …) nesting stays readable",
+            );
+        }
+    }
+
     #[test]
     fn tail_truncates_to_char_boundary() {
         let short = "ok";
@@ -1447,7 +2686,7 @@ Count:2
     #[test]
     fn arg_builders_always_emit_synctex() {
         let no_extra: Vec<String> = vec![];
-        let mk = latexmk_args(None, "doc.tex", None, &no_extra);
+        let mk = latexmk_args(None, "doc.tex", None, &no_extra, None);
         assert!(mk.iter().any(|a| a == "-synctex=1"), "latexmk: {mk:?}");
         let eng = engine_args("doc.tex", None, &no_extra);
         assert!(eng.iter().any(|a| a == "-synctex=1"), "engine: {eng:?}");
@@ -1458,7 +2697,7 @@ Count:2
         // `-file-line-error` makes the engine print `file:line: message`, which the
         // viewer parses for jump-to-error. Both build paths must request it.
         let no_extra: Vec<String> = vec![];
-        let mk = latexmk_args(None, "doc.tex", None, &no_extra);
+        let mk = latexmk_args(None, "doc.tex", None, &no_extra, None);
         assert!(
             mk.iter().any(|a| a == "-file-line-error"),
             "latexmk: {mk:?}"
@@ -1606,5 +2845,104 @@ Count:2
         let solo = resolve_tex_root(main.to_string_lossy().into_owned()).unwrap();
         assert_eq!(solo, main_disp.to_string_lossy());
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    // ── Cached document preambles (full compiles) ───────────────────────────
+
+    #[test]
+    fn a_doc_head_needs_a_body_marker() {
+        assert_eq!(
+            doc_preamble_head("\\documentclass{a}\n\\begin{document}x\\end{document}"),
+            Some("\\documentclass{a}\n")
+        );
+        // A fragment has nothing to split at, so nothing to dump.
+        assert_eq!(doc_preamble_head("\\section{x}\n"), None);
+    }
+
+    #[test]
+    fn preamble_deps_name_local_candidates() {
+        let head = "\\documentclass[12pt]{myclass}\n\
+                    \\usepackage{amsmath, mystyle}\n\
+                    \\usepackage[utf8]{inputenc}\n\
+                    \\RequirePackage{other}\n\
+                    \\input{macros}\n\
+                    \\input{defs.tex}\n";
+        let deps = preamble_local_dep_names(head);
+        assert_eq!(
+            deps,
+            vec![
+                "myclass.cls",
+                "amsmath.sty",
+                "mystyle.sty",
+                "inputenc.sty",
+                "other.sty",
+                "macros.tex",
+                "defs.tex",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_doc_format_key_tracks_the_preamble_and_its_local_files() {
+        let dir = std::env::temp_dir().join(format!("eldrun-docfmt-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("macros.tex"), "\\newcommand{\\R}{\\mathbb{R}}\n").unwrap();
+
+        let head = "\\documentclass{article}\n\\input{macros}\n";
+        let a = doc_fmt_key("pdflatex", head, &dir);
+        // Stable while nothing changed.
+        assert_eq!(a, doc_fmt_key("pdflatex", head, &dir));
+        // A changed preamble mints a new key…
+        assert_ne!(
+            a,
+            doc_fmt_key("pdflatex", "\\documentclass{book}\n\\input{macros}\n", &dir)
+        );
+        // …and so does editing a local file the preamble reads: a dump rendered
+        // against stale macros would be a wrong PDF, not a wrong hover card.
+        fs::write(dir.join("macros.tex"), "\\newcommand{\\R}{\\mathbb{C}}\n").unwrap();
+        assert_ne!(a, doc_fmt_key("pdflatex", head, &dir));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_latexmk_fmt_override_keeps_every_invariant() {
+        let no_extra: Vec<String> = vec![];
+        let args = latexmk_args(None, "doc.tex", None, &no_extra, Some("doc-pdflatex-0a-12"));
+        // The override names the key, never a path (latexmk re-splits this
+        // string on whitespace; the directory travels via TEXFORMATS), and
+        // stands before user extras so a user's own -pdflatex wins.
+        assert!(args
+            .iter()
+            .any(|a| a == "-pdflatex=pdflatex -fmt=doc-pdflatex-0a-12 %O %S"));
+        assert!(!args.iter().any(|a| flag_enables_shell_escape(a)));
+        // Without a key the args are exactly the old ones.
+        assert!(!latexmk_args(None, "doc.tex", None, &no_extra, None)
+            .iter()
+            .any(|a| a.starts_with("-pdflatex=")));
+    }
+
+    #[test]
+    fn a_compile_format_error_includes_the_not_found_shape() {
+        // Everything the preview treats as a dead dump…
+        assert!(compile_log_is_format_error(
+            "(Fatal format file error; I'm stymied)"
+        ));
+        // …plus the shape only the full compile can hit: an engine that ignores
+        // TEXFORMATS never finds the key at all.
+        assert!(compile_log_is_format_error(
+            "I can't find the format file `doc-pdflatex-0a-12.fmt'!"
+        ));
+        // A document's own error must NOT earn a second full run — that would
+        // double every typo's feedback loop.
+        assert!(!compile_log_is_format_error("! Undefined control sequence."));
+    }
+
+    #[test]
+    fn texformats_ends_with_the_default_slot() {
+        // The trailing separator is kpathsea's "insert the default path here";
+        // without it the engine would find OUR formats and nothing else.
+        let sep = if cfg!(windows) { ';' } else { ':' };
+        assert!(texformats_search_path().ends_with(sep));
     }
 }

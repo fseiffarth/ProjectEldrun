@@ -45,6 +45,19 @@ change was not run live.
   the launcher and the `pretauri:dev` hook). It also refuses when port 1420 is
   held by an orphaned vite — a second `tauri dev` would otherwise attach to the
   *first* session's dev server and silently render its stale module graph.
+- Dogfooding: `./start-eldrun-dev-sandbox.sh` runs the same dev server with
+  `ELDRUN_STATE_DIR`/`ELDRUN_HOME` redirected under
+  `~/.local/share/eldrun-dev/`, so a disposable dev window coexists with a
+  packaged daily-driver Eldrun (`npm run package`) without sharing any state —
+  sessions live in the packaged build, out of HMR's reach. Still one dev
+  session at a time (port 1420), and still launched by the user only.
+- `npm run package:dev` freezes the *current working tree* as a release binary
+  behind the "Eldrun (dev)" desktop entry (`start-eldrun-dev-build.sh`, binary
+  at `~/.local/share/eldrun/eldrun-dev`). No hot reload: the user works and
+  spots bugs in it, then checks fixes in the hot-reload window. Both use the
+  real state, so **only one runs at a time** — each launcher refuses with a
+  desktop notification while the other is up. Re-run it to move the frozen
+  window to a newer snapshot.
 
 ## Docs
 
@@ -70,14 +83,15 @@ area you're touching; never read speculatively.
 | `tmux_sessions.md` | Shell/script tabs surviving SSH drops and crashes; Sessions view. |
 | `docker_containers.md` | Per-project session container: toggle semantics, lifecycle. |
 | `vm_projects.md` | The VM trust tier: no shared fs, inverse sync posture, egress knob. |
-| `agent_authority.md` | How sandbox / tab location / agentMode compose. |
+| `agent_authority.md` | How sandbox and tab location compose; why the permission mode is the agent's own. |
 | `hpc_careful_mode.md` | What probes stop collecting on a login node; host classification. |
 | `mail_encryption.md` | The sealed local store and the OpenPGP track: what each protects. |
 | `caldav.md` | Why a sync merges by resource URL instead of replacing. |
 
 Longer-lived plans and matrices live in `docs/` — e.g.
 `multi_host_remote_plan.md`, `git_lockstep_case_matrix.md`,
-`eldrun_mobile_agent_plan.md`. Project docs:
+`eldrun_mobile_agent_plan.md`. `docs/competitive_landscape.md` holds the
+positioning-vs-positioning read on overlapping tools. Project docs:
 `README.md`, `DOCUMENTATION.md`, `ROADMAP.md`, `STATUS.md`, and `TODO.md` —
 whose per-group files live in `todo/`.
 
@@ -239,13 +253,14 @@ loopback port, and from there is an ordinary `RemoteSpec` with `vm: true`.
   limited unless the code says otherwise.
 - Eldrun installs Claude/Codex session hooks and also has hook-free Codex
   binding. Codex user hooks may need one-time trust via `/hooks`.
-- Agent authority has three axes: project container sandbox, tab location
-  (local/primary/worker), and optional Plan/Auto agent mode.
-- `components/tabs/agentModes.ts` is a capability table. Add an agent there only
-  if it has an absolute mode flag and a working resume path for the respawn that
-  mode switching causes.
-- Plan/Auto is a launch flag, persisted per tab and re-applied when args are
-  rebuilt from layout state. Do not persist raw args as the source of truth.
+- Agent authority has two axes Eldrun owns: project container sandbox and tab
+  location (local/primary/worker).
+- **An agent's permission mode is the agent's own, set through its own CLI.**
+  Eldrun launches the plain command and injects no mode flag — there is no
+  Plan/Auto toggle, and nothing persists a per-tab mode. The one thing that
+  carries a mode across a respawn is `services::agent_session`, which re-applies
+  the mode Claude's own hook recorded onto the `--resume` line; that preserves
+  what the user set in-session and must not grow into a mode Eldrun chooses.
 - Terminal `kill`/`kill_all` must reap the child process subtree, not just the
   shell leader.
 
@@ -278,6 +293,9 @@ loopback port, and from there is an ordinary `RemoteSpec` with `vm: true`.
 
 ## Backend notes
 
+- `services::agent_fence` owns the default-on Linux bubblewrap fence for local
+  agents; writable roots derive from `box_allowed_roots`, and missing/unusable
+  bubblewrap fails closed rather than silently launching on the host.
 - Remote GPU snapshots are parsed through the same local `gpustat` parsers so
   host readings match local ones field-for-field.
 - `services::openvpn` tracks both headless tunnels and interactive terminal

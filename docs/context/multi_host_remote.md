@@ -32,3 +32,7 @@ Referenced from `AGENTS.md`.
     shared-fs host so even a stray `worker_sync_now` is harmless. "Sync code now" / "Pull
     outputs" / "Auto-sync code" are hidden for a shared-fs worker (its outputs are already
     in the primary's folder, moved by the primary's own sync).
+  - Commit-triggered fan-out and the manual **Sync code now** action enter the
+    same `(project, host)` in-flight guard. Only one writer may build, upload,
+    and apply that worker's fixed bundle path at a time; a racing second action
+    reports a harmless skip.

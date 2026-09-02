@@ -1,4 +1,10 @@
+pub mod agent_prompts;
 pub mod agent_session;
+pub mod agent_tasks;
+// Default-on Linux filesystem boundary for local agent tabs.  The authority
+// decision and root computation stay AppHandle-free; terminal spawn only applies
+// the resulting bubblewrap argv.
+pub mod agent_fence;
 // "Check for a new Eldrun" against the GitHub releases page: version compare,
 // per-platform asset pick, staged download, per-platform install.
 pub mod app_update;
@@ -11,6 +17,9 @@ pub mod browser_engine;
 pub mod caldav;
 pub mod codex_bind;
 pub mod git_credentials;
+// The default branch (`main`) for repositories Eldrun creates, and the
+// unpublished-`master` rename that runs just before a publish.
+pub mod git_init;
 pub mod git_peer;
 pub mod hpc_mode;
 pub mod local_loss;
@@ -44,8 +53,12 @@ pub mod restore_service;
 pub mod sandbox;
 pub mod sftp;
 pub mod skills;
+// Dictionary-backed (Hunspell/spellbook) spell check for the native editors —
+// the deterministic provider beside the opt-in LLM grammar check.
+pub mod spell;
 pub mod ssh_common;
 pub mod ssh_exec;
+pub mod state_gc;
 pub mod sync_auto;
 pub mod terminal_service;
 pub mod tmux_local;

@@ -132,7 +132,7 @@ pub fn list_dir_local(project_dir: &str, rel_path: &str) -> Result<Vec<FileEntry
 }
 
 /// Scan one or more download *source* folders and return their recently-modified
-/// entries, merged and sorted newest-first. Backs the right-panel Downloads
+/// entries, merged and sorted newest-first. Backs the side-panel Downloads
 /// section (fast-copy of freshly downloaded files into a project).
 ///
 /// Unlike [`list_dir`], the `paths` are user-chosen source folders that live
@@ -699,8 +699,26 @@ async fn remote_metadata(
     }
 }
 
+/// Offload a blocking local-fs body to a worker thread. The full recursive
+/// walks (Ctrl+P/QuickOpen), tree copies/moves, external imports, and archive
+/// extraction below all do work proportional to tree/archive size; run inline
+/// they blocked the main thread — the freeze class `commands::git`'s
+/// `run_off_thread` doc describes. The sync bodies stay directly
+/// unit-testable.
+async fn run_off_thread<T: Send + 'static>(
+    f: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    tokio::task::spawn_blocking(f)
+        .await
+        .map_err(|e| format!("fs task failed: {e}"))?
+}
+
 #[tauri::command]
-pub fn list_project_endings(project_dir: String) -> Result<Vec<String>, String> {
+pub async fn list_project_endings(project_dir: String) -> Result<Vec<String>, String> {
+    run_off_thread(move || list_project_endings_blocking(project_dir)).await
+}
+
+pub fn list_project_endings_blocking(project_dir: String) -> Result<Vec<String>, String> {
     let root = canonical(&project_dir)?;
     let mut endings = BTreeSet::new();
     collect_project_endings(&root, &root, 0, &mut endings)?;
@@ -708,7 +726,11 @@ pub fn list_project_endings(project_dir: String) -> Result<Vec<String>, String> 
 }
 
 #[tauri::command]
-pub fn list_project_paths(project_dir: String) -> Result<Vec<ProjectPathEntry>, String> {
+pub async fn list_project_paths(project_dir: String) -> Result<Vec<ProjectPathEntry>, String> {
+    run_off_thread(move || list_project_paths_blocking(project_dir)).await
+}
+
+pub fn list_project_paths_blocking(project_dir: String) -> Result<Vec<ProjectPathEntry>, String> {
     let root = canonical(&project_dir)?;
     let mut paths = Vec::new();
     collect_project_paths(&root, &root, "", 0, &mut paths)?;
@@ -995,7 +1017,17 @@ pub fn create_dir_local(project_dir: &str, rel_path: &str) -> Result<(), String>
 /// in-project copy/paste, or two box-co-accessible projects). The destination
 /// must not already exist, and a directory may not be copied into itself.
 #[tauri::command]
-pub fn copy_path(
+pub async fn copy_path(
+    src_project_dir: String,
+    src_rel: String,
+    dest_project_dir: String,
+    dest_rel: String,
+) -> Result<(), String> {
+    run_off_thread(move || copy_path_blocking(src_project_dir, src_rel, dest_project_dir, dest_rel))
+        .await
+}
+
+pub fn copy_path_blocking(
     src_project_dir: String,
     src_rel: String,
     dest_project_dir: String,
@@ -1012,7 +1044,17 @@ pub fn copy_path(
 /// confinement and pre-conditions as [`copy_path`]. Falls back to copy+remove
 /// when a plain rename is not possible (e.g. across filesystems/mountpoints).
 #[tauri::command]
-pub fn move_path(
+pub async fn move_path(
+    src_project_dir: String,
+    src_rel: String,
+    dest_project_dir: String,
+    dest_rel: String,
+) -> Result<(), String> {
+    run_off_thread(move || move_path_blocking(src_project_dir, src_rel, dest_project_dir, dest_rel))
+        .await
+}
+
+pub fn move_path_blocking(
     src_project_dir: String,
     src_rel: String,
     dest_project_dir: String,
@@ -1035,7 +1077,7 @@ pub fn move_path(
     remove.map_err(|e| e.to_string())
 }
 
-/// Import an external file or directory (dropped onto the right panel from the
+/// Import an external file or directory (dropped onto the side panel from the
 /// OS file manager) into the project. Unlike [`copy_path`], the SOURCE is an
 /// arbitrary absolute path outside the project, so it is not confined; only the
 /// DESTINATION is confined to the project root. `dest_rel` is the project-
@@ -1044,12 +1086,33 @@ pub fn move_path(
 /// true` overwrites the existing entry. Returns the final project-relative path
 /// of the imported copy. Callers prompt the user (see `project_path_exists`)
 /// before passing `replace=true`.
+///
+/// `dest_name` renames the copy on the way in — the collision prompt's "keep
+/// both, as <name>", where the user names the second copy instead of accepting
+/// " (n)". It is the *name* only, never a path (see `validate_import_name`), so
+/// it can redirect the copy within the dropped-on folder and nowhere else; and
+/// it still goes through `unique_dest` unless `replace`, so a chosen name that
+/// also collides is suffixed rather than overwriting something.
 #[tauri::command]
-pub fn import_external_file(
+pub async fn import_external_file(
     project_dir: String,
     source_path: String,
     dest_rel: String,
     replace: bool,
+    dest_name: Option<String>,
+) -> Result<String, String> {
+    run_off_thread(move || {
+        import_external_file_blocking(project_dir, source_path, dest_rel, replace, dest_name)
+    })
+    .await
+}
+
+pub fn import_external_file_blocking(
+    project_dir: String,
+    source_path: String,
+    dest_rel: String,
+    replace: bool,
+    dest_name: Option<String>,
 ) -> Result<String, String> {
     let src = canonical(&source_path)?;
     let root = canonical(&project_dir)?;
@@ -1067,10 +1130,14 @@ pub fn import_external_file(
         return Err("cannot copy a folder into itself".to_string());
     }
 
-    let file_name = src
+    let source_name = src
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .ok_or_else(|| "source has no file name".to_string())?;
+    let file_name = match dest_name.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
+        Some(n) => validate_import_name(n)?,
+        None => source_name,
+    };
     let dest = if replace {
         dest_dir_c.join(&file_name)
     } else {
@@ -1122,7 +1189,11 @@ pub fn project_path_exists(project_dir: String, rel_path: String) -> Result<bool
 /// `enclosed_name` (which rejects `..`/absolute components), and the resolved
 /// output is additionally confined to the destination folder before any write.
 #[tauri::command]
-pub fn extract_archive(project_dir: String, rel_path: String) -> Result<String, String> {
+pub async fn extract_archive(project_dir: String, rel_path: String) -> Result<String, String> {
+    run_off_thread(move || extract_archive_blocking(project_dir, rel_path)).await
+}
+
+pub fn extract_archive_blocking(project_dir: String, rel_path: String) -> Result<String, String> {
     let root = canonical(&project_dir)?;
     let archive = canonical(root.join(&rel_path).to_string_lossy().as_ref())?;
     enforce_confinement(&root, &archive)?;
@@ -1179,6 +1250,18 @@ pub fn extract_archive(project_dir: String, rel_path: String) -> Result<String, 
 
 /// Pick a non-colliding destination path in `dir` for `file_name`, appending
 /// " (1)", " (2)", … before the extension until a free name is found.
+/// A caller-chosen import name is one path component and nothing else. A
+/// separator would place the copy outside the folder that was dropped onto,
+/// and `.`/`..` name a directory rather than a new entry in it — so both are
+/// refused here, before `enforce_confinement` gets a chance to be the only
+/// thing standing between a typed name and an arbitrary write.
+fn validate_import_name(name: &str) -> Result<String, String> {
+    if name.contains('/') || name.contains('\\') || name == "." || name == ".." {
+        return Err(format!("invalid file name: {name}"));
+    }
+    Ok(name.to_string())
+}
+
 fn unique_dest(dir: &Path, file_name: &str) -> PathBuf {
     let direct = dir.join(file_name);
     if !direct.exists() {
@@ -1732,7 +1815,7 @@ fn compute_allowed_roots(
     root_work: &Path,
 ) -> Vec<PathBuf> {
     // The ROOT scope — a viewer with no owning project (`scope_id: None`), i.e.
-    // the right panel's root view and any root-scope tab — browses the root
+    // the side panel's root view and any root-scope tab — browses the root
     // terminal folder `~/eldrun/root`. Its *listing* passes confinement because
     // `list_dir` confines against the project_dir argument, but every absolute-
     // path read a viewer then makes (`read_file_bytes`, `file_mtime`, …) lands
@@ -1740,6 +1823,30 @@ fn compute_allowed_roots(
     // opened from the root tree sat on "Loading" forever. Only the no-project
     // scope gains it: a project-scoped viewer stays project-isolated.
     let mut roots: Vec<PathBuf> = Vec::new();
+    // A BOX scope (`box:<id>`) has no single anchor project: its roots are the
+    // box folder plus every member's tree (and mirror override) — the
+    // co-accessible set the box exists to create. An unknown box stays empty
+    // (fail closed), and the root work dir is never folded in: a box viewer is
+    // not the root scope.
+    if let Some(box_id) = scope_id.and_then(crate::commands::boxes::box_id_of_scope) {
+        let Some(b) = boxes.iter().find(|b| b.id == box_id) else {
+            return Vec::new();
+        };
+        if let Some(folder) = &b.folder {
+            roots.push(PathBuf::from(folder));
+        }
+        let in_box = || {
+            projects
+                .iter()
+                .filter(|e| b.member_ids.iter().any(|m| m == &e.id))
+        };
+        roots.extend(in_box().filter_map(project_dir));
+        roots.extend(in_box().filter_map(mirror_override_dir));
+        roots
+            .iter_mut()
+            .for_each(|r| *r = r.canonicalize().unwrap_or_else(|_| r.clone()));
+        return roots;
+    }
     if scope_id.is_none() {
         roots.push(root_work.to_path_buf());
     }
@@ -2025,7 +2132,20 @@ const MAX_SCAN_DEPTH: usize = 64;
 fn should_skip_ending_scan_dir(name: &str) -> bool {
     matches!(
         name,
-        ".git" | ".eldrun" | "node_modules" | "target" | "dist" | "build" | ".next" | ".cache"
+        ".git"
+            | ".eldrun"
+            | "node_modules"
+            | "target"
+            | "dist"
+            | "build"
+            | ".next"
+            | ".cache"
+            // Python vendor/artifact dirs — a 50k-file venv would otherwise be
+            // walked on every Ctrl+P/QuickOpen scan.
+            | ".venv"
+            | "venv"
+            | "__pycache__"
+            | ".tox"
     )
 }
 
@@ -2337,7 +2457,7 @@ mod tests {
         let dir = tmp.path().to_string_lossy().to_string();
         std::fs::write(tmp.path().join("a.txt"), "hello").unwrap();
 
-        copy_path(dir.clone(), "a.txt".into(), dir.clone(), "b.txt".into()).unwrap();
+        copy_path_blocking(dir.clone(), "a.txt".into(), dir.clone(), "b.txt".into()).unwrap();
 
         assert_eq!(
             std::fs::read_to_string(tmp.path().join("a.txt")).unwrap(),
@@ -2356,7 +2476,7 @@ mod tests {
         std::fs::create_dir(tmp.path().join("src")).unwrap();
         std::fs::write(tmp.path().join("src/main.rs"), "fn main() {}").unwrap();
 
-        copy_path(dir.clone(), "src".into(), dir.clone(), "src2".into()).unwrap();
+        copy_path_blocking(dir.clone(), "src".into(), dir.clone(), "src2".into()).unwrap();
 
         assert_eq!(
             std::fs::read_to_string(tmp.path().join("src2/main.rs")).unwrap(),
@@ -2372,7 +2492,7 @@ mod tests {
         std::fs::write(tmp.path().join("a.txt"), "1").unwrap();
         std::fs::write(tmp.path().join("b.txt"), "2").unwrap();
 
-        let err = copy_path(dir.clone(), "a.txt".into(), dir.clone(), "b.txt".into()).unwrap_err();
+        let err = copy_path_blocking(dir.clone(), "a.txt".into(), dir.clone(), "b.txt".into()).unwrap_err();
         assert!(err.contains("already exists"), "{err}");
         // The pre-existing destination is untouched.
         assert_eq!(
@@ -2411,7 +2531,7 @@ mod tests {
             &[("a.txt", b"hello"), ("sub/", b""), ("sub/b.txt", b"world")],
         );
 
-        let folder = extract_archive(dir.clone(), "bundle.zip".into()).unwrap();
+        let folder = extract_archive_blocking(dir.clone(), "bundle.zip".into()).unwrap();
 
         assert_eq!(folder, "bundle");
         assert_eq!(
@@ -2431,7 +2551,7 @@ mod tests {
         std::fs::create_dir(tmp.path().join("bundle")).unwrap();
         write_test_zip(&tmp.path().join("bundle.zip"), &[("a.txt", b"x")]);
 
-        let folder = extract_archive(dir.clone(), "bundle.zip".into()).unwrap();
+        let folder = extract_archive_blocking(dir.clone(), "bundle.zip".into()).unwrap();
 
         assert_eq!(folder, "bundle (1)");
         assert!(tmp.path().join("bundle (1)/a.txt").exists());
@@ -2447,7 +2567,7 @@ mod tests {
             &[("../escaped.txt", b"pwned"), ("safe.txt", b"ok")],
         );
 
-        extract_archive(dir.clone(), "evil.zip".into()).unwrap();
+        extract_archive_blocking(dir.clone(), "evil.zip".into()).unwrap();
 
         // The traversal entry is dropped; the sibling escape file never appears.
         assert!(!tmp.path().join("escaped.txt").exists());
@@ -2461,7 +2581,7 @@ mod tests {
         std::fs::create_dir(tmp.path().join("src")).unwrap();
 
         let err =
-            copy_path(dir.clone(), "src".into(), dir.clone(), "src/inner".into()).unwrap_err();
+            copy_path_blocking(dir.clone(), "src".into(), dir.clone(), "src/inner".into()).unwrap_err();
         assert!(err.contains("into itself"), "{err}");
     }
 
@@ -2471,12 +2591,40 @@ mod tests {
         let dir = tmp.path().to_string_lossy().to_string();
         std::fs::write(tmp.path().join("a.txt"), "hello").unwrap();
 
-        move_path(dir.clone(), "a.txt".into(), dir.clone(), "sub/b.txt".into()).unwrap();
+        move_path_blocking(dir.clone(), "a.txt".into(), dir.clone(), "sub/b.txt".into()).unwrap();
 
         assert!(!tmp.path().join("a.txt").exists());
         assert_eq!(
             std::fs::read_to_string(tmp.path().join("sub/b.txt")).unwrap(),
             "hello"
+        );
+    }
+
+    /// Two DIFFERENT roots — the box view's cross-project drag-and-drop (and a
+    /// side-panel → other project's Files tab drop) depend on this shape: the
+    /// frontend routes the drop to `dest_project_dir = <target tree's root>`.
+    /// Locks that a folder moves wholesale into the other root and leaves
+    /// nothing behind in the source project.
+    #[test]
+    fn move_path_moves_a_folder_between_roots() {
+        let src = tempfile::tempdir().unwrap();
+        let dest = tempfile::tempdir().unwrap();
+        std::fs::create_dir(src.path().join("data")).unwrap();
+        std::fs::write(src.path().join("data/x.txt"), "payload").unwrap();
+        std::fs::create_dir(dest.path().join("incoming")).unwrap();
+
+        move_path_blocking(
+            src.path().to_string_lossy().to_string(),
+            "data".into(),
+            dest.path().to_string_lossy().to_string(),
+            "incoming/data".into(),
+        )
+        .unwrap();
+
+        assert!(!src.path().join("data").exists());
+        assert_eq!(
+            std::fs::read_to_string(dest.path().join("incoming/data/x.txt")).unwrap(),
+            "payload"
         );
     }
 
@@ -2489,11 +2637,12 @@ mod tests {
         let proj = tempfile::tempdir().unwrap();
         std::fs::create_dir(proj.path().join("assets")).unwrap();
 
-        let rel = import_external_file(
+        let rel = import_external_file_blocking(
             proj.path().to_string_lossy().to_string(),
             ext.path().join("photo.png").to_string_lossy().to_string(),
             "assets".into(),
             false,
+            None,
         )
         .unwrap();
 
@@ -2513,11 +2662,12 @@ mod tests {
         let proj = tempfile::tempdir().unwrap();
         std::fs::write(proj.path().join("a.txt"), "old").unwrap();
 
-        let rel = import_external_file(
+        let rel = import_external_file_blocking(
             proj.path().to_string_lossy().to_string(),
             ext.path().join("a.txt").to_string_lossy().to_string(),
             "".into(),
             false,
+            None,
         )
         .unwrap();
 
@@ -2540,11 +2690,12 @@ mod tests {
         let proj = tempfile::tempdir().unwrap();
         std::fs::write(proj.path().join("a.txt"), "old").unwrap();
 
-        let rel = import_external_file(
+        let rel = import_external_file_blocking(
             proj.path().to_string_lossy().to_string(),
             ext.path().join("a.txt").to_string_lossy().to_string(),
             "".into(),
             true,
+            None,
         )
         .unwrap();
 
@@ -2555,6 +2706,100 @@ mod tests {
             "new"
         );
         assert!(!proj.path().join("a (1).txt").exists());
+    }
+
+    #[test]
+    fn import_external_file_honours_a_chosen_name() {
+        let ext = tempfile::tempdir().unwrap();
+        std::fs::write(ext.path().join("a.txt"), "new").unwrap();
+        let proj = tempfile::tempdir().unwrap();
+        std::fs::write(proj.path().join("a.txt"), "old").unwrap();
+
+        // The collision prompt's "keep both, as …": the second copy is named by
+        // the user rather than suffixed.
+        let rel = import_external_file_blocking(
+            proj.path().to_string_lossy().to_string(),
+            ext.path().join("a.txt").to_string_lossy().to_string(),
+            "".into(),
+            false,
+            Some("  a-draft.txt  ".into()),
+        )
+        .unwrap();
+
+        assert_eq!(rel, "a-draft.txt");
+        assert_eq!(
+            std::fs::read_to_string(proj.path().join("a.txt")).unwrap(),
+            "old"
+        );
+        assert_eq!(
+            std::fs::read_to_string(proj.path().join("a-draft.txt")).unwrap(),
+            "new"
+        );
+    }
+
+    #[test]
+    fn chosen_name_that_also_collides_is_suffixed_not_overwritten() {
+        let ext = tempfile::tempdir().unwrap();
+        std::fs::write(ext.path().join("a.txt"), "new").unwrap();
+        let proj = tempfile::tempdir().unwrap();
+        std::fs::write(proj.path().join("a.txt"), "old").unwrap();
+        std::fs::write(proj.path().join("taken.txt"), "mine").unwrap();
+
+        // Without `replace`, a name is a request and never an overwrite — the
+        // prompt's suggestion can be stale by the time the copy runs.
+        let rel = import_external_file_blocking(
+            proj.path().to_string_lossy().to_string(),
+            ext.path().join("a.txt").to_string_lossy().to_string(),
+            "".into(),
+            false,
+            Some("taken.txt".into()),
+        )
+        .unwrap();
+
+        assert_eq!(rel, "taken (1).txt");
+        assert_eq!(
+            std::fs::read_to_string(proj.path().join("taken.txt")).unwrap(),
+            "mine"
+        );
+    }
+
+    #[test]
+    fn import_external_file_rejects_a_chosen_name_with_a_separator() {
+        let ext = tempfile::tempdir().unwrap();
+        std::fs::write(ext.path().join("a.txt"), "x").unwrap();
+        let proj = tempfile::tempdir().unwrap();
+        std::fs::create_dir(proj.path().join("sub")).unwrap();
+
+        for name in ["../escape.txt", "sub/a.txt", "..", "."] {
+            let err = import_external_file_blocking(
+                proj.path().to_string_lossy().to_string(),
+                ext.path().join("a.txt").to_string_lossy().to_string(),
+                "".into(),
+                false,
+                Some(name.into()),
+            )
+            .unwrap_err();
+            assert!(err.contains("invalid file name"), "{name}: {err}");
+        }
+        // Nothing landed anywhere.
+        assert!(!proj.path().join("sub/a.txt").exists());
+    }
+
+    #[test]
+    fn blank_chosen_name_falls_back_to_the_source_name() {
+        let ext = tempfile::tempdir().unwrap();
+        std::fs::write(ext.path().join("a.txt"), "x").unwrap();
+        let proj = tempfile::tempdir().unwrap();
+
+        let rel = import_external_file_blocking(
+            proj.path().to_string_lossy().to_string(),
+            ext.path().join("a.txt").to_string_lossy().to_string(),
+            "".into(),
+            false,
+            Some("   ".into()),
+        )
+        .unwrap();
+        assert_eq!(rel, "a.txt");
     }
 
     #[test]
@@ -2573,11 +2818,12 @@ mod tests {
         std::fs::write(ext.path().join("pkg/mod.rs"), "fn x() {}").unwrap();
         let proj = tempfile::tempdir().unwrap();
 
-        let rel = import_external_file(
+        let rel = import_external_file_blocking(
             proj.path().to_string_lossy().to_string(),
             ext.path().join("pkg").to_string_lossy().to_string(),
             "".into(),
             false,
+            None,
         )
         .unwrap();
 
@@ -2594,11 +2840,12 @@ mod tests {
         std::fs::write(ext.path().join("a.txt"), "x").unwrap();
         let proj = tempfile::tempdir().unwrap();
 
-        let err = import_external_file(
+        let err = import_external_file_blocking(
             proj.path().to_string_lossy().to_string(),
             ext.path().join("a.txt").to_string_lossy().to_string(),
             "../escape".into(),
             false,
+            None,
         )
         .unwrap_err();
         assert!(err.contains("invalid path component"), "{err}");
@@ -2618,7 +2865,7 @@ mod tests {
         std::fs::write(tmp.path().join("src/lib.py"), "x = 1").unwrap();
         std::os::unix::fs::symlink(tmp.path(), tmp.path().join("repo")).unwrap();
 
-        let endings = list_project_endings(tmp.path().to_string_lossy().to_string()).unwrap();
+        let endings = list_project_endings_blocking(tmp.path().to_string_lossy().to_string()).unwrap();
 
         // Real file endings are collected; the self-symlink is never entered.
         assert!(endings.contains(&".rs".to_string()));
@@ -2826,6 +3073,62 @@ mod tests {
             compute_allowed_roots(&projects, &Vec::new(), Some("nope"), Path::new(ROOT_WORK))
                 .is_empty()
         );
+    }
+
+    fn mk_box(id: &str, members: &[&str], folder: Option<&str>) -> crate::schema::boxes::ProjectBox {
+        crate::schema::boxes::ProjectBox {
+            id: id.to_string(),
+            name: id.to_string(),
+            member_ids: members.iter().map(|s| s.to_string()).collect(),
+            folder: folder.map(|s| s.to_string()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn allowed_roots_box_scope_covers_folder_and_member_roots() {
+        let mut y = entry("y", "inactive", "/home/u/code/projecty");
+        y.extra.insert(
+            "mirror".to_string(),
+            Value::String("/home/u/eldrun/projects-ssh/y".to_string()),
+        );
+        let projects = vec![entry("x", "current", "/home/u/code/projectx"), y];
+        let boxes = vec![mk_box("b1", &["x", "y"], Some("/home/u/eldrun/boxes/b1"))];
+        let roots = compute_allowed_roots(&projects, &boxes, Some("box:b1"), Path::new(ROOT_WORK));
+        assert!(roots.iter().any(|r| r.ends_with("boxes/b1")));
+        assert!(roots.iter().any(|r| r.ends_with("projectx")));
+        assert!(roots.iter().any(|r| r.ends_with("projecty")));
+        assert!(roots.iter().any(|r| r.ends_with("projects-ssh/y")));
+        // A box viewer is not the root scope.
+        assert!(!roots.iter().any(|r| r == Path::new(ROOT_WORK)));
+    }
+
+    #[test]
+    fn allowed_roots_box_scope_excludes_non_members() {
+        let projects = vec![
+            entry("x", "current", "/home/u/code/projectx"),
+            entry("y", "inactive", "/home/u/code/projecty"),
+        ];
+        let boxes = vec![mk_box("b1", &["y"], None)];
+        let roots = compute_allowed_roots(&projects, &boxes, Some("box:b1"), Path::new(ROOT_WORK));
+        assert!(roots.iter().any(|r| r.ends_with("projecty")));
+        assert!(
+            !roots.iter().any(|r| r.ends_with("projectx")),
+            "the current project is not reachable through a box it is not in"
+        );
+    }
+
+    #[test]
+    fn allowed_roots_unknown_box_scope_fails_closed() {
+        let projects = vec![entry("x", "current", "/home/u/code/projectx")];
+        let boxes = vec![mk_box("b1", &["x"], None)];
+        assert!(compute_allowed_roots(
+            &projects,
+            &boxes,
+            Some("box:ghost"),
+            Path::new(ROOT_WORK)
+        )
+        .is_empty());
     }
 
     #[test]

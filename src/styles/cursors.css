@@ -1,0 +1,109 @@
+/* cursors.css — the custom mouse-cursor packs (`Settings.ui_cursor`).
+   Appended LAST in styles/index.css: everything here either only applies while
+   a pack is active (`:root[data-cursor]`) or is documentation, so it wants the
+   highest source order and nothing in the cascade depends on it sitting early.
+
+   ── How the packs reach the app ────────────────────────────────────────────
+   `lib/cursorPacks.ts` draws the art on a canvas and hands back a map of custom
+   properties; `stores/settings.applyCursor` writes them onto the ROOT element
+   as inline vars and stamps `data-cursor="<pack>"` beside them. Each value is a
+   complete `cursor` value with the keyword it replaces baked in as its own
+   fallback:
+
+       --cur-pointer: url("data:image/png;base64,…") 9 1, pointer;
+
+   ── The rule every stylesheet in this app follows ──────────────────────────
+   A rule that wants a cursor names the TOKEN and keeps the keyword as the
+   var()'s fallback:
+
+       cursor: var(--cur-pointer, pointer);
+
+   With no pack active the var is undefined and the declaration is exactly the
+   keyword it always was — no image, no cost, no behaviour change. That is why
+   the packs need no `!important`, no runtime stylesheet patching and no second
+   copy of any rule: the fallback IS the system cursor.
+
+   **New rules must be written this way.** A bare `cursor: pointer;` still works
+   — it just stops following the pack, which is how a pack starts looking half
+   applied. `CursorPacks.test.ts` scans the whole corpus for the keywords a pack
+   ships art for and fails on a bare one, so the invariant is enforced rather
+   than merely documented. Keywords no pack replaces (`wait`, `cell`, `zoom-in`,
+   `help`, `none`, `auto`, `inherit`) are deliberately left alone. */
+
+/* The root arrow. `cursor` inherits, so this one declaration is what puts the
+   pack's pointer over every surface that does not ask for something else. */
+:root[data-cursor] {
+  cursor: var(--cur-default, default);
+}
+
+/* …which is also why the text surfaces have to say so explicitly: the root
+   arrow inherits INTO them, and the UA stylesheet's `cursor: auto` on a text
+   field loses to an inherited value from an element as specific as `:root`.
+   The list is the app's actual text: the fields, the editors, the terminal.
+   Everything else in Eldrun is chrome, which is why the arrow is the honest
+   default here and `auto` is not offered as a pack shape. */
+:root[data-cursor] :is(textarea, [contenteditable="true"]),
+:root[data-cursor]
+  input:not(
+    [type="checkbox"],
+    [type="radio"],
+    [type="range"],
+    [type="color"],
+    [type="file"],
+    [type="button"],
+    [type="submit"],
+    [type="reset"]
+  ) {
+  cursor: var(--cur-text, text);
+}
+
+/* xterm paints its own `cursor: text` on `.xterm`; an equal-specificity rule of
+   ours could win or lose on import order alone, so this one is scoped by the
+   root attribute and outranks it outright. `.xterm-screen` is the child the
+   pointer is actually over. */
+:root[data-cursor] :is(.xterm, .xterm-screen) {
+  cursor: var(--cur-text, text);
+}
+
+/* pdf.js's text layer is a stack of transparent spans over the page canvas; the
+   selection gesture there is the ordinary drag, so it reads as text like any
+   other selectable prose. */
+:root[data-cursor] .textLayer {
+  cursor: var(--cur-text, text);
+}
+
+/* ── Settings → Theme: the picker and the pack's own art ────────────────────
+   The row is `settingsUi`'s `SettingRow`, whose control column is 200px wide
+   (`.settings-card-row > .dropdown`); this wrapper stands in that column's
+   place and hands the width down, so the picker keeps the right edge every
+   other control in the dialog lines up on. */
+.settings-card-row > .cursor-setting {
+  flex: 0 1 200px;
+  width: 200px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.cursor-setting > .dropdown {
+  width: 100%;
+}
+
+/* The four shapes at their true size — the same PNGs the pointer is drawn
+   from, so the strip cannot show one thing while the cursor is another. On the
+   window's own ground rather than a card's, since that is what a cursor is
+   actually seen against. */
+.cursor-preview {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 6px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm, 4px);
+  background: var(--bg-main);
+}
+
+.cursor-preview img {
+  display: block;
+}

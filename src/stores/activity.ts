@@ -1,11 +1,16 @@
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { emit, listen } from "@tauri-apps/api/event";
 import { create } from "zustand";
 import { looksLikeDecisionPromptStripped, stripAnsi } from "../lib/agentPrompt";
 import { METRIC, agentPromptLeaf } from "../lib/usageMetrics";
 import { allGroups, isPtyTabKind, useTabsStore } from "./tabs";
 import type { TabEntry } from "./tabs";
 import { bumpUsage } from "./usage";
+import { isDetachedWindow } from "./detachedContext";
+
+/** Mirrors `DETACHED_ACTIVITY` in stores/detached (spelled here so this module
+ *  stays free of that import: detached.ts imports this one). */
+const DETACHED_ACTIVITY_EVENT = "detached-activity";
 
 /// A scope (project) stays "running" until its PTYs have been quiet for this
 /// window. Short enough to clear quickly when a task ends, long enough to bridge
@@ -131,8 +136,45 @@ export function lastPtyOutputAt(ptyId: string): number | undefined {
  *  reset in `notePtyOutput` misses: an answer so fast that the agent's next
  *  output lands inside the same burst, leaving the answered menu in the tail. */
 export function noteUserInput(ptyId: string) {
+  // Group B #234: a popout's terminal reports to the classifier that lives in
+  // the main window — the popout's own maps are never read by anything.
+  if (isDetachedWindow()) {
+    void emit(DETACHED_ACTIVITY_EVENT, { ptyId, kind: "input" });
+    return;
+  }
   inputByPty[ptyId] = Date.now();
   tailByPty[ptyId] = "";
+}
+
+/**
+ * Group B #234, the popout side: adopt the statuses the main window mirrored
+ * over (`detachedStatusEvent`) into THIS window's activity store, keyed the way
+ * `TabBar` reads them, so the popout's strip paints the same lamps. Replaces the
+ * whole verdict for `scope`'s keys in `status`; keys of other scopes are kept.
+ */
+export function applyDetachedStatus(
+  scope: string,
+  status: Record<string, "working" | "needs-decision" | "finished">,
+): void {
+  const prefix = `${scope}:`;
+  const busyByTab: Record<string, boolean> = {};
+  const attentionByTab: Record<string, AttentionKind> = {};
+  const cur = useActivityStore.getState();
+  for (const [id, v] of Object.entries(cur.busyByTab)) if (!id.startsWith(prefix)) busyByTab[id] = v;
+  for (const [id, v] of Object.entries(cur.attentionByTab)) {
+    if (!id.startsWith(prefix)) attentionByTab[id] = v;
+  }
+  for (const [key, state] of Object.entries(status)) {
+    const ptyId = `${prefix}${key}`;
+    if (state === "working") busyByTab[ptyId] = true;
+    else if (state === "needs-decision") attentionByTab[ptyId] = "decision";
+    else if (state === "finished") attentionByTab[ptyId] = "done";
+  }
+  useActivityStore.setState({
+    busyByTab,
+    attentionByTab,
+    attentionByScope: rollupAttentionScopes(attentionByTab),
+  });
 }
 
 /** Forget everything recorded about a PTY, called when it is (re)spawned. A
@@ -157,6 +199,16 @@ export function splitPtyId(ptyId: string): { scope: string; key: string } | null
  *  background projects are never "looked at". */
 function isTabLookedAt(scope: string, key: string): boolean {
   const st = useTabsStore.getState();
+  // A tab in a popout is looked at when it is the active tab of its pane there
+  // (#234): the popout is its own window, on screen whichever scope the main
+  // window shows. Its window focus is not visible from here; the active tab of
+  // an unfocused popout is still the one on its screen, which is what "looked
+  // at" means for retiring a `done` flag.
+  for (const d of st.detachedGroupsByScope[scope] ?? []) {
+    for (const g of allGroups(d.subtree)) {
+      if (g.tabKeys.includes(key)) return g.activeKey === key;
+    }
+  }
   if (st.scope !== scope) return false;
   for (const g of allGroups(st.layoutByScope[scope] ?? null)) {
     if (g.tabKeys.includes(key)) return g.activeKey === key;
@@ -164,16 +216,12 @@ function isTabLookedAt(scope: string, key: string): boolean {
   return false;
 }
 
-/** True when the tab lives in a detached popout (#42). Such a tab has its own OS
- *  window and its own tab strip, and this window has no idea whether the user is
- *  looking at it — so it raises no attention here, which also stops a popped-out
- *  agent from leaving its project pill glowing with a flag nothing can clear. */
-function isTabDetached(scope: string, key: string): boolean {
-  const groups = useTabsStore.getState().detachedGroupsByScope[scope] ?? [];
-  return groups.some((d) =>
-    allGroups(d.subtree).some((g) => g.tabKeys.includes(key)),
-  );
-}
+// (A `isTabDetached` suppression used to sit here: a popped-out agent raised no
+// attention at all, because this window could not tell whether anyone was
+// looking at it and a flag it raised would have been unclearable. Group B #234
+// answers both — `isTabLookedAt` reads the popout's own active tab, and the
+// popout's strip clears the flag over DETACHED_ACTIVITY — so the suppression is
+// gone and a popped-out agent lights the project pill like a docked one.)
 
 /** Test-only: forget all recorded PTY activity so cases start isolated. */
 export function _clearPtyActivityForTest() {
@@ -219,7 +267,9 @@ function attentionFor(
 ): AttentionKind | null {
   // Only AI agent tabs raise attention; a shell finishing a build doesn't.
   if (tab.kind !== "agent" && tab.kind !== "local_agent") return null;
-  if (isTabDetached(scope, tab.key)) return null;
+  // A popped-out agent is classified like any other (#234): its input reaches
+  // this window over DETACHED_ACTIVITY, `isTabLookedAt` reads its popout's
+  // active tab, and the verdict is mirrored back so the popout's strip shows it.
   const lookedAt = isTabLookedAt(scope, tab.key);
   // What's on screen has been read, so it can't be what raises a "done" later.
   if (lookedAt) seenAtByPty[ptyId] = now;
@@ -452,11 +502,22 @@ export const useActivityStore = create<ActivityStore>((set, get) => ({
 
   noteBell: (ptyId) => {
     if (!splitPtyId(ptyId)) return;
+    if (isDetachedWindow()) {
+      void emit(DETACHED_ACTIVITY_EVENT, { ptyId, kind: "bell" });
+      return;
+    }
     bellByPty[ptyId] = Date.now();
     get().recompute();
   },
 
   clearAttention: (ptyId) => {
+    // A popout's strip clears a lamp the same way: by telling the main window
+    // the tab was looked at. Its own mirrored copy is refreshed by the next
+    // status broadcast, which follows the main store's update.
+    if (isDetachedWindow()) {
+      void emit(DETACHED_ACTIVITY_EVENT, { ptyId, kind: "seen" });
+      return;
+    }
     seenAtByPty[ptyId] = Date.now();
     const kind = get().attentionByTab[ptyId];
     if (!kind) return;
@@ -493,6 +554,9 @@ export const useActivityStore = create<ActivityStore>((set, get) => ({
   },
 
   recompute: () => {
+    // A popout classifies nothing (its tabs store is empty — a recompute here
+    // would only wipe the statuses the main window mirrored over).
+    if (isDetachedWindow()) return;
     const now = Date.now();
     // Seconds of agent work this tick is worth, for the usage recap. Derived from
     // the gap since the last tick rather than assuming the interval, and clamped:
@@ -629,13 +693,24 @@ export const useActivityStore = create<ActivityStore>((set, get) => ({
 
 // App-lifetime listener: clears the run animation when a detached script
 // finishes (run_id is the script's absolute path). Lives in the store rather
-// than in FileTree so the run state survives right-panel hide/show, which
+// than in FileTree so the run state survives side-panel hide/show, which
 // unmounts the tree — see TODO group R #34. Guarded so non-Tauri contexts
 // (e.g. unit tests, where the IPC bridge is absent) don't throw on import.
 if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
-  void listen<{ runId: string; success: boolean }>("script-finished", (e) => {
-    useActivityStore.setState((s) => ({
-      runningScripts: withoutScript(s.runningScripts, e.payload.runId),
-    }));
-  }).catch(() => {});
+  try {
+    // `Promise.resolve` rather than a bare `.catch`: this module is imported
+    // (transitively) by suites that stub the event module with a plain `vi.fn()`,
+    // whose `undefined` return would throw HERE, at import time, and take the
+    // whole suite down before a single test ran. A store's module scope must not
+    // be able to fail on the shape of somebody else's mock.
+    void Promise.resolve(
+      listen<{ runId: string; success: boolean }>("script-finished", (e) => {
+        useActivityStore.setState((s) => ({
+          runningScripts: withoutScript(s.runningScripts, e.payload.runId),
+        }));
+      }),
+    ).catch(() => {});
+  } catch {
+    /* no IPC bridge (tests) */
+  }
 }

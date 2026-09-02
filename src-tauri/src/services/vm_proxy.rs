@@ -342,7 +342,10 @@ fn handle_conn(mut stream: TcpStream, shared: Arc<ProxyShared>) {
         return;
     };
 
-    let allowed = {
+    // Every built-in and user-configured endpoint is a TLS service. Restricting
+    // the tunnel to HTTPS prevents an allowlisted hostname from becoming an SSH
+    // or arbitrary-service escape hatch (for example `allowed-host:22`).
+    let allowed = port == 443 && {
         let standing = shared.allow.lock().unwrap();
         if host_allowed(&host, &standing) {
             true
@@ -515,6 +518,22 @@ mod tests {
         assert!(response.starts_with("HTTP/1.1 502"), "{response}");
         assert_eq!(blocked_report("test-proxy-temp").total, 0);
         stop_proxy("test-proxy-temp");
+    }
+
+    #[test]
+    fn allowed_host_on_non_https_port_is_denied_and_reported() {
+        let port = ensure_proxy("test-proxy-port", allow(&["allowed.example"])).unwrap();
+        let mut conn = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        conn.write_all(b"CONNECT allowed.example:22 HTTP/1.1\r\n\r\n")
+            .unwrap();
+        let mut response = String::new();
+        conn.read_to_string(&mut response).unwrap();
+        assert!(response.starts_with("HTTP/1.1 403"), "{response}");
+        assert_eq!(
+            blocked_report("test-proxy-port").recent[0].target,
+            "allowed.example:22"
+        );
+        stop_proxy("test-proxy-port");
     }
 
     #[test]

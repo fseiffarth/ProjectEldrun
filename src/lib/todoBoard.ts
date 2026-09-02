@@ -45,6 +45,7 @@ import {
 } from "./calendarTime";
 import { dayAgenda, visibleCalendarIds } from "../stores/calendar";
 import type { TranslationKey } from "./i18n";
+import type { ProjectRemark } from "./projectRemarks";
 
 /** Gap between adjacent ranks. Mirrors the backend's `RANK_GAP`. */
 export const RANK_STEP = 1024;
@@ -831,6 +832,8 @@ function convertedCard(
     start?: string | null;
     mail?: CalendarTask["mail"];
     event?: CalendarTask["event"];
+    file?: CalendarTask["file"];
+    project_id?: string;
   },
 ): Omit<CalendarTask, "id"> {
   return {
@@ -845,7 +848,26 @@ function convertedCard(
     created: toStamp(conv.now ?? new Date()),
     ...(fields.mail ? { mail: fields.mail } : {}),
     ...(fields.event ? { event: fields.event } : {}),
+    ...(fields.file ? { file: fields.file } : {}),
+    ...(fields.project_id ? { project_id: fields.project_id } : {}),
   };
+}
+
+/** Convert one file remark into an ordinary intake card. */
+export function taskFromRemark(
+  remark: ProjectRemark,
+  projectId: string,
+  conv: CardConversion,
+): Omit<CalendarTask, "id"> {
+  const first = remark.text.split("\n").find((line) => line.trim())?.trim() || remark.file;
+  const source = `${remark.file}${remark.line != null ? `:${remark.line}` : ""}`;
+  return convertedCard(conv, {
+    title: first,
+    notes: `📌 ${source}`,
+    priority: 5,
+    project_id: projectId,
+    file: { project_id: projectId, path: remark.file, line: remark.line, text: remark.text },
+  });
 }
 
 /**

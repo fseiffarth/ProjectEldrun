@@ -1,13 +1,30 @@
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
-import { ApiError, api, type TabRow } from "../api";
+import {
+  ApiError,
+  api,
+  MAX_INBOX_FILE,
+  uploadToInbox,
+  type TabRow,
+} from "../api";
 import { TERMINAL_PROTOCOL } from "../terminal/protocol";
-import { readableScreen, readableText, TRUNCATION_NOTICE, type ReadableLine } from "../terminal/readableScreen";
+import { readableRange, readableScreen, readableText, TRUNCATION_NOTICE, type ReadableLine } from "../terminal/readableScreen";
+import {
+  absorbHistory,
+  emptyHistory,
+  lastHistoryText,
+  shiftHistory,
+  type HistoryChunk,
+} from "../terminal/readableHistory";
 import { type TerminalEvent } from "../terminal/protocol";
 import { installTerminalTouchScroll } from "../terminal/touchScroll";
+import { sessionStatus, shortenPath, type SessionStatus } from "../terminal/statusLine";
+import { readSelectPrompt, selectKeys } from "../terminal/selectPrompt";
+import { currentMode, modeChoices, shiftTabKey } from "../terminal/agentModes";
 import { agentInputWrites } from "../terminal/composer";
+import { ScheduleSheet } from "./ScheduleSheet";
 import {
   prepareOnDeviceSpeech,
   sanitizeVoiceTranscript,
@@ -42,6 +59,30 @@ const PONG_GRACE = PING_INTERVAL * 2 + 5_000;
 const AGENT_KEY_GAP = 80;
 const AGENT_SUBMIT_GAP = 200;
 
+/** Session lines the phone keeps. Matches the desktop sidecar's replay depth
+ * (`pty_bridge::MOBILE_SCROLLBACK_LINES`) and the tmux `history-limit` Eldrun
+ * sets on its sessions — the three are one number by design, so what tmux
+ * retains is what the replay carries and what this buffer can hold. */
+const PHONE_SCROLLBACK = 10_000;
+/** Rows past the live screen the per-frame tail rebuild re-reads. The screen
+ * itself can still be repainted by the program; the margin is slack so the
+ * history absorbs nothing a repaint could reach. */
+const TAIL_MARGIN = 8;
+/** Frozen history chunks each "Show earlier output" tap reveals (×400 lines). */
+const REVEAL_CHUNKS = 2;
+
+/** How long the model sheet waits for the session to draw the picker `/model`
+ * opens. Past it the sheet steps aside: the dialog — or the reason there is
+ * none — is in the session output, and the arrow keys still answer it. */
+const MODEL_PICKER_WAIT = 6_000;
+/** Time given to a Shift+Tab before the redrawn status line is read back. One
+ * reading-view rebuild (READABLE_INTERVAL) plus the TUI's own repaint. */
+const MODE_SETTLE = 340;
+/** Shift+Tab presses one mode switch may cost. Longer than either CLI's cycle,
+ * so a mode that is genuinely offered is always reached — and a mode that is
+ * not ends the walk where it started. */
+const MODE_CYCLE_LIMIT = 6;
+
 const CLOSE_REASONS: Record<string, string> = {
   access_revoked: "This device's access to the session was withdrawn.",
   idle_timeout: "The session was released after a period without contact.",
@@ -54,6 +95,26 @@ const CLOSE_REASONS: Record<string, string> = {
   session_gone: "This session has ended on the desktop.",
 };
 
+/** Why a phone file did not reach the project inbox, by the desktop's code. */
+const UPLOAD_FAILURES: Record<string, string> = {
+  file_too_large: "is larger than 24 MB.",
+  empty_file: "is empty.",
+  inbox_full: "did not fit — the project's inbox is full.",
+  project_unavailable: "could not be saved — the project folder is unavailable.",
+  tab_not_found: "could not be saved — this session's project is no longer shared.",
+  timeout: "took too long to send.",
+  offline: "did not reach the desktop — the connection dropped.",
+};
+
+/** A file on its way from the phone into the project inbox, or one that did
+ * not make it. A delivered one leaves the list: its `@` reference is in the
+ * draft, which is the record. */
+interface InboxUpload {
+  id: number;
+  name: string;
+  failure?: string;
+}
+
 /** One logical line of the session, with the colours the program actually
  * emitted. Style is never inferred from the text — see `readableScreen`. */
 function ReadableRow({ line }: { line: ReadableLine }) {
@@ -65,9 +126,67 @@ function ReadableRow({ line }: { line: ReadableLine }) {
   ))}</div>;
 }
 
+/** A revealed block of earlier output. Memoized on the frozen chunk's stable
+ * `lines` reference, so the per-frame rebuild of the live tail costs nothing
+ * for however much history is on screen. */
+const HistoryLines = memo(function HistoryLines({ lines }: { lines: readonly ReadableLine[] }) {
+  return <>{lines.map((line) => <ReadableRow key={line.key} line={line} />)}</>;
+});
+
+interface SheetOption {
+  key: string;
+  label: string;
+  description?: string;
+  /** The option the session is in right now. */
+  current: boolean;
+  /** The option a switch is being applied to. */
+  pending?: boolean;
+}
+
+/**
+ * A choice the session offers, as a phone list: the sheet the composer chips
+ * open instead of leaving the reader to walk a TUI dialog with the arrow keys.
+ * It renders what the caller resolved — the dialog's own rows, or the modes a
+ * session's status line says it has — and reports taps back. No parsing, no
+ * keystrokes.
+ */
+function OptionSheet({ title, note, options, waiting, busy, onPick, onClose }: {
+  title: string;
+  note?: { text: string; error?: boolean };
+  options: SheetOption[];
+  /** Shown while the list is still empty. */
+  waiting: string;
+  busy: boolean;
+  onPick: (key: string) => void;
+  onClose: () => void;
+}) {
+  return <div className="sheet-backdrop" role="presentation" onClick={onClose}>
+    <section className="option-sheet" role="dialog" aria-modal="true" aria-label={title} onClick={(event) => event.stopPropagation()}>
+      <span className="sheet-grip" aria-hidden="true" />
+      <header>
+        <button className="sheet-close" onClick={onClose} aria-label="Close">✕</button>
+        <h2>{title}</h2>
+        <span className="sheet-close" aria-hidden="true" />
+      </header>
+      {note && <p className={note.error ? "sheet-note error" : "sheet-note"} role={note.error ? "alert" : undefined}>{note.text}</p>}
+      {options.length === 0
+        ? <p className="sheet-note">{waiting}</p>
+        : <ul className="option-list">{options.map((option) => <li key={option.key}>
+            <button className={option.current ? "current" : ""} aria-current={option.current || undefined} disabled={busy} onClick={() => onPick(option.key)}>
+              <span><strong>{option.label}</strong>{option.description && <small>{option.description}</small>}</span>
+              {option.pending
+                ? <span className="sheet-pending" role="status">Switching…</span>
+                : option.current && <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 13 4.5 4.5L19 7" /></svg>}
+            </button>
+          </li>)}</ul>}
+    </section>
+  </div>;
+}
+
 export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
   const host = useRef<HTMLDivElement>(null);
   const readableHost = useRef<HTMLElement>(null);
+  const composerInput = useRef<HTMLTextAreaElement>(null);
   /** Re-reads the emulated screen on demand — used when Focus is opened, so the
    * reading view is current instead of waiting for the next output byte. */
   const refreshReadable = useRef<() => void>(() => {});
@@ -93,6 +212,17 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
   const [draft, setDraft] = useState("");
   const [lines, setLines] = useState<ReadableLine[]>([]);
   const [clipped, setClipped] = useState(false);
+  /** The absorbed earlier output, republished for render whenever it grows.
+   * The log itself lives in a ref inside the terminal effect; this is only the
+   * render snapshot (chunk references are stable, so revealing is cheap). */
+  const [earlier, setEarlier] = useState<{ chunks: HistoryChunk[]; open: ReadableLine[]; dropped: boolean }>(
+    { chunks: [], open: [], dropped: false },
+  );
+  /** How many frozen chunks are revealed above the open chunk + tail. */
+  const [revealed, setRevealed] = useState(1);
+  /** Scroll position captured when revealing, so prepended lines do not shove
+   * the text the reader was looking at (WebKit has no overflow-anchor). */
+  const revealAnchor = useRef<{ height: number; top: number }>();
   const [atBottom, setAtBottom] = useState(true);
   const [lastSent, setLastSent] = useState("");
   const [copied, setCopied] = useState(false);
@@ -102,12 +232,45 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
   const [voicePreview, setVoicePreview] = useState("");
   const [voiceStatus, setVoiceStatus] = useState("");
   const [voiceFailure, setVoiceFailure] = useState(() => voiceAvailable ? "" : VOICE_UNAVAILABLE);
+  /** Whether the model sheet is up. It opens on the tap that sends `/model`,
+   * before the session has drawn the picker it lists. */
+  const [modelSheet, setModelSheet] = useState(false);
+  const [modeSheet, setModeSheet] = useState(false);
+  const [scheduleSheet, setScheduleSheet] = useState(false);
+  /** The composer's **+**: a phone file into the project inbox, or an `@`. */
+  const [addSheet, setAddSheet] = useState(false);
+  const [uploads, setUploads] = useState<InboxUpload[]>([]);
+  const fileInput = useRef<HTMLInputElement>(null);
+  /** Bumped when the tab changes so a late upload result lands nowhere. */
+  const uploadRun = useRef(0);
+  const uploadSeq = useRef(0);
+  /** The reading view as it stood when a composer sheet opened. While the
+   * sheet is up the session repaints under it — the `/model` picker, a status
+   * line per Shift+Tab — and that churn is the sheet's *input*, not something
+   * to read: the sheet lists the picker and confirms the walk from the live
+   * `lines`; what is painted behind it stays still. */
+  const [frozenLines, setFrozenLines] = useState<ReadableLine[] | null>(null);
+  const linesRef = useRef<ReadableLine[]>([]);
+  linesRef.current = lines;
+  /** The mode a Shift+Tab walk is currently trying to reach. */
+  const [switching, setSwitching] = useState("");
+  /** A mode the walk went a full cycle without reaching. */
+  const [switchFailed, setSwitchFailed] = useState("");
+  /** Whether the picker was ever on screen while the model sheet was open —
+   * only then does its disappearance mean the dialog is done. */
+  const sawPicker = useRef(false);
+  /** Cancels an in-flight mode walk when the tab changes or the user picks
+   * again; the walk reads the status line between presses. */
+  const modeWalk = useRef(0);
+  const statusRef = useRef<SessionStatus | null>(null);
 
   useEffect(() => {
     setView("focus");
     setDraft("");
     setLines([]);
     setClipped(false);
+    setEarlier({ chunks: [], open: [], dropped: false });
+    setRevealed(1);
     setAtBottom(true);
     setLastSent("");
     setCopied(false);
@@ -115,10 +278,21 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     setAltScreen(false);
     setCtrl(false);
     setSendFailed(false);
+    setModelSheet(false);
+    setModeSheet(false);
+    setScheduleSheet(false);
+    setAddSheet(false);
+    setUploads([]);
+    uploadRun.current += 1;
+    setSwitching("");
+    setSwitchFailed("");
+    sawPicker.current = false;
     return () => {
       window.clearTimeout(copiedTimer.current);
       sendTimers.current.forEach(window.clearTimeout);
       sendTimers.current = [];
+      // Abandons a mode walk still waiting between two Shift+Tabs.
+      modeWalk.current += 1;
     };
   }, [tab.id]);
 
@@ -143,13 +317,34 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
       cursorInactiveStyle: "bar",
       cursorWidth: 2,
       fontSize: 14,
-      scrollback: 4000,
+      scrollback: PHONE_SCROLLBACK,
       // A shell/agent prompt remains part of PTY output, but it must not look
       // like an editable field on the phone.
       theme: { background: "#0b0d13", foreground: "#e7e9f2", cursor: "#0b0d13", cursorAccent: "#0b0d13" },
     });
     const fit = new FitAddon(); term.loadAddon(fit); term.open(host.current); fit.fit();
     bracketedPaste.current = () => term.modes.bracketedPasteMode === true;
+    // The history log needs to know when xterm trims scrollback (row indices
+    // shift), and xterm has no public event for it — so this rides the internal
+    // buffer list's own trim emitter, guarded: when a future xterm renames it,
+    // the view falls back to the bounded whole-screen rebuild instead of
+    // showing wrong lines.
+    const history = emptyHistory();
+    type TrimEvent = (listener: (amount: number) => void) => { dispose(): void };
+    const trimEvent = (term as unknown as {
+      _core?: { _bufferService?: { buffers?: { normal?: { lines?: { onTrim?: TrimEvent } } } } };
+    })._core?._bufferService?.buffers?.normal?.lines?.onTrim;
+    const trimWatch = typeof trimEvent === "function"
+      ? trimEvent((amount) => shiftHistory(history, amount))
+      : undefined;
+    const resetHistory = () => {
+      history.chunks = [];
+      history.open = [];
+      history.end = 0;
+      history.droppedLines = 0;
+      history.lost = false;
+      setEarlier({ chunks: [], open: [], dropped: false });
+    };
     let readableFrame = 0;
     let readableScrollFrame = 0;
     let readableTimer = 0;
@@ -165,11 +360,32 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
       const followOutput = stream.scrollHeight - stream.scrollTop - stream.clientHeight < 120;
       // The alternate screen has no scrollback, so the reading view would show
       // only the visible frame, rebuild it on every redraw, and lose the lot
-      // when the program exits. Say so instead of showing a collapsing view.
-      setAltScreen(buffer.type === "alternate");
-      const screen = readableScreen(buffer);
-      setLines(screen.lines);
-      setClipped(screen.clipped);
+      // when the program exits. Say so instead of showing a collapsing view —
+      // and never absorb its frames into the history: they are a full-screen
+      // program's repaints, not session output.
+      const alternate = buffer.type === "alternate";
+      setAltScreen(alternate);
+      if (alternate) return;
+      if (trimWatch) {
+        // Rows that left the tail window are converted once and kept; only the
+        // tail — the live screen plus a margin — is re-read per frame.
+        const grew = absorbHistory(buffer, history, term.rows + TAIL_MARGIN);
+        const tail = readableRange(buffer, history.end, buffer.length, lastHistoryText(history));
+        while (tail.length > 0 && tail[tail.length - 1].text === "") tail.pop();
+        setLines(tail);
+        if (grew) {
+          setEarlier({
+            chunks: [...history.chunks],
+            open: history.open,
+            dropped: history.droppedLines > 0 || history.lost,
+          });
+        }
+        setClipped(false);
+      } else {
+        const screen = readableScreen(buffer);
+        setLines(screen.lines);
+        setClipped(screen.clipped);
+      }
       if (followOutput) {
         cancelAnimationFrame(readableScrollFrame);
         readableScrollFrame = requestAnimationFrame(() => {
@@ -309,7 +525,10 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
           // boundary the replay was appended to whatever was already on screen,
           // so each reconnect left another copy of the same agent turn — and a
           // reader could not tell one destructive command from three.
+          // The history log goes with it: the replay re-delivers the session,
+          // so keeping the absorbed copy would double every line.
           term.reset();
+          resetHistory();
           setLines([]);
           return;
         }
@@ -386,6 +605,7 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
       clearTimeout(reconnectTimer);
       if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "detached" }));
       ws?.close();
+      trimWatch?.dispose();
       term.dispose();
       clearInterval(ping);
       clearTimeout(resizeTimer);
@@ -401,6 +621,31 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     };
   }, [tab.id]);
   useEffect(() => { if (view === "focus") refreshReadable.current(); }, [view]);
+  /** Chunks above the revealed window stay in memory but out of the DOM — the
+   * lazy half of the earlier-output log. */
+  const hiddenChunks = Math.max(0, earlier.chunks.length - revealed);
+  const visibleChunks = useMemo(
+    () => earlier.chunks.slice(hiddenChunks),
+    [earlier.chunks, hiddenChunks],
+  );
+  const hiddenLines = useMemo(
+    () => earlier.chunks.slice(0, hiddenChunks).reduce((sum, chunk) => sum + chunk.lines.length, 0),
+    [earlier.chunks, hiddenChunks],
+  );
+  const showEarlier = () => {
+    const stream = readableHost.current;
+    if (stream) revealAnchor.current = { height: stream.scrollHeight, top: stream.scrollTop };
+    setRevealed((count) => count + REVEAL_CHUNKS);
+  };
+  // Revealing prepends content, which would shove the line the reader tapped
+  // beside out of view; restore the reading position by the height delta.
+  useLayoutEffect(() => {
+    const anchor = revealAnchor.current;
+    const stream = readableHost.current;
+    if (!anchor || !stream) return;
+    revealAnchor.current = undefined;
+    stream.scrollTop = anchor.top + (stream.scrollHeight - anchor.height);
+  }, [revealed]);
   const type = (value: string) => {
     const delivered = write.current(value);
     setSendFailed(!delivered);
@@ -421,6 +666,36 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
   const later = (delay: number, send: () => void) => {
     sendTimers.current.push(window.setTimeout(send, delay));
   };
+  /** Drops writes still queued behind their gaps. */
+  const clearPending = () => {
+    sendTimers.current.forEach(window.clearTimeout);
+    sendTimers.current = [];
+  };
+  /** Delivers a run of writes one at a time, never as one chunk (see
+   * AGENT_KEY_GAP). Only the first can be confirmed synchronously; a later one
+   * that fails raises the dropped-connection notice through `type`. Shared by
+   * the composer's Send and by the sheet that answers a TUI dialog with the
+   * same arrow/Enter keys the on-screen key row sends. */
+  const deliver = (writes: string[]) => {
+    if (writes.length === 0) return true;
+    if (!type(writes[0])) return false;
+    const step = (index: number) => {
+      if (index >= writes.length) return;
+      // The submit gets the longer pause: it is the one write whose arrival in
+      // the same read as the text would be swallowed as part of a paste.
+      const gap = index === writes.length - 1 ? AGENT_SUBMIT_GAP : AGENT_KEY_GAP;
+      later(gap, () => { if (type(writes[index])) step(index + 1); });
+    };
+    step(1);
+    return true;
+  };
+  /** One message into the agent's line editor: reset its line, deliver the
+   * text, submit — inside bracketed paste markers where the pane has the mode
+   * on. Shared by the composer's Send and the composer chips' slash commands. */
+  const sendAgentText = (text: string) => {
+    clearPending();
+    return deliver(agentInputWrites(text, bracketedPaste.current()));
+  };
   const submitDraft = () => {
     if (!connected || !draft.trim()) return;
     // Only confirm what actually left the device. `readyState === OPEN` on a
@@ -432,29 +707,172 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
       setDraft("");
       return;
     }
-    // Agents own a line editor inside their TUI: reset its line, deliver the
-    // draft, submit — every piece its own write, never one chunk (see
-    // AGENT_KEY_GAP), and inside bracketed paste markers where the pane has the
-    // mode on. Only the first write can be confirmed synchronously; a later one
-    // that fails raises the dropped-connection notice through `type`.
-    sendTimers.current.forEach(window.clearTimeout);
-    sendTimers.current = [];
-    const writes = agentInputWrites(draft, bracketedPaste.current());
-    if (!type(writes[0])) return;
-    const step = (index: number) => {
-      if (index >= writes.length) return;
-      // The submit gets the longer pause: it is the one write whose arrival in
-      // the same read as the text would be swallowed as part of a paste.
-      const gap = index === writes.length - 1 ? AGENT_SUBMIT_GAP : AGENT_KEY_GAP;
-      later(gap, () => { if (type(writes[index])) step(index + 1); });
-    };
-    step(1);
+    if (!sendAgentText(draft)) return;
     setLastSent(draft);
     setDraft("");
   };
+  /** The facts the session prints below its own input box — the composer
+   * chips' labels. Absent fields leave the chip on its generic label. */
+  const status = useMemo(() => (tab.kind === "agent" ? sessionStatus(lines) : null), [tab.kind, lines]);
+  // The mode walk reads the status between two presses, outside React's render.
+  useEffect(() => { statusRef.current = status; }, [status]);
+  /** The picker `/model` opened, read off the screen while the sheet is up — a
+   * list of the session's own rows, not a list of models Eldrun believes in. */
+  const picker = useMemo(() => (modelSheet ? readSelectPrompt(lines) : null), [modelSheet, lines]);
+  useEffect(() => {
+    if (!modelSheet) return;
+    if (picker) {
+      sawPicker.current = true;
+      return;
+    }
+    // Gone after it was listed: answered here, on the desktop, or dismissed.
+    if (sawPicker.current) {
+      setModelSheet(false);
+      return;
+    }
+    // Never drawn: the session may have no `/model` picker at all. Step out of
+    // the way rather than hold an empty sheet over its output.
+    const timer = window.setTimeout(() => setModelSheet(false), MODEL_PICKER_WAIT);
+    return () => window.clearTimeout(timer);
+  }, [modelSheet, picker]);
+  /** `/model` opens the agent's own picker in the session; the sheet lists the
+   * rows it drew, and a tap answers it with the same keys the arrow row sends —
+   * so nothing here decides what the models are. */
+  const selectModel = () => {
+    if (modelSheet) return;
+    sawPicker.current = false;
+    if (!sendAgentText("/model")) return;
+    setModelSheet(true);
+  };
+  const chooseModel = (key: string) => {
+    if (!picker) return;
+    clearPending();
+    deliver(selectKeys(picker.current, Number(key)));
+    setModelSheet(false);
+  };
+  const closeModelSheet = () => {
+    // The dialog is the session's own and still open: close it there too,
+    // rather than leaving a modal behind that the reader can no longer see.
+    if (picker) type("\u001b");
+    setModelSheet(false);
+  };
+  /** The modes this session has, decided by the mode it is showing with the
+   * tab's agent label as the tie-break (and, for a family whose default mode
+   * draws no text at all, as the way in). Empty for a session no family
+   * claims — the chip then keeps cycling, as before. */
+  const agentLabel = tab.agent_label ?? tab.label;
+  /** Shift+Tab — the mode cycle Claude Code, Codex and Qwen Code all bind,
+   * encoded the way this family's TUI reads it (`shiftTabKey`). The chip label
+   * follows the status line the TUI redraws, so the feedback is real. */
+  const shiftTab = shiftTabKey(agentLabel);
+  const cycleMode = () => press(shiftTab);
+  const modes = useMemo(() => modeChoices(status?.mode, agentLabel), [status?.mode, agentLabel]);
+  const activeMode = currentMode(modes, status?.mode, status != null);
+  const openModeSheet = () => {
+    if (modes.length === 0) {
+      cycleMode();
+      return;
+    }
+    setSwitchFailed("");
+    setModeSheet(true);
+  };
+  /** Walks the Shift+Tab cycle to the tapped mode, reading the redrawn status
+   * line after every press. No cycle order is assumed: the walk stops when the
+   * session reports the mode that was asked for, or when a full lap has brought
+   * it back to where it started — which is also what leaves a mode the session
+   * does not offer with nothing changed. */
+  const applyMode = async (value: string) => {
+    if (switching || !connected) return;
+    const start = statusRef.current?.mode;
+    if (currentMode(modes, start, statusRef.current != null) === value) {
+      setModeSheet(false);
+      return;
+    }
+    const walk = modeWalk.current + 1;
+    modeWalk.current = walk;
+    setSwitchFailed("");
+    setSwitching(value);
+    for (let step = 0; step < MODE_CYCLE_LIMIT; step += 1) {
+      if (!type(shiftTab)) break;
+      await new Promise((resolve) => { window.setTimeout(resolve, MODE_SETTLE); });
+      if (modeWalk.current !== walk) return;
+      const now = statusRef.current?.mode;
+      if (currentMode(modes, now, statusRef.current != null) === value) {
+        setSwitching("");
+        setModeSheet(false);
+        return;
+      }
+      // Back where it started ends the walk — but only on a positively read
+      // mode: with a silent-mode family, `undefined` is also what a mid-redraw
+      // frame reports, and breaking on it would end a legitimate walk early.
+      if (step > 0 && now !== undefined && now === start) break;
+    }
+    if (modeWalk.current !== walk) return;
+    setSwitching("");
+    setSwitchFailed(value);
+  };
+  const sheetUp = modelSheet || modeSheet;
+  useLayoutEffect(() => {
+    setFrozenLines(sheetUp ? linesRef.current : null);
+  }, [sheetUp]);
+  /** Adds an `@` for the agent's file mentions to the draft — context is
+   * resolved by the agent from the submitted message, not by the phone. */
+  const addContext = () => {
+    setDraft((current) => `${current}${current && !current.endsWith(" ") ? " " : ""}@`);
+    composerInput.current?.focus();
+  };
+  /** Appends one token to the draft with a space on each side as needed. */
+  const appendToDraft = (token: string) => {
+    setDraft((current) => `${current}${current && !current.endsWith(" ") ? " " : ""}${token} `);
+  };
+  /** Sends the picked files into the project inbox one by one and writes each
+   * one's `@` reference into the draft as it lands. The reference is the
+   * desktop's — the phone never composes a path. */
+  const attachFromPhone = (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    const run = uploadRun.current;
+    for (const file of Array.from(files)) {
+      const id = ++uploadSeq.current;
+      const name = file.name || "attachment";
+      if (file.size > MAX_INBOX_FILE) {
+        setUploads((current) => [...current, { id, name, failure: UPLOAD_FAILURES.file_too_large }]);
+        continue;
+      }
+      setUploads((current) => [...current, { id, name }]);
+      void uploadToInbox(tab.id, file, name).then(
+        (attachment) => {
+          if (uploadRun.current !== run) return;
+          setUploads((current) => current.filter((upload) => upload.id !== id));
+          appendToDraft(`@${attachment.reference}`);
+        },
+        (error: unknown) => {
+          if (uploadRun.current !== run) return;
+          const code = error instanceof ApiError ? error.code : "";
+          const failure = UPLOAD_FAILURES[code] ?? "could not be sent to the desktop.";
+          setUploads((current) => current.map((upload) => upload.id === id ? { ...upload, failure } : upload));
+        },
+      );
+    }
+    composerInput.current?.focus();
+  };
+  const dismissUpload = (id: number) => setUploads((current) => current.filter((upload) => upload.id !== id));
+  const pickAdd = (key: string) => {
+    setAddSheet(false);
+    if (key === "phone") {
+      fileInput.current?.click();
+    } else {
+      addContext();
+    }
+  };
   const copyReadable = async () => {
     try {
-      await navigator.clipboard.writeText(readableText(lines));
+      // Copy exactly what the reading view is showing: the revealed history,
+      // the open chunk, then the live tail.
+      await navigator.clipboard.writeText(readableText([
+        ...visibleChunks.flatMap((chunk) => chunk.lines),
+        ...earlier.open,
+        ...lines,
+      ]));
       setCopied(true);
       window.clearTimeout(copiedTimer.current);
       copiedTimer.current = window.setTimeout(() => setCopied(false), 1_500);
@@ -552,6 +970,27 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     }
   }, [tab.id]);
   const dictateLabel = listening ? "Stop dictation" : preparingVoice ? "Preparing dictation" : "Dictate";
+  const pickerOptions: SheetOption[] = (picker?.options ?? []).map((option) => ({
+    key: String(option.index),
+    label: option.label,
+    description: option.description,
+    current: option.index === picker?.current,
+  }));
+  const modeOptions: SheetOption[] = modes.map((choice) => ({
+    key: choice.value,
+    label: choice.label,
+    description: choice.description,
+    current: choice.value === activeMode,
+    pending: choice.value === switching,
+  }));
+  const failedMode = modes.find((choice) => choice.value === switchFailed);
+  /** What the reading view paints: the live screen, or the frame it held when
+   * a composer sheet opened. */
+  const shown = frozenLines ?? lines;
+  const addOptions: SheetOption[] = [
+    { key: "phone", label: "From this phone", description: "A photo, screenshot or file — saved to the project's inbox and referenced in the message", current: false },
+    { key: "project", label: "A project file (@)", description: "Type a path after the @ for the agent to read", current: false },
+  ];
   return <main className={`terminal-screen ${tab.kind}-tab`} style={viewportHeight ? { height: viewportHeight } : undefined}><header><button className="back" onClick={back}>‹</button><div className="terminal-title"><h1>{tab.label}</h1><small>{tab.kind === "agent" ? "Agent session" : "Shell session"}</small></div><div className="terminal-view-switch" aria-label="Output view"><button className={view === "focus" ? "selected" : ""} aria-pressed={view === "focus"} onClick={() => setView("focus")}>Focus</button><button className={view === "terminal" ? "selected" : ""} aria-pressed={view === "terminal"} onClick={() => setView("terminal")}>Terminal</button></div><span className={connected ? "lamp" : "lamp off"} /></header>
     <div className="terminal-body">
       <div ref={host} className={`terminal${view === "focus" ? " focus-source" : ""}`} />
@@ -562,11 +1001,15 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
             const stream = event.currentTarget;
             setAtBottom(stream.scrollHeight - stream.scrollTop - stream.clientHeight < 120);
           }}>
-          {lines.length === 0
+          {shown.length === 0 && visibleChunks.length === 0 && earlier.open.length === 0
             ? <div className="readable-empty"><strong>Waiting for output</strong><span>The exact terminal is running behind this view.</span></div>
             : <div className="readable-lines">
                 {clipped && <div className="readable-notice">{TRUNCATION_NOTICE}</div>}
-                {lines.map((line) => <ReadableRow key={line.key} line={line} />)}
+                {hiddenLines > 0 && <button className="readable-earlier" onClick={showEarlier}>Show earlier output ({hiddenLines.toLocaleString()} lines)</button>}
+                {hiddenLines === 0 && earlier.dropped && <div className="readable-notice">{TRUNCATION_NOTICE}</div>}
+                {visibleChunks.map((chunk) => <HistoryLines key={chunk.id} lines={chunk.lines} />)}
+                {earlier.open.map((line) => <ReadableRow key={line.key} line={line} />)}
+                {shown.map((line) => <ReadableRow key={line.key} line={line} />)}
               </div>}
         </section>
         {lines.length > 0 && <div className="readable-tools">
@@ -580,10 +1023,60 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
       {stoppedReason && <div className="voice-feedback error" role="alert">{stoppedReason}</div>}
       {sendFailed && !stoppedReason && <div className="voice-feedback error" role="alert">That did not reach the desktop — the connection dropped. It will retry on its own.</div>}
       {lastSent && <div className="last-sent"><span>Sent</span><p>{lastSent}</p></div>}
-      <div className="prompt-composer"><textarea value={draft} disabled={!connected} rows={1} aria-label={tab.kind === "agent" ? "Message agent" : "Shell command"} placeholder={connected ? (tab.kind === "agent" ? "Message the agent…" : "Type a command…") : "Reconnecting…"} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); submitDraft(); } }} /><div className="prompt-composer-actions">{tab.kind === "agent" && <button className={`composer-dictate${listening ? " listening" : ""}`} disabled={!connected || !voiceAvailable || preparingVoice} title={voiceAvailable ? "Dictate a message" : "Voice typing is unavailable in this browser; use the keyboard microphone."} aria-label={dictateLabel} aria-pressed={listening} onClick={listening ? stopVoice : () => void startVoice()}>{listening ? <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1" /></svg> : <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M6 11a6 6 0 0 0 12 0M12 17v4M8 21h8" /></svg>}</button>}<button className="send-icon" disabled={!connected || !draft.trim()} onClick={submitDraft} aria-label="Send" title="Send"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 4 16 8-16 8 3-8-3-8Z" /><path d="M7 12h13" /></svg></button></div></div>
+      {uploads.map((upload) => upload.failure
+        ? <div key={upload.id} className="inbox-upload error" role="alert"><strong>{upload.name}</strong><span>{upload.failure}</span><button onClick={() => dismissUpload(upload.id)} aria-label={`Dismiss ${upload.name}`}>✕</button></div>
+        : <div key={upload.id} className="inbox-upload" role="status"><strong>{upload.name}</strong><span>Sending to the project inbox…</span></div>)}
+      {status && (status.path || status.branch || status.context) && <div className="session-facts" title={status.path}>
+        {status.path && <span className="fact-path">{shortenPath(status.path)}</span>}
+        {status.branch && <span className="fact-branch">⎇ {status.branch}</span>}
+        {status.context && <span className="fact-context">{status.context} context</span>}
+      </div>}
+      <div className="prompt-composer">
+        <textarea ref={composerInput} value={draft} disabled={!connected} rows={1} aria-label={tab.kind === "agent" ? "Message agent" : "Shell command"} placeholder={connected ? (tab.kind === "agent" ? "Message the agent…" : "Type a command…") : "Reconnecting…"} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); submitDraft(); } }} />
+        <div className="composer-bar">
+          {tab.kind === "agent" && <>
+            <input ref={fileInput} type="file" multiple hidden aria-hidden="true" tabIndex={-1} data-testid="inbox-file-input" onChange={(event) => { attachFromPhone(event.target.files); event.target.value = ""; }} />
+            <button className="composer-add" disabled={!connected} onClick={() => setAddSheet(true)} aria-label="Add to the message" aria-haspopup="dialog" aria-expanded={addSheet} title="Add a photo or file from this phone, or a project file (@)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg></button>
+            <button className="composer-chip" disabled={!connected} onClick={selectModel} aria-haspopup="dialog" aria-expanded={modelSheet} title="Choose the model (/model)">{status?.model ?? "Model"}</button>
+            <button className="composer-chip" disabled={!connected} onClick={openModeSheet} aria-haspopup={modes.length > 0 ? "dialog" : undefined} aria-expanded={modes.length > 0 ? modeSheet : undefined} title={modes.length > 0 ? "Choose the permission mode" : "Switch mode (Shift+Tab)"}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2 4.5 13.5H11L10 22l8.5-11.5H12L13 2Z" /></svg>{status?.mode ?? activeMode ?? "Mode"}</button>
+            <button className="composer-chip" onClick={() => setScheduleSheet(true)} aria-haspopup="dialog" aria-expanded={scheduleSheet} title="Scheduled prompts">◷ Schedule</button>
+          </>}
+          <span className="composer-spacer" />
+          {tab.kind === "agent" && <button className={`composer-dictate${listening ? " listening" : ""}`} disabled={!connected || !voiceAvailable || preparingVoice} title={voiceAvailable ? "Dictate a message" : "Voice typing is unavailable in this browser; use the keyboard microphone."} aria-label={dictateLabel} aria-pressed={listening} onClick={listening ? stopVoice : () => void startVoice()}>{listening ? <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1" /></svg> : <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M6 11a6 6 0 0 0 12 0M12 17v4M8 21h8" /></svg>}</button>}
+          <button className="send-icon" disabled={!connected || !draft.trim()} onClick={submitDraft} aria-label="Send" title="Send"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 4 16 8-16 8 3-8-3-8Z" /><path d="M7 12h13" /></svg></button>
+        </div>
+      </div>
       <div className="keys">
       <button className={ctrl ? "selected" : ""} aria-pressed={ctrl} disabled={!connected} onClick={() => setCtrl((on) => !on)}>Ctrl</button><button disabled={!connected} onClick={() => press("\u001b")}>Esc</button><button disabled={!connected} onClick={() => press("\t")}>Tab</button><button disabled={!connected} onClick={() => press("\u001b[D")}>←</button><button disabled={!connected} onClick={() => press("\u001b[A")}>↑</button><button disabled={!connected} onClick={() => press("\u001b[B")}>↓</button><button disabled={!connected} onClick={() => press("\u001b[C")}>→</button><button disabled={!connected} onClick={() => press("\r")}>Enter</button><button disabled={!connected} onClick={() => press("\u007f")}>⌫</button><button className="danger" disabled={!connected} onClick={() => window.confirm("Send interrupt (Ctrl+C)?") && type("\u0003")}>Interrupt</button>
       </div>
     </div>
+    {modelSheet && <OptionSheet
+      title="Select model"
+      options={pickerOptions}
+      waiting={connected ? "Waiting for the session's model picker…" : "Waiting for the connection…"}
+      busy={false}
+      onPick={chooseModel}
+      onClose={closeModelSheet}
+    />}
+    {addSheet && <OptionSheet
+      title="Add to the message"
+      options={addOptions}
+      waiting=""
+      busy={false}
+      onPick={pickAdd}
+      onClose={() => setAddSheet(false)}
+    />}
+    {modeSheet && <OptionSheet
+      title="Permission mode"
+      note={failedMode
+        ? { text: `This session did not switch to ${failedMode.label}; it is back in the mode it was in.`, error: true }
+        : undefined}
+      options={modeOptions}
+      waiting="This session reports no mode."
+      busy={switching !== ""}
+      onPick={(key) => void applyMode(key)}
+      onClose={() => { if (!switching) setModeSheet(false); }}
+    />}
+    {scheduleSheet && <ScheduleSheet tabId={tab.id} label={tab.label} onClose={() => setScheduleSheet(false)} />}
   </main>;
 }

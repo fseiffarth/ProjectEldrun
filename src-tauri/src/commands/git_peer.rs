@@ -71,6 +71,7 @@ pub async fn git_peer_sync_now(
 ) -> Result<GitPeerState, String> {
     let target = remote_target_for(&project_id)
         .ok_or("Git lockstep is only available for SSH remote projects")?;
+    let _reconcile = git_peer::reconcile_guard(&project_id).await;
     let state = git_peer::detect_and_sync(
         pool.inner(),
         manifest.inner(),
@@ -104,6 +105,7 @@ pub async fn git_peer_pair_confirm(
 ) -> Result<GitPeerState, String> {
     let rt = remote_target_for(&project_id)
         .ok_or("Git lockstep is only available for SSH remote projects")?;
+    let _reconcile = git_peer::reconcile_guard(&project_id).await;
     let state = git_peer::detect_and_sync(
         pool.inner(),
         manifest.inner(),
@@ -143,6 +145,7 @@ pub async fn git_peer_restore_backup(
 ) -> Result<GitPeerState, String> {
     let rt = remote_target_for(&project_id)
         .ok_or("Git lockstep is only available for SSH remote projects")?;
+    let _reconcile = git_peer::reconcile_guard(&project_id).await;
     let state = git_peer::restore_backup(
         pool.inner(),
         manifest.inner(),
@@ -185,6 +188,7 @@ pub async fn git_peer_checkout(
     let rt = remote_target_for(&project_id)
         .ok_or("Git lockstep is only available for SSH remote projects")?;
     let side = initiating_side.unwrap_or_else(|| "local".to_string());
+    let _reconcile = git_peer::reconcile_guard(&project_id).await;
     let state = git_peer::checkout_lockstep(
         pool.inner(),
         manifest.inner(),
@@ -216,6 +220,7 @@ pub async fn git_peer_resolve(
 ) -> Result<GitPeerState, String> {
     let rt = remote_target_for(&project_id)
         .ok_or("Git lockstep is only available for SSH remote projects")?;
+    let _reconcile = git_peer::reconcile_guard(&project_id).await;
     let state = git_peer::resolve(
         pool.inner(),
         manifest.inner(),

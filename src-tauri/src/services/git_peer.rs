@@ -49,7 +49,7 @@ const RS: char = '\x1e';
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Output;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use notify::{RecursiveMode, Watcher};
@@ -1624,7 +1624,7 @@ async fn transfer_and_apply(
 
     // 6. Cleanup: drop the incoming namespace + bundle files on both ends.
     cleanup_incoming(&dst_peer);
-    cleanup_bundles(pool, project_id, spec, &src_peer, &dst_peer, to_remote).await;
+    cleanup_bundles(pool, project_id, spec).await;
 
     // 7. Count the tracked files these applied moves carried into the "files
     //    synced" metric. Lockstep moves the whole tracked tree as one bundle, so
@@ -2005,14 +2005,7 @@ fn cleanup_incoming(peer: &Peer) {
     }
 }
 
-async fn cleanup_bundles(
-    pool: &RemotePoolState,
-    project_id: &str,
-    spec: &RemoteSpec,
-    _src_peer: &Peer,
-    _dst_peer: &Peer,
-    _to_remote: bool,
-) {
+async fn cleanup_bundles(pool: &RemotePoolState, project_id: &str, spec: &RemoteSpec) {
     let _ = std::fs::remove_file(local_bundle_path(project_id));
     if let Some(sftp) = crate::services::remote::pooled_sftp(pool, project_id).await {
         let _ = sftp::remove_file_on(&sftp, &remote_bundle_path(spec)).await;
@@ -2473,11 +2466,7 @@ async fn reconcile_with(
         // transient git/network failure must never license a wipe of a real repo. This
         // guard used to protect only the local side — while the remote one, reached
         // over a flaky link, is by far the likelier to misprobe (#28p D3.4).
-        let dest_probe_error = if source_is_local {
-            remote.probe_error
-        } else {
-            local.probe_error
-        };
+        let dest_probe_error = pairing_dest_probe_error(source_is_local, &local, &remote);
         if dest_probe_error {
             let side = if source_is_local {
                 "Remote host"
@@ -3196,7 +3185,6 @@ fn desync_state(project_id: &str, spec: &RemoteSpec, detail: &str) -> GitPeerSta
 pub struct GitPeerTask {
     cancel: Arc<Notify>,
     join: tokio::task::JoinHandle<()>,
-    _watcher: Option<notify::RecommendedWatcher>,
 }
 
 /// Tauri-managed registry of per-project lockstep tasks, keyed by project id.
@@ -3205,6 +3193,50 @@ pub type GitPeerRegistry = Arc<Mutex<HashMap<String, GitPeerTask>>>;
 /// Build a fresh, empty registry for `tauri::Builder::manage`.
 pub fn new_registry() -> GitPeerRegistry {
     Arc::new(Mutex::new(HashMap::new()))
+}
+
+/// One async reconcile lock per project. Manual commands and the background
+/// watcher/poll loop share the same fixed bundle paths and persisted state, so
+/// their complete operations—not merely individual file writes—must serialize.
+fn reconcile_locks() -> &'static std::sync::Mutex<HashMap<String, Arc<Mutex<()>>>> {
+    static LOCKS: OnceLock<std::sync::Mutex<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
+    LOCKS.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+}
+
+pub async fn reconcile_guard(project_id: &str) -> tokio::sync::OwnedMutexGuard<()> {
+    let lock = {
+        let mut locks = reconcile_locks().lock().unwrap_or_else(|e| e.into_inner());
+        Arc::clone(
+            locks
+                .entry(project_id.to_string())
+                .or_insert_with(|| Arc::new(Mutex::new(()))),
+        )
+    };
+    lock.lock_owned().await
+}
+
+/// Attach the mirror's `.git` watcher once the repository exists. Initial
+/// pairing may create `.git` after the task starts, so every interval tick
+/// retries this cheap one-time attachment.
+fn ensure_git_watcher(
+    slot: &mut Option<notify::RecommendedWatcher>,
+    gitdir: &Path,
+    tx: &mpsc::UnboundedSender<()>,
+) {
+    if slot.is_some() || !gitdir.exists() {
+        return;
+    }
+    let tx = tx.clone();
+    let Ok(mut watcher) = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+        if res.is_ok() {
+            let _ = tx.send(());
+        }
+    }) else {
+        return;
+    };
+    if watcher.watch(gitdir, RecursiveMode::Recursive).is_ok() {
+        *slot = Some(watcher);
+    }
 }
 
 /// The `git-peer-status` event payload (camelCase).
@@ -3259,24 +3291,6 @@ pub async fn start(
     }
 
     let (tx, rx) = mpsc::unbounded_channel::<()>();
-    // Watch only `.git` (HEAD/refs/packed-refs live here) so we don't double-fire
-    // with the mirror-wide auto-sync watcher on ordinary file edits.
-    let gitdir = mirror_dir(project_id).join(".git");
-    let watcher = if gitdir.exists() {
-        match notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
-            if res.is_ok() {
-                let _ = tx.send(());
-            }
-        }) {
-            Ok(mut w) => {
-                let _ = w.watch(&gitdir, RecursiveMode::Recursive);
-                Some(w)
-            }
-            Err(_) => None,
-        }
-    } else {
-        None
-    };
 
     let cancel = Arc::new(Notify::new());
     let join = tokio::spawn(poll_loop(
@@ -3287,17 +3301,11 @@ pub async fn start(
         worker_sync,
         target.spec,
         project_id.to_string(),
+        tx,
         rx,
         cancel.clone(),
     ));
-    guard.insert(
-        project_id.to_string(),
-        GitPeerTask {
-            cancel,
-            join,
-            _watcher: watcher,
-        },
-    );
+    guard.insert(project_id.to_string(), GitPeerTask { cancel, join });
 }
 
 /// Stop the project's lockstep task (no-op if none).
@@ -3327,12 +3335,19 @@ async fn poll_loop(
     worker_sync: crate::services::worker_sync::WorkerSyncState,
     spec: RemoteSpec,
     project_id: String,
+    tx: mpsc::UnboundedSender<()>,
     mut rx: mpsc::UnboundedReceiver<()>,
     cancel: Arc<Notify>,
 ) {
+    // Watch only `.git` (HEAD/refs/packed-refs live here) so ordinary file edits
+    // remain the byte-sync watcher's concern. The watcher lives with this future.
+    let gitdir = mirror_dir(&project_id).join(".git");
+    let mut watcher: Option<notify::RecommendedWatcher> = None;
+    ensure_git_watcher(&mut watcher, &gitdir, &tx);
     // Initial reconcile so both sides start in step. Forced: there is no prior pass in
     // this session to early-out against, and a stale green signature from the last run
     // must not skip it.
+    let reconcile = reconcile_guard(&project_id).await;
     let s = detect_and_sync(
         &pool,
         &manifest,
@@ -3345,6 +3360,7 @@ async fn poll_loop(
         },
     )
     .await;
+    drop(reconcile);
     emit_status(&app, &project_id, &s);
     // The primary now holds the current committed code; push it to any already-
     // connected workers (multi-host, `docs/multi_host_remote_plan.md` §2). Cheap
@@ -3363,10 +3379,13 @@ async fn poll_loop(
                 // the project is closed. Breaking ends the task — `stop()` then
                 // finds it already finished, which is what a cancel leaves too.
                 if crate::services::hpc_mode::is_hpc_spec(&spec) { break; }
+                ensure_git_watcher(&mut watcher, &gitdir, &tx);
+                let reconcile = reconcile_guard(&project_id).await;
                 let s = detect_and_sync(
                     &pool, &manifest, &auto, &project_id, &spec, ReconcileOpts::default(),
                 )
                 .await;
+                drop(reconcile);
                 emit_status(&app, &project_id, &s);
             }
             res = rx.recv() => {
@@ -3381,10 +3400,12 @@ async fn poll_loop(
                         res = rx.recv() => { if res.is_none() { return; } }
                     }
                 }
+                let reconcile = reconcile_guard(&project_id).await;
                 let s = detect_and_sync(
                     &pool, &manifest, &auto, &project_id, &spec, ReconcileOpts::default(),
                 )
                 .await;
+                drop(reconcile);
                 emit_status(&app, &project_id, &s);
                 // A `.git` change on the mirror = a new commit/ref move; fan the
                 // committed code out to every connected worker (plan §2 trigger).
@@ -3454,6 +3475,27 @@ pub async fn detect_and_sync(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn reconcile_guard_serializes_one_project_but_not_another() {
+        let first = reconcile_guard("guard-test-a").await;
+        // A different project is independent.
+        let other =
+            tokio::time::timeout(Duration::from_millis(100), reconcile_guard("guard-test-b"))
+                .await
+                .expect("another project must not share the lock");
+        drop(other);
+
+        let waiting = tokio::spawn(async { reconcile_guard("guard-test-a").await });
+        tokio::task::yield_now().await;
+        assert!(!waiting.is_finished(), "same-project reconcile overlapped");
+        drop(first);
+        let acquired = tokio::time::timeout(Duration::from_secs(1), waiting)
+            .await
+            .expect("waiter did not acquire after release")
+            .expect("waiter task failed");
+        drop(acquired);
+    }
 
     /// Returns true when `git` is on PATH; probe tests skip gracefully otherwise.
     fn git_available() -> bool {

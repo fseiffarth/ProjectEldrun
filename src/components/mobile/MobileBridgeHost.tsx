@@ -10,6 +10,8 @@ import {
 import { useSettingsStore } from "../../stores/settings";
 import { calendarColor, useCalendarStore, visibleCalendarIds } from "../../stores/calendar";
 import { useActivityStore } from "../../stores/activity";
+import { persistScheduleBinding } from "../../stores/agentSchedules";
+import { sendCollectedPrompt, useAgentPromptsStore, type ProjectAgentPrompt } from "../../stores/agentPrompts";
 import { isTrashProject } from "../../lib/trashProject";
 import { resolveProjectDirectory } from "../../types";
 import type { CalendarEvent, CalendarTask, Subtask, TaskColumn } from "../../types";
@@ -26,9 +28,9 @@ import {
   customAgentToItem,
   type StaticMenuItem,
 } from "../tabs/newTabItems";
-import { supportsAgentMode, withAgentMode, type AgentMode } from "../tabs/agentModes";
 import { useT } from "../../lib/i18n";
 import { useAlertsFeed, type AlertsFeed } from "../files/useAlertsFeed";
+import { desktopTimeZone, nextScheduleOccurrence, type ScheduleRule, type ScheduledAgentPrompt } from "../../lib/agentSchedule";
 
 const MOBILE_DESKTOP_EVENT = "eldrun-mobile-desktop-request";
 
@@ -42,7 +44,7 @@ interface CreateRequest {
   mode?: string;
   idempotency_key: string;
 }
-interface TodoColumn { id: string; name: string; position: number; done: boolean; color?: string }
+interface TodoColumn { id: string; name: string; position: number; done: boolean; archived: boolean; color?: string }
 interface TodoSubtask { id: string; title: string; done: boolean }
 interface TodoTaskInput {
   title: string;
@@ -69,6 +71,7 @@ interface MobileAlertItem {
   all_day: boolean;
   minutes_away?: number;
   days_away?: number;
+  task_id?: string;
 }
 interface MobileAlerts { enabled: boolean; items: MobileAlertItem[] }
 interface MobileCalendarEvent {
@@ -114,6 +117,17 @@ type TodoAction =
   | { type: "column_rename"; column_id: string; name: string }
   | { type: "column_move"; column_id: string; delta: -1 | 1 }
   | { type: "column_delete"; column_id: string };
+interface MobileScheduleInput { enabled: boolean; message: string; rule: ScheduleRule }
+type ScheduleMutation =
+  | { type: "create"; schedule: MobileScheduleInput }
+  | { type: "update"; schedule_id: string; schedule: MobileScheduleInput }
+  | { type: "delete"; schedule_id: string };
+interface MobilePromptInput { message: string }
+type PromptMutation =
+  | { type: "create"; prompt: MobilePromptInput }
+  | { type: "update"; prompt_id: string; prompt: MobilePromptInput }
+  | { type: "delete"; prompt_id: string }
+  | { type: "send"; prompt_id: string; tmux_session: string };
 type DesktopRequest =
 | { type: "catalog"; request_id: string; project_id?: string }
   | { type: "activate"; request_id: string; project_id: string }
@@ -125,7 +139,11 @@ type DesktopRequest =
   | { type: "todo_mutate"; request_id: string; action: TodoAction }
   | { type: "mail_overview"; request_id: string }
   | { type: "mail_folder"; request_id: string; folder_id: string; offset: number }
-  | { type: "mail_message"; request_id: string; folder_id: string; message_id: string; offset: number };
+  | { type: "mail_message"; request_id: string; folder_id: string; message_id: string; offset: number }
+  | { type: "schedules"; request_id: string; project_id: string; tmux_session: string }
+  | { type: "schedule_mutate"; request_id: string; project_id: string; tmux_session: string; action: ScheduleMutation }
+  | { type: "prompts"; request_id: string; project_id: string }
+  | { type: "prompt_mutate"; request_id: string; project_id: string; action: PromptMutation };
 type DesktopResponse =
 | { status: "catalog"; agents: CatalogAgent[]; statuses: AgentTabStatus[] }
   | { status: "activated" }
@@ -134,6 +152,8 @@ type DesktopResponse =
   | { status: "alerts"; alerts: MobileAlerts }
   | { status: "calendar"; calendar: MobileCalendar }
   | { status: "mail"; mail: MobileMailView }
+  | { status: "schedules"; schedules: ScheduledAgentPrompt[]; time_zone: string; next_runs: Record<string, string> }
+  | { status: "prompts"; prompts: ProjectAgentPrompt[] }
   | { status: "error"; code: string; message: string };
 
 interface CatalogChoice { public: CatalogAgent; item: StaticMenuItem }
@@ -165,10 +185,12 @@ async function agentChoices(): Promise<CatalogChoice[]> {
       public: {
         id: await invoke<string>("mobile_opaque_id", { domain: "agent", value: item.cmd }),
         label: item.label,
-        modes:
-          settings?.agent_mode_toggle && supportsAgentMode(item.cmd)
-            ? ["plan", "auto"]
-            : [],
+        // Always empty: Eldrun no longer launches an agent into a permission
+        // mode, so there is no launch mode for the phone to pick. The phone can
+        // still change the mode of a *running* session, which it does the way a
+        // person would — pressing Shift+Tab and reading the TUI's own status
+        // line back (`mobile-web/src/terminal/agentModes.ts`).
+        modes: [] as string[],
       },
     })),
   );
@@ -232,13 +254,6 @@ async function create(request: CreateRequest, t: ReturnType<typeof useT>): Promi
       return { status: "error", code: "unsupported_mode", message: "Agent mode is unavailable" };
     }
     spec = buildStaticTabSpec(choice.item, cwd, project.name, t);
-    if (request.mode) {
-      spec = {
-        ...spec,
-        args: withAgentMode(spec.cmd, spec.args ?? [], request.mode as AgentMode),
-        agentMode: request.mode as AgentMode,
-      };
-    }
   }
   let created: TabEntry;
   try {
@@ -266,6 +281,104 @@ async function activate(projectId: string): Promise<DesktopResponse> {
   }
   await projects.activateProject(project.id);
   return { status: "activated" };
+}
+
+function scheduleTargetTab(projectId: string, tmuxSession: string) {
+  return (useTabsStore.getState().tabsByScope[projectId] ?? []).find((entry) =>
+    (entry.kind === "agent" || entry.kind === "local_agent")
+      && (entry.tmuxSession === tmuxSession || entry.tmuxAttach === tmuxSession),
+  );
+}
+
+function scheduleTarget(projectId: string, tmuxSession: string): string | null {
+  return scheduleTargetTab(projectId, tmuxSession)?.scheduleTargetId ?? null;
+}
+
+async function schedulesFor(projectId: string, tmuxSession: string): Promise<DesktopResponse> {
+  const target = scheduleTarget(projectId, tmuxSession);
+  if (!target) return { status: "error", code: "tab_not_found", message: "Agent tab is unavailable" };
+  const schedules = await invoke<ScheduledAgentPrompt[]>("agent_schedules_list", {
+    projectId,
+    scheduleTargetId: target,
+  });
+  const now = new Date();
+  const next_runs = Object.fromEntries(schedules.flatMap((schedule) => {
+    const next = nextScheduleOccurrence(schedule, now);
+    return next ? [[schedule.id, next.key]] : [];
+  }));
+  return { status: "schedules", schedules, time_zone: desktopTimeZone(), next_runs };
+}
+
+async function mutateSchedule(
+  projectId: string,
+  tmuxSession: string,
+  action: ScheduleMutation,
+): Promise<DesktopResponse> {
+  const target = scheduleTarget(projectId, tmuxSession);
+  if (!target) return { status: "error", code: "tab_not_found", message: "Agent tab is unavailable" };
+  if (action.type === "delete") {
+    await invoke("agent_schedule_delete", {
+      projectId,
+      scheduleTargetId: target,
+      scheduleId: action.schedule_id,
+    });
+  } else {
+    await invoke("agent_schedule_upsert", {
+      projectId,
+      scheduleTargetId: target,
+      schedule: {
+        id: action.type === "create" ? crypto.randomUUID() : action.schedule_id,
+        ...action.schedule,
+      },
+    });
+    void persistScheduleBinding(projectId);
+  }
+  return schedulesFor(projectId, tmuxSession);
+}
+
+// ── Project prompt collection ────────────────────────────────────────────────
+// The phone edits the same `agent_prompts.json` rows the Agents view shows;
+// ids and timestamps are minted here. `send` is the desktop's send-now — a
+// one-time schedule at *this* machine's current minute — so the phone never
+// reasons about the desktop clock and delivery keeps the scheduler's idle gate.
+
+async function promptsFor(projectId: string): Promise<DesktopResponse> {
+  const prompts = await useAgentPromptsStore.getState().load(projectId);
+  return { status: "prompts", prompts };
+}
+
+async function mutatePrompt(projectId: string, action: PromptMutation): Promise<DesktopResponse> {
+  const store = useAgentPromptsStore.getState();
+  if (action.type === "delete") {
+    await store.remove(projectId, action.prompt_id);
+  } else if (action.type === "send") {
+    const prompt = (await store.load(projectId)).find((item) => item.id === action.prompt_id);
+    if (!prompt) return { status: "error", code: "prompt_not_found", message: "Prompt no longer exists" };
+    const tab = scheduleTargetTab(projectId, action.tmux_session);
+    if (!tab?.scheduleTargetId) {
+      return { status: "error", code: "tab_not_found", message: "Agent tab is unavailable" };
+    }
+    // The phone's send retires the prompt to the history exactly as the
+    // desktop's does — one collected prompt, one send, one record of where it
+    // went, whichever surface aimed it.
+    await sendCollectedPrompt(
+      projectId,
+      {
+        scheduleTargetId: tab.scheduleTargetId,
+        label: tab.label,
+        sessionId: tab.sessionId,
+        agent: tab.cmd,
+      },
+      prompt,
+    );
+    void persistScheduleBinding(projectId);
+  } else {
+    await store.upsert(projectId, {
+      id: action.type === "create" ? crypto.randomUUID() : action.prompt_id,
+      message: action.prompt.message,
+    });
+  }
+  return promptsFor(projectId);
 }
 
 async function taskId(task: CalendarTask) {
@@ -314,6 +427,9 @@ async function todoSnapshot(): Promise<TodoBoard> {
       name: column.name,
       position: column.position,
       done: column.done,
+      // The phone filters archived cards on the flag, not on the column's name:
+      // a rename must not change what its "hide archived" switch hides.
+      archived: column.archived ?? false,
       color: column.color || undefined,
     })),
     tasks: await Promise.all(calendar.tasks.map(async (task) => ({
@@ -455,12 +571,17 @@ async function todoMutate(action: TodoAction): Promise<DesktopResponse> {
   return { status: "todo", board: await todoSnapshot() };
 }
 
-function alertsSnapshot(feed: AlertsFeed): MobileAlerts {
+async function alertsSnapshot(feed: AlertsFeed): Promise<MobileAlerts> {
   return {
     enabled: feed.enabled,
     // Keep source ids and action metadata inside the desktop process. The
-    // mobile home needs a timeline, not a second control surface.
-    items: feed.items.map((item) => ({
+    // mobile home needs a timeline, not a second control surface. The one
+    // exception is a card row's `task_id`, and it is not a widening of the
+    // boundary: it is the *same* opaque id `todoSnapshot` already hands this
+    // device for that card, so tapping the alert can open the card it names —
+    // the header's own to-do list has routed to the card rather than the board
+    // since it existed, for the reason it exists at all.
+    items: await Promise.all(feed.items.map(async (item) => ({
       kind: item.kind,
       severity: item.severity,
       title: item.title,
@@ -469,7 +590,10 @@ function alertsSnapshot(feed: AlertsFeed): MobileAlerts {
       all_day: item.allDay,
       minutes_away: item.minutesAway ?? undefined,
       days_away: item.daysAway ?? undefined,
-    })),
+      task_id: item.kind === "task" && item.source.taskId
+        ? await opaqueId("task", item.source.taskId)
+        : undefined,
+    }))),
   };
 }
 
@@ -728,13 +852,17 @@ async function handleRequest(
     case "activate": return activate(request.project_id);
     case "create": return create(request.request, t);
     case "todo": return { status: "todo", board: await todoSnapshot() };
-    case "alerts": return { status: "alerts", alerts: alertsSnapshot(alerts) };
+    case "alerts": return { status: "alerts", alerts: await alertsSnapshot(alerts) };
     case "calendar": return { status: "calendar", calendar: await calendarSnapshot(request.month) };
     case "calendar_mutate": return calendarMutate(request.month, request.action);
     case "todo_mutate": return todoMutate(request.action);
     case "mail_overview": return mailOverview();
     case "mail_folder": return mailFolderPage(request.folder_id, request.offset);
     case "mail_message": return mailMessage(request.folder_id, request.message_id, request.offset);
+    case "schedules": return schedulesFor(request.project_id, request.tmux_session);
+    case "schedule_mutate": return mutateSchedule(request.project_id, request.tmux_session, request.action);
+    case "prompts": return promptsFor(request.project_id);
+    case "prompt_mutate": return mutatePrompt(request.project_id, request.action);
   }
 }
 
@@ -742,7 +870,16 @@ let mutationQueue: Promise<unknown> = Promise.resolve();
 
 export function MobileBridgeHost() {
   const t = useT();
-  const alerts = useAlertsFeed();
+  // The phone's Alerts screen is its own surface, so it is read *past* the file
+  // viewer's 🔔 key: `files_alerts` is that group's visibility, and closing the
+  // strip beside the tree on the laptop must not blank the phone — a control on
+  // one surface silently switching off another one that has no way back. What
+  // says which alerts exist (the source switches, the lookahead, the mutes) is
+  // still shared, so the two surfaces never disagree about the rows themselves.
+  // Gated on the Mobile host actually being on: with no phone in the picture the
+  // feed stays exactly as opt-in as before, arming no timer and reading no store.
+  const mobileHostOn = useSettingsStore((s) => s.settings?.eldrun_mobile_host?.enabled ?? false);
+  const alerts = useAlertsFeed({ ignoreVisibility: mobileHostOn });
   const alertsRef = useRef(alerts);
   const tRef = useRef(t);
   alertsRef.current = alerts;
@@ -766,7 +903,7 @@ export function MobileBridgeHost() {
           }).catch(() => {});
         }
       };
-      if (request.type === "create" || request.type === "activate" || request.type === "todo_mutate" || request.type === "calendar_mutate") {
+      if (request.type === "create" || request.type === "activate" || request.type === "todo_mutate" || request.type === "calendar_mutate" || request.type === "schedule_mutate" || request.type === "prompt_mutate") {
         mutationQueue = mutationQueue.then(run, run);
       } else {
         void run();

@@ -175,9 +175,10 @@ pub fn machine_load() -> MachineLoad {
 /// rebuild its cached process tree instead of reusing the previous walk.
 static PROC_TREE_GEN: AtomicU64 = AtomicU64::new(0);
 
-/// Cache for [`descendant_pids`], keyed by the (sorted) root pid set. Holds the
-/// generation it was built at and a freshness deadline; reused only while both
-/// the generation is unchanged *and* the entry is younger than [`CACHE_TTL`].
+/// One cache entry for [`descendant_pids`], keyed by the (sorted) root pid set.
+/// Holds the generation it was built at and a freshness deadline; reused only
+/// while both the generation is unchanged *and* the entry is younger than
+/// [`CACHE_TTL`].
 struct DescendantCache {
     roots: Vec<u32>,
     pids: Vec<u32>,
@@ -185,7 +186,18 @@ struct DescendantCache {
     computed_at: Instant,
 }
 
-static DESCENDANT_CACHE: Mutex<Option<DescendantCache>> = Mutex::new(None);
+/// A **small keyed set**, not a single slot: several callers sample with
+/// different root sets on overlapping timers (a hovered project pill and the
+/// renderer watchdog are the concrete pair), and a single entry meant each one
+/// evicted the other every sample — every hit became a full process-table walk.
+/// A handful of entries under the same TTL/generation rules keeps concurrent
+/// samplers all warm.
+static DESCENDANT_CACHE: Mutex<Vec<DescendantCache>> = Mutex::new(Vec::new());
+
+/// How many distinct root sets keep a live entry at once. Two is the observed
+/// concurrent floor (pill hover + watchdog); four adds headroom for another
+/// hover or monitor pane without letting the lookup scan grow.
+const CACHE_ENTRIES: usize = 4;
 
 /// Upper bound on cache reuse even if no spawn/death bumped the generation: a
 /// process tree can grow/shrink without Eldrun spawning the PTY directly (an
@@ -225,20 +237,32 @@ pub fn descendant_pids(roots: &[u32]) -> Vec<u32> {
     let generation = PROC_TREE_GEN.load(Ordering::Relaxed);
     {
         let cache = DESCENDANT_CACHE.lock().unwrap();
-        if let Some(entry) = cache.as_ref() {
-            if entry.generation == generation
-                && entry.roots == key
-                && entry.computed_at.elapsed() < CACHE_TTL
-            {
-                return entry.pids.clone();
-            }
+        if let Some(entry) = cache.iter().find(|e| {
+            e.generation == generation && e.roots == key && e.computed_at.elapsed() < CACHE_TTL
+        }) {
+            return entry.pids.clone();
         }
     }
 
     let pids = compute_descendant_pids(&key);
 
     let mut cache = DESCENDANT_CACHE.lock().unwrap();
-    *cache = Some(DescendantCache {
+    // A spawn/death or the TTL stales every entry at once (they all describe
+    // the one process table), so dead entries are pruned wholesale — along
+    // with any previous entry for this key, which the push below replaces.
+    cache.retain(|e| {
+        e.generation == generation && e.computed_at.elapsed() < CACHE_TTL && e.roots != key
+    });
+    while cache.len() >= CACHE_ENTRIES {
+        let oldest = cache
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, e)| e.computed_at)
+            .map(|(i, _)| i)
+            .unwrap_or(0);
+        cache.remove(oldest);
+    }
+    cache.push(DescendantCache {
         roots: key,
         pids: pids.clone(),
         generation,
@@ -290,6 +314,91 @@ pub fn sum_jiffies(pids: &[u32]) -> u64 {
 /// Sum resident memory across `pids`, in KiB. Dead pids are skipped.
 pub fn sum_rss_kib(pids: &[u32]) -> u64 {
     pids.iter().filter_map(|&pid| platform::rss_kib(pid)).sum()
+}
+
+/// One process's resident memory split by what backs it, as `/proc/<pid>/status`
+/// reports it. The split is what a "this renderer is at 4 GB" line needs to be
+/// actionable: `anon` is heap (JS objects, decoded images, canvas backing
+/// stores), `file` is mapped libraries and caches, `shmem` is shared memory
+/// (compositor buffers, IPC). A watchdog that only knows the total cannot tell
+/// a JS-heap leak from a graphics one, and the two are fixed in different places.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct RssBreakdown {
+    pub rss_kib: u64,
+    pub anon_kib: u64,
+    pub file_kib: u64,
+    pub shmem_kib: u64,
+}
+
+/// Parse the `Rss*` fields out of a `/proc/<pid>/status` body. Fields a kernel
+/// does not report (pre-4.5 has no `RssAnon`) stay zero.
+pub fn parse_rss_breakdown(status: &str) -> RssBreakdown {
+    let mut out = RssBreakdown::default();
+    for line in status.lines() {
+        let Some((key, rest)) = line.split_once(':') else {
+            continue;
+        };
+        let slot = match key.trim() {
+            "VmRSS" => &mut out.rss_kib,
+            "RssAnon" => &mut out.anon_kib,
+            "RssFile" => &mut out.file_kib,
+            "RssShmem" => &mut out.shmem_kib,
+            _ => continue,
+        };
+        if let Some(v) = rest.split_whitespace().next().and_then(|v| v.parse().ok()) {
+            *slot = v;
+        }
+    }
+    out
+}
+
+/// Resident size per mapping *name* from a `/proc/<pid>/smaps` body, largest
+/// first, at most `top` entries. Anonymous mappings (no name) are pooled under
+/// `[anon]`; everything else keeps the kernel's name (`[heap]`, a library path,
+/// `memfd:…`), so the answer names the kind of memory rather than a region.
+pub fn aggregate_smaps_rss(smaps: &str, top: usize) -> Vec<(String, u64)> {
+    let mut by_name: HashMap<String, u64> = HashMap::new();
+    let mut current = String::from("[anon]");
+    for line in smaps.lines() {
+        // A mapping header starts with its hex address range; every other line is
+        // a `Key: value kB` field. `Rss:` is the one we sum.
+        let is_header = line
+            .split_once('-')
+            .is_some_and(|(lo, _)| !lo.is_empty() && lo.bytes().all(|b| b.is_ascii_hexdigit()));
+        if is_header {
+            // `addr perms offset dev inode [name…]` — the name may contain spaces.
+            let mut fields = line.splitn(6, char::is_whitespace);
+            let name = fields.nth(5).map(str::trim).unwrap_or("");
+            current = if name.is_empty() { "[anon]".to_string() } else { name.to_string() };
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("Rss:") {
+            if let Some(kib) = rest.split_whitespace().next().and_then(|v| v.parse::<u64>().ok()) {
+                *by_name.entry(current.clone()).or_insert(0) += kib;
+            }
+        }
+    }
+    let mut rows: Vec<(String, u64)> = by_name.into_iter().filter(|(_, kib)| *kib > 0).collect();
+    rows.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    rows.truncate(top);
+    rows
+}
+
+/// The breakdown and the largest mappings of one live process. `/proc`-only:
+/// elsewhere there is nothing comparable to read, and `None` says so.
+#[cfg(target_os = "linux")]
+pub fn process_memory(pid: u32, top: usize) -> Option<(RssBreakdown, Vec<(String, u64)>)> {
+    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+    let breakdown = parse_rss_breakdown(&status);
+    // smaps is large for a browser process (thousands of mappings) and is read
+    // only on the watchdog's own schedule, never per poll.
+    let smaps = std::fs::read_to_string(format!("/proc/{pid}/smaps")).unwrap_or_default();
+    Some((breakdown, aggregate_smaps_rss(&smaps, top)))
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn process_memory(_pid: u32, _top: usize) -> Option<(RssBreakdown, Vec<(String, u64)>)> {
+    None
 }
 
 /// Parent pid for a live process, if resolvable on this backend.
@@ -1188,7 +1297,9 @@ const PROCESSOR_PERF_ENTRY_BYTES: usize = 48;
 /// trailing partial entry is ignored; negative times (never expected) clamp to 0.
 #[cfg(any(target_os = "windows", test))]
 fn parse_processor_perf_buffer(buf: &[u8]) -> Vec<CpuTimes> {
-    buf.chunks_exact(PROCESSOR_PERF_ENTRY_BYTES)
+    buf.as_chunks::<PROCESSOR_PERF_ENTRY_BYTES>()
+        .0
+        .iter()
         .map(|chunk| {
             let time = |off: usize| {
                 i64::from_le_bytes(chunk[off..off + 8].try_into().unwrap()).max(0) as u64
@@ -1233,7 +1344,9 @@ fn parse_host_processor_ticks(ticks: &[u32], ns_per_tick: u64) -> Vec<CpuTimes> 
     const CPU_STATE_IDLE: usize = 2;
     const CPU_STATE_NICE: usize = 3;
     ticks
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| {
             let busy =
                 (c[CPU_STATE_USER] as u64 + c[CPU_STATE_SYSTEM] as u64 + c[CPU_STATE_NICE] as u64)
@@ -2285,6 +2398,42 @@ mod tests {
     use super::*;
 
     #[test]
+    fn rss_breakdown_reads_the_four_fields() {
+        let status = "Name:\tWebKitWebProcess\nVmRSS:\t 4744000 kB\nRssAnon:\t 4600000 kB\nRssFile:\t  100000 kB\nRssShmem:\t   44000 kB\nThreads:\t37\n";
+        assert_eq!(
+            parse_rss_breakdown(status),
+            RssBreakdown { rss_kib: 4_744_000, anon_kib: 4_600_000, file_kib: 100_000, shmem_kib: 44_000 }
+        );
+        // A kernel without the split still yields the total.
+        assert_eq!(parse_rss_breakdown("VmRSS:\t 12 kB\n").rss_kib, 12);
+    }
+
+    #[test]
+    fn smaps_aggregates_by_mapping_name_largest_first() {
+        let smaps = "\
+7f00-7f10 rw-p 00000000 00:00 0 \n\
+Rss:                 300 kB\n\
+7f10-7f20 rw-p 00000000 00:00 0                          [heap]\n\
+Rss:                 100 kB\n\
+7f20-7f30 r-xp 00000000 08:01 1234 /usr/lib/lib with space.so\n\
+Rss:                  50 kB\n\
+7f30-7f40 rw-p 00000000 00:00 0 \n\
+Rss:                 200 kB\n\
+7f40-7f50 rw-s 00000000 00:01 5 /memfd:WebKit (deleted)\n\
+Rss:                   0 kB\n";
+        let rows = aggregate_smaps_rss(smaps, 8);
+        assert_eq!(
+            rows,
+            vec![
+                ("[anon]".to_string(), 500),
+                ("[heap]".to_string(), 100),
+                ("/usr/lib/lib with space.so".to_string(), 50),
+            ]
+        );
+        assert_eq!(aggregate_smaps_rss(smaps, 1).len(), 1);
+    }
+
+    #[test]
     fn clk_tck_is_positive() {
         assert!(clk_tck() > 0, "ticks-per-second must be positive");
     }
@@ -2400,12 +2549,12 @@ M\t44000
         let gen = PROC_TREE_GEN.load(Ordering::Relaxed);
         {
             let mut cache = DESCENDANT_CACHE.lock().unwrap();
-            *cache = Some(DescendantCache {
+            *cache = vec![DescendantCache {
                 roots: fake_roots.clone(),
                 pids: fake_pids.clone(),
                 generation: gen,
                 computed_at: Instant::now(),
-            });
+            }];
         }
         // Same roots + same generation + fresh → cache hit returns the seeded set
         // (which could never come from a real process walk for pid 424242).
@@ -2424,16 +2573,47 @@ M\t44000
         let gen = PROC_TREE_GEN.load(Ordering::Relaxed);
         {
             let mut cache = DESCENDANT_CACHE.lock().unwrap();
-            *cache = Some(DescendantCache {
+            *cache = vec![DescendantCache {
                 roots: vec![111111u32],
                 pids: vec![111111u32, 222222u32],
                 generation: gen,
                 computed_at: Instant::now(),
-            });
+            }];
         }
         // Different roots → cache miss → recompute (no 222222 from a real walk).
         let other = descendant_pids(&[333333]);
         assert!(!other.contains(&222222));
+    }
+
+    #[test]
+    fn descendant_pids_cache_holds_multiple_root_sets() {
+        let _guard = lock_cache_for_test();
+        // The concrete regression the keyed cache fixes: two callers alternating
+        // different root sets (a hovered pill and the renderer watchdog) must
+        // BOTH stay warm instead of evicting each other every sample. Seed two
+        // synthetic entries; both queries must be served from the cache (the
+        // seeded pids could never come from a real process walk).
+        let gen = PROC_TREE_GEN.load(Ordering::Relaxed);
+        let a = DescendantCache {
+            roots: vec![424242u32],
+            pids: vec![424242u32, 555555u32],
+            generation: gen,
+            computed_at: Instant::now(),
+        };
+        let b = DescendantCache {
+            roots: vec![434343u32],
+            pids: vec![434343u32, 666666u32],
+            generation: gen,
+            computed_at: Instant::now(),
+        };
+        {
+            let mut cache = DESCENDANT_CACHE.lock().unwrap();
+            *cache = vec![a, b];
+        }
+        assert_eq!(descendant_pids(&[424242]), vec![424242, 555555]);
+        assert_eq!(descendant_pids(&[434343]), vec![434343, 666666]);
+        // And reading one must not have evicted the other: both still hit.
+        assert_eq!(descendant_pids(&[424242]), vec![424242, 555555]);
     }
 
     // The sampling assertions below rely on a real process backend (Linux `/proc`

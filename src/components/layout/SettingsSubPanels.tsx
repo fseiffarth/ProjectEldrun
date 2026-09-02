@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Toggle } from "../common/Toggle";
+import { SettingsCard, SettingsHeader, SettingsList, SettingsSection, ToggleRow } from "./settingsUi";
+import { formatBytes as fmtBytes } from "../../lib/formatBytes";
 import { UntestedTag } from "../common/UntestedTag";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -20,6 +22,32 @@ import { useProjectsStore } from "../../stores/projects";
 import { useGlobalMachinesStore } from "../../stores/globalMachines";
 import { useT, type TranslationKey } from "../../lib/i18n";
 import { notifyAgentRegistryChanged } from "../../lib/agentRegistry";
+import {
+  DEFAULT_PREFACE_COMMANDS,
+  MAX_PREFACE_COMMANDS,
+  agentComposerKey,
+  agentModelsFor,
+  prefaceCommandsFor,
+  sanitizePrefaceCommand,
+} from "../../lib/agentPrefaces";
+import {
+  AGENT_CRON_MESSAGE,
+  addTime,
+  agentCronTimes,
+  allAgentsEnabled,
+  nextAgentCronRun,
+  normalizeTimes,
+  removeTime,
+  withAgentCronEnabled,
+  withAgentCronTimes,
+  withAllAgentsEnabled,
+  withCronEnabled,
+  withGlobalTimes,
+  type AgentCron,
+} from "../../lib/agentCron";
+import { formatTime } from "../../lib/calendarTime";
+import { useUse24h } from "../../lib/timeFormat";
+import { AGENT_FENCE_DEFAULT_PATHS, parseAgentFencePaths } from "../../lib/agentFence";
 
 interface OllamaModelInfo {
   name: string;
@@ -134,7 +162,15 @@ function matchesSizeBuckets(sizes: string[], selected: Set<string>): boolean {
   });
 }
 
-export function GlobalAppsSettings({ onBack }: { onBack: () => void }) {
+/** Every sub-panel takes the same two: `onBack` returns to the main settings
+ *  panel, `onClose` dismisses the whole dialog. Optional because the panels are
+ *  also rendered standalone in tests. */
+export interface SubPanelProps {
+  onBack: () => void;
+  onClose?: () => void;
+}
+
+export function GlobalAppsSettings({ onBack, onClose }: SubPanelProps) {
   const t = useT();
   const { settings, updateSettings } = useSettingsStore();
   const [apps, setApps] = useState<Record<string, GlobalAppEntry>>(settings?.global_apps ?? {});
@@ -162,12 +198,10 @@ export function GlobalAppsSettings({ onBack }: { onBack: () => void }) {
 
   return (
     <>
-      <div className="settings-title-row">
-        <h2>{t("globalApps.title")}</h2>
-        <button type="button" onClick={onBack}>{t("common.back")}</button>
-      </div>
+      <SettingsHeader title={t("globalApps.title")} onBack={onBack} onClose={onClose} />
+      <div className="dialog-scroll">
       <p className="settings-help">{t("globalApps.help")}</p>
-      <div className="settings-list">
+      <SettingsList boxed>
         {GLOBAL_APP_ROLES.map((role) => {
           const entry = apps[role.key] ?? { exec: "", visible: true };
           const roleLabel = t(role.labelKey);
@@ -190,16 +224,24 @@ export function GlobalAppsSettings({ onBack }: { onBack: () => void }) {
                   if (e.key === "Enter") updateRole(role.key, { exec: e.currentTarget.value.trim() });
                 }}
               />
-              <button type="button" onClick={() => void chooseExecutable(role.key)}>...</button>
+              <button
+                type="button"
+                className="settings-btn sm icon"
+                title={t("globalApps.browseTitle", { role: roleLabel })}
+                onClick={() => void chooseExecutable(role.key)}
+              >
+                …
+              </button>
             </div>
           );
         })}
+      </SettingsList>
       </div>
     </>
   );
 }
 
-export function FileTypeSettings({ onBack }: { onBack: () => void }) {
+export function FileTypeSettings({ onBack, onClose }: SubPanelProps) {
   const t = useT();
   const [apps, setApps] = useState<Record<string, string>>({});
   const [draft, setDraft] = useState({ ext: "", app: "" });
@@ -239,13 +281,11 @@ export function FileTypeSettings({ onBack }: { onBack: () => void }) {
 
   return (
     <>
-      <div className="settings-title-row">
-        <h2>{t("filetypes.title")}</h2>
-        <button type="button" onClick={onBack}>{t("common.back")}</button>
-      </div>
+      <SettingsHeader title={t("filetypes.title")} onBack={onBack} onClose={onClose} />
+      <div className="dialog-scroll">
       <p className="settings-help">{t("filetypes.help")}</p>
       {error && <div className="project-dialog-error">{error}</div>}
-      <div className="settings-list">
+      <SettingsList boxed>
         {Object.entries(apps).sort(([a], [b]) => a.localeCompare(b)).map(([ext, app]) => (
           <div className="filetype-settings-row" key={ext}>
             <input
@@ -264,9 +304,17 @@ export function FileTypeSettings({ onBack }: { onBack: () => void }) {
                 if (e.key === "Enter") saveApps({ ...apps, [ext]: e.currentTarget.value.trim() });
               }}
             />
-            <button type="button" onClick={() => void chooseExecutable(ext)}>...</button>
             <button
               type="button"
+              className="settings-btn sm icon"
+              title={t("filetypes.browseTitle")}
+              onClick={() => void chooseExecutable(ext)}
+            >
+              …
+            </button>
+            <button
+              type="button"
+              className="settings-btn sm icon danger"
               onClick={() => {
                 const { [ext]: _removed, ...rest } = apps;
                 saveApps(rest);
@@ -291,8 +339,11 @@ export function FileTypeSettings({ onBack }: { onBack: () => void }) {
               if (e.key === "Enter") addEntry();
             }}
           />
-          <button type="button" onClick={addEntry}>{t("common.add")}</button>
+          <button type="button" className="settings-btn sm primary" onClick={addEntry}>
+            {t("common.add")}
+          </button>
         </div>
+      </SettingsList>
       </div>
     </>
   );
@@ -311,7 +362,7 @@ export function FileTypeSettings({ onBack }: { onBack: () => void }) {
  * folder you browse to, while this is one explicit choice per host, edited
  * only here.
  */
-export function RemoteHostsSettings({ onBack }: { onBack: () => void }) {
+export function RemoteHostsSettings({ onBack, onClose }: SubPanelProps) {
   const t = useT();
   const [defaults, setDefaults] = useState<Record<string, string> | null>(null);
   const [draftHost, setDraftHost] = useState("");
@@ -371,21 +422,23 @@ export function RemoteHostsSettings({ onBack }: { onBack: () => void }) {
 
   return (
     <>
-      <div className="settings-title-row">
-        <h2>{t("nav.remoteHosts.title")}</h2>
-        <button type="button" onClick={onBack}>{t("common.back")}</button>
-      </div>
+      <SettingsHeader title={t("nav.remoteHosts.title")} onBack={onBack} onClose={onClose} />
+      <div className="dialog-scroll">
       <p className="settings-help">{t("remoteHosts.help")}</p>
       {error && <div className="project-dialog-error">{error}</div>}
+      {/* One framed list holds the saved hosts, the empty state AND the add
+          row — the same shape the File Type Apps panel uses. Before, the add
+          row sat outside the frame and read as a stray strip below it. */}
       {defaults === null ? (
         <p className="settings-help">{t("common.loading")}</p>
-      ) : entries.length === 0 ? (
-        <div className="settings-empty">{t("remoteHosts.empty")}</div>
       ) : (
-        <div className="settings-list">
+        <SettingsList boxed>
+          {entries.length === 0 && (
+            <div className="settings-empty">{t("remoteHosts.empty")}</div>
+          )}
           {entries.map(([host, path]) => (
             <div className="remote-host-settings-row" key={host}>
-              <span className="settings-role-label" title={host}>{host}</span>
+              <span className="settings-list-label" title={host}>{host}</span>
               <input
                 value={path}
                 onChange={(e) => setDefaults((d) => (d ? { ...d, [host]: e.target.value } : d))}
@@ -394,44 +447,47 @@ export function RemoteHostsSettings({ onBack }: { onBack: () => void }) {
                   if (e.key === "Enter") savePath(host, e.currentTarget.value);
                 }}
               />
-              <button type="button" onClick={() => removeHost(host)} title={t("common.remove")}>
+              <button
+                type="button"
+                className="settings-btn sm icon danger"
+                onClick={() => removeHost(host)}
+                title={t("common.remove")}
+              >
                 ×
               </button>
             </div>
           ))}
-        </div>
+          <div className="remote-host-settings-row remote-host-settings-add">
+            <input
+              list="remote-host-suggestions"
+              value={draftHost}
+              placeholder={t("remoteHosts.hostPlaceholder")}
+              onChange={(e) => setDraftHost(e.target.value)}
+            />
+            <datalist id="remote-host-suggestions">
+              {hostSuggestions.map((h) => (
+                <option key={h} value={h} />
+              ))}
+            </datalist>
+            <input
+              value={draftPath}
+              placeholder={t("remoteHosts.pathPlaceholder")}
+              onChange={(e) => setDraftPath(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") addEntry();
+              }}
+            />
+            <button type="button" className="settings-btn sm primary" onClick={addEntry}>
+              {t("common.add")}
+            </button>
+          </div>
+        </SettingsList>
       )}
-      <div className="remote-host-settings-row remote-host-settings-add">
-        <input
-          list="remote-host-suggestions"
-          value={draftHost}
-          placeholder={t("remoteHosts.hostPlaceholder")}
-          onChange={(e) => setDraftHost(e.target.value)}
-        />
-        <datalist id="remote-host-suggestions">
-          {hostSuggestions.map((h) => (
-            <option key={h} value={h} />
-          ))}
-        </datalist>
-        <input
-          value={draftPath}
-          placeholder={t("remoteHosts.pathPlaceholder")}
-          onChange={(e) => setDraftPath(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") addEntry();
-          }}
-        />
-        <button type="button" onClick={addEntry}>{t("common.add")}</button>
       </div>
     </>
   );
 }
 
-function fmtBytes(n: number): string {
-  if (n === 0) return "0 B";
-  if (n < 1024 * 1024 * 1024) return (n / (1024 * 1024)).toFixed(0) + " MB";
-  return (n / (1024 * 1024 * 1024)).toFixed(1) + " GB";
-}
 
 /**
  * Parameter count (in billions) parsed from a catalog tag like "1b", "0.5b",
@@ -466,6 +522,9 @@ interface AgentInfo {
   uninstall_cmd_sudo: string;
   docs: string;
   installed: boolean;
+  /** Whether the scheduled warm-up can drive this CLI (it has a known one-shot
+   *  print mode — backend `WARMUPS`). False greys the schedule toggle. */
+  warmup: boolean;
 }
 
 /**
@@ -537,7 +596,7 @@ function CodexHookNotice() {
 
   return (
     <div className="agent-codex-hook">
-      <div className="settings-section-title">
+      <div className="settings-subheader">
         {t("agents.codexHookLabel")}{" "}
         <span className="ollama-status-text">
           {off ? t("agents.codexHookDisabled") : t("agents.codexHookNotTrusted")}
@@ -595,6 +654,66 @@ function ClaudeRemoteControlNotice() {
   );
 }
 
+function AgentFenceCard() {
+  const t = useT();
+  const { settings, updateSettings } = useSettingsStore();
+  const stored = settings?.agent_fence_paths;
+  const effective = stored ?? [...AGENT_FENCE_DEFAULT_PATHS];
+  const [paths, setPaths] = useState(effective.join("\n"));
+  useEffect(() => {
+    setPaths((stored ?? [...AGENT_FENCE_DEFAULT_PATHS]).join("\n"));
+  }, [stored]);
+
+  const savePaths = () => {
+    const next = parseAgentFencePaths(paths);
+    setPaths(next.join("\n"));
+    void updateSettings({ agent_fence_paths: next });
+  };
+
+  return (
+    <SettingsCard className="agent-fence-card">
+      <div className="settings-subheader">
+        {t("settings.agentFenceTitle")} <UntestedTag />
+      </div>
+      <label className="settings-toggle-card-row">
+        <span>{t("settings.agentFenceEnabled")}</span>
+        <Toggle
+          checked={settings?.agent_fence ?? true}
+          onChange={(e) => void updateSettings({ agent_fence: e.target.checked })}
+        />
+      </label>
+      <p className="settings-help">{t("settings.agentFenceHelp")}</p>
+      <p className="settings-help">{t("settings.agentFenceLimits")}</p>
+      <label className="settings-help" htmlFor="agent-fence-paths">
+        {t("settings.agentFencePaths")}
+      </label>
+      <textarea
+        id="agent-fence-paths"
+        className="ollama-pull-input"
+        rows={8}
+        value={paths}
+        spellCheck={false}
+        onChange={(event) => setPaths(event.target.value)}
+        onBlur={savePaths}
+        aria-label={t("settings.agentFencePaths")}
+      />
+      <div className="ollama-install-cmd-row">
+        <button
+          type="button"
+          className="ollama-action-btn"
+          onClick={() => {
+            setPaths(AGENT_FENCE_DEFAULT_PATHS.join("\n"));
+            void updateSettings({ agent_fence_paths: undefined });
+          }}
+        >
+          {t("settings.agentFenceReset")}
+        </button>
+      </div>
+      <p className="settings-help">{t("settings.agentFencePathsHelp")}</p>
+    </SettingsCard>
+  );
+}
+
 /**
  * "Install Node/npm first" helper for the Manage Agents panel. Most agent CLIs
  * install through `npm`, so when `npm` isn't on the host's PATH this points the
@@ -615,7 +734,7 @@ function NodeRuntimeNotice() {
   const { command, shell, shellKind } = NODE_INSTALL[PLATFORM];
   return (
     <div className="ollama-vibe-section agent-list-entry">
-      <div className="settings-section-title">
+      <div className="settings-subheader">
         Node.js / npm{" "}
         <span className="ollama-status-text">{t("agents.nodeNotDetected")}</span>
       </div>
@@ -648,6 +767,445 @@ function NodeRuntimeNotice() {
 }
 
 /**
+ * A list of local times ("HH:MM"), edited as chips plus an hour/minute picker.
+ *
+ * The app's own {@link Dropdown} rather than a native `<select>` (WebKitGTK
+ * draws that as an unthemed OS menu — the note on the remote-machine picker
+ * above) and rather than an `<input type="time">`, which takes its 12-vs-24-hour
+ * face from the process locale and ignores both the element's `lang` and
+ * `Settings.time_format_24h` (`common/TimeField`'s header documents the probe).
+ * Two lists of numbers have neither problem and nothing to mistype.
+ *
+ * Stored values are always 24-hour; only the chips are printed through the
+ * user's clock setting, so the picker says the same thing the board and the
+ * calendar do.
+ */
+function TimeListEditor({
+  times,
+  onChange,
+  disabled,
+  emptyLabel,
+}: {
+  times: string[];
+  onChange: (next: string[]) => void;
+  disabled?: boolean;
+  /** What to show in place of the chips when the list is empty — "no times yet"
+   *  for the global list, "follows the global times" for an agent's own. */
+  emptyLabel: string;
+}) {
+  const t = useT();
+  const use24h = useUse24h();
+  const [hour, setHour] = useState("09");
+  const [minute, setMinute] = useState("00");
+
+  const hours = useMemo(
+    () => Array.from({ length: 24 }, (_, i) => String(i).padStart(2, "0")).map((v) => ({ value: v, label: v })),
+    [],
+  );
+  const minutes = useMemo(
+    () => Array.from({ length: 60 }, (_, i) => String(i).padStart(2, "0")).map((v) => ({ value: v, label: v })),
+    [],
+  );
+  const pending = `${hour}:${minute}`;
+
+  return (
+    <div className="agent-cron-times">
+      <div className="agent-cron-chips">
+        {times.length === 0 ? (
+          <span className="agent-cron-empty">{emptyLabel}</span>
+        ) : (
+          times.map((time) => (
+            <span key={time} className="agent-cron-chip">
+              {formatTime(time, use24h)}
+              <button
+                type="button"
+                className="agent-cron-chip-remove"
+                title={t("agentCron.removeTime", { time })}
+                aria-label={t("agentCron.removeTime", { time })}
+                disabled={disabled}
+                onClick={() => onChange(removeTime(times, time))}
+              >
+                ×
+              </button>
+            </span>
+          ))
+        )}
+      </div>
+      <div className="agent-cron-add">
+        <Dropdown
+          className="agent-cron-unit"
+          title={t("agentCron.hourAria")}
+          value={hour}
+          options={hours}
+          disabled={disabled}
+          onChange={setHour}
+        />
+        <span className="agent-cron-colon">:</span>
+        <Dropdown
+          className="agent-cron-unit"
+          title={t("agentCron.minuteAria")}
+          value={minute}
+          options={minutes}
+          disabled={disabled}
+          onChange={setMinute}
+        />
+        <button
+          type="button"
+          className="ollama-action-btn"
+          disabled={disabled || times.includes(pending)}
+          onClick={() => onChange(addTime(times, pending))}
+        >
+          {t("agentCron.addTime")}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** "Next: 06:00 tomorrow", or nothing when this agent is not scheduled. */
+function NextRunLabel({ cron, cmd }: { cron: AgentCron | undefined; cmd: string }) {
+  const t = useT();
+  const use24h = useUse24h();
+  // Read once per render rather than on a ticking clock: this is a settings
+  // panel, and a readout that only refreshes when something is edited is the
+  // honest cost of not running a timer behind a screen nobody is watching.
+  const now = new Date();
+  const next = nextAgentCronRun(cron, cmd, now);
+  if (!next) return null;
+  const time = formatTime(
+    `${String(next.getHours()).padStart(2, "0")}:${String(next.getMinutes()).padStart(2, "0")}`,
+    use24h,
+  );
+  const tomorrow = next.getDate() !== now.getDate();
+  return (
+    <span className="agent-cron-next">
+      {t(tomorrow ? "agentCron.nextTomorrow" : "agentCron.nextToday", { time })}
+    </span>
+  );
+}
+
+/**
+ * The scheduled warm-up's global half: the master switch and the time list every
+ * participating agent follows unless it names its own.
+ *
+ * It sits at the top of this panel rather than in a settings section of its own
+ * because the thing it schedules is *these* rows — participation is per agent,
+ * ticked on the agent's own card a few lines below, and a global switch two
+ * panels away from the per-agent one is how half a schedule ends up armed.
+ */
+/**
+ * The prefix chips and model names the side panel's per-tab agent composer
+ * offers, per agent.
+ *
+ * Editable rather than hardcoded because both lists date faster than the app
+ * ships: a CLI adds a slash command in a point release and renames its models
+ * more often than that. What is NOT offered here is a permission or plan mode —
+ * an agent's authority is set through the agent's own CLI, and every entry in
+ * these lists is literally typed into it (see `lib/agentPrefaces`).
+ *
+ * An agent the user has never touched carries no stored entry at all and falls
+ * back to the defaults; "Use defaults" deletes the key rather than writing the
+ * defaults out, so a later change to them still reaches that agent. An
+ * explicitly EMPTY list is kept, because "no chips for this one" is a decision.
+ */
+function AgentComposerCard({ agents }: { agents: AgentInfo[] | null }) {
+  const t = useT();
+  const { settings, updateSettings } = useSettingsStore();
+  const [agentId, setAgentId] = useState("claude");
+  const [command, setCommand] = useState("");
+  const [modelName, setModelName] = useState("");
+  const [error, setError] = useState("");
+
+  const installed = (agents ?? []).filter((agent) => agent.installed);
+  // Fall back to the agents that have defaults, so the card is usable before
+  // `list_agents` lands and on a machine with nothing installed yet.
+  const options = installed.length > 0
+    ? installed.map((agent) => ({ value: agent.id, label: agent.label }))
+    : Object.keys(DEFAULT_PREFACE_COMMANDS).map((id) => ({ value: id, label: id }));
+  const key = agentComposerKey(agentId);
+  const commands = prefaceCommandsFor(agentId, settings?.agent_preface_commands);
+  const models = agentModelsFor(agentId, settings?.agent_models);
+
+  const writeCommands = (next: string[]) => {
+    void updateSettings({
+      agent_preface_commands: { ...(settings?.agent_preface_commands ?? {}), [key]: next },
+    });
+  };
+  const writeModels = (next: string[]) => {
+    void updateSettings({
+      agent_models: { ...(settings?.agent_models ?? {}), [key]: next },
+    });
+  };
+  const useDefaults = () => {
+    const { [key]: _dropCommands, ...restCommands } = settings?.agent_preface_commands ?? {};
+    const { [key]: _dropModels, ...restModels } = settings?.agent_models ?? {};
+    void updateSettings({ agent_preface_commands: restCommands, agent_models: restModels });
+    setError("");
+  };
+
+  const move = (list: string[], index: number, delta: number): string[] => {
+    const target = index + delta;
+    if (target < 0 || target >= list.length) return list;
+    const next = [...list];
+    [next[index], next[target]] = [next[target], next[index]];
+    return next;
+  };
+
+  const addCommand = () => {
+    const clean = sanitizePrefaceCommand(command);
+    if (!clean) {
+      setError(t("agents.composerInvalidCommand"));
+      return;
+    }
+    if (commands.length >= MAX_PREFACE_COMMANDS) {
+      setError(t("agents.composerLimit", { count: String(MAX_PREFACE_COMMANDS) }));
+      return;
+    }
+    setError("");
+    setCommand("");
+    if (!commands.includes(clean)) writeCommands([...commands, clean]);
+  };
+
+  const addModel = () => {
+    const clean = modelName.trim();
+    if (!clean) return;
+    setModelName("");
+    if (!models.includes(clean)) writeModels([...models, clean]);
+  };
+
+  const listEditor = (
+    entries: string[],
+    write: (next: string[]) => void,
+    emptyKey: TranslationKey,
+  ) => (
+    entries.length === 0 ? (
+      <p className="settings-help">{t(emptyKey)}</p>
+    ) : (
+      <SettingsList boxed>
+        {entries.map((entry, index) => (
+          <div className="settings-row" key={entry}>
+            <code style={{ flex: 1, minWidth: 0 }}>{entry}</code>
+            <button
+              type="button"
+              className="settings-btn sm icon"
+              title={t("agents.composerMoveUp")}
+              disabled={index === 0}
+              onClick={() => write(move(entries, index, -1))}
+            >
+              ↑
+            </button>
+            <button
+              type="button"
+              className="settings-btn sm icon"
+              title={t("agents.composerMoveDown")}
+              disabled={index === entries.length - 1}
+              onClick={() => write(move(entries, index, 1))}
+            >
+              ↓
+            </button>
+            <button
+              type="button"
+              className="settings-btn sm icon danger"
+              title={t("agents.composerRemove")}
+              onClick={() => write(entries.filter((_, at) => at !== index))}
+            >
+              ✕
+            </button>
+          </div>
+        ))}
+      </SettingsList>
+    )
+  );
+
+  return (
+    <SettingsCard>
+      <div className="settings-subheader">
+        {t("agents.composerHeading")}
+        <UntestedTag />
+      </div>
+      <p className="settings-help">{t("agents.composerHelp")}</p>
+      <div className="settings-card-row">
+        <span>{t("agents.composerAgent")}</span>
+        <Dropdown
+          value={agentId}
+          options={options}
+          onChange={(value) => { setAgentId(value); setError(""); }}
+          title={t("agents.composerAgent")}
+        />
+        <button type="button" className="settings-btn sm" onClick={useDefaults}>
+          {t("agents.composerReset")}
+        </button>
+      </div>
+
+      <div className="settings-subheader">{t("agents.composerCommands")}</div>
+      {listEditor(commands, writeCommands, "agents.composerNoCommands")}
+      <div className="ollama-install-cmd-row">
+        <input
+          type="text"
+          className="ollama-pull-input"
+          placeholder={t("agents.composerAddCommand")}
+          aria-label={t("agents.composerAddCommand")}
+          value={command}
+          spellCheck={false}
+          onChange={(event) => setCommand(event.target.value)}
+          onKeyDown={(event) => { if (event.key === "Enter") addCommand(); }}
+        />
+        <button type="button" className="settings-btn sm" onClick={addCommand}>
+          {t("agents.composerAdd")}
+        </button>
+      </div>
+      {error && <div className="project-dialog-error">{error}</div>}
+
+      <div className="settings-subheader">{t("agents.composerModels")}</div>
+      {listEditor(models, writeModels, "agents.composerNoModels")}
+      <div className="ollama-install-cmd-row">
+        <input
+          type="text"
+          className="ollama-pull-input"
+          placeholder={t("agents.composerAddModel")}
+          aria-label={t("agents.composerAddModel")}
+          value={modelName}
+          spellCheck={false}
+          onChange={(event) => setModelName(event.target.value)}
+          onKeyDown={(event) => { if (event.key === "Enter") addModel(); }}
+        />
+        <button type="button" className="settings-btn sm" onClick={addModel}>
+          {t("agents.composerAdd")}
+        </button>
+      </div>
+    </SettingsCard>
+  );
+}
+
+function AgentCronSection({ agents }: { agents: AgentInfo[] | null }) {
+  const t = useT();
+  const { settings, updateSettings } = useSettingsStore();
+  const cron = settings?.agent_cron;
+  const enabled = cron?.enabled === true;
+  const times = normalizeTimes(cron?.times);
+  // Only an installed agent can be scheduled — a missing CLI would fail once a
+  // day, silently, at six in the morning — and only one the backend has a
+  // one-shot recipe for can be driven at all. The rest are still listed, greyed
+  // with the reason, so "why isn't X here?" never has to be asked.
+  const installed = (agents ?? []).filter((a) => a.installed);
+  const capable = installed.filter((a) => a.warmup === true).map((a) => a.id);
+  const all = allAgentsEnabled(cron, capable);
+
+  return (
+    <SettingsCard>
+      <div className="settings-subheader">
+        {t("agentCron.title")} <UntestedTag />
+      </div>
+      <p className="settings-help">{t("agentCron.help", { message: AGENT_CRON_MESSAGE })}</p>
+      <p className="settings-help">{t("agentCron.runningNote")}</p>
+      <ToggleRow
+        label={t("agentCron.enable")}
+        checked={enabled}
+        onChange={(e) => void updateSettings({ agent_cron: withCronEnabled(cron, e.target.checked) })}
+      />
+      <div className="agent-cron-block">
+        <span className="agent-cron-label">{t("agentCron.globalTimes")}</span>
+        <TimeListEditor
+          times={times}
+          disabled={!enabled}
+          emptyLabel={t("agentCron.noTimes")}
+          onChange={(next) => void updateSettings({ agent_cron: withGlobalTimes(cron, next) })}
+        />
+      </div>
+      <p className="settings-help">{t("agentCron.globalTimesHelp")}</p>
+      <div className="agent-cron-agents">
+        <span className="agent-cron-label">{t("agentCron.agentsTitle")}</span>
+        {/* One switch for everyone, default off: a bulk flip of the same
+            per-agent flags the rows below write, so it reads as "all on" only
+            when every capable agent is on, and turning one row off turns it
+            back off — never a separate mode the rows would have to argue with. */}
+        <ToggleRow
+          label={t("agentCron.allAgents")}
+          checked={all}
+          disabled={!enabled || capable.length === 0}
+          title={t("agentCron.allAgentsTitle")}
+          onChange={(e) => void updateSettings({ agent_cron: withAllAgentsEnabled(cron, capable, e.target.checked) })}
+        />
+        {agents === null ? (
+          <span className="agent-cron-empty">{t("agents.checkingInstalled")}</span>
+        ) : installed.length === 0 ? (
+          <span className="agent-cron-empty">{t("agentCron.noAgents")}</span>
+        ) : (
+          <>
+            {/* The same button grid as Project Settings' file-hiding endings —
+                one pressed/unpressed button per agent, so twenty CLIs read at
+                a glance instead of twenty toggle rows. Muted is off. A CLI the
+                backend cannot drive is disabled with the reason in its tip. */}
+            <div className="settings-list project-ending-list agent-cron-grid">
+              {installed.map((a) => {
+                const headless = a.warmup === true;
+                const on = headless && cron?.agents?.[a.id]?.enabled === true;
+                return (
+                  <button
+                    type="button"
+                    key={a.id}
+                    className={`project-ending-toggle${on ? "" : " is-hidden"}`}
+                    aria-pressed={on}
+                    disabled={!enabled || !headless}
+                    onClick={() => void updateSettings({ agent_cron: withAgentCronEnabled(cron, a.id, !on) })}
+                    title={
+                      !headless
+                        ? t("agentCron.noHeadless", { label: a.label })
+                        : t(on ? "agentCron.gridOff" : "agentCron.gridOn", { label: a.label, message: AGENT_CRON_MESSAGE })
+                    }
+                  >
+                    {a.label}
+                  </button>
+                );
+              })}
+            </div>
+            {/* Own times only for the agents that are on: the grid is the
+                overview, and a time editor per switched-off agent would bury it. */}
+            {installed
+              .filter((a) => a.warmup === true && cron?.agents?.[a.id]?.enabled === true)
+              .map((a) => (
+                <AgentCronRow key={a.id} cmd={a.id} label={a.label} />
+              ))}
+          </>
+        )}
+      </div>
+    </SettingsCard>
+  );
+}
+
+/** One switched-on agent's own times: the list it runs on when the global one
+ *  is not what it wants, and when it fires next. Rendered under the grid only
+ *  for agents that are on — participation itself is the grid button. */
+function AgentCronRow({ cmd, label }: { cmd: string; label: string }) {
+  const t = useT();
+  const { settings, updateSettings } = useSettingsStore();
+  const cron = settings?.agent_cron;
+  const master = cron?.enabled === true;
+  const own = normalizeTimes(cron?.agents?.[cmd]?.times);
+  const effective = agentCronTimes(cron, cmd);
+
+  return (
+    <div className="agent-cron-row">
+      <span className="agent-cron-name">{label}</span>
+      <TimeListEditor
+        times={own}
+        disabled={!master}
+        emptyLabel={t("agentCron.followsGlobal")}
+        onChange={(next) => void updateSettings({ agent_cron: withAgentCronTimes(cron, cmd, next) })}
+      />
+      {/* An agent ticked on with no times anywhere is armed and can never
+          fire — the one state the schedule cannot express as a "next run",
+          and therefore the one that has to be said out loud. */}
+      {effective.length === 0 ? (
+        <span className="agent-cron-warn">{t("agentCron.needsTimes")}</span>
+      ) : (
+        <NextRunLabel cron={cron} cmd={cmd} />
+      )}
+    </div>
+  );
+}
+
+/**
  * "Manage Agents" panel: detect and one-click-install the AI coding-agent CLIs
  * Eldrun can launch as agent tabs (Claude, Codex, Google Antigravity, Google
  * Gemini, Mistral/vibe, Aider, OpenCode, Cursor, Copilot, Grok, Qwen, OpenClaw).
@@ -655,7 +1213,7 @@ function NodeRuntimeNotice() {
  * registry lives in the backend (`commands::agents`); this just renders each
  * entry with an install button, a live install log, and a manual fallback.
  */
-export function AgentsPanel({ onBack }: { onBack: () => void }) {
+export function AgentsPanel({ onBack, onClose }: SubPanelProps) {
   const t = useT();
   const { settings, updateSettings } = useSettingsStore();
   const remoteMachines = useGlobalMachinesStore((s) => s.machines);
@@ -684,6 +1242,8 @@ export function AgentsPanel({ onBack }: { onBack: () => void }) {
   const [remoteInstalling, setRemoteInstalling] = useState<string | null>(null);
   const [remoteResults, setRemoteResults] = useState<Record<string, string>>({});
   const [remoteErrors, setRemoteErrors] = useState<Record<string, string>>({});
+  // Filter over the *not installed* half only (see the two sections below).
+  const [search, setSearch] = useState("");
   const logRef = useRef<HTMLPreElement>(null);
 
   const refresh = () => {
@@ -829,279 +1389,339 @@ export function AgentsPanel({ onBack }: { onBack: () => void }) {
     }
   };
 
+  // The card for one CLI. One renderer for both sections below, so an
+  // installed entry and one still to be installed cannot drift into two
+  // designs — the only thing that differs is which list a card lands in.
+  const agentCard = (a: AgentInfo) => (
+    <SettingsCard key={a.id} className="agent-list-entry">
+      <div className="agent-list-entry-head">
+        <div className="settings-subheader">
+          {a.label}{" "}
+          {a.installed ? (
+            <span className="ollama-status-text">
+              <span className="ollama-status-dot running" /> {t("agents.installed")}
+            </span>
+          ) : (
+            <span className="ollama-status-text">{t("agents.notInstalled")}</span>
+          )}
+        </div>
+        {a.installed && (
+          <label
+            className="agent-disable-toggle"
+            title={t("agents.disableToggleTitle")}
+          >
+            <Toggle
+              checked={!disabledAgents.includes(a.id)}
+              onChange={(e) => setAgentDisabled(a.id, !e.target.checked)}
+              size="sm"
+              aria-label={t(
+                disabledAgents.includes(a.id) ? "agents.disableAriaEnable" : "agents.disableAriaDisable",
+                { label: a.label },
+              )}
+            />
+            {disabledAgents.includes(a.id) ? t("agents.disabled") : t("agents.enabled")}
+          </label>
+        )}
+      </div>
+      <div className="agent-remote-install-row">
+        {/* The app's own `Dropdown`, never a native <select>: WebKitGTK
+            renders a <select> popup as a light OS menu that ignores the
+            theme entirely — the reason every other picker in the app
+            (the file-browser sort, the LaTeX engine, the catalog sort a
+            few hundred lines below) already uses this one. */}
+        <Dropdown
+          className="agent-remote-machine-picker"
+          title={t("agents.remoteMachineAria", { label: a.label })}
+          value={remoteTargets[a.id] ?? ""}
+          placeholder={
+            !remoteMachinesLoaded
+              ? t("agents.remoteMachinesLoading")
+              : remoteMachines.length === 0
+                ? t("agents.noRemoteMachines")
+                : t("agents.chooseRemoteMachine")
+          }
+          disabled={!remoteMachinesLoaded || remoteMachines.length === 0 || remoteInstalling !== null}
+          options={remoteMachines.map((machine) => ({
+            value: machine.id,
+            label: machine.label || machine.host,
+          }))}
+          onChange={(v) => setRemoteTargets((prev) => ({ ...prev, [a.id]: v }))}
+        />
+        <button
+          type="button"
+          className="ollama-action-btn"
+          disabled={!remoteTargets[a.id] || remoteInstalling !== null}
+          onClick={() => void installAgentRemote(a)}
+        >
+          {remoteInstalling === `${a.id}:${remoteTargets[a.id]}`
+            ? t("agents.installingRemote")
+            : t("agents.installOnRemote")}
+        </button>
+        <button
+          type="button"
+          className="ollama-action-btn"
+          title={t("agents.installOnRemoteTerminalTitle")}
+          disabled={!remoteTargets[a.id] || remoteInstalling !== null}
+          onClick={() => void installAgentRemoteInTerminal(a)}
+        >
+          {t("agents.installOnRemoteTerminal")}
+        </button>
+        <UntestedTag />
+      </div>
+      {remoteResults[a.id] && (
+        <div className="agent-remote-result">{remoteResults[a.id]}</div>
+      )}
+      {remoteErrors[a.id] && (
+        <div className="project-dialog-error">{remoteErrors[a.id]}</div>
+      )}
+      {a.installed && (
+        <>
+          <div className="ollama-install-cmd-row">
+            <button
+              type="button"
+              className="ollama-action-btn"
+              disabled={installing !== null || removing !== null}
+              title={t("agents.removeTitle")}
+              onClick={() => void removeAgent(a.id)}
+            >
+              {removing === a.id ? t("agents.removing") : t("agents.remove")}
+            </button>
+            <button
+              type="button"
+              className="ollama-action-btn"
+              disabled={installing !== null || removing !== null}
+              title={t("agents.reinstallTitle")}
+              onClick={() => void reinstallAgent(a.id)}
+            >
+              {removing === a.id || installing === a.id ? t("agents.reinstalling") : t("agents.reinstall")}
+            </button>
+          </div>
+          {errors[a.id] && (
+            <div className="project-dialog-error">{errors[a.id]}</div>
+          )}
+          {/* npm-installed agents only (uninstall_cmd empty otherwise):
+              npm's global dir is root-owned on a system-wide Linux
+              Node install, so Remove can fail with EACCES — the same
+              run-in-a-terminal escape hatch the install flow offers,
+              plus a one-click sudo-prefixed variant for that exact
+              case (uninstall_cmd_sudo, empty on Windows). */}
+          {a.uninstall_cmd !== "" && (
+            <>
+              <p className="settings-help">
+                {t("agents.permissionHelpPre")}{" "}
+                <strong>{a.shell}</strong> {t("agents.permissionHelpPost")}{" "}
+                <code>sudo</code> {t("agents.permissionHelpPost2")}
+              </p>
+              <div className="ollama-install-cmd-row">
+                <code className="ollama-install-cmd">{a.uninstall_cmd}</code>
+                <button
+                  type="button"
+                  className="ollama-action-btn"
+                  onClick={() =>
+                    runInstallInTab(`Remove ${a.label}`, a.uninstall_cmd, a.shell_kind)
+                  }
+                >
+                  {t("agents.runInTerminal")}
+                </button>
+                {a.uninstall_cmd_sudo !== "" && (
+                  <button
+                    type="button"
+                    className="ollama-action-btn"
+                    title={t("agents.runWithSudoTitle")}
+                    onClick={() =>
+                      runInstallInTab(`Remove ${a.label}`, a.uninstall_cmd_sudo, a.shell_kind)
+                    }
+                  >
+                    {t("agents.runWithSudo")}
+                  </button>
+                )}
+              </div>
+            </>
+          )}
+        </>
+      )}
+      {!a.installed && (
+        <>
+          {/* Auto-install runs the official installer via `sh` on
+              Linux/macOS and via PowerShell/cmd on Windows. It is only
+              hidden when this platform has no one-line installer at all
+              (install_cmd empty — Windows-only case, see AgentInfo);
+              the docs-link fallback below covers that. */}
+          {a.install_cmd !== "" && (
+            <>
+              <div className="ollama-install-cmd-row">
+                <button
+                  type="button"
+                  className="ollama-action-btn primary"
+                  disabled={installing !== null}
+                  onClick={() => void installAgent(a.id)}
+                >
+                  {installing === a.id ? t("agents.installing") : t("agents.installLabel", { label: a.label })}
+                </button>
+                {installing === a.id && (
+                  <span className="ollama-status-text">{t("agents.runningInstaller")}</span>
+                )}
+              </div>
+              {logs[a.id] && (
+                <pre
+                  className="ollama-install-log"
+                  ref={installing === a.id ? logRef : undefined}
+                >
+                  {logs[a.id]}
+                </pre>
+              )}
+              {errors[a.id] && (
+                <div className="project-dialog-error">{errors[a.id]}</div>
+              )}
+            </>
+          )}
+          {a.install_cmd ? (
+            <>
+              {/* Whenever install_cmd is non-empty the one-click button
+                  above is also shown, so this is always the "or". */}
+              <p className="settings-help">
+                {t("agents.orInstallInShellPre")} <strong>{a.shell}</strong>{" "}
+                {t("agents.orInstallInShellPost")}
+              </p>
+              <div className="ollama-install-cmd-row">
+                <code className="ollama-install-cmd">{a.install_cmd}</code>
+                <button
+                  type="button"
+                  className="ollama-action-btn primary"
+                  onClick={() =>
+                    runInstallInTab(`Install ${a.label}`, a.install_cmd, a.shell_kind)
+                  }
+                >
+                  {t("agents.runInTerminal")}
+                </button>
+                {/* npm-based installers only (install_cmd_sudo empty
+                    otherwise — Windows, or a curl/pip installer that
+                    targets the user's own home directory): the actual
+                    EACCES fix when npm's global directory is root-owned,
+                    the default on a non-nvm Linux/macOS Node install. */}
+                {a.install_cmd_sudo !== "" && (
+                  <button
+                    type="button"
+                    className="ollama-action-btn"
+                    title={t("agents.runWithSudoTitle")}
+                    onClick={() =>
+                      runInstallInTab(`Install ${a.label}`, a.install_cmd_sudo, a.shell_kind)
+                    }
+                  >
+                    {t("agents.runWithSudo")}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="ollama-action-btn"
+                  disabled={installing !== null}
+                  onClick={() => recheck(a.id)}
+                >
+                  {t("common.recheck")}
+                </button>
+              </div>
+            </>
+          ) : (
+            <p className="settings-help">
+              {t("agents.noWindowsInstallerPre")}{" "}
+              <a href={a.docs} target="_blank" rel="noreferrer">
+                {t("agents.installDocs")}
+              </a>
+              {t("agents.noWindowsInstallerPost")}{" "}
+              <button
+                type="button"
+                className="ollama-action-btn"
+                disabled={installing !== null}
+                onClick={() => recheck(a.id)}
+              >
+                {t("common.recheck")}
+              </button>
+              .
+            </p>
+          )}
+        </>
+      )}
+      {a.id === "codex" && <CodexHookNotice />}
+      {a.id === "claude" && <ClaudeRemoteControlNotice />}
+    </SettingsCard>
+  );
+
+  const installedAgents = (agents ?? []).filter((a) => a.installed);
+  const availableAgents = (agents ?? []).filter((a) => !a.installed);
+  const query = search.trim().toLowerCase();
+  // Matched on the label, the id and the binary name, because a CLI is looked
+  // for by whichever of the three the user happens to know ("gemini", "vibe").
+  const matches = query
+    ? availableAgents.filter((a) =>
+        [a.label, a.id, a.bin].some((s) => s.toLowerCase().includes(query)),
+      )
+    : [];
+
   return (
     <>
-      <div className="settings-title-row">
-        <h2>{t("nav.agents.title")}</h2>
-        <button type="button" onClick={onBack}>{t("common.back")}</button>
-      </div>
+      <SettingsHeader title={t("nav.agents.title")} onBack={onBack} onClose={onClose} />
+      <div className="dialog-scroll">
       <p className="settings-help">
         {t("agents.help1")} <strong>+</strong> {t("agents.help2")} <code>npm</code>{" "}
         {t("agents.help3")} <code>PATH</code> {t("agents.help4")}
       </p>
       <p className="settings-help">{t("agents.googleCliChoice")}</p>
       <NodeRuntimeNotice />
+      <AgentFenceCard />
+      <AgentCronSection agents={agents} />
+      <AgentComposerCard agents={agents} />
       {agents === null ? (
         <p className="settings-help">{t("agents.checkingInstalled")}</p>
       ) : (
-        <div className="settings-list">
-          {[...agents]
-            .sort((a, b) => Number(b.installed) - Number(a.installed))
-            .map((a) => (
-            <div key={a.id} className="ollama-vibe-section agent-list-entry">
-              <div className="agent-list-entry-head">
-                <div className="settings-section-title">
-                  {a.label}{" "}
-                  {a.installed ? (
-                    <span className="ollama-status-text">
-                      <span className="ollama-status-dot running" /> {t("agents.installed")}
-                    </span>
-                  ) : (
-                    <span className="ollama-status-text">{t("agents.notInstalled")}</span>
-                  )}
+        <>
+          {/* Two sections, and the asymmetry between them is the point: the
+              installed CLIs are a short list you manage (enable, remove,
+              reinstall, schedule), while everything else is a catalog that only
+              grows. Rendering the catalog in full buried the handful of entries
+              that matter under a dozen install cards, so it is behind a search
+              box instead and shows nothing until something is typed. */}
+          <SettingsSection title={t("agents.installedGroup")}>
+            {installedAgents.length === 0 ? (
+              <p className="settings-help">{t("agents.noneInstalled")}</p>
+            ) : (
+              <SettingsList>{installedAgents.map(agentCard)}</SettingsList>
+            )}
+          </SettingsSection>
+          <SettingsSection title={t("agents.availableGroup")}>
+            {availableAgents.length === 0 ? (
+              <p className="settings-help">{t("agents.allInstalled")}</p>
+            ) : (
+              <>
+                <div className="ollama-catalog-controls">
+                  <input
+                    type="text"
+                    className="ollama-pull-input"
+                    placeholder={t("agents.searchPlaceholder")}
+                    value={search}
+                    spellCheck={false}
+                    autoCapitalize="off"
+                    autoCorrect="off"
+                    aria-label={t("agents.searchPlaceholder")}
+                    onChange={(e) => setSearch(e.target.value)}
+                  />
                 </div>
-                {a.installed && (
-                  <label
-                    className="agent-disable-toggle"
-                    title={t("agents.disableToggleTitle")}
-                  >
-                    <Toggle
-                      checked={!disabledAgents.includes(a.id)}
-                      onChange={(e) => setAgentDisabled(a.id, !e.target.checked)}
-                      size="sm"
-                      aria-label={t(
-                        disabledAgents.includes(a.id) ? "agents.disableAriaEnable" : "agents.disableAriaDisable",
-                        { label: a.label },
-                      )}
-                    />
-                    {disabledAgents.includes(a.id) ? t("agents.disabled") : t("agents.enabled")}
-                  </label>
+                {query === "" ? (
+                  <p className="settings-help">
+                    {t("agents.searchHint", { count: String(availableAgents.length) })}
+                  </p>
+                ) : matches.length === 0 ? (
+                  <p className="settings-help">
+                    {t("agents.noSearchMatch", { query: search.trim() })}
+                  </p>
+                ) : (
+                  <SettingsList>{matches.map(agentCard)}</SettingsList>
                 )}
-              </div>
-              <div className="agent-remote-install-row">
-                {/* The app's own `Dropdown`, never a native <select>: WebKitGTK
-                    renders a <select> popup as a light OS menu that ignores the
-                    theme entirely — the reason every other picker in the app
-                    (the file-browser sort, the LaTeX engine, the catalog sort a
-                    few hundred lines below) already uses this one. */}
-                <Dropdown
-                  className="agent-remote-machine-picker"
-                  title={t("agents.remoteMachineAria", { label: a.label })}
-                  value={remoteTargets[a.id] ?? ""}
-                  placeholder={
-                    !remoteMachinesLoaded
-                      ? t("agents.remoteMachinesLoading")
-                      : remoteMachines.length === 0
-                        ? t("agents.noRemoteMachines")
-                        : t("agents.chooseRemoteMachine")
-                  }
-                  disabled={!remoteMachinesLoaded || remoteMachines.length === 0 || remoteInstalling !== null}
-                  options={remoteMachines.map((machine) => ({
-                    value: machine.id,
-                    label: machine.label || machine.host,
-                  }))}
-                  onChange={(v) => setRemoteTargets((prev) => ({ ...prev, [a.id]: v }))}
-                />
-                <button
-                  type="button"
-                  className="ollama-action-btn"
-                  disabled={!remoteTargets[a.id] || remoteInstalling !== null}
-                  onClick={() => void installAgentRemote(a)}
-                >
-                  {remoteInstalling === `${a.id}:${remoteTargets[a.id]}`
-                    ? t("agents.installingRemote")
-                    : t("agents.installOnRemote")}
-                </button>
-                <button
-                  type="button"
-                  className="ollama-action-btn"
-                  title={t("agents.installOnRemoteTerminalTitle")}
-                  disabled={!remoteTargets[a.id] || remoteInstalling !== null}
-                  onClick={() => void installAgentRemoteInTerminal(a)}
-                >
-                  {t("agents.installOnRemoteTerminal")}
-                </button>
-                <UntestedTag />
-              </div>
-              {remoteResults[a.id] && (
-                <div className="agent-remote-result">{remoteResults[a.id]}</div>
-              )}
-              {remoteErrors[a.id] && (
-                <div className="project-dialog-error">{remoteErrors[a.id]}</div>
-              )}
-              {a.installed && (
-                <>
-                  <div className="ollama-install-cmd-row">
-                    <button
-                      type="button"
-                      className="ollama-action-btn"
-                      disabled={installing !== null || removing !== null}
-                      title={t("agents.removeTitle")}
-                      onClick={() => void removeAgent(a.id)}
-                    >
-                      {removing === a.id ? t("agents.removing") : t("agents.remove")}
-                    </button>
-                    <button
-                      type="button"
-                      className="ollama-action-btn"
-                      disabled={installing !== null || removing !== null}
-                      title={t("agents.reinstallTitle")}
-                      onClick={() => void reinstallAgent(a.id)}
-                    >
-                      {removing === a.id || installing === a.id ? t("agents.reinstalling") : t("agents.reinstall")}
-                    </button>
-                  </div>
-                  {errors[a.id] && (
-                    <div className="project-dialog-error">{errors[a.id]}</div>
-                  )}
-                  {/* npm-installed agents only (uninstall_cmd empty otherwise):
-                      npm's global dir is root-owned on a system-wide Linux
-                      Node install, so Remove can fail with EACCES — the same
-                      run-in-a-terminal escape hatch the install flow offers,
-                      plus a one-click sudo-prefixed variant for that exact
-                      case (uninstall_cmd_sudo, empty on Windows). */}
-                  {a.uninstall_cmd !== "" && (
-                    <>
-                      <p className="settings-help">
-                        {t("agents.permissionHelpPre")}{" "}
-                        <strong>{a.shell}</strong> {t("agents.permissionHelpPost")}{" "}
-                        <code>sudo</code> {t("agents.permissionHelpPost2")}
-                      </p>
-                      <div className="ollama-install-cmd-row">
-                        <code className="ollama-install-cmd">{a.uninstall_cmd}</code>
-                        <button
-                          type="button"
-                          className="ollama-action-btn"
-                          onClick={() =>
-                            runInstallInTab(`Remove ${a.label}`, a.uninstall_cmd, a.shell_kind)
-                          }
-                        >
-                          {t("agents.runInTerminal")}
-                        </button>
-                        {a.uninstall_cmd_sudo !== "" && (
-                          <button
-                            type="button"
-                            className="ollama-action-btn"
-                            title={t("agents.runWithSudoTitle")}
-                            onClick={() =>
-                              runInstallInTab(`Remove ${a.label}`, a.uninstall_cmd_sudo, a.shell_kind)
-                            }
-                          >
-                            {t("agents.runWithSudo")}
-                          </button>
-                        )}
-                      </div>
-                    </>
-                  )}
-                </>
-              )}
-              {!a.installed && (
-                <>
-                  {/* Auto-install runs the official installer via `sh` on
-                      Linux/macOS and via PowerShell/cmd on Windows. It is only
-                      hidden when this platform has no one-line installer at all
-                      (install_cmd empty — Windows-only case, see AgentInfo);
-                      the docs-link fallback below covers that. */}
-                  {a.install_cmd !== "" && (
-                    <>
-                      <div className="ollama-install-cmd-row">
-                        <button
-                          type="button"
-                          className="ollama-action-btn primary"
-                          disabled={installing !== null}
-                          onClick={() => void installAgent(a.id)}
-                        >
-                          {installing === a.id ? t("agents.installing") : t("agents.installLabel", { label: a.label })}
-                        </button>
-                        {installing === a.id && (
-                          <span className="ollama-status-text">{t("agents.runningInstaller")}</span>
-                        )}
-                      </div>
-                      {logs[a.id] && (
-                        <pre
-                          className="ollama-install-log"
-                          ref={installing === a.id ? logRef : undefined}
-                        >
-                          {logs[a.id]}
-                        </pre>
-                      )}
-                      {errors[a.id] && (
-                        <div className="project-dialog-error">{errors[a.id]}</div>
-                      )}
-                    </>
-                  )}
-                  {a.install_cmd ? (
-                    <>
-                      {/* Whenever install_cmd is non-empty the one-click button
-                          above is also shown, so this is always the "or". */}
-                      <p className="settings-help">
-                        {t("agents.orInstallInShellPre")} <strong>{a.shell}</strong>{" "}
-                        {t("agents.orInstallInShellPost")}
-                      </p>
-                      <div className="ollama-install-cmd-row">
-                        <code className="ollama-install-cmd">{a.install_cmd}</code>
-                        <button
-                          type="button"
-                          className="ollama-action-btn primary"
-                          onClick={() =>
-                            runInstallInTab(`Install ${a.label}`, a.install_cmd, a.shell_kind)
-                          }
-                        >
-                          {t("agents.runInTerminal")}
-                        </button>
-                        {/* npm-based installers only (install_cmd_sudo empty
-                            otherwise — Windows, or a curl/pip installer that
-                            targets the user's own home directory): the actual
-                            EACCES fix when npm's global directory is root-owned,
-                            the default on a non-nvm Linux/macOS Node install. */}
-                        {a.install_cmd_sudo !== "" && (
-                          <button
-                            type="button"
-                            className="ollama-action-btn"
-                            title={t("agents.runWithSudoTitle")}
-                            onClick={() =>
-                              runInstallInTab(`Install ${a.label}`, a.install_cmd_sudo, a.shell_kind)
-                            }
-                          >
-                            {t("agents.runWithSudo")}
-                          </button>
-                        )}
-                        <button
-                          type="button"
-                          className="ollama-action-btn"
-                          disabled={installing !== null}
-                          onClick={() => recheck(a.id)}
-                        >
-                          {t("common.recheck")}
-                        </button>
-                      </div>
-                    </>
-                  ) : (
-                    <p className="settings-help">
-                      {t("agents.noWindowsInstallerPre")}{" "}
-                      <a href={a.docs} target="_blank" rel="noreferrer">
-                        {t("agents.installDocs")}
-                      </a>
-                      {t("agents.noWindowsInstallerPost")}{" "}
-                      <button
-                        type="button"
-                        className="ollama-action-btn"
-                        disabled={installing !== null}
-                        onClick={() => recheck(a.id)}
-                      >
-                        {t("common.recheck")}
-                      </button>
-                      .
-                    </p>
-                  )}
-                </>
-              )}
-              {a.id === "codex" && <CodexHookNotice />}
-              {a.id === "claude" && <ClaudeRemoteControlNotice />}
-            </div>
-          ))}
-        </div>
+              </>
+            )}
+          </SettingsSection>
+        </>
       )}
+      </div>
     </>
   );
 }
@@ -1132,7 +1752,7 @@ interface OllamaInstallStrategy {
   download_url: string;
 }
 
-export function OllamaPanel({ onBack }: { onBack: () => void }) {
+export function OllamaPanel({ onBack, onClose }: SubPanelProps) {
   const t = useT();
   const { settings, updateSettings } = useSettingsStore();
   const [installed, setInstalled] = useState<boolean | null>(null);
@@ -1722,8 +2342,8 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
   // the install-Ollama and main panels; collapses to a one-line "ready" note
   // once Vibe is detected, and expands to an installer when it is missing.
   const vibeSection = (
-    <div className="ollama-vibe-section">
-      <div className="settings-section-title">{t("ollama.vibeTitle")}</div>
+    <SettingsCard className="ollama-vibe-section">
+      <div className="settings-subheader">{t("ollama.vibeTitle")}</div>
       {vibeInstalled === null ? (
         <p className="settings-help">{t("ollama.vibeChecking")}</p>
       ) : vibeInstalled ? (
@@ -1793,7 +2413,7 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
           </div>
         </>
       )}
-    </div>
+    </SettingsCard>
   );
 
   // ── Not installed: show the (semi-)automated installer + manual steps ──────
@@ -1805,17 +2425,15 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
     const isWindows = strategy?.os === "windows";
     return (
       <>
-        <div className="settings-title-row">
-          <h2>{t("ollama.installTitle")}</h2>
-          <button type="button" onClick={onBack}>{t("common.back")}</button>
-        </div>
+        <SettingsHeader title={t("ollama.installTitle")} onBack={onBack} onClose={onClose} />
+        <div className="dialog-scroll">
 
         <p className="settings-help">{t("ollama.notInstalledHelp")}</p>
 
-        <div className="settings-section-title">{t("ollama.automaticInstall")}</div>
-        <p className="settings-help">
-          {isWindows ? t("ollama.autoInstallHelpWindows") : t("ollama.autoInstallHelpOther")}
-        </p>
+        <SettingsSection
+          title={t("ollama.automaticInstall")}
+          help={isWindows ? t("ollama.autoInstallHelpWindows") : t("ollama.autoInstallHelpOther")}
+        />
         <div className="ollama-install-cmd-row">
           <button
             type="button"
@@ -1886,16 +2504,15 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
         </button>
 
         {vibeSection}
+        </div>
       </>
     );
   }
 
   return (
     <>
-      <div className="settings-title-row">
-        <h2>{t("ollama.modelsTitle")}</h2>
-        <button type="button" onClick={onBack}>{t("common.back")}</button>
-      </div>
+      <SettingsHeader title={t("ollama.modelsTitle")} onBack={onBack} onClose={onClose} />
+      <div className="dialog-scroll">
 
       <div className="ollama-status-bar">
         <span className={`ollama-status-dot ${serverRunning ? "running" : "stopped"}`} />
@@ -2436,6 +3053,7 @@ export function OllamaPanel({ onBack }: { onBack: () => void }) {
         {regDone && regModels.length > 0 && (
           <div className="ollama-empty">{t("ollama.endOfResults")}</div>
         )}
+      </div>
       </div>
     </>
   );

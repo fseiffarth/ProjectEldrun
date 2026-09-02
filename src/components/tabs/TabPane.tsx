@@ -29,9 +29,15 @@ import { effectiveTabLocation, remoteHostIdOf, type TabEntry } from "../../store
  * stores and can't derive it:
  *  - `attachOnly` — a popout's terminals attach to the main window's PTY, never
  *    spawn (so all the terminal spawn inputs below are cosmetic there).
- *  - `ownsTabs` — only the main window owns the tab store, so only it may let a
- *    pane retitle its tab (`tabKey`) or open new tabs (`canOpenTabs`). A popout
- *    runs on a streamed COPY with no write channel back, so it passes neither.
+ *  - (There used to be an `ownsTabs` here, gating whether a pane could retitle
+ *    its tab or open new ones: a popout ran on a streamed copy with no write
+ *    channel back. Group B #231/#239 built that channel — a popout's tabs-store
+ *    writes are forwarded to the main window by the seam in
+ *    `stores/detachedContext` — so every window may now write tab state, and the
+ *    props below are passed unconditionally. Without it a popped-out editor lost
+ *    its scroll, zoom and Python breakpoints at every relaunch, a popped-out
+ *    Files tab forgot the folder it was browsing, and a popped-out browser tab
+ *    forgot its title and address.)
  *  - `filesProjectDir` / `terminalCwd` / `sandbox` / `holdRemoteTerminal` /
  *    `onConnect` — all resolved from the projects store, which the popout lacks.
  *
@@ -51,8 +57,6 @@ export interface TabPaneProps {
   groupId?: string;
   /** Popout: attach to the main window's PTY instead of spawning one. */
   attachOnly?: boolean;
-  /** Main window only: the host owns the tab store (retitle / open-tabs). */
-  ownsTabs?: boolean;
   /** Open the connect dialog (network pane + a held remote terminal). */
   onConnect?: () => void;
   /** A remote terminal whose SSH pool is down — hold rather than spawn. */
@@ -82,7 +86,6 @@ function TabPaneImpl({
   focused,
   groupId,
   attachOnly = false,
-  ownsTabs = false,
   onConnect,
   holdRemoteTerminal = false,
   remoteHost = "",
@@ -105,11 +108,8 @@ function TabPaneImpl({
     case "browser":
       // Reader mode is ordinary DOM (a sanitized page in a script-less iframe),
       // so this pane needs none of the native-view plumbing Plan A anticipated —
-      // no bounds, no visibility sync, no suppression. `ownsTabs` marks the main
-      // window, which is the only one that may let a page retitle its tab.
-      return (
-        <BrowserPane tab={tab} scope={scope} visible={visible} ownsTabs={ownsTabs} />
-      );
+      // no bounds, no visibility sync, no suppression.
+      return <BrowserPane tab={tab} scope={scope} visible={visible} />;
     case "printing":
       // Printers belong to the machine, so — like the calendar pane — this one
       // takes no project props at all. `visible` is not cosmetic here: it arms
@@ -124,9 +124,7 @@ function TabPaneImpl({
         <DiskUsagePane
           projectId={projectId}
           projectCwd={tab.cwd}
-          // A popout can't retitle its tab (no write channel back), so it gets no
-          // tabKey — its Disk Usage tab keeps the label it was given.
-          {...(ownsTabs ? { tabKey: tab.key } : {})}
+          tabKey={tab.key}
           visible={visible}
         />
       );
@@ -142,12 +140,11 @@ function TabPaneImpl({
         <ProjectFilesTab
           scope={scope}
           cwd={tab.cwd}
-          // Same as Disk Usage above: no write channel back from a popout, so no
-          // tabKey (browsed folder stays the popout's) and no open-in-new-tab.
-          {...(ownsTabs ? { tabKey: tab.key, canOpenTabs: true } : {})}
-          // Unconditional, unlike `tabKey`: this only names the viewer to its own
-          // window's Local/Remote memory, so it needs no write channel back and a
-          // popout's Files tab keeps its side across a remount too.
+          tabKey={tab.key}
+          canOpenTabs
+          // Names the viewer to its own window's Local/Remote memory (per
+          // window, unlike everything else here), so a popout's Files tab keeps
+          // its side across a remount too.
           viewerId={`tab:${tab.key}`}
           folder={tab.folder}
           visible={visible}
@@ -200,6 +197,8 @@ function TabPaneImpl({
           tmuxSession={tmuxSession ?? null}
           tmuxAttach={tab.tmuxAttach ?? null}
           hostBoundUid={tab.hostBoundUid ?? null}
+          kind={tab.kind}
+          scheduleTargetId={tab.scheduleTargetId}
           zoomable={zoomable}
           visible={visible}
           focused={focused}

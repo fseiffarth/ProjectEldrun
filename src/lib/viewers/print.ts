@@ -15,6 +15,7 @@
 
 import { createElement } from "react";
 import type { PDFDocumentProxy } from "pdfjs-dist";
+import { translate, useI18nStore } from "../i18n";
 import { initialPages, isPristine, type PageList } from "./pageModel";
 import {
   mountPageStrip,
@@ -278,6 +279,15 @@ export function sanitizePrintOptions(v: unknown): PrintOptions {
   };
 }
 
+/** `translate` at the live language — this dialog is DOM-built outside React,
+ *  so its strings are read here (once, when it opens) rather than via `useT`. */
+function tr(
+  key: Parameters<typeof translate>[1],
+  params?: Parameters<typeof translate>[2],
+): string {
+  return translate(useI18nStore.getState().lang, key, params);
+}
+
 function clampScale(n: number): number {
   if (!Number.isFinite(n)) return 100;
   return Math.min(400, Math.max(10, Math.round(n)));
@@ -340,7 +350,7 @@ export function printDocument(fullHtml: string): Promise<void> {
 
     const title = document.createElement("span");
     title.className = "print-preview-title";
-    title.textContent = "Print preview";
+    title.textContent = tr("print.title");
 
     const actions = document.createElement("div");
     actions.className = "print-preview-actions";
@@ -352,16 +362,16 @@ export function printDocument(fullHtml: string): Promise<void> {
     // viewer toolbar's PrintButton busy state.
     printBtn.disabled = true;
     printBtn.innerHTML =
-      `<span class="file-viewer-save-spinner" aria-hidden="true"></span>Preparing…`;
+      `<span class="file-viewer-save-spinner" aria-hidden="true"></span>${escapeAttr(tr("print.preparing"))}`;
 
     const closeBtn = document.createElement("button");
     closeBtn.className = "dialog-close-btn print-preview-close";
     closeBtn.type = "button";
-    closeBtn.textContent = "Close";
+    closeBtn.textContent = tr("common.close");
 
     const iframe = document.createElement("iframe");
     iframe.className = "print-preview-frame";
-    iframe.setAttribute("title", "Print preview");
+    iframe.setAttribute("title", tr("print.title"));
     // The sandbox is load-bearing and the token list is exactly two, deliberately.
     //
     // What lands in `srcdoc` is not always a document Eldrun assembled: for an
@@ -394,44 +404,44 @@ export function printDocument(fullHtml: string): Promise<void> {
     optionsRow.className = "print-preview-options";
 
     const paper = selectField(
-      "Paper",
+      tr("print.paper"),
       (Object.keys(PAPER_CM) as PaperSize[]).sort().map((p) => [p, p] as const),
       opts.paper,
       (v) => set({ paper: v as PaperSize }),
     );
     const orientation = selectField(
-      "Layout",
+      tr("print.layout"),
       [
-        ["portrait", "Portrait"],
-        ["landscape", "Landscape"],
+        ["portrait", tr("print.portrait")],
+        ["landscape", tr("print.landscape")],
       ],
       opts.orientation,
       (v) => set({ orientation: v as Orientation }),
     );
     const margin = selectField(
-      "Margins",
+      tr("print.margins"),
       [
-        ["none", "None"],
-        ["narrow", "Narrow"],
-        ["normal", "Normal"],
-        ["wide", "Wide"],
+        ["none", tr("print.marginNone")],
+        ["narrow", tr("print.marginNarrow")],
+        ["normal", tr("print.marginNormal")],
+        ["wide", tr("print.marginWide")],
       ],
       opts.margin,
       (v) => set({ margin: v as MarginPreset }),
     );
     const scale = selectField(
-      "Scale",
+      tr("print.scale"),
       SCALE_CHOICES.map((s) => [String(s), `${s}%`] as const),
       String(opts.scale),
       (v) => set({ scale: Number(v) }),
     );
     const pages = selectField(
-      "Pages",
+      tr("print.pages"),
       [
-        ["all", "All"],
-        ["odd", "Odd"],
-        ["even", "Even"],
-        ["custom", "Custom"],
+        ["all", tr("print.pagesAll")],
+        ["odd", tr("print.pagesOdd")],
+        ["even", tr("print.pagesEven")],
+        ["custom", tr("print.pagesCustom")],
       ],
       opts.pages,
       (v) => set({ pages: v as PageSelection }),
@@ -440,16 +450,16 @@ export function printDocument(fullHtml: string): Promise<void> {
     const rangeInput = document.createElement("input");
     rangeInput.className = "print-opt-range";
     rangeInput.type = "text";
-    rangeInput.placeholder = "e.g. 1-3, 5";
+    rangeInput.placeholder = tr("print.rangePlaceholder");
     rangeInput.value = opts.range;
-    rangeInput.setAttribute("aria-label", "Page range");
+    rangeInput.setAttribute("aria-label", tr("print.rangeAria"));
     rangeInput.addEventListener("input", () => set({ range: rangeInput.value }));
 
-    const background = checkField("Backgrounds", opts.background, (v) =>
+    const background = checkField(tr("print.backgrounds"), opts.background, (v) =>
       set({ background: v }),
     );
-    const grayscale = checkField("Grayscale", opts.grayscale, (v) => set({ grayscale: v }));
-    const pageNumbers = checkField("Page numbers", opts.pageNumbers, (v) =>
+    const grayscale = checkField(tr("print.grayscale"), opts.grayscale, (v) => set({ grayscale: v }));
+    const pageNumbers = checkField(tr("print.pageNumbers"), opts.pageNumbers, (v) =>
       set({ pageNumbers: v }),
     );
 
@@ -472,13 +482,12 @@ export function printDocument(fullHtml: string): Promise<void> {
 
     const stripHint = document.createElement("span");
     stripHint.className = "print-strip-hint";
-    stripHint.textContent =
-      "Drag to reorder · shift-click for a range · ⟳ turns a page · ✕ removes it";
+    stripHint.textContent = tr("print.stripHint");
 
     const resetBtn = document.createElement("button");
     resetBtn.className = "print-strip-reset";
     resetBtn.type = "button";
-    resetBtn.textContent = "Reset pages";
+    resetBtn.textContent = tr("print.resetPages");
     resetBtn.addEventListener("click", () => {
       arrangement = initialPages(pageEls.length);
       opts = { ...opts, pages: "all", range: "" };
@@ -512,8 +521,7 @@ export function printDocument(fullHtml: string): Promise<void> {
     /** The mounted <PageStrip>; created on the first paged render. */
     let stripUi: MountedPageStrip | null = null;
 
-    const NO_PAGES_HINT =
-      "This document has no fixed pages — use the system print dialog's page range.";
+    const NO_PAGES_HINT = tr("print.noPagesHint");
 
     /** Push the arrangement + options into the previewed document and the UI. */
     const apply = () => {
@@ -567,10 +575,12 @@ export function printDocument(fullHtml: string): Promise<void> {
       const empty = paged && sequence.length === 0;
       printBtn.disabled = empty;
       printBtn.textContent = empty
-        ? "No pages selected"
+        ? tr("print.noneSelected")
         : paged && sequence.length < pageEls.length
-          ? `🖨 Print (${sequence.length} ${sequence.length === 1 ? "page" : "pages"})`
-          : "🖨 Print";
+          ? sequence.length === 1
+            ? tr("print.printOnePage")
+            : tr("print.printPages", { count: sequence.length })
+          : tr("print.print");
     };
 
     /** Merge an option change and re-apply. */
@@ -611,8 +621,8 @@ export function printDocument(fullHtml: string): Promise<void> {
             : "—",
         isExcluded: (ref) => !printing.has(ref.id),
         titleFor: (ref) =>
-          `Page ${ref.page} of the original document` +
-          (ref.rot ? ` · turned ${ref.rot}°` : ""),
+          tr("print.pageOf", { page: ref.page }) +
+          (ref.rot ? ` · ${tr("print.turned", { deg: ref.rot })}` : ""),
       };
       if (stripUi) stripUi.update(props);
       else stripUi = mountPageStrip(stripPages, props);
@@ -774,7 +784,7 @@ export async function renderPdfPagesToImages(
     canvas.height = Math.ceil(viewport.height);
     const ctx = canvas.getContext("2d");
     if (!ctx) continue;
-    await page.render({ canvasContext: ctx, viewport }).promise;
+    await page.render({ canvas, canvasContext: ctx, viewport }).promise;
     if (ref.marks?.length) {
       ctx.fillStyle = "#000000";
       for (const m of ref.marks) ctx.fillRect(m.x * scale, m.y * scale, m.w * scale, m.h * scale);

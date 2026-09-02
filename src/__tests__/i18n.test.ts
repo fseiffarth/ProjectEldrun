@@ -1,5 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { translate, normalizeLang, LANGUAGES, TRANSLATIONS } from "../lib/i18n";
+import { translate, normalizeLang, LANGUAGES } from "../lib/i18n";
+// The aggregator also registers every lazy dictionary, so `translate` below
+// answers in all five languages without awaiting a chunk.
+import { TRANSLATIONS } from "../lib/i18nDicts/all";
 
 describe("i18n", () => {
   it("translates a known key per language", () => {

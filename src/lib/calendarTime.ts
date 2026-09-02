@@ -233,12 +233,6 @@ export function monthGrid(
   return out;
 }
 
-/** Whether `date` falls in `[rangeStart, rangeEnd)` — both bare dates. */
-export function dateInRange(date: string, rangeStart: string, rangeEnd: string): boolean {
-  const d = datePart(date);
-  return d >= datePart(rangeStart) && d < datePart(rangeEnd);
-}
-
 // ── Event geometry ──────────────────────────────────────────────────────────
 
 /** Anything with a start/end/all-day — an event or one expanded occurrence. */
@@ -299,11 +293,6 @@ export function spanDates(span: Span): string[] {
       : addDays(datePart(s.end), 1);
   const n = Math.max(1, daysBetween(startDate, endDate));
   return dateRange(startDate, n);
-}
-
-/** Whether the span touches more than one day. */
-export function isMultiDay(span: Span): boolean {
-  return spanDates(span).length > 1;
 }
 
 /**

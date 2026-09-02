@@ -5,7 +5,7 @@ import { WebglAddon } from "@xterm/addon-webgl";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { invoke } from "@tauri-apps/api/core";
-import { useSettingsStore } from "../../stores/settings";
+import { resolveTheme, useSettingsStore } from "../../stores/settings";
 import { useProjectsStore } from "../../stores/projects";
 import { useT } from "../../lib/i18n";
 import { useExperimental } from "../../lib/experimental";
@@ -15,11 +15,18 @@ import { useAgentTaskStore } from "../../stores/agentTask";
 import { noteInput } from "../../lib/promptCount";
 import { METRIC, agentPromptLeaf, sub } from "../../lib/usageMetrics";
 import { ROOT_SCOPE, bumpUsage, markAgentActive } from "../../stores/usage";
-import { onTerminalExit, onTerminalOutput, onTerminalReady, onTerminalReplay } from "../../lib/terminalBus";
+import {
+  onTerminalExit,
+  onTerminalOutput,
+  onTerminalReady,
+  onTerminalReplay,
+  type TerminalOutputRange,
+} from "../../lib/terminalBus";
 import { hpcGuardRefusal } from "../../lib/hpcGuard";
 import { useHpcGuardStore } from "../../stores/hpcGuardPrompt";
-import { claimInitialInput, decodeOsc52Clipboard, initialInputForPty, isTerminalIdentityResponse, isTerminalReport, stripTerminalQueries } from "../../lib/terminalControl";
+import { CSI_U_SHIFT_TAB, claimInitialInput, decodeOsc52Clipboard, initialInputForPty, isCodexCommand, isTerminalIdentityResponse, isTerminalReport, stripTerminalQueries } from "../../lib/terminalControl";
 import { clearPtyInput, writePtyInput } from "../../lib/terminalInput";
+import { registerScheduledAgentInput } from "../../lib/scheduledAgentInput";
 import "@xterm/xterm/css/xterm.css";
 
 // Hoisted to module scope: keystroke input fires this on every key, so we reuse
@@ -27,6 +34,26 @@ import "@xterm/xterm/css/xterm.css";
 // resulting `Uint8Array` is passed straight to `pty_write` (Tauri v2 ships typed
 // arrays to a `Vec<u8>` command directly), avoiding the per-key `Array.from`.
 const PTY_ENCODER = new TextEncoder();
+const PTY_DECODER = new TextDecoder();
+
+interface PtyScrollback {
+  data: string;
+  startOffset: number;
+  endOffset: number;
+}
+
+/** Keep only bytes newer than an atomic backend scrollback snapshot. */
+export function outputAfterScrollback(
+  data: string,
+  range: TerminalOutputRange | undefined,
+  snapshotEnd: number | undefined,
+): string {
+  if (!range || snapshotEnd === undefined) return data;
+  if (range.endOffset <= snapshotEnd) return "";
+  if (range.startOffset >= snapshotEnd) return data;
+  const cut = snapshotEnd - range.startOffset;
+  return PTY_DECODER.decode(PTY_ENCODER.encode(data).slice(cut));
+}
 
 interface Props {
   id: string;
@@ -82,9 +109,51 @@ interface Props {
   // running rather than tearing the connection down. This view owns the PTY
   // (it spawns it, unlike `attachOnly`), it just declines to reap it on unmount.
   persistOnUnmount?: boolean;
+  /** The tab-store kind. Threaded explicitly so custom/local agent launchers
+   * receive the restriction even when their command name is not recognisable. */
+  kind?: TabKind;
+  /** Stable local-only target id for per-tab scheduled prompts. */
+  scheduleTargetId?: string;
 }
 
 function terminalTheme(scheme: string | undefined) {
+  // "system" never reaches the CSS unresolved (stores/settings.applyTheme
+  // resolves it against the OS preference) and must not reach this mapping
+  // unresolved either — the terminal is the largest surface in the window, and
+  // an unrecognized scheme here would silently paint the fancy_dark palette
+  // inside a light window. (An OS flip while the app is open re-themes the
+  // window live but an open terminal only on its next theme write — accepted.)
+  if (scheme) scheme = resolveTheme(scheme);
+  if (scheme === "soft_dark") {
+    // The neutral dark theme: background/foreground match its own
+    // --bg-main/--text-primary exactly (the achromatic pair's rule below),
+    // with a GitHub-dimmed-style ANSI ramp — muted enough not to glow against
+    // the gray ground, still unmistakably coloured (they are not chrome).
+    return {
+      background: "#17181c",
+      foreground: "#e8eaf0",
+      cursor: "#e8eaf0",
+      cursorAccent: "#17181c",
+      selectionBackground: "#3a4150",
+      selectionForeground: "#e8eaf0",
+      black: "#4a4f5a",
+      red: "#f47067",
+      green: "#57ab5a",
+      yellow: "#c69026",
+      blue: "#6c9bf0",
+      magenta: "#b083f0",
+      cyan: "#39c5cf",
+      white: "#b4bac5",
+      brightBlack: "#6e7480",
+      brightRed: "#ff938a",
+      brightGreen: "#6bc46d",
+      brightYellow: "#daaa3f",
+      brightBlue: "#86b3f7",
+      brightMagenta: "#c89bf5",
+      brightCyan: "#56d4dd",
+      brightWhite: "#e8eaf0",
+    };
+  }
   if (scheme === "light_lavender") {
     // Neutral slots form a wide lavender ramp (not grey) so Claude Code's ANSI
     // theme reads as lavender with strong contrast: `black` is a deep saturated
@@ -121,7 +190,75 @@ function terminalTheme(scheme: string | undefined) {
       brightWhite: "#2c2348",
     };
   }
-  if (scheme === "light" || scheme === "fancy_light") {
+  // The two achromatic themes (see "The two achromatic themes" in themes.css)
+  // get their own terminal palettes rather than sharing the tinted ones below,
+  // for the reason a terminal always needs its own: the pane is the largest
+  // single surface in the window, so a terminal on #0d1117 inside a window on
+  // #000000 does not read as a slightly different black — it reads as a panel
+  // someone forgot to style. Background and foreground therefore match the
+  // theme's own --bg-main/--text-primary exactly.
+  //
+  // The sixteen ANSI slots stay COLOURED, and that is the same rule the tokens
+  // follow: they are not chrome. A terminal's red and green are a diff's - and
+  // +, a test run's fail and pass, an agent's error — meaning the program chose,
+  // which the theme has no standing to overrule. What is neutral in the palette
+  // is only what was already neutral: the black/white ramp, re-spaced so its
+  // four steps stay distinct against a pure ground (on #000000 the old dim grey
+  // sat too close to the background, and dimmed text in an agent TUI is a whole
+  // tier of its output).
+  if (scheme === "light") {
+    return {
+      background: "#ffffff",
+      foreground: "#000000",
+      cursor: "#000000",
+      cursorAccent: "#ffffff",
+      selectionBackground: "#cfcfcf",
+      selectionForeground: "#000000",
+      black: "#000000",
+      red: "#d1242f",
+      green: "#1a7f37",
+      yellow: "#9a6700",
+      blue: "#0969da",
+      magenta: "#8250df",
+      cyan: "#1b7c83",
+      white: "#767676",
+      brightBlack: "#4d4d4d",
+      brightRed: "#cf222e",
+      brightGreen: "#2da44e",
+      brightYellow: "#bf8700",
+      brightBlue: "#0550ae",
+      brightMagenta: "#6639ba",
+      brightCyan: "#3192aa",
+      brightWhite: "#000000",
+    };
+  }
+  if (scheme === "dark") {
+    return {
+      background: "#000000",
+      foreground: "#ffffff",
+      cursor: "#ffffff",
+      cursorAccent: "#000000",
+      selectionBackground: "#3d3d3d",
+      selectionForeground: "#ffffff",
+      black: "#5a5a5a",
+      red: "#f85149",
+      green: "#3fb950",
+      yellow: "#e3b341",
+      blue: "#388bfd",
+      magenta: "#bc8cff",
+      cyan: "#39c5cf",
+      white: "#cccccc",
+      brightBlack: "#8a8a8a",
+      brightRed: "#ff7b72",
+      brightGreen: "#56d364",
+      brightYellow: "#e3b341",
+      brightBlue: "#58a6ff",
+      brightMagenta: "#d2a8ff",
+      brightCyan: "#39c5cf",
+      brightWhite: "#ffffff",
+    };
+  }
+  if (scheme === "fancy_light") {
     return {
       background: "#ffffff",
       foreground: "#24292f",
@@ -205,7 +342,7 @@ function readAgentFontSize(): number {
   return DEFAULT_FONT_SIZE;
 }
 
-export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, localOnly = false, sandbox = false, projectId = null, remoteHostId = null, tmuxSession = null, tmuxAttach = null, hostBoundUid = null, visible, focused, attachOnly = false, zoomable = false, persistOnUnmount = false }: Props) {
+export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, localOnly = false, sandbox = false, projectId = null, remoteHostId = null, tmuxSession = null, tmuxAttach = null, hostBoundUid = null, visible, focused, attachOnly = false, zoomable = false, persistOnUnmount = false, kind: declaredKind, scheduleTargetId }: Props) {
   const viewerId = useRef(crypto.randomUUID()).current;
   const viewerUpdateSeq = useRef(0);
   const colorScheme = useSettingsStore((s) => s.settings?.color_scheme);
@@ -221,6 +358,9 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
   const initialEnterTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const openWatchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const firstOutputAt = useRef<number | null>(null);
+  const scheduledReady = useRef(false);
+  const terminalReadySeen = useRef(false);
+  const scheduledSettleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // xterm crashes if opened/written into a zero-size or display:none element
   // (its renderer never initializes, so syncScrollArea dereferences undefined).
   // Panes start hidden — and even the active pane is display:none until its rect
@@ -263,6 +403,8 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
     let cancelled = false;
     initialInputSent.current = false;
     initialInputPending.current = !!initialInput;
+    scheduledReady.current = false;
+    terminalReadySeen.current = false;
 
     const term = new Terminal({
       scrollback: 5000,
@@ -373,7 +515,19 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
     // timeout: a live query written afterwards is parsed after the callback, and
     // its reply still reaches the program that asked for it.
     let staleParse = 0;
+    // Group B #235: an ATTACH-ONLY view opens a fresh xterm on a PTY that has
+    // been running without it — a tab just popped out into its own window, or a
+    // pane remounted by a reseed. Until its history has been fetched, nothing
+    // may reach the terminal: live chunks are buffered like any catch-up so the
+    // fetched tail can be prepended to them. The backend tags both snapshots and
+    // events with byte offsets: an event may be delivered during the round trip
+    // even though its bytes are already IN the snapshot, so offset filtering is
+    // what makes the handoff exactly-once. Cleared by the fetch in either
+    // direction — a backend too old to answer must not leave a pane mute.
+    let historyPending = attachOnly;
+    const historyOutput: Array<{ data: string; range?: TerminalOutputRange }> = [];
     const flushPending = () => {
+      if (historyPending) return;
       const buffered = pendingOutput.current;
       if (!buffered) return;
       pendingOutput.current = "";
@@ -392,7 +546,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
     // keeps ordering safe even if a chunk lands between the visibility flip
     // and the flush-on-show in doFit.
     const writeTerm = (data: string) => {
-      if (openedRef.current && visibleRef.current) {
+      if (openedRef.current && visibleRef.current && !historyPending) {
         flushPending();
         term.write(data);
       } else {
@@ -450,7 +604,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
     // (a local model driven through `vibe` still has cmd "vibe") — TerminalView
     // is handed cmd/env, not the TabEntry's kind.
     const localModel = env.ELDRUN_LOCAL_MODEL || env.VIBE_ACTIVE_MODEL;
-    const kind: TabKind = localModel ? "local_agent" : cmdToKind(cmd);
+    const kind: TabKind = declaredKind ?? (localModel ? "local_agent" : cmdToKind(cmd));
     const agentLeaf = agentPromptLeaf({ kind, cmd, env });
     // A shell tab can be RESUMED with no initialInput to type — a tmux reattach on
     // reconnect/relaunch. tmux probes the outer terminal on attach (secondary DA,
@@ -473,6 +627,37 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
         bumpUsage(scope, METRIC.SHELL_COMMAND);
       }
     };
+
+    // Scheduler input is registered by the PTY-owning main-window view only.
+    // A detached view attaches to the same PTY but must never become a second
+    // delivery owner. Readiness waits for terminal-ready plus real TUI output and
+    // a short settle cushion, matching the initial-input gate below.
+    const armScheduledReady = () => {
+      if (!scheduleTargetId || attachOnly || !terminalReadySeen.current || firstOutputAt.current === null) return;
+      if (scheduledSettleTimer.current) clearTimeout(scheduledSettleTimer.current);
+      scheduledReady.current = false;
+      // Every new output chunk restarts the cushion. This closes the short gap
+      // before the activity store's sustained-output debounce calls an agent
+      // "working": scheduling must still wait until the TUI itself is quiet.
+      scheduledSettleTimer.current = setTimeout(() => {
+        if (!cancelled) scheduledReady.current = true;
+      }, 1200);
+    };
+    const unregisterScheduled = scheduleTargetId && !attachOnly
+      ? registerScheduledAgentInput(scheduleTargetId, {
+          ptyId: id,
+          ready: () => scheduledReady.current,
+          bracketedPaste: () => term.modes.bracketedPasteMode === true,
+          recordAuthorizedInput: () => {
+            noteUserInput(id);
+            countSubmit();
+          },
+          // A prefix command (`/clear`, `/model …`) stamps input so its output
+          // reads as this tab working, but is deliberately NOT counted: the
+          // usage recap counts prompts asked, and a slash command is not one.
+          noteInput: () => noteUserInput(id),
+        })
+      : undefined;
 
     // Wire keyboard input → PTY write. The input stamp is what licenses this
     // tab's later output to show as "working"/"done" (see noteUserInput).
@@ -594,6 +779,10 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       }
     };
 
+    // Codex is the one agent whose Shift+Tab has to be re-encoded on its way to
+    // the PTY; resolved once here from the pane's command.
+    const csiUShiftTab = isCodexCommand(cmd);
+
     term.attachCustomKeyEventHandler((e) => {
       if (e.type !== "keydown") return true;
       // Ctrl +/-/0 zoom (agent panes only). preventDefault stops WebKit's own
@@ -606,6 +795,16 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
         if (e.code === "Equal") { e.preventDefault(); e.stopPropagation(); applyFontSize(cur + 1, true); return false; }
         if (e.code === "Minus") { e.preventDefault(); e.stopPropagation(); applyFontSize(cur - 1, true); return false; }
         if (e.code === "Digit0") { e.preventDefault(); e.stopPropagation(); applyFontSize(DEFAULT_FONT_SIZE, true); return false; }
+      }
+      // Shift+Tab in a Codex pane. xterm.js would send the legacy backtab, which
+      // Codex's permission-mode cycle does not recognize — send the CSI-u form of
+      // Tab+Shift it does read instead (see terminalControl.shiftTabForAgent).
+      // Every other agent cycles on the backtab, so nothing else is re-encoded.
+      if (csiUShiftTab && e.code === "Tab" && e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
+        e.preventDefault();
+        noteUserInput(id);
+        writePtyInput(id, PTY_ENCODER.encode(CSI_U_SHIFT_TAB)).catch(console.error);
+        return false;
       }
       if (!e.ctrlKey || !e.shiftKey) return true;
       if (e.code === "KeyC") {
@@ -636,12 +835,14 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
     // The bus does that dispatch once, in O(1) per id, no matter how many panes
     // are mounted. Subscribing is synchronous, so these are wired up before
     // `setupAndSpawn` below ever awaits `pty_spawn` — no output can arrive first.
-    unlistenOutput.current = onTerminalOutput(id, (data) => {
+    unlistenOutput.current = onTerminalOutput(id, (data, range) => {
       // Record when the spawned program first produces output — used to tell
       // when an agent TUI has actually started so we don't type the
       // initialInput before it can accept keystrokes (see below).
       if (firstOutputAt.current === null) firstOutputAt.current = Date.now();
-      writeTerm(data);
+      armScheduledReady();
+      if (historyPending) historyOutput.push({ data, range });
+      else writeTerm(data);
     });
 
     // The backend's replay of what streamed while this pane was hidden
@@ -651,8 +852,13 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
     // flushPending's stripTerminalQueries guard, never a bare term.write — a
     // terminal query in it would be answered on parse and typed into the
     // shell (the tmux attach-probe bug flushPending documents).
-    unlistenReplay.current = onTerminalReplay(id, (data) => {
+    unlistenReplay.current = onTerminalReplay(id, (data, range) => {
       if (firstOutputAt.current === null) firstOutputAt.current = Date.now();
+      armScheduledReady();
+      if (historyPending) {
+        historyOutput.push({ data, range });
+        return;
+      }
       pendingOutput.current += data;
       if (pendingOutput.current.length > PENDING_OUTPUT_CAP * 2) {
         pendingOutput.current = pendingOutput.current.slice(-PENDING_OUTPUT_CAP);
@@ -661,6 +867,8 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
     });
 
     unlistenReady.current = onTerminalReady(id, () => {
+      terminalReadySeen.current = true;
+      armScheduledReady();
       writeTerm("\r\n");
       if (initialInput && !initialInputSent.current) {
         if (!claimInitialInput(id, initialInput)) {
@@ -716,7 +924,44 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       // The PTY already exists, spawned by the main window's pane; pty_spawn with
       // a duplicate id would kill+respawn it, destroying scrollback / the agent
       // session. We only subscribe to the broadcast output/input by id.
-      if (attachOnly) return;
+      if (attachOnly) {
+        // …but it does ask for what the terminal has already shown (#235). The
+        // backend keeps a bounded tail of everything it routed for this PTY, so
+        // a freshly popped-out shell renders its history instead of a blank
+        // pane that stays blank until the program next draws. Prepended to
+        // whatever streamed after the snapshot boundary, then trimmed to the
+        // same cap the buffer uses. Byte ranges discard events already included
+        // in the snapshot (including an overlapping replay); all of it still
+        // goes through `flushPending`'s query guard like every other late write.
+        let tail = "";
+        let snapshotEnd: number | undefined;
+        try {
+          const snapshot = await invoke<string | PtyScrollback>("pty_scrollback", { id });
+          if (typeof snapshot === "string") {
+            // Backend-stale development session: retain the old response shape.
+            tail = snapshot;
+          } else if (snapshot) {
+            tail = snapshot.data;
+            snapshotEnd = snapshot.endOffset;
+          }
+        } catch {
+          // An older backend has no such command — open blank, as before.
+        }
+        if (cancelled) return;
+        const live = historyOutput
+          .map((chunk) => outputAfterScrollback(chunk.data, chunk.range, snapshotEnd))
+          .join("");
+        if (tail || live) {
+          pendingOutput.current = tail + live + pendingOutput.current;
+          if (pendingOutput.current.length > PENDING_OUTPUT_CAP * 2) {
+            pendingOutput.current = pendingOutput.current.slice(-PENDING_OUTPUT_CAP);
+          }
+          if (firstOutputAt.current === null) firstOutputAt.current = Date.now();
+        }
+        historyPending = false;
+        if (openedRef.current && visibleRef.current) flushPending();
+        return;
+      }
 
       // Register this view with the visible-only output router *before* starting
       // the child. The ordinary visibility effect below also keeps that state in
@@ -742,7 +987,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       notePtySpawn(id);
       const spawn = () =>
         invoke("pty_spawn", {
-          opts: { id, cmd, args, env, cwd, cols: term.cols, rows: term.rows, local_only: localOnly, sandbox, project_id: projectId ?? null, remote_host_id: remoteHostId ?? null, tmux_session: tmuxSession ?? null, tmux_attach: tmuxAttach ?? null, host_bound_uid: hostBoundUid ?? null },
+          opts: { id, cmd, args, env, cwd, cols: term.cols, rows: term.rows, local_only: localOnly, sandbox, agent: kind === "agent" || kind === "local_agent", project_id: projectId ?? null, remote_host_id: remoteHostId ?? null, tmux_session: tmuxSession ?? null, tmux_attach: tmuxAttach ?? null, host_bound_uid: hostBoundUid ?? null },
         });
       try {
         await spawn();
@@ -882,6 +1127,8 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       cancelled = true;
       clearPtyInput(id);
       if (initialEnterTimer.current) clearTimeout(initialEnterTimer.current);
+      if (scheduledSettleTimer.current) clearTimeout(scheduledSettleTimer.current);
+      unregisterScheduled?.();
       if (openWatchTimer.current) clearTimeout(openWatchTimer.current);
       if (selectionCopyTimer) clearTimeout(selectionCopyTimer);
       oscHandler.dispose();
@@ -935,7 +1182,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       fitRef.current = null;
       openedRef.current = false;
     };
-  }, [id, cmd, cwd, initialInput, argsKey, envKey, localOnly, sandbox, projectId, remoteHostId, tmuxSession, tmuxAttach, hostBoundUid, attachOnly, zoomable, persistOnUnmount]);
+  }, [id, cmd, cwd, initialInput, argsKey, envKey, localOnly, sandbox, projectId, remoteHostId, tmuxSession, tmuxAttach, hostBoundUid, attachOnly, zoomable, persistOnUnmount, declaredKind, scheduleTargetId]);
 
   // Re-theme a LIVE, OPEN terminal. Both halves of that guard are load-bearing,
   // and `termRef.current` alone was neither: assigning `options.theme` makes
@@ -1009,12 +1256,13 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
         // on the right (the viewport scrollbar already insets the right edge), so
         // the text margins read as balanced. FitAddon accounts for this padding.
         ...(zoomable ? { paddingLeft: 10, paddingRight: 4 } : null),
-        background:
-          colorScheme === "light_lavender"
-            ? "#faf9fe"
-            : colorScheme === "light" || colorScheme === "fancy_light"
-              ? "#ffffff"
-              : "#0d1117",
+        // The ground under xterm's own canvas, which must be the SAME colour the
+        // terminal paints — it shows through before the renderer's first frame
+        // and in the strip below the last row. So it is read straight off
+        // `terminalTheme` rather than restated as a second ternary over the same
+        // schemes: that copy had already drifted (it answered #0d1117 for every
+        // dark scheme, so a theme with its own background flashed the wrong one).
+        background: terminalTheme(colorScheme).background,
       }}
     />
   );

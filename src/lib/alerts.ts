@@ -15,7 +15,7 @@ import { stripFormatControls } from "./textSafety";
 import { selectUrgentMail } from "./todoBoard";
 
 /**
- * **The alert feed behind the right panel's opt-in "Alerts" group.**
+ * **The alert feed behind the side panel's opt-in "Alerts" group.**
  *
  * One merged, time-ordered list of the three things that can need the user
  * *now*: mail they marked urgent/important, calendar entries about to start,
@@ -178,6 +178,52 @@ export interface AlertInput {
    * an overdue card, i.e. muting one thing would quietly mute another.
    */
   muted?: readonly string[];
+}
+
+/**
+ * Everything that decides whether a source may contribute at all, resolved in
+ * one place because two surfaces now ask the question and they disagree about
+ * exactly one input.
+ */
+export interface AlertGateInput {
+  /** `files_alerts` — the file viewer's Alerts group *is* this key (the header's
+   *  🔔 writes it), so it is the group's visibility rather than a preference
+   *  above one. */
+  visible: boolean;
+  /**
+   * Ignore `visible`. Because that key is the desktop group's visibility, a
+   * surface the file viewer does not own — Eldrun Mobile's own Alerts screen —
+   * must not go dark because the strip beside the tree was closed on the
+   * laptop. The source switches, the lookahead and the mutes still apply: those
+   * say *which alerts exist*, which is a different question from which window
+   * is currently showing them.
+   */
+  ignoreVisible?: boolean;
+  /** `files_alerts_sources`. */
+  mail: boolean;
+  events: boolean;
+  tasks: boolean;
+  /** Mail's second gate, the `mail_client` experiment. */
+  mailClient: boolean;
+}
+
+/** Which sources survived their gates, and whether anything is left. */
+export interface AlertGates {
+  wantMail: boolean;
+  wantEvents: boolean;
+  wantTasks: boolean;
+  /** At least one source survived. All-off is reported as disabled rather than
+   *  as an empty list: an empty strip reads as "nothing is due", which is a
+   *  different and possibly wrong statement. */
+  enabled: boolean;
+}
+
+export function alertGates(input: AlertGateInput): AlertGates {
+  const on = input.visible || input.ignoreVisible === true;
+  const wantMail = on && input.mail && input.mailClient;
+  const wantEvents = on && input.events;
+  const wantTasks = on && input.tasks;
+  return { wantMail, wantEvents, wantTasks, enabled: wantMail || wantEvents || wantTasks };
 }
 
 /**

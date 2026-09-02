@@ -339,13 +339,80 @@ fn conflict_message(conflict: &ProjectConflict) -> String {
     }
 }
 
-fn read_projects_list() -> ProjectsList {
+fn read_projects_list() -> Result<ProjectsList, String> {
     let path = storage::state_dir().join("projects.json");
     if path.exists() {
-        storage::read_json(&path).unwrap_or_default()
+        storage::read_json(&path).map_err(|e| e.to_string())
     } else {
-        vec![]
+        Ok(vec![])
     }
+}
+
+/// Apply one serialized read-modify-write to the project registry. Existing
+/// corrupt JSON is an error, never an empty registry, and every successful
+/// mutation lands through an atomic replacement.
+pub(crate) fn patch_projects_list<R>(
+    patch: impl FnOnce(&mut ProjectsList) -> Result<R, String>,
+) -> Result<R, String> {
+    let path = storage::state_dir().join("projects.json");
+    storage::patch_json(&path, ProjectsList::new(), |list| {
+        // Call before the patch so return values derived from `list` include
+        // Trash even on a brand-new install, then again so a whole-list-style
+        // mutation cannot remove or weaken it.
+        ensure_trash_project(list)?;
+        let result = patch(list)?;
+        ensure_trash_project(list)?;
+        Ok(result)
+    })
+}
+
+/// Patch one registry entry without open-coding another whole-list
+/// read-modify-write. The closure's return value can carry the entry's
+/// `local_file` into the best-effort `project.json` mirror update.
+pub(crate) fn patch_project_entry<R>(
+    project_id: &str,
+    patch: impl FnOnce(&mut ProjectEntry) -> Result<R, String>,
+) -> Result<R, String> {
+    patch_projects_list(|list| {
+        let entry = list
+            .iter_mut()
+            .find(|entry| entry.id == project_id)
+            .ok_or_else(|| format!("project '{project_id}' not found"))?;
+        patch(entry)
+    })
+}
+
+/// [`patch_project_entry`] plus the mirror write every per-field setter used to
+/// open-code: after the registry patch lands, apply `patch_project` to the
+/// entry's own `project.json` and write it back atomically. The mirror closure
+/// receives the registry patch's result, so a value computed under the registry
+/// lock (e.g. the merged host list) can be mirrored without a second read. A
+/// missing `project.json` is fine — the registry is the source of truth and the
+/// file is display/export data (a remote project's copy may simply not exist
+/// locally). An *existing* file that fails to parse is an error, not a silent
+/// skip: the registry write has already landed by then, so skipping quietly is
+/// exactly how the two copies diverge with no signal.
+pub(crate) fn patch_project_entry_mirrored<R>(
+    project_id: &str,
+    patch_entry: impl FnOnce(&mut ProjectEntry) -> Result<R, String>,
+    patch_project: impl FnOnce(&mut Project, &R),
+) -> Result<R, String> {
+    let (result, local_file) = patch_project_entry(project_id, |entry| {
+        let result = patch_entry(entry)?;
+        Ok((result, entry.local_file.clone()))
+    })?;
+    let proj_path = PathBuf::from(&local_file);
+    if proj_path.exists() {
+        let mut project: Project = storage::read_json(&proj_path).map_err(|e| {
+            format!(
+                "the registry was updated, but the project's own project.json \
+                 could not be read to mirror the change (it is now stale): {e}"
+            )
+        })?;
+        patch_project(&mut project, &result);
+        storage::write_json_atomic(&proj_path, &project).map_err(|e| e.to_string())?;
+    }
+    Ok(result)
 }
 
 /// The built-in Trash workspace is deliberately a project rather than a second
@@ -461,7 +528,7 @@ pub struct CheckProjectSiteRequest {
 /// on disk, since this answer can be stale by the time Create is clicked.
 #[tauri::command]
 pub fn check_project_site(req: CheckProjectSiteRequest) -> Result<Option<ProjectConflict>, String> {
-    let list = read_projects_list();
+    let list = read_projects_list()?;
     let site = match req.remote.as_ref() {
         Some(spec) => ProjectSite::Remote { spec },
         None => match req.directory.as_deref() {
@@ -476,23 +543,12 @@ pub fn check_project_site(req: CheckProjectSiteRequest) -> Result<Option<Project
 
 #[tauri::command]
 pub fn get_projects() -> Result<ProjectsList, String> {
-    let path = storage::state_dir().join("projects.json");
-    let mut list: ProjectsList = if path.exists() {
-        storage::read_json(&path).map_err(|e| e.to_string())?
-    } else {
-        vec![]
-    };
-    // Bring legacy entries up to the current shape in-memory so the frontend and
-    // every command see canonical, fully-populated entries regardless of which
-    // Eldrun version first wrote them. Persisted on the next natural save (no
-    // surprise write from a read command).
-    for entry in list.iter_mut() {
-        normalize_entry(entry);
-    }
-    if ensure_trash_project(&mut list)? {
-        storage::write_json(&path, &list).map_err(|e| e.to_string())?;
-    }
-    Ok(list)
+    patch_projects_list(|list| {
+        for entry in list.iter_mut() {
+            normalize_entry(entry);
+        }
+        Ok(list.clone())
+    })
 }
 
 /// Bring one `projects.json` entry up to the current on-disk shape, in place.
@@ -558,10 +614,24 @@ pub(crate) fn normalize_git_type(value: &str) -> String {
 
 #[tauri::command]
 pub fn save_projects(projects: ProjectsList) -> Result<(), String> {
-    let path = storage::state_dir().join("projects.json");
-    let mut projects = projects;
-    ensure_trash_project(&mut projects)?;
-    storage::write_json(&path, &projects).map_err(|e| e.to_string())
+    patch_projects_list(|current| {
+        // The frontend uses this command for pill status/order only. Treating
+        // its cached whole-list snapshot as authoritative would let it erase a
+        // VM/HPC/background update that landed after the snapshot was loaded.
+        for incoming in projects {
+            if let Some(stored) = current.iter_mut().find(|entry| entry.id == incoming.id) {
+                stored.status = incoming.status;
+                stored.position = incoming.position;
+                // One deliberate legacy cleanup still rides the next ordinary
+                // save: box membership moved to boxes.json and this flattened
+                // key must disappear once the frontend has stripped it.
+                if !incoming.extra.contains_key("box_id") {
+                    stored.extra.remove("box_id");
+                }
+            }
+        }
+        Ok(())
+    })
 }
 
 // ── Archive (delete → restorable holding area) ─────────────────────────────
@@ -626,7 +696,9 @@ fn entry_is_remote(entry: &ProjectEntry) -> bool {
 
 /// Move a directory tree from `src` to `dst`, creating `dst`'s parent. Tries a
 /// fast `rename` first and falls back to recursive copy + remove when that fails
-/// (e.g. a cross-filesystem move). No-op when `src` does not exist.
+/// (e.g. a cross-filesystem move). No-op when `src` does not exist. `src` is
+/// only removed after the whole copy succeeded, so a failed fallback leaves the
+/// source intact and the move retryable.
 fn move_tree(src: &Path, dst: &Path) -> Result<(), String> {
     if !src.exists() {
         return Ok(());
@@ -637,24 +709,79 @@ fn move_tree(src: &Path, dst: &Path) -> Result<(), String> {
     if fs::rename(src, dst).is_ok() {
         return Ok(());
     }
-    copy_tree(src, dst).map_err(|e| e.to_string())?;
+    copy_tree_core(src, dst, true)?;
     fs::remove_dir_all(src).map_err(|e| e.to_string())?;
     Ok(())
 }
 
-fn copy_tree(src: &Path, dst: &Path) -> std::io::Result<()> {
-    fs::create_dir_all(dst)?;
-    for entry in fs::read_dir(src)? {
-        let entry = entry?;
+/// The ONE recursive tree-copy core behind both copiers ([`move_tree`]'s
+/// cross-device fallback and [`copy_dir_all`]).
+///
+/// `keep_git` says whose copy this is: an archive/restore/mirror **move**
+/// carries `.git` verbatim — the tree *is* the project, history included —
+/// while the duplicate/import path leaves git's administrative state behind
+/// (and skips any directory holding a `.git` of either kind, see
+/// [`copy_dir_all`]'s doc for why the *file* form matters).
+///
+/// Symlinks are **recreated as links, never followed**. Following them
+/// (`fs::copy` on the link path, as both copiers used to) has two failure
+/// modes: a *dangling* link — a stale venv/node `bin` pointer is the ordinary
+/// case — errored out a cross-device `archive_project` halfway through the
+/// move, and a link to a large tree silently duplicated it. A dangling link is
+/// therefore fine here: the link itself is copied, pointing at the same target.
+fn copy_tree_core(src: &Path, dst: &Path, keep_git: bool) -> Result<(), String> {
+    fs::create_dir_all(dst).map_err(|e| e.to_string())?;
+    for entry in fs::read_dir(src).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let file_type = entry.file_type().map_err(|e| e.to_string())?;
+        if !keep_git && entry.file_name() == ".git" {
+            continue;
+        }
         let from = entry.path();
         let to = dst.join(entry.file_name());
-        if entry.file_type()?.is_dir() {
-            copy_tree(&from, &to)?;
+        if file_type.is_symlink() {
+            copy_symlink(&from, &to)?;
+        } else if file_type.is_dir() {
+            if !keep_git && fs::symlink_metadata(from.join(".git")).is_ok() {
+                continue;
+            }
+            copy_tree_core(&from, &to, keep_git)?;
         } else {
-            fs::copy(&from, &to)?;
+            fs::copy(&from, &to).map_err(|e| e.to_string())?;
         }
     }
     Ok(())
+}
+
+/// Recreate one symlink at `to`, replacing whatever an interrupted earlier copy
+/// may have left there (that is what makes a resumed `archive_project` pass
+/// idempotent). On Windows creating a symlink needs a privilege most users
+/// lack, so a refused link degrades to copying what it resolves to — and a
+/// dangling one is skipped, since it pointed at nothing to lose.
+fn copy_symlink(from: &Path, to: &Path) -> Result<(), String> {
+    let target = fs::read_link(from).map_err(|e| e.to_string())?;
+    if fs::symlink_metadata(to).is_ok() {
+        let _ = fs::remove_file(to);
+    }
+    #[cfg(unix)]
+    return std::os::unix::fs::symlink(&target, to).map_err(|e| e.to_string());
+    #[cfg(windows)]
+    {
+        let is_dir = fs::metadata(from).map(|m| m.is_dir()).unwrap_or(false);
+        let made = if is_dir {
+            std::os::windows::fs::symlink_dir(&target, to)
+        } else {
+            std::os::windows::fs::symlink_file(&target, to)
+        };
+        if made.is_err() {
+            if let Ok(meta) = fs::metadata(from) {
+                if meta.is_file() {
+                    fs::copy(from, to).map_err(|e| e.to_string())?;
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 /// The original path if free, else a collision-safe sibling, so restoring never
@@ -680,35 +807,50 @@ fn free_target(orig: &Path) -> PathBuf {
 /// Purge a project's time-tracking history: drop it from every day bucket of the
 /// rolling summary and filter it out of the legacy append-only log if present.
 /// Called only on PERMANENT deletion (archiving keeps the history).
-fn purge_project_time(project_id: &str) {
+fn purge_project_time(project_id: &str) -> Result<(), String> {
     use crate::schema::time_log;
-    let mut summary = time_log::load_summary_migrating();
-    let mut changed = false;
-    for by_project in summary.days.values_mut() {
-        if by_project.remove(project_id).is_some() {
-            changed = true;
+    time_log::patch_summary(|summary| {
+        for by_project in summary.days.values_mut() {
+            by_project.remove(project_id);
         }
-    }
-    if changed {
-        let _ = time_log::save_summary(&summary);
-    }
+        Ok(())
+    })?;
     let legacy = storage::state_dir().join(time_log::LEGACY_LOG_FILE);
     if legacy.exists() {
-        if let Ok(entries) = storage::read_json::<time_log::TimeLog>(&legacy) {
-            let kept: time_log::TimeLog = entries
-                .into_iter()
-                .filter(|e| e.project_id != project_id)
-                .collect();
-            let _ = storage::write_json(&legacy, &kept);
-        }
+        let entries =
+            storage::read_json::<time_log::TimeLog>(&legacy).map_err(|e| e.to_string())?;
+        let kept: time_log::TimeLog = entries
+            .into_iter()
+            .filter(|e| e.project_id != project_id)
+            .collect();
+        storage::write_json_atomic(&legacy, &kept).map_err(|e| e.to_string())?;
     }
+    Ok(())
+}
+
+/// Offload a blocking project-lifecycle body to a worker thread. Archiving,
+/// restoring, moving a mirror, creating and importing all move whole trees
+/// (and `archive_project` shuts a VM down inline — seconds); run synchronously
+/// on the main thread that froze the window — the freeze class
+/// `commands::git`'s `run_off_thread` doc describes. The sync `*_blocking`
+/// bodies stay directly unit-testable (see `tests/projects_commands.rs`).
+async fn run_off_thread<T: Send + 'static>(
+    f: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    tokio::task::spawn_blocking(f)
+        .await
+        .map_err(|e| format!("project task failed: {e}"))?
 }
 
 /// Move a project into the archive and drop it from `projects.json`. `archived_at`
 /// is a caller-supplied ISO timestamp (the frontend stamps it). The remote host
 /// tree is never touched — only local folders move.
 #[tauri::command]
-pub fn archive_project(project_id: String, archived_at: String) -> Result<(), String> {
+pub async fn archive_project(project_id: String, archived_at: String) -> Result<(), String> {
+    run_off_thread(move || archive_project_blocking(project_id, archived_at)).await
+}
+
+pub fn archive_project_blocking(project_id: String, archived_at: String) -> Result<(), String> {
     validate_project_id(&project_id)?;
     if paths::is_trash_project_id(&project_id) {
         return Err(
@@ -716,12 +858,7 @@ pub fn archive_project(project_id: String, archived_at: String) -> Result<(), St
         );
     }
 
-    let list_path = storage::state_dir().join("projects.json");
-    let mut list: ProjectsList = if list_path.exists() {
-        storage::read_json(&list_path).map_err(|e| e.to_string())?
-    } else {
-        Vec::new()
-    };
+    let list = read_projects_list()?;
     let idx = list
         .iter()
         .position(|p| p.id == project_id)
@@ -730,7 +867,13 @@ pub fn archive_project(project_id: String, archived_at: String) -> Result<(), St
     let remote = entry_is_remote(&entry);
 
     let dest = paths::archive_root().join(&project_id);
-    if dest.exists() {
+    // The manifest is written LAST, so its presence is what "already archived"
+    // means. A dest without one is a previous attempt that failed partway
+    // (e.g. a cross-device move erroring mid-copy): resume into it — move_tree
+    // no-ops for trees already moved and re-copies over any partial copy —
+    // rather than refusing with no path forward (the project is still
+    // registered, its folders half here, and retry used to be blocked).
+    if dest.join("entry.json").exists() {
         return Err(format!(
             "an archived project with id '{project_id}' already exists"
         ));
@@ -763,8 +906,14 @@ pub fn archive_project(project_id: String, archived_at: String) -> Result<(), St
     };
     storage::write_json(&dest.join("entry.json"), &manifest).map_err(|e| e.to_string())?;
 
-    list.remove(idx);
-    storage::write_json(&list_path, &list).map_err(|e| e.to_string())?;
+    patch_projects_list(|list| {
+        let before = list.len();
+        list.retain(|project| project.id != project_id);
+        if list.len() == before {
+            return Err(format!("project '{project_id}' not found"));
+        }
+        Ok(())
+    })?;
     Ok(())
 }
 
@@ -798,8 +947,16 @@ pub fn list_archived_projects() -> Result<Vec<ArchivedProject>, String> {
 /// Restore an archived project: move its folders back (collision-safe) and
 /// re-register it in `projects.json` as `inactive`. Returns the restored entry.
 #[tauri::command]
-pub fn restore_archived_project(project_id: String) -> Result<ProjectEntry, String> {
+pub async fn restore_archived_project(project_id: String) -> Result<ProjectEntry, String> {
+    run_off_thread(move || restore_archived_project_blocking(project_id)).await
+}
+
+pub fn restore_archived_project_blocking(project_id: String) -> Result<ProjectEntry, String> {
     validate_project_id(&project_id)?;
+    // Validate the registry before moving anything out of the archive. A
+    // corrupt existing file must fail closed without leaving a half-restored
+    // project tree behind.
+    let _ = read_projects_list()?;
 
     let dest = paths::archive_root().join(&project_id);
     let manifest: ArchiveManifest =
@@ -845,16 +1002,12 @@ pub fn restore_archived_project(project_id: String) -> Result<ProjectEntry, Stri
 
     entry.status = "inactive".to_string();
 
-    let list_path = storage::state_dir().join("projects.json");
-    let mut list: ProjectsList = if list_path.exists() {
-        storage::read_json(&list_path).unwrap_or_default()
-    } else {
-        Vec::new()
-    };
-    entry.position = next_position(&list);
-    list.retain(|p| p.id != entry.id); // guard against a stale duplicate
-    list.push(entry.clone());
-    storage::write_json(&list_path, &list).map_err(|e| e.to_string())?;
+    entry = patch_projects_list(|list| {
+        entry.position = next_position(list);
+        list.retain(|p| p.id != entry.id); // guard against a stale duplicate
+        list.push(entry.clone());
+        Ok(entry.clone())
+    })?;
 
     fs::remove_dir_all(&dest).map_err(|e| e.to_string())?;
     Ok(entry)
@@ -1004,7 +1157,7 @@ pub fn delete_archived_project(project_id: String) -> Result<(), String> {
     if dest.exists() {
         fs::remove_dir_all(&dest).map_err(|e| e.to_string())?;
     }
-    purge_project_time(&project_id);
+    purge_project_time(&project_id)?;
     Ok(())
 }
 
@@ -1027,39 +1180,23 @@ pub fn set_project_description(
 ) -> Result<Option<String>, String> {
     let cleaned = clean_description(description);
 
-    // projects.json — find the entry and update its flattened `description`.
-    let list_path = storage::state_dir().join("projects.json");
-    let mut list: ProjectsList = if list_path.exists() {
-        storage::read_json(&list_path).map_err(|e| e.to_string())?
-    } else {
-        Vec::new()
-    };
-    let entry = list
-        .iter_mut()
-        .find(|p| p.id == project_id)
-        .ok_or_else(|| format!("project '{project_id}' not found"))?;
-    match &cleaned {
-        Some(d) => {
-            entry
-                .extra
-                .insert("description".to_string(), Value::String(d.clone()));
-        }
-        None => {
-            entry.extra.remove("description");
-        }
-    }
-    let local_file = entry.local_file.clone();
-    storage::write_json(&list_path, &list).map_err(|e| e.to_string())?;
-
-    // project.json — keep the per-project file consistent (best effort: a
-    // missing file is not fatal since the list is the source of truth for pills).
-    let proj_path = PathBuf::from(&local_file);
-    if proj_path.exists() {
-        if let Ok(mut project) = storage::read_json::<Project>(&proj_path) {
-            project.description = cleaned.clone();
-            storage::write_json(&proj_path, &project).map_err(|e| e.to_string())?;
-        }
-    }
+    patch_project_entry_mirrored(
+        &project_id,
+        |entry| {
+            match &cleaned {
+                Some(d) => {
+                    entry
+                        .extra
+                        .insert("description".to_string(), Value::String(d.clone()));
+                }
+                None => {
+                    entry.extra.remove("description");
+                }
+            }
+            Ok(())
+        },
+        |project, ()| project.description = cleaned.clone(),
+    )?;
 
     Ok(cleaned)
 }
@@ -1078,30 +1215,14 @@ pub fn set_project_name(project_id: String, name: String) -> Result<String, Stri
         return Err("project name cannot be empty".to_string());
     }
 
-    // projects.json — find the entry and update its `name`.
-    let list_path = storage::state_dir().join("projects.json");
-    let mut list: ProjectsList = if list_path.exists() {
-        storage::read_json(&list_path).map_err(|e| e.to_string())?
-    } else {
-        Vec::new()
-    };
-    let entry = list
-        .iter_mut()
-        .find(|p| p.id == project_id)
-        .ok_or_else(|| format!("project '{project_id}' not found"))?;
-    entry.name = cleaned.clone();
-    let local_file = entry.local_file.clone();
-    storage::write_json(&list_path, &list).map_err(|e| e.to_string())?;
-
-    // project.json — keep the per-project file consistent (best effort: a
-    // missing file is not fatal since the list is the source of truth for pills).
-    let proj_path = PathBuf::from(&local_file);
-    if proj_path.exists() {
-        if let Ok(mut project) = storage::read_json::<Project>(&proj_path) {
-            project.name = cleaned.clone();
-            storage::write_json(&proj_path, &project).map_err(|e| e.to_string())?;
-        }
-    }
+    patch_project_entry_mirrored(
+        &project_id,
+        |entry| {
+            entry.name = cleaned.clone();
+            Ok(())
+        },
+        |project, ()| project.name = cleaned.clone(),
+    )?;
 
     Ok(cleaned)
 }
@@ -1159,14 +1280,9 @@ pub fn set_project_sandbox(
         }
         return Err("The built-in Trash project's sandbox is always on.".into());
     }
-    let list_path = storage::state_dir().join("projects.json");
-    let mut list: ProjectsList = if list_path.exists() {
-        storage::read_json(&list_path).map_err(|e| e.to_string())?
-    } else {
-        Vec::new()
-    };
+    let list = read_projects_list()?;
     let entry = list
-        .iter_mut()
+        .iter()
         .find(|p| p.id == project_id)
         .ok_or_else(|| format!("project '{project_id}' not found"))?;
 
@@ -1256,7 +1372,7 @@ pub fn set_project_sandbox(
         }
     }
 
-    write_project_sandbox_spec(&mut list, &list_path, &project_id, &spec)?;
+    write_project_sandbox_spec(&project_id, &spec)?;
     Ok(SandboxToggleOutcome::Applied { spec })
 }
 
@@ -1291,13 +1407,7 @@ pub fn set_project_sandbox_spec(
         crate::services::sandbox::validate_network(net)?;
     }
 
-    let list_path = storage::state_dir().join("projects.json");
-    let mut list: ProjectsList = if list_path.exists() {
-        storage::read_json(&list_path).map_err(|e| e.to_string())?
-    } else {
-        Vec::new()
-    };
-    write_project_sandbox_spec(&mut list, &list_path, &project_id, &spec)?;
+    write_project_sandbox_spec(&project_id, &spec)?;
     Ok(spec)
 }
 
@@ -1313,66 +1423,67 @@ pub fn set_project_remote_control(
     project_id: String,
     remote_control: Option<bool>,
 ) -> Result<Option<bool>, String> {
-    let list_path = storage::state_dir().join("projects.json");
-    let mut list: ProjectsList = if list_path.exists() {
-        storage::read_json(&list_path).map_err(|e| e.to_string())?
-    } else {
-        Vec::new()
-    };
-    let entry = list
-        .iter_mut()
-        .find(|p| p.id == project_id)
-        .ok_or_else(|| format!("project '{project_id}' not found"))?;
-
-    match remote_control {
-        Some(v) => {
-            entry
-                .extra
-                .insert("remote_control".into(), serde_json::Value::Bool(v));
-        }
-        None => {
-            entry.extra.remove("remote_control");
-        }
-    }
-    let local_file = entry.local_file.clone();
-    storage::write_json(&list_path, &list).map_err(|e| e.to_string())?;
-
-    let proj_path = PathBuf::from(&local_file);
-    if proj_path.exists() {
-        if let Ok(mut project) = storage::read_json::<Project>(&proj_path) {
-            project.remote_control = remote_control;
-            storage::write_json(&proj_path, &project).map_err(|e| e.to_string())?;
-        }
-    }
+    patch_project_entry_mirrored(
+        &project_id,
+        |entry| {
+            match remote_control {
+                Some(v) => {
+                    entry
+                        .extra
+                        .insert("remote_control".into(), serde_json::Value::Bool(v));
+                }
+                None => {
+                    entry.extra.remove("remote_control");
+                }
+            }
+            Ok(())
+        },
+        |project, ()| project.remote_control = remote_control,
+    )?;
     Ok(remote_control)
+}
+
+/// Set or clear a project's override of the global default-on agent fence.
+/// The trusted projects.json mirror is what terminal spawn reads; project.json
+/// receives the same value for display/export compatibility only.
+#[tauri::command]
+pub fn set_project_agent_fence(
+    project_id: String,
+    agent_fence: Option<bool>,
+) -> Result<Option<bool>, String> {
+    patch_project_entry_mirrored(
+        &project_id,
+        |entry| {
+            match agent_fence {
+                Some(value) => {
+                    entry
+                        .extra
+                        .insert("agent_fence".into(), serde_json::Value::Bool(value));
+                }
+                None => {
+                    entry.extra.remove("agent_fence");
+                }
+            }
+            Ok(())
+        },
+        |project, ()| project.agent_fence = agent_fence,
+    )?;
+    Ok(agent_fence)
 }
 
 /// Persist a container spec into both stores: the `projects.json` entry's
 /// flattened `sandbox` (the always-local mirror the spawn path reads) and the
 /// project's own `project.json` (best effort — the list is the source of truth).
-fn write_project_sandbox_spec(
-    list: &mut ProjectsList,
-    list_path: &Path,
-    project_id: &str,
-    spec: &SandboxSpec,
-) -> Result<(), String> {
-    let entry = list
-        .iter_mut()
-        .find(|p| p.id == project_id)
-        .ok_or_else(|| format!("project '{project_id}' not found"))?;
+fn write_project_sandbox_spec(project_id: &str, spec: &SandboxSpec) -> Result<(), String> {
     let value = serde_json::to_value(spec).map_err(|e| e.to_string())?;
-    entry.extra.insert("sandbox".to_string(), value);
-    let local_file = entry.local_file.clone();
-    storage::write_json(list_path, list).map_err(|e| e.to_string())?;
-
-    let proj_path = PathBuf::from(&local_file);
-    if proj_path.exists() {
-        if let Ok(mut project) = storage::read_json::<Project>(&proj_path) {
-            project.sandbox = Some(spec.clone());
-            storage::write_json(&proj_path, &project).map_err(|e| e.to_string())?;
-        }
-    }
-    Ok(())
+    patch_project_entry_mirrored(
+        project_id,
+        |entry| {
+            entry.extra.insert("sandbox".to_string(), value);
+            Ok(())
+        },
+        |project, ()| project.sandbox = Some(spec.clone()),
+    )
 }
 
 /// Toggle-time container preflight: is docker installed, is the daemon up, does
@@ -1425,37 +1536,25 @@ pub fn set_project_openvpn(
 /// `project.json` (best effort — a remote project's copy may be unreachable).
 /// Errors if the project is unknown or not remote.
 fn patch_remote_spec(project_id: &str, patch: impl Fn(&mut RemoteSpec)) -> Result<(), String> {
-    let list_path = storage::state_dir().join("projects.json");
-    let mut list: ProjectsList = if list_path.exists() {
-        storage::read_json(&list_path).map_err(|e| e.to_string())?
-    } else {
-        Vec::new()
-    };
-    let entry = list
-        .iter_mut()
-        .find(|p| p.id == project_id)
-        .ok_or_else(|| format!("project '{project_id}' not found"))?;
-    let remote_val = entry
-        .extra
-        .get_mut("remote")
-        .ok_or_else(|| "project is not remote".to_string())?;
-    let mut remote: RemoteSpec =
-        serde_json::from_value(remote_val.clone()).map_err(|e| e.to_string())?;
-    patch(&mut remote);
-    *remote_val = serde_json::to_value(&remote).map_err(|e| e.to_string())?;
-    let local_file = entry.local_file.clone();
-    storage::write_json(&list_path, &list).map_err(|e| e.to_string())?;
-
-    let proj_path = PathBuf::from(&local_file);
-    if proj_path.exists() {
-        if let Ok(mut project) = storage::read_json::<Project>(&proj_path) {
+    patch_project_entry_mirrored(
+        project_id,
+        |entry| {
+            let remote_val = entry
+                .extra
+                .get_mut("remote")
+                .ok_or_else(|| "project is not remote".to_string())?;
+            let mut remote: RemoteSpec =
+                serde_json::from_value(remote_val.clone()).map_err(|e| e.to_string())?;
+            patch(&mut remote);
+            *remote_val = serde_json::to_value(&remote).map_err(|e| e.to_string())?;
+            Ok(())
+        },
+        |project, ()| {
             if let Some(r) = project.remote.as_mut() {
                 patch(r);
-                storage::write_json(&proj_path, &project).map_err(|e| e.to_string())?;
             }
-        }
-    }
-    Ok(())
+        },
+    )
 }
 
 /// Opt a **remote** project in/out of auto-connect (launch + activation bring the
@@ -1496,9 +1595,9 @@ pub fn set_project_mobile_access(project_id: String, enabled: bool) -> Result<bo
         }
         return Err("The built-in Trash project is always available to Eldrun Mobile.".into());
     }
-    let mut projects = get_projects()?;
+    let projects = get_projects()?;
     let project = projects
-        .iter_mut()
+        .iter()
         .find(|p| p.id == project_id)
         .ok_or("project not found")?;
     if enabled {
@@ -1524,13 +1623,31 @@ pub fn set_project_mobile_access(project_id: String, enabled: bool) -> Result<bo
         if !crate::services::tmux_local::tmux_available() {
             return Err("Mobile access requires tmux on this machine".into());
         }
-        project
-            .extra
-            .insert("eldrun_mobile_access".into(), Value::Bool(true));
-    } else {
-        project.extra.remove("eldrun_mobile_access");
     }
-    save_projects(projects)?;
+    patch_project_entry(&project_id, |project| {
+        if enabled {
+            if project.extra.get("remote").is_some_and(|v| !v.is_null()) {
+                return Err("Mobile access is available only for local projects".into());
+            }
+            let runtime_enabled = |key: &str| {
+                project
+                    .extra
+                    .get(key)
+                    .and_then(|v| v.get("enabled"))
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+            };
+            if runtime_enabled("sandbox") || runtime_enabled("vm") {
+                return Err("Mobile access is unavailable for container and VM projects".into());
+            }
+            project
+                .extra
+                .insert("eldrun_mobile_access".into(), Value::Bool(true));
+        } else {
+            project.extra.remove("eldrun_mobile_access");
+        }
+        Ok(())
+    })?;
     Ok(enabled)
 }
 
@@ -1696,39 +1813,25 @@ fn patch_compute_hosts(
     project_id: &str,
     patch: impl Fn(&mut Vec<ComputeHost>),
 ) -> Result<Vec<ComputeHost>, String> {
-    let list_path = storage::state_dir().join("projects.json");
-    let mut list: ProjectsList = if list_path.exists() {
-        storage::read_json(&list_path).map_err(|e| e.to_string())?
-    } else {
-        Vec::new()
-    };
-    let entry = list
-        .iter_mut()
-        .find(|p| p.id == project_id)
-        .ok_or_else(|| format!("project '{project_id}' not found"))?;
-    let mut hosts: Vec<ComputeHost> = entry
-        .extra
-        .get("compute_hosts")
-        .and_then(|v| serde_json::from_value(v.clone()).ok())
-        .unwrap_or_default();
-    patch(&mut hosts);
-    let value = serde_json::to_value(&hosts).map_err(|e| e.to_string())?;
-    if hosts.is_empty() {
-        entry.extra.remove("compute_hosts");
-    } else {
-        entry.extra.insert("compute_hosts".to_string(), value);
-    }
-    let local_file = entry.local_file.clone();
-    storage::write_json(&list_path, &list).map_err(|e| e.to_string())?;
-
-    let proj_path = PathBuf::from(&local_file);
-    if proj_path.exists() {
-        if let Ok(mut project) = storage::read_json::<Project>(&proj_path) {
-            patch(&mut project.compute_hosts);
-            storage::write_json(&proj_path, &project).map_err(|e| e.to_string())?;
-        }
-    }
-    Ok(hosts)
+    patch_project_entry_mirrored(
+        project_id,
+        |entry| {
+            let mut hosts: Vec<ComputeHost> = entry
+                .extra
+                .get("compute_hosts")
+                .and_then(|v| serde_json::from_value(v.clone()).ok())
+                .unwrap_or_default();
+            patch(&mut hosts);
+            let value = serde_json::to_value(&hosts).map_err(|e| e.to_string())?;
+            if hosts.is_empty() {
+                entry.extra.remove("compute_hosts");
+            } else {
+                entry.extra.insert("compute_hosts".to_string(), value);
+            }
+            Ok(hosts)
+        },
+        |project, hosts| project.compute_hosts = hosts.clone(),
+    )
 }
 
 /// Persist which machine shells launched from this project run on — the choice
@@ -1747,37 +1850,23 @@ pub fn set_project_run_host(
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
 
-    let list_path = storage::state_dir().join("projects.json");
-    let mut list: ProjectsList = if list_path.exists() {
-        storage::read_json(&list_path).map_err(|e| e.to_string())?
-    } else {
-        Vec::new()
-    };
-    let entry = list
-        .iter_mut()
-        .find(|p| p.id == project_id)
-        .ok_or_else(|| format!("project '{project_id}' not found"))?;
-
-    match &value {
-        Some(v) => {
-            entry
-                .extra
-                .insert("run_host".into(), serde_json::Value::String(v.clone()));
-        }
-        None => {
-            entry.extra.remove("run_host");
-        }
-    }
-    let local_file = entry.local_file.clone();
-    storage::write_json(&list_path, &list).map_err(|e| e.to_string())?;
-
-    let proj_path = PathBuf::from(&local_file);
-    if proj_path.exists() {
-        if let Ok(mut project) = storage::read_json::<Project>(&proj_path) {
-            project.run_host = value.clone();
-            storage::write_json(&proj_path, &project).map_err(|e| e.to_string())?;
-        }
-    }
+    patch_project_entry_mirrored(
+        &project_id,
+        |entry| {
+            match &value {
+                Some(v) => {
+                    entry
+                        .extra
+                        .insert("run_host".into(), serde_json::Value::String(v.clone()));
+                }
+                None => {
+                    entry.extra.remove("run_host");
+                }
+            }
+            Ok(())
+        },
+        |project, ()| project.run_host = value.clone(),
+    )?;
     Ok(value)
 }
 
@@ -1899,39 +1988,33 @@ pub fn set_project_categories(
 ) -> Result<Vec<String>, String> {
     let cleaned = clean_categories(categories);
 
-    // projects.json — mirror into the entry's flattened `categories`.
-    let list_path = storage::state_dir().join("projects.json");
-    let mut list: ProjectsList = if list_path.exists() {
-        storage::read_json(&list_path).map_err(|e| e.to_string())?
+    let value = if cleaned.is_empty() {
+        None
     } else {
-        Vec::new()
+        Some(serde_json::to_value(&cleaned).map_err(|e| e.to_string())?)
     };
-    let entry = list
-        .iter_mut()
-        .find(|p| p.id == project_id)
-        .ok_or_else(|| format!("project '{project_id}' not found"))?;
-    if cleaned.is_empty() {
-        entry.extra.remove("categories");
-    } else {
-        let value = serde_json::to_value(&cleaned).map_err(|e| e.to_string())?;
-        entry.extra.insert("categories".to_string(), value);
-    }
-    let local_file = entry.local_file.clone();
-    storage::write_json(&list_path, &list).map_err(|e| e.to_string())?;
-
-    // project.json — keep the per-project file consistent (best effort).
-    let proj_path = PathBuf::from(&local_file);
-    if proj_path.exists() {
-        if let Ok(mut project) = storage::read_json::<Project>(&proj_path) {
-            if cleaned.is_empty() {
-                project.extra.remove("categories");
-            } else {
-                let value = serde_json::to_value(&cleaned).map_err(|e| e.to_string())?;
-                project.extra.insert("categories".to_string(), value);
+    patch_project_entry_mirrored(
+        &project_id,
+        |entry| {
+            match &value {
+                Some(v) => {
+                    entry.extra.insert("categories".to_string(), v.clone());
+                }
+                None => {
+                    entry.extra.remove("categories");
+                }
             }
-            storage::write_json(&proj_path, &project).map_err(|e| e.to_string())?;
-        }
-    }
+            Ok(())
+        },
+        |project, ()| match &value {
+            Some(v) => {
+                project.extra.insert("categories".to_string(), v.clone());
+            }
+            None => {
+                project.extra.remove("categories");
+            }
+        },
+    )?;
 
     Ok(cleaned)
 }
@@ -1952,17 +2035,11 @@ pub fn set_project_categories(
 #[tauri::command]
 pub fn set_project_git_disabled(project_id: String, disabled: bool) -> Result<String, String> {
     // projects.json — locate the entry and resolve its on-disk directory.
-    let list_path = storage::state_dir().join("projects.json");
-    let mut list: ProjectsList = if list_path.exists() {
-        storage::read_json(&list_path).map_err(|e| e.to_string())?
-    } else {
-        Vec::new()
-    };
+    let list = read_projects_list()?;
     let entry = list
-        .iter_mut()
+        .iter()
         .find(|p| p.id == project_id)
         .ok_or_else(|| format!("project '{project_id}' not found"))?;
-    let local_file = entry.local_file.clone();
     let directory = entry
         .extra
         .get("directory")
@@ -1990,17 +2067,8 @@ pub fn set_project_git_disabled(project_id: String, disabled: bool) -> Result<St
         "none".to_string()
     } else {
         if !git_dir.exists() {
-            let output = crate::paths::command_no_window("git")
-                .args(["init"])
-                .current_dir(&directory)
-                .output()
-                .map_err(|e| format!("failed to run git init: {e}"))?;
-            if !output.status.success() {
-                return Err(format!(
-                    "git init failed: {}",
-                    String::from_utf8_lossy(&output.stderr).trim()
-                ));
-            }
+            crate::services::git_init::init_repo(&directory)
+                .map_err(|e| format!("git init failed: {e}"))?;
         }
         let gitignore = directory.join(".gitignore");
         if !gitignore.exists() {
@@ -2010,20 +2078,17 @@ pub fn set_project_git_disabled(project_id: String, disabled: bool) -> Result<St
         "local".to_string()
     };
 
-    // projects.json — mirror the new push-axis type into the flattened entry.
-    entry
-        .extra
-        .insert("git_type".to_string(), Value::String(new_git_type.clone()));
-    storage::write_json(&list_path, &list).map_err(|e| e.to_string())?;
-
-    // project.json — keep the per-project file consistent (best effort).
-    let proj_path = PathBuf::from(&local_file);
-    if proj_path.exists() {
-        if let Ok(mut project) = storage::read_json::<Project>(&proj_path) {
-            project.git_type = Some(new_git_type.clone());
-            storage::write_json(&proj_path, &project).map_err(|e| e.to_string())?;
-        }
-    }
+    // Mirror the new push-axis type into the flattened entry + project.json.
+    patch_project_entry_mirrored(
+        &project_id,
+        |entry| {
+            entry
+                .extra
+                .insert("git_type".to_string(), Value::String(new_git_type.clone()));
+            Ok(())
+        },
+        |project, ()| project.git_type = Some(new_git_type.clone()),
+    )?;
 
     Ok(new_git_type)
 }
@@ -2105,7 +2170,7 @@ pub fn save_tab_layout(
 }
 
 /// `~/eldrun/root` — the working directory of everything that belongs to no
-/// project (the root control terminal, and now the right panel's file tree over
+/// project (the root control terminal, and now the side panel's file tree over
 /// the same folder, which is where data lands while it is only being looked at
 /// or before it has a project to belong to).
 ///
@@ -2165,7 +2230,7 @@ pub fn remote_mirror_status(project_id: String, name: String) -> Result<MirrorSt
         return Err("not a remote project".to_string());
     }
     let dir = crate::services::remote_sync::mirror_dir(&project_id);
-    let suggested = default_remote_mirror(&name, &project_id, &read_projects_list());
+    let suggested = default_remote_mirror(&name, &project_id, &read_projects_list()?);
     Ok(MirrorStatus {
         exists: dir.is_dir(),
         path: dir.to_string_lossy().to_string(),
@@ -2198,33 +2263,16 @@ pub fn set_remote_mirror_dir(project_id: String, path: String) -> Result<String,
 /// reads) and the project's `project.json` (best effort). Shared by
 /// `set_remote_mirror_dir` and `move_remote_mirror`.
 fn persist_mirror_dir(project_id: &str, resolved: &str) -> Result<(), String> {
-    // projects.json — the always-local source of truth.
-    let list_path = storage::state_dir().join("projects.json");
-    let mut list: ProjectsList = if list_path.exists() {
-        storage::read_json(&list_path).map_err(|e| e.to_string())?
-    } else {
-        Vec::new()
-    };
-    let entry = list
-        .iter_mut()
-        .find(|p| p.id == project_id)
-        .ok_or_else(|| format!("project '{project_id}' not found"))?;
-    entry
-        .extra
-        .insert("mirror".to_string(), Value::String(resolved.to_string()));
-    let local_file = entry.local_file.clone();
-    storage::write_json(&list_path, &list).map_err(|e| e.to_string())?;
-
-    // project.json — keep the per-project file consistent (best effort).
-    let proj_path = PathBuf::from(&local_file);
-    if proj_path.exists() {
-        if let Ok(mut project) = storage::read_json::<Project>(&proj_path) {
-            project.mirror = Some(resolved.to_string());
-            storage::write_json(&proj_path, &project).map_err(|e| e.to_string())?;
-        }
-    }
-
-    Ok(())
+    patch_project_entry_mirrored(
+        project_id,
+        |entry| {
+            entry
+                .extra
+                .insert("mirror".to_string(), Value::String(resolved.to_string()));
+            Ok(())
+        },
+        |project, ()| project.mirror = Some(resolved.to_string()),
+    )
 }
 
 /// Move a remote (SSH) project's local mirror folder to a new location: the user
@@ -2235,7 +2283,15 @@ fn persist_mirror_dir(project_id: &str, resolved: &str) -> Result<(), String> {
 /// has the new folder created. Persists the new pointer and returns its absolute
 /// path. Errors for a local project. Backs the pill's "Move project…" option.
 #[tauri::command]
-pub fn move_remote_mirror(
+pub async fn move_remote_mirror(
+    project_id: String,
+    name: String,
+    parent_dir: String,
+) -> Result<String, String> {
+    run_off_thread(move || move_remote_mirror_blocking(project_id, name, parent_dir)).await
+}
+
+pub fn move_remote_mirror_blocking(
     project_id: String,
     name: String,
     parent_dir: String,
@@ -2313,10 +2369,12 @@ _Layout, style, and anything an agent must not do._
 
 ## Project docs
 
+- [PROJECT.md](./PROJECT.md) — map of the scaffold: every file linked, with what it is for
 - [README.md](./README.md) — overview
 - [DOCUMENTATION.md](./DOCUMENTATION.md) — reference documentation
 - [ROADMAP.md](./ROADMAP.md) — planned direction
 - [TODO.md](./TODO.md) — open work items
+- [REMARKS.md](./REMARKS.md) — project-wide remarks attached to files and lines
 - [STATUS.md](./STATUS.md) — current state
 "#;
 
@@ -2348,18 +2406,65 @@ Gemini-specific overrides only.
 Other agent files: [AGENTS.md](./AGENTS.md) · [CLAUDE.md](./CLAUDE.md)
 "#;
 
+/// The navigation hub: one file linking every other scaffold file with a line
+/// on what it is for, so a fresh project can be walked from a single entry
+/// point — the links are relative, so the markdown viewer's link-following
+/// (#49/#50) opens each target in-app. Scaffolded like the rest (never
+/// overwritten), and listed first so previews show the map before the mapped.
+const PROJECT_SCAFFOLD: &str = r#"# Project Map
+
+Start here. This file links every scaffold file with what it is for, so the
+project can be navigated from one place. The links are relative and open
+in Eldrun's markdown viewer.
+
+## Docs
+
+- [README.md](./README.md) — overview: what this project is and how to use it
+- [DOCUMENTATION.md](./DOCUMENTATION.md) — reference documentation
+- [ROADMAP.md](./ROADMAP.md) — planned direction
+- [STATUS.md](./STATUS.md) — current state
+- [TODO.md](./TODO.md) — open work items
+- [REMARKS.md](./REMARKS.md) — project-wide remarks attached to files and lines
+
+## Agent instructions
+
+- [AGENTS.md](./AGENTS.md) — canonical instructions for every AI coding agent
+- [CLAUDE.md](./CLAUDE.md) — Claude Code pointer; imports AGENTS.md
+- [GEMINI.md](./GEMINI.md) — Gemini CLI pointer; imports AGENTS.md
+
+## Config
+
+- [.claude/settings.json](./.claude/settings.json) — Claude Code permissions for this project
+- [.gitignore](./.gitignore) — patterns git ignores (git-backed projects only)
+
+_Add links to your own key files and folders here so this stays the map of
+the project._
+"#;
+
+const REMARKS_SCAFFOLD: &str = r#"# Remarks
+
+Per-file remarks. One bullet per remark:
+`- [ ] [<path>:<line>](./<path>:<line>) — text`. Line optional, a hint only.
+Tick a box to resolve a remark. Everything else in this file is yours.
+"#;
+
 pub const SCAFFOLD_FILES: &[(&str, &str)] = &[
+    ("PROJECT.md", PROJECT_SCAFFOLD),
     ("AGENTS.md", AGENTS_SCAFFOLD),
     ("CLAUDE.md", CLAUDE_SCAFFOLD),
     ("GEMINI.md", GEMINI_SCAFFOLD),
     ("TODO.md", "# TODO\n"),
+    ("REMARKS.md", REMARKS_SCAFFOLD),
     ("ROADMAP.md", "# Roadmap\n"),
     ("STATUS.md", "# Status\n"),
     ("README.md", "# Project\n"),
     ("DOCUMENTATION.md", "# Documentation\n"),
 ];
 
-pub const GITIGNORE_DEFAULT: &str = "__pycache__/\n*.pyc\n.venv/\nnode_modules/\ntarget/\ndist/\nbuild/\n.env\n.env.local\n.DS_Store\n*.log\n*.swp\n*.swo\n.idea/\n.eldrun/\nproject.json\n";
+// `screenshots/` is ignored by default because a screen grab holds whatever
+// happened to be on the screen — mail, tokens, another project's window — and
+// a project with a public remote is one `git add -A` away from publishing it.
+pub const GITIGNORE_DEFAULT: &str = "__pycache__/\n*.pyc\n.venv/\nnode_modules/\ntarget/\ndist/\nbuild/\n.env\n.env.local\n.DS_Store\n*.log\n*.swp\n*.swo\n.idea/\n.eldrun/\nscreenshots/\nproject.json\n";
 
 pub const CLAUDE_SETTINGS: &str = r#"{"permissions":{"allow":[],"deny":[]}}"#;
 
@@ -2396,10 +2501,7 @@ pub fn scaffold_project(dir: &Path, with_git: bool) -> std::io::Result<()> {
         fs::write(cs, CLAUDE_SETTINGS)?;
     }
     if with_git && !dir.join(".git").exists() {
-        let _ = crate::paths::command_no_window("git")
-            .args(["init"])
-            .current_dir(dir)
-            .output();
+        let _ = crate::services::git_init::init_repo(dir);
         // Give the fresh repo an initial commit so the scaffold (`.claude`, docs,
         // `.gitignore`) is TRACKED, not merely present. This is what makes a later
         // remote `extend` seed the host: git lockstep pairs by transferring
@@ -2459,31 +2561,43 @@ fn git_head_unborn(dir: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// The `GITIGNORE_DEFAULT` patterns absent from `dir/.gitignore` — a missing
+/// file reports every default. Read-only: this is the migration plan's preview
+/// of what `ensure_gitignore_defaults` would append.
+fn missing_gitignore_lines_at(dir: &Path) -> std::io::Result<Vec<String>> {
+    let defaults: Vec<&str> = GITIGNORE_DEFAULT
+        .lines()
+        .filter(|l| !l.is_empty())
+        .collect();
+    let path = dir.join(".gitignore");
+    if !path.exists() {
+        return Ok(defaults.into_iter().map(str::to_string).collect());
+    }
+    let existing = fs::read_to_string(&path)?;
+    let existing_lines: HashSet<&str> = existing.lines().collect();
+    Ok(defaults
+        .into_iter()
+        .filter(|l| !existing_lines.contains(l))
+        .map(str::to_string)
+        .collect())
+}
+
 /// Append any `GITIGNORE_DEFAULT` pattern missing from `dir/.gitignore` to the
 /// end of the file, creating it fresh if absent. Existing lines are never
 /// reordered or removed — this only ever adds patterns Eldrun scaffolds by
 /// default (e.g. a new one like `project.json` added after the project's
 /// `.gitignore` was first written). Returns the patterns that were added.
 fn ensure_gitignore_defaults(dir: &Path) -> std::io::Result<Vec<String>> {
-    let path = dir.join(".gitignore");
-    let defaults: Vec<&str> = GITIGNORE_DEFAULT
-        .lines()
-        .filter(|l| !l.is_empty())
-        .collect();
-    if !path.exists() {
-        fs::write(&path, GITIGNORE_DEFAULT)?;
-        return Ok(defaults.into_iter().map(str::to_string).collect());
-    }
-    let existing = fs::read_to_string(&path)?;
-    let existing_lines: HashSet<&str> = existing.lines().collect();
-    let missing: Vec<&str> = defaults
-        .into_iter()
-        .filter(|l| !existing_lines.contains(l))
-        .collect();
+    let missing = missing_gitignore_lines_at(dir)?;
     if missing.is_empty() {
         return Ok(vec![]);
     }
-    let mut updated = existing;
+    let path = dir.join(".gitignore");
+    if !path.exists() {
+        fs::write(&path, GITIGNORE_DEFAULT)?;
+        return Ok(missing);
+    }
+    let mut updated = fs::read_to_string(&path)?;
     if !updated.is_empty() && !updated.ends_with('\n') {
         updated.push('\n');
     }
@@ -2492,7 +2606,7 @@ fn ensure_gitignore_defaults(dir: &Path) -> std::io::Result<Vec<String>> {
         updated.push('\n');
     }
     fs::write(&path, updated)?;
-    Ok(missing.into_iter().map(str::to_string).collect())
+    Ok(missing)
 }
 
 /// Result of repairing one project's scaffold — which pieces were actually
@@ -2581,10 +2695,7 @@ fn repair_project_scaffold_at(dir: &Path, with_git: bool) -> std::io::Result<Sca
             .push(".claude/settings.json".to_string());
     }
     if with_git && !dir.join(".git").exists() {
-        let _ = crate::paths::command_no_window("git")
-            .args(["init"])
-            .current_dir(dir)
-            .output();
+        let _ = crate::services::git_init::init_repo(dir);
         // `.exists()`, not `is_dir()` (#23 I6): `.git` is a directory for a main repo
         // and a *file* in a linked worktree, so `is_dir` reported a worktree-rooted
         // project as having no repo at all.
@@ -2612,6 +2723,23 @@ fn scaffold_target_for_entry(entry: &ProjectEntry) -> Option<(PathBuf, bool)> {
         entry_directory(entry)?
     };
     Some((PathBuf::from(target), with_git))
+}
+
+/// Whether a materialized scaffold target needs repair. Kept separate from the
+/// Tauri command so the exact warning rule can be covered without depending on
+/// the user's persisted project list.
+fn scaffold_is_missing_at(target: &Path, with_git: bool) -> bool {
+    SCAFFOLD_FILES.iter().any(|(name, _)| {
+        let p = target.join(name);
+        // An agent doc still holding its untouched legacy stub counts as
+        // missing: a repair would change it, so the tag must not claim the
+        // scaffold is complete (see `is_legacy_agent_stub`).
+        match fs::read_to_string(&p) {
+            Ok(existing) => is_legacy_agent_stub(name, &existing),
+            Err(_) => !p.exists(),
+        }
+    }) || (with_git && !target.join(".gitignore").exists())
+        || !target.join(".claude/settings.json").exists()
 }
 
 /// A single project's scaffold-repair outcome, for the "Repair scaffold
@@ -2703,43 +2831,41 @@ pub fn migrate_legacy_projects() {
     if !path.exists() {
         return;
     }
-    let mut list: ProjectsList = match storage::read_json(&path) {
-        Ok(l) => l,
+    let repairs = match patch_projects_list(|list| {
+        let mut repairs = Vec::new();
+        for entry in list.iter_mut() {
+            if !normalize_entry(entry) {
+                continue;
+            }
+            if let Some((target, with_git)) = scaffold_target_for_entry(entry) {
+                repairs.push((entry.name.clone(), entry.id.clone(), target, with_git));
+            }
+        }
+        Ok(repairs)
+    }) {
+        Ok(repairs) => repairs,
         Err(e) => {
             eprintln!("migrate_legacy_projects: read projects.json: {e}");
             return;
         }
     };
-    let mut dirty = false;
-    for entry in list.iter_mut() {
-        if !normalize_entry(entry) {
-            continue; // already current — nothing to migrate or repair.
-        }
-        dirty = true;
+    for (name, id, target, with_git) in repairs {
         // Legacy entry: also fill in any scaffold piece it predates. Skipped
         // when there's no materialized local target yet (e.g. a remote project
         // whose mirror hasn't been created).
-        let Some((target, with_git)) = scaffold_target_for_entry(entry) else {
-            continue;
-        };
         if !target.is_dir() {
             continue;
         }
         match repair_project_scaffold_at(&target, with_git) {
             Ok(report) if !report.is_empty() => eprintln!(
                 "migrate_legacy_projects: '{}' ({}) scaffold repaired: {:?}",
-                entry.name, entry.id, report.created_files
+                name, id, report.created_files
             ),
             Ok(_) => {}
             Err(e) => eprintln!(
                 "migrate_legacy_projects: '{}' ({}) scaffold repair failed: {e}",
-                entry.name, entry.id
+                name, id
             ),
-        }
-    }
-    if dirty {
-        if let Err(e) = storage::write_json(&path, &list) {
-            eprintln!("migrate_legacy_projects: persist projects.json: {e}");
         }
     }
 }
@@ -2809,18 +2935,253 @@ pub fn project_scaffold_missing(project_id: String) -> Result<bool, String> {
     if !target.is_dir() {
         return Ok(false);
     }
-    let missing = SCAFFOLD_FILES.iter().any(|(name, _)| {
-        let p = target.join(name);
-        // An agent doc still holding its untouched legacy stub counts as missing:
-        // a repair *would* change it, so the tag must not claim the scaffold is
-        // complete (see `is_legacy_agent_stub`).
-        match fs::read_to_string(&p) {
-            Ok(existing) => is_legacy_agent_stub(name, &existing),
-            Err(_) => !p.exists(),
+    Ok(scaffold_is_missing_at(&target, with_git))
+}
+
+// ── Step-by-step project migration ─────────────────────────────────────────
+
+/// One proposed change of the "Migrate project" flow. The dialog renders each
+/// step with what it would do and the user accepts or declines it; `id` is what
+/// an accepting `project_migration_apply` call echoes back. Kinds:
+/// `entry` (normalize the projects.json entry), `createFile`, `upgradeStub`,
+/// `gitignore`, `gitInit`.
+#[derive(Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MigrationStep {
+    pub id: String,
+    pub kind: String,
+    /// The project-relative file the step touches, when it touches one.
+    pub path: Option<String>,
+    /// Human-readable specifics (gitignore patterns to append, entry fields
+    /// that change) — data, not prose: the frontend owns the wording.
+    pub details: Vec<String>,
+}
+
+/// The dry-run answer to "what would migrating this project change" — a list
+/// the user reviews step by step. Empty `steps` means already up to date.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MigrationPlan {
+    pub project_id: String,
+    pub name: String,
+    /// The local dir scaffold steps would run in; `None` when no local target
+    /// has materialized yet (then only the `entry` step can be offered).
+    pub target_dir: Option<String>,
+    pub steps: Vec<MigrationStep>,
+}
+
+/// What one apply actually changed. `report` reuses the repair shape so the
+/// summary code is shared with "Repair scaffold files".
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MigrationApplyReport {
+    pub entry_normalized: bool,
+    pub report: ScaffoldRepairReport,
+}
+
+/// What `normalize_entry` would change on this entry, as `field: old → new`
+/// lines — computed by running the real normalizer on a clone and diffing, so
+/// the preview can never drift from what an accepted `entry` step applies.
+fn entry_migration_details(entry: &ProjectEntry) -> Vec<String> {
+    let mut probe = entry.clone();
+    if !normalize_entry(&mut probe) {
+        return vec![];
+    }
+    let mut details = Vec::new();
+    for key in ["directory", "git_type"] {
+        let before = entry.extra.get(key).and_then(Value::as_str);
+        let after = probe.extra.get(key).and_then(Value::as_str);
+        if before != after {
+            details.push(match before {
+                Some(b) => format!("{key}: {b} → {}", after.unwrap_or("")),
+                None => format!("{key} → {}", after.unwrap_or("")),
+            });
         }
-    }) || (with_git && !target.join(".gitignore").exists())
-        || !target.join(".claude/settings.json").exists();
-    Ok(missing)
+    }
+    details
+}
+
+/// The scaffold-side migration steps for one materialized target dir — the
+/// same conditions `repair_project_scaffold_at` acts on, read-only and one
+/// step per piece so each can be accepted or declined on its own.
+fn migration_steps_at(dir: &Path, with_git: bool) -> std::io::Result<Vec<MigrationStep>> {
+    let mut steps = Vec::new();
+    for (name, content) in SCAFFOLD_FILES {
+        let p = dir.join(name);
+        match fs::read_to_string(&p) {
+            Ok(existing) => {
+                if existing != *content && is_legacy_agent_stub(name, &existing) {
+                    steps.push(MigrationStep {
+                        id: format!("stub:{name}"),
+                        kind: "upgradeStub".to_string(),
+                        path: Some((*name).to_string()),
+                        details: vec![],
+                    });
+                }
+            }
+            Err(_) => {
+                if !p.exists() {
+                    steps.push(MigrationStep {
+                        id: format!("file:{name}"),
+                        kind: "createFile".to_string(),
+                        path: Some((*name).to_string()),
+                        details: vec![],
+                    });
+                }
+            }
+        }
+    }
+    if !dir.join(".claude/settings.json").exists() {
+        steps.push(MigrationStep {
+            id: "claude_settings".to_string(),
+            kind: "createFile".to_string(),
+            path: Some(".claude/settings.json".to_string()),
+            details: vec![],
+        });
+    }
+    if with_git {
+        let missing = missing_gitignore_lines_at(dir)?;
+        if !missing.is_empty() {
+            steps.push(MigrationStep {
+                id: "gitignore".to_string(),
+                kind: "gitignore".to_string(),
+                path: Some(".gitignore".to_string()),
+                details: missing,
+            });
+        }
+        // `.exists()`, not `is_dir()`: a linked worktree's `.git` is a file
+        // (#23 I6) and must not invite a nested `git init`.
+        if !dir.join(".git").exists() {
+            steps.push(MigrationStep {
+                id: "git_init".to_string(),
+                kind: "gitInit".to_string(),
+                path: None,
+                details: vec![],
+            });
+        }
+    }
+    Ok(steps)
+}
+
+/// Apply the **accepted** scaffold steps only. Every condition is re-checked
+/// against the disk (the plan is a snapshot and the tree can move under it),
+/// so a stale accept degrades to a no-op rather than an overwrite — the
+/// never-overwrite rule of `repair_project_scaffold_at` holds per step.
+fn apply_migration_steps_at(
+    dir: &Path,
+    with_git: bool,
+    accepted: &HashSet<String>,
+) -> std::io::Result<ScaffoldRepairReport> {
+    fs::create_dir_all(dir)?;
+    let mut report = ScaffoldRepairReport::default();
+    for (name, content) in SCAFFOLD_FILES {
+        let p = dir.join(name);
+        if accepted.contains(&format!("file:{name}")) && !p.exists() {
+            fs::write(&p, content)?;
+            report.created_files.push((*name).to_string());
+        } else if accepted.contains(&format!("stub:{name}")) {
+            if let Ok(existing) = fs::read_to_string(&p) {
+                if existing != *content && is_legacy_agent_stub(name, &existing) {
+                    fs::write(&p, content)?;
+                    report.updated_files.push((*name).to_string());
+                }
+            }
+        }
+    }
+    if accepted.contains("claude_settings") {
+        let dot_claude = dir.join(".claude");
+        fs::create_dir_all(&dot_claude)?;
+        let cs = dot_claude.join("settings.json");
+        if !cs.exists() {
+            fs::write(&cs, CLAUDE_SETTINGS)?;
+            report
+                .created_files
+                .push(".claude/settings.json".to_string());
+        }
+    }
+    if with_git && accepted.contains("gitignore") {
+        report.gitignore_lines_added = ensure_gitignore_defaults(dir)?;
+    }
+    if with_git && accepted.contains("git_init") && !dir.join(".git").exists() {
+        let _ = crate::services::git_init::init_repo(dir);
+        report.git_initialized = dir.join(".git").exists();
+    }
+    Ok(report)
+}
+
+/// Dry-run for the "Migrate project" dialog: everything an old project is
+/// missing relative to the current Eldrun state, one step per piece. Changes
+/// nothing.
+#[tauri::command]
+pub fn project_migration_plan(project_id: String) -> Result<MigrationPlan, String> {
+    let list_path = storage::state_dir().join("projects.json");
+    let list: ProjectsList = storage::read_json(&list_path).map_err(|e| e.to_string())?;
+    let entry = list
+        .into_iter()
+        .find(|p| p.id == project_id)
+        .ok_or_else(|| "Project not found".to_string())?;
+    let mut steps = Vec::new();
+    let entry_details = entry_migration_details(&entry);
+    if !entry_details.is_empty() {
+        steps.push(MigrationStep {
+            id: "entry".to_string(),
+            kind: "entry".to_string(),
+            path: None,
+            details: entry_details,
+        });
+    }
+    let mut target_dir = None;
+    if let Some((target, with_git)) = scaffold_target_for_entry(&entry) {
+        if target.is_dir() {
+            steps.extend(migration_steps_at(&target, with_git).map_err(|e| e.to_string())?);
+            target_dir = Some(target.to_string_lossy().to_string());
+        }
+    }
+    Ok(MigrationPlan {
+        project_id: entry.id,
+        name: entry.name,
+        target_dir,
+        steps,
+    })
+}
+
+/// Apply the steps the user accepted (by id, from `project_migration_plan`).
+/// Declined steps are simply absent from `accepted` and nothing runs for them.
+#[tauri::command]
+pub fn project_migration_apply(
+    project_id: String,
+    accepted: Vec<String>,
+) -> Result<MigrationApplyReport, String> {
+    let accepted: HashSet<String> = accepted.into_iter().collect();
+    let mut entry_normalized = false;
+    if accepted.contains("entry") {
+        entry_normalized = patch_projects_list(|list| {
+            let entry = list
+                .iter_mut()
+                .find(|p| p.id == project_id)
+                .ok_or_else(|| "Project not found".to_string())?;
+            Ok(normalize_entry(entry))
+        })?;
+    }
+    // Re-read after the entry step: normalization can backfill the very
+    // `directory` the scaffold target resolves from.
+    let list_path = storage::state_dir().join("projects.json");
+    let list: ProjectsList = storage::read_json(&list_path).map_err(|e| e.to_string())?;
+    let entry = list
+        .into_iter()
+        .find(|p| p.id == project_id)
+        .ok_or_else(|| "Project not found".to_string())?;
+    let mut report = ScaffoldRepairReport::default();
+    if let Some((target, with_git)) = scaffold_target_for_entry(&entry) {
+        if target.is_dir() {
+            report =
+                apply_migration_steps_at(&target, with_git, &accepted).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(MigrationApplyReport {
+        entry_normalized,
+        report,
+    })
 }
 
 #[derive(Debug, Deserialize)]
@@ -2855,7 +3216,11 @@ pub struct CreateProjectRequest {
 }
 
 #[tauri::command]
-pub fn create_project(mut req: CreateProjectRequest) -> Result<ProjectEntry, String> {
+pub async fn create_project(req: CreateProjectRequest) -> Result<ProjectEntry, String> {
+    run_off_thread(move || create_project_blocking(req)).await
+}
+
+pub fn create_project_blocking(mut req: CreateProjectRequest) -> Result<ProjectEntry, String> {
     let id = uuid_v4();
 
     // A VM project IS a remote project (the one architectural decision of
@@ -2888,7 +3253,7 @@ pub fn create_project(mut req: CreateProjectRequest) -> Result<ProjectEntry, Str
     // work below (a remote `mkdir`, a scaffold, a `git init`). "New project"
     // pointed at a folder that is already a project used to register a second
     // entry straight over the first, and scaffold it while it was at it.
-    let registered = read_projects_list();
+    let registered = read_projects_list()?;
     // VM projects are exempt from the duplicate gate: every one synthesizes
     // the same loopback target + in-guest path, but each names its own,
     // freshly created virtual machine — the site can never collide.
@@ -3013,15 +3378,8 @@ pub fn create_project(mut req: CreateProjectRequest) -> Result<ProjectEntry, Str
     storage::write_json(&project_file, &project).map_err(|e| e.to_string())?;
 
     // Register in the global list.
-    let list_path = storage::state_dir().join("projects.json");
-    let mut list: ProjectsList = if list_path.exists() {
-        storage::read_json(&list_path).unwrap_or_default()
-    } else {
-        vec![]
-    };
-    let position = next_position(&list);
     let mut extra = project_extra(
-        directory,
+        directory.clone(),
         git_type,
         description,
         req.remote.as_ref(),
@@ -3035,16 +3393,29 @@ pub fn create_project(mut req: CreateProjectRequest) -> Result<ProjectEntry, Str
         }
     }
 
-    let entry = ProjectEntry {
-        id: id.clone(),
-        name: req.name,
-        status: "inactive".to_string(),
-        position,
-        local_file: project_file.to_string_lossy().to_string(),
-        extra,
-    };
-    list.push(entry.clone());
-    storage::write_json(&list_path, &list).map_err(|e| e.to_string())?;
+    let entry = patch_projects_list(|list| {
+        if !is_vm {
+            let site = match req.remote.as_ref() {
+                Some(spec) => ProjectSite::Remote { spec },
+                None => ProjectSite::Local {
+                    dir: &req.directory,
+                },
+            };
+            if let Some(conflict) = find_project_conflict(list, &site, None) {
+                return Err(conflict_message(&conflict));
+            }
+        }
+        let entry = ProjectEntry {
+            id: id.clone(),
+            name: req.name.clone(),
+            status: "inactive".to_string(),
+            position: next_position(list),
+            local_file: project_file.to_string_lossy().to_string(),
+            extra,
+        };
+        list.push(entry.clone());
+        Ok(entry)
+    })?;
 
     // Lockstep on by default for a git-backed remote project — the same call
     // `extend_project_to_remote` makes, for the same reason: the host root was
@@ -3107,7 +3478,11 @@ pub struct ImportProjectRequest {
 }
 
 #[tauri::command]
-pub fn import_project(req: ImportProjectRequest) -> Result<ProjectEntry, String> {
+pub async fn import_project(req: ImportProjectRequest) -> Result<ProjectEntry, String> {
+    run_off_thread(move || import_project_blocking(req)).await
+}
+
+pub fn import_project_blocking(req: ImportProjectRequest) -> Result<ProjectEntry, String> {
     if req.name.trim().is_empty() {
         return Err("Project name is invalid".to_string());
     }
@@ -3124,7 +3499,7 @@ pub fn import_project(req: ImportProjectRequest) -> Result<ProjectEntry, String>
     // and leaves the source registered and intact, so the result is a genuinely
     // separate project — "start a variant from this one" is a real thing to want.
     // `keep` and `move` both end up on the source tree itself.
-    let registered = read_projects_list();
+    let registered = read_projects_list()?;
     if req.mode != "copy" {
         let site = match req.remote.as_ref() {
             Some(spec) => ProjectSite::Remote { spec },
@@ -3237,12 +3612,7 @@ fn finish_import(
     let project_file = target.join("project.json");
     let project_file_s = project_file.to_string_lossy().to_string();
 
-    let list_path = storage::state_dir().join("projects.json");
-    let mut list: ProjectsList = if list_path.exists() {
-        storage::read_json(&list_path).unwrap_or_default()
-    } else {
-        vec![]
-    };
+    let list = read_projects_list()?;
     // The second half of the gate: `import_project` checked the *source* before
     // touching the disk, this checks where the import actually landed (which for
     // copy/move is a different directory). Both go through the one resolver, so a
@@ -3348,26 +3718,33 @@ fn finish_import(
     };
     storage::write_json(&project_file, &project).map_err(|e| e.to_string())?;
 
-    let position = next_position(&list);
     let description = project.description.clone();
     let extra = project_extra(
-        directory,
+        directory.clone(),
         git_type,
         description,
         remote.as_ref(),
         mirror.as_deref(),
     );
-    let entry = ProjectEntry {
-        id,
-        name: req.name,
-        status: "inactive".to_string(),
-        position,
-        local_file: project_file_s,
-        extra,
-    };
-    list.push(entry.clone());
-    storage::write_json(&list_path, &list).map_err(|e| e.to_string())?;
-    Ok(entry)
+    patch_projects_list(|list| {
+        let site = match remote.as_ref() {
+            Some(spec) => ProjectSite::Remote { spec },
+            None => ProjectSite::Local { dir: &directory },
+        };
+        if let Some(conflict) = find_project_conflict(list, &site, None) {
+            return Err(conflict_message(&conflict));
+        }
+        let entry = ProjectEntry {
+            id,
+            name: req.name,
+            status: "inactive".to_string(),
+            position: next_position(list),
+            local_file: project_file_s,
+            extra,
+        };
+        list.push(entry.clone());
+        Ok(entry)
+    })
 }
 
 #[derive(Debug, Deserialize)]
@@ -3394,12 +3771,7 @@ pub async fn extend_project_to_remote(
     if paths::is_trash_project_id(&req.project_id) {
         return Err("The built-in Trash project is permanently local and isolated.".into());
     }
-    let list_path = storage::state_dir().join("projects.json");
-    let mut list: ProjectsList = if list_path.exists() {
-        storage::read_json(&list_path).map_err(|e| e.to_string())?
-    } else {
-        return Err("Project not found".to_string());
-    };
+    let list = read_projects_list()?;
 
     let idx = list
         .iter()
@@ -3487,23 +3859,37 @@ pub async fn extend_project_to_remote(
 
     // Update the same projects.json entry in place, preserving every other extra
     // key (categories, git_provider, git_type, description, sandbox, …).
-    let entry = &mut list[idx];
-    entry.local_file = new_project_file.to_string_lossy().to_string();
-    entry
-        .extra
-        .insert("directory".to_string(), Value::String(new_directory));
-    if let Ok(value) = serde_json::to_value(&req.remote) {
-        entry.extra.insert("remote".to_string(), value);
-    }
-    entry
-        .extra
-        .insert("mirror".to_string(), Value::String(old_dir));
-    let updated = entry.clone();
     // Persist the `mirror` pointer to projects.json BEFORE removing the old
     // project.json. If this crashes mid-way, the worst case is a harmless leftover
     // project.json in the mirror — never a lost `mirror` pointer (which would make
     // `mirror_dir` fall back to an empty state dir and desync the lockstep view).
-    storage::write_json(&list_path, &list).map_err(|e| e.to_string())?;
+    let updated = patch_projects_list(|list| {
+        if let Some(conflict) = find_project_conflict(
+            list,
+            &ProjectSite::Remote { spec: &req.remote },
+            Some(&req.project_id),
+        ) {
+            return Err(conflict_message(&conflict));
+        }
+        let entry = list
+            .iter_mut()
+            .find(|entry| entry.id == req.project_id)
+            .ok_or_else(|| "Project not found".to_string())?;
+        if entry.extra.contains_key("remote") {
+            return Err("Project is already remote".to_string());
+        }
+        entry.local_file = new_project_file.to_string_lossy().to_string();
+        entry.extra.insert(
+            "directory".to_string(),
+            Value::String(new_directory.clone()),
+        );
+        let value = serde_json::to_value(&req.remote).map_err(|e| e.to_string())?;
+        entry.extra.insert("remote".to_string(), value);
+        entry
+            .extra
+            .insert("mirror".to_string(), Value::String(old_dir.clone()));
+        Ok(entry.clone())
+    })?;
 
     // Extend is an explicit "keep these two in step" action, and at this instant the
     // remote root was just created empty — so the first lockstep sync can only be a
@@ -3553,12 +3939,7 @@ pub async fn detach_project_from_remote(
     project_id: String,
     manifest: State<'_, SyncManifestState>,
 ) -> Result<ProjectEntry, String> {
-    let list_path = storage::state_dir().join("projects.json");
-    let mut list: ProjectsList = if list_path.exists() {
-        storage::read_json(&list_path).map_err(|e| e.to_string())?
-    } else {
-        return Err("Project not found".to_string());
-    };
+    let list = read_projects_list()?;
 
     let idx = list
         .iter()
@@ -3663,22 +4044,25 @@ pub async fn detach_project_from_remote(
 
     // Update the projects.json entry in place, preserving every other extra key
     // (categories, git_provider, git_type, description, sandbox, …).
-    let entry = &mut list[idx];
-    entry.local_file = new_project_file.to_string_lossy().to_string();
-    entry
-        .extra
-        .insert("directory".to_string(), Value::String(mirror));
-    entry.extra.remove("remote");
-    entry.extra.remove("mirror");
-    let updated = entry.clone();
-    storage::write_json(&list_path, &list).map_err(|e| e.to_string())?;
+    let updated = patch_project_entry(&project_id, |entry| {
+        if !entry.extra.contains_key("remote") {
+            return Err("Project is not remote".to_string());
+        }
+        entry.local_file = new_project_file.to_string_lossy().to_string();
+        entry
+            .extra
+            .insert("directory".to_string(), Value::String(mirror));
+        entry.extra.remove("remote");
+        entry.extra.remove("mirror");
+        Ok(entry.clone())
+    })?;
     Ok(updated)
 }
 
 // ── Time tracking ─────────────────────────────────────────────────────────
 
 #[tauri::command]
-pub fn get_time_today(project_id: String) -> f64 {
+pub fn get_time_today(project_id: String) -> Result<f64, String> {
     // Efficiency #2: O(1) lookup in the rolling daily-summary file instead of
     // fully deserializing the growing append-only log on every pill hover.
     crate::schema::time_log::today_secs(&project_id)
@@ -3762,24 +4146,7 @@ pub(crate) fn sanitize_name(name: &str) -> String {
 /// into the original's index and HEAD. A directory holding one is likewise not copied
 /// into: a nested repo or worktree is not this tree's content to duplicate.
 fn copy_dir_all(src: &Path, dst: &Path) -> Result<(), String> {
-    fs::create_dir_all(dst).map_err(|e| e.to_string())?;
-    for entry in fs::read_dir(src).map_err(|e| e.to_string())? {
-        let entry = entry.map_err(|e| e.to_string())?;
-        let file_type = entry.file_type().map_err(|e| e.to_string())?;
-        if entry.file_name() == ".git" {
-            continue;
-        }
-        let target = dst.join(entry.file_name());
-        if file_type.is_dir() {
-            if fs::symlink_metadata(entry.path().join(".git")).is_ok() {
-                continue;
-            }
-            copy_dir_all(&entry.path(), &target)?;
-        } else {
-            fs::copy(entry.path(), target).map_err(|e| e.to_string())?;
-        }
-    }
-    Ok(())
+    copy_tree_core(src, dst, false)
 }
 
 /// Mint a pseudo-UUID without an external dep. Time-based (nanos), so callers
@@ -3836,6 +4203,55 @@ mod tests {
             !dst.join("wt").exists(),
             "a directory holding a .git of either kind is not this tree's content"
         );
+    }
+
+    /// §9.4: the archive/move copy (`keep_git: true`) carries `.git` verbatim —
+    /// the tree IS the project, history included — where the duplicate path
+    /// (`copy_dir_all`) leaves it behind.
+    #[test]
+    fn the_move_copy_carries_git_state_verbatim() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        std::fs::create_dir_all(src.join(".git")).unwrap();
+        std::fs::write(src.join(".git/HEAD"), b"ref: refs/heads/main").unwrap();
+        std::fs::write(src.join("a.txt"), b"x").unwrap();
+
+        let dst = tmp.path().join("dst");
+        copy_tree_core(&src, &dst, true).unwrap();
+        assert!(dst.join("a.txt").exists());
+        assert!(dst.join(".git/HEAD").exists());
+    }
+
+    /// §9.4: symlinks are recreated as links (never followed), and a DANGLING
+    /// one — a stale venv/node `bin` pointer is the ordinary case — is copied
+    /// rather than erroring out the whole move partway, which used to strand a
+    /// cross-device `archive_project` in an unretryable half-moved state.
+    #[cfg(unix)]
+    #[test]
+    fn symlinks_are_preserved_and_a_dangling_one_is_tolerated() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("real.txt"), b"x").unwrap();
+        std::os::unix::fs::symlink("real.txt", src.join("live-link")).unwrap();
+        std::os::unix::fs::symlink("/nonexistent/python", src.join("dangling")).unwrap();
+
+        let dst = tmp.path().join("dst");
+        copy_tree_core(&src, &dst, true).unwrap();
+
+        assert_eq!(
+            std::fs::read_link(dst.join("live-link")).unwrap(),
+            std::path::PathBuf::from("real.txt"),
+            "a live link must stay a link, not become a second copy"
+        );
+        assert_eq!(
+            std::fs::read_link(dst.join("dangling")).unwrap(),
+            std::path::PathBuf::from("/nonexistent/python"),
+            "a dangling link is carried, not an error"
+        );
+        // Re-run over the same destination: a resumed archive pass must be
+        // idempotent, including replacing the links it already made.
+        copy_tree_core(&src, &dst, true).unwrap();
     }
 
     /// A worktree copied as a bare directory would be worse than useless — but a
@@ -4277,6 +4693,105 @@ mod tests {
         );
     }
 
+    // ── Step-by-step migration ─────────────────────────────────────────────
+
+    #[test]
+    fn migration_plan_lists_one_step_per_missing_piece() {
+        let tmp = tempfile::tempdir().unwrap();
+        let steps = migration_steps_at(tmp.path(), true).unwrap();
+        // Every scaffold file + .claude/settings.json as createFile, plus the
+        // gitignore and git-init steps.
+        let create: Vec<&str> = steps
+            .iter()
+            .filter(|s| s.kind == "createFile")
+            .filter_map(|s| s.path.as_deref())
+            .collect();
+        assert_eq!(create.len(), SCAFFOLD_FILES.len() + 1);
+        assert!(create.contains(&"AGENTS.md"));
+        assert!(create.contains(&".claude/settings.json"));
+        let gitignore = steps.iter().find(|s| s.id == "gitignore").unwrap();
+        assert!(gitignore.details.contains(&"project.json".to_string()));
+        assert!(steps.iter().any(|s| s.id == "git_init"));
+    }
+
+    #[test]
+    fn migration_plan_offers_a_stub_upgrade_not_a_create_for_a_legacy_doc() {
+        let tmp = tempfile::tempdir().unwrap();
+        scaffold_project(tmp.path(), false).unwrap();
+        std::fs::write(tmp.path().join("CLAUDE.md"), "# Claude Context\n").unwrap();
+        let steps = migration_steps_at(tmp.path(), false).unwrap();
+        assert_eq!(
+            steps,
+            vec![MigrationStep {
+                id: "stub:CLAUDE.md".to_string(),
+                kind: "upgradeStub".to_string(),
+                path: Some("CLAUDE.md".to_string()),
+                details: vec![],
+            }],
+            "a complete no-git scaffold with one legacy stub has exactly that one step"
+        );
+    }
+
+    #[test]
+    fn migration_apply_honours_declines_step_by_step() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Accept only two of the plan's steps; everything declined must stay
+        // exactly as it was — including git init.
+        let accepted: HashSet<String> = ["file:AGENTS.md".to_string(), "gitignore".to_string()]
+            .into_iter()
+            .collect();
+        let report = apply_migration_steps_at(tmp.path(), true, &accepted).unwrap();
+        assert_eq!(report.created_files, vec!["AGENTS.md"]);
+        assert!(!report.gitignore_lines_added.is_empty());
+        assert!(tmp.path().join(".gitignore").exists());
+        assert!(!tmp.path().join("TODO.md").exists(), "declined file created");
+        assert!(
+            !tmp.path().join(".claude/settings.json").exists(),
+            "declined settings created"
+        );
+        assert!(!report.git_initialized);
+        assert!(!tmp.path().join(".git").exists(), "declined git init ran");
+    }
+
+    #[test]
+    fn migration_apply_rechecks_disk_so_a_stale_accept_never_overwrites() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Planned as missing, but the user (or an agent) wrote real content
+        // before the apply landed — the accepted create must become a no-op.
+        std::fs::write(tmp.path().join("AGENTS.md"), "# Agents\n\nReal guidance.\n").unwrap();
+        let accepted: HashSet<String> =
+            ["file:AGENTS.md".to_string(), "stub:AGENTS.md".to_string()]
+                .into_iter()
+                .collect();
+        let report = apply_migration_steps_at(tmp.path(), false, &accepted).unwrap();
+        assert!(report.created_files.is_empty());
+        assert!(report.updated_files.is_empty());
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("AGENTS.md")).unwrap(),
+            "# Agents\n\nReal guidance.\n",
+        );
+    }
+
+    #[test]
+    fn entry_migration_details_previews_the_normalize_diff() {
+        let mut entry = legacy_entry();
+        entry
+            .extra
+            .insert("git_type".to_string(), Value::String("private".to_string()));
+        let details = entry_migration_details(&entry);
+        assert_eq!(
+            details,
+            vec![
+                "directory → /home/u/eldrun/projects/projecteldrun".to_string(),
+                "git_type: private → remote-private".to_string(),
+            ],
+        );
+        // An already-normalized entry previews no step.
+        let mut probe = entry.clone();
+        normalize_entry(&mut probe);
+        assert!(entry_migration_details(&probe).is_empty());
+    }
+
     // ── scaffold_project ───────────────────────────────────────────────────
 
     #[test]
@@ -4285,6 +4800,7 @@ mod tests {
         scaffold_project(tmp.path(), true).unwrap();
 
         for name in &[
+            "PROJECT.md",
             "AGENTS.md",
             "CLAUDE.md",
             "GEMINI.md",
@@ -4297,6 +4813,17 @@ mod tests {
             assert!(tmp.path().join(name).exists(), "missing: {name}");
         }
         assert!(tmp.path().join(".claude/settings.json").exists());
+    }
+
+    /// A screen grab holds whatever was on the screen, and a project with a
+    /// public remote is one `git add -A` away from publishing it. The default
+    /// is what makes a saved shot ignored rather than staged.
+    #[test]
+    fn scaffold_project_gitignores_screenshots() {
+        let dir = tempfile::tempdir().unwrap();
+        scaffold_project(dir.path(), true).unwrap();
+        let gitignore = fs::read_to_string(dir.path().join(".gitignore")).unwrap();
+        assert!(gitignore.lines().any(|line| line == "screenshots/"));
     }
 
     #[test]
@@ -4516,7 +5043,10 @@ mod tests {
 
         // The agent-specific docs carry no instructions of their own: each
         // imports AGENTS.md and links the other agent files.
-        for (name, sibling) in &[("CLAUDE.md", "(./GEMINI.md)"), ("GEMINI.md", "(./CLAUDE.md)")] {
+        for (name, sibling) in &[
+            ("CLAUDE.md", "(./GEMINI.md)"),
+            ("GEMINI.md", "(./CLAUDE.md)"),
+        ] {
             let doc = std::fs::read_to_string(tmp.path().join(name)).unwrap();
             assert!(
                 doc.lines().any(|l| l.trim() == "@AGENTS.md"),
@@ -4539,6 +5069,24 @@ mod tests {
         ));
         assert!(!is_legacy_agent_stub("TODO.md", "# TODO\n"));
         assert!(!is_legacy_agent_stub("AGENTS.md", AGENTS_SCAFFOLD));
+    }
+
+    #[test]
+    fn legacy_agent_stubs_mark_an_otherwise_complete_scaffold_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        scaffold_project(tmp.path(), true).unwrap();
+        assert!(!scaffold_is_missing_at(tmp.path(), true));
+
+        // Die Crew predates AGENTS.md being canonical and has exactly these
+        // untouched placeholders. They must keep the visible warning on until
+        // the user repairs the project scaffold.
+        for (name, content) in LEGACY_AGENT_STUBS {
+            std::fs::write(tmp.path().join(name), content).unwrap();
+        }
+
+        assert!(scaffold_is_missing_at(tmp.path(), true));
+        repair_project_scaffold_at(tmp.path(), true).unwrap();
+        assert!(!scaffold_is_missing_at(tmp.path(), true));
     }
 
     #[test]

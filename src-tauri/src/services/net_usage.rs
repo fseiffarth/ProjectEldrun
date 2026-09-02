@@ -63,7 +63,7 @@ mod linux {
     use std::time::Duration;
 
     use super::{FLUSH_EVERY_TICKS, SAMPLE_INTERVAL_SECS};
-    use crate::commands::network::linux_ssh_link;
+    use crate::commands::network::{linux_ssh_link_shared, SsDump};
     use crate::schema::net_usage::{self, ByteCounts};
     use crate::services::remote::{self, RemotePoolState};
     use crate::storage;
@@ -145,18 +145,33 @@ mod linux {
                 disconnected = true;
             }
 
-            for id in &ids {
-                let pid = id.clone();
-                let snap = tauri::async_runtime::spawn_blocking(move || linux_ssh_link(&pid))
-                    .await
-                    .ok();
-                let Some(snap) = snap else { continue };
+            // One system-wide `ss` scan serves every project this tick: the
+            // scan is machine-global (`-p` walks every `/proc/<pid>/fd`), so
+            // running it per project multiplied that cost by N and threw away
+            // all but one master's rows each time. The per-master `ssh -O
+            // check` stays per project — that part genuinely differs.
+            let snaps: Vec<(String, _)> = if ids.is_empty() {
+                Vec::new()
+            } else {
+                tauri::async_runtime::spawn_blocking(move || {
+                    let mut ss = SsDump::default();
+                    ids.into_iter()
+                        .map(|id| {
+                            let snap = linux_ssh_link_shared(&id, &mut ss);
+                            (id, snap)
+                        })
+                        .collect()
+                })
+                .await
+                .unwrap_or_default()
+            };
 
+            for (id, snap) in snaps {
                 // Not actually carrying counters (master not found / `ss`
                 // unavailable): drop the baseline so the next good sample
                 // re-baselines instead of diffing against stale numbers.
                 if !snap.connected || snap.connection_id.is_none() {
-                    baselines.remove(id);
+                    baselines.remove(&id);
                     continue;
                 }
 
@@ -169,7 +184,7 @@ mod linux {
                 let cid = snap.connection_id.clone().unwrap_or_default();
 
                 let booked =
-                    match decide_booking(baselines.get(id), &cur, known_conns.contains(&cid)) {
+                    match decide_booking(baselines.get(&id), &cur, known_conns.contains(&cid)) {
                         Booking::Delta(d_rx, d_tx) => Some((d_rx, d_tx)),
                         Booking::Fresh(d_rx, d_tx) => {
                             known_conns.insert(cid);
@@ -184,7 +199,7 @@ mod linux {
                         acc.tx = acc.tx.saturating_add(d_tx);
                     }
                 }
-                baselines.insert(id.clone(), cur);
+                baselines.insert(id, cur);
             }
 
             if disconnected || tick.is_multiple_of(FLUSH_EVERY_TICKS) {

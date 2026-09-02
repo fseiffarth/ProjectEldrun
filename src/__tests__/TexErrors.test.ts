@@ -4,7 +4,12 @@
  * resolving those paths against the build directory.
  */
 import { describe, it, expect } from "vitest";
-import { parseTexErrors, resolveTexErrorPath } from "../lib/viewers/tex";
+import {
+  compileWasNoop,
+  parseTexErrors,
+  resolveTexErrorPath,
+  texDiagnosticsByFile,
+} from "../lib/viewers/tex";
 
 describe("parseTexErrors", () => {
   it("pulls file/line/message out of -file-line-error lines", () => {
@@ -78,5 +83,74 @@ describe("resolveTexErrorPath", () => {
     expect(resolveTexErrorPath("C:\\Users\\u\\proj", "C:\\texmf\\x.sty")).toBe(
       "C:\\texmf\\x.sty",
     );
+  });
+});
+
+describe("compileWasNoop", () => {
+  it("recognises the latexmk run that executed no engine, and not a real build", () => {
+    const noop = [
+      "Rc files read:",
+      "  .latexmkrc",
+      "Latexmk: This is Latexmk, John Collins, 15 June 2025. Version 4.87.",
+      "Latexmk: Nothing to do for 'main.tex'.",
+      "Latexmk: All targets (main.pdf) are up-to-date",
+      "",
+    ].join("\n");
+    expect(compileWasNoop(noop)).toBe(true);
+    // A real build also ends on the up-to-date line, so that alone must not count.
+    const built = [
+      "Latexmk: applying rule 'lualatex'...",
+      "Output written on main.pdf (58 pages, 2548134 bytes).",
+      "Latexmk: All targets (main.pdf) are up-to-date",
+      "",
+    ].join("\n");
+    expect(compileWasNoop(built)).toBe(false);
+    expect(compileWasNoop("")).toBe(false);
+  });
+});
+
+describe("texDiagnosticsByFile", () => {
+  const dir = "/doc";
+  const root = "/doc/main.tex";
+
+  it("buckets errors and warnings by resolved absolute path", () => {
+    const byFile = texDiagnosticsByFile(
+      dir,
+      root,
+      [
+        { file: "./chapters/intro.tex", line: 12, message: "Undefined control sequence." },
+        { file: "./chapters/intro.tex", line: 40, message: "Missing $ inserted." },
+        { file: "/doc/main.tex", line: 3, message: "Emergency stop." },
+      ],
+      [{ kind: "reference", message: "Reference `fig:x' undefined", file: "chapters/intro.tex", line: 22 }],
+    );
+    expect(byFile.get("/doc/chapters/intro.tex")).toEqual({
+      errors: 2,
+      warnings: 1,
+      // The FIRST error's line, not the last: a LaTeX build's later errors are
+      // usually the first one's wreckage.
+      errorLine: 12,
+      warningLine: 22,
+    });
+    expect(byFile.get("/doc/main.tex")).toEqual({ errors: 1, warnings: 0, errorLine: 3 });
+  });
+
+  it("attributes a warning with no file to the built root, like the warnings card", () => {
+    const byFile = texDiagnosticsByFile(dir, root, [], [
+      { kind: "other", message: "Font shape undefined", line: 9 },
+    ]);
+    expect(byFile.get("/doc/main.tex")).toEqual({ errors: 0, warnings: 1, warningLine: 9 });
+  });
+
+  it("leaves a warning that carries no line without a jump target", () => {
+    const byFile = texDiagnosticsByFile(dir, root, [], [
+      { kind: "other", message: "Rerun to get cross-references right", file: "main.tex" },
+      { kind: "other", message: "Later one, with a line", file: "main.tex", line: 7 },
+    ]);
+    expect(byFile.get("/doc/main.tex")).toEqual({ errors: 0, warnings: 2, warningLine: 7 });
+  });
+
+  it("is empty for a clean build, which is what clears the badges", () => {
+    expect(texDiagnosticsByFile(dir, root, [], []).size).toBe(0);
   });
 });

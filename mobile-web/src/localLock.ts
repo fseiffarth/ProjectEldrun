@@ -105,6 +105,10 @@ export async function localUnlockPinLength(): Promise<number | null> {
   return typeof length === "number" && length >= 4 && length <= 12 ? length : null;
 }
 
+export async function localUnlockBiometricEnabled(): Promise<boolean> {
+  return !!(await readRecord())?.biometricCredentialId;
+}
+
 export async function platformBiometricAvailable(): Promise<boolean> {
   return typeof PublicKeyCredential !== "undefined"
     && typeof PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable === "function"
@@ -150,20 +154,21 @@ async function verifyBiometric(credentialId: string): Promise<void> {
 }
 
 export interface LocalUnlockSetup {
-  biometricRequired: boolean;
+  /** A platform credential was enrolled; it is the default unlock from now on. */
+  biometricEnrolled: boolean;
 }
 
 /** Configure the app-local lock after pairing. The PIN is never persisted;
- * only a per-device PBKDF2 verifier is stored. WebAuthn itself performs the
- * platform biometric/device-lock check and keeps its private credential in the
- * phone's authenticator. */
+ * only a per-device PBKDF2 verifier is stored. When the phone offers a
+ * platform authenticator, the enrolled WebAuthn credential becomes the
+ * default unlock and the PIN is the fallback. */
 export async function configureLocalUnlock(pin: string): Promise<LocalUnlockSetup> {
   if (!validPin(pin) || pin.length < MIN_NEW_PIN) throw new Error(`Choose a ${MIN_NEW_PIN}–12 digit PIN.`);
   const salt = randomBytes(16);
   const verifier = await pinDigest(pin, salt);
   const biometricCredentialId = await enrollBiometric();
   await saveRecord({ version: 1, salt: b64url(salt), verifier: b64url(verifier), pinLength: pin.length, biometricCredentialId: biometricCredentialId ?? undefined });
-  return { biometricRequired: !!biometricCredentialId };
+  return { biometricEnrolled: !!biometricCredentialId };
 }
 
 /** Exponential backoff after `LOCKOUT_AFTER` misses, capped. Exported so the
@@ -180,7 +185,44 @@ function describeWait(milliseconds: number): string {
   return `${minutes} minute${minutes === 1 ? "" : "s"}`;
 }
 
-/** Verify both local factors before the caller resumes the Eldrun session. */
+/** Enroll the platform biometric onto an existing record — the path for a
+ * phone whose browser lacked (or refused) an authenticator at setup, which
+ * otherwise leaves the lock PIN-only forever. Called after a verified PIN
+ * unlock only, never from the locked screen. Failure is not an error: the
+ * lock simply stays PIN-only and the next unlock offers again. */
+export async function maybeEnrollBiometric(): Promise<boolean> {
+  const record = await readRecord();
+  if (!record) return false;
+  if (record.biometricCredentialId) return true;
+  try {
+    const biometricCredentialId = await enrollBiometric();
+    if (!biometricCredentialId) return false;
+    await saveRecord({ ...record, biometricCredentialId });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Fingerprint-first unlock: the WebAuthn platform assertion alone resumes
+ * the session. The OS rate-limits and hardware-binds biometric attempts, so a
+ * PIN lockout deliberately does not block this path — it is the stronger
+ * factor and the way back in for a locked-out legitimate user. */
+export async function unlockLocalBiometric(): Promise<void> {
+  const record = await readRecord();
+  if (!record) throw new Error("Set up the app lock before unlocking Eldrun Mobile.");
+  if (!record.biometricCredentialId) throw new Error("Device biometric unlock is not set up on this phone.");
+  await verifyBiometric(record.biometricCredentialId);
+  if (record.failedAttempts || record.lockedUntil) {
+    await saveRecord({ ...record, failedAttempts: 0, lockedUntil: undefined });
+  }
+}
+
+/** PIN fallback unlock, for when the platform authenticator fails or is
+ * unavailable. Either factor alone unlocks: the lock guards casual access to
+ * an unlocked phone, and the paired signing key is a non-exportable CryptoKey
+ * the PIN never encrypted — requiring both here would leave a broken
+ * fingerprint sensor with no way in at all. */
 export async function unlockLocal(pin: string, now = Date.now()): Promise<void> {
   const record = await readRecord();
   if (!record) throw new Error("Set up the app lock before unlocking Eldrun Mobile.");
@@ -198,7 +240,6 @@ export async function unlockLocal(pin: string, now = Date.now()): Promise<void> 
       ? `Incorrect PIN. Try again in ${describeWait(lockedUntil - now)}.`
       : "Incorrect PIN.");
   }
-  if (record.biometricCredentialId) await verifyBiometric(record.biometricCredentialId);
   if (record.failedAttempts || record.lockedUntil) {
     await saveRecord({ ...record, failedAttempts: 0, lockedUntil: undefined });
   }

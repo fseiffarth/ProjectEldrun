@@ -98,7 +98,7 @@ describe("tour catalogs", () => {
 });
 
 // The bubble geometry: the "find your files" steps point at a marker that
-// follows the file panel to *either* window edge (`right_panel_side`), so a
+// follows the file panel to *either* window edge (`side_panel_edge`), so a
 // left-placed bubble at x≈0 used to hang a full bubble-width off-screen.
 describe("bubbleStyle", () => {
   const rect = (left: number, width = 6, top = 300, height = 120) =>

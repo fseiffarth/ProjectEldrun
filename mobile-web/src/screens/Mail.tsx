@@ -30,7 +30,7 @@ function sizeLabel(size: number) {
   return `${(size / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-export function Mail({ back }: { back: () => void }) {
+export function Mail() {
   const [accounts, setAccounts] = useState<MobileMailAccount[] | null>(null);
   const [folder, setFolder] = useState<Extract<MobileMailView, { view: "folder" }> | null>(null);
   const [message, setMessage] = useState<Extract<MobileMailView, { view: "message" }> | null>(null);
@@ -69,11 +69,9 @@ export function Mail({ back }: { back: () => void }) {
     } catch (reason) { setError(String(reason)); } finally { setBusy(false); }
   };
 
-  const goBack = () => {
-    if (message) setMessage(null);
-    else if (folder) setFolder(null);
-    else back();
-  };
+  // Mail is a tab now, so the chevron only ever walks its own stack: message →
+  // folder → account list. At the root there is nothing above it to go back to.
+  const goBack = message ? () => setMessage(null) : folder ? () => setFolder(null) : null;
   const refresh = () => {
     if (message) void loadMessage(message.message);
     else if (folder) void loadFolder(folder.folder, folder.offset);
@@ -82,7 +80,7 @@ export function Mail({ back }: { back: () => void }) {
 
   return <main className="screen mail-mobile-screen">
     <header>
-      <button className="back" onClick={goBack}>‹</button>
+      {goBack && <button className="back" onClick={goBack}>‹</button>}
       <h1>{message ? safeText(message.message.subject) || "(No subject)" : folder ? safeText(folder.folder.name) : "Mail"}</h1>
       <button onClick={refresh} disabled={busy}>↻</button>
     </header>

@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { create } from "zustand";
 
 export interface TrackedWindow {
@@ -18,6 +19,10 @@ interface WindowsStore {
   refresh: (projectId?: string) => Promise<void>;
   launch: (exec: string, file?: string, projectId?: string) => Promise<TrackedWindow>;
   untrack: (id: string) => Promise<void>;
+  /** Close the launched app (kill its process subtree) and drop its entry.
+   *  Rows the backend cannot signal (pid 0: OS-default opens, hand-offs)
+   *  fall back to a plain untrack — either way the row ends up gone. */
+  closeApp: (id: string) => Promise<void>;
   openFile: (
     path: string,
     handler?: string,
@@ -33,11 +38,18 @@ interface WindowsStore {
 export const useWindowsStore = create<WindowsStore>((set) => ({
   windows: [],
 
+  // Merge-refresh: replace only the requested project's slice. The store is
+  // one array shared by every mounted viewer (side panel, Files tabs, docked
+  // columns), so a wholesale replace would let concurrent viewers clobber
+  // each other's projects.
   refresh: async (projectId) => {
-    const windows = await invoke<TrackedWindow[]>("get_opened_windows", {
+    const fetched = await invoke<TrackedWindow[]>("get_opened_windows", {
       projectId: projectId ?? null,
     });
-    set({ windows });
+    const scope = projectId ?? null;
+    set((s) => ({
+      windows: [...s.windows.filter((w) => (w.project_id ?? null) !== scope), ...fetched],
+    }));
   },
 
   launch: async (exec, file, projectId) => {
@@ -56,6 +68,23 @@ export const useWindowsStore = create<WindowsStore>((set) => ({
     set((s) => ({ windows: s.windows.filter((w) => w.id !== id) }));
   },
 
+  closeApp: async (id) => {
+    // Optimistic: the row leaves immediately; the backend confirms via the
+    // app-windows-changed event → refresh.
+    set((s) => ({ windows: s.windows.filter((w) => w.id !== id) }));
+    try {
+      await invoke("close_tracked_window", { id });
+    } catch {
+      // "not closeable" (pid 0) or a backend predating the command: at least
+      // drop the registry entry so the list and the registry agree.
+      try {
+        await invoke("untrack_window", { id });
+      } catch {
+        // Nothing left to do — the optimistic removal stands.
+      }
+    }
+  },
+
   openFile: async (path, handler, projectId, origin, position) => {
     const win = await invoke<TrackedWindow>("open_file", {
       path,
@@ -69,3 +98,17 @@ export const useWindowsStore = create<WindowsStore>((set) => ({
     return win;
   },
 }));
+
+let windowsEventsInstalled = false;
+
+/** Subscribe this window to backend app-registry changes (a launched app
+ *  exiting, a close finishing) and fold them in via a scoped refresh. Called
+ *  once per window root (AppShell / DetachedApp); the flag is per JS heap, so
+ *  each window installs exactly one listener. */
+export function installWindowsEvents(): void {
+  if (windowsEventsInstalled) return;
+  windowsEventsInstalled = true;
+  void listen<{ project_id: string | null }>("app-windows-changed", (e) => {
+    void useWindowsStore.getState().refresh(e.payload?.project_id ?? undefined);
+  });
+}

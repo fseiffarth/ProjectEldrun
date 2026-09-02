@@ -76,6 +76,10 @@ vi.mock("../stores/settings", () => {
       { getState: () => state, subscribe: () => () => {} },
     ),
     whenSettingsLoaded: () => Promise.resolve(),
+    // Group B #226: the shell subscribes every window's settings store to
+    // writes made in any window. Nothing is written here, so a no-op unlisten
+    // is all this test needs.
+    listenSettingsChanged: () => Promise.resolve(() => {}),
   };
 });
 // AppShell loads boxes once projects are loaded; provide a no-op so the effect
@@ -96,7 +100,7 @@ vi.mock("../stores/timer", () => ({
 vi.mock("../components/layout/HeaderBar", () => ({ HeaderBar: () => null }));
 vi.mock("../components/layout/CenterPanel", () => ({ CenterPanel: () => null }));
 vi.mock("../components/layout/ProjectSwitcher", () => ({ ProjectSwitcher: () => null }));
-vi.mock("../components/layout/RightPanel", () => ({ RightPanel: () => null }));
+vi.mock("../components/layout/SidePanel", () => ({ SidePanel: () => null }));
 vi.mock("../components/layout/GlobalAppBar", () => ({ GlobalAppBar: () => null }));
 vi.mock("../hooks/useKeyboard", () => ({ useKeyboard: vi.fn() }));
 

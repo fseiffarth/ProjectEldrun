@@ -1,5 +1,5 @@
 /**
- * Pure multi-selection logic for the right-panel file tree: a shift-range spans
+ * Pure multi-selection logic for the side-panel file tree: a shift-range spans
  * the contiguous slice of the visible order, ctrl/cmd toggles a single row, and
  * a plain click collapses to one. These lock the range math (order-independent,
  * inclusive) and the click state machine (selection + anchor transitions).

@@ -603,6 +603,21 @@ pub fn enforce_spawn_authority(opts: &mut PtyOptions) {
     let Some(project_id) = opts.project_id.clone() else {
         return;
     };
+    // Box scopes (`box:<id>`) run local + uncontained by design (v1 trust
+    // statement): a box has no container or VM of its own, and one member's
+    // sandbox spec must not silently govern a tab that can also reach the
+    // other members' trees — a half-applied boundary would read as a whole
+    // one. The box editor surfaces the trust notice instead.
+    if crate::commands::boxes::box_id_of_scope(&project_id).is_some() {
+        if opts.sandbox {
+            eprintln!(
+                "sandbox: box-scoped tab '{}' resolved to sandbox: false (boxes run uncontained)",
+                opts.id
+            );
+        }
+        opts.sandbox = false;
+        return;
+    }
     let is_remote = crate::services::remote::remote_target_for(&project_id).is_some();
     let spec = sandbox_spec_for(&project_id);
     let toggle_on = spec.as_ref().is_some_and(|s| s.enabled);
@@ -797,6 +812,10 @@ pub fn up(
                 .into_iter()
                 .map(|(src, dst)| format!("{src}:{dst}")),
         );
+        rw_mounts.extend(
+            staged_claude_json_mount(&home, &stage, &[project_dir.to_string()])
+                .map(|(src, dst)| format!("{src}:{dst}")),
+        );
     }
     let ro_mounts = if strict_trash {
         Vec::new()
@@ -830,7 +849,11 @@ pub fn up(
     let (tx_rw, tx_ro) = if strict_trash {
         (Vec::new(), Vec::new())
     } else {
-        claude_transcript_mounts(&home, project_dir, &claude_projects_stage(project_id))
+        claude_transcript_mounts(
+            &home,
+            &[project_dir.to_string()],
+            &claude_projects_stage(project_id),
+        )
     };
     let rw_mounts: Vec<String> = rw_mounts.into_iter().chain(tx_rw).collect();
     let ro_mounts: Vec<String> = ro_mounts.into_iter().chain(tx_ro).collect();
@@ -1534,7 +1557,11 @@ fn narrowed_agent_mounts(dir: &str, unmounted: &[&str]) -> Vec<String> {
 /// there. With the shared root mounted, a contained agent could overwrite another
 /// project's tab record and thereby choose which conversation an **uncontained**
 /// agent resumes.
-fn rw_mounts(home: &str, live_sessions_src: &str, live_sessions_dst: &str) -> Vec<String> {
+pub(crate) fn rw_mounts(
+    home: &str,
+    live_sessions_src: &str,
+    live_sessions_dst: &str,
+) -> Vec<String> {
     let mut m = Vec::new();
     m.extend(narrowed_agent_mounts(
         &format!("{home}/.claude"),
@@ -1578,7 +1605,7 @@ const TRANSCRIPT_PROBE_LINES: usize = 32;
 /// nobody knew about at create time (a subdir tab, a fresh worktree) lands in a
 /// real host directory instead of the container's throwaway layer — teardown
 /// harvests it into `~/.claude/projects` (see [`harvest_claude_transcripts`]).
-fn claude_projects_stage(project_id: &str) -> PathBuf {
+pub(crate) fn claude_projects_stage(project_id: &str) -> PathBuf {
     stage_dir(project_id).join("claude-projects")
 }
 
@@ -1664,9 +1691,9 @@ fn transcript_name_matches(name: &str, project_dir: &str) -> bool {
 ///
 /// The whole dir used to be one rw mount, which made every project's history
 /// rewritable from inside any container.
-fn claude_transcript_mounts(
+pub(crate) fn claude_transcript_mounts(
     home: &str,
-    project_dir: &str,
+    roots: &[String],
     stage: &Path,
 ) -> (Vec<String>, Vec<String>) {
     let dest_root = format!("{home}/.claude/{CLAUDE_PROJECTS_ENTRY}");
@@ -1695,8 +1722,10 @@ fn claude_transcript_mounts(
         let _ = std::fs::create_dir_all(stage.join(&name));
         let pair = format!("{}:{dest_root}/{name}", src.to_string_lossy());
         let ours = match transcript_cwd(&src) {
-            Some(cwd) => cwd_is_within(&cwd, project_dir),
-            None => transcript_name_matches(&name, project_dir),
+            Some(cwd) => roots.iter().any(|root| cwd_is_within(&cwd, root)),
+            None => roots
+                .iter()
+                .any(|root| transcript_name_matches(&name, root)),
         };
         if ours {
             rw.push(pair);
@@ -1758,7 +1787,7 @@ fn harvest_claude_transcripts(stage: &Path, real_root: &Path) {
 }
 
 /// [`harvest_claude_transcripts`] for one project's stage.
-fn harvest_project_transcripts(project_id: &str) {
+pub(crate) fn harvest_project_transcripts(project_id: &str) {
     let real = paths::home_dir()
         .join(".claude")
         .join(CLAUDE_PROJECTS_ENTRY);
@@ -1783,7 +1812,7 @@ fn harvest_all_transcripts() {
 /// Read-only identical-path mounts: just the hook *script* dir, which is shared
 /// with host-run agents and so must be immutable from inside the container (see
 /// the module doc). Mounted only when it exists on the host.
-fn ro_mounts(hooks_dir: &Path) -> Vec<String> {
+pub(crate) fn ro_mounts(hooks_dir: &Path) -> Vec<String> {
     let mut m = Vec::new();
     if hooks_dir.is_dir() {
         let h = hooks_dir.to_string_lossy();
@@ -1795,7 +1824,7 @@ fn ro_mounts(hooks_dir: &Path) -> Vec<String> {
 /// Per-project staging dir for the writable hook-config copies:
 /// `<state_dir>/sandbox-stage/<sanitized project id>`. One dir per project
 /// (mounts are fixed at create), refreshed at each `up` — no per-tab leak.
-fn stage_dir(project_id: &str) -> PathBuf {
+pub(crate) fn stage_dir(project_id: &str) -> PathBuf {
     storage::state_dir()
         .join("sandbox-stage")
         .join(sanitize_key(project_id))
@@ -1821,7 +1850,7 @@ fn stage_dir(project_id: &str) -> PathBuf {
 /// `src:dst` strings: a host path is not colon-free on every platform (a
 /// Windows drive letter carries one), so joining here would hand the caller a
 /// string it cannot split back apart unambiguously.
-fn staged_config_mounts(home: &str, stage: &Path) -> Vec<(String, String)> {
+pub(crate) fn staged_config_mounts(home: &str, stage: &Path) -> Vec<(String, String)> {
     let home = Path::new(home);
     let mut mounts = Vec::new();
     for rel in [
@@ -1852,6 +1881,50 @@ fn staged_config_mounts(home: &str, stage: &Path) -> Vec<(String, String)> {
         }
     }
     mounts
+}
+
+/// Stage `~/.claude.json` and mount the copy at the real path.
+///
+/// This top-level file is Claude's identity and onboarding state: without it a
+/// fenced/contained tab looks like a fresh install and demands login **every
+/// tab**, even though `.credentials.json` itself is mounted. It is also
+/// cross-project state — a `projects` map keyed by cwd holding every project's
+/// prompt history and `allowedTools` — so neither hiding it nor mounting the
+/// host original writable is acceptable: the former breaks login, the latter
+/// would let a boxed agent read every project's history and write standing
+/// permissions for *uncontained* sessions of other projects (the same class of
+/// hole as [`CLAUDE_UNMOUNTED`]'s `plugins`/`agents`).
+///
+/// So: a per-project **copy**, with the `projects` map filtered to entries at
+/// or under this box's own `roots`. Login and onboarding survive, foreign
+/// history stays invisible, and writes die with the stage. Refreshed in place
+/// at every up, like [`staged_config_mounts`]. A missing or unparsable host
+/// file stages `{}` (fresh-install behavior, which is then accurate).
+pub(crate) fn staged_claude_json_mount(
+    home: &str,
+    stage: &Path,
+    roots: &[String],
+) -> Option<(String, String)> {
+    let src_path = Path::new(home).join(".claude.json");
+    let src = src_path.to_string_lossy().into_owned();
+    let leaf = src
+        .trim_start_matches(['/', '\\'])
+        .replace(['/', '\\', ':'], "_");
+    let dst = stage.join(&leaf);
+    let mut value: serde_json::Value = std::fs::read(&src_path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    if let Some(projects) = value.get_mut("projects").and_then(|v| v.as_object_mut()) {
+        projects.retain(|cwd, _| {
+            roots
+                .iter()
+                .any(|root| Path::new(cwd).starts_with(root))
+        });
+    }
+    let body = serde_json::to_vec(&value).ok()?;
+    std::fs::write(&dst, body).ok()?;
+    Some((dst.to_string_lossy().into_owned(), src))
 }
 
 /// Placeholder content for a shadowed agent-config file the host does not have
@@ -2302,6 +2375,58 @@ mod tests {
         std::fs::remove_dir_all(&base).ok();
     }
 
+    #[test]
+    fn staged_claude_json_keeps_login_and_filters_foreign_projects() {
+        let base = std::env::temp_dir().join(format!("eldrun-sbx-cj-{}", std::process::id()));
+        let home = base.join("home");
+        let stage = base.join("stage");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&stage).unwrap();
+        let root = home.join("work/p").to_string_lossy().into_owned();
+        let host = home.join(".claude.json");
+        std::fs::write(
+            &host,
+            serde_json::json!({
+                "oauthAccount": {"emailAddress": "u@example.org"},
+                "hasCompletedOnboarding": true,
+                "projects": {
+                    root.clone(): {"allowedTools": ["Bash"]},
+                    format!("{root}/sub"): {"history": ["own subdir survives"]},
+                    "/elsewhere/secret": {"history": ["other project's prompts"]},
+                },
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let home_str = home.to_string_lossy().into_owned();
+        let (src, dst) =
+            staged_claude_json_mount(&home_str, &stage, std::slice::from_ref(&root)).unwrap();
+        assert_eq!(dst, host.to_string_lossy());
+        assert!(Path::new(&src).starts_with(&stage));
+        let staged: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&src).unwrap()).unwrap();
+        // Login + onboarding survive; foreign project entries do not.
+        assert_eq!(
+            staged["oauthAccount"]["emailAddress"], "u@example.org",
+            "login state must survive into the box"
+        );
+        assert_eq!(staged["hasCompletedOnboarding"], true);
+        let projects = staged["projects"].as_object().unwrap();
+        assert_eq!(projects.len(), 2, "got: {projects:?}");
+        assert!(projects.contains_key(&root));
+        assert!(projects.contains_key(&format!("{root}/sub")));
+
+        // Missing host file: an empty object is staged, the original not created.
+        std::fs::remove_file(&host).unwrap();
+        let (src2, _) = staged_claude_json_mount(&home_str, &stage, &[root]).unwrap();
+        assert_eq!(src2, src, "refreshed in place, not a second copy");
+        assert_eq!(std::fs::read(&src2).unwrap(), b"{}");
+        assert!(!host.exists(), "staging must never create the host original");
+
+        std::fs::remove_dir_all(&base).ok();
+    }
+
     // ── spec sources ──────────────────────────────────────────────────────
 
     #[test]
@@ -2368,6 +2493,7 @@ mod tests {
             rows: 24,
             local_only: false,
             sandbox: false,
+            agent: true,
             project_id: None,
             remote_host_id: None,
             tmux_session: None,
@@ -2377,6 +2503,32 @@ mod tests {
         wrap_pty_options_docker(&mut opts).unwrap();
         assert_eq!(opts.cmd, "claude");
         assert_eq!(opts.args, args(&["--session-id", "x"]));
+    }
+
+    #[test]
+    fn box_scope_never_resolves_sandboxed() {
+        // A `box:<id>` tab is local + uncontained by design; the branch returns
+        // before any state-dir read, so this is safe to exercise in a test.
+        let mut opts = PtyOptions {
+            id: "t".to_string(),
+            cmd: "claude".to_string(),
+            args: vec![],
+            env: Default::default(),
+            cwd: "/home/u/eldrun/boxes/b".to_string(),
+            cols: 80,
+            rows: 24,
+            local_only: false,
+            sandbox: true,
+            agent: true,
+            project_id: Some("box:abc".to_string()),
+            remote_host_id: None,
+            tmux_session: None,
+            tmux_attach: None,
+            host_bound_uid: None,
+        };
+        enforce_spawn_authority(&mut opts);
+        assert!(!opts.sandbox, "box tabs must never spawn containerized");
+        assert!(!opts.local_only, "local_only is left as requested");
     }
 
     // ── Authority resolution (S-2 / S-6) ──────────────────────────────────
@@ -2732,6 +2884,12 @@ mod tests {
             "ours-subdir",
             Some(&project_dir.join("sub").to_string_lossy()),
         );
+        let second_root = base.join("work").join("box-sibling");
+        transcript_dir(
+            &projects,
+            "ours-second-root",
+            Some(&second_root.join("nested").to_string_lossy()),
+        );
         transcript_dir(
             &projects,
             "sibling",
@@ -2745,7 +2903,8 @@ mod tests {
 
         let stage = base.join("stage");
         let home_str = home.to_string_lossy().into_owned();
-        let (rw, ro) = claude_transcript_mounts(&home_str, &project, &stage);
+        let roots = vec![project.clone(), second_root.to_string_lossy().into_owned()];
+        let (rw, ro) = claude_transcript_mounts(&home_str, &roots, &stage);
 
         let src_of = |name: &str| projects.join(name).to_string_lossy().into_owned();
         let has = |v: &[String], name: &str| {
@@ -2760,6 +2919,7 @@ mod tests {
 
         assert!(has(&rw, "ours"));
         assert!(has(&rw, "ours-subdir"));
+        assert!(has(&rw, "ours-second-root"));
         assert!(
             has(&ro, "sibling"),
             "a sibling project must not be writable"
@@ -2774,10 +2934,10 @@ mod tests {
         for name in ["sibling", "elsewhere", "empty-unknown"] {
             assert!(!has(&rw, name));
         }
-        assert_eq!(rw.len() + ro.len(), 1 + 5);
+        assert_eq!(rw.len() + ro.len(), 1 + 6);
         // Deterministic, so the mount list doesn't flap with readdir order.
         assert_eq!(
-            claude_transcript_mounts(&home_str, &project, &stage),
+            claude_transcript_mounts(&home_str, &roots, &stage),
             (rw, ro)
         );
 

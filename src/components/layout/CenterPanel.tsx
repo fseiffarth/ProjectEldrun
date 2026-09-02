@@ -22,24 +22,22 @@ import {
   BLOB_TAB_CMD,
   DEFAULT_MIN_SUBWINDOW_PX,
   EMPTY_GROUP_ID,
-  FILES_TAB_CMD,
   allGroups,
-  cmdToKind,
+  dividerFraction,
   effectiveTabLocation,
   findGroup,
-  isRestorableTab,
+  hydrateScopeFromDisk,
   isResumableAgentTab,
   isPtyTabKind,
   localTabCwd,
   remoteHostIdOf,
   useTabsStore,
   type LayoutNode,
-  type SavedLayoutTree,
-  type TabKind,
 } from "../../stores/tabs";
 import { useSettingsStore } from "../../stores/settings";
 import { useDragStore } from "../../stores/drag";
 import { useSubwindowNavStore } from "../../stores/subwindowNav";
+import { useKeyboardSteeringStore } from "../../stores/keyboardSteering";
 import { useWindowFocused } from "../../hooks/useWindowFocused";
 import { useScrollSyncStore } from "../../stores/scrollSync";
 import { useWindowMoveStore } from "../../stores/windowMove";
@@ -51,17 +49,19 @@ import {
   startDetachedDropSession,
   reseedDetached,
 } from "../tabs/detachedDropTargets";
+import { createDetachedDragNet } from "../tabs/detachedDragNet";
 import {
   snapshotFrame,
   physToClient,
   type PhysPoint,
   type WindowFrame,
 } from "../../lib/coords";
-import { dragPlatform } from "../../lib/dragPlatform";
+import { bindDragRelease, dragPlatform } from "../../lib/dragPlatform";
 import { shouldPersistTab, shouldPersistLocalTab } from "../../lib/tmuxSession";
 import { isTrashProject } from "../../lib/trashProject";
 import { IS_WINDOWS } from "../../lib/platform";
-import { useProjectsStore } from "../../stores/projects";
+import { restoreProjectScope, useProjectsStore } from "../../stores/projects";
+import { BOX_SCOPE_PREFIX, boxFolderOfScope, restoreBoxScope, useBoxesStore } from "../../stores/boxes";
 import { useRemoteMachinesStore } from "../../stores/remoteMachines";
 import { useRemoteStatusStore } from "../../stores/remoteStatus";
 import { resolveLocalMirror, resolveProjectDirectory } from "../../types";
@@ -120,6 +120,12 @@ export function CenterPanel() {
   const windowMoving = useWindowMoveStore((s) => s.moving);
 
   const { projects, activeId } = useProjectsStore();
+  // Bumped on every pill click, even one re-selecting the already-active
+  // project. It is what lets the restore effect below leave a box scope when
+  // the user clicks the project they were in before opening the box —
+  // `activeId` doesn't change then, so without this dep the effect never
+  // re-runs its `setScope` and the box scope is stuck.
+  const switchGeneration = useProjectsStore((s) => s.switchGeneration);
 
   // Whether a pointer-drag is active. We subscribe to a boolean (not the drag
   // object, which is replaced on every pointermove) so the panel doesn't
@@ -147,6 +153,11 @@ export function CenterPanel() {
   const activeProject = projects.find((p) => p.id === activeId);
   const localFile = activeProject?.local_file as string | undefined;
   const projectCwd = resolveProjectDirectory(activeProject);
+  // The active BOX scope's folder (empty string outside a box scope). New tabs
+  // opened while a box is active default here, not to the previously active
+  // project's directory — the box folder is the scope's own root.
+  const activeBoxFolder = useBoxesStore((s) => boxFolderOfScope(scope, s.boxes));
+  const newTabCwd = activeBoxFolder || projectCwd;
 
   // Mount-free remote: a remote project starts DISCONNECTED but its LOCAL tabs
   // (local agents / local_agent / local-toggled shells — all running in the
@@ -199,29 +210,17 @@ export function CenterPanel() {
     const nextScope = activeId ?? "root";
     setScope(nextScope);
 
-    type LayoutEntry = { key: string; label: string; cmd: string; cwd: string; kind?: TabKind; type?: string; env?: Record<string, string>; sessionId?: string; embedPath?: string; embedExec?: string; viewer?: "pdf" | "image" | "markdown" | "text" };
-    // Keep shell/files/network tabs, resumable agent tabs (Claude with a sessionId,
-    // resumed via --resume), and in-app file-viewer embeds; other agent/embed tabs
-    // (including external-app embeds) are dropped. Derive kind from the saved entry
-    // or its command. The saved groups tree self-heals (loadFromLayout drops
-    // dropped keys).
-    const restorableOf = (raw: LayoutEntry[]) =>
-      raw.filter((t) =>
-        isRestorableTab({
-          kind: t.kind ?? cmdToKind(t.cmd || (t.type === "files" ? FILES_TAB_CMD : "")),
-          cmd: t.cmd,
-          sessionId: t.sessionId,
-          viewer: t.viewer,
-        }),
-      );
-
     if (!activeId) {
       // Root context. Its tabs now persist under the `"root"` id (state dir), so
       // restore them on the first visit this session exactly as a project's are;
       // later visits trust the in-memory state. When nothing restorable was saved
       // (a fresh install, or a root left at its default), seed the 3D project-blob
       // — the root's default tab — but only when projects exist (an empty cloud
-      // has nothing to show).
+      // has nothing to show). `hydrateScopeFromDisk` owns the guards and the
+      // restorable filter (shared with the project/box restores, so a saved
+      // custom-agent tab no longer vanishes at root); the root work dir is
+      // resolved lazily — it is only the fallback cwd for tabs that saved an
+      // empty one (e.g. a files tab).
       if ("root" in useTabsStore.getState().tabsByScope) return;
       const seedBlob = () => {
         if (
@@ -236,55 +235,47 @@ export function CenterPanel() {
           );
         }
       };
-      invoke<Record<string, unknown>>("load_tab_session", { projectId: "root" })
-        .then(async (proj) => {
-          // Another effect run may have hydrated root while we awaited.
-          if ("root" in useTabsStore.getState().tabsByScope) return;
-          const restorable = restorableOf((proj.tabLayout as LayoutEntry[] | undefined) ?? []);
-          if (restorable.length === 0) {
-            seedBlob();
-            return;
-          }
-          // Restored root tabs carry their own cwd; the root work dir is only the
-          // fallback for any that saved an empty one (e.g. a files tab).
-          const rootCwd = await invoke<string>("root_work_dir").catch(() => "");
-          if ("root" in useTabsStore.getState().tabsByScope) return;
-          const groups = proj.tabGroups as SavedLayoutTree | undefined;
-          loadFromLayout(restorable, rootCwd, "root", groups ?? undefined);
+      hydrateScopeFromDisk("root", () => invoke<string>("root_work_dir").catch(() => ""))
+        .then((hydrated) => {
+          if (!hydrated) seedBlob();
         })
         .catch(() => seedBlob());
       return;
     }
 
-    // A project with no local_file isn't ready to restore yet.
+    // Project context: restore the saved tab layout from disk (first visit this
+    // session). `restoreProjectScope` owns every guard — no local_file, a scope
+    // already initialized this session (in-memory state wins, so intentionally
+    // closed tabs are not resurrected), and a layout with nothing restorable in it
+    // (which must NOT create the scope key). It is the same call the startup pass
+    // makes for the active projects nobody switches to, so the current project and
+    // the background ones restore under one policy.
+    //
+    // A freshly-visited project with no restorable tabs stays empty (the empty
+    // Subwindow with a "+"); we no longer seed a default README.md tab.
+    //
+    // `localFile` is in the deps because a project whose entry hasn't loaded yet
+    // isn't restorable: the effect re-runs the moment the list arrives. The entry
+    // itself is read from the store rather than closed over, so an unrelated field
+    // changing on it (the git-provider sniff, a status flip) can't re-fire this.
     if (!localFile) return;
+    const project = useProjectsStore.getState().projects.find((p) => p.id === nextScope);
+    if (project) void restoreProjectScope(project);
+    // `switchGeneration` re-runs the `setScope` above on a pill click that
+    // re-selects the already-active project — the one gesture that must leave
+    // an open box scope (activeId is unchanged, so nothing else here moves).
+  }, [activeId, localFile, setScope, loadFromLayout, switchGeneration]);
 
-    // Scope was already initialized this session (tabs may be empty by user intent).
-    // Trust in-memory state rather than re-reading disk — avoids restoring
-    // intentionally-closed tabs, and eliminates a race where load_project reads
-    // stale project.json before switch_project_runtime has written the empty layout.
-    if (nextScope in useTabsStore.getState().tabsByScope) return;
-
-    // Project context: restore saved tab layout from disk (first visit this session).
-    const scopeForLoad = nextScope;
-    // The saved layout comes from `<state_dir>/sessions/<id>/`, not from the
-    // project's own `project.json` — that file lives in the project container's
-    // writable mount and in any cloned repository, and everything restored here
-    // becomes a `pty_spawn`. `load_project` no longer serves it at all.
-    invoke<Record<string, unknown>>("load_tab_session", { projectId: nextScope })
-      .then((proj) => {
-        const restorable = restorableOf((proj.tabLayout as LayoutEntry[] | undefined) ?? []);
-        // Guard: don't overwrite tabs that switch_project_runtime already loaded.
-        if (scopeForLoad in useTabsStore.getState().tabsByScope) return;
-        // A freshly-visited project with NO restorable tabs stays empty (shows the
-        // empty Subwindow with a "+"); we no longer seed a default README.md tab.
-        if (restorable.length === 0) return;
-        // `tabGroups` carries the saved split/group tree (absent → single group).
-        const groups = proj.tabGroups as SavedLayoutTree | undefined;
-        loadFromLayout(restorable, projectCwd, scopeForLoad, groups ?? undefined);
-      })
-      .catch(() => {});
-  }, [activeId, projectCwd, localFile, setScope, loadFromLayout]);
+  // Box-scope restore: the first entry of a `box:<id>` scope this session
+  // loads its saved tabs from `<state_dir>/sessions/box_<id>/` (lazy, like a
+  // project's); nothing restorable seeds one shell at the box folder. The
+  // seed lives in `restoreBoxScope`, not in `openBox`, so restore and seed
+  // cannot race. See stores/boxes.
+  useEffect(() => {
+    if (!scope.startsWith(BOX_SCOPE_PREFIX)) return;
+    if (scope in useTabsStore.getState().tabsByScope) return;
+    void restoreBoxScope(scope);
+  }, [scope]);
 
   // Re-hydrate vibe local_agent tabs that were saved without VIBE_HOME/
   // VIBE_ACTIVE_MODEL. Only vibe needs this: `ollama launch`/fallback driver tabs
@@ -309,17 +300,21 @@ export function CenterPanel() {
   }, [activeId, updateTabEnv]);
 
   useEffect(() => {
-    // Root persists under the `"root"` id with no export copy (it has no
-    // project.json, so `localFile` is empty and the backend skips it). A project
-    // without a `local_file` isn't ready to persist yet.
-    if (activeId && !localFile) return;
-    const scopeToPersist = activeId ?? "root";
-    const file = localFile ?? "";
+    // Persist the ACTIVE scope. Root persists under the `"root"` id with no
+    // export copy (it has no project.json, so `localFile` is empty and the
+    // backend skips it); a `box:<id>` scope persists under its own id the same
+    // way — `storage::project_key` maps it to `sessions/box_<id>/` and an empty
+    // localFile skips the project-tree export copy. A project without a
+    // `local_file` isn't ready to persist yet.
+    const isBoxScope = scope.startsWith(BOX_SCOPE_PREFIX);
+    if (!isBoxScope && activeId && !localFile) return;
+    const scopeToPersist = isBoxScope ? scope : (activeId ?? "root");
+    const file = isBoxScope ? "" : (localFile ?? "");
     const timer = window.setTimeout(() => {
       persistScope(scopeToPersist, file).catch(() => {});
     }, 300);
     return () => window.clearTimeout(timer);
-  }, [activeId, localFile, tabs, layout, detachedGroups, persistScope]);
+  }, [scope, activeId, localFile, tabs, layout, detachedGroups, persistScope]);
 
   // #42: re-open popouts that were detached when this scope was last saved. The
   // groups were restored DOCKED (above) so their panes mount and spawn their
@@ -620,12 +615,33 @@ export function CenterPanel() {
     let session: ReturnType<typeof startDetachedDropSession> | null = null;
     let dragSrcGroupId: string | null = null;
     let dragLabel: string | undefined;
+    // #238: the net under a lost END. START makes every pane pointer-events:none
+    // (so the drop preview can hit-test the bars underneath) and only END or an
+    // Escape pressed IN THIS WINDOW takes it back out — the main window's own
+    // release handlers deliberately never end a detached drag. So a popout
+    // destroyed mid-gesture, or an engine that swallows the terminal event, left
+    // the main window ignoring every click with nothing on screen saying why.
+    // Two observable facts end it: MOVEs stopping (the popout polls the cursor
+    // at frame rate while the gesture is live) and a press landing here.
+    const expire = () => {
+      if (useDragStore.getState().drag?.kind !== "detached") return;
+      endSession();
+      useDragStore.getState().end();
+    };
+    const net = createDetachedDragNet(expire);
     const endSession = () => {
+      net.stop();
       session?.dispose();
       session = null;
       dragSrcGroupId = null;
       dragLabel = undefined;
     };
+    // A real press in the main window means the popout no longer owns the
+    // pointer — whatever happened to its END, the gesture is over.
+    const onMainPointerDown = () => {
+      if (net.armed()) expire();
+    };
+    window.addEventListener("pointerdown", onMainPointerDown, true);
     // The sibling popout under the physical cursor, or null (none, or it's the
     // source popout — a self-drop is handled locally in the popout).
     const siblingAt = (phys: PhysPoint | null) => {
@@ -652,9 +668,16 @@ export function CenterPanel() {
         // scope become live drop targets (highlight on MOVE, dock on END) — the
         // same machinery `TabBar` uses for main→popout drags.
         endSession();
-        session = startDetachedDropSession();
+        // The drag's OWN scope decides which popouts are targets (#238): a root
+        // or box popout is never parked, so a tab can be dragged out of one
+        // while a project is active — and it must light up and land in a sibling
+        // of its own scope, never in the active project's popouts (where the
+        // move then silently no-ops because the two records live under different
+        // scope keys).
+        session = startDetachedDropSession({ scope: dScope });
         dragSrcGroupId = groupId;
         dragLabel = label;
+        net.start();
         void session.resolve();
         // Start the drag synchronously so the high-frequency MOVE poll that
         // follows isn't dropped by its `kind !== "detached"` guard while we await
@@ -683,6 +706,7 @@ export function CenterPanel() {
     reg(
       listen<DetachedDragMove>(DETACHED_DRAG_MOVE, (ev) => {
         if (useDragStore.getState().drag?.kind !== "detached") return;
+        net.touch();
         const phys: PhysPoint = {
           x: ev.payload.cursorPhysX,
           y: ev.payload.cursorPhysY,
@@ -891,6 +915,7 @@ export function CenterPanel() {
     return () => {
       cancelled = true;
       endSession();
+      window.removeEventListener("pointerdown", onMainPointerDown, true);
       for (const fn of unsubs) fn();
     };
   }, []);
@@ -967,7 +992,7 @@ export function CenterPanel() {
       {renderLayout ? (
         <LayoutTree
           node={renderLayout}
-          projectCwd={projectCwd}
+          projectCwd={newTabCwd}
           resizeSplit={resizeSplit}
           mergeGroups={mergeGroups}
           panelRef={panelRef}
@@ -980,7 +1005,7 @@ export function CenterPanel() {
         // available to create the first tab. EMPTY_GROUP_ID isn't a real group
         // (the store has no layout) — the add menu's addTab() creates the root
         // group, which then replaces this placeholder with a real LayoutTree.
-        <Subwindow groupId={EMPTY_GROUP_ID} projectCwd={projectCwd}>
+        <Subwindow groupId={EMPTY_GROUP_ID} projectCwd={newTabCwd}>
           {/* Measured like a real group body so a file dragged from the right
               panel can drop anywhere over the (full-panel) empty placeholder and
               become the first tab — see commitFileDrop's empty-state branch. */}
@@ -1175,16 +1200,15 @@ export function CenterPanel() {
             >
               {/* The shared per-tab render switch (`components/tabs/TabPane`), the
                   SAME one every detached popout renders. The main window owns the
-                  tab store (`ownsTabs`) and the projects store, so it resolves the
-                  mirror/sandbox/hold props the popout can't. New pane kinds/props
-                  go in TabPane so they reach both windows at once. */}
+                  projects store, so it resolves the mirror/sandbox/hold props the
+                  popout can't. New pane kinds/props go in TabPane so they reach
+                  both windows at once. */}
               <TabPane
                 tab={tab}
                 scope={scopeKey}
                 visible={visible}
                 focused={visible && windowFocused && groupId === focusedGroupId}
                 groupId={groupId}
-                ownsTabs
                 onConnect={getConnect(scopeKey)}
                 holdRemoteTerminal={holdRemoteTerminal}
                 remoteHost={paneHostLabel}
@@ -1290,6 +1314,12 @@ export function SplitPreviewOverlay({ groupRects }: { groupRects: Record<string,
  *    group and every subwindow shows a numbered badge — the committed focus is
  *    0, others numbered in document order (wrapping) so ↑/↓ read as relative
  *    steps. Focus commits (moving the frame's committed home) on Shift release.
+ *  - While keyboard steering mode is active: the SAME badges, anchored to the
+ *    committed focus (steering arrows commit immediately, so there is no
+ *    preview id — the badges re-anchor after every step). Deliberately the
+ *    relative ↓/↑ labels, not absolute digits: in steering the digits 1–9
+ *    belong to the project stations, and a second set of digits here would
+ *    collide with them.
  * `pointer-events: none`, panel-relative coords from the same measured rects.
  */
 export function FocusFrameOverlay({
@@ -1304,6 +1334,7 @@ export function FocusFrameOverlay({
   const focusedGroupId = useTabsStore((s) => s.focusedGroupId);
   const navActive = useSubwindowNavStore((s) => s.active);
   const previewGroupId = useSubwindowNavStore((s) => s.previewGroupId);
+  const steeringActive = useKeyboardSteeringStore((s) => s.active);
   // Only the OS-focused window draws its focus frame, so a blurred main window
   // doesn't show an active subwindow alongside a focused popout (#42).
   const windowFocused = useWindowFocused();
@@ -1343,7 +1374,7 @@ export function FocusFrameOverlay({
           }}
         />
       )}
-      {navActive &&
+      {(navActive || steeringActive) &&
         f >= 0 &&
         orderedIds.map((id, p) => {
           const r = groupRects[id];
@@ -1376,6 +1407,7 @@ export function FocusFrameOverlay({
 const GHOST_THUMB_W = 280; // px; the thumbnail's on-screen width.
 
 export function DragGhost() {
+  const t = useT();
   // Eff #14: subscribe to COARSE PRIMITIVE selectors (mirroring
   // SplitPreviewOverlay / stores/drag.ts), not the whole `drag` object. The
   // ghost still re-renders each frame to follow the pointer (pointerX/Y change),
@@ -1444,15 +1476,15 @@ export function DragGhost() {
               matching the drag itself: once the cursor leaves the window with
               Ctrl held, the OS drag owns the drop and the in-app targets are
               out of the picture. */}
-          <div className="tab-drag-ghost-opt">Drop on a folder → move file there</div>
+          <div className="tab-drag-ghost-opt">{t("tabDrag.dropFolder")}</div>
           <div className={`tab-drag-ghost-opt${!shiftHeld && !ctrlHeld ? " active" : ""}`}>
-            Drop → open in new window / dock into popout
+            {t("tabDrag.dropOpen")}
           </div>
           <div className={`tab-drag-ghost-opt${shiftHeld && !ctrlHeld ? " active" : ""}`}>
-            ⇧ Shift → force a new window
+            {t("tabDrag.shiftNewWindow")}
           </div>
           <div className={`tab-drag-ghost-opt${ctrlHeld ? " active" : ""}`}>
-            ⌃ Ctrl → copy out to another app
+            {t("tabDrag.ctrlCopyOut")}
           </div>
         </div>
       ) : null}
@@ -1476,13 +1508,14 @@ export function DragGhost() {
  * propagation so toggling never starts a divider resize drag.
  */
 function ScrollLinkButton({ a, b }: { a: string; b: string }) {
+  const t = useT();
   const linked = useScrollSyncStore((s) => s.links[a] === b);
   const toggleLink = useScrollSyncStore((s) => s.toggleLink);
   return (
     <button
       type="button"
       className={`split-scroll-link-btn${linked ? " linked" : ""}`}
-      title={linked ? "Unlink scrolling" : "Link scrolling of these subwindows"}
+      title={linked ? t("scrollLink.unlink") : t("scrollLink.link")}
       aria-pressed={linked}
       onPointerDown={(e) => e.stopPropagation()}
       onClick={(e) => {
@@ -1565,6 +1598,11 @@ function SplitView(props: TreeProps & { node: Extract<LayoutNode, { type: "split
   const minWidth = useSettingsStore((s) => s.settings?.min_subwindow_width) ?? DEFAULT_MIN_SUBWINDOW_PX;
   const minHeight = useSettingsStore((s) => s.settings?.min_subwindow_height) ?? DEFAULT_MIN_SUBWINDOW_PX;
 
+  // A mid-flight divider drag's teardown, so unmounting this subtree (scope
+  // switch, group close) unbinds the window listeners instead of leaking them.
+  const activeDragTeardown = useRef<(() => void) | null>(null);
+  useEffect(() => () => activeDragTeardown.current?.(), []);
+
   const startDrag = (dividerIndex: number) => (e: React.PointerEvent) => {
     e.preventDefault();
     const container = containerRef.current;
@@ -1591,26 +1629,20 @@ function SplitView(props: TreeProps & { node: Extract<LayoutNode, { type: "split
 
     const onMove = (ev: PointerEvent) => {
       // The new fraction is the pointer position within the SPAN of the two
-      // children adjacent to this divider, measured from the container origin.
+      // children adjacent to this divider, measured from the container origin
+      // (pure math shared with the popout: dividerFraction in stores/tabs).
       const isRow = node.dir === "row";
       const total = isRow ? rect.width : rect.height;
       if (total <= 0) return;
       const pos = isRow ? ev.clientX - rect.left : ev.clientY - rect.top;
-      // Fraction of the whole container up to the pointer.
-      const wholeFraction = Math.min(Math.max(pos / total, 0), 1);
-      // Sum of sizes before this divider's left child.
-      let before = 0;
-      for (let i = 0; i < dividerIndex; i++) before += node.sizes[i];
+      const clamped = dividerFraction(
+        node,
+        dividerIndex,
+        pos,
+        total,
+        isRow ? minWidth : minHeight,
+      );
       const pair = node.sizes[dividerIndex] + node.sizes[dividerIndex + 1];
-      // Desired size of the left child of the pair = pointer fraction minus the
-      // space taken by everything before the pair.
-      const leftSize = wholeFraction - before;
-      // Enforce the min subwindow size: neither side of the pair may shrink below
-      // `minPx` (as a fraction of the container). If the pair is too small to fit
-      // both minimums, split it evenly.
-      const minPx = isRow ? minWidth : minHeight;
-      const minFrac = Math.min(minPx / total, pair / 2);
-      const clamped = Math.min(Math.max(leftSize, minFrac), pair - minFrac);
       // Resize the two neighbours on the DOM (mirrors applyResize: only these two
       // change, the pair sum is preserved) instead of writing the store every
       // frame — the store write rebuilt the whole layout tree and re-rendered the
@@ -1625,11 +1657,15 @@ function SplitView(props: TreeProps & { node: Extract<LayoutNode, { type: "split
       // per frame, not once per pointermove).
       scheduleResize();
     };
-    const onUp = (ev: PointerEvent) => {
-      (e.target as HTMLElement).releasePointerCapture?.(ev.pointerId);
+    const teardown = () => {
+      activeDragTeardown.current = null;
+      unbindRelease();
       window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", onUp);
+      (e.target as HTMLElement).releasePointerCapture?.(e.pointerId);
       if (rafId != null) cancelAnimationFrame(rafId);
+    };
+    const commit = () => {
+      teardown();
       // Commit the final position to the store ONCE. The next render writes these
       // same sizes via `node.sizes`, matching the DOM, so there's no visual jump;
       // clear the override first so the layout effect stops re-asserting it.
@@ -1638,8 +1674,26 @@ function SplitView(props: TreeProps & { node: Extract<LayoutNode, { type: "split
       if (sizes) props.resizeSplit(node.id, dividerIndex, sizes[dividerIndex]);
       props.onResized();
     };
+    const abort = () => {
+      teardown();
+      // No store change happened, so no re-render will overwrite the drag's DOM
+      // flex writes — re-assert the committed store sizes ourselves.
+      dragSizesRef.current = null;
+      for (const [i, el] of childRefs.current) {
+        if (node.sizes[i] != null) el.style.flex = `${node.sizes[i]} 1 0`;
+      }
+      props.onResized();
+    };
+    // Engine-correct release semantics (the same policy every other drag path
+    // routes through): pointerup commits; on WebKitGTK — which frequently fires
+    // `pointercancel` INSTEAD of `pointerup` (see the in-window tab-drag effect
+    // above) — a cancel commits too, while on engines with a real pointerup a
+    // cancel is a genuine capture loss and aborts; Escape always aborts. The
+    // bare-`pointerup` pair this replaces left the gesture STUCK mid-drag on
+    // Linux whenever the release arrived as a cancel.
+    const unbindRelease = bindDragRelease({ onCommit: commit, onAbort: abort });
     window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", onUp);
+    activeDragTeardown.current = teardown;
   };
 
   return (

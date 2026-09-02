@@ -9,12 +9,12 @@ import type { ProjectEntry } from "../types";
  * The project's **persistent (tmux) sessions**, as ONE shared reading (TODO #85).
  *
  * The Sessions view is not a single surface: the same `ProjectFilesView` is
- * rendered by the right panel, by every Files (Project) tab, and by every
+ * rendered by the side panel, by every Files (Project) tab, and by every
  * subwindow's docked file column — in the main window and in each popout. Each
  * of those instances used to own the list, the `tmux ls` poll and the "show all
  * sessions" toggle privately, which meant N SSH round trips per host every 7 s
  * and N answers that could disagree: a session killed in the docked column sat
- * on in the right panel until *its* interval came round, and the toggle set in
+ * on in the side panel until *its* interval came round, and the toggle set in
  * one surface said nothing about the other. Sessions are a property of the
  * **host**, not of the surface looking at it, so they live here instead.
  *

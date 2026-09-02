@@ -96,6 +96,9 @@ vi.mock("@xterm/xterm/css/xterm.css", () => ({}));
 let colorScheme: string | undefined;
 vi.mock("../stores/settings", () => ({
   useSettingsStore: vi.fn((sel: (s: object) => unknown) => sel({ settings: { color_scheme: colorScheme } })),
+  // Pass-through: only "system" resolves differently, and these tests pin a
+  // concrete scheme.
+  resolveTheme: (s: string) => s,
 }));
 
 import { TerminalView } from "../components/terminal/TerminalView";

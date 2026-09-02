@@ -17,14 +17,99 @@
 //! spawns `tmux` itself, and `cwd`/`env` set on the client are inherited by a
 //! freshly-created session.
 
+use crate::services::ssh_exec::TMUX_HISTORY_LINES;
 use crate::terminal::PtyOptions;
 
 /// Prefix reserved for tmux sessions Eldrun creates on the local machine.
 ///
 /// It is deliberately broad enough to include sessions created by a previous
 /// Eldrun run and whose tabs have not been opened in this run yet. A clean app
-/// quit reaps these sessions, while a crash leaves them available for restore.
+/// quit reaps these sessions ([`kill_eldrun_sessions`]), while a crash leaves
+/// them available for restore.
 pub const ELDRUN_LOCAL_TMUX_PREFIX: &str = "eldrun-";
+
+/// Which of a `tmux ls` listing's sessions a clean quit ends: every session
+/// Eldrun minted, and nothing else. Pure, so the ownership rule is tested
+/// without a tmux server.
+///
+/// There used to be one exemption — the Trash workspace's sessions, kept so a
+/// phone attached through the Mobile sidecar could keep working after the
+/// desktop quit. That only made sense while the sidecar outlived the app; it
+/// no longer does (`commands::mobile_control::stop_host_for_exit`), so a Trash
+/// session left behind is an agent nobody can reach, i.e. exactly the leftover
+/// the quit path exists to remove.
+pub fn sessions_to_reap<'a>(names: impl IntoIterator<Item = &'a str>) -> Vec<String> {
+    names
+        .into_iter()
+        .filter(|name| is_eldrun_local_tmux_session(name))
+        .map(str::to_string)
+        .collect()
+}
+
+/// Whether a `tmux kill-session` failure means the session was already gone —
+/// which is the desired end state, not an error. A session can exit between
+/// `ls` and `kill-session`, and the server itself goes away with its last one.
+pub fn kill_failure_is_already_gone(stderr: &str) -> bool {
+    stderr.contains("can't find session")
+        || stderr.contains("no server running")
+        || stderr.contains("failed to connect to server")
+}
+
+/// End every tmux session Eldrun created on the local machine — the clean-quit
+/// reap (TODO #85). Blocking; callers off the main thread wrap it in
+/// `spawn_blocking`, the exit path runs it inline.
+///
+/// This deliberately lists the daemon rather than only the tabs currently
+/// hydrated in the frontend: a session recovered from an earlier crash may
+/// belong to an inactive project and therefore have no mounted tab in this run
+/// yet. The `eldrun-` prefix is reserved for sessions Eldrun mints, so
+/// user-managed sessions are never affected.
+///
+/// Reached from two places on purpose: the frontend's close handler (the
+/// window's ×) and the backend's `RunEvent::Exit` net, which also catches the
+/// exits that never run frontend code — a SIGTERM/SIGINT from the dev launcher,
+/// an `app.exit()`. A renderer or process crash reaches neither, leaving the
+/// sessions alive for restore.
+pub fn kill_eldrun_sessions() -> Result<(), String> {
+    if !tmux_available() {
+        return Ok(());
+    }
+    let listed = crate::paths::command_no_window("tmux")
+        .args(local_tmux_ls_args())
+        .output()
+        .map_err(|e| format!("could not list tmux sessions: {e}"))?;
+    // `tmux ls` returns non-zero when no server is running, which is already
+    // the desired end state for the quit path.
+    if !listed.status.success() {
+        return Ok(());
+    }
+    let sessions = crate::services::ssh_exec::parse_tmux_ls(&String::from_utf8_lossy(&listed.stdout));
+    let mut failures = Vec::new();
+    for name in sessions_to_reap(sessions.iter().map(|s| s.name.as_str())) {
+        let output = crate::paths::command_no_window("tmux")
+            .args(local_tmux_kill_args(&name))
+            .output()
+            .map_err(|e| format!("could not run tmux: {e}"))?;
+        if !output.status.success() {
+            let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            if !kill_failure_is_already_gone(&detail) {
+                failures.push(if detail.is_empty() {
+                    name
+                } else {
+                    format!("{name}: {detail}")
+                });
+            }
+        }
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "could not stop every Eldrun local tmux session: {}",
+            failures.join("; ")
+        ))
+    }
+}
 
 /// Whether a local tmux session is owned by Eldrun.
 ///
@@ -88,8 +173,18 @@ pub fn tmux_available() -> bool {
 /// and resume). Attach is deliberately non-evicting so desktop and phone clients
 /// coexist. `status off` / `mouse on` / `window-size largest` are session-scoped
 /// after a literal `;` argv item (tmux splits its argv on a standalone `;`).
+/// `history-limit` alone comes **before** `new-session` and is `-g`: a pane
+/// copies the limit at creation, so a `-t`-scoped set after the fact would leave
+/// the session's one pane at tmux's default 2000 — see
+/// [`ssh_exec::TMUX_HISTORY_LINES`](crate::services::ssh_exec::TMUX_HISTORY_LINES),
+/// which also sizes the phone replay.
 pub fn local_tmux_args(session: &str, target_cmd: &str, target_args: &[String]) -> Vec<String> {
     let mut args: Vec<String> = vec![
+        "set-option".into(),
+        "-g".into(),
+        "history-limit".into(),
+        TMUX_HISTORY_LINES.to_string(),
+        ";".into(),
         "new-session".into(),
         "-A".into(),
         "-s".into(),
@@ -191,6 +286,13 @@ mod tests {
         assert_eq!(
             args,
             vec![
+                // history-limit precedes new-session: a pane copies it at
+                // creation, so the trailing `-t`-scoped sets are too late.
+                "set-option",
+                "-g",
+                "history-limit",
+                "10000",
+                ";",
                 "new-session",
                 "-A",
                 "-s",
@@ -222,9 +324,9 @@ mod tests {
         // A command tab keeps a login shell AFTER the command so the finished run
         // reattaches (resumable-command-tab guarantee) instead of re-running.
         let args = local_tmux_args("eldrun-x", "python", &["train.py".into()]);
-        assert_eq!(args[0], "new-session");
+        assert_eq!(args[5], "new-session");
         assert!(args.iter().any(|a| a == "eldrun-x"));
-        let target = &args[4];
+        let target = &args[9];
         assert_eq!(
             target,
             "'python' 'train.py'; exec \"${SHELL:-/bin/bash}\" -l"
@@ -252,6 +354,35 @@ mod tests {
     }
 
     #[test]
+    fn quit_reaps_every_eldrun_session_including_trash_and_no_foreign_one() {
+        // A user's own `train`/`work` sessions are never touched; every Eldrun-
+        // minted one goes, the Trash workspace's included — the sidecar that
+        // once justified keeping those stops with the app now.
+        let trash = format!("eldrun-{}--agent-abc", crate::paths::TRASH_PROJECT_ID);
+        let listed = [
+            "train",
+            "eldrun-p1--shell-1",
+            trash.as_str(),
+            "work",
+            "my-eldrun-run",
+        ];
+        assert_eq!(
+            sessions_to_reap(listed),
+            vec!["eldrun-p1--shell-1".to_string(), trash.clone()]
+        );
+        assert!(sessions_to_reap(["train"]).is_empty());
+    }
+
+    #[test]
+    fn already_gone_failures_are_not_errors() {
+        assert!(kill_failure_is_already_gone("can't find session: eldrun-x"));
+        assert!(kill_failure_is_already_gone("no server running on /tmp/tmux-1000/default"));
+        assert!(kill_failure_is_already_gone("error connecting to /tmp/tmux-1000/default (failed to connect to server)"));
+        assert!(!kill_failure_is_already_gone("permission denied"));
+        assert!(!kill_failure_is_already_gone(""));
+    }
+
+    #[test]
     fn wrap_no_session_is_noop() {
         let mut opts = PtyOptions {
             id: "t".into(),
@@ -263,6 +394,7 @@ mod tests {
             rows: 24,
             local_only: false,
             sandbox: false,
+            agent: false,
             project_id: Some("p".into()),
             remote_host_id: None,
             tmux_session: None,

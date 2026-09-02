@@ -454,7 +454,21 @@ pub fn run() {
         std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
     }
 
+    // Before the logger appends this run's `=== STARTED … ===` line, so the cap
+    // is enforced against what previous runs left rather than a moment later.
+    services::state_gc::cap_crash_log();
     install_crash_logger();
+
+    // The webview's data directory is `<data dir>/<identifier>` on Linux, and
+    // the identifier is the Tauri config's — asked for rather than hardcoded, so
+    // a rename cannot leave this sweeping a directory nothing writes to any
+    // more. Built here, at the top of `run`, because the cache has to be judged
+    // and dropped BEFORE wry constructs the WebContext that opens it; the
+    // context is handed to `build` unchanged at the bottom of the chain.
+    let context = tauri::generate_context!();
+    if let Some(root) = services::state_gc::webview_data_root(&context.config().identifier) {
+        services::state_gc::trim_webview_cache(&root);
+    }
 
     // More than one crate in the tree can supply a rustls `CryptoProvider`, and
     // rustls refuses to guess — it panics at the *first handshake* instead, i.e.
@@ -528,6 +542,51 @@ pub fn run() {
                 _app.handle().clone(),
                 mobile_desktop.clone(),
             );
+            // The Mobile host's lifetime is the app's: `RunEvent::Exit` stops
+            // it, so an enabled configuration has to bring it back here rather
+            // than waiting for the next login. Off the main thread, bounded,
+            // and a no-op when Mobile is off or the host is already up.
+            commands::mobile_control::start_host_on_launch();
+            // A SIGTERM/SIGINT (the dev launcher's Ctrl+C, a `kill`, a session
+            // logout) used to end the process with none of the teardown the
+            // window's × runs: PTY subtrees, local tmux sessions, the Mobile
+            // host, containers, VMs and tunnels all outlived it. Route the
+            // signal into the ordinary exit instead, so `RunEvent::Exit` runs
+            // the same cleanup for every clean exit. `AppHandle::exit` from a
+            // runtime thread goes through the event-loop proxy, which is what
+            // makes the exit events deliverable at all. Unix only: Windows has
+            // no signals, and its console close is a hard kill either way.
+            #[cfg(unix)]
+            {
+                let handle = _app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    use tokio::signal::unix::{signal, SignalKind};
+                    let (Ok(mut term), Ok(mut int)) = (
+                        signal(SignalKind::terminate()),
+                        signal(SignalKind::interrupt()),
+                    ) else {
+                        return;
+                    };
+                    tokio::select! {
+                        _ = term.recv() => {}
+                        _ = int.recv() => {}
+                    }
+                    handle.exit(0);
+                });
+            }
+            // Announce window-registry mutations made outside a frontend command
+            // (a launched app exiting) so every window's Apps view refreshes.
+            {
+                use tauri::{Emitter, Manager};
+                let handle = _app.handle().clone();
+                _app.state::<WindowRegistryState>().lock().unwrap().notify =
+                    Some(Arc::new(move |project_id: Option<String>| {
+                        let _ = handle.emit(
+                            "app-windows-changed",
+                            serde_json::json!({ "project_id": project_id }),
+                        );
+                    }));
+            }
             #[cfg(target_os = "linux")]
             install_webview_crash_reporter(_app);
             // Recolor WebKitGTK's native in-content scrollbars (page CSS can't —
@@ -621,6 +680,12 @@ pub fn run() {
             // that target, quietly turning every later channel into its own login.
             // Off-thread: one cheap local `ssh -O check` per file.
             std::thread::spawn(services::ssh_exec::sweep_stale_control_sockets);
+            // Remove askpass shims a previous run left behind. Same posture as
+            // the socket sweep above and for the same reason: the `Askpass`
+            // guard deletes its own file, so anything still there belongs to a
+            // process that died before it could. Off-thread — one `kill(pid, 0)`
+            // per file, and the directory can hold thousands.
+            std::thread::spawn(services::ssh_common::sweep_stale_askpass);
             // Re-adopt OpenVPN tunnels a previous run left running (a crash, an OOM
             // kill, a refused quit-time prompt): the daemon runs as root and outlives
             // the app, still rerouting the machine, but the live-tunnel registries are
@@ -657,7 +722,26 @@ pub fn run() {
             // Settings
             commands::settings::get_settings,
             commands::settings::save_settings,
+            commands::settings::patch_settings,
             commands::settings::save_window_state,
+            // Per-tab scheduled agent prompts. Definitions and receipts live in
+            // local-only agent_tasks.json; the frontend owns wall-clock delivery.
+            commands::agent_tasks::agent_schedules_list,
+            commands::agent_tasks::agent_schedule_upsert,
+            commands::agent_tasks::agent_schedule_delete,
+            commands::agent_tasks::agent_schedules_delete_target,
+            commands::agent_tasks::agent_schedule_claim,
+            commands::agent_tasks::agent_schedule_complete,
+            commands::agent_tasks::agent_schedules_cleanup_orphans,
+            // Project-scoped prompt collection (agent_prompts.json): text with no
+            // tab binding until the user aims it at an agent tab.
+            commands::agent_prompts::agent_prompts_list,
+            commands::agent_prompts::agent_prompt_upsert,
+            commands::agent_prompts::agent_prompt_delete,
+            commands::agent_prompts::agent_prompt_history_list,
+            commands::agent_prompts::agent_prompt_archive,
+            commands::agent_prompts::agent_prompt_record,
+            commands::agent_prompts::agent_prompt_history_clear,
             // Updates (Settings → Updates): check the GitHub releases page,
             // download this platform's artifact, hand it to its installer.
             commands::app_update::check_app_update,
@@ -696,6 +780,7 @@ pub fn run() {
             commands::vm::remote_download_size,
             commands::vm::remote_download_to,
             commands::projects::set_project_remote_control,
+            commands::projects::set_project_agent_fence,
             commands::projects::set_project_mobile_access,
             commands::projects::sandbox_preflight,
             commands::python::python_interpreters,
@@ -743,6 +828,8 @@ pub fn run() {
             commands::projects::project_scaffold_missing,
             commands::projects::repair_project_scaffold,
             commands::projects::repair_all_project_scaffolds,
+            commands::projects::project_migration_plan,
+            commands::projects::project_migration_apply,
             commands::projects::import_project,
             commands::projects::check_project_site,
             commands::projects::extend_project_to_remote,
@@ -955,7 +1042,6 @@ pub fn run() {
             // SSH-sync (Phase 1): selective local↔remote mirror sync.
             commands::sync::sync_pull,
             commands::sync::sync_whole_project,
-            commands::sync::sync_now,
             commands::sync::sync_push,
             commands::sync::sync_mark_selected,
             commands::sync::sync_set_auto,
@@ -1031,7 +1117,10 @@ pub fn run() {
             commands::clipboard::clipboard_has_image,
             commands::clipboard::save_clipboard_image,
             commands::clipboard::copy_png_bytes_to_clipboard,
-            commands::screenshot::capture_project_screenshot,
+            commands::screenshot::capture_screenshot,
+            commands::screenshot::read_pending_screenshot,
+            commands::screenshot::save_pending_screenshot,
+            commands::screenshot::discard_pending_screenshot,
             commands::fs::delete_file,
             commands::fs::delete_dir,
             commands::fs::create_file,
@@ -1067,13 +1156,16 @@ pub fn run() {
             // LaTeX view / compile (gated on a TeX engine being on PATH)
             commands::tex::tex_capability,
             commands::tex::compile_tex,
+            commands::tex::tex_preview_snippet,
             commands::tex::synctex_edit,
+            commands::tex::synctex_status,
             commands::tex::synctex_view,
             commands::tex::synctex_page_lines,
             commands::tex::list_fonts,
             commands::tex::resolve_tex_root,
             // Terminal
             commands::terminal::pty_spawn,
+            commands::terminal::agent_fence_status,
             commands::terminal::register_host_bound_tab,
             commands::terminal::pty_write,
             commands::terminal::pty_resize,
@@ -1081,6 +1173,7 @@ pub fn run() {
             commands::terminal::pty_kill_scope,
             commands::terminal::pty_set_visible,
             commands::terminal::pty_remove_view,
+            commands::terminal::pty_scrollback,
             commands::terminal::pty_watch,
             commands::terminal::pty_unwatch,
             commands::terminal::local_tmux_list,
@@ -1094,6 +1187,7 @@ pub fn run() {
             commands::apps::open_file,
             commands::apps::list_tracked_windows,
             commands::apps::untrack_window,
+            commands::apps::close_tracked_window,
             commands::apps::check_pid_alive,
             commands::apps::restore_open_apps,
             commands::apps::run_script_detached,
@@ -1122,11 +1216,12 @@ pub fn run() {
             commands::workspace::network_conn_type,
             // Project-runtime switching (replaces switch_project_windows)
             commands::project_runtime::switch_project_runtime,
-            commands::project_runtime::load_right_panel_folder,
-            commands::project_runtime::save_right_panel_folder,
+            commands::project_runtime::load_side_panel_folder,
+            commands::project_runtime::save_side_panel_folder,
             // Git
             commands::git::git_available,
             commands::git::git_status,
+            commands::git::git_dirty_probe,
             commands::git::git_repo_root,
             commands::git::detect_git_providers,
             commands::git::git_add_all,
@@ -1188,6 +1283,9 @@ pub fn run() {
             // Debug diagnostics
             commands::debug::debug_app_resource_usage,
             commands::debug::webview_rss_kib,
+            commands::debug::webview_renderer_rss,
+            commands::debug::webview_renderer_claim,
+            commands::debug::webview_renderer_memory,
             // Ollama local models
             commands::ollama::list_ollama_models,
             commands::ollama::ensure_vibe_ollama_model,
@@ -1211,6 +1309,7 @@ pub fn run() {
             commands::agents::install_agent_remote,
             commands::agents::install_agent_remote_command,
             commands::agents::uninstall_agent,
+            commands::agents::agent_warmup,
             commands::ollama::ollama_is_running,
             commands::ollama::ollama_status,
             commands::ollama::ollama_gpu_status,
@@ -1236,11 +1335,18 @@ pub fn run() {
             commands::ollama::complete_text,
             // Local grammar/spelling check (opt-in, local-only)
             commands::ollama::check_grammar,
+            // Dictionary spell check (Hunspell dictionaries, local-only)
+            commands::spell::spell_check,
+            commands::spell::spell_languages,
+            commands::spell::spell_add_word,
+            commands::spell::spell_dictionaries,
+            commands::spell::spell_install_language,
+            commands::spell::spell_remove_language,
         ])
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_drag::init())
         .plugin(tauri_plugin_notification::init())
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building tauri application")
         .run(|_app, event| {
             // A detached popout can die WITHOUT going through `attach_subwindow`
@@ -1256,8 +1362,42 @@ pub fn run() {
                 ..
             } = &event
             {
+                use tauri::{Emitter, Manager};
+                // The main window going away must take every other Eldrun window
+                // with it. Popouts, the deck presenter and live browser pages are
+                // siblings of `main` in this process, not children of it, so
+                // nothing closes them on their own: they would strand on screen
+                // and — since Tauri exits only on the LAST window — keep a
+                // windowless Eldrun running behind them. The shell's own
+                // `shutdownDetachedWindows` already tears popouts down (before
+                // `destroy()`, so their bounds are persisted first); this is the
+                // net under it, for the windows it does not cover and for the
+                // quits it never runs on (hung/crashed renderer, WM kill).
+                if label == services::window_service::MAIN_WINDOW_LABEL {
+                    let open: Vec<String> = _app.webview_windows().into_keys().collect();
+                    for other in services::window_service::windows_closed_with_main(
+                        open.iter().map(String::as_str),
+                    ) {
+                        if let Some(win) = _app.get_webview_window(&other) {
+                            if let Err(e) = win.destroy() {
+                                eprintln!("close with main: destroy {other}: {e}");
+                            }
+                        }
+                    }
+                }
+                // Group B #238: every teardown of a secondary window uses
+                // `destroy()`, which runs no renderer cleanup — so its panes
+                // never call `pty_remove_view` and the output router keeps a
+                // `visible: true` viewer under a dead window's uuid. The PTY
+                // then streams over IPC for the rest of the session, for every
+                // tab that ever lived in that window. Drop the whole window's
+                // registrations here, the one choke point every death passes.
+                // Not limited to popouts: the presenter and live browser
+                // windows are destroyed the same way.
+                if label != services::window_service::MAIN_WINDOW_LABEL {
+                    crate::terminal::route_drop_window_views(label);
+                }
                 if label.starts_with("detached-") {
-                    use tauri::Manager;
                     // Guard against a same-label window already re-created
                     // (rapid destroy → re-detach): only clean up when no live
                     // window holds the label, else we'd free the NEW window's
@@ -1272,11 +1412,31 @@ pub fn run() {
                             let ws = _app.state::<commands::workspace::WorkspaceStateArc>();
                             ws.lock().unwrap().backend.unset_parkable(wid);
                         }
+                        // Group B #224: tell the frontend a popout died. A
+                        // legitimate teardown drops the store record BEFORE the
+                        // window goes, so the host finds none and does nothing;
+                        // a record still standing means the window died behind
+                        // the store's back (xkill, a renderer crash, the
+                        // seed-timeout self-destroy) — and without this its tabs
+                        // were stranded in a `detached: true` record with no
+                        // window, no dock-back path, their PTYs running hidden,
+                        // and the failure repeated at every launch.
+                        let _ = _app.emit(
+                            "detached-window-destroyed",
+                            serde_json::json!({ "label": label }),
+                        );
                     }
                 }
             }
             if let tauri::RunEvent::Exit = event {
                 use tauri::Manager;
+                // Stop the Eldrun Mobile host first: its lifetime is the app's
+                // (started again at the next launch, see `setup`), and once the
+                // desktop is gone it can neither create tabs nor reach the
+                // sessions reaped below, so a host left running would only be a
+                // listener with nothing behind it. Bounded (admin-socket
+                // timeouts), best-effort, and a no-op when Mobile is off.
+                tauri::async_runtime::block_on(commands::mobile_control::stop_host_for_exit());
                 // Abort every terminal's process subtree so no inner process (a
                 // dev server, a build, a training run) outlives Eldrun. Runs
                 // before the container teardown below, since a containerized
@@ -1284,6 +1444,17 @@ pub fn run() {
                 // container. Dropping the registry alone would kill only the
                 // shell leaders and orphan everything they spawned.
                 _app.state::<RegistryState>().lock().unwrap().kill_all();
+                // The local tmux servers those PTYs were clients of survive the
+                // clients by design (that is what makes a crash resumable), so a
+                // clean quit ends Eldrun's own sessions explicitly. The window's
+                // close handler already does this before `destroy()`; repeating
+                // it here is what covers the exits that never run frontend code
+                // — the dev launcher's Ctrl+C (SIGINT/SIGTERM → `app.exit`),
+                // an `app.exit()` from the backend. Idempotent: a second pass
+                // finds no server and returns.
+                if let Err(e) = services::tmux_local::kill_eldrun_sessions() {
+                    eprintln!("tmux_local: quit reap: {e}");
+                }
                 // Stop the Ollama server *this run started* — the spawned
                 // `ollama serve` (with the runner child holding the weights) or
                 // the systemd unit that was inactive until Eldrun asked for it.

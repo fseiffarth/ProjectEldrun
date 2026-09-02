@@ -3,16 +3,27 @@ import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { Toggle } from "../common/Toggle";
 import { Dropdown } from "../common/Dropdown";
+import {
+  SettingRow,
+  SettingsCard,
+  SettingsHeader,
+  SettingsList,
+  SettingsSection,
+  ToggleRow,
+} from "../layout/settingsUi";
 import { useSettingsStore } from "../../stores/settings";
 import { VIEWER_PREF_TYPES } from "../../lib/viewers/fileUtils";
 import { PythonInterpreterWindow } from "../projects/PythonInterpreterWindow";
+import { ProjectMigrationDialog } from "../projects/ProjectMigrationDialog";
+import { SpellDictionaryPicker } from "./SpellDictionaryPicker";
+import { UntestedTag } from "../common/UntestedTag";
 import { useT } from "../../lib/i18n";
 import { DEFAULT_LOOKAHEAD_DAYS } from "../../lib/alerts";
 import type { ProjectEntry, Settings, ViewerPref } from "../../types";
 
 /**
  * The file-view filters (which endings/paths a project's tree hides) and the
- * Project Settings dialog that edits them. Shared by the right panel and the
+ * Project Settings dialog that edits them. Shared by the side panel and the
  * "Files (Project)" tab so the two views hide the same files: the lists live in
  * the project's own `project.json`, not in either host's state.
  */
@@ -22,6 +33,12 @@ type ProjectJson = Record<string, unknown>;
 const PANEL_HIDDEN_ENDINGS_KEY = "panel_hidden_endings";
 const PANEL_HIDDEN_PATHS_KEY = "panel_hidden_paths";
 const PANEL_SHOWN_PATHS_KEY = "panel_shown_paths";
+/** Tree grouping: does the root's scaffold get its own collapsible section, and
+ *  does everything git ignores get one? Both default to ON — that is what the
+ *  tree's own state used to seed, so an existing project's view is unchanged
+ *  until the switch is thrown. */
+const PANEL_SEPARATE_SCAFFOLD_KEY = "panel_separate_scaffold";
+const PANEL_SEPARATE_GITIGNORED_KEY = "panel_separate_gitignored";
 /** Folders excluded from every recursive scan. Read by the backend too — keep the
  *  spelling in step with `commands::fs::excluded_rel_set`. */
 const SCAN_EXCLUDED_PATHS_KEY = "scan_excluded_paths";
@@ -42,6 +59,12 @@ const PYTHON_ENDINGS = new Set([".py", ".pyw", ".pyi"]);
  *  an alert strip and become an agenda. */
 const ALERT_DAYS_MIN = 1;
 const ALERT_DAYS_MAX = 60;
+
+/** A stored boolean, where anything but an explicit `false` is the default —
+ *  an absent key (every project predating the setting) means "on". */
+function readBool(project: ProjectJson | null, key: string): boolean {
+  return project?.[key] !== false;
+}
 
 function readStringList(project: ProjectJson | null, key: string): string[] {
   const raw = project?.[key];
@@ -68,6 +91,18 @@ export interface ProjectFileFilters {
   availableEndings: string[];
   /** Folders the user excluded from recursive scans (see `toggleScanExcluded`). */
   scanExcluded: string[];
+  /**
+   * Whether the tree gives the project root's scaffold files, and everything
+   * git ignores, their own collapsible sections. Per project rather than per
+   * surface: the file view is mounted many times at once (the side panel, each
+   * Files (Project) tab, each docked subwindow column), so the toggle these
+   * replace showed one project with different sections depending on which copy
+   * was last clicked — and reset itself on every remount.
+   */
+  separateScaffold: boolean;
+  separateGitignored: boolean;
+  setSeparateScaffold: (value: boolean) => void;
+  setSeparateGitignored: (value: boolean) => void;
   error: string | null;
   toggleHiddenEnding: (ending: string, checked: boolean) => void;
   /**
@@ -101,6 +136,8 @@ export function useProjectFileFilters(opts: {
   const [hiddenPaths, setHiddenPaths] = useState<string[]>([]);
   const [shownPaths, setShownPaths] = useState<string[]>([]);
   const [scanExcluded, setScanExcluded] = useState<string[]>([]);
+  const [separateScaffold, setSeparateScaffoldState] = useState(true);
+  const [separateGitignored, setSeparateGitignoredState] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -112,6 +149,8 @@ export function useProjectFileFilters(opts: {
       setHiddenPaths([]);
       setShownPaths([]);
       setScanExcluded([]);
+      setSeparateScaffoldState(true);
+      setSeparateGitignoredState(true);
       return;
     }
     Promise.all([
@@ -128,6 +167,8 @@ export function useProjectFileFilters(opts: {
         setHiddenPaths(readStringList(loaded, PANEL_HIDDEN_PATHS_KEY));
         setShownPaths(readStringList(loaded, PANEL_SHOWN_PATHS_KEY));
         setScanExcluded(readStringList(loaded, SCAN_EXCLUDED_PATHS_KEY).map(normalizeScanPath).filter(Boolean));
+        setSeparateScaffoldState(readBool(loaded, PANEL_SEPARATE_SCAFFOLD_KEY));
+        setSeparateGitignoredState(readBool(loaded, PANEL_SEPARATE_GITIGNORED_KEY));
       })
       .catch((e) => {
         setProject(null);
@@ -136,6 +177,8 @@ export function useProjectFileFilters(opts: {
         setHiddenPaths([]);
         setShownPaths([]);
         setScanExcluded([]);
+        setSeparateScaffoldState(true);
+        setSeparateGitignoredState(true);
         setError(String(e));
       });
   }, [localFile, projectDir, remoteBlocked]);
@@ -186,12 +229,37 @@ export function useProjectFileFilters(opts: {
     invoke("save_project", { localFile, project: nextProject }).catch((e) => setError(String(e)));
   };
 
+  /** Optimistic single-key write, for the same reason `toggleScanExcluded` is
+   *  one: the tree re-sections off these flags, and awaiting the write leaves
+   *  the switch showing the old value while the file view has not moved. */
+  const patchProject = (key: string, value: unknown) => {
+    if (!localFile || !project) return;
+    const nextProject = { ...project, [key]: value };
+    setProject(nextProject);
+    setError(null);
+    invoke("save_project", { localFile, project: nextProject }).catch((e) => setError(String(e)));
+  };
+
+  const setSeparateScaffold = (value: boolean) => {
+    setSeparateScaffoldState(value);
+    patchProject(PANEL_SEPARATE_SCAFFOLD_KEY, value);
+  };
+
+  const setSeparateGitignored = (value: boolean) => {
+    setSeparateGitignoredState(value);
+    patchProject(PANEL_SEPARATE_GITIGNORED_KEY, value);
+  };
+
   return {
     hiddenEndings,
     hiddenPaths,
     shownPaths,
     availableEndings,
     scanExcluded,
+    separateScaffold,
+    separateGitignored,
+    setSeparateScaffold,
+    setSeparateGitignored,
     error,
     toggleHiddenEnding,
     toggleScanExcluded,
@@ -217,8 +285,18 @@ export function ProjectFilesSettingsDialog({
   const t = useT();
   const settings = useSettingsStore((s) => s.settings);
   const updateSettings = useSettingsStore((s) => s.updateSettings);
-  const { availableEndings, hiddenEndings, error, toggleHiddenEnding } = filters;
+  const {
+    availableEndings,
+    hiddenEndings,
+    error,
+    toggleHiddenEnding,
+    separateScaffold,
+    separateGitignored,
+    setSeparateScaffold,
+    setSeparateGitignored,
+  } = filters;
   const [showPython, setShowPython] = useState(false);
+  const [showMigrate, setShowMigrate] = useState(false);
 
   const alertsOn = settings?.files_alerts ?? true;
   const alertSources = settings?.files_alerts_sources ?? {};
@@ -240,10 +318,7 @@ export function ProjectFilesSettingsDialog({
     <>
     <div className="modal-backdrop how-to-start-backdrop" onMouseDown={onClose}>
       <div className="settings-dialog project-settings-dialog" onMouseDown={(e) => e.stopPropagation()}>
-        <div className="settings-title-row">
-          <h2>{t("projectSettings.title")}</h2>
-          <button type="button" className="dialog-close-btn" onClick={onClose}>×</button>
-        </div>
+        <SettingsHeader title={t("projectSettings.title")} onClose={onClose} />
 
         {/* `.settings-dialog` is a split-scroll FRAME: it clips (overflow:hidden,
             padding 0, gap 0) and the `.dialog-scroll` child does the scrolling.
@@ -253,8 +328,10 @@ export function ProjectFilesSettingsDialog({
             dialog is the Alerts group, "Unmute all" and the debug row. Same
             structure as EventDialog/CustomAgentDialog. */}
         <div className="dialog-scroll">
-        <div className="settings-section-title">{t("projectSettings.fileHiding")}</div>
-        <p className="settings-help">{t("projectSettings.fileHidingHelp")}</p>
+        <SettingsSection
+          title={t("projectSettings.fileHiding")}
+          help={t("projectSettings.fileHidingHelp")}
+        />
         {availableEndings.length === 0 ? (
           <div className="settings-empty">{t("projectSettings.noEndingsFound")}</div>
         ) : (
@@ -281,43 +358,121 @@ export function ProjectFilesSettingsDialog({
         )}
         {error && <div className="settings-error">{error}</div>}
 
+        {/* Where the tree puts a project's own scaffold files and everything git
+            ignores: their own collapsible sections, or in among the rest. Both
+            are grouping rules, not hiding rules — nothing disappears either way
+            — which is why they sit beside the endings above rather than in it.
+            They live here at all because the file view is rendered many times
+            over at once, so the toggle that used to sit under the tree meant
+            one project could show different sections in the side panel and in a
+            Files (Project) tab, and reset itself on every remount. */}
+        <SettingsSection
+          title={
+            <>
+              {t("projectSettings.treeGrouping")} <UntestedTag />
+            </>
+          }
+          help={t("projectSettings.treeGroupingHelp")}
+        />
+        <SettingsCard>
+          <ToggleRow
+            label={t("projectSettings.separateScaffold")}
+            title={t("projectSettings.separateScaffoldHelp")}
+            checked={separateScaffold}
+            onChange={(e) => setSeparateScaffold(e.target.checked)}
+          />
+          <ToggleRow
+            label={t("projectSettings.separateGitignored")}
+            title={t("projectSettings.separateGitignoredHelp")}
+            checked={separateGitignored}
+            onChange={(e) => setSeparateGitignored(e.target.checked)}
+          />
+        </SettingsCard>
+
         {hasPython && project && (
           <>
-            <div className="settings-section-title">{t("projectSettings.python")}</div>
-            <p className="settings-help">{t("projectSettings.pythonHelp")}</p>
-            <button
-              className="tab-add-btn"
-              style={{ fontSize: 11, padding: "2px 8px" }}
-              onClick={() => setShowPython(true)}
-            >
-              {project.python_interpreter ? "✓ " : ""}
-              {t("projectSettings.pythonInterpreter")}
-            </button>
+            <SettingsSection
+              title={t("projectSettings.python")}
+              help={t("projectSettings.pythonHelp")}
+            />
+            <div className="settings-link-row">
+              <button
+                type="button"
+                className="settings-btn"
+                onClick={() => setShowPython(true)}
+              >
+                {project.python_interpreter ? "✓ " : ""}
+                {t("projectSettings.pythonInterpreter")}
+              </button>
+            </div>
+          </>
+        )}
+
+        {/* Step-by-step migration of an old project to the current Eldrun
+            state (scaffold files, agent-doc templates, .gitignore defaults,
+            registry fields) — the reviewed, per-step counterpart of the pill's
+            all-at-once "Repair scaffold files". */}
+        {project && (
+          <>
+            <SettingsSection
+              title={
+                <>
+                  {t("projectSettings.migration")} <UntestedTag />
+                </>
+              }
+              help={t("projectSettings.migrationHelp")}
+            />
+            <div className="settings-link-row">
+              <button
+                type="button"
+                className="settings-btn"
+                onClick={() => setShowMigrate(true)}
+              >
+                {t("projectSettings.migrateProject")}
+              </button>
+            </div>
           </>
         )}
 
         {/* #48 per-file-type native-viewer settings (global, not per-project).
             Toggles opt-in local autocomplete (#45) per type, plus the global
             autosave (#47). */}
-        <div className="settings-section-title">{t("projectSettings.nativeViewers")}</div>
-        <p className="settings-help">{t("projectSettings.nativeViewersHelp")}</p>
-        <label className="viewer-pref-toggle" style={{ marginBottom: 6 }}>
-          <Toggle
-            size="sm"
+        <SettingsSection
+          title={t("projectSettings.nativeViewers")}
+          help={t("projectSettings.nativeViewersHelp")}
+        />
+        <SettingsCard>
+          <ToggleRow
+            label={t("projectSettings.autosaveEdits")}
             checked={settings?.autosave !== false}
             onChange={(e) => void updateSettings({ autosave: e.target.checked })}
           />
-          <span>{t("projectSettings.autosaveEdits")}</span>
-        </label>
-        <label className="viewer-pref-toggle" style={{ marginBottom: 6 }}>
-          <Toggle
-            size="sm"
+          <ToggleRow
+            label={t("projectSettings.highlightRecentEdits")}
             checked={settings?.change_tint !== false}
             onChange={(e) => void updateSettings({ change_tint: e.target.checked })}
           />
-          <span>{t("projectSettings.highlightRecentEdits")}</span>
-        </label>
-        <div className="viewer-prefs-list">
+          {/* Which Hunspell dictionary the editors' spelling check reads —
+              machine-wide, since the language you write in is not per project —
+              plus the row that downloads any other language. */}
+          <SpellDictionaryPicker />
+        </SettingsCard>
+
+        {/* A real table, header row and all. Every row is the SAME four-column
+            grid whether or not the type supports completion — a type without it
+            leaves those cells empty rather than shortening its row, which is
+            what makes the toggles line up in columns you can read down. Before,
+            each row was a bare flex line whose extension list stretched, so no
+            two rows' controls started at the same x. */}
+        <SettingsList boxed className="viewer-prefs-list">
+          <div className="viewer-pref-row viewer-pref-head">
+            <span>{t("projectSettings.viewerType")}</span>
+            <span>{t("agents.enabled")}</span>
+            <span>{t("localModel.role.autocomplete")}</span>
+            <span>{t("projectSettings.completionLength")}</span>
+            <span>{t("localModel.role.grammar")}</span>
+            <span>{t("fileViewer.spellingLabel")}</span>
+          </div>
           {VIEWER_PREF_TYPES.map((vt) => {
             const pref: ViewerPref = settings?.viewer_prefs?.[vt.id] ?? {};
             const enabled = pref.enabled !== false;
@@ -330,27 +485,25 @@ export function ProjectFilesSettingsDialog({
               });
             return (
               <div className="viewer-pref-row" key={vt.id}>
-                <span className="viewer-pref-name">{vt.label}</span>
-                <span className="viewer-pref-exts">{vt.extensions.join(" ")}</span>
-                <label className="viewer-pref-toggle">
-                  <Toggle
-                    size="sm"
-                    checked={enabled}
-                    onChange={(e) => patch({ enabled: e.target.checked })}
-                  />
-                  <span>{t("agents.enabled")}</span>
-                </label>
-                {vt.autocomplete && (
+                <span className="viewer-pref-label">
+                  <span className="viewer-pref-name">{vt.label}</span>
+                  <span className="viewer-pref-exts">{vt.extensions.join(" ")}</span>
+                </span>
+                <Toggle
+                  size="sm"
+                  checked={enabled}
+                  onChange={(e) => patch({ enabled: e.target.checked })}
+                  aria-label={`${vt.label} — ${t("agents.enabled")}`}
+                />
+                {vt.autocomplete ? (
                   <>
-                    <label className="viewer-pref-toggle">
-                      <Toggle
-                        size="sm"
-                        checked={pref.autocomplete === true}
-                        disabled={!enabled}
-                        onChange={(e) => patch({ autocomplete: e.target.checked })}
-                      />
-                      <span>{t("localModel.role.autocomplete")}</span>
-                    </label>
+                    <Toggle
+                      size="sm"
+                      checked={pref.autocomplete === true}
+                      disabled={!enabled}
+                      onChange={(e) => patch({ autocomplete: e.target.checked })}
+                      aria-label={`${vt.label} — ${t("localModel.role.autocomplete")}`}
+                    />
                     {/* #45 default completion-length mode; toggled live
                         in-editor with Shift+Tab while a suggestion shows. */}
                     <Dropdown
@@ -369,126 +522,141 @@ export function ProjectFilesSettingsDialog({
                     />
                     {/* Local-model grammar/spelling check — underlines typos
                         (red), grammar (blue), style (green) in the editor. */}
-                    <label className="viewer-pref-toggle">
-                      <Toggle
-                        size="sm"
-                        checked={pref.grammar_check === true}
-                        disabled={!enabled}
-                        onChange={(e) => patch({ grammar_check: e.target.checked })}
-                      />
-                      <span>{t("localModel.role.grammar")}</span>
-                    </label>
+                    <Toggle
+                      size="sm"
+                      checked={pref.grammar_check === true}
+                      disabled={!enabled}
+                      onChange={(e) => patch({ grammar_check: e.target.checked })}
+                      aria-label={`${vt.label} — ${t("localModel.role.grammar")}`}
+                    />
+                    {/* Dictionary (Hunspell) spell check — deterministic and
+                        model-free, red-underlines typos in the editor. */}
+                    <Toggle
+                      size="sm"
+                      checked={pref.spell_check === true}
+                      disabled={!enabled}
+                      onChange={(e) => patch({ spell_check: e.target.checked })}
+                      aria-label={`${vt.label} — ${t("fileViewer.spellingLabel")}`}
+                    />
+                  </>
+                ) : (
+                  /* Four empty cells, so this row's Enabled toggle still sits
+                     in the same column as every other row's. */
+                  <>
+                    <span className="viewer-pref-na">–</span>
+                    <span className="viewer-pref-na">–</span>
+                    <span className="viewer-pref-na">–</span>
+                    <span className="viewer-pref-na">–</span>
                   </>
                 )}
               </div>
             );
           })}
-        </div>
+        </SettingsList>
 
-        {/* The right panel's opt-in Alerts group (global, not per-project).
+        {/* The side panel's opt-in Alerts group (global, not per-project).
             Off by default on purpose — the file viewer is a work surface, and an
             alert strip nobody asked for is an interruption in the one panel that
             stays open all day. The per-source rows are greyed while the master
             switch is off: they only ever take a source *away*, so they mean
             nothing until there is a group to take it out of. */}
-        <div className="settings-section-title">{t("filesAlerts.enable")}</div>
-        <p className="settings-help">{t("filesAlerts.enableHint")}</p>
-        <label className="viewer-pref-toggle" style={{ marginBottom: 6 }}>
-          <Toggle
-            size="sm"
+        <SettingsSection
+          title={t("filesAlerts.enable")}
+          help={t("filesAlerts.enableHint")}
+        />
+        {/* One card: the master switch, what it looks ahead, and which sources
+            it draws from are one setting with three parts — the per-source rows
+            only ever take a source *away*, so they mean nothing without the
+            switch above them and are disabled with it. */}
+        <SettingsCard>
+          <ToggleRow
+            label={t("agents.enabled")}
             checked={alertsOn}
             onChange={(e) => void updateSettings({ files_alerts: e.target.checked })}
           />
-          <span>{t("agents.enabled")}</span>
-        </label>
-        <div className="settings-row">
-          <label htmlFor="files-alerts-days">{t("filesAlerts.days")}</label>
-          <input
-            id="files-alerts-days"
-            type="number"
-            min={ALERT_DAYS_MIN}
-            max={ALERT_DAYS_MAX}
-            step={1}
-            disabled={!alertsOn}
-            placeholder={String(DEFAULT_LOOKAHEAD_DAYS)}
-            value={settings?.files_alerts_days ?? ""}
-            onChange={(e) => {
-              const v = parseInt(e.target.value, 10);
-              // Out of range clears the key rather than storing a value the hook
-              // would silently clamp — an unset field showing the default is
-              // honest about what the group will actually do.
-              void updateSettings({
-                files_alerts_days:
-                  Number.isFinite(v) && v >= ALERT_DAYS_MIN && v <= ALERT_DAYS_MAX
-                    ? v
-                    : undefined,
-              });
-            }}
-          />
-        </div>
-        <div className="viewer-prefs-list">
-          <div className="viewer-pref-row">
-            <label className="viewer-pref-toggle">
-              <Toggle
-                size="sm"
-                checked={alertSources.mail !== false}
-                disabled={!alertsOn}
-                onChange={(e) => patchAlertSources({ mail: e.target.checked })}
-              />
-              <span>{t("filesAlerts.sourceMail")}</span>
+          <div className="settings-card-row">
+            <label className="settings-card-label" htmlFor="files-alerts-days">
+              {t("filesAlerts.days")}
             </label>
-            <label className="viewer-pref-toggle">
-              <Toggle
-                size="sm"
-                checked={alertSources.events !== false}
-                disabled={!alertsOn}
-                onChange={(e) => patchAlertSources({ events: e.target.checked })}
-              />
-              <span>{t("filesAlerts.sourceEvents")}</span>
-            </label>
-            <label className="viewer-pref-toggle">
-              <Toggle
-                size="sm"
-                checked={alertSources.tasks !== false}
-                disabled={!alertsOn}
-                onChange={(e) => patchAlertSources({ tasks: e.target.checked })}
-              />
-              <span>{t("filesAlerts.sourceTasks")}</span>
-            </label>
+            <input
+              id="files-alerts-days"
+              type="number"
+              min={ALERT_DAYS_MIN}
+              max={ALERT_DAYS_MAX}
+              step={1}
+              disabled={!alertsOn}
+              placeholder={String(DEFAULT_LOOKAHEAD_DAYS)}
+              value={settings?.files_alerts_days ?? ""}
+              onChange={(e) => {
+                const v = parseInt(e.target.value, 10);
+                // Out of range clears the key rather than storing a value the
+                // hook would silently clamp — an unset field showing the
+                // default is honest about what the group will actually do.
+                void updateSettings({
+                  files_alerts_days:
+                    Number.isFinite(v) && v >= ALERT_DAYS_MIN && v <= ALERT_DAYS_MAX
+                      ? v
+                      : undefined,
+                });
+              }}
+            />
           </div>
-        </div>
+          <ToggleRow
+            label={t("filesAlerts.sourceMail")}
+            checked={alertSources.mail !== false}
+            disabled={!alertsOn}
+            onChange={(e) => patchAlertSources({ mail: e.target.checked })}
+          />
+          <ToggleRow
+            label={t("filesAlerts.sourceEvents")}
+            checked={alertSources.events !== false}
+            disabled={!alertsOn}
+            onChange={(e) => patchAlertSources({ events: e.target.checked })}
+          />
+          <ToggleRow
+            label={t("filesAlerts.sourceTasks")}
+            checked={alertSources.tasks !== false}
+            disabled={!alertsOn}
+            onChange={(e) => patchAlertSources({ tasks: e.target.checked })}
+          />
+        </SettingsCard>
         {/* The muted rows' escape hatch. The group's own 🔕 chip only counts
             mutes whose row is still live, which is the right number *there* —
             but it means a mute whose mail was unmarked or whose meeting has
             passed has no control of its own left. This one names the raw stored
             count, so the key can always be cleared from somewhere. */}
         {mutedCount > 0 && (
-          <div className="settings-row">
-            <label>{t("filesAlerts.mutedStored", { count: mutedCount })}</label>
-            <button
-              className="tab-add-btn"
-              onClick={() => void updateSettings({ files_alerts_muted: [] })}
-              title={t("filesAlerts.unmuteAllTitle")}
-            >
-              {t("filesAlerts.unmuteAll")}
-            </button>
-          </div>
+          <SettingRow
+            label={t("filesAlerts.mutedStored", { count: mutedCount })}
+            control={
+              <button
+                type="button"
+                className="settings-btn sm"
+                onClick={() => void updateSettings({ files_alerts_muted: [] })}
+                title={t("filesAlerts.unmuteAllTitle")}
+              >
+                {t("filesAlerts.unmuteAll")}
+              </button>
+            }
+          />
         )}
 
         {settings?.debug && (
           <>
-            <div className="settings-section-title">{t("projectSettings.debug")}</div>
-            <button
-              className="tab-add-btn"
-              style={{ fontSize: 11, padding: "2px 8px", width: "100%", color: "var(--danger, #f85149)" }}
-              onClick={() => {
-                invoke("clear_project_session", { localFile }).then(() => {
-                  window.location.reload();
-                }).catch(console.error);
-              }}
-            >
-              {t("projectSettings.clearSessionStorage")}
-            </button>
+            <SettingsSection title={t("projectSettings.debug")} />
+            <div className="settings-link-row">
+              <button
+                type="button"
+                className="settings-btn danger"
+                onClick={() => {
+                  invoke("clear_project_session", { localFile }).then(() => {
+                    window.location.reload();
+                  }).catch(console.error);
+                }}
+              >
+                {t("projectSettings.clearSessionStorage")}
+              </button>
+            </div>
           </>
         )}
         </div>
@@ -502,6 +670,10 @@ export function ProjectFilesSettingsDialog({
         so dismissing the picker threw away the dialog it was opened from. */}
     {showPython && project && (
       <PythonInterpreterWindow project={project} onClose={() => setShowPython(false)} />
+    )}
+    {/* Sibling for the same reason as the interpreter picker above. */}
+    {showMigrate && project && (
+      <ProjectMigrationDialog project={project} onClose={() => setShowMigrate(false)} />
     )}
     </>,
     document.body,

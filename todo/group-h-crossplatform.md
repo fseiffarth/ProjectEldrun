@@ -407,4 +407,290 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
         left out deliberately rather than forgotten — it is the one part that
         reaches the network unasked.
 
+- [~] **31g — Eldrun Mobile sidecar on macOS & Windows** (2026-08-26; ✅
+  Code-complete, ⚠️ needs live QA on real macOS/Windows machines).
+  The separate `eldrun-mobile-host` cargo bin is gone — the sidecar is a copy
+  of the Eldrun binary run with `--mobile-host`, which is also what fixed the
+  `package-macos` CI job (Tauri never lipo-merges secondary binaries into a
+  `universal-apple-darwin` bundle, so the copy step failed on every macOS
+  build). macOS installs a launchd LaunchAgent
+  (`io.github.fseiffarth.eldrun.mobile-host`, `KeepAlive.SuccessfulExit=false`
+  ≙ `Restart=on-failure`); Windows registers an HKCU Run-key autostart and
+  speaks the admin/desktop control planes over tokio named pipes with a
+  same-user token handshake (`services/mobile_control/admin.rs::pipe`) because
+  `tokio::net::UnixStream` does not exist there. Windows terminal attach still
+  requires tmux, so only the desktop-mediated surfaces (pairing, mail,
+  calendar, to-dos) work there; the phone-install QR handoff (bash+jq) is
+  hidden on Windows and state-dir-aware on macOS.
+  - [ ] 🖐️ Manual test — macOS: enable Mobile in Settings, confirm the launch
+    agent starts, pair a phone, attach a tmux tab
+    - [ ] ✅ Works
+    - [ ] ❌ Doesn't work
+  - [ ] 🖐️ Manual test — Windows: enable Mobile, confirm the host starts and
+    survives logoff/logon, pair a phone, open mail/calendar/to-dos
+    - [ ] ✅ Works
+    - [ ] ❌ Doesn't work
+
+- [~] **31h — Mobile composer status chips** (2026-08-28; ✅ Code-complete, ⚠️
+  needs live QA on a phone against a real Claude Code / Codex tab).
+  The phone Terminal screen's composer now has the official Claude Code mobile
+  shape: a ＋ button (inserts an `@` file mention into the draft), a model chip
+  and a mode chip on a bar under the textarea, plus a small path · branch ·
+  context readout above it. The labels come from
+  `mobile-web/src/terminal/statusLine.ts`, which parses the status area the
+  agent TUI draws *below its own input box* (path, branch, model, mode,
+  context %) out of the readable screen — only below a recognized input
+  prompt, only positive matches, generic "Model"/"Mode" labels otherwise.
+  Tapping the model chip sends `/model` and the mode chip sends Shift+Tab, so
+  the chip labels follow the TUI's own redraw — both taps now open a list sheet
+  instead (see 31j). Tested in `src/__tests__/MobileStatusLine.test.ts`.
+  - [ ] 🖐️ Manual test — on the phone, open a Claude tab: chips show the
+    model/mode from the statusline, `/model` picker opens from the model chip,
+    mode chip cycles plan/accept-edits, ＋ inserts `@` into the draft
+    - [ ] ✅ Works
+    - [ ] ❌ Doesn't work
+
+- [~] **31i — Mobile lazy terminal history, whole session** (2026-08-28;
+  ✅ Code-complete, ⚠️ needs live QA on a phone; the tmux `history-limit` half
+  needs a backend restart and takes effect per newly created session).
+  The phone Focus view no longer clips at 400 lines: lines that scroll out of
+  the live tail are absorbed once into frozen, memoized chunks
+  (`mobile-web/src/terminal/readableHistory.ts` — trim-aware via xterm's
+  internal `onTrim`, falls back to the old bounded view if that internal moves)
+  and a "Show earlier output (N lines)" button at the top lazily reveals them
+  page by page (~800 lines/tap, scroll-anchored), up to 20k lines in memory.
+  Depth is one number by design: tmux sessions are now created with
+  `history-limit 10000` (`ssh_exec::TMUX_HISTORY_LINES`, set *before*
+  `new-session` in both the remote wrap and `tmux_local` — a pane copies the
+  limit at creation), the sidecar replay captures the same depth
+  (`pty_bridge::MOBILE_SCROLLBACK_LINES`), and the phone xterm's scrollback
+  matches (`PHONE_SCROLLBACK`). Copy copies exactly what is revealed. Tested in
+  `src/__tests__/MobileReadableScreen.test.ts` (lazy-history describe block).
+  - [ ] 🖐️ Manual test — on the phone, open an agent tab with a long session:
+    "Show earlier output" appears, reveals older lines without the view
+    jumping, repeated taps walk back to the session start, reconnect (airplane
+    mode toggle) replays without duplicating lines
+    - [ ] ✅ Works
+    - [ ] ❌ Doesn't work
+
+- [~] **31j — Mobile model/mode chips open a list, not a TUI dialog**
+  (2026-08-28; ✅ Code-complete, ⚠️ needs live QA on a phone against a real
+  Claude Code / Codex tab).
+  Both composer chips now open a bottom sheet with a tappable list — name,
+  description, a check on the one the session is in — instead of leaving the
+  reader to walk a dialog that reflows into nonsense at phone width.
+  - **Model**: the chip still sends `/model`; the sheet lists the rows the
+    session's *own* picker drew, read by `mobile-web/src/terminal/selectPrompt.ts`
+    (a contiguous run of numbered rows carrying exactly one highlight marker —
+    anything else is not a dialog and the sheet steps aside after 6s). A tap
+    moves the highlight with the same ↑/↓ + Enter the on-screen key row sends;
+    dismissing sends Esc. Nothing decides what the models are but the session.
+  - **Mode**: neither CLI has a mode picker, so the sheet lists the family the
+    session's *reported* mode belongs to (`terminal/agentModes.ts`: Claude
+    default/accept edits/plan/bypass permissions, Codex read only/auto/full
+    access) and applies one by pressing Shift+Tab until the redrawn status line
+    reports it — no cycle order assumed, a full lap without a match leaves the
+    session where it was and says so. A session whose mode no family claims
+    keeps the old single-cycle tap. `statusLine` learned Codex's bare `auto`
+    (anchored, so Claude's `auto-compact` and `~/…/auto/…` stay unmatched).
+  Tested in `src/__tests__/MobileSelectPrompt.test.ts` and
+  `src/__tests__/MobileOptionSheet.test.tsx`.
+  - [ ] 🖐️ Manual test — on the phone, open a Claude tab: the model chip opens
+    a list of the real models with the current one checked, tapping one
+    switches it (chip label follows), ✕ closes both sheet and picker; the mode
+    chip opens the four modes, tapping Plan lands in plan mode, tapping bypass
+    on a session without it reports the failure and leaves the mode unchanged
+    - [ ] ✅ Works
+    - [ ] ❌ Doesn't work
+
+- [~] **31l — Mobile Focus mode chips for all agent families** (2026-08-28;
+  ✅ Code-complete, ⚠️ needs live QA on a phone).
+  The mode sheet now covers every agent whose TUI actually prints its mode,
+  keyed by the tab's agent label as well as the shown mode:
+  - **Claude default** — Claude Code prints *nothing* in default mode, so the
+    sheet never appeared for the most common state. A `silent` mode on the
+    family reads an input frame with no mode text as "default" (label-gated:
+    only a tab labelled Claude earns it), so the sheet opens, marks Default
+    current, and a walk *to* default can confirm.
+  - **Qwen Code** — full family (Ask permissions / Plan / Accept edits / Auto
+    / YOLO); all five are on its Shift+Tab cycle and each draws indicator
+    text (English locale), so every switch is verifiable. `statusLine` learned
+    the shapes, the `*` YOLO prompt prefix, and decimal `45.2% context used`.
+  - **Gemini CLI** — deliberately no family: since ~0.5 the approval mode is
+    only prompt colour + aria-label, nothing the readable view can parse, so
+    the chip keeps blind-cycling. Its `NN% used` context column is read.
+  - Vibe/OpenCode are alt-screen TUIs (Focus already hands them to Terminal);
+    Aider is a plain REPL. `scripts/backend-stale.sh` now also flags a stale
+    *embedded* mobile bundle (mobile-web src newer than mobile-dist, or
+    mobile-dist newer than the running process) — the phone serves the bundle
+    baked in at compile time, which is how "Claude without the Terminal
+    toggle" happened while every source file was right.
+  - [ ] 🖐️ Manual test — on the phone: a Claude tab in default mode shows
+    "default" on the mode chip and the sheet opens with Default checked;
+    walking Default→Plan→Default confirms both ways; a Qwen tab lists five
+    modes and lands on the tapped one (incl. YOLO, whose prompt turns `*`);
+    a Gemini tab still blind-cycles but shows its `% used` as context
+    - [ ] ✅ Works
+    - [ ] ❌ Doesn't work
+
+- [~] **31n — Mobile Focus: + attaches from the phone; sheets freeze the view**
+  (2026-08-31; ✅ Code-complete, ⚠️ needs live QA on a phone — and a rebuild +
+  restart first, since the phone serves the bundle baked into the binary).
+  - **+ → "From this phone"** opens the phone's own picker (camera / photo
+    library / files, multiple). Each file is `POST`ed raw to
+    `/api/v1/tabs/{id}/inbox` (own 24 MiB body limit) and lands in the tab's
+    project under `.eldrun/inbox/<UTC stamp>-<safe name>` — a folder the
+    desktop already git-ignores, hides from the tree and skips in sync — and
+    the phone writes `@.eldrun/inbox/<file>` into the draft as each one lands.
+    The reference is *project-relative* on purpose: no host path crosses the
+    browser API, and it is what the agent needs from its own cwd. "A project
+    file (@)" is the old + behaviour. A pending/failed row sits above the
+    composer (oversized files never leave the phone; failures name the reason).
+    The write is defensive (`inbox.rs`): sanitized + stamped name,
+    `create_new`, inbox must canonicalize below the project root.
+  - **Frozen reading view**: while the model or mode sheet is up, the Focus
+    pane keeps the frame it held when the sheet opened; the `/model` picker
+    and the Shift+Tab status redraws are still *read* from the live screen
+    (the sheet lists the picker, the walk confirms against it) but not painted
+    behind it. Closing the sheet resumes the live view.
+  - [ ] 🖐️ Manual test — on the phone: + → From this phone → pick a photo →
+    "Sending…" row appears, then `@.eldrun/inbox/….jpg ` lands in the draft and
+    the file is in `<project>/.eldrun/inbox/` on the desktop; send the message
+    and Claude reads the image; pick a >24 MB video → refused without upload;
+    + → A project file inserts a bare `@`. Open the Model sheet → the picker
+    text does not appear behind the sheet; close it → the view resumes
+    - [ ] ✅ Works
+    - [ ] ❌ Doesn't work
+
+- [~] **31o — Mobile names which machine failed, instead of "Host unavailable"**
+  (2026-09-01; ✅ Code-complete, ⚠️ needs live QA on a phone — and a rebuild +
+  restart first, since the phone serves the bundle baked into the binary).
+  Prompted by a real outage: the phone had dropped off the tailnet for a day,
+  and the only thing the app could say was "Host unavailable" with a Retry
+  button, which is equally true when the sidecar is dead, when Eldrun itself is
+  closed, and when the browser blocked the key store — four different fixes
+  behind one sentence.
+  - `mobile-web/src/connection.ts` classifies a failed request into one of nine
+    reasons and pairs each with copy that names the machine to go and fix. The
+    split that carries it: `api()` reports a transport failure as status `0`
+    (nothing answered — off the tailnet, or the desktop is asleep), while an
+    HTTP error means something *did* answer, and only the sidecar sends a JSON
+    `error` code — so a gateway status carrying the bare `request_failed`
+    fallback is the proxy's, i.e. the sidecar is not listening, whereas a `503`
+    reading `desktop_unavailable` is the sidecar's own report that Eldrun is
+    closed. Where the phone genuinely cannot tell two causes apart it names
+    both rather than blaming one.
+  - Shown on the unavailable splash (title + what to do + the raw `status code`
+    for a bug report) and on the Home list's error line.
+  - Fixes a real bug found on the way: `resumeAuth` treated *any* 403 as a
+    rejected device, so a rejected **origin** — the host refusing the address
+    the app was opened from, which re-pairing cannot fix — sent the reader to a
+    pairing screen that could only fail again.
+  - Tested in `src/__tests__/MobileConnectionError.test.ts` (10 cases).
+  - [ ] 🖐️ Manual test — on the phone: turn Tailscale off → "Can't reach your
+    desktop" naming Tailscale *and* a sleeping desktop, not "Host unavailable";
+    turn airplane mode on → "This phone is offline" instead; with Tailscale up
+    but Eldrun closed on the desktop → an error naming *Eldrun Mobile* /
+    *Eldrun* rather than the phone; each shows a `status code` line
+    - [ ] ✅ Works
+    - [ ] ❌ Doesn't work
+
+- [~] **31k — Mobile fingerprint unlock is the default** (2026-08-28;
+  ✅ Code-complete, ⚠️ needs live QA on a phone).
+  The local lock used to demand PIN *then* biometric; now the enrolled
+  WebAuthn platform credential alone unlocks, prompted automatically as the
+  locked screen opens (a browser that wants a user gesture — iOS Safari —
+  gets a "Unlock with fingerprint" button instead), and the PIN is the
+  fallback for a failed/unavailable authenticator. Either factor alone
+  suffices — the lock guards casual access and the paired signing key is a
+  non-exportable CryptoKey the PIN never encrypted. A successful biometric
+  unlock clears the PIN lockout counter; a PIN lockout does not block the
+  biometric path. An existing record with no credential (setup ran where
+  `isUserVerifyingPlatformAuthenticatorAvailable()` said no — e.g. Firefox
+  Android, or no OS screen lock at the time) is **retro-enrolled**: a
+  successful PIN unlock on a now-capable browser raises the enrollment sheet
+  (`maybeEnrollBiometric`, announced in the unlock copy first), so fingerprint
+  becomes the default from the next unlock without re-pairing; a refused
+  enrollment just stays PIN-only and offers again next time
+  (`mobile-web/src/localLock.ts`, `mobile-web/src/screens/LocalUnlock.tsx`).
+  A browser that exposes **no** platform authenticator now says so and names
+  the remedy, rather than silently showing a PIN field: DuckDuckGo (and every
+  other browser built on the system WebView) has no WebAuthn, which is why
+  this never appeared on a phone before — the note points at Chrome/Safari
+  and warns that re-pairing is the cost, a pairing being per-browser
+  IndexedDB state.
+  - [ ] 🖐️ Manual test — on the phone with a lock configured: a PIN-only
+    record offers fingerprint enrollment right after a PIN unlock; from then
+    on reopening the PWA raises the fingerprint sheet by itself (or shows the
+    button on iOS), a fingerprint alone unlocks, cancelling it leaves the PIN
+    path working, a fresh setup on a biometric-capable phone states
+    PIN-as-fallback
+    - [ ] ✅ Works
+    - [ ] ❌ Doesn't work
+
+- [~] **31m — Mobile to-do board: sticky filters, FAB, hide archived**
+  (2026-08-30; ✅ Code-complete, ⚠️ needs live QA on a phone).
+  Four changes to `mobile-web/src/screens/Todo.tsx`. **"Hide done" is
+  remembered** (`mobile-web/src/prefs.ts`, `localStorage` under
+  `eldrun.mobile.*`) — the screen is remounted by every tab switch, so the
+  toggle was being re-ticked a dozen times a session; the search and the two
+  pickers stay transient on purpose, since a filter that outlives the visit
+  hides cards nobody chose to hide. **"Hide archived" is new and defaults
+  on**: it hides cards resting in a column flagged `archived`, which "hide
+  done" cannot reach (an *abandoned* archived card has `percent < 100`). That
+  flag had to be added to the bridge — `protocol::TodoColumn.archived`
+  (`#[serde(default)]`; the struct is `deny_unknown_fields`, so the desktop
+  could not have sent it otherwise) and `MobileBridgeHost`'s snapshot — and is
+  read off the flag, never the column's name, so a rename cannot change what
+  the filter hides. **Add card is a FAB** floating above the tab bar (z-index
+  between the bar and the editor backdrop); + Column stays as a small button
+  at the top. **The search moved directly under the header** and the "synced
+  through the desktop" notice to the foot of the screen. Tested in
+  `src/__tests__/MobileTodoBoard.test.ts`.
+  - [ ] 🖐️ Manual test — on the phone: tick "Hide done", leave the board and
+    come back (still ticked); the board opens with archived cards hidden and
+    the archive column still showing its count; unticking "Hide archived"
+    reveals them and is remembered; the ＋ button adds a card and never sits
+    under the tab bar or over the editor; the last column is fully scrollable
+    past the button
+    - [ ] ✅ Works
+    - [ ] ❌ Doesn't work
+
+- [~] **31q — Mobile collected prompts** (2026-09-02; ✅ code-complete and
+  automated tests passing, ⚠️ phone QA pending). "◷ Collected prompts" on the
+  project screen opens the project's tab-free prompt list (desktop #249)
+  through project-scoped, authenticated, exact-origin routes
+  (`/api/v1/projects/{id}/prompts[/{prompt_id}[/send]]`). *Send now* posts an
+  opaque agent-tab id; the sidecar checks the tab belongs to the same project
+  and is an agent tab before the desktop turns the prompt into a one-time
+  schedule at **its** current minute — the phone never computes desktop time.
+  *Schedule…* opens the per-tab sheet (31p) prefilled. The embedded PWA is
+  compiled in, so this needs a rebuild + restart to reach a phone. Locked by
+  `MobileProjectPrompts.test.tsx` and the `host.rs` prompt route test.
+  - [ ] 🖐️ Manual phone QA — add/edit/delete a prompt and see the desktop
+    Agents view follow; Send now to an idle agent and watch it typed on the
+    desktop; Schedule… lands in the tab sheet with the text; with desktop
+    Eldrun closed the sheet disables writes and says so.
+  - [ ] ✅ Works
+  - [ ] ❌ Doesn't work
+- [~] **31p — Mobile per-tab schedule sheet** (2026-09-01; ✅ code-complete and
+  automated tests passing, ⚠️ phone QA pending). The ◷ beside each agent tab on
+  the project's tab list and the Schedule chip in its terminal manage the same
+  one-time/daily/weekday definitions through authenticated opaque-tab
+  endpoints. The phone sees the desktop time zone but never the raw
+  project id, tmux name, path, or schedule target id. With the sidecar still
+  reachable and desktop Eldrun closed, terminal access remains available while
+  the sheet disables writes and says to open desktop Eldrun.
+  - 2026-09-02 fix: "Schedules could not be loaded" / save failing on the phone
+    was the desktop answering `tab_not_found` for every restored agent tab —
+    the restore path computed the schedule target id on its resume-check helper
+    object and never put it on the tab entry (see group-s). Not yet re-verified
+    on a phone; the embedded PWA needs a restart to pick up the moved control.
+  - [ ] 🖐️ Manual phone QA — CRUD a schedule and see the desktop dialog/indicator
+    refresh; edit it on desktop and see the open sheet refresh; close desktop
+    Eldrun and verify the explanatory disabled state without losing terminal
+    access; verify auth/origin rejection from an unpaired client.
+  - [ ] ✅ Works
+  - [ ] ❌ Doesn't work
+
 ---

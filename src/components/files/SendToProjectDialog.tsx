@@ -246,7 +246,7 @@ export function SendToProjectDialog({ source, fromProjectId, onClose }: Props) {
 
             {error && <p className="settings-help folder-picker-error">{error}</p>}
 
-            <div className="settings-actions folder-picker-actions">
+            <div className="folder-picker-actions">
               <button type="button" onClick={onClose}>{t("common.cancel")}</button>
               <button
                 type="button"
@@ -271,7 +271,7 @@ export function SendToProjectDialog({ source, fromProjectId, onClose }: Props) {
                 })}
               </p>
             </div>
-            <div className="settings-actions folder-picker-actions">
+            <div className="folder-picker-actions">
               <button type="button" className="primary" onClick={onClose}>
                 {t("common.close")}
               </button>

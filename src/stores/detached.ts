@@ -12,7 +12,8 @@
  * `DetachedApp` / the main shell.
  */
 import { emit, listen } from "@tauri-apps/api/event";
-import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { WebviewWindow, getAllWebviewWindows } from "@tauri-apps/api/webviewWindow";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   useTabsStore,
   orderedTabKeys,
@@ -23,16 +24,31 @@ import {
   applyResize,
   moveKeyInTree,
   allGroups,
+  isPtyTabKind,
+  type DetachedGroup,
   type DropEdge,
   type LayoutNode,
   type LocalityHost,
   type TabEntry,
   type TabLocation,
+  type ViewerState,
   type WindowBounds,
 } from "./tabs";
 import { useProjectsStore } from "./projects";
-import { sshOf, useRemoteStatusStore, type ConnState } from "./remoteStatus";
-import type { ProjectEntry } from "../types";
+import {
+  PRIMARY_HOST,
+  hostStateOf,
+  sshOf,
+  useRemoteStatusStore,
+  type ConnState,
+  type HostConnState,
+} from "./remoteStatus";
+import { BOX_SCOPE_PREFIX, useBoxesStore } from "./boxes";
+import { useActivityStore, noteUserInput } from "./activity";
+import { bumpUsage } from "./usage";
+import { useRemoteMachinesStore } from "./remoteMachines";
+import { useBigFoldersStore } from "./bigFolders";
+import type { ProjectBox, ProjectEntry } from "../types";
 
 /** Parsed `?detached=<scope>:<groupId>` query. */
 export interface DetachedParam {
@@ -41,16 +57,27 @@ export interface DetachedParam {
 }
 
 /**
- * Parse the `?detached=` query that selects the DetachedApp render branch.
- * Returns null when absent (→ render the normal AppShell). The value is
- * `<scope>:<groupId>`; a group id can itself contain a hyphen (e.g. `g-3`) but
- * never a colon, so we split on the FIRST colon only.
+ * Parse the query that selects the DetachedApp render branch. Returns null when
+ * absent (→ render the normal AppShell).
+ *
+ * The backend now writes two keys — `?detached=<scope>&group=<groupId>` — so a
+ * scope may contain anything: a box scope is `box:<id>` (#224), and the old
+ * single-value form `?detached=<scope>:<groupId>` split on the FIRST colon, which
+ * read that as scope `"box"` and group `"<id>:g-3"`. The host then found no
+ * record, never answered the seed, and the popout destroyed itself after 8 s
+ * with the group's tabs stranded in a `detached:true` record. The legacy form
+ * is still accepted (a popout URL minted by an older backend) and splits on the
+ * LAST colon: a group id (`g-3`, `s-12`) never contains one, a scope may.
  */
 export function parseDetachedParam(search: string): DetachedParam | null {
   const params = new URLSearchParams(search);
   const raw = params.get("detached");
   if (!raw) return null;
-  const idx = raw.indexOf(":");
+  const group = params.get("group");
+  if (group) {
+    return raw ? { scope: raw, groupId: group } : null;
+  }
+  const idx = raw.lastIndexOf(":");
   if (idx < 0) return null;
   const scope = raw.slice(0, idx);
   const groupId = raw.slice(idx + 1);
@@ -79,7 +106,7 @@ export const DETACHED_DOCK = "detached-dock";
  */
 export const DETACHED_CLOSE = "detached-close";
 /**
- * Detached → main: hide this popout into the main window's right-panel "Hidden
+ * Detached → main: hide this popout into the main window's side-panel "Hidden
  * subwindows" list instead of docking it live (DETACHED_DOCK) or discarding it
  * (DETACHED_CLOSE). The group's tabs stay mounted (PTYs alive); the main window
  * parks its subtree in `hiddenGroupsByScope`, from which it is restored or closed
@@ -114,6 +141,73 @@ export const DETACHED_ZOOM = "detached-zoom";
 export const DETACHED_DRAG_START = "detached-drag-start";
 export const DETACHED_DRAG_MOVE = "detached-drag-move";
 export const DETACHED_DRAG_END = "detached-drag-end";
+
+/**
+ * Group B #234 — detached → main: what the user did in a popout's terminal, for
+ * the activity classifier that lives ONLY in the main window. Main's "working" /
+ * "done" derivation requires input this session (`stores/activity`'s
+ * `noteUserInput`), and a popout's `TerminalView` used to record that input into
+ * the popout's own, never-read activity store — so a popped-out agent never lit
+ * the project pill. `seen` is the popout's equivalent of activating a tab
+ * (`clearAttention`); `bell` is the terminal bell.
+ */
+export const DETACHED_ACTIVITY = "detached-activity";
+export interface DetachedActivityEnvelope {
+  ptyId: string;
+  kind: "input" | "seen" | "bell";
+}
+
+/**
+ * Group B #234 — detached → main: one usage counter bump. The popout's own
+ * `stores/usage` accumulator is never flushed (only AppShell flushes), so a
+ * prompt typed in a popout never reached the daily recap.
+ */
+export const DETACHED_USAGE = "detached-usage";
+export interface DetachedUsageEnvelope {
+  scope: string;
+  key: string;
+  n: number;
+}
+
+/**
+ * Group B #234 — main → detached: the classified status of THIS popout's tabs
+ * (working / needs-decision / finished), namespaced per label like the seed. The
+ * popout's own activity store has no PTY history to classify from, so the main
+ * window — which sees every PTY's output — mirrors its verdict over, and the
+ * popout's strip paints the same lamps `TabBar` does.
+ */
+export const detachedStatusEvent = (label: string) => `detached-status-${label}`;
+export type DetachedTabStatus = "working" | "needs-decision" | "finished";
+export interface DetachedStatusPayload {
+  scope: string;
+  /** tab key → status; a tab with nothing to say is absent. */
+  status: Record<string, DetachedTabStatus>;
+}
+
+/**
+ * Group B #233 — detached → main: open a dialog whose host is mounted only in
+ * the main window. The stores behind these dialogs forward the request here when
+ * they run in a popout heap (`isDetachedWindow`), because the alternative — a
+ * button that flips a store nobody in this window renders — is a dead button.
+ */
+export const DETACHED_OPEN_DIALOG = "detached-open-dialog";
+export interface DetachedOpenDialogEnvelope {
+  kind: "remoteMachines" | "bigFolders";
+  projectId: string;
+}
+
+/**
+ * Group B #224 — backend → main: a `detached-*` window was destroyed. Emitted
+ * from the `WindowEvent::Destroyed` hook for every popout death. Legitimate
+ * teardowns drop the store record BEFORE the window goes, so the host finds no
+ * record and does nothing; a record still standing means the popout died
+ * behind the store's back (`xkill`, a renderer crash, a seed timeout) and its
+ * tabs are docked back rather than stranded.
+ */
+export const DETACHED_WINDOW_DESTROYED = "detached-window-destroyed";
+export interface DetachedWindowDestroyedEnvelope {
+  label: string;
+}
 
 /**
  * #42: main → detached drop preview. The mirror image of the DETACHED_DRAG_*
@@ -240,21 +334,33 @@ export interface DetachedSeed {
    */
   zoom?: number;
   /**
-   * The owning project's remote identity, captured at seed time — the detached
-   * window is inert to the projects store, so this is the only way its tab strip
-   * can render the locality badge/menu and name the machine a tab runs on
-   * (`docs/multi_host_remote_plan.md`). Absent for a local project. `computeHosts`
-   * can go stale if a worker is added while the popout is open (re-seed only on a
-   * tab add); acceptable — the machine list refreshes next time it re-seeds.
+   * The owning project's identity, captured at seed time — the detached window
+   * is inert to the projects store, so this is how its tab strip renders the
+   * locality badge/menu and names the machine a tab runs on
+   * (`docs/multi_host_remote_plan.md`), and how its file viewers resolve a
+   * project at all (#232). Present for EVERY project scope now, local ones
+   * included — `primaryHost` is what says "remote"; a local project ships its
+   * entry with no host. Absent only for the root scope. Refreshed by the host's
+   * context subscriber whenever the entry or its SSH state changes (#238), so it
+   * no longer waits for an unrelated reseed.
    */
   remote?: DetachedRemoteInfo;
 }
 
-/** The slice of a project's remoteness a detached window needs to drive its
- *  locality UI (streamed in the seed since the projects store is unavailable). */
+/** The slice of a project's identity a detached window needs (streamed in the
+ *  seed since the projects store is unavailable there). Named for the remote
+ *  case it started as; since #232 it is the popout's whole project context. */
 export interface DetachedRemoteInfo {
   primaryHost?: string;
   computeHosts?: LocalityHost[];
+  /**
+   * A box scope's member projects (`box:<id>`), so a "Files — ⟨member⟩" tab in
+   * a popped-out box subwindow can resolve its member by root the way the main
+   * window's `ProjectFilesTab` does from the projects store.
+   */
+  boxMembers?: ProjectEntry[];
+  /** The owning box record required by box-scoped selectors in the popout. */
+  box?: ProjectBox;
   /**
    * The owning project entry, streamed because the popout is inert to the
    * projects store. Without it a docked (or popped-out) file viewer can't render
@@ -273,6 +379,8 @@ export interface DetachedRemoteInfo {
    * Stale between re-seeds (a connect made after pop-out lands at the next seed).
    */
   primarySsh?: ConnState;
+  /** Live primary + worker connection state, keyed by host id. */
+  hostStates?: Record<string, HostConnState>;
 }
 
 /** Build a seed payload from a detached popout's tabs + subtree. Pure. The
@@ -318,7 +426,19 @@ export type DetachedEdit =
   // target group (the "+" menu, or a drop on a tab bar / pane centre).
   | { kind: "add"; tab: Omit<TabEntry, "key">; targetGroupId: string; edge?: DropEdge }
   // Multi-pane popouts: split `key` into a new pane at `edge` of `targetGroupId`.
-  | { kind: "split"; key: string; targetGroupId: string; edge: DropEdge }
+  // The popout mints the new pane's ids (`mintDetachedSplitIds`) and ships them,
+  // so the main store's copy of the tree names the pane exactly as the popout
+  // does — each window has its own id counter, and a pane named differently on
+  // the two sides is one the popout can report as a drop target but the main
+  // store cannot find.
+  | {
+      kind: "split";
+      key: string;
+      targetGroupId: string;
+      edge: DropEdge;
+      newGroupId?: string;
+      newSplitId?: string;
+    }
   // Multi-pane popouts: resize the divider between children i and i+1 of a split.
   | { kind: "resize"; splitId: string; dividerIndex: number; fraction: number }
   // Multi-pane popouts: merge `key` into `targetGroupId` (at `index`, else append).
@@ -327,7 +447,17 @@ export type DetachedEdit =
   // file viewer), or record the folder it browsed to. Applied optimistically
   // popout-side, mirrored by the main window into its detached record so the
   // state persists + survives a dock.
-  | { kind: "files"; groupId: string; open?: boolean; width?: number; folder?: string };
+  | { kind: "files"; groupId: string; open?: boolean; width?: number; folder?: string }
+  // Group B #231 — pane writes forwarded by the popout's store seam
+  // (`stores/detachedContext`): viewer state (scroll/zoom/breakpoints…), a tmux
+  // session rename, a Files tab's browsed folder. Payload-only; no node change.
+  | { kind: "setViewerState"; key: string; patch: ViewerState }
+  | { kind: "setTmuxName"; key: string; name: string }
+  | { kind: "setFolder"; key: string; folder: string }
+  | { kind: "setUrl"; key: string; url: string }
+  // A tab bound for ANOTHER scope's layout (an install command's root-scope tab
+  // opened from a popout): the main window adds it there with `addTabToScope`.
+  | { kind: "addToScope"; scope: string; tab: Omit<TabEntry, "key"> };
 
 /** Envelope for a detached→main edit (identity + the edit itself). */
 export interface DetachedEditEnvelope {
@@ -370,6 +500,31 @@ export interface DetachedSeedRequest {
  * tab PAYLOAD updates (rename label) are applied to `tabs` separately by the
  * caller; this only updates the group node (tabKeys/activeKey).
  */
+/**
+ * Ids for the nodes a popout-side split creates, minted in the POPOUT and sent
+ * along with the `split` edit so the main store uses the same ones. Namespaced
+ * by the popout's window label: the id counters of the two windows run
+ * independently, so a bare `g-<n>` minted here could collide with a node the
+ * main store already has. (Ids are regenerated anyway when a popout docks back.)
+ */
+let _detachedNodeCounter = 0;
+export function mintDetachedSplitIds(
+  label: string,
+  /** Ids already in the popout's tree. The counter restarts at 0 when the popout's
+   *  webview reloads (the renderer watchdog, the crash reporter), so without this
+   *  a post-reload split could re-mint an id a pane minted before the reload still
+   *  carries (#227) — and `splitSubtree` then silently swaps it for a fresh one
+   *  the popout never learns. */
+  taken?: Iterable<string>,
+): { groupId: string; splitId: string } {
+  const used = new Set(taken ?? []);
+  for (;;) {
+    const n = ++_detachedNodeCounter;
+    const ids = { groupId: `g-${label}-${n}`, splitId: `s-${label}-${n}` };
+    if (!used.has(ids.groupId) && !used.has(ids.splitId)) return ids;
+  }
+}
+
 export function applyEditToSubtree(
   subtree: LayoutNode,
   edit: DetachedEdit,
@@ -403,7 +558,12 @@ export function applyEditToSubtree(
     }
     case "split": {
       // Optimistic local split; null (invalid) leaves the popout unchanged.
-      return splitSubtree(subtree, edit.key, edit.targetGroupId, edit.edge) ?? subtree;
+      return (
+        splitSubtree(subtree, edit.key, edit.targetGroupId, edit.edge, {
+          groupId: edit.newGroupId,
+          splitId: edit.newSplitId,
+        }) ?? subtree
+      );
     }
     case "resize":
       // Optimistic local divider resize (mirrors the main window's resizeSplit).
@@ -420,11 +580,16 @@ export function applyEditToSubtree(
         ...(edit.folder != null ? { filesFolder: edit.folder } : {}),
       }));
     case "add":
+    case "addToScope":
       // The detached window can't mint the tab key — it leaves the subtree as-is
       // and waits for the main window's re-seed (with the real, keyed tab).
       return subtree;
     case "rename":
-      // Label lives on the tab payload, not the group node — no node change.
+    case "setViewerState":
+    case "setTmuxName":
+    case "setFolder":
+    case "setUrl":
+      // Payload-only edits — no node change.
       return subtree;
     case "setLocation":
       // Locality lives on the tab payload, not the group node — no node change.
@@ -551,13 +716,32 @@ export function decideDetachedPaneDrop(input: {
   return { kind: "newWindow" };
 }
 
-/** The remoteness a popout of `scope` needs to name its machines — read from the
- *  MAIN window's projects store at seed time. `undefined` for a local project (no
- *  locality axis) so the popout renders no locality badge, exactly like a local
- *  project's main-window tab strip. */
-function remoteInfoForScope(scope: string): DetachedRemoteInfo | undefined {
-  const project = useProjectsStore.getState().projects.find((p) => p.id === scope);
-  if (!project?.remote) return undefined;
+/**
+ * The project context a popout of `scope` needs — read from the MAIN window's
+ * stores at seed time (#232). Every project scope gets its entry (a local
+ * project's file viewers were a bare tree without one: no git bar, no history,
+ * no Apps/Sessions, no remarks); a remote project additionally names its hosts
+ * and ships the primary's live SSH state; a box scope ships its members. Only
+ * the root scope has nothing to say.
+ */
+export function projectInfoForScope(scope: string): DetachedRemoteInfo | undefined {
+  const projects = useProjectsStore.getState().projects;
+  if (scope.startsWith(BOX_SCOPE_PREFIX)) {
+    const box = useBoxesStore.getState().boxes.find((b) => `${BOX_SCOPE_PREFIX}${b.id}` === scope);
+    if (!box) return undefined;
+    const boxMembers = box.member_ids
+      .map((id) => projects.find((p) => p.id === id))
+      .filter((p): p is ProjectEntry => !!p);
+    return { box, boxMembers };
+  }
+  const project = projects.find((p) => p.id === scope);
+  if (!project) return undefined;
+  if (!project.remote) return { project };
+  const remoteStatus = useRemoteStatusStore.getState();
+  const hostIds = [PRIMARY_HOST, ...(project.compute_hosts ?? []).map((host) => host.id)];
+  const hostStates = Object.fromEntries(
+    hostIds.map((hostId) => [hostId, hostStateOf(remoteStatus, project.id, hostId)]),
+  );
   return {
     primaryHost: project.remote.host,
     computeHosts: project.compute_hosts,
@@ -565,8 +749,73 @@ function remoteInfoForScope(scope: string): DetachedRemoteInfo | undefined {
     // viewer can render the source switch + run-host picker and actually read the
     // host tree over the shared SFTP pool (see DetachedRemoteInfo).
     project,
-    primarySsh: sshOf(useRemoteStatusStore.getState(), project.id),
+    primarySsh: sshOf(remoteStatus, project.id),
+    hostStates,
   };
+}
+
+/**
+ * Re-seed one popout from the main store's current record. `landedKey` tags the
+ * seed so the popout plays the drop-in landing for a freshly-docked tab. THE one
+ * reseed path (#230): the tab-drop, file-drop, delete/rename-retarget and host
+ * paths all used to build their own seed, and the drop-side copy forgot the
+ * project context — every dock into a remote project's popout wiped its locality
+ * badges and turned its docked viewer into a plain local folder.
+ */
+export function reseedDetached(scope: string, groupId: string, landedKey?: string): void {
+  const store = useTabsStore.getState();
+  const entry = store.detachedGroupsByScope[scope]?.find((d) => d.id === groupId);
+  if (!entry) return;
+  const seed = buildSeed(
+    scope,
+    groupId,
+    store.tabsByScope[scope] ?? [],
+    entry.subtree,
+    entry.zoom,
+    projectInfoForScope(scope),
+  );
+  void emit(detachedSeedEvent(entry.label), landedKey ? { ...seed, landedKey } : seed);
+}
+
+/** Persist `scope` through the store's scope-aware writer (#229). Root and box
+ *  scopes have no project.json — they persist under their own session directory
+ *  with an empty export path — so this must never be gated on `local_file`: a
+ *  root popout closed while a project was active used to come back at the next
+ *  launch because nothing rewrote `sessions/root/`. */
+function persistScopeNow(scope: string): Promise<void> {
+  const localFile = useProjectsStore.getState().projects.find((p) => p.id === scope)?.local_file;
+  return useTabsStore.getState().persistScope(scope, localFile ?? "").catch(() => {});
+}
+
+/** Set while `shutdownDetachedWindows` destroys popouts on quit, so their
+ *  `Destroyed` events are not mistaken for crashes and docked back. */
+let shuttingDown = false;
+
+/** The `DetachedTabStatus` map for one popout's keys, from the main window's
+ *  classified activity — the same three states `TabBar` derives per tab. Pure. */
+export function statusForEntry(
+  scope: string,
+  entry: DetachedGroup,
+  tabs: TabEntry[],
+  busyByTab: Record<string, boolean>,
+  attentionByTab: Record<string, "decision" | "done">,
+): Record<string, DetachedTabStatus> {
+  const out: Record<string, DetachedTabStatus> = {};
+  const byKey = new Map(tabs.map((t) => [t.key, t] as const));
+  for (const key of orderedTabKeys(entry.subtree)) {
+    const tab = byKey.get(key);
+    if (!tab) continue;
+    const ptyId = `${scope}:${key}`;
+    if (isPtyTabKind(tab.kind) && busyByTab[ptyId]) {
+      out[key] = "working";
+      continue;
+    }
+    if (tab.kind !== "agent" && tab.kind !== "local_agent") continue;
+    const attn = attentionByTab[ptyId];
+    if (attn === "decision") out[key] = "needs-decision";
+    else if (attn === "done") out[key] = "finished";
+  }
+  return out;
 }
 
 /**
@@ -577,8 +826,14 @@ function remoteInfoForScope(scope: string): DetachedRemoteInfo | undefined {
  * a combined unlisten. The detached window never calls this — it is inert.
  */
 export async function listenDetachedHost(): Promise<() => void> {
-  const unSeed = await listen<DetachedSeedRequest>(DETACHED_REQUEST_SEED, (ev) => {
-    const { label, scope, groupId } = ev.payload;
+  // Registering Tauri listeners requires an IPC round trip apiece. A popout may
+  // request its seed after the first listener is live but before the edit/close
+  // listeners are; answering then lets it render and speak a protocol the host
+  // cannot yet hear. Queue seeds until the complete host is ready.
+  let hostReady = false;
+  const queuedSeeds: DetachedSeedRequest[] = [];
+  let publishStatus = (_force = false) => {};
+  const answerSeed = ({ label, scope, groupId }: DetachedSeedRequest) => {
     const store = useTabsStore.getState();
     const entry = (store.detachedGroupsByScope[scope] ?? []).find(
       (d) => d.id === groupId,
@@ -590,9 +845,18 @@ export async function listenDetachedHost(): Promise<() => void> {
       store.tabsByScope[scope] ?? [],
       entry.subtree,
       entry.zoom,
-      remoteInfoForScope(scope),
+      projectInfoForScope(scope),
     );
     void emit(detachedSeedEvent(label), seed);
+    publishStatus(true);
+  };
+
+  const unSeed = await listen<DetachedSeedRequest>(DETACHED_REQUEST_SEED, (ev) => {
+    if (!hostReady) {
+      queuedSeeds.push(ev.payload);
+      return;
+    }
+    answerSeed(ev.payload);
   });
 
   const unEdit = await listen<DetachedEditEnvelope>(DETACHED_EDIT, (ev) => {
@@ -611,19 +875,13 @@ export async function listenDetachedHost(): Promise<() => void> {
           ? store.addDetachedTabSplit(scope, groupId, edit.tab, edit.targetGroupId, edit.edge)
           : store.addDetachedTab(scope, groupId, edit.tab, edit.targetGroupId);
       if (!key) return;
-      const entry = (useTabsStore.getState().detachedGroupsByScope[scope] ?? []).find(
-        (d) => d.id === groupId,
-      );
-      if (!entry) return;
-      const seed = buildSeed(
-        scope,
-        groupId,
-        useTabsStore.getState().tabsByScope[scope] ?? [],
-        entry.subtree,
-        entry.zoom,
-        remoteInfoForScope(scope),
-      );
-      void emit(detachedSeedEvent(entry.label), { ...seed, landedKey: key });
+      reseedDetached(scope, groupId, key);
+      return;
+    }
+    if (edit.kind === "addToScope") {
+      // A tab a popout opened for ANOTHER scope (an install command's root tab):
+      // it belongs in that scope's own layout, which only this window holds.
+      store.addTabToScope(edit.scope, edit.tab);
       return;
     }
     store.applyDetachedEdit(scope, groupId, edit);
@@ -648,13 +906,15 @@ export async function listenDetachedHost(): Promise<() => void> {
     // inactive project), `dropDetachedGroup` re-injects the subtree into that
     // scope's STORED layout (so its tabs still persist) and closes the OS
     // window — instead of stranding the group. Both paths close the OS window
-    // via `attach_subwindow`.
+    // via `attach_subwindow`. Persisted afterwards for the same reason the close
+    // and hide paths are: a parked scope has nothing else to write it (#229).
     const store = useTabsStore.getState();
     if (store.scope === scope) {
       store.attachGroup(groupId);
     } else {
       store.dropDetachedGroup(scope, groupId);
     }
+    void persistScopeNow(scope);
   });
 
   const unClose = await listen<DetachedDockEnvelope>(DETACHED_CLOSE, (ev) => {
@@ -664,30 +924,204 @@ export async function listenDetachedHost(): Promise<() => void> {
     store.closeDetachedGroup(scope, groupId);
     // Persist so the dropped tabs don't come back on next launch. For the active
     // scope CenterPanel's debounced save also covers this, but a parked
-    // (inactive) scope has nothing else to write its project.json — persist it
-    // explicitly. Root has no project.json, so there's nothing to persist.
-    const localFile = useProjectsStore
-      .getState()
-      .projects.find((p) => p.id === scope)?.local_file;
-    if (localFile) void store.persistScope(scope, localFile);
+    // (inactive) scope has nothing else to write its session — persist it
+    // explicitly, for EVERY scope (root and box scopes persist too; #229).
+    void persistScopeNow(scope);
   });
 
   const unHide = await listen<DetachedDockEnvelope>(DETACHED_HIDE, (ev) => {
     const { scope, groupId } = ev.payload;
     const store = useTabsStore.getState();
     // Park the popout in the scope's Hidden list (tabs stay mounted). Works for
-    // the active scope (shows in the right panel now) and an inactive one (shows
+    // the active scope (shows in the side panel now) and an inactive one (shows
     // when that project is next activated) — `hiddenGroupsByScope` is per-scope.
     store.hideDetachedGroup(scope, groupId);
     // Persist so the group is saved as HIDDEN (not detached) and restores into the
-    // Hidden list on next launch. The active scope's CenterPanel also debounce-
-    // saves, but a parked (inactive) scope has nothing else to write its
-    // project.json. Root has no project.json, so there's nothing to persist.
-    const localFile = useProjectsStore
-      .getState()
-      .projects.find((p) => p.id === scope)?.local_file;
-    if (localFile) void store.persistScope(scope, localFile);
+    // Hidden list on next launch (every scope, see the close handler).
+    void persistScopeNow(scope);
   });
+
+  // #234: a popout's terminal input / tab activation / bell reach the classifier.
+  const unActivity = await listen<DetachedActivityEnvelope>(DETACHED_ACTIVITY, (ev) => {
+    const { ptyId, kind } = ev.payload;
+    if (kind === "input") noteUserInput(ptyId);
+    else if (kind === "seen") useActivityStore.getState().clearAttention(ptyId);
+    else if (kind === "bell") useActivityStore.getState().noteBell(ptyId);
+  });
+
+  // #234: a popout's usage counters land in the one accumulator that is flushed.
+  const unUsage = await listen<DetachedUsageEnvelope>(DETACHED_USAGE, (ev) => {
+    const { scope, key, n } = ev.payload;
+    bumpUsage(scope, key, n);
+  });
+
+  // #233: dialogs hosted only here, requested from a popout. Focus the main
+  // window so the dialog is not raised behind the popout the click came from.
+  const unDialog = await listen<DetachedOpenDialogEnvelope>(DETACHED_OPEN_DIALOG, (ev) => {
+    const { kind, projectId } = ev.payload;
+    if (kind === "remoteMachines") useRemoteMachinesStore.getState().open(projectId);
+    else if (kind === "bigFolders") useBigFoldersStore.getState().open(projectId);
+    try {
+      void getCurrentWindow().setFocus().catch(() => {});
+    } catch {
+      /* no Tauri window (tests) */
+    }
+  });
+
+  // #224: a popout that died with its record still standing — nothing in the
+  // store tore it down first — is docked back instead of leaving its tabs in a
+  // `detached:true` record with no window. Quit teardown destroys popouts with
+  // their records deliberately intact (they respawn next launch), hence the flag.
+  const unDestroyed = await listen<DetachedWindowDestroyedEnvelope>(
+    DETACHED_WINDOW_DESTROYED,
+    (ev) => {
+      if (shuttingDown) return;
+      const { label } = ev.payload;
+      const store = useTabsStore.getState();
+      for (const [scope, entries] of Object.entries(store.detachedGroupsByScope)) {
+        const entry = entries?.find((d) => d.label === label);
+        if (!entry) continue;
+        store.recoverDetachedGroup(scope, entry.id);
+        void persistScopeNow(scope);
+        return;
+      }
+    },
+  );
+
+  // ── Main → popout sync (#238 "reaches a popout only on the next unrelated
+  // reseed"). A popout renders from streamed props, so anything the main store
+  // changes about its tabs — an agent retitle, a rename from the main strip, a
+  // host switch, a project's compute hosts or SSH state — has to be pushed. One
+  // subscriber per store, keyed per popout label, debounced so a burst of edits
+  // costs one seed. No echo loop: a reseed changes nothing in the main store.
+  const lastSig = new Map<string, string>();
+  const timers = new Map<string, ReturnType<typeof setTimeout>>();
+  const scheduleReseed = (scope: string, entry: DetachedGroup, sig: string) => {
+    if (lastSig.get(entry.label) === sig) return;
+    lastSig.set(entry.label, sig);
+    const prev = timers.get(entry.label);
+    if (prev) clearTimeout(prev);
+    timers.set(
+      entry.label,
+      setTimeout(() => {
+        timers.delete(entry.label);
+        reseedDetached(scope, entry.id);
+      }, 150),
+    );
+  };
+  // Identity of a project entry object without stringifying it each time.
+  const projectRefs = {
+    ids: new WeakMap<ProjectEntry, number>(),
+    next: 0,
+    id(p: ProjectEntry): number {
+      let n = this.ids.get(p);
+      if (n === undefined) {
+        n = ++this.next;
+        this.ids.set(p, n);
+      }
+      return n;
+    },
+  };
+  const tabRefs = {
+    ids: new WeakMap<TabEntry, number>(),
+    next: 0,
+    id(t: TabEntry): number {
+      let n = this.ids.get(t);
+      if (n === undefined) {
+        n = ++this.next;
+        this.ids.set(t, n);
+      }
+      return n;
+    },
+  };
+  const nodeRefs = new WeakMap<LayoutNode, number>();
+  let nodeNext = 0;
+  const nodeId = (n: LayoutNode): number => {
+    let id = nodeRefs.get(n);
+    if (id === undefined) {
+      id = ++nodeNext;
+      nodeRefs.set(n, id);
+    }
+    return id;
+  };
+  const contextSig = (scope: string): string => {
+    const project = useProjectsStore.getState().projects.find((p) => p.id === scope);
+    const remoteStatus = useRemoteStatusStore.getState();
+    const states = project?.remote
+      ? [PRIMARY_HOST, ...(project.compute_hosts ?? []).map((host) => host.id)]
+          .map((hostId) => `${hostId}:${JSON.stringify(hostStateOf(remoteStatus, project.id, hostId))}`)
+          .join(",")
+      : "-";
+    // Reference identity of the entry is the cheapest "did it change" — the
+    // projects store replaces an entry object on every edit — plus the SSH word.
+    return `${project ? projectRefs.id(project) : "-"}|${states}`;
+  };
+  const sweep = () => {
+    const store = useTabsStore.getState();
+    const live = new Set<string>();
+    for (const [scope, entries] of Object.entries(store.detachedGroupsByScope)) {
+      const tabs = store.tabsByScope[scope] ?? [];
+      const byKey = new Map(tabs.map((t) => [t.key, t] as const));
+      for (const entry of entries ?? []) {
+        live.add(entry.label);
+        const payloadSig = orderedTabKeys(entry.subtree)
+          .map((k) => {
+            const t = byKey.get(k);
+            return t ? tabRefs.id(t) : 0;
+          })
+          .join(",");
+        const sig = `${nodeId(entry.subtree)}|${payloadSig}|${contextSig(scope)}`;
+        if (!lastSig.has(entry.label)) {
+          // First sighting: the popout's own seed request covers it. Record the
+          // signature so only a LATER change reseeds.
+          lastSig.set(entry.label, sig);
+          continue;
+        }
+        scheduleReseed(scope, entry, sig);
+      }
+    }
+    for (const label of [...lastSig.keys()]) {
+      if (!live.has(label)) {
+        lastSig.delete(label);
+        const t = timers.get(label);
+        if (t) clearTimeout(t);
+        timers.delete(label);
+      }
+    }
+  };
+  const unTabsSync = useTabsStore.subscribe(sweep);
+  const unProjectsSync = useProjectsStore.subscribe(sweep);
+  const unRemoteSync = useRemoteStatusStore.subscribe(sweep);
+
+  // #234: mirror each popout's tab statuses whenever the classifier moves.
+  const lastStatus = new Map<string, string>();
+  publishStatus = (force = false) => {
+    const store = useTabsStore.getState();
+    const { busyByTab, attentionByTab } = useActivityStore.getState();
+    for (const [scope, entries] of Object.entries(store.detachedGroupsByScope)) {
+      const tabs = store.tabsByScope[scope] ?? [];
+      for (const entry of entries ?? []) {
+        const status = statusForEntry(scope, entry, tabs, busyByTab, attentionByTab);
+        const sig = JSON.stringify(status);
+        if (!force && lastStatus.get(entry.label) === sig) continue;
+        lastStatus.set(entry.label, sig);
+        const payload: DetachedStatusPayload = { scope, status };
+        void emit(detachedStatusEvent(entry.label), payload);
+      }
+    }
+  };
+  const unActivitySync = useActivityStore.subscribe((s, prev) => {
+    if (s.busyByTab !== prev.busyByTab || s.attentionByTab !== prev.attentionByTab) {
+      publishStatus();
+    }
+  });
+
+  // Prime signatures before the first real change. Without this, the first SSH
+  // or project update after an initial seed was mistaken for "first sight" and
+  // deliberately skipped; only the second update reached the popout.
+  sweep();
+  hostReady = true;
+  for (const request of queuedSeeds.splice(0)) answerSeed(request);
 
   return () => {
     unSeed();
@@ -697,7 +1131,65 @@ export async function listenDetachedHost(): Promise<() => void> {
     unDock();
     unClose();
     unHide();
+    unActivity();
+    unUsage();
+    unDialog();
+    unDestroyed();
+    unTabsSync();
+    unProjectsSync();
+    unRemoteSync();
+    unActivitySync();
+    for (const t of timers.values()) clearTimeout(t);
+    timers.clear();
   };
+}
+
+/**
+ * Group B #225: destroy every popout window the store knows nothing about.
+ *
+ * Called once as the MAIN window's shell mounts. At that instant the tabs store
+ * is empty — nothing has been restored yet — so any live `detached-*` window is
+ * necessarily a leftover from a PREVIOUS page load of this same renderer: the
+ * memory watchdog reloading the window (U#223), the crash reporter, a dev full
+ * reload. A fresh app launch has no popout windows at all, so nothing here can
+ * kill a window that matters.
+ *
+ * That leftover was the whole bug. A reload re-hydrates the scope from disk,
+ * which mints fresh tab keys and group ids, and the `detached: true` groups then
+ * queue a respawn that opens NEW popouts under NEW labels (`detach_subwindow` is
+ * idempotent by label, so it never reused the old window). Nothing told the old
+ * ones: they stayed on screen showing stale tabs, re-requesting a seed nobody
+ * answers, their edits hitting no record and being dropped, their PTY ids
+ * orphaned in the backend registry — still interactive, in a window that had
+ * become a zombie. Two popouts, one group, and the terminals in the visible one
+ * wired to nothing. Destroying them first is the "never both old and new" rule:
+ * the tabs come back in the freshly respawned window, which is seeded and live.
+ *
+ * `destroy()` rather than `close()`, deliberately: the old window's own close
+ * handler would emit `DETACHED_CLOSE` and take the group's tabs with it.
+ * Best-effort throughout — this must never block startup.
+ */
+export async function closeOrphanedPopouts(): Promise<void> {
+  const known = new Set(
+    Object.values(useTabsStore.getState().detachedGroupsByScope)
+      .flat()
+      .map((d) => d?.label)
+      .filter((l): l is string => !!l),
+  );
+  let windows: Awaited<ReturnType<typeof getAllWebviewWindows>>;
+  try {
+    windows = await getAllWebviewWindows();
+  } catch {
+    return;
+  }
+  for (const win of windows) {
+    if (!win.label.startsWith("detached-") || known.has(win.label)) continue;
+    try {
+      await win.destroy();
+    } catch {
+      /* best-effort: keep going */
+    }
+  }
 }
 
 /**
@@ -718,14 +1210,16 @@ export async function listenDetachedHost(): Promise<() => void> {
 export async function shutdownDetachedWindows(): Promise<void> {
   const store = useTabsStore.getState();
   const projects = useProjectsStore.getState().projects;
+  // From here on a popout's `Destroyed` is ours, not a crash (#224): the records
+  // must survive so the popouts respawn at their saved bounds next launch.
+  shuttingDown = true;
   for (const [scope, entries] of Object.entries(store.detachedGroupsByScope)) {
     if (!entries || entries.length === 0) continue;
-    // Persist the detached set + bounds durably. Root has no project.json, so its
-    // popouts can't be restored — they just close.
-    const localFile = projects.find((p) => p.id === scope)?.local_file;
-    if (localFile) {
-      await store.persistScope(scope, localFile).catch(() => {});
-    }
+    // Persist the detached set + bounds durably — for EVERY scope (#229). Root
+    // and box scopes persist under their own session directory with no export
+    // copy (`localFile` empty), so their popouts respawn like a project's.
+    const localFile = projects.find((p) => p.id === scope)?.local_file ?? "";
+    await store.persistScope(scope, localFile).catch(() => {});
     for (const entry of entries) {
       try {
         const win = await WebviewWindow.getByLabel(entry.label);

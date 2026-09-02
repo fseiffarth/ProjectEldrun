@@ -246,6 +246,10 @@ The closest description is:
 
 > A project-centric desktop operating layer.
 
+Tools that claim overlapping ground — including PandaOS, which pitches nearly
+the same first pillar — are assessed in
+[competitive_landscape.md](competitive_landscape.md).
+
 ---
 
 ## Strategic conclusion

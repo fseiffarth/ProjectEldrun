@@ -33,7 +33,7 @@ const AGENT_OUTPUT = [
   "╭────────────────────────────────────────────────────────────╮",
   "│ >                                                          │",
   "╰────────────────────────────────────────────────────────────╯",
-  `  ${DIM}? for shortcuts · 85% context left${OFF}`,
+  `  ${DIM}~/projects/eldrun (develop) · Opus 4.1 · plan mode on (shift+tab to cycle) · 85% context left${OFF}`,
 ].join("\r\n");
 
 const SHELL_OUTPUT = [

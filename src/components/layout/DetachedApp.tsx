@@ -1,19 +1,28 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useRendererWatchdog } from "../../lib/rendererWatchdog";
 import { emit, listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   useSettingsStore,
   applyTheme,
+  applyAccent,
+  applyCorners,
+  applyCursor,
+  applyThemeVars,
   applyZoom,
   clampZoom,
+  listenSettingsChanged,
   stepZoom,
   THEME_CHANGED_EVENT,
   LANGUAGE_CHANGED_EVENT,
+  APPEARANCE_CHANGED_EVENT,
+  type AppearancePayload,
 } from "../../stores/settings";
 import { applyLanguage, useT } from "../../lib/i18n";
 import {
   DETACHED_BOUNDS,
   DETACHED_CLOSE,
+  DETACHED_DOCK,
   DETACHED_HIDE,
   DETACHED_EDIT,
   DETACHED_REQUEST_SEED,
@@ -22,13 +31,23 @@ import {
   applyRenameToTabs,
   applyLocationToTabs,
   detachedSeedEvent,
+  detachedStatusEvent,
+  mintDetachedSplitIds,
   type DetachedEdit,
   type DetachedParam,
   type DetachedRemoteInfo,
   type DetachedSeed,
+  type DetachedStatusPayload,
 } from "../../stores/detached";
 import {
+  installDetachedWindowContext,
+  setDetachedWindowContext,
+  type DetachedWindowContext,
+} from "../../stores/detachedContext";
+import { applyDetachedStatus } from "../../stores/activity";
+import {
   allGroups,
+  allNodeIds as nodeIdsOf,
   orderedTabKeys,
   setDetachedViewerState,
   type LayoutNode,
@@ -39,13 +58,21 @@ import { withdrawnTabKinds } from "../../lib/experimental";
 import { PLATFORM } from "../../lib/platform";
 import { useTabLandStore } from "../../stores/tabLand";
 import { startFocusTracking, useQuiesce } from "../../stores/power";
+import { usePresentationStore } from "../../stores/presentation";
 import { applyFastModeAttribute, useFastMode } from "../../lib/fastMode";
 import { useRemoteStatusStore } from "../../stores/remoteStatus";
+import { useProjectsStore } from "../../stores/projects";
+import { useBoxesStore } from "../../stores/boxes";
+import { installWindowsEvents } from "../../stores/windows";
 import { listenPdfReveal } from "../../stores/pdfSync";
 import { listenEditorJump } from "../../stores/editorJump";
+import { listenTexCenter } from "../../stores/texCenter";
 import { DetachedCenterPanel } from "./DetachedCenterPanel";
 import { BrowserDownloadHost } from "../browser/BrowserDownloadHost";
 import { SyncConfirmDialog } from "../common/SyncConfirmDialog";
+import { HpcGuardDialog } from "../common/HpcGuardDialog";
+import { ScreenshotSaveOverlay } from "./ScreenshotSaveOverlay";
+import { DetachedCloseChoice } from "./DetachedCloseChoice";
 
 interface Props {
   param: DetachedParam;
@@ -79,6 +106,14 @@ export function DetachedApp({ param }: Props) {
   // once split-in-popout (multi-pane) lands in the renderer (Phase 2).
   const [group, setGroup] = useState<LayoutNode | null>(null);
   const [tabs, setTabs] = useState<TabEntry[]>([]);
+  // Group B #237: the WM × asks rather than discarding. `null` = not asking.
+  const [closeChoice, setCloseChoice] = useState<null | { resolveDefault: boolean }>(null);
+  // Group B #239: whether this window is on screen at all. A parked (project
+  // switched away → `hide()`) or minimised popout kept reporting its panes
+  // `visible`, so its PTYs went on streaming over IPC and its file views went on
+  // polling mtimes — the cost the hidden-pane gating exists to remove, paid by a
+  // window nobody can see. Panes below compose their own visibility with this.
+  const [windowVisible, setWindowVisible] = useState(true);
   // The owning project's remoteness, streamed in the seed (this window is inert to
   // the projects store). Drives the tab strip's locality badge/menu + machine
   // names; undefined for a local project (no locality axis).
@@ -99,12 +134,40 @@ export function DetachedApp({ param }: Props) {
     void loadSettings({ skipZoom: true });
   }, [loadSettings]);
 
+  // Group B #226: follow settings written in ANY window. Without this the
+  // popout's store kept the snapshot taken at the line above for the rest of its
+  // life: its xterm palette stayed on the old scheme after a theme switch (the
+  // chrome recoloured — that rides the theme broadcast — the terminal did not),
+  // a rebound shortcut, a Fast-mode flip, the min-subwindow size and the
+  // energy-saver preference never arrived, and — worse — its next write spread
+  // that stale copy back over settings.json, silently undoing everything changed
+  // in the main window meanwhile.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    listenSettingsChanged()
+      .then((fn) => { if (cancelled) fn(); else unlisten = fn; })
+      .catch(() => {});
+    return () => { cancelled = true; unlisten?.(); };
+  }, []);
+
   // Track THIS window's focus (a popout is its own JS context, so the main
   // window's tracker cannot see it): blur pauses every animation wholesale via
   // `[data-blurred]` and collapses the agent-status glows via
   // `[data-energy-saver]`, so an unfocused popout's render thread can reach a
   // genuine idle instead of repainting glows nobody is looking at.
   useEffect(() => startFocusTracking(), []);
+  // A popout has its own renderer, so it runs its own memory watchdog and
+  // reloads ITSELF when that renderer runs away (a reload re-seeds the group
+  // from the main window, like the crash reporter's reload does). The main
+  // window's watchdog cannot do this for it: reloading the main window frees
+  // nothing in this process — the 2026-09-01 reload loop. See lib/rendererWatchdog.
+  useRendererWatchdog();
+  // A popout hosts the docked file column → its Apps view needs the same
+  // app-windows-changed subscription the main window installs.
+  useEffect(() => {
+    installWindowsEvents();
+  }, []);
   const quiesce = useQuiesce();
   useEffect(() => {
     const root = document.documentElement;
@@ -128,15 +191,68 @@ export function DetachedApp({ param }: Props) {
   // into it, is released rather than left immovable with no visible cause. macOS
   // is excluded for the same reason it is there — its own Space is the expected
   // behaviour and `DeckPresenter`/F11 opt into it deliberately.
+  //
+  // It runs CONTINUOUSLY, not only at mount, and that is the load-bearing part.
+  // A mount-only check cannot see the one path that still fullscreens a popout
+  // deliberately: `DeckPresenter` fullscreens the window it presents in and undoes
+  // it in its cleanup, so a presenter torn down without that cleanup — the webview
+  // reloading, an HMR module swap in dev, a crash mid-talk — leaves the window
+  // fullscreen with the guard long since finished. And a popout has no OS title
+  // bar, so nothing on screen distinguishes that from a merely large window: it
+  // has simply stopped being movable, with no control anywhere that brings it back
+  // (F11 maximizes, and a maximize leaves a fullscreen window fullscreen).
+  // Observed live under Muffin — `_NET_WM_ALLOWED_ACTIONS` on the stuck popout had
+  // lost `_NET_WM_ACTION_MOVE`, `_NET_WM_ACTION_RESIZE` and both MAXIMIZE atoms.
+  //
+  // A resize is the signal because every fullscreen transition is one; focus
+  // regain is the backstop for a WM that reports the state change without one.
+  // Debounced, so an interactive resize drag costs a single check once it settles
+  // rather than one IPC round trip per frame. A talk in progress is skipped via
+  // `presenting` — that window is fullscreen because the user asked it to be, and
+  // the presenter's own cleanup is what takes it back out.
   useEffect(() => {
     if (PLATFORM === "macos") return;
     const win = getCurrentWindow();
-    win
-      .isFullscreen()
-      .then((fs) => {
-        if (fs) return win.setFullscreen(false);
-      })
-      .catch(() => {});
+    let disposed = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    // Every path in here is wrapped, and that is not defensive habit: this effect
+    // runs in a window whose ONLY content is one React root, so a throw out of it
+    // unmounts the tree and leaves a grey OS window with nothing on it and no
+    // message — observed, from a broken intermediate module during an HMR update.
+    // A guard whose failure mode is worse than the state it guards against is not
+    // worth having, so it can only ever decline to run.
+    const check = () => {
+      try {
+        if (disposed) return;
+        if (usePresentationStore.getState().presenting > 0) return;
+        win
+          .isFullscreen()
+          .then((fs) => {
+            if (fs && !disposed && usePresentationStore.getState().presenting === 0) {
+              return win.setFullscreen(false);
+            }
+          })
+          .catch(() => {});
+      } catch {
+        /* never take the window down over a fullscreen check */
+      }
+    };
+    const schedule = () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(check, 250);
+    };
+    check();
+    const unlisteners: Array<() => void> = [];
+    const bind = (p: Promise<() => void>) => {
+      p.then((fn) => (disposed ? fn() : unlisteners.push(fn))).catch(() => {});
+    };
+    bind(win.onResized(schedule));
+    bind(win.onFocusChanged(({ payload }) => payload && schedule()));
+    return () => {
+      disposed = true;
+      if (timer) clearTimeout(timer);
+      for (const fn of unlisteners) fn();
+    };
   }, []);
 
   // Per-window zoom via Ctrl +/- / Ctrl+0, handled before any editable-target
@@ -185,6 +301,28 @@ export function DetachedApp({ param }: Props) {
     return () => { cancelled = true; unlisten?.(); };
   }, []);
 
+  // Same story for the appearance overrides (custom accent, corner style, the
+  // cursor pack):
+  // they are inline vars on each window's own root element, so a change in the
+  // main window's Settings needs the broadcast to reach this document too. The
+  // initial values arrive with the settings load above.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    listen<AppearancePayload>(APPEARANCE_CHANGED_EVENT, (e) => {
+      applyAccent(e.payload.accent);
+      // After the accent, as everywhere else: an explicit token override wins
+      // over the value applyAccent derives from the accent.
+      applyThemeVars(e.payload.themeVars);
+      applyCorners(e.payload.corners);
+      // Last: the cursor art is drawn from the palette the three above set.
+      applyCursor(e.payload.cursor);
+    })
+      .then((fn) => { if (cancelled) fn(); else unlisten = fn; })
+      .catch(() => {});
+    return () => { cancelled = true; unlisten?.(); };
+  }, []);
+
   // Same story for the UI language: this popout holds its own i18n store, so a
   // language switch in the main window's Settings only re-renders that window
   // without the cross-window broadcast. Re-apply live (see LANGUAGE_CHANGED_EVENT).
@@ -220,6 +358,20 @@ export function DetachedApp({ param }: Props) {
     let unlisten: (() => void) | undefined;
     let cancelled = false;
     listenEditorJump()
+      .then((fn) => { if (cancelled) fn(); else unlisten = fn; })
+      .catch(() => {});
+    return () => { cancelled = true; unlisten?.(); };
+  }, []);
+
+  // #42: a reverse-search center switch aimed at a TeX workspace popped out into
+  // THIS window. The main window cannot switch our center itself — this heap's
+  // workspace renders its ViewerState from a one-time seed, so a main-side
+  // `setViewerState` write never reaches it; it broadcasts, and the registry
+  // this listener consults holds the mounted workspace's own goTo.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    listenTexCenter()
       .then((fn) => { if (cancelled) fn(); else unlisten = fn; })
       .catch(() => {});
     return () => { cancelled = true; unlisten?.(); };
@@ -268,18 +420,39 @@ export function DetachedApp({ param }: Props) {
   useEffect(() => {
     const win = getCurrentWindow();
     let pos: { x: number; y: number } | null = null;
-    let size = { w: 900, h: 640 };
+    // Group B #236: seeded from the window's ACTUAL physical size, not from the
+    // builder's LOGICAL default. `onMoved`/`onResized` payloads are physical, so
+    // a popout that was moved but never resized used to flush the literal
+    // 900×640 as a physical rect — and respawned at half size on a 2× display.
+    // Until the read lands, a flush is refused rather than guessed at.
+    let size: { w: number; h: number } | null = null;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let unMoved: (() => void) | undefined;
     let unResized: (() => void) | undefined;
     let cancelled = false;
+    win
+      .innerSize()
+      .then((s) => {
+        if (!cancelled && !size) size = { w: s.width, h: s.height };
+      })
+      .catch(() => {});
     const flush = () => {
-      if (!pos) return;
-      void emit(DETACHED_BOUNDS, {
-        scope: param.scope,
-        groupId: param.groupId,
-        bounds: { x: pos.x, y: pos.y, w: size.w, h: size.h },
-      });
+      if (!pos || !size) return;
+      // #238: a park (`hide()`) / unpark (`show()`) can fire Moved/Resized with
+      // whatever geometry the WM used while the window was off screen. Persisting
+      // that would move the popout on the next launch, so a flush is only taken
+      // while the window is actually visible.
+      void win
+        .isVisible()
+        .then((visible) => {
+          if (!visible || cancelled || !pos || !size) return;
+          void emit(DETACHED_BOUNDS, {
+            scope: param.scope,
+            groupId: param.groupId,
+            bounds: { x: pos.x, y: pos.y, w: size.w, h: size.h },
+          });
+        })
+        .catch(() => {});
     };
     const schedule = () => {
       if (timer) clearTimeout(timer);
@@ -306,6 +479,30 @@ export function DetachedApp({ param }: Props) {
       unResized?.();
     };
   }, [param.scope, param.groupId]);
+
+  // #239: track whether this window is on screen (parked by a project switch,
+  // or minimised), so the panes below can stop streaming and polling for a
+  // window nobody can see. Polled rather than event-driven: a Tauri-side
+  // `hide()` raises no window event the renderer can hear, and the check is one
+  // cheap IPC call on the same cadence a hidden pane would otherwise cost far
+  // more than.
+  useEffect(() => {
+    const win = getCurrentWindow();
+    let cancelled = false;
+    const check = () => {
+      Promise.all([win.isVisible(), win.isMinimized()])
+        .then(([visible, minimized]) => {
+          if (!cancelled) setWindowVisible(visible && !minimized);
+        })
+        .catch(() => {});
+    };
+    check();
+    const id = setInterval(check, 2000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, []);
 
   // Seed + edit listeners. The main window owns the source of truth and ships
   // the group's tabs + subtree; subsequent main-side edits re-seed.
@@ -343,15 +540,49 @@ export function DetachedApp({ param }: Props) {
       setGroup(ev.payload.subtree);
       setTabs(ev.payload.tabs);
       setRemoteInfo(ev.payload.remote);
-      // Seed THIS window's (otherwise empty) remoteStatus store with the primary
-      // host's SSH state from the seed, so the docked file viewer's Local/Remote
-      // hooks (`useRemoteBlocked`/`useIndependentFileSource`) resolve the same way
-      // they do in the main window — the SFTP pool itself is shared across
-      // windows, so a Remote read works once the status here says connected. Runs
-      // on every seed (initial + re-seeds), so a later connect refreshes it.
+      // Seed THIS window's otherwise-empty remoteStatus store with every host's
+      // live state. The SFTP/SSH pools are process-wide, but the lamps and host
+      // gates read this per-window Zustand heap; primary-only seeding made every
+      // worker look disconnected in a popout forever.
       const remote = ev.payload.remote;
-      if (remote?.project?.remote && remote.primarySsh) {
-        useRemoteStatusStore.getState().setSsh(remote.project.id, remote.primarySsh);
+      if (remote?.project?.remote) {
+        const projectId = remote.project.id;
+        const status = useRemoteStatusStore.getState();
+        status.clear(projectId);
+        for (const [hostId, state] of Object.entries(remote.hostStates ?? {})) {
+          status.setSsh(projectId, state.ssh, hostId);
+          status.setVpn(projectId, state.vpn, hostId);
+        }
+        // Compatibility with a seed from a backend/frontend heap that predates
+        // `hostStates` during a backend-stale development session.
+        if (!remote.hostStates && remote.primarySsh) {
+          status.setSsh(projectId, remote.primarySsh);
+        }
+      }
+      // …and seed the PROJECTS store the same way (#232). A popout is inert to
+      // project switching, but dozens of panes ask that store who this project
+      // is — and getting `null` back is what left a local project's popout
+      // showing a bare tree: no git bar, no history, no Apps/Sessions view, no
+      // remarks, no type tags, no run-host picker, monitoring panes treating a
+      // remote project as local, an empty box-member list. Seeding the entry (and
+      // a box scope's members) answers all of them at once, rather than
+      // threading a project prop through every pane that happens to need one.
+      // `activeId` matches the popout's own scope, which is the only project it
+      // will ever show. Nothing here drives a switch: `DetachedApp` mounts no
+      // runtime-switch listener, so this store is a read-only fact in this window.
+      const members = remote?.boxMembers;
+      const entry = remote?.project;
+      if (members?.length || entry) {
+        useProjectsStore.setState({
+          projects: members?.length ? members : entry ? [entry] : [],
+          ...(entry ? { activeId: entry.id } : {}),
+        });
+      }
+      // `boxMembersOfScope` resolves membership through the box record first;
+      // projects alone cannot identify which streamed members belong to this
+      // scope. Seed the minimal owning box alongside its projects.
+      if (remote?.box) {
+        useBoxesStore.setState({ boxes: [remote.box], loaded: true });
       }
       // A tab docked INTO this popout from another window arrives on a seed
       // tagged with its key — play the same drop-in landing as an in-popout
@@ -375,6 +606,12 @@ export function DetachedApp({ param }: Props) {
         const request = () => {
           if (cancelled || seeded) return;
           if (Date.now() >= deadline) {
+            // Nothing can render here — but the group may still exist in the
+            // main store, and simply destroying this window used to strand it:
+            // its tabs were out of the layout, its record persisted
+            // `detached: true`, and the failure repeated at every launch (#224).
+            // The `WindowEvent::Destroyed` hook tells the main window, which
+            // docks any surviving record back; this destroy is what triggers it.
             void getCurrentWindow().destroy();
             return;
           }
@@ -397,7 +634,8 @@ export function DetachedApp({ param }: Props) {
   }, [label, param.scope, param.groupId]);
 
   // Apply an edit locally AND stream it to the main window so its
-  // `detachedGroupsByScope` entry stays in sync.
+  // `detachedGroupsByScope` entry stays in sync. Held in a ref as well, so the
+  // store seam installed below (which binds once) always reaches the current one.
   const pushEdit = (edit: DetachedEdit) => {
     setGroup((g) => (g ? applyEditToSubtree(g, edit) : g));
     if (edit.kind === "rename") {
@@ -410,21 +648,92 @@ export function DetachedApp({ param }: Props) {
     void emit(DETACHED_EDIT, { scope: param.scope, groupId: param.groupId, edit });
   };
 
+  // #234: paint the same working / needs-decision / finished lamps the main
+  // window's strip does. The classifier lives there (it is the window that sees
+  // every PTY's output); this store has no history to classify from, so the
+  // verdict is mirrored over and adopted verbatim.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    listen<DetachedStatusPayload>(detachedStatusEvent(label), (ev) => {
+      applyDetachedStatus(ev.payload.scope, ev.payload.status);
+    })
+      .then((fn) => { if (cancelled) fn(); else unlisten = fn; })
+      .catch(() => {});
+    return () => { cancelled = true; unlisten?.(); };
+  }, [label]);
+
   // Closing the LAST tab closes the whole popout window — an empty detached
   // window has nothing to render (it would strand on "Loading subwindow…").
   // Route it through the same teardown as a WM/title-bar close (DETACHED_CLOSE):
   // the main window kills the remaining tab's PTY, drops the group, and persists.
-  // We then destroy this OS window directly (destroy() bypasses our own
-  // onCloseRequested, so it won't re-emit DETACHED_CLOSE).
+  // The main store removes the record first, then `attach_subwindow` destroys
+  // the OS window. Keeping teardown host-owned is what distinguishes an asked-
+  // for close from the Destroyed hook's crash recovery.
   const handleClose = (key: string) => {
     const isLastTab = !group || orderedTabKeys(group).length <= 1;
     if (isLastTab) {
       void emit(DETACHED_CLOSE, { scope: param.scope, groupId: param.groupId });
-      void getCurrentWindow().destroy();
       return;
     }
     pushEdit({ kind: "close", key });
   };
+
+  // Group B #237: put the WHOLE popout back into the main window's tiled layout
+  // — the dock-back gesture that has not existed since the 2026-07-19 move-only
+  // rework. There was no ⤓ button, grip and titlebar drags became native OS
+  // moves, and `DETACHED_DOCK` was listened for but emitted nowhere, so the only
+  // way tabs came back was dragging them out one at a time and the WM × threw
+  // them away. Without *some* dock-back, every popout failure is tab loss. The
+  // main-side ladder was already there; this is the caller it was missing.
+  const handleDock = () => {
+    void emit(DETACHED_DOCK, { scope: param.scope, groupId: param.groupId });
+  };
+
+  // The store seam (#231): while this heap is a popout, tabs-store writes made
+  // by PANES — a Ctrl+clicked link in a README, a breakpoint in a .py, a
+  // renamed tmux session, "reveal in Files", an agent install — are forwarded to
+  // the main window instead of landing in this window's empty store, where they
+  // used to silently vanish. Installed once, reading the live callbacks through
+  // refs so it never needs re-binding; removed on unmount so a test (or a
+  // future in-main mount) cannot inherit it.
+  const focusedGroupRef = useRef<string | null>(null);
+  const seamRef = useRef({ group, pushEdit, handleClose });
+  seamRef.current = { group, pushEdit, handleClose };
+  // Installed during RENDER, not in an effect: child effects run before the
+  // parent's, so a pane that writes to the tabs store as it mounts (a viewer
+  // restoring its state) would find no context and write into the void. The
+  // effect below repeats the install after StrictMode cleanup and removes it on
+  // a real unmount.
+  const detachedContext = useMemo<DetachedWindowContext>(
+    () => ({
+      scope: param.scope,
+      groupId: param.groupId,
+      label,
+      // Where a new tab lands: the pane the user is working in, resolved at call
+      // time (both the focus and the tree move under this binding). Falls back
+      // to the popout's first pane, then to its own record id — which
+      // `addDetachedTab` reads as "the first group" anyway.
+      targetGroupId: () => {
+        const tree = seamRef.current.group;
+        const groups = tree ? allGroups(tree) : [];
+        const focused = focusedGroupRef.current;
+        if (focused && groups.some((g) => g.id === focused)) return focused;
+        return groups[0]?.id ?? param.groupId;
+      },
+      pushEdit: (edit) => seamRef.current.pushEdit(edit as DetachedEdit),
+      closeTab: (key) => seamRef.current.handleClose(key),
+    }),
+    [label, param.scope, param.groupId],
+  );
+  // Render-time installation is deliberate: child effects run before parent
+  // effects. The effect repeats it so StrictMode's synthetic cleanup is followed
+  // by a real reinstall instead of leaving this heap classified as the main one.
+  setDetachedWindowContext(detachedContext);
+  useEffect(
+    () => installDetachedWindowContext(detachedContext),
+    [detachedContext],
+  );
 
   // Withdraw the tabs of an experiment that was switched off — the popout's half
   // of `lib/experimentalSweep`. This window runs its own store and its own
@@ -444,14 +753,13 @@ export function DetachedApp({ param }: Props) {
     if (doomed.length === 0) return;
     if (doomed.length === inGroup.size) {
       void emit(DETACHED_CLOSE, { scope: param.scope, groupId: param.groupId });
-      void getCurrentWindow().destroy();
       return;
     }
     for (const tab of doomed) pushEdit({ kind: "close", key: tab.key });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settings, tabs, group, param.scope, param.groupId]);
 
-  // Hide the WHOLE popout into the main window's right-panel "Hidden subwindows"
+  // Hide the WHOLE popout into the main window's side-panel "Hidden subwindows"
   // list. Like handleClose it closes THIS OS window, but the main window PARKS the
   // group (tabs stay mounted, PTYs alive) instead of discarding it — restorable
   // from the panel. Hides the whole window (every pane of a multi-pane popout) as
@@ -459,17 +767,19 @@ export function DetachedApp({ param }: Props) {
   // emit DETACHED_CLOSE (which would drop the tabs).
   const handleHideWindow = () => {
     void emit(DETACHED_HIDE, { scope: param.scope, groupId: param.groupId });
-    void getCurrentWindow().destroy();
   };
 
-  // Close-on-close: closing this OS window via the WM/title-bar CLOSES the
-  // group's tabs for good — they are not docked back and do not restore on next
-  // launch (dock-back is done by Ctrl+dragging the tab bar onto the main window,
-  // #42). Prevent the default close and emit
-  // DETACHED_CLOSE; the MAIN window owns the teardown (kills the PTYs, drops the
-  // tabs, persists) and closes this window via `attach_subwindow`. As a safety
-  // net (e.g. the main window is gone and never closes us), force-destroy after a
-  // short grace period so the window can't get stuck un-closable.
+  // Closing this OS window via the WM/title-bar ASKS what to do with the tabs
+  // (Group B #237). It used to discard them outright: the group's tabs were
+  // closed for good, their PTYs killed, nothing restored — and since there was
+  // no dock-back gesture at all, "I closed the popout and lost my terminals" was
+  // one stray click away, with the OS close button being the affordance most
+  // people reach for first. So the ✕ prevents the default and raises a choice
+  // (dock the tabs back / close them), which is also the one place a popout can
+  // explain that those are different things. Escape or the backdrop cancels, and
+  // the window stays open — the safe default for a gesture that may have been a
+  // misclick. Each answer emits its own event and then destroys this window
+  // (`destroy()` bypasses this handler, so nothing is emitted twice).
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     let cancelled = false;
@@ -477,10 +787,7 @@ export function DetachedApp({ param }: Props) {
     win
       .onCloseRequested((event) => {
         event.preventDefault();
-        void emit(DETACHED_CLOSE, { scope: param.scope, groupId: param.groupId });
-        setTimeout(() => {
-          void win.destroy();
-        }, 1500);
+        setCloseChoice({ resolveDefault: true });
       })
       .then((fn) => {
         if (cancelled) fn();
@@ -491,7 +798,7 @@ export function DetachedApp({ param }: Props) {
       cancelled = true;
       unlisten?.();
     };
-  }, [param.scope, param.groupId]);
+  }, []);
 
   if (!group || allGroups(group).length === 0) {
     return <div className="detached-loading">{t("detached.loadingSubwindow")}</div>;
@@ -507,20 +814,68 @@ export function DetachedApp({ param }: Props) {
           push can be started in this window and its confirmation has to render
           here — this store instance is this window's. */}
       <SyncConfirmDialog />
+      {/* #233: the HPC guard. A ▶ run from a popped-out file tree on a tagged
+          host parks a Promise that only this dialog resolves — with no host in
+          this window the run hung forever, silently. (The store now also refuses
+          rather than parking when no host is mounted, so the two together make
+          the hang impossible in either direction.) */}
+      <HpcGuardDialog />
+      {/* #233: the screenshot save step. `useScreenshotPendingStore` is
+          per-window, so a PDF screenshot taken in a popout raised its overlay
+          nowhere: the shot reached the clipboard and the save-to-project half of
+          the feature simply never appeared. */}
+      <ScreenshotSaveOverlay />
+      {closeChoice && (
+        <DetachedCloseChoice
+          onDock={() => {
+            setCloseChoice(null);
+            handleDock();
+          }}
+          onCloseTabs={() => {
+            setCloseChoice(null);
+            void emit(DETACHED_CLOSE, { scope: param.scope, groupId: param.groupId });
+            // The main window closes this window via `attach_subwindow`; the
+            // timer is the net for a main window that is gone or wedged, so the
+            // popout can never be stuck un-closable.
+            setTimeout(() => {
+              void getCurrentWindow().destroy();
+            }, 1500);
+          }}
+          onCancel={() => setCloseChoice(null)}
+        />
+      )}
       <DetachedCenterPanel
       scope={param.scope}
       popoutId={param.groupId}
       tree={group}
       tabs={tabs}
       remoteInfo={remoteInfo}
+      windowVisible={windowVisible}
+      onFocusedGroup={(id) => {
+        focusedGroupRef.current = id;
+      }}
       onActivate={(key) => pushEdit({ kind: "activate", key })}
       onClose={handleClose}
+      onDockWindow={handleDock}
       onHideWindow={handleHideWindow}
       onSetLocation={(key, location) => pushEdit({ kind: "setLocation", key, location })}
       onReorder={(tabKeys) => pushEdit({ kind: "reorder", tabKeys })}
-      onSplit={(key, targetGroupId, edge) =>
-        pushEdit({ kind: "split", key, targetGroupId, edge })
-      }
+      onRename={(key, label) => pushEdit({ kind: "rename", key, label })}
+      onSplit={(key, targetGroupId, edge) => {
+        // Mint the new pane's ids HERE and ship them, so the main store names
+        // the pane as this window does (see `mintDetachedSplitIds`). The ids
+        // already in this popout's tree are passed so a counter reset by a
+        // webview reload cannot re-mint one of them (#227).
+        const ids = mintDetachedSplitIds(label, group ? nodeIdsOf(group) : []);
+        pushEdit({
+          kind: "split",
+          key,
+          targetGroupId,
+          edge,
+          newGroupId: ids.groupId,
+          newSplitId: ids.splitId,
+        });
+      }}
       onResize={(splitId, dividerIndex, fraction) =>
         pushEdit({ kind: "resize", splitId, dividerIndex, fraction })
       }

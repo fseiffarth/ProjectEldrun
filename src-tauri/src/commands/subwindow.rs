@@ -42,8 +42,42 @@ pub fn detached_title(seq: u32) -> String {
 }
 
 /// The query string the DetachedApp renderer reads to mount a single group.
+///
+/// Two SEPARATE keys, percent-encoded, rather than the single `scope:group`
+/// value this used to write (Group B #224). A scope is not colon-free: a box
+/// scope is `box:<id>`, so the renderer's parser — which split on the first
+/// colon — read `box:abc:g-3` as scope `"box"`, group `"abc:g-3"`. The host had
+/// no record under that scope, never answered the seed, and after 8 s the popout
+/// destroyed itself: the group's tabs were gone from the layout with no window
+/// to get them back from, their PTYs running hidden, and the record persisted
+/// `detached: true` so the failure repeated at every launch. Box-scope detach
+/// could therefore never work at all.
 pub fn detached_query(scope: &str, group_id: &str) -> String {
-    format!("index.html?detached={scope}:{group_id}")
+    format!(
+        "index.html?detached={}&group={}",
+        urlencode(scope),
+        urlencode(group_id)
+    )
+}
+
+/// Percent-encode the characters that would end or re-split a query value.
+/// Deliberately tiny and local: a scope is an id or a `box:<id>`, a group id is
+/// `g-<n>`/`s-<n>`, so this is a guard against the shapes we mint rather than a
+/// general URL encoder.
+fn urlencode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' | '.' | '~' => out.push(ch),
+            _ => {
+                let mut buf = [0u8; 4];
+                for b in ch.encode_utf8(&mut buf).as_bytes() {
+                    out.push_str(&format!("%{b:02X}"));
+                }
+            }
+        }
+    }
+    out
 }
 
 pub fn detached_decorations(os: crate::paths::OsKind) -> bool {
@@ -196,10 +230,20 @@ pub async fn detach_subwindow(
     // default size and let the WM place the window. Size before position so a
     // resize can't shift the placement. Best-effort: a failed setter still leaves
     // a usable (default-placed) window rather than aborting the detach.
-    if let Some(size) = detached_size(width, height) {
+    //
+    // Group B #236: the saved rect is VALIDATED against the monitors connected
+    // right now, exactly as the project-switch-back path already does
+    // (`project_runtime::switch` step 8b). Only that path ran the resolver, so a
+    // popout whose display had been unplugged (or the arrangement rearranged)
+    // between sessions respawned at coordinates on a screen that no longer
+    // exists — a borderless window, off-screen, with nothing to grab. When the
+    // rect no longer meaningfully overlaps any monitor the resolver answers
+    // `None` and we leave the WM's own placement, which is on a real screen.
+    let fitted = fit_detached_bounds(&win, x, y, width, height);
+    if let Some(size) = fitted.1 {
         let _ = win.set_size(size);
     }
-    if let Some(pos) = detached_position(x, y) {
+    if let Some(pos) = fitted.0 {
         let _ = win.set_position(pos);
     }
 
@@ -290,6 +334,43 @@ pub async fn detach_subwindow(
     });
 
     Ok(label)
+}
+
+/// The position/size to actually apply to a respawning popout: the caller's
+/// saved rect, fitted to the monitors this window can currently see (#236).
+///
+/// A rect with no complete position+size pair is passed through unchanged (the
+/// WM places it, at the default size); a complete one that no longer overlaps
+/// any monitor yields `(None, None)`, i.e. the WM's placement rather than a
+/// window flung off-screen. Live monitors are read from the freshly-built
+/// window, so this can only run after `build()`.
+fn fit_detached_bounds(
+    win: &tauri::WebviewWindow,
+    x: Option<f64>,
+    y: Option<f64>,
+    width: Option<f64>,
+    height: Option<f64>,
+) -> (Option<Position>, Option<Size>) {
+    let (pos, size) = (detached_position(x, y), detached_size(width, height));
+    let (Some(_), Some(_)) = (&pos, &size) else {
+        // A partial rect was never a restore — nothing to validate.
+        return (pos, size);
+    };
+    let saved = crate::schema::settings::WindowState {
+        x: x.unwrap_or_default() as i32,
+        y: y.unwrap_or_default() as i32,
+        w: width.unwrap_or_default() as u32,
+        h: height.unwrap_or_default() as u32,
+        maximized: false,
+    };
+    let monitors = crate::services::window_service::monitor_rects(win);
+    match crate::services::window_state::resolve_detached_geometry(saved, &monitors) {
+        Some(g) => (
+            Some(Position::Physical(PhysicalPosition::new(g.x, g.y))),
+            Some(Size::Physical(PhysicalSize::new(g.w, g.h))),
+        ),
+        None => (None, None),
+    }
 }
 
 /// Close a detached subwindow and remove it from the registry + parkable
@@ -411,12 +492,33 @@ mod tests {
     }
 
     #[test]
-    fn query_carries_the_detached_param() {
-        assert_eq!(detached_query("p1", "g-3"), "index.html?detached=p1:g-3");
+    fn query_carries_scope_and_group_as_separate_keys() {
+        assert_eq!(
+            detached_query("p1", "g-3"),
+            "index.html?detached=p1&group=g-3"
+        );
         assert_eq!(
             detached_query("root", "g-1"),
-            "index.html?detached=root:g-1"
+            "index.html?detached=root&group=g-1"
         );
+    }
+
+    #[test]
+    fn a_box_scopes_colon_survives_the_query() {
+        // The #224 bug: one `scope:group` value split on the first colon read
+        // `box:abc:g-3` as scope "box", so a box popout could never be seeded.
+        // Two keys make the scope opaque — encoded, so it cannot end the value.
+        let q = detached_query("box:abc", "g-3");
+        assert_eq!(q, "index.html?detached=box%3Aabc&group=g-3");
+        assert!(!q.trim_start_matches("index.html?detached=box%3Aabc").contains(':'));
+    }
+
+    #[test]
+    fn urlencode_escapes_separators_and_keeps_id_characters() {
+        assert_eq!(urlencode("g-3"), "g-3");
+        assert_eq!(urlencode("box:abc"), "box%3Aabc");
+        assert_eq!(urlencode("a&b=c"), "a%26b%3Dc");
+        assert_eq!(urlencode("a b"), "a%20b");
     }
 
     #[test]

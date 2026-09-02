@@ -25,7 +25,6 @@ import {
   serializeTree,
   pruneSavedTree,
   withHiddenDocked,
-  hiddenTabKeys,
   type GroupNode,
   type SplitNode,
 } from "../stores/tabs";
@@ -228,8 +227,6 @@ describe("tabs store — hidden-subwindow persistence", () => {
     const tagged = findHiddenNode(merged);
     expect(tagged).not.toBeNull();
     expect((tagged as { tabKeys: string[] }).tabKeys).toEqual([b.key]);
-    // Owned-keys union counts hidden tabs.
-    expect(hiddenTabKeys(hidden)).toEqual([b.key]);
   });
 
   it("pruning preserves the hidden tag (restores parked, not docked)", () => {

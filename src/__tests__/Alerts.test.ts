@@ -6,6 +6,7 @@ import {
   MAX_MUTED_ALERTS,
   addMutedAlert,
   alertCounts,
+  alertGates,
   readsInHours,
   selectAlerts,
   selectMutedAlerts,
@@ -747,5 +748,66 @@ describe("alertCounts", () => {
     ];
     expect(alertCounts(selectAlerts({ now: NOW, tasks, limit: 1 })))
       .toEqual({ overdue: 1, now: 0, soon: 0, upcoming: 0 });
+  });
+});
+
+/**
+ * The gates. The one asymmetry worth locking: `files_alerts` is the *file
+ * viewer's* group visibility, so Eldrun Mobile — a surface with its own screen
+ * and no 🔔 of its own — reads past it, while everything that says which alerts
+ * exist stays shared between the two.
+ */
+describe("alertGates", () => {
+  const ALL_ON = { visible: true, mail: true, events: true, tasks: true, mailClient: true };
+
+  it("is every source when the group is on", () => {
+    expect(alertGates(ALL_ON)).toEqual({
+      wantMail: true,
+      wantEvents: true,
+      wantTasks: true,
+      enabled: true,
+    });
+  });
+
+  it("closes every source when the group is off", () => {
+    expect(alertGates({ ...ALL_ON, visible: false })).toEqual({
+      wantMail: false,
+      wantEvents: false,
+      wantTasks: false,
+      enabled: false,
+    });
+  });
+
+  it("keeps the phone's sources open across a closed desktop group", () => {
+    expect(alertGates({ ...ALL_ON, visible: false, ignoreVisible: true })).toEqual({
+      wantMail: true,
+      wantEvents: true,
+      wantTasks: true,
+      enabled: true,
+    });
+  });
+
+  it("still obeys the source switches when visibility is skipped", () => {
+    expect(alertGates({ ...ALL_ON, visible: false, ignoreVisible: true, mail: false })).toMatchObject({
+      wantMail: false,
+      wantEvents: true,
+      enabled: true,
+    });
+    expect(
+      alertGates({
+        ...ALL_ON,
+        visible: false,
+        ignoreVisible: true,
+        mail: false,
+        events: false,
+        tasks: false,
+      }).enabled,
+    ).toBe(false);
+  });
+
+  it("keeps mail behind the mail_client gate on both surfaces", () => {
+    expect(alertGates({ ...ALL_ON, mailClient: false }).wantMail).toBe(false);
+    expect(alertGates({ ...ALL_ON, visible: false, ignoreVisible: true, mailClient: false }).wantMail)
+      .toBe(false);
   });
 });

@@ -16,7 +16,7 @@
  * real one.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, act, waitFor } from "@testing-library/react";
+import { render, screen, act, waitFor, cleanup, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 const { mockInvoke } = vi.hoisted(() => ({
@@ -66,18 +66,32 @@ const CHILD_SRC = "\\section{Chapter}\nchild body\n";
 /** Wire the backend mock for a compilable one-child document. */
 function setupInvoke(
   syncRects: Array<{ page: number; x: number; y: number; w: number; h: number }> = [],
+  engines: string[] = ["pdflatex"],
 ) {
   const files: Record<string, string> = { [MAIN]: MAIN_SRC, [CHILD]: CHILD_SRC };
-  mockInvoke.mockImplementation((cmd: string, args?: Record<string, unknown>) => {
+  mockInvoke.mockImplementation((
+    cmd: string,
+    args?: Record<string, unknown>,
+    opts?: { headers?: Record<string, string> },
+  ) => {
     switch (cmd) {
       case "tex_capability":
-        return Promise.resolve({ available: true, engines: ["pdflatex"], bibtex: false, latexmk: false });
+        return Promise.resolve({ available: true, engines, bibtex: false, latexmk: false });
       case "read_file_text": {
         const text = files[(args?.path as string) ?? ""];
         return text != null ? Promise.resolve(text) : Promise.reject(new Error("missing"));
       }
-      case "write_file_text":
+      case "write_file_text": {
+        // Recorded, so the ＋ (new file) test can assert the spliced \input.
+        files[(args?.path as string) ?? ""] = (args?.content as string) ?? "";
         return Promise.resolve(null);
+      }
+      case "write_file_bytes": {
+        // Bytes ride as the raw body; the path is a header (see fileAccess.ts).
+        const p = decodeURIComponent(opts?.headers?.["x-eldrun-path"] ?? "");
+        files[p] = "";
+        return Promise.resolve(null);
+      }
       case "resolve_tex_root":
         // A child resolves to the main; the main resolves to itself.
         return Promise.resolve((args?.path as string) === CHILD ? MAIN : (args?.path as string));
@@ -93,14 +107,19 @@ function setupInvoke(
         return Promise.resolve(syncRects);
       case "synctex_edit":
         return Promise.resolve(null);
-      case "file_mtime":
-        return Promise.resolve(1);
+      case "file_mtime": {
+        // Answers only for files that exist — texPathExists reads a failed stat
+        // as absence, which is what lets the ＋ create a missing child.
+        const p = (args?.path as string) ?? "";
+        return files[p] != null ? Promise.resolve(1) : Promise.reject(new Error("missing"));
+      }
       case "list_dir":
         return Promise.resolve([]);
       default:
         return Promise.resolve(null);
     }
   });
+  return files;
 }
 
 async function resetStores() {
@@ -249,6 +268,40 @@ describe("TeX workspace — center switching + SyncTeX", () => {
     );
   });
 
+  it("(i) the engine chosen on the main file compiles every file in the structure", async () => {
+    // Two engines, so the selector is offered at all (one installed ⇒ hidden).
+    setupInvoke([], ["pdflatex", "lualatex"]);
+    await renderWorkspace();
+
+    // Choose lualatex on the main file — the only pane mounted so far.
+    const trigger = await screen.findByTitle(/LaTeX engine/i);
+    await act(async () => {
+      await userEvent.click(trigger);
+    });
+    await act(async () => {
+      await userEvent.click(screen.getByRole("option", { name: "lualatex" }));
+    });
+
+    // Center the child and build from THERE. A child compiles its root, so the
+    // engine it builds with is the document's, not the backend's default.
+    const childRow = await screen.findByRole("button", { name: /chap\.tex/i });
+    await act(async () => {
+      await userEvent.click(childRow);
+    });
+    const childCompile = await screen.findByRole("button", { name: /compile main\.tex/i });
+    await act(async () => {
+      await userEvent.click(childCompile);
+    });
+
+    await waitFor(() => {
+      const call = mockInvoke.mock.calls.find((c) => c[0] === "compile_tex");
+      expect(call?.[1]).toMatchObject({ path: MAIN, engine: "lualatex" });
+    });
+    // And the child's own toolbar says so: one choice, shown by every pane.
+    for (const el of screen.getAllByTitle(/LaTeX engine/i))
+      expect(el.textContent).toContain("lualatex");
+  });
+
   it("(d) reverse search routes back into the workspace, switching the center", async () => {
     setupInvoke([{ page: 1, x: 10, y: 20, w: 100, h: 12 }]);
     const { tabKey, useTabsStore } = await renderWorkspace();
@@ -275,6 +328,138 @@ describe("TeX workspace — center switching + SyncTeX", () => {
     );
     expect(jumpSpy).toHaveBeenCalledWith(CHILD, 2, 1);
     expect(useTabsStore.getState().tabs).toHaveLength(1);
+  });
+
+  it("(h) the structure sidebar folds to a rail and comes back, persisted per tab", async () => {
+    setupInvoke();
+    const { tabKey, useTabsStore } = await renderWorkspace();
+    await screen.findByRole("button", { name: /chap\.tex/i });
+
+    await act(async () => {
+      await userEvent.click(await screen.findByRole("button", { name: /hide the structure/i }));
+    });
+
+    // Folded: the tree is gone, the persisted flag is set, and the rail still
+    // offers the way back (a fold must never be a one-way door).
+    await waitFor(() =>
+      expect(
+        useTabsStore.getState().tabs.find((t) => t.key === tabKey)?.viewerState?.texSidebarHidden,
+      ).toBe(true),
+    );
+    expect(screen.queryByRole("button", { name: /chap\.tex/i })).toBeNull();
+
+    await act(async () => {
+      await userEvent.click(await screen.findByRole("button", { name: /show the structure/i }));
+    });
+    await screen.findByRole("button", { name: /chap\.tex/i });
+    expect(
+      useTabsStore.getState().tabs.find((t) => t.key === tabKey)?.viewerState?.texSidebarHidden,
+    ).toBe(false);
+  });
+
+  it("(i) back returns the center to the previously centered file", async () => {
+    setupInvoke();
+    const { tabKey, useTabsStore } = await renderWorkspace();
+    const vsOf = () => useTabsStore.getState().tabs.find((t) => t.key === tabKey)?.viewerState;
+
+    // Nothing centered yet ⇒ nothing to go back to: the button is present (it is
+    // the only navigation this tab has) but inert.
+    const backBefore = await screen.findByRole("button", { name: /nothing to go back to/i });
+    expect((backBefore as HTMLButtonElement).disabled).toBe(true);
+
+    await act(async () => {
+      await userEvent.click(await screen.findByRole("button", { name: /chap\.tex/i }));
+    });
+    await waitFor(() => expect(vsOf()?.texActivePath).toBe(CHILD));
+
+    await act(async () => {
+      await userEvent.click(await screen.findByRole("button", { name: /back to main\.tex/i }));
+    });
+    await waitFor(() => expect(vsOf()?.texActivePath).toBe(MAIN));
+    // One step back is the whole stack — the button goes inert again.
+    const backAfter = await screen.findByRole("button", { name: /nothing to go back to/i });
+    expect((backAfter as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("(m) ↑ goes up to the parent and puts the caret on its \\input line (#tex-structure-up)", async () => {
+    setupInvoke();
+    const { tabKey, useTabsStore } = await renderWorkspace();
+    const vsOf = () => useTabsStore.getState().tabs.find((t) => t.key === tabKey)?.viewerState;
+    const { useEditorJumpStore } = await import("../stores/editorJump");
+
+    // On the main document there is nothing above: present, inert, and the
+    // title says so.
+    const upBefore = await screen.findByRole("button", { name: /this is the main document/i });
+    expect((upBefore as HTMLButtonElement).disabled).toBe(true);
+
+    await act(async () => {
+      await userEvent.click(await screen.findByRole("button", { name: /chap\.tex/i }));
+    });
+    await waitFor(() => expect(vsOf()?.texActivePath).toBe(CHILD));
+
+    // The child is inputted on line 3 of main.tex; the title names both.
+    const up = await screen.findByRole("button", { name: /up to main\.tex, line 3/i });
+    expect((up as HTMLButtonElement).disabled).toBe(false);
+    // The main pane is mounted and consumes a jump the moment it lands, so the
+    // request is recorded on the way through rather than read back afterwards.
+    const jumps: Array<{ line: number; column: number }> = [];
+    const unsub = useEditorJumpStore.subscribe((st) => {
+      const r = st.requestsByPath[MAIN];
+      if (r) jumps.push({ line: r.line, column: r.column });
+    });
+    await act(async () => {
+      await userEvent.click(up);
+    });
+    await waitFor(() => expect(vsOf()?.texActivePath).toBe(MAIN));
+    unsub();
+    expect(jumps).toEqual([{ line: 3, column: 1 }]);
+
+    // Up was a navigation like any other: ← returns to the child.
+    await act(async () => {
+      await userEvent.click(await screen.findByRole("button", { name: /back to chap\.tex/i }));
+    });
+    await waitFor(() => expect(vsOf()?.texActivePath).toBe(CHILD));
+  });
+
+  it("(n) Ctrl+Shift+Up / Ctrl+Shift+Down drive up and back when focus is inside the workspace", async () => {
+    setupInvoke();
+    const { tabKey, useTabsStore } = await renderWorkspace();
+    const vsOf = () => useTabsStore.getState().tabs.find((t) => t.key === tabKey)?.viewerState;
+    const { useEditorJumpStore } = await import("../stores/editorJump");
+
+    const childRow = await screen.findByRole("button", { name: /chap\.tex/i });
+    await act(async () => {
+      await userEvent.click(childRow);
+    });
+    await waitFor(() => expect(vsOf()?.texActivePath).toBe(CHILD));
+
+    // From the centered child's editor textarea — where the global shortcut hook
+    // would refuse to act — the chord bubbles to the workspace root and climbs.
+    const editor = document.querySelector<HTMLTextAreaElement>(".tex-workspace textarea");
+    expect(editor).not.toBeNull();
+    const jumps: number[] = [];
+    const unsub = useEditorJumpStore.subscribe((st) => {
+      const r = st.requestsByPath[MAIN];
+      if (r) jumps.push(r.line);
+    });
+    await act(async () => {
+      fireEvent.keyDown(editor!, { key: "ArrowUp", ctrlKey: true, shiftKey: true });
+    });
+    await waitFor(() => expect(vsOf()?.texActivePath).toBe(MAIN));
+    unsub();
+    expect(jumps).toEqual([3]);
+
+    // Ctrl+Shift+Down retraces the step.
+    await act(async () => {
+      fireEvent.keyDown(document.querySelector(".tex-workspace")!, { key: "ArrowDown", ctrlKey: true, shiftKey: true });
+    });
+    await waitFor(() => expect(vsOf()?.texActivePath).toBe(CHILD));
+
+    // Outside the workspace the chord is nobody's: the center stays put.
+    await act(async () => {
+      fireEvent.keyDown(document.body, { key: "ArrowUp", ctrlKey: true, shiftKey: true });
+    });
+    expect(vsOf()?.texActivePath).toBe(CHILD);
   });
 
   it("(e) a commented-out \\input is not listed in the sidebar", async () => {
@@ -387,5 +572,243 @@ describe("TeX workspace — center switching + SyncTeX", () => {
       ),
     );
     expect(useTabsStore.getState().tabs).toHaveLength(1);
+  });
+
+  it("(k) reverse search centers a workspace mounted in a popout (no store entry)", async () => {
+    // The bug: a popped-out workspace renders its ViewerState from a one-time
+    // seed into local React state, so the `setViewerState(texActivePath)` write
+    // reverse search used to make landed in a store the popout never reads —
+    // tex→pdf worked, pdf→tex silently did nothing. The switch has to reach the
+    // window that RENDERS the workspace, which is what the texCenter registry is.
+    setupInvoke();
+    vi.resetModules();
+    const { useTabsStore } = await import("../stores/tabs");
+    useTabsStore.getState().setScope("p");
+    // Deliberately no addTab — the popout's empty store (see (f)).
+    const { FileViewerPane, jumpToSource } = await import("../components/embed/FileViewerPane");
+    await act(async () => {
+      render(
+        <FileViewerPane viewer="texworkspace" path={MAIN} projectId="p" tabKey="detached-tex" visible />,
+      );
+    });
+    await screen.findByRole("button", { name: /chap\.tex/i });
+
+    const { useEditorJumpStore } = await import("../stores/editorJump");
+    const jumpSpy = vi.spyOn(useEditorJumpStore.getState(), "requestJump");
+
+    await act(async () => {
+      jumpToSource(CHILD, 2, 1, MAIN);
+    });
+
+    // The center switched to the producing child — its body is on screen — and
+    // the caret jump reached it, with the store still holding no tab at all.
+    await waitFor(() => expect(screen.getByDisplayValue(/child body/)).toBeTruthy());
+    expect(jumpSpy).toHaveBeenCalledWith(CHILD, 2, 1);
+    expect(useTabsStore.getState().tabs.find((t) => t.key === "detached-tex")).toBeUndefined();
+  });
+
+  it("(l) a DETACHED workspace tab is switched by broadcast, never by a store write", async () => {
+    // The other half of (k), from the main window's side: the workspace tab is in
+    // this store but its group has been popped out, so this heap does not render
+    // it. A `setViewerState` here would write a field the popout's seeded mirror
+    // never re-reads, so the switch goes out as a cross-window request instead.
+    setupInvoke();
+    vi.resetModules();
+    const { useTabsStore } = await import("../stores/tabs");
+    const { TEX_CENTER_EVENT } = await import("../stores/texCenter");
+    const { emit } = await import("@tauri-apps/api/event");
+    useTabsStore.getState().setScope("p");
+    const tab = useTabsStore.getState().addTab({
+      label: "main.tex",
+      cmd: "",
+      cwd: "/p",
+      kind: "embed",
+      embedPath: MAIN,
+      viewer: "texworkspace",
+    });
+    // Pop that tab's group out: the payload stays in `tabsByScope`, its
+    // arrangement moves to `detachedGroupsByScope` (see stores/tabs).
+    useTabsStore.setState({
+      detachedGroupsByScope: {
+        p: [
+          {
+            id: "d1",
+            label: "detached-1",
+            subtree: { type: "group", id: "g1", tabKeys: [tab.key], activeKey: tab.key },
+          },
+        ],
+      },
+    });
+    vi.mocked(emit).mockClear();
+
+    // Nothing is rendered here, so the registry misses and the escalation runs.
+    const { jumpToSource } = await import("../components/embed/FileViewerPane");
+    await act(async () => {
+      jumpToSource(CHILD, 2, 1, MAIN);
+    });
+
+    await waitFor(() =>
+      expect(emit).toHaveBeenCalledWith(
+        TEX_CENTER_EVENT,
+        expect.objectContaining({ root: MAIN, source: CHILD }),
+      ),
+    );
+    // And the store was NOT written: the popout owns that field now.
+    expect(
+      useTabsStore.getState().tabs.find((t) => t.key === tab.key)?.viewerState?.texActivePath,
+    ).toBeUndefined();
+    // No scattered standalone source tab either.
+    expect(useTabsStore.getState().tabs).toHaveLength(1);
+  });
+
+  it("(j) the sidebar's ＋ creates a child file, \\inputs it, and centers it", async () => {
+    const files = setupInvoke();
+    const { tabKey, useTabsStore } = await renderWorkspace();
+    await screen.findByRole("button", { name: /chap\.tex/i });
+
+    await act(async () => {
+      await userEvent.click(await screen.findByRole("button", { name: /new file/i }));
+    });
+    const input = await screen.findByRole("textbox", { name: /file name/i });
+    await act(async () => {
+      await userEvent.type(input, "notes{enter}");
+    });
+
+    // The file exists, the main document gained its \input above \end{document},
+    // and the re-gathered structure lists + centers the new child.
+    await waitFor(() =>
+      expect(
+        useTabsStore.getState().tabs.find((t) => t.key === tabKey)?.viewerState?.texActivePath,
+      ).toBe("/p/notes.tex"),
+    );
+    expect(files["/p/notes.tex"]).toBe("");
+    expect(files[MAIN]).toMatch(/\\input\{notes\}\n\\end\{document\}/);
+    await screen.findByRole("button", { name: /notes\.tex/i });
+  });
+
+  it("(k) the engine choice rides the workspace tab and is still set after a restart", async () => {
+    // Two engines ⇒ the selector is offered (with one, the backend default is
+    // the only choice and there is nothing to remember).
+    setupInvoke([], ["pdflatex", "xelatex"]);
+    const { tabKey, useTabsStore } = await renderWorkspace();
+    const vsOf = () => useTabsStore.getState().tabs.find((t) => t.key === tabKey)?.viewerState;
+
+    await act(async () => {
+      await userEvent.click(await screen.findByTitle(/LaTeX engine/));
+    });
+    await act(async () => {
+      await userEvent.click(await screen.findByRole("option", { name: "xelatex" }));
+    });
+    await waitFor(() => expect(vsOf()?.texEngine).toBe("xelatex"));
+
+    // The restart: the pane is torn down and re-created against the tab the
+    // restored layout hands back. The toolbar must read `xelatex` again — and,
+    // the part that actually matters, the build must run under it.
+    cleanup();
+    const { FileViewerPane } = await import("../components/embed/FileViewerPane");
+    await act(async () => {
+      render(<FileViewerPane viewer="texworkspace" path={MAIN} projectId="p" tabKey={tabKey} />);
+    });
+    expect((await screen.findByTitle(/LaTeX engine/)).textContent).toContain("xelatex");
+
+    await act(async () => {
+      await userEvent.click(await screen.findByRole("button", { name: /^compile/i }));
+    });
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenCalledWith(
+        "compile_tex",
+        expect.objectContaining({ path: MAIN, engine: "xelatex" }),
+      ),
+    );
+  });
+  it("(j) Compile pressed in a child pane first writes the main pane's unsaved draft", async () => {
+    setupInvoke();
+    await renderWorkspace();
+
+    // Edit the main file in its own pane; the pane stays mounted (display:none)
+    // with this draft once the center switches to the child.
+    const mainBox = (await screen.findByRole("textbox")) as HTMLTextAreaElement;
+    await waitFor(() => expect(mainBox.value).toBe(MAIN_SRC));
+    const edited = MAIN_SRC.replace("Hi", "Hi, edited");
+    fireEvent.change(mainBox, { target: { value: edited } });
+
+    // Center the child and build from THERE.
+    await act(async () => {
+      await userEvent.click(await screen.findByRole("button", { name: /chap\.tex/i }));
+    });
+    await act(async () => {
+      await userEvent.click(await screen.findByRole("button", { name: /compile main\.tex/i }));
+    });
+
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenCalledWith("compile_tex", expect.objectContaining({ path: MAIN })),
+    );
+    // The main draft reached disk — with the edit — BEFORE the build read it.
+    // Without this the build was of main.tex as last saved: with nothing on disk
+    // changed, latexmk answers "up-to-date" and the old PDF comes back as a success.
+    const calls = mockInvoke.mock.calls;
+    const write = calls.findIndex(
+      (c) => c[0] === "write_file_text" && (c[1] as { path: string }).path === MAIN,
+    );
+    const compile = calls.findIndex((c) => c[0] === "compile_tex");
+    expect(write).toBeGreaterThanOrEqual(0);
+    expect(write).toBeLessThan(compile);
+    expect((calls[write][1] as { content: string }).content).toBe(edited);
+  });
+
+  // #tex-structure-errors: the Errors/Warnings cards say WHAT is wrong, read from
+  // whichever pane is centered; the tree says WHICH FILE, which is the question a
+  // document split across a dozen `\input`s actually raises.
+  it("badges the structure row of every file the last build reported on", async () => {
+    setupInvoke();
+    // A failed build whose one error and one warning are both inside the CHILD:
+    // the error through `-file-line-error`, the warning through the `(…)` nesting.
+    const base = mockInvoke.getMockImplementation()!;
+    mockInvoke.mockImplementation((cmd: string, args?: unknown, opts?: unknown) =>
+      cmd === "compile_tex"
+        ? Promise.resolve({
+            success: false,
+            pdf_path: null,
+            engine: "pdflatex",
+            log: [
+              "This is pdfTeX, Version 3.14",
+              "(./main.tex",
+              "(./chap.tex",
+              "./chap.tex:2: Undefined control sequence.",
+              "l.2 \\badcmd",
+              "LaTeX Warning: Reference `fig:x' undefined on input line 2.",
+              ")",
+              ")",
+            ].join("\n"),
+            shell_escape: false,
+          })
+        : (base as (c: string, a?: unknown, o?: unknown) => unknown)(cmd, args, opts),
+    );
+
+    const { tabKey, useTabsStore } = await renderWorkspace();
+    const { useEditorJumpStore } = await import("../stores/editorJump");
+    const jumpSpy = vi.spyOn(useEditorJumpStore.getState(), "requestJump");
+
+    await act(async () => {
+      await userEvent.click(await screen.findByRole("button", { name: /compile/i }));
+    });
+
+    // The child's row wears both pills; the main document's row wears neither —
+    // nothing in the log was attributed to it.
+    const errorBadge = await screen.findByRole("button", { name: /1 error in chap\.tex/i });
+    expect(await screen.findByRole("button", { name: /1 warning in chap\.tex/i })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /in main\.tex from the last build/i })).toBeNull();
+
+    // Clicking a pill centers that file with the caret on the reported line —
+    // the step the reader who spotted the badge was about to take by hand.
+    await act(async () => {
+      await userEvent.click(errorBadge);
+    });
+    await waitFor(() =>
+      expect(
+        useTabsStore.getState().tabs.find((t) => t.key === tabKey)?.viewerState?.texActivePath,
+      ).toBe(CHILD),
+    );
+    expect(jumpSpy).toHaveBeenCalledWith(CHILD, 2, 1);
   });
 });

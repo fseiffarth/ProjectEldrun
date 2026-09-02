@@ -111,7 +111,11 @@ A native iOS/Android wrapper may follow, but it must reuse this API and protocol
 
 ### Explicitly out of scope
 
-- browsing, editing, uploading, downloading, or opening files;
+- browsing, editing, downloading, or opening files. The one file the phone
+  may *send* is the composer's **+ → From this phone** drop: bytes land in
+  the tab's project under `.eldrun/inbox/` (git-ignored, hidden from the
+  tree, skipped by sync) and the phone gets back only the project-relative
+  `.eldrun/inbox/<file>` reference to put after an `@` — never a host path;
 - muting calendar events, configuring CalDAV credentials, or editing a single
   occurrence of a recurring event;
 - viewer/embed/browser/external-app tab types;
@@ -206,9 +210,15 @@ HTTP “run command” endpoint.
   custom agent with configured `resumeArgs`); and
 - launchable in a local, non-container, non-VM project.
 
-Plan/Auto choices come only from `components/tabs/agentModes.ts`, and only when
-the desktop's agent-mode feature exposes them. The phone sends an opaque catalog
-id plus an optional advertised mode; it never sends a command or flag. MVP does
+The advertised launch-`modes` list is **now always empty**: Eldrun no longer
+launches an agent into a permission mode at all (the desktop Plan/Auto toggle
+and `components/tabs/agentModes.ts` were removed — see
+`docs/context/agent_authority.md`), so there is no launch mode left to offer.
+The wire field stays, and a request naming a mode is refused with
+`unsupported_mode`. Changing a *running* session's mode is unaffected: that is
+the phone's own sheet (`mobile-web/src/terminal/agentModes.ts`), which presses
+Shift+Tab and verifies against the TUI's status line. The phone sends an opaque
+catalog id; it never sends a command or flag. MVP does
 not accept an initial prompt because agents have no uniform prompt argv and
 typing hidden input after spawn would require fragile readiness heuristics. The
 terminal opens and the user types the prompt normally.

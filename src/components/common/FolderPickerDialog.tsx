@@ -144,7 +144,7 @@ export function FolderPickerDialog({ initialPath, title, confirmLabel, nameLabel
           </div>
         )}
 
-        <div className="settings-actions folder-picker-actions">
+        <div className="folder-picker-actions">
           <button type="button" onClick={onClose}>{t("common.cancel")}</button>
           <button
             type="button"

@@ -18,7 +18,7 @@ describe("experimentalEnabled", () => {
   it("is on when the flag is unset and debug mode is on", () => {
     // The point of the gate: a new experiment reaches a debug build with no toggle.
     expect(experimentalEnabled(s({ debug: true }), "python_run_debug")).toBe(true);
-    expect(experimentalEnabled(s({ debug: true }), "agent_mode_toggle")).toBe(true);
+    expect(experimentalEnabled(s({ debug: true }), "deck_presenter")).toBe(true);
   });
 
   it("keeps the WebGL terminal renderer opt-in even in debug mode", () => {
@@ -37,7 +37,7 @@ describe("experimentalEnabled", () => {
 
   it("treats settings that have not loaded yet as off", () => {
     expect(experimentalEnabled(null, "python_run_debug")).toBe(false);
-    expect(experimentalEnabled(undefined, "agent_mode_toggle")).toBe(false);
+    expect(experimentalEnabled(undefined, "deck_presenter")).toBe(false);
   });
 
   it("applies the debug default to every non-WebGL flag", () => {

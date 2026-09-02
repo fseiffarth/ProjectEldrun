@@ -1,5 +1,7 @@
 import type { LinkOpenTarget } from "./browser";
 import type { PyMainVerdict } from "../lib/pythonMainCache";
+import type { AgentCron } from "../lib/agentCron";
+import type { CursorPack } from "../lib/cursorPacks";
 
 export interface GlobalAppEntry {
   exec: string;
@@ -42,6 +44,11 @@ export interface GrammarIssue {
   suggestion: string;
   category: GrammarCategory;
   message: string;
+  /** Which provider produced the issue — set frontend-side on receipt, never on
+   *  the wire. `"dict"` (the Hunspell `spell_check` command) adds the
+   *  "Add to dictionary" action to the tooltip; absent/`"model"` is the LLM
+   *  `check_grammar` provider. */
+  source?: "model" | "dict";
 }
 
 export interface ViewerPref {
@@ -56,6 +63,15 @@ export interface ViewerPref {
   /** Whether the local-model grammar/spelling check is enabled for this type.
    *  Local-only (Ollama) and opt-in; default OFF. */
   grammar_check?: boolean;
+  /** Whether the dictionary (Hunspell) spell check is enabled for this type.
+   *  Needs no model — deterministic, milliseconds, offline. Default OFF: red
+   *  underlines nobody asked for are noise in a code editor. */
+  spell_check?: boolean;
+  /** Whether the TeX editor typesets the snippet under the pointer and shows it
+   *  in a hover card (#tex-hover-preview). Read only for the `"tex"` entry, and
+   *  absent means ON — the opposite default to the two toggles above, which are
+   *  opt-in because they call a model. */
+  hover_preview?: boolean;
   /** Editor font size in px for this type's in-app code editor. Adjusted from
    *  the viewer's A−/A+ controls (or Ctrl +/−/0); unset falls back to 12px. */
   font_size?: number;
@@ -110,6 +126,18 @@ export interface CustomAgent {
   installCmd?: string;
 }
 
+/** The views of the shared file viewer's switcher (`ProjectFilesView`), named
+ *  here because the side panel persists its last one in `Settings`. */
+export type FilesPanelView =
+  | "files"
+  | "windows"
+  | "git"
+  | "agents"
+  | "orange"
+  | "sessions"
+  | "jobs"
+  | "remarks";
+
 export interface Settings {
   debug?: boolean;
   eldrun_mobile_host?: {
@@ -121,6 +149,10 @@ export interface Settings {
   /** Show Eldrun Mobile's host-connection control in the desktop header. This
    * defaults to on when Mobile itself is enabled; an explicit false hides it. */
   mobile_indicator?: boolean;
+  /** Is the header's machine-state cluster (connection, battery, Mobile, VPN,
+   * Machines, CPU/RAM/GPU) expanded into the bar? Unset means collapsed to a
+   * single summary lamp; anything non-nominal shows itself regardless. */
+  header_status_expanded?: boolean;
   git_profile_url?: string;
   git_token?: string;
   color_scheme?: string;
@@ -138,6 +170,43 @@ export interface Settings {
    *  Clamped to [0.5, 3]. Zoom is **per window**: a detached popout persists its
    *  own zoom on its layout entry (see `DetachedGroup.zoom`), not here. */
   ui_zoom?: number;
+  /** Custom accent color (`#rrggbb`) overriding the active theme's `--accent`
+   *  across every theme; unset = the theme's own. Applied as inline root CSS
+   *  vars by `stores/settings.applyAccent` — the hover/active/pill tokens all
+   *  derive from `--accent`, so one override recolors them together. */
+  ui_accent?: string;
+  /** Corner style override: `"square"` or `"rounded"`; unset = the active
+   *  theme's own radius tokens. Applied by `stores/settings.applyCorners`. */
+  ui_corners?: CornerStyle;
+  /** Custom mouse-cursor pack (`lib/cursorPacks`); unset = the system cursors.
+   *  Applied by `stores/settings.applyCursor`, which draws the art from the
+   *  LIVE theme — so the pointer follows the theme, the custom accent and the
+   *  Theme Customizer's token overrides rather than being a fixed asset.
+   *  Round-trips through the backend's `extra` catch-all — no Rust field
+   *  needed, like `ui_theme_vars`.
+   *
+   *  `null`, not `undefined`, is how the pack is switched back OFF: a patch
+   *  crosses the IPC as JSON, which drops an `undefined` property outright, so
+   *  the key would simply not be in the patch and the stored pack would stand
+   *  (`ollama_models_path` clears itself the same way). */
+  ui_cursor?: CursorPack | null;
+  /** Per-token color overrides from the Theme Customizer, keyed by CSS custom
+   *  property (`{"--bg-panel": "#101820"}`). Only the `lib/themeTokens` catalog
+   *  names, holding `#rrggbb`/`#rrggbbaa`, are honoured — see
+   *  `stores/settings.normalizeThemeVars`, which is what stands between a
+   *  hand-edited settings.json and an arbitrary inline-CSS write. Cross-theme
+   *  like `ui_accent`, and applied after it, so a hand-picked `--accent-hover`
+   *  beats the one derived from the accent. Round-trips through the backend's
+   *  `extra` catch-all — no Rust field needed. */
+  ui_theme_vars?: Record<string, string>;
+  /** Saved looks from the Theme Customizer: the whole appearance — base theme,
+   *  accent, per-token overrides and corner style — under a name, so a palette
+   *  you built can be put away and brought back instead of being the one thing
+   *  the app can hold at a time. Validated on read the way `ui_theme_vars` is
+   *  (`stores/settings.normalizeThemePresets`), since a stored preset reaches
+   *  the root style the moment it is loaded. Round-trips through the backend's
+   *  `extra` catch-all — no Rust field needed. */
+  ui_theme_presets?: ThemePreset[];
   /** Calendar: first column of the week — `0` = Sunday (default), `1` = Monday. */
   calendar_week_start?: 0 | 1;
   /** Calendar: the view a fresh calendar tab opens on. Default `"month"`. */
@@ -167,7 +236,7 @@ export interface Settings {
    *  — and `experimental()` additionally means "on in debug", which would put a
    *  third header button in every developer's window unasked. */
   todo_board?: boolean;
-  /** Right panel: the **Alerts** group in the file viewer — urgent mail, the
+  /** Side panel: the **Alerts** group in the file viewer — urgent mail, the
    *  calendar entries about to start, and the to-do cards whose due date is here
    *  or past, merged into one time-ordered strip. **Default true.**
    *
@@ -180,7 +249,7 @@ export interface Settings {
    *  separate shown/hidden state, and that is what makes the default safe to
    *  invert: the toolbar's 🔔 writes this key, so closing the group persists and
    *  survives a relaunch instead of coming back at the next remount — and this
-   *  viewer is mounted many times over at once (the right panel, every Files
+   *  viewer is mounted many times over at once (the side panel, every Files
    *  tab, every subwindow's docked column, every popout), so a per-surface flag
    *  would have to be dismissed once per surface. The button is deliberately
    *  rendered whether or not the group is on: it is the way back, and gating it
@@ -275,6 +344,11 @@ export interface Settings {
    *  the familiar Claude/Codex/Gemini quick picks; an empty array is a deliberate
    *  choice to show agents only after searching. */
   compact_tab_agents?: string[];
+  /** Prefix chips per agent command for the side panel's agent composer; unset
+   *  falls back to `lib/agentPrefaces`' defaults, `[]` means none. */
+  agent_preface_commands?: Record<string, string[]>;
+  /** Model names per agent command, typed as that CLI's own `/model <name>`. */
+  agent_models?: Record<string, string[]>;
   /** User-defined custom agents offered in the add-tab menu's Agents group,
    *  added/removed from the "＋ Add agent…" dialog. Round-trips through the
    *  backend settings `extra` catch-all — no Rust field needed. See CustomAgent. */
@@ -285,6 +359,15 @@ export interface Settings {
    *  uninstalling the CLI. Round-trips through the backend settings `extra`
    *  catch-all — no Rust field needed. Unset/empty = nothing hidden. */
   disabled_agents?: string[];
+  /** The scheduled agent warm-up (Manage CLIs → Scheduled warm-up): at each
+   *  configured local time, one short message is sent to that agent in the Trash
+   *  project, so its usage window starts *then* rather than whenever the first
+   *  real prompt happens to be typed. A global time list with per-agent
+   *  participation and per-agent overrides; read through `lib/agentCron.ts`,
+   *  which is also where the semantics of every field live. Round-trips through
+   *  the backend settings `extra` catch-all — no Rust field needed, since
+   *  nothing in the backend reads it. Unset = nothing scheduled. */
+  agent_cron?: AgentCron;
   /** The default local (Ollama) model. Used by any task without its own
    *  per-task assignment in `ollama_roles`, and as the legacy "active model".
    *  Chosen in the 🧠 menu (click a loaded model's name). Unset = none. */
@@ -322,6 +405,11 @@ export interface Settings {
    *  mail — and is the kind of thing to have answered before the feature runs,
    *  not after; the chip's tooltip says nothing reads it so far. */
   ollama_roles?: Record<string, string>;
+  /** Hunspell dictionary code (e.g. `en_US`) for the editors' dictionary spell
+   *  check. Unset means the default — an installed English variant when there
+   *  is one. Machine-wide (the language you write in is not per project);
+   *  per-type enablement is `ViewerPref.spell_check`. */
+  spell_language?: string;
   /** The **Mail AI (local)** global master switch (Group Q, #203–#208) —
    *  "Allow Mail AI features", **default off**. The per-feature toggles now live
    *  **per account** (`MailAiPrefs` in `types/mail`); this one global flag gates
@@ -372,6 +460,12 @@ export interface Settings {
    *  so the running session can be monitored/steered from the Claude app/web. Only
    *  Claude supports this flag; other agents ignore the setting. */
   agent_remote_control?: boolean;
+  /** Default-on filesystem fence for local agent tabs. Linux uses bubblewrap;
+   * remote-host and non-Linux tabs report that it is not enforced. */
+  agent_fence?: boolean;
+  /** Extra host toolchain/config paths exposed read-only inside the fence.
+   * Unset uses the backend defaults; an explicit empty list exposes none. */
+  agent_fence_paths?: string[];
   /** When true (the default), the usage recap opens by itself on the first launch
    *  of each day. Turning it off stops the popup, not the counting — the recap
    *  stays reachable from Settings. */
@@ -379,11 +473,6 @@ export interface Settings {
   /** UTC date ("YYYY-MM-DD") the recap was last auto-shown, so it opens once a day
    *  rather than once per window. Written by the recap host. */
   daily_stats_last_shown?: string;
-  /** EXPERIMENTAL, default OFF. Shows a Plan/Auto badge on agent tabs whose agent
-   *  supports an absolute mode flag AND resumes on respawn (currently Claude only —
-   *  see components/tabs/agentModes.ts). Switching restarts the agent; the
-   *  conversation is resumed, the terminal scrollback is not. */
-  agent_mode_toggle?: boolean;
   /** EXPERIMENTAL, default OFF. Gives a Python file in the code viewer its Run/Debug
    *  buttons and the breakpoint gutter (#87). Off by default because Run *executes
    *  the file* — one click away from an editor — so it is opt-in. Go-to-definition
@@ -402,6 +491,14 @@ export interface Settings {
    *  `docs/typing_latency_plan.md` Step 4); a terminal whose WebGL fails, at load
    *  or via runtime context loss, demotes itself back to canvas. */
   terminal_webgl?: boolean;
+  /** EXPERIMENTAL, default OFF. The markdown relationship graph: adds a "Graph"
+   *  mode to the markdown viewer that crawls the viewed document's local-file
+   *  links (markdown targets recursively, everything else as a leaf) and renders
+   *  them as a clickable navigation map. Purely a frontend gate — the crawl rides
+   *  the same confined `read_file_text` every viewer read uses. */
+  md_graph?: boolean;
+  /** EXPERIMENTAL, default OFF. Project-wide per-file remarks in REMARKS.md. */
+  project_remarks?: boolean;
   /** Persistent LOCAL (tmux) sessions (TODO #85): when true (the default on Unix),
    *  a local project's shell/script tabs run inside a tmux session on the machine,
    *  so a long run keeps going if Eldrun crashes and the tab reattaches on restart.
@@ -468,14 +565,34 @@ export interface Settings {
    *  off a *standing preference*, and one merged control could not say "plugged
    *  in, still want it lean" — which is the case that asks for this. */
   fast_mode?: boolean;
-  /** When true, the right panel is docked open (reflows layout) instead of hover-revealed. */
-  right_panel_pinned?: boolean;
-  /** Width of the right (file/git) panel in px. Set by dragging the panel's left
-   *  border; unset falls back to the default 280px. */
-  right_panel_width?: number;
-  /** Which edge the file panel docks against. Unset falls back to "right". Flipped
+  /** When true, the side panel is docked open (reflows layout) instead of hover-revealed. */
+  side_panel_pinned?: boolean;
+  /** Width of the side (files/git/search/sessions) panel in px. Set by dragging the
+   *  panel's inner border; unset falls back to the default 280px. */
+  side_panel_width?: number;
+  /** Which edge the side panel docks against. Unset falls back to "right". Flipped
    *  by the ⇄ button in the panel header; round-trips through the settings `extra`
    *  catch-all, so no backend field is needed. */
+  side_panel_edge?: "left" | "right";
+  /** Which view of the side panel's file viewer (Files / Git / Apps / Agents /
+   *  ± / sessions / jobs / remarks) was last open. Restored on launch and kept
+   *  across a project switch — the panel remounts on both, and coming back to
+   *  Files every time meant a user living in Git or Agents re-picked it after
+   *  each switch. A view the current project has no button for (a remote-only
+   *  or SLURM-only one) falls back to Files for as long as that is true, without
+   *  overwriting what is stored. Rides the settings `extra` catch-all like
+   *  `side_panel_edge`, so no backend field is needed. */
+  side_panel_view?: FilesPanelView;
+  /** Pre-rename spellings of the three keys above, from when the panel was fixed to
+   *  the right edge and named for it. Read-only fallbacks: settings.json written by
+   *  an older build still carries them, and every read below is
+   *  `side_panel_* ?? right_panel_*`. Nothing writes them any more, and they ride in
+   *  the backend's `extra` catch-all, so an untouched install keeps its width, pin
+   *  state and edge across the upgrade. @deprecated use the `side_panel_*` keys. */
+  right_panel_pinned?: boolean;
+  /** @deprecated use {@link Settings.side_panel_width}. */
+  right_panel_width?: number;
+  /** @deprecated use {@link Settings.side_panel_edge}. */
   right_panel_side?: "left" | "right";
   /** Minimum subwindow (split pane) width in px a divider drag may shrink to.
    *  Unset falls back to DEFAULT_MIN_SUBWINDOW_PX. */
@@ -499,7 +616,7 @@ export interface Settings {
    * original hard-coded behaviour.
    */
   keyboard_shortcuts?: Record<string, KeyboardChord>;
-  /** Download *source* folders scanned by the right-panel Downloads section
+  /** Download *source* folders scanned by the side-panel Downloads section
    *  (fast-copy of freshly downloaded files into a project). Machine-wide,
    *  read-only. Unset/empty → the frontend falls back to the OS Downloads dir. */
   download_sources?: string[];
@@ -868,6 +985,9 @@ export interface ProjectEntry {
    *  tabs; absent inherits the global setting (`settings.agent_remote_control`,
    *  default ON). Set from the pill's "Remote control" menu item. */
   remote_control?: boolean;
+  /** Per-project override of the global default-on agent filesystem fence.
+   * Absent inherits `settings.agent_fence`. */
+  agent_fence?: boolean;
   /** Which machine shells launched from this project run on — the persisted
    *  `RunHostPicker` choice (a `TabLocation`: "local" | "remote" | "host:<id>").
    *  Seeds the live `useRunHostPrefStore` on load so the choice survives a
@@ -878,8 +998,6 @@ export interface ProjectEntry {
    *  (`docs/hpc_workspace_plan.md`). Mirrored from project.json's `hpc`. Absent
    *  for every project that isn't in a workspace. */
   hpc?: HpcInfo;
-  /** Denormalized inverse of `ProjectBox.member_ids` (the box this pill is in). */
-  box_id?: string;
   /** Per-project git-hosting profile URL that overrides the global one. Mirrored
    *  from project.json into the pill list; the matching token lives in the OS
    *  keyring, never here. See `GitHostingInfo`. */
@@ -1154,6 +1272,14 @@ export interface TaskEventLink {
   location?: string;
 }
 
+/** A project file a card was converted from, plus a frozen remark snapshot. */
+export interface TaskFileLink {
+  project_id?: string;
+  path: string;
+  line?: number | null;
+  text?: string;
+}
+
 /** One column of the todo board. */
 export interface TaskColumn {
   id: string;
@@ -1198,6 +1324,8 @@ export interface CalendarTask {
    *  `mail`/`event` — both conversions build the same card, they differ only in
    *  which object they record. */
   event?: TaskEventLink | null;
+  /** The file remark this card was converted from. */
+  file?: TaskFileLink | null;
   /** `ProjectEntry.id`, or absent. Never validated against `projects.json` — an
    *  unresolvable id still filters and renders as an unknown-project chip. */
   project_id?: string;
@@ -1304,17 +1432,50 @@ export function resolveLocalMirror(project: ProjectEntry | null | undefined): st
   return typeof mirror === "string" && mirror.trim() ? mirror : null;
 }
 
+/** Corner-style override for the whole app (`Settings.ui_corners`). Unset in
+ *  settings = the active theme's own radius tokens. */
+export type CornerStyle = "square" | "rounded";
+
 export type Theme =
+  | "system"
   | "fancy_dark"
+  | "soft_dark"
   | "dark"
   | "light"
   | "fancy_light"
   | "light_lavender";
 
 export const THEMES: { value: Theme; label: string }[] = [
+  { value: "system", label: "System (follow OS)" },
   { value: "fancy_dark", label: "Fancy Dark" },
+  { value: "soft_dark", label: "Soft Dark" },
   { value: "dark", label: "Plain Dark" },
   { value: "light", label: "Plain Light" },
   { value: "fancy_light", label: "Fancy Light" },
   { value: "light_lavender", label: "Light Lavender" },
 ];
+
+/** One saved look from the Theme Customizer (`Settings.ui_theme_presets`).
+ *
+ *  It stores everything the customizer can change, not just the token map: a
+ *  palette built on top of Fancy Dark reads as somebody else's on Plain Light,
+ *  so the base theme travels with it, and so do the accent (its own setting)
+ *  and the corner style (the same window's knob). Loading one writes all four
+ *  settings in a single patch. */
+export interface ThemePreset {
+  /** Stable id; the list is keyed and addressed by it, never by name. */
+  id: string;
+  name: string;
+  /** The base theme the look sat on. Unset = leave the current one alone. */
+  theme?: Theme;
+  /** Accent override at save time; unset = the base theme's own accent. */
+  accent?: string;
+  /** Corner style at save time; unset = the base theme's own radii. */
+  corners?: CornerStyle;
+  /** Cursor pack at save time; unset = the system cursors. */
+  cursor?: CursorPack;
+  /** The per-token overrides, in `ui_theme_vars`' shape. */
+  vars: Record<string, string>;
+  /** Epoch ms the preset was written, for the "saved <date>" line. */
+  saved?: number;
+}

@@ -80,8 +80,17 @@ still empties, or a killed session would never leave the list. This is the same
 rule `release` already kept the last reading for.
 **Kill vs. detach**: closing a tab **always detaches** —
 `lib/closeRemoteTab.ts`'s `closeTabWithConfirm` just `removeTab`s, killing only the
-ssh/PTY client, so the session lives on under its tmux daemon; an app-exit,
-crash, or respawn likewise **leave the session alive**. Disconnecting a remote
+ssh/PTY client, so the session lives on under its tmux daemon; a crash or a
+respawn likewise **leaves the session alive**, and so does an app exit for a
+**remote** session. A **clean quit ends every local `eldrun-*` session** —
+the window's × runs `local_tmux_kill_eldrun_sessions` before `destroy()`, and
+`RunEvent::Exit` runs the same `tmux_local::kill_eldrun_sessions` as the net for
+exits that never reach frontend code (the dev launcher's Ctrl+C: SIGTERM/SIGINT
+are routed into `app.exit()` on Unix). Only a crash leaves local sessions
+behind, and those are what the next launch reattaches. The Trash workspace's
+sessions used to be exempt so a phone could keep working after the desktop
+quit; the Mobile host now stops with the app too, so they go with the rest.
+Disconnecting a remote
 machine is deliberately different: `remote_disconnect` and
 `remote_disconnect_all_hosts` end *every* tmux session on each currently
 connected host before tearing down its pool. A session's **×** remains the way to

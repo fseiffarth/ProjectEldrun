@@ -1,7 +1,6 @@
 import React, { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { confirm as dialogConfirm, open as openDialog } from "@tauri-apps/plugin-dialog";
-import { Toggle } from "../common/Toggle";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { startDrag } from "@crabnebula/tauri-plugin-drag";
@@ -23,6 +22,7 @@ import {
 import { bindDragRelease, dragPlatform, PLATFORM } from "../../lib/dragPlatform";
 import { useSettingsStore } from "../../stores/settings";
 import { useExperimental } from "../../lib/experimental";
+import { GIT_STATE_COLOR } from "../../lib/gitColors";
 import { createDeckFile } from "../../lib/viewers/deck/create";
 import { useProjectsStore } from "../../stores/projects";
 import { useRemoteStatusStore } from "../../stores/remoteStatus";
@@ -31,8 +31,20 @@ import { confirmSyncTransfer } from "../../stores/syncConfirm";
 import { useActivityStore } from "../../stores/activity";
 import { useFileClipboardStore } from "../../stores/fileClipboard";
 import { type FileEntry, type InternalViewer, type SortKey, fileIcon, folderIcon, fmtSize, fmtModified, visibleEntries, isHiddenByEnding, internalViewerFor, disabledViewers, fileEntriesEqual, stringMapsEqual, nextSelection, STANDARD_PROJECT_FILES } from "../../lib/viewers/fileUtils";
+import {
+  dropFileTreeSnapshot,
+  fileTreeSnapshotKey,
+  readFileTreeSnapshot,
+  writeFileTreeSnapshot,
+} from "../../lib/fileViewSnapshots";
 import { type TexCapability, type TexCompileResult, getTexCapability, lastLogLine } from "../../lib/viewers/tex";
 import { basename, dirname, relativePathWithin, resolvePath } from "../../lib/paths";
+import {
+  moveDestRel,
+  movedEntryAbs,
+  resolveMoveTarget,
+  type ResolvedMoveTarget,
+} from "../../lib/fileMove";
 import { resolveLocalMirror, resolveProjectDirectory } from "../../types";
 import { DirSizeUnavailable, guardedDirSize, isHostTimeout } from "../../lib/dirSizeGuard";
 import { useFastMode } from "../../lib/fastMode";
@@ -54,14 +66,19 @@ import { useRunHostPrefStore } from "../../stores/runHostPref";
 import { readFileText } from "../embed/fileAccess";
 import { SetDefaultAppDialog } from "./SetDefaultAppDialog";
 import { SendToProjectDialog, type SendSource } from "./SendToProjectDialog";
+import { AddRemarkDialog } from "./AddRemarkDialog";
+import { useProjectRemarksStore } from "../../stores/projectRemarks";
 import { normalizeScanPath } from "./ProjectFilesSettings";
 import { FileTreeSearch } from "./FileTreeSearch";
 import { useClampToViewport } from "../../hooks/useClampToViewport";
 import { UntestedTag } from "../common/UntestedTag";
+import { RenameDialog, containingFolderLabel } from "./RenameDialog";
+import { useDialogs } from "../common/PromptDialogs";
+import { Dropdown } from "../common/Dropdown";
 import { useT, type TranslationKey } from "../../lib/i18n";
 
 // Persist whether the collapsed "gitignored" files section is expanded, so the
-// choice survives right-panel hide/show and remounts (FileTree remounts each
+// choice survives side-panel hide/show and remounts (FileTree remounts each
 // time the panel reopens). Mirrors GitHistory's localStorage view pref.
 const GITIGNORED_EXPANDED_KEY = "eldrun.fileTree.gitignoredExpanded";
 // Same idea, for the collapsed "hidden by extension" group (the project's own
@@ -101,6 +118,16 @@ function sizeTitle(shown: number, ignored: number, fallback: string): string {
   return ignored > 0 ? `${fmtSize(shown + ignored)} total — ${fmtSize(ignored)} git-ignored` : fallback;
 }
 
+/** Sort keys as the breadcrumb's dropdown labels them. Lives here now that the
+ *  control sits in the ⌂ row rather than in a row of its own above the tree. */
+const SORT_KEY_LABEL: Record<SortKey, TranslationKey> = {
+  name: "sortKey.name",
+  size: "sortKey.size",
+  type: "sortKey.type",
+  created: "sortKey.created",
+  modified: "sortKey.modified",
+};
+
 interface Props {
   projectDir: string;
   projectId: string | null;
@@ -108,6 +135,11 @@ interface Props {
   localFile?: string | null;
   sortKey?: SortKey;
   descending?: boolean;
+  /** When given, the breadcrumb (⌂) row carries the sort control — a right-
+   *  aligned key dropdown plus a direction toggle. Omitted by hosts that keep
+   *  the row minimal (the compact docked subwindow), which then just render
+   *  whatever order the props already say. */
+  onSortChange?: (sortKey: SortKey, descending: boolean) => void;
   hiddenEndings?: string[];
   hiddenPaths?: string[];
   shownPaths?: string[];
@@ -117,6 +149,18 @@ interface Props {
   scanExcluded?: string[];
   /** When given, folder rows offer "Exclude from scans" / "Include in scans". */
   onToggleScanExcluded?: (relPath: string, excluded: boolean) => void;
+  /** Collect the project root's scaffold files into their own collapsible
+   *  section (`panel_separate_scaffold` in project.json, edited in Project
+   *  Settings). Both this and the gitignored split used to be a toggle under
+   *  the tree, which put a per-project rule in a surface that is mounted many
+   *  times over at once — the side panel, every Files (Project) tab, every
+   *  docked subwindow column — so the same project showed different sections
+   *  depending on which copy you had last clicked, and nothing survived a
+   *  relaunch. Default on, which is what the local state used to seed. */
+  separateScaffold?: boolean;
+  /** The same for everything git ignores (`panel_separate_gitignored`), which
+   *  applies in every folder rather than only at the root. */
+  separateGitignored?: boolean;
   initialRelPath?: string | null;
   onRelPathChange?: (relPath: string) => void;
   /** When given, the context menu offers "Open in a new tab" — on a folder, and
@@ -143,6 +187,17 @@ interface Props {
    *  tree's project becomes current again everything restarts, with one quiet
    *  catch-up re-list covering whatever changed while it was hidden. */
   active?: boolean;
+  /** Fold state of the in-tree search box, when the HOST owns that chrome. The
+   *  side panel puts the 🔍 / ↻ pair in its Files/Git/Apps toolbar row, so the
+   *  tree renders neither button itself and, closed, renders no search row at
+   *  all — the whole point of the move was to stop spending a row on chrome.
+   *  Omit both and the tree keeps its own toggle beside the box (standalone
+   *  use, e.g. a bare `<FileTree>` in a test). */
+  searchOpen?: boolean;
+  onSearchOpenChange?: (open: boolean) => void;
+  /** Bumped by the host's ↻ to force a re-list. A counter, not a boolean: two
+   *  refreshes in a row must both land. */
+  refreshNonce?: number;
 }
 
 type GitStatusMap = Record<string, string>;
@@ -159,6 +214,10 @@ type DeleteConfirm = { entries: FileEntry[] } | null;
  *  clipboard or a system-clipboard image (screenshot); `name` is the name being
  *  chosen for the pasted result in the current folder. */
 type PastePrompt = { kind: "file" | "image"; name: string; error: string | null };
+/** The entry whose rename dialog is open (`RenameDialog` owns the typed name).
+ *  Replaces a `window.prompt`, which WebKitGTK draws as a browser alert titled
+ *  with the dev-server origin ("localhost:1420 says"). */
+type RenamePrompt = { entry: FileEntry } | null;
 /** A folder whose auto-sync toggle would pull enough from the host to be worth
  *  confirming first (`AUTO_SYNC_WARN_*`), with what it priced. */
 type AutoConfirm = { entry: FileEntry; files: number; bytes: number } | null;
@@ -170,13 +229,7 @@ type AutoConfirm = { entry: FileEntry; files: number; bytes: number } | null;
 const AUTO_SYNC_WARN_FILES = 200;
 const AUTO_SYNC_WARN_BYTES = 100 * 1024 * 1024;
 
-export const STATUS_COLOR: Record<string, string> = {
-  modified:  "#f85149", // red – tracked, unstaged working-tree change
-  untracked: "#f85149", // red – new, not yet tracked
-  staged:    "#d29922", // orange – staged, not committed
-  unpushed:  "#3fb950", // green – committed locally, not pushed
-  ignored:   "#6e7681", // dim gray – ignored by git
-};
+export const STATUS_COLOR = GIT_STATE_COLOR;
 
 const STATUS_TITLE_KEY: Record<string, TranslationKey> = {
   modified:  "fileTree.statusModified",
@@ -273,10 +326,13 @@ export function FileTree({
   localFile = null,
   sortKey = "name",
   descending = false,
+  onSortChange,
   hiddenEndings = [],
   hiddenPaths = [],
   scanExcluded,
   onToggleScanExcluded,
+  separateScaffold = true,
+  separateGitignored = true,
   shownPaths = [],
   initialRelPath = "",
   onRelPathChange,
@@ -284,13 +340,35 @@ export function FileTree({
   syncSource,
   remoteProbeDir,
   active = true,
+  searchOpen: searchOpenProp,
+  onSearchOpenChange,
+  refreshNonce,
 }: Props) {
   const t = useT();
   // Non-null inside a detached popout: replaces the main window's CenterPanel
   // drop authority (which this window can't reach) for a file dragged onto a
   // pane. See fileDropContext.
   const fileDrop = useContext(FileDropContext);
-  const [rawEntries, setRawEntries] = useState<FileEntry[]>([]);
+  // The tree is unmounted, not hidden, whenever the side panel closes
+  // (`mountTree={open}`) or the panels are toggled away — so a reveal used to
+  // start from an empty tree and fill itself in over a listing, a git-status
+  // round trip and one recursive walk per folder. `mountSeed` is the last state
+  // this (project, root, folder) was left in: every piece of it below is seeded
+  // from it so the FIRST frame after a reveal is already populated, and the
+  // mount effect then upgrades it with a quiet, diffing refresh. Read once (a
+  // lazy initializer), so a re-render never re-seeds over live state.
+  const [mountSeed] = useState(() =>
+    readFileTreeSnapshot(fileTreeSnapshotKey(projectId, projectDir, initialRelPath ?? "")),
+  );
+  // Consumed by the mount effect: the seeded first pass refreshes instead of
+  // re-listing from scratch. A later run of that effect (a remote pool coming
+  // up) is a real load, so the flag only ever fires once.
+  const seedPending = useRef(!!mountSeed);
+  const snapshotKeyFor = useCallback(
+    (rel: string) => fileTreeSnapshotKey(projectId, projectDir, rel),
+    [projectId, projectDir],
+  );
+  const [rawEntries, setRawEntries] = useState<FileEntry[]>(() => mountSeed?.entries ?? []);
   // Recursive folder sizes (bytes), keyed by absolute folder path. Filled in
   // lazily by a per-folder backend call so a big subtree never blocks the
   // listing — the tree renders immediately and each folder's size appears
@@ -308,7 +386,7 @@ export function FileTree({
   // off re-runs the effects and prices the folders on screen — the dedupe set
   // was never filled while it was on, so nothing is skipped.
   const fastMode = useFastMode();
-  const [dirSizes, setDirSizes] = useState<Record<string, number>>({});
+  const [dirSizes, setDirSizes] = useState<Record<string, number>>(() => mountSeed?.dirSizes ?? {});
   const requestedSizes = useRef<Set<string>>(new Set());
   // Which listing the in-flight size calls belong to. Bumped by `load()`, the
   // only thing that invalidates the cache — so a result is stale ONLY if the
@@ -333,9 +411,14 @@ export function FileTree({
     (rel: string) => scanExcludedSet.has(normalizeScanPath(rel)),
     [scanExcludedSet],
   );
-  // The rel path of the most recent `load` call — lets the async remote-boundary
-  // probe bail if navigation has moved on since the listing it was probing failed.
-  const loadTargetRef = useRef<string>("");
+  // The rel path of the most recent `load` call — the folder the tree is
+  // committed to showing. Every async listing/status result checks itself
+  // against it before touching state, so a `refresh` of folder A that lands
+  // after the user has moved on to B can't paint A's rows or A's git letters
+  // under B's breadcrumb (the seeded `load` puts B on screen at once, so a slow
+  // A result used to visibly flash in over it). Seeded from the saved folder
+  // for the same reason `relPath` is: the seeded mount's refresh must pass.
+  const loadTargetRef = useRef<string>(initialRelPath ?? "");
   // Bytes of a folder's recursive size that are git-ignored, for folders that
   // are NOT themselves ignored (they sit in the regular/standard section) but
   // contain ignored content — e.g. a source folder with a build output dir
@@ -343,7 +426,9 @@ export function FileTree({
   // `dirSizes` for these folders (one walk, both numbers), so the split can
   // never exceed the total it was measured against. A folder with no ignored
   // content is simply absent from this map (nothing to annotate).
-  const [dirIgnoredBytes, setDirIgnoredBytes] = useState<Record<string, number>>({});
+  const [dirIgnoredBytes, setDirIgnoredBytes] = useState<Record<string, number>>(
+    () => mountSeed?.dirIgnoredBytes ?? {},
+  );
   // Which files can be embedded as a frameless in-tab app (Group K #40). Keyed
   // by extension (default-app resolution is per-mime/extension), so we only
   // query the backend once per distinct extension. Only embeddable files get the
@@ -372,9 +457,8 @@ export function FileTree({
   // whole path exists (the normal case) or the source is local. The breadcrumb
   // tints the on-host prefix and strikes through the local-only tail from it.
   const [missingCrumbDepth, setMissingCrumbDepth] = useState<number | null>(null);
-  const [gitStatuses, setGitStatuses] = useState<GitStatusMap>({});
+  const [gitStatuses, setGitStatuses] = useState<GitStatusMap>(() => mountSeed?.gitStatuses ?? {});
   const [isDragOver, setIsDragOver] = useState(false);
-  const [separateScaffold, setSeparateScaffold] = useState(true);
   const [gitignoredExpanded, setGitignoredExpanded] = useState<boolean>(() => {
     try {
       return localStorage.getItem(GITIGNORED_EXPANDED_KEY) === "1";
@@ -401,7 +485,7 @@ export function FileTree({
   const [tooltip, setTooltip] = useState<{ rect: DOMRect; entry: FileEntry } | null>(null);
   const tooltipRef = useRef<HTMLDivElement | null>(null);
   // Vertical-only correction: a row near the bottom of a short docked viewer
-  // (the right panel, a subwindow's file sidebar) still measures its anchor
+  // (the side panel, a subwindow's file sidebar) still measures its anchor
   // against the WHOLE app window, so an unclamped `top: tooltip.rect.top`
   // could push the tooltip's body past the window's bottom edge. Horizontal
   // placement already picks a side with room (see the style below), so only
@@ -436,6 +520,28 @@ export function FileTree({
   const [pathEdit, setPathEdit] = useState<string | null>(null);
   const pathEditRef = useRef<HTMLInputElement | null>(null);
   const [search, setSearch] = useState("");
+  // Search folds away and starts CLOSED: the box + mode pills cost two rows of
+  // tree on every surface that renders FileTree (the side panel is the tight
+  // one), and most sessions browse rather than search. Opening it is one click,
+  // and closing clears the query so the tree comes straight back.
+  const [searchOpenSelf, setSearchOpenSelf] = useState(false);
+  // Who owns the fold: the side panel passes both halves and draws the toggle
+  // in its own toolbar; a bare tree keeps the toggle (and the refresh button)
+  // in the search row.
+  const hostOwnsSearchChrome = onSearchOpenChange !== undefined;
+  const searchOpen = hostOwnsSearchChrome ? !!searchOpenProp : searchOpenSelf;
+  function setSearchOpen(open: boolean) {
+    if (onSearchOpenChange) onSearchOpenChange(open);
+    else setSearchOpenSelf(open);
+  }
+  // Closing must not leave a live query behind: `searching` already ignores it,
+  // but the next open would silently repopulate the results view from a query
+  // nobody typed now. This is an effect on the RESULT rather than a line in the
+  // setter above, because the fold can also be closed from outside the tree
+  // entirely — the side panel's toolbar owns that button and never calls in.
+  useEffect(() => {
+    if (!searchOpen) setSearch("");
+  }, [searchOpen]);
   const [searchMode, setSearchMode] = useState<"name" | "content">("name");
   const [searchCase, setSearchCase] = useState(false);
   // Search scope: false (default) confines the search to the browsed folder
@@ -445,12 +551,16 @@ export function FileTree({
   // A pending "reveal in tree" (jump-to-path) request from a search result: the
   // parent folder to navigate to and the entry name to select once it lists.
   const [pendingReveal, setPendingReveal] = useState<{ parent: string; name: string } | null>(null);
-  // Drag-to-move: the rel path of the folder / breadcrumb under the cursor while
-  // a file is being dragged (null = none). The ref carries the live value into
-  // the drag's window-bound release handler (which captured an earlier closure);
-  // the state drives the drop-target highlight and only changes when the hovered
-  // target changes (not every pointermove), so the tree re-renders rarely.
-  const moveTargetRef = useRef<string | null>(null);
+  // Drag-to-move: the resolved drop target under the cursor while a file is
+  // being dragged (null = none). The ref carries the live value into the drag's
+  // window-bound release handler (which captured an earlier closure); the state
+  // drives THIS tree's drop-target highlight and only changes when the hovered
+  // target changes (not every pointermove), so the tree re-renders rarely. A
+  // target in ANOTHER tree (a box member root, a Files tab of a different
+  // project) can't be highlighted through this tree's state — its element is
+  // classed imperatively instead (`moveTargetElRef`).
+  const moveTargetRef = useRef<ResolvedMoveTarget | null>(null);
+  const moveTargetElRef = useRef<HTMLElement | null>(null);
   const [moveTargetRel, setMoveTargetRel] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<EntryContextMenu>(null);
   const contextMenuRef = useRef<HTMLDivElement | null>(null);
@@ -479,8 +589,15 @@ export function FileTree({
   const [autoConfirm, setAutoConfirm] = useState<AutoConfirm>(null);
   const [defaultAppFor, setDefaultAppFor] = useState<FileEntry | null>(null);
   const [sendTo, setSendTo] = useState<SendSource | null>(null);
+  const [remarkFor, setRemarkFor] = useState<FileEntry | null>(null);
+  const remarksEnabled = useExperimental("project_remarks");
+  const remarkCounts = useProjectRemarksStore((s) => projectId ? s.byProject[projectId]?.countsByFile : undefined);
   const [pastePrompt, setPastePrompt] = useState<PastePrompt | null>(null);
   const [pasteBusy, setPasteBusy] = useState(false);
+  const [renamePrompt, setRenamePrompt] = useState<RenamePrompt>(null);
+  // The panel's other questions — New File/Folder/Presentation — in the same
+  // chrome the rename above wears, rather than in the browser's native boxes.
+  const { promptText, dialogs } = useDialogs();
   // SSH-sync Phase 2: project-relative paths whose push was blocked by a stale
   // host base, awaiting the user's keep-local / take-host / skip choice. The
   // first is shown in the conflict modal; resolving advances the queue.
@@ -512,7 +629,7 @@ export function FileTree({
   // Same shared, persisted map the open-editor's Run/Debug toolbar reads/writes
   // (`FileViewerPane.tsx`'s `pyArgs`/`setPyArgs`) — keyed by absolute path in
   // global settings, not local component state, so it survives this tree
-  // unmounting (right-panel hide/close) and an Eldrun restart.
+  // unmounting (side-panel hide/close) and an Eldrun restart.
   const pyArgsByPath = useSettingsStore((s) => s.settings?.python_run_args ?? EMPTY_PY_ARGS);
   const setPyArgs = useCallback((path: string, v: string) => {
     void useSettingsStore.getState().setPythonRunArgs(path, v);
@@ -704,6 +821,19 @@ export function FileTree({
     if (projectId) void refreshSyncStatus(projectId);
   }
 
+  // The host's ↻ (the side panel's toolbar owns that button now) reaches the
+  // tree as a bumped counter. The first render carries the host's starting
+  // value, which is not a refresh request — only a CHANGE is, so the last-seen
+  // value is seeded from the prop rather than from 0/undefined.
+  const lastRefreshNonce = useRef(refreshNonce);
+  useEffect(() => {
+    if (refreshNonce === lastRefreshNonce.current) return;
+    lastRefreshNonce.current = refreshNonce;
+    refreshListing();
+    // `refreshListing` is re-created every render; the nonce is the trigger.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refreshNonce]);
+
   // Per-entry git status resolving the "whole directory is ignored" sentinel the
   // backend emits under the reserved key "." (git's porcelain never lists an empty
   // ignored subdir, so those children arrive absent from `gitStatuses`; without
@@ -743,10 +873,23 @@ export function FileTree({
         (dirIgnoredBytes[e.path] ?? 0) > 0 &&
         dirSizes[e.path] !== undefined &&
         (dirIgnoredBytes[e.path] ?? 0) >= dirSizes[e.path]);
-    const regular = nonStandard.filter((e) => !isIgnored(e));
-    const gitignored = nonStandard.filter(isIgnored);
+    // With the gitignored split off, ignored entries stay in the regular list
+    // rather than moving to a section that is not rendered — the point of the
+    // switch is to see them in place, not to hide them.
+    const regular = separateGitignored ? nonStandard.filter((e) => !isIgnored(e)) : nonStandard;
+    const gitignored = separateGitignored ? nonStandard.filter(isIgnored) : [];
     return { regular, standard, gitignored, hiddenExt };
-  }, [entries, relPath, separateScaffold, displayStatuses, dirSizes, dirIgnoredBytes, hiddenEndings, shownPaths]);
+  }, [
+    entries,
+    relPath,
+    separateScaffold,
+    separateGitignored,
+    displayStatuses,
+    dirSizes,
+    dirIgnoredBytes,
+    hiddenEndings,
+    shownPaths,
+  ]);
 
   // How many rows the tree will actually render, raised a page at a time by the
   // "show more" footer. Rows are NOT virtualized, and each one is ~16 elements
@@ -1131,9 +1274,50 @@ export function FileTree({
     // git_file_statuses commands would block the main thread on the dead SSH pool
     // and freeze the app. Re-runs once the pool connects (remoteBlocked flips).
     if (remoteBlocked) return;
-    load(initialRelPath ?? "");
+    const rel = initialRelPath ?? "";
+    // Seeded mount (the panel was revealed again): the folder is already on
+    // screen, so upgrade it in place with the quiet, diffing refresh instead of
+    // re-listing from scratch — no loading flash, and nothing repaints where
+    // nothing changed. If the folder no longer lists, fall through to the full
+    // load so the error is shown rather than the stale rows.
+    if (seedPending.current) {
+      seedPending.current = false;
+      // One frame later, not inside this commit: `list_dir`/`git_file_statuses`
+      // are SYNCHRONOUS Tauri commands on the main thread (over SFTP for a
+      // remote project), so dispatching them here would stall the very frame
+      // the seed exists to make instant. The tree is already on screen; the
+      // upgrade can wait for it to paint.
+      let cancelled = false;
+      const frame = requestAnimationFrame(() => {
+        void refresh(rel).then((ok) => {
+          if (!ok && !cancelled) void load(rel);
+        });
+      });
+      return () => {
+        cancelled = true;
+        cancelAnimationFrame(frame);
+      };
+    }
+    load(rel);
+    return undefined;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectDir, remoteBlocked]);
+
+  // Keep the folder's snapshot current so the NEXT mount (a panel reveal, a
+  // `panelsHidden` toggle) paints it immediately. Written from the live state
+  // rather than at the fetch sites so every source that moves the tree — the
+  // listing, the fs-watch refresh, each folder size as it resolves — is
+  // captured by construction. Skipped while an error is up: a failed listing is
+  // not a state worth restoring, and `load` has already dropped that key.
+  useEffect(() => {
+    if (!projectDir || error) return;
+    writeFileTreeSnapshot(snapshotKeyFor(relPath), {
+      entries: rawEntries,
+      gitStatuses,
+      dirSizes,
+      dirIgnoredBytes,
+    });
+  }, [projectDir, snapshotKeyFor, relPath, rawEntries, gitStatuses, dirSizes, dirIgnoredBytes, error]);
 
   // SSH-sync Phase 1: keep the sync overlay fresh — re-stat selected files
   // whenever the tree (re)lists. Runs for both the remote-source tree and the
@@ -1273,7 +1457,6 @@ export function FileTree({
     // pool is down — they would freeze the window. See `remoteBlocked`.
     if (remoteBlocked) return;
     loadTargetRef.current = rel;
-    setLoading(true);
     setError(null);
     setMissingCrumbDepth(null);
     // Navigating into a different folder abandons the current selection (its
@@ -1287,31 +1470,67 @@ export function FileTree({
     // NOT do this — folder sizes stay put through watch churn.
     sizeGeneration.current += 1;
     requestedSizes.current.clear();
-    setDirSizes({});
-    setDirIgnoredBytes({});
+    // The folder's last-known listing, if we've been here before: paint it (and
+    // its sizes) at once so navigation lands on a populated tree instead of a
+    // spinner, then let the fetch below replace it. `relPath` moves WITH the
+    // seeded entries, never before them — a breadcrumb pointing at one folder
+    // over another folder's rows would resolve a clicked row's path against the
+    // wrong root. Everything is re-requested regardless (the dedupe set was just
+    // cleared), so a seed only ever decides what is on screen in the meantime.
+    const seed = readFileTreeSnapshot(snapshotKeyFor(rel));
+    let announced = false;
+    const announceRel = () => {
+      if (announced) return;
+      announced = true;
+      setRelPath(rel);
+      onRelPathChange?.(rel);
+    };
+    if (seed) {
+      announceRel();
+      setRawEntries(seed.entries);
+      setGitStatuses(seed.gitStatuses);
+      setDirSizes(seed.dirSizes);
+      setDirIgnoredBytes(seed.dirIgnoredBytes);
+    } else {
+      setLoading(true);
+      setDirSizes({});
+      setDirIgnoredBytes({});
+    }
     try {
       const result = await invoke<FileEntry[]>("list_dir", {
         projectDir,
         relPath: rel,
       });
-      setRawEntries(result);
-      setRelPath(rel);
-      onRelPathChange?.(rel);
-      const statuses = await invoke<GitStatusMap>("git_file_statuses", {
+      // Superseded by a later navigation: that load owns the screen now.
+      if (loadTargetRef.current !== rel) return;
+      setRawEntries((prev) => (fileEntriesEqual(prev, result) ? prev : result));
+      announceRel();
+      const statuses = await invoke<GitStatusMap | null>("git_file_statuses", {
         projectDir,
         relPath: rel,
-      }).catch(() => ({}));
-      setGitStatuses(statuses);
+      }).catch(() => null);
+      if (loadTargetRef.current !== rel) return;
+      // A failed status probe is a transient (a `.git/index.lock` held by
+      // another git, a spawn hiccup) and not "nothing is ignored/modified":
+      // keep what is on screen (the seed's letters) rather than wiping it to a
+      // map that moves every ignored folder into the regular list for one
+      // frame. Unseeded, there is nothing to keep — the previous folder's
+      // letters belong to the previous folder.
+      if (statuses) setGitStatuses((prev) => (stringMapsEqual(prev, statuses) ? prev : statuses));
+      else if (!seed) setGitStatuses({});
     } catch (e) {
+      if (loadTargetRef.current !== rel) return;
       // The listing failed — most often because "Remote" was selected in a
       // folder that only exists in the local mirror. Drop the previous listing
       // (which would otherwise leave the LOCAL files on screen under a Remote
       // header, falsely implying they're on the host) and show a readable
       // reason. Keep `relPath` so the breadcrumb / Local switch still work.
+      // Forget the snapshot too: a folder that no longer lists must not come
+      // back seeded (and silently listing-looking) on the next reveal.
+      dropFileTreeSnapshot(snapshotKeyFor(rel));
       setRawEntries([]);
       setGitStatuses({});
-      setRelPath(rel);
-      onRelPathChange?.(rel);
+      announceRel();
       setError(describeListError(t, e, remoteListing));
       // Remote source: find where the path stops existing on the host so the
       // breadcrumb can show the boundary (on-host prefix vs local-only tail).
@@ -1319,7 +1538,8 @@ export function FileTree({
       // handful of cheap SFTP stats over the already-live pool.
       if (remoteListing) void probeRemoteBoundary(rel);
     } finally {
-      setLoading(false);
+      // A superseded load leaves the spinner to the load that replaced it.
+      if (loadTargetRef.current === rel) setLoading(false);
     }
   }
 
@@ -1377,20 +1597,31 @@ export function FileTree({
   // loading flash, and only swap state in when the result actually changed.
   // Replacing rawEntries/gitStatuses on every event (a single write emits a
   // burst) is what caused the tree to flicker, so we diff before committing.
-  async function refresh(rel: string) {
-    if (remoteBlocked) return;
+  // Returns whether the folder listed. The fs-watch caller ignores it (a failure
+  // there is transient churn); the seeded mount uses it to fall back to a full
+  // `load`, which is what surfaces the error for a folder that really is gone.
+  async function refresh(rel: string): Promise<boolean> {
+    if (remoteBlocked) return true;
     let result: FileEntry[];
     try {
       result = await invoke<FileEntry[]>("list_dir", { projectDir, relPath: rel });
     } catch {
-      return; // transient (e.g. dir mid-rename) — keep the last good listing
+      return false; // transient (e.g. dir mid-rename) — keep the last good listing
     }
+    // The tree has navigated away while this was in flight: these rows belong
+    // to a folder that is no longer on screen. Reported as listed — the caller's
+    // only fallback is a full load of `rel`, which would be just as stale.
+    if (loadTargetRef.current !== rel) return true;
     setRawEntries((prev) => (fileEntriesEqual(prev, result) ? prev : result));
-    const statuses = await invoke<GitStatusMap>("git_file_statuses", {
+    const statuses = await invoke<GitStatusMap | null>("git_file_statuses", {
       projectDir,
       relPath: rel,
-    }).catch(() => ({}));
-    setGitStatuses((prev) => (stringMapsEqual(prev, statuses) ? prev : statuses));
+    }).catch(() => null);
+    if (loadTargetRef.current !== rel) return true;
+    // Keep the last good letters over a failed probe (see `load`): a quiet
+    // refresh must never move rows between sections because git was busy.
+    if (statuses) setGitStatuses((prev) => (stringMapsEqual(prev, statuses) ? prev : statuses));
+    return true;
   }
 
   // Jump-to-path: reveal a project-relative path in the tree. A folder navigates
@@ -1463,7 +1694,7 @@ export function FileTree({
       entry,
       projectDir,
       projectId,
-      origin: "right_file_tree",
+      origin: "side_file_tree",
       external,
       disabled: disabledViewerSet,
       // In a detached popout, stream the viewer tab into that window rather than
@@ -1859,12 +2090,27 @@ export function FileTree({
       useDragStore.getState().move(ev.clientX, ev.clientY);
       // Drag-to-move: highlight the folder row / breadcrumb / up button under the
       // cursor as the destination. The drag ghost is pointer-events:none, so
-      // elementFromPoint reaches the rows beneath it. A target whose rel matches
-      // the file's current folder is a no-op and is ignored.
+      // elementFromPoint reaches the rows beneath it — including rows of OTHER
+      // mounted trees (a box member root, a Files tab of another project), so
+      // every target carries its own tree's identity and `resolveMoveTarget`
+      // decides what a drop there means: a same-tree move (dropping onto the
+      // file's current folder is a no-op), a cross-project move (local↔local
+      // only), or nothing.
       const overEl = document.elementFromPoint(ev.clientX, ev.clientY) as HTMLElement | null;
       const moveEl = overEl?.closest<HTMLElement>("[data-move-rel]") ?? null;
-      const moveRel = moveEl?.getAttribute("data-move-rel") ?? null;
-      setMoveTarget(moveRel != null && moveRel !== relPath ? moveRel : null);
+      const target = moveEl
+        ? {
+            rel: moveEl.getAttribute("data-move-rel") ?? "",
+            root: moveEl.getAttribute("data-move-root") ?? projectDir,
+            remote: moveEl.getAttribute("data-move-remote") === "1",
+          }
+        : null;
+      const resolved = resolveMoveTarget(target, {
+        root: projectDir,
+        folderRel: relPath,
+        remote: remoteListing,
+      });
+      setMoveTarget(resolved, resolved?.crossRoot ? moveEl : null);
       // Inside a detached popout, CenterPanel's window-wide drop authority isn't
       // there to resolve the pane under the cursor — do it here so the popout's
       // split/merge preview lights up and the release has a target to commit to.
@@ -1906,9 +2152,11 @@ export function FileTree({
       // afterwards always saw null and silently dropped every drag-to-move (the
       // file just stayed put). See git dfcb6e0, which introduced the read below
       // the cleanup() call.
-      const moveRel = moveTargetRef.current;
+      const moveTarget = moveTargetRef.current;
       // TEMPORARY drag QA
-      dragDbg(`commit shift=${shiftKey} dragging=${dragging} moveRel=${moveRel ?? "null"} canDrop=${canDrop}`);
+      dragDbg(
+        `commit shift=${shiftKey} dragging=${dragging} moveRel=${moveTarget?.rel ?? "null"} cross=${moveTarget?.crossRoot ?? false} canDrop=${canDrop}`,
+      );
       cleanup();
       if (!dragging) {
         // Never moved → a plain click does NOT open. Opening a file is a
@@ -1919,11 +2167,14 @@ export function FileTree({
       // Drag-to-move takes precedence: released over a folder / breadcrumb in the
       // tree → relocate the file(s) there. This is the one gesture available to
       // ALL files (even those with no tab/viewer target). When a multi-selection
-      // is being dragged, every selected file moves.
-      if (moveRel != null) {
+      // is being dragged, every selected file moves. A cross-root target
+      // (another project's tree in a box view, or another project's Files tab)
+      // moves INTO that project — `move_path` confines each side to its own
+      // root, so the two-root call is the supported shape.
+      if (moveTarget != null) {
         useDragStore.getState().end();
         for (const de of dragEntries) {
-          await moveEntryToFolder(relForEntry(de), de.name, moveRel, de.path);
+          await moveEntryToFolder(relForEntry(de), de.name, moveTarget, de.path);
         }
         return;
       }
@@ -2046,33 +2297,59 @@ export function FileTree({
     return relPath ? `${relPath}/${entry.name}` : entry.name;
   }
 
-  // Set the current drag-to-move drop target (a folder rel path, "" = project
-  // root, null = none). Keeps the ref (read by the release handler) and the
-  // highlight state in sync; the setter is a no-op when unchanged so dragging
-  // over the same folder doesn't churn renders.
-  function setMoveTarget(rel: string | null) {
-    moveTargetRef.current = rel;
-    setMoveTargetRel((prev) => (prev === rel ? prev : rel));
+  // Set the current drag-to-move drop target (null = none). Keeps the ref (read
+  // by the release handler) and the highlight in sync; the setter is a no-op
+  // when unchanged so dragging over the same folder doesn't churn renders.
+  // A same-tree target highlights through this tree's own render state; a
+  // cross-tree target's element (`crossEl`) belongs to another tree whose state
+  // this drag can't reach, so its `move-drop-target` class is applied
+  // imperatively — re-applied every pointermove, which also survives that
+  // tree re-rendering mid-drag and recomputing its className without it.
+  function setMoveTarget(target: ResolvedMoveTarget | null, crossEl: HTMLElement | null = null) {
+    moveTargetRef.current = target;
+    if (moveTargetElRef.current && moveTargetElRef.current !== crossEl) {
+      moveTargetElRef.current.classList.remove("move-drop-target");
+    }
+    moveTargetElRef.current = crossEl;
+    crossEl?.classList.add("move-drop-target");
+    const ownRel = target && !crossEl ? target.rel : null;
+    setMoveTargetRel((prev) => (prev === ownRel ? prev : ownRel));
   }
 
-  // Relocate a dragged file into a folder shown in the tree (drag-to-move). The
-  // backend `move_path` works the same for local and remote (SFTP) projects. A
-  // name collision in the destination aborts with an error rather than silently
-  // clobbering — moving is meant to be safe.
-  async function moveEntryToFolder(sourceRel: string, name: string, destFolderRel: string, sourceAbs: string) {
-    const destRel = destFolderRel ? `${destFolderRel}/${name}` : name;
+  // Identity stamped on every `data-move-rel` drop target, so a drag that
+  // started in a DIFFERENT tree (box member roots, another project's Files tab)
+  // knows which root — and which side, local or remote — a drop here lands in.
+  // Every `data-move-rel` site must spread this; `FileMove.test.ts` enforces it.
+  const moveTargetAttrs = {
+    "data-move-root": projectDir,
+    "data-move-remote": remoteListing ? "1" : undefined,
+  };
+
+  // Relocate a dragged file into a folder shown in a tree (drag-to-move). The
+  // target may belong to THIS tree or — cross-root — to another project's tree
+  // (`resolveMoveTarget` already vetted it: local↔local only). `move_path`
+  // confines each side to its own passed root, so the destination root goes
+  // through verbatim. A name collision in the destination aborts with an error
+  // rather than silently clobbering — moving is meant to be safe.
+  async function moveEntryToFolder(
+    sourceRel: string,
+    name: string,
+    target: ResolvedMoveTarget,
+    sourceAbs: string,
+  ) {
+    const destRel = moveDestRel(target.rel, name);
     setLoading(true);
     setError(null);
     try {
       const exists = await invoke<boolean>("project_path_exists", {
-        projectDir,
+        projectDir: target.root,
         relPath: destRel,
       }).catch(() => false);
       if (exists) {
         setError(
           t("fileTree.alreadyExistsIn", {
             name,
-            folder: destFolderRel || t("fileTree.projectRootFolder"),
+            folder: target.rel || t("fileTree.projectRootFolder"),
           }),
         );
         setLoading(false);
@@ -2081,14 +2358,20 @@ export function FileTree({
       await invoke("move_path", {
         srcProjectDir: projectDir,
         srcRel: sourceRel,
-        destProjectDir: projectDir,
+        destProjectDir: target.root,
         destRel,
       });
       // Retarget any open viewer tab of the moved file/folder (main + detached).
-      // `sourceAbs` ends with `sourceRel`, so swapping that tail for `destRel`
-      // yields the new absolute path without rebuilding it from `projectDir`.
-      const newAbs = `${sourceAbs.slice(0, sourceAbs.length - sourceRel.length)}${destRel}`;
+      const newAbs = movedEntryAbs({
+        sourceAbs,
+        sourceRel,
+        destRel,
+        destRoot: target.root,
+        crossRoot: target.crossRoot,
+      });
       retargetTabsForRenamedPath(sourceAbs, newAbs);
+      // This tree re-lists (the entry left it); a cross-root destination tree
+      // catches up through its own fs-watch.
       await load(relPath);
     } catch (err) {
       setError(String(err));
@@ -2436,29 +2719,32 @@ export function FileTree({
     if (targets.length > 0) setDeleteConfirm({ entries: targets });
   }
 
-  async function renameEntry(entry: FileEntry) {
+  function renameEntry(entry: FileEntry) {
     setContextMenu(null);
-    const nextName = window.prompt(t("fileTree.renameToPrompt"), entry.name);
-    if (!nextName?.trim() || nextName.trim() === entry.name) return;
+    setRenamePrompt({ entry });
+  }
+
+  /** The dialog's action. Throws on failure so the dialog keeps the typed name
+   *  and shows the reason; the tab retarget and the reload only run on success. */
+  async function confirmRename(entry: FileEntry, nextName: string) {
     setLoading(true);
     setError(null);
-    try {
-      await invoke("rename_path", {
-        projectDir,
-        oldRel: relForEntry(entry),
-        newName: nextName.trim(),
-      });
-      // Retarget any open viewer tab of this file (main + detached) to the new
-      // path. Derive the new absolute path by swapping the basename on the entry's
-      // own absolute path (== embedPath), so it holds for local and remote alike.
-      const oldAbs = entry.path;
-      const newAbs = `${oldAbs.slice(0, oldAbs.lastIndexOf("/") + 1)}${nextName.trim()}`;
-      retargetTabsForRenamedPath(oldAbs, newAbs);
-      await load(relPath);
-    } catch (err) {
-      setError(String(err));
+    await invoke("rename_path", {
+      projectDir,
+      oldRel: relForEntry(entry),
+      newName: nextName,
+    }).catch((err) => {
       setLoading(false);
-    }
+      throw err;
+    });
+    // Retarget any open viewer tab of this file (main + detached) to the new
+    // path. Derive the new absolute path by swapping the basename on the entry's
+    // own absolute path (== embedPath), so it holds for local and remote alike.
+    const oldAbs = entry.path;
+    const newAbs = `${oldAbs.slice(0, oldAbs.lastIndexOf("/") + 1)}${nextName}`;
+    retargetTabsForRenamedPath(oldAbs, newAbs);
+    setRenamePrompt(null);
+    await load(relPath);
   }
 
   /**
@@ -2475,55 +2761,87 @@ export function FileTree({
    */
   async function createDeck() {
     setContextMenu(null);
-    const name = window.prompt(t("fileTree.newPresentationPrompt"), "talk");
-    const trimmed = name?.trim();
-    if (!trimmed) return;
-    setLoading(true);
-    setError(null);
-    try {
-      const { fileName, abs } = await createDeckFile({
-        projectDir,
-        projectId,
-        relDir: relPath,
-        name: trimmed,
-      });
-      await load(relPath);
-      openEntry(
-        {
-          name: fileName,
-          path: abs,
-          is_dir: false,
-          size: 0,
-          extension: "json",
-          mime: "application/json",
-        },
-        false,
-      );
-    } catch (err) {
-      setError(String(err));
-      setLoading(false);
-    }
+    // The write runs from inside the dialog, so a refused name (a collision, a
+    // bad character) keeps the typed one on screen instead of discarding it.
+    await promptText(
+      {
+        title: t("fileTree.newPresentation"),
+        body: newEntryBody(),
+        label: t("fileTree.newPresentationPrompt"),
+        initial: "talk",
+        confirmLabel: t("common.create"),
+      },
+      async (trimmed) => {
+        setLoading(true);
+        setError(null);
+        try {
+          const { fileName, abs } = await createDeckFile({
+            projectDir,
+            projectId,
+            relDir: relPath,
+            name: trimmed,
+          });
+          await load(relPath);
+          openEntry(
+            {
+              name: fileName,
+              path: abs,
+              is_dir: false,
+              size: 0,
+              extension: "json",
+              mime: "application/json",
+            },
+            false,
+          );
+        } catch (err) {
+          setLoading(false);
+          throw err;
+        }
+      },
+    );
+  }
+
+  /** "Creating in <folder>" — the same orientation the rename dialog gives, and
+   *  the answer to the question a bare name field cannot: *where*. The tree's
+   *  browsed folder, not the clicked entry's. */
+  function newEntryBody() {
+    const folder = relPath
+      ? relPath.slice(relPath.lastIndexOf("/") + 1)
+      : t("fileTree.projectRootFolder");
+    return (
+      <>
+        {t("fileTree.newEntryIn")} <strong>{folder}</strong>
+      </>
+    );
   }
 
   async function createEntry(kind: "file" | "dir") {
     setContextMenu(null);
-    const label = t(kind === "file" ? "fileTree.newFileNamePrompt" : "fileTree.newFolderNamePrompt");
-    const name = window.prompt(label, "");
-    const trimmed = name?.trim();
-    if (!trimmed) return;
-    const rel = relPath ? `${relPath}/${trimmed}` : trimmed;
-    setLoading(true);
-    setError(null);
-    try {
-      await invoke(kind === "file" ? "create_file" : "create_dir", {
-        projectDir,
-        relPath: rel,
-      });
-      await load(relPath);
-    } catch (err) {
-      setError(String(err));
-      setLoading(false);
-    }
+    await promptText(
+      {
+        title: t(kind === "file" ? "fileBrowser.newFile" : "fileBrowser.newFolder"),
+        body: newEntryBody(),
+        label: t(
+          kind === "file" ? "fileTree.newFileNamePrompt" : "fileTree.newFolderNamePrompt",
+        ),
+        confirmLabel: t("common.create"),
+      },
+      async (trimmed) => {
+        const rel = relPath ? `${relPath}/${trimmed}` : trimmed;
+        setLoading(true);
+        setError(null);
+        try {
+          await invoke(kind === "file" ? "create_file" : "create_dir", {
+            projectDir,
+            relPath: rel,
+          });
+          await load(relPath);
+        } catch (err) {
+          setLoading(false);
+          throw err;
+        }
+      },
+    );
   }
 
   function copyEntries(targets: FileEntry[], op: "copy" | "cut") {
@@ -2709,7 +3027,7 @@ export function FileTree({
     if (runInBackground && !remoteForegroundOnly) {
       // Detached spawn: no tab, no captured output. The activity store tracks
       // the run (and the app-lifetime `script-finished` listener clears it) so
-      // the spinner survives right-panel hide/show — see TODO group R #34.
+      // the spinner survives side-panel hide/show — see TODO group R #34.
       runScript(entry.path, projectDir, projectId);
       return;
     }
@@ -2909,7 +3227,7 @@ export function FileTree({
   // Whether the search results replace the browsed listing. The search box is
   // only offered on a local-source tree (its backends walk the local path).
   const canSearch = !remoteListing;
-  const searching = canSearch && search.trim().length > 0;
+  const searching = canSearch && searchOpen && search.trim().length > 0;
   // Folder the search is confined to: the browsed folder by default, the whole
   // project when "root" is chosen (or when already at the root).
   const searchScope = searchRoot ? "" : relPath;
@@ -3030,6 +3348,8 @@ export function FileTree({
     );
   }
 
+  const folderSyncSlot = renderFolderSyncSlot();
+
   return (
     <div
       ref={treeRootRef}
@@ -3047,157 +3367,202 @@ export function FileTree({
           row lives above the scroll container and is already fixed). They share
           ONE sticky wrapper so they stack instead of each pinning to top:0 and
           colliding — which is what hid the path line behind the search box.
-          Shared by the right panel and the Files (Project) tab (both render
+          Shared by the side panel and the Files (Project) tab (both render
           FileTree), so both get the fixed path line. */}
       <div className="file-tree-head">
       {remoteListing && (
         <div className="file-tree-remote-bar" title={t("fileTree.remoteBarTitle")}>
-          <button
-            className="file-tree-up file-tree-refresh"
-            onClick={refreshListing}
-            disabled={loading}
-            title={t("fileTree.refreshSftpTitle")}
-            aria-label={t("common.refresh")}
-          >
-            ↻
-          </button>
           <span className="file-tree-remote-label">{t("fileSourceSwitch.remote")}</span>
-          {/* The browsed folder's own pull control — the root's included, which
-              is the one this bar exists to give it. */}
-          {renderFolderSyncSlot()}
-          {syncProgress && (
-            <span className="file-tree-sync-progress" title={t("fileTree.syncingRel", { rel: syncProgress.rel || "…" })}>
-              ⟳ {syncProgress.done}/{syncProgress.total}
-            </span>
-          )}
-        </div>
-      )}
-      {/* The local twin of the remote bar's ↻. A local listing has an fs watcher,
-          so it does not *need* a manual refresh to see new files — but it is the
-          only way to force the Run-gate re-check (`refreshListing`) when the
-          watcher can't help: a same-second write that lands on an identical size
-          leaves the persisted verdict's stamp untouched. Same classes and same
-          slot as the remote bar, so the button doesn't move when the Remote/Local
-          switch flips. */}
-      {!remoteListing && (
-        <div className="file-tree-local-bar">
-          <button
-            className="file-tree-up file-tree-refresh"
-            onClick={refreshListing}
-            disabled={loading}
-            title={t("fileTree.refreshTitle")}
-            aria-label={t("common.refresh")}
-          >
-            ↻
-          </button>
-          {/* The browsed folder's own push control (see `renderFolderSyncSlot`).
-              The local bar is where it matters most: a push starts from this
-              side, and at the root there was no row to start it from. */}
-          {renderFolderSyncSlot()}
-          {/* Same counter, same class, same slot as the remote bar's. It belongs
-              here MORE than there: a push is started from the Local side, so this
-              is the bar that is on screen while the longest transfer in the app
-              runs. Without it the local side showed nothing at all. */}
-          {syncProgress && (
-            <span className="file-tree-sync-progress" title={t("fileTree.syncingRel", { rel: syncProgress.rel || "…" })}>
-              ⟳ {syncProgress.done}/{syncProgress.total}
-            </span>
-          )}
-        </div>
-      )}
-      {canSearch && (
-        <div className="file-tree-search">
-          <div className="file-tree-search-row">
-            <input
-              type="text"
-              className="file-tree-search-input"
-              value={search}
-              placeholder={
-                searchMode === "name"
-                  ? searchScope
-                    ? t("fileTree.findFilesInScope", { scope: scopeLabel })
-                    : t("fileTree.findFiles")
-                  : searchScope
-                    ? t("fileTree.searchInScope", { scope: scopeLabel })
-                    : t("fileTree.searchInFiles")
-              }
-              spellCheck={false}
-              autoComplete="off"
-              onChange={(e) => setSearch(e.target.value)}
-              onKeyDown={(e) => {
-                // Keep the tree's Enter/Escape handler out of the input.
-                e.stopPropagation();
-                if (e.key === "Escape") setSearch("");
-              }}
-            />
-            {search && (
-              <button
-                type="button"
-                className="file-tree-search-clear"
-                title={t("fileTree.clearSearch")}
-                aria-label={t("fileTree.clearSearch")}
-                onClick={() => setSearch("")}
-              >
-                ×
-              </button>
+          <div className="file-tree-bar-actions">
+            {/* The browsed folder's own pull control — the root's included, which
+                is the one this bar exists to give it. */}
+            {folderSyncSlot}
+            {syncProgress && (
+              <span className="file-tree-sync-progress" title={t("fileTree.syncingRel", { rel: syncProgress.rel || "…" })}>
+                ⟳ {syncProgress.done}/{syncProgress.total}
+              </span>
             )}
+            <button
+              className="file-tree-up file-tree-refresh"
+              onClick={refreshListing}
+              disabled={loading}
+              title={t("fileTree.refreshSftpTitle")}
+              aria-label={t("common.refresh")}
+            >
+              ↻
+            </button>
           </div>
-          <div className="file-tree-search-modes">
-            <button
-              type="button"
-              className={`file-tree-search-mode${searchMode === "name" ? " active" : ""}`}
-              aria-pressed={searchMode === "name"}
-              onClick={() => setSearchMode("name")}
-              title={t("fileTree.searchNamesTitle")}
-            >
-              {t("fileTree.searchName")}
-            </button>
-            <button
-              type="button"
-              className={`file-tree-search-mode${searchMode === "content" ? " active" : ""}`}
-              aria-pressed={searchMode === "content"}
-              onClick={() => setSearchMode("content")}
-              title={t("fileTree.searchContentTitle")}
-            >
-              {t("fileTree.searchContent")}
-            </button>
-            {searchMode === "content" && (
-              <button
-                type="button"
-                className={`file-tree-search-mode${searchCase ? " active" : ""}`}
-                aria-pressed={searchCase}
-                onClick={() => setSearchCase((v) => !v)}
-                title={t("search.caseSensitive")}
-              >
-                Aa
-              </button>
-            )}
-            {/* Scope: search under the browsed folder (default) or the whole
-                project. Only shown in a subfolder — at the root they're the same. */}
-            {relPath && (
-              <span className="file-tree-search-scope">
-                <button
-                  type="button"
-                  className={`file-tree-search-mode file-tree-search-scope-folder${!searchRoot ? " active" : ""}`}
-                  aria-pressed={!searchRoot}
-                  onClick={() => setSearchRoot(false)}
-                  title={t("fileTree.searchUnderScope", { scope: relPath })}
-                >
-                  {scopeLabel}
-                </button>
-                <button
-                  type="button"
-                  className={`file-tree-search-mode${searchRoot ? " active" : ""}`}
-                  aria-pressed={searchRoot}
-                  onClick={() => setSearchRoot(true)}
-                  title={t("fileTree.searchWholeProject")}
-                >
-                  {t("fileTree.searchRoot")}
-                </button>
+        </div>
+      )}
+      {/* The local source needs a bar only while it has folder-sync state to
+          report. Refresh itself belongs in the existing search row below, so it
+          never creates an otherwise empty row. */}
+      {!remoteListing && (folderSyncSlot || syncProgress) && (
+        <div className="file-tree-local-bar">
+          <div className="file-tree-bar-actions">
+            {/* The browsed folder's own push control (see `renderFolderSyncSlot`).
+                The local bar is where it matters most: a push starts from this
+                side, and at the root there was no row to start it from. */}
+            {folderSyncSlot}
+            {/* Same counter, same class, same slot as the remote bar's. It belongs
+                here MORE than there: a push is started from the Local side, so this
+                is the bar that is on screen while the longest transfer in the app
+                runs. Without it the local side showed nothing at all. */}
+            {syncProgress && (
+              <span className="file-tree-sync-progress" title={t("fileTree.syncingRel", { rel: syncProgress.rel || "…" })}>
+                ⟳ {syncProgress.done}/{syncProgress.total}
               </span>
             )}
           </div>
         </div>
+      )}
+      {/* Closed under a host that owns the chrome, there is nothing left to
+          draw — that is the row the move to the toolbar buys back. A bare tree
+          still renders the row, because its own toggle lives in it. */}
+      {canSearch && (searchOpen || !hostOwnsSearchChrome) && (
+        <div className={`file-tree-search${searchOpen ? "" : " file-tree-search--collapsed"}`}>
+          <div className="file-tree-search-row">
+            {/* The one control that survives the fold. It sits where the input
+                would start, so opening does not move the row's other buttons. */}
+            {!hostOwnsSearchChrome && (
+              <button
+                type="button"
+                className={`file-tree-up file-tree-search-toggle${searchOpen ? " active" : ""}`}
+                aria-pressed={searchOpen}
+                aria-expanded={searchOpen}
+                onClick={() => setSearchOpen(!searchOpen)}
+                title={searchOpen ? t("fileTree.hideSearch") : t("fileTree.showSearch")}
+                aria-label={searchOpen ? t("fileTree.hideSearch") : t("fileTree.showSearch")}
+              >
+                🔍
+              </button>
+            )}
+            {searchOpen && (
+              <>
+                <input
+                  type="text"
+                  className="file-tree-search-input"
+                  value={search}
+                  autoFocus
+                  placeholder={
+                    searchMode === "name"
+                      ? searchScope
+                        ? t("fileTree.findFilesInScope", { scope: scopeLabel })
+                        : t("fileTree.findFiles")
+                      : searchScope
+                        ? t("fileTree.searchInScope", { scope: scopeLabel })
+                        : t("fileTree.searchInFiles")
+                  }
+                  spellCheck={false}
+                  autoComplete="off"
+                  onChange={(e) => setSearch(e.target.value)}
+                  onKeyDown={(e) => {
+                    // Keep the tree's Enter/Escape handler out of the input.
+                    e.stopPropagation();
+                    // Escape clears a query, and folds the box away once it is
+                    // already empty — the same two-step every find bar uses.
+                    if (e.key === "Escape") {
+                      if (search) setSearch("");
+                      else setSearchOpen(false);
+                    }
+                  }}
+                />
+                {search && (
+                  <button
+                    type="button"
+                    className="file-tree-search-clear"
+                    title={t("fileTree.clearSearch")}
+                    aria-label={t("fileTree.clearSearch")}
+                    onClick={() => setSearch("")}
+                  >
+                    ×
+                  </button>
+                )}
+              </>
+            )}
+            {/* A local listing has an fs watcher, so it does not normally need a
+                manual refresh. This is still the escape hatch for the Run-gate
+                re-check when a same-second, same-size write leaves its persisted
+                stamp untouched. Under a host that owns the chrome it is the ↻ in
+                the toolbar (reaching this tree as `refreshNonce`), so the tree
+                does not draw a second one. */}
+            {!hostOwnsSearchChrome && (
+              <button
+                className="file-tree-up file-tree-refresh"
+                onClick={refreshListing}
+                disabled={loading}
+                title={t("fileTree.refreshTitle")}
+                aria-label={t("common.refresh")}
+              >
+                ↻
+              </button>
+            )}
+          </div>
+          {searchOpen && (
+            <div className="file-tree-search-modes">
+              <button
+                type="button"
+                className={`file-tree-search-mode${searchMode === "name" ? " active" : ""}`}
+                aria-pressed={searchMode === "name"}
+                onClick={() => setSearchMode("name")}
+                title={t("fileTree.searchNamesTitle")}
+              >
+                {t("fileTree.searchName")}
+              </button>
+              <button
+                type="button"
+                className={`file-tree-search-mode${searchMode === "content" ? " active" : ""}`}
+                aria-pressed={searchMode === "content"}
+                onClick={() => setSearchMode("content")}
+                title={t("fileTree.searchContentTitle")}
+              >
+                {t("fileTree.searchContent")}
+              </button>
+              {searchMode === "content" && (
+                <button
+                  type="button"
+                  className={`file-tree-search-mode${searchCase ? " active" : ""}`}
+                  aria-pressed={searchCase}
+                  onClick={() => setSearchCase((v) => !v)}
+                  title={t("search.caseSensitive")}
+                >
+                  Aa
+                </button>
+              )}
+              {/* Scope: search under the browsed folder (default) or the whole
+                  project. Only shown in a subfolder — at the root they're the same. */}
+              {relPath && (
+                <span className="file-tree-search-scope">
+                  <button
+                    type="button"
+                    className={`file-tree-search-mode file-tree-search-scope-folder${!searchRoot ? " active" : ""}`}
+                    aria-pressed={!searchRoot}
+                    onClick={() => setSearchRoot(false)}
+                    title={t("fileTree.searchUnderScope", { scope: relPath })}
+                  >
+                    {scopeLabel}
+                  </button>
+                  <button
+                    type="button"
+                    className={`file-tree-search-mode${searchRoot ? " active" : ""}`}
+                    aria-pressed={searchRoot}
+                    onClick={() => setSearchRoot(true)}
+                    title={t("fileTree.searchWholeProject")}
+                  >
+                    {t("fileTree.searchRoot")}
+                  </button>
+                </span>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+      {/* Search backends walk the canonical local path, so a remote-source
+          listing has no search box. Say why in its place — the Local/Remote
+          switch is already visible in the source row — rather than leaving the
+          affordance to silently vanish. */}
+      {!canSearch && (
+        <div className="file-tree-search-remote-hint">{t("fileTree.searchRemoteHint")}</div>
       )}
       {!searching && pathEdit !== null && (
         <div className="file-tree-breadcrumb file-tree-path-edit">
@@ -3220,10 +3585,17 @@ export function FileTree({
           />
         </div>
       )}
-      {!searching && pathEdit === null && relPath && (() => {
+      {!searching && pathEdit === null && (() => {
         // Parent of the current folder — the up button doubles as a drag-to-move
         // target ("move into the parent dir"). The breadcrumb crumbs cover the
         // other ancestors (and ⌂ the project root).
+        //
+        // Rendered at the ROOT too, where it holds only ⌂ and the folder total.
+        // The root used to be served by the scaffold toggle's row instead, which
+        // carried both of those as a side effect of being the one thing under
+        // the tree; with the toggle moved into Project Settings the breadcrumb
+        // is what keeps the total, the right-click path editor and the
+        // drag-into-the-root target on screen there.
         const parentRel = relPath.split("/").filter(Boolean).slice(0, -1).join("/");
         return (
         <div
@@ -3234,17 +3606,21 @@ export function FileTree({
             startPathEdit();
           }}
         >
+          {relPath && (
+            <button
+              className={`file-tree-up${moveTargetRel === parentRel ? " move-drop-target" : ""}`}
+              data-move-rel={parentRel}
+              {...moveTargetAttrs}
+              onClick={goUp}
+              title={t("fileTree.goUp")}
+            >
+              ↑
+            </button>
+          )}
           <button
-            className={`file-tree-up${moveTargetRel === parentRel ? " move-drop-target" : ""}`}
-            data-move-rel={parentRel}
-            onClick={goUp}
-            title={t("fileTree.goUp")}
-          >
-            ↑
-          </button>
-          <button
-            className={`file-tree-crumb${moveTargetRel === "" ? " move-drop-target" : ""}`}
+            className={`file-tree-crumb${!relPath ? " current" : ""}${moveTargetRel === "" ? " move-drop-target" : ""}`}
             data-move-rel=""
+            {...moveTargetAttrs}
             onClick={() => load("")}
             title={t("fileTree.projectRootTitle")}
           >
@@ -3266,6 +3642,7 @@ export function FileTree({
                 <button
                   className={`file-tree-crumb${isLast ? " current" : ""}${moveTargetRel === target ? " move-drop-target" : ""}${missing ? " crumb-missing" : ""}${onHost ? " crumb-on-host" : ""}`}
                   data-move-rel={target}
+                  {...moveTargetAttrs}
                   onClick={() => { if (!isLast) load(target); }}
                   title={
                     missing
@@ -3280,11 +3657,49 @@ export function FileTree({
               </React.Fragment>
             );
           })}
-          {renderGroupTotal(
-            groupSizes.regular,
-            groupSizes.regularPartial,
-            sizeTitle(groupSizes.regular, groupSizes.regularIgnored, t("fileTree.totalSizeShown")),
-          )}
+          {/* The row's right end: the folder total and — where the host offers
+              one — the sort control. Grouped in one flex box because both want
+              to sit right, and two independent `margin-left:auto` siblings
+              would split the free space between them instead of stacking at
+              the edge. */}
+          <span className="file-tree-crumb-end">
+            {renderGroupTotal(
+              groupSizes.regular,
+              groupSizes.regularPartial,
+              sizeTitle(groupSizes.regular, groupSizes.regularIgnored, t("fileTree.totalSizeShown")),
+            )}
+            {onSortChange && (
+              <span
+                className="file-tree-sort"
+                /* The crumbs are drag-to-move targets and the whole row opens
+                   the path editor on right-click; neither belongs to the sort
+                   control, so it keeps its clicks to itself. */
+                onContextMenu={(e) => e.stopPropagation()}
+              >
+                <Dropdown
+                  className="file-tree-sort-key"
+                  value={sortKey}
+                  onChange={(v) => onSortChange(v as SortKey, descending)}
+                  title={t("projectFilesPane.sortByTitle", { key: t(SORT_KEY_LABEL[sortKey]) })}
+                  options={(["name", "size", "type", "created", "modified"] as SortKey[]).map(
+                    (key) => ({ value: key, label: t(SORT_KEY_LABEL[key]) }),
+                  )}
+                />
+                <button
+                  type="button"
+                  className="file-tree-sort-dir"
+                  onClick={() => onSortChange(sortKey, !descending)}
+                  title={t(
+                    descending
+                      ? "projectFilesPane.sortDescendingTitle"
+                      : "projectFilesPane.sortAscendingTitle",
+                  )}
+                >
+                  {descending ? "↓" : "↑"}
+                </button>
+              </span>
+            )}
+          </span>
         </div>
         );
       })()}
@@ -3308,24 +3723,6 @@ export function FileTree({
             ×
           </button>
         </div>
-      )}
-      {!searching && pathEdit === null && !relPath && (
-        <label
-          className="file-tree-scaffold-toggle"
-          onContextMenu={(e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            startPathEdit();
-          }}
-        >
-          <Toggle size="sm" checked={separateScaffold} onChange={(e) => setSeparateScaffold(e.target.checked)} />
-          {t("fileBrowser.separateScaffold")}
-          {renderGroupTotal(
-            groupSizes.regular,
-            groupSizes.regularPartial,
-            sizeTitle(groupSizes.regular, groupSizes.regularIgnored, t("fileTree.totalSizeShown")),
-          )}
-        </label>
       )}
       {searching && (
         <FileTreeSearch
@@ -3452,6 +3849,7 @@ export function FileTree({
               // Folders are drag-to-move destinations: dropping a dragged file
               // here relocates it (hit-tested by data-move-rel in the drag).
               data-move-rel={e.is_dir ? relForEntry(e) : undefined}
+              {...(e.is_dir ? moveTargetAttrs : undefined)}
               // Dirs: single-click navigates + native DnD (file export).
               // Files, plain drag: pointer-based drag onto a tab bar for
               // drag-to-tab files (built-in viewer OR embeddable handler); R6 —
@@ -3477,6 +3875,11 @@ export function FileTree({
               onMouseLeave={handleEntryMouseLeave}
             >
               <GitMarker status={status} />
+              {remarksEnabled && projectId && !e.is_dir && (
+                <span className="file-remark-slot">
+                  {(remarkCounts?.[relForEntry(e)] ?? 0) > 0 && <span className="file-remark-count">{remarkCounts?.[relForEntry(e)]}</span>}
+                </span>
+              )}
               {/* Fixed-width sync slot: always reserved on a sync-tracked tree so
                   file/folder names stay left-aligned whether or not the row has an
                   action button. `none` → red sync/push button; `amber` → orange
@@ -4114,6 +4517,11 @@ export function FileTree({
                     <UntestedTag />
                   </button>
                 )}
+                {remarksEnabled && projectId && !entry.is_dir && (
+                  <button className="untested" onClick={() => { setContextMenu(null); setRemarkFor(entry); }}>
+                    {t("projectRemarks.addMenu")} <UntestedTag />
+                  </button>
+                )}
                 {/* The per-file/folder SFTP exit — the one casual way bytes
                     leave a mirrorless (VM) project, size-confirmed. */}
                 {remoteListing && (
@@ -4286,23 +4694,9 @@ export function FileTree({
                 if (e.key === "Enter") void confirmPaste();
                 if (e.key === "Escape") setPastePrompt(null);
               }}
-              style={{
-                width: "100%",
-                boxSizing: "border-box",
-                marginTop: 6,
-                fontSize: 12,
-                background: "var(--bg-panel)",
-                color: "var(--text-primary)",
-                border: "1px solid var(--border-color)",
-                borderRadius: "var(--radius-sm)",
-                padding: "4px 6px",
-                fontFamily: "inherit",
-              }}
             />
             {pastePrompt.error && (
-              <div className="file-delete-path" style={{ color: "var(--danger, #f85149)" }}>
-                {pastePrompt.error}
-              </div>
+              <div className="file-delete-path file-delete-error">{pastePrompt.error}</div>
             )}
             <div className="file-delete-actions">
               <button type="button" onClick={() => setPastePrompt(null)} disabled={pasteBusy}>{t("common.cancel")}</button>
@@ -4313,6 +4707,16 @@ export function FileTree({
           </div>
         </div>,
         document.body,
+      )}
+      {dialogs}
+      {renamePrompt && (
+        <RenameDialog
+          entryName={renamePrompt.entry.name}
+          isDir={renamePrompt.entry.is_dir}
+          folder={containingFolderLabel(renamePrompt.entry.path, t("fileTree.projectRootFolder"))}
+          onCancel={() => setRenamePrompt(null)}
+          onRename={(next) => confirmRename(renamePrompt.entry, next)}
+        />
       )}
       {defaultAppFor && defaultAppFor.extension && (
         <SetDefaultAppDialog
@@ -4328,6 +4732,10 @@ export function FileTree({
           fromProjectId={projectId}
           onClose={() => setSendTo(null)}
         />
+      )}
+      {remarkFor && projectId && (
+        <AddRemarkDialog projectId={projectId} projectDir={projectDir} file={relForEntry(remarkFor)}
+          onClose={() => setRemarkFor(null)} />
       )}
       {tooltip && createPortal(
         <div

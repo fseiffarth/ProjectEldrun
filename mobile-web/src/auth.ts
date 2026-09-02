@@ -1,4 +1,5 @@
 import { ApiError, api } from "./api";
+import { classifyUnavailable, unavailableDetail, type UnavailableReason } from "./connection";
 
 const DB = "eldrun-mobile-auth";
 const STORE = "keys";
@@ -54,21 +55,37 @@ async function login(record: AuthRecord): Promise<void> {
   });
 }
 
-export type ResumeResult = "paired" | "unpaired" | "unavailable";
+export type ResumeResult =
+  | { kind: "paired" }
+  | { kind: "unpaired" }
+  /** Carries *why*, so the splash can say which machine to go and fix rather
+   * than showing one "Host unavailable" for every possible cause. */
+  | { kind: "unavailable"; reason: UnavailableReason; detail?: string };
 
 export async function resumeAuth(): Promise<ResumeResult> {
   const record = await load();
-  if (!record) return "unpaired";
+  if (!record) return { kind: "unpaired" };
   try {
     await login(record);
-    return "paired";
+    return { kind: "paired" };
   } catch (reason) {
     // Only a rejection of *this device's identity* means "re-pair". A timeout,
     // an offline phone, or a 429 from the rate limiter must not send the user
     // to the pairing screen, which is what `status < 500` used to do.
+    //
+    // `invalid_origin` is a 403 but is emphatically *not* a rejected device —
+    // it is the host refusing the address the app was opened from, and
+    // re-pairing cannot fix it. It was swept in by the blanket `status === 403`
+    // and sent the reader to a pairing screen that could only fail again.
     const rejected = reason instanceof ApiError
+      && reason.code !== "invalid_origin"
       && (reason.status === 403 || reason.code === "unknown_device" || reason.code === "invalid_signature");
-    return rejected ? "unpaired" : "unavailable";
+    if (rejected) return { kind: "unpaired" };
+    return {
+      kind: "unavailable",
+      reason: classifyUnavailable(reason),
+      detail: unavailableDetail(reason),
+    };
   }
 }
 

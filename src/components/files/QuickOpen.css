@@ -84,7 +84,7 @@
 .qo-empty {
   padding: 12px;
   font-size: 13px;
-  color: var(--text-muted, #9aa6bf);
+  color: var(--text-muted);
 }
 
 /* ── Context-files picker variant ──────────────────────────────────────────

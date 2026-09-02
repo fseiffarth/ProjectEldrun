@@ -1,0 +1,3946 @@
+/* settings-chrome.css — split from the old monolithic themes.css (order-preserving).
+   Settings design system (button/rows/cards/headers/lists), shared page strip, PDF page rail, HPC tag, mode-toggle card, shared CTA buttons, menu-button interaction.
+   IMPORT ORDER IS LOAD-BEARING: these files are @imported in sequence from
+   styles/index.css; equal-specificity rules rely on source order exactly as
+   they did in the monolith, so never reorder the imports or move rules
+   between files without checking the cascade. */
+
+/* ── The settings button ──────────────────────────────────────────────────
+   ONE button for every settings surface, in one size with three variants —
+   default (outline), `.primary` (filled accent, at most one per view) and
+   `.danger`. `.sm` is the compact size the dense action rows use (an Ollama
+   model row carries five buttons), not a fourth variant.
+
+   The bare-element selectors below are the legacy spelling: a plain <button>
+   inside those specific rows gets the look without a class, which is why the
+   panels could be written without one. New markup should say `settings-btn`
+   (plus `.sm`/`.primary`/`.danger`) — a button anywhere else, e.g. inside a
+   `.settings-card`, matches nothing and renders as a raw native button.
+
+   `:not(.dialog-close-btn)` because the ✕ that sits in most
+   `.settings-title-row`s is the app close button now (see the Close / window
+   controls section), and a descendant selector would otherwise outrank that
+   rule and box it back up. */
+.settings-btn,
+.settings-title-row button:not(.dialog-close-btn),
+.settings-link-row button:not(.dialog-close-btn),
+.global-app-settings-row button:not(.dialog-close-btn),
+.filetype-settings-row button:not(.dialog-close-btn),
+.remote-host-settings-row button:not(.dialog-close-btn),
+.ollama-action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-sm);
+  background: var(--control-bg);
+  color: var(--text-primary);
+  font-size: var(--text-base);
+  line-height: 1.2;
+  white-space: nowrap;
+  cursor: var(--cur-pointer, pointer);
+  padding: 7px 10px;
+  transition: background var(--transition), border-color var(--transition);
+}
+
+.settings-btn:hover:not(:disabled),
+.settings-title-row button:not(.dialog-close-btn):hover:not(:disabled),
+.settings-link-row button:not(.dialog-close-btn):hover:not(:disabled),
+.global-app-settings-row button:not(.dialog-close-btn):hover:not(:disabled),
+.filetype-settings-row button:not(.dialog-close-btn):hover:not(:disabled),
+.remote-host-settings-row button:not(.dialog-close-btn):hover:not(:disabled),
+.ollama-action-btn:hover:not(:disabled) {
+  background: var(--control-hover-bg);
+  border-color: var(--accent);
+}
+
+.settings-btn:disabled,
+.settings-title-row button:not(.dialog-close-btn):disabled,
+.settings-link-row button:not(.dialog-close-btn):disabled,
+.global-app-settings-row button:not(.dialog-close-btn):disabled,
+.filetype-settings-row button:not(.dialog-close-btn):disabled,
+.remote-host-settings-row button:not(.dialog-close-btn):disabled,
+.ollama-action-btn:disabled {
+  opacity: 0.5;
+  cursor: var(--cur-default, default);
+}
+
+/* Compact size for dense action rows. */
+.settings-btn.sm,
+button.settings-btn.sm,
+.ollama-action-btn {
+  font-size: 11px;
+  padding: 3px 8px;
+  line-height: 1.4;
+}
+
+/* A square-ish button whose whole label is one glyph (…, ×). Without this they
+   shrink-wrap to the glyph and a column of them is visibly ragged. */
+.settings-btn.icon,
+button.settings-btn.icon {
+  min-width: 32px;
+  padding-left: 6px;
+  padding-right: 6px;
+}
+
+/* The one call to action in a view (Install …, Add). Filled accent so it stands
+   apart from the outline buttons beside it. */
+.settings-btn.primary,
+button.settings-btn.primary,
+.ollama-action-btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--bg-main);
+  font-weight: 600;
+}
+
+.settings-btn.primary:hover:not(:disabled),
+button.settings-btn.primary:hover:not(:disabled),
+.ollama-action-btn.primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+
+/* Destructive: coloured label, and the border only follows on hover so a row of
+   buttons doesn't read as a row of warnings at rest. */
+.settings-btn.danger,
+button.settings-btn.danger,
+.settings-link-row button.danger,
+.settings-card button.danger,
+.ollama-action-btn.danger {
+  color: var(--danger);
+}
+
+.settings-btn.danger:hover:not(:disabled),
+button.settings-btn.danger:hover:not(:disabled),
+.settings-link-row button.danger:hover:not(:disabled),
+.settings-card button.danger:hover:not(:disabled),
+.ollama-action-btn.danger:hover:not(:disabled) {
+  border-color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, var(--control-bg));
+}
+
+/* GlobalMachineMonitorDialog: the full htop-like System Monitor pane opened
+   from the header's Machines menu for one ad-hoc global machine. `.sysmon-root`
+   (SystemMonitorPane's own CSS) is `position: absolute; inset: 0` — it needs a
+   sized, positioned ancestor, which `.sysmon-dialog-body` provides; the pane
+   scrolls itself (`.sysmon-scroll`), so the body clips rather than scrolls. */
+.sysmon-dialog {
+  width: min(1200px, calc(100vw - 48px));
+  height: min(85vh, calc(100vh - 48px));
+  max-height: min(85vh, calc(100vh - 48px));
+}
+.sysmon-dialog-body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Print preview overlay (src/lib/viewers/print.ts). Reuses .modal-backdrop +
+   .settings-dialog chrome; the dialog is sized to preview a page and the iframe
+   fills the remaining height. */
+.print-preview-dialog {
+  width: min(1020px, calc(100vw - 48px));
+  height: min(90vh, calc(100vh - 48px));
+  max-height: min(90vh, calc(100vh - 48px));
+  padding: 14px 16px;
+  gap: 10px;
+  overflow: hidden;
+}
+.print-preview-titlebar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border-bottom: 1px solid var(--border-subtle);
+  padding-bottom: 10px;
+}
+.print-preview-title {
+  flex: 1;
+  font-size: 15px;
+  font-weight: 650;
+  color: var(--accent);
+}
+.print-preview-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.print-preview-print {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  background: var(--accent);
+  color: var(--bg-panel);
+  cursor: var(--cur-pointer, pointer);
+  padding: 7px 14px;
+  font-weight: 600;
+}
+.print-preview-print:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 85%, #000);
+}
+.print-preview-print:disabled {
+  opacity: 0.6;
+  cursor: var(--cur-default, default);
+}
+.print-preview-print .file-viewer-save-spinner {
+  border-top-color: var(--bg-panel);
+}
+.print-preview-frame {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  background: #fff;
+}
+.print-preview-options {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.print-opt {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+.print-opt-check {
+  cursor: var(--cur-pointer, pointer);
+}
+.print-opt:has(:disabled) {
+  opacity: 0.5;
+  cursor: var(--cur-default, default);
+}
+.print-opt-label {
+  color: var(--text-secondary);
+}
+.print-opt-select,
+.print-opt-range {
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--control-bg);
+  color: var(--text-primary);
+  padding: 3px 6px;
+  font-size: 12px;
+}
+.print-opt-range {
+  width: 96px;
+}
+.print-opt-select:disabled,
+.print-opt-range:disabled {
+  opacity: 0.5;
+  cursor: var(--cur-default, default);
+}
+
+/* Page strip: drag-to-reorder / delete, shown only for paged documents. */
+.print-preview-strip {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.print-strip-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.print-strip-hint {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+.print-strip-reset {
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--control-bg);
+  color: var(--text-primary);
+  cursor: var(--cur-pointer, pointer);
+  padding: 3px 10px;
+  font-size: 11px;
+}
+.print-strip-reset:disabled {
+  opacity: 0.45;
+  cursor: var(--cur-default, default);
+}
+/* The host the print preview mounts its <PageStrip> into. Layout lives on the
+   strip's own root (.page-strip-row), so this only carries the thumbnail vars. */
+.print-strip-pages {
+  min-width: 0;
+}
+
+/* ── Shared page strip (components/common/PageStrip) ────────────────────────────
+   One widget in two homes: the print preview's horizontal strip and the PDF
+   viewer's vertical page rail. Only the axis differs, so only the axis is themed
+   twice. The card box follows the sheet's proportions — portrait paper gets an
+   upright card, landscape a wide one — from the two vars the host sets. */
+.page-strip {
+  display: flex;
+  gap: 8px;
+  padding: 2px;
+}
+.page-strip-row {
+  flex-direction: row;
+  align-items: flex-start;
+  overflow-x: auto;
+}
+.page-strip-column {
+  flex-direction: column;
+  align-items: center;
+  overflow-y: auto;
+}
+.page-strip-card {
+  position: relative;
+  flex: 0 0 auto;
+  width: var(--page-thumb-w, 59px);
+  height: var(--page-thumb-h, 84px);
+  border: 1px solid var(--border-color);
+  background: #fff;
+  overflow: hidden;
+  cursor: var(--cur-grab, grab);
+  touch-action: none; /* pointer drag owns the gesture */
+  user-select: none;
+}
+.page-strip-card img,
+.page-strip-card canvas {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+/* The print strip's thumbnails are the page's own flat IMAGE, so a turn has to be
+   applied here in CSS. The PDF rail's are canvases pdf.js already rendered at the
+   right rotation — rotating those again would turn them twice, hence img only. */
+.page-strip-card img {
+  transform: translate(-50%, -50%) rotate(var(--page-thumb-rot, 0deg));
+}
+/* A quarter turn swaps the image's box, so the turned image still fills the card
+   instead of spilling out of it (the print stylesheet does the same for paper). */
+.page-strip-card.is-quarter-turned img {
+  width: var(--page-thumb-h, 84px);
+  height: var(--page-thumb-w, 59px);
+}
+.page-strip-blank {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  color: #777;
+  font-size: 16px;
+}
+.page-strip-card.is-excluded {
+  opacity: 0.35;
+}
+.page-strip-card.is-selected {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.page-strip-card.is-dragging {
+  cursor: var(--cur-grabbing, grabbing);
+  outline: 2px solid var(--accent);
+  opacity: 0.85;
+}
+.page-strip-num {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  min-width: 16px;
+  padding: 0 3px;
+  background: var(--accent);
+  color: var(--bg-panel);
+  font-size: 10px;
+  font-weight: 600;
+  text-align: center;
+}
+.page-strip-del,
+.page-strip-rotate {
+  position: absolute;
+  top: 0;
+  border: none;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  cursor: var(--cur-pointer, pointer);
+  padding: 0 4px;
+  font-size: 11px;
+  line-height: 16px;
+  opacity: 0;
+}
+.page-strip-del {
+  right: 0;
+}
+.page-strip-rotate {
+  left: 0;
+}
+.page-strip-card:hover .page-strip-del,
+.page-strip-card:hover .page-strip-rotate,
+.page-strip-del:focus-visible,
+.page-strip-rotate:focus-visible {
+  opacity: 1;
+}
+
+/* Where pages dragged from another strip (or another Eldrun window) would land. It
+   sits in the flex flow, so it opens a real gap between the two cards. */
+.page-strip-caret {
+  flex: 0 0 auto;
+  background: var(--accent);
+  border-radius: 2px;
+}
+.page-strip-row .page-strip-caret {
+  width: 3px;
+  align-self: stretch;
+}
+.page-strip-column .page-strip-caret {
+  height: 3px;
+  width: var(--page-thumb-w, 72px);
+}
+
+/* ── PDF viewer: the page rail ──────────────────────────────────────────────────
+   The <PageStrip> stood on its side, beside the reader. Fixed card box + the
+   canvas's own object-fit handles pages of differing sizes. */
+.file-viewer-pdf-rail {
+  --page-thumb-w: 72px;
+  --page-thumb-h: 96px;
+  flex: 0 0 auto;
+  display: flex;
+  min-height: 0;
+  border-right: 1px solid var(--border-subtle);
+  background: var(--bg-panel);
+}
+.file-viewer-pdf-rail .page-strip-column {
+  padding: 6px;
+}
+
+/* Contents sidebar (#pdf-outline): the PDF's embedded chapters, a jump list. */
+.file-viewer-pdf-outline {
+  flex: 0 0 auto;
+  width: 240px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-right: 1px solid var(--border-subtle);
+  background: var(--bg-panel);
+  font-size: 12px;
+}
+.file-viewer-pdf-outline-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border-subtle);
+  font-weight: 600;
+  color: var(--text-secondary, var(--text-primary));
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 11px;
+}
+.file-viewer-pdf-outline-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 4px 0;
+}
+.file-viewer-pdf-outline-empty {
+  padding: 10px;
+  color: var(--text-secondary, var(--text-muted));
+  font-style: italic;
+}
+.file-viewer-pdf-outline-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 2px;
+  padding-right: 6px;
+}
+.file-viewer-pdf-outline-row.current {
+  background: var(--control-bg);
+}
+.file-viewer-pdf-outline-caret {
+  flex: 0 0 auto;
+  width: 16px;
+  padding: 3px 0;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary, var(--text-muted));
+  cursor: var(--cur-pointer, pointer);
+  font-size: 10px;
+  line-height: 1.2;
+}
+/* A leaf row's per-level sign, standing in the caret column: a dot for the top
+   tiers, a dash deeper down (a branch shows the ▸/▾ triangle here instead). */
+.file-viewer-pdf-outline-caret.is-sign {
+  cursor: var(--cur-default, default);
+  color: var(--text-secondary, var(--text-muted));
+  text-align: center;
+  font-size: 11px;
+}
+.file-viewer-pdf-outline-title {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  padding: 3px 2px;
+  border: none;
+  background: transparent;
+  color: var(--text-primary);
+  cursor: var(--cur-pointer, pointer);
+  font: inherit;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+.file-viewer-pdf-outline-title:hover:not(:disabled) {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.file-viewer-pdf-outline-row.current .file-viewer-pdf-outline-title {
+  font-weight: 700;
+}
+.file-viewer-pdf-outline-title:disabled {
+  cursor: var(--cur-default, default);
+  color: var(--text-secondary, var(--text-muted));
+}
+
+/* Levels echo the markdown viewer's heading tiers: the top level leans on the
+   accent hue, the second on the secondary accent, the third picks up a small
+   accent dot, and anything deeper stays quiet text — so the document's shape
+   reads at a glance without every tier shouting. */
+.file-viewer-pdf-outline-title.depth-0 {
+  font-size: var(--text-base);
+  font-weight: 650;
+  color: var(--accent, var(--text-primary));
+  letter-spacing: -0.01em;
+}
+.file-viewer-pdf-outline-title.depth-1 {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent-secondary, var(--accent, var(--text-primary)));
+}
+.file-viewer-pdf-outline-title.depth-2 {
+  font-size: var(--text-md);
+  font-weight: 500;
+  color: var(--text-primary);
+}
+.file-viewer-pdf-outline-title.depth-3 {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--text-secondary, var(--text-muted));
+}
+/* A disabled (unresolvable) entry stays muted whatever its level. */
+.file-viewer-pdf-outline-title:disabled { color: var(--text-secondary, var(--text-muted)); }
+
+/* "Inferred from text" note when the chapters came from the font-size fallback. */
+.file-viewer-pdf-outline-note {
+  padding: 3px 10px 5px;
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-secondary, var(--text-muted));
+  font-size: 10px;
+  font-style: italic;
+}
+
+/* A thin separator between the contents toggle and the zoom cluster. */
+.file-viewer-pdf-toolbar-sep {
+  align-self: stretch;
+  width: 1px;
+  margin: 3px 2px;
+  background: var(--border-subtle);
+}
+
+/* Hover preview: a floating thumbnail of a contents entry's page. Fixed-position
+   so it escapes the sidebar's scroll clipping and can overhang the page area. */
+.file-viewer-pdf-outline-preview {
+  position: fixed;
+  z-index: 60;
+  padding: 4px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+}
+.file-viewer-pdf-outline-preview img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 2px;
+  /* Keep the page white in dark themes — the pages elsewhere stay as authored. */
+  background: #fff;
+}
+.file-viewer-pdf-outline-preview-loading {
+  padding: 24px 8px;
+  text-align: center;
+  color: var(--text-secondary, var(--text-muted));
+  font-size: 11px;
+}
+.file-viewer-pdf-outline-preview-cap {
+  padding: 3px 2px 1px;
+  text-align: center;
+  color: var(--text-secondary, var(--text-muted));
+  font-size: 10px;
+}
+
+/* A viewer-wide notice bar (unsaved edits vs. a changed file, a failed save). */
+.file-viewer-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--control-bg);
+  color: var(--text-primary);
+  font-size: 12px;
+}
+.file-viewer-banner.is-error {
+  color: var(--danger);
+}
+/* A question about something irreversible (the blackout burn-in), not a failure —
+   so it is toned as a warning rather than as an error. */
+.file-viewer-banner.is-warn {
+  color: var(--warning);
+  background: color-mix(in srgb, var(--warning) 12%, var(--control-bg));
+}
+.file-viewer-banner button {
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  cursor: var(--cur-pointer, pointer);
+  padding: 2px 8px;
+  font-size: 11px;
+}
+.file-viewer-zoom-btn.is-dirty {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* ══ Settings design system ═══════════════════════════════════════════════
+   ONE visual language for every settings surface: the Settings dialog, its
+   sub-panels, and the settings-shaped sections other dialogs reuse.
+
+   It used to be four languages at once. Bordered toggle cards alternated with
+   bare label+control rows, so half the controls sat 12px inside a card edge
+   and half sat flush with the dialog padding; every `Dropdown` was as wide as
+   its own longest option, so no two controls shared a right edge; `.settings-
+   row input` matched no rule at all, which rendered the browser-home, search-
+   template, min-subwindow and Eldrun Mobile fields as raw *native* inputs — a
+   white box in a dark theme; and help paragraphs floated between rows,
+   belonging to nothing.
+
+   A settings panel now renders these building blocks and nothing else:
+
+     .settings-section-title   a section header
+     .settings-subheader       a grouping *inside* a section
+     .settings-card            the one container (bordered, padded surface)
+     .settings-card-row        one label + control line inside a card
+     .settings-row             the same line outside one (inside lists, etc.)
+     .settings-list[.boxed]    a repeated-row list
+     .settings-btn             the one button
+
+   Keeping to them is what holds the left edge, the control column and the type
+   scale identical down the whole scroll — so add a variant here rather than a
+   one-off rule beside the component that needed it. */
+
+/* ── Rows ──────────────────────────────────────────────────────────────── */
+.settings-row,
+.settings-switch-row,
+.settings-card-row,
+.settings-toggle-card-row {
+  min-height: 32px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+/* Only a row that *is* a <label> (a toggle row wrapping its checkbox) reacts to
+   a click on its text; a row holding a Dropdown must not pretend to. */
+label.settings-card-row,
+label.settings-toggle-card-row {
+  cursor: var(--cur-pointer, pointer);
+}
+
+.settings-row > label,
+.settings-row > span:first-child,
+.settings-row > .settings-card-label,
+.settings-switch-row > span:first-child,
+.settings-card-row > label,
+.settings-card-row > span:first-child,
+.settings-card-row > .settings-card-label,
+.settings-toggle-card-row > span:first-child {
+  flex: 1;
+  min-width: 0;
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+/* Rows stacked in one card read as a grouped list rather than as three
+   switches sharing a gap — the Resource-monitor / Remote-features cards. */
+.settings-card-row + .settings-card-row,
+.settings-toggle-card-row + .settings-toggle-card-row {
+  border-top: 1px solid var(--border-subtle);
+  padding-top: 8px;
+}
+
+/* ── The control column ────────────────────────────────────────────────── */
+/* Every control in a settings row is the same width and the same height,
+   whatever it is: this is the rule that stops a Theme dropdown sized to "Fancy
+   Dark" and a "Week starts on" dropdown sized to "Sunday" ending at two
+   different right edges. `0 1` (not `0 0`) so a narrow dialog shrinks the
+   controls instead of overflowing the label. */
+.settings-row > input,
+.settings-row > select,
+.settings-row > .dropdown,
+.settings-row > .password-input,
+.settings-card-row > input,
+.settings-card-row > select,
+.settings-card-row > .dropdown,
+.settings-card-row > .password-input {
+  flex: 0 1 200px;
+  width: 200px;
+}
+
+.settings-row > .dropdown > .dropdown-trigger,
+.settings-card-row > .dropdown > .dropdown-trigger {
+  width: 100%;
+  min-width: 0;
+  height: 32px;
+  justify-content: space-between;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* Field chrome — one border/radius/height/padding for every text field and
+   select on a settings surface, whether it sits in a row, in a `.settings-
+   field` label column, or in one of the grid list rows. */
+.settings-row > input,
+.settings-row > select,
+.settings-card-row > input,
+.settings-card-row > select,
+.settings-field input,
+.settings-field select,
+.global-app-settings-row input[type="text"],
+.global-app-settings-row input:not([type]),
+.filetype-settings-row input,
+.remote-host-settings-row input,
+.theme-var-row > input[type="text"],
+.theme-preset-save > input[type="text"] {
+  height: 32px;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-sm);
+  background: var(--control-bg);
+  color: var(--text-primary);
+  font-size: var(--text-base);
+  padding: 0 9px;
+}
+
+/* WebKitGTK paints a number field's spinner as an un-themable grey OS widget
+   butted against the right edge of the themed field — the same reason the app
+   replaced native <select> popups with its own `Dropdown`. Drop it: `min` and
+   `step` still constrain what is typed. */
+.settings-row > input[type="number"]::-webkit-inner-spin-button,
+.settings-row > input[type="number"]::-webkit-outer-spin-button,
+.settings-card-row > input[type="number"]::-webkit-inner-spin-button,
+.settings-card-row > input[type="number"]::-webkit-outer-spin-button {
+  appearance: none;
+  margin: 0;
+}
+
+/* Native <select> keeps room for the caret the base `select` rule paints. */
+.settings-row > select,
+.settings-card-row > select {
+  padding: 0 28px 0 9px;
+  min-width: 0;
+}
+
+/* Group L / #62 — keyboard-shortcut rebinding rows. */
+.shortcut-row .settings-role-label {
+  flex: 1;
+  color: var(--text-primary);
+}
+
+.shortcut-capture-btn {
+  min-width: 150px;
+  height: 30px;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-sm);
+  background: var(--control-bg);
+  color: var(--text-primary);
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  cursor: var(--cur-pointer, pointer);
+}
+
+.shortcut-capture-btn:hover:not(:disabled) {
+  background: var(--control-hover-bg);
+  border-color: var(--accent);
+}
+
+.shortcut-capture-btn.capturing {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* A shortcut row plus its (optional) warning line as one boxed-list entry —
+   the wrapper takes the list's padding/separator, the flex row inside has
+   none of its own. */
+.shortcut-entry {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+/* Two actions resolving to one chord, or a chord a fixed key swallows first.
+   Toned as a warning, not an error (the file-viewer banner's rule): nothing is
+   broken — one of the two bindings simply never fires. */
+.shortcut-conflict {
+  font-size: var(--text-md);
+  color: var(--warning);
+}
+
+.project-dialog select {
+  min-width: 160px;
+}
+
+.settings-row > input:hover,
+.settings-row > input:focus,
+.settings-row > select:hover,
+.settings-row > select:focus,
+.settings-card-row > input:hover,
+.settings-card-row > input:focus,
+.settings-card-row > select:hover,
+.settings-card-row > select:focus,
+.settings-field input:hover,
+.settings-field input:focus,
+.global-app-settings-row input:hover,
+.global-app-settings-row input:focus,
+.filetype-settings-row input:hover,
+.filetype-settings-row input:focus,
+.remote-host-settings-row input:hover,
+.remote-host-settings-row input:focus,
+.theme-preset-save > input:hover,
+.theme-preset-save > input:focus,
+.project-dialog input:hover,
+.project-dialog input:focus,
+.project-dialog textarea:hover,
+.project-dialog textarea:focus,
+.project-dialog select:hover,
+.project-dialog select:focus,
+.menu-form input:hover,
+.menu-form input:focus,
+.menu-form textarea:hover,
+.menu-form textarea:focus,
+.menu-form select:hover,
+.menu-form select:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+
+.settings-row select option,
+.project-dialog select option,
+.file-browser-actions select option {
+  background: var(--bg-panel);
+  color: var(--text-primary);
+}
+
+/* A stacked field: its caption above, the control below, full width. Used where
+   a value is too long to sit in the 200px control column (tokens, URLs). */
+.settings-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+/* ── Cards ─────────────────────────────────────────────────────────────── */
+/* The one container. `.settings-toggle-card` is the older name for it and
+   `.agent-list-entry` was a second, near-identical card that used
+   --bg-elevated / --border-subtle instead; all three are one surface now. */
+.settings-card,
+.settings-toggle-card,
+.agent-list-entry {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border-color);
+  background: var(--bg-panel);
+}
+
+.settings-card > .settings-help,
+.settings-toggle-card > .settings-help {
+  margin: 0;
+}
+
+/* ── Headers ───────────────────────────────────────────────────────────── */
+/* Section header. Small caps + tracking rather than just a coloured line of
+   body text, so a section reads as a header at a glance and clearly outranks
+   the card titles (13px/600, --text-primary) beneath it. */
+.settings-section-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border-subtle);
+  color: var(--accent-secondary);
+  font-size: var(--text-md);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.settings-section-title > .untested-tag,
+.settings-subheader > .untested-tag {
+  margin-left: 0;
+}
+
+/* One step down: a grouping *inside* a section (a per-agent name, a per-host
+   block). No rule of its own, no small caps — it is a title, not a divider. */
+.settings-subheader {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-primary);
+  font-size: var(--text-base);
+  font-weight: 650;
+}
+
+/* Air above it when it follows content, none when it opens a card. */
+* + .settings-subheader {
+  margin-top: 6px;
+}
+
+/* A row of buttons under a section (Add folder, Take the tour, …). */
+.settings-link-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding-top: 2px;
+}
+
+/* A dialog's decision row: the choices sit at the trailing edge. */
+.settings-link-row-end {
+  justify-content: flex-end;
+}
+
+/* Sub-panel navigation menu at the foot of the main settings panel. Mirrors the
+   Lessons / How-to-start card menu (.lesson-item) so the whole app's "pick a
+   destination" lists read as one style. */
+.settings-nav-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.settings-nav-item {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  text-align: left;
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border-color);
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  cursor: var(--cur-pointer, pointer);
+  transition: border-color var(--transition), background var(--transition);
+}
+
+.settings-nav-item:hover {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg-panel));
+}
+
+.settings-nav-item-title {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.settings-nav-item-blurb {
+  color: var(--text-secondary);
+  font-size: var(--text-md);
+  line-height: 1.4;
+}
+
+/* Explanatory copy. Inside a card it explains that card's control; loose in the
+   scroll it introduces the section it follows. */
+.settings-help {
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+/* Spelling-dictionary rows (M#248): the dropdown and its action button share
+   one line; the download/remove status rides the help text so the row's
+   height never jumps while a download runs. */
+.spell-dict-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.spell-dict-status {
+  color: var(--text-primary);
+}
+.spell-dict-status.danger {
+  color: var(--danger);
+}
+
+/* Eldrun Mobile: keep the Tailscale setup close to the fields it configures,
+   without making the normal settings card visually read as a warning. */
+.mobile-settings-guide {
+  margin: 4px 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--accent) 4%, var(--control-bg));
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.mobile-phone-install {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin: 6px 0;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--accent) 32%, var(--border-subtle));
+  border-radius: var(--radius-sm);
+  background: linear-gradient(110deg, color-mix(in srgb, var(--accent) 11%, var(--control-bg)), var(--control-bg));
+}
+
+.mobile-phone-install strong {
+  color: var(--text-primary);
+  font-size: 12px;
+}
+
+.mobile-phone-install p {
+  max-width: 530px;
+  margin: 3px 0 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+/* Chrome comes from `.settings-btn.primary`; only the layout role is local. */
+.mobile-phone-install-button {
+  flex: 0 0 auto;
+}
+
+/* A compact, actionable summary of the checks Eldrun itself can make. It does
+   not pretend to verify tailnet account policy or the physical phone. */
+.mobile-security-health {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 10px;
+  border: 1px solid var(--control-border);
+  border-left-width: 3px;
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--bg-panel) 85%, transparent);
+}
+
+.mobile-security-health.good { border-left-color: var(--success); }
+.mobile-security-health.danger { border-left-color: var(--danger); }
+.mobile-security-health.off { border-left-color: var(--text-muted); }
+
+.mobile-security-health strong { color: var(--text-primary); font-size: 12px; }
+.mobile-security-health p { margin: 2px 0 0; color: var(--text-secondary); font-size: 11px; }
+.mobile-security-health button { flex: 0 0 auto; }
+
+@media (max-width: 560px) {
+  .mobile-phone-install {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .mobile-security-health {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
+
+.mobile-settings-guide summary {
+  color: var(--text-primary);
+  font-weight: 600;
+  cursor: var(--cur-pointer, pointer);
+}
+
+.mobile-settings-guide-body {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding-top: 7px;
+}
+
+.mobile-settings-guide-body p {
+  margin: 0;
+}
+
+.mobile-settings-guide-body ol {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding-left: 20px;
+}
+
+.mobile-settings-guide code {
+  color: var(--text-primary);
+  font-family: var(--font-mono, monospace);
+}
+
+.mobile-settings-guide-command {
+  display: block;
+  width: fit-content;
+  max-width: 100%;
+  margin: 5px 0;
+  padding: 4px 6px;
+  overflow-wrap: anywhere;
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel);
+}
+
+.mobile-settings-guide-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.mobile-settings-guide-actions button {
+  padding: 3px 8px;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  cursor: var(--cur-pointer, pointer);
+}
+
+.mobile-settings-guide-actions button:hover {
+  border-color: var(--accent);
+}
+
+.mobile-settings-guide a {
+  width: fit-content;
+  color: var(--accent);
+}
+
+/* Collapsed explanatory box inside a settings panel or dialog — the same
+   treatment as `.mobile-settings-guide`, under a name any panel can reach.
+   Used by the git-hosting token permission guide. */
+.settings-guide {
+  margin: 2px 0 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--accent) 4%, var(--control-bg));
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.settings-guide > summary {
+  color: var(--text-primary);
+  font-weight: 600;
+  cursor: var(--cur-pointer, pointer);
+}
+
+.settings-guide-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 7px;
+}
+
+.settings-guide-body p {
+  margin: 0;
+}
+
+.settings-guide code {
+  color: var(--text-primary);
+  font-family: var(--font-mono, monospace);
+}
+
+.git-scopes-group strong {
+  color: var(--text-primary);
+  font-size: 12px;
+}
+
+.git-scopes-group ul {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 4px 0 0;
+  padding-left: 18px;
+  list-style: disc;
+}
+
+/* Keep the per-project Mobile access controls from making global settings grow
+   with every project, while retaining quick access to a specific project. */
+.mobile-project-access-search {
+  width: 100%;
+  box-sizing: border-box;
+  height: 32px;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-sm);
+  background: var(--control-bg);
+  color: var(--text-primary);
+  font-size: var(--text-base);
+  padding: 0 9px;
+}
+
+.mobile-project-access-search:hover,
+.mobile-project-access-search:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+
+.mobile-project-access-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 280px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+/* Archived-projects (Settings) list — `.settings-list.boxed`'s shape, spelled
+   out because this one is a <ul> that also scrolls. */
+.archived-projects-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  background: var(--bg-panel);
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.archived-project-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 10px;
+}
+
+.archived-project-row + .archived-project-row {
+  border-top: 1px solid var(--border-subtle);
+}
+
+.archived-project-info {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.archived-project-name {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.archived-project-tag {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+  border: 1px solid var(--border-color, rgba(255, 255, 255, 0.15));
+  border-radius: var(--radius-sm);
+  padding: 0 4px;
+}
+
+.archived-project-date {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.archived-project-actions,
+.archived-project-confirm {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.archived-project-confirm input {
+  min-width: 160px;
+  height: 30px;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-sm);
+  background: var(--control-bg);
+  color: var(--text-primary);
+  font-size: var(--text-base);
+  padding: 0 9px;
+}
+
+.archived-project-confirm input:hover,
+.archived-project-confirm input:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+
+.archived-project-confirm-group {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.archived-project-warn {
+  margin: 0;
+  max-width: 340px;
+  font-size: 0.82em;
+  line-height: 1.35;
+  text-align: right;
+  color: var(--danger);
+}
+
+.help-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.help-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+}
+
+.help-row {
+  display: grid;
+  grid-template-columns: 160px 1fr;
+  gap: 12px;
+  align-items: baseline;
+}
+
+.help-row dt {
+  color: var(--text-primary);
+  font-weight: 600;
+  font-size: 12px;
+}
+
+.help-row dd {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+@media (max-width: 520px) {
+  .help-row {
+    grid-template-columns: 1fr;
+    gap: 2px;
+  }
+}
+
+.project-settings-dialog {
+  width: min(560px, calc(100vw - 32px));
+}
+
+.project-ending-form {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.project-ending-form input {
+  flex: 1;
+  height: 34px;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-sm);
+  background: var(--control-bg);
+  color: var(--text-primary);
+  padding: 0 9px;
+}
+
+.project-ending-form input:hover,
+.project-ending-form input:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+
+.project-ending-form button {
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-sm);
+  background: var(--control-bg);
+  color: var(--text-primary);
+  cursor: var(--cur-pointer, pointer);
+  padding: 7px 10px;
+}
+
+.project-ending-form button:hover {
+  background: var(--control-hover-bg);
+  border-color: var(--accent);
+}
+
+.settings-list.project-ending-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
+  gap: 4px 10px;
+  max-height: min(360px, calc(100vh - 300px));
+  overflow-y: auto;
+  padding-right: 2px;
+  /* `flex: none` is what keeps this list on screen at all. It is a flex item of
+     the dialog's column, and `overflow-y: auto` gives a flex item an automatic
+     minimum size of ZERO — every sibling here (headings, help text, the viewer
+     rows) has the default content-based minimum and cannot shrink, so when the
+     dialog's content exceeds its max-height this one list absorbed the entire
+     shrinkage and collapsed to 0px: the File hiding section rendered its title
+     and its help line above nothing at all. It still scrolls internally once
+     the endings pass `max-height`; it just no longer pays for the whole
+     dialog's overflow. */
+  flex: none;
+}
+
+.project-ending-toggle {
+  min-height: 32px;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-sm);
+  background: var(--control-bg);
+  color: var(--text-primary);
+  cursor: var(--cur-pointer, pointer);
+  padding: 6px 8px;
+  font-family: inherit;
+  font-size: 12px;
+  text-align: center;
+}
+
+.project-ending-toggle:hover {
+  background: var(--control-hover-bg);
+  border-color: var(--accent);
+}
+
+.project-ending-toggle.is-hidden {
+  color: var(--text-muted);
+  background: var(--bg-main);
+  border-color: var(--border-subtle);
+}
+
+.settings-empty {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.settings-error {
+  color: var(--danger);
+  font-size: 12px;
+  word-break: break-word;
+}
+
+/* ── Lists ────────────────────────────────────────────────────────────────
+   Two shapes, one class. Bare, a list is a stack of cards (the VPN configs,
+   the agents) and the cards draw their own edges. `.boxed` is for a list of
+   *repeated rows* — download folders, shortcuts, file types, global apps,
+   remote hosts — which read as one framed table with hairline separators
+   rather than as N loose rows floating on the dialog background. */
+.settings-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.settings-list.boxed {
+  gap: 0;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  background: var(--bg-panel);
+  /* Clips the first/last row's corners against the frame's radius. Rows never
+     scroll inside the frame, so no scrollbar ever meets the rounded edge. */
+  overflow: hidden;
+}
+
+.settings-list.boxed > * {
+  padding: 8px 10px;
+}
+
+.settings-list.boxed > * + * {
+  border-top: 1px solid var(--border-subtle);
+}
+
+.settings-list.boxed > .settings-empty {
+  padding: 14px 10px;
+  text-align: center;
+}
+
+/* A row's own label column, ellipsised — a long path or an agent name must not
+   push the row's buttons off the right edge. */
+.settings-list-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: var(--text-base);
+}
+
+.global-app-settings-row,
+.filetype-settings-row {
+  display: grid;
+  align-items: center;
+  gap: 8px;
+}
+
+.global-app-settings-row {
+  grid-template-columns: 18px 22px 104px minmax(120px, 1fr) auto;
+}
+
+.filetype-settings-row {
+  grid-template-columns: 70px minmax(120px, 1fr) auto auto;
+}
+
+.filetype-settings-row:last-child {
+  grid-template-columns: 70px minmax(120px, 1fr) auto;
+  border-top: 1px solid var(--border-subtle);
+  padding-top: 8px;
+}
+
+.remote-host-settings-row {
+  display: grid;
+  align-items: center;
+  gap: 8px;
+  grid-template-columns: minmax(90px, 180px) minmax(120px, 1fr) auto;
+}
+
+/* The add row is the framed list's last row now; `.settings-list.boxed` draws
+   its separator, so it only needs the wider first column a bare host name
+   doesn't. */
+.remote-host-settings-add {
+  grid-template-columns: minmax(90px, 180px) minmax(120px, 1fr) auto;
+}
+
+.settings-role-icon {
+  text-align: center;
+}
+
+.settings-role-label {
+  color: var(--text-primary);
+}
+
+/* Canonical dialog header: solid accent + subtle divider, matching
+   .settings-title-row h2. (Previously a fancy_dark-only gradient-clipped title
+   that diverged from every other dialog.) */
+.project-dialog h2 {
+  font-size: 16px;
+  font-weight: 650;
+  color: var(--accent);
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+/* `.menu-form` is the ONE canonical form context reused wherever fields appear
+   OUTSIDE a `.project-dialog` — chiefly forms embedded in header popover menus
+   (`.tab-new-menu`, e.g. the global-machines "Add a machine" form), which get no
+   field styling from the popover surface on their own. It carries the exact same
+   label/input/select/textarea look as `.project-dialog`, so a form reads
+   identically in a dialog or a menu. New menus with a form: add `menu-form` to
+   the form container. */
+.project-dialog label,
+.menu-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+/* Container settings (#38): the read-only-rootfs switch sits beside its label
+   text, unlike the stacked text fields above it. */
+.project-dialog label.container-settings-toggle {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+/* The container-scope radio group (#38): which tabs the container applies to.
+   A bordered fieldset rather than two loose labels — the two options are one
+   decision, and the dialog's other rows are independent knobs. */
+.project-dialog .container-scope-fieldset {
+  border: 1px solid var(--border-subtle, var(--border-color));
+  border-radius: var(--radius);
+  padding: 8px 12px 10px;
+  margin: 0 0 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.project-dialog .container-scope-fieldset legend {
+  padding: 0 4px;
+  font-size: 0.85em;
+  opacity: 0.75;
+}
+
+/* The radio sits beside a two-line block (label + its help line), so the row is
+   a grid rather than a flex baseline — a flex row centres the input against the
+   whole block and puts it next to the help text on a wrapped option. */
+.project-dialog label.container-scope-option {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: start;
+  gap: 8px;
+  cursor: var(--cur-pointer, pointer);
+}
+
+.project-dialog label.container-scope-option input[type="radio"] {
+  width: auto;
+  margin: 2px 0 0;
+  cursor: var(--cur-pointer, pointer);
+}
+
+.project-dialog label.container-scope-option > span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.project-dialog label.container-scope-option .settings-help {
+  margin: 0;
+}
+
+.project-dialog input,
+.project-dialog select,
+.project-dialog textarea,
+.menu-form input,
+.menu-form select,
+.menu-form textarea {
+  height: 34px;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-sm);
+  background: var(--control-bg);
+  color: var(--text-primary);
+  padding: 0 8px;
+}
+
+/* Menu-form fields stretch to the popover width (their labels are flex columns,
+   and a menu is narrow — a default-width input would sit oddly short). Scoped to
+   `.menu-form` so it can't disturb a `.project-dialog` input that shares a flex
+   row with a button (e.g. `.folder-picker-row`). */
+.menu-form input,
+.menu-form select,
+.menu-form textarea {
+  box-sizing: border-box;
+  width: 100%;
+}
+
+.project-dialog textarea,
+.menu-form textarea {
+  min-height: 72px;
+  padding: 8px;
+  resize: vertical;
+}
+
+.project-description-field {
+  gap: 6px !important;
+}
+
+.project-description-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.project-description-header span {
+  min-width: 0;
+}
+
+.project-description-header select {
+  width: auto;
+  min-width: 118px;
+  max-width: 160px;
+  height: 28px;
+}
+
+.folder-picker-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Masked input + show/hide eye toggle (see common/PasswordInput.tsx). The wrap
+   takes the input's place in every layout: it stretches to full width in the
+   column/label contexts (flex cross-axis stretch) and grows to fill a
+   `.folder-picker-row`. The reveal button floats over the trailing edge, so the
+   input reserves room for it via padding-right. */
+.password-input-wrap {
+  position: relative;
+  display: flex;
+  min-width: 0;
+}
+.password-input-wrap > input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding-right: 30px;
+}
+.folder-picker-row > .password-input-wrap {
+  flex: 1;
+  overflow: visible;
+}
+.password-reveal-btn {
+  position: absolute;
+  top: 0;
+  right: 0;
+  height: 100%;
+  width: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: var(--cur-pointer, pointer);
+}
+.password-reveal-btn:hover {
+  color: var(--text-primary);
+}
+.password-reveal-btn:disabled {
+  cursor: var(--cur-default, default);
+  opacity: 0.5;
+}
+
+/* OpenVPN activation password prompt */
+.vpn-prompt-dialog {
+  max-width: 380px;
+}
+
+.vpn-prompt-text {
+  color: var(--text-primary);
+  margin: 0 0 8px;
+  /* A project name is user-chosen and a header-started connect substitutes the
+     `.ovpn` filename — both routinely long and both unbreakable to the normal
+     wrapper (no spaces). Without this the name overflowed the 380px dialog and
+     dragged its whole layout wide. */
+  overflow-wrap: anywhere;
+}
+
+/* Title row: heading on the left, × on the right. The canonical accent-header
+   divider moves from the h2 onto the row itself — left on the h2 it would end
+   where the text ends instead of spanning the dialog. */
+.vpn-prompt-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.vpn-prompt-header h2 {
+  min-width: 0;
+  padding-bottom: 0;
+  border-bottom: none;
+  overflow-wrap: anywhere;
+}
+
+/* The project (or `.ovpn`) name inside the prose line — see `.vpn-prompt-text`. */
+.vpn-prompt-name {
+  overflow-wrap: anywhere;
+}
+
+.vpn-prompt-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.vpn-prompt-actions button {
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-sm);
+  padding: 7px 12px;
+  background: var(--control-bg);
+  color: var(--text-primary);
+  cursor: var(--cur-pointer, pointer);
+}
+
+.vpn-prompt-actions button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--bg-main);
+  font-weight: 600;
+}
+
+.vpn-prompt-actions button.primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+
+/* "Sign in in a terminal" — the same escape hatch inside the connect dialogs, as a
+   switch rather than a button: it is a *mode* for this connect (which half of the
+   login section is on screen), and it has to be flippable back. It borrows the
+   `.remote-connect-remember` row layout so it reads as one of that section's options,
+   set apart only by the rule above it. */
+.terminal-signin-toggle {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-color);
+}
+
+/* Once a login has actually failed, the hint stops being a footnote about an option
+   and becomes the suggestion — so it is toned like one. */
+.terminal-signin-toggle .terminal-signin-suggest {
+  color: var(--warning, var(--text-primary));
+  opacity: 0.9;
+}
+
+/* "Go easy on this machine" — same borrowed `.remote-connect-remember` row as the
+   terminal-login switch above it, and set apart the same way. It is last in the
+   section on purpose: it says nothing about *this* connect, only about how Eldrun
+   should behave on this host from now on. */
+.careful-host-toggle {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-color);
+}
+
+/* "Log in in terminal" — an alternative *route*, not a step in this dialog's flow, so
+   it sits apart from the Cancel/Connect pair rather than becoming a third thing to
+   choose between at the same spot. */
+.vpn-prompt-actions button.vpn-prompt-terminal-btn {
+  margin-right: auto;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.vpn-prompt-actions button.vpn-prompt-terminal-btn:hover:not(:disabled) {
+  color: var(--text-primary);
+  border-color: var(--accent);
+}
+
+.vpn-prompt-actions button.vpn-prompt-terminal-btn:disabled {
+  opacity: 0.5;
+  cursor: var(--cur-default, default);
+}
+
+.folder-picker-row span {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+}
+
+.folder-picker-row button,
+.project-dialog-actions button {
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-sm);
+  padding: 7px 10px;
+  background: var(--control-bg);
+  color: var(--text-primary);
+  cursor: var(--cur-pointer, pointer);
+}
+
+.folder-picker-row button:hover {
+  background: var(--control-hover-bg);
+  border-color: var(--accent);
+}
+
+/* Dialog action buttons share the unified accent-underline hover, so their
+   border stays neutral on hover — an accent border here would double the
+   underline's bottom edge (see the unified menu-button block below). */
+.project-dialog-actions button:hover {
+  background: var(--control-hover-bg);
+}
+
+.project-dialog-actions button:last-child {
+  background: var(--accent);
+  color: var(--bg-main);
+  border-color: var(--accent);
+}
+
+.project-dialog-actions button:disabled {
+  opacity: 0.55;
+  cursor: var(--cur-default, default);
+}
+
+/* Destructive confirm (e.g. delete git history) — overrides the accent style
+   the last-child rule otherwise applies. */
+.project-dialog-actions button.danger,
+.project-dialog-actions button.danger:last-child {
+  background: var(--danger);
+  color: var(--bg-main);
+  border-color: var(--danger);
+}
+
+.project-dialog-path {
+  min-height: 16px;
+  color: var(--text-muted);
+  font-size: 12px;
+  word-break: break-all;
+}
+
+/* Remote machines manager (multi-host remote, docs/multi_host_remote_plan.md).
+   Reuses the app's dialog surface; each worker is a bordered card matching the
+   settings toggle-card look. */
+.remote-machine-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  background: var(--bg-panel);
+}
+
+.remote-machine-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.remote-machine-name {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.remote-machine-tag {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-color);
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+}
+
+.remote-machine-target {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.remote-machine-status {
+  min-height: 16px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.remote-machine-status.error {
+  color: var(--danger);
+}
+
+.remote-machine-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.remote-machine-actions button {
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+  background: var(--control-bg);
+  color: var(--text-primary);
+  font-size: 12px;
+  cursor: var(--cur-pointer, pointer);
+}
+
+.remote-machine-actions button:hover:not(:disabled) {
+  background: var(--control-hover-bg);
+  border-color: var(--accent);
+}
+
+.remote-machine-actions button:disabled {
+  opacity: 0.55;
+  cursor: var(--cur-default, default);
+}
+
+.remote-machine-actions button.danger {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.remote-machine-actions button.danger:hover:not(:disabled) {
+  background: var(--danger);
+  color: var(--bg-main);
+}
+
+/* Per-worker toggle rows: label text on the left, switch on the right. */
+.remote-machine-toggle {
+  flex-direction: row !important;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.remote-machine-toggle > span:first-child {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+/* Wraps the worker cards so the group keeps the dialog's own card-to-card
+   spacing. */
+.remote-machine-worker-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* The confirm-shared-path panel an incoming global machine seeds — an accent
+   border marks it as the thing that just landed, distinct from an ordinary
+   worker card. */
+.remote-machine-drop-panel {
+  border-color: var(--accent);
+}
+
+/* The "Add a machine" block. Reads as one of the worker cards above it — same
+   border/radius/background/padding — so the form doesn't look like a stray,
+   unframed section tacked onto the list of entries. */
+.remote-machine-add {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  background: var(--bg-panel);
+}
+
+.remote-machine-add-title {
+  font-weight: 650;
+  color: var(--accent-secondary, var(--accent));
+  font-size: 13px;
+}
+
+.remote-machine-add-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* "Your machines" — the global-machine shortcut at the top of the add form.
+   Deliberately lighter than a worker card: these are offers, not entries. */
+.remote-machine-global {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.remote-machine-global-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.remote-machine-global-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  /* A large fleet must not push the form itself off the dialog. */
+  max-height: 168px;
+  overflow-y: auto;
+}
+
+.remote-machine-global-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+}
+
+.remote-machine-global-row .remote-machine-name {
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.remote-machine-global-row button {
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-sm);
+  padding: 3px 8px;
+  background: var(--control-bg);
+  color: var(--text-primary);
+  font-size: 11px;
+  white-space: nowrap;
+  cursor: var(--cur-pointer, pointer);
+}
+
+.remote-machine-global-row button:hover:not(:disabled) {
+  background: var(--control-hover-bg);
+  border-color: var(--accent);
+}
+
+.remote-machine-loggedin {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+/* Only the text span flexes — NOT the ConnLamp, which is also a <span> child.
+   A bare `> span` would stretch the 8px round lamp into a green bar. */
+.remote-machine-loggedin > span:not(.conn-lamp) {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.remote-machine-loggedin > button {
+  flex: none;
+}
+
+.extend-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.extend-path-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.extend-path-label {
+  flex: none;
+  width: 52px;
+  color: var(--text-muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.extend-remote-path {
+  flex: 1;
+  min-width: 0;
+  display: block;
+  padding: 6px 10px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.remote-chosen-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.remote-chosen-summary .remote-chosen-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.remote-change-folder-btn {
+  flex: none;
+  padding: 2px 10px;
+  font-size: 12px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  cursor: var(--cur-pointer, pointer);
+}
+
+.remote-change-folder-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.remote-change-folder-btn:disabled {
+  opacity: 0.5;
+  cursor: var(--cur-default, default);
+}
+
+.project-dialog-error {
+  color: var(--danger);
+  font-size: 12px;
+  word-break: break-word;
+}
+
+/* "This folder is already the project X" — the duplicate-import notice. It sits on
+   the error colour because it does block Create, but it carries an action (open
+   the existing project) rather than leaving the user to go find it, so it needs a
+   row rather than the plain text line above. */
+.project-dialog-conflict {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+/* Local-loss warning (#28q): what lockstep/sync destroyed in the local mirror.
+   Reuses the one dialog surface; only the title takes the warning colour, because
+   the thing being reported is not an error — it is a correct operation the user is
+   entitled to know happened to their machine. */
+.local-loss-dialog {
+  width: min(620px, calc(100vw - 32px));
+}
+
+.local-loss-title {
+  color: var(--warning);
+}
+
+.local-loss-lede {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  margin: 0;
+}
+
+.local-loss-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow-y: auto;
+  max-height: 46vh;
+}
+
+.local-loss-entry {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  border-left: 3px solid var(--warning);
+  border-radius: var(--radius);
+}
+
+.local-loss-entry-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.local-loss-badge {
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.local-loss-badge-deleted {
+  color: var(--danger);
+}
+
+.local-loss-badge-overwritten {
+  color: var(--warning);
+}
+
+.local-loss-when {
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.local-loss-op {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.local-loss-paths {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-family: var(--font-mono, ui-monospace, "SF Mono", Menlo, Consolas, monospace);
+  font-size: 11px;
+  color: var(--text-primary);
+  max-height: 160px;
+  overflow-y: auto;
+  word-break: break-all;
+}
+
+.local-loss-more {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.local-loss-recovery {
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+/* Nothing to recover from: say so in the colour that means it, rather than
+   leaving the line blank and letting the user assume git has a copy. */
+.local-loss-gone {
+  color: var(--danger);
+}
+
+/* Remote-usage warning: the host looked already in use right after connect
+   (high load/memory, or another logged-in session). Same dialog surface as
+   local-loss, same warning-coloured title — but advisory, not a record of
+   something destroyed, so unlike local-loss it dismisses on backdrop click. */
+/* Canonical framed dialog (.settings-title-row header + .dialog-scroll body);
+   only the width is this dialog's own — chrome, header tint and scroll frame all
+   come from the shared .project-dialog.dialog-framed rules. */
+.remote-usage-dialog {
+  width: min(560px, calc(100vw - 32px));
+}
+
+.remote-usage-lede {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  margin: 0;
+}
+
+/* One card per connected host (multi-host remote): its own bordered, elevated
+   surface — rather than a divider-separated block — is what keeps two hosts'
+   stats from reading as one continuous list when several are connected. */
+.remote-usage-host {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-1);
+}
+
+.remote-usage-host + .remote-usage-host {
+  margin-top: 2px;
+}
+
+.remote-usage-host-title {
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--text-primary);
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.remote-usage-reasons {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding-left: 18px;
+  font-size: 12px;
+  color: var(--text-primary);
+}
+
+/* ── The HPC tag ───────────────────────────────────────────────────────────
+   The badge that marks a machine as a shared cluster login node (Machines menu
+   row, connect dialog, the guard modal). Deliberately loud enough to notice on a
+   row and small enough not to shout: it is a fact about the machine, not a
+   warning about it. */
+.hpc-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 5px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  line-height: 15px;
+  color: var(--accent);
+  background: transparent;
+  flex: none;
+}
+
+.hpc-guard-dialog {
+  max-width: 520px;
+}
+.hpc-guard-title {
+  margin: 0 0 10px;
+  font-size: 15px;
+  font-weight: 650;
+  color: var(--text-primary);
+}
+.hpc-guard-target {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.hpc-guard-target code {
+  font-size: 11px;
+  color: var(--text-primary);
+}
+.hpc-guard-badge {
+  padding: 0 5px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  line-height: 15px;
+  color: var(--accent);
+}
+.hpc-guard-body {
+  margin: 0 0 10px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-primary);
+}
+.hpc-guard-note {
+  margin: 0 0 14px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+/* Closing a project — the app's own confirmation, replacing the native
+   `confirm()` that was the one dialog in Eldrun the theme could not reach.
+   Rides the shared `.project-dialog` surface (accent rail, wash, shadow) and
+   adds only what is specific to it: the two counts, and the list of tabs that
+   turns "3 terminal tabs" back into named work. */
+.stop-project-dialog {
+  width: min(460px, calc(100vw - 32px));
+}
+.stop-project-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 650;
+  color: var(--text-primary);
+}
+.stop-project-lede {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-primary);
+}
+/* The two figures, read as one row of facts rather than a sentence: the number
+   is what the eye lands on, the clause beside it says what it costs. */
+.stop-project-counts {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.stop-project-count {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.stop-project-num {
+  min-width: 22px;
+  text-align: right;
+  font-size: 17px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--danger);
+}
+.stop-project-what {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+/* The inventory. Scrolls rather than growing the dialog past its buttons; the
+   tail is summed by `.stop-project-more` when it does not fit. */
+.stop-project-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 168px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 8px 10px;
+  list-style: none;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  background: var(--bg-panel);
+}
+.stop-project-tab {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 20px;
+  color: var(--text-primary);
+}
+.stop-project-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-muted);
+}
+/* An agent tab is the one whose loss is least likely to be in the user's head —
+   it may have been working unattended for an hour — so it is the one marked. */
+.stop-project-dot-agent {
+  background: var(--accent);
+}
+.stop-project-tab-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Locality chip: only ever drawn for a tab that is NOT on this machine. */
+.stop-project-where {
+  flex: none;
+  margin-left: auto;
+  padding: 0 5px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
+  line-height: 15px;
+  color: var(--text-secondary);
+}
+.stop-project-more {
+  font-size: 11px;
+  line-height: 20px;
+  color: var(--text-muted);
+}
+.stop-project-keep {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+/* The HPC-host note: why this section lists only the user's own sessions and
+   processes. Informational, so it is toned down against the reasons list above
+   it — it explains the reading, it is not one of the warnings. */
+.remote-usage-careful {
+  padding: 6px 8px;
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-sm);
+  background: var(--bg-subtle);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.remote-usage-stats {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  /* No border/background of its own — the host card above already provides
+     the boundary; a nested box here just read as a card-in-a-card. */
+}
+
+.remote-usage-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.remote-usage-stat-label {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.remote-usage-stat-value {
+  font-size: 12px;
+  color: var(--text-primary);
+  font-family: var(--font-mono, ui-monospace, "SF Mono", Menlo, Consolas, monospace);
+}
+
+/* Traffic-light dot for CPU/GPU utilization: green (idle) → orange → red. */
+.remote-usage-light {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 6px;
+  border-radius: 50%;
+  vertical-align: baseline;
+  background: var(--text-muted);
+}
+
+.remote-usage-light.is-green {
+  background: var(--success);
+  box-shadow: 0 0 4px var(--success);
+}
+
+.remote-usage-light.is-orange {
+  background: var(--warning);
+  box-shadow: 0 0 4px var(--warning);
+}
+
+.remote-usage-light.is-red {
+  background: var(--danger);
+  box-shadow: 0 0 4px var(--danger);
+}
+
+.remote-usage-stat-sub {
+  color: var(--text-muted);
+  font-family: inherit;
+}
+
+.remote-usage-section {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.remote-usage-section-title {
+  font-size: 11px;
+  font-weight: 650;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.remote-usage-empty {
+  color: var(--text-muted);
+  font-style: italic;
+  font-size: 12px;
+}
+
+.remote-usage-procs {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-height: 140px;
+  overflow-y: auto;
+}
+
+.remote-usage-procs li {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 11px;
+  font-family: var(--font-mono, ui-monospace, "SF Mono", Menlo, Consolas, monospace);
+  color: var(--text-primary);
+  padding: 3px 6px;
+  background: var(--bg-input);
+  border-radius: var(--radius);
+}
+
+.remote-usage-proc-cmd {
+  font-weight: 650;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.remote-usage-proc-user {
+  color: var(--text-secondary);
+}
+
+.remote-usage-proc-pct {
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+/* The per-user "Logged in" table: a real grid, not flex, so User / CPU /
+   Sessions / Mem line up column-for-column across every row and the header.
+   Each `li` is `display: contents` so its cells become direct grid items —
+   that's what keeps a data row's columns in the same tracks as the header's. */
+.remote-usage-users {
+  display: grid;
+  grid-template-columns: minmax(60px, max-content) repeat(3, max-content);
+  column-gap: 14px;
+  row-gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-height: 140px;
+  overflow-y: auto;
+  font-size: 11px;
+  font-family: var(--font-mono, ui-monospace, "SF Mono", Menlo, Consolas, monospace);
+}
+.remote-usage-users li {
+  display: contents;
+}
+.remote-usage-users-head span {
+  color: var(--text-muted);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  padding: 0 6px;
+}
+.remote-usage-users li:not(.remote-usage-users-head) > span {
+  padding: 3px 6px;
+  background: var(--bg-input);
+  color: var(--text-primary);
+}
+.remote-usage-users li:not(.remote-usage-users-head) > span:first-child {
+  border-top-left-radius: var(--radius);
+  border-bottom-left-radius: var(--radius);
+}
+.remote-usage-users li:not(.remote-usage-users-head) > span:last-child {
+  border-top-right-radius: var(--radius);
+  border-bottom-right-radius: var(--radius);
+}
+.remote-usage-user {
+  font-weight: 650;
+  white-space: nowrap;
+}
+/* "you" chip on the connected account's own row in the "Logged in" table — the
+   row is pinned to the top, and this is what says why it is there (on a host
+   where the login name differs from the local one, the name alone doesn't). */
+.remote-usage-user-you {
+  margin-left: 6px;
+  padding: 0 4px;
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  vertical-align: 1px;
+}
+.remote-usage-user-cpu,
+.remote-usage-user-sessions,
+.remote-usage-user-mem {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.remote-usage-user-cpu {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+}
+
+.scaffold-popover {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  background: var(--bg-main);
+  border: 1px solid var(--border-subtle);
+}
+
+.scaffold-popover-title {
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.scaffold-steps {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.scaffold-steps li + li {
+  margin-top: 3px;
+}
+
+.manual-validation-row {
+  min-height: 28px;
+  flex-direction: row !important;
+  align-items: center;
+  gap: 8px !important;
+  color: var(--text-primary) !important;
+}
+
+.manual-validation-row input[type="checkbox"],
+.skip-scaffold-row input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  flex: 0 0 auto;
+  accent-color: var(--accent);
+}
+
+.skip-scaffold-row {
+  min-height: 28px;
+  flex-direction: row !important;
+  align-items: center;
+  gap: 8px !important;
+  color: var(--text-primary) !important;
+}
+
+.scaffold-fill-all-row {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) minmax(160px, 210px);
+  gap: 10px !important;
+  align-items: center;
+  color: var(--text-primary) !important;
+}
+
+.scaffold-fill-all-row span {
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.scaffold-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.scaffold-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(160px, 210px);
+  gap: 10px;
+  align-items: center;
+  padding: 7px 8px;
+  border: 1px solid var(--border-subtle);
+  background: var(--control-bg);
+}
+
+.scaffold-file {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.scaffold-file span {
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
+.scaffold-file small,
+.scaffold-empty {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.scaffold-row select:disabled {
+  opacity: 0.62;
+  cursor: var(--cur-default, default);
+}
+
+.scaffold-row-status {
+  color: var(--text-muted);
+  font-size: 12px;
+  text-align: right;
+}
+
+@media (max-width: 640px) {
+  .scaffold-fill-all-row,
+  .scaffold-row {
+    grid-template-columns: 1fr;
+  }
+
+  .scaffold-row-status {
+    text-align: left;
+  }
+}
+
+.ssh-optional-hint {
+  color: var(--text-muted);
+  font-weight: 400;
+  font-size: 12px;
+}
+
+/* ── Mode-toggle card + sliding switch (remote-project / OpenVPN toggles) ──── */
+/* A bordered row carrying a title + one-line description on the left and a
+   sliding switch on the right. Lights up with the accent when the mode is on,
+   replacing the bare native checkbox these toggles used to render as. */
+.toggle-card {
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: center;
+  gap: 14px;
+  padding: 11px 13px;
+  border: 1px solid var(--border-subtle);
+  background: var(--control-bg);
+  cursor: var(--cur-pointer, pointer);
+  transition: border-color var(--transition), background var(--transition);
+}
+
+.toggle-card:hover {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border-subtle));
+}
+
+.toggle-card.is-on {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 9%, var(--control-bg));
+}
+
+.toggle-card-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.toggle-card-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.toggle-card-desc {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.4;
+}
+
+/* The static twin of `.toggle-card`, borrowing its title/desc typography: shown in
+   place of a dialog's "Connect via OpenVPN" toggle once a tunnel is up machine-wide
+   (`VpnTunnelUpNotice`). Nothing to switch — the tunnel already exists — so it reads
+   as a lit, non-interactive card rather than an off toggle. */
+.vpn-up-card {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 11px 13px;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border-subtle));
+  background: color-mix(in srgb, var(--accent) 9%, var(--control-bg));
+}
+
+/* Sliding pill switch. The checkbox is the real (focusable) control, layered
+   transparently over the track; the track's ::after pseudo is the moving knob. */
+.eld-switch {
+  position: relative;
+  flex: 0 0 auto;
+  display: inline-flex;
+  width: 40px;
+  height: 22px;
+}
+
+.eld-switch input[type="checkbox"] {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  opacity: 0;
+  cursor: var(--cur-pointer, pointer);
+  z-index: 1;
+}
+
+.eld-switch-track {
+  position: absolute;
+  inset: 0;
+  border-radius: var(--radius-full);
+  background: color-mix(in srgb, var(--text-secondary) 32%, transparent);
+  border: 1px solid var(--control-border);
+  transition: background var(--transition), border-color var(--transition);
+}
+
+.eld-switch-track::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 3px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--text-primary);
+  transform: translateY(-50%);
+  transition: transform var(--transition), background var(--transition);
+}
+
+.eld-switch input:checked + .eld-switch-track {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.eld-switch input:checked + .eld-switch-track::after {
+  transform: translate(18px, -50%);
+  /* The knob rides ON the accent-filled track, so it must be the accent's
+     contrast tone, not a fixed #fff. That literal worked only while every
+     theme's --accent was a mid-tone hue; under the achromatic `dark` theme the
+     accent IS white, so a white knob on a white track vanished — which is why
+     only the switched-ON rows in a group looked broken while the OFF ones
+     beside them (a grey track, --text-primary knob) were fine. */
+  background: var(--accent-contrast);
+}
+
+.eld-switch input:focus-visible + .eld-switch-track {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Compact variant for inline toolbars / filter rows (file-browser filters,
+   search options, per-file-type viewer prefs) where the full-size pill would
+   dominate a dense row. */
+.eld-switch-sm {
+  width: 30px;
+  height: 16px;
+}
+
+.eld-switch-sm .eld-switch-track::after {
+  width: 10px;
+  height: 10px;
+  left: 2px;
+}
+
+.eld-switch-sm input:checked + .eld-switch-track::after {
+  transform: translate(14px, -50%);
+}
+
+/* OpenVPN section heading. There's no on/off toggle (OpenVPN is the only tunnel
+   type), so this is a plain title + hint that labels the always-shown config
+   controls below; the tunnel is used only when a config is actually selected. */
+.vpn-section-header {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+/* Expanded OpenVPN controls, nested under the section heading with an accent
+   spine so the config picker / connect button read as belonging to it. */
+.vpn-details {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 2px 0 2px 12px;
+  border-left: 2px solid color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+.ssh-connect-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  background: var(--bg-main);
+  border: 1px solid var(--border-subtle);
+}
+
+.ssh-tooling-warning {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  font-size: 12px;
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  border: 1px solid var(--danger);
+  word-break: break-word;
+}
+
+/* "Recently used…" picker reuses the address-input look but is a real select. */
+.vpn-config-recent {
+  cursor: var(--cur-pointer, pointer);
+}
+
+/* The OpenVPN config a remote project currently uses: label + file name + the
+   "Change…" way back to the picker, so a stored choice is visible and swappable
+   rather than a one-shot decision. */
+.vpn-config-current {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 2px 0;
+  font-size: 12px;
+}
+.vpn-config-current-name {
+  flex: 1 1 auto;
+  font-family: var(--mono-font, monospace);
+  color: var(--text-secondary);
+  word-break: break-all;
+}
+.vpn-config-change-btn {
+  flex: 0 0 auto;
+}
+
+/* OpenVPN connect button: animate the in-flight handshake and tint the button
+   by tunnel state so its status reads at a glance (the exact state/error is in
+   the hover title). */
+.vpn-connect-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: background var(--transition-slow), border-color var(--transition-slow), color var(--transition-slow);
+}
+
+.vpn-connect-btn.vpn-status-connecting {
+  /* Disabled while connecting, but keep it visibly "alive" with a soft pulse. */
+  border-color: var(--accent);
+  color: var(--accent);
+  animation: vpn-connecting-pulse 1.1s ease-in-out infinite;
+}
+
+.vpn-connect-btn.vpn-status-connected {
+  border-color: var(--success);
+  color: var(--success);
+  background: color-mix(in srgb, var(--success) 14%, transparent);
+}
+
+.vpn-connect-btn.vpn-status-error {
+  border-color: var(--danger);
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+}
+
+/* Small spinning ring shown inside the button while the tunnel comes up. */
+.vpn-spinner {
+  width: 11px;
+  height: 11px;
+  border: 2px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: file-viewer-spin 0.7s linear infinite;
+  flex: 0 0 auto;
+}
+
+@keyframes vpn-connecting-pulse {
+  0%,
+  100% {
+    background: color-mix(in srgb, var(--accent) 8%, transparent);
+  }
+  50% {
+    background: color-mix(in srgb, var(--accent) 22%, transparent);
+  }
+}
+
+/* Non-headless connect block: the "Connect VPN…/Log in over SSH…" button and,
+   once clicked, the live terminal embedded in the project dialog where the user
+   authenticates the tunnel/login. The PTY outlives the dialog (persistOnUnmount)
+   so the new project rides the connection it set up. */
+.dialog-connect {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border-color));
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+}
+
+/* Prominent call-to-action so it's obvious THIS is where you open the login
+   terminal — full-width, accent-filled, with a blinking-prompt glyph. */
+.dialog-connect-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  padding: 9px 12px;
+  font-weight: 600;
+  /* --bg-main (not --accent-contrast) matches .btn-primary and the dialog
+     action buttons — legible dark-on-accent instead of low-contrast white. */
+  color: var(--bg-main);
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  cursor: var(--cur-pointer, pointer);
+  transition: background var(--transition), border-color var(--transition), opacity var(--transition);
+}
+
+.dialog-connect-btn:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+
+.dialog-connect-btn:disabled {
+  cursor: var(--cur-default, default);
+  opacity: 0.55;
+}
+
+.dialog-connect-btn-icon {
+  font-family: "JetBrains Mono", "Fira Code", Consolas, Menlo, monospace;
+  font-weight: 700;
+  letter-spacing: -1px;
+}
+
+/* ── Shared CTA buttons ──────────────────────────────────────────────────
+   The one canonical primary / danger call-to-action for the whole app. Filled
+   accent (or danger) with text in --bg-main — legible on every theme's accent
+   (dark text on the dark themes' bright accents, light text on the light
+   themes' blues), where fixed-white --accent-contrast would wash out. Sharp
+   corners via --radius. Use .btn-primary / .btn-danger (+ .btn-block to span a
+   row) for any new CTA so buttons never drift again. */
+.btn-primary,
+.btn-danger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 9px 12px;
+  border-radius: var(--radius);
+  font-weight: 600;
+  color: var(--bg-main);
+  cursor: var(--cur-pointer, pointer);
+  transition: background var(--transition), border-color var(--transition), opacity var(--transition), transform var(--transition);
+}
+
+.btn-primary {
+  background: var(--accent);
+  border: 1px solid var(--accent);
+}
+
+.btn-danger {
+  background: var(--danger);
+  border: 1px solid var(--danger);
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+
+.btn-primary:active:not(:disabled) {
+  background: var(--accent-active);
+  border-color: var(--accent-active);
+}
+
+.btn-danger:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+.btn-danger:active:not(:disabled) {
+  filter: brightness(0.94);
+}
+
+.btn-primary:disabled,
+.btn-danger:disabled {
+  opacity: 0.55;
+  cursor: var(--cur-default, default);
+}
+
+.btn-block {
+  width: 100%;
+}
+
+/* ── Unified menu-button interaction (accent underline + press) ────────────
+   Every menu-row button — the context menu, the +tab menu, the custom
+   dropdown menu, and the project-switcher add menu — shares ONE hover/press
+   feel so they never drift: a theme-accent underline that wipes in from the
+   leading edge on hover, and a quick scale-down on click. The per-menu rules
+   above still own each menu's layout, colours and background-hover; this only
+   layers the shared accent underline and the press animation on top. The
+   hover accent was moved OUT of the box border (now kept neutral, so the
+   underline reads cleanly instead of doubling the bottom edge) — the accent
+   border survives only as the +tab menu's keyboard `enter-target` and the
+   dropdown's `.selected`, which are distinct "this is picked" signals, not
+   plain hover. */
+.context-menu button,
+.tab-new-menu-item,
+.dropdown .dropdown-menu button,
+.project-switcher-add-menu button,
+.project-dialog-actions button {
+  position: relative;
+  transition: background-color var(--transition), border-color var(--transition),
+    color var(--transition), transform var(--transition);
+}
+
+/* The underline: a pseudo-element pinned to the bottom edge, scaled to 0 on
+   the x-axis and grown to full width on hover. transform-origin left makes it
+   wipe in from the leading edge. Inset to match each row's horizontal padding
+   so it sits under the label, not the full box. */
+.context-menu button::after,
+.tab-new-menu-item::after,
+.dropdown .dropdown-menu button::after,
+.project-switcher-add-menu button::after,
+.project-dialog-actions button::after {
+  content: "";
+  position: absolute;
+  left: 9px;
+  right: 9px;
+  bottom: 3px;
+  height: 2px;
+  border-radius: var(--radius-full);
+  background: var(--accent);
+  transform: scaleX(0);
+  transform-origin: left center;
+  transition: transform var(--transition);
+  pointer-events: none;
+}
+
+.context-menu button:hover:not(:disabled)::after,
+.tab-new-menu-item:hover:not(:disabled)::after,
+.tab-new-menu-item.enter-target::after,
+.dropdown .dropdown-menu button:hover:not(:disabled)::after,
+.project-switcher-add-menu button:hover::after,
+.project-dialog-actions button:hover:not(:disabled)::after {
+  transform: scaleX(1);
+}
+
+/* Danger actions underline in the danger hue, tracking their red text. */
+.context-menu button.danger::after,
+.context-menu-danger-zone button::after {
+  background: var(--danger);
+}
+
+/* Dialog action rows: the filled CTA (last-child) and danger buttons sit on an
+   accent/danger fill, where an accent underline would be invisible — so their
+   underline is drawn in the button's own text colour (--bg-main) instead. */
+.project-dialog-actions button:last-child::after,
+.project-dialog-actions button.danger::after {
+  background: var(--bg-main);
+}
+
+/* Click feedback: a quick press-in, shared by the menu rows AND the CTA
+   buttons so every button in the app answers a click the same way. */
+.context-menu button:active:not(:disabled),
+.tab-new-menu-item:active:not(:disabled),
+.dropdown .dropdown-menu button:active:not(:disabled),
+.project-switcher-add-menu button:active,
+.project-dialog-actions button:active:not(:disabled),
+.btn-primary:active:not(:disabled),
+.btn-danger:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .context-menu button::after,
+  .tab-new-menu-item::after,
+  .dropdown .dropdown-menu button::after,
+  .project-switcher-add-menu button::after,
+  .project-dialog-actions button::after {
+    transition: none;
+  }
+  .context-menu button:active:not(:disabled),
+  .tab-new-menu-item:active:not(:disabled),
+  .dropdown .dropdown-menu button:active:not(:disabled),
+  .project-switcher-add-menu button:active,
+  .project-dialog-actions button:active:not(:disabled),
+  .btn-primary:active:not(:disabled),
+  .btn-danger:active:not(:disabled) {
+    transform: none;
+  }
+}
+
+.dialog-connect-terminal {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border: 1px solid var(--border-color);
+  padding: 6px;
+  background: var(--bg-panel);
+}
+
+.dialog-connect-terminal-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+/* Fixed-height host so the embedded xterm has a stable layout box to open into
+   (xterm refuses to render in a zero-height element). */
+.dialog-connect-terminal-host {
+  height: 180px;
+  min-height: 180px;
+  display: flex;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.vpn-disconnect-btn {
+  border-color: var(--danger);
+  color: var(--danger);
+  flex: 0 0 auto;
+}
+
+/* ── Install overlay ──────────────────────────────────────────────────────
+   The one-click install's centered terminal (`InstallOverlayHost`), on the
+   shared `.project-dialog.dialog-framed` chrome. Sized its own way rather than
+   riding the mail/calendar/board trio's shared box: those are whole panes and
+   claim most of the window; this is one terminal watching one command, and a
+   near-fullscreen black rectangle would read as a mode switch rather than a
+   progress window. */
+.install-overlay {
+  width: min(860px, calc(100vw - 48px));
+  height: min(640px, calc(100vh - 96px));
+  display: flex;
+  flex-direction: column;
+}
+.install-overlay-hint {
+  margin: 0;
+  padding: 6px 16px 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+/* Definite, clipped box for the embedded xterm — same reason as
+   `.dialog-connect-terminal-host`: xterm refuses to open into a zero-height
+   element, and the terminal scrolls itself. */
+.install-overlay-body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  margin: 0 10px 10px;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+/* "Paste username / password" above a login terminal (see CredentialPasteBar):
+   small, secondary buttons — the login itself happens in the terminal below, this
+   only saves retyping a credential the keychain already holds. */
+.credential-paste-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.credential-paste-btn {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  font-size: 0.8em;
+  border-radius: var(--radius-sm);
+}
+
+.credential-paste-note {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* "Push to GitHub/GitLab" picked but no Eldrun connection yet: a nudge to set
+   the access token up in Settings → Git Hosting, with a one-click redirect. */
+.git-connect-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  color: var(--text-primary, var(--text));
+  font-size: 0.85em;
+}
+
+.git-connect-notice button {
+  flex: 0 0 auto;
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* Read-only live OpenVPN handshake log (headless connect). Terminal-styled so a
+   streamed connect reads as live work; capped + scrollable so a chatty handshake
+   stays inside the dialog. */
+.connection-log {
+  max-height: 150px;
+  overflow-y: auto;
+  padding: 6px 8px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-panel);
+  font-family: "JetBrains Mono", "Fira Code", Consolas, Menlo, monospace;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.connection-log-line {
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text-secondary, var(--text));
+}
+
+.connection-log-waiting {
+  opacity: 0.7;
+  font-style: italic;
+}
+
+.sshfs-install {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 4px;
+  padding-top: 6px;
+  border-top: 1px solid color-mix(in srgb, var(--danger) 40%, transparent);
+  color: var(--text-primary);
+}
+
+.sshfs-install-instruction {
+  font-size: 12px;
+}
+
+.sshfs-install-commands {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.sshfs-install-cmd {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  background: var(--bg-main);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+}
+
+.sshfs-install-cmd-text {
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  white-space: pre;
+}
+
+.sshfs-install-copy,
+.sshfs-install-guide-btn {
+  flex: none;
+  padding: 2px 8px;
+  font-size: 11px;
+  cursor: var(--cur-pointer, pointer);
+}
+
+.sshfs-install-guide-btn {
+  align-self: flex-start;
+}
+
+.ssh-address-input,
+.ssh-password-input {
+  flex: 1;
+  min-width: 0;
+  width: 100%;
+}
+
+.remote-browser {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  background: var(--bg-main);
+  border: 1px solid var(--border-subtle);
+}
+
+.remote-browser-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.remote-up-btn {
+  flex: 0 0 auto;
+}
+
+.remote-breadcrumb {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+  font-size: 12px;
+}
+
+.remote-browser-header button {
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-sm);
+  padding: 5px 9px;
+  background: var(--control-bg);
+  color: var(--text-primary);
+  cursor: var(--cur-pointer, pointer);
+}
+
+.remote-browser-header button:hover {
+  background: var(--control-hover-bg);
+  border-color: var(--accent);
+}
+
+.remote-newfolder {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.remote-newfolder-input {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-sm);
+  padding: 5px 8px;
+  background: var(--control-bg);
+  color: var(--text-primary);
+  font-size: 12px;
+}
+
+.remote-newfolder button {
+  flex: 0 0 auto;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-sm);
+  padding: 5px 9px;
+  background: var(--control-bg);
+  color: var(--text-primary);
+  cursor: var(--cur-pointer, pointer);
+}
+
+.remote-newfolder button:hover:not(:disabled) {
+  background: var(--control-hover-bg);
+  border-color: var(--accent);
+}
+
+.remote-newfolder button:disabled {
+  opacity: 0.5;
+  cursor: var(--cur-default, default);
+}
+
+.remote-list {
+  display: flex;
+  flex-direction: column;
+  max-height: 200px;
+  overflow-y: auto;
+  border: 1px solid var(--border-subtle);
+  background: var(--control-bg);
+}
+
+.remote-entry {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  font-size: 13px;
+}
+
+.remote-entry + .remote-entry {
+  border-top: 1px solid var(--border-subtle);
+}
+
+.remote-entry.is-dir {
+  color: var(--text-primary);
+  cursor: var(--cur-pointer, pointer);
+}
+
+.remote-entry.is-dir:hover {
+  background: var(--control-hover-bg);
+}
+
+.remote-entry.is-file {
+  color: var(--text-muted);
+  cursor: var(--cur-default, default);
+}
+
+.remote-entry-icon {
+  flex: 0 0 auto;
+  color: var(--text-muted);
+}
+
+.remote-entry-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.remote-chosen {
+  color: var(--text-muted);
+  font-size: 12px;
+  word-break: break-all;
+}
+
+/* ── Accent-color picker (Settings → Accent color) ───────────────────────
+   A strip of preset swatches + the native color input + reset. The swatches
+   are the control AND the preview, so they keep their own hex backgrounds
+   (inline style) — the one place a hardcoded color is the point. The active
+   swatch wears the focus-ring treatment as a standing ring, since a colored
+   square cannot show "selected" by color. */
+.accent-picker {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.accent-swatch {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  cursor: var(--cur-pointer, pointer);
+  transition: transform var(--transition);
+}
+
+.accent-swatch:hover {
+  transform: scale(1.15);
+}
+
+.accent-swatch.active {
+  outline: 2px solid var(--text-primary);
+  outline-offset: 1px;
+}
+
+/* The native color input, squared to sit in the swatch row. WebKitGTK draws
+   its own swatch inside; the paddings are stripped so it reads as one more
+   square rather than a framed miniature. */
+.accent-custom {
+  width: 26px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-sm);
+  background: var(--control-bg);
+  cursor: var(--cur-pointer, pointer);
+}
+
+/* ── Theme customizer (Settings → Theme colors) ──────────────────────────
+   One row per CSS variable: the native color input as swatch AND control (the
+   accent picker's `.accent-custom`, reused rather than restyled), the variable
+   name as the label — this panel edits the design system, so the token name is
+   the honest identifier — the hex as text (the only way to reach the alpha a
+   color input has no channel for), and a reset that is only live while the
+   token is actually overridden. The card holds the rows directly, so they carry
+   their own separators instead of `.settings-card-row`'s label/control split,
+   which sizes for one control per line. */
+.theme-var-card {
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+}
+
+/* One catalog entry: the row itself, and — while its palette button is open —
+   the used-color strip beneath it. The separator lives on the ITEM rather than
+   the row so an open drawer stays inside its own token's band instead of
+   reading as the next one's. */
+.theme-var-item {
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.theme-var-item:last-child {
+  border-bottom: none;
+}
+
+.theme-var-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px;
+}
+
+/* ── The used-color strip ────────────────────────────────────────────────
+   Every distinct color the active theme paints right now (overrides
+   included), so a value can be matched to one already on screen rather than
+   guessed beside it. It EXPANDS the row instead of floating over it: the card
+   sits in a scrolling dialog, where a popover is one scroll away from being
+   clipped or left behind. */
+.theme-palette {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 0 10px 8px 10px;
+}
+
+.theme-palette-title {
+  flex: 0 0 auto;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+.theme-palette-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+/* One notch smaller than the accent presets: this is a reference strip, not
+   the row's main control. The fill is inline (the color IS the button), so a
+   translucent token simply shows the card through it. */
+.theme-palette-swatch {
+  width: 18px;
+  height: 18px;
+}
+
+.theme-palette-toggle {
+  flex: 0 0 auto;
+  min-width: 28px;
+}
+
+.theme-palette-toggle.active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* ── Saved themes ────────────────────────────────────────────────────────
+   The whole look under a name: a save line on top, then one row per stored
+   theme — name and what it holds on the left, a few of its own colors as
+   dots, then load / overwrite / delete. */
+.theme-preset-card {
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+}
+
+.theme-preset-save {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+/* Takes the slack beside the Save button; its border/height/background come
+   from the shared settings field chrome above, which this row is listed in —
+   a bare `input` matches nothing but `font: inherit`, so an unlisted field
+   here renders as the engine's own white box. */
+.theme-preset-name {
+  flex: 1;
+  min-width: 0;
+}
+
+.theme-preset-empty {
+  padding: 8px 10px;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+.theme-preset-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.theme-preset-row:last-child {
+  border-bottom: none;
+}
+
+.theme-preset-label {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.theme-preset-title {
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.theme-preset-meta {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+.theme-preset-dots {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 3px;
+}
+
+.theme-preset-dot {
+  width: 12px;
+  height: 12px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+}
+
+/* Armed by its first press: deleting a hand-built look has no undo, so the
+   button says what the second press will do and wears the danger tone while
+   it waits. */
+.theme-preset-delete.armed {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+/* The label cell takes the slack so the hex field and the reset stay in one
+   column down the card; `min-width: 0` lets a long token ellipsize rather than
+   push them out of alignment. */
+.theme-var-label {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.theme-var-name {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* What the token paints. It WRAPS rather than ellipsizing — an example cut off
+   mid-clause answers nothing, and a row growing to two lines costs less than
+   the question it leaves open. */
+.theme-var-example {
+  font-size: var(--text-xs);
+  line-height: 1.35;
+  color: var(--text-muted);
+}
+
+/* An overridden row says so on the name, not with a badge: the whole card is a
+   list of names, so the one signal that reads at a glance is the name itself. */
+.theme-var-row.overridden .theme-var-name {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.theme-var-hex {
+  flex: 0 0 auto;
+  width: 11ch;
+  font-family: var(--font-mono);
+}
+
+/* A half-typed hex is not an error to shout about — it is the normal state of
+   the field while it is being filled in — so it is marked, not blocked. */
+.theme-var-hex.invalid {
+  border-color: var(--danger);
+}
+
+.theme-var-swatch {
+  flex: 0 0 auto;
+}
+
+/* The accent's row carries the whole swatch strip instead of a single input,
+   so the name gives up the slack it takes on every other row and the picker
+   takes it — wrapping onto a second line at a narrow window rather than
+   pushing the reset off the card's right edge. */
+.theme-var-row.accent-row .theme-var-label {
+  flex: 0 0 auto;
+  max-width: 46%;
+}
+
+.theme-var-row.accent-row .accent-picker {
+  flex: 1;
+  justify-content: flex-end;
+}
+
+.theme-var-reset {
+  flex: 0 0 auto;
+  min-width: 28px;
+}
+
+/* The customizer window is wider than the Settings one it opens from: each row
+   is a swatch + a token name + a hex field + a reset, and at the Settings width
+   the names ellipsize into `--accent-…`, which is the one thing on the row that
+   has to stay readable. Taller, too — the palette is one long list, and the
+   fewer screens it spans the easier it is to compare two surfaces. */
+.settings-dialog.theme-customizer {
+  width: min(720px, calc(100vw - 32px));
+  max-height: min(860px, calc(100vh - 64px));
+}

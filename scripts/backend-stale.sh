@@ -52,17 +52,51 @@ done < <(
     -printf '%T@ %p\n'
 )
 
-if [ "$newest" -le "$started" ]; then
-  echo "Backend is current: running pid $app_pid started after the newest src-tauri change."
+stale=0
+if [ "$newest" -gt "$started" ]; then
+  stale=1
+fi
+
+# The phone's PWA is EMBEDDED INTO THE BINARY at compile time (src-tauri/
+# build.rs bakes mobile-dist/ in), so the running sidecar serves the bundle as
+# of its own build — and no src-tauri mtime says so. Two seams go stale
+# independently: mobile-web sources newer than the built bundle (the bundle
+# needs `npm run mobile:build`), and a built bundle newer than the running
+# process (a restart re-embeds it). Both showed up as "the phone is missing a
+# feature that is plainly in the code".
+newest_ts() {
+  find "$@" -type f -printf '%T@\n' 2>/dev/null | sort -nr | head -n 1 | cut -d. -f1
+}
+mobile_src="$(newest_ts "$ROOT/mobile-web/src" "$ROOT/vite.mobile.config.ts" "$ROOT/tsconfig.mobile.json")"
+mobile_dist="$(newest_ts "$ROOT/mobile-dist")"
+mobile_msg=""
+if [ -n "$mobile_src" ] && [ -n "$mobile_dist" ] && [ "$mobile_src" -gt "$mobile_dist" ]; then
+  stale=1
+  mobile_msg="MOBILE BUNDLE IS STALE — mobile-web/ sources are newer than mobile-dist/.
+  Run 'npm run mobile:build', then restart to re-embed it."
+elif [ -n "$mobile_dist" ] && [ "$mobile_dist" -gt "$started" ]; then
+  stale=1
+  mobile_msg="EMBEDDED MOBILE PWA IS STALE — the running app was built before the current
+  mobile-dist/ bundle ($(date -d "@$mobile_dist" '+%F %T')); the phone is being served the old one."
+fi
+
+if [ "$stale" = "0" ]; then
+  echo "Backend is current: running pid $app_pid started after the newest src-tauri change,"
+  echo "and its embedded mobile PWA matches mobile-dist/."
   exit 0
 fi
 
-rel="${newest_file#"$ROOT"/}"
-echo "BACKEND IS STALE — the running window predates your backend changes."
-echo "  running pid : $app_pid (started $(date -d "@$started" '+%F %T'))"
-echo "  newest edit : $rel ($(date -d "@$newest" '+%F %T'))"
+if [ "$newest" -gt "$started" ]; then
+  rel="${newest_file#"$ROOT"/}"
+  echo "BACKEND IS STALE — the running window predates your backend changes."
+  echo "  running pid : $app_pid (started $(date -d "@$started" '+%F %T'))"
+  echo "  newest edit : $rel ($(date -d "@$newest" '+%F %T'))"
+fi
+if [ -n "$mobile_msg" ]; then
+  echo "$mobile_msg"
+fi
 echo
-echo "Frontend (src/) changes are already live via vite HMR; only src-tauri/ needs this."
+echo "Frontend (src/) changes are already live via vite HMR; only src-tauri/ (and the embedded mobile bundle) need this."
 echo "To pick them up, restart the dev session yourself when it suits you:"
 echo "  pkill -f '$ROOT/node_modules/.bin/tauri'; pkill -f '$ROOT/target/debug/eldrun'"
 echo "  ./start-eldrun-tauri-hotreload.sh"

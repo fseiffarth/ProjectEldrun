@@ -22,7 +22,15 @@ import type { GlobalAppEntry } from "../types";
 /** Every role Eldrun replaced with a surface of its own. Kept as a literal
  *  rather than imported: a test that reads the value under test proves
  *  nothing. */
-const RETIRED = ["mail", "calendar", "file_manager", "print_manager", "system_monitor"];
+const RETIRED = [
+  "mail",
+  "calendar",
+  "file_manager",
+  "print_manager",
+  "system_monitor",
+  "notes",
+  "media_player",
+];
 
 function settings(...roles: string[]): Record<string, GlobalAppEntry> {
   return Object.fromEntries(roles.map((role) => [role, { exec: `/usr/bin/${role}`, visible: true }]));
@@ -42,8 +50,8 @@ describe("global app roles", () => {
   });
 
   it("drops every retired role while keeping the live ones", () => {
-    const apps = settings("browser", "notes", ...RETIRED);
-    expect(rolesIn(apps)).toEqual(["browser", "notes"]);
+    const apps = settings("browser", "screenshot", ...RETIRED);
+    expect(rolesIn(apps)).toEqual(["browser", "screenshot"]);
   });
 
   it("still renders a role in neither list", () => {
@@ -58,7 +66,7 @@ describe("global app roles", () => {
   });
 
   it("orders live roles by the registry, unknown ones alphabetically after", () => {
-    const apps = settings("notes", "browser", "zzz_tool", "aaa_tool");
-    expect(rolesIn(apps)).toEqual(["browser", "notes", "aaa_tool", "zzz_tool"]);
+    const apps = settings("screenshot", "browser", "zzz_tool", "aaa_tool");
+    expect(rolesIn(apps)).toEqual(["browser", "screenshot", "aaa_tool", "zzz_tool"]);
   });
 });

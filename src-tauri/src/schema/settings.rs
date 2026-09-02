@@ -3,6 +3,25 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// Read-only host toolchain/config paths restored inside the default-empty home
+/// of a fenced local agent.  Secrets such as `.ssh`, `gh`, AWS and gcloud are
+/// intentionally absent.
+pub const DEFAULT_AGENT_FENCE_PATHS: &[&str] = &[
+    "~/.local/bin",
+    "~/.local/share/claude",
+    "~/.local/share/pnpm",
+    "~/.nvm",
+    "~/.cargo",
+    "~/.rustup",
+    "~/anaconda3",
+    "~/miniconda3",
+    "~/.pyenv",
+    "~/.bun",
+    "~/go",
+    "~/.gitconfig",
+    "~/.config/git",
+];
+
 /// One entry in `settings["global_apps"]`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GlobalAppEntry {
@@ -59,6 +78,19 @@ pub struct Settings {
     /// frontend-side as a CSS `zoom`; the backend only round-trips the value.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ui_zoom: Option<f32>,
+    /// Custom accent color (`#rrggbb`) overriding the active theme's `--accent`
+    /// across every theme. Unset = the theme's own accent. Frontend logic only
+    /// (`stores/settings.applyAccent` — the hover/active/pill tokens all derive
+    /// from `--accent`, so one inline var recolors them together); the backend
+    /// just round-trips the value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ui_accent: Option<String>,
+    /// Corner style override: `"square"` or `"rounded"`. Unset = the active
+    /// theme's own radius tokens (the house square, or soft_dark's rounded).
+    /// Frontend logic only (`stores/settings.applyCorners`); the backend just
+    /// round-trips the value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ui_corners: Option<String>,
     /// Calendar: first column of the week — `0` = Sunday (default), `1` = Monday.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub calendar_week_start: Option<u8>,
@@ -99,7 +131,7 @@ pub struct Settings {
     /// `mail_client`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub todo_board: Option<bool>,
-    /// Right panel: the opt-in **Alerts** group in the file viewer — urgent
+    /// Side panel: the opt-in **Alerts** group in the file viewer — urgent
     /// mail, the calendar entries about to start, and the to-do cards whose due
     /// date is here or past, in one time-ordered strip.
     ///
@@ -243,6 +275,13 @@ pub struct Settings {
     /// has never heard of.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ollama_roles: Option<HashMap<String, String>>,
+    /// Hunspell dictionary code (e.g. `en_US`) for the editors' dictionary
+    /// spell check (`services::spell`). Unset means the default — an installed
+    /// English variant when there is one, else the first dictionary found.
+    /// One machine-wide choice (the language you write in is not per project);
+    /// per-type enablement lives in `ViewerPref::spell_check`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spell_language: Option<String>,
     /// Preserved for Python rollback; not used by the Tauri app.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ollama_autostart: Option<bool>,
@@ -259,7 +298,7 @@ pub struct Settings {
     /// list intentionally leaves every agent behind the menu's search field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compact_tab_agents: Option<Vec<String>>,
-    /// When true (the default), running a `.sh` from the right panel spawns it
+    /// When true (the default), running a `.sh` from the side panel spawns it
     /// as a detached background process instead of opening a terminal tab.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub run_scripts_in_background: Option<bool>,
@@ -268,6 +307,27 @@ pub struct Settings {
     /// app/web. Only Claude supports the flag; other agents ignore it. Default ON.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_remote_control: Option<bool>,
+    /// Default-on filesystem fence for locally-running agent tabs.  On Linux it
+    /// uses bubblewrap; per-project overrides live in projects.json.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_fence: Option<bool>,
+    /// Extra host paths exposed read-only inside the agent fence.  Unset uses
+    /// [`DEFAULT_AGENT_FENCE_PATHS`]; an explicit empty list exposes none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_fence_paths: Option<Vec<String>>,
+    /// Prefix chips offered by the side panel's per-tab agent composer, keyed by
+    /// agent command (`claude`, `codex`, …). Each entry is one of that CLI's own
+    /// slash commands, submitted ahead of the prompt. Unset falls back to the
+    /// frontend's per-agent defaults; an explicit empty list means "no chips for
+    /// this agent", which is why it is a map of lists rather than one flat list.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_preface_commands: Option<HashMap<String, Vec<String>>>,
+    /// Model names offered by that same composer, keyed by agent command. The
+    /// pick is typed as the agent's own `/model <name>` — Eldrun never passes a
+    /// model flag at launch. Editable because model names change far faster than
+    /// this app ships.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_models: Option<HashMap<String, Vec<String>>>,
     /// When true (the default), the usage recap opens by itself on the first
     /// launch of each day. Turning it off leaves the recap reachable from
     /// Settings — it stops the popup, it does not stop the counting.
@@ -277,15 +337,6 @@ pub struct Settings {
     /// day rather than on every window. Written by the recap host itself.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub daily_stats_last_shown: Option<String>,
-    /// EXPERIMENTAL, default OFF. When true, agent tabs whose agent supports it
-    /// (currently only Claude) show a Plan/Auto badge that switches the tab's
-    /// authority mode — `--permission-mode plan` vs `acceptEdits`. Switching
-    /// respawns the agent (the mode is a launch flag), which is only safe because
-    /// the backend resumes the conversation; see `services::agent_session`. Purely
-    /// a frontend gate: the flag reaches the backend inside `opts.args` like any
-    /// other launch arg, so nothing in the spawn path reads this.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub agent_mode_toggle: Option<bool>,
     /// EXPERIMENTAL, default OFF. When true, a Python file in the native code
     /// viewer gets the Run/Debug buttons and the breakpoint gutter (#87). Purely a
     /// frontend gate, and off by default because Run *executes the file*: the
@@ -312,6 +363,16 @@ pub struct Settings {
     /// the backend reads it, the renderer is an xterm.js concern.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub terminal_webgl: Option<bool>,
+    /// EXPERIMENTAL, default OFF. The markdown relationship graph: a "Graph"
+    /// mode on the markdown viewer that crawls the viewed document's local-file
+    /// links and renders them as a clickable navigation map. Purely a frontend
+    /// gate — the crawl reads files through the same confined `read_file_text`
+    /// every viewer read goes through, so nothing in the backend reads this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub md_graph: Option<bool>,
+    /// EXPERIMENTAL, default OFF. Project-wide per-file remarks in REMARKS.md.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_remarks: Option<bool>,
     /// EXPERIMENTAL, default OFF. The in-app browser (TODO J #61,
     /// `docs/browser_plan_{a,b,c}.md`): a JS-free reader tab plus a separate
     /// hardened live-page window. Read via `web_browser()`, which applies the
@@ -547,7 +608,7 @@ pub struct Settings {
     /// fall back to the built-in defaults in the frontend.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keyboard_shortcuts: Option<HashMap<String, ChordDescriptor>>,
-    /// Download *source* folders scanned by the right-panel Downloads section
+    /// Download *source* folders scanned by the side-panel Downloads section
     /// (fast-copy of freshly downloaded files into a project). A machine-wide
     /// list, read-only — Eldrun never changes any browser's download path.
     /// Unset/empty → the frontend falls back to the user's `~/Downloads`.
@@ -566,6 +627,12 @@ pub struct Settings {
     /// header. Unset means visible whenever the Mobile host is enabled.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mobile_indicator: Option<bool>,
+    /// Whether the header's machine-state cluster (connection, battery, Mobile,
+    /// OpenVPN, Machines, CPU/RAM/GPU) is expanded into the bar. Unset means
+    /// collapsed to one lamp; a member with something wrong to say still shows
+    /// itself either way (see `stores/headerStatus`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub header_status_expanded: Option<bool>,
     #[serde(flatten)]
     pub extra: HashMap<String, Value>,
 }
@@ -638,6 +705,19 @@ pub struct ViewerPref {
     /// Like `autocomplete`, defaults OFF (no model call unless explicitly on).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grammar_check: Option<bool>,
+    /// Whether the dictionary (Hunspell) spell check is enabled for this type.
+    /// Defaults OFF like its siblings — not for privacy (it calls no model),
+    /// but because red underlines nobody asked for are noise in a code editor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spell_check: Option<bool>,
+    /// Whether the TeX editor typesets the snippet under the pointer and shows
+    /// it in a hover card (#tex-hover-preview). Only the `"tex"` entry reads it.
+    /// Absent means ON — unlike `autocomplete`/`grammar_check` above, which are
+    /// opt-in because they call a model; this runs the local TeX engine the
+    /// viewer is already built around, on a fragment, only after the pointer has
+    /// rested. Set `false` to stop hovering from compiling anything.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hover_preview: Option<bool>,
     /// Editor font size in px for this type's in-app code editor. Adjusted from
     /// the viewer's A−/A+ controls (or Ctrl +/−/0). Unset falls back to the
     /// frontend default (12px).
@@ -677,6 +757,23 @@ impl Settings {
         self.agent_remote_control.unwrap_or(true)
     }
 
+    /// Whether local agent tabs should receive the filesystem fence.  Default
+    /// ON so older settings files adopt the safer posture automatically.
+    pub fn agent_fence(&self) -> bool {
+        self.agent_fence.unwrap_or(true)
+    }
+
+    /// The configured read-only toolchain/config allowlist, or the documented
+    /// defaults when the key has never been written.
+    pub fn agent_fence_paths(&self) -> Vec<String> {
+        self.agent_fence_paths.clone().unwrap_or_else(|| {
+            DEFAULT_AGENT_FENCE_PATHS
+                .iter()
+                .map(|path| (*path).to_string())
+                .collect()
+        })
+    }
+
     /// Whether the usage recap auto-opens once a day. Defaults ON when unset, so
     /// an existing install gets the recap without having to find the toggle.
     pub fn daily_stats_recap(&self) -> bool {
@@ -690,13 +787,6 @@ impl Settings {
     /// would silently fail for exactly the people most likely to hit a broken one.
     fn experimental(&self, flag: Option<bool>) -> bool {
         flag.unwrap_or_else(|| self.debug.unwrap_or(false))
-    }
-
-    /// Whether the experimental per-tab Plan/Auto agent-mode badge is offered.
-    /// Switching a mode restarts the agent, so nobody outside debug mode gets that
-    /// behaviour without asking for it.
-    pub fn agent_mode_toggle(&self) -> bool {
-        self.experimental(self.agent_mode_toggle)
     }
 
     /// Whether the experimental Python Run/Debug buttons and breakpoint gutter are
@@ -757,7 +847,6 @@ mod tests {
     fn experimental_flags_default_to_debug_mode() {
         let off = Settings::default();
         assert!(!off.python_run_debug());
-        assert!(!off.agent_mode_toggle());
         assert!(!off.deck_presenter());
         assert!(!off.web_browser());
 
@@ -766,7 +855,6 @@ mod tests {
             ..Default::default()
         };
         assert!(debug.python_run_debug());
-        assert!(debug.agent_mode_toggle());
         assert!(debug.deck_presenter());
         assert!(debug.web_browser());
 
@@ -871,5 +959,25 @@ mod tests {
             "mail_ai_allow fell through to `extra`: {:?}",
             s.extra.keys().collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn agent_fence_defaults_on_with_documented_paths_and_preserves_empty_override() {
+        let defaults = Settings::default();
+        assert!(defaults.agent_fence());
+        assert_eq!(
+            defaults.agent_fence_paths(),
+            super::DEFAULT_AGENT_FENCE_PATHS
+                .iter()
+                .map(|path| (*path).to_string())
+                .collect::<Vec<_>>()
+        );
+
+        let off: Settings =
+            serde_json::from_str(r#"{"agent_fence":false,"agent_fence_paths":[]}"#)
+                .expect("agent fence settings parse");
+        assert!(!off.agent_fence());
+        assert!(off.agent_fence_paths().is_empty());
+        assert!(off.extra.is_empty());
     }
 }
