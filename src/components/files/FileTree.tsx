@@ -113,9 +113,21 @@ function sizeCategory(bytes: number): string {
 }
 
 /** Hover title for a non-ignored size figure: the total + ignored split when
- *  there's ignored content to split out, else the plain fallback wording. */
-function sizeTitle(shown: number, ignored: number, fallback: string): string {
-  return ignored > 0 ? `${fmtSize(shown + ignored)} total — ${fmtSize(ignored)} git-ignored` : fallback;
+ *  there's ignored content to split out, else the plain fallback wording. A pure
+ *  helper, not a component, so it takes `t` explicitly — the same shape
+ *  `FileViewerPane`'s `acModeLabel` uses. */
+function sizeTitle(
+  t: (key: TranslationKey, params?: Record<string, string | number>) => string,
+  shown: number,
+  ignored: number,
+  fallback: string,
+): string {
+  return ignored > 0
+    ? t("fileTree.sizeTotalIgnoredSplit", {
+        total: fmtSize(shown + ignored),
+        ignored: fmtSize(ignored),
+      })
+    : fallback;
 }
 
 /** Sort keys as the breadcrumb's dropdown labels them. Lives here now that the
@@ -3666,7 +3678,7 @@ export function FileTree({
             {renderGroupTotal(
               groupSizes.regular,
               groupSizes.regularPartial,
-              sizeTitle(groupSizes.regular, groupSizes.regularIgnored, t("fileTree.totalSizeShown")),
+              sizeTitle(t, groupSizes.regular, groupSizes.regularIgnored, t("fileTree.totalSizeShown")),
             )}
             {onSortChange && (
               <span
@@ -4077,7 +4089,7 @@ export function FileTree({
                   {renderGroupTotal(
                     groupSizes.standard,
                     groupSizes.standardPartial,
-                    sizeTitle(groupSizes.standard, groupSizes.standardIgnored, t("fileTree.totalSizeScaffold")),
+                    sizeTitle(t, groupSizes.standard, groupSizes.standardIgnored, t("fileTree.totalSizeScaffold")),
                   )}
                 </button>
                 {scaffoldExpanded && rows.standard.map((e) => renderEntry(e, true))}

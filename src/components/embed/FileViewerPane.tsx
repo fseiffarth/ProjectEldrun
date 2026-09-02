@@ -3571,7 +3571,7 @@ function CodeEditor({
     grammarAbort.current?.abort();
     const ctl = new AbortController();
     grammarAbort.current = ctl;
-    setGrammarStatus("Checking grammar…");
+    setGrammarStatus(t("fileViewer.grammarChecking"));
     try {
       // Resolve the currently-loaded model the same way autocomplete does, so the
       // check runs against whatever is resident in Ollama at trigger time.
@@ -3585,7 +3585,7 @@ function CodeEditor({
           ? grammarCheck.preferred
           : running[0] ?? "";
       if (!model) {
-        setGrammarStatus("Grammar check unavailable — load a local model (🧠 menu) to enable it.");
+        setGrammarStatus(t("fileViewer.grammarUnavailable"));
         return;
       }
       const issues = await invoke<GrammarIssue[]>("check_grammar", {
@@ -3595,18 +3595,24 @@ function CodeEditor({
       });
       if (ctl.signal.aborted) return;
       setGrammarIssues(issues);
-      setGrammarStatus(issues.length ? `${issues.length} issue${issues.length === 1 ? "" : "s"}` : "No issues");
+      setGrammarStatus(
+        issues.length
+          ? t(issues.length === 1 ? "fileViewer.grammarIssuesOne" : "fileViewer.grammarIssuesMany", {
+              count: issues.length,
+            })
+          : t("fileViewer.grammarNoIssues"),
+      );
     } catch (e) {
       if (ctl.signal.aborted) return;
       setGrammarStatus(
         String(e).includes("not_running")
-          ? "Grammar check unavailable — load a local model (🧠 menu) to enable it."
-          : "Grammar check failed — see the local model.",
+          ? t("fileViewer.grammarUnavailable")
+          : t("fileViewer.grammarFailed"),
       );
     }
     // Primitive deps (the config object's identity changes every render) so the
     // idle-check timer isn't reset by unrelated re-renders.
-  }, [grammarCheck?.enabled, grammarCheck?.preferred, lang]);
+  }, [grammarCheck?.enabled, grammarCheck?.preferred, lang, t]);
 
   // Idle re-check: when enabled, run a short while after the user stops typing,
   // skipping when the draft is unchanged from the last check. Clears stale marks
@@ -5518,7 +5524,9 @@ function ValidationBanner({
   const t = useT();
   if (!issue) return null;
   const where = issue.line
-    ? ` (line ${issue.line}${issue.column ? `, col ${issue.column}` : ""})`
+    ? issue.column
+      ? t("fileViewer.validationAtLineCol", { line: issue.line, column: issue.column })
+      : t("fileViewer.validationAtLine", { line: issue.line })
     : "";
   return (
     <div className="file-viewer-validation" role="alert">
