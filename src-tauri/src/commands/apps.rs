@@ -2227,6 +2227,7 @@ fn is_protected_window(conn: &xcb::Connection, window: xcb::x::Window) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     fn tracked(project_id: Option<&str>, origin: &str, window_id: Option<u64>) -> TrackedWindow {
         TrackedWindow {
@@ -2585,14 +2586,15 @@ mod tests {
     // ── installed-app parsing / embeddable allowlist ───────────────────────
 
     fn write_desktop(body: &str) -> PathBuf {
+        // A wall-clock stamp is not unique enough: macOS resolves `now()` to
+        // roughly a microsecond, so two tests writing in parallel can land on
+        // the same name and read each other's body. A counter cannot collide.
+        static SEQ: AtomicU64 = AtomicU64::new(0);
         let dir = std::env::temp_dir();
         let path = dir.join(format!(
             "eldrun-test-{}-{}.desktop",
             std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
+            SEQ.fetch_add(1, Ordering::Relaxed)
         ));
         fs::write(&path, body).unwrap();
         path
