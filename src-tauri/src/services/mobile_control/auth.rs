@@ -260,10 +260,12 @@ impl AuthStore {
             return Err("device_name_required".into());
         }
         let der = Base64UrlUnpadded::decode_vec(public_key).map_err(|_| "invalid_public_key")?;
-        PublicKey::from_public_key_der(&der).map_err(|_| "invalid_public_key")?;
+        // Length first: the bound exists so an unauthenticated caller cannot
+        // hand the SPKI parser an arbitrarily long buffer.
         if der.len() > 256 {
             return Err("invalid_public_key".into());
         }
+        PublicKey::from_public_key_der(&der).map_err(|_| "invalid_public_key")?;
         // Everything is validated; only now is the code spent.
         self.pairing = None;
         let id = random_id::<20>()?;
