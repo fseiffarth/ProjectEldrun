@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { GitHistory } from "./GitHistory";
 import { GitChangeTree, type ChangeScope } from "./GitChangeTree";
+import { AlertsSection } from "./AlertsSection";
 import {
   FileSourceSwitch,
   ProjectFilesPane,
@@ -422,8 +423,11 @@ export function ProjectFilesView({
   // that row alive for one button. It reaches the tree as a bumped counter.
   const [searchOpen, setSearchOpen] = useState(false);
   const [refreshNonce, setRefreshNonce] = useState(0);
-  // The Alerts group stacked below the file tree (urgent mail, the next
-  // appointments, due/overdue cards). Unlike Downloads there is no local shown
+  // The Alerts group stacked below the viewer's body (urgent mail, the next
+  // appointments, due/overdue cards) — below the file tree in the files view,
+  // and below Git/Orange/Sessions/Jobs/Remarks/Agents/Windows in theirs: the
+  // rows are global, so which view the panel happens to be parked on must not
+  // decide whether a due card is seen. Unlike Downloads there is no local shown
   // flag: `files_alerts` IS the visibility, which is what lets the × stick — the
   // group is on by default, so a close that came back at the next remount (and
   // this viewer is mounted many times over) would be a control that doesn't work.
@@ -2488,12 +2492,10 @@ export function ProjectFilesView({
           }}
           showDownloads={showDownloads}
           onCloseDownloads={() => setShowDownloads(false)}
-          showAlerts={alertsHere}
-          onCloseAlerts={() => void updateSettings({ files_alerts: false })}
           // The host's frame footer belongs to the panel, not to the global
-          // Alerts group stacked under the tree, so in the files view the pane
-          // places it ABOVE that group. Every other view renders it at the
-          // bottom (below) — there is no section down there to be mistaken for.
+          // Alerts group stacked below, so in the files view the pane places it
+          // ABOVE that group — every other view renders it at the bottom, and
+          // the group follows it there too.
           frameFooter={footer}
           // Right-click → "Open in a new tab": the same file view, on that
           // folder, as a Files (Project) tab in this project's scope.
@@ -2540,6 +2542,15 @@ export function ProjectFilesView({
         </div>
       )}
       {view !== "files" && footer}
+      {/* The Alerts group belongs to the viewer, not to one of its views: mail,
+          appointments and cards are global, so a user who left the panel on Git
+          (or Sessions, or Jobs) must still see the row that is due. It sits
+          after every view's body — in the files view that is directly under the
+          tree and its frame footer, exactly where it always was. Only a box's
+          multi-root view is excluded, as its toolbar already excludes it. */}
+      {alertsHere && !activeBox && (
+        <AlertsSection onClose={() => void updateSettings({ files_alerts: false })} />
+      )}
       {showSettings && project && localFile && (
         <ProjectFilesSettingsDialog
           localFile={localFile}

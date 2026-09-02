@@ -21,7 +21,11 @@ import { useT, type TranslationKey } from "../../lib/i18n";
 /**
  * The side-panel **Alerts** group: urgent mail, the next appointments, and the
  * to-do cards whose due date is here or past — one time-ordered strip, rendered
- * directly BELOW the project file tree, the same slot `DownloadsSection` uses.
+ * BELOW the viewer's body, under the file tree in the files view (the same slot
+ * `DownloadsSection` uses) and under Git, Orange, Sessions, Jobs, Remarks,
+ * Agents or Windows in theirs. It belongs to `ProjectFilesView`, not to one of
+ * its views: the rows are global, so which view the panel happens to be parked
+ * on must not decide whether a due card is seen.
  *
  * It sits in the file viewer because that is the surface that is open all day.
  * The three sources already have homes (the mail overlay, the calendar overlay,

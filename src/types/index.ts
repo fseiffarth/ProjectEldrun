@@ -575,14 +575,24 @@ export interface Settings {
    *  catch-all, so no backend field is needed. */
   side_panel_edge?: "left" | "right";
   /** Which view of the side panel's file viewer (Files / Git / Apps / Agents /
-   *  ± / sessions / jobs / remarks) was last open. Restored on launch and kept
-   *  across a project switch — the panel remounts on both, and coming back to
-   *  Files every time meant a user living in Git or Agents re-picked it after
-   *  each switch. A view the current project has no button for (a remote-only
+   *  ± / sessions / jobs / remarks) was last chosen in *any* scope. Restored on
+   *  launch, and used only for a scope `side_panel_view_by_project` has no entry
+   *  for — the panel remounts on both a project switch and a relaunch, and coming
+   *  back to Files every time meant a user living in Git or Agents re-picked it
+   *  after each one. A view the current project has no button for (a remote-only
    *  or SLURM-only one) falls back to Files for as long as that is true, without
    *  overwriting what is stored. Rides the settings `extra` catch-all like
    *  `side_panel_edge`, so no backend field is needed. */
   side_panel_view?: FilesPanelView;
+  /** The same, but per project — keyed by project id, and by scope name for the
+   *  root and box scopes, which have no project id. This is what the panel reads
+   *  first: living in Git on one project and in Files on another is the normal
+   *  case, and a single global view made every switch re-pick. `side_panel_view`
+   *  stays as the seed for a scope not in this map (the last view chosen
+   *  anywhere), so a fresh project opens where the user was rather than snapping
+   *  back to Files. Rides the settings `extra` catch-all, so no backend field is
+   *  needed. */
+  side_panel_view_by_project?: Record<string, FilesPanelView>;
   /** Pre-rename spellings of the three keys above, from when the panel was fixed to
    *  the right edge and named for it. Read-only fallbacks: settings.json written by
    *  an older build still carries them, and every read below is

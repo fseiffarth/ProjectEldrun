@@ -1,10 +1,15 @@
 /**
  * The side panel's view switcher used to reset to Files on anything that
  * remounted the shared viewer — a project switch (the panel is keyed by project
- * id) and every relaunch. It now reads and writes `settings.side_panel_view`,
- * so a user living in Git or Agents finds that view where they left it.
+ * id) and every relaunch. It now reads and writes settings, so a user living in
+ * Git or Agents finds that view where they left it.
  *
- * The second case here is the one the persistence itself cannot fix: a stored
+ * The memory is *per project* (`side_panel_view_by_project`, keyed by project id
+ * or, without one, by scope): Git on one project and Files on another is the
+ * normal case. `side_panel_view` stays the seed a project with no entry of its
+ * own opens on, which is also what carries an older settings.json forward.
+ *
+ * The last case here is the one the persistence itself cannot fix: a stored
  * view whose button this project has no reason to show (Sessions is remote-only)
  * must render as Files rather than as a room with no door out — without
  * overwriting what is stored, so it comes back on a remote project.
@@ -79,14 +84,29 @@ async function renderPanel() {
 }
 
 describe("side panel view memory", () => {
-  it("opens on the stored view instead of falling back to Files", async () => {
-    settingsState.settings = { side_panel_view: "git" };
+  it("opens on this project's own stored view", async () => {
+    // The global seed says Git, but this project was last left on Agents — the
+    // per-project entry wins.
+    settingsState.settings = {
+      side_panel_view: "git",
+      side_panel_view_by_project: { "proj-1": "agents" },
+    };
     await renderPanel();
-    expect(screen.getByRole("button", { name: "Git" }).getAttribute("aria-pressed")).toBe("true");
-    expect(screen.getByRole("button", { name: "Files" }).getAttribute("aria-pressed")).toBe("false");
+    expect(screen.getByRole("button", { name: "Agents" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("button", { name: "Git" }).getAttribute("aria-pressed")).toBe("false");
   });
 
-  it("writes the view back when the switcher moves", async () => {
+  it("seeds a project with no entry of its own from the last view chosen anywhere", async () => {
+    settingsState.settings = {
+      side_panel_view: "git",
+      side_panel_view_by_project: { "other-project": "agents" },
+    };
+    await renderPanel();
+    expect(screen.getByRole("button", { name: "Git" }).getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("writes the view back under this project, keeping other projects' views", async () => {
+    settingsState.settings = { side_panel_view_by_project: { "other-project": "git" } };
     await renderPanel();
     // Unset settings still read as Files, the pre-existing behaviour.
     expect(screen.getByRole("button", { name: "Files" }).getAttribute("aria-pressed")).toBe("true");
@@ -94,13 +114,16 @@ describe("side panel view memory", () => {
     await act(async () => {
       await user.click(screen.getByRole("button", { name: "Agents" }));
     });
-    expect(settingsState.updateSettings).toHaveBeenCalledWith({ side_panel_view: "agents" });
+    expect(settingsState.updateSettings).toHaveBeenCalledWith({
+      side_panel_view: "agents",
+      side_panel_view_by_project: { "other-project": "git", "proj-1": "agents" },
+    });
   });
 
   it("falls back to Files for a stored view this project has no button for", async () => {
     // Sessions is remote-only; this project is local, so the stored view has no
     // way back out of itself and must not be entered.
-    settingsState.settings = { side_panel_view: "sessions" };
+    settingsState.settings = { side_panel_view_by_project: { "proj-1": "sessions" } };
     await renderPanel();
     expect(screen.getByRole("button", { name: "Files" }).getAttribute("aria-pressed")).toBe("true");
     // …and the stored value is left alone, so a remote project still gets it.

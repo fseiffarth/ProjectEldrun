@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { FileTree } from "./FileTree";
-import { AlertsSection } from "./AlertsSection";
 import { DownloadsSection } from "./DownloadsSection";
 import { GitHistory } from "./GitHistory";
 import { ProjectFilesSettingsDialog, useProjectFileFilters } from "./ProjectFilesSettings";
@@ -475,16 +474,12 @@ interface Props {
   onSortChange: (sortKey: SortKey, descending: boolean) => void;
   showDownloads: boolean;
   onCloseDownloads: () => void;
-  /** The opt-in Alerts group below the tree. Already gated on `files_alerts` by
-   *  the host, so this is only the toggle's own state. */
-  showAlerts: boolean;
-  onCloseAlerts: () => void;
   /** The host's own bottom frame chrome (the side panel's TTY / DEBUG / version
    *  row). It closes off the PANEL, so it is rendered here — above the Alerts
-   *  group — rather than under it: mail and appointments are a separate,
-   *  global section that happens to be stacked below the tree, and a frame
-   *  footer beneath it read as Alerts' own footer. Hosts with no frame chrome
-   *  of their own (the Files tab) pass none. */
+   *  group the host stacks after this pane — rather than under it: mail and
+   *  appointments are a separate, global section that happens to sit below the
+   *  tree, and a frame footer beneath it read as Alerts' own footer. Hosts with
+   *  no frame chrome of their own (the Files tab) pass none. */
   frameFooter?: ReactNode;
   /** Offers the tree's "Open in a new tab" action (see FileTree). Omitted where
    *  the host can't own a tab — a box's multi-root view, a detached window. */
@@ -529,8 +524,6 @@ export function ProjectFilesPane({
   onSortChange,
   showDownloads,
   onCloseDownloads,
-  showAlerts,
-  onCloseAlerts,
   frameFooter,
   onOpenFolderTab,
   mountTree = true,
@@ -831,13 +824,8 @@ export function ProjectFilesPane({
         />
       )}
       {/* The panel's own frame footer sits here, between the viewer and the
-          global groups below it — see `frameFooter`. */}
+          global groups the host stacks below it — see `frameFooter`. */}
       {frameFooter}
-      {/* Below Downloads, and with no project condition of its own: mail,
-          appointments and cards are global, so the group is the same wherever
-          the viewer is mounted. Only a box's multi-root view is excluded, and
-          that is already the toolbar button's rule. */}
-      {showAlerts && !activeBox && <AlertsSection onClose={onCloseAlerts} />}
     </>
   );
 }

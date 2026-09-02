@@ -235,9 +235,15 @@ export function SidePanel({
   // Which view of the shared viewer the panel is on. Kept in settings rather
   // than in the viewer's own state because both things that reset it are
   // remounts this component cannot see through: a project switch (the `key`
-  // below) and a relaunch. Unset — a fresh install, or an older settings.json —
-  // reads as Files, the previous behaviour.
-  const panelView = useSettingsStore((s) => s.settings?.side_panel_view ?? "files");
+  // below) and a relaunch. Stored per scope — the same key the panel remounts on
+  // — because Git on one project and Files on another is the normal case, and one
+  // global view made every switch re-pick. A scope with no entry yet falls back to
+  // the last view chosen anywhere, then to Files (a fresh install, or a
+  // settings.json from before either key existed).
+  const viewByScope = useSettingsStore((s) => s.settings?.side_panel_view_by_project);
+  const lastPanelView = useSettingsStore((s) => s.settings?.side_panel_view ?? "files");
+  const viewKey = activeId ?? scope;
+  const panelView = viewByScope?.[viewKey] ?? lastPanelView;
   const updateSettings = useSettingsStore((s) => s.updateSettings);
 
   // Drag the left border to resize the panel; width persists in settings.
@@ -406,7 +412,12 @@ export function SidePanel({
       footer={versionFooter}
       view={panelView}
       onViewChange={(view: FilesPanelView) => {
-        void updateSettings({ side_panel_view: view });
+        // Both keys: this scope's own view, and the seed the next scope with no
+        // entry of its own opens on.
+        void updateSettings({
+          side_panel_view: view,
+          side_panel_view_by_project: { ...(viewByScope ?? {}), [viewKey]: view },
+        });
       }}
     />
   );
