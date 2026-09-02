@@ -10,7 +10,10 @@
   flex: 1;
   display: flex;
   flex-direction: column;
+  /* Not a scroll container (see base.css html/body/#root + ViewerOverflowClip.test.ts):
+     a programmatic scroll here would displace every subwindow at once. */
   overflow: hidden;
+  overflow: clip;
   background-color: var(--bg-main);
   position: relative;
 }
@@ -33,7 +36,12 @@
   flex-direction: column;
   background: var(--bg-panel);
   color: var(--text-primary);
+  /* Not a scroll container. `scrollBox.ts` documents the failure this guards:
+     scrollIntoView / focus() scrolled this box programmatically, displacing the
+     whole viewer ("PDF cut off on the left") with no scrollbar to recover it.
+     See ViewerOverflowClip.test.ts. */
   overflow: hidden;
+  overflow: clip;
 }
 
 /* ── Presentation overlay (marker + laser), over every native viewer ──────── */

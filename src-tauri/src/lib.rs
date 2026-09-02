@@ -1140,6 +1140,7 @@ pub fn run() {
             commands::tex::compile_tex,
             commands::tex::tex_preview_snippet,
             commands::tex::synctex_edit,
+            commands::tex::synctex_status,
             commands::tex::synctex_view,
             commands::tex::synctex_page_lines,
             commands::tex::list_fonts,

@@ -19,12 +19,29 @@ function at(i: number, len = 1) {
   return { start: i, end: i + len };
 }
 
+/** An opening delimiter the document-wide diagnostic left unclosed. */
+function unclosedAt(i: number, len = 1) {
+  return { start: i, end: i + len, problem: "unclosed" as const };
+}
+
+/** An unmatched `\begin{env}` — the whole token, tagged with its name. */
+function unclosedEnv(text: string, env: string, from = 0) {
+  const start = text.indexOf(`\\begin{${env}}`, from);
+  return { start, end: start + `\\begin{${env}}`.length, problem: "unclosed" as const, env };
+}
+
+/** An `\end{env}` closing nothing that is open. */
+function unmatchedEnd(text: string, env: string, from = 0) {
+  const start = text.indexOf(`\\end{${env}}`, from);
+  return { start, end: start + `\\end{${env}}`.length, problem: "unmatchedEnd" as const, env };
+}
+
 describe("findUnclosedTexBrackets", () => {
   it("returns only opening ordinary brackets still missing their end", () => {
     const text = "\\section{closed}\nouter{inner{ok}\nvalue[done]\ncall(";
     expect(findUnclosedTexBrackets(text)).toEqual([
-      at(text.indexOf("outer{") + "outer".length),
-      at(text.lastIndexOf("(")),
+      unclosedAt(text.indexOf("outer{") + "outer".length),
+      unclosedAt(text.lastIndexOf("(")),
     ]);
   });
 
@@ -36,14 +53,61 @@ describe("findUnclosedTexBrackets", () => {
   it("includes unmatched math and environment opening delimiters", () => {
     const text = "\\[display\n\\begin{itemize}\n$inline";
     expect(findUnclosedTexBrackets(text)).toEqual([
-      at(text.indexOf("\\["), 2),
-      at(text.indexOf("\\begin"), "\\begin{itemize}".length),
-      at(text.indexOf("$")),
+      unclosedAt(text.indexOf("\\["), 2),
+      unclosedEnv(text, "itemize"),
+      unclosedAt(text.indexOf("$")),
     ]);
   });
 
-  it("ignores extra closing delimiters because only missing ends are diagnosed", () => {
-    expect(findUnclosedTexBrackets(")]}\\)\\]\\end{itemize}")).toEqual([]);
+  it("ignores extra closing brackets, whose group is ambiguous", () => {
+    expect(findUnclosedTexBrackets(")]}\\)\\]")).toEqual([]);
+  });
+
+  // Environments pair BY NAME, unlike the caret-local matcher's depth count —
+  // which is exactly what a depth count gets wrong, since a begin and an end of
+  // different names cancel each other out and the file reads as balanced.
+  it("flags both halves when \\begin and \\end name different environments", () => {
+    const text = "\\begin{itemize}\n\\item a\n\\end{enumerate}\n";
+    expect(findUnclosedTexBrackets(text)).toEqual([
+      unclosedEnv(text, "itemize"),
+      unmatchedEnd(text, "enumerate"),
+    ]);
+  });
+
+  it("flags an \\end with no \\begin of that environment at all", () => {
+    const text = "text\n\\end{itemize}\n";
+    expect(findUnclosedTexBrackets(text)).toEqual([unmatchedEnd(text, "itemize")]);
+  });
+
+  it("blames the inner \\begin when an outer environment closes over it", () => {
+    // Depth counting paired `\\end{document}` with `\\begin{itemize}` and reported
+    // `\\begin{document}` — the one token that is not the mistake.
+    const text = "\\begin{document}\n\\begin{itemize}\n\\item a\n\\end{document}\n";
+    expect(findUnclosedTexBrackets(text)).toEqual([unclosedEnv(text, "itemize")]);
+  });
+
+  it("reports crossed environments from both ends", () => {
+    const text = "\\begin{a}\\begin{b}\\end{a}\\end{b}";
+    expect(findUnclosedTexBrackets(text)).toEqual([
+      unclosedEnv(text, "b"),
+      unmatchedEnd(text, "b"),
+    ]);
+  });
+
+  it("pairs repeated and nested environments of the same name", () => {
+    const text =
+      "\\begin{itemize}\\begin{itemize}\\end{itemize}\\end{itemize}\n" +
+      "\\begin{itemize}\\end{itemize}";
+    expect(findUnclosedTexBrackets(text)).toEqual([]);
+  });
+
+  it("ignores a commented-out \\end", () => {
+    const text = "\\begin{itemize}\n% \\end{itemize}\n\\end{itemize}";
+    expect(findUnclosedTexBrackets(text)).toEqual([]);
+  });
+
+  it("tolerates spacing inside the environment braces", () => {
+    expect(findUnclosedTexBrackets("\\begin{ itemize }x\\end{itemize}")).toEqual([]);
   });
 
   it("reads a line break's optional spacing as a bracket, never as \\[ display math", () => {
@@ -58,7 +122,7 @@ describe("findUnclosedTexBrackets", () => {
     // `\\\[` is a line break followed by a genuine display-math opener — the
     // parity rule, so consuming the escaped character must not swallow it.
     const text = "row \\\\\\[x";
-    expect(findUnclosedTexBrackets(text)).toEqual([at(text.indexOf("\\[", 4), 2)]);
+    expect(findUnclosedTexBrackets(text)).toEqual([unclosedAt(text.indexOf("\\[", 4), 2)]);
   });
 });
 

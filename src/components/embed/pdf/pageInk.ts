@@ -69,8 +69,9 @@ export async function pageInkAt(
   if (rects.length === 0) return [];
   if (typeof document === "undefined") return null;
   let canvas: HTMLCanvasElement | null = null;
+  let page: Awaited<ReturnType<PDFDocumentProxy["getPage"]>> | null = null;
   try {
-    const page = await doc.getPage(pageNumber);
+    page = await doc.getPage(pageNumber);
     const base = page.getViewport({ scale: 1, rotation: 0 });
     const fit = Math.sqrt(INK_MAX_PIXELS / (base.width * base.height * INK_SCALE * INK_SCALE));
     const scale = fit < 1 ? INK_SCALE * fit : INK_SCALE;
@@ -108,6 +109,12 @@ export async function pageInkAt(
       canvas.width = 0;
       canvas.height = 0;
     }
+    // …and the page's parse with it. The probe's render decoded every image on
+    // the sheet into the page object, exactly as the thumbnail's does, and a
+    // probe is asked once per page per document — nothing is coming back for
+    // that cache. pdf.js refuses the cleanup while the main view is painting
+    // the same page, which is the one case it must not disturb.
+    page?.cleanup();
   }
 }
 

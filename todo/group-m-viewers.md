@@ -1238,6 +1238,57 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work
 
+250. **TeX workspace: an Up step to the parent's `\input` line, and hotkeys
+    for Up and Back.** ✅ Done 2026-09-02, code-complete and **live-unverified**.
+    #221's ← retraces where the centre has *been*; this adds `↑`, beside it on
+    both surfaces (header and folded rail), that climbs the document's own tree:
+    from a chapter to the `\input{chapter}` line of the file that inputs it,
+    whether or not that parent was ever centred this sitting.
+    - **Where it lands** — `gatherTexStructure` now records the 1-based
+      line/column of every `\input`/`\include`/`\subfile` and
+      `\includegraphics` it lists (`TexFileNode.line`/`column`, same on
+      graphics), and `texStructureParent` answers "who inputs this, and where".
+      Up is an ordinary `goTo` (so ← undoes it) followed by an editor-jump
+      request to that line — landing at the parent's top would leave the reader
+      searching for the line they just came from. A file inputted twice is
+      listed once, under the parent that reached it first, so Up goes there.
+    - **Hotkeys** — `Ctrl+Shift+↑` (up) and `Ctrl+Shift+↓` (back), rebindable
+      as `texUp`/`texBack` in a new "TeX workspace" group of the Keyboard
+      Shortcuts panel and cheat sheet. **Only while the TeX viewer has focus**:
+      the workspace listens on its own root element rather than through
+      `useKeyboard`, which scopes the chords to "focus is somewhere in this
+      workspace" (the editor's textarea included — the global hook's editable-
+      target guard would drop them there) and makes them work in a popout with
+      no per-window wiring. A chord with nowhere to go is not consumed. The
+      button titles show the resolved chord, so a rebound key is what the
+      tooltip says. Frontend-only, **no backend restart**.
+    - The defaults were `Ctrl+Shift+U`/`B` until 2026-09-02, changed at the
+      user's request: on a GTK desktop with IBus, `Ctrl+Shift+U` is the input
+      method's own unicode-entry chord and can be eaten before the page sees it
+      while a textarea is focused. The arrows collide with no other default
+      (the subwindow-cycling arrows are Shift-only) and the workspace consumes
+      the chord, so the textarea's own paragraph selection never runs.
+    - i18n: `texWorkspace.up` / `upEmpty` / `backChord`,
+      `shortcutHelp.group.tex`, 4 strings × 5 languages.
+    - [x] 🤖 Automated test (`src/__tests__/TexStructure.test.ts`: line/column
+      per reference incl. a nested child and a graphic, `texStructureParent`
+      for child/graphic/root/unlisted; `TexWorkspace.test.tsx` (m) ↑ inert on
+      the main, climbs from the child with the jump to line 3, ← returns; (n)
+      the chords from the editor textarea and the workspace root, and a chord
+      fired outside the workspace does nothing)
+    - [ ] 🖐️ Manual test — open a multi-file `.tex` workspace, click a chapter
+      in the sidebar, press `↑` (or `Ctrl+Shift+↑` with the caret in the
+      editor): the main file is centred with the caret on its `\input{…}` line,
+      scrolled into view. `Ctrl+Shift+↓` returns to the chapter. Open a graphic
+      from the sidebar and go up — the caret lands on the `\includegraphics`.
+      Check both buttons are inert on the main document, that the tooltips name
+      the file, line and chord, that the rail (folded sidebar) carries all three
+      buttons, and that the chords do nothing with a terminal tab focused. Then
+      rebind `texUp` in Settings → Keyboard Shortcuts and confirm the tooltip
+      and the key follow.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
 241. **PDF viewer: present the file fullscreen in a window of its own.** ✅
     Implemented (2026-09-01, untested live) · `▶ Fullscreen` in the PDF toolbar
     opens the PDF as a window with nothing else on it — no tab bar, no toolbar,
@@ -1736,3 +1787,108 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     textarea above it still catches every real event — and keep the measured
     scan as the jsdom fallback). Worth doing next time an editor feels sluggish
     under the pointer in a link-dense or heavily-annotated document.
+
+250. **PDF→TeX reverse search: LuaTeX/beamer precision + "recompile" notices.**
+    Fixed 2026-09-02, not yet verified live. (a) In the MLG_GNN_GED talk a
+    Ctrl-click on a block title jumped to `main.tex`'s `\end{frame}` line and
+    body lines were a coin flip: LuaTeX's font callback re-tags glyph runs
+    with the frame's closing line, and the resolver *preferred* those leaves
+    (`commands/synctex.rs`, ancestor-tag rule; 68.8 % → 0 % wrong answers on
+    that talk). (b) A click with no `.synctex.gz`, a stale map (source saved
+    after the build, or PDF rebuilt without SyncTeX), or an honest miss now
+    raises a banner in the PDF tab with a one-click **Recompile** (routed to
+    the mounted editor's own compile via `registerTexCompile`, cross-window
+    through the `tex-workspace-center` event). To verify: open the talk's
+    `main.pdf`, Ctrl-click "In continuous domains: interpolate" → should land
+    on `slides/interpolation.tex:1`; edit a slide, save, Ctrl-click → stale
+    notice + Recompile; delete the `.synctex.gz`, Ctrl-click → no-map notice.
+
+251. **TeX editor: the structure diagnostic reads `\begin`/`\end`, not just
+    braces.** Fixed 2026-09-02, not yet verified live. The persistent red
+    underline in the `.tex` editor flagged an unclosed `{`, `[`, `(`, `$` or
+    `\[` and, in principle, an unclosed `\begin{…}` — but it paired
+    environments the way the caret-local matcher does, **by nesting depth with
+    the name ignored**. Depth counting is right for a well-formed document and
+    exactly wrong for a broken one, which is the only document a diagnostic is
+    for: `\begin{itemize}…\end{enumerate}` cancels out and the file read as
+    clean, and `\begin{document}\begin{itemize}…\end{document}` blamed
+    `\begin{document}` — the one token that is not the mistake. An `\end`
+    without any `\begin` was silently ignored outright, under the "extra
+    closing delimiters are not diagnosed" rule the ordinary brackets follow.
+    - **Environments now pair by name** (`findUnclosedTexBrackets`). An `\end`
+      closes the innermost open environment of *its* name; every environment
+      opened inside that one is then reported unclosed — the recovery that
+      blames `\begin{itemize}` above and keeps the rest of the file's structure
+      from skewing off a wrong pop. The caret-local matcher
+      (`findTexEnvDelimiterMatch`) still counts depth alone, on purpose: it
+      answers "where is this token's partner" in a document that parses.
+    - **An `\end` is now flagged on its own** — the one closing delimiter that
+      is. A stray `}` stays ignored: it says nothing about which group it meant
+      to close and would turn red constantly mid-edit, while `\end{itemize}`
+      names the environment it claims to close and is simply wrong when no
+      `itemize` is open.
+    - **The hover hint says which mistake it is.** Each flagged range carries
+      its own sentence in `data-hint` (`fileViewer.unclosedEnvHint`,
+      `fileViewer.unmatchedEndHint`, all five languages), naming the
+      environment: "\begin{itemize} is missing its \end{itemize}" reads
+      differently from "\end{enumerate} has no matching \begin{enumerate}", and
+      one generic "opening delimiter is missing its closing partner" was wrong
+      text for half of them.
+    - [x] 🤖 Automated tests (`src/__tests__/TexDelimiterMatch.test.ts` —
+      mismatched names flagging both halves, a stray `\end`, the inner-`\begin`
+      blame, crossed environments, repeated/nested same-name pairs, a
+      commented-out `\end`, and spacing inside the braces;
+      `src/__tests__/EditorBracketMatch.test.ts` — the hint reaching
+      `data-hint`, escaped)
+    - [ ] 🖐️ Manual test — frontend only, hot-reloads. In a `.tex` file write
+      `\begin{itemize}` … `\end{enumerate}`: **both** lines should underline
+      red and carry a gutter mark, and hovering each should name the right
+      environment. Delete the `\end` entirely — only the `\begin` is red. Type
+      an `\end{center}` with no `\begin{center}` anywhere — that line is red.
+      Confirm a well-formed document with nested and repeated environments is
+      clean, and that an `\end` inside a `%` comment is ignored.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+252. **TeX workspace: the structure tree says *which file* is broken.**
+    Implemented 2026-09-02, not yet verified live. The Errors and Warnings cards
+    answer "what is wrong" for a build, and are read from whichever pane the
+    reader happens to be editing. In a document split across a dozen `\input`s
+    that leaves the more useful question open — *which chapter* — and the
+    structure sidebar is the one surface already drawing the document as its
+    files.
+    - **A red and an amber pill per row**, counts only (`texDiagnosticsByFile`
+      buckets a build's errors and warnings by the absolute path of the file
+      each is in, keyed the same way the tree is). Nothing is drawn for a clean
+      file: a tree of green ticks would cost the one thing the badges are worth,
+      which is that a red pill is rare enough to be seen without looking for it.
+    - **Clicking a pill centers that file with the caret on the first error** (or
+      first locatable warning) — the step a reader who spotted the badge was
+      about to take by hand, and the reason the pills are their own buttons
+      rather than decoration inside the row's. A row is now a `rowline` holding
+      the file button and its pills; nesting a button inside the row's would be
+      invalid markup and unreachable by keyboard.
+    - **Reported by every build, failed or green** (`onDiagnostics`, beside the
+      existing `onCompiled` which only fires on success): a green build still
+      has warnings, and a clean one reports an empty map, which is what clears
+      the badges. Reset when the workspace changes documents — stale badges
+      pointing at a previous document's lines are worse than none.
+    - A warning TeX's `(…)` nesting could not place falls back to the built
+      root, the same rule the Warnings card renders under, so a warning cannot
+      be attributed to one file in the list and another in the badge. Errors in
+      a file the structure does not list (a `.sty`, a package) have no row to
+      land on and stay in the cards only.
+    - [x] 🤖 Automated tests (`src/__tests__/TexErrors.test.ts` — bucketing by
+      resolved path, first-line-wins, the no-file warning falling back to the
+      root, a warning with no line leaving no jump target, and the empty map;
+      `src/__tests__/TexWorkspace.test.tsx` — a failing build badges the child's
+      row and not the main's, and the pill centers the child with a `requestJump`
+      on the reported line)
+    - [ ] 🖐️ Manual test — frontend only, hot-reloads. Open a multi-file TeX
+      workspace, break something in a chapter (an undefined command), Compile:
+      that chapter's row in the sidebar should show a red **1** and the main
+      document's row nothing. Click the pill — the chapter centers with the
+      caret on the error line. Fix it and compile again: the red pill goes, and
+      any amber warning pills land on the files the Warnings card names.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work

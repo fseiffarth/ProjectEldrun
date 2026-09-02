@@ -158,17 +158,19 @@ import {
   resolveTexKeyRef,
   texKeyRefRanges,
   findTexComplAt,
-  parseTexLabels,
-  parseTexDefinedCommands,
-  parseTexDocumentEnvironments,
+  texCompletionsFor,
   insertTexCommand,
   insertTexEnvironment,
   TEX_STANDARD_COMMANDS,
   TEX_STANDARD_ENVIRONMENTS,
   type TexCommandEntry,
   type TexEnvEntry,
+  type TexLabelEntry,
+  type BibEntry,
   type TexWarning,
+  type TexFileDiagnostics,
   parseTexWarnings,
+  texDiagnosticsByFile,
   gatherTexWordCount,
   type TexWordCount,
   gatherTexCompletions,
@@ -192,13 +194,16 @@ import {
   syncTexEnvRename,
   texEnvNameRangeAt,
   gatherTexStructure,
+  texStructureParent,
   hasMatchingTexEnd,
   type TexStructure,
   type TexFileNode,
   texSnippetRanges,
   texPreamble,
   type TexSnippetRange,
+  compileWasNoop,
 } from "../../lib/viewers/tex";
+import { chordLabel, chordMatches, resolveChord, type ShortcutMap } from "../../lib/shortcuts";
 import {
   renderTexPreview,
   cachedTexPreview,
@@ -207,14 +212,20 @@ import {
 import { TexStructureRail, TexStructureSidebar } from "./tex/TexStructureSidebar";
 import { useDialogs } from "../common/PromptDialogs";
 import { focusTexWorkspaceForSource } from "./openTexWorkspace";
-import { registerTexWorkspace, unregisterTexWorkspace } from "../../stores/texCenter";
+import {
+  registerTexCompile,
+  registerTexWorkspace,
+  unregisterTexCompile,
+  unregisterTexWorkspace,
+} from "../../stores/texCenter";
 import { YamlTree } from "./YamlTree";
 import { YamlGrid } from "./YamlGrid";
 import { BibCards } from "./BibCards";
 import { isTreePath, isJsonPath } from "../../lib/viewers/yaml";
 import { isBibPath } from "../../lib/viewers/bib";
 import { hasCards } from "../../lib/viewers/yamlGrid";
-import { useT, type TranslationKey } from "../../lib/i18n";
+import { useI18nStore, useT, type TranslationKey } from "../../lib/i18n";
+import { defaultSpellLanguage, dictionaryLabel } from "../../lib/spellDictionaries";
 
 // The five heavyweight leaf viewers are code-split (§5.1 startup size): a
 // static import here would parse pdfjs-dist + pdf-lib + fontkit (PdfView,
@@ -1460,6 +1471,15 @@ export function applyIndent(
   };
 }
 
+/** Advance across the closing brace of a TeX argument. This is deliberately a
+ * narrow Tab-stop: it applies only to a collapsed caret immediately before `}`;
+ * selections and ordinary source indentation retain their usual Tab behaviour.
+ */
+export function advanceTexBraceTabStop(el: HTMLTextAreaElement): number | null {
+  const { value, selectionStart: start, selectionEnd: end } = el;
+  return start === end && value[start] === "}" ? start + 1 : null;
+}
+
 /**
  * Toggle line comments over every line the selection touches (Ctrl+Shift+C),
  * using `marker` — `%` in a `.tex` file, `//`, `#`, … elsewhere. Returns the next
@@ -2134,13 +2154,19 @@ export function decorateBracketMatch(source: string, match: BracketMatch): strin
 }
 
 /**
- * Build the persistent TeX missing-end overlay. Every unmatched opening
- * delimiter gets a danger-coloured wavy underline; source stays transparent so
- * the syntax layer keeps the glyph itself readable.
+ * Build the persistent TeX delimiter-diagnostic overlay. Every delimiter left
+ * without a partner gets a danger-coloured wavy underline; source stays
+ * transparent so the syntax layer keeps the glyph itself readable.
+ * A range's `hint` rides along in `data-hint`, which is what the hover tooltip
+ * reads — a `\begin{itemize}` with no end and an `\end{itemize}` with no begin
+ * are different mistakes and say so, rather than sharing one generic message.
  * Ranges are sorted and overlap-pruned defensively (the TeX scanner normally
- * emits disjoint ranges). SECURITY: all source runs are HTML-escaped.
+ * emits disjoint ranges). SECURITY: all source runs and hints are HTML-escaped.
  */
-export function decorateUnclosedBrackets(source: string, ranges: BracketSide[]): string {
+export function decorateUnclosedBrackets(
+  source: string,
+  ranges: (BracketSide & { hint?: string })[],
+): string {
   const sorted = [...ranges].sort((a, b) => a.start - b.start || a.end - b.end);
   let out = "";
   let pos = 0;
@@ -2149,8 +2175,9 @@ export function decorateUnclosedBrackets(source: string, ranges: BracketSide[]):
     const end = Math.max(start, Math.min(range.end, source.length));
     if (end <= start || start < pos) continue;
     out += escapeHtmlText(source.slice(pos, start));
+    const hint = range.hint ? ` data-hint="${escapeHtmlText(range.hint)}"` : "";
     out +=
-      '<span class="file-viewer-unclosed-bracket">' +
+      `<span class="file-viewer-unclosed-bracket"${hint}>` +
       escapeHtmlText(source.slice(start, end)) +
       "</span>";
     pos = end;
@@ -2438,18 +2465,39 @@ export function snapToDevicePx(cssPx: number, dpr: number): number {
 }
 
 /**
- * Viewport coordinates of the caret at character `pos` in a textarea, used to
- * anchor the `\ref`/`\cite` completion dropdown right under the typed key. Uses
- * the standard hidden-mirror technique: a div copies the textarea's box/text
+ * Where the caret at character `pos` of a textarea is, used to anchor the
+ * `\ref`/`\cite` completion dropdown right under the typed key. The standard
+ * hidden-mirror technique, in two halves: a div copies the textarea's box/text
  * metrics, holds the text up to `pos`, and a trailing marker span's offset gives
- * the caret position; the textarea's own scroll and screen rect map it to the
- * viewport. Returns the line height too so the caller can drop below the line.
+ * the caret position (`textareaCaretMirrorOffsets` → these offsets, relative to
+ * the textarea's padding box); the textarea's own scroll and screen rect then
+ * map it to the viewport (`textareaMirrorToViewport`).
  */
-function textareaCaretViewportRect(
+interface CaretMirrorOffsets {
+  top: number;
+  left: number;
+  height: number;
+}
+
+/** Map mirror offsets to viewport coordinates. Cheap — one `getBoundingClientRect`
+ *  and the live scroll offsets — so the completion dropdown can re-anchor on
+ *  every keystroke while the expensive mirror layout below runs once per token. */
+function textareaMirrorToViewport(
   ta: HTMLTextAreaElement,
-  pos: number,
+  m: CaretMirrorOffsets,
 ): { left: number; top: number; height: number } {
   const rect = ta.getBoundingClientRect();
+  return { left: rect.left + m.left - ta.scrollLeft, top: rect.top + m.top - ta.scrollTop, height: m.height };
+}
+
+/**
+ * The mirror measurement itself: lay out the text up to `pos` in a hidden div
+ * with the textarea's metrics and read the marker's offsets. This is a full
+ * layout of everything before the caret — on a long document the single most
+ * expensive thing a keystroke can do — which is why the caller caches it for
+ * as long as the same token is being typed (the token's start does not move).
+ */
+function textareaCaretMirrorOffsets(ta: HTMLTextAreaElement, pos: number): CaretMirrorOffsets {
   const style = getComputedStyle(ta);
   const lh = parseFloat(style.lineHeight) || parseFloat(style.fontSize) * 1.2 || 16;
   const div = document.createElement("div");
@@ -2469,11 +2517,14 @@ function textareaCaretViewportRect(
   div.style.height = "auto";
   div.textContent = ta.value.slice(0, pos);
   const marker = document.createElement("span");
-  marker.textContent = ta.value.slice(pos) || ".";
+  // Only the word the caret is in follows it: that is what decides whether a
+  // soft wrap moves the caret to the next line, and it is all the marker's
+  // position depends on. The rest of the document was laid out for nothing.
+  marker.textContent = /^\S{0,200}/.exec(ta.value.slice(pos, pos + 200))?.[0] || ".";
   div.appendChild(marker);
   document.body.appendChild(div);
-  const top = rect.top + marker.offsetTop - ta.scrollTop;
-  const left = rect.left + marker.offsetLeft - ta.scrollLeft;
+  const top = marker.offsetTop;
+  const left = marker.offsetLeft;
   document.body.removeChild(div);
   return { left, top, height: lh };
 }
@@ -2853,6 +2904,26 @@ function CodeEditor({
   } | null>(null);
   const [caretTick, setCaretTick] = useState(0);
   const complClosedAt = useRef(-1);
+  // The open dropdown's per-token work (see `refreshCompl`): the candidate list
+  // for its family and the caret mirror's layout, valid while the text outside
+  // `[start, end)` — held here as `prefix`/`suffix` — is unchanged.
+  const complSession = useRef<{
+    kind: TexComplContext["kind"];
+    start: number;
+    prefix: string;
+    suffix: string;
+    candidates: TexLabelEntry[] | BibEntry[] | TexCommandEntry[] | TexEnvEntry[];
+    mirror: CaretMirrorOffsets;
+  } | null>(null);
+  const complListRef = useRef<HTMLUListElement>(null);
+  // Keep the highlighted row in view. One effect per dropdown update, rather
+  // than a ref callback on the active row: a fresh callback on every render
+  // made React re-run it — and its layout-forcing `scrollIntoView` — on every
+  // keystroke for every row.
+  useEffect(() => {
+    if (!compl) return;
+    complListRef.current?.querySelector(".active")?.scrollIntoView?.({ block: "nearest" });
+  }, [compl]);
   // Source index of a space auto-inserted after `}` when a completion was
   // accepted (else null). If the very next keystroke is closing punctuation, the
   // space is removed so it reads "\cite{x}." rather than "\cite{x} .".
@@ -3066,13 +3137,25 @@ function CodeEditor({
     [loaded, lang, draft, indentUnit],
   );
 
-  // TeX missing-end diagnostics are persistent rather than caret-local: every
-  // unmatched opening delimiter is red, and every logical line holding one is
-  // marked in the gutter. Other editor languages keep their existing behaviour.
-  const unclosedBrackets = useMemo(
-    () => (loaded && lang === "tex" ? findUnclosedTexBrackets(draft) : []),
-    [loaded, lang, draft],
-  );
+  // TeX structure diagnostics are persistent rather than caret-local: every
+  // delimiter left without a partner is red, and every logical line holding one
+  // is marked in the gutter. Other editor languages keep their existing
+  // behaviour. Each range carries its own hover hint, since the three mistakes
+  // the scanner separates — an opening delimiter with no end, a `\begin` with no
+  // `\end`, an `\end` with no `\begin` — read as different sentences and the
+  // environment ones can name the environment.
+  const unclosedBrackets = useMemo(() => {
+    if (!loaded || lang !== "tex") return [];
+    return findUnclosedTexBrackets(draft).map((range) => ({
+      ...range,
+      hint:
+        range.problem === "unmatchedEnd"
+          ? t("fileViewer.unmatchedEndHint", { env: range.env ?? "" })
+          : range.env != null
+            ? t("fileViewer.unclosedEnvHint", { env: range.env })
+            : t("fileViewer.unclosedBracketHint"),
+    }));
+  }, [loaded, lang, draft, t]);
   const unclosedHtml = useMemo(
     () =>
       unclosedBrackets.length > 0
@@ -3087,7 +3170,11 @@ function CodeEditor({
     }
     return set;
   }, [draft, unclosedBrackets]);
-  const [unclosedTip, setUnclosedTip] = useState<{ left: number; top: number } | null>(null);
+  const [unclosedTip, setUnclosedTip] = useState<{
+    left: number;
+    top: number;
+    hint: string;
+  } | null>(null);
 
   // Bracket-match highlight: whichever bracket the caret sits just before/after
   // gets its partner highlighted too (`findMatchingBracket`/`decorateBracketMatch`
@@ -3615,15 +3702,20 @@ function CodeEditor({
 
   // The textarea owns pointer events, so hover-test the scroll-aligned diagnostic
   // layer's span boxes (the same technique used for grammar marks and links).
-  const unclosedTipAt = useCallback((x: number, y: number): { left: number; top: number } | null => {
-    const layer = unclosedLayerRef.current;
-    if (!layer) return null;
-    for (const span of layer.querySelectorAll<HTMLElement>(".file-viewer-unclosed-bracket")) {
-      const r = span.getBoundingClientRect();
-      if (linkRectHit(r, x, y)) return { left: x, top: r.top };
-    }
-    return null;
-  }, []);
+  const unclosedTipAt = useCallback(
+    (x: number, y: number): { left: number; top: number; hint: string } | null => {
+      const layer = unclosedLayerRef.current;
+      if (!layer) return null;
+      for (const span of layer.querySelectorAll<HTMLElement>(".file-viewer-unclosed-bracket")) {
+        const r = span.getBoundingClientRect();
+        if (linkRectHit(r, x, y)) {
+          return { left: x, top: r.top, hint: span.dataset.hint ?? "" };
+        }
+      }
+      return null;
+    },
+    [],
+  );
 
   // ── #tex-hover-preview: the hover card ────────────────────────────────────
   // The pointer resting on a fragment typesets it. Three pieces of state, and
@@ -4161,11 +4253,37 @@ function CodeEditor({
     if (caret === complClosedAt.current) return; // suppressed at this exact caret
     complClosedAt.current = -1;
     const ctx = findTexComplAt(draft, caret);
-    if (!ctx) { setCompl(null); return; }
+    if (!ctx) { complSession.current = null; setCompl(null); return; }
+    // One token, one session: the candidate list (which parses the draft) and
+    // the mirror layout (which lays out everything before the caret) are both
+    // functions of the document OUTSIDE the token being typed, so they are
+    // computed when the dropdown opens and reused for every keystroke that only
+    // extends or shortens that token. "Outside the token is unchanged" is
+    // checked literally — same family, same start, and the text before and after
+    // the token byte-identical — so an edit anywhere else starts a fresh
+    // session rather than trusting a stale one.
+    const prev = complSession.current;
+    const session =
+      prev &&
+      prev.kind === ctx.kind &&
+      prev.start === ctx.start &&
+      draft.length - ctx.end === prev.suffix.length &&
+      draft.startsWith(prev.prefix) &&
+      draft.endsWith(prev.suffix)
+        ? prev
+        : {
+            kind: ctx.kind,
+            start: ctx.start,
+            prefix: draft.slice(0, ctx.start),
+            suffix: draft.slice(ctx.end),
+            candidates: texCompletionsFor(texCompletions, draft, ctx.kind),
+            mirror: textareaCaretMirrorOffsets(el, ctx.start),
+          };
+    complSession.current = session;
     const q = ctx.query.toLowerCase();
     let items: TexComplItem[];
     if (ctx.kind === "cite") {
-      items = texCompletions.cites
+      items = (session.candidates as BibEntry[])
         .filter(
           (e) =>
             !q ||
@@ -4178,7 +4296,7 @@ function CodeEditor({
       // #245: a command is matched by PREFIX only. A substring match over a table
       // of two hundred names offers `\varepsilon` for `\ps`, which is noise on
       // every keystroke — a key list is browsed, a command name is typed.
-      items = texCompletions.commands
+      items = (session.candidates as TexCommandEntry[])
         .filter((c) => !q || c.name.toLowerCase().startsWith(q))
         .map((c) => ({
           value: c.name,
@@ -4189,11 +4307,11 @@ function CodeEditor({
           entry: c,
         }));
     } else if (ctx.kind === "env") {
-      items = texCompletions.envs
+      items = (session.candidates as TexEnvEntry[])
         .filter((e) => !q || e.name.toLowerCase().includes(q))
         .map((e) => ({ value: e.name, detail: e.seed, local: e.local, entry: e }));
     } else {
-      items = texCompletions.labels
+      items = (session.candidates as TexLabelEntry[])
         .filter(
           (l) => !q || l.key.toLowerCase().includes(q) || l.section?.toLowerCase().includes(q),
         )
@@ -4208,7 +4326,8 @@ function CodeEditor({
     }
     items = items.slice(0, COMPL_LIMIT);
     if (items.length === 0) { setCompl(null); return; }
-    const pos = textareaCaretViewportRect(el, ctx.start);
+    // Re-anchoring is the cheap half: the textarea's screen rect and scroll.
+    const pos = textareaMirrorToViewport(el, session.mirror);
     setCompl((prev) => {
       const same =
         prev != null &&
@@ -4321,8 +4440,8 @@ function CodeEditor({
       autoSpace.current = null; // any other real key commits the space
     }
 
-    // \ref/\cite dropdown: arrows move the highlight, Tab accepts (Enter is left
-    // to insert a newline), Esc closes. Handled first so it captures Tab.
+    // TeX dropdown: arrows move the highlight, Enter/Tab accept, Esc closes.
+    // Handled first so its accept keys do not become a newline or indentation.
     if (compl && compl.items.length > 0) {
       if (e.key === "ArrowDown") {
         e.preventDefault();
@@ -4336,7 +4455,7 @@ function CodeEditor({
         );
         return;
       }
-      if (e.key === "Tab") {
+      if (e.key === "Enter" || e.key === "Tab") {
         e.preventDefault();
         acceptCompl(compl.items[compl.index]);
         return;
@@ -4459,6 +4578,21 @@ function CodeEditor({
       return;
     }
     if (e.key === "Tab") {
+      // After a TeX completion has seeded an argument (`\\begin{}` is the
+      // common case), Tab leaves that argument rather than inserting spaces.
+      // A visible completion menu above already captured Tab, so it can still
+      // accept its highlighted item.
+      if (!e.shiftKey && lang === "tex") {
+        const caret = advanceTexBraceTabStop(e.currentTarget);
+        if (caret != null) {
+          e.preventDefault();
+          const el = e.currentTarget;
+          requestAnimationFrame(() => {
+            el.selectionStart = el.selectionEnd = caret;
+          });
+          return;
+        }
+      }
       const next = applyIndent(e.currentTarget, e.shiftKey);
       if (!next) return;
       e.preventDefault();
@@ -4808,7 +4942,7 @@ function CodeEditor({
           style={{ left: unclosedTip.left, top: unclosedTip.top }}
           role="tooltip"
         >
-          {t("fileViewer.unclosedBracketHint")}
+          {unclosedTip.hint || t("fileViewer.unclosedBracketHint")}
         </div>
       )}
       {acStatus && (
@@ -4978,6 +5112,7 @@ function CodeEditor({
       )}
       {compl && (
         <ul
+          ref={complListRef}
           className={`file-viewer-tex-compl${compl.ctx.kind === "cite" ? " is-cite" : ""}`}
           role="listbox"
           style={{ left: compl.pos.left, top: compl.pos.top + compl.pos.height }}
@@ -4987,7 +5122,6 @@ function CodeEditor({
               key={it.value + i}
               role="option"
               aria-selected={i === compl.index}
-              ref={i === compl.index ? (el) => el?.scrollIntoView({ block: "nearest" }) : undefined}
               className={`file-viewer-tex-compl-item${i === compl.index ? " active" : ""}`}
               // mousedown (not click) + preventDefault so the textarea keeps focus
               // — otherwise the blur handler would close the dropdown first.
@@ -7621,6 +7755,26 @@ function texWorkspaceContains(structure: TexStructure, path: string): boolean {
 type TexCompileOpts = { engine: string; outDir: string; extraFlags: string };
 const EMPTY_TEX_COMPILE_OPTS: TexCompileOpts = { engine: "", outDir: "", extraFlags: "" };
 
+/** A tab's persisted build configuration (see `ViewerState.texEngine`), with the
+ *  defaults filled in for a tab that has never had one. */
+function texCompileOptsFrom(vs: ViewerState | undefined): TexCompileOpts {
+  return {
+    engine: vs?.texEngine ?? EMPTY_TEX_COMPILE_OPTS.engine,
+    outDir: vs?.texOutDir ?? EMPTY_TEX_COMPILE_OPTS.outDir,
+    extraFlags: vs?.texExtraFlags ?? EMPTY_TEX_COMPILE_OPTS.extraFlags,
+  };
+}
+
+/** The same patch, in `ViewerState` spelling. Only the keys actually being
+ *  changed are written, so a patch of one field never restates the other two. */
+function texCompileViewerState(patch: Partial<TexCompileOpts>): ViewerState {
+  const vs: ViewerState = {};
+  if (patch.engine !== undefined) vs.texEngine = patch.engine;
+  if (patch.outDir !== undefined) vs.texOutDir = patch.outDir;
+  if (patch.extraFlags !== undefined) vs.texExtraFlags = patch.extraFlags;
+  return vs;
+}
+
 // The most panes kept mounted in the workspace center at once. Switching between
 // them is display:none, not remount, so an unsaved draft / undo / scroll of a
 // file you flipped away from survives — the same guarantee two standalone `.tex`
@@ -7754,6 +7908,54 @@ function TexWorkspaceView({
     setActivePath(backTarget);
   }, [backTarget, setActivePath]);
 
+  // UP (#tex-structure-up): from a chapter to the `\input{chapter}` line of the
+  // file that inputs it. Back retraces where the center has been; Up climbs the
+  // document's own tree, so it works for a child reached by a sidebar click, a
+  // SyncTeX jump or a restored tab alike — the parent need never have been
+  // centered this sitting. It is a navigation like any other (through `goTo`,
+  // so ← undoes it), followed by a caret jump to the reference itself: landing
+  // at the parent's top would leave the reader searching the file for the line
+  // they just came from, which is the whole thing this step exists to skip.
+  const upTarget = useMemo(
+    () => (structure ? texStructureParent(structure, activePath) : null),
+    [structure, activePath],
+  );
+  const goUp = useCallback(() => {
+    if (!upTarget) return;
+    goTo(upTarget.path);
+    if (upTarget.line) useEditorJumpStore.getState().requestJump(upTarget.path, upTarget.line, upTarget.column);
+  }, [upTarget, goTo]);
+  const upLabel = upTarget ? basename(upTarget.path) : undefined;
+
+  // The two chords (Ctrl+Shift+↑ / Ctrl+Shift+↓ by default, rebindable in the
+  // Keyboard Shortcuts panel). Listened for on the workspace's own root rather
+  // than in `useKeyboard`: they mean nothing outside a workspace tab, so the
+  // scope is "focus is somewhere in this workspace" — the editor's textarea,
+  // the sidebar, a viewer in the center — which the bubbling keydown gives for
+  // free, and which is exactly where the global hook's editable-target guard
+  // would have dropped them. A workspace in a popout gets them the same way,
+  // with no per-window wiring. Only a chord that can act is consumed.
+  const shortcutOverrides = useSettingsStore((s) => s.settings?.keyboard_shortcuts) as
+    | ShortcutMap
+    | undefined;
+  const upChord = useMemo(() => chordLabel(resolveChord("texUp", shortcutOverrides)), [shortcutOverrides]);
+  const backChord = useMemo(() => chordLabel(resolveChord("texBack", shortcutOverrides)), [shortcutOverrides]);
+  const onWorkspaceKeyDown = useCallback(
+    (e: React.KeyboardEvent) => {
+      const ev = e.nativeEvent;
+      if (upTarget && chordMatches(resolveChord("texUp", shortcutOverrides), ev)) {
+        e.preventDefault();
+        e.stopPropagation();
+        goUp();
+      } else if (backTarget !== undefined && chordMatches(resolveChord("texBack", shortcutOverrides), ev)) {
+        e.preventDefault();
+        e.stopPropagation();
+        goBack();
+      }
+    },
+    [upTarget, backTarget, shortcutOverrides, goUp, goBack],
+  );
+
   // Advertise this workspace to SyncTeX reverse search (#42): a reverse click's
   // `focusTexWorkspaceForSource` centers it through the `texCenter` registry —
   // the ONLY route that reaches a popout, whose tabs store holds no entry a
@@ -7790,6 +7992,33 @@ function TexWorkspaceView({
       dirtyHandlersRef.current.set(p, h);
     }
     return h;
+  }, []);
+
+  // Every mounted pane's `save`, so a Compile pressed in ANY pane first writes
+  // EVERY pane's unsaved draft. Panes stay mounted (display:none) with their
+  // drafts, and the build reads the files on disk: a chapter edited in one pane
+  // and a Compile pressed in another built the chapter as last saved — and,
+  // because nothing on disk had changed, latexmk reported "up-to-date" and the
+  // old PDF came back as a success. Each `save` no-ops when its buffer is clean.
+  const saveHandlersRef = useRef<Map<string, () => Promise<void>>>(new Map());
+  const saveRegistrarsRef = useRef<Map<string, (save: () => Promise<void>) => () => void>>(
+    new Map(),
+  );
+  const saveRegistrarFor = useCallback((p: string) => {
+    let r = saveRegistrarsRef.current.get(p);
+    if (!r) {
+      r = (save: () => Promise<void>) => {
+        saveHandlersRef.current.set(p, save);
+        return () => {
+          if (saveHandlersRef.current.get(p) === save) saveHandlersRef.current.delete(p);
+        };
+      };
+      saveRegistrarsRef.current.set(p, r);
+    }
+    return r;
+  }, []);
+  const saveAllPanes = useCallback(async () => {
+    await Promise.all([...saveHandlersRef.current.values()].map((save) => save()));
   }, []);
 
   // Follow the active file into the mounted LRU, evicting the least-recently-used
@@ -7850,18 +8079,35 @@ function TexWorkspaceView({
     [openPdfTab],
   );
 
+  // Which FILE is broken, drawn on the structure tree (#tex-structure-errors).
+  // The Errors/Warnings cards answer "what is wrong" from whichever pane the
+  // reader is editing; in a document split across a dozen `\input`s that leaves
+  // the more useful question open, and the sidebar is the one surface already
+  // drawing the document as its files. Reported by every build, failed or not,
+  // and reset when the workspace changes documents (a side switch re-roots every
+  // path) — stale badges pointing at a previous document's lines would be worse
+  // than none.
+  const [diagnostics, setDiagnostics] = useState<Map<string, TexFileDiagnostics>>(new Map());
+  useEffect(() => { setDiagnostics(new Map()); }, [mainPath]);
+
   // How this document is compiled, shared by every `.tex` pane in the workspace.
   // Every one of them builds the SAME main file (`resolve_tex_root` redirects a
   // child fragment to its parent), so the engine is a property of the document:
   // per-pane state meant compiling from a chapter rebuilt the parent under the
   // backend's default engine while the main file's own toolbar still read
-  // `xelatex`. Held here rather than persisted, matching what a standalone `.tex`
-  // tab does with the same choice — and the host outlives an evicted pane, so the
-  // setting survives the center switching away and back.
-  const [compileOpts, setCompileOpts] = useState<TexCompileOpts>(EMPTY_TEX_COMPILE_OPTS);
+  // `xelatex`. Persisted on the workspace tab like `texActivePath` beside it — a
+  // document that only builds under `lualatex` builds under it in every sitting,
+  // instead of reverting to the backend's default on the next launch and failing
+  // the first compile of the day for a reason the toolbar no longer shows.
+  // Read like `texActivePath` above: the store when it holds this tab, the local
+  // mirror in a popout where it never will.
+  const compileOpts = useMemo<TexCompileOpts>(
+    () => texCompileOptsFrom({ ...localVs, ...storeVs }),
+    [storeVs, localVs],
+  );
   const patchCompileOpts = useCallback(
-    (patch: Partial<TexCompileOpts>) => setCompileOpts((prev) => ({ ...prev, ...patch })),
-    [],
+    (patch: Partial<TexCompileOpts>) => patchViewerState(texCompileViewerState(patch)),
+    [patchViewerState],
   );
 
   // In-structure link/error targets switch the center; out-of-tree ones fall back
@@ -7949,7 +8195,10 @@ function TexWorkspaceView({
           onFollowChild={onFollowChild}
           onJumpToSource={onJumpToSource}
           onDirtyChange={dirtyHandlerFor(p)}
+          onRegisterSave={saveRegistrarFor(p)}
+          onSaveAll={saveAllPanes}
           onCompiled={onCompiled}
+          onDiagnostics={setDiagnostics}
           compileOpts={compileOpts}
           onCompileOptsChange={patchCompileOpts}
         />
@@ -7966,20 +8215,40 @@ function TexWorkspaceView({
   };
 
   return (
-    <div className="tex-workspace">
+    <div className="tex-workspace" onKeyDown={onWorkspaceKeyDown}>
       {sidebarHidden ? (
-        <TexStructureRail onShow={showSidebar} onBack={backTarget ? goBack : undefined} backLabel={backLabel} />
+        <TexStructureRail
+          onShow={showSidebar}
+          onBack={backTarget ? goBack : undefined}
+          backLabel={backLabel}
+          backChord={backChord}
+          onUp={upTarget ? goUp : undefined}
+          upLabel={upLabel}
+          upLine={upTarget?.line}
+          upChord={upChord}
+        />
       ) : structure ? (
         <TexStructureSidebar
           structure={structure}
           activePath={activePath}
           width={sidebarWidth}
-          onSelect={(p) => goTo(p)}
+          onSelect={(p, _v, line) => {
+            goTo(p);
+            // A badge click carries the line; a plain row click does not, and
+            // leaves the caret where that file was last left.
+            if (line) useEditorJumpStore.getState().requestJump(p, line, 1);
+          }}
+          diagnostics={diagnostics}
           onResize={onResizeSidebar}
           onHide={hideSidebar}
           onNewFile={onNewFile}
           onBack={backTarget ? goBack : undefined}
           backLabel={backLabel}
+          backChord={backChord}
+          onUp={upTarget ? goUp : undefined}
+          upLabel={upLabel}
+          upLine={upTarget?.line}
+          upChord={upChord}
         />
       ) : (
         <div className="tex-structure-sidebar" style={{ width: sidebarWidth }}>
@@ -8080,7 +8349,10 @@ function TexView({
   onFollowChild,
   onJumpToSource,
   onDirtyChange,
+  onRegisterSave,
+  onSaveAll,
   onCompiled,
+  onDiagnostics,
   compileOpts,
   onCompileOptsChange,
 }: {
@@ -8107,9 +8379,21 @@ function TexView({
   /** Report this editor's dirty state up, so the workspace's keep-mounted center
    *  cache never evicts a pane with unsaved edits. */
   onDirtyChange?: (dirty: boolean) => void;
+  /** Hand this pane's `save` to the workspace (returns the unregister), so a
+   *  Compile pressed in any pane can flush this one's draft too. */
+  onRegisterSave?: (save: () => Promise<void>) => () => void;
+  /** Write every mounted pane's unsaved draft. Called before a build, after this
+   *  pane's own save — the build reads files, not editor buffers. */
+  onSaveAll?: () => Promise<void>;
   /** A successful compile finished: the actual output PDF and the bumped version.
    *  Opens/refocuses the PDF tab and drives a structure re-gather. */
   onCompiled?: (info: { pdfPath: string; pdfVersion: number }) => void;
+  /** Every build's errors and warnings, bucketed by the absolute path of the
+   *  file each is in, for the structure sidebar's per-file badges
+   *  (#tex-structure-errors). Fired whether the build succeeded or failed —
+   *  a green build still reports warnings, and only a failed one has errors —
+   *  and with an empty map for a clean build, which is what clears the badges. */
+  onDiagnostics?: (byFile: Map<string, TexFileDiagnostics>) => void;
   /** The compile configuration, OWNED BY THE HOST. Every `.tex` in a workspace
    *  builds the same main document (`resolve_tex_root`), so which engine — and
    *  which out-dir and extra flags — that build runs with is a property of the
@@ -8276,15 +8560,20 @@ function TexView({
   // available; "" means "let the backend pick") plus the #54 options. Held by the
   // workspace host when there is one — see `compileOpts` — so every file in one
   // structure builds its shared main document the same way; a standalone tab owns
-  // the same shape locally.
-  const [localOpts, setLocalOpts] = useState<TexCompileOpts>(EMPTY_TEX_COMPILE_OPTS);
+  // the same shape locally, seeded from and written back to its own persisted
+  // `ViewerState` so the engine a document needs is still selected after a
+  // restart (the workspace persists the shared copy the same way).
+  const [localOpts, setLocalOpts] = useState<TexCompileOpts>(() => texCompileOptsFrom(viewPos.initial));
   const { engine, outDir, extraFlags } = compileOpts ?? localOpts;
   const patchOpts = useCallback(
     (patch: Partial<TexCompileOpts>) => {
       if (onCompileOptsChange) onCompileOptsChange(patch);
-      else setLocalOpts((prev) => ({ ...prev, ...patch }));
+      else {
+        setLocalOpts((prev) => ({ ...prev, ...patch }));
+        viewPos.persist(texCompileViewerState(patch));
+      }
     },
-    [onCompileOptsChange],
+    [onCompileOptsChange, viewPos],
   );
   const [compiling, setCompiling] = useState(false);
   const [compileError, setCompileError] = useState<string | null>(null);
@@ -8310,6 +8599,10 @@ function TexView({
   // SyncTeX could not run at all (tool absent, or a backend not yet rebuilt), the
   // case that used to masquerade as a miss. Auto-cleared by the effect below.
   const [syncNote, setSyncNote] = useState<null | "miss" | "unavail">(null);
+  // The last build finished without running an engine (latexmk found every
+  // source unchanged) — a success that produced nothing new. Cleared by the
+  // next build; shown until then so it explains the PDF the reader is looking at.
+  const [compileNote, setCompileNote] = useState<null | "unchanged">(null);
 
   // #245 warnings: what the build reported that did NOT stop it. This is where
   // nearly everything worth fixing lives — an undefined `\ref` prints `??` in the
@@ -8327,8 +8620,11 @@ function TexView({
   // \ref/\cite key completion: `\label` keys across the document and entry keys
   // from the connected `.bib` file(s), gathered from disk on load. Re-gathered
   // after each compile (a build may add labels / change bib resources). The
-  // current file's labels are merged live from the editor draft below so a label
-  // just typed is offered without waiting for a re-gather.
+  // current file's own labels/macros/environments are merged in from the live
+  // draft by the editor itself (`texCompletionsFor`), lazily — only once a
+  // dropdown is actually open, and only for the family it shows. Merging them
+  // here, on every keystroke, was three whole-document parses per character
+  // typed in any TeX file, dropdown or not.
   const [gathered, setGathered] = useState<TexCompletions>({
     labels: [],
     cites: [],
@@ -8342,30 +8638,6 @@ function TexView({
       .catch(() => {});
     return () => { cancelled = true; };
   }, [path, scope, pdfVersion]);
-  const completions = useMemo<TexCompletions>(() => {
-    const seen = new Set<string>();
-    const labels = [...parseTexLabels(draft), ...gathered.labels].filter((l) => {
-      if (seen.has(l.key)) return false;
-      seen.add(l.key);
-      return true;
-    });
-    // #245: the same live merge for the draft's own macros and environments — a
-    // `\newcommand` typed a minute ago, or a `\begin{wrapfigure}` opened in this
-    // file, is offered without waiting for the next re-gather.
-    const seenCmd = new Set<string>();
-    const commands = [...parseTexDefinedCommands(draft), ...gathered.commands].filter((c) => {
-      if (seenCmd.has(c.name)) return false;
-      seenCmd.add(c.name);
-      return true;
-    });
-    const seenEnv = new Set<string>();
-    const envs = [...parseTexDocumentEnvironments(draft), ...gathered.envs].filter((e) => {
-      if (seenEnv.has(e.name)) return false;
-      seenEnv.add(e.name);
-      return true;
-    });
-    return { labels, cites: gathered.cites, commands, envs };
-  }, [draft, gathered]);
 
   // #54 compiler options: an optional output folder (relative to the source or
   // absolute) and extra engine flags (space-separated), both above with the
@@ -8510,13 +8782,18 @@ function TexView({
     setErrors([]);
     setWarnings([]);
     setSyncNote(null);
+    setCompileNote(null);
     // Snapshot the caret synchronously, before any await can let focus change or
     // a blur reset it: prefer the editor's live cursor, falling back to the last
     // reported offset. This is the position forward search reveals in the PDF.
     const caretAtCompile = caretApiRef.current?.() ?? caretRef.current;
     try {
-      // The source is editable, so persist any pending edits before building.
+      // The source is editable, so persist any pending edits before building —
+      // this pane's AND every other mounted pane's (a workspace builds one
+      // document from the files on disk; a draft left in another pane would be
+      // built as last saved, and a latexmk no-op would then hand back the old PDF).
       await save();
+      await onSaveAll?.();
       // A child file builds its main document instead of the fragment.
       const target = await resolveTexRoot(path);
       setRoot(target);
@@ -8532,18 +8809,29 @@ function TexView({
       setLog(res.log);
       // The warnings are read whether or not the build succeeded: a document that
       // failed usually has both, and one that succeeded still has these.
-      setWarnings(parseTexWarnings(res.log));
+      const parsedWarnings = parseTexWarnings(res.log);
+      const parsedErrors = res.success ? [] : parseTexErrors(res.log);
+      setWarnings(parsedWarnings);
+      setErrors(parsedErrors);
+      // The structure sidebar's per-file badges (#tex-structure-errors). Reported
+      // from `target`, the file actually built, rather than this pane's `root`
+      // state — which `setRoot` above has not applied yet in this closure.
+      onDiagnostics?.(
+        texDiagnosticsByFile(dirname(target) || "/", target, parsedErrors, parsedWarnings),
+      );
       // Surface a shell-escape warning regardless of build success — an external
       // command may have run even if the document then failed to compile.
       setShellEscape(res.shell_escape);
       if (!res.success) {
-        const parsed = parseTexErrors(res.log);
-        setErrors(parsed);
-        const detail = parsed[0]?.message || lastLogLine(res.log);
+        const detail = parsedErrors[0]?.message || lastLogLine(res.log);
         setCompileError(detail || t("fileViewer.compilationFailed"));
         return;
       }
       setCompileError(null);
+      // latexmk ran no engine because nothing on disk changed: still a success
+      // (the PDF matches the sources), but say so — a reader who expected new
+      // content is otherwise left staring at the old PDF with a green build.
+      setCompileNote(compileWasNoop(res.log) ? "unchanged" : null);
       if (res.pdf_path) {
         setPdfPath(res.pdf_path);
         const nextVersion = pdfVersionRef.current + 1;
@@ -8574,14 +8862,45 @@ function TexView({
         // No jump: the PDF is already shown and stays where it was. Distinguish a
         // real miss (SyncTeX ran, no box for that line) from SyncTeX being
         // unavailable (`null`) so the notice names the actual cause, not a failure.
-        else setSyncNote(recs === null ? "unavail" : "miss");
+        // The reveal above carried the re-read; without one, ask for it outright
+        // so Compile always puts the file as it is on disk on screen.
+        else {
+          setSyncNote(recs === null ? "unavail" : "miss");
+          usePdfSyncStore.getState().requestReload(res.pdf_path);
+        }
       }
     } catch (e) {
       setCompileError(String(e));
     } finally {
       setCompiling(false);
     }
-  }, [compiling, save, path, engine, outDir, extraFlags, openPdf, rootDir, t, onCompiled]);
+  }, [
+    compiling,
+    save,
+    onSaveAll,
+    path,
+    engine,
+    outDir,
+    extraFlags,
+    openPdf,
+    rootDir,
+    t,
+    onCompiled,
+    onDiagnostics,
+  ]);
+
+  // Advertise this editor's compile to the PDF tab's "recompile" notice (a
+  // reverse-search click with no map, a stale map, or a PDF rebuilt without
+  // SyncTeX). The PDF viewer owns no compile of its own — this one holds the
+  // draft, the engine and the out-dir — so it asks here. Rides a ref so the
+  // registration is one per path, not one per render.
+  const compileRef = useRef(compile);
+  compileRef.current = compile;
+  useEffect(() => {
+    const run = () => void compileRef.current();
+    registerTexCompile(path, run);
+    return () => unregisterTexCompile(path, run);
+  }, [path]);
 
   // #245: count the whole document on demand. Reading the draft rather than the
   // file is the point — the count is asked for while writing, and one that lags
@@ -8610,6 +8929,9 @@ function TexView({
   useEffect(() => {
     onDirtyChange?.(isDirty);
   }, [isDirty, onDirtyChange]);
+
+  // Lend this pane's `save` to the workspace for its save-all-before-compile.
+  useEffect(() => onRegisterSave?.(save), [save, onRegisterSave]);
 
   // The error-list jump: a workspace switches the center to an in-structure file;
   // standalone falls back to the module default (open/focus a tab).
@@ -8691,7 +9013,7 @@ function TexView({
               autocomplete={ac}
               grammarCheck={gc}
               spellCheck={sc}
-              texCompletions={completions}
+              texCompletions={gathered}
               fontSize={font.fontSize}
               lineHeight={font.lineHeight}
               incFont={font.inc}
@@ -8843,6 +9165,11 @@ function TexView({
           onCreate={() => void createMissingRef()}
           onDismiss={() => setCreateRef(null)}
         />
+      )}
+      {compileNote === "unchanged" && (
+        <div className="file-viewer-tex-sync-miss" role="status">
+          {t("fileViewer.compileUnchangedMsg")} <UntestedTag />
+        </div>
       )}
       {syncNote && (
         <div className="file-viewer-tex-sync-miss" role="status">
@@ -9013,7 +9340,7 @@ function TexView({
             autocomplete={ac}
             grammarCheck={gc}
             spellCheck={sc}
-            texCompletions={completions}
+            texCompletions={gathered}
             hoverPreview={hoverPreview}
             fontSize={font.fontSize}
             lineHeight={font.lineHeight}

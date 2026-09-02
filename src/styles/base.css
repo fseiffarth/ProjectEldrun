@@ -19,7 +19,14 @@
 html, body, #root {
   height: 100%;
   width: 100%;
+  /* `clip`, not just `hidden`: a hidden box is still a scroll container, so a
+     focus() reveal or a stray scrollIntoView can displace it programmatically
+     with no scrollbar to drag it back — the "viewer cut off at one edge until
+     a resize" corruption. `hidden` stays as the fallback for engines without
+     `clip`. Same pattern on every clipping wrapper in the pane chain; the
+     whole set is asserted by ViewerOverflowClip.test.ts. */
   overflow: hidden;
+  overflow: clip;
   user-select: none;
   background: var(--bg-main, #101624);
 }
@@ -239,7 +246,9 @@ html, body, #root {
   position: relative;
   flex: 1;
   min-height: 0;
+  /* Not a scroll container (see the html/body/#root rule + ViewerOverflowClip.test.ts). */
   overflow: hidden;
+  overflow: clip;
 }
 .detached-body > .split,
 .detached-body > .subwindow {

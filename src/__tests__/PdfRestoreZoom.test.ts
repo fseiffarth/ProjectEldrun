@@ -12,7 +12,11 @@
  */
 import { describe, it, expect } from "vitest";
 
-import { restoredPdfZoom, rescaleScrollTarget } from "../components/embed/pdf/PdfViewer";
+import {
+  restoredPdfZoom,
+  rescaleScrollTarget,
+  shouldArmPdfRestoreDeadline,
+} from "../components/embed/pdf/PdfViewer";
 
 describe("restoredPdfZoom", () => {
   it("starts at the fit baseline when there is no saved state", () => {
@@ -69,5 +73,21 @@ describe("rescaleScrollTarget", () => {
     const target = { top: 300, left: 12 };
     expect(rescaleScrollTarget(target, 0, 1.5)).toEqual(target);
     expect(rescaleScrollTarget(target, 1.5, 0)).toEqual(target);
+  });
+});
+
+describe("PDF restore deadline", () => {
+  const target = { top: 9542, left: 0 };
+
+  it("does not expire a saved position while its restored tab is hidden", () => {
+    // TeX workspaces normally restore with the editor active and their compiled
+    // PDF as a hidden sibling. display:none gives that PDF no scroll range; the
+    // target must remain pending until the reader actually opens it.
+    expect(shouldArmPdfRestoreDeadline(false, target)).toBe(false);
+  });
+
+  it("bounds retries once the PDF is visible", () => {
+    expect(shouldArmPdfRestoreDeadline(true, target)).toBe(true);
+    expect(shouldArmPdfRestoreDeadline(true, null)).toBe(false);
   });
 });

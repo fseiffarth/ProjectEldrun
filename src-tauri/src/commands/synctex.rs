@@ -36,15 +36,48 @@
 //!   is nearer to a click in a short line's trailing slack than the last real
 //!   word is, and it carries the box's tag ({@link trim_line_fill});
 //! * answer with the nearest leaf that *disagrees* with the box's own
-//!   `(tag, line)`, since a leaf merely repeating it is the artefact rather than
-//!   material — falling back to the plain nearest leaf when every leaf agrees,
-//!   which is the ordinary single-file line and resolves exactly as the CLI
-//!   resolves it.
+//!   `(tag, line)` **and with every enclosing box's** — a leaf merely repeating
+//!   one of those is the artefact rather than material — falling back to the
+//!   plain nearest leaf when every leaf agrees, which is the ordinary
+//!   single-file line and resolves exactly as the CLI resolves it.
+//!
+//! The *enclosing* boxes matter because of a second artefact class, LuaTeX's.
+//! `luaotfload` rebuilds glyph runs in a callback (kerning, ligatures, feature
+//! substitution), and a node created there carries the input position at the
+//! moment the callback ran — not the line that wrote the text. Under beamer
+//! that moment is `\end{frame}`: the frame is boxed and its paragraphs are
+//! finished when the environment closes, so a slide `\input` from another file
+//! gets glyph runs tagged `main.tex:<\end{frame}>` spliced between its own
+//! correctly-tagged runs, on *every* line:
+//!
+//! ```text
+//! [ tag1 L33 …                            <- the page's vbox: main.tex, \end{frame}
+//!   ( tag295 L1 x=28.35 y=55.5 w=396.9    <- block title: interpolation.tex:1 (right)
+//!     x tag295 L1 x=37.5                  <- "In continuous"
+//!     …
+//!     k tag1  L33 x=146.1                 <- a kern from the font callback
+//!     x tag1  L33 x=180.5                 <- "domains: interpolate", retagged
+//!     g tag295 L1 x=311.7
+//! ```
+//!
+//! Here the box tag is *right* and the foreign leaves are the artefact — the
+//! inverse of the pdfTeX case — so "prefer the leaf that disagrees with the box"
+//! chose exactly the wrong record and sent every click on that title to the
+//! `\end{frame}` line of the main file. What both classes share is that the
+//! artefact's `(tag, line)` is the position of some box that was being closed:
+//! the line box for pdfTeX's paragraph break, an outer box (the frame, the page)
+//! for a callback that ran when *it* closed. Treating every ancestor's tag as
+//! an artefact tag catches both; a genuine line of material never repeats the
+//! tag of a box that encloses it, because that box's line is an environment or
+//! paragraph boundary, not text.
 //!
 //! Measured against `synctex edit` on the documents above: identical on 133 of
 //! 138 clicks landing on glyphs (the five differences are all cases where the
 //! CLI names the wrong file or the wrong line), and 0 wrong files against the
-//! CLI's 12 on an 84-point sweep through the margins and inter-word gaps.
+//! CLI's 12 on an 84-point sweep through the margins and inter-word gaps. On a
+//! 55-page LuaLaTeX beamer talk, the ancestor rule changes the candidate set of
+//! 207 of 10 005 line boxes, and every dropped record is a `main.tex`
+//! `\end{frame}` line.
 //!
 //! SyncTeX records no column, so the column is always 0 (as with the CLI, which
 //! reports `Column:-1` for every record pdfTeX writes).
@@ -93,6 +126,11 @@ struct HBox {
     /// Nesting depth, so a nested box (a section number, a math atom) outranks
     /// the line box that contains it when both cover the click.
     depth: usize,
+    /// The `(tag, line)` of every box enclosing this one, outermost first. A
+    /// leaf repeating one of these is a node minted when that box closed (a
+    /// LuaTeX font callback at `\end{frame}`, say) rather than material — see
+    /// the module doc and {@link resolve_in_hbox}.
+    ancestors: Vec<(u32, u32)>,
     /// Direct children, in emission order (left to right).
     leaves: Vec<Rec>,
 }
@@ -282,6 +320,7 @@ fn walk_hboxes(text: &str, p: &Preamble, only_page: Option<u32>) -> Vec<(u32, HB
                         HBox {
                             rec,
                             depth: stack.len(),
+                            ancestors: stack.iter().map(|(r, _, _)| (r.tag, r.line)).collect(),
                             leaves,
                         },
                     ));
@@ -371,7 +410,7 @@ fn trim_line_fill<'a>(bx: &HBox, leaves: &[&'a Rec]) -> Vec<&'a Rec> {
 }
 
 /// The source location for a click at `cx` inside `bx`: the nearest leaf that
-/// says something the box's own tag does not.
+/// says something neither the box's own tag nor any enclosing box's does.
 ///
 /// A leaf repeating the box's exact `(tag, line)` is nearly always the artefact
 /// rather than material — the line fill, or the record TeX stamps with the
@@ -379,6 +418,13 @@ fn trim_line_fill<'a>(bx: &HBox, leaves: &[&'a Rec]) -> Vec<&'a Rec> {
 /// makes a click in the margin, in a paragraph indent, or in the slack after a
 /// short line resolve to the line's real author instead of to whatever file was
 /// being read when the paragraph was finally broken.
+///
+/// The same holds one level up: a leaf repeating an *ancestor* box's tag was
+/// minted when that box closed — LuaTeX's font callback re-tagging glyph runs
+/// with beamer's `\end{frame}` line is the measured case — and is the artefact
+/// even though it disagrees with the line box. Without this, a line whose own
+/// tag is right and whose foreign leaves are the artefact resolved to the
+/// artefact every time, because those were the only leaves that "disagreed".
 ///
 /// When every leaf agrees with the box the distinction is empty and the plain
 /// nearest-leaf answer stands — the ordinary single-file line, resolved exactly
@@ -389,15 +435,34 @@ fn resolve_in_hbox(bx: &HBox, cx: f64) -> (u32, u32) {
     if usable.is_empty() {
         return (bx.rec.tag, bx.rec.line);
     }
+    let is_own = |r: &Rec| r.tag == bx.rec.tag && r.line == bx.rec.line;
+    // A line box is routinely wrapped in hboxes carrying its own tag (beamer's
+    // block layout nests four deep), so the box's own tag is excluded here or
+    // the middle layer below would never hold anything.
+    let is_ancestor = |r: &Rec| {
+        !is_own(r) && bx.ancestors.iter().any(|&(t, l)| r.tag == t && r.line == l)
+    };
+    // Layered: leaves that disagree with everything, then the box's own leaves
+    // (a line whose tag is right and whose only foreign records are callback
+    // artefacts — the beamer block title), then whatever is there. The middle
+    // layer is what keeps the title from falling back onto the artefact once the
+    // first layer is empty.
     let informative: Vec<&Rec> = usable
         .iter()
         .copied()
-        .filter(|r| r.tag != bx.rec.tag || r.line != bx.rec.line)
+        .filter(|r| !is_own(r) && !is_ancestor(r))
         .collect();
-    let pool = if informative.is_empty() {
-        &usable
-    } else {
+    let own_only: Vec<&Rec> = usable
+        .iter()
+        .copied()
+        .filter(|r| !is_ancestor(r))
+        .collect();
+    let pool = if !informative.is_empty() {
         &informative
+    } else if !own_only.is_empty() {
+        &own_only
+    } else {
+        &usable
     };
 
     // Nearest by horizontal distance; ties keep the earlier (left) record,
@@ -441,21 +506,121 @@ struct Map {
     pre: Preamble,
 }
 
-/// Read the SyncTeX map beside `pdf`, preferring the compressed form the engines
-/// write. Returns None when there is none — an imported PDF, or one built
-/// without `-synctex=1`, simply has no reverse search.
-fn load_map(pdf: &Path) -> Option<std::sync::Arc<Map>> {
+/// The SyncTeX map beside `pdf`, preferring the compressed form the engines
+/// write. None when there is none — an imported PDF, or one built without
+/// `-synctex=1`, simply has no reverse search.
+fn map_path(pdf: &Path) -> Option<PathBuf> {
     let stem = pdf.file_stem()?.to_str()?;
     let dir = pdf.parent().unwrap_or_else(|| Path::new("."));
     let gz = dir.join(format!("{stem}.synctex.gz"));
     let plain = dir.join(format!("{stem}.synctex"));
-    let path = if gz.exists() {
-        gz
+    if gz.exists() {
+        Some(gz)
     } else if plain.exists() {
-        plain
+        Some(plain)
     } else {
-        return None;
+        None
+    }
+}
+
+/// What reverse search can promise for a PDF right now — the answer to "why did
+/// my click do nothing, or land on the wrong line", asked by the viewer before
+/// it words a notice. Every field is a reason to recompile.
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize)]
+pub struct MapStatus {
+    /// A `.synctex(.gz)` sits beside the PDF at all.
+    pub has_map: bool,
+    /// The PDF was written measurably after the map: rebuilt without
+    /// `-synctex=1`, or by a tool that emits none. The map describes an earlier
+    /// build and its positions no longer belong to these pages.
+    pub pdf_newer_than_map: bool,
+    /// Local sources the map names — the `.tex`/`.sty`/`.cls` files under the
+    /// main document's directory — saved after the map was written. The lines
+    /// reverse search answers with are those of the build *before* that edit.
+    pub newer_sources: Vec<String>,
+}
+
+/// Two files closed by the same compile can land in either order within a
+/// second; only a gap wider than this is read as "written afterwards".
+const STALE_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Extensions of inputs a person edits. The map also names every `.aux`, `.nav`
+/// and `.out` the run read back, and those are rewritten *by* the compile — a
+/// build that never touched a source would otherwise report itself stale.
+const SOURCE_EXTS: [&str; 5] = ["tex", "sty", "cls", "ltx", "tikz"];
+
+/// The inputs under `root` (the main document's directory) with a source
+/// extension whose `mtime_of` is later than `map_mtime` by more than the grace.
+/// Sorted for a stable readout. Pure over `mtime_of` so the rule is testable
+/// without touching a clock.
+fn stale_inputs(
+    inputs: &HashMap<u32, String>,
+    root: &Path,
+    map_mtime: SystemTime,
+    mtime_of: impl Fn(&Path) -> Option<SystemTime>,
+) -> Vec<String> {
+    let threshold = map_mtime + STALE_GRACE;
+    let mut out: Vec<String> = inputs
+        .values()
+        .map(|p| absolutise(p, root))
+        .filter(|abs| {
+            let path = Path::new(abs);
+            path.starts_with(root)
+                && path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .is_some_and(|e| SOURCE_EXTS.contains(&e.to_ascii_lowercase().as_str()))
+        })
+        .filter(|abs| mtime_of(Path::new(abs)).is_some_and(|m| m > threshold))
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// Probe the map beside `pdf` ({@link MapStatus}). The map is loaded through the
+/// same cache reverse search uses, so a status check after a click costs a few
+/// `stat`s and no second gunzip.
+pub fn status(pdf: &Path) -> MapStatus {
+    let Some(path) = map_path(pdf) else {
+        return MapStatus::default();
     };
+    let mtime = |p: &Path| std::fs::metadata(p).ok().and_then(|m| m.modified().ok());
+    let Some(map_mtime) = mtime(&path) else {
+        return MapStatus {
+            has_map: true,
+            ..Default::default()
+        };
+    };
+    let pdf_newer_than_map = mtime(pdf).is_some_and(|m| m > map_mtime + STALE_GRACE);
+    let newer_sources = match load_map(pdf) {
+        Some(map) => {
+            let pdf_dir = pdf.parent().unwrap_or_else(|| Path::new("."));
+            // The main document is the lowest-numbered input; its directory is
+            // the tree the person edits (an out-dir build puts the PDF elsewhere).
+            let root = map
+                .pre
+                .inputs
+                .iter()
+                .min_by_key(|(tag, _)| **tag)
+                .map(|(_, p)| PathBuf::from(absolutise(p, pdf_dir)))
+                .and_then(|main| main.parent().map(Path::to_path_buf))
+                .unwrap_or_else(|| pdf_dir.to_path_buf());
+            let root = std::fs::canonicalize(&root).unwrap_or(root);
+            stale_inputs(&map.pre.inputs, &root, map_mtime, mtime)
+        }
+        None => Vec::new(),
+    };
+    MapStatus {
+        has_map: true,
+        pdf_newer_than_map,
+        newer_sources,
+    }
+}
+
+/// Read the SyncTeX map beside `pdf` ({@link map_path}), through the cache.
+fn load_map(pdf: &Path) -> Option<std::sync::Arc<Map>> {
+    let path = map_path(pdf)?;
 
     let mtime = std::fs::metadata(&path).ok()?.modified().ok()?;
     if let Ok(guard) = CACHE.lock() {
@@ -834,6 +999,7 @@ g1,9:11436714,8865054
                 elastic: false,
             },
             depth: 1,
+            ancestors: Vec::new(),
             leaves: Vec::new(),
         };
         assert_eq!(resolve_in_hbox(&bx, 50.0), (3, 12));
@@ -963,6 +1129,220 @@ x1,5:11218261,8865054
         assert_eq!(rects.len(), 2, "one box per page: {rects:?}");
         assert_eq!(rects[0].0, 1);
         assert_eq!(rects[1].0, 2);
+    }
+
+    /// One slide of a LuaLaTeX beamer talk, trimmed from a real run: `main.tex`
+    /// (tag 1) `\input`s `slides/interpolation.tex` (tag 295) inside a frame that
+    /// closes on line 33. The page vbox carries `(1, 33)`; the line boxes carry
+    /// the slide's own file, and among their correctly-tagged glyph runs sit
+    /// kern + glyph records tagged `(1, 33)` — nodes luaotfload minted when the
+    /// frame closed. The first line's box tag is right (line 1); the second's is
+    /// the paragraph-break artefact (line 3 for line 2's text), so both artefact
+    /// classes are on one page.
+    const LUATEX: &str = "\
+SyncTeX Version:1
+Input:1:/proj/main.tex
+Input:295:/proj/slides/interpolation.tex
+Output:pdf
+Unit:1
+X Offset:0
+Y Offset:0
+Content:
+{7
+[1,33:4718592,4718592:23146168,12000000,0
+[295,16:1857863,2831155:26011770,6277000,0
+(295,1:1857863,3637000:26011770,544000,150000
+[295,1:1857863,3093000:26011770,544000,150000
+(295,1:1857863,3637000:26011770,544000,150000
+h295,1:1857863,3637000
+x295,1:2457000,3637000
+g295,1:2713000,3637000
+x295,1:3834000,3637000
+x295,1:4686000,3637000
+k1,33:9573000,3637000:19660
+x1,33:11829000,3637000
+x1,33:12989000,3637000
+g295,1:20428000,3637000
+g295,1:27869633,3637000
+)
+]
+)
+(295,3:1857863,4673000:26011770,458000,137000
+h295,2:1857863,4673000
+x295,2:2477000,4673000
+k1,33:1857863,4673000:-19660
+x1,33:3244000,4673000
+g295,2:3460000,4673000
+x295,2:4326000,4673000
+g295,2:4542000,4673000
+x295,2:6620000,4673000
+k1,33:4542000,4673000:19660
+x1,33:8645000,4673000
+x1,33:8881000,4673000
+x1,33:9307000,4673000
+g295,2:10422000,4673000
+x295,2:10658000,4673000
+g295,3:25950000,4673000
+g295,3:27869633,4673000
+)
+]
+]
+}7
+";
+
+    fn resolve_luatex(cx: f64, cy: f64) -> (u32, u32) {
+        let pre = parse_preamble(LUATEX);
+        let boxes = page_hboxes(LUATEX, 7, &pre);
+        let bx = pick_hbox(&boxes, cx, cy).expect("an hbox");
+        resolve_in_hbox(bx, cx)
+    }
+
+    #[test]
+    fn ancestors_are_recorded_outermost_first() {
+        let pre = parse_preamble(LUATEX);
+        let boxes = page_hboxes(LUATEX, 7, &pre);
+        assert_eq!(boxes.len(), 3, "the title's inner and wrapper hbox, the body line");
+        // Innermost first in emission order (a box is pushed when it closes).
+        assert_eq!(boxes[0].ancestors, vec![(1, 33), (295, 16), (295, 1), (295, 1)]);
+        assert_eq!(boxes[1].ancestors, vec![(1, 33), (295, 16)]);
+        // The pdfTeX fixture: both line boxes sit directly in the page vbox.
+        let pre = parse_preamble(DOC);
+        let boxes = page_hboxes(DOC, 1, &pre);
+        assert_eq!(boxes[0].ancestors, vec![(1, 7)]);
+    }
+
+    #[test]
+    fn a_leaf_retagged_by_the_font_callback_never_wins() {
+        // The block title: the box is right (interpolation.tex:1) and the only
+        // leaves that disagree with it are the `(1, 33)` artefacts — under the
+        // box-only rule those were the *preferred* pool, so every click on the
+        // title went to main.tex's `\end{frame}`. Sweep the whole line.
+        let title = bp(3637000.0);
+        for cx in [20.0, bp(2457000.0), bp(9573000.0), bp(11829000.0), bp(12989000.0), 300.0, 500.0]
+        {
+            assert_eq!(resolve_luatex(cx, title), (295, 1), "x = {cx}");
+        }
+        // The body line: box tag is the paragraph-break artefact (line 3), the
+        // material is line 2, and the `(1, 33)` runs are spliced between its
+        // words. A click on one of those runs used to be a coin flip.
+        let body = bp(4673000.0);
+        for cx in [20.0, bp(2477000.0), bp(3244000.0), bp(8645000.0), bp(9307000.0), 400.0, 500.0]
+        {
+            assert_eq!(resolve_luatex(cx, body), (295, 2), "x = {cx}");
+        }
+    }
+
+    #[test]
+    fn an_ancestor_tag_is_still_the_answer_when_it_is_all_there_is() {
+        // Beamer's own chrome (a footline typeset by the template) has nothing
+        // but the frame's own tag in it; dropping every leaf must not answer
+        // nothing, it falls back to the plain nearest leaf.
+        const CHROME: &str = "\
+Input:1:/proj/main.tex
+Unit:1
+X Offset:0
+Y Offset:0
+Content:
+{1
+[1,33:0,0:23146168,12000000,0
+(1,33:1857863,3637000:26011770,544000,150000
+x1,33:2457000,3637000
+x1,33:3834000,3637000
+)
+]
+}1
+";
+        let pre = parse_preamble(CHROME);
+        let boxes = page_hboxes(CHROME, 1, &pre);
+        let bx = pick_hbox(&boxes, bp(3000000.0), bp(3637000.0)).expect("an hbox");
+        assert_eq!(resolve_in_hbox(bx, bp(3000000.0)), (1, 33));
+    }
+
+    #[test]
+    fn stale_inputs_reports_only_edited_local_sources() {
+        use std::time::Duration;
+        let t0 = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+        let mut inputs = HashMap::new();
+        inputs.insert(1, "/proj/./main.tex".to_string());
+        inputs.insert(2, "/usr/share/texmf/beamer.cls".to_string());
+        inputs.insert(3, "/proj/slides/idea.tex".to_string());
+        inputs.insert(4, "/proj/main.aux".to_string());
+        inputs.insert(5, "/proj/theme.sty".to_string());
+        let mtimes: HashMap<&str, SystemTime> = HashMap::from([
+            ("/proj/main.tex", t0 + Duration::from_secs(1)), // within the grace: same build
+            ("/usr/share/texmf/beamer.cls", t0 + Duration::from_secs(600)), // not local
+            ("/proj/slides/idea.tex", t0 + Duration::from_secs(60)), // edited after
+            ("/proj/main.aux", t0 + Duration::from_secs(60)), // generated, not a source
+            ("/proj/theme.sty", t0 - Duration::from_secs(60)), // older: fine
+        ]);
+        let got = stale_inputs(&inputs, Path::new("/proj"), t0, |p| {
+            mtimes.get(p.to_str().unwrap()).copied()
+        });
+        assert_eq!(got, vec!["/proj/slides/idea.tex".to_string()]);
+        // A file the stat cannot see is not reported as stale.
+        let got = stale_inputs(&inputs, Path::new("/proj"), t0, |_| None);
+        assert!(got.is_empty());
+    }
+
+    #[test]
+    fn status_reads_the_files_beside_the_pdf() {
+        use std::fs::File;
+        use std::io::Write;
+        use std::time::Duration;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = std::fs::canonicalize(dir.path()).expect("canonical");
+        let pdf = root.join("main.pdf");
+
+        // No map at all: nothing can be promised.
+        File::create(&pdf).expect("pdf");
+        assert_eq!(status(&pdf), MapStatus::default());
+
+        // A map naming a local source and a system class.
+        std::fs::create_dir(root.join("slides")).expect("slides dir");
+        let slide = root.join("slides/idea.tex");
+        let main = root.join("main.tex");
+        File::create(&slide).expect("slide");
+        File::create(&main).expect("main");
+        let map = root.join("main.synctex");
+        writeln!(
+            File::create(&map).expect("map"),
+            "SyncTeX Version:1\nInput:1:{}\nInput:2:/usr/share/texmf/beamer.cls\nInput:3:{}\nUnit:1\nX Offset:0\nY Offset:0\nContent:\n{{1\n}}1\n",
+            main.display(),
+            slide.display()
+        )
+        .expect("write map");
+
+        let t0 = SystemTime::now() - Duration::from_secs(3600);
+        let set = |p: &Path, t: SystemTime| {
+            File::options()
+                .write(true)
+                .open(p)
+                .expect("open")
+                .set_modified(t)
+                .expect("set mtime")
+        };
+        set(&map, t0);
+        set(&pdf, t0);
+        set(&main, t0 - Duration::from_secs(10));
+        set(&slide, t0 - Duration::from_secs(10));
+        assert_eq!(
+            status(&pdf),
+            MapStatus {
+                has_map: true,
+                pdf_newer_than_map: false,
+                newer_sources: vec![],
+            }
+        );
+
+        // The slide is saved after the build: reported, by canonical path.
+        set(&slide, t0 + Duration::from_secs(120));
+        let st = status(&pdf);
+        assert_eq!(st.newer_sources, vec![slide.to_string_lossy().into_owned()]);
+        assert!(!st.pdf_newer_than_map);
+
+        // The PDF rebuilt without a map: the map is the older build's.
+        set(&pdf, t0 + Duration::from_secs(120));
+        assert!(status(&pdf).pdf_newer_than_map);
     }
 
     #[test]

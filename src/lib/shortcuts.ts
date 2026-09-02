@@ -46,10 +46,12 @@ export type ShortcutAction =
   | "closeAllTabs"
   | "steeringMode"
   | "cycleProjectBack"
-  | "shortcutHelp";
+  | "shortcutHelp"
+  | "texUp"
+  | "texBack";
 
 /** Section ids for the cheat-sheet/settings grouping (`SHORTCUT_GROUPS`). */
-export type ShortcutGroup = "navigation" | "tabs" | "steering";
+export type ShortcutGroup = "navigation" | "tabs" | "steering" | "tex";
 
 export interface ShortcutDef {
   action: ShortcutAction;
@@ -69,6 +71,7 @@ export const SHORTCUT_GROUPS: { id: ShortcutGroup; labelKey: TranslationKey }[] 
   { id: "navigation", labelKey: "shortcutHelp.group.navigation" },
   { id: "tabs", labelKey: "shortcutHelp.group.tabs" },
   { id: "steering", labelKey: "shortcutHelp.group.steering" },
+  { id: "tex", labelKey: "shortcutHelp.group.tex" },
 ];
 
 /**
@@ -174,6 +177,29 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
     label: "Open shortcut help",
     group: "steering",
     default: { key: "F1" },
+    untested: true,
+  },
+  // The TeX workspace's two navigation steps (#tex-structure-up). Unlike every
+  // chord above these are NOT handled by `useKeyboard`: they only mean anything
+  // inside a workspace tab, so the workspace itself listens — on its own root
+  // element, which is what scopes them to "the TeX viewer has focus" and lets
+  // them work from the editor's textarea, where the global hook's editable-
+  // target guard would drop them. Ctrl+Shift+Arrow collides with no default
+  // here: the subwindow-cycling arrows are Shift-only, and the workspace
+  // consumes the chord (preventDefault) so the textarea's own paragraph-
+  // selection never runs.
+  {
+    action: "texUp",
+    label: "TeX workspace: up to the parent document",
+    group: "tex",
+    default: { key: "ArrowUp", ctrl: true, shift: true },
+    untested: true,
+  },
+  {
+    action: "texBack",
+    label: "TeX workspace: back to the previous file",
+    group: "tex",
+    default: { key: "ArrowDown", ctrl: true, shift: true },
     untested: true,
   },
 ];

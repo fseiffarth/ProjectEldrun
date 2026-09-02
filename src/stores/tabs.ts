@@ -475,6 +475,20 @@ export interface ViewerState {
   // that column, and the rail (never a bare edge) is what keeps the fold
   // reversible from where it happened.
   texSidebarHidden?: boolean;
+  // --- TeX compile configuration (`viewer:"tex"` and `viewer:"texworkspace"`) --
+  // How this document is BUILT: the engine (`""` / absent = let the backend pick
+  // its default), the #54 output folder and the #54 extra engine flags. Persisted
+  // per tab because the choice is a property of the document — a thesis whose
+  // fonts need `lualatex` needs it every sitting, and re-picking the engine after
+  // every relaunch (and after the first compile silently failed under the default
+  // one) is the whole reason this is stored rather than session state. In a
+  // workspace these ride the single workspace tab, so every pane in it builds the
+  // shared main document the same way; a standalone `.tex` tab holds its own.
+  // Empty strings are stored as written: `""` is a real choice ("back to the
+  // backend default"), not an absent one.
+  texEngine?: string;
+  texOutDir?: string;
+  texExtraFlags?: string;
 }
 
 // Detached windows render their tabs from a Tauri-event SEED into local React

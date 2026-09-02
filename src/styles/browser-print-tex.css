@@ -995,7 +995,9 @@
   flex-direction: row;
   background: var(--bg-panel);
   color: var(--text-primary);
+  /* Not a scroll container (see base.css html/body/#root + ViewerOverflowClip.test.ts). */
   overflow: hidden;
+  overflow: clip;
 }
 
 .tex-structure-sidebar {
@@ -1107,6 +1109,63 @@
   padding: 6px 8px 2px;
 }
 
+/* One line of the tree: the file's button plus its build badges. The paint
+   lives here rather than on the button so hovering a badge lights the same row
+   the button does, and the active row's tint reaches the sidebar's edge. */
+.tex-structure-rowline {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding-right: 6px;
+}
+
+.tex-structure-rowline:hover {
+  background: var(--bg-hover);
+}
+
+.tex-structure-rowline.is-active {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+/* The row shrinks to leave the badges room; without `min-width: 0` a long file
+   name refuses to ellipsise and pushes them out of the sidebar. */
+.tex-structure-rowline > .tex-structure-row {
+  width: auto;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* Error/warning counts from the last build, same pills as the compile cards'
+   (`file-viewer-tex-error-count` / `-warn-count`), sized down for the tree. */
+.tex-structure-diag {
+  flex: 0 0 auto;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 5px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--bg-main);
+  cursor: var(--cur-pointer, pointer);
+}
+
+.tex-structure-diag.is-error {
+  background: var(--danger);
+}
+
+.tex-structure-diag.is-warning {
+  background: var(--warning);
+}
+
+.tex-structure-diag:hover {
+  filter: brightness(1.15);
+}
+
 .tex-structure-row {
   display: flex;
   align-items: center;
@@ -1168,7 +1227,10 @@
   position: relative;
   flex: 1 1 auto;
   min-width: 0;
+  /* Not a scroll container: the editor's own focus() on a pane switch must not
+     be able to displace the workspace center. See ViewerOverflowClip.test.ts. */
   overflow: hidden;
+  overflow: clip;
 }
 
 .tex-workspace-pane {

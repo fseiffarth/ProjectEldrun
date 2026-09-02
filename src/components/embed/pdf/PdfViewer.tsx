@@ -30,6 +30,7 @@ import { useExperimental } from "../../../lib/experimental";
 import { emptyDeck } from "../../../lib/viewers/deck/model";
 import { deckPathForPdf, serializeDeck } from "../../../lib/viewers/deck/sidecar";
 import { jumpToSource, SaveButton, useViewerState } from "../FileViewerPane";
+import { canRecompileTexSource, recompileTexSource } from "../openTexWorkspace";
 import {
   renderPdfPagesToImages,
   printHtmlBody,
@@ -139,8 +140,11 @@ import {
   pdfPointToBigPoints,
   bigPointsToCssRect,
   synctexEdit,
+  synctexStatus,
+  syncNoticeKind,
   resolveTexRoot,
   refineToWord,
+  type SyncNoticeKind,
   type SyncRect,
   type SyncSource,
   type TextItemBox,
@@ -242,6 +246,20 @@ export function rescaleScrollTarget(
   return { top: target.top * ratio, left: target.left * ratio };
 }
 
+/**
+ * A restore target may only time out while the reader is actually on screen.
+ * Hidden tabs have no scrollable layout (`display:none`), so their scrollTop is
+ * clamped to zero no matter how complete the PDF is. TeX-linked PDFs commonly
+ * restart behind their editor tab; expiring the target there turns a valid saved
+ * position into a jump to the top before the reader has even opened the tab.
+ */
+export function shouldArmPdfRestoreDeadline(
+  paneVisible: boolean,
+  target: { top: number; left: number } | null,
+): boolean {
+  return paneVisible && target != null;
+}
+
 /** The eight standard `/Info` field names, bound to their wording (#pdf-meta). A
  *  map rather than a derived key, because these are the only names in the dict that
  *  belong to the format: everything else is the producer's own invention, and the
@@ -326,7 +344,15 @@ function PdfThumb({
     let cancelled = false;
     let task: { cancel: () => void; promise: Promise<void> } | null = null;
     void (async () => {
-      const p = await doc.getPage(page);
+      let p;
+      try {
+        p = await doc.getPage(page);
+      } catch {
+        // A page tree the compiler has not finished writing ("Page dictionary kid
+        // reference points to wrong type of object"): the next mtime poll brings
+        // the finished file, and an unpainted thumbnail is the right face for now.
+        return;
+      }
       if (cancelled) return;
       const rotation = (((p.rotate + rot) % 360) + 360) % 360;
       const base = p.getViewport({ scale: 1, rotation });
@@ -616,7 +642,14 @@ function PdfPageCanvas({
     let cancelled = false;
     let task: { cancel: () => void; promise: Promise<void> } | null = null;
     (async () => {
-      const page = await doc.getPage(pageNumber);
+      let page;
+      try {
+        page = await doc.getPage(pageNumber);
+      } catch {
+        // Mid-compile read (see PdfThumb): keep the old pixels, the next reload
+        // paints the real page. This was an unhandled rejection per page per build.
+        return;
+      }
       if (cancelled) return;
       const dpr = window.devicePixelRatio || 1;
       const viewport = page.getViewport({
@@ -644,6 +677,16 @@ function PdfPageCanvas({
       if (sameGeometry && samePage(fp, prev.fp)) {
         // Already on screen, at this size, drawing this. Nothing to do — which is
         // the whole point: no clear, no repaint, no flash.
+        //
+        // Except to hand back what the comparison cost: `getOperatorList()` is the
+        // parse half of a render, and it decoded every image on this page into the
+        // NEW document's page object on the way to its answer. Nothing will ever
+        // paint from that parse — the pixels it matches are already on the canvas
+        // — so without this every recompile of an unchanged deck left the fresh
+        // document holding the decoded images of every page near the viewport,
+        // for the life of that document. (Refused while a render is in flight,
+        // which cannot be this effect's — it has not started one.)
+        page.cleanup();
         return;
       }
       // From here the canvas is going to change, and any interruption (a zoom
@@ -2224,6 +2267,10 @@ function PdfCanvas({
   // Decided once, by `restoredPdfZoom`, which is where the rule is documented.
   const restored = useState(() => restoredPdfZoom(viewPos.initial))[0];
   const [scale, setScale] = useState(restored.scale);
+  // A fit-baseline restore is not addressable until this sitting's pane width is
+  // known and `fitWidth` has expressed the saved offset at that zoom. In
+  // particular, a PDF loaded behind its TeX editor starts with width zero.
+  const [initialZoomReady, setInitialZoomReady] = useState(false);
   // True while the PDF is at the fit-to-width baseline, so a pane/tab resize
   // re-fits. A manual zoom (buttons / Ctrl+wheel) clears it; the "Fit width"
   // button and the initial fit restore it. Mirrors ImageViewer's `fittedRef`.
@@ -2286,6 +2333,25 @@ function PdfCanvas({
     };
   }, [syncable]);
 
+  // Why a reverse-search click did nothing, or may have landed on the wrong
+  // line — worded from `synctexStatus` after every click (see `syncNoticeKind`).
+  // A Ctrl-click used to fail silently in every one of these cases, which read
+  // as "click-to-source is broken" when the answer was "you haven't recompiled".
+  // `source` is the file the Recompile button builds from (the resolved input on
+  // a hit, the PDF's sibling `.tex` otherwise); `canRecompile` gates the button,
+  // since a PDF opened on its own has no workspace to hand the build to.
+  const [syncNotice, setSyncNotice] = useState<{
+    kind: SyncNoticeKind;
+    source: string;
+    sources: string[];
+    canRecompile: boolean;
+  } | null>(null);
+  useEffect(() => {
+    if (!syncNotice) return;
+    const id = window.setTimeout(() => setSyncNotice(null), 10000);
+    return () => window.clearTimeout(id);
+  }, [syncNotice]);
+
   // SyncTeX forward search: a pending reveal/highlight request for this PDF.
   // Copied into local state so we can consume the store request immediately
   // (avoiding a re-fire) while keeping the highlight mounted to animate.
@@ -2334,6 +2400,26 @@ function PdfCanvas({
     });
     setReloadReveal(null);
   }, [doc, loadedDiskVersion, reloadReveal]);
+
+  // A plain re-read request (a compile with nothing to reveal — see
+  // `requestReload`): re-read the bytes now rather than wait for an mtime
+  // advance that, after a latexmk "up-to-date" no-op, never comes. Skipped while
+  // the first load is still in flight (it is reading those bytes already) and
+  // routed through the stale banner when page edits are pending, exactly like
+  // the poll — a reload replaces the arrangement.
+  const reloadNonce = usePdfSyncStore((s) => s.reloadByPath[path] ?? 0);
+  useEffect(() => {
+    if (!reloadNonce || (!doc && !error)) return;
+    if (dirtyRef.current) {
+      setStaleOnDisk(true);
+      return;
+    }
+    void fileMtime(path, scope)
+      .then((mtime) => { lastMtime.current = mtime; })
+      .catch(() => {});
+    setDiskVersion((v) => v + 1);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reloadNonce]);
 
   // A SyncTeX reveal names a page of the FILE, but the reader shows an arrangement —
   // that page may have been moved, or dropped. Resolve it to the sheet currently
@@ -3272,21 +3358,34 @@ function PdfCanvas({
   // Resolve the clicked source's root (the main `.tex` that produces this PDF) and
   // pass it as the routing anchor, so a subfile with no tab yet opens in the
   // subwindow that already holds the main `.tex` rather than the focused group.
+  //
+  // Every outcome is worded: no map beside the PDF (compile with SyncTeX first),
+  // a map the PDF or a source outgrew (recompile — the jump still happens, a
+  // nearby line beats nothing), or an honest miss on a current map. The status
+  // probe runs after the resolve, not before, so a clean hit on a current map
+  // costs one extra command answered from the map cache and a few stats.
   const onSyncClick = useCallback(
     async (page: number, x: number, y: number) => {
-      const src = await synctexEdit(path, page, x, y);
-      if (!src) return;
-      const anchor = await resolveTexRoot(src.input).catch(() => src.input);
-      // In a TeX workspace the host handles reverse search itself (it switches
-      // the docked editor's center to the producing child); standalone falls
-      // back to the module jump (open/focus the source tab).
-      if (onReverseSource) {
-        onReverseSource(src, anchor);
-        return;
+      setSyncNotice(null);
+      const src = syncable ? await synctexEdit(path, page, x, y) : null;
+      if (src) {
+        const anchor = await resolveTexRoot(src.input).catch(() => src.input);
+        // In a TeX workspace the host handles reverse search itself (it switches
+        // the docked editor's center to the producing child); standalone falls
+        // back to the module jump (open/focus the source tab).
+        if (onReverseSource) onReverseSource(src, anchor);
+        else jumpToSource(src.input, src.line, src.column, anchor);
       }
-      jumpToSource(src.input, src.line, src.column, anchor);
+      const status = syncable ? await synctexStatus(path) : null;
+      const kind = syncable
+        ? syncNoticeKind(status, src != null)
+        : ("noMap" satisfies SyncNoticeKind);
+      if (!kind) return;
+      const source = src?.input ?? path.replace(/\.pdf$/i, ".tex");
+      const canRecompile = await canRecompileTexSource(source).catch(() => false);
+      setSyncNotice({ kind, source, sources: status?.newer_sources ?? [], canRecompile });
     },
-    [path, onReverseSource],
+    [path, syncable, onReverseSource],
   );
 
   // Seed the mtime baseline once per file, visible or not, so it pairs with the
@@ -3391,16 +3490,6 @@ function PdfCanvas({
       setError(null);
     }
     const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
-    // Safety net: stop re-applying the restore target once the pages have had
-    // time to lay out, so a target the (re)loaded PDF can't reach — a recompile
-    // shortened it, or the file changed on disk while Eldrun was closed — never
-    // keeps yanking the scroll back and fighting the reader. Armed only AFTER
-    // the document loads (below), not here at effect start: the byte read +
-    // parse can itself take seconds for a large PDF (a LaTeX thesis on a busy
-    // restart), and a clock started before that would expire before the content
-    // ever reached its full height — dropping the restore for exactly the big
-    // documents where a remembered position matters most.
-    let restoreDeadline: ReturnType<typeof setTimeout> | null = null;
     (async () => {
       for (let attempt = 0; ; attempt++) {
         try {
@@ -3444,13 +3533,6 @@ function PdfCanvas({
           setLoadedDiskVersion(diskVersion);
           setDoc(src.doc);
           freePrev();
-          // Start the give-up clock now that the pages are about to lay out —
-          // see the note where `restoreDeadline` is declared.
-          if (restoreScroll.current) {
-            restoreDeadline = setTimeout(() => {
-              restoreScroll.current = null;
-            }, 4000);
-          }
           return;
         } catch (e) {
           if (cancelled) return;
@@ -3474,9 +3556,23 @@ function PdfCanvas({
     })();
     return () => {
       cancelled = true;
-      if (restoreDeadline) clearTimeout(restoreDeadline);
     };
   }, [path, scope, diskVersion]);
+
+  // Safety net: stop re-applying an unreachable target once the VISIBLE pages
+  // have had time to lay out. A hidden tab is not merely off screen: its
+  // `display:none` scroller has no reachable range, so starting this clock at
+  // document load discarded TeX-linked PDFs' saved positions four seconds into
+  // startup, while they were still sitting behind the restored editor tab.
+  useEffect(() => {
+    const target = restoreScroll.current;
+    if (!shouldArmPdfRestoreDeadline(paneVisible, target)) return;
+    const id = window.setTimeout(() => {
+      restoreScroll.current = null;
+      restoreScale.current = null;
+    }, 4000);
+    return () => window.clearTimeout(id);
+  }, [doc, paneVisible]);
 
   // Release the open source documents when the viewer unmounts. This is its own
   // effect (not the load effect's cleanup) because the load effect now hands its
@@ -3544,8 +3640,19 @@ function PdfCanvas({
     const vp = page.getViewport({ scale: 1 });
     const avail = el.clientWidth - 24; // leave room for page margins
     if (avail > 0 && vp.width > 0) {
-      setScale(clampPdfScale(avail / vp.width));
+      const nextScale = clampPdfScale(avail / vp.width);
+      // Re-express the pending target BEFORE announcing that zoom is ready: the
+      // restore layout effect runs before ordinary effects, so leaving this to
+      // the scale effect below could apply (and clear) the old-scale offset one
+      // frame too early.
+      const from = restoreScale.current;
+      if (from != null && restoreScroll.current) {
+        restoreScroll.current = rescaleScrollTarget(restoreScroll.current, from, nextScale);
+        restoreScale.current = nextScale;
+      }
+      setScale(nextScale);
       fittedRef.current = true;
+      setInitialZoomReady(true);
       // Record the baseline here rather than leaving it to the scale-persist
       // effect: fitting when the view is already AT the fit (the "Fit width"
       // button on an untouched document) changes no scale, so that effect never
@@ -3567,13 +3674,26 @@ function PdfCanvas({
     if (!doc) return;
     if (!didInitialFit.current) {
       didInitialFit.current = true;
-      if (viewPos.initial?.scale != null && !fittedRef.current) return;
+      if (viewPos.initial?.scale != null && !fittedRef.current) {
+        setInitialZoomReady(true);
+        return;
+      }
     } else if (reloadKeepZoom.current) {
+      setInitialZoomReady(true);
       return;
     }
     void fitWidth(doc);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [doc, fitWidth]);
+
+  // A hidden first load has width zero, so the attempt above intentionally does
+  // nothing. Retry on reveal even in engines/tests where ResizeObserver does not
+  // report the display:none → visible transition; only a successful fit marks
+  // the saved scroll target ready to apply.
+  useEffect(() => {
+    if (!doc || !paneVisible || initialZoomReady || !fittedRef.current) return;
+    void fitWidth(doc);
+  }, [doc, paneVisible, initialZoomReady, fitWidth]);
 
   // Re-fit to width when the pane/tab resizes, but only while at the fit
   // baseline — a manual zoom opts out. Same contract as ImageViewer's resize
@@ -3822,11 +3942,14 @@ function PdfCanvas({
   useLayoutEffect(() => {
     const el = scrollRef.current;
     const target = restoreScroll.current;
-    if (!doc || !el || !target) return;
+    if (!doc || !paneVisible || !initialZoomReady || !el || !target) return;
     el.scrollTop = target.top;
     el.scrollLeft = target.left;
-    if (el.scrollTop >= target.top - 1) restoreScroll.current = null;
-  }, [doc]);
+    if (el.scrollTop >= target.top - 1) {
+      restoreScroll.current = null;
+      restoreScale.current = null;
+    }
+  }, [doc, paneVisible, initialZoomReady]);
 
   // Apply a pending cursor-anchored scroll target once the page content has
   // resized after a zoom (the observer fires when the canvases repaint).
@@ -3850,7 +3973,10 @@ function PdfCanvas({
       if (restore) {
         el.scrollTop = restore.top;
         el.scrollLeft = restore.left;
-        if (el.scrollTop >= restore.top - 1) restoreScroll.current = null;
+        if (el.scrollTop >= restore.top - 1) {
+          restoreScroll.current = null;
+          restoreScale.current = null;
+        }
       }
       // A layout-height change (zoom re-render, pages appearing) moves which
       // page sits under the anchor even without a scroll event.
@@ -4338,6 +4464,40 @@ function PdfCanvas({
           <button onClick={() => setStaleOnDisk(false)}>{t("pdfViewer.keepChangesButton")}</button>
         </div>
       )}
+      {syncNotice && (
+        // A reverse-search click that could not be honoured, or was honoured
+        // from a build the source has since moved past. Names the edited files
+        // on a stale map so the reader can tell "I forgot to recompile" from
+        // "someone else's build".
+        <div className="file-viewer-banner" role="status">
+          <span>
+            {t(
+              syncNotice.kind === "noMap"
+                ? "pdfViewer.syncNoMapMsg"
+                : syncNotice.kind === "pdfNewer"
+                  ? "pdfViewer.syncPdfNewerMsg"
+                  : syncNotice.kind === "stale"
+                    ? "pdfViewer.syncStaleMsg"
+                    : "pdfViewer.syncMissMsg",
+              {
+                files: syncNotice.sources.map((f) => basename(f)).join(", "),
+              },
+            )}
+          </span>
+          {syncNotice.canRecompile && (
+            <button
+              onClick={() => {
+                const { source } = syncNotice;
+                setSyncNotice(null);
+                void recompileTexSource(source);
+              }}
+            >
+              {t("pdfViewer.syncRecompileButton")}
+            </button>
+          )}
+          <button onClick={() => setSyncNotice(null)}>{t("common.close")}</button>
+        </div>
+      )}
       {editError && (
         <div className="file-viewer-banner is-error" role="alert">
           <span>{editError}</span>
@@ -4438,7 +4598,10 @@ function PdfCanvas({
                     cssSize={pageSizes?.[i]}
                     // SyncTeX only means anything for pages of the file itself: a
                     // page merged in from another PDF has no line in this source.
-                    onSyncClick={syncable && ref.src === SELF ? onSyncClick : undefined}
+                    // Wired whether or not a map exists: without one the click
+                    // explains itself (a "recompile" notice) instead of doing
+                    // nothing. The crosshair cursor still only arms with a map.
+                    onSyncClick={ref.src === SELF ? onSyncClick : undefined}
                     syncArmed={syncArmed}
                     highlight={highlight && i === syncSheetIndex ? highlight : null}
                     onReveal={() => { restoreScroll.current = null; }}

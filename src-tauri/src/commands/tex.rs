@@ -1836,6 +1836,20 @@ pub async fn synctex_edit(
     .map_err(|e| format!("synctex task failed: {e}"))?
 }
 
+/// Why a reverse-search click did nothing, or landed on the wrong line: whether
+/// a map exists beside `pdf`, whether the PDF outgrew it, and which local
+/// sources were saved after it ({@link crate::commands::synctex::MapStatus}).
+/// The viewer asks after a miss — and after a hit, to warn that the line it just
+/// jumped to belongs to the build before the edit — and words a "recompile"
+/// notice from the answer. Off the main thread for the same reason as
+/// `synctex_edit`: the first call after a compile inflates the map.
+#[tauri::command]
+pub async fn synctex_status(pdf: String) -> Result<crate::commands::synctex::MapStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || crate::commands::synctex::status(Path::new(&pdf)))
+        .await
+        .map_err(|e| format!("synctex task failed: {e}"))
+}
+
 /// Parse the `synctex view` stdout into every record block it emitted, in order.
 /// A forward query returns ONE block per node the source position maps to — one
 /// per horizontal box on the line, and one per visual line when a source line

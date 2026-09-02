@@ -1,5 +1,11 @@
 import { orderedTabKeys, useTabsStore, type TabEntry } from "../../stores/tabs";
-import { centerTexWorkspace, requestTexCenter } from "../../stores/texCenter";
+import {
+  centerTexWorkspace,
+  compileTexWorkspace,
+  hasTexCompiler,
+  requestTexCenter,
+  requestTexCompile,
+} from "../../stores/texCenter";
 import { resolveTexRoot } from "../../lib/viewers/tex";
 import { basename, dirname } from "../../lib/paths";
 
@@ -147,5 +153,41 @@ export async function focusTexWorkspaceForSource(sourcePath: string): Promise<bo
   // "center on the main" is represented as texActivePath === root, matching
   // `openTexWorkspace`, so nothing has to special-case the main document.
   store.setViewerState(existing.key, { texActivePath: sourcePath === root ? root : sourcePath });
+  return true;
+}
+
+/**
+ * Whether a recompile of the document `sourcePath` belongs to can be triggered
+ * from here: an editor for it (or for its main document) is mounted in this
+ * window, or a workspace tab for the main document exists in this window's
+ * store (possibly rendered in a popout). The PDF viewer's recompile notice
+ * offers its button only when this is true — a button that does nothing is
+ * worse than a sentence.
+ */
+export async function canRecompileTexSource(sourcePath: string): Promise<boolean> {
+  const root = await resolveTexRoot(sourcePath).catch(() => sourcePath);
+  if (hasTexCompiler(sourcePath) || hasTexCompiler(root)) return true;
+  return useTabsStore
+    .getState()
+    .tabs.some((t) => t.kind === "embed" && t.viewer === "texworkspace" && t.embedPath === root);
+}
+
+/**
+ * Recompile the document `sourcePath` belongs to, through the editor that owns
+ * the build (`registerTexCompile`): the mounted editor for the source or its
+ * main document in this window, else a broadcast to the window rendering the
+ * (detached) workspace. The workspace is focused first so the build's errors
+ * and the resulting PDF reload land somewhere visible. Returns false when no
+ * workspace for the document is known to this window at all.
+ */
+export async function recompileTexSource(sourcePath: string): Promise<boolean> {
+  const root = await resolveTexRoot(sourcePath).catch(() => sourcePath);
+  if (compileTexWorkspace(sourcePath) || compileTexWorkspace(root)) return true;
+  if (!(await focusTexWorkspaceForSource(sourcePath))) return false;
+  // Focusing mounted the editor in this window (a keep-mounted center switch),
+  // or the workspace lives in a popout — either way, one more local try before
+  // the broadcast.
+  if (compileTexWorkspace(sourcePath) || compileTexWorkspace(root)) return true;
+  requestTexCompile(root, sourcePath);
   return true;
 }

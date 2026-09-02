@@ -73,6 +73,19 @@ const FILE_LINE_ERROR = /^(.+?):(\d+): (.*)$/;
 /** Parse `compile_tex`'s log into the list of errors TeX reported, in order.
  *  Relies on the `-file-line-error` format Eldrun compiles with. Duplicate
  *  file+line+message lines (TeX can repeat them) are collapsed. */
+/** True when the build log says latexmk ran NO engine because every tracked
+ *  source still matched its recorded checksum — "Nothing to do for 'main.tex'" /
+ *  "All targets (main.pdf) are up-to-date". The exit status is 0 and the PDF
+ *  exists, so the backend reports success; but the bytes on disk are the previous
+ *  build's, and a reader expecting new content needs to hear that — the usual
+ *  cause is an edit that never reached disk (an unsaved pane, an editor draft),
+ *  which no amount of recompiling will pick up. */
+export function compileWasNoop(log: string): boolean {
+  // Only this line is exclusive to the no-op: "All targets (…) are up-to-date"
+  // closes a real build too.
+  return /^Latexmk: Nothing to do for '/m.test(log);
+}
+
 export function parseTexErrors(log: string): TexError[] {
   const out: TexError[] = [];
   const seen = new Set<string>();
@@ -275,6 +288,65 @@ export function parseTexWarnings(log: string): TexWarning[] {
   return out;
 }
 
+// --- Per-file build diagnostics (the structure sidebar's badges) -------------
+//
+// The Errors and Warnings cards answer "what is wrong" for the build as a
+// whole, and are read from the file the reader happens to be editing. In a
+// document split across a dozen `\input`s that leaves the other question
+// unanswered: WHICH file is broken. The structure sidebar already draws the
+// document as its files, so it is the one surface where an answer costs a
+// glance — hence the counts below, bucketed to the same absolute paths the
+// structure tree is keyed by.
+
+/** One file's share of the last build's log. */
+export interface TexFileDiagnostics {
+  errors: number;
+  warnings: number;
+  /** 1-based line of the file's FIRST error, for the badge's jump. */
+  errorLine?: number;
+  /** …and of its first *locatable* warning (many carry no line at all). */
+  warningLine?: number;
+}
+
+/**
+ * Bucket a build's errors and warnings by the absolute path of the file each is
+ * in, ready for the structure sidebar to look up per row. `rootDir` and
+ * `rootPath` are the built document's directory and path: log locations are
+ * relative to the former, and a warning TeX's `(…)` nesting could not place
+ * falls back to the latter — the same rule the Warnings card renders under, so
+ * a warning cannot be attributed to one file in the list and another in the
+ * badge. Pure / unit-tested.
+ */
+export function texDiagnosticsByFile(
+  rootDir: string,
+  rootPath: string,
+  errors: TexError[],
+  warnings: TexWarning[],
+): Map<string, TexFileDiagnostics> {
+  const out = new Map<string, TexFileDiagnostics>();
+  const bucket = (path: string): TexFileDiagnostics => {
+    let d = out.get(path);
+    if (!d) {
+      d = { errors: 0, warnings: 0 };
+      out.set(path, d);
+    }
+    return d;
+  };
+  for (const e of errors) {
+    const d = bucket(resolveTexErrorPath(rootDir, e.file));
+    d.errors += 1;
+    // First in log order wins: that is the one worth jumping to, since a LaTeX
+    // build's later errors are usually the first one's wreckage.
+    if (d.errorLine === undefined) d.errorLine = e.line;
+  }
+  for (const w of warnings) {
+    const d = bucket(resolveTexErrorPath(rootDir, w.file ?? rootPath));
+    d.warnings += 1;
+    if (d.warningLine === undefined && w.line !== undefined) d.warningLine = w.line;
+  }
+  return out;
+}
+
 // --- SyncTeX forward/reverse search -----------------------------------------
 
 /** A source location from SyncTeX reverse search; mirrors backend `SyncSource`. */
@@ -306,6 +378,45 @@ export function synctexEdit(
   y: number,
 ): Promise<SyncSource | null> {
   return invoke<SyncSource | null>("synctex_edit", { pdf, page, x, y }).catch(() => null);
+}
+
+/** What reverse search can promise for a PDF right now; mirrors the backend
+ *  `MapStatus`. Every true/non-empty field is a reason to recompile. */
+export type SyncTexStatus = {
+  /** A `.synctex(.gz)` sits beside the PDF at all. */
+  has_map: boolean;
+  /** The PDF was rebuilt after the map (without SyncTeX, or by another tool). */
+  pdf_newer_than_map: boolean;
+  /** Local sources saved after the map was written, absolute paths. */
+  newer_sources: string[];
+};
+
+/** Probe the SyncTeX map beside `pdf`. Resolves to null when the backend cannot
+ *  answer (a backend not yet rebuilt for it), which the caller reads as "unknown"
+ *  and words nothing from. */
+export function synctexStatus(pdf: string): Promise<SyncTexStatus | null> {
+  return invoke<SyncTexStatus>("synctex_status", { pdf }).catch(() => null);
+}
+
+/** The notice a reverse-search click deserves, from the map's status and whether
+ *  the click resolved. Pure, so the wording decision is unit-tested:
+ *   - `noMap`     nothing to resolve against — compile with SyncTeX first;
+ *   - `pdfNewer`  the PDF outgrew its map — the positions are a previous build's;
+ *   - `stale`     a source was saved after the build — the line is the old one;
+ *   - `miss`      the map is current but nothing was set at that spot;
+ *   - `null`      a clean hit, or a status the backend could not report.
+ *  A stale/pdf-newer notice is shown even on a hit: the jump still happens (a
+ *  nearby line beats nothing), but the reader is told why it may be off. */
+export type SyncNoticeKind = "noMap" | "pdfNewer" | "stale" | "miss";
+export function syncNoticeKind(
+  status: SyncTexStatus | null,
+  hit: boolean,
+): SyncNoticeKind | null {
+  if (!status) return hit ? null : "miss";
+  if (!status.has_map) return "noMap";
+  if (status.pdf_newer_than_map) return "pdfNewer";
+  if (status.newer_sources.length > 0) return "stale";
+  return hit ? null : "miss";
 }
 
 /** Forward search: every SyncTeX record (`input:line:column` → the line's
@@ -1059,22 +1170,28 @@ function isBackslashEscaped(text: string, pos: number): boolean {
  * inside verbatim, never a real one. Pure.
  */
 export function blankTexComments(source: string): string {
+  // Hops from `%` to `%` with `indexOf` and copies the stretches between them
+  // whole. The character-at-a-time version this replaced was called four times
+  // per keystroke from the TeX editor (link layer, key layer, and the live
+  // completion merge) and was the single largest share of a keystroke on a
+  // long document.
   let out = "";
-  let i = 0;
-  while (i < source.length) {
-    const ch = source[i];
-    if (ch === "%" && !isBackslashEscaped(source, i)) {
-      // Blank from here to (not including) the next newline.
-      let j = i;
-      while (j < source.length && source[j] !== "\n") j++;
-      out += " ".repeat(j - i);
-      i = j;
-    } else {
-      out += ch;
-      i++;
+  let last = 0;
+  let i = source.indexOf("%");
+  while (i !== -1) {
+    if (isBackslashEscaped(source, i)) {
+      i = source.indexOf("%", i + 1);
+      continue;
     }
+    // Blank from here to (not including) the next newline.
+    const nl = source.indexOf("\n", i);
+    const end = nl === -1 ? source.length : nl;
+    out += source.slice(last, i) + " ".repeat(end - i);
+    last = end;
+    i = source.indexOf("%", end);
   }
-  return out;
+  if (last === 0) return source; // no comments: the source is already the answer
+  return out + source.slice(last);
 }
 
 /**
@@ -1167,19 +1284,44 @@ function pairTexMathTokens(tokens: MathToken[]): TexDelimiterMatch[] {
   return pairs;
 }
 
+/** What a flagged delimiter's problem is, so the editor can say which mistake
+ *  it found rather than one generic "missing partner" for all of them. */
+export type TexDelimiterProblem =
+  /** An opening delimiter that never receives its closing partner. */
+  | "unclosed"
+  /** An `\end{…}` with no open `\begin{…}` of that environment name. */
+  | "unmatchedEnd";
+
+/** One delimiter the document-wide diagnostic flags: the range to paint, what
+ *  is wrong with it, and — for `\begin`/`\end` tokens — the environment name
+ *  involved, which the hover hint names. */
+export interface TexUnclosedDelimiter extends TexDelimiterSide {
+  problem: TexDelimiterProblem;
+  env?: string;
+}
+
 /**
- * Opening TeX delimiters that never receive a closing partner. This is the
- * document-wide diagnostic counterpart of the caret-local match helpers below:
- * ordinary parentheses/brackets/braces, math delimiters, and \begin{...} blocks
- * all use the same ranges the editor can paint. Comments are blanked first and
- * escaped ordinary brackets are left to TeX's math-token scan or treated as
- * literals, so commented examples and printed braces do not turn a source line
- * red. Extra closing delimiters are deliberately ignored: the diagnostic
- * answers only which opening token is still missing its end.
+ * TeX delimiters left without a partner. This is the document-wide diagnostic
+ * counterpart of the caret-local match helpers below: ordinary
+ * parentheses/brackets/braces, math delimiters, and `\begin{…}`/`\end{…}`
+ * blocks all use the same ranges the editor can paint. Comments are blanked
+ * first and escaped ordinary brackets are left to TeX's math-token scan or
+ * treated as literals, so commented examples and printed braces do not turn a
+ * source line red.
+ *
+ * Environments are paired BY NAME here, unlike the caret-local matcher, which
+ * counts depth alone. Depth counting is right for a well-formed document and
+ * exactly wrong for a broken one: `\begin{itemize}…\end{enumerate}` cancels
+ * out under a depth count, so the one document shape this diagnostic most needs
+ * to catch reported nothing at all. Name pairing also lets an `\end` be flagged
+ * on its own — the one closing delimiter that is. A stray `}` stays ignored
+ * because it says nothing about which group it was meant to close and turns red
+ * constantly mid-edit, while `\end{itemize}` names the environment it claims to
+ * close and is simply wrong when no `itemize` is open.
  */
-export function findUnclosedTexBrackets(source: string): TexDelimiterSide[] {
+export function findUnclosedTexBrackets(source: string): TexUnclosedDelimiter[] {
   const text = blankTexComments(source);
-  const unclosed: TexDelimiterSide[] = [];
+  const unclosed: TexUnclosedDelimiter[] = [];
 
   // Ordinary groups pair independently by kind, matching the existing plain
   // bracket matcher. LIFO leaves the outer opener behind in a nested group.
@@ -1201,7 +1343,7 @@ export function findUnclosedTexBrackets(source: string): TexDelimiterSide[] {
     if (open) ordinary.get(open)?.pop();
   }
   for (const stack of ordinary.values()) {
-    for (const start of stack) unclosed.push({ start, end: start + 1 });
+    for (const start of stack) unclosed.push({ start, end: start + 1, problem: "unclosed" });
   }
 
   // TeX math pairs: \(...\) and \[...\] are stacks; $ and $$ toggle.
@@ -1232,21 +1374,48 @@ export function findUnclosedTexBrackets(source: string): TexDelimiterSide[] {
     }
   }
   for (const tok of [...parenMath, ...bracketMath]) {
-    unclosed.push({ start: tok.start, end: tok.end });
+    unclosed.push({ start: tok.start, end: tok.end, problem: "unclosed" });
   }
-  if (dollar) unclosed.push({ start: dollar.start, end: dollar.end });
-  if (doubleDollar) unclosed.push({ start: doubleDollar.start, end: doubleDollar.end });
+  if (dollar) unclosed.push({ start: dollar.start, end: dollar.end, problem: "unclosed" });
+  if (doubleDollar) {
+    unclosed.push({ start: doubleDollar.start, end: doubleDollar.end, problem: "unclosed" });
+  }
 
-  // Environment blocks use the same name-agnostic depth pairing as the
-  // caret-local matcher. Paint the complete begin token so it reads as the
-  // missing-end diagnostic, rather than making its already-closed braces look
-  // like the problem.
-  const environments: EnvToken[] = [];
+  // Environment blocks, paired by name. The whole `\begin`/`\end` token is
+  // painted so it reads as the structural diagnostic, rather than making the
+  // token's own (already closed) braces look like the problem.
+  //
+  // An `\end` closes the INNERMOST open environment of its name, and every
+  // environment opened inside that one is then unclosed — the recovery that
+  // reports `\begin{itemize}` in `\begin{itemize}\begin{center}\end{itemize}`
+  // instead of blaming the wrong token and losing the rest of the file's
+  // structure to a skewed stack. An `\end` naming nothing that is open is
+  // flagged where it stands.
+  const openEnvs: EnvToken[] = [];
   for (const tok of texEnvTokens(text)) {
-    if (tok.kind === "begin") environments.push(tok);
-    else environments.pop();
+    if (tok.kind === "begin") {
+      openEnvs.push(tok);
+      continue;
+    }
+    let match = -1;
+    for (let i = openEnvs.length - 1; i >= 0; i--) {
+      if (openEnvs[i].name === tok.name) {
+        match = i;
+        break;
+      }
+    }
+    if (match < 0) {
+      unclosed.push({ start: tok.start, end: tok.end, problem: "unmatchedEnd", env: tok.name });
+      continue;
+    }
+    for (const inner of openEnvs.splice(match + 1)) {
+      unclosed.push({ start: inner.start, end: inner.end, problem: "unclosed", env: inner.name });
+    }
+    openEnvs.pop();
   }
-  for (const tok of environments) unclosed.push({ start: tok.start, end: tok.end });
+  for (const tok of openEnvs) {
+    unclosed.push({ start: tok.start, end: tok.end, problem: "unclosed", env: tok.name });
+  }
 
   return unclosed.sort((a, b) => a.start - b.start || a.end - b.end);
 }
@@ -1272,13 +1441,16 @@ export function findTexMathDelimiterMatch(text: string, caret: number): TexDelim
   return best;
 }
 
-/** Every `\begin{name}`/`\end{name}` occurrence, whole-token ranges (the
- *  environment name is not captured — matching ignores it, see
- *  {@link findTexEnvDelimiterMatch}). */
-const TEX_ENV_TOKEN_RE = /\\(begin|end)\s*\{[^{}]*\}/g;
+/** Every `\begin{name}`/`\end{name}` occurrence, whole-token ranges. The name
+ *  is carried along for the document-wide diagnostic
+ *  ({@link findUnclosedTexBrackets}), which pairs BY NAME; the caret-local
+ *  matcher ({@link findTexEnvDelimiterMatch}) ignores it on purpose. */
+const TEX_ENV_TOKEN_RE = /\\(begin|end)\s*\{([^{}]*)\}/g;
 
 interface EnvToken {
   kind: "begin" | "end";
+  /** The environment name, trimmed — `""` for a half-typed `\begin{}`. */
+  name: string;
   start: number;
   end: number;
 }
@@ -1287,7 +1459,12 @@ function texEnvTokens(text: string): EnvToken[] {
   const out: EnvToken[] = [];
   TEX_ENV_TOKEN_RE.lastIndex = 0;
   for (let m = TEX_ENV_TOKEN_RE.exec(text); m; m = TEX_ENV_TOKEN_RE.exec(text)) {
-    out.push({ kind: m[1] === "begin" ? "begin" : "end", start: m.index, end: m.index + m[0].length });
+    out.push({
+      kind: m[1] === "begin" ? "begin" : "end",
+      name: m[2].trim(),
+      start: m.index,
+      end: m.index + m[0].length,
+    });
   }
   return out;
 }
@@ -2867,6 +3044,59 @@ export async function gatherTexCompletions(
   };
 }
 
+/** `gathered`'s entries, with what `key` names deduplicated and `first` put in
+ *  front of them. */
+function mergeFirst<T>(first: T[], rest: T[], key: (t: T) => string): T[] {
+  if (first.length === 0) return rest;
+  const seen = new Set<string>();
+  return [...first, ...rest].filter((t) => {
+    const k = key(t);
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+}
+
+/**
+ * The candidates of ONE completion family for the document as it is in the
+ * editor: the file's current `draft` is parsed for what it defines and that is
+ * merged in front of the `gathered` (on-disk) set — a `\label`, `\newcommand` or
+ * `\begin{wrapfigure}` typed a minute ago is offered without waiting for a
+ * re-gather, and the document's own definition outranks a standard one.
+ *
+ * One family at a time, on purpose: this is called from the editor only once a
+ * dropdown context exists, for the family that context needs, and cached by the
+ * caller for as long as the same token is being typed. The three whole-document
+ * parses it replaced ran on every keystroke of every TeX file, dropdown or not.
+ * Pure.
+ */
+export function texCompletionsFor(gathered: TexCompletions, draft: string, kind: "ref"): TexLabelEntry[];
+export function texCompletionsFor(gathered: TexCompletions, draft: string, kind: "cite"): BibEntry[];
+export function texCompletionsFor(gathered: TexCompletions, draft: string, kind: "cmd"): TexCommandEntry[];
+export function texCompletionsFor(gathered: TexCompletions, draft: string, kind: "env"): TexEnvEntry[];
+export function texCompletionsFor(
+  gathered: TexCompletions,
+  draft: string,
+  kind: TexComplKind,
+): TexLabelEntry[] | BibEntry[] | TexCommandEntry[] | TexEnvEntry[];
+export function texCompletionsFor(
+  gathered: TexCompletions,
+  draft: string,
+  kind: TexComplKind,
+): TexLabelEntry[] | BibEntry[] | TexCommandEntry[] | TexEnvEntry[] {
+  switch (kind) {
+    case "ref":
+      return mergeFirst(parseTexLabels(draft), gathered.labels, (l) => l.key);
+    case "cite":
+      // A `.bib` is never the file being edited here, so there is nothing live.
+      return gathered.cites;
+    case "cmd":
+      return mergeFirst(parseTexDefinedCommands(draft), gathered.commands, (c) => c.name);
+    case "env":
+      return mergeFirst(parseTexDocumentEnvironments(draft), gathered.envs, (e) => e.name);
+  }
+}
+
 // --- \ref / \cite jump-to-definition (#tex-ref-jump) ------------------------
 //
 // The other half of the cross-reference. `\input{…}` has been Ctrl-clickable
@@ -2893,7 +3123,17 @@ export interface TexKeyRef {
  *  (`classifyComplCmd`), so this stays one regex rather than one per family, and
  *  `\textbf{\ref{x}}` matches the inner command because the outer body has
  *  braces in it. */
-const TEX_KEYREF_RE = /\\([a-zA-Z]+)\*?\s*(?:\[[^\]]*\]\s*)*\{([^{}]*)\}/g;
+const TEX_KEYREF_RE = new RegExp(
+  // The command name is narrowed IN the pattern to the two families
+  // `classifyComplCmd` accepts — anything containing `cite`, or the fixed
+  // reference set — so the scan rejects `\textbf{…}` at its first letter instead
+  // of capturing every braced argument in the document and classifying it
+  // afterwards. `classifyComplCmd` is still applied to each match, so the two
+  // cannot disagree about what a key command is; the lookahead keeps `\refx{…}`
+  // from matching as `\ref`. Case-insensitive like the classifier (`\Cref`).
+  `\\\\([a-zA-Z]*cite[a-zA-Z]*|(?:${[...REF_COMPL_CMDS].join("|")})(?![a-zA-Z]))\\*?\\s*(?:\\[[^\\]]*\\]\\s*)*\\{([^{}]*)\\}`,
+  "gi",
+);
 
 /**
  * The `\ref`/`\cite` key the caret sits on, if any. A click anywhere on the
@@ -3049,6 +3289,10 @@ export interface TexGraphicNode {
   label: string;
   viewer: InternalViewer;
   section?: string;
+  /** 1-based line/column of the `\includegraphics` in the referencing file —
+   *  where "go up" from the graphic lands (#tex-structure-up). */
+  line?: number;
+  column?: number;
 }
 
 /** One `.tex` file in the document tree: its inputted children in document
@@ -3059,6 +3303,11 @@ export interface TexFileNode {
   /** The nearest preceding sectioning heading in the PARENT file, when this node
    *  was reached via an `\input`/`\include` under one. Absent for the root. */
   section?: string;
+  /** 1-based line/column of the `\input`/`\include`/`\subfile` in the PARENT
+   *  file that reached this node — the place the workspace's "go up" step
+   *  (#tex-structure-up) puts the caret on. Absent for the root. */
+  line?: number;
+  column?: number;
   graphics: TexGraphicNode[];
   children: TexFileNode[];
 }
@@ -3126,17 +3375,29 @@ export async function gatherTexStructure(
     const sections = parseTexSections(scan);
     // One document-order pass over both kinds, so children and graphics are
     // gathered in the order they appear and can be attributed to their heading.
-    const childJobs: Array<{ token: string; section?: string }> = [];
-    const graphicJobs: Array<{ token: string; section?: string }> = [];
+    type Job = { token: string; section?: string; line: number; column: number };
+    const childJobs: Job[] = [];
+    const graphicJobs: Job[] = [];
     TEX_STRUCT_RE.lastIndex = 0;
+    // Line/column of each reference, so "go up" from a child can land on the
+    // `\input` that reached it rather than at the parent's top. The scan is the
+    // same length as the text, so offsets in it are offsets in the file; the
+    // line count is kept incrementally since matches arrive in document order.
+    let line = 1;
+    let lineFrom = 0;
     for (let m = TEX_STRUCT_RE.exec(scan); m; m = TEX_STRUCT_RE.exec(scan)) {
       const cmd = m[1];
       const sec = sectionAt(sections, m.index);
+      for (let i = scan.indexOf("\n", lineFrom); i !== -1 && i < m.index; i = scan.indexOf("\n", lineFrom)) {
+        line += 1;
+        lineFrom = i + 1;
+      }
+      const column = m.index - lineFrom + 1;
       for (const part of m[2].split(",")) {
         const token = part.trim();
         if (!token) continue;
-        if (cmd === "includegraphics") graphicJobs.push({ token, section: sec });
-        else childJobs.push({ token, section: sec });
+        if (cmd === "includegraphics") graphicJobs.push({ token, section: sec, line, column });
+        else childJobs.push({ token, section: sec, line, column });
       }
     }
     // Resolve graphics (async — a bare stem lists its directory). Skipped when
@@ -3153,6 +3414,8 @@ export async function gatherTexStructure(
           label: resolved.label,
           viewer: resolved.viewer,
           section: g.section,
+          line: g.line,
+          column: g.column,
         });
       }
     }
@@ -3162,13 +3425,42 @@ export async function gatherTexStructure(
       if (seen.size >= 60) break;
       const childPath = resolveSibling(filePath, c.token, ".tex");
       if (seen.has(childPath)) continue;
-      node.children.push(await build(childPath, c.section));
+      const child = await build(childPath, c.section);
+      child.line = c.line;
+      child.column = c.column;
+      node.children.push(child);
     }
     return node;
   };
 
   const root = await build(rootPath, undefined);
   return { root };
+}
+
+/** Where "go up" from `path` lands (#tex-structure-up): the file that inputs
+ *  it (or, for a graphic, that `\includegraphics` it) and the 1-based
+ *  line/column of that reference. Null for the root — and for a path the
+ *  structure does not list, which the workspace centers on the main document
+ *  anyway. The first occurrence wins: a file inputted twice is listed once
+ *  (see `gatherTexStructure`), under the parent that reached it first. */
+export function texStructureParent(
+  structure: TexStructure,
+  path: string,
+): { path: string; line?: number; column?: number } | null {
+  const walk = (n: TexFileNode): { path: string; line?: number; column?: number } | null => {
+    for (const c of n.children) {
+      if (c.path === path) return { path: n.path, line: c.line, column: c.column };
+    }
+    for (const g of n.graphics) {
+      if (g.path === path) return { path: n.path, line: g.line, column: g.column };
+    }
+    for (const c of n.children) {
+      const hit = walk(c);
+      if (hit) return hit;
+    }
+    return null;
+  };
+  return walk(structure.root);
 }
 
 // --- Word count (#245) -------------------------------------------------------

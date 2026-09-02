@@ -39,6 +39,10 @@ export interface TexCenterEnvelope {
   /** The source file the center should switch to. */
   source: string;
   from: string;
+  /** When set, the request is "recompile the document `source` belongs to"
+   *  rather than a center switch — the PDF tab's recompile notice, which has
+   *  no compile of its own (see `registerTexCompile`). */
+  compile?: boolean;
 }
 
 /** The current window's Tauri label, or "" outside a Tauri context (tests). */
@@ -91,6 +95,57 @@ export function requestTexCenter(root: string, source: string): void {
   }
 }
 
+// The compile entry points mounted in THIS window, keyed by the editor's own
+// source path: every mounted TeX editor (a workspace pane or a standalone tab)
+// advertises its `compile`, which saves the whole workspace and builds the main
+// document whichever file it is registered under.
+const mountedCompilers = new Map<string, () => void>();
+
+/** Advertise a mounted TeX editor's compile for `path` (call on mount). The
+ *  PDF viewer's "recompile" notice reaches the build through this rather than
+ *  owning a compile of its own — the editor holds the unsaved draft, the engine
+ *  choice and the out-dir, and a second compile path would drift from it. */
+export function registerTexCompile(path: string, compile: () => void): void {
+  mountedCompilers.set(path, compile);
+}
+
+/** Drop a compile registration (call on unmount). Identity-checked, like
+ *  {@link unregisterTexWorkspace}. */
+export function unregisterTexCompile(path: string, compile: () => void): void {
+  if (mountedCompilers.get(path) === compile) mountedCompilers.delete(path);
+}
+
+/** True when an editor for `path` is mounted in THIS window and can compile. */
+export function hasTexCompiler(path: string): boolean {
+  return mountedCompilers.has(path);
+}
+
+/** Run the compile of the editor mounted for `path` in THIS window. Returns
+ *  false — and touches nothing — when none is mounted here, so the caller can
+ *  escalate cross-window. */
+export function compileTexWorkspace(path: string): boolean {
+  const compile = mountedCompilers.get(path);
+  if (!compile) return false;
+  compile();
+  return true;
+}
+
+/** Broadcast a recompile request to the other window(s) — the workspace tab
+ *  exists but renders in a popout this heap cannot reach. Best effort, like
+ *  {@link requestTexCenter}. */
+export function requestTexCompile(root: string, source: string): void {
+  try {
+    emit(TEX_CENTER_EVENT, {
+      root,
+      source,
+      from: currentLabel(),
+      compile: true,
+    } satisfies TexCenterEnvelope).catch(() => {});
+  } catch {
+    /* no Tauri event bus available (synchronous failure) */
+  }
+}
+
 /**
  * Register THIS window's listener for cross-window center broadcasts (#42).
  * Every window (main shell + each detached popout) calls this once at startup;
@@ -102,8 +157,13 @@ export async function listenTexCenter(): Promise<() => void> {
   const self = currentLabel();
   try {
     return await listen<TexCenterEnvelope>(TEX_CENTER_EVENT, (ev) => {
-      const { root, source, from } = ev.payload;
+      const { root, source, from, compile } = ev.payload;
       if (from === self) return; // we already tried our own registry locally
+      if (compile) {
+        // The clicked source's editor if it is mounted here, else the main's.
+        if (!compileTexWorkspace(source)) compileTexWorkspace(root);
+        return;
+      }
       centerTexWorkspace(root, source);
     });
   } catch {

@@ -1,11 +1,14 @@
 import { describe, it, expect } from "vitest";
 import {
+  blankTexComments,
   findTexComplAt,
   insertTexCommand,
   insertTexEnvironment,
   parseTexDefinedCommands,
   parseTexDocumentEnvironments,
+  texCompletionsFor,
   texEnvComplCommand,
+  texKeyRefRanges,
   TEX_STANDARD_COMMANDS,
   TEX_STANDARD_ENVIRONMENTS,
   type TexComplContext,
@@ -247,5 +250,121 @@ describe("the standard tables", () => {
     expect(byName.get("enumerate")?.item).toBe("\\item ");
     expect(byName.get("tabular")?.seed).toBe("{}");
     expect(byName.get("equation")?.seed).toBeUndefined();
+  });
+});
+
+// --- Keystroke cost (the autocomplete slowdown) -------------------------------
+//
+// The editor used to re-parse the whole document on every keystroke of every TeX
+// file, dropdown or not, and the parsers ran a character-at-a-time comment
+// blanker up to four times per character typed. These pin the replacements:
+// the fast blanker is byte-for-byte the old one, the narrowed key-ref regex
+// finds the same links, and the per-family merge the editor now calls lazily
+// puts the draft's own definitions first.
+
+/** The character-at-a-time blanker the `indexOf` version replaced — kept as the
+ *  reference the fast one is checked against. */
+function blankTexCommentsReference(source: string): string {
+  const escaped = (pos: number) => {
+    let n = 0;
+    for (let i = pos - 1; i >= 0 && source[i] === "\\"; i--) n++;
+    return n % 2 === 1;
+  };
+  let out = "";
+  let i = 0;
+  while (i < source.length) {
+    if (source[i] === "%" && !escaped(i)) {
+      let j = i;
+      while (j < source.length && source[j] !== "\n") j++;
+      out += " ".repeat(j - i);
+      i = j;
+    } else {
+      out += source[i];
+      i++;
+    }
+  }
+  return out;
+}
+
+describe("blankTexComments — the fast blanker matches the reference", () => {
+  const cases = [
+    "",
+    "%",
+    "% only a comment",
+    "no comments at all\nacross lines\n",
+    "text % comment\nmore % another\n",
+    "escaped \\% stays % but this goes\n",
+    "double \\\\% is a comment\n",
+    "triple \\\\\\% is escaped\n",
+    "% at start\n%\n%%\nlast line % trailing without newline",
+    "\\cite{a} % c\n\\ref{b}\n",
+  ];
+  for (const src of cases) {
+    it(`blanks ${JSON.stringify(src).slice(0, 40)} identically`, () => {
+      const got = blankTexComments(src);
+      expect(got).toBe(blankTexCommentsReference(src));
+      expect(got.length).toBe(src.length);
+    });
+  }
+
+  it("returns the very same string when there is nothing to blank", () => {
+    const src = "a \\% b\nc";
+    expect(blankTexComments(src)).toBe(src);
+  });
+});
+
+describe("texKeyRefRanges — narrowed scan finds the same links", () => {
+  it("underlines ref/cite keys and nothing else", () => {
+    const src = "\\textbf{x} \\ref{a} \\Cref{b} \\citep[p.~5]{c,d} \\refx{e} \\parencite{f}";
+    const keys = texKeyRefRanges(src).map((r) => src.slice(r.start, r.end));
+    expect(keys).toEqual(["a", "b", "c", "d", "f"]);
+  });
+
+  it("skips a commented-out reference", () => {
+    const src = "% \\ref{a}\n\\ref{b}";
+    const keys = texKeyRefRanges(src).map((r) => src.slice(r.start, r.end));
+    expect(keys).toEqual(["b"]);
+  });
+});
+
+describe("texCompletionsFor — the per-family live merge", () => {
+  const gathered = {
+    labels: [{ key: "sec:intro", section: "Intro" }, { key: "fig:one" }],
+    cites: [{ key: "knuth84", type: "book" }],
+    commands: TEX_STANDARD_COMMANDS,
+    envs: TEX_STANDARD_ENVIRONMENTS,
+  };
+  const draft = [
+    "\\newcommand{\\R}{\\mathbb{R}}",
+    "\\newcommand{\\section}{x}", // shadows a standard entry — offered once, as local
+    "\\label{fig:one}", // already gathered — offered once
+    "\\label{eq:new}",
+    "\\begin{wrapfigure}",
+  ].join("\n");
+
+  it("puts the draft's own labels first and deduplicates by key", () => {
+    expect(texCompletionsFor(gathered, draft, "ref").map((l) => l.key)).toEqual([
+      "fig:one", "eq:new", "sec:intro",
+    ]);
+  });
+
+  it("puts the draft's own commands first, once, marked local", () => {
+    const cmds = texCompletionsFor(gathered, draft, "cmd");
+    expect(cmds.slice(0, 2)).toEqual([
+      { name: "R", args: 0, local: true },
+      { name: "section", args: 0, local: true },
+    ]);
+    expect(cmds.filter((c) => c.name === "section")).toHaveLength(1);
+    expect(cmds.length).toBe(TEX_STANDARD_COMMANDS.length + 1);
+  });
+
+  it("adds an environment the draft already uses", () => {
+    const envs = texCompletionsFor(gathered, draft, "env");
+    expect(envs[0]).toEqual({ name: "wrapfigure", local: true });
+    expect(envs.length).toBe(TEX_STANDARD_ENVIRONMENTS.length + 1);
+  });
+
+  it("has nothing live for citations — the .bib is never the file being edited", () => {
+    expect(texCompletionsFor(gathered, draft, "cite")).toBe(gathered.cites);
   });
 });

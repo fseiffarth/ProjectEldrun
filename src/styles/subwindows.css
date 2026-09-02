@@ -145,7 +145,9 @@
   flex-direction: column;
   min-height: 0;
   min-width: 0;
+  /* Not a scroll container (see base.css html/body/#root + ViewerOverflowClip.test.ts). */
   overflow: hidden;
+  overflow: clip;
   border-left: 1px solid var(--border-color);
   background: var(--bg-panel);
 }
@@ -198,7 +200,11 @@
 .center-pane {
   position: absolute;
   flex-direction: column;
+  /* Not a scroll container — this is the "tab host above it" scrollBox.ts names:
+     a focus() reveal or scrollIntoView scrolling this box is what displaced a
+     whole viewer pane sideways. See ViewerOverflowClip.test.ts. */
   overflow: hidden;
+  overflow: clip;
   pointer-events: auto;
 }
 

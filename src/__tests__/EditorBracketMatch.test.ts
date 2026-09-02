@@ -133,4 +133,16 @@ describe("decorateUnclosedBrackets", () => {
         '<span class="file-viewer-unclosed-bracket">(</span>',
     );
   });
+
+  // The hover tooltip reads `data-hint` off the span it hit, so each range can
+  // say which mistake it is — an unclosed `\begin` and a stray `\end` share the
+  // underline but not the sentence.
+  it("carries a range's hint into data-hint, escaped", () => {
+    expect(
+      decorateUnclosedBrackets("{x", [{ start: 0, end: 1, hint: 'no "end" <yet>' }]),
+    ).toBe(
+      '<span class="file-viewer-unclosed-bracket" ' +
+        'data-hint="no &quot;end&quot; &lt;yet&gt;">{</span>x',
+    );
+  });
 });
