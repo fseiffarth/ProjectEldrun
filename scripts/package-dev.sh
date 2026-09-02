@@ -27,7 +27,27 @@ export PATH="$HOME/.cargo/bin:$PATH"
 
 # beforeBuildCommand runs `npm run build` (tsc + vite + mobile bundle), so a
 # type error anywhere fails here, same as CI.
-npm run tauri -- build --no-bundle
+#
+# The fallback is for one specific failure: tauri-cli builds a file watcher
+# before it does anything, even for `build`, and the watcher needs an inotify
+# INSTANCE — a per-user resource capped at 128 (`fs.inotify.max_user_instances`)
+# that a desktop session with a running Eldrun, a vite dev server and a browser
+# routinely sits just under. tauri-cli unwraps that error and aborts (SIGABRT,
+# "Too many open files"), which is precisely the moment this script exists for:
+# freezing the tree WHILE working. `tauri build --no-bundle` is
+# `npm run build` + `cargo build --release` with the bundling step skipped, so
+# run those two directly rather than asking the user to close things.
+build_log="$(mktemp)"
+trap 'rm -f "$build_log"' EXIT
+if ! npm run tauri -- build --no-bundle 2>&1 | tee "$build_log"; then
+  if grep -q "Too many open files" "$build_log"; then
+    echo "package-dev: tauri-cli could not open an inotify instance; building without it." >&2
+    npm run build
+    cargo build --release --manifest-path "$ROOT/src-tauri/Cargo.toml"
+  else
+    exit 1
+  fi
+fi
 
 RAW_BIN=""
 for candidate in "$ROOT/target/release/eldrun" "$ROOT/src-tauri/target/release/eldrun"; do
