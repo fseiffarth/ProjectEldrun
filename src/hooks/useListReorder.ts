@@ -1,20 +1,19 @@
 import { useCallback, useRef, useState } from "react";
 
-import type { Subtask } from "../../types";
-import { stepDropSlot } from "../../lib/todoBoard";
+import { dropSlot, type ReorderRect } from "../lib/listReorder";
 
 /**
- * Dragging a checklist step into a different position — **once**, for the two
- * surfaces that edit a checklist.
+ * Dragging a row of a list into a different position — **once**, for every
+ * surface that has the gesture.
  *
- * A checklist is an ordered list the moment it has more than two entries: the
- * step you have to do first is the one that belongs at the top, and until now the
- * only way to get it there was to delete the other rows and retype them. Both
- * places that render the list (the board card's inline checklist and the full
- * card dialog) get the same gesture from here rather than a copy each — the same
- * bargain `lib/todoBoard`'s ops strike for what an add or a delete means.
+ * A list is an ordered one the moment it has more than two entries: the step you
+ * have to do first, or the prompt you want to send first, is the one that
+ * belongs at the top, and without this the only way to get it there was to
+ * delete the other rows and retype them. Every place that renders such a list
+ * (a to-do card's inline checklist, the full card dialog, the Agents view's
+ * collected prompts) gets the same gesture from here rather than a copy each.
  *
- * Three rules are forced by the engines and by where the list sits:
+ * Three rules are forced by the engines and by where these lists sit:
  *
  * - **Pointer events, not HTML5 DnD.** A native drag does not work under
  *   WebKitGTK (`TabBar`, `YamlTree` and `MachinesIndicator` all landed here), and
@@ -32,10 +31,11 @@ import { stepDropSlot } from "../../lib/todoBoard";
  *   cursor that moved it is the feedback loop this avoids.
  *
  * `commit` is handed `(id, to)` where `to` is an index into the list **without**
- * the dragged step — `moveSubtask`'s convention, and what `stepDropSlot` yields.
+ * the dragged row — `moveSubtask`'s and `reorderedIds`' convention, and what
+ * `dropSlot` yields.
  */
-export interface StepReorder {
-  /** The in-flight drag: which step, how far it has been carried, where it would
+export interface ListReorder {
+  /** The in-flight drag: which row, how far it has been carried, where it would
    *  land. `null` when nothing is being dragged. */
   drag: { id: string; dy: number; to: number } | null;
   /** Register a row element, so the gesture can measure it. */
@@ -55,19 +55,19 @@ export interface StepReorder {
   isDragging: (id: string) => boolean;
 }
 
-export function useStepReorder(
-  steps: Subtask[],
+export function useListReorder(
+  rows: readonly { id: string }[],
   commit: (id: string, to: number) => void,
-): StepReorder {
+): ListReorder {
   const [drag, setDrag] = useState<{ id: string; dy: number; to: number } | null>(null);
-  const rows = useRef(new Map<string, HTMLElement>());
-  const rects = useRef<{ id: string; top: number; height: number }[]>([]);
+  const nodes = useRef(new Map<string, HTMLElement>());
+  const rects = useRef<ReorderRect[]>([]);
   const startY = useRef(0);
 
   const rowRef = useCallback(
     (id: string) => (el: HTMLElement | null) => {
-      if (el) rows.current.set(id, el);
-      else rows.current.delete(id);
+      if (el) nodes.current.set(id, el);
+      else nodes.current.delete(id);
     },
     [],
   );
@@ -75,42 +75,42 @@ export function useStepReorder(
   const gripProps = (id: string) => ({
     onPointerDown: (e: React.PointerEvent<HTMLElement>) => {
       if (e.button !== 0) return;
-      // `preventDefault` keeps the press from selecting the step's text;
+      // `preventDefault` keeps the press from selecting the row's text;
       // `stopPropagation` keeps it from reaching the board card underneath,
       // whose pointerdown seeds a card drag.
       e.preventDefault();
       e.stopPropagation();
       e.currentTarget.setPointerCapture(e.pointerId);
       startY.current = e.clientY;
-      rects.current = steps.map((s) => {
-        const rect = rows.current.get(s.id)?.getBoundingClientRect();
-        return { id: s.id, top: rect?.top ?? 0, height: rect?.height ?? 0 };
+      rects.current = rows.map((row) => {
+        const rect = nodes.current.get(row.id)?.getBoundingClientRect();
+        return { id: row.id, top: rect?.top ?? 0, height: rect?.height ?? 0 };
       });
-      setDrag({ id, dy: 0, to: stepDropSlot(rects.current, id, e.clientY) });
+      setDrag({ id, dy: 0, to: dropSlot(rects.current, id, e.clientY) });
     },
     onPointerMove: (e: React.PointerEvent<HTMLElement>) => {
       if (!drag) return;
       const dy = e.clientY - startY.current;
-      const to = stepDropSlot(rects.current, drag.id, e.clientY);
+      const to = dropSlot(rects.current, drag.id, e.clientY);
       if (dy !== drag.dy || to !== drag.to) setDrag({ ...drag, dy, to });
     },
     onPointerUp: (e: React.PointerEvent<HTMLElement>) => {
       if (!drag) return;
       const { id: dragged } = drag;
       setDrag(null);
-      commit(dragged, stepDropSlot(rects.current, dragged, e.clientY));
+      commit(dragged, dropSlot(rects.current, dragged, e.clientY));
     },
     // A cancelled gesture leaves the list alone. Unlike the *card* drag — where
     // WebKitGTK's `pointercancel` is the terminal event of an ordinary drop, so
-    // it has to commit — a step that springs back has cost the user one drag,
-    // while a step reordered by a cancel nobody asked for is a silent edit.
+    // it has to commit — a row that springs back has cost the user one drag,
+    // while a row reordered by a cancel nobody asked for is a silent edit.
     onPointerCancel: () => setDrag(null),
     onKeyDown: (e: React.KeyboardEvent<HTMLElement>) => {
       if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
       // A reorder must not be pointer-only: the focused grip nudges by one.
       e.preventDefault();
       e.stopPropagation();
-      const from = steps.findIndex((s) => s.id === id);
+      const from = rows.findIndex((row) => row.id === id);
       if (from < 0) return;
       commit(id, from + (e.key === "ArrowUp" ? -1 : 1));
     },
@@ -118,7 +118,7 @@ export function useStepReorder(
 
   const rowStyle = (index: number): React.CSSProperties | undefined => {
     if (!drag) return undefined;
-    const from = steps.findIndex((s) => s.id === drag.id);
+    const from = rows.findIndex((row) => row.id === drag.id);
     if (index === from) return { transform: `translateY(${drag.dy}px)` };
     const height = rects.current.find((r) => r.id === drag.id)?.height ?? 0;
     // `to` is an index into the list without the dragged row, so a row after it

@@ -6,6 +6,8 @@ import {
   applyPending,
   bucketByColumn,
   columnOf,
+  dropAccepted,
+  fallbackColumnId,
   filterTasks,
   mintSubtaskId,
   moveSubtask,
@@ -44,7 +46,7 @@ function task(over: Partial<CalendarTask> = {}): CalendarTask {
 }
 
 describe("columnOf", () => {
-  it("shows a never-placed card in the first column", () => {
+  it("shows a never-placed card in the intake column", () => {
     // The backend deliberately does not backfill a column on read, so this is
     // every card created by the calendar's Tasks view or an ICS import.
     expect(columnOf(task(), COLUMNS)).toBe("backlog");
@@ -97,6 +99,98 @@ describe("taskFromRemark", () => {
   });
 });
 
+/**
+ * The three columns a deadline decides, and the two ways that has to hold: the
+ * card moves itself as the date passes, and nothing is written to make it.
+ */
+describe("the date-governed columns", () => {
+  const TODAY = "2026-07-08";
+
+  it("shows a backlog card due today in Today", () => {
+    expect(columnOf(task({ column: "backlog", due: TODAY }), COLUMNS, TODAY)).toBe("today");
+  });
+
+  it("shows a late card in Overdue, from the backlog or from Today", () => {
+    const late = { due: "2026-07-01" };
+    expect(columnOf(task({ ...late, column: "backlog" }), COLUMNS, TODAY)).toBe("overdue");
+    expect(columnOf(task({ ...late, column: "today" }), COLUMNS, TODAY)).toBe("overdue");
+  });
+
+  it("reads the deadline in whole days, so an hour deadline is not late all afternoon", () => {
+    // The board is a day-sized readout; the "3d late" chip is where the hour is
+    // allowed to matter.
+    expect(columnOf(task({ column: "today", due: `${TODAY}T09:00` }), COLUMNS, TODAY)).toBe("today");
+  });
+
+  it("lets a card leave Overdue when its deadline moves", () => {
+    expect(columnOf(task({ column: "overdue", due: "2026-07-20" }), COLUMNS, TODAY)).toBe("backlog");
+    expect(columnOf(task({ column: "overdue", due: TODAY }), COLUMNS, TODAY)).toBe("today");
+    // A column named Overdue that holds an undated card is simply lying.
+    expect(columnOf(task({ column: "overdue" }), COLUMNS, TODAY)).toBe("backlog");
+  });
+
+  it("leaves a deliberate placement alone", () => {
+    // Doing, Done, an archive and anything the user added are decisions, and a
+    // date does not overrule one.
+    expect(columnOf(task({ column: "doing", due: "2026-07-01" }), COLUMNS, TODAY)).toBe("doing");
+    expect(columnOf(task({ column: "archived", due: "2026-07-01" }), COLUMNS, TODAY)).toBe("archived");
+    // An undated or future card dragged into Today stays there.
+    expect(columnOf(task({ column: "today" }), COLUMNS, TODAY)).toBe("today");
+    expect(columnOf(task({ column: "today", due: "2026-07-20" }), COLUMNS, TODAY)).toBe("today");
+  });
+
+  it("never routes a finished card out of Done", () => {
+    expect(columnOf(task({ column: "backlog", due: "2026-07-01", percent: 100 }), COLUMNS, TODAY)).toBe("done");
+  });
+
+  it("keeps a late card where it is when the board has no Overdue column", () => {
+    const columns = COLUMNS.filter((c) => c.id !== "overdue");
+    expect(columnOf(task({ column: "backlog", due: "2026-07-01" }), columns, TODAY)).toBe("backlog");
+  });
+
+  it("writes nothing — the routing is what the *render* does", () => {
+    const card = task({ column: "backlog", due: TODAY });
+    const before = JSON.stringify(card);
+    columnOf(card, COLUMNS, TODAY);
+    expect(JSON.stringify(card)).toBe(before);
+    expect(card.column).toBe("backlog");
+  });
+
+  it("refuses only the drops the deadline would undo", () => {
+    const dueToday = task({ column: "backlog", due: TODAY });
+    expect(dropAccepted(dueToday, "today", COLUMNS, TODAY)).toBe(true);
+    expect(dropAccepted(dueToday, "doing", COLUMNS, TODAY)).toBe(true);
+    // Both of these would land and be undone by the next render.
+    expect(dropAccepted(dueToday, "backlog", COLUMNS, TODAY)).toBe(false);
+    expect(dropAccepted(dueToday, "overdue", COLUMNS, TODAY)).toBe(false);
+    const undated = task({ column: "backlog" });
+    expect(dropAccepted(undated, "today", COLUMNS, TODAY)).toBe(true);
+    expect(dropAccepted(undated, "overdue", COLUMNS, TODAY)).toBe(false);
+  });
+});
+
+describe("fallbackColumnId", () => {
+  it("is the flagged intake column, not the leftmost open one", () => {
+    // The layout leads with the date columns and puts Backlog behind Doing, so
+    // "leftmost open" would file every unplaced card as work in progress.
+    expect(fallbackColumnId(COLUMNS)).toBe("backlog");
+    expect(COLUMNS[0].id).toBe("overdue");
+  });
+
+  it("falls back to the old positional rule for a board with no flag", () => {
+    const columns: TaskColumn[] = [
+      { id: "inbox", name: "Inbox", position: 0, done: false },
+      { id: "done", name: "Done", position: 1, done: true },
+    ];
+    expect(fallbackColumnId(columns)).toBe("inbox");
+  });
+
+  it("never picks a date column", () => {
+    const columns = COLUMNS.filter((c) => c.id !== "backlog");
+    expect(fallbackColumnId(columns)).toBe("doing");
+  });
+});
+
 describe("bucketByColumn", () => {
   it("puts every card in exactly one column", () => {
     const tasks = [
@@ -111,6 +205,23 @@ describe("bucketByColumn", () => {
     expect(buckets.get("backlog")!.map((t) => t.id)).toEqual(["a", "d"]);
     expect(buckets.get("doing")!.map((t) => t.id)).toEqual(["b"]);
     expect(buckets.get("done")!.map((t) => t.id)).toEqual(["c"]);
+  });
+
+  it("buckets by the deadline against the day it is handed", () => {
+    // The same cards, two days apart: nothing about them changed, and the board
+    // still redraws itself around the date.
+    const tasks = [
+      task({ id: "a", column: "backlog", due: "2026-07-08" }),
+      task({ id: "b", column: "backlog", due: "2026-07-09" }),
+    ];
+    const day = bucketByColumn(tasks, COLUMNS, "2026-07-08");
+    expect(day.get("today")!.map((t) => t.id)).toEqual(["a"]);
+    expect(day.get("backlog")!.map((t) => t.id)).toEqual(["b"]);
+
+    const later = bucketByColumn(tasks, COLUMNS, "2026-07-09");
+    expect(later.get("overdue")!.map((t) => t.id)).toEqual(["a"]);
+    expect(later.get("today")!.map((t) => t.id)).toEqual(["b"]);
+    expect(later.get("backlog")).toEqual([]);
   });
 });
 

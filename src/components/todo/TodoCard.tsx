@@ -19,7 +19,7 @@ import {
 } from "../../lib/todoBoard";
 import { useT } from "../../lib/i18n";
 import { useUse24h } from "../../lib/timeFormat";
-import { useStepReorder } from "./useStepReorder";
+import { useListReorder } from "../../hooks/useListReorder";
 import { resolveRemarkAbsPath } from "../../lib/projectRemarks";
 import { jumpToSource } from "../embed/FileViewerPane";
 import { basename } from "../../lib/paths";
@@ -169,8 +169,8 @@ export function TodoCard({ task, columns, onPointerDown, onEdit, onOpenMail }: P
   };
 
   // Reordering is one more checklist edit, written like every other one — the
-  // gesture itself is `useStepReorder`'s, shared with the dialog.
-  const reorder = useStepReorder(task.subtasks ?? [], (id, to) => {
+  // gesture itself is `useListReorder`'s, shared with the dialog.
+  const reorder = useListReorder(task.subtasks ?? [], (id, to) => {
     void editSteps((current) => moveSubtask(current, id, to));
   });
 

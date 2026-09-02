@@ -7,12 +7,12 @@ import { useSettingsStore } from "../../stores/settings";
 import { useTodoStore } from "../../stores/todo";
 import { mailPrioritySet } from "../../lib/mail";
 import { useExperimental } from "../../lib/experimental";
-import { addSubtask, moveSubtask, removeSubtask, setSubtask } from "../../lib/todoBoard";
+import { addSubtask, fallbackColumnId, moveSubtask, removeSubtask, setSubtask } from "../../lib/todoBoard";
 import { datePart, formatTime, timePart, toDateStr } from "../../lib/calendarTime";
 import { useUse24h } from "../../lib/timeFormat";
 import { useT } from "../../lib/i18n";
 import { TimeField } from "../common/TimeField";
-import { useStepReorder } from "./useStepReorder";
+import { useListReorder } from "../../hooks/useListReorder";
 
 interface Props {
   task: CalendarTask;
@@ -187,7 +187,7 @@ export function TodoCardDialog({ task, columns, onClose, onOpenMail }: Props) {
 
   // The same gesture the board card carries, staged in the draft here rather
   // than written — which is the only difference between the two surfaces.
-  const reorder = useStepReorder(steps, (id, to) =>
+  const reorder = useListReorder(steps, (id, to) =>
     setDraft((d) => moveSubtask(d, id, to)),
   );
 
@@ -365,7 +365,7 @@ export function TodoCardDialog({ task, columns, onClose, onOpenMail }: Props) {
               <span>{t("todoDialog.column")}</span>
               <select
                 className="cal-input"
-                value={draft.column ?? columns[0]?.id ?? ""}
+                value={draft.column || fallbackColumnId(columns)}
                 onChange={(e) => patch({ column: e.target.value, rank: null })}
               >
                 {columns.map((c) => (

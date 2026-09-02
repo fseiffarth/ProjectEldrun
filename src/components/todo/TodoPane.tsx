@@ -11,6 +11,7 @@ import {
   applyPending,
   archivedColumnIds,
   boardColumns,
+  fallbackColumnId,
   filterTasks,
 } from "../../lib/todoBoard";
 import { useT } from "../../lib/i18n";
@@ -233,18 +234,20 @@ export function TodoPane() {
         />
 
         <aside className="todo-rails">
-          {/* Both rails convert into the SAME column — the board's first — and
-              they are handed it rather than assuming "backlog", which a renamed
-              or reordered board turns into just a word. */}
+          {/* Both rails convert into the SAME column — the board's intake one —
+              and they are handed it rather than assuming "backlog", which a
+              renamed or reordered board turns into just a word. A conversion is
+              an intake, so it must not land in a date column either: what a card
+              is due is not decided by the rail that created it. */}
           <TodoAgendaRail
             tasks={tasks}
             defaultCalendarId={defaultCalendarId}
-            firstColumnId={columns[0]?.id ?? "backlog"}
+            intakeColumnId={fallbackColumnId(columns)}
           />
           <TodoMailRail
             tasks={tasks}
             defaultCalendarId={defaultCalendarId}
-            firstColumnId={columns[0]?.id ?? "backlog"}
+            intakeColumnId={fallbackColumnId(columns)}
           />
         </aside>
       </div>

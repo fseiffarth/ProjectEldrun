@@ -1556,7 +1556,7 @@ mod tests {
         assert!(columns_set_at(&path, Vec::new(), None).is_err());
         assert_eq!(
             read_data(&path).unwrap().task_columns.len(),
-            5,
+            6,
             "the refused edit must leave the board alone"
         );
     }

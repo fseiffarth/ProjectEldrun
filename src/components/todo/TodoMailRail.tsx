@@ -16,7 +16,7 @@ import { useT } from "../../lib/i18n";
 interface Props {
   tasks: CalendarTask[];
   defaultCalendarId: string;
-  firstColumnId: string;
+  intakeColumnId: string;
 }
 
 /**
@@ -32,7 +32,7 @@ interface Props {
  * todo board must not materialize a mail database for someone who has the mail
  * client switched off.
  */
-export function TodoMailRail({ tasks, defaultCalendarId, firstColumnId }: Props) {
+export function TodoMailRail({ tasks, defaultCalendarId, intakeColumnId }: Props) {
   const t = useT();
   const mailClient = useExperimental("mail_client");
   const accounts = useMailStore((s) => s.accounts);
@@ -86,7 +86,7 @@ export function TodoMailRail({ tasks, defaultCalendarId, firstColumnId }: Props)
       .createTask(
         taskFromMail(
           header,
-          { calendarId: defaultCalendarId, columnId: firstColumnId, now: new Date() },
+          { calendarId: defaultCalendarId, columnId: intakeColumnId, now: new Date() },
           t("mail.noSubject"),
         ),
       )

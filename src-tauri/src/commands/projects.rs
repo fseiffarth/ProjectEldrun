@@ -4799,19 +4799,12 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         scaffold_project(tmp.path(), true).unwrap();
 
-        for name in &[
-            "PROJECT.md",
-            "AGENTS.md",
-            "CLAUDE.md",
-            "GEMINI.md",
-            "TODO.md",
-            "ROADMAP.md",
-            "STATUS.md",
-            "README.md",
-            ".gitignore",
-        ] {
+        // Derived from SCAFFOLD_FILES rather than a hand-kept copy, so a file
+        // added to the scaffold later is covered here without an edit.
+        for (name, _) in SCAFFOLD_FILES {
             assert!(tmp.path().join(name).exists(), "missing: {name}");
         }
+        assert!(tmp.path().join(".gitignore").exists());
         assert!(tmp.path().join(".claude/settings.json").exists());
     }
 
@@ -5021,6 +5014,32 @@ mod tests {
         assert!(report.is_empty());
     }
 
+    /// PROJECT.md is the navigation hub: a scaffold file it does not link is
+    /// unreachable by walking the map. Checked against `SCAFFOLD_FILES` rather
+    /// than a hand-kept list, so adding a scaffold file (REMARKS.md was the
+    /// one that slipped through) fails here until the map links it too.
+    #[test]
+    fn project_map_links_every_scaffold_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        scaffold_project(tmp.path(), true).unwrap();
+
+        let map = std::fs::read_to_string(tmp.path().join("PROJECT.md")).unwrap();
+        for (name, _) in SCAFFOLD_FILES {
+            if *name == "PROJECT.md" {
+                continue; // the map does not link itself
+            }
+            assert!(
+                map.contains(&format!("(./{name})")),
+                "PROJECT.md missing link to {name}"
+            );
+        }
+        // The config files are scaffolded outside SCAFFOLD_FILES but belong on
+        // the map all the same.
+        for link in &["(./.claude/settings.json)", "(./.gitignore)"] {
+            assert!(map.contains(link), "PROJECT.md missing link {link}");
+        }
+    }
+
     #[test]
     fn agent_docs_point_at_agents_md_and_link_each_other() {
         let tmp = tempfile::tempdir().unwrap();
@@ -5032,10 +5051,12 @@ mod tests {
         for link in &[
             "(./CLAUDE.md)",
             "(./GEMINI.md)",
+            "(./PROJECT.md)",
             "(./README.md)",
             "(./DOCUMENTATION.md)",
             "(./ROADMAP.md)",
             "(./TODO.md)",
+            "(./REMARKS.md)",
             "(./STATUS.md)",
         ] {
             assert!(agents.contains(link), "AGENTS.md missing link {link}");

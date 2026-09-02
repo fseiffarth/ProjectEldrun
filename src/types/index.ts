@@ -1302,6 +1302,15 @@ export interface TaskColumn {
    *  finished card filed here stays instead of snapping back to Done. Nothing
    *  auto-moves a card here, and an unplaced card is never filed here. */
   archived?: boolean;
+  /** **The** overdue column: a card whose deadline has passed is *shown* here,
+   *  whatever column it is filed in. Display only — see `columnOf`. */
+  overdue?: boolean;
+  /** **The** today column: a card due today is shown here. `overdue`'s twin. */
+  due_today?: boolean;
+  /** **The** intake column: where an unplaced card lands and every conversion
+   *  files one. Flagged rather than inferred from position, because the board
+   *  leads with the date columns and puts the backlog behind Doing. */
+  intake?: boolean;
   color?: string;
   /** Advisory WIP cap; `0` = none. Nothing ever refuses a move because of it. */
   limit?: number;

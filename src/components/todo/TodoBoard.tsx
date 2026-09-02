@@ -12,6 +12,8 @@ import {
   columnTitle,
   currentSlot,
   doneColumnId,
+  dropAccepted,
+  fallbackColumnId,
   insertionIndex,
   orderedColumn,
   provisionalRank,
@@ -34,6 +36,15 @@ interface Props {
 
 /** How far the pointer must travel before a click becomes a drag. */
 const DRAG_THRESHOLD = 5;
+
+/** The bare card `addCard` asks the routing about before it composes one. */
+const DRAFT_SHAPE: CalendarTask = {
+  id: "",
+  calendar_id: "",
+  title: "",
+  priority: 0,
+  percent: 0,
+};
 
 /**
  * The board, and the owner of the card-drag gesture.
@@ -283,6 +294,11 @@ export function TodoBoard({
         task.rank != null &&
         task.column === drag.fromColumn;
       if (settled) return;
+      // A drop the deadline would immediately undo is not a move — the write
+      // would land and the next render would put the card straight back, which
+      // reads as a broken drag rather than as "that column is the date's to
+      // decide". The ghost has been saying so for the whole gesture.
+      if (!dropAccepted(task, drag.overColumn, columns, today)) return;
       void commitMove(task, drag.overColumn, drag.overIndex);
     };
 
@@ -308,6 +324,12 @@ export function TodoBoard({
   const addCard = (columnId: string) => {
     const column = buckets.get(columnId) ?? [];
     const top = orderedColumn(column, today)[0]?.rank ?? null;
+    // Dated today (below) — so a draft composed under Overdue would be filed in
+    // a column its own deadline contradicts. It is shown in Today either way;
+    // this is only so the *record* says something true.
+    const filed = dropAccepted({ ...DRAFT_SHAPE, due: today }, columnId, columns, today)
+      ? columnId
+      : fallbackColumnId(columns);
     onEditCard({
       id: "",
       calendar_id: defaultCalendarId,
@@ -325,7 +347,7 @@ export function TodoBoard({
       due: today,
       priority: 0,
       percent: 0,
-      column: columnId,
+      column: filed,
       rank: provisionalRank(null, top),
       created: toStamp(new Date()),
       // A card created under a project filter inherits it — otherwise it
@@ -390,11 +412,20 @@ export function TodoBoard({
   const overColumn = cardDrag?.overColumn
     ? (columns.find((c) => c.id === cardDrag.overColumn) ?? null)
     : null;
+  const dragged = cardDrag ? tasks.find((t) => t.id === cardDrag.taskId) : null;
+  // Refused for the same reason `onCommit` refuses it: the card's deadline, not
+  // the pointer, decides between Overdue, Today and the backlog.
+  const refused =
+    !!cardDrag &&
+    !!dragged &&
+    !!cardDrag.overColumn &&
+    !dropAccepted(dragged, cardDrag.overColumn, columns, today);
   const crossingTo =
-    cardDrag && overColumn && overColumn.id !== cardDrag.fromColumn
+    cardDrag && overColumn && overColumn.id !== cardDrag.fromColumn && !refused
       ? columnTitle(overColumn, t, storedColumns)
       : null;
-  const noDrop = !!cardDrag && (!cardDrag.overColumn || cardDrag.overIndex === null);
+  const noDrop =
+    !!cardDrag && (!cardDrag.overColumn || cardDrag.overIndex === null || refused);
 
   return (
     <div
@@ -410,10 +441,10 @@ export function TodoBoard({
           cards={buckets.get(column.id) ?? []}
           cardCount={countBuckets.get(column.id)?.length ?? 0}
           placeholderIndex={
-            cardDrag?.overColumn === column.id ? cardDrag.overIndex : null
+            cardDrag?.overColumn === column.id && !refused ? cardDrag.overIndex : null
           }
           placeholderHeight={cardDrag?.height ?? 0}
-          dropTarget={cardDrag?.overColumn === column.id}
+          dropTarget={cardDrag?.overColumn === column.id && !refused}
           draggingId={cardDrag?.taskId ?? null}
           onCardPointerDown={onCardPointerDown}
           onEditCard={onEditCard}
@@ -452,7 +483,9 @@ export function TodoBoard({
             <span className="todo-drag-ghost-to">→ {crossingTo}</span>
           )}
           {noDrop && (
-            <span className="todo-drag-ghost-to">{t("todoBoard.dropNowhere")}</span>
+            <span className="todo-drag-ghost-to">
+              {t(refused ? "todoBoard.dropDateDecides" : "todoBoard.dropNowhere")}
+            </span>
           )}
         </div>
       )}

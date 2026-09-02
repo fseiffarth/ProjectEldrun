@@ -18,10 +18,18 @@
  * this is what makes the board show the truth in the meantime.
  *
  * **Nothing here migrates anything.** No render path writes `column` or `rank`
- * onto a task: a card that has never been placed is simply *shown* in the first
+ * onto a task: a card that has never been placed is simply *shown* in the intake
  * column, and acquires a real placement the first time it is moved. Writing
  * placement at read time would rewrite `calendar.json` once per launch, for
  * someone who may only ever use the calendar.
+ *
+ * The second rule is what makes the third one possible. **Three columns are
+ * decided by the deadline, not by the user**: Overdue, Today and the intake
+ * column route between themselves from `due` at render time (`dateColumn`), so a
+ * backlog card due today shows up in Today and a card whose date passed
+ * overnight is in Overdue the next morning — with nothing written, and nothing
+ * to undo when the deadline moves again. Every other column is a decision
+ * someone made by dragging, and no date overrules one.
  */
 
 import type {
@@ -45,6 +53,7 @@ import {
 } from "./calendarTime";
 import { dayAgenda, visibleCalendarIds } from "../stores/calendar";
 import type { TranslationKey } from "./i18n";
+import { dropSlot } from "./listReorder";
 import type { ProjectRemark } from "./projectRemarks";
 
 /** Gap between adjacent ranks. Mirrors the backend's `RANK_GAP`. */
@@ -60,14 +69,36 @@ export const RANK_STEP = 1024;
  * card stays exactly where it was being shown.
  */
 export const DEFAULT_COLUMNS: TaskColumn[] = [
-  { id: "backlog", name: "Backlog", position: 0, done: false, color: "#8a93a5" },
-  { id: "today", name: "Today", position: 1, done: false, color: "#4aa3df" },
+  {
+    id: "overdue",
+    name: "Overdue",
+    position: 0,
+    done: false,
+    overdue: true,
+    color: "#d9534f",
+  },
+  {
+    id: "today",
+    name: "Today",
+    position: 1,
+    done: false,
+    due_today: true,
+    color: "#4aa3df",
+  },
   { id: "doing", name: "Doing", position: 2, done: false, color: "#e8a33d" },
-  { id: "done", name: "Done", position: 3, done: true, color: "#5cb85c" },
+  {
+    id: "backlog",
+    name: "Backlog",
+    position: 3,
+    done: false,
+    intake: true,
+    color: "#8a93a5",
+  },
+  { id: "done", name: "Done", position: 4, done: true, color: "#5cb85c" },
   {
     id: "archived",
     name: "Archived",
-    position: 4,
+    position: 5,
     done: false,
     archived: true,
     color: "#7d8590",
@@ -76,6 +107,7 @@ export const DEFAULT_COLUMNS: TaskColumn[] = [
 
 /** Translation keys for the seeded columns, so a default board is localized. */
 const DEFAULT_COLUMN_LABELS: Record<string, TranslationKey> = {
+  overdue: "todoBoard.columnOverdue",
   backlog: "todoBoard.columnBacklog",
   today: "todoBoard.columnToday",
   doing: "todoBoard.columnDoing",
@@ -119,13 +151,37 @@ export function archivedColumnIds(columns: TaskColumn[]): Set<string> {
   return new Set(columns.filter((c) => c.archived).map((c) => c.id));
 }
 
+/** The overdue column's id, or null when the board has none. */
+export function overdueColumnId(columns: TaskColumn[]): string | null {
+  return columns.find((c) => c.overdue)?.id ?? null;
+}
+
+/** The today column's id, or null when the board has none. */
+export function todayColumnId(columns: TaskColumn[]): string | null {
+  return columns.find((c) => c.due_today)?.id ?? null;
+}
+
 /**
- * The column an unplaced card is shown in: the leftmost that is neither Done nor
- * an archive. An unplaced card must never land in the archive — archiving is a
- * deliberate move, mirroring the backend's `col_fallback`.
+ * The column an unplaced card is shown in, and the one every conversion files
+ * into: the column flagged `intake`, and failing that the leftmost that is
+ * neither Done, nor an archive, nor date-governed. Mirrors the backend's
+ * `col_fallback` exactly, including the order of its two rules.
+ *
+ * The flag is what carries this now. The old *leftmost open column* rule read
+ * the intent off the layout, and the layout changed: with Overdue and Today
+ * leading the board and Backlog behind Doing, "leftmost open" is **Doing**, and
+ * every unplaced card would have been filed as work in progress. Neither date
+ * column can be the fallback either — landing there is a statement about a
+ * deadline, and a card with no home has made no such statement.
  */
 export function fallbackColumnId(columns: TaskColumn[]): string {
-  return (columns.find((c) => !c.done && !c.archived) ?? columns[0]).id;
+  const dateGoverned = (c: TaskColumn) => !!c.overdue || !!c.due_today;
+  return (
+    columns.find((c) => c.intake) ??
+    columns.find((c) => !c.done && !c.archived && !dateGoverned(c)) ??
+    columns.find((c) => !c.done && !c.archived) ??
+    columns[0]
+  ).id;
 }
 
 // ── Bucketing and ordering ──────────────────────────────────────────────────
@@ -134,25 +190,105 @@ export function fallbackColumnId(columns: TaskColumn[]): string {
  * Which column a card is *shown* in, applying the rules in order:
  * an archive it names wins first (a resting place outranks completion, so a
  * finished card can leave Done), then completion wins, then an absent/unknown
- * column falls to the first, then the column the card names.
+ * column falls to the intake column, then the column the card names — and
+ * finally the deadline, for the three columns a deadline governs (`dateColumn`).
  */
-export function columnOf(task: CalendarTask, columns: TaskColumn[]): string {
+export function columnOf(
+  task: CalendarTask,
+  columns: TaskColumn[],
+  today: string = todayStr(),
+): string {
   const named = task.column;
   // A card filed in an archive stays there whatever its percent — that is the
   // whole point of archiving a *done* card, and mirrors `normalize_tasks`.
   if (named && columns.some((c) => c.id === named && c.archived)) return named;
   const done = doneColumnId(columns);
   if (task.percent >= 100 && done) return done;
+  let column: string;
   if (!named || !columns.some((c) => c.id === named)) {
     // A completed card with no done column has nowhere better to go than the
     // fallback — which is exactly what the backend does with the coupling off.
-    return fallbackColumnId(columns);
+    column = fallbackColumnId(columns);
+  } else if (done && named === done && task.percent < 100) {
+    // A card that is *not* complete cannot sit in Done, however it was filed:
+    // otherwise unticking it in the calendar's Tasks view would leave it under a
+    // heading that says it is finished.
+    column = fallbackColumnId(columns);
+  } else {
+    column = named;
   }
-  // A card that is *not* complete cannot sit in Done, however it was filed:
-  // otherwise unticking it in the calendar's Tasks view would leave it under a
-  // heading that says it is finished.
-  if (done && named === done && task.percent < 100) return fallbackColumnId(columns);
-  return named;
+  return dateColumn(task, column, columns, today);
+}
+
+/**
+ * The deadline's say in where a card is shown — the Overdue/Today/intake trio,
+ * and nothing else.
+ *
+ * **Three columns, one rule.** Between the intake column, Today and Overdue, a
+ * card's position is not an opinion anyone holds: it is what its `due` says
+ * today. So a backlog card due today is *shown* in Today, one whose deadline has
+ * passed is shown in Overdue, and a card sitting in Overdue that is no longer
+ * late leaves it — a column named Overdue that holds something else is simply
+ * lying. Doing, Done, an archive and every column the user added are untouched:
+ * putting a card *there* is a decision, and a date does not get to overrule it.
+ *
+ * **Display only, and that is the whole design.** Nothing here writes `column`.
+ * The backend's `normalize` runs on every read and therefore must not consult a
+ * clock (`normalize_tasks` step 5 says why at length: the same file would
+ * migrate differently depending on the hour, and every board would reshuffle
+ * itself at midnight). Routing at *render* time has neither problem — the board
+ * simply redraws — and it leaves the card's own filing intact, so a deadline that
+ * moves, or passes, takes the card with it in both directions instead of
+ * one-way-stamping a column onto the record.
+ *
+ * A card keeps its place when the board has no column to route it into, so a
+ * user who deleted Overdue gets late cards left where they are rather than
+ * vanished.
+ */
+function dateColumn(
+  task: CalendarTask,
+  column: string,
+  columns: TaskColumn[],
+  today: string,
+): string {
+  // A finished card is Done's business (or its archive's), never a deadline's.
+  if (task.percent >= 100) return column;
+  const fallback = fallbackColumnId(columns);
+  const overdueCol = overdueColumnId(columns);
+  const todayCol = todayColumnId(columns);
+  const governed =
+    column === fallback || column === overdueCol || column === todayCol;
+  if (!governed) return column;
+  // Day granularity deliberately: `isOverdue` given a bare date compares days,
+  // so an hour deadline does not move a card into Overdue halfway through the
+  // afternoon it is due. Columns are a day-sized readout; the "3d late" chip is
+  // where the hour is allowed to matter.
+  if (isOverdue(task, today)) return overdueCol ?? column;
+  if (task.due && datePart(task.due) === today) return todayCol ?? column;
+  // Not late and not due today: an undated or future card that someone dragged
+  // into Today stays there — a deliberate "I am doing this today" is exactly the
+  // decision this function does not overrule — but it cannot stay in Overdue.
+  return column === overdueCol ? fallback : column;
+}
+
+/**
+ * Whether dropping `task` into `columnId` would actually keep it there.
+ *
+ * Asked of the routing itself rather than re-deriving it, so the answer cannot
+ * drift from what the board then draws. It is false only for the deadline-driven
+ * cases — a card due today dropped into the backlog, a late one dropped into
+ * Today, anything not late dropped into Overdue — where the write would land and
+ * be undone by the next render, i.e. a drag that visibly snaps back. The board
+ * refuses those drops instead, and says so on the drag ghost; the way to move a
+ * card between those three columns is to change its deadline.
+ */
+export function dropAccepted(
+  task: CalendarTask,
+  columnId: string,
+  columns: TaskColumn[],
+  today: string = todayStr(),
+): boolean {
+  return columnOf({ ...task, column: columnId }, columns, today) === columnId;
 }
 
 /** Group cards by the column they are shown in, each column already ordered. */
@@ -164,7 +300,7 @@ export function bucketByColumn(
   const buckets = new Map<string, CalendarTask[]>();
   for (const column of columns) buckets.set(column.id, []);
   for (const task of tasks) {
-    const id = columnOf(task, columns);
+    const id = columnOf(task, columns, today);
     (buckets.get(id) ?? buckets.set(id, []).get(id)!).push(task);
   }
   for (const [id, list] of buckets) buckets.set(id, orderedColumn(list, today));
@@ -433,21 +569,17 @@ export function moveSubtask(task: CalendarTask, id: string, to: number): Calenda
 }
 
 /**
- * Where a dragged step would land, from the pointer's Y over the rects measured
- * when the drag started: the number of OTHER rows whose midpoint it has passed —
- * i.e. `moveSubtask`'s index into the list without the dragged step.
- *
- * Kept here rather than in either component because both checklist surfaces drag
- * the same way, and because it is the half of the gesture that can be tested.
+ * Where a dragged step would land — `lib/listReorder`'s `dropSlot` under the
+ * name the checklist code and its tests know it by. Every list with the
+ * gesture shares that arithmetic; the alias keeps the checklist's own vocabulary
+ * without a second copy of it.
  */
 export function stepDropSlot(
   rects: { id: string; top: number; height: number }[],
   id: string,
   clientY: number,
 ): number {
-  return rects
-    .filter((r) => r.id !== id)
-    .filter((r) => clientY > r.top + r.height / 2).length;
+  return dropSlot(rects, id, clientY);
 }
 
 /**
@@ -797,9 +929,10 @@ export function selectUrgentMail(
  * from and one that says so only in its title. So both go through
  * `convertedCard`, and the fixed part is fixed here:
  *
- * - **the backlog** (the board's first column) — a converted card is an intake,
+ * - **the backlog** (the board's intake column) — a converted card is an intake,
  *   not a decision about when it will be done, and the drag onto Today is the
- *   user's to make;
+ *   user's to make. Never a date column, for the same reason: a card lands in
+ *   Today or Overdue by having a deadline, not by how it was created;
  * - **open**, `percent: 0`, unranked (the first move ranks it);
  * - **`created`** stamped from the caller's clock, as everything else that mints
  *   a card does — this module has no business reading the clock for a write;
@@ -815,8 +948,9 @@ export function selectUrgentMail(
 export interface CardConversion {
   /** Calendar to file the card under — the board's default. */
   calendarId: string;
-  /** The board's first column. Named rather than assumed, because a user can
-   *  rename or reorder the columns and "backlog" is then just a word. */
+  /** The board's intake column (`fallbackColumnId`). Named rather than assumed,
+   *  because a user can rename or reorder the columns and "backlog" is then just
+   *  a word. */
   columnId: string;
   /** The clock, injected: the frontend owns local wall-clock stamps. */
   now?: Date;

@@ -22,7 +22,7 @@ interface Props {
   tasks: CalendarTask[];
   defaultCalendarId: string;
   /** The board's first column: where every conversion lands. */
-  firstColumnId: string;
+  intakeColumnId: string;
 }
 
 /**
@@ -46,7 +46,7 @@ interface Props {
  * because it has a card would put the rail at odds with the calendar and with the
  * header badge. The row keeps its slot and stops offering a second card.
  */
-export function TodoAgendaRail({ tasks, defaultCalendarId, firstColumnId }: Props) {
+export function TodoAgendaRail({ tasks, defaultCalendarId, intakeColumnId }: Props) {
   const t = useT();
   const use24h = useUse24h();
   const events = useCalendarStore((s) => s.events);
@@ -75,7 +75,7 @@ export function TodoAgendaRail({ tasks, defaultCalendarId, firstColumnId }: Prop
           occ,
           {
             calendarId: defaultCalendarId,
-            columnId: firstColumnId,
+            columnId: intakeColumnId,
             now: new Date(),
           },
           t("calendar.untitled"),

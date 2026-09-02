@@ -11,7 +11,7 @@ import {
   mailSummarize,
   useMailAiFeature,
 } from "../../lib/mail";
-import { boardColumns, taskFromMail } from "../../lib/todoBoard";
+import { boardColumns, fallbackColumnId, taskFromMail } from "../../lib/todoBoard";
 import { toDate, toStamp } from "../../lib/calendarTime";
 import { useCalendarStore } from "../../stores/calendar";
 import { useMailStore } from "../../stores/mail";
@@ -54,7 +54,7 @@ export function MailAiMessageActions({ header }: { header: MailHeader }) {
   const createTask = useCalendarStore((s) => s.createTask);
 
   const defaultCalendarId = calendars[0]?.id ?? "default";
-  const firstColumnId = boardColumns(storedColumns)[0]?.id ?? "backlog";
+  const intakeColumnId = fallbackColumnId(boardColumns(storedColumns));
 
   // #204 — the ephemeral summary.
   const [summary, setSummary] = useState<string[] | null>(null);
@@ -153,7 +153,7 @@ export function MailAiMessageActions({ header }: { header: MailHeader }) {
     // the model's own title/due/priority on top.
     const base = taskFromMail(
       header,
-      { calendarId: defaultCalendarId, columnId: firstColumnId, now: new Date() },
+      { calendarId: defaultCalendarId, columnId: intakeColumnId, now: new Date() },
       t("mail.noSubject"),
     );
     const priority = mapTaskPriority(extracted.priority) ?? base.priority;

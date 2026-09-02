@@ -5,7 +5,7 @@ import { resolvePath } from "../../lib/paths";
 import { REMARKS_FILE, resolveRemarkAbsPath, type ProjectRemark } from "../../lib/projectRemarks";
 import { useProjectRemarksStore } from "../../stores/projectRemarks";
 import { useCalendarStore } from "../../stores/calendar";
-import { boardColumns, taskFromRemark } from "../../lib/todoBoard";
+import { boardColumns, fallbackColumnId, taskFromRemark } from "../../lib/todoBoard";
 import { useT } from "../../lib/i18n";
 import { UntestedTag } from "../common/UntestedTag";
 import { useDialogs } from "../common/PromptDialogs";
@@ -51,7 +51,7 @@ export function RemarksPane({ projectId, projectDir, visible }: {
     const current = useCalendarStore.getState();
     const columns = boardColumns(current.taskColumns);
     await current.createTask(taskFromRemark(remark, projectId, {
-      calendarId: current.calendars[0]?.id ?? "default", columnId: columns[0]?.id ?? "backlog", now: new Date(),
+      calendarId: current.calendars[0]?.id ?? "default", columnId: fallbackColumnId(columns), now: new Date(),
     }));
   };
   const walk = (delta: number) => {

@@ -16,6 +16,7 @@ export const STANDARD_PROJECT_FILES = new Set([
   "README.md",
   "ROADMAP.md",
   "TODO.md",
+  "REMARKS.md",
   "AGENTS.md",
   "CLAUDE.md",
   "GEMINI.md",
