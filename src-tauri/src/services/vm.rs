@@ -165,7 +165,22 @@ pub fn vm_ssh_opts(host: &str, port: Option<u16>) -> Vec<String> {
         return Vec::new();
     }
     let reg = registry().lock().unwrap();
-    let Some(vm) = reg.values().find(|vm| vm.runtime.ssh_port == port) else {
+    // A **live** claim on the port wins over a stale one. A QEMU killed from
+    // outside (or crashed) leaves its registry entry behind and releases its
+    // port back to the ephemeral pool, so the next VM can be handed exactly it —
+    // and an arbitrary `values()` order would then lend the new VM the dead
+    // one's identity and known_hosts: an ssh authenticating with the wrong key
+    // against a host key recorded for a machine that no longer exists, i.e. a
+    // refusal wearing the wording of a MITM. Liveness only *ranks* the match; a
+    // sole claimant still answers, because coming back empty would send the
+    // connection to the user's real `~/.ssh/known_hosts`, which is the one thing
+    // this injection exists to prevent.
+    let by_port = |vm: &&RunningVm| vm.runtime.ssh_port == port;
+    let Some(vm) = reg
+        .values()
+        .find(|vm| by_port(vm) && pid_is_live_qemu(vm.runtime.pid))
+        .or_else(|| reg.values().find(by_port))
+    else {
         return Vec::new();
     };
     vec![
@@ -204,7 +219,7 @@ pub fn vm_spec_for(project_id: &str) -> Option<VmSpec> {
 pub fn is_running(project_id: &str) -> bool {
     let reg = registry().lock().unwrap();
     reg.get(project_id)
-        .map(|vm| pid_alive(vm.runtime.pid))
+        .map(|vm| pid_is_live_qemu(vm.runtime.pid))
         .unwrap_or(false)
 }
 
@@ -212,7 +227,7 @@ pub fn is_running(project_id: &str) -> bool {
 pub fn running_state(project_id: &str) -> Option<VmRuntime> {
     let reg = registry().lock().unwrap();
     reg.get(project_id)
-        .filter(|vm| pid_alive(vm.runtime.pid))
+        .filter(|vm| pid_is_live_qemu(vm.runtime.pid))
         .map(|vm| vm.runtime.clone())
 }
 
@@ -1000,6 +1015,28 @@ fn pid_alive(pid: u32) -> bool {
     }
 }
 
+/// Whether `pid` is a live process that is (still) **our** QEMU.
+///
+/// The `comm` half is the rule `sweep_orphans` already states — a recycled pid
+/// must never be signalled — applied wherever a pid read from the registry or a
+/// pidfile is acted on. Both outlive the process they name: a QEMU killed from
+/// outside clears neither, so the record can point at whatever the kernel later
+/// gives that number. Non-Linux has no `/proc` to ask, and the tier only boots
+/// on Linux, so there liveness is all there is (identical behaviour to before).
+fn pid_is_live_qemu(pid: u32) -> bool {
+    if !pid_alive(pid) {
+        return false;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        process_is_qemu(pid)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        true
+    }
+}
+
 #[cfg(unix)]
 fn signal_pid(pid: u32, sig: i32) {
     unsafe {
@@ -1069,7 +1106,12 @@ pub fn shutdown(project_id: &str) {
             .and_then(|s| s.trim().parse().ok())
     });
 
-    if let Some(pid) = pid.filter(|&p| pid_alive(p)) {
+    // `pid_is_live_qemu`, not `pid_alive`: this pid can come from a `qemu.pid`
+    // file (or a registry entry) that outlived its process — a QEMU killed from
+    // outside clears neither — and the number may since have been recycled onto
+    // something innocent. `sweep_orphans` has always checked; a deactivate,
+    // archive or project delete signalled whatever the file said.
+    if let Some(pid) = pid.filter(|&p| pid_is_live_qemu(p)) {
         let clean = qmp_powerdown(&dir.join("qmp.sock")).is_ok()
             && wait_pid_gone(pid, Duration::from_secs(15));
         #[cfg(unix)]

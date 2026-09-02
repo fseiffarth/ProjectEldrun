@@ -266,7 +266,14 @@ fn accept_loop(listener: TcpListener, shared: Arc<ProxyShared>) {
         if shared.stop.load(Ordering::SeqCst) {
             return;
         }
-        let Ok((stream, _)) = conn else { continue };
+        let Ok((stream, _)) = conn else {
+            // A failing `accept()` (fd exhaustion, most plausibly) returns
+            // immediately, so retrying it bare is a hot loop on a thread nobody
+            // is watching. Back off a little and try again — the condition is
+            // transient, and the listener is the VM's only route out.
+            std::thread::sleep(Duration::from_millis(50));
+            continue;
+        };
         let conn_shared = Arc::clone(&shared);
         let _ = std::thread::Builder::new()
             .name("vm-proxy-conn".to_string())
