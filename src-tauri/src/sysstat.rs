@@ -316,6 +316,91 @@ pub fn sum_rss_kib(pids: &[u32]) -> u64 {
     pids.iter().filter_map(|&pid| platform::rss_kib(pid)).sum()
 }
 
+/// One process's resident memory split by what backs it, as `/proc/<pid>/status`
+/// reports it. The split is what a "this renderer is at 4 GB" line needs to be
+/// actionable: `anon` is heap (JS objects, decoded images, canvas backing
+/// stores), `file` is mapped libraries and caches, `shmem` is shared memory
+/// (compositor buffers, IPC). A watchdog that only knows the total cannot tell
+/// a JS-heap leak from a graphics one, and the two are fixed in different places.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct RssBreakdown {
+    pub rss_kib: u64,
+    pub anon_kib: u64,
+    pub file_kib: u64,
+    pub shmem_kib: u64,
+}
+
+/// Parse the `Rss*` fields out of a `/proc/<pid>/status` body. Fields a kernel
+/// does not report (pre-4.5 has no `RssAnon`) stay zero.
+pub fn parse_rss_breakdown(status: &str) -> RssBreakdown {
+    let mut out = RssBreakdown::default();
+    for line in status.lines() {
+        let Some((key, rest)) = line.split_once(':') else {
+            continue;
+        };
+        let slot = match key.trim() {
+            "VmRSS" => &mut out.rss_kib,
+            "RssAnon" => &mut out.anon_kib,
+            "RssFile" => &mut out.file_kib,
+            "RssShmem" => &mut out.shmem_kib,
+            _ => continue,
+        };
+        if let Some(v) = rest.split_whitespace().next().and_then(|v| v.parse().ok()) {
+            *slot = v;
+        }
+    }
+    out
+}
+
+/// Resident size per mapping *name* from a `/proc/<pid>/smaps` body, largest
+/// first, at most `top` entries. Anonymous mappings (no name) are pooled under
+/// `[anon]`; everything else keeps the kernel's name (`[heap]`, a library path,
+/// `memfd:…`), so the answer names the kind of memory rather than a region.
+pub fn aggregate_smaps_rss(smaps: &str, top: usize) -> Vec<(String, u64)> {
+    let mut by_name: HashMap<String, u64> = HashMap::new();
+    let mut current = String::from("[anon]");
+    for line in smaps.lines() {
+        // A mapping header starts with its hex address range; every other line is
+        // a `Key: value kB` field. `Rss:` is the one we sum.
+        let is_header = line
+            .split_once('-')
+            .is_some_and(|(lo, _)| !lo.is_empty() && lo.bytes().all(|b| b.is_ascii_hexdigit()));
+        if is_header {
+            // `addr perms offset dev inode [name…]` — the name may contain spaces.
+            let mut fields = line.splitn(6, char::is_whitespace);
+            let name = fields.nth(5).map(str::trim).unwrap_or("");
+            current = if name.is_empty() { "[anon]".to_string() } else { name.to_string() };
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("Rss:") {
+            if let Some(kib) = rest.split_whitespace().next().and_then(|v| v.parse::<u64>().ok()) {
+                *by_name.entry(current.clone()).or_insert(0) += kib;
+            }
+        }
+    }
+    let mut rows: Vec<(String, u64)> = by_name.into_iter().filter(|(_, kib)| *kib > 0).collect();
+    rows.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    rows.truncate(top);
+    rows
+}
+
+/// The breakdown and the largest mappings of one live process. `/proc`-only:
+/// elsewhere there is nothing comparable to read, and `None` says so.
+#[cfg(target_os = "linux")]
+pub fn process_memory(pid: u32, top: usize) -> Option<(RssBreakdown, Vec<(String, u64)>)> {
+    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+    let breakdown = parse_rss_breakdown(&status);
+    // smaps is large for a browser process (thousands of mappings) and is read
+    // only on the watchdog's own schedule, never per poll.
+    let smaps = std::fs::read_to_string(format!("/proc/{pid}/smaps")).unwrap_or_default();
+    Some((breakdown, aggregate_smaps_rss(&smaps, top)))
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn process_memory(_pid: u32, _top: usize) -> Option<(RssBreakdown, Vec<(String, u64)>)> {
+    None
+}
+
 /// Parent pid for a live process, if resolvable on this backend.
 pub fn ppid(pid: u32) -> Option<u32> {
     platform::ppid(pid)
@@ -2311,6 +2396,42 @@ pub(crate) fn lock_cache_for_test() -> std::sync::MutexGuard<'static, ()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rss_breakdown_reads_the_four_fields() {
+        let status = "Name:\tWebKitWebProcess\nVmRSS:\t 4744000 kB\nRssAnon:\t 4600000 kB\nRssFile:\t  100000 kB\nRssShmem:\t   44000 kB\nThreads:\t37\n";
+        assert_eq!(
+            parse_rss_breakdown(status),
+            RssBreakdown { rss_kib: 4_744_000, anon_kib: 4_600_000, file_kib: 100_000, shmem_kib: 44_000 }
+        );
+        // A kernel without the split still yields the total.
+        assert_eq!(parse_rss_breakdown("VmRSS:\t 12 kB\n").rss_kib, 12);
+    }
+
+    #[test]
+    fn smaps_aggregates_by_mapping_name_largest_first() {
+        let smaps = "\
+7f00-7f10 rw-p 00000000 00:00 0 \n\
+Rss:                 300 kB\n\
+7f10-7f20 rw-p 00000000 00:00 0                          [heap]\n\
+Rss:                 100 kB\n\
+7f20-7f30 r-xp 00000000 08:01 1234 /usr/lib/lib with space.so\n\
+Rss:                  50 kB\n\
+7f30-7f40 rw-p 00000000 00:00 0 \n\
+Rss:                 200 kB\n\
+7f40-7f50 rw-s 00000000 00:01 5 /memfd:WebKit (deleted)\n\
+Rss:                   0 kB\n";
+        let rows = aggregate_smaps_rss(smaps, 8);
+        assert_eq!(
+            rows,
+            vec![
+                ("[anon]".to_string(), 500),
+                ("[heap]".to_string(), 100),
+                ("/usr/lib/lib with space.so".to_string(), 50),
+            ]
+        );
+        assert_eq!(aggregate_smaps_rss(smaps, 1).len(), 1);
+    }
 
     #[test]
     fn clk_tck_is_positive() {

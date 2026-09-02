@@ -592,6 +592,44 @@ screen is not.*
       and recompiling the talk a few times should not ratchet it upwards.
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work
+    - [x] 🔍 **2026-09-02, the popout again at 4.1–7.2 GB across six ceiling
+      reports while the talk was being recompiled — and this time a watchdog
+      reload did NOT free it** ("4744 MB still ≥ ceiling 271 s after a reload").
+      Reproduced NOTHING headlessly: the real `PdfView` + TeX workspace,
+      compiled through the actual `compile` closure in an offscreen WebKitGTK
+      2.52 WebView (scratch Vite bundle with Tauri stubbed), stays flat over 20
+      recompiles of an 82 MB / 42-page PDF — same file, alternating content,
+      StrictMode, rail + contents open, a beamer deck with drawn links, a
+      16-page 12-megapixel JPEG deck, and at `GDK_SCALE=2`. pdf.js alone
+      (load/render/fingerprint/text/links/destroy, destroy mid-render) plateaus
+      too, as does an 80 MB `ipc://` fetch. The one thing that DOES produce the
+      observed shape is Tauri's **postMessage IPC fallback**: a window whose
+      custom-protocol fetch once rejected delivers every raw-bytes response as
+      a `runCallback(id, [37,80,…])` script, and evaluating one 82 MB PDF that
+      way takes the renderer to 2.8–6 GB and leaves ≥ 1.9 GB behind — per
+      reload. Not proven to be the trigger (nothing in the logs says the
+      fallback armed); now detectable: `readFileBytes` writes an `ipc-fallback`
+      line to crash.log the first time a raw read arrives as a number array in
+      a real window. Also new: the ceiling and hold reports carry the memory
+      KIND (`webview_renderer_memory`: RssAnon/File/Shmem + the largest
+      mappings from smaps), because "a reload does not free it" means it is not
+      the page's garbage and the total alone cannot say what it is. Small
+      certain wins landed alongside: an unchanged page's fingerprint compare
+      now hands its parse back (`page.cleanup()` — `getOperatorList` had
+      decoded every image on the page into the fresh document for nothing),
+      the link layer's ink probe cleans up after its render, and a mid-compile
+      `getPage` rejection no longer surfaces as an unhandled rejection per page.
+    - [ ] 🖐️ Manual test (what is the 4 GB) — after a backend restart, work as
+      before with the talk in a popout until the footer's `win-1` reading
+      climbs; then read the newest `renderer-watchdog` entry in
+      `~/.local/share/eldrun/crash.log`: it now ends in `[anon … MB, file … MB,
+      shmem … MB; largest mappings: …]`. Anon ≈ total means JS heap / decoded
+      images; a large `memfd:` or shmem share means compositor or IPC buffers;
+      an `ipc-fallback` entry above it means the fallback theory is confirmed.
+      Also open the popout's devtools console once and look for "IPC custom
+      protocol failed".
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 ---
 

@@ -82,6 +82,48 @@ export interface RendererRss {
   rss_kib: number;
 }
 
+/** What one renderer's resident memory is made of (`commands::debug::RendererMemory`). */
+export interface RendererMemory {
+  pid: number;
+  rss_kib: number;
+  anon_kib: number;
+  file_kib: number;
+  shmem_kib: number;
+  /** Largest mappings by kernel name (`[anon]`, `[heap]`, a library, `memfd:…`), largest first. */
+  top: { name: string; rss_kib: number }[];
+}
+
+/**
+ * The breakdown as one bracketed clause for a crash.log line: heap versus mapped
+ * files versus shared memory, then the largest mappings. This is the part of a
+ * ceiling report that says what KIND of memory a 4 GB renderer holds — a JS-heap
+ * leak, decoded images and canvas backing stores, and compositor buffers all read
+ * as "RSS" but are fixed in different places, and a reload frees only the first.
+ */
+export function formatRendererMemory(m: RendererMemory): string {
+  const mb = (kib: number) => Math.round(kib / 1024);
+  const top = m.top
+    .slice(0, 8)
+    .map((t) => `${t.name} ${mb(t.rss_kib)} MB`)
+    .join(", ");
+  return (
+    ` [anon ${mb(m.anon_kib)} MB, file ${mb(m.file_kib)} MB, shmem ${mb(m.shmem_kib)} MB` +
+    (top ? `; largest mappings: ${top}]` : "]")
+  );
+}
+
+/** The breakdown clause for `pid`, or `""` when the backend cannot say (an older
+ *  binary, a platform without `/proc`, a pid that is not one of our renderers). */
+async function describeRendererMemory(pid: number): Promise<string> {
+  if (!pid) return "";
+  try {
+    const m = await invoke<RendererMemory | null>("webview_renderer_memory", { pid });
+    return m && typeof m === "object" && Array.isArray(m.top) ? formatRendererMemory(m) : "";
+  } catch {
+    return "";
+  }
+}
+
 /**
  * Every renderer's resident size. Falls back to the older unattributed
  * largest-renderer command against a backend that predates the per-renderer
@@ -355,20 +397,24 @@ export function useRendererWatchdog(): void {
       if (verdict.action === "hold") {
         if (!heldReported) {
           heldReported = true;
+          // Memory a reload did not free is not the page's own garbage — say what
+          // it is made of, so the next look starts from the kind, not the total.
+          const what = await describeRendererMemory(own.pid);
           await report(
             `renderer RSS ${Math.round(mb)} MB still ≥ ${RENDERER_CEILING_MB} MB ceiling ` +
               `${Math.round(verdict.sinceReloadMs / 1000)} s after a watchdog reload of '${label}' ` +
               `— a reload does not free this memory; not reloading again for ` +
-              `${Math.round(RELOAD_COOLDOWN_MS / 60_000)} min`,
+              `${Math.round(RELOAD_COOLDOWN_MS / 60_000)} min${what}`,
           );
         }
         return;
       }
 
       tripped = true;
+      const what = await describeRendererMemory(own.pid);
       await report(
         `renderer RSS ${Math.round(mb)} MB ≥ ${RENDERER_CEILING_MB} MB ceiling ` +
-          `(pid ${own.pid || "?"}) — reloading window '${label}' to free its JS heap before it OOMs`,
+          `(pid ${own.pid || "?"}) — reloading window '${label}' to free its JS heap before it OOMs${what}`,
       );
       writeSessionNumber(RELOAD_AT_KEY, Date.now());
       location.reload();

@@ -1266,6 +1266,7 @@ pub fn run() {
             commands::debug::webview_rss_kib,
             commands::debug::webview_renderer_rss,
             commands::debug::webview_renderer_claim,
+            commands::debug::webview_renderer_memory,
             // Ollama local models
             commands::ollama::list_ollama_models,
             commands::ollama::ensure_vibe_ollama_model,

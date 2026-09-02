@@ -4,6 +4,7 @@ import {
   RELOAD_COOLDOWN_MS,
   RENDERER_CEILING_MB,
   decideWatchdog,
+  formatRendererMemory,
   formatRssKib,
   ownRenderer,
   pickProbedPid,
@@ -111,5 +112,30 @@ describe("rendererWatchdog / readout formatting", () => {
     expect(formatRssKib(912 * MB)).toBe("912 MB");
     expect(formatRssKib(4736 * MB)).toBe("4.6 GB");
     expect(formatRssKib(1024 * MB)).toBe("1.0 GB");
+  });
+});
+
+describe("rendererWatchdog / formatRendererMemory", () => {
+  it("names the kind of memory and the largest mappings, in MB", () => {
+    const clause = formatRendererMemory({
+      pid: 7,
+      rss_kib: 4_744_000,
+      anon_kib: 4_600_000,
+      file_kib: 100_000,
+      shmem_kib: 44_000,
+      top: [
+        { name: "[anon]", rss_kib: 4_300_000 },
+        { name: "[heap]", rss_kib: 200_000 },
+      ],
+    });
+    expect(clause).toBe(
+      " [anon 4492 MB, file 98 MB, shmem 43 MB; largest mappings: [anon] 4199 MB, [heap] 195 MB]",
+    );
+  });
+
+  it("closes the clause without a mapping list when there is none", () => {
+    expect(
+      formatRendererMemory({ pid: 1, rss_kib: 0, anon_kib: 0, file_kib: 0, shmem_kib: 0, top: [] }),
+    ).toBe(" [anon 0 MB, file 0 MB, shmem 0 MB]");
   });
 });

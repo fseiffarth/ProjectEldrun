@@ -95,6 +95,47 @@ pub struct RendererRss {
     pub rss_kib: u64,
 }
 
+/// What one renderer's resident memory is made of — the watchdog's answer to
+/// "4 GB of *what*?", written into crash.log beside the ceiling report.
+#[derive(Debug, Clone, Serialize)]
+pub struct RendererMemory {
+    pub pid: u32,
+    pub rss_kib: u64,
+    pub anon_kib: u64,
+    pub file_kib: u64,
+    pub shmem_kib: u64,
+    /// The largest mappings by resident size, by kernel name (`[anon]`,
+    /// `[heap]`, a library, `memfd:…`), largest first.
+    pub top: Vec<MappingRss>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MappingRss {
+    pub name: String,
+    pub rss_kib: u64,
+}
+
+/// The memory breakdown of one of this app's renderer processes. Only a pid
+/// that [`webview_renderer_rss`] would list is read — a made-up pid gets `None`,
+/// as does any platform without `/proc`.
+#[tauri::command]
+pub fn webview_renderer_memory(pid: u32) -> Option<RendererMemory> {
+    let root = eldrun_process_root(std::process::id());
+    let ours = crate::sysstat::descendant_pids(&[root]).contains(&pid) && is_webview_renderer(pid);
+    if !ours {
+        return None;
+    }
+    let (b, top) = crate::sysstat::process_memory(pid, 8)?;
+    Some(RendererMemory {
+        pid,
+        rss_kib: b.rss_kib,
+        anon_kib: b.anon_kib,
+        file_kib: b.file_kib,
+        shmem_kib: b.shmem_kib,
+        top: top.into_iter().map(|(name, rss_kib)| MappingRss { name, rss_kib }).collect(),
+    })
+}
+
 /// Which window each renderer pid belongs to, as the windows reported it.
 static RENDERER_CLAIMS: std::sync::Mutex<Vec<(u32, String)>> = std::sync::Mutex::new(Vec::new());
 
