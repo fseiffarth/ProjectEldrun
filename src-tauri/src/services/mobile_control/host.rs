@@ -12,7 +12,7 @@ use axum::{
     http::{header, HeaderMap, HeaderValue, Request, Response, StatusCode},
     middleware::{self, Next},
     response::IntoResponse,
-    routing::{get, post},
+    routing::{get, post, put},
     Json, Router,
 };
 use base64ct::{Base64UrlUnpadded, Encoding};
@@ -27,8 +27,8 @@ use super::{
     inbox,
     limits,
     protocol::{
-        CalendarAction, CreateTabRequest, DesktopRequest, DesktopResponse, TodoAction,
-        MAX_CONTROL_MESSAGE, MAX_INPUT_FRAME, TERMINAL_PROTOCOL,
+        CalendarAction, CreateTabRequest, DesktopRequest, DesktopResponse, MobilePromptInput,
+        MobileScheduleInput, PromptMutation, ScheduleMutation, TodoAction, MAX_CONTROL_MESSAGE, MAX_INPUT_FRAME, TERMINAL_PROTOCOL,
     },
     pty_bridge::{self, TerminalRegistry},
 };
@@ -870,6 +870,371 @@ async fn tab(
     (StatusCode::OK, Json(json!({ "tab": row })))
 }
 
+fn schedule_desktop_error(
+    response: Result<DesktopResponse, String>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    match response {
+        Ok(DesktopResponse::Schedules {
+            schedules,
+            time_zone,
+            next_runs,
+        }) => (
+            StatusCode::OK,
+            Json(json!({
+                "schedules": schedules,
+                "time_zone": time_zone,
+                "next_runs": next_runs,
+            })),
+        ),
+        Ok(DesktopResponse::Error { code, .. }) => api_error(
+            if code == "tab_not_found" {
+                StatusCode::NOT_FOUND
+            } else {
+                StatusCode::BAD_REQUEST
+            },
+            &code,
+        ),
+        _ => api_error(StatusCode::SERVICE_UNAVAILABLE, "desktop_unavailable"),
+    }
+}
+
+fn schedule_target(
+    state: &HostState,
+    tab_id: &str,
+) -> Result<(String, String), (StatusCode, Json<serde_json::Value>)> {
+    let catalog = catalog(state)?;
+    let Some((project, tab)) = catalog.tab(tab_id) else {
+        return Err(api_error(StatusCode::NOT_FOUND, "tab_not_found"));
+    };
+    if tab.public.kind != "agent" {
+        return Err(api_error(StatusCode::BAD_REQUEST, "agent_tab_required"));
+    }
+    Ok((project.raw_id.clone(), tab.tmux_name.clone()))
+}
+
+async fn schedules(
+    State(state): State<HostState>,
+    headers: HeaderMap,
+    Path(tab_id): Path<String>,
+) -> impl IntoResponse {
+    if let Err(error) = authenticate(&headers, &state) {
+        return error;
+    }
+    let (project_id, tmux_session) = match schedule_target(&state, &tab_id) {
+        Ok(target) => target,
+        Err(error) => return error,
+    };
+    let desktop_socket = state.config.control_dir.join("desktop-control.sock");
+    let request_id = Base64UrlUnpadded::encode_string(&random_16());
+    schedule_desktop_error(
+        admin::desktop_call(
+            &desktop_socket,
+            &DesktopRequest::Schedules {
+                request_id,
+                project_id,
+                tmux_session,
+            },
+        )
+        .await,
+    )
+}
+
+async fn schedule_mutation(
+    state: &HostState,
+    tab_id: &str,
+    action: ScheduleMutation,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let (project_id, tmux_session) = match schedule_target(state, tab_id) {
+        Ok(target) => target,
+        Err(error) => return error,
+    };
+    let desktop_socket = state.config.control_dir.join("desktop-control.sock");
+    let request_id = Base64UrlUnpadded::encode_string(&random_16());
+    schedule_desktop_error(
+        admin::desktop_call(
+            &desktop_socket,
+            &DesktopRequest::ScheduleMutate {
+                request_id,
+                project_id,
+                tmux_session,
+                action,
+            },
+        )
+        .await,
+    )
+}
+
+async fn schedule_create(
+    State(state): State<HostState>,
+    headers: HeaderMap,
+    Path(tab_id): Path<String>,
+    body: Bytes,
+) -> impl IntoResponse {
+    if let Err(error) = authenticate(&headers, &state) {
+        return error;
+    }
+    if !exact_origin(&headers, &state) {
+        return api_error(StatusCode::FORBIDDEN, "invalid_origin");
+    }
+    let Ok(schedule) = serde_json::from_slice::<MobileScheduleInput>(&body) else {
+        return api_error(StatusCode::BAD_REQUEST, "invalid_request");
+    };
+    let (status, body) =
+        schedule_mutation(&state, &tab_id, ScheduleMutation::Create { schedule }).await;
+    (
+        if status == StatusCode::OK {
+            StatusCode::CREATED
+        } else {
+            status
+        },
+        body,
+    )
+}
+
+async fn schedule_update(
+    State(state): State<HostState>,
+    headers: HeaderMap,
+    Path((tab_id, schedule_id)): Path<(String, String)>,
+    body: Bytes,
+) -> impl IntoResponse {
+    if let Err(error) = authenticate(&headers, &state) {
+        return error;
+    }
+    if !exact_origin(&headers, &state) {
+        return api_error(StatusCode::FORBIDDEN, "invalid_origin");
+    }
+    let Ok(schedule) = serde_json::from_slice::<MobileScheduleInput>(&body) else {
+        return api_error(StatusCode::BAD_REQUEST, "invalid_request");
+    };
+    schedule_mutation(
+        &state,
+        &tab_id,
+        ScheduleMutation::Update {
+            schedule_id,
+            schedule,
+        },
+    )
+    .await
+}
+
+async fn schedule_delete(
+    State(state): State<HostState>,
+    headers: HeaderMap,
+    Path((tab_id, schedule_id)): Path<(String, String)>,
+) -> impl IntoResponse {
+    if let Err(error) = authenticate(&headers, &state) {
+        return error;
+    }
+    if !exact_origin(&headers, &state) {
+        return api_error(StatusCode::FORBIDDEN, "invalid_origin");
+    }
+    schedule_mutation(&state, &tab_id, ScheduleMutation::Delete { schedule_id }).await
+}
+
+// ── Project prompt collection ────────────────────────────────────────────────
+// Prompts are project-scoped and tab-free, so the routes hang off the opaque
+// project id; only `send` names a tab, and that tab must be an agent tab of
+// the same project. The desktop owns ids, timestamps and "now".
+
+fn prompt_desktop_error(
+    response: Result<DesktopResponse, String>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    match response {
+        Ok(DesktopResponse::Prompts { prompts }) => {
+            (StatusCode::OK, Json(json!({ "prompts": prompts })))
+        }
+        Ok(DesktopResponse::Error { code, .. }) => api_error(
+            match code.as_str() {
+                "tab_not_found" | "prompt_not_found" => StatusCode::NOT_FOUND,
+                "desktop_unavailable" => StatusCode::SERVICE_UNAVAILABLE,
+                _ => StatusCode::BAD_REQUEST,
+            },
+            &code,
+        ),
+        _ => api_error(StatusCode::SERVICE_UNAVAILABLE, "desktop_unavailable"),
+    }
+}
+
+fn prompt_project(
+    state: &HostState,
+    project_id: &str,
+) -> Result<String, (StatusCode, Json<serde_json::Value>)> {
+    let catalog = catalog(state)?;
+    let Some(project) = catalog.project(project_id) else {
+        return Err(api_error(StatusCode::NOT_FOUND, "project_not_found"));
+    };
+    Ok(project.raw_id.clone())
+}
+
+async fn prompts_call(
+    state: &HostState,
+    request: DesktopRequest,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let desktop_socket = state.config.control_dir.join("desktop-control.sock");
+    prompt_desktop_error(admin::desktop_call(&desktop_socket, &request).await)
+}
+
+async fn prompts(
+    State(state): State<HostState>,
+    headers: HeaderMap,
+    Path(project_id): Path<String>,
+) -> impl IntoResponse {
+    if let Err(error) = authenticate(&headers, &state) {
+        return error;
+    }
+    let project_id = match prompt_project(&state, &project_id) {
+        Ok(raw) => raw,
+        Err(error) => return error,
+    };
+    let request_id = Base64UrlUnpadded::encode_string(&random_16());
+    prompts_call(
+        &state,
+        DesktopRequest::Prompts {
+            request_id,
+            project_id,
+        },
+    )
+    .await
+}
+
+/// Authentication and origin come before the body is even parsed, so an
+/// anonymous or cross-origin request learns nothing from a validation error.
+fn mutation_guard(
+    headers: &HeaderMap,
+    state: &HostState,
+) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
+    authenticate(headers, state)?;
+    if !exact_origin(headers, state) {
+        return Err(api_error(StatusCode::FORBIDDEN, "invalid_origin"));
+    }
+    Ok(())
+}
+
+async fn prompt_mutation(
+    state: &HostState,
+    project_id: &str,
+    action: PromptMutation,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let project_id = match prompt_project(state, project_id) {
+        Ok(raw) => raw,
+        Err(error) => return error,
+    };
+    let request_id = Base64UrlUnpadded::encode_string(&random_16());
+    prompts_call(
+        state,
+        DesktopRequest::PromptMutate {
+            request_id,
+            project_id,
+            action,
+        },
+    )
+    .await
+}
+
+async fn prompt_create(
+    State(state): State<HostState>,
+    headers: HeaderMap,
+    Path(project_id): Path<String>,
+    body: Bytes,
+) -> impl IntoResponse {
+    if let Err(error) = mutation_guard(&headers, &state) {
+        return error;
+    }
+    let Ok(prompt) = serde_json::from_slice::<MobilePromptInput>(&body) else {
+        return api_error(StatusCode::BAD_REQUEST, "invalid_request");
+    };
+    let (status, body) =
+        prompt_mutation(&state, &project_id, PromptMutation::Create { prompt }).await;
+    (
+        if status == StatusCode::OK {
+            StatusCode::CREATED
+        } else {
+            status
+        },
+        body,
+    )
+}
+
+async fn prompt_update(
+    State(state): State<HostState>,
+    headers: HeaderMap,
+    Path((project_id, prompt_id)): Path<(String, String)>,
+    body: Bytes,
+) -> impl IntoResponse {
+    if let Err(error) = mutation_guard(&headers, &state) {
+        return error;
+    }
+    let Ok(prompt) = serde_json::from_slice::<MobilePromptInput>(&body) else {
+        return api_error(StatusCode::BAD_REQUEST, "invalid_request");
+    };
+    prompt_mutation(
+        &state,
+        &project_id,
+        PromptMutation::Update { prompt_id, prompt },
+    )
+    .await
+}
+
+async fn prompt_delete(
+    State(state): State<HostState>,
+    headers: HeaderMap,
+    Path((project_id, prompt_id)): Path<(String, String)>,
+) -> impl IntoResponse {
+    if let Err(error) = mutation_guard(&headers, &state) {
+        return error;
+    }
+    prompt_mutation(&state, &project_id, PromptMutation::Delete { prompt_id }).await
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PromptSendBody {
+    tab_id: String,
+}
+
+async fn prompt_send(
+    State(state): State<HostState>,
+    headers: HeaderMap,
+    Path((project_id, prompt_id)): Path<(String, String)>,
+    body: Bytes,
+) -> impl IntoResponse {
+    if let Err(error) = mutation_guard(&headers, &state) {
+        return error;
+    }
+    let Ok(send) = serde_json::from_slice::<PromptSendBody>(&body) else {
+        return api_error(StatusCode::BAD_REQUEST, "invalid_request");
+    };
+    // The tab is resolved here, before the generic mutation path, so a tab id
+    // from another project can never aim a prompt across projects.
+    let tmux_session = {
+        let catalog = match catalog(&state) {
+            Ok(catalog) => catalog,
+            Err(error) => return error,
+        };
+        let Some((tab_project, tab)) = catalog.tab(&send.tab_id) else {
+            return api_error(StatusCode::NOT_FOUND, "tab_not_found");
+        };
+        if tab.public.kind != "agent" {
+            return api_error(StatusCode::BAD_REQUEST, "agent_tab_required");
+        }
+        if catalog.project(&project_id).map(|project| project.raw_id.as_str())
+            != Some(tab_project.raw_id.as_str())
+        {
+            return api_error(StatusCode::NOT_FOUND, "tab_not_found");
+        }
+        tab.tmux_name.clone()
+    };
+    prompt_mutation(
+        &state,
+        &project_id,
+        PromptMutation::Send {
+            prompt_id,
+            tmux_session,
+        },
+    )
+    .await
+}
+
 async fn terminal(
     State(state): State<HostState>,
     headers: HeaderMap,
@@ -1054,7 +1419,27 @@ fn router(state: HostState) -> Router {
             post(activate_project),
         )
         .route("/api/v1/projects/{project_id}/tabs", post(create_tab))
+        .route(
+            "/api/v1/projects/{project_id}/prompts",
+            get(prompts).post(prompt_create),
+        )
+        .route(
+            "/api/v1/projects/{project_id}/prompts/{prompt_id}",
+            put(prompt_update).delete(prompt_delete),
+        )
+        .route(
+            "/api/v1/projects/{project_id}/prompts/{prompt_id}/send",
+            post(prompt_send),
+        )
         .route("/api/v1/tabs/{tab_id}", get(tab))
+        .route(
+            "/api/v1/tabs/{tab_id}/schedules",
+            get(schedules).post(schedule_create),
+        )
+        .route(
+            "/api/v1/tabs/{tab_id}/schedules/{schedule_id}",
+            put(schedule_update).delete(schedule_delete),
+        )
         .route("/api/v1/tabs/{tab_id}/terminal", get(terminal))
         // The phone's drop box takes a whole photo; every other body stays at
         // the control-message limit below (the inner layer wins).
@@ -1362,6 +1747,8 @@ mod tests {
         "/api/v1/projects",
         "/api/v1/projects/anything",
         "/api/v1/tabs/anything",
+        "/api/v1/tabs/anything/schedules",
+        "/api/v1/projects/anything/prompts",
     ];
 
     #[test]
@@ -1396,11 +1783,104 @@ mod tests {
             "/api/v1/projects/anything/activate",
             "/api/v1/todo",
             "/api/v1/calendar",
+            "/api/v1/tabs/anything/schedules",
             "/api/v1/tabs/anything/inbox",
+            "/api/v1/projects/anything/prompts",
+            "/api/v1/projects/anything/prompts/anything/send",
         ] {
             let (status, _, body) = host.send(post_json(uri, ORIGIN, &create)).await;
             assert_eq!(status, StatusCode::UNAUTHORIZED, "{uri} answered: {body}");
         }
+    }
+
+    #[tokio::test]
+    async fn schedule_editor_requires_the_desktop_bridge_and_leaks_no_raw_target() {
+        let host = Fixture::with_project();
+        let cookie = host.pair_device(&signing_key(12)).await.0;
+        let (_, _, projects_body) = host.send(get_as("/api/v1/projects", &cookie)).await;
+        let project_id = json(&projects_body)["projects"][0]["id"]
+            .as_str()
+            .expect("opaque project id")
+            .to_string();
+        let (_, _, project_body) = host
+            .send(get_as(&format!("/api/v1/projects/{project_id}"), &cookie))
+            .await;
+        let tab_id = json(&project_body)["tabs"][0]["id"]
+            .as_str()
+            .expect("opaque tab id")
+            .to_string();
+
+        let (status, _, body) = host
+            .send(get_as(&format!("/api/v1/tabs/{tab_id}/schedules"), &cookie))
+            .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "answered: {body}");
+        assert_eq!(json(&body)["error"], "desktop_unavailable");
+        assert!(!body.contains(RAW_PROJECT));
+        assert!(!body.contains(&host.root.to_string_lossy().to_string()));
+        assert!(!body.contains("scheduleTargetId"));
+    }
+
+    #[tokio::test]
+    async fn prompt_collection_requires_the_desktop_bridge_and_checks_origin() {
+        let host = Fixture::with_project();
+        let cookie = host.pair_device(&signing_key(14)).await.0;
+        let (_, _, projects_body) = host.send(get_as("/api/v1/projects", &cookie)).await;
+        let project_id = json(&projects_body)["projects"][0]["id"]
+            .as_str()
+            .expect("opaque project id")
+            .to_string();
+        let (_, _, project_body) = host
+            .send(get_as(&format!("/api/v1/projects/{project_id}"), &cookie))
+            .await;
+        let tab_id = json(&project_body)["tabs"][0]["id"]
+            .as_str()
+            .expect("opaque tab id")
+            .to_string();
+
+        let (status, _, body) = host
+            .send(get_as(&format!("/api/v1/projects/{project_id}/prompts"), &cookie))
+            .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "answered: {body}");
+        assert_eq!(json(&body)["error"], "desktop_unavailable");
+        assert!(!body.contains(RAW_PROJECT));
+
+        let (status, _, body) = host
+            .send(get_as("/api/v1/projects/nope/prompts", &cookie))
+            .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "answered: {body}");
+
+        // A mutation from a foreign origin is refused before any desktop call.
+        let create = Request::builder()
+            .method("POST")
+            .uri(format!("/api/v1/projects/{project_id}/prompts"))
+            .header(header::ORIGIN, "https://evil.example")
+            .header(header::COOKIE, cookie_pair(&cookie))
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                serde_json::to_vec(&serde_json::json!({ "message": "Review" })).expect("body"),
+            ))
+            .expect("request");
+        let (status, _, answer) = host.send(create).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "answered: {answer}");
+
+        // Sending names a tab of this project; a shell tab is not a target.
+        let send = Request::builder()
+            .method("POST")
+            .uri(format!("/api/v1/projects/{project_id}/prompts/anything/send"))
+            .header(header::ORIGIN, ORIGIN)
+            .header(header::COOKIE, cookie_pair(&cookie))
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                serde_json::to_vec(&serde_json::json!({ "tab_id": tab_id })).expect("body"),
+            ))
+            .expect("request");
+        let (status, _, answer) = host.send(send).await;
+        assert!(
+            status == StatusCode::BAD_REQUEST || status == StatusCode::SERVICE_UNAVAILABLE,
+            "answered {status}: {answer}"
+        );
+        assert!(!answer.contains(RAW_PROJECT));
+        assert!(!answer.contains("tmux"));
     }
 
     #[tokio::test]
@@ -1469,6 +1949,24 @@ mod tests {
             ))
             .expect("request");
         let (status, _, answer) = host.send(create).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "answered: {answer}");
+
+        let schedule = Request::builder()
+            .method("POST")
+            .uri("/api/v1/tabs/anything/schedules")
+            .header(header::ORIGIN, "https://evil.example")
+            .header(header::COOKIE, cookie_pair(&cookie))
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                serde_json::to_vec(&serde_json::json!({
+                    "enabled": true,
+                    "message": "Review",
+                    "rule": { "type": "daily", "time": "09:00" },
+                }))
+                .expect("body"),
+            ))
+            .expect("request");
+        let (status, _, answer) = host.send(schedule).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "answered: {answer}");
     }
 

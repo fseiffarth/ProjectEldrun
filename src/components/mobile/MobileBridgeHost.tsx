@@ -10,6 +10,8 @@ import {
 import { useSettingsStore } from "../../stores/settings";
 import { calendarColor, useCalendarStore, visibleCalendarIds } from "../../stores/calendar";
 import { useActivityStore } from "../../stores/activity";
+import { persistScheduleBinding } from "../../stores/agentSchedules";
+import { sendCollectedPrompt, useAgentPromptsStore, type ProjectAgentPrompt } from "../../stores/agentPrompts";
 import { isTrashProject } from "../../lib/trashProject";
 import { resolveProjectDirectory } from "../../types";
 import type { CalendarEvent, CalendarTask, Subtask, TaskColumn } from "../../types";
@@ -28,6 +30,7 @@ import {
 } from "../tabs/newTabItems";
 import { useT } from "../../lib/i18n";
 import { useAlertsFeed, type AlertsFeed } from "../files/useAlertsFeed";
+import { desktopTimeZone, nextScheduleOccurrence, type ScheduleRule, type ScheduledAgentPrompt } from "../../lib/agentSchedule";
 
 const MOBILE_DESKTOP_EVENT = "eldrun-mobile-desktop-request";
 
@@ -114,6 +117,17 @@ type TodoAction =
   | { type: "column_rename"; column_id: string; name: string }
   | { type: "column_move"; column_id: string; delta: -1 | 1 }
   | { type: "column_delete"; column_id: string };
+interface MobileScheduleInput { enabled: boolean; message: string; rule: ScheduleRule }
+type ScheduleMutation =
+  | { type: "create"; schedule: MobileScheduleInput }
+  | { type: "update"; schedule_id: string; schedule: MobileScheduleInput }
+  | { type: "delete"; schedule_id: string };
+interface MobilePromptInput { message: string }
+type PromptMutation =
+  | { type: "create"; prompt: MobilePromptInput }
+  | { type: "update"; prompt_id: string; prompt: MobilePromptInput }
+  | { type: "delete"; prompt_id: string }
+  | { type: "send"; prompt_id: string; tmux_session: string };
 type DesktopRequest =
 | { type: "catalog"; request_id: string; project_id?: string }
   | { type: "activate"; request_id: string; project_id: string }
@@ -125,7 +139,11 @@ type DesktopRequest =
   | { type: "todo_mutate"; request_id: string; action: TodoAction }
   | { type: "mail_overview"; request_id: string }
   | { type: "mail_folder"; request_id: string; folder_id: string; offset: number }
-  | { type: "mail_message"; request_id: string; folder_id: string; message_id: string; offset: number };
+  | { type: "mail_message"; request_id: string; folder_id: string; message_id: string; offset: number }
+  | { type: "schedules"; request_id: string; project_id: string; tmux_session: string }
+  | { type: "schedule_mutate"; request_id: string; project_id: string; tmux_session: string; action: ScheduleMutation }
+  | { type: "prompts"; request_id: string; project_id: string }
+  | { type: "prompt_mutate"; request_id: string; project_id: string; action: PromptMutation };
 type DesktopResponse =
 | { status: "catalog"; agents: CatalogAgent[]; statuses: AgentTabStatus[] }
   | { status: "activated" }
@@ -134,6 +152,8 @@ type DesktopResponse =
   | { status: "alerts"; alerts: MobileAlerts }
   | { status: "calendar"; calendar: MobileCalendar }
   | { status: "mail"; mail: MobileMailView }
+  | { status: "schedules"; schedules: ScheduledAgentPrompt[]; time_zone: string; next_runs: Record<string, string> }
+  | { status: "prompts"; prompts: ProjectAgentPrompt[] }
   | { status: "error"; code: string; message: string };
 
 interface CatalogChoice { public: CatalogAgent; item: StaticMenuItem }
@@ -261,6 +281,104 @@ async function activate(projectId: string): Promise<DesktopResponse> {
   }
   await projects.activateProject(project.id);
   return { status: "activated" };
+}
+
+function scheduleTargetTab(projectId: string, tmuxSession: string) {
+  return (useTabsStore.getState().tabsByScope[projectId] ?? []).find((entry) =>
+    (entry.kind === "agent" || entry.kind === "local_agent")
+      && (entry.tmuxSession === tmuxSession || entry.tmuxAttach === tmuxSession),
+  );
+}
+
+function scheduleTarget(projectId: string, tmuxSession: string): string | null {
+  return scheduleTargetTab(projectId, tmuxSession)?.scheduleTargetId ?? null;
+}
+
+async function schedulesFor(projectId: string, tmuxSession: string): Promise<DesktopResponse> {
+  const target = scheduleTarget(projectId, tmuxSession);
+  if (!target) return { status: "error", code: "tab_not_found", message: "Agent tab is unavailable" };
+  const schedules = await invoke<ScheduledAgentPrompt[]>("agent_schedules_list", {
+    projectId,
+    scheduleTargetId: target,
+  });
+  const now = new Date();
+  const next_runs = Object.fromEntries(schedules.flatMap((schedule) => {
+    const next = nextScheduleOccurrence(schedule, now);
+    return next ? [[schedule.id, next.key]] : [];
+  }));
+  return { status: "schedules", schedules, time_zone: desktopTimeZone(), next_runs };
+}
+
+async function mutateSchedule(
+  projectId: string,
+  tmuxSession: string,
+  action: ScheduleMutation,
+): Promise<DesktopResponse> {
+  const target = scheduleTarget(projectId, tmuxSession);
+  if (!target) return { status: "error", code: "tab_not_found", message: "Agent tab is unavailable" };
+  if (action.type === "delete") {
+    await invoke("agent_schedule_delete", {
+      projectId,
+      scheduleTargetId: target,
+      scheduleId: action.schedule_id,
+    });
+  } else {
+    await invoke("agent_schedule_upsert", {
+      projectId,
+      scheduleTargetId: target,
+      schedule: {
+        id: action.type === "create" ? crypto.randomUUID() : action.schedule_id,
+        ...action.schedule,
+      },
+    });
+    void persistScheduleBinding(projectId);
+  }
+  return schedulesFor(projectId, tmuxSession);
+}
+
+// ── Project prompt collection ────────────────────────────────────────────────
+// The phone edits the same `agent_prompts.json` rows the Agents view shows;
+// ids and timestamps are minted here. `send` is the desktop's send-now — a
+// one-time schedule at *this* machine's current minute — so the phone never
+// reasons about the desktop clock and delivery keeps the scheduler's idle gate.
+
+async function promptsFor(projectId: string): Promise<DesktopResponse> {
+  const prompts = await useAgentPromptsStore.getState().load(projectId);
+  return { status: "prompts", prompts };
+}
+
+async function mutatePrompt(projectId: string, action: PromptMutation): Promise<DesktopResponse> {
+  const store = useAgentPromptsStore.getState();
+  if (action.type === "delete") {
+    await store.remove(projectId, action.prompt_id);
+  } else if (action.type === "send") {
+    const prompt = (await store.load(projectId)).find((item) => item.id === action.prompt_id);
+    if (!prompt) return { status: "error", code: "prompt_not_found", message: "Prompt no longer exists" };
+    const tab = scheduleTargetTab(projectId, action.tmux_session);
+    if (!tab?.scheduleTargetId) {
+      return { status: "error", code: "tab_not_found", message: "Agent tab is unavailable" };
+    }
+    // The phone's send retires the prompt to the history exactly as the
+    // desktop's does — one collected prompt, one send, one record of where it
+    // went, whichever surface aimed it.
+    await sendCollectedPrompt(
+      projectId,
+      {
+        scheduleTargetId: tab.scheduleTargetId,
+        label: tab.label,
+        sessionId: tab.sessionId,
+        agent: tab.cmd,
+      },
+      prompt,
+    );
+    void persistScheduleBinding(projectId);
+  } else {
+    await store.upsert(projectId, {
+      id: action.type === "create" ? crypto.randomUUID() : action.prompt_id,
+      message: action.prompt.message,
+    });
+  }
+  return promptsFor(projectId);
 }
 
 async function taskId(task: CalendarTask) {
@@ -741,6 +859,10 @@ async function handleRequest(
     case "mail_overview": return mailOverview();
     case "mail_folder": return mailFolderPage(request.folder_id, request.offset);
     case "mail_message": return mailMessage(request.folder_id, request.message_id, request.offset);
+    case "schedules": return schedulesFor(request.project_id, request.tmux_session);
+    case "schedule_mutate": return mutateSchedule(request.project_id, request.tmux_session, request.action);
+    case "prompts": return promptsFor(request.project_id);
+    case "prompt_mutate": return mutatePrompt(request.project_id, request.action);
   }
 }
 
@@ -781,7 +903,7 @@ export function MobileBridgeHost() {
           }).catch(() => {});
         }
       };
-      if (request.type === "create" || request.type === "activate" || request.type === "todo_mutate" || request.type === "calendar_mutate") {
+      if (request.type === "create" || request.type === "activate" || request.type === "todo_mutate" || request.type === "calendar_mutate" || request.type === "schedule_mutate" || request.type === "prompt_mutate") {
         mutationQueue = mutationQueue.then(run, run);
       } else {
         void run();

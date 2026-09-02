@@ -2,7 +2,13 @@ import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "rea
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
-import { ApiError, api, MAX_INBOX_FILE, uploadToInbox, type TabRow } from "../api";
+import {
+  ApiError,
+  api,
+  MAX_INBOX_FILE,
+  uploadToInbox,
+  type TabRow,
+} from "../api";
 import { TERMINAL_PROTOCOL } from "../terminal/protocol";
 import { readableRange, readableScreen, readableText, TRUNCATION_NOTICE, type ReadableLine } from "../terminal/readableScreen";
 import {
@@ -18,6 +24,7 @@ import { sessionStatus, shortenPath, type SessionStatus } from "../terminal/stat
 import { readSelectPrompt, selectKeys } from "../terminal/selectPrompt";
 import { currentMode, modeChoices, shiftTabKey } from "../terminal/agentModes";
 import { agentInputWrites } from "../terminal/composer";
+import { ScheduleSheet } from "./ScheduleSheet";
 import {
   prepareOnDeviceSpeech,
   sanitizeVoiceTranscript,
@@ -229,6 +236,7 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
    * before the session has drawn the picker it lists. */
   const [modelSheet, setModelSheet] = useState(false);
   const [modeSheet, setModeSheet] = useState(false);
+  const [scheduleSheet, setScheduleSheet] = useState(false);
   /** The composer's **+**: a phone file into the project inbox, or an `@`. */
   const [addSheet, setAddSheet] = useState(false);
   const [uploads, setUploads] = useState<InboxUpload[]>([]);
@@ -272,6 +280,7 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     setSendFailed(false);
     setModelSheet(false);
     setModeSheet(false);
+    setScheduleSheet(false);
     setAddSheet(false);
     setUploads([]);
     uploadRun.current += 1;
@@ -1030,6 +1039,7 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
             <button className="composer-add" disabled={!connected} onClick={() => setAddSheet(true)} aria-label="Add to the message" aria-haspopup="dialog" aria-expanded={addSheet} title="Add a photo or file from this phone, or a project file (@)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg></button>
             <button className="composer-chip" disabled={!connected} onClick={selectModel} aria-haspopup="dialog" aria-expanded={modelSheet} title="Choose the model (/model)">{status?.model ?? "Model"}</button>
             <button className="composer-chip" disabled={!connected} onClick={openModeSheet} aria-haspopup={modes.length > 0 ? "dialog" : undefined} aria-expanded={modes.length > 0 ? modeSheet : undefined} title={modes.length > 0 ? "Choose the permission mode" : "Switch mode (Shift+Tab)"}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2 4.5 13.5H11L10 22l8.5-11.5H12L13 2Z" /></svg>{status?.mode ?? activeMode ?? "Mode"}</button>
+            <button className="composer-chip" onClick={() => setScheduleSheet(true)} aria-haspopup="dialog" aria-expanded={scheduleSheet} title="Scheduled prompts">◷ Schedule</button>
           </>}
           <span className="composer-spacer" />
           {tab.kind === "agent" && <button className={`composer-dictate${listening ? " listening" : ""}`} disabled={!connected || !voiceAvailable || preparingVoice} title={voiceAvailable ? "Dictate a message" : "Voice typing is unavailable in this browser; use the keyboard microphone."} aria-label={dictateLabel} aria-pressed={listening} onClick={listening ? stopVoice : () => void startVoice()}>{listening ? <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1" /></svg> : <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M6 11a6 6 0 0 0 12 0M12 17v4M8 21h8" /></svg>}</button>}
@@ -1067,5 +1077,6 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
       onPick={(key) => void applyMode(key)}
       onClose={() => { if (!switching) setModeSheet(false); }}
     />}
+    {scheduleSheet && <ScheduleSheet tabId={tab.id} label={tab.label} onClose={() => setScheduleSheet(false)} />}
   </main>;
 }

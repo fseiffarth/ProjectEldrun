@@ -2,6 +2,23 @@ export interface ProjectRow { id: string; label: string; status: string; live_se
 export type AgentStatus = "working" | "question" | "done";
 export interface TabRow { id: string; label: string; kind: "shell" | "agent"; agent_label?: string; agent_status?: AgentStatus; available: boolean; viewer_busy: boolean; last_activity?: number }
 export interface AgentRow { id: string; label: string; modes: ("plan" | "auto")[] }
+export type ScheduleRule =
+  | { type: "once"; at: string }
+  | { type: "daily"; time: string }
+  | { type: "weekdays"; weekdays: number[]; time: string };
+export interface ScheduledPrompt {
+  id: string;
+  enabled: boolean;
+  message: string;
+  rule: ScheduleRule;
+  last?: { occurrence: string; result: "delivered" | "missed" | "failed"; at: string };
+}
+export interface ScheduledPromptInput { enabled: boolean; message: string; rule: ScheduleRule }
+export interface ScheduledPromptList { schedules: ScheduledPrompt[]; time_zone: string; next_runs: Record<string, string> }
+/** A prompt collected for a project without a tab. Ids and timestamps are the
+ * desktop's; the phone only ever sends the text. */
+export interface ProjectPrompt { id: string; message: string; created_at: string; updated_at: string }
+export interface ProjectPromptList { prompts: ProjectPrompt[] }
 export interface ProjectDetail { project: ProjectRow; tabs: TabRow[]; desktop_available: boolean; agents: AgentRow[] }
 export interface TodoColumn { id: string; name: string; position: number; done: boolean; archived: boolean; color?: string }
 export interface TodoSubtask { id: string; title: string; done: boolean }
@@ -191,6 +208,27 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   return body as T;
 }
 
+const schedulePath = (tabId: string) => `/api/v1/tabs/${encodeURIComponent(tabId)}/schedules`;
+
+export function getSchedules(tabId: string): Promise<ScheduledPromptList> {
+  return api(schedulePath(tabId));
+}
+
+export function createSchedule(tabId: string, schedule: ScheduledPromptInput): Promise<ScheduledPromptList> {
+  return api(schedulePath(tabId), { method: "POST", body: JSON.stringify(schedule) });
+}
+
+export function updateSchedule(tabId: string, scheduleId: string, schedule: ScheduledPromptInput): Promise<ScheduledPromptList> {
+  return api(`${schedulePath(tabId)}/${encodeURIComponent(scheduleId)}`, {
+    method: "PUT",
+    body: JSON.stringify(schedule),
+  });
+}
+
+export function deleteSchedule(tabId: string, scheduleId: string): Promise<ScheduledPromptList> {
+  return api(`${schedulePath(tabId)}/${encodeURIComponent(scheduleId)}`, { method: "DELETE" });
+}
+
 /** A file the phone dropped into the tab's project inbox. `reference` is
  * project-relative (`.eldrun/inbox/<file>`) — the one path shape that crosses
  * this boundary, because it carries no host component and is exactly what the
@@ -204,6 +242,30 @@ const UPLOAD_TIMEOUT = 120_000;
 
 /** `POST /api/v1/tabs/{id}/inbox` — the raw file as the body, its name in the
  * query (a header cannot carry a non-Latin-1 photo-library name). */
+const promptsPath = (projectId: string) => `/api/v1/projects/${encodeURIComponent(projectId)}/prompts`;
+
+export function getPrompts(projectId: string): Promise<ProjectPromptList> {
+  return api(promptsPath(projectId));
+}
+
+export function createPrompt(projectId: string, message: string): Promise<ProjectPromptList> {
+  return api(promptsPath(projectId), { method: "POST", body: JSON.stringify({ message }) });
+}
+
+export function updatePrompt(projectId: string, promptId: string, message: string): Promise<ProjectPromptList> {
+  return api(`${promptsPath(projectId)}/${encodeURIComponent(promptId)}`, { method: "PUT", body: JSON.stringify({ message }) });
+}
+
+export function deletePrompt(projectId: string, promptId: string): Promise<ProjectPromptList> {
+  return api(`${promptsPath(projectId)}/${encodeURIComponent(promptId)}`, { method: "DELETE" });
+}
+
+/** Send-now: the desktop turns the prompt into a one-time schedule at its own
+ * current minute for `tabId`, delivered at that tab's next safe idle point. */
+export function sendPrompt(projectId: string, promptId: string, tabId: string): Promise<ProjectPromptList> {
+  return api(`${promptsPath(projectId)}/${encodeURIComponent(promptId)}/send`, { method: "POST", body: JSON.stringify({ tab_id: tabId }) });
+}
+
 export async function uploadToInbox(tabId: string, file: Blob, name: string): Promise<InboxAttachment> {
   let response: Response;
   try {

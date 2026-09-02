@@ -656,4 +656,41 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     - [ ] ✅ Works
     - [ ] ❌ Doesn't work
 
+- [~] **31q — Mobile collected prompts** (2026-09-02; ✅ code-complete and
+  automated tests passing, ⚠️ phone QA pending). "◷ Collected prompts" on the
+  project screen opens the project's tab-free prompt list (desktop #249)
+  through project-scoped, authenticated, exact-origin routes
+  (`/api/v1/projects/{id}/prompts[/{prompt_id}[/send]]`). *Send now* posts an
+  opaque agent-tab id; the sidecar checks the tab belongs to the same project
+  and is an agent tab before the desktop turns the prompt into a one-time
+  schedule at **its** current minute — the phone never computes desktop time.
+  *Schedule…* opens the per-tab sheet (31p) prefilled. The embedded PWA is
+  compiled in, so this needs a rebuild + restart to reach a phone. Locked by
+  `MobileProjectPrompts.test.tsx` and the `host.rs` prompt route test.
+  - [ ] 🖐️ Manual phone QA — add/edit/delete a prompt and see the desktop
+    Agents view follow; Send now to an idle agent and watch it typed on the
+    desktop; Schedule… lands in the tab sheet with the text; with desktop
+    Eldrun closed the sheet disables writes and says so.
+  - [ ] ✅ Works
+  - [ ] ❌ Doesn't work
+- [~] **31p — Mobile per-tab schedule sheet** (2026-09-01; ✅ code-complete and
+  automated tests passing, ⚠️ phone QA pending). The ◷ beside each agent tab on
+  the project's tab list and the Schedule chip in its terminal manage the same
+  one-time/daily/weekday definitions through authenticated opaque-tab
+  endpoints. The phone sees the desktop time zone but never the raw
+  project id, tmux name, path, or schedule target id. With the sidecar still
+  reachable and desktop Eldrun closed, terminal access remains available while
+  the sheet disables writes and says to open desktop Eldrun.
+  - 2026-09-02 fix: "Schedules could not be loaded" / save failing on the phone
+    was the desktop answering `tab_not_found` for every restored agent tab —
+    the restore path computed the schedule target id on its resume-check helper
+    object and never put it on the tab entry (see group-s). Not yet re-verified
+    on a phone; the embedded PWA needs a restart to pick up the moved control.
+  - [ ] 🖐️ Manual phone QA — CRUD a schedule and see the desktop dialog/indicator
+    refresh; edit it on desktop and see the open sheet refresh; close desktop
+    Eldrun and verify the explanatory disabled state without losing terminal
+    access; verify auth/origin rejection from an unpaired client.
+  - [ ] ✅ Works
+  - [ ] ❌ Doesn't work
+
 ---

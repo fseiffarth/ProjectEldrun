@@ -1,5 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiError, api, setUnauthorizedHandler } from "../../mobile-web/src/api";
+import {
+  ApiError,
+  api,
+  createSchedule,
+  deleteSchedule,
+  getSchedules,
+  setUnauthorizedHandler,
+  updateSchedule,
+} from "../../mobile-web/src/api";
 
 function respondWith(body: string, init?: ResponseInit) {
   vi.stubGlobal("fetch", vi.fn(async () => new Response(body, init)));
@@ -63,5 +71,25 @@ describe("Eldrun Mobile API client", () => {
     respondWith(JSON.stringify({ error: "invalid_challenge" }), { status: 401 });
     await expect(api("/api/v1/auth/session", { method: "POST" })).rejects.toBeInstanceOf(ApiError);
     expect(expired).not.toHaveBeenCalled();
+  });
+
+  it("uses the opaque tab schedule CRUD routes with same-origin credentials", async () => {
+    const body = { schedules: [], time_zone: "Europe/Berlin", next_runs: {} };
+    const fetchMock = vi.fn(async (_input: string, _init?: RequestInit) => new Response(JSON.stringify(body), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const schedule = { enabled: true, message: "Review", rule: { type: "daily" as const, time: "09:00" } };
+
+    await getSchedules("tab opaque");
+    await createSchedule("tab opaque", schedule);
+    await updateSchedule("tab opaque", "schedule/1", schedule);
+    await deleteSchedule("tab opaque", "schedule/1");
+
+    expect(fetchMock.mock.calls.map(([url, init]) => [url, init?.method ?? "GET"])).toEqual([
+      ["/api/v1/tabs/tab%20opaque/schedules", "GET"],
+      ["/api/v1/tabs/tab%20opaque/schedules", "POST"],
+      ["/api/v1/tabs/tab%20opaque/schedules/schedule%2F1", "PUT"],
+      ["/api/v1/tabs/tab%20opaque/schedules/schedule%2F1", "DELETE"],
+    ]);
+    for (const [, init] of fetchMock.mock.calls) expect(init?.credentials).toBe("same-origin");
   });
 });

@@ -1,3 +1,4 @@
+use crate::schema::{agent_prompts::ProjectAgentPrompt, AgentScheduleRule, ScheduledAgentPrompt};
 use serde::{Deserialize, Serialize};
 
 pub const MAX_CONTROL_MESSAGE: usize = 64 * 1024;
@@ -26,6 +27,62 @@ pub struct CreateTabRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<String>,
     pub idempotency_key: String,
+}
+
+/// Phone-editable schedule fields. Receipts are desktop-owned and therefore are
+/// not accepted in a mutation body.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MobileScheduleInput {
+    pub enabled: bool,
+    pub message: String,
+    pub rule: AgentScheduleRule,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ScheduleMutation {
+    Create {
+        schedule: MobileScheduleInput,
+    },
+    Update {
+        schedule_id: String,
+        schedule: MobileScheduleInput,
+    },
+    Delete {
+        schedule_id: String,
+    },
+}
+
+/// Phone-editable fields of a project-collected prompt. Ids and timestamps are
+/// desktop-owned.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MobilePromptInput {
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum PromptMutation {
+    Create {
+        prompt: MobilePromptInput,
+    },
+    Update {
+        prompt_id: String,
+        prompt: MobilePromptInput,
+    },
+    Delete {
+        prompt_id: String,
+    },
+    /// Aim a collected prompt at one agent tab now. The desktop turns it into a
+    /// one-time schedule at its *own* current minute, so the phone never has to
+    /// reason about the desktop's clock, and delivery keeps the scheduler's
+    /// idle gate, claim and receipt.
+    Send {
+        prompt_id: String,
+        tmux_session: String,
+    },
 }
 
 /// The deliberately small task surface exposed to a paired Mobile device.
@@ -433,6 +490,26 @@ pub enum DesktopRequest {
         message_id: String,
         offset: u32,
     },
+    Schedules {
+        request_id: String,
+        project_id: String,
+        tmux_session: String,
+    },
+    ScheduleMutate {
+        request_id: String,
+        project_id: String,
+        tmux_session: String,
+        action: ScheduleMutation,
+    },
+    Prompts {
+        request_id: String,
+        project_id: String,
+    },
+    PromptMutate {
+        request_id: String,
+        project_id: String,
+        action: PromptMutation,
+    },
 }
 
 impl DesktopRequest {
@@ -448,7 +525,11 @@ impl DesktopRequest {
             | Self::TodoMutate { request_id, .. }
             | Self::MailOverview { request_id }
             | Self::MailFolder { request_id, .. }
-            | Self::MailMessage { request_id, .. } => request_id,
+            | Self::MailMessage { request_id, .. }
+            | Self::Schedules { request_id, .. }
+            | Self::ScheduleMutate { request_id, .. }
+            | Self::Prompts { request_id, .. }
+            | Self::PromptMutate { request_id, .. } => request_id,
         }
     }
 }
@@ -495,6 +576,14 @@ pub enum DesktopResponse {
     },
     Mail {
         mail: MobileMailView,
+    },
+    Schedules {
+        schedules: Vec<ScheduledAgentPrompt>,
+        time_zone: String,
+        next_runs: std::collections::BTreeMap<String, String>,
+    },
+    Prompts {
+        prompts: Vec<ProjectAgentPrompt>,
     },
     Error {
         code: String,
@@ -579,8 +668,9 @@ impl TerminalEvent {
 mod tests {
     use super::{
         AgentTabStatus, DesktopRequest, DesktopResponse, MobileAlertItem, MobileAlertsSnapshot,
-        MobileMailView,
+        MobileMailView, MobilePromptInput, MobileScheduleInput, PromptMutation, ScheduleMutation,
     };
+    use crate::schema::AgentScheduleRule;
 
     #[test]
     fn catalog_statuses_stay_on_the_internal_control_plane() {
@@ -618,6 +708,79 @@ mod tests {
         let response = serde_json::to_value(DesktopResponse::Activated)
             .expect("serialize activation response");
         assert_eq!(response["status"], "activated");
+    }
+
+    #[test]
+    fn schedule_mutations_are_strict_and_keep_target_identity_internal() {
+        let request = DesktopRequest::ScheduleMutate {
+            request_id: "request-schedule".into(),
+            project_id: "raw-project".into(),
+            tmux_session: "raw-tmux".into(),
+            action: ScheduleMutation::Create {
+                schedule: MobileScheduleInput {
+                    enabled: true,
+                    message: "Review the build".into(),
+                    rule: AgentScheduleRule::Daily {
+                        time: "09:30".into(),
+                    },
+                },
+            },
+        };
+        let value = serde_json::to_value(&request).expect("serialize schedule mutation");
+        assert_eq!(value["type"], "schedule_mutate");
+        assert_eq!(request.request_id(), "request-schedule");
+
+        let mut hostile = value;
+        hostile["action"]["schedule"]["schedule_target_id"] = "must-not-cross".into();
+        assert!(serde_json::from_value::<DesktopRequest>(hostile).is_err());
+
+        let response = serde_json::to_value(DesktopResponse::Schedules {
+            schedules: vec![],
+            time_zone: "Europe/Berlin".into(),
+            next_runs: std::collections::BTreeMap::new(),
+        })
+        .expect("serialize schedules response");
+        let encoded = response.to_string();
+        assert!(!encoded.contains("raw-project"));
+        assert!(!encoded.contains("raw-tmux"));
+        assert!(!encoded.contains("schedule_target"));
+    }
+
+    #[test]
+    fn prompt_mutations_are_strict_and_send_names_only_the_tmux_session() {
+        let request = DesktopRequest::PromptMutate {
+            request_id: "request-prompt".into(),
+            project_id: "raw-project".into(),
+            action: PromptMutation::Send {
+                prompt_id: "prompt-1".into(),
+                tmux_session: "raw-tmux".into(),
+            },
+        };
+        let value = serde_json::to_value(&request).expect("serialize prompt mutation");
+        assert_eq!(value["type"], "prompt_mutate");
+        assert_eq!(value["action"]["type"], "send");
+        assert_eq!(request.request_id(), "request-prompt");
+
+        // A phone body may not smuggle a rule or a target onto a send/create.
+        let mut hostile = value.clone();
+        hostile["action"]["schedule_target_id"] = "must-not-cross".into();
+        assert!(serde_json::from_value::<DesktopRequest>(hostile).is_err());
+        let mut create = serde_json::to_value(&DesktopRequest::PromptMutate {
+            request_id: "request-create".into(),
+            project_id: "raw-project".into(),
+            action: PromptMutation::Create {
+                prompt: MobilePromptInput {
+                    message: "Review the build".into(),
+                },
+            },
+        })
+        .expect("serialize create");
+        create["action"]["prompt"]["id"] = "phone-picked".into();
+        assert!(serde_json::from_value::<DesktopRequest>(create).is_err());
+
+        let response = serde_json::to_value(DesktopResponse::Prompts { prompts: vec![] })
+            .expect("serialize prompts response");
+        assert_eq!(response["status"], "prompts");
     }
 
     #[test]
