@@ -1849,7 +1849,10 @@ pub(crate) fn stage_dir(project_id: &str) -> PathBuf {
 /// Returned as `(copy on host, original path)` **pairs**, not pre-joined
 /// `src:dst` strings: a host path is not colon-free on every platform (a
 /// Windows drive letter carries one), so joining here would hand the caller a
-/// string it cannot split back apart unambiguously.
+/// string it cannot split back apart unambiguously. The bubblewrap fence takes
+/// the same pairs but symlinks rather than mounts them — see
+/// [`crate::services::agent_fence::STAGE_MOUNT`] for why a mounted file cannot
+/// be replaced by the rename every one of these agents writes with.
 pub(crate) fn staged_config_mounts(home: &str, stage: &Path) -> Vec<(String, String)> {
     let home = Path::new(home);
     let mut mounts = Vec::new();

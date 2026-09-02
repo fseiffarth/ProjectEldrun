@@ -543,4 +543,36 @@ intent. What is left is listed here.
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work
 
+155. **A bind-mounted config file cannot be rewritten (DONE ✅ · 🖐️ Untested).**
+    The fence shadowed `~/.codex/config.toml`, `~/.claude/settings.json`,
+    `~/.claude/settings.local.json` and `~/.claude.json` by bind-mounting a
+    per-project copy over each one. `rename(2)` onto a mount point is `EBUSY`,
+    and all of these agents persist config by writing a sibling temp file and
+    renaming it over the original — so Codex died on the very first write a new
+    project provokes: `Failed to set trust for <project>: … failed to persist
+    config at /home/…/.codex/config.toml (code -32603)`. Verified directly:
+    `mv` onto a bind-mounted file returns `Device or resource busy`. Fixed by
+    binding the scope's whole staging dir once at
+    `agent_fence::STAGE_MOUNT` (`/run/eldrun-agent-config`) and making each
+    shadowed path a `--symlink` into it: an in-place rewrite still lands in the
+    throwaway copy, a rename replaces the *link* with a plain file in the home
+    tmpfs, and neither reaches the host original.
+    **Still open — the same bug in the two places the symlink trick does not
+    reach:** (a) project containers still `-v` the copies file-by-file, and
+    `~/.codex` there is created root-owned by docker, so a link cannot simply be
+    made from inside; (b) the genuinely host-writable per-entry file mounts
+    (`~/.codex/auth.json`, `~/.claude/.credentials.json`) hit the same `EBUSY`
+    when the agent rotates a token, and they cannot be shadowed — a fix means
+    mounting their parent, which is exactly the narrowing
+    `CLAUDE_UNMOUNTED`/`CODEX_UNMOUNTED` exist to keep.
+    - [x] 🤖 Automated test — `agent_fence::tests::bwrap_argv_orders_home_mounts_roots_and_command`
+      (the config path is a `--symlink`, never a mount destination, and the stage
+      mount precedes it), `staged_shadow_becomes_a_link_into_the_stage_mount`.
+    - [ ] 🖐️ Manual test — needs a backend restart. Open a Codex tab in a
+      brand-new project and let it ask to trust the folder: it must record the
+      trust without the `failed to persist config` error, and
+      `~/.codex/config.toml` on the host must stay unchanged.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
 ---

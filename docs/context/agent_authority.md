@@ -83,6 +83,19 @@ demanded a fresh login, and mounting the host original writable would hand a
 boxed agent every project's history plus a place to write `allowedTools` for
 uncontained sessions. The same staged mount goes into project containers.
 
+Inside the fence those staged copies are **symlinked** into place rather than
+mounted over their real paths. `rename(2)` onto a mount point fails with
+`EBUSY`, and every one of these agents rewrites its config by writing a sibling
+temp file and renaming it over the original — with `~/.codex/config.toml`
+bind-mounted, Codex failed with `failed to persist config` the first time it
+tried to record a newly trusted project, and the same applies to Claude's
+`settings.json`. So the scope's staging dir is bound once at
+`/run/eldrun-agent-config` and each shadowed path is a link into it: an
+in-place rewrite still lands in the throwaway copy, and a rename simply
+replaces the link with a plain file in the home tmpfs. Neither reaches the host
+original, which is the whole point of the shadow. Project containers still bind
+the copies file by file and keep that limitation.
+
 Composition is explicit:
 
 - A project container is already the stronger boundary, so the fence is skipped.

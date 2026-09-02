@@ -35,6 +35,28 @@ pub(crate) struct BindMount {
     pub read_only: bool,
 }
 
+/// A symlink created inside the fence, pointing at a staged shadow copy.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FenceSymlink {
+    pub target: String,
+    pub link: String,
+}
+
+/// Where this scope's staging dir (the writable config shadows) is mounted
+/// inside the fence.
+///
+/// The shadows are reached *through* this directory and symlinked into place
+/// rather than bind-mounted onto their real paths, because `rename(2)` fails
+/// with `EBUSY` when the destination is a mount point — and every agent that
+/// rewrites its own config writes a sibling temp file and renames it over the
+/// original. Codex surfaced that as `failed to persist config at
+/// ~/.codex/config.toml` the first time it tried to record a newly trusted
+/// project. A symlink into a bound *directory* is safe for either style of
+/// writer: an in-place rewrite still lands in the throwaway copy, and a rename
+/// simply replaces the symlink with a plain file in the home tmpfs. Neither
+/// reaches the host original, which is the whole point of the shadow.
+pub(crate) const STAGE_MOUNT: &str = "/run/eldrun-agent-config";
+
 #[derive(Debug, Clone, Serialize)]
 pub struct AgentFenceStatus {
     pub enforced: bool,
@@ -381,7 +403,17 @@ fn mount_pair(pair: &str, read_only: bool) -> Option<BindMount> {
     })
 }
 
-fn agent_state_mounts(scope_id: &str, roots: &[PathBuf]) -> Vec<BindMount> {
+/// Turn a `(staged copy, real path)` pair into the symlink that puts the copy
+/// at the real path — see [`STAGE_MOUNT`] for why it is a link, not a mount.
+fn staged_symlink(src: &str, dst: &str) -> Option<FenceSymlink> {
+    let leaf = Path::new(src).file_name()?.to_string_lossy().into_owned();
+    Some(FenceSymlink {
+        target: format!("{STAGE_MOUNT}/{leaf}"),
+        link: dst.to_string(),
+    })
+}
+
+fn agent_state_mounts(scope_id: &str, roots: &[PathBuf]) -> (Vec<BindMount>, Vec<FenceSymlink>) {
     let home = paths::home_dir_string();
     let state_dir = storage::state_dir();
     let live_root = crate::services::agent_session::live_sessions_dir();
@@ -398,15 +430,18 @@ fn agent_state_mounts(scope_id: &str, roots: &[PathBuf]) -> Vec<BindMount> {
     .into_iter()
     .filter_map(|m| mount_pair(&m, false))
     .collect();
-    mounts.extend(
+    // One writable mount of the whole staging dir; the shadows below are
+    // symlinked into it rather than mounted over their real paths.
+    mounts.push(BindMount {
+        src: stage.to_string_lossy().into_owned(),
+        dst: STAGE_MOUNT.to_string(),
+        read_only: false,
+    });
+    let mut symlinks: Vec<FenceSymlink> =
         crate::services::sandbox::staged_config_mounts(&home, &stage)
-            .into_iter()
-            .map(|(src, dst)| BindMount {
-                src,
-                dst,
-                read_only: false,
-            }),
-    );
+            .iter()
+            .filter_map(|(src, dst)| staged_symlink(src, dst))
+            .collect();
     let roots_as_strings: Vec<String> = roots
         .iter()
         .map(|p| p.to_string_lossy().into_owned())
@@ -417,11 +452,7 @@ fn agent_state_mounts(scope_id: &str, roots: &[PathBuf]) -> Vec<BindMount> {
     if let Some((src, dst)) =
         crate::services::sandbox::staged_claude_json_mount(&home, &stage, &roots_as_strings)
     {
-        mounts.push(BindMount {
-            src,
-            dst,
-            read_only: false,
-        });
+        symlinks.extend(staged_symlink(&src, &dst));
     }
     let (tx_rw, tx_ro) = crate::services::sandbox::claude_transcript_mounts(
         &home,
@@ -435,12 +466,14 @@ fn agent_state_mounts(scope_id: &str, roots: &[PathBuf]) -> Vec<BindMount> {
             .into_iter()
             .filter_map(|m| mount_pair(&m, true)),
     );
-    mounts
+    (mounts, symlinks)
 }
 
 /// Pure bubblewrap argv builder.  Later mounts intentionally shadow earlier
 /// ones: the empty home hides secrets, selected state/config is restored, and
-/// project/box roots finally become read-write.
+/// project/box roots finally become read-write.  `symlinks` come last of the
+/// filesystem setup, after the mount that holds what they point at.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn bwrap_args(
     home: &str,
     cwd: &str,
@@ -449,6 +482,7 @@ pub(crate) fn bwrap_args(
     roots: &[PathBuf],
     extra_ro: &[String],
     mounts: &[BindMount],
+    symlinks: &[FenceSymlink],
 ) -> Vec<String> {
     let mut args = vec![
         "--ro-bind".into(),
@@ -480,6 +514,9 @@ pub(crate) fn bwrap_args(
         args.push(mount.src.clone());
         args.push(mount.dst.clone());
     }
+    for link in symlinks {
+        args.extend(["--symlink".into(), link.target.clone(), link.link.clone()]);
+    }
     for root in roots {
         let root = root.to_string_lossy().into_owned();
         args.extend(["--bind-try".into(), root.clone(), root]);
@@ -508,7 +545,7 @@ pub fn wrap_pty_options_bwrap(
             "Agent fence: bubblewrap is unavailable, so this agent was not started. Install it with `{INSTALL_HINT}`, or turn the Agent fence off for this project."
         ));
     }
-    let mounts = agent_state_mounts(scope_id, roots);
+    let (mounts, symlinks) = agent_state_mounts(scope_id, roots);
     let mut extra_ro = configured_read_only_paths();
     extra_ro.extend(command_bind_paths(
         &opts.cmd,
@@ -524,6 +561,7 @@ pub fn wrap_pty_options_bwrap(
         roots,
         &extra_ro,
         &mounts,
+        &symlinks,
     );
     opts.cmd = "bwrap".to_string();
     opts.args = args;
@@ -804,9 +842,13 @@ mod tests {
     fn bwrap_argv_orders_home_mounts_roots_and_command() {
         let roots = vec![PathBuf::from("/home/u/work/p")];
         let mounts = vec![BindMount {
-            src: "/stage/config".into(),
-            dst: "/home/u/.codex/config.toml".into(),
+            src: "/stage/p".into(),
+            dst: STAGE_MOUNT.into(),
             read_only: false,
+        }];
+        let symlinks = vec![FenceSymlink {
+            target: format!("{STAGE_MOUNT}/home_u_.codex_config.toml"),
+            link: "/home/u/.codex/config.toml".into(),
         }];
         let out = bwrap_args(
             "/home/u",
@@ -816,23 +858,46 @@ mod tests {
             &roots,
             &["/home/u/.cargo".into()],
             &mounts,
+            &symlinks,
         );
         let home_tmpfs = out
             .windows(2)
             .position(|p| p == ["--tmpfs", "/home/u"])
             .unwrap();
         let cargo = out.iter().position(|p| p == "/home/u/.cargo").unwrap();
+        let stage = out.iter().position(|p| p == STAGE_MOUNT).unwrap();
         let config = out
             .iter()
             .position(|p| p == "/home/u/.codex/config.toml")
             .unwrap();
         let root = out.iter().rposition(|p| p == "/home/u/work/p").unwrap();
-        assert!(home_tmpfs < cargo && cargo < config && config < root);
+        // The staging dir must be mounted before the links into it are made.
+        assert!(home_tmpfs < cargo && cargo < stage && stage < config && config < root);
+        // And the config path is a symlink, never a mount destination: a
+        // rename onto a mount point is EBUSY (see `STAGE_MOUNT`).
+        assert_eq!(out[config - 2], "--symlink");
         assert!(!out.iter().any(|p| p == "--new-session"));
         let separator = out.iter().position(|p| p == "--").unwrap();
         assert_eq!(&out[separator + 1..], &["codex", "resume", "abc"]);
         assert_eq!(out[separator - 2], "--chdir");
         assert_eq!(out[separator - 1], "/home/u/work/p");
+    }
+
+    #[test]
+    fn staged_shadow_becomes_a_link_into_the_stage_mount() {
+        let link = staged_symlink(
+            "/state/sandbox-stage/p1/home_u_.codex_config.toml",
+            "/home/u/.codex/config.toml",
+        )
+        .unwrap();
+        assert_eq!(
+            link,
+            FenceSymlink {
+                target: format!("{STAGE_MOUNT}/home_u_.codex_config.toml"),
+                link: "/home/u/.codex/config.toml".into(),
+            }
+        );
+        assert!(staged_symlink("/", "/home/u/.codex/config.toml").is_none());
     }
 
     #[cfg(unix)]
