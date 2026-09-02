@@ -1678,9 +1678,17 @@ function PdfCanvas({
   // both, so the ref is only ever ahead of the state, never wrong about it.
   const visiblePageRef = useRef(1);
   // Undo/redo: the arrangement is a small immutable list, so history is just a
-  // stack of them.
+  // stack of them. Both stacks are mirrored into refs for the reason `pagesRef`
+  // is: the three history moves below each write all three pieces at once, and a
+  // `setState` called from inside another setter's updater is double-invoked by
+  // StrictMode — which pushed every edit onto `past` twice (so the first Undo
+  // did nothing) and stacked duplicates onto `future`.
   const [past, setPast] = useState<PageList[]>([]);
+  const pastRef = useRef<PageList[]>([]);
+  pastRef.current = past;
   const [future, setFuture] = useState<PageList[]>([]);
+  const futureRef = useRef<PageList[]>([]);
+  futureRef.current = future;
   const [saving, setSaving] = useState(false);
   const [editError, setEditError] = useState<string | null>(null);
   /** The page rail (the thumbnail strip you arrange pages in) is showing. */
@@ -1948,41 +1956,40 @@ function PdfCanvas({
     }
   }, []);
 
-  /** Record an arrangement edit, making it undoable. */
+  /** Record an arrangement edit, making it undoable.
+   *
+   *  The current arrangement is read from `pagesRef`, not from a `setPages`
+   *  updater: every caller already builds `next` from that same ref, so the two
+   *  cannot disagree, and it keeps each setter's updater pure (see the refs). */
   const applyEdit = useCallback(
     (next: PageList) => {
       materializeSourceBytes();
-      setPages((cur) => {
-        setPast((p) => [...p, cur]);
-        setFuture([]);
-        return next;
-      });
+      const cur = pagesRef.current;
+      setPast((p) => [...p, cur]);
+      setFuture([]);
+      setPages(next);
     },
     [materializeSourceBytes],
   );
 
   const undo = useCallback(() => {
-    setPast((p) => {
-      if (p.length === 0) return p;
-      const prev = p[p.length - 1];
-      setPages((cur) => {
-        setFuture((f) => [cur, ...f]);
-        return prev;
-      });
-      return p.slice(0, -1);
-    });
+    const p = pastRef.current;
+    if (p.length === 0) return;
+    const prev = p[p.length - 1];
+    const cur = pagesRef.current;
+    setFuture((f) => [cur, ...f]);
+    setPast(p.slice(0, -1));
+    setPages(prev);
   }, []);
 
   const redo = useCallback(() => {
-    setFuture((f) => {
-      if (f.length === 0) return f;
-      const next = f[0];
-      setPages((cur) => {
-        setPast((p) => [...p, cur]);
-        return next;
-      });
-      return f.slice(1);
-    });
+    const f = futureRef.current;
+    if (f.length === 0) return;
+    const next = f[0];
+    const cur = pagesRef.current;
+    setPast((p) => [...p, cur]);
+    setFuture(f.slice(1));
+    setPages(next);
   }, []);
 
   // Marking, unmarking and clearing are ordinary arrangement edits — which is the

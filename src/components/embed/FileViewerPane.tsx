@@ -9706,6 +9706,15 @@ function ImageView({
   // View transform: image-pixel scale and top-left offset within the viewport.
   const [scale, setScale] = useState(1);
   const [offset, setOffset] = useState({ x: 0, y: 0 });
+  // Live mirrors, read by `zoomTo`: the anchored-zoom offset is a function of the
+  // PREVIOUS scale and offset together, and computing it inside a `setScale`
+  // updater would mean calling `setOffset` from within another setter's updater —
+  // which StrictMode double-invokes to check for purity, applying the pan
+  // correction twice and throwing the cursor anchor off on every dev-build zoom.
+  const scaleRef = useRef(scale);
+  scaleRef.current = scale;
+  const offsetRef = useRef(offset);
+  offsetRef.current = offset;
   // True while the view is the auto-fit baseline, so a viewport resize re-fits.
   const fittedRef = useRef(true);
 
@@ -9741,13 +9750,12 @@ function ImageView({
   const zoomTo = useCallback((target: number, anchor?: { x: number; y: number }) => {
     const vp = viewportSize();
     const a = anchor ?? { x: vp.w / 2, y: vp.h / 2 };
-    setScale((prev) => {
-      const next = clampScale(target);
-      // #52: keep the anchor (cursor) point fixed under the zoom. Math extracted
-      // into the pure, tested `zoomOffset` helper.
-      setOffset((o) => zoomOffset(prev, next, o, a));
-      return next;
-    });
+    const prev = scaleRef.current;
+    const next = clampScale(target);
+    // #52: keep the anchor (cursor) point fixed under the zoom. Math extracted
+    // into the pure, tested `zoomOffset` helper.
+    setOffset(zoomOffset(prev, next, offsetRef.current, a));
+    setScale(next);
     fittedRef.current = false;
   }, []);
 
