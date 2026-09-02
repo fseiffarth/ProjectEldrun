@@ -126,6 +126,18 @@ export interface CustomAgent {
   installCmd?: string;
 }
 
+/** The views of the shared file viewer's switcher (`ProjectFilesView`), named
+ *  here because the side panel persists its last one in `Settings`. */
+export type FilesPanelView =
+  | "files"
+  | "windows"
+  | "git"
+  | "agents"
+  | "orange"
+  | "sessions"
+  | "jobs"
+  | "remarks";
+
 export interface Settings {
   debug?: boolean;
   eldrun_mobile_host?: {
@@ -562,6 +574,15 @@ export interface Settings {
    *  by the ⇄ button in the panel header; round-trips through the settings `extra`
    *  catch-all, so no backend field is needed. */
   side_panel_edge?: "left" | "right";
+  /** Which view of the side panel's file viewer (Files / Git / Apps / Agents /
+   *  ± / sessions / jobs / remarks) was last open. Restored on launch and kept
+   *  across a project switch — the panel remounts on both, and coming back to
+   *  Files every time meant a user living in Git or Agents re-picked it after
+   *  each switch. A view the current project has no button for (a remote-only
+   *  or SLURM-only one) falls back to Files for as long as that is true, without
+   *  overwriting what is stored. Rides the settings `extra` catch-all like
+   *  `side_panel_edge`, so no backend field is needed. */
+  side_panel_view?: FilesPanelView;
   /** Pre-rename spellings of the three keys above, from when the panel was fixed to
    *  the right edge and named for it. Read-only fallbacks: settings.json written by
    *  an older build still carries them, and every read below is

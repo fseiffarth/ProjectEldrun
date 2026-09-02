@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { GitHistory } from "./GitHistory";
@@ -21,7 +21,7 @@ import { confirmSyncTransfer } from "../../stores/syncConfirm";
 import { openLinkedFile, viewerForPath } from "../embed/FileViewerPane";
 import { useWindowsStore } from "../../stores/windows";
 import { useGitDirtyStore, gitDirtyState } from "../../stores/gitDirty";
-import { resolveLocalMirror, type ProjectEntry } from "../../types";
+import { resolveLocalMirror, type FilesPanelView, type ProjectEntry } from "../../types";
 import { fmtModified, type SortKey } from "../../lib/viewers/fileUtils";
 import {
   readGitBarSnapshot,
@@ -229,7 +229,7 @@ export function mtimeDivergenceCue(
 }
 
 
-type View = "files" | "windows" | "git" | "orange" | "sessions" | "jobs" | "remarks";
+type View = FilesPanelView;
 
 // A single shared empty array for scopes with no registered tabs. Must be a
 // stable reference — a Zustand selector that returned a fresh `[]` here would
@@ -307,6 +307,15 @@ export interface ProjectFilesViewProps {
   hidden?: React.ReactNode;
   /** Panel-only bottom frame chrome, rendered outside the scrollable viewer. */
   footer?: React.ReactNode;
+
+  /** Host-owned view switcher selection. The side panel passes these so the view
+   *  survives what remounts this component — a project switch (the panel is keyed
+   *  by project id) and a relaunch (it lands in `settings.side_panel_view`). A
+   *  host that passes neither keeps the view in local state, defaulting to Files,
+   *  which is what a Files (Project) tab and the docked subwindow sidebar want:
+   *  each of those is opened for a folder, not resumed. */
+  view?: View;
+  onViewChange?: (view: View) => void;
 }
 
 export function ProjectFilesView({
@@ -329,6 +338,8 @@ export function ProjectFilesView({
   hidden,
   footer,
   compact,
+  view: hostView,
+  onViewChange,
 }: ProjectFilesViewProps) {
   const t = useT();
   // Sessions/Jobs/workspaces ask their questions in the panel's own chrome, the
@@ -345,14 +356,60 @@ export function ProjectFilesView({
         .sort((a, b) => a.opened_at - b.opened_at),
     [windows, projectId],
   );
-  const [view, setView] = useState<View>("files");
   const remarksEnabled = useExperimental("project_remarks");
+  // A box scope shows a multi-root file view (the box folder + every member
+  // project's root) instead of one project tree; the pane renders it. Read here
+  // rather than beside the tree because the view switcher below gates half its
+  // buttons on it.
+  const { activeBox } = useBoxRoots(scope);
+  // Whether the primary host has SLURM — the Jobs button's gate. Declared up
+  // here with the other view gates; the probe that sets it lives with the rest
+  // of the Jobs code further down.
+  const [slurmSupported, setSlurmSupported] = useState(false);
+  // The view switcher's selection. Held here even when a host persists it (the
+  // `view`/`onViewChange` props) so a click paints immediately rather than after
+  // the host's write has come back — the host's value is folded in whenever it
+  // CHANGES, which covers both a settings load that lands after this mounted and
+  // the write-back of a click.
+  const [localView, setLocalView] = useState<View>(hostView ?? "files");
+  const [seenHostView, setSeenHostView] = useState(hostView);
+  if (hostView !== seenHostView) {
+    setSeenHostView(hostView);
+    if (hostView !== undefined) setLocalView(hostView);
+  }
+  const requestedView = localView;
+  const setView = useCallback(
+    (next: View) => {
+      setLocalView(next);
+      onViewChange?.(next);
+    },
+    [onViewChange],
+  );
+  // What is actually shown. A stored view whose toolbar button this project
+  // doesn't have — Orange/Sessions off a remote project, Jobs off a SLURM host,
+  // Remarks with the flag off — would otherwise be a room with no door out, and
+  // SLURM support in particular is only known one async probe after mount. So
+  // the unavailable view *renders* as Files while the stored value stays put:
+  // switch back to a remote project, or let the probe land, and it returns.
+  const viewAvailable = (candidate: View): boolean => {
+    switch (candidate) {
+      case "orange":
+      case "sessions":
+        return !activeBox && !!project?.remote && !!projectId;
+      case "jobs":
+        return !activeBox && slurmSupported && !!projectId;
+      case "remarks":
+        return !activeBox && remarksEnabled && !!projectId;
+      default:
+        return true;
+    }
+  };
+  const view: View = viewAvailable(requestedView) ? requestedView : "files";
   useEffect(() => {
     if (active && remarksEnabled && projectId && projectDir) {
       void useProjectRemarksStore.getState().load(projectId, projectDir);
     }
   }, [active, remarksEnabled, projectId, projectDir]);
-  useEffect(() => { if (!remarksEnabled && view === "remarks") setView("files"); }, [remarksEnabled, view]);
   const [showSettings, setShowSettings] = useState(false);
   // Toggles the Downloads section stacked below the file tree (fast-copy of
   // recent downloads into the project). Toolbar ⬇⬇ button; files view only.
@@ -807,7 +864,6 @@ export function ProjectFilesView({
   // only while the view is active (like Sessions). A local project with SLURM (a
   // login node) also gets it. The session store carries just-submitted jobs so a
   // Watch can resolve their log path without a fresh scontrol.
-  const [slurmSupported, setSlurmSupported] = useState(false);
   const [jobRows, setJobRows] = useState<SlurmJob[]>([]);
   const sessionJobs = useHpcJobsStore((s) =>
     projectId ? s.byProject[projectId] : undefined,
@@ -1094,9 +1150,6 @@ export function ProjectFilesView({
   const nameHover = useProjectHoverCard(project ?? undefined);
   const leftDockedPanel = containerClassName.includes("side-panel left");
 
-  // A box scope shows a multi-root file view (the box folder + every member
-  // project's root) instead of one project tree; the pane renders it.
-  const { activeBox } = useBoxRoots(scope);
   // The root scope's own tree (`~/eldrun/root`): a real folder with no project
   // record behind it — no project.json, no git provider, no settings dialog — so
   // it is named for what it is rather than falling back to a bare "Files". The
@@ -1486,7 +1539,7 @@ export function ProjectFilesView({
             className={`toolbar-btn side-panel-orange-btn${view === "orange" ? " active" : ""}`}
             style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: 2 }}
             aria-pressed={view === "orange"}
-            onClick={() => setView((v) => (v === "orange" ? "files" : "orange"))}
+            onClick={() => setView(view === "orange" ? "files" : "orange")}
             title={t("projectFilesView.divergedFilesTitle", {
               count: orangeFiles.length + newLocalFiles.length,
             })}
@@ -1506,7 +1559,7 @@ export function ProjectFilesView({
             className={`toolbar-btn side-panel-orange-btn${view === "sessions" ? " active" : ""}`}
             style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: 2 }}
             aria-pressed={view === "sessions"}
-            onClick={() => setView((v) => (v === "sessions" ? "files" : "sessions"))}
+            onClick={() => setView(view === "sessions" ? "files" : "sessions")}
             title={t("projectFilesView.persistentSessionsTitle", { count: sessionRows.length })}
           >
             ☰ {sessionRows.length > 0 && <span className="side-panel-orange-count">{sessionRows.length}</span>}
@@ -1519,7 +1572,7 @@ export function ProjectFilesView({
             className={`toolbar-btn side-panel-orange-btn${view === "jobs" ? " active" : ""}`}
             style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: 2 }}
             aria-pressed={view === "jobs"}
-            onClick={() => setView((v) => (v === "jobs" ? "files" : "jobs"))}
+            onClick={() => setView(view === "jobs" ? "files" : "jobs")}
             title={t("projectFilesView.slurmJobsTitle", { count: jobRows.length })}
           >
             ⚙ {jobRows.length > 0 && <span className="side-panel-orange-count">{jobRows.length}</span>}
@@ -1530,7 +1583,7 @@ export function ProjectFilesView({
             className={`toolbar-btn side-panel-orange-btn${view === "remarks" ? " active" : ""}`}
             style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: 2 }}
             aria-pressed={view === "remarks"}
-            onClick={() => setView((v) => (v === "remarks" ? "files" : "remarks"))}
+            onClick={() => setView(view === "remarks" ? "files" : "remarks")}
             title={t("projectRemarks.view")}
           >
             💬

@@ -158,3 +158,32 @@
       logs): no browser-titled box appears anywhere.
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work
+
+252. **The side panel forgot which view it was on.** The Files / Git / Apps /
+    Agents switcher lived in `ProjectFilesView`'s own state, and the panel
+    remounts on both of the things that end a sitting: a project switch (the
+    panel is keyed by project id) and a relaunch. So a user working out of Git
+    or Agents re-picked it after every switch. The selection now round-trips
+    through `settings.side_panel_view` — the panel reads it and writes it back
+    on each switch, riding the settings `extra` catch-all like
+    `side_panel_edge`, so no backend field was needed. The viewer keeps its own
+    copy for the paint (a click shows immediately rather than after the write
+    comes back) and folds in the host's value whenever it *changes*, which also
+    covers a settings load landing after the panel mounted. A stored view whose
+    button this project has no reason to show — Orange/Sessions off a remote
+    project, Jobs off a SLURM host, Remarks with the flag off — renders as Files
+    without overwriting what is stored, so it returns on a project that has it;
+    that also keeps the async SLURM probe from being raced into a room with no
+    door out. The Files (Project) tab and the docked subwindow sidebar pass
+    neither prop and still open on Files: each is opened for a folder, not
+    resumed.
+    Frontend: `types/index.ts` (`FilesPanelView`, `Settings.side_panel_view`),
+    `components/files/ProjectFilesView.tsx`, `components/layout/SidePanel.tsx`.
+    Implemented 2026-09-02, **not live-tested**.
+    - [x] 🤖 Automated test — `SidePanelViewMemory`
+    - [ ] 🖐️ Manual test — open the side panel, switch to **Git** (or Agents),
+      switch to another project and back: the panel is still on that view.
+      Quit and relaunch: still there. Then, on a **local** project, confirm the
+      panel does not open into a Sessions/Jobs view it has no button for.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work

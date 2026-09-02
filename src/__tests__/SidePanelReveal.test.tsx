@@ -18,7 +18,17 @@ vi.mock("../stores/projects", () => ({ useProjectsStore: vi.fn() }));
 vi.mock("../stores/windows", () => ({
   useWindowsStore: () => ({ windows: [], refresh: vi.fn(), untrack: vi.fn(), closeApp: vi.fn() }),
 }));
-vi.mock("../stores/settings", () => ({ useSettingsStore: () => null }));
+vi.mock("../stores/settings", () => {
+  // Selector-aware, not a fixed `null`: the side panel reads its stored view off
+  // `settings` and writes it back through the `updateSettings` action when the
+  // view switcher moves, so a mock that ignored the selector handed the panel a
+  // null where an action belongs.
+  const state = { settings: null, updateSettings: async () => {} };
+  return {
+    useSettingsStore: (selector?: (s: typeof state) => unknown) =>
+      selector ? selector(state) : state,
+  };
+});
 
 import { useProjectsStore } from "../stores/projects";
 import { SidePanel } from "../components/layout/SidePanel";

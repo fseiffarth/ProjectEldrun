@@ -3,6 +3,7 @@ import { ProjectFilesView } from "../files/ProjectFilesView";
 import { useFileSource } from "../files/ProjectFilesPane";
 import { openProjectFilesTab } from "../files/ProjectFilesTab";
 import { useProjectsStore } from "../../stores/projects";
+import { useSettingsStore } from "../../stores/settings";
 import {
   ROOT_SCOPE,
   useTabsStore,
@@ -11,7 +12,7 @@ import {
   type TabEntry,
 } from "../../stores/tabs";
 import { useActivityStore, type AttentionKind } from "../../stores/activity";
-import { resolveProjectDirectory } from "../../types";
+import { resolveProjectDirectory, type FilesPanelView } from "../../types";
 import { useT } from "../../lib/i18n";
 import { terminalCharsPerSecond } from "../../dev/terminalOutputRate";
 import {
@@ -231,6 +232,14 @@ export function SidePanel({
   const closeHiddenGroup = useTabsStore((s) => s.closeHiddenGroup);
   const [hiddenCollapsed, setHiddenCollapsed] = useState(false);
 
+  // Which view of the shared viewer the panel is on. Kept in settings rather
+  // than in the viewer's own state because both things that reset it are
+  // remounts this component cannot see through: a project switch (the `key`
+  // below) and a relaunch. Unset — a fresh install, or an older settings.json —
+  // reads as Files, the previous behaviour.
+  const panelView = useSettingsStore((s) => s.settings?.side_panel_view ?? "files");
+  const updateSettings = useSettingsStore((s) => s.updateSettings);
+
   // Drag the left border to resize the panel; width persists in settings.
   // Pointer capture (set in onResizeStart) keeps the drag alive once the cursor
   // leaves this thin strip.
@@ -395,6 +404,10 @@ export function SidePanel({
       pin={chrome}
       hidden={hidden}
       footer={versionFooter}
+      view={panelView}
+      onViewChange={(view: FilesPanelView) => {
+        void updateSettings({ side_panel_view: view });
+      }}
     />
   );
 }
