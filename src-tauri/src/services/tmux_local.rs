@@ -481,7 +481,10 @@ mod tests {
         // one argv item each, before `-s`.
         let env = env_of(&[
             ("ELDRUN_TAB_UID", "tab-uid-1"),
-            ("ANTHROPIC_API_KEY", "k"),
+            // "sk-test" rather than a bare letter: `scripts/privacy-check.sh`
+            // clears an api_key whose value is built out of placeholder words, and
+            // reports every other one — a fixture must not need the override.
+            ("ANTHROPIC_API_KEY", "sk-test"),
             // tmux owns TERM per pane; a bad key would land unquoted in `export`.
             ("TERM", "xterm-256color"),
             ("not a key", "x"),
@@ -492,7 +495,7 @@ mod tests {
             .filter(|w| w[0] == "-e")
             .map(|w| w[1].as_str())
             .collect();
-        assert_eq!(e, vec!["ANTHROPIC_API_KEY=k", "ELDRUN_TAB_UID=tab-uid-1"]);
+        assert_eq!(e, vec!["ANTHROPIC_API_KEY=sk-test", "ELDRUN_TAB_UID=tab-uid-1"]);
         // …and the flags precede the session name, as tmux requires.
         let dash_s = args.iter().position(|a| a == "-s").unwrap();
         assert!(args.iter().position(|a| a == "-e").unwrap() < dash_s);
