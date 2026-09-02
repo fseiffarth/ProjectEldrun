@@ -332,6 +332,11 @@ export interface Settings {
    *  the familiar Claude/Codex/Gemini quick picks; an empty array is a deliberate
    *  choice to show agents only after searching. */
   compact_tab_agents?: string[];
+  /** Prefix chips per agent command for the side panel's agent composer; unset
+   *  falls back to `lib/agentPrefaces`' defaults, `[]` means none. */
+  agent_preface_commands?: Record<string, string[]>;
+  /** Model names per agent command, typed as that CLI's own `/model <name>`. */
+  agent_models?: Record<string, string[]>;
   /** User-defined custom agents offered in the add-tab menu's Agents group,
    *  added/removed from the "＋ Add agent…" dialog. Round-trips through the
    *  backend settings `extra` catch-all — no Rust field needed. See CustomAgent. */

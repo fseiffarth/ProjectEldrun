@@ -33,6 +33,7 @@ import { projectTypeTags } from "../projects/projectTypeTags";
 import { ProjectHoverCard, useProjectHoverCard } from "../projects/ProjectHoverCard";
 import { useRemoteMachinesStore } from "../../stores/remoteMachines";
 import { UntestedTag } from "../common/UntestedTag";
+import { AgentSchedulesView } from "../agents/AgentSchedulesView";
 import { useDialogs } from "../common/PromptDialogs";
 import { ROOT_SCOPE, useTabsStore, type TabEntry } from "../../stores/tabs";
 import { persistentSessionOf } from "../../lib/closeRemoteTab";
@@ -1445,7 +1446,10 @@ export function ProjectFilesView({
       )}
 
       <div className="side-panel-toolbar">
-        {(["files", "git", "windows"] as View[]).map((v) => (
+        {/* Agents (#249): every agent tab of this scope that can carry
+            schedules, plus the scope's collected prompts. Same row as Apps so
+            the side panel and the Files tab offer it alike. */}
+        {(["files", "git", "windows", "agents"] as View[]).map((v) => (
           <button
             key={v}
             className={`toolbar-btn${view === v ? " active" : ""}${v === "git" && gitPendingColor ? " toolbar-btn--flagged" : ""}`}
@@ -1458,7 +1462,9 @@ export function ProjectFilesView({
                 ? "projectFilesView.tabFiles"
                 : v === "git"
                   ? "projectFilesView.tabGit"
-                  : "projectFilesView.tabApps",
+                  : v === "agents"
+                    ? "projectFilesView.tabAgents"
+                    : "projectFilesView.tabApps",
             )}
             {v === "git" && gitPendingColor && (
               <span
@@ -2450,6 +2456,8 @@ export function ProjectFilesView({
       {view === "remarks" && projectId && (
         <RemarksPane projectId={projectId} projectDir={projectDir} visible={active} />
       )}
+
+      {view === "agents" && <AgentSchedulesView scope={scope} active={active} />}
 
       {view === "windows" && (
         <div className="side-panel-scroll" style={{ flex: 1, overflowY: "auto", padding: 4 }}>

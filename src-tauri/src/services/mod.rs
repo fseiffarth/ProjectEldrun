@@ -1,4 +1,6 @@
+pub mod agent_prompts;
 pub mod agent_session;
+pub mod agent_tasks;
 // Default-on Linux filesystem boundary for local agent tabs.  The authority
 // decision and root computation stay AppHandle-free; terminal spawn only applies
 // the resulting bubblewrap argv.

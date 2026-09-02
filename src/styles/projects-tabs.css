@@ -2374,3 +2374,374 @@
   color: var(--accent);
   border-color: var(--accent);
 }
+
+/* Per-tab scheduled prompts. The dialog rides the canonical settings frame; this
+   block only lays out its schedule-specific rows and compact form. */
+.agent-schedule-dialog {
+  width: min(760px, calc(100vw - 32px));
+  max-height: min(820px, calc(100vh - 32px));
+}
+
+.agent-schedule-scroll,
+.agent-schedule-form,
+.agent-schedule-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.agent-schedule-notice {
+  padding: 10px 12px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--bg-panel);
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.agent-schedule-notice p { margin: 0 0 6px; }
+.agent-schedule-notice p:last-child { margin-bottom: 0; }
+.agent-schedule-notice .danger-text { color: var(--danger); }
+
+.agent-schedule-row {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--control-bg);
+}
+
+.agent-schedule-row-main {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.agent-schedule-row-main span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: pre-wrap;
+}
+
+.agent-schedule-row-main small { color: var(--text-muted); }
+
+/* The status board above the list: how many rules are armed and when the first
+   of them fires, which is the question the list of rules never answered. */
+.agent-schedule-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  align-items: baseline;
+  padding: 10px 12px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  background: var(--control-bg);
+}
+
+.agent-schedule-summary-counts {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.agent-schedule-summary-counts strong {
+  font-size: 20px;
+  line-height: 1;
+  color: var(--accent);
+}
+
+.agent-schedule-summary-next {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  flex: 1;
+  min-width: 0;
+}
+
+.agent-schedule-summary-when { font-size: 13px; font-weight: 600; }
+.agent-schedule-summary-when.muted { color: var(--text-muted); font-weight: 400; }
+.agent-schedule-summary-next small { color: var(--text-muted); }
+.agent-schedule-summary-zone { color: var(--text-muted); font-size: 11px; }
+
+.agent-schedule-row-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+/* One word per row for what the schedule is doing. The colors are the app's
+   three states plus neutral: armed/delivered read as fine, due draws the eye,
+   missed warns, failed is the error color. */
+.agent-schedule-pill {
+  padding: 1px 8px;
+  border: 1px solid var(--border-color);
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.agent-schedule-pill.is-armed {
+  color: var(--success);
+  border-color: color-mix(in srgb, var(--success) 55%, transparent);
+}
+
+.agent-schedule-pill.is-due {
+  color: var(--accent-contrast);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.agent-schedule-pill.is-missed,
+.agent-schedule-pill.is-expired {
+  color: var(--warning);
+  border-color: color-mix(in srgb, var(--warning) 55%, transparent);
+}
+
+.agent-schedule-pill.is-failed {
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 55%, transparent);
+}
+
+.agent-schedule-pill.is-delivered { color: var(--text-secondary); }
+
+/* A sent prompt that has not reached its agent yet: aimed, waiting for a safe
+   idle point. Neutral like delivered — nothing is wrong with it — but named,
+   because "sent" and "arrived" are not the same thing. */
+.agent-schedule-pill.is-queued {
+  color: var(--text-muted);
+  border-style: dashed;
+}
+
+/* A row whose schedule is off says so at a glance, not only in its pill. */
+.agent-schedule-row.is-paused .agent-schedule-row-main { opacity: 0.65; }
+
+.agent-schedule-row.is-due {
+  border-color: color-mix(in srgb, var(--accent) 60%, var(--border-color));
+}
+
+.agent-schedule-warn {
+  padding: 6px 10px;
+  border: 1px solid color-mix(in srgb, var(--warning) 55%, transparent);
+  border-radius: var(--radius);
+  color: var(--warning);
+  font-size: 12px;
+}
+
+.agent-schedule-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.agent-schedule-form > label,
+.agent-schedule-form > .agent-schedule-field {
+  display: grid;
+  grid-template-columns: 150px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+}
+
+/* Direct children only. A descendant selector here also caught the weekday
+   checkboxes and — once the form grew `common/TimeField`/`common/DateField` —
+   the segments *inside* those fields, stretching each to the full row with a
+   second border around it. The composed fields wear `.cal-input` themselves. */
+.agent-schedule-form > label > textarea,
+.agent-schedule-form > label > input,
+.agent-schedule-form > label > select {
+  width: 100%;
+  color: var(--text-primary);
+  background: var(--control-bg);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  padding: 7px 9px;
+}
+
+.agent-schedule-form textarea { resize: vertical; }
+
+.agent-schedule-weekdays,
+.agent-schedule-form-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.agent-schedule-form-actions { justify-content: flex-end; }
+
+.tab-schedule-indicator {
+  color: var(--accent);
+  font-size: 11px;
+  line-height: 1;
+}
+
+@media (max-width: 620px) {
+  .agent-schedule-row { flex-direction: column; }
+  .agent-schedule-row-actions { justify-content: flex-start; }
+  .agent-schedule-form > label,
+  .agent-schedule-form > .agent-schedule-field { grid-template-columns: 1fr; }
+}
+
+/* ── Agents view (Files / Git / Apps / Agents row) ──────────────────────── */
+.agent-prompts-view { display: flex; flex-direction: column; gap: 12px; }
+.agent-prompts-section { display: flex; flex-direction: column; gap: 8px; }
+.agent-prompts-section h3 { margin: 0; font-size: 12px; color: var(--text-secondary); }
+.agent-prompts-section .settings-help { margin: 0; }
+.agent-prompts-tab,
+.agent-prompts-row {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: 8px 10px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--control-bg);
+}
+.agent-prompts-tab-main,
+.agent-prompts-row-main { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 4px; }
+.agent-prompts-tab-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.agent-prompts-tab-head small,
+.agent-prompts-tab-when,
+.agent-prompts-row-main small { color: var(--text-muted); font-size: 11px; }
+.agent-prompts-tab-head .danger-text { color: var(--danger); }
+.agent-prompts-row-main span { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
+.agent-prompts-row-actions { display: flex; flex-wrap: wrap; gap: 4px; justify-content: flex-end; }
+.agent-prompts-target { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.agent-prompts-target select { flex: 1; min-width: 0; }
+.agent-prompts-notice {
+  padding: 8px 10px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-md);
+  background: var(--accent-soft);
+  color: var(--text-primary);
+  font-size: 12px;
+}
+.agent-prompts-form { display: flex; flex-direction: column; gap: 6px; }
+.agent-prompts-form textarea { width: 100%; box-sizing: border-box; resize: vertical; font: inherit; }
+
+/* The section headers use the settings design system's own header
+   (`.settings-section-title` — small caps, accent, hairline above), so the
+   Agents view's three sections read as sections rather than as three slightly
+   larger lines of body text. The overrides here are only what a 6px-padded side
+   panel needs: no top rule on the first one, and room for a trailing button. */
+.agent-prompts-view .settings-section-title { margin-top: 0; }
+.agent-prompts-view .settings-section-title > .settings-btn { margin-left: auto; }
+.agent-prompts-section:first-child .settings-section-title { padding-top: 0; border-top: none; }
+
+.agent-prompts-tab { flex-direction: row; }
+.agent-prompts-tab-actions { display: flex; flex-direction: column; gap: 4px; align-items: stretch; }
+
+/* Per-tab composer. The prefix chips copy `.file-tree-search-mode` — the side
+   panel's existing "this option is on" chip — rather than introducing a second
+   toggle look for the same idea. */
+.agent-composer { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+.agent-composer textarea {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  font: inherit;
+  font-size: 12px;
+}
+.agent-composer-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.agent-composer-chips-label { font-size: 10px; color: var(--text-muted); margin-right: 2px; }
+.agent-composer-chip,
+.agent-prompts-copy {
+  font-size: 10px;
+  padding: 1px 7px;
+  height: 18px;
+  background: transparent;
+  color: var(--text-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  cursor: var(--cur-pointer, pointer);
+}
+.agent-composer-chip:hover,
+.agent-prompts-copy:hover { background-color: var(--pill-hover-bg); }
+.agent-composer-chip.active { color: var(--accent); border-color: var(--accent); }
+.agent-composer-model { display: flex; align-items: center; gap: 8px; font-size: 11px; }
+.agent-composer-model > span { color: var(--text-muted); }
+.agent-composer-model .dropdown { flex: 1; min-width: 0; }
+.agent-composer-preview { color: var(--text-muted); font-size: 10px; overflow-wrap: anywhere; }
+
+/* The per-entry target picker: which tab a collected prompt goes to is asked
+   at the moment it is sent, in the row itself, so it opens inside the row. */
+.agent-prompts-picker { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-top: 4px; }
+.agent-prompts-picker-label { font-size: 10px; color: var(--text-muted); }
+.agent-prompts-picker .agent-schedule-pill {
+  width: 8px;
+  height: 8px;
+  padding: 0;
+  border-radius: 50%;
+  margin-right: 4px;
+}
+/* The session id is shown whole — it is the value that gets carried elsewhere —
+   so it wraps inside the narrow side panel and keeps its copy button beside it. */
+.agent-prompts-session {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  font-family: var(--font-mono, monospace);
+}
+.agent-prompts-row-main .agent-prompts-session-id {
+  min-width: 0;
+  font-size: inherit;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.agent-prompts-copy { flex: none; font-family: var(--font-sans, inherit); }
+
+/* The outcome leads a sent prompt's row, with the agent beside it: what
+   happened, and to what. */
+.agent-prompts-sent-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+
+/* The prompt TEXT is the one thing in these rows the user wrote; everything
+   around it (outcome, agent, tab, times, session id) is Eldrun's record of what
+   happened to it. Undifferentiated it read as one more metadata line in the
+   stack. So it is quoted: an accent rule down its left, indented off it, on the
+   panel ground rather than the row's control fill — the same "this is the
+   payload" treatment `.agent-prompts-notice` gives a message from the app. */
+.agent-prompts-row-main .agent-prompts-message {
+  margin: 1px 0 2px;
+  padding: 4px 8px;
+  border-left: 2px solid var(--accent);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  background: var(--bg-panel, transparent);
+  color: var(--text-primary);
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Renaming an agent tab from the Agents view (its name is how one agent is told
+   from another here). The input copies the tab bar's own inline rename
+   (`.tab-label-edit`) so the two renames look like one feature; the ✎ that
+   opens it is the view's existing chip. */
+.agent-prompts-rename {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  font-weight: 600;
+  font-size: 12px;
+  color: inherit;
+  background: var(--bg-main, rgba(0, 0, 0, 0.25));
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  padding: 0 4px;
+  margin: 0;
+  outline: none;
+}
+.agent-prompts-rename-btn { flex: none; line-height: 1; }

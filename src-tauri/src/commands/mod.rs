@@ -1,3 +1,5 @@
+pub mod agent_prompts;
+pub mod agent_tasks;
 pub mod agents;
 pub mod app_update;
 pub mod apps;

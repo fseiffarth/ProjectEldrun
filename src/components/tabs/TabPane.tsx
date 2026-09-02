@@ -198,6 +198,7 @@ function TabPaneImpl({
           tmuxAttach={tab.tmuxAttach ?? null}
           hostBoundUid={tab.hostBoundUid ?? null}
           kind={tab.kind}
+          scheduleTargetId={tab.scheduleTargetId}
           zoomable={zoomable}
           visible={visible}
           focused={focused}

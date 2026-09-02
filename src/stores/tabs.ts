@@ -25,10 +25,14 @@ function withTmuxSession(
   tab: Omit<TabEntry, "key">,
   scope: string,
 ): Omit<TabEntry, "key"> {
-  if ((tab.kind === "shell" || tab.kind === "agent") && !tab.tmuxSession && !tab.tmuxAttach) {
-    return { ...tab, tmuxSession: newTmuxSessionName(scope, tab.kind === "agent" ? "agent" : "shell") };
+  let next = tab;
+  if ((next.kind === "agent" || next.kind === "local_agent") && !next.scheduleTargetId) {
+    next = { ...next, scheduleTargetId: crypto.randomUUID() };
   }
-  return tab;
+  if ((next.kind === "shell" || next.kind === "agent") && !next.tmuxSession && !next.tmuxAttach) {
+    return { ...next, tmuxSession: newTmuxSessionName(scope, next.kind === "agent" ? "agent" : "shell") };
+  }
+  return next;
 }
 
 /** A new SHELL tab launched from a project inherits that project's run-host
@@ -80,6 +84,7 @@ export function duplicateSpec(tab: TabEntry): Omit<TabEntry, "key"> {
     tmuxSession: _tmux,
     tmuxAttach: _attach,
     hostBoundUid: _hostBound,
+    scheduleTargetId: _scheduleTarget,
     ...rest
   } = tab;
   if (!sessionId) return rest;
@@ -540,6 +545,10 @@ export interface TabEntry {
   // `--session-id <uuid>`), the UUID Eldrun minted and launched the agent with.
   // Surfaced on tab hover and intended to later drive session resume.
   sessionId?: string;
+  // Stable local-only binding into <state_dir>/agent_tasks.json. It follows the
+  // tab through restore/locality/split/detach, but duplication mints a new one.
+  // The backend strips it from the project-tree export/adoption path.
+  scheduleTargetId?: string;
   // This tab's work is **not** worth outliving it: never tmux-wrapped, however
   // persist-enabled its project is (`lib/tmuxSession`'s `shouldPersistTab`). Set
   // by the SLURM log tab on an HPC-tagged host — a `tail -F` left running under a
@@ -783,6 +792,7 @@ export interface SavedTabEntry {
   type?: string;
   env?: Record<string, string>;
   sessionId?: string;
+  scheduleTargetId?: string;
   // For restorable in-app "embed" tabs (a file dragged from the FileTree onto a
   // tab bar that renders via a built-in `viewer`): the absolute file path and
   // the viewer to re-render it with on restart. Only `viewer` embeds are
@@ -845,6 +855,7 @@ export function toSavedTabEntry(t: TabEntry): SavedTabEntry {
     kind: t.kind,
     env: t.env ?? {},
     sessionId: t.sessionId,
+    scheduleTargetId: t.scheduleTargetId,
     embedPath: t.embedPath,
     embedExec: t.embedExec,
     viewer: t.viewer,
@@ -997,6 +1008,14 @@ interface TabsStore {
     matches: (tab: TabEntry) => boolean,
   ) => TabEntry;
   renameTab: (key: string, label: string) => void;
+  // The same rename, aimed at a named scope instead of the active one. The
+  // Agents view of the file viewer lists `tabsByScope[scope]` for ITS scope,
+  // which is not necessarily the scope the tab bar is showing (a Files (Project)
+  // tab of one project, a docked subwindow sidebar), and `renameTab` writes to
+  // whichever scope is active — so renaming from there needs the scope said out
+  // loud. Falls through to `renameTab` when they are the same, keeping the
+  // detached-popout forwarding path intact.
+  renameTabInScope: (scope: string, key: string, label: string) => void;
   // Rewrite the embedPath (and label) of every in-app "embed" tab in the CURRENT
   // scope whose file was renamed/moved on disk — an exact match (`embedPath ===
   // oldAbs`) or, for a directory rename/move, any tab UNDER it (`embedPath`
@@ -2304,6 +2323,26 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
         t.key === key ? { ...t, label: nextLabel } : t,
       );
       return writeScope(s, s.scope, nextTabs, layout, focusedGroupId);
+    });
+  },
+
+  renameTabInScope: (scope, key, label) => {
+    const nextLabel = label.trim();
+    if (!nextLabel) return;
+    if (scope === get().scope) {
+      get().renameTab(key, nextLabel);
+      return;
+    }
+    set((s) => {
+      const tabs = s.tabsByScope[scope];
+      if (!tabs?.some((t) => t.key === key)) return {};
+      return writeScope(
+        s,
+        scope,
+        tabs.map((t) => (t.key === key ? { ...t, label: nextLabel } : t)),
+        s.layoutByScope[scope] ?? null,
+        s.focusedGroupByScope[scope] ?? null,
+      );
     });
   },
 
@@ -4167,6 +4206,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
         kind,
         cmd: t.cmd,
         sessionId: t.sessionId,
+        scheduleTargetId: isAgent ? (t.scheduleTargetId ?? crypto.randomUUID()) : undefined,
         resumeArgs: t.resumeArgs,
       };
       // A built-in looks its cmd up in the static table; only a custom agent
@@ -4212,9 +4252,15 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
         cmd: t.cmd,
         args,
         env,
-        cwd: isAgent && defaultCwd ? defaultCwd : t.cwd || defaultCwd,
+        cwd: isAgent && defaultCwd ? restoredAgentCwd(t.cwd, defaultCwd) : t.cwd || defaultCwd,
         kind,
         sessionId: t.sessionId,
+        // The binding into agent_tasks.json. Kept from the layout when it has one,
+        // minted here otherwise (a layout written before schedules existed) — it
+        // used to be computed on `tabShape` only and never reach the entry, so a
+        // restored agent tab had no target: no ◷ on the desktop, `tab_not_found`
+        // on the phone, and the startup orphan sweep deleting every schedule.
+        scheduleTargetId: tabShape.scheduleTargetId,
         // A restart-resumable custom agent keeps its resume flag (already folded
         // into `base`/`args` above) so a *second* restart resumes it again.
         resumeArgs: t.resumeArgs,

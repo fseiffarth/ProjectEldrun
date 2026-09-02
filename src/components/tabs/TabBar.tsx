@@ -61,6 +61,9 @@ import { useActivityStore } from "../../stores/activity";
 import { UntestedTag } from "../common/UntestedTag";
 import { useT } from "../../lib/i18n";
 import { TRASH_PROJECT_ID } from "../../lib/trashProject";
+import { AgentScheduleDialog } from "../agents/AgentScheduleDialog";
+import { scheduleCacheKey, useAgentSchedulesStore } from "../../stores/agentSchedules";
+import { nextScheduleOccurrence } from "../../lib/agentSchedule";
 
 /** Default fly-out card size when no live pane thumbnail is available (group
  *  detach via the bar drag carries no preview). */
@@ -269,6 +272,8 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
   const [editingKey, setEditingKey] = useState<string | null>(null);
   // The manage-custom-agents dialog the "+" menu's "Add custom…" opens.
   const [agentDialogOpen, setAgentDialogOpen] = useState(false);
+  const [scheduleDialogKey, setScheduleDialogKey] = useState<string | null>(null);
+  const schedulesByTarget = useAgentSchedulesStore((s) => s.byTarget);
   const addMenuRef = useRef<HTMLDivElement>(null);
   const addBtnRef = useRef<HTMLButtonElement>(null);
   // The tabs live in their own horizontally-scrolling strip; chevrons flank it
@@ -1251,6 +1256,25 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
             ) : (
               <span className="tab-label">{tab.label}</span>
             )}
+            {(tab.kind === "agent" || tab.kind === "local_agent") && tab.scheduleTargetId && (() => {
+              const enabled = (schedulesByTarget[scheduleCacheKey(scope, tab.scheduleTargetId)] ?? [])
+                .filter((schedule) => schedule.enabled);
+              const count = enabled.length;
+              const next = enabled
+                .map((schedule) => nextScheduleOccurrence(schedule, new Date())?.at)
+                .filter((at): at is Date => !!at)
+                .sort((a, b) => a.getTime() - b.getTime())[0];
+              return count > 0 ? (
+                <span
+                  className="tab-schedule-indicator"
+                  title={next
+                    ? t("agentSchedule.indicatorNext", { count, value: next.toLocaleString() })
+                    : t("agentSchedule.indicator", { count })}
+                >
+                  ◷
+                </span>
+              ) : null;
+            })()}
             {/* Viewer file-source badge — remote-native (host SFTP) vs local
                 mirror, a clickable toggle when the file exists on both sides.
                 Shared with the detached strip (see TabLocalityBadges). */}
@@ -1623,6 +1647,13 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
       {agentDialogOpen && (
         <CustomAgentDialog onClose={() => setAgentDialogOpen(false)} />
       )}
+      {worktreePicker.dialogs}
+      {scheduleDialogKey && (() => {
+        const tab = tabs.find((item) => item.key === scheduleDialogKey);
+        return tab ? (
+          <AgentScheduleDialog scope={scope} tab={tab} onClose={() => setScheduleDialogKey(null)} />
+        ) : null;
+      })()}
       {localityMenu && (
         <LocalityMenu
           menu={localityMenu}
@@ -1657,6 +1688,19 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
             >
               <span className="tab-new-menu-dot" style={{ color: "var(--accent)" }}>⧉</span>
               {t("tabBar.duplicate")}
+              <UntestedTag />
+            </button>
+          )}
+          {tabs.some((tab) => tab.key === tabMenu.key && (tab.kind === "agent" || tab.kind === "local_agent")) && (
+            <button
+              className="tab-new-menu-item"
+              onClick={() => {
+                setScheduleDialogKey(tabMenu.key);
+                setTabMenu(null);
+              }}
+            >
+              <span className="tab-new-menu-dot" style={{ color: "var(--accent)" }}>◷</span>
+              {t("agentSchedule.menu")}
               <UntestedTag />
             </button>
           )}

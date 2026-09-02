@@ -1,4 +1,5 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { emit, listen } from "@tauri-apps/api/event";
 import { cursorPosition, getCurrentWindow } from "@tauri-apps/api/window";
 import { PhysicalPosition } from "@tauri-apps/api/dpi";
@@ -80,6 +81,10 @@ import {
 import { texPdfPartner } from "../../lib/texPdfLink";
 import { useT } from "../../lib/i18n";
 import { StarIcon } from "./StarIcon";
+import { AgentScheduleDialog } from "../agents/AgentScheduleDialog";
+import { scheduleCacheKey, useAgentSchedulesStore } from "../../stores/agentSchedules";
+import { UntestedTag } from "../common/UntestedTag";
+import { nextScheduleOccurrence } from "../../lib/agentSchedule";
 
 /** Pixel coordinates of a group body, relative to the detached center panel. */
 interface Rect {
@@ -321,6 +326,9 @@ export function DetachedCenterPanel({
   const t = useT();
   const [addMenu, setAddMenu] = useState<{ groupId: string; x: number; y: number } | null>(null);
   const [agentDialogOpen, setAgentDialogOpen] = useState(false);
+  const [scheduleDialogKey, setScheduleDialogKey] = useState<string | null>(null);
+  const [tabMenu, setTabMenu] = useState<{ key: string; x: number; y: number } | null>(null);
+  const schedulesByTarget = useAgentSchedulesStore((state) => state.byTarget);
   // Tab hover card anchor (the hovered tab's bottom-centre), mirroring the main
   // window's TabBar — the popout has its own tab strip, so it renders its own.
   // Fast mode drops the hover card: it carries its own ticking clock and
@@ -378,6 +386,19 @@ export function DetachedCenterPanel({
   // fired from `handleLocalTabRelease` on the same cross-group rules `commitDrop`
   // uses (never on a same-group reorder).
   const landedKey = useTabLandStore((s) => s.landed?.key ?? null);
+
+  useEffect(() => {
+    for (const tab of tabs) {
+      if ((tab.kind === "agent" || tab.kind === "local_agent") && tab.scheduleTargetId) {
+        void useAgentSchedulesStore.getState().load(scope, tab.scheduleTargetId).catch(() => []);
+      }
+    }
+    let stop: (() => void) | undefined;
+    void listen("agent-schedules-changed", () => {
+      void useAgentSchedulesStore.getState().refreshLoaded();
+    }).then((unlisten) => { stop = unlisten; });
+    return () => stop?.();
+  }, [scope, tabs]);
   const landedNonce = useTabLandStore((s) => s.landed?.nonce ?? 0);
   const clearLanded = useTabLandStore((s) => s.clear);
   const byKey = new Map(tabs.map((t) => [t.key, t] as const));
@@ -1371,18 +1392,10 @@ export function DetachedCenterPanel({
                   className={`tab ${isActive ? "active" : ""}${stateClass}${isDragging ? " dragging" : ""}${landing ? " landing" : ""}`}
                   onPointerDown={(e) => onTabPointerDown(e, group, tab)}
                   onContextMenu={(e) => {
-                    // Rename, the one main-window tab action the popout's strip
-                    // was missing (#239): the `rename` edit already existed and
-                    // nothing emitted it. A prompt rather than an inline field —
-                    // this strip has no editing state, and a rename in a popout
-                    // is rare enough that borrowing the main window's inline
-                    // editor would be more machinery than the gesture is worth.
                     e.preventDefault();
                     e.stopPropagation();
-                    const next = window.prompt(t("detachedTabs.renamePrompt"), tab.label);
-                    if (next != null && next.trim() && next !== tab.label) {
-                      onRename?.(tab.key, next.trim());
-                    }
+                    setHoverTab(null);
+                    setTabMenu({ key: tab.key, x: e.clientX, y: e.clientY });
                   }}
                   // Styled hover card (same one the main window's TabBar shows —
                   // this strip is bespoke, so it anchors the shared card itself).
@@ -1411,6 +1424,22 @@ export function DetachedCenterPanel({
                   }
                 >
                   <span className="tab-label">{tab.label}</span>
+                  {(tab.kind === "agent" || tab.kind === "local_agent") && tab.scheduleTargetId && (() => {
+                    const enabled = (schedulesByTarget[scheduleCacheKey(scope, tab.scheduleTargetId)] ?? [])
+                      .filter((schedule) => schedule.enabled);
+                    const next = enabled
+                      .map((schedule) => nextScheduleOccurrence(schedule, new Date())?.at)
+                      .filter((at): at is Date => !!at)
+                      .sort((a, b) => a.getTime() - b.getTime())[0];
+                    return enabled.length > 0 ? (
+                      <span
+                        className="tab-schedule-indicator"
+                        title={next
+                          ? t("agentSchedule.indicatorNext", { count: enabled.length, value: next.toLocaleString() })
+                          : t("agentSchedule.indicator", { count: enabled.length })}
+                      >◷</span>
+                    ) : null;
+                  })()}
                   {/* Local/remote badges — parity with the main-window TabBar,
                       via the shared TabLocalityBadges. The source badge reads THIS
                       window's fileSources store; the locality badge/menu use the
@@ -1780,6 +1809,34 @@ export function DetachedCenterPanel({
       {agentDialogOpen && (
         <CustomAgentDialog onClose={() => setAgentDialogOpen(false)} />
       )}
+      {tabMenu && createPortal(
+        <div className="tab-new-menu" style={{ position: "fixed", left: tabMenu.x, top: tabMenu.y }}>
+          <button className="tab-new-menu-item" onClick={() => {
+            const tab = byKey.get(tabMenu.key);
+            setTabMenu(null);
+            if (!tab) return;
+            const next = window.prompt(t("detachedTabs.renamePrompt"), tab.label);
+            if (next != null && next.trim() && next !== tab.label) onRename?.(tab.key, next.trim());
+          }}>
+            <span className="tab-new-menu-dot" style={{ color: "var(--accent)" }}>✎</span>
+            {t("common.rename")}
+          </button>
+          {(() => {
+            const tab = byKey.get(tabMenu.key);
+            return tab && (tab.kind === "agent" || tab.kind === "local_agent") ? (
+              <button className="tab-new-menu-item" onClick={() => { setScheduleDialogKey(tab.key); setTabMenu(null); }}>
+                <span className="tab-new-menu-dot" style={{ color: "var(--accent)" }}>◷</span>
+                {t("agentSchedule.menu")} <UntestedTag />
+              </button>
+            ) : null;
+          })()}
+        </div>,
+        document.body,
+      )}
+      {scheduleDialogKey && (() => {
+        const tab = byKey.get(scheduleDialogKey);
+        return tab ? <AgentScheduleDialog scope={scope} tab={tab} onClose={() => setScheduleDialogKey(null)} /> : null;
+      })()}
       {/* Multi-host locality menu — parity with the main-window TabBar, routed
           through onSetLocation (the main window owns the PTY + respawns it). */}
       {localityMenu && (

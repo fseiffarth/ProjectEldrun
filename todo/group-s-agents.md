@@ -483,3 +483,180 @@ unchanged; the new agents are additive.
       - [ ] The phone's mode chip lands on the mode it was asked for.
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work
+
+- [~] **249 — Agents view + collected prompts** (2026-09-02; ✅ code-complete and
+  automated tests passing, ⚠️ live QA pending). The file viewer's row grew a
+  fourth entry, Files / Git / Apps / **Agents**: every agent tab of the scope
+  that can carry schedules (live state, enabled count, next run, one click into
+  the schedule dialog), plus the project's **collected prompts** — text kept
+  without a tab in `agent_prompts.json`, sent to a chosen tab now or turned
+  into a schedule with the dialog prefilled. *Send now* is a one-time schedule
+  at the current minute, so it inherits the idle gate, claim, receipt and the
+  one-hour window (a busy agent waits; after an hour it reads "missed"); a tab
+  at its cap drops finished one-time entries first. Mirrored on the phone as
+  31q. Locked by `AgentPromptSend.test.ts`, `AgentSchedulesView.test.tsx`,
+  `services::agent_prompts` tests.
+  - [ ] 🖐️ Manual desktop QA — open Agents in the side panel and in a Files
+    tab; confirm every agent tab of the project is listed with a sensible
+    state and count; collect a prompt, Send now to an idle agent and see it
+    typed at the next idle point and the tab's ◷ status read Delivered; Send
+    to a busy agent and see "Due now" until it settles; Schedule… opens the
+    dialog with the text prefilled; edit/delete a prompt and see the phone's
+    sheet follow.
+  - [ ] ✅ Works
+  - [ ] ❌ Doesn't work
+- [~] **Per-tab scheduled agent prompts** (2026-09-01; ✅ code-complete and
+  automated tests passing, ⚠️ live QA pending). Multiple one-time/daily/weekday
+  prompts are bound to a stable local-only tab target, claimed atomically, and
+  delivered only after the live PTY has settled and is idle. Focus does not
+  suppress delivery; the dialog explicitly warns that the current composer
+  draft is replaced. Definitions/receipts stay in `agent_tasks.json` and never
+  enter the project-tree session export.
+  - 2026-09-02 fix (found via the phone's `tab_not_found`): `loadFromLayout`
+    minted/kept `scheduleTargetId` on its `tabShape` helper but never on the
+    restored entry, so every restored agent tab had no target — no ◷ on the
+    desktop, the mobile bridge refusing the tab, and the startup orphan sweep
+    emptying `agent_tasks.json` on each launch. The entry now carries the id,
+    and every schedule write persists the scope so a freshly minted binding
+    reaches disk before a quit. Locked by `TabScheduleTarget.test.ts`.
+  - 2026-09-02 fix (restart audit): stopping a project (`deactivateProject` →
+    `unloadScope`) dropped the whole in-memory scope, and the host's tab diff
+    read that as every agent tab closed — deleting the project's schedules
+    although its layout (and target ids) restore on the next activation. A
+    binding is now deleted only while its scope still exists; a vanished scope
+    keeps its schedules for the startup sweep to judge. App quit/relaunch was
+    already intact: all active projects hydrate at launch with their ids.
+    Locked by `AgentScheduleHostUnload.test.tsx`.
+  - [ ] 🖐️ Manual desktop QA — add/edit/toggle/delete two schedules, verify the
+    tab indicator/next/last status, a focused draft is replaced, a busy agent
+    waits, an approval prompt blocks, a second due prompt waits for output plus
+    idle, and a >60-minute occurrence records missed without backlog delivery.
+  - [ ] 🖐️ Restart/DST QA — resumable Claude/Codex targets survive a deliberate
+    restart; non-resumable schedules disappear; spring-gap time is skipped and
+    an autumn repeated time fires once.
+  - [ ] ✅ Works
+  - [ ] ❌ Doesn't work
+
+- [~] **250 — Per-tab prompt composer + collected-prompt history** (2026-09-02;
+  ✅ code-complete, ❌ never live-verified). The Agents view grew the field that
+  makes it usable without a detour through the schedule dialog, and lost the one
+  piece of shared state that made a send ambiguous.
+  - **A composer under each agent tab**: prefix chips, the agent's own model
+    pick, a message, and Send — aimed at the tab it is rendered under, so
+    nothing has to be targeted first. The chips and the model are that CLI's own
+    slash commands (`lib/agentPrefaces`), submitted **one at a time, in order,
+    ahead of the prompt** rather than as extra lines of it — `/clear` and
+    `/model` take a whole line and would otherwise swallow the prompt appended
+    to them. `ScheduledAgentPrompt.preface` carries them (Rust + TS), and
+    `AgentScheduleHost` waits for the tab to go quiet between submissions
+    (capped, since the occurrence is already claimed).
+  - **Eldrun still chooses nothing.** There is a model pick and deliberately no
+    permission/plan mode: the composer types what the user picked into the
+    agent's own CLI, which is the same line AGENTS.md draws around agent
+    authority. No flag is injected at launch, here or anywhere.
+  - **Both lists are editable** per agent under Settings → Agents
+    (`agent_preface_commands`, `agent_models`), because slash commands and model
+    names date faster than this app ships. An agent with no default gets an
+    empty list rather than an invented command; "Use defaults" deletes the key
+    rather than writing the defaults out, so a later change still reaches it.
+  - **Restructure**: the tab's NAME leads and its working/needs-a-decision/idle
+    state reads after it; the three section headers use the settings design
+    system's own `.settings-section-title`.
+  - **No view-wide target tab.** Which agent a collected prompt is for is asked
+    in the row, at the moment of the send, instead of being a mode the whole
+    list silently sat in.
+  - **Sent prompts move to a history section** (`agent_prompts.json`'s new
+    `history` map, capped at 200 per project) recording where each went: the tab
+    label and the **agent session id**, which is the only thing that still names
+    the conversation once the tab is closed. The phone's send retires a prompt
+    the same way (`sendCollectedPrompt`), so one collected prompt cannot be sent
+    twice from two surfaces.
+  - 🤖 Automated: `AgentPrefaces.test.ts` (sanitize parity with the Rust
+    validator, list resolution, model-last ordering), `ScheduledAgentInput`
+    (one submission per prefix, one counted prompt), `AgentSchedulesView`
+    (per-row target pick, archive-on-send, chips reaching the schedule), plus
+    Rust unit tests for the preface rules and the history move/cap.
+  - [ ] 🖐️ Manual desktop QA — send from a tab's composer with `/clear` +
+    a model picked and watch the three submissions land in order; send a
+    collected prompt, pick the tab in the row, see it leave the list and appear
+    under Sent prompts with the right session id; "Collect again"; Clear.
+  - [ ] 🖐️ Settings QA — add/reorder/remove a chip and a model for one agent,
+    confirm the composer follows, then "Use defaults" and confirm it reverts.
+  - [ ] ✅ Works
+  - [ ] ❌ Doesn't work
+
+- [~] **251 — Deliveries leave the schedule menu for Sent prompts** (2026-09-02;
+  ✅ code-complete, ❌ never live-verified). A one-time rule that had run stayed
+  in the tab's schedule menu forever, as a plan that says it already happened,
+  while the side panel's Sent prompts knew only about prompts sent by hand.
+  - **The menu is about the future.** `AgentScheduleHost` writes each run onto
+    the project's history (`agent_prompt_record`) and then deletes a one-time
+    rule; the dialog filters finished one-time entries as well, so one still on
+    its way out is never listed. Recurring rules stay — they still fire — and
+    contribute one history row per occurrence.
+  - **The record is written first**, the rule dropped only once it lands: the
+    prompt has already reached the agent by then, and a rule deleted after a
+    failed write would take the only account of the delivery with it. A rule
+    left finished by an older build or by a crash between the receipt and the
+    retire is swept the same way on the next tick, so old state migrates itself.
+  - **One prompt, one row.** `deliveryRecordId` records a one-time run under the
+    collected prompt's own id — which is why `sendCollectedPrompt` now gives the
+    queued rule that id — so the delivery turns that prompt's *Queued* row into
+    a *Delivered* one instead of listing the same text twice; a recurring rule
+    records under `id@occurrence`, which also makes a retry idempotent.
+  - **What a sent prompt now says**: the outcome (Queued / Delivered / Missed /
+    Failed), the prompt, the tab **and the agent** it went to, the session id,
+    the occurrence it was due at, when it was collected and when it went.
+    `SentAgentPrompt` gained `agent`, `result` and `scheduled_for`, all optional
+    so a file written before this still loads.
+  - **The schedule form gained the composer's two pickers** — prefix chips and
+    the agent's own `/model` — because a prompt that needs `/clear` and a model
+    at 9:00 needs them every 9:00. Still the agent's own slash commands, still
+    no permission/plan mode. `splitPreface` reads a saved rule back into chips
+    and a model, and a command the agent no longer offers stays a chip of its
+    own rather than vanishing when the rule is edited.
+  - 🤖 Automated: `AgentScheduleRetire` (record-then-delete, recurring rules
+    kept, rule kept when the write fails), `AgentPromptSend` (record ids),
+    `AgentPrefaces` (`splitPreface` round-trip), `AgentScheduleDialog` (finished
+    rules hidden, preface saved), `AgentSchedulesView` (the row's outcome,
+    agent, session and times), plus Rust unit tests for the same-id update and
+    the never-collected row.
+  - [ ] 🖐️ Manual desktop QA — schedule a one-time prompt a minute out, watch it
+    deliver, and confirm it is **gone from the tab's ◷ Schedules menu** and
+    present under Sent prompts with Delivered, the agent, the session id and
+    both times; confirm a daily rule stays in the menu and adds one row per run.
+  - [ ] 🖐️ Manual desktop QA — put `/clear` and a model on a daily rule, save,
+    reopen it for editing and confirm both come back; watch the three
+    submissions land in order at the next run.
+  - [ ] ✅ Works
+  - [ ] ❌ Doesn't work
+
+253. **Agents view: rename a tab where its name is read, and let the prompt text
+    look like the prompt.** Two small things the Agents view was missing once it
+    had rows in it.
+    - **Rename.** Telling three agents apart in this list is entirely down to
+      their names, and the only way to change one was a right-click on the tab
+      itself — a tab that need not be in the group on screen. Each row's name
+      now has a ✎ beside it that turns it into an input (Enter commits, Escape
+      abandons, blur commits; an empty name leaves the tab named what it was),
+      styled off the tab bar's own inline rename so the two read as one feature.
+      The store gained `renameTabInScope`, because this view lists
+      `tabsByScope[scope]` for **its** scope while `renameTab` writes to
+      whichever scope is active; the same-scope case still goes through
+      `renameTab`, keeping the detached-popout forwarding path intact.
+    - **The prompt text.** In both the collected and the sent lists the prompt
+      was a bare `<span>` among the metadata lines, so the one thing the user
+      wrote read as one more line of Eldrun's record of it. It is now quoted —
+      an accent rule down the left, indented off it, on the panel ground rather
+      than the row's control fill (`.agent-prompts-message`).
+    Frontend: `components/agents/AgentSchedulesView.tsx`, `stores/tabs.ts`,
+    `styles/projects-tabs.css`.
+    Implemented 2026-09-02, **not live-tested**.
+    - [x] 🤖 Automated test — `AgentTabRename` (the scoped store action, the
+      empty-name guard, the inline edit, Escape)
+    - [ ] 🖐️ Manual test — open **Agents** in the side panel with two agent
+      tabs running, rename one from the row and confirm the tab bar shows the
+      new name and keeps it across a relaunch; check the prompt text in Sent
+      prompts is visibly set apart from the outcome/tab/time lines.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work

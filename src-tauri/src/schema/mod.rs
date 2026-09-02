@@ -1,3 +1,5 @@
+pub mod agent_prompts;
+pub mod agent_tasks;
 pub mod boxes;
 pub mod browser;
 pub mod caldav;
@@ -39,3 +41,7 @@ pub use settings::Settings;
 pub use skills::{InstalledSkill, SkillCatalogEntry, SkillDetail, SkillSource};
 pub use time_log::TimeLogEntry;
 pub use usage_stats::{Counters, UsageStats};
+pub use agent_tasks::{
+    AgentScheduleLastRun, AgentScheduleResult, AgentScheduleRule,
+    AgentScheduleTargetBinding, ScheduledAgentPrompt,
+};

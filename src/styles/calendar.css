@@ -1367,3 +1367,175 @@
 .cal-alarm-actions .cal-btn-primary {
   margin-left: auto;
 }
+
+/* The day-entry field (`common/DateField`) and the instant field that composes
+   it with the clock (`common/DateTimeField`). Like `.time-field`, the trigger
+   wears the *caller's* box class (`.cal-input` &c.), so border, height and focus
+   ring stay the app's; everything here is what turns that box into a date, and
+   what draws the calendar the native popover could not be made to dismiss. */
+.date-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font: inherit;
+  text-align: left;
+  cursor: var(--cur-pointer, pointer);
+  box-sizing: border-box;
+}
+
+.date-field:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.date-field.is-empty .date-field-label { color: var(--text-muted); }
+.date-field:disabled { opacity: 0.45; cursor: var(--cur-default, default); }
+
+.date-field-icon { opacity: 0.7; }
+
+.date-field-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The drawn calendar. `.context-menu-portal` owns position and layering; this is
+   only its chrome and grid. */
+.date-pop {
+  padding: 8px;
+  min-width: 244px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-2);
+}
+
+.date-pop-head {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-bottom: 6px;
+}
+
+.date-pop-title {
+  flex: 1;
+  text-align: center;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.date-pop-nav {
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: var(--radius);
+  background: none;
+  color: inherit;
+  font: inherit;
+  line-height: 1;
+  cursor: var(--cur-pointer, pointer);
+}
+
+.date-pop-nav:hover,
+.date-pop-nav:focus-visible {
+  background: var(--control-hover-bg);
+  outline: none;
+}
+
+.date-pop-weekdays,
+.date-pop-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 30px);
+  gap: 2px;
+}
+
+.date-pop-weekday {
+  text-align: center;
+  font-size: 10px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+}
+
+.date-pop-day {
+  height: 26px;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  cursor: var(--cur-pointer, pointer);
+}
+
+.date-pop-day:hover { background: var(--control-hover-bg); }
+.date-pop-day:focus-visible { outline: none; border-color: var(--accent); }
+.date-pop-day.is-outside { color: var(--text-muted); opacity: 0.6; }
+.date-pop-day.is-today { border-color: var(--accent); }
+
+.date-pop-day.is-selected {
+  background: var(--accent);
+  color: var(--accent-contrast);
+  border-color: var(--accent);
+}
+
+.date-pop-day.is-blocked {
+  opacity: 0.3;
+  cursor: var(--cur-default, default);
+}
+
+.date-pop-foot {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-color);
+}
+
+.datetime-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.datetime-field-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.datetime-field-echo {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.datetime-field-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* Shortcut chips: the reason this field exists is that the common instants
+   should need neither the calendar nor the clock. */
+.datetime-chip {
+  padding: 3px 9px;
+  font: inherit;
+  font-size: 11px;
+  color: var(--text-secondary);
+  background: var(--control-bg);
+  border: 1px solid var(--control-border);
+  border-radius: 999px;
+  cursor: var(--cur-pointer, pointer);
+}
+
+.datetime-chip:hover,
+.datetime-chip:focus-visible {
+  color: var(--text-primary);
+  border-color: var(--accent);
+  outline: none;
+}
+
+.datetime-chip:disabled { opacity: 0.45; cursor: var(--cur-default, default); }

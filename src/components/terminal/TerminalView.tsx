@@ -26,6 +26,7 @@ import { hpcGuardRefusal } from "../../lib/hpcGuard";
 import { useHpcGuardStore } from "../../stores/hpcGuardPrompt";
 import { CSI_U_SHIFT_TAB, claimInitialInput, decodeOsc52Clipboard, initialInputForPty, isCodexCommand, isTerminalIdentityResponse, isTerminalReport, stripTerminalQueries } from "../../lib/terminalControl";
 import { clearPtyInput, writePtyInput } from "../../lib/terminalInput";
+import { registerScheduledAgentInput } from "../../lib/scheduledAgentInput";
 import "@xterm/xterm/css/xterm.css";
 
 // Hoisted to module scope: keystroke input fires this on every key, so we reuse
@@ -111,6 +112,8 @@ interface Props {
   /** The tab-store kind. Threaded explicitly so custom/local agent launchers
    * receive the restriction even when their command name is not recognisable. */
   kind?: TabKind;
+  /** Stable local-only target id for per-tab scheduled prompts. */
+  scheduleTargetId?: string;
 }
 
 function terminalTheme(scheme: string | undefined) {
@@ -339,7 +342,7 @@ function readAgentFontSize(): number {
   return DEFAULT_FONT_SIZE;
 }
 
-export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, localOnly = false, sandbox = false, projectId = null, remoteHostId = null, tmuxSession = null, tmuxAttach = null, hostBoundUid = null, visible, focused, attachOnly = false, zoomable = false, persistOnUnmount = false, kind: declaredKind }: Props) {
+export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, localOnly = false, sandbox = false, projectId = null, remoteHostId = null, tmuxSession = null, tmuxAttach = null, hostBoundUid = null, visible, focused, attachOnly = false, zoomable = false, persistOnUnmount = false, kind: declaredKind, scheduleTargetId }: Props) {
   const viewerId = useRef(crypto.randomUUID()).current;
   const viewerUpdateSeq = useRef(0);
   const colorScheme = useSettingsStore((s) => s.settings?.color_scheme);
@@ -355,6 +358,9 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
   const initialEnterTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const openWatchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const firstOutputAt = useRef<number | null>(null);
+  const scheduledReady = useRef(false);
+  const terminalReadySeen = useRef(false);
+  const scheduledSettleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // xterm crashes if opened/written into a zero-size or display:none element
   // (its renderer never initializes, so syncScrollArea dereferences undefined).
   // Panes start hidden — and even the active pane is display:none until its rect
@@ -397,6 +403,8 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
     let cancelled = false;
     initialInputSent.current = false;
     initialInputPending.current = !!initialInput;
+    scheduledReady.current = false;
+    terminalReadySeen.current = false;
 
     const term = new Terminal({
       scrollback: 5000,
@@ -620,6 +628,37 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       }
     };
 
+    // Scheduler input is registered by the PTY-owning main-window view only.
+    // A detached view attaches to the same PTY but must never become a second
+    // delivery owner. Readiness waits for terminal-ready plus real TUI output and
+    // a short settle cushion, matching the initial-input gate below.
+    const armScheduledReady = () => {
+      if (!scheduleTargetId || attachOnly || !terminalReadySeen.current || firstOutputAt.current === null) return;
+      if (scheduledSettleTimer.current) clearTimeout(scheduledSettleTimer.current);
+      scheduledReady.current = false;
+      // Every new output chunk restarts the cushion. This closes the short gap
+      // before the activity store's sustained-output debounce calls an agent
+      // "working": scheduling must still wait until the TUI itself is quiet.
+      scheduledSettleTimer.current = setTimeout(() => {
+        if (!cancelled) scheduledReady.current = true;
+      }, 1200);
+    };
+    const unregisterScheduled = scheduleTargetId && !attachOnly
+      ? registerScheduledAgentInput(scheduleTargetId, {
+          ptyId: id,
+          ready: () => scheduledReady.current,
+          bracketedPaste: () => term.modes.bracketedPasteMode === true,
+          recordAuthorizedInput: () => {
+            noteUserInput(id);
+            countSubmit();
+          },
+          // A prefix command (`/clear`, `/model …`) stamps input so its output
+          // reads as this tab working, but is deliberately NOT counted: the
+          // usage recap counts prompts asked, and a slash command is not one.
+          noteInput: () => noteUserInput(id),
+        })
+      : undefined;
+
     // Wire keyboard input → PTY write. The input stamp is what licenses this
     // tab's later output to show as "working"/"done" (see noteUserInput).
     //
@@ -801,6 +840,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       // when an agent TUI has actually started so we don't type the
       // initialInput before it can accept keystrokes (see below).
       if (firstOutputAt.current === null) firstOutputAt.current = Date.now();
+      armScheduledReady();
       if (historyPending) historyOutput.push({ data, range });
       else writeTerm(data);
     });
@@ -814,6 +854,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
     // shell (the tmux attach-probe bug flushPending documents).
     unlistenReplay.current = onTerminalReplay(id, (data, range) => {
       if (firstOutputAt.current === null) firstOutputAt.current = Date.now();
+      armScheduledReady();
       if (historyPending) {
         historyOutput.push({ data, range });
         return;
@@ -826,6 +867,8 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
     });
 
     unlistenReady.current = onTerminalReady(id, () => {
+      terminalReadySeen.current = true;
+      armScheduledReady();
       writeTerm("\r\n");
       if (initialInput && !initialInputSent.current) {
         if (!claimInitialInput(id, initialInput)) {
@@ -1084,6 +1127,8 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       cancelled = true;
       clearPtyInput(id);
       if (initialEnterTimer.current) clearTimeout(initialEnterTimer.current);
+      if (scheduledSettleTimer.current) clearTimeout(scheduledSettleTimer.current);
+      unregisterScheduled?.();
       if (openWatchTimer.current) clearTimeout(openWatchTimer.current);
       if (selectionCopyTimer) clearTimeout(selectionCopyTimer);
       oscHandler.dispose();
@@ -1137,7 +1182,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       fitRef.current = null;
       openedRef.current = false;
     };
-  }, [id, cmd, cwd, initialInput, argsKey, envKey, localOnly, sandbox, projectId, remoteHostId, tmuxSession, tmuxAttach, hostBoundUid, attachOnly, zoomable, persistOnUnmount, declaredKind]);
+  }, [id, cmd, cwd, initialInput, argsKey, envKey, localOnly, sandbox, projectId, remoteHostId, tmuxSession, tmuxAttach, hostBoundUid, attachOnly, zoomable, persistOnUnmount, declaredKind, scheduleTargetId]);
 
   // Re-theme a LIVE, OPEN terminal. Both halves of that guard are load-bearing,
   // and `termRef.current` alone was neither: assigning `options.theme` makes

@@ -315,6 +315,19 @@ pub struct Settings {
     /// [`DEFAULT_AGENT_FENCE_PATHS`]; an explicit empty list exposes none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_fence_paths: Option<Vec<String>>,
+    /// Prefix chips offered by the side panel's per-tab agent composer, keyed by
+    /// agent command (`claude`, `codex`, …). Each entry is one of that CLI's own
+    /// slash commands, submitted ahead of the prompt. Unset falls back to the
+    /// frontend's per-agent defaults; an explicit empty list means "no chips for
+    /// this agent", which is why it is a map of lists rather than one flat list.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_preface_commands: Option<HashMap<String, Vec<String>>>,
+    /// Model names offered by that same composer, keyed by agent command. The
+    /// pick is typed as the agent's own `/model <name>` — Eldrun never passes a
+    /// model flag at launch. Editable because model names change far faster than
+    /// this app ships.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_models: Option<HashMap<String, Vec<String>>>,
     /// When true (the default), the usage recap opens by itself on the first
     /// launch of each day. Turning it off leaves the recap reachable from
     /// Settings — it stops the popup, it does not stop the counting.

@@ -154,7 +154,7 @@ fn write_terminal_session(
 /// folder that is byte-synced to another machine, copied, or moved by hand, which
 /// is the one real cost of moving the authoritative copy into the state dir. A
 /// user who wants it back asks for it (`adopt_folder_tab_layout`), and what they
-/// get goes through [`sanitize_loaded_layout`] first.
+/// get goes through [`sanitize_untrusted_layout`] first.
 ///
 /// The asymmetry is the whole point: *writing* a file into the container's
 /// writable mount grants nothing, and *reading* one back as a command to run is
@@ -164,7 +164,15 @@ fn write_export_copy(local_file: &str, session: &TerminalSession) {
     let Some(sessions_dir) = eldrun_sessions_dir(local_file) else {
         return;
     };
-    if let Err(e) = storage::write_json_atomic(&sessions_dir.join(TERMINALS_FILE), session) {
+    // A schedule binding is local control-plane state: exporting it would make a
+    // copied/cloned project able to name an existing target in agent_tasks.json.
+    // The authoritative state-dir copy keeps it; the travelling project copy
+    // deliberately does not.
+    let mut exported = session.clone();
+    for tab in &mut exported.tab_layout {
+        tab.extra.remove(SCHEDULE_TARGET_KEY);
+    }
+    if let Err(e) = storage::write_json_atomic(&sessions_dir.join(TERMINALS_FILE), &exported) {
         eprintln!("terminal_service: write .eldrun export copy: {e}");
     }
 }
@@ -312,6 +320,15 @@ pub fn sanitize_loaded_layout(tabs: &mut [TabEntry]) {
     sanitize_tab_layout(tabs, &known_tab_commands(&custom), &custom);
 }
 
+/// Sanitize a project-tree layout and remove state-directory-only bindings that
+/// an exported/adopted folder is never allowed to introduce.
+fn sanitize_untrusted_layout(tabs: &mut [TabEntry]) {
+    sanitize_loaded_layout(tabs);
+    for tab in tabs {
+        tab.extra.remove(SCHEDULE_TARGET_KEY);
+    }
+}
+
 /// Neutralize every layout entry whose `cmd` is not a known tab command.
 ///
 /// Entries are **kept**, not dropped: the tab still comes back (with its label,
@@ -347,6 +364,7 @@ pub fn sanitize_tab_layout(
             "location",
             "args",
             HOST_BOUND_UID_KEY,
+            SCHEDULE_TARGET_KEY,
         ] {
             tab.extra.remove(key);
         }
@@ -451,7 +469,7 @@ pub fn adopt_project_tree_session(
 ) -> Result<TerminalSession, String> {
     let mut session = read_project_tree_session(local_file)
         .ok_or_else(|| "no saved layout in this folder".to_string())?;
-    sanitize_loaded_layout(&mut session.tab_layout);
+    sanitize_untrusted_layout(&mut session.tab_layout);
     // `open_apps` is not adopted: a folder-supplied list of host commands to
     // launch is precisely what the move was about, and no legitimate workflow
     // needs one to travel. The tabs do.
@@ -494,7 +512,7 @@ pub fn migrate_project_sessions_once() {
         let Some(mut session) = read_project_tree_session(&entry.local_file) else {
             continue;
         };
-        sanitize_loaded_layout(&mut session.tab_layout);
+        sanitize_untrusted_layout(&mut session.tab_layout);
         if std::fs::create_dir_all(&dir).is_err() {
             continue;
         }
@@ -540,6 +558,9 @@ const MIGRATED_MARKER: &str = ".migrated";
 /// The layout field carrying a tab's host-bound marker id (#150). An index into
 /// `<state_dir>/sessions/<project>/host_bound/`, never an authority on its own.
 const HOST_BOUND_UID_KEY: &str = "hostBoundUid";
+
+/// Stable binding into local-only `agent_tasks.json`. Never exported/adopted.
+const SCHEDULE_TARGET_KEY: &str = "scheduleTargetId";
 
 /// `<project>/.eldrun/sessions/` — where the **export** copies of the session
 /// files live (and where `filetabs.json` / `layout.json` / `windows.json` still
@@ -714,5 +735,52 @@ mod tests {
         let mut tabs = vec![entry("launch-only")];
         sanitize_tab_layout(&mut tabs, &set, &custom);
         assert_eq!(resume_args(&tabs[0]), None);
+    }
+
+    #[test]
+    fn schedule_targets_survive_state_load_but_not_project_tree_adoption() {
+        let mut state_tab = entry("claude");
+        state_tab.extra.insert(
+            SCHEDULE_TARGET_KEY.to_string(),
+            Value::String("local-target".to_string()),
+        );
+        let mut state = vec![state_tab.clone()];
+        sanitize_loaded_layout(&mut state);
+        assert_eq!(
+            state[0].extra.get(SCHEDULE_TARGET_KEY),
+            Some(&Value::String("local-target".to_string()))
+        );
+
+        let mut adopted = vec![state_tab];
+        sanitize_untrusted_layout(&mut adopted);
+        assert!(!adopted[0].extra.contains_key(SCHEDULE_TARGET_KEY));
+    }
+
+    #[test]
+    fn project_tree_export_omits_schedule_target_bindings() {
+        let dir = tempfile::tempdir().expect("temp project");
+        let local_file = dir.path().join("project.json");
+        let mut tab = entry("claude");
+        tab.extra.insert(
+            SCHEDULE_TARGET_KEY.to_string(),
+            Value::String("local-target".to_string()),
+        );
+        let session = TerminalSession {
+            tab_layout: vec![tab],
+            ..TerminalSession::default()
+        };
+
+        write_export_copy(&local_file.to_string_lossy(), &session);
+
+        let exported: TerminalSession = storage::read_json(
+            &dir.path().join(".eldrun/sessions").join(TERMINALS_FILE),
+        )
+        .expect("read export");
+        assert!(!exported.tab_layout[0]
+            .extra
+            .contains_key(SCHEDULE_TARGET_KEY));
+        assert!(session.tab_layout[0]
+            .extra
+            .contains_key(SCHEDULE_TARGET_KEY));
     }
 }

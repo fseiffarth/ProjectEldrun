@@ -724,6 +724,24 @@ pub fn run() {
             commands::settings::save_settings,
             commands::settings::patch_settings,
             commands::settings::save_window_state,
+            // Per-tab scheduled agent prompts. Definitions and receipts live in
+            // local-only agent_tasks.json; the frontend owns wall-clock delivery.
+            commands::agent_tasks::agent_schedules_list,
+            commands::agent_tasks::agent_schedule_upsert,
+            commands::agent_tasks::agent_schedule_delete,
+            commands::agent_tasks::agent_schedules_delete_target,
+            commands::agent_tasks::agent_schedule_claim,
+            commands::agent_tasks::agent_schedule_complete,
+            commands::agent_tasks::agent_schedules_cleanup_orphans,
+            // Project-scoped prompt collection (agent_prompts.json): text with no
+            // tab binding until the user aims it at an agent tab.
+            commands::agent_prompts::agent_prompts_list,
+            commands::agent_prompts::agent_prompt_upsert,
+            commands::agent_prompts::agent_prompt_delete,
+            commands::agent_prompts::agent_prompt_history_list,
+            commands::agent_prompts::agent_prompt_archive,
+            commands::agent_prompts::agent_prompt_record,
+            commands::agent_prompts::agent_prompt_history_clear,
             // Updates (Settings → Updates): check the GitHub releases page,
             // download this platform's artifact, hand it to its installer.
             commands::app_update::check_app_update,
