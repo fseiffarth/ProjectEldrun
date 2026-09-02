@@ -626,18 +626,21 @@ export function applyLocationToTabs(
  * commit both consult it. Pure, so every branch is unit-testable.
  *
  * Ladder (first match wins):
- *   1. `cancelled` (Escape / abort) → `none`.
- *   2. released over the SOURCE popout & handled there → `local` (caller emitted
- *      `cancelled:true`; this is defensive — such a release never reaches here).
- *   3. `shift` → `newWindow` (Shift ALWAYS means "pop into its own window",
+ *   1. `cancelled` → `local`. It carries BOTH of the two cases the source emits
+ *      it for — an Escape/abort, and a release over the source popout that the
+ *      popout already committed itself — and both mean the same thing to this
+ *      window: leave everything alone. (`none` is therefore never returned by
+ *      this function; it stays in the union as the callers' shared "do nothing"
+ *      arm, which they handle identically to `local`.)
+ *   2. `shift` → `newWindow` (Shift ALWAYS means "pop into its own window",
  *      mirroring the main-window tab rule; a lone-tab source is refused downstream,
  *      so it's a clean no-op rather than a hang).
- *   4. over a SIBLING popout → `dockDetached` into it.
- *   5. over the MAIN window → `dockMain` at the resolved pane target.
- *   6. free space (no Eldrun window under the cursor) → `newWindow`.
+ *   3. over a SIBLING popout → `dockDetached` into it.
+ *   4. over the MAIN window → `dockMain` at the resolved pane target.
+ *   5. free space (no Eldrun window under the cursor) → `newWindow`.
  */
 export type DetachedTabDrop =
-  | { kind: "none" } // cancelled — leave everything as-is
+  | { kind: "none" } // never returned here; the callers' shared "do nothing" arm
   | { kind: "local" } // the source popout already committed a within-popout drop
   | { kind: "newWindow" } // Shift, or released in free space → own new popout
   | { kind: "dockDetached"; toGroupId: string } // released over a sibling popout
@@ -1098,9 +1101,11 @@ export async function listenDetachedHost(): Promise<() => void> {
   publishStatus = (force = false) => {
     const store = useTabsStore.getState();
     const { busyByTab, attentionByTab } = useActivityStore.getState();
+    const live = new Set<string>();
     for (const [scope, entries] of Object.entries(store.detachedGroupsByScope)) {
       const tabs = store.tabsByScope[scope] ?? [];
       for (const entry of entries ?? []) {
+        live.add(entry.label);
         const status = statusForEntry(scope, entry, tabs, busyByTab, attentionByTab);
         const sig = JSON.stringify(status);
         if (!force && lastStatus.get(entry.label) === sig) continue;
@@ -1108,6 +1113,14 @@ export async function listenDetachedHost(): Promise<() => void> {
         const payload: DetachedStatusPayload = { scope, status };
         void emit(detachedStatusEvent(entry.label), payload);
       }
+    }
+    // Drop the memory of popouts that are gone, the way the reseed sweep prunes
+    // `lastSig`. Labels are derived from scope+group, so a respawned popout can
+    // reuse one — `answerSeed`'s forced publish already covers that case, but a
+    // map that only ever grows in a session that runs for days should not be
+    // the asymmetric one here.
+    for (const label of [...lastStatus.keys()]) {
+      if (!live.has(label)) lastStatus.delete(label);
     }
   };
   const unActivitySync = useActivityStore.subscribe((s, prev) => {
