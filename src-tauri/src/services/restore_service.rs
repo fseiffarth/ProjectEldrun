@@ -43,6 +43,14 @@ pub fn restore_project_apps(
         if app.mode.as_deref() == Some("embedded") {
             continue;
         }
+        if !file_is_safe_argument(app.file.as_deref()) {
+            eprintln!(
+                "restore_service: refusing to auto-launch '{}' from project '{project_id}' \
+                 open_apps — its file argument looks like a command-line option",
+                app.exec
+            );
+            continue;
+        }
         if !is_allowed_restore_exec(&app.exec, &forbidden, &allowed) {
             eprintln!(
                 "restore_service: refusing to auto-launch '{}' from project '{project_id}' \
@@ -74,6 +82,21 @@ pub fn restore_project_apps(
         }
     }
     launched
+}
+
+/// Whether an entry's `file` is a file argument rather than a **flag**.
+///
+/// `do_launch` appends it as a trailing argv item, so the exec filter above is
+/// only half the gate: a registered app plus one attacker-chosen option is still
+/// an attacker-chosen behaviour (`--script=…`, `--config=…`, `-e …` on the apps
+/// that take them), and none of that is what "reopen the file this project had
+/// open" means. A real path never starts with `-`; `--` is likewise not a file.
+/// Pure, so the rule is testable.
+pub fn file_is_safe_argument(file: Option<&str>) -> bool {
+    match file.map(str::trim) {
+        None | Some("") => true,
+        Some(f) => !f.starts_with('-'),
+    }
 }
 
 /// Whether `exec` may be auto-launched on the host on project activation.
@@ -229,6 +252,18 @@ mod tests {
         // A bare name resolves through PATH and matches the registered basename.
         assert!(is_allowed_restore_exec("firefox", &[], &reg));
         assert!(is_allowed_restore_exec("flatpak run org.x.App", &[], &reg));
+    }
+
+    #[test]
+    fn an_option_shaped_file_argument_is_refused() {
+        // The file is appended to a registered app's argv, so a leading `-` is a
+        // flag the entry's writer chose, not a document to reopen.
+        assert!(file_is_safe_argument(None));
+        assert!(file_is_safe_argument(Some("/home/u/notes.md")));
+        assert!(file_is_safe_argument(Some("relative/notes.md")));
+        assert!(!file_is_safe_argument(Some("--script=/tmp/pwn.lua")));
+        assert!(!file_is_safe_argument(Some("-e")));
+        assert!(!file_is_safe_argument(Some("  --config=/tmp/x")));
     }
 
     #[test]
