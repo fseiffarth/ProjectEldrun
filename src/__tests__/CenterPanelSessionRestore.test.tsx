@@ -54,7 +54,7 @@ describe("loadFromLayout — scope isolation", () => {
     expect(state.activeKey).toBeNull();
   });
 
-  it("agent tab cwd is always replaced by defaultCwd, never the saved cwd", () => {
+  it("agent tab cwd is replaced by defaultCwd unless it is a worktree or a passed agent root", () => {
     const layout = [
       { key: "agent-2", label: "claude", cmd: "claude", cwd: "/saved-cwd", kind: "agent" as const },
     ];
@@ -64,6 +64,20 @@ describe("loadFromLayout — scope isolation", () => {
     const tab = useTabsStore.getState().tabsByScope["project-c"]?.[0];
     expect(tab?.cwd).toBe("/default-cwd");
     expect(tab?.cwd).not.toContain("saved-cwd");
+  });
+
+  it("agent tab keeps a cwd that is one of the agent roots the caller passes (box members)", () => {
+    const layout = [
+      { key: "a1", label: "claude — P", cmd: "claude", cwd: "/members/p", kind: "agent" as const },
+      { key: "a2", label: "claude", cmd: "claude", cwd: "/stale/elsewhere", kind: "agent" as const },
+    ];
+
+    useTabsStore
+      .getState()
+      .loadFromLayout(layout, "/boxes/b1", "box:b1", undefined, { agentRoots: ["/members/p"] });
+
+    const tabs = useTabsStore.getState().tabsByScope["box:b1"] ?? [];
+    expect(tabs.map((t) => t.cwd)).toEqual(["/members/p", "/boxes/b1"]);
   });
 
   it("shell tab cwd is kept from layout (only agents are overridden)", () => {

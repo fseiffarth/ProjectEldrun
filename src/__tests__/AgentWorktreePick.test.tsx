@@ -80,6 +80,22 @@ describe("isProjectWorktreeCwd / restoredAgentCwd", () => {
     expect(restoredAgentCwd("/p/p1/src", "/p/p1")).toBe("/p/p1");
     expect(restoredAgentCwd(undefined, "/p/p1")).toBe("/p/p1");
   });
+
+  it("keeps a cwd that is one of the passed agent roots, or a worktree under one", () => {
+    const roots = ["/p/p1", "/p/p2"];
+    // A box scope's per-member Claude tab starts in the member root.
+    expect(restoredAgentCwd("/p/p2", "/boxes/b1", roots)).toBe("/p/p2");
+    expect(restoredAgentCwd("/p/p2/", "/boxes/b1", roots)).toBe("/p/p2/");
+    expect(restoredAgentCwd("/p/p1/.eldrun/worktrees/feat", "/boxes/b1", roots)).toBe(
+      "/p/p1/.eldrun/worktrees/feat",
+    );
+    // A subdirectory of a member, a stale root, and an empty root list all reset.
+    expect(restoredAgentCwd("/p/p2/src", "/boxes/b1", roots)).toBe("/boxes/b1");
+    expect(restoredAgentCwd("/p/p20", "/boxes/b1", roots)).toBe("/boxes/b1");
+    expect(restoredAgentCwd("/old/p2", "/boxes/b1", roots)).toBe("/boxes/b1");
+    expect(restoredAgentCwd("/p/p2", "/boxes/b1", [])).toBe("/boxes/b1");
+    expect(restoredAgentCwd("/p/p2", "/boxes/b1", [""])).toBe("/boxes/b1");
+  });
 });
 
 describe("agentWorktreeChoices", () => {

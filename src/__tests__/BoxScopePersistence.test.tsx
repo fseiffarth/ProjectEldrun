@@ -113,6 +113,30 @@ describe("restoreBoxScope", () => {
     expect(tabs[0].cwd).toBe("/boxes/b1/sub");
   });
 
+  it("keeps a member-root Claude tab in the member root, and resets a stale agent cwd", async () => {
+    // The "+" menu's per-member Claude tab starts in the member's root; a
+    // relaunch used to move it to the box folder.
+    useProjectsStore.setState((s) => ({
+      projects: s.projects.map((p) => ({ ...p, directory: "/members/p" })),
+    }));
+    useTabsStore.getState().setScope("box:b1");
+    mockInvoke.mockImplementation((cmd: string) =>
+      Promise.resolve(
+        cmd === "load_tab_session"
+          ? {
+              tabLayout: [
+                { key: "a1", label: "Claude — P", cmd: "claude", cwd: "/members/p", kind: "agent", sessionId: "11111111-1111-1111-1111-111111111111" },
+                { key: "a2", label: "Claude", cmd: "claude", cwd: "/old/place", kind: "agent", sessionId: "22222222-2222-2222-2222-222222222222" },
+              ],
+            }
+          : undefined,
+      ),
+    );
+    await restoreBoxScope("box:b1");
+    const tabs = useTabsStore.getState().tabsByScope["box:b1"];
+    expect(tabs.map((t) => t.cwd)).toEqual(["/members/p", "/boxes/b1"]);
+  });
+
   it("seeds one shell at the box folder when nothing restorable was saved", async () => {
     useTabsStore.getState().setScope("box:b1");
     mockInvoke.mockImplementation((cmd: string) =>

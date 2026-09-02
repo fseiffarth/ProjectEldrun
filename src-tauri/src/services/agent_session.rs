@@ -71,6 +71,8 @@ where
     if opts.cmd != "codex" {
         return opts;
     }
+    opts.env
+        .insert(TAB_AGENT_ENV.to_string(), "codex".to_string());
     let Some(uid) = opts.env.get("ELDRUN_TAB_UID").cloned() else {
         return opts;
     };
@@ -83,7 +85,7 @@ where
 /// Whether Codex has a persisted rollout log for `uuid`. Codex stores sessions at
 /// `~/.codex/sessions/<YYYY>/<MM>/<DD>/rollout-<ts>-<uuid>.jsonl`, so we walk the
 /// date buckets (bounded depth) for a `.jsonl` whose name contains the uuid.
-fn codex_session_exists(root: &std::path::Path, uuid: &str) -> bool {
+pub(crate) fn codex_session_exists(root: &std::path::Path, uuid: &str) -> bool {
     fn walk(dir: &std::path::Path, uuid: &str, depth: u8) -> bool {
         if depth > 5 {
             return false;
@@ -129,20 +131,53 @@ fn codex_session_exists(root: &std::path::Path, uuid: &str) -> bool {
 fn resolve_claude_session(opts: PtyOptions) -> PtyOptions {
     let projects = paths::home_dir().join(".claude").join("projects");
     let project_id = opts.project_id.clone();
-    resolve_claude_session_impl(
+    // A fenced/contained agent writes a transcript for a cwd that had no host
+    // dir yet into the project's stage, which is harvested into `projects` only
+    // when the tab goes away — so a respawn while a sibling tab of the same
+    // project is still up has to look there too. Reusing a `--session-id`
+    // Claude already has a log for is a hard error ("already in use"), so a
+    // missed log is a dead tab, not a fresh one.
+    let mut roots: Vec<PathBuf> = vec![projects];
+    if let Some(pid) = project_id.as_deref() {
+        roots.push(crate::services::sandbox::claude_projects_stage(pid));
+    }
+    let root_refs: Vec<&std::path::Path> = roots.iter().map(|p| p.as_path()).collect();
+    resolve_claude_session_in(
         opts,
-        &projects,
+        &root_refs,
         |uid| read_live_session_for(project_id.as_deref(), uid),
         |uid| read_live_mode_for(project_id.as_deref(), uid),
     )
 }
 
-/// Testable core of [`resolve_claude_session`]: `projects` is the Claude session
-/// root, `live_lookup` maps a launch id → recorded live id (if any), and
-/// `mode_lookup` maps a launch id → the last hook-recorded permission mode.
+/// Testable core of [`resolve_claude_session`] against a single Claude session
+/// root — see [`resolve_claude_session_in`] for the several-roots form.
+#[cfg(test)]
 fn resolve_claude_session_impl<F, M>(
-    mut opts: PtyOptions,
+    opts: PtyOptions,
     projects: &std::path::Path,
+    live_lookup: F,
+    mode_lookup: M,
+) -> PtyOptions
+where
+    F: Fn(&str) -> Option<String>,
+    M: Fn(&str) -> Option<String>,
+{
+    resolve_claude_session_in(opts, &[projects], live_lookup, mode_lookup)
+}
+
+/// Env var naming the agent a tab runs, set beside `ELDRUN_TAB_UID` so the hook
+/// script knows which continuity rule applies to a record — see
+/// [`hook_script_body`]. Every process under the tab inherits both.
+pub const TAB_AGENT_ENV: &str = "ELDRUN_TAB_AGENT";
+
+/// [`resolve_claude_session_impl`] over several session roots: a log found under
+/// any of them counts. `live_lookup` maps a launch id → recorded live id (if
+/// any), and `mode_lookup` maps a launch id → the last hook-recorded permission
+/// mode.
+fn resolve_claude_session_in<F, M>(
+    mut opts: PtyOptions,
+    roots: &[&std::path::Path],
     live_lookup: F,
     mode_lookup: M,
 ) -> PtyOptions
@@ -153,6 +188,11 @@ where
     if opts.cmd != "claude" {
         return opts;
     }
+    // Set unconditionally: a persisted layout's `env` is not where this comes
+    // from, and a wrong marker would relax the hook's guard for this tab.
+    opts.env
+        .insert(TAB_AGENT_ENV.to_string(), "claude".to_string());
+    let session_exists = |id: &str| roots.iter().any(|root| claude_session_exists(root, id));
     let Some(i) = opts
         .args
         .iter()
@@ -172,8 +212,8 @@ where
 
     // Prefer the hook-recorded live id (survives /clear); fall back to launch id.
     let resume_target = live_lookup(&launch_id)
-        .filter(|id| claude_session_exists(projects, id))
-        .or_else(|| claude_session_exists(projects, &launch_id).then(|| launch_id.clone()));
+        .filter(|id| session_exists(id))
+        .or_else(|| session_exists(&launch_id).then(|| launch_id.clone()));
 
     match resume_target {
         Some(id) => {
@@ -610,6 +650,19 @@ fn write_hook_script() -> std::io::Result<()> {
 /// (`SessionStart` does not; `Stop` does) — `permission_mode` →
 /// `<live_dir>/<ELDRUN_TAB_UID>.mode`. No jq dependency: one `sed` per field
 /// pulls the value out of the one-line JSON.
+///
+/// **Only the tab's own session may move the record.** Every process under the
+/// tab inherits `ELDRUN_TAB_UID`, so a nested CLI — the tab's agent running
+/// `claude -p …` through its own shell tool, verified live — fires this hook too,
+/// and used to overwrite both records with its one-shot session and its default
+/// mode: the next relaunch resumed a dead headless session and lost the
+/// conversation. A Claude tab's session id is its launch key and stays that id
+/// until `/clear` or `/resume` rolls it (the `source` field says which), and
+/// `Stop` never introduces an id, so a session id that is neither the key nor
+/// the current record is accepted only from a `clear`/`resume` start. A Codex
+/// tab (`ELDRUN_TAB_AGENT=codex`) mints its own ids, so its record is free-form
+/// — except that a Claude fired inside it (`CLAUDECODE` is set by Claude for its
+/// children, never by Codex) is refused outright.
 #[cfg(not(windows))]
 fn hook_script_body(live_dir: &str) -> String {
     format!(
@@ -623,32 +676,42 @@ fn hook_script_body(live_dir: &str) -> String {
          input=$(cat)\n\
          sid=$(printf '%s' \"$input\" | tr '\\n' ' ' | sed -n 's/.*\"session_id\"[[:space:]]*:[[:space:]]*\"\\([0-9a-fA-F-]*\\)\".*/\\1/p')\n\
          mode=$(printf '%s' \"$input\" | tr '\\n' ' ' | sed -n 's/.*\"permission_mode\"[[:space:]]*:[[:space:]]*\"\\([a-zA-Z]*\\)\".*/\\1/p')\n\
-         [ -n \"$sid\" ] || [ -n \"$mode\" ] || exit 0\n\
+         src=$(printf '%s' \"$input\" | tr '\\n' ' ' | sed -n 's/.*\"source\"[[:space:]]*:[[:space:]]*\"\\([a-zA-Z]*\\)\".*/\\1/p')\n\
+         [ -n \"$sid\" ] || exit 0\n\
          dir=\"{live_dir}\"\n\
          mkdir -p \"$dir\" 2>/dev/null || exit 0\n\
-         [ -n \"$sid\" ] && printf '%s' \"$sid\" > \"$dir/$ELDRUN_TAB_UID\"\n\
+         cur=$(cat \"$dir/$ELDRUN_TAB_UID\" 2>/dev/null)\n\
+         # Only the tab's own session may move the record: a nested CLI under the\n\
+         # tab inherits ELDRUN_TAB_UID and fires this hook too.\n\
+         case \"$ELDRUN_TAB_AGENT\" in\n\
+         \x20 codex) [ -z \"$CLAUDECODE\" ] || exit 0 ;;\n\
+         \x20 *) if [ \"$sid\" != \"$ELDRUN_TAB_UID\" ] && [ \"$sid\" != \"$cur\" ]; then\n\
+         \x20      case \"$src\" in clear|resume) ;; *) exit 0 ;; esac\n\
+         \x20    fi ;;\n\
+         esac\n\
+         printf '%s' \"$sid\" > \"$dir/$ELDRUN_TAB_UID\"\n\
          [ -n \"$mode\" ] && printf '%s' \"$mode\" > \"$dir/$ELDRUN_TAB_UID.mode\"\n\
          exit 0\n",
         live_dir = live_dir,
     )
 }
 
-/// PowerShell hook body (Windows). Mirrors the POSIX script: reads the SessionStart
-/// JSON on stdin, extracts `session_id` with a regex (no jq/`Get-Content` JSON
-/// dependency), and writes it to `<live_dir>/<ELDRUN_TAB_UID>` using the same key
-/// scheme `read_live_session` reads back. No-op unless launched by Eldrun
-/// (`ELDRUN_TAB_UID` set); the uuid-ish guard doubles as path-traversal defense.
-/// `[IO.File]::WriteAllText` writes UTF-8 *without* a BOM, so the stored id round-
-/// trips cleanly through `read_live_session`'s `trim()`/`is_uuidish` checks.
+/// PowerShell hook body (Windows). Mirrors the POSIX script — the same fields,
+/// the same continuity rule — with regexes in place of `sed` and no jq/
+/// `Get-Content` JSON dependency. Keyed and guarded the same way, so
+/// `read_live_session` reads both back identically. `[IO.File]::WriteAllText`
+/// writes UTF-8 *without* a BOM, so the stored id round-trips cleanly through
+/// `read_live_session`'s `trim()`/`is_uuidish` checks.
 #[cfg(windows)]
 fn hook_script_body(live_dir: &str) -> String {
     // `live_dir` is a Windows path (backslashes); embed it in a single-quoted
     // PowerShell literal so backslashes are not treated as escapes.
     let live_dir = live_dir.replace('\'', "''");
     format!(
-        "# Eldrun SessionStart hook - records the agent's live session id per tab so\r\n\
-         # Eldrun can resume the current session (incl. after /clear). No-op unless\r\n\
-         # launched by Eldrun (ELDRUN_TAB_UID set). Managed by Eldrun; do not edit.\r\n\
+        "# Eldrun agent hook (SessionStart + Stop) - records the agent's live session\r\n\
+         # id and permission mode per tab so Eldrun can resume the current session\r\n\
+         # (incl. after /clear). No-op unless launched by Eldrun (ELDRUN_TAB_UID set).\r\n\
+         # Managed by Eldrun; do not edit.\r\n\
          $ErrorActionPreference = 'SilentlyContinue'\r\n\
          $uid = $env:ELDRUN_TAB_UID\r\n\
          if ([string]::IsNullOrEmpty($uid)) {{ exit 0 }}\r\n\
@@ -656,11 +719,25 @@ fn hook_script_body(live_dir: &str) -> String {
          $payload = [Console]::In.ReadToEnd()\r\n\
          $m = [regex]::Match($payload, '\"session_id\"\\s*:\\s*\"([0-9A-Fa-f-]+)\"')\r\n\
          $mm = [regex]::Match($payload, '\"permission_mode\"\\s*:\\s*\"([A-Za-z]+)\"')\r\n\
-         if ((-not $m.Success) -and (-not $mm.Success)) {{ exit 0 }}\r\n\
+         $ms = [regex]::Match($payload, '\"source\"\\s*:\\s*\"([A-Za-z]+)\"')\r\n\
+         if (-not $m.Success) {{ exit 0 }}\r\n\
+         $sid = $m.Groups[1].Value\r\n\
          $dir = '{live_dir}'\r\n\
          [void](New-Item -ItemType Directory -Force -Path $dir -ErrorAction SilentlyContinue)\r\n\
-         if ($m.Success) {{ [IO.File]::WriteAllText((Join-Path $dir $uid), $m.Groups[1].Value) }}\r\n\
-         if ($mm.Success) {{ [IO.File]::WriteAllText((Join-Path $dir ($uid + '.mode')), $mm.Groups[1].Value) }}\r\n\
+         $rec = Join-Path $dir $uid\r\n\
+         $cur = ''\r\n\
+         if (Test-Path $rec) {{ $cur = [IO.File]::ReadAllText($rec).Trim() }}\r\n\
+         # Only the tab's own session may move the record: a nested CLI under the\r\n\
+         # tab inherits ELDRUN_TAB_UID and fires this hook too.\r\n\
+         if ($env:ELDRUN_TAB_AGENT -eq 'codex') {{\r\n\
+         \x20 if (-not [string]::IsNullOrEmpty($env:CLAUDECODE)) {{ exit 0 }}\r\n\
+         }} elseif (($sid -ne $uid) -and ($sid -ne $cur)) {{\r\n\
+         \x20 $src = ''\r\n\
+         \x20 if ($ms.Success) {{ $src = $ms.Groups[1].Value }}\r\n\
+         \x20 if (($src -ne 'clear') -and ($src -ne 'resume')) {{ exit 0 }}\r\n\
+         }}\r\n\
+         [IO.File]::WriteAllText($rec, $sid)\r\n\
+         if ($mm.Success) {{ [IO.File]::WriteAllText(($rec + '.mode'), $mm.Groups[1].Value) }}\r\n\
          exit 0\r\n",
         live_dir = live_dir,
     )
@@ -1136,6 +1213,142 @@ mod tests {
         assert!(body.contains("\"session_id\""));
         assert!(body.contains("\"permission_mode\""));
         assert!(body.contains(".mode"));
+    }
+
+    /// Run the POSIX hook body as the agents would: `sh <script>` with the tab
+    /// env and the hook JSON on stdin. Returns the record and mode files' text.
+    #[cfg(unix)]
+    fn run_hook(
+        script: &std::path::Path,
+        live_dir: &std::path::Path,
+        uid: &str,
+        agent: Option<&str>,
+        claudecode: bool,
+        payload: &str,
+    ) -> (Option<String>, Option<String>) {
+        use std::io::Write as _;
+        let mut cmd = std::process::Command::new("sh");
+        cmd.arg(script)
+            .env_clear()
+            .env("PATH", std::env::var("PATH").unwrap_or_default())
+            .env("ELDRUN_TAB_UID", uid)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        if let Some(a) = agent {
+            cmd.env(TAB_AGENT_ENV, a);
+        }
+        if claudecode {
+            cmd.env("CLAUDECODE", "1");
+        }
+        let mut child = cmd.spawn().expect("sh");
+        child.stdin.take().unwrap().write_all(payload.as_bytes()).unwrap();
+        assert!(child.wait().unwrap().success());
+        let read = |name: String| std::fs::read_to_string(live_dir.join(name)).ok();
+        (read(uid.to_string()), read(format!("{uid}.mode")))
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hook_script_lets_only_the_tabs_own_session_move_the_record() {
+        let tmp = unique_tmp("eldrun-hook-run");
+        let live = tmp.join("live");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let script = tmp.join("hook.sh");
+        std::fs::write(&script, hook_script_body(&live.to_string_lossy())).unwrap();
+        let uid = "11111111-1111-4111-8111-111111111111";
+        let nested = "22222222-2222-4222-8222-222222222222";
+        let cleared = "33333333-3333-4333-8333-333333333333";
+        let start = |sid: &str, src: &str| {
+            format!(r#"{{"session_id":"{sid}","hook_event_name":"SessionStart","source":"{src}"}}"#)
+        };
+        let stop = |sid: &str, mode: &str| {
+            format!(r#"{{"session_id":"{sid}","hook_event_name":"Stop","permission_mode":"{mode}"}}"#)
+        };
+        let claude = Some("claude");
+
+        // The tab's own start records its launch id; Stop records the mode.
+        let (rec, _) = run_hook(&script, &live, uid, claude, true, &start(uid, "startup"));
+        assert_eq!(rec.as_deref(), Some(uid));
+        let (rec, mode) = run_hook(&script, &live, uid, claude, true, &stop(uid, "acceptEdits"));
+        assert_eq!(rec.as_deref(), Some(uid));
+        assert_eq!(mode.as_deref(), Some("acceptEdits"));
+
+        // A nested `claude -p` under the tab (same env, CLAUDECODE set) is refused
+        // on both events: neither record moves.
+        let (rec, mode) = run_hook(&script, &live, uid, claude, true, &start(nested, "startup"));
+        assert_eq!(rec.as_deref(), Some(uid));
+        assert_eq!(mode.as_deref(), Some("acceptEdits"));
+        let (rec, mode) = run_hook(&script, &live, uid, claude, true, &stop(nested, "default"));
+        assert_eq!(rec.as_deref(), Some(uid));
+        assert_eq!(mode.as_deref(), Some("acceptEdits"));
+
+        // `/clear` rolls the id, and the following Stop is accepted for the new one.
+        let (rec, _) = run_hook(&script, &live, uid, claude, true, &start(cleared, "clear"));
+        assert_eq!(rec.as_deref(), Some(cleared));
+        let (rec, mode) = run_hook(&script, &live, uid, claude, true, &stop(cleared, "plan"));
+        assert_eq!(rec.as_deref(), Some(cleared));
+        assert_eq!(mode.as_deref(), Some("plan"));
+        // …and the launch id itself is always the tab's (a relaunch on `--resume
+        // <launch>` after a lost record).
+        let (rec, _) = run_hook(&script, &live, uid, claude, true, &start(uid, "resume"));
+        assert_eq!(rec.as_deref(), Some(uid));
+        // A `resume` start to another conversation is the user's choice.
+        let (rec, _) = run_hook(&script, &live, uid, claude, true, &start(nested, "resume"));
+        assert_eq!(rec.as_deref(), Some(nested));
+
+        // No agent marker (an older launch): the strict rule applies.
+        let (rec, _) = run_hook(&script, &live, uid, None, true, &start(cleared, "startup"));
+        assert_eq!(rec.as_deref(), Some(nested));
+
+        // A Codex tab mints its own ids, so its record is free-form — but a
+        // Claude fired under it (CLAUDECODE set) is refused.
+        let codex_uid = "44444444-4444-4444-8444-444444444444";
+        let codex_id = "55555555-5555-4555-8555-555555555555";
+        let (rec, _) = run_hook(&script, &live, codex_uid, Some("codex"), false, &start(codex_id, "startup"));
+        assert_eq!(rec.as_deref(), Some(codex_id));
+        let (rec, _) = run_hook(&script, &live, codex_uid, Some("codex"), true, &start(nested, "startup"));
+        assert_eq!(rec.as_deref(), Some(codex_id));
+
+        // No session id → nothing written, not even a mode.
+        let other = "66666666-6666-4666-8666-666666666666";
+        let (rec, mode) = run_hook(&script, &live, other, claude, true, r#"{"permission_mode":"plan"}"#);
+        assert!(rec.is_none() && mode.is_none());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn resolve_finds_a_log_under_any_of_several_roots() {
+        // The fenced/contained stage holds a transcript until the tab goes away;
+        // a respawn meanwhile must still see it — reusing the `--session-id`
+        // would be refused by Claude.
+        let uuid = "9d9d9d9d-9d9d-4d9d-8d9d-9d9d9d9d9d9d";
+        let empty = projects_with_sessions(&[]);
+        let stage = projects_with_sessions(&[uuid]);
+        let out = resolve_claude_session_in(
+            opts_with_args(&["--session-id", uuid]),
+            &[empty.as_path(), stage.as_path()],
+            |_| None,
+            |_| None,
+        );
+        assert_eq!(out.args, vec!["--resume".to_string(), uuid.to_string()]);
+        assert_eq!(out.env.get(TAB_AGENT_ENV).map(String::as_str), Some("claude"));
+    }
+
+    #[test]
+    fn resolvers_stamp_the_tab_agent_over_whatever_the_layout_carried() {
+        let projects = projects_with_sessions(&[]);
+        let mut opts = opts_with_args(&["--session-id", "abc-123"]);
+        opts.env.insert(TAB_AGENT_ENV.to_string(), "codex".to_string());
+        let out = resolve_claude_session_impl(opts, &projects, |_| None, |_| None);
+        assert_eq!(out.env.get(TAB_AGENT_ENV).map(String::as_str), Some("claude"));
+
+        let mut opts = opts_with_args(&[]);
+        opts.cmd = "codex".to_string();
+        opts.env
+            .insert("ELDRUN_TAB_UID".to_string(), "11111111-1111-4111-8111-111111111111".to_string());
+        let out = resolve_codex_session_impl(opts, &projects, |_| None);
+        assert_eq!(out.env.get(TAB_AGENT_ENV).map(String::as_str), Some("codex"));
     }
 
     #[test]

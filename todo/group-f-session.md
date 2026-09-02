@@ -114,4 +114,46 @@
         `vibe --continue`. Same shared-latest caveat. *Files: `stores/tabs.ts`
         (`RESUMABLE_AGENTS.vibe`).* Verified against `vibe --help`.
 
+    - [x] **39e — Restore hardening (review of 39c/39d, 2026-09-02).** ✅ Code
+      done, not run live. Four things the review found, each with a unit test:
+      **(1)** the hook accepted any Claude that inherited `ELDRUN_TAB_UID` — a
+      `claude -p` run from the tab's own Bash tool overwrote both the live id and
+      the mode record (reproduced live) — so the script now lets only the tab's
+      own session move the record (id must be the launch key or the current
+      record, else only a `clear`/`resume` start), keyed by a new
+      `ELDRUN_TAB_AGENT` marker, and the Codex binder adopts a hook id only when
+      Codex has a rollout for it; **(2)** a box's per-member Claude tab restored
+      into the box folder instead of the member root (`restoredAgentCwd` now
+      takes the box's member roots as `agentRoots`); **(3)** a restored remote
+      Claude tab always launched `--session-id <launch>`, which Claude refuses
+      once the host has that transcript ("already in use", reproduced live) —
+      the remote command now probes the host and picks `--resume` there
+      (`ssh_exec::host_side_resume`); **(4)** the crashed-run transcript harvest
+      ran on the off-thread container sweep, racing restored tabs — it is now
+      synchronous at startup (`sandbox::harvest_and_clear_stage`), and the
+      resolver also probes the project's stage. Verified live along the way: the
+      current Claude CLI finds `--resume <id>` from any cwd. *Files:
+      `services/agent_session.rs`, `services/ssh_exec.rs`, `services/sandbox.rs`,
+      `services/codex_bind.rs`, `lib.rs`, `lib/agentWorktrees.ts`,
+      `stores/{tabs,boxes}.ts`; doc `docs/context/agent_sessions.md`.*
+      - [x] 🤖 Automated — `hook_script_lets_only_the_tabs_own_session_move_the_record`
+        (runs the real `sh` script), `resolve_finds_a_log_under_any_of_several_roots`,
+        `remote_command_lets_the_host_decide_a_claude_resume`, and the
+        `restoredAgentCwd` / box-restore cases in `AgentWorktreePick`,
+        `CenterPanelSessionRestore`, `BoxScopePersistence`.
+      - [ ] 🖐️ Manual test (needs a backend rebuild + restart, which rewrites the
+        hook script on startup)
+        - [ ] In a Claude tab, set a non-default mode (shift+tab), ask it to run
+          `claude -p "say ok"`, then restart Eldrun → the tab resumes *its*
+          conversation in the mode you set, not the one-shot run.
+        - [ ] `/clear` in a Claude tab, chat, restart → the post-clear
+          conversation comes back.
+        - [ ] Box scope: "+ → Claude — ⟨member⟩", restart → the tab is in the
+          member root (`pwd` in a shell or the tab hover), not the box folder.
+        - [ ] Remote project: Claude tab, chat, `tmux kill-server` on the host
+          (or reboot it), restart Eldrun → the tab resumes instead of dying with
+          "Session ID … is already in use".
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+
 ---

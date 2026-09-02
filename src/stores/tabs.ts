@@ -784,6 +784,15 @@ export type DetachedEditPayload =
   | { kind: "setUrl"; key: string; url: string };
 
 /** Flat tab shape as persisted in project.json's `tab_layout`. */
+/**
+ * Restore-time knobs for `loadFromLayout`. `agentRoots`: directories besides
+ * the scope root a restored agent tab may keep as its cwd — a box scope's
+ * member roots (see `restoredAgentCwd`). Absent means the scope root only.
+ */
+export interface LoadFromLayoutOptions {
+  agentRoots?: readonly string[];
+}
+
 export interface SavedTabEntry {
   key: string;
   label: string;
@@ -1384,6 +1393,7 @@ interface TabsStore {
     defaultCwd: string,
     targetScope?: string,
     groups?: SavedLayoutTree,
+    opts?: LoadFromLayoutOptions,
   ) => void;
   /** Atomically hydrate an inactive scope, deduplicate a Mobile request, add its
    * desktop-built tab spec, and strictly persist the resulting target scope. */
@@ -4161,7 +4171,8 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     });
   },
 
-  loadFromLayout: (layout, defaultCwd, targetScope, groups) => {
+  loadFromLayout: (layout, defaultCwd, targetScope, groups, opts) => {
+    const agentRoots = opts?.agentRoots ?? [];
     // A retired kind is dropped first and unconditionally. Unlike the withdrawal
     // below this waits for nothing: the kind does not exist any more, and the
     // fall-through for its unrecognized `cmd` is `"shell"` — so a mail tab saved
@@ -4197,10 +4208,13 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
         cmdToKind(t.cmd || (t.type === "files" ? FILES_TAB_CMD : ""));
       // Agent tabs start in the current project dir so stale saved cwds don't
       // put the agent in the wrong directory after a project move/rename — with
-      // one exception: a cwd under THIS root's `.eldrun/worktrees/` is a linked
-      // worktree the agent was deliberately started in, and Claude keys its
-      // history by cwd, so resetting it is what made `--resume` come back as a
-      // fresh conversation (`restoredAgentCwd`).
+      // two exceptions, both places the scope *derives* rather than remembers: a
+      // cwd under THIS root's `.eldrun/worktrees/` is a linked worktree the agent
+      // was deliberately started in, and a box scope's member root (or a
+      // worktree under one) is where its per-member Claude tab was started.
+      // Resetting those put the agent in the wrong directory and, on the CLI of
+      // the day, made `--resume` come back as a fresh conversation
+      // (`restoredAgentCwd`).
       const isAgent = kind === "agent" || kind === "local_agent";
       const freshKey = nextKey(kind);
       keyMap.set(t.key, freshKey);
@@ -4257,7 +4271,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
         cmd: t.cmd,
         args,
         env,
-        cwd: isAgent && defaultCwd ? restoredAgentCwd(t.cwd, defaultCwd) : t.cwd || defaultCwd,
+        cwd: isAgent && defaultCwd ? restoredAgentCwd(t.cwd, defaultCwd, agentRoots) : t.cwd || defaultCwd,
         kind,
         sessionId: t.sessionId,
         // The binding into agent_tasks.json. Kept from the layout when it has one,
@@ -4550,7 +4564,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
 export async function hydrateScopeFromDisk(
   scope: string,
   defaultCwd: string | (() => Promise<string>),
-  opts: { createEmptyScope?: boolean } = {},
+  opts: { createEmptyScope?: boolean } & LoadFromLayoutOptions = {},
 ): Promise<boolean> {
   const hydrated = () =>
     Object.prototype.hasOwnProperty.call(useTabsStore.getState().tabsByScope, scope);
@@ -4584,7 +4598,9 @@ export async function hydrateScopeFromDisk(
   if (hydrated()) return true;
   useTabsStore
     .getState()
-    .loadFromLayout(restorable, cwd, scope, (saved.tabGroups as SavedLayoutTree | undefined) ?? undefined);
+    .loadFromLayout(restorable, cwd, scope, (saved.tabGroups as SavedLayoutTree | undefined) ?? undefined, {
+      agentRoots: opts.agentRoots,
+    });
   return true;
 }
 

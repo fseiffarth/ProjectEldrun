@@ -665,9 +665,13 @@ pub fn run() {
             // Cheap: one small file per project, and it no-ops after the first
             // run. See `services::terminal_service::migrate_project_sessions_once`.
             services::terminal_service::migrate_project_sessions_once();
+            // A crashed run's staged agent transcripts go home BEFORE the window
+            // can restore a tab: the resume probe reads the host dir, and the
+            // stage root is wiped here too, so no fenced spawn can race it.
+            services::sandbox::harvest_and_clear_stage();
             // Remove project containers a previous run left behind (a crash
-            // skips the exit teardown) and the staged config copies. Off-thread:
-            // docker may be slow or absent, and neither may block startup.
+            // skips the exit teardown). Off-thread: docker may be slow or
+            // absent, and neither may block startup.
             std::thread::spawn(services::sandbox::sweep_orphans);
             // Reap project VMs a previous (crashed) run left behind, by
             // pidfile — a VM's lifetime is its app session, so anything alive

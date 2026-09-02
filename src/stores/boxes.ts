@@ -117,7 +117,15 @@ export async function restoreBoxScope(scope: string): Promise<void> {
     // The shared hydration path (also the fix for saved custom-agent tabs,
     // which the hand-rolled copy here dropped by omitting `resumeArgs` from
     // the restorable probe). False → nothing restorable was saved → seed.
-    if (!(await hydrateScopeFromDisk(scope, folder))) seedShell();
+    // Member roots are places a restored agent tab may keep as its cwd: the
+    // per-member Claude tab starts there on purpose, and resetting it to the
+    // box folder put the agent in the wrong directory on every relaunch.
+    const agentRoots = boxMembersOfScope(
+      scope,
+      useBoxesStore.getState().boxes,
+      useProjectsStore.getState().projects,
+    ).map((m) => m.dir);
+    if (!(await hydrateScopeFromDisk(scope, folder, { agentRoots }))) seedShell();
   } catch {
     seedShell();
   }

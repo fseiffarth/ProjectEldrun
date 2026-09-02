@@ -361,8 +361,14 @@ fn poll_once(root: &Path) -> Duration {
     } in tabs
     {
         // The trusted hook, if it is running, is strictly more precise than we
-        // are — so if it has recorded an id we didn't put there, it wins.
-        if let Some(hook_id) = agent_session::read_live_session_in(&live_dir, &uid) {
+        // are — so if it has recorded an id we didn't put there, it wins. Only
+        // an id Codex actually has a rollout for, though: the record can also
+        // be written by a *Claude* fired under this tab (its hook inherits the
+        // tab's key), and adopting that id would leave the tab with a session
+        // Codex cannot resume.
+        if let Some(hook_id) = agent_session::read_live_session_in(&live_dir, &uid)
+            .filter(|id| agent_session::codex_session_exists(root, id))
+        {
             if Some(&hook_id) != bound.as_ref() && !known.contains(&hook_id) {
                 adopt(&pty, hook_id);
                 continue;

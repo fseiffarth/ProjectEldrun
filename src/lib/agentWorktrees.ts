@@ -46,13 +46,32 @@ export function isProjectWorktreeCwd(cwd: string, projectDir: string): boolean {
   return name.length > 0 && !name.includes("/") && name !== "." && name !== "..";
 }
 
+/** Same directory, modulo a trailing separator and separator style. */
+function sameDir(a: string, b: string): boolean {
+  const norm = (s: string) => stripTrailingSep(s).replace(/\\/g, "/");
+  return norm(a).length > 0 && norm(a) === norm(b);
+}
+
 /**
- * The cwd a restored agent tab spawns in: its saved worktree cwd when it has
- * one under this project's root, else the project root. Pure — the seam
- * `loadFromLayout` goes through.
+ * The cwd a restored agent tab spawns in: its saved cwd when that is a place
+ * the scope *derives* rather than remembers — a linked worktree under the
+ * scope's own root, or (a box scope) one of the box's member roots or a
+ * worktree under one, which is where the "+" menu's per-member Claude tab is
+ * deliberately started — else the scope root. A cwd that is none of these is
+ * a stale one from before a project move and resets, as before. Pure — the
+ * seam `loadFromLayout` goes through; `agentRoots` is what the box restore
+ * passes from `boxMembersOfScope`.
  */
-export function restoredAgentCwd(savedCwd: string | undefined, defaultCwd: string): string {
-  if (savedCwd && isProjectWorktreeCwd(savedCwd, defaultCwd)) return savedCwd;
+export function restoredAgentCwd(
+  savedCwd: string | undefined,
+  defaultCwd: string,
+  agentRoots: readonly string[] = [],
+): string {
+  if (!savedCwd) return defaultCwd;
+  if (isProjectWorktreeCwd(savedCwd, defaultCwd)) return savedCwd;
+  for (const root of agentRoots) {
+    if (sameDir(savedCwd, root) || isProjectWorktreeCwd(savedCwd, root)) return savedCwd;
+  }
   return defaultCwd;
 }
 

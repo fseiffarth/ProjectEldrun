@@ -959,16 +959,28 @@ pub fn down_all() {
     exec_tabs().lock().unwrap().clear();
 }
 
-/// Startup sweep: remove every container labelled `eldrun.owner=eldrun` (a
-/// previous run's containers are by definition stale) and clear the staged
-/// config copies (recreated at each `up`). Best-effort; cheap no-op when
-/// docker is absent.
-pub fn sweep_orphans() {
+/// Startup, **before the window can spawn anything**: harvest the transcripts a
+/// previous run left in the stage and clear the stage root.
+///
+/// A crashed run never got to harvest, so whatever its fenced/contained agents
+/// recorded for a cwd that had no host transcript dir yet is still here — and
+/// the resolver's session probe reads the host dir. This used to run on the
+/// [`sweep_orphans`] thread, racing the restored tabs: a restore that probed
+/// before the harvest landed saw no log and launched `--session-id <launch>`,
+/// which Claude refuses once a log for that id exists ("already in use"), and
+/// a fenced spawn that set its stage up before the wipe had it pulled out from
+/// under its mount. Plain renames, so it is cheap enough to block on.
+pub fn harvest_and_clear_stage() {
     let stage_root = storage::state_dir().join("sandbox-stage");
-    // Before the wipe: a previous run that crashed never got to harvest the
-    // transcripts its containers wrote into the stage.
     harvest_all_transcripts();
     let _ = std::fs::remove_dir_all(&stage_root);
+}
+
+/// Startup sweep: remove every container labelled `eldrun.owner=eldrun` (a
+/// previous run's containers are by definition stale). The staged config
+/// copies are cleared by [`harvest_and_clear_stage`], which must have run first
+/// and synchronously. Best-effort; cheap no-op when docker is absent.
+pub fn sweep_orphans() {
     // Containers are Unix-only (`up_for_project` is a no-op and spawn refuses on
     // Windows), so a previous run can't have left one behind — don't spawn
     // `docker --version`/`docker ps` at every Windows startup for nothing.
