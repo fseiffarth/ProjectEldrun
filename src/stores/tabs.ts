@@ -382,6 +382,10 @@ export interface ViewerState {
   // Absent means the tab tracks the per-type `viewer_prefs.tex` default, which
   // is ON — see `useTexHoverPreview`.
   texHoverPreview?: boolean;
+  // Tab-local beamer-mode override for the TeX editor (#tex-beamer). Absent
+  // means the tab follows the document: on when any file of it loads
+  // `\documentclass{beamer}`, off otherwise — see `useTexBeamerMode`.
+  texBeamer?: boolean;
   // Debug breakpoints (#py), as 1-based line numbers into the file. Persisted per
   // tab like the reader's scroll position, so the dots survive closing the file
   // and an Eldrun restart. Remapped as the draft is edited (see useBreakpoints);

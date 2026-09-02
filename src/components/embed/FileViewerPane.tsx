@@ -66,6 +66,19 @@ import {
   generateToc,
   type EditResult,
 } from "../../lib/viewers/markdownEdit";
+import {
+  BEAMER_OVERLAY_COMMANDS,
+  beamerEditRange,
+  buildOverlaySpec,
+  insertPause,
+  isBeamerDocument,
+  isOverlaySpecBody,
+  nextOverlayNumber,
+  overlayItems,
+  wrapBeamerOverlay,
+  type BeamerOverlayCommand,
+  type RememberedSelection,
+} from "../../lib/viewers/beamer";
 import { internalViewerFor, disabledViewers, relFromAbs, type InternalViewer, type FileEntry } from "../../lib/viewers/fileUtils";
 import {
   isPythonPath,
@@ -2630,6 +2643,7 @@ function CodeEditor({
   gotoLine,
   onGotoApplied,
   onCaretChange,
+  onSelectionChange,
   caretApiRef,
   editorApiRef,
   showBlame,
@@ -2659,6 +2673,12 @@ function CodeEditor({
   /** Reports the current caret offset (after clicks / key navigation), so the
    *  LaTeX viewer can run SyncTeX forward search from it on compile. */
   onCaretChange?: (offset: number) => void;
+  /** Reports the selection `[start, end)` after clicks / key navigation, while
+   *  the textarea is focused (the same blur guard as `onCaretChange`). The
+   *  beamer bar (#tex-beamer) remembers the last real one: WebKitGTK collapses
+   *  a textarea's selection when focus moves to the bar's own number field, so
+   *  by the time Wrap is clicked the live selection may already be gone. */
+  onSelectionChange?: (start: number, end: number) => void;
   /** When set, receives a getter for the textarea's *live* caret offset (or
    *  `null` if the editor isn't mounted/available). The LaTeX viewer reads this
    *  synchronously at compile time so forward search uses the real cursor even if
@@ -3997,12 +4017,15 @@ function CodeEditor({
   const emitCaret = useCallback(() => {
     const el = textareaRef.current;
     if (el) {
-      if (document.activeElement === el && onCaretChange) onCaretChange(el.selectionStart);
+      if (document.activeElement === el) {
+        onCaretChange?.(el.selectionStart);
+        onSelectionChange?.(el.selectionStart, el.selectionEnd);
+      }
       // Track the caret's line for the blame inline hint (cheap; only read).
       setCaretLine(offsetToLineCol(el.value, el.selectionStart).line);
     }
     bumpCaret();
-  }, [onCaretChange, bumpCaret]);
+  }, [onCaretChange, onSelectionChange, bumpCaret]);
 
   // Re-apply the scroll transform to the blame layers whenever they (re)mount or
   // the caret line changes: a freshly-mounted node starts at translateY(0), so
@@ -5757,6 +5780,185 @@ function useTexHoverPreview(tabKey: string | undefined): { on: boolean; toggle: 
     });
   }, [tabKey, def]);
   return { on, toggle };
+}
+
+/**
+ * Beamer mode for the TeX editor (#tex-beamer): is the overlay bar shown? Per
+ * tab, like the hover preview, but its default is the DOCUMENT's — on when any
+ * file of it loads `\documentclass{beamer}` (`detected`), off otherwise — so a
+ * deck opens with the bar and a paper never sees it, and a click either way is
+ * remembered on the tab.
+ */
+function useTexBeamerMode(
+  tabKey: string | undefined,
+  detected: boolean,
+): { on: boolean; toggle: () => void } {
+  const [override, setOverride] = useState<boolean | undefined>(
+    () => seedViewerState(tabKey)?.texBeamer,
+  );
+  const on = override ?? detected;
+  const toggle = useCallback(() => {
+    setOverride((cur) => {
+      const next = !(cur ?? detected);
+      if (tabKey) useTabsStore.getState().setViewerState(tabKey, { texBeamer: next });
+      return next;
+    });
+  }, [tabKey, detected]);
+  return { on, toggle };
+}
+
+/**
+ * The beamer overlay bar (#tex-beamer): a command, a slide range, and three
+ * actions over the editor's selection — Wrap (`\only<2->{…}` around it), Items
+ * (`<n>` on each `\item` in the lines, counting up), Pause. The bar is chrome;
+ * every edit is `lib/viewers/beamer`'s and goes through the editor's `applyEdit`
+ * so undo, the syntax overlay and the caret behave as for any other edit.
+ *
+ * The **from** field is empty by default and means "the next unused number in
+ * this frame" (`nextOverlayNumber`), read from the draft at the moment of the
+ * click — the number the author would otherwise have to look up. Typing a
+ * number pins it; `to` and `onward` complete the range; and the spec field shows
+ * what will be written and can be edited directly for the forms three number
+ * fields cannot express (`<+->`, `<1,3>`, `<handout:0>`).
+ */
+function BeamerBar({
+  api,
+  selection,
+}: {
+  api: React.MutableRefObject<EditorApi | null>;
+  selection: React.MutableRefObject<RememberedSelection | null>;
+}) {
+  const t = useT();
+  const [cmd, setCmd] = useState<BeamerOverlayCommand>("only");
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
+  const [onward, setOnward] = useState(true);
+  // A spec typed by hand overrides the three fields until one of them moves.
+  const [raw, setRaw] = useState<string | null>(null);
+  const [note, setNote] = useState<string | null>(null);
+
+  const num = (s: string): number | null => {
+    const n = parseInt(s, 10);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  };
+  // The spec the fields describe; a `from` left empty is filled in at apply time.
+  const specFor = (fromN: number | null): string =>
+    raw ?? buildOverlaySpec(fromN, num(to), onward);
+  const preview = raw ?? buildOverlaySpec(num(from) ?? 0, num(to), onward);
+  const previewShown = num(from) == null && raw == null
+    ? preview.replace(/^0/, "n")
+    : preview;
+  const previewValid = raw == null || isOverlaySpecBody(raw);
+
+  const run = (
+    fn: (value: string, start: number, end: number, spec: string) => EditResult | null,
+  ) => {
+    setNote(null);
+    api.current?.applyEdit((value, liveStart, liveEnd) => {
+      const { start, end } = beamerEditRange(value, liveStart, liveEnd, selection.current);
+      const spec = specFor(num(from) ?? nextOverlayNumber(value, start));
+      if (!isOverlaySpecBody(spec)) {
+        setNote(t("fileViewer.beamerSpecInvalid"));
+        return { value, selStart: start, selEnd: end };
+      }
+      const res = fn(value, start, end, spec);
+      if (!res) {
+        setNote(t("fileViewer.beamerNoItems"));
+        return { value, selStart: start, selEnd: end };
+      }
+      return res;
+    });
+  };
+
+  const field = (
+    label: string,
+    title: string,
+    value: string,
+    set: (v: string) => void,
+    placeholder = "",
+  ) => (
+    <label className="file-viewer-beamer-field" title={title}>
+      {label}
+      <input
+        type="number"
+        min={1}
+        max={999}
+        value={value}
+        placeholder={placeholder}
+        onChange={(e) => { set(e.target.value); setRaw(null); }}
+        onKeyDown={(e) => { if (e.key === "Enter") run(wrap); }}
+      />
+    </label>
+  );
+  const wrap = (v: string, s: number, e: number, spec: string) =>
+    wrapBeamerOverlay(v, s, e, cmd, spec);
+
+  return (
+    <div className="file-viewer-beamer-bar" role="group" aria-label={t("fileViewer.beamerBarLabel")}>
+      <Dropdown
+        title={t("fileViewer.beamerCommandTitle")}
+        value={cmd}
+        onChange={(v) => setCmd(v as BeamerOverlayCommand)}
+        options={BEAMER_OVERLAY_COMMANDS.map((c) => ({ value: c, label: `\\${c}` }))}
+      />
+      {field(t("fileViewer.beamerFrom"), t("fileViewer.beamerFromTitle"), from, setFrom, "n")}
+      {field(t("fileViewer.beamerTo"), t("fileViewer.beamerToTitle"), to, setTo)}
+      <label className="file-viewer-beamer-field" title={t("fileViewer.beamerOnwardTitle")}>
+        <input
+          type="checkbox"
+          checked={onward}
+          onChange={(e) => { setOnward(e.target.checked); setRaw(null); }}
+        />
+        {t("fileViewer.beamerOnward")}
+      </label>
+      <label className="file-viewer-beamer-field" title={t("fileViewer.beamerSpecTitle")}>
+        <span className="file-viewer-beamer-spec" aria-hidden="true">{"<"}</span>
+        <input
+          type="text"
+          className={previewValid ? undefined : "is-invalid"}
+          aria-label={t("fileViewer.beamerSpecTitle")}
+          value={raw ?? previewShown}
+          onChange={(e) => setRaw(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") run(wrap); }}
+          spellCheck={false}
+        />
+        <span className="file-viewer-beamer-spec" aria-hidden="true">{">"}</span>
+      </label>
+      <span className="file-viewer-beamer-sep" aria-hidden="true" />
+      <button
+        type="button"
+        className="file-viewer-beamer-apply"
+        title={t("fileViewer.beamerWrapTitle", { cmd })}
+        // mousedown + preventDefault keeps the editor's selection: the button
+        // must not take focus, or the textarea blurs and WebKitGTK collapses
+        // the very selection about to be wrapped.
+        onMouseDown={(e) => e.preventDefault()}
+        onClick={() => run(wrap)}
+      >
+        {t("fileViewer.beamerWrap")}
+      </button>
+      <button
+        type="button"
+        title={t("fileViewer.beamerItemsTitle")}
+        onMouseDown={(e) => e.preventDefault()}
+        onClick={() => run((v, s, e, spec) => overlayItems(v, s, e, spec))}
+      >
+        {t("fileViewer.beamerItems")}
+      </button>
+      <button
+        type="button"
+        title={t("fileViewer.beamerPauseTitle")}
+        onMouseDown={(e) => e.preventDefault()}
+        onClick={() => {
+          setNote(null);
+          api.current?.applyEdit((v, s, e) => insertPause(v, s, e));
+        }}
+      >
+        {t("fileViewer.beamerPause")}
+      </button>
+      {note && <span className="file-viewer-beamer-note" role="status">{note}</span>}
+    </div>
+  );
 }
 
 /**
@@ -8749,6 +8951,20 @@ function TexView({
   }, [root, path, scope]);
 
   const hoverPref = useTexHoverPreview(tabKey);
+  // #tex-beamer: the document decides the default (a deck opens with the bar),
+  // the tab remembers a click. The gather answers for the whole document; the
+  // draft answers for a class line typed into THIS file before any compile.
+  const beamerDetected = useMemo(
+    () => gathered.beamer === true || isBeamerDocument(draft),
+    [gathered.beamer, draft],
+  );
+  const beamer = useTexBeamerMode(tabKey, beamerDetected);
+  const texEditorApi = useRef<EditorApi | null>(null);
+  const beamerSelection = useRef<RememberedSelection | null>(null);
+  const onSelectionChange = useCallback((start: number, end: number) => {
+    beamerSelection.current =
+      start === end ? null : { start, end, text: draftRef.current.slice(start, end) };
+  }, []);
   const hoverPreview = useMemo<HoverPreviewConfig | undefined>(() => {
     if (!hoverPref.on || !cap?.available) return undefined;
     // Read the draft through the ref, not the closure: the config is memoized on
@@ -9151,6 +9367,14 @@ function TexView({
         >
           {t("fileViewer.texPreviewLabel")} <UntestedTag />
         </button>
+        <button
+          className={`file-viewer-tex-beamer-toggle${beamer.on ? " active" : ""}`}
+          onClick={beamer.toggle}
+          aria-pressed={beamer.on}
+          title={beamer.on ? t("fileViewer.beamerOnHint") : t("fileViewer.beamerOffHint")}
+        >
+          {t("fileViewer.beamerToggle")} <UntestedTag />
+        </button>
         {pdfVersion > 0 && pdfPath && (
           <button
             className="file-viewer-tex-open-pdf"
@@ -9177,6 +9401,7 @@ function TexView({
         <SaveButton isDirty={isDirty} saving={saving} save={() => void save()} />
         <PrintButton onPrint={handlePrint} disabled={!loaded} />
       </ViewerHeader>
+      {beamer.on && <BeamerBar api={texEditorApi} selection={beamerSelection} />}
       {compiling && (
         <div className="file-viewer-tex-progress" role="progressbar" aria-label={t("fileViewer.compilingLabel")}>
           <div className="file-viewer-tex-progress-bar" />
@@ -9402,7 +9627,9 @@ function TexView({
             gotoLine={jump.gotoLine}
             onGotoApplied={jump.onGotoApplied}
             onCaretChange={onCaret}
+            onSelectionChange={onSelectionChange}
             caretApiRef={caretApiRef}
+            editorApiRef={texEditorApi}
             initialScrollTop={viewPos.initial?.scrollTop}
             onScrollPersist={persistScroll}
             wrap

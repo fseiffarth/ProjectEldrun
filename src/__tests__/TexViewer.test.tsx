@@ -172,6 +172,49 @@ describe("TexView", () => {
     expect(mockInvoke).toHaveBeenCalledWith("write_file_text", expect.objectContaining({ path: "/p/paper.tex" }));
   });
 
+  it("#tex-beamer: the Beamer toggle shows the overlay bar, and Wrap wraps the selection", async () => {
+    setupInvoke(true);
+    await renderTexView();
+
+    const textarea = (await screen.findByRole("textbox")) as HTMLTextAreaElement;
+    await waitFor(() => expect(textarea.value).toBe(TEX_SOURCE));
+    // An `article` document: off by default, so no bar.
+    expect(screen.queryByRole("group", { name: /beamer overlays/i })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: /^beamer/i }));
+    const bar = await screen.findByRole("group", { name: /beamer overlays/i });
+    expect(bar).toBeTruthy();
+
+    // Select "Hi" and wrap it: no frame in the document, no overlay yet, so the
+    // next free slide is 2 and the default range is onward.
+    const s = TEX_SOURCE.indexOf("Hi");
+    textarea.focus();
+    textarea.setSelectionRange(s, s + 2);
+    fireEvent.select(textarea);
+    fireEvent.click(screen.getByRole("button", { name: /^wrap$/i }));
+
+    await waitFor(() => {
+      expect(textarea.value).toBe(TEX_SOURCE.replace("Hi", "\\only<2->{Hi}"));
+    });
+    // The wrapped body stays selected, so a second Wrap re-targets.
+    expect(textarea.value.slice(textarea.selectionStart, textarea.selectionEnd)).toBe("Hi");
+  });
+
+  it("#tex-beamer: a beamer document opens with the bar on", async () => {
+    mockInvoke.mockImplementation((cmd: string, args?: Record<string, unknown>) => {
+      if (cmd === "tex_capability") {
+        return Promise.resolve({ available: true, engines: ["pdflatex"], bibtex: false, latexmk: false });
+      }
+      if (cmd === "read_file_text") return Promise.resolve("\\documentclass{beamer}\n\\begin{document}\n\\end{document}\n");
+      if (cmd === "resolve_tex_root") return Promise.resolve((args?.path as string) ?? "");
+      if (cmd === "file_mtime") return Promise.reject(new Error("no synctex"));
+      return Promise.resolve(null);
+    });
+    await renderTexView();
+    await screen.findByRole("group", { name: /beamer overlays/i });
+    expect(screen.getByRole("button", { name: /^beamer/i }).getAttribute("aria-pressed")).toBe("true");
+  });
+
   it("renders an engine selector when more than one engine is available", async () => {
     setupInvoke(true, ["pdflatex", "xelatex"]);
     await renderTexView();

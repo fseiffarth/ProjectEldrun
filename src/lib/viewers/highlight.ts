@@ -17,6 +17,8 @@
  * interpreted as markup. Keep this invariant if extending.
  */
 
+import { overlaySpecAt } from "./beamer";
+
 export type Lang =
   | "js"
   | "rust"
@@ -589,8 +591,27 @@ function scanTex(code: string, depth = 0): string {
         if (close !== -1) {
           out += escapeHtml("{") + span("type", code.slice(i + 1, close)) + escapeHtml("}");
           i = close + 1;
+          // `\begin{frame}<1->`: an overlay spec on the environment itself.
+          const spec = overlaySpecAt(code, i);
+          if (spec) {
+            out += span("overlay", code.slice(i, spec.end));
+            i = spec.end;
+          }
         }
         continue;
+      }
+
+      // A beamer overlay specification glued to a control word — `\only<2->`,
+      // `\item<3>`, `\alert<+->` (#tex-beamer) — is its own token, so the slide
+      // numbers stand out from the prose around them. Only the strict spec
+      // grammar qualifies (`overlaySpecAt`); a `<` that is prose or math stays
+      // plain.
+      if (word) {
+        const spec = overlaySpecAt(code, i);
+        if (spec) {
+          out += span("overlay", code.slice(i, spec.end));
+          i = spec.end;
+        }
       }
 
       // Any other control WORD carries its brace arguments in italic. A single

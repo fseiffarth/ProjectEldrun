@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { internalViewerFor, type FileEntry, type InternalViewer } from "./fileUtils";
 import { bibPlainValue, parseBib } from "./bib";
+import { isBeamerDocument } from "./beamer";
 import { basename, dirname, isAbsolute, normalizePath, resolvePath } from "../paths";
 import { fileMtime, writeFileBytes, writeFileText } from "../../components/embed/fileAccess";
 
@@ -2917,6 +2918,10 @@ export interface TexCompletions {
   commands: TexCommandEntry[];
   /** The standard environment table plus the ones this document defines or uses. */
   envs: TexEnvEntry[];
+  /** Does any file of the document load `\documentclass{beamer}`? Rides the same
+   *  walk because the class line is regularly in a file the editor is not in —
+   *  a child fragment of a deck is still a deck. Absent means unknown/not. */
+  beamer?: boolean;
 }
 
 /**
@@ -2995,10 +3000,12 @@ export async function gatherTexCompletions(
   const seenCmd = new Set(TEX_STANDARD_COMMANDS.map((c) => c.name));
   const envs: TexEnvEntry[] = [];
   const seenEnv = new Set(TEX_STANDARD_ENVIRONMENTS.map((e) => e.name));
+  let beamer = false;
   const bibPaths = await walkTexSources(
     currentPath,
     projectId,
     (_file, text) => {
+      if (!beamer && isBeamerDocument(text)) beamer = true;
       for (const l of parseTexLabels(text)) {
         if (seenLabel.has(l.key)) continue;
         seenLabel.add(l.key);
@@ -3041,6 +3048,7 @@ export async function gatherTexCompletions(
     cites,
     commands: [...commands, ...TEX_STANDARD_COMMANDS],
     envs: [...envs, ...TEX_STANDARD_ENVIRONMENTS],
+    beamer,
   };
 }
 

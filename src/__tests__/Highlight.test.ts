@@ -99,6 +99,20 @@ describe("highlight", () => {
     expect(html).not.toContain("tok-comment");
   });
 
+  it("colours a beamer overlay spec glued to a command as its own token", () => {
+    const html = highlight("\\only<2->{x} \\item<3> y \\begin{frame}<1->", "tex")!;
+    expect(html).toContain('<span class="tok-keyword">\\only</span><span class="tok-overlay">&lt;2-&gt;</span>');
+    expect(html).toContain('<span class="tok-keyword">\\item</span><span class="tok-overlay">&lt;3&gt;</span>');
+    expect(html).toContain('<span class="tok-type">frame</span>}<span class="tok-overlay">&lt;1-&gt;</span>');
+    // The argument after the spec still highlights as one.
+    expect(html).toContain('<span class="tok-arg">x</span>');
+  });
+
+  it("leaves a `<` that is prose or math alone", () => {
+    const html = highlight("$a<b$ \\vec<a> and \\only <2>", "tex")!;
+    expect(html).not.toContain("tok-overlay");
+  });
+
   it("treats an escaped percent as a command, not a comment", () => {
     const html = highlight("50\\% done", "tex")!;
     expect(html).toContain('<span class="tok-keyword">\\%</span>');

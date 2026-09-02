@@ -1920,3 +1920,54 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       any amber warning pills land on the files the Warnings card names.
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work
+
+253. **TeX editor: beamer mode — wrap a selection in an overlay with a slide
+    number.** Implemented 2026-09-02, not yet verified live. Writing a deck means
+    typing `\only<2->{…}`, `\uncover<3>{…}`, `\alert<2>{…}` around every phrase
+    that is to appear later, plus keeping the frame's slide count in your head.
+    - **Beamer toggle** in the TeX header (beside Preview). Default follows the
+      document — on when any file of it loads `\documentclass{beamer}` (the
+      completion gather's walk reports `beamer`, and the draft itself is read
+      for a class line typed before any compile), off for a paper — and a click
+      is remembered per tab (`ViewerState.texBeamer`).
+    - **The overlay bar** under the header while on: a command dropdown
+      (`\only` `\uncover` `\visible` `\invisible` `\alert` `\onslide` `\alt`
+      `\temporal`), *from* / *to* / *onward* fields, and the spec as it will be
+      written (`<2->`), editable directly for forms the fields cannot express
+      (`<+->`, `<1,3>`, `<handout:0>`). **Wrap** puts `\cmd<spec>{…}` around the
+      selection (empty selection → empty braces with the caret inside; `\alt`
+      → caret in the empty second argument, `\temporal` → selection in the
+      middle, caret in the first); applied to text that is *already* a wrapped
+      body or a whole wrapped command, it changes the command and the spec
+      instead of nesting (same-arity only). A line-wise selection's trailing
+      newline stays outside the braces. **Items** stamps `<n>` on every `\item`
+      in the selected lines, counting one slide up per item (a range steps both
+      ends; a relative `+-` is stamped as is). **Pause** inserts `\pause` on
+      its own line.
+    - **The number is suggested**: an empty *from* means the next unused slide
+      in the enclosing frame (`nextOverlayNumber` — one past the largest number
+      in any spec between `\begin{frame}` and `\end{frame}`, 2 when none).
+    - **Overlay specs highlight** as their own token (`tok-overlay`, bold in the
+      number colour) after a control word or a `\begin{env}` — strict grammar
+      only, so a `<` in prose or math stays plain.
+    - The bar remembers the editor's last real selection
+      (`CodeEditor.onSelectionChange`) because WebKitGTK collapses a textarea's
+      selection when focus moves to the bar's number field; the live selection
+      wins when there is one, the remembered one is used only while the draft
+      still holds exactly that text there.
+    - Pure half in `src/lib/viewers/beamer.ts`; tests in
+      `src/__tests__/Beamer.test.ts`, `Highlight.test.ts` (the token) and
+      `TexViewer.test.tsx` (toggle → bar → Wrap; a beamer document opens with
+      the bar on). Frontend only, hot-reloads.
+    - [ ] 🖐️ Manual test — open a `.tex` with `\documentclass{beamer}`: the
+      **Beamer** toggle should be lit and the bar visible; in an `article` the
+      bar stays away until clicked. In a frame, select a phrase, leave *from*
+      empty, click **Wrap**: `\only<2->{phrase}` (or the next free number if
+      the frame already has overlays), the phrase still selected; pick
+      `\uncover` and Wrap again: the command changes in place, nothing nests.
+      Select three `\item` lines, type 2 in *from*, click **Items**:
+      `<2->`, `<3->`, `<4->`. Click into the *from* field first, then Wrap — the
+      selection made before the click must still be the one wrapped. Specs
+      should read bold in the number colour.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work

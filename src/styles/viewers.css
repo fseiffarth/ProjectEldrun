@@ -2589,6 +2589,10 @@
    reads as a keyword), and the italic is what separates a command's text from
    the markup around it. */
 .tok-arg { font-style: italic; }
+/* A beamer overlay spec (`<2->`) glued to a command (#tex-beamer): the slide
+   numbers are what the author scans a frame for, so they get weight as well as
+   the number colour. */
+.tok-overlay { color: var(--warning); font-weight: 700; }
 
 /* Markdown source highlighting (the .md "Edit" view). Reuses the same semantic
    variables so it adapts per theme; headings/strong stay bold, emphasis italic. */
@@ -3934,8 +3938,10 @@
 }
 .file-viewer-tex-options-toggle,
 .file-viewer-tex-preview-toggle,
+.file-viewer-tex-beamer-toggle,
 .file-viewer-tex-open-pdf,
-.file-viewer-tex-wordcount-btn {
+.file-viewer-tex-wordcount-btn,
+.file-viewer-beamer-bar button {
   background: transparent;
   color: var(--text-muted);
   border: 1px solid var(--border-color);
@@ -3948,10 +3954,91 @@
 .file-viewer-tex-options-toggle:hover,
 .file-viewer-tex-preview-toggle.active,
 .file-viewer-tex-preview-toggle:hover,
+.file-viewer-tex-beamer-toggle.active,
+.file-viewer-tex-beamer-toggle:hover,
 .file-viewer-tex-open-pdf:hover,
-.file-viewer-tex-wordcount-btn:hover:not(:disabled) {
+.file-viewer-tex-wordcount-btn:hover:not(:disabled),
+.file-viewer-beamer-bar button:hover:not(:disabled) {
   color: var(--text-primary);
   border-color: var(--text-muted);
+}
+
+/* Beamer overlay bar (#tex-beamer): the row under the header while beamer mode
+   is on. `.file-viewer-tex-options`' chrome — a second row of the same kind. */
+.file-viewer-beamer-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--border-color);
+  background: var(--bg-panel);
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.file-viewer-beamer-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.file-viewer-beamer-field input[type="number"] {
+  width: 4ch;
+  padding: 1px 4px;
+  font: inherit;
+  font-size: 11px;
+  color: var(--text-primary);
+  background: var(--bg-main);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  -moz-appearance: textfield;
+}
+.file-viewer-beamer-field input[type="number"]::-webkit-outer-spin-button,
+.file-viewer-beamer-field input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.file-viewer-beamer-field input[type="text"] {
+  width: 9ch;
+  padding: 1px 4px;
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  color: var(--text-primary);
+  background: var(--bg-main);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+}
+.file-viewer-beamer-field input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.file-viewer-beamer-field input.is-invalid {
+  border-color: var(--danger, #c33);
+}
+.file-viewer-beamer-field input[type="checkbox"] {
+  margin: 0;
+  accent-color: var(--accent);
+}
+.file-viewer-beamer-spec {
+  font-family: var(--font-mono, monospace);
+  color: var(--warning);
+  font-weight: 700;
+}
+.file-viewer-beamer-bar button:disabled {
+  opacity: 0.5;
+  cursor: var(--cur-default, default);
+}
+.file-viewer-beamer-bar .file-viewer-beamer-apply {
+  color: var(--text-primary);
+  border-color: var(--accent);
+}
+.file-viewer-beamer-sep {
+  width: 1px;
+  height: 14px;
+  background: var(--border-color);
+}
+.file-viewer-beamer-note {
+  color: var(--text-muted);
+  font-style: italic;
 }
 .file-viewer-tex-wordcount-btn:disabled {
   opacity: 0.5;
