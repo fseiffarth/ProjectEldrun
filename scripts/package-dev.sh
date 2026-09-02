@@ -37,13 +37,19 @@ export PATH="$HOME/.cargo/bin:$PATH"
 # freezing the tree WHILE working. `tauri build --no-bundle` is
 # `npm run build` + `cargo build --release` with the bundling step skipped, so
 # run those two directly rather than asking the user to close things.
+#
+# `--features custom-protocol` is the part the CLI would otherwise supply, and
+# it is not optional: without it tauri compiles the app in *dev* mode, which
+# embeds no frontend and points the window at devUrl — a frozen build that
+# opens "Could not connect to localhost" and nothing else (2026-09-02).
 build_log="$(mktemp)"
 trap 'rm -f "$build_log"' EXIT
 if ! npm run tauri -- build --no-bundle 2>&1 | tee "$build_log"; then
   if grep -q "Too many open files" "$build_log"; then
     echo "package-dev: tauri-cli could not open an inotify instance; building without it." >&2
     npm run build
-    cargo build --release --manifest-path "$ROOT/src-tauri/Cargo.toml"
+    cargo build --release --features custom-protocol \
+      --manifest-path "$ROOT/src-tauri/Cargo.toml"
   else
     exit 1
   fi
@@ -57,6 +63,10 @@ if [[ -z "$RAW_BIN" ]]; then
   echo "package-dev: release binary not found after build" >&2
   exit 1
 fi
+
+# Whichever path built it, it has to be a prod binary: a dev one would install
+# and launch fine and then show only WebKit's connection-refused page.
+"$ROOT/scripts/assert-embedded-frontend.sh" "$RAW_BIN"
 
 # The running frozen instance keeps its old inode; `install` replaces the path
 # atomically enough that a relaunch picks the new snapshot up.

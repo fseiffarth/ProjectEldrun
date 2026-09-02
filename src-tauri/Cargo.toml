@@ -13,6 +13,20 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 name = "eldrun"
 path = "src/main.rs"
 
+# Switches the app from `devUrl` to the frontend embedded at compile time:
+# tauri's build script sets `dev = !custom_protocol`, and a `dev` build embeds
+# no assets at all and points the window at http://localhost:1420 — which is
+# "Could not connect to localhost" in a window launched with no vite behind it.
+#
+# `tauri build` turns this on itself, so the packaging scripts' fallback path
+# (a hand-rolled `cargo build --release`, used when the tauri CLI cannot start)
+# is the one caller that has to pass it: `--features custom-protocol`.
+#
+# Off by default on purpose: `cargo test`/`cargo clippy` then keep compiling in
+# dev mode, needing no built `dist/` and no brotli pass over the bundle.
+[features]
+custom-protocol = ["tauri/custom-protocol"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
