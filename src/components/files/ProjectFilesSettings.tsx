@@ -15,6 +15,7 @@ import { useSettingsStore } from "../../stores/settings";
 import { VIEWER_PREF_TYPES } from "../../lib/viewers/fileUtils";
 import { PythonInterpreterWindow } from "../projects/PythonInterpreterWindow";
 import { ProjectMigrationDialog } from "../projects/ProjectMigrationDialog";
+import { SpellDictionaryPicker } from "./SpellDictionaryPicker";
 import { UntestedTag } from "../common/UntestedTag";
 import { useT } from "../../lib/i18n";
 import { DEFAULT_LOOKAHEAD_DAYS } from "../../lib/alerts";
@@ -297,16 +298,6 @@ export function ProjectFilesSettingsDialog({
   const [showPython, setShowPython] = useState(false);
   const [showMigrate, setShowMigrate] = useState(false);
 
-  // Installed Hunspell dictionary codes for the spelling-language dropdown —
-  // read once per dialog open (a local directory listing, no network). `null`
-  // until the answer lands, so "none installed" is never shown prematurely.
-  const [spellLangs, setSpellLangs] = useState<string[] | null>(null);
-  useEffect(() => {
-    invoke<string[]>("spell_languages")
-      .then(setSpellLangs)
-      .catch(() => setSpellLangs([]));
-  }, []);
-
   const alertsOn = settings?.files_alerts ?? true;
   const alertSources = settings?.files_alerts_sources ?? {};
   const mutedCount = settings?.files_alerts_muted?.length ?? 0;
@@ -462,33 +453,9 @@ export function ProjectFilesSettingsDialog({
             onChange={(e) => void updateSettings({ change_tint: e.target.checked })}
           />
           {/* Which Hunspell dictionary the editors' spelling check reads —
-              machine-wide, since the language you write in is not per project.
-              The list is what is actually installed; an empty one names the
-              fix instead of offering a dropdown of nothing. */}
-          <SettingRow
-            label={
-              <>
-                {t("projectSettings.spellLanguage")} <UntestedTag />
-              </>
-            }
-            help={t("projectSettings.spellLanguageHelp")}
-            control={
-              spellLangs !== null && spellLangs.length === 0 ? (
-                <span className="settings-help">{t("projectSettings.spellNoDicts")}</span>
-              ) : (
-                <Dropdown
-                  value={
-                    settings?.spell_language ??
-                    spellLangs?.find((l) => l.startsWith("en")) ??
-                    spellLangs?.[0] ??
-                    ""
-                  }
-                  options={(spellLangs ?? []).map((l) => ({ value: l, label: l }))}
-                  onChange={(v) => void updateSettings({ spell_language: v })}
-                />
-              )
-            }
-          />
+              machine-wide, since the language you write in is not per project —
+              plus the row that downloads any other language. */}
+          <SpellDictionaryPicker />
         </SettingsCard>
 
         {/* A real table, header row and all. Every row is the SAME four-column

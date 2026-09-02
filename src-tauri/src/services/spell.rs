@@ -76,11 +76,21 @@ pub fn dict_dirs() -> Vec<PathBuf> {
     dirs
 }
 
-/// Language codes (file stems, e.g. `en_US`) with BOTH halves of a Hunspell
-/// dictionary present, first-dir-wins, sorted. Pure over the given dirs.
-pub fn available_languages_in(dirs: &[PathBuf]) -> Vec<String> {
-    let mut seen: Vec<String> = Vec::new();
-    for dir in dirs {
+/// An installed dictionary. `removable` when it lives in the first directory
+/// (the state dir, the one place Eldrun writes) — a system dictionary is the
+/// package manager's and is never deleted from here.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct InstalledEntry {
+    pub code: String,
+    pub removable: bool,
+}
+
+/// Dictionaries (file stems, e.g. `en_US`) with BOTH halves of a Hunspell
+/// pair present, first-dir-wins, sorted by code. Pure over the given dirs;
+/// the first dir is the writable one, so its entries are the removable ones.
+pub fn installed_in(dirs: &[PathBuf]) -> Vec<InstalledEntry> {
+    let mut seen: Vec<InstalledEntry> = Vec::new();
+    for (i, dir) in dirs.iter().enumerate() {
         let entries = match std::fs::read_dir(dir) {
             Ok(e) => e,
             Err(_) => continue,
@@ -100,13 +110,22 @@ pub fn available_languages_in(dirs: &[PathBuf]) -> Vec<String> {
             if !path.with_extension("aff").is_file() {
                 continue;
             }
-            if !seen.iter().any(|s| s == stem) {
-                seen.push(stem.to_string());
+            if !seen.iter().any(|s| s.code == stem) {
+                seen.push(InstalledEntry {
+                    code: stem.to_string(),
+                    removable: i == 0,
+                });
             }
         }
     }
-    seen.sort();
+    seen.sort_by(|a, b| a.code.cmp(&b.code));
     seen
+}
+
+/// Language codes with BOTH halves of a Hunspell dictionary present,
+/// first-dir-wins, sorted. Pure over the given dirs.
+pub fn available_languages_in(dirs: &[PathBuf]) -> Vec<String> {
+    installed_in(dirs).into_iter().map(|e| e.code).collect()
 }
 
 /// The `.aff`/`.dic` pair for `code`, searched across `dict_dirs()`.
@@ -235,6 +254,242 @@ pub fn check(text: &str, language: &str, doc: &str) -> Result<Vec<SpellIssue>, S
     };
     let dict = load_dict(&code)?;
     Ok(check_text(&dict, text, doc))
+}
+
+// ── Downloadable dictionaries ────────────────────────────────────────────────
+//
+// The system dirs hold whatever the distro installed (typically one English
+// variant); anything else used to mean finding a `.aff`/`.dic` pair by hand.
+// The catalog below names the languages the picker offers, each fetched from
+// the wooorm/dictionaries collection on GitHub (the LibreOffice/Mozilla
+// dictionaries, normalised to UTF-8, one directory per language, always
+// `index.aff` + `index.dic`). Only catalog entries are ever fetched, so no
+// user-supplied string reaches a URL or a file name. Display names are the
+// frontend's job (`Intl.DisplayNames` in the UI language) — nothing here is
+// prose.
+
+/// One installable dictionary: `code` is the Hunspell stem the files are saved
+/// under (`de_DE`), `source` the collection directory it is fetched from (`de`).
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct CatalogEntry {
+    pub code: String,
+    pub source: String,
+}
+
+/// (Hunspell code, collection directory). Sorted by code; the picker sorts by
+/// display name anyway.
+const CATALOG: &[(&str, &str)] = &[
+    ("bg_BG", "bg"),
+    ("br_FR", "br"),
+    ("ca_ES", "ca"),
+    ("cs_CZ", "cs"),
+    ("cy_GB", "cy"),
+    ("da_DK", "da"),
+    ("de_AT", "de-AT"),
+    ("de_CH", "de-CH"),
+    ("de_DE", "de"),
+    ("el_GR", "el"),
+    ("en_AU", "en-AU"),
+    ("en_CA", "en-CA"),
+    ("en_GB", "en-GB"),
+    ("en_US", "en"),
+    ("en_ZA", "en-ZA"),
+    ("eo", "eo"),
+    ("es_AR", "es-AR"),
+    ("es_ES", "es"),
+    ("es_MX", "es-MX"),
+    ("es_US", "es-US"),
+    ("et_EE", "et"),
+    ("eu_ES", "eu"),
+    ("fa_IR", "fa"),
+    ("fo_FO", "fo"),
+    ("fr_FR", "fr"),
+    ("fur_IT", "fur"),
+    ("fy_NL", "fy"),
+    ("ga_IE", "ga"),
+    ("gd_GB", "gd"),
+    ("gl_ES", "gl"),
+    ("he_IL", "he"),
+    ("hr_HR", "hr"),
+    ("hu_HU", "hu"),
+    ("hy_AM", "hy"),
+    ("is_IS", "is"),
+    ("it_IT", "it"),
+    ("ka_GE", "ka"),
+    ("ko_KR", "ko"),
+    ("la", "la"),
+    ("lb_LU", "lb"),
+    ("lt_LT", "lt"),
+    ("lv_LV", "lv"),
+    ("mk_MK", "mk"),
+    ("mn_MN", "mn"),
+    ("nb_NO", "nb"),
+    ("nds_DE", "nds"),
+    ("ne_NP", "ne"),
+    ("nl_NL", "nl"),
+    ("nn_NO", "nn"),
+    ("oc_FR", "oc"),
+    ("pl_PL", "pl"),
+    ("pt_BR", "pt"),
+    ("pt_PT", "pt-PT"),
+    ("ro_RO", "ro"),
+    ("ru_RU", "ru"),
+    ("rw_RW", "rw"),
+    ("sk_SK", "sk"),
+    ("sl_SI", "sl"),
+    ("sr_RS", "sr"),
+    ("sv_SE", "sv"),
+    ("tk_TM", "tk"),
+    ("tr_TR", "tr"),
+    ("uk_UA", "uk"),
+    ("vi_VN", "vi"),
+];
+
+const DICT_SOURCE_BASE: &str =
+    "https://raw.githubusercontent.com/wooorm/dictionaries/main/dictionaries";
+
+/// Largest file accepted for either half. The biggest real one (Hungarian's
+/// `.dic`) is a few MB; anything past this is not a dictionary.
+const MAX_DICT_FILE_BYTES: usize = 40 * 1024 * 1024;
+
+const DOWNLOAD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// Every language the picker can install.
+pub fn catalog() -> Vec<CatalogEntry> {
+    CATALOG
+        .iter()
+        .map(|(code, source)| CatalogEntry {
+            code: (*code).to_string(),
+            source: (*source).to_string(),
+        })
+        .collect()
+}
+
+/// The collection directory for a catalog code, or `None` for anything the
+/// catalog does not name — the one gate between a caller's string and a URL.
+pub fn catalog_source(code: &str) -> Option<&'static str> {
+    CATALOG
+        .iter()
+        .find(|(c, _)| *c == code)
+        .map(|(_, source)| *source)
+}
+
+/// The `(aff, dic)` URLs for a collection directory. Pure.
+pub fn dictionary_urls(source: &str) -> (String, String) {
+    (
+        format!("{DICT_SOURCE_BASE}/{source}/index.aff"),
+        format!("{DICT_SOURCE_BASE}/{source}/index.dic"),
+    )
+}
+
+/// A code safe to use as a file stem under the dictionaries folder: the
+/// catalog's shape (`xx`, `xx_YY`, `xxx_YY`), never a path, never the personal
+/// list. Pure.
+pub fn valid_code(code: &str) -> bool {
+    !code.is_empty()
+        && code.len() <= 16
+        && code != "personal"
+        && code
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+/// Parse a downloaded pair before it is written, so a truncated body or an
+/// HTML error page saved under `.dic` can never poison the folder. Pure.
+pub fn validate_dictionary(aff: Vec<u8>, dic: Vec<u8>) -> Result<(), String> {
+    if aff.is_empty() || dic.is_empty() {
+        return Err("empty dictionary file".into());
+    }
+    let aff = decode_dict_bytes(aff);
+    let dic = decode_dict_bytes(dic);
+    Dictionary::new(&aff, &dic)
+        .map(|_| ())
+        .map_err(|e| format!("not a Hunspell dictionary: {e}"))
+}
+
+fn download_client() -> Result<reqwest::Client, String> {
+    // `reqwest` is built with `rustls-no-provider`, and rustls panics when no
+    // process default is installed — the same guard `app_update` uses.
+    crate::services::mail_engine::install_crypto_provider();
+    reqwest::Client::builder()
+        .user_agent("eldrun-spell")
+        .timeout(DOWNLOAD_TIMEOUT)
+        .referer(false)
+        .build()
+        .map_err(|e| format!("download client: {e}"))
+}
+
+async fn fetch_capped(client: &reqwest::Client, url: &str) -> Result<Vec<u8>, String> {
+    let resp = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| format!("download failed: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("download failed: HTTP {}", resp.status().as_u16()));
+    }
+    if resp
+        .content_length()
+        .is_some_and(|n| n > MAX_DICT_FILE_BYTES as u64)
+    {
+        return Err("download failed: file too large".into());
+    }
+    let bytes = resp
+        .bytes()
+        .await
+        .map_err(|e| format!("download failed: {e}"))?;
+    if bytes.len() > MAX_DICT_FILE_BYTES {
+        return Err("download failed: file too large".into());
+    }
+    Ok(bytes.to_vec())
+}
+
+/// Download a catalog language into `<state_dir>/dictionaries/<code>.{aff,dic}`
+/// — validated as a parsable pair first, written via temp files so a failure
+/// half-way leaves no orphan the discovery would list, then the cache entry
+/// for that code dropped so the next check reads the new files. The state dir
+/// is searched first, so a downloaded `en_US` outranks the system's.
+pub async fn install_language(code: &str) -> Result<(), String> {
+    let source = catalog_source(code).ok_or("unknown language")?;
+    let (aff_url, dic_url) = dictionary_urls(source);
+    let client = download_client()?;
+    let (aff, dic) = tokio::try_join!(fetch_capped(&client, &aff_url), fetch_capped(&client, &dic_url))?;
+    validate_dictionary(aff.clone(), dic.clone())?;
+    let dir = crate::storage::state_dir().join("dictionaries");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create dir: {e}"))?;
+    let aff_path = dir.join(format!("{code}.aff"));
+    let dic_path = dir.join(format!("{code}.dic"));
+    let aff_tmp = dir.join(format!("{code}.aff.part"));
+    let dic_tmp = dir.join(format!("{code}.dic.part"));
+    std::fs::write(&aff_tmp, &aff).map_err(|e| format!("write aff: {e}"))?;
+    std::fs::write(&dic_tmp, &dic).map_err(|e| format!("write dic: {e}"))?;
+    std::fs::rename(&aff_tmp, &aff_path).map_err(|e| format!("write aff: {e}"))?;
+    std::fs::rename(&dic_tmp, &dic_path).map_err(|e| format!("write dic: {e}"))?;
+    dict_cache().lock().unwrap().remove(code);
+    Ok(())
+}
+
+/// Delete a dictionary pair from the state dir — and only from there: a code
+/// that resolves to a system dictionary is refused, never deleted. Drops the
+/// cache entry so a check against the removed code fails with `no_dictionary`
+/// instead of answering from memory.
+pub fn remove_language(code: &str) -> Result<(), String> {
+    if !valid_code(code) {
+        return Err("invalid language".into());
+    }
+    let dir = crate::storage::state_dir().join("dictionaries");
+    let aff_path = dir.join(format!("{code}.aff"));
+    let dic_path = dir.join(format!("{code}.dic"));
+    if !dic_path.is_file() && !aff_path.is_file() {
+        return Err("not_removable".into());
+    }
+    for p in [aff_path, dic_path] {
+        if p.is_file() {
+            std::fs::remove_file(&p).map_err(|e| format!("remove: {e}"))?;
+        }
+    }
+    dict_cache().lock().unwrap().remove(code);
+    Ok(())
 }
 
 // ── The pure check ───────────────────────────────────────────────────────────
@@ -884,5 +1139,78 @@ mod tests {
         let text = "zzqx ".repeat(1000);
         let issues = check_text(&d, &text, "");
         assert_eq!(issues.len(), MAX_SPELL_ISSUES);
+    }
+
+    // ── Downloadable dictionaries ────────────────────────────────────────
+
+    #[test]
+    fn catalog_codes_are_unique_valid_stems_with_unique_sources() {
+        let cat = catalog();
+        assert!(cat.len() > 40);
+        for (i, e) in cat.iter().enumerate() {
+            assert!(valid_code(&e.code), "{}", e.code);
+            assert!(!e.source.is_empty() && e.source.is_ascii(), "{}", e.source);
+            assert!(!cat[..i].iter().any(|o| o.code == e.code), "dup code {}", e.code);
+            assert!(!cat[..i].iter().any(|o| o.source == e.source), "dup source {}", e.source);
+        }
+        assert_eq!(catalog_source("de_DE"), Some("de"));
+        assert_eq!(catalog_source("en_US"), Some("en"));
+        assert_eq!(catalog_source("../etc"), None);
+        assert_eq!(catalog_source(""), None);
+    }
+
+    #[test]
+    fn dictionary_urls_point_at_the_collection_pair() {
+        let (aff, dic) = dictionary_urls("de-AT");
+        assert_eq!(
+            aff,
+            "https://raw.githubusercontent.com/wooorm/dictionaries/main/dictionaries/de-AT/index.aff"
+        );
+        assert!(dic.ends_with("/de-AT/index.dic"));
+    }
+
+    #[test]
+    fn valid_code_refuses_paths_and_the_personal_list() {
+        assert!(valid_code("de_DE"));
+        assert!(valid_code("sr-Latn"));
+        assert!(!valid_code(""));
+        assert!(!valid_code("personal"));
+        assert!(!valid_code("../en_US"));
+        assert!(!valid_code("en US"));
+        assert!(!valid_code("a_very_long_code_indeed"));
+    }
+
+    #[test]
+    fn validate_dictionary_accepts_a_real_pair_and_rejects_html() {
+        let aff = b"SET UTF-8\nTRY esianrtolcdugmphbyfvkwz\n".to_vec();
+        let dic = b"2\nhello\nworld\n".to_vec();
+        assert_eq!(validate_dictionary(aff.clone(), dic), Ok(()));
+        assert!(validate_dictionary(aff.clone(), Vec::new()).is_err());
+        assert!(validate_dictionary(Vec::new(), b"1\nx\n".to_vec()).is_err());
+        // A 404 page saved as the word list must not pass.
+        let html = b"<!DOCTYPE html><html><body>Not Found</body></html>".to_vec();
+        assert!(validate_dictionary(aff, html).is_err());
+    }
+
+    #[test]
+    fn installed_in_marks_only_the_first_dir_removable() {
+        let root = std::env::temp_dir().join(format!("eldrun-spell-installed-{}", std::process::id()));
+        let state = root.join("state");
+        let system = root.join("system");
+        std::fs::create_dir_all(&state).unwrap();
+        std::fs::create_dir_all(&system).unwrap();
+        for (dir, code) in [(&state, "de_DE"), (&system, "en_US"), (&system, "de_DE")] {
+            std::fs::write(dir.join(format!("{code}.aff")), "SET UTF-8\n").unwrap();
+            std::fs::write(dir.join(format!("{code}.dic")), "1\nx\n").unwrap();
+        }
+        let got = installed_in(&[state.clone(), system.clone()]);
+        assert_eq!(
+            got,
+            vec![
+                InstalledEntry { code: "de_DE".into(), removable: true },
+                InstalledEntry { code: "en_US".into(), removable: false },
+            ]
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

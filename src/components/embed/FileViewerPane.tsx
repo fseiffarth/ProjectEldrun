@@ -3610,6 +3610,10 @@ function CodeEditor({
   useEffect(() => {
     if (!spellCheck?.enabled || !loaded) {
       setSpellIssues([]);
+      // Re-arm the once-per-enable failure report: a check that fails again
+      // after the chip is toggled off and on (or the dictionary changed
+      // underneath) must say so again, not stay silent for the session.
+      spellReported.current = false;
       return;
     }
     const id = window.setTimeout(async () => {
@@ -3635,6 +3639,12 @@ function CodeEditor({
     return () => window.clearTimeout(id);
     // Primitive deps for the config object, mirroring the grammar effect above.
   }, [spellCheck?.enabled, spellCheck?.language, loaded, draft, lang, t]);
+
+  // A new dictionary choice gets its own failure report (the flag above only
+  // resets when the chip goes off).
+  useEffect(() => {
+    spellReported.current = false;
+  }, [spellCheck?.language]);
 
   // Keep the grammar overlay aligned after it mounts/changes.
   useEffect(() => {
@@ -5794,6 +5804,7 @@ function EditorAiControls({ ai }: { ai: TabAiPrefs }) {
       >
         {t("fileViewer.spellingLabel")}
       </button>
+      {ai.spelling && <SpellLanguageSelect />}
       {modelLoaded && (
         <>
           <button
@@ -5838,6 +5849,47 @@ function EditorAiControls({ ai }: { ai: TabAiPrefs }) {
         </>
       )}
     </div>
+  );
+}
+
+/**
+ * The dictionary the spelling chip reads, beside it — so the language can be
+ * switched where the writing happens instead of in Project Settings. The
+ * choice is `Settings.spell_language`, machine-wide (the backend's default,
+ * an installed English variant, is what an unset value shows). Lists what is
+ * installed; adding a language stays a Project Settings job (it downloads).
+ * Re-lists whenever the setting moves, which is also how a download made in
+ * Settings while this tab is open reaches the list.
+ */
+function SpellLanguageSelect() {
+  const t = useT();
+  const uiLang = useI18nStore((s) => s.lang);
+  const spellLanguage = useSettingsStore(
+    (s) => s.settings?.spell_language as string | undefined,
+  );
+  const [installed, setInstalled] = useState<string[]>([]);
+  useEffect(() => {
+    let live = true;
+    invoke<string[]>("spell_languages")
+      .then((codes) => {
+        if (live) setInstalled(codes);
+      })
+      .catch(() => {
+        if (live) setInstalled([]);
+      });
+    return () => {
+      live = false;
+    };
+  }, [spellLanguage]);
+  if (installed.length === 0) return null;
+  return (
+    <Dropdown
+      className="file-viewer-ai-mode"
+      value={spellLanguage ?? defaultSpellLanguage(installed.map((code) => ({ code })))}
+      title={t("fileViewer.spellingLanguageTitle")}
+      options={installed.map((code) => ({ value: code, label: dictionaryLabel(code, uiLang) }))}
+      onChange={(v) => void useSettingsStore.getState().updateSettings({ spell_language: v })}
+    />
   );
 }
 

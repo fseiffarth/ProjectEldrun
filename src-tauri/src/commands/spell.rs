@@ -57,3 +57,38 @@ pub async fn spell_add_word(word: String) -> Result<(), String> {
         .await
         .map_err(|e| format!("spell task failed: {e}"))?
 }
+
+/// What the dictionary picker needs in one round trip: every installed
+/// dictionary (with whether it can be removed from here) and the downloadable
+/// catalog. Display names are computed in the frontend, in the UI language.
+#[derive(serde::Serialize)]
+pub struct SpellDictionaries {
+    pub installed: Vec<spell::InstalledEntry>,
+    pub catalog: Vec<spell::CatalogEntry>,
+}
+
+#[tauri::command]
+pub async fn spell_dictionaries() -> Result<SpellDictionaries, String> {
+    tauri::async_runtime::spawn_blocking(|| SpellDictionaries {
+        installed: spell::installed_in(&spell::dict_dirs()),
+        catalog: spell::catalog(),
+    })
+    .await
+    .map_err(|e| format!("spell task failed: {e}"))
+}
+
+/// Download a catalog language into the state dir's `dictionaries/` folder.
+/// The only network call in this module; `code` must name a catalog entry —
+/// nothing else is ever fetched.
+#[tauri::command]
+pub async fn spell_install_language(code: String) -> Result<(), String> {
+    spell::install_language(&code).await
+}
+
+/// Delete a dictionary pair from the state dir (never a system one).
+#[tauri::command]
+pub async fn spell_remove_language(code: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || spell::remove_language(&code))
+        .await
+        .map_err(|e| format!("spell task failed: {e}"))?
+}

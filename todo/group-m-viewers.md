@@ -1709,6 +1709,18 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     header — offered without a loaded model, unlike its two siblings — and one
     machine-wide dictionary choice (`Settings.spell_language`, defaulting to an
     installed English variant).
+    **Language choice + downloads** (2026-09-02, untested live): a distro ships
+    one English variant and nothing else, so the setting was a dropdown of one.
+    Project Settings' dictionary row now pairs with an **Add a language** row
+    — a catalog of ~60 languages fetched from the wooorm/dictionaries
+    collection on GitHub (the LibreOffice/Mozilla dictionaries) into
+    `<state_dir>/dictionaries/`, parsed before written, selected on arrival,
+    removable again with a × (system dictionaries are never deleted). Names
+    come from `Intl.DisplayNames` in the UI language. The editor header's
+    Spelling chip grew a language dropdown beside it so the dictionary can be
+    switched where the writing happens. A failed check now re-reports each
+    time the chip is re-enabled or the dictionary changes, instead of once
+    per session.
     - [x] 🤖 Automated test (Rust `services::spell`: flags a misspelling with
       its line, suggests a close correction, accepts sentence case, skips
       identifiers/CamelCase/single letters, keeps apostrophe words, masking
@@ -1717,8 +1729,13 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       Markdown masks fences/inline code/link targets, URLs/emails masked in
       plain text, discovery pairs `.aff`/`.dic` and skips orphans + the
       personal list, English-preferring default, Latin-1 fallback decode, the
-      issue cap; TS `GrammarCheck.test.ts`: `mergeSpellIssues` passthrough,
-      ordering, same-line dedupe, different-line keep)
+      issue cap, catalog codes unique/valid with unique sources, download
+      URLs, `valid_code` refusing paths and `personal`, `validate_dictionary`
+      rejecting an HTML error page, `installed_in` marking only the state dir
+      removable; TS `GrammarCheck.test.ts`: `mergeSpellIssues` passthrough,
+      ordering, same-line dedupe, different-line keep; `SpellDictionaries.test.ts`:
+      stem → tag, names in the UI language with code fallback, English-first
+      default, installed/downloadable split sorted by label)
     - [ ] 🖐️ Manual test — turn Spelling on for Markdown in Project Settings
       (Native viewers table) and open a `.md`: typos get red wavy underlines
       within a second of pausing; code fences, inline code and link URLs are
@@ -1731,7 +1748,18 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       a different dictionary in Project Settings (with two installed) and
       confirm the marks re-judge. Remove all dictionaries and confirm the
       status line names the missing dictionary once instead of erroring
-      repeatedly.
+      repeatedly. **Downloads:** in Project Settings › Native viewers, pick
+      German under Add a language and Download — the row says it is working,
+      the dictionary dropdown then lists "Deutsch (Deutschland) · de_DE" (in
+      the UI language) and has it selected, `~/.local/share/eldrun/
+      dictionaries/de_DE.{aff,dic}` exist, and German prose in an open editor
+      stops being marked within a second. The dropdown beside the Spelling
+      chip in the editor header lists both dictionaries; switching there
+      re-judges the marks and Project Settings shows the same choice. The ×
+      beside de_DE removes it and the selection falls back to en_US; en_US
+      (the system's) shows no ×. Pull the network and Download another
+      language: a red "Failed: …" appears on the row and nothing half-written
+      is listed.
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work
 

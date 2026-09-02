@@ -985,6 +985,21 @@ label.settings-toggle-card-row {
   line-height: 1.35;
 }
 
+/* Spelling-dictionary rows (M#248): the dropdown and its action button share
+   one line; the download/remove status rides the help text so the row's
+   height never jumps while a download runs. */
+.spell-dict-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.spell-dict-status {
+  color: var(--text-primary);
+}
+.spell-dict-status.danger {
+  color: var(--danger);
+}
+
 /* Eldrun Mobile: keep the Tailscale setup close to the fields it configures,
    without making the normal settings card visually read as a warning. */
 .mobile-settings-guide {

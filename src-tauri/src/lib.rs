@@ -1321,6 +1321,9 @@ pub fn run() {
             commands::spell::spell_check,
             commands::spell::spell_languages,
             commands::spell::spell_add_word,
+            commands::spell::spell_dictionaries,
+            commands::spell::spell_install_language,
+            commands::spell::spell_remove_language,
         ])
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_drag::init())
