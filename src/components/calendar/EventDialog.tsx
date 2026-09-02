@@ -174,11 +174,16 @@ export function EventDialog({
   const creating = target.event === null;
   const recurring = !!target.event?.rrule;
 
+  // Re-seed on the TARGET only. The other two are seeds, not inputs: settings
+  // load after the pane mounts (and a background CalDAV sync can add a calendar),
+  // so listing them here re-ran `initialForm` over a form somebody was typing in
+  // and threw the draft away mid-edit.
   useEffect(() => {
     setForm(initialForm(target, defaultCalendarId, defaultReminderMinutes));
     setScopeAsk(null);
     setError(null);
-  }, [target, defaultCalendarId, defaultReminderMinutes]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [target]);
 
   const patch = (p: Partial<Form>) => setForm((f) => ({ ...f, ...p }));
 

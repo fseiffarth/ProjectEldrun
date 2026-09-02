@@ -53,7 +53,17 @@ function snap(minutes: number): number {
 /** A live drag. `create` draws a ghost; `move`/`resize` preview on the block. */
 type Drag =
   | { kind: "create"; date: string; fromMin: number; toMin: number }
-  | { kind: "move"; occ: Occurrence; date: string; startMin: number; durationMin: number }
+  | {
+      kind: "move";
+      occ: Occurrence;
+      date: string;
+      startMin: number;
+      durationMin: number;
+      /** Minutes between the block's top and where it was grabbed, so a block
+       *  picked up by its middle moves with the pointer instead of snapping its
+       *  START to it (which shifted the event by half its length). */
+      grabOffsetMin: number;
+    }
   | { kind: "resize"; occ: Occurrence; date: string; endMin: number };
 
 /**
@@ -147,6 +157,7 @@ export function TimeGrid({
       startMin: slice.startMin,
       // The true duration, which may exceed the day slice for an overnight event.
       durationMin: Math.max(SNAP_MIN, minutesBetween(occ.start, occ.end)),
+      grabOffsetMin: minutesAt(e.clientY) - slice.startMin,
     });
   }
 
@@ -165,7 +176,8 @@ export function TimeGrid({
     if (drag.kind === "create") {
       setDrag({ ...drag, toMin: at });
     } else if (drag.kind === "move") {
-      setDrag({ ...drag, startMin: at });
+      // Both terms are already multiples of SNAP_MIN, so the difference is too.
+      setDrag({ ...drag, startMin: Math.max(0, at - drag.grabOffsetMin) });
     } else {
       // Never let the bottom edge cross the top.
       const startMin =
