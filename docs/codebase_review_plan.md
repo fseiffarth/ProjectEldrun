@@ -633,20 +633,415 @@ Reported explicitly so future reviews don't re-plow them:
 
 ## 13. Coverage gaps
 
-Areas **not** (or only lightly) examined — a follow-up review would start here:
-`FileViewerPane.tsx` bulk (7.8k lines; only viewer-state/zoom sections read),
-`PdfViewer.tsx`, `FileTree.tsx` bulk, mail components + `stores/mail.ts` bulk,
-`stores/browser.ts`/`lib/browser.ts`, `stores/detached.ts`, header indicators,
-calendar view components, deck viewers, `lib/lessons.ts`/`lib/tour.ts`;
-backend: `sftp.rs` internals, `ssh_common.rs` dial-policy internals, `vm.rs`
-lifecycle, `restore_service.rs`, tmux modules, mail crypto stack
-(`mail_crypt`/`mail_pgp`/`mail_sanitize`), `gpustat.rs` internals,
-`platform/windows.rs`/`macos.rs` FFI bodies, `mobile_control/` service
-internals. Highest-value follow-ups flagged by the agents: the sandbox mount
-denylist against the current `~/.claude` layout, `ssh_common.rs`'s
-background-dial refusal paths, an exhaustive i18n string sweep, and a runtime
-profile to confirm the static perf findings. Exhaustive per-theme visual QA
-needs a live window.
+**Closed 2026-09-02** by a second four-agent pass — see §14. Still open after
+it: deck viewers (only the 83 untranslated icon labels were catalogued),
+`gpustat.rs` internals, `platform/windows.rs`/`macos.rs` FFI bodies, a runtime
+profile to confirm the static perf findings, and exhaustive per-theme visual
+QA (needs a live window).
+
+## 14. Follow-up review — 2026-09-02
+
+Four parallel agents over the §13 areas, same evidence standard: every finding
+file:line-verified on `develop`, speculative items dropped. HIGH/MED fixed in
+place where the fix was localized; the rest recorded below. All six gates green
+after the pass (`npm run build`, `npm test` 4096/4096, `cargo test` 2132/2132,
+`npm run lint` 0 errors, `cargo clippy --all-targets -D warnings` clean,
+`scripts/privacy-check.sh` clean).
+
+### 14.1 Sandbox mount denylist vs. the current `~/.claude` layout
+
+The §13-flagged item, and the one that paid best. Audited from *inside* the
+fence (`stat -c %d` per entry separates host bind-mounts from fence-local
+tmpfs) rather than inferred from the code. The denylist had drifted; three gaps
+were exploitable. Everything under `$HOME` is hidden by default, so
+`CLAUDE_UNMOUNTED` is the whole boundary for `~/.claude`.
+
+- [x] **14.1 HIGH (fence escape)** — `services/sandbox.rs:1498` — top-level
+  `*.sh` under `~/.claude` (the statusline hooks) were mounted **read-write**.
+  `staged_config_mounts` stops a contained agent *repointing* a hook in
+  `settings.json` but did nothing about rewriting the script the settings
+  already point at — which the host's **uncontained** CLI then executes.
+  Fence-to-host code execution. Fix: new `AGENT_READ_ONLY` list
+  (`sandbox.rs:1539`) mounts `*.sh`/`*.md` read-only; `narrowed_agent_mounts`
+  (`:1569`) returns `(rw, ro)`, `rw_mounts` → `agent_home_mounts` (`:1613`)
+  returns both halves, both consumers (`sandbox.rs` `up()`,
+  `agent_fence.rs:425-436`) wire the ro half through. Statusline still works.
+- [x] **14.2 HIGH (prompt injection)** — same list — `~/.claude/CLAUDE.md` and
+  its imports were read-write: a write there is a standing injection into every
+  future *uncontained* host session. Covered by the same `*.md` rule.
+- [x] **14.3 HIGH (cross-project leak)** — same list — `.claude.json` and its
+  `.bak`/`.backup.<ts>` siblings were mounted read-write and **unfiltered**,
+  carrying the cross-project `projects` map (per-project prompt history,
+  `allowedTools`, `hasTrustDialogAccepted`) — exactly what
+  `staged_claude_json_mount` exists to stage a *filtered* copy of. A boxed
+  agent could read every project's history and write standing permissions for
+  other projects' uncontained sessions. Fix: `".claude.json*"` added to
+  `CLAUDE_UNMOUNTED` (`:1517`); `staged_claude_json_mount` →
+  `staged_claude_json_mounts` (`:1966`) stages both locations, the nested one
+  only when the host has it (so a CLI that doesn't use it isn't handed a
+  spurious fresh-install marker).
+- [x] **14.4 MED (pattern bug)** — the pattern was `"daemon.*"`;
+  `is_unmounted_entry` strips the trailing `*`, giving prefix `"daemon."`,
+  which never matches the `daemon/` **directory**. The 0700 daemon state dir
+  was mounted rw in every fenced/containerized agent. Fix: `"daemon*"`
+  (`:1511`); `is_unmounted_entry` → `matches_entry` (`:1552`) with leading-`*`
+  suffix matching. Regression test pins both directions.
+- [x] **14.5 MED** — `debug/`, `feedback/`, `paste-cache/`, `uploads/` are
+  cross-session content with no part in resume — the same class as
+  `history.jsonl`, denied since the start. All four added to `CLAUDE_UNMOUNTED`.
+- [ ] **14.6 MED (product call, NOT fixed)** — `plans/`, `tasks/`, `todos/`,
+  `jobs/`, `cache/`, `downloads/` remain rw. Same leakage class as 14.5, but
+  each is plausibly resume-adjacent (a plan written in a fenced tab would be
+  lost at tab close if unmounted), so this is the owner's decision, not a
+  review fix. `plans/` is the highest-value of the six.
+- **Negative**: `.credentials.json` stays rw and that is correct — the agent
+  *is* the CLI and refreshes its own OAuth token; the trade-off is already
+  documented at `sandbox.rs:1901-1917`. The fence still fails closed:
+  `wrap_pty_options_bwrap` (`agent_fence.rs:538-547`) errors before any spawn
+  when `bwrap_available()` is false, and that probes a real unprivileged
+  sandbox op, not `which bwrap`.
+
+### 14.7 Remote transport & runtime lifecycle
+
+- [x] **14.7 HIGH (data-safety)** — `services/sftp.rs:812` —
+  `remove_dir_on` listed with `list_dir_on`, which **follow-stats symlinks**
+  (`read_entries`, `:585-600`), so a symlink-to-directory inside a deleted tree
+  reported `is_dir: true` and the recursion descended into the **link's target**
+  and removed its contents — bytes outside the tree being deleted. Reachable
+  from the ordinary file-tree delete on a remote project (`commands/fs.rs:837`
+  → `remote_remove_dir` `:665` → `remove_dir_on`). The local twin uses
+  `fs::remove_dir_all`, which does *not* follow, so the remote path had
+  silently diverged from it — and on a cluster a `data -> /scratch/<user>/data`
+  link inside a project is the normal case. Fix: list with the lstat-typed
+  `list_dir_raw_on` and unlink anything that is not `SyncKind::Dir` (SFTP
+  REMOVE does not follow), matching `remove_dir_all` and the walker's G3 rule.
+- [x] **14.8 MED (unbounded await + child leak)** — `services/sftp.rs`
+  `spawn_sftp` — `Sftp::new(...)` was awaited with no bound.
+  `ConnectTimeout=10` covers only the TCP connect; a host that accepts and then
+  stops answering (wedged login node, middlebox) parked the handshake forever,
+  so `remote_connect`/`open_pooled_session` never returned (no timeout at
+  `services/remote.rs:368` either) and every retry added another live `ssh`
+  child plus its askpass shim. Fix: `HANDSHAKE_TIMEOUT` (60 s, deliberately
+  generous for slow PAM/NFS logins), `child.start_kill()` on expiry.
+- [x] **14.9 MED (can kill an innocent process)** — `services/vm.rs`
+  `shutdown` signalled a `pid` from the registry or a stale `qemu.pid` after
+  only `pid_alive`, while `sweep_orphans` has always required
+  `/proc/<pid>/comm` to be qemu for exactly this reason. Both records outlive
+  an externally-killed QEMU, so a recycled pid could be SIGTERM'd then
+  SIGKILL'd on any deactivate/archive/delete. Fix: `pid_is_live_qemu` used by
+  `shutdown`, `is_running`, `running_state`.
+- [x] **14.10 MED (wrong-host identity reuse)** — `services/vm.rs:161-185`
+  `vm_ssh_opts` matched the registry by forwarded port alone over
+  `HashMap::values()`. A crashed VM's entry survives and its port returns to
+  the ephemeral pool, so a later VM on the same port could be handed the **dead
+  VM's** `IdentityFile`/`UserKnownHostsFile` — auth with the wrong key against
+  a host key recorded for a machine that no longer exists, refused in wording
+  that reads like a MITM. Fix: prefer a live claimant; the sole-claimant
+  fallback is kept deliberately (returning nothing would send the connection to
+  the user's real `~/.ssh/known_hosts`, the thing this injection prevents — and
+  what `ssh_opts_only_for_registered_loopback_ports` pins).
+- [x] **14.11 MED (argument injection)** — `services/restore_service.rs:64-72`
+  filtered `app.exec` twice but passed `app.file` straight into `do_launch`,
+  which appends it as a trailing argv item (`commands/apps.rs:341-343`). A
+  registered app plus one attacker-chosen option (`--script=`, `--config=`) is
+  attacker-chosen behaviour, in a function whose own doc calls the list
+  untrusted. Fix: pure `file_is_safe_argument` refuses an option-shaped file.
+  (Exposure is smaller than that doc implies — `open_apps` now comes from the
+  state dir, `terminal_service::load_open_apps:414`; the comment saying it
+  lives in the project's `project.json` is stale.)
+- [x] **14.12 LOW** — `services/vm_proxy.rs:263-273` `accept_loop` `continue`d
+  on an `accept()` error with no backoff, spinning a thread on a persistent
+  condition (fd exhaustion). 50 ms backoff added.
+- [ ] **14.13 LOW (NOT fixed)** — `services/vm.rs` `ensure_booted`: a failing
+  `record_vm_endpoint` returns via `?` with the VM booted and registered, while
+  the `wait_ssh_ready` failure below it tears down. The VM stays in the
+  registry so `down_all` from `RunEvent::Exit` still reaps it; adding teardown
+  to an error path that can't be live-exercised is the worse trade.
+- [ ] **14.14 LOW (design call, NOT fixed)** — `vm_proxy.rs` spawns one thread
+  per connection plus a second per established tunnel with no cap, and the
+  guest opens them. Denials are cheap and short-lived, so this is a nuisance,
+  not a hole; a cap needs a refusal policy and a deny-log entry.
+- [ ] **14.15 LOW (note)** — `services/remote_sync.rs:665`
+  `rsync_ssh_transport` hand-builds the `ssh …` string for rsync's `-e`, so
+  that dial never passes `authorize_dial`, and `ControlMaster=no` means "ride a
+  master if live, **else connect directly**". Covered in practice: the only
+  caller (`commands/sync.rs:1754`) first runs `rsync_available_host`, whose
+  `run_remote_shell` uses a gated builder, and the auto-sync loop never runs
+  against a tagged host. Worth a one-line gate if §1 is revisited.
+- [ ] **14.16 LOW (note)** — `services/ssh_common.rs:1786 scan_host_keys` runs
+  `ssh-keyscan`, the one *network* touch in the module that does not pass
+  `authorize_dial`. Reachable only via `ssh_host_key_preview` →
+  `stores/hostKeyPrompt.ts:84`, opened only from `withHostKeyConfirm`
+  call sites — all user gestures. Recorded so a future background caller is not
+  added silently.
+
+### 14.17 Mail crypto & mobile sidecar
+
+- [x] **14.17 MED (decompression bomb)** — `services/mail_pgp.rs:636`
+  `decrypt_message` — `Message::as_data_vec` reads its *streaming,
+  decompressing* reader to end with no bound (`pgp-0.20.0`
+  `composed/message/types.rs:986` is a bare `read_to_end`), so a compression
+  bomb inside an attacker-sent encrypted mail expanded into memory without
+  limit. The existing hostile-crypto fixture only proved the cap is applied to
+  the plaintext *after* the allocation. Fix: `read_bounded` (`:748`) reads
+  through `Read::take(MAX_DECRYPTED_READ)` = `MAX_MESSAGE_BYTES + 1` — one byte
+  past the cap rather than an error, so the caller still refuses it in
+  `parse_message` with a size error rather than a decryption failure and the
+  existing contract and test are unchanged; only the allocation is bounded.
+- [x] **14.18 LOW** — `services/mail_crypt.rs:510,522` —
+  `read_keychain_kek`/`write_keychain_kek` left the KEK's base64 string and its
+  decoded bytes in non-zeroized heap, against the `Key`/`Zeroizing` discipline
+  the rest of the module keeps. Both wrapped in `Zeroizing`.
+- [x] **14.19 LOW** — `services/mobile_control/auth.rs:262-266` — `pair()`
+  called `PublicKey::from_public_key_der` on the decoded DER *before* the
+  `der.len() > 256` check, handing the SPKI parser an arbitrarily long buffer
+  (bounded only by `MAX_CONTROL_MESSAGE`) from an unauthenticated caller.
+  Length check moved ahead of the parse.
+- [ ] **14.20 LOW (NOT fixed, deliberate)** — `auth.rs:350-357` resolves the
+  session cookie by `HashMap::get`, not a constant-time compare. Recorded for
+  completeness: the token is 256 bits of OS RNG, the sidecar is loopback-only
+  (§12), and map lookup is the standard shape — a fix is ceremony, not defense.
+  The low-entropy secret that *does* matter, the pairing code, already uses
+  `subtle::ConstantTimeEq` against an HMAC (`:251`), as does the Windows admin
+  token (`admin.rs:185`).
+
+### 14.21 Frontend: the StrictMode double-invoke class
+
+Three separate bugs of one shape — a **side effect inside a `setState`
+updater**, which `<React.StrictMode>` (`bootstrap.tsx:57`) double-invokes to
+check purity. Worth naming as a class: the repo's own idiom (`pagesRef`,
+`naturalRef`, `draftRef`) is the fix in all three.
+
+- [x] **14.21 MED** — `embed/FileViewerPane.tsx:9750` — `ImageView.zoomTo`
+  called `setOffset(…)` inside the `setScale` updater, so the anchored-pan
+  correction applied twice (`x = a − (a−o)k²`) and every wheel/button zoom in a
+  dev build drifted away from the cursor. Fix: `scaleRef`/`offsetRef` mirrors,
+  both setters called flat.
+- [x] **14.22 MED** — `embed/pdf/PdfViewer.tsx:1964-1996` — same class, worse
+  symptom: `applyEdit` pushed onto `past` inside a `setPages` updater and
+  `undo`/`redo` nested three setters, so **each edit pushed twice and the first
+  Ctrl+Z did nothing**, while one undo pushed 2–4 entries onto `future`,
+  corrupting redo. Fix: `pastRef`/`futureRef` beside the existing `pagesRef`.
+- [x] **14.23 MED (draft loss)** — `calendar/EventDialog.tsx:177-186` — the
+  re-seed effect listed `defaultCalendarId`/`defaultReminderMinutes` as deps,
+  so a settings load landing after the dialog opened, or a background CalDAV
+  sync changing `calendars[0]`, re-ran `initialForm` over a form being typed in
+  and discarded the draft. Deps narrowed to `[target]`: the two are seeds, not
+  inputs.
+- **Negative**: the other nested-updater sites are idempotent and were left
+  alone — `useTabAiPrefs`/`useTexHoverPreview`/`useTexBeamerMode` call
+  `persist()` inside their updater and `PdfCanvas.onWheel` writes
+  `pendingScroll`/`fittedRef` inside `setScale`, but all recompute the same
+  value from the same `prev`, so the double invoke is a no-op. Do not "fix".
+
+### 14.24 Frontend: other
+
+- [x] **14.24 MED (race)** — `stores/mail.ts:481-518` — `loadPage` had no
+  staleness guard: it read the selection, awaited
+  `mail_headers`/`mail_priority_page`, then wrote
+  `headers`/`headerTotal`/`headerOffset`/`loadingHeaders` unconditionally.
+  `setQuery` is wired to `onChange` with **no debounce**
+  (`MailPane.tsx:489`), so typing `hello` fires five overlapping reads, and an
+  encrypted store's bounded scan makes the *shorter, earlier* query the slow
+  one often enough to matter — the list then shows results for a prefix of what
+  was typed. Same for `openFolder(A)` → `openFolder(B)`. Every other await in
+  this store already guards itself (`selectMessage` re-checks
+  `selectedMessageId`); this one did not. Fix: module-level `pageToken`
+  counter, superseded answers return whole — `loadingHeaders` included, since
+  the newer request owns the spinner. The no-selection early return now also
+  bumps the token and clears `loadingHeaders` (it left a stranded spinner true
+  forever).
+- [x] **14.25 MED (drag offset)** — `calendar/TimeGrid.tsx:160,180` — the
+  move-drag set `startMin` to the pointer's snapped minute, ignoring where in
+  the block the pointer grabbed it, so dragging a 2 h block by its middle moved
+  the event an hour earlier than aimed. Fix: `grabOffsetMin` recorded at
+  `beginMove` and subtracted (both terms are `SNAP_MIN` multiples, so the
+  result stays snapped; clamped at 0).
+- [x] **14.26 LOW** — `stores/detached.ts:1097-1112` — `lastStatus` was never
+  pruned while its sibling `lastSig` is swept for dead labels (`:1083-1090`).
+  Per-popout string leak for the session's life, no functional bug
+  (`answerSeed` publishes forced). `publishStatus` now prunes to live labels.
+- [x] **14.27 LOW (comments that contradicted the code)** —
+  `mail/MailOverlay.tsx:41-44` claimed capture-phase while the listener is
+  registered on **bubble** (bubble is what makes the dialogs'
+  `stopPropagation` work — a future edit "restoring" capture would break Escape
+  in every mail dialog); `stores/detached.ts:628-644` documented
+  `decideDetachedTabDrop` step 1 as `cancelled → none` while the code returns
+  `{kind:"local"}` and `{kind:"none"}` is never returned by that function at
+  all. Both corrected; no behaviour change.
+- [ ] **14.28 LOW (owner's call, NOT fixed)** — `files/FileTree.tsx:304` + 14
+  call sites — the `dragDbg` Windows-drag-QA instrumentation is still live and
+  fires `report_frontend_error` into crash.log on **every** row click, every
+  file pointerdown, every Ctrl press/release transition and every drag
+  commit/abort. Its own comment says "TEMPORARY … remove together with every
+  dragDbg call"; it belongs to an open Windows item.
+- [ ] **14.29 LOW (NOT fixed)** — `embed/FileViewerPane.tsx:5066` — the grammar
+  tooltip renders `issue.category` verbatim, so the machine token
+  (`spelling`/`grammar`/`style`) shows as a user-facing label in every
+  language. Needs a key per category and a decision on the label set.
+- [ ] **14.30 LOW (NOT fixed)** — `embed/FileViewerPane.tsx:8249,8266` —
+  `TexWorkspaceView`'s `dirtyHandlersRef`/`saveRegistrarsRef` are only ever
+  added to; a pane evicted from the keep-mounted LRU leaves entries for the
+  tab's life. Bounded by distinct files centred per session — tidiness, not a
+  leak.
+- [ ] **14.31 LOW (NOT fixed)** — `calendar/CalendarPane.tsx:790` —
+  `AllDayBar`'s `dateWithin` re-implements `lib/calendarTime`'s
+  `spanCoversDate`, which `MonthView` uses for the same question. A one-line
+  consolidation that changes an all-day edge rule, so it wants its own test.
+
+### 14.32 i18n sweep (the §13-flagged exhaustive pass)
+
+Three passes over `src/` + `mobile-web/src/` (attribute literals, JSX text
+nodes, user-visible field literals), every hit verified at its render site.
+`__tests__/` and `src/dev/` (never ships) excluded.
+
+**322 verified user-facing untranslated strings across 22 files in `src/`.**
+Largest: `lib/viewers/deck/icons.ts` 83 (icon `label:`, rendered as `title` and
+`.deck-icon-label`); `components/mobile/MobileBridgeHost.tsx` 37 (`message:` in
+every protocol error response, `:298-1038` — the function already receives `t`
+and uses it for tab specs; §8.1 covered `MobileSettings`/`MobileIndicator` but
+missed this file); `lib/shortcuts.ts` 17 (`SHORTCUT_DEFS[].label`, rendered raw
+in the F1 overlay and Settings → Shortcuts, while the *groups* beside them use
+`labelKey` — the two halves of one table disagree); `lib/viewers/fileUtils.ts`
+16 (`VIEWER_PREF_TYPES[].label`); `projects/scaffold.ts` 8; `types/index.ts` 7
+(`THEMES[].label`); then `projects/projectTypeTags.ts` 5,
+`projects/HpcPipelineWizard.tsx` 3, `common/HpcGuardDialog.tsx` 3 (whole dialog
+body; no `useT` import at all), `common/PasswordInput.tsx` 2,
+`common/TimeField.tsx` 2, and singles in `useRemoteBrowse.ts`,
+`lib/codexHooks.ts`, `lib/slurm.ts`. `newTabItems.ts`'s 28 agent labels are
+product proper nouns, not defects.
+
+- [x] Fixed in this pass: `stores/mail.ts` error strip (`mail.messageGone`),
+  the `fileViewer.grammar*` status line (6 keys, `…One`/`…Many` plural),
+  `fileViewer.validationAtLine{,Col}`, `fileTree.sizeTotalIgnoredSplit`.
+- [ ] The rest of the inventory above is **listed, not fixed** — it spans files
+  owned by other slices and wants one deliberate pass.
+- **`mobile-web/` has no i18n layer at all** (125 strings across 14 files; no
+  `i18n`/`translate`/`useT` anywhere in `mobile-web/src/`). This is the same
+  self-contained-single-look posture §7.12 records for its CSS — recorded here
+  as an explicit decision so it is not re-discovered as a bug.
+- **Parity is otherwise perfect**: `de`/`es`/`fr`/`it` each carry exactly the
+  `en` key set, **0 shape mismatches** (no key's `{placeholder}` set differs by
+  locale). All three dynamic `as TranslationKey` casts
+  (`SettingsPanel.tsx:1514,1517`, `SettingsSubPanels.tsx:2932`) were traced to
+  their generating arrays — every key resolves.
+- [ ] **38 dead English keys** (×5 languages ≈ 190 entries) have zero
+  references in `src/`: seven `mail.*`, `tabKind.browser`, four
+  `globalApp.role.*`, two `skillsLibrary.*`, eight `remoteMachines.save*`, five
+  `projectDialog.*`, and singles elsewhere. Not deleted — ~190 lines of churn,
+  and `mail.loadRemote`/`mail.remoteLoaded` are deliberate placeholders for the
+  documented not-yet-built remote-content proxy
+  (`MailMessageView.tsx:172-181`). Separate pass.
+
+### 14.33 Verified clean (negative results from this pass)
+
+- **`ssh_common.rs` background-dial audit — clean**, the §13-flagged target.
+  All seven argv builders call `authorize_dial(..., ambient_intent(...))`
+  (`:277`, `:395`, `:472`, `:518`, `:569`, `:597`, plus
+  `ssh_exec::ssh_pty_args:799`). Every `user_dial`/`declared_dial` call site
+  binds a **named** guard (`let _dial = …`, never `let _ = …`) so the
+  authorization outlives the argv build — verified across `commands/ssh`,
+  `remote`, `global_machines`, `agents`, `slurm`, `sync`, `hpc_ws`,
+  `disk_usage`, and `services/remote.rs:404` (pool-lifetime guard held *in* the
+  pool entry). "Can't tell" answers **false** everywhere it matters:
+  `dial_authorized` is `.unwrap_or(false)` on a poisoned lock; `declared_dial`
+  treats `None` and `Some(true)` identically; `commands/terminal.rs:479` gates
+  the restore-path `pty_spawn` before `connect_host`; `hpc_mode::load_settings`
+  deliberately never caches a failed read, keeping the last known tag rather
+  than opening a 2 s untagged window. Only 14.15/14.16 sit outside the choke
+  point.
+- **`mail_sanitize` — clean**, including a specifically chased
+  `rename_anchor_hrefs` bypass (`:412-448`): its `after.find('>')` tag scan
+  would mis-slice a tag whose attribute value contains a literal `>` (html5ever
+  does not escape `>` in attribute values), but it is **not reachable** —
+  `<a>`'s only allowed attributes are `href` (rewritten to an integer index),
+  `style` (filter drops any declaration containing `<`, `>`, `&`, `\`, `url(`,
+  `@`, `/*`), and `dir` (`ltr|rtl|auto`). Allowlists replace ammonia's defaults
+  wholesale rather than extending them; `on*` is prefix-rejected; `data-lid` is
+  unforgeable because it is in no allowlist.
+- **`mail_crypt` envelope — clean**: AAD binds
+  `account_id ‖ table ‖ column ‖ row_key`; XChaCha20-Poly1305 with a random
+  192-bit nonce; `CryptError` is coarse on the authenticity side (no oracle);
+  key file `0600` via `write_bytes_atomic` (temp chmod'd before rename) and
+  everything written is already sealed ciphertext, so the pre-chmod umask
+  window exposes nothing; `enable_*` refuse over an existing key file;
+  `rewrap` clears the stale keychain KEK when switching away.
+- **Mobile auth/CSRF — clean**: every mutating route goes through
+  `mutation_guard` (`host.rs:1264`) = `authenticate` + exact-`Origin`; the WS
+  upgrade (`:1433-1438`) checks both explicitly (WS ignores CORS); the cookie
+  is `__Host-`-prefixed, `Secure`, `HttpOnly`, `SameSite=Strict`; rate limits
+  are per-scope with separate `pair`/`auth:<device>`/`auth:unknown` budgets,
+  bucket-count-capped, sliding-window, swept; pair codes are rejection-sampled
+  (no modulo skew), retire after 5 wrong guesses, and are spent only after full
+  validation; challenges are single-use (removed before verification).
+- **Mobile resource bounds — clean**: `limits.rs` caps concurrent connections
+  by semaphore *before* accept and puts a handshake deadline on the raw stream;
+  `DefaultBodyLimit` is global with a per-route inbox override; the WS upgrade
+  sets `max_message_size`/`max_frame_size` to `MAX_INPUT_FRAME` (closing
+  tungstenite's 64 MiB default); `PtySession::drop` kills+reaps the child
+  before aborting the reader task, so no malformed frame leaks a PTY, process
+  or blocking-pool thread; the catalog's 1 s TTL bounds `tmux ls` forks.
+- **Mobile boundary hygiene — clean**: `ResolvedProject`/`ResolvedTab`
+  (`discovery.rs:109-121`) hold `raw_id`/`root`/`tmux_name` but derive only
+  `Debug, Clone` — only the nested `public` field is `Serialize`, so no raw id,
+  path, host command or tmux target has a route to the wire. `inbox.rs`
+  rebuilds the filename from a safe alphabet, requires the inbox to
+  canonicalize below the project root (planted-symlink test present), uses
+  `create_new` so nothing is overwritten and a raced symlink is refused, and
+  only `InboxError::code()` — never the `io::Error` string — crosses the
+  boundary. The Unix admin socket chmods `0600` *and* checks
+  `peer_cred().uid()` on every accept.
+- **`tmux_local.rs` — clean**: reap set prefix-scoped and pure-tested
+  (`sessions_to_reap`), `kill_eldrun_sessions` idempotent and treating "no
+  server" as the desired end state, `wrap_pty_options_local` a no-op without a
+  session name or tmux, both exit paths reaching it.
+- **Process-teardown invariant holds** for the transport slice: QEMU →
+  `vm::down_all` (`lib.rs:1489`), proxy threads in-process, local tmux sessions
+  reaped at exit, pooled `ssh` children via `remote::disconnect_all`. The only
+  escape found was the timed-out `ssh` child (14.8, now killed).
+- **No lock held across an `.await`** in any of the six transport files or
+  anywhere in `mobile_control`.
+- **`embed/pdf/**` helpers — clean**: `pdfDoc.ts` (incl. `buildPdf`'s
+  copy/flatten/scrub path), `selection.ts`, `pageText.ts`, `scrollBox.ts`,
+  `present.ts`, `outline.ts`, `links.ts` and the four note/text/selection/link
+  components. Every async page render/read is cancel-guarded, `page.cleanup()`
+  is paired with the paint, `PdfPageCanvas`'s off-screen blit + fingerprint
+  path is sound.
+- **Hidden-pane gating holds** across the viewer/tree slice: `useEditableFile`,
+  `useReadonlyFile`, `useBlobUrl` and `PdfCanvas`'s mtime polls all gate on
+  `usePaneVisible()` with catch-up on show; `FileTree` gates listing, fs-watch,
+  the 15 s remote re-stat, the host readdir probe and all three folder-size
+  effects on `active`. Every listener/timer/observer in the slice is paired
+  with a cleanup (the two deliberately permanent ones are documented at the
+  site). No blurred-box-shadow animation anywhere in these files.
+- **Header indicators — clean**: `StatusCluster`, `MachinesIndicator`,
+  `VpnIndicator`, Mail/Calendar/Todo indicators, `Clock`,
+  `AppResourceDisplay`, `AppTimerDisplay`, `Battery`, `ConnTypeIcon`,
+  `AlertsToggle`. Polls ride `saverInterval`+quiesce or `useFastMode`, hover
+  menus share `headerHoverMenu`, the machines open-sweep is in-flight- and
+  interval-braked.
+- **`lib/tour.ts`, `lib/lessons.ts` — clean**: fully key-driven, no hardcoded
+  text, no duplicate step ids *within* any lesson (what
+  `TourHost.tsx:312`'s `findIndex` depends on); ids repeated across lessons are
+  correct and harmless.
+- **`lib/browser.ts`, `stores/browser.ts` — clean**: `READER_FRAME_CSP` *is*
+  `MAIL_FRAME_CSP` imported, `readerLooksUnsafe` is mail's tripwire
+  re-exported, no wrapper takes a path; the three-outcome gate, per-tab
+  session-scoped `approved`, `browser:blocked` routing and the `load` slow-
+  answer guard (`:293`) are all correct. `formatDownloadSize` (`:441`) is a
+  fourth byte formatter not named in §9.1, but with its own null-for-invalid
+  contract — a deliberate variant like `mail.formatSize`; worth one line in
+  `lib/formatBytes.ts`'s module doc, nothing more.
+- **`components/mail/**` (12 files) — clean**: body renders only in
+  `<iframe sandbox="">` with no tokens, inline `<meta>` CSP, `srcdoc` assigned
+  via DOM property, `bodyLooksUnsafe` gating the render
+  (`MailMessageView.tsx:86-100,189-208`); zero `dangerouslySetInnerHTML` under
+  the directory; every subject/address/menu label through
+  `stripFormatControls`; every `listen` on the cancelled-flag pattern.
+- **`stores/detached.ts` host teardown — clean**: all 15 listeners and every
+  debounce timer unlistened/cleared in the returned cleanup; `sweep`'s
+  `lastSig` pruning, the `hostReady` seed queue and the WeakMap ref-identity
+  signatures all sound.
 
 ## Suggested execution order
 
@@ -665,6 +1060,10 @@ ordered so shared helpers land before their consumers.
   convention; theme-color fixes need a live-window check per theme.
 - **Phase E — dedup, dead code, small fixes**: §3 dedups (3.4–3.9), §9, §10,
   §11, and the remaining §1 LOWs.
+- **Phase F — §14 leftovers** (all HIGH/MED of the 2026-09-02 pass already
+  landed): the 14.6 `~/.claude` mount decision (product call, `plans/` first),
+  the 14.32 i18n inventory as one deliberate pass, the 38 dead keys, and
+  14.28's `dragDbg` removal once the Windows drag item closes.
 
 Gates for every phase: `npm run build`, `npm test`,
 `cargo test --manifest-path src-tauri/Cargo.toml`, `npm run lint`,
