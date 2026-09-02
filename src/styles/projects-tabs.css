@@ -2378,8 +2378,35 @@
 /* Per-tab scheduled prompts. The dialog rides the canonical settings frame; this
    block only lays out its schedule-specific rows and compact form. */
 .agent-schedule-dialog {
-  width: min(760px, calc(100vw - 32px));
+  width: min(880px, calc(100vw - 32px));
   max-height: min(820px, calc(100vh - 32px));
+}
+
+/* The rules and the form, side by side. The form is the shorter of the two and
+   the one you come back to, so it takes the fixed column and stays put while
+   the rules scroll past it; it caps its own height rather than letting a long
+   prompt push Save below the fold. */
+.agent-schedule-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 300px);
+  gap: 18px;
+  align-items: start;
+}
+
+.agent-schedule-body > .agent-schedule-form {
+  position: sticky;
+  top: 0;
+  max-height: min(620px, calc(100vh - 190px));
+  overflow-y: auto;
+  padding-left: 18px;
+  border-left: 1px solid var(--border-subtle);
+}
+
+/* A pane header opens its column — no hairline above it, nothing to divide. */
+.agent-schedule-body .settings-section-title {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: none;
 }
 
 .agent-schedule-scroll,
@@ -2399,15 +2426,20 @@
   font-size: 12px;
 }
 
-.agent-schedule-notice p { margin: 0 0 6px; }
-.agent-schedule-notice p:last-child { margin-bottom: 0; }
-.agent-schedule-notice .danger-text { color: var(--danger); }
+.agent-schedule-notice p { margin: 6px 0 0; }
+/* Same fold as the other guides in the app (`.mobile-settings-guide`,
+   `.agent-prompts-files`): a bold primary-text summary, nothing else. */
+.agent-schedule-notice > summary {
+  color: var(--text-primary);
+  font-weight: 600;
+  cursor: var(--cur-pointer, pointer);
+}
 
 .agent-schedule-row {
   display: flex;
-  gap: 14px;
-  align-items: flex-start;
-  justify-content: space-between;
+  flex-direction: column;
+  gap: 8px;
+  align-items: stretch;
   padding: 10px 12px;
   border: 1px solid var(--border-color);
   border-radius: var(--radius-md);
@@ -2435,9 +2467,9 @@
 .agent-schedule-summary {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px 18px;
+  gap: 4px 16px;
   align-items: baseline;
-  padding: 10px 12px;
+  padding: 7px 12px;
   border: 1px solid var(--border-color);
   border-radius: var(--radius);
   background: var(--control-bg);
@@ -2452,7 +2484,7 @@
 }
 
 .agent-schedule-summary-counts strong {
-  font-size: 20px;
+  font-size: 15px;
   line-height: 1;
   color: var(--accent);
 }
@@ -2516,6 +2548,36 @@
 
 .agent-schedule-pill.is-delivered { color: var(--text-secondary); }
 
+/* ── Agent-tab state pills ───────────────────────────────────────────────
+   These four say what an AGENT TAB is doing, not what a schedule did, so they
+   are painted in the tab ring's own palette (`--status-*`, see themes.css) and
+   in its stroke style: the pill in the Agents view and the border around the
+   tab it names are the same statement, and a pill that said "needs a decision"
+   in the error red while the tab wore amber read as a third state. Working is
+   dotted for the same reason it is on the ring — unfinished — and done is the
+   same green closed up. Idle draws nothing but its neutral text: a tab with
+   nothing to say is what the tab bar shows as no ring at all. */
+.agent-schedule-pill.is-agent-working {
+  color: var(--status-working);
+  border-color: var(--status-working);
+  border-style: dotted;
+  background: color-mix(in srgb, var(--status-working) 12%, transparent);
+}
+
+.agent-schedule-pill.is-agent-decision {
+  color: var(--status-decision);
+  border-color: var(--status-decision);
+  background: color-mix(in srgb, var(--status-decision) 12%, transparent);
+}
+
+.agent-schedule-pill.is-agent-done {
+  color: var(--status-done);
+  border-color: var(--status-done);
+  background: color-mix(in srgb, var(--status-done) 12%, transparent);
+}
+
+.agent-schedule-pill.is-agent-idle { color: var(--text-secondary); }
+
 /* A sent prompt that has not reached its agent yet: aimed, waiting for a safe
    idle point. Neutral like delivered — nothing is wrong with it — but named,
    because "sent" and "arrived" are not the same thing. */
@@ -2539,20 +2601,47 @@
   font-size: 12px;
 }
 
+/* The row's own last line, not a column beside it: at this width a button
+   column left the rule text in a gutter. */
 .agent-schedule-row-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
   align-items: center;
   justify-content: flex-end;
+  color: var(--text-secondary);
+  font-size: 12px;
 }
 
+.agent-schedule-row-actions > label {
+  display: flex;
+  gap: 5px;
+  align-items: center;
+  margin-right: auto;
+  cursor: var(--cur-pointer, pointer);
+}
+
+/* Label over control. A 150px label column beside a 300px pane left every
+   control in a slot too narrow to read, and the message box needs the width
+   more than its one-word label does. */
 .agent-schedule-form > label,
 .agent-schedule-form > .agent-schedule-field {
   display: grid;
-  grid-template-columns: 150px minmax(0, 1fr);
-  gap: 10px;
-  align-items: center;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 4px;
+}
+
+.agent-schedule-form > label > span:first-child,
+.agent-schedule-form > .agent-schedule-field > span:first-child {
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+/* An empty label cell (the prefix preview's) would otherwise open a 4px gap
+   above a line that is already only a preview of the line above it. */
+.agent-schedule-form > .agent-schedule-field > span:first-child:empty {
+  display: none;
 }
 
 /* Direct children only. A descendant selector here also caught the weekday
@@ -2587,11 +2676,19 @@
   line-height: 1;
 }
 
-@media (max-width: 620px) {
-  .agent-schedule-row { flex-direction: column; }
-  .agent-schedule-row-actions { justify-content: flex-start; }
-  .agent-schedule-form > label,
-  .agent-schedule-form > .agent-schedule-field { grid-template-columns: 1fr; }
+/* Below this the dialog is viewport-wide and the two panes no longer fit:
+   they stack, rules first, and the form gives up its rule and its stickiness. */
+@media (max-width: 780px) {
+  .agent-schedule-body { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .agent-schedule-body > .agent-schedule-form {
+    position: static;
+    max-height: none;
+    overflow-y: visible;
+    padding-left: 0;
+    padding-top: 12px;
+    border-left: none;
+    border-top: 1px solid var(--border-subtle);
+  }
 }
 
 /* ── Agents view (Files / Git / Apps / Agents row) ──────────────────────── */
@@ -2613,12 +2710,86 @@
 .agent-prompts-tab-main,
 .agent-prompts-row-main { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 4px; }
 .agent-prompts-tab-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+
+/* The tab's name is the link to the tab. A bare text button, so the row still
+   reads as a name and not as a toolbar — the same restraint (and the same
+   accent-on-hover) `.agent-prompts-file` uses for the other clickable label in
+   this view. */
+.agent-prompts-tab-name {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: var(--cur-pointer, pointer);
+}
+.agent-prompts-tab-name:hover { color: var(--accent); text-decoration: underline; }
 .agent-prompts-tab-head small,
 .agent-prompts-tab-when,
 .agent-prompts-row-main small { color: var(--text-muted); font-size: 11px; }
 .agent-prompts-tab-head .danger-text { color: var(--danger); }
+
+/* The prompts a tab is holding: sent, claimed by no agent yet, waiting for this
+   one to fall idle. Indented under the tab's own lines so the queue reads as
+   belonging to that tab, and wrapping rather than truncating — the text of a
+   prompt is the only way to tell two of them apart. */
+.agent-prompts-queued {
+  list-style: none;
+  margin: 2px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.agent-prompts-queued li {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+}
+.agent-prompts-queued .agent-schedule-pill { font-size: 10px; white-space: nowrap; }
+.agent-prompts-queued-text {
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 .agent-prompts-row-main span { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
 .agent-prompts-row-actions { display: flex; flex-wrap: wrap; gap: 4px; justify-content: flex-end; }
+
+/* Collected prompts read as a paragraph, not a label: a column of buttons
+   beside them squeezed the message into a gutter. Grid instead — the grip keeps
+   its own column beside both rows, the text gets the full width, and the
+   actions sit on their own line under it, left-aligned with the text they act
+   on. */
+.agent-prompts-row.is-stacked {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  column-gap: 10px;
+  row-gap: 6px;
+}
+.agent-prompts-row.is-stacked .agent-prompts-grip { grid-row: 1 / span 2; }
+.agent-prompts-row.is-stacked .agent-prompts-row-main,
+.agent-prompts-row.is-stacked .agent-prompts-row-actions { grid-column: 2; }
+.agent-prompts-row.is-stacked .agent-prompts-row-actions { justify-content: flex-start; }
+
+/* Same two rows without the grip column: a scheduled prompt and a sent one are
+   read, not reordered (the order being dragged is the library's), so the text
+   starts at the row's own padding instead of in a gutter kept for a control
+   that is not there. */
+.agent-prompts-row.is-stacked.is-gripless { grid-template-columns: minmax(0, 1fr); }
+.agent-prompts-row.is-stacked.is-gripless .agent-prompts-row-main,
+.agent-prompts-row.is-stacked.is-gripless .agent-prompts-row-actions { grid-column: 1; }
+
+/* "This one already went to scheduling." The pill is the schedules list's own
+   (`.agent-schedule-pill`), armed-green when a rule is actually going to fire
+   and neutral when every matching rule is off — a second badge look for the
+   same idea is exactly what this view does not need. The font-size is restated
+   because `.agent-prompts-row-main span` above sets the message's 12px and
+   outranks the pill's own rule. */
+.agent-prompts-scheduled { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.agent-prompts-scheduled .agent-schedule-pill { font-size: 10px; white-space: nowrap; }
 .agent-prompts-target { display: flex; align-items: center; gap: 8px; font-size: 12px; }
 .agent-prompts-target select { flex: 1; min-width: 0; }
 .agent-prompts-notice {
@@ -2676,6 +2847,106 @@
 .agent-composer-model .dropdown { flex: 1; min-width: 0; }
 .agent-composer-preview { color: var(--text-muted); font-size: 10px; overflow-wrap: anywhere; }
 
+/* Dragging a collected prompt into a different place in the list. The gesture is
+   `hooks/useListReorder` — the same one the to-do card's checklist uses — so the
+   treatment copies `.todo-step-grip`'s: a grip that appears on hover, the
+   dragged row riding above its neighbours, the others parting by transform. */
+.agent-prompts-grip {
+  all: unset;
+  flex: none;
+  width: 12px;
+  align-self: center;
+  text-align: center;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--text-muted);
+  opacity: 0;
+  cursor: var(--cur-grab, grab);
+  touch-action: none;
+}
+.agent-prompts-row:hover .agent-prompts-grip,
+.agent-prompts-row:focus-within .agent-prompts-grip { opacity: 1; }
+.agent-prompts-grip:focus-visible {
+  opacity: 1;
+  color: var(--text-primary);
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
+.agent-prompts-grip:active { cursor: var(--cur-grabbing, grabbing); }
+.agent-prompts-row.is-dragging {
+  position: relative;
+  z-index: 2;
+  opacity: 0.85;
+}
+.agent-prompts-row.is-dragging .agent-prompts-grip {
+  opacity: 1;
+  cursor: var(--cur-grabbing, grabbing);
+}
+.agent-prompts-row.is-parting { transition: transform var(--transition); }
+
+/* The Sent prompts filters. A search line of its own, then the three pickers on
+   one wrapping row, then what is being shown — narrow enough for the side panel
+   at its smallest, and it collapses to nothing when the history is empty. */
+.agent-prompts-filters { display: flex; flex-direction: column; gap: 4px; }
+.agent-prompts-filter-text {
+  width: 100%;
+  box-sizing: border-box;
+  font: inherit;
+  font-size: 12px;
+}
+.agent-prompts-filter-row { display: flex; flex-wrap: wrap; gap: 4px; }
+.agent-prompts-filter-row .agent-prompts-filter-pick { flex: 1 1 90px; min-width: 0; }
+.agent-prompts-filter-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+.agent-prompts-filter-foot small { color: var(--text-muted); font-size: 11px; }
+
+/* Tags: the same chip the composer's prefix commands wear, so a row reads as
+   one vocabulary — text, then what it is for. The count on a library chip is
+   quieter than the tag. The tag field takes the rename input's metrics: one
+   line, the row's own font, live on focus. */
+.agent-prompts-tags { display: flex; flex-wrap: wrap; gap: 4px; }
+.agent-prompts-tag > span { margin-left: 4px; opacity: 0.65; }
+.agent-prompts-tags-input {
+  width: 100%;
+  box-sizing: border-box;
+  font: inherit;
+  font-size: 11px;
+  color: inherit;
+  background: var(--bg-main, rgba(0, 0, 0, 0.25));
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  padding: 2px 6px;
+  margin: 0;
+  outline: none;
+}
+.agent-prompts-tags-input:focus { border-color: var(--accent); }
+
+/* Prompt blame on a sent row: the commit line sits with the session id (same
+   treatment, same copy button), and the files fold behind a summary — a
+   refactor's list is long, and the row is a record first. Each file is a
+   button because clicking it asks the list "which prompts touched this". */
+.agent-prompts-files { font-size: 11px; color: var(--text-muted); }
+.agent-prompts-files summary { cursor: var(--cur-pointer, pointer); }
+.agent-prompts-files ul { margin: 2px 0 0; padding-left: 14px; }
+.agent-prompts-file {
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  color: var(--text-secondary);
+  text-align: left;
+  overflow-wrap: anywhere;
+  cursor: var(--cur-pointer, pointer);
+}
+.agent-prompts-file:hover { color: var(--accent); text-decoration: underline; }
+
 /* The per-entry target picker: which tab a collected prompt goes to is asked
    at the moment it is sent, in the row itself, so it opens inside the row. */
 .agent-prompts-picker { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-top: 4px; }
@@ -2686,6 +2957,10 @@
   padding: 0;
   border-radius: 50%;
   margin-right: 4px;
+  /* At 8px a dotted ring is three specks and a 12% wash is nothing at all, so
+     the dot says its state with the FILL instead — same colour, one shape. */
+  border-style: solid;
+  background: currentcolor;
 }
 /* The session id is shown whole — it is the value that gets carried elsewhere —
    so it wraps inside the narrow side panel and keeps its copy button beside it. */
@@ -2724,6 +2999,27 @@
   line-height: 1.45;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+/* Editing a collected prompt happens in the row it is read in, so the field
+   takes the quoted message's own place and metrics — the text does not move
+   when it becomes editable, and the row does not jump. The accent border says
+   it is live, the same way the rename input does. */
+.agent-prompts-row-main .agent-prompts-edit {
+  width: 100%;
+  box-sizing: border-box;
+  margin: 1px 0 2px;
+  padding: 4px 8px;
+  border: 1px solid var(--accent);
+  border-left-width: 2px;
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  background: var(--bg-main, rgba(0, 0, 0, 0.25));
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.45;
+  resize: vertical;
+  outline: none;
 }
 
 /* Renaming an agent tab from the Agents view (its name is how one agent is told

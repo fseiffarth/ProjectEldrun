@@ -1,6 +1,11 @@
 pub mod agent_prompts;
 pub mod agent_session;
 pub mod agent_tasks;
+// One agent CLI's own usage panel (Claude's `/usage`), read in print mode
+// without a tab: recipe table, envelope parsing, and the short-lived cache
+// that keeps a phone reopening the status sheet from spawning a CLI each
+// time.
+pub mod agent_usage;
 // Default-on Linux filesystem boundary for local agent tabs.  The authority
 // decision and root computation stay AppHandle-free; terminal spawn only applies
 // the resulting bubblewrap argv.
@@ -38,6 +43,7 @@ pub mod mobile_control;
 pub mod net_usage;
 pub mod openvpn;
 pub mod project_runtime;
+pub mod prompt_blame;
 pub mod remote;
 pub mod remote_agents;
 pub mod remote_credentials;

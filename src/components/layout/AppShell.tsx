@@ -44,6 +44,7 @@ import { BrowserDownloadHost } from "../browser/BrowserDownloadHost";
 import { MailOverlayHost } from "../mail/MailOverlay";
 import { CalendarOverlayHost } from "../calendar/CalendarOverlay";
 import { CalDavSyncHost } from "../calendar/CalDavSyncHost";
+import { AgentContinueHost } from "./AgentContinueHost";
 import { AgentCronHost } from "./AgentCronHost";
 import { AgentScheduleHost } from "./AgentScheduleHost";
 import { CalDavConflictDialog } from "../calendar/CalDavConflictDialog";
@@ -1050,6 +1051,7 @@ export function AppShell() {
           there would only ever fire while its own settings page was being read.
           Main window only, so two windows cannot both send the morning's
           message. */}
+          <AgentContinueHost />
           <AgentCronHost />
           <AgentScheduleHost />
       {/* The push half's one question (Phase 3): a `412` means the resource

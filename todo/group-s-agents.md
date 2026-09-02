@@ -660,3 +660,275 @@ unchanged; the new agents are additive.
       prompts is visibly set apart from the outcome/tab/time lines.
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work
+
+254. **Agents view: copy a collected prompt, drag the list into order, and
+    narrow the sent one.** Three things the two prompt lists were missing once
+    they had more than a couple of rows in them.
+    - **Copy.** A collected prompt is text written to be pasted somewhere — a
+      terminal, an issue, another agent — and the only way to get it back was to
+      select it in a 12px row. Each row (collected *and* sent) now has the same
+      one-click ⧉ the session id already had, with the ✓ acknowledgement the
+      clipboard does not give. The ack is keyed by *button*, not by text, so two
+      rows holding the same sentence tick separately.
+    - **Order.** The collected list is an ordered one — the prompt to send first
+      belongs at the top — but the order was the file's insertion order and the
+      only way to change it was delete-and-retype. Rows now drag by a grip
+      through `hooks/useListReorder`, which is the to-do checklist's gesture
+      *moved out* of `components/todo/useStepReorder.ts` and generalized to any
+      `{ id }[]`: pointer events (WebKitGTK does not deliver HTML5 DnD), rects
+      frozen at pointerdown, arrow keys on the focused grip. The drop persists
+      through a new `agent_prompt_reorder` command that takes the whole new id
+      order; ids it does not name keep their relative place at the end, so a
+      prompt collected in another window between the read and the write is not
+      dropped. `lib/listReorder` holds the shared arithmetic (`dropSlot`,
+      `reorderedIds`); `lib/todoBoard`'s `stepDropSlot` is now an alias of it.
+    - **Filter.** The sent list is a bounded record (200 per project) opened with
+      narrow questions: what did I send Codex, what failed, what went out today,
+      where did that one sentence go. Four composing facets answer them — text
+      over prompt/tab/agent/session, the agent, the outcome (with *queued*, the
+      absence of a result, as a filter of its own), and a time window where
+      `Today` is the calendar day and the rest roll back from now. The filter is
+      view state, not a setting: the next visit starts on the whole list. The
+      foot says `Showing n of m`, and Clear (which still deletes *everything*)
+      says so in its tooltip.
+    Frontend: `components/agents/AgentSchedulesView.tsx`, `lib/listReorder.ts`,
+    `lib/agentPromptFilter.ts`, `hooks/useListReorder.ts` (moved),
+    `stores/agentPrompts.ts`, `styles/projects-tabs.css`.
+    Backend: `services/agent_prompts.rs`, `commands/agent_prompts.rs` — so the
+    reorder command needs a restart before the drag can persist.
+    Implemented 2026-09-02, **not live-tested**.
+    - [x] 🤖 Automated test — `AgentPromptFilter` (the four facets, their
+      composition, `today` vs. rolling windows, an unreadable `sent_at` kept,
+      `reorderedIds`/`dropSlot`), `AgentSchedulesView` (copy, the reorder
+      commit and its optimistic paint, filtering by text/agent/window), plus a
+      Rust unit test for the named-order-then-the-rest reorder.
+    - [ ] 🖐️ Manual test — with several collected prompts, drag one to the top,
+      relaunch and confirm it stayed; copy one and paste it elsewhere; in Sent
+      prompts filter by an agent and by *Last 7 days* and confirm the count line
+      and the empty state read correctly.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+255. **Agents view: tag the prompts, search the library, and blame a change on
+    a prompt.** The collected list was a pile; the sent list knew *where* a
+    prompt went but nothing about *what it did to the tree*.
+    - **Tags.** A collected prompt carries short lowercase tokens
+      (`refactor, tests, paper`) typed as one line beside the text, in the add
+      form and in the row editor. Stored on the row (`ProjectAgentPrompt.tags`),
+      normalized identically on both sides (`lib/agentPromptTags` ↔
+      `services::agent_prompts::normalize_tag`: trimmed, `#` stripped,
+      lowercase, inner whitespace folded to `-`), capped at 16 per prompt. The
+      phone edits text only and its `tags: None` **keeps** a prompt's tags; an
+      editor that names a list, empty included, replaces them. Tags travel into
+      the history at send time and survive the delivery's re-record, and
+      *Collect again* brings them back.
+    - **Library search.** The collected section gains a search box (text over
+      the prompt and its tags; `#tag` matches tags only) and one chip per tag in
+      use with its count — a chip narrows the list, and a row's own tag chips do
+      the same. Dragging is withheld while a filter is on: a drop index into a
+      filtered view names the wrong slot in the file's order. The sent list's
+      filter gains a **tag** facet and its text search reaches tags, the commit,
+      the branch and the touched files.
+    - **Prompt blame.** `git blame` says which commit put a line there; this
+      says which prompt did. At send/record time the backend stamps the row
+      with the local repo's HEAD (`commit`, `branch`; `services::prompt_blame`,
+      **local projects only** — a remote repo's git is an SSH round trip that
+      must not run inside a send, so a remote row simply carries none). Once
+      `AgentScheduleHost` sees the tab idle again after a *delivered* send it
+      calls `agent_prompt_blame`, which records the files that changed between
+      the submission and now: working-tree entries (`git status -z`) whose mtime
+      is after the submission, plus `git diff --name-only <commit> HEAD` when
+      the repo has moved on; deletions are never attributed, an unreadable mtime
+      is kept, the list is sorted and capped at 200. Git runs outside the file
+      lock; `archive`/`record`/`blame` commands went `async` + off-thread for
+      it. The row shows `branch @ abc1234` with a copy of the full hash, and the
+      files fold behind a `N file(s) touched` summary where each file is a
+      button that sets the text filter — "which prompts touched this file" in
+      one click. A delivered row without files yet says so.
+    Frontend: `components/agents/AgentSchedulesView.tsx`,
+    `components/layout/AgentScheduleHost.tsx`, `lib/agentPromptTags.ts` (new),
+    `lib/agentPromptFilter.ts`, `stores/agentPrompts.ts`,
+    `styles/projects-tabs.css`, `lib/i18n.ts` + the four dictionaries.
+    Backend: `services/prompt_blame.rs` (new), `services/agent_prompts.rs`,
+    `schema/agent_prompts.rs`, `commands/agent_prompts.rs`, `lib.rs` — so tags
+    persist and the blame lands only after a restart.
+    Implemented 2026-09-02, **not live-tested**.
+    - [x] 🤖 Automated test — `AgentPromptTags` (normalization, the comma /
+      `#` split rule, caps, round-trip, counts, the library filter),
+      `AgentPromptFilter` (tag facet, `#tag`, file/commit/branch text hits),
+      `AgentSchedulesView` (tags saved from the add form and the row editor, the
+      chip and `#` search narrowing, a sent row's commit + files and the
+      file-click filter); Rust: tag validation, tags kept unless named, archive
+      carries tags + head, a delivery keeps the send row's tags and takes the
+      fresher head, blame lands and survives a re-record, `-z` status parsing
+      (rename sources skipped, deletions marked), the mtime rule, ISO parsing of
+      both writers' stamps.
+    - [ ] 🖐️ Manual test — collect a prompt with `refactor, tests`, confirm the
+      chips and that clicking one narrows the list; edit its tags and relaunch;
+      send it to a Claude tab in a **local** git project, let the agent change a
+      file and go idle, then confirm the sent row shows the branch and short
+      hash, a `N file(s) touched` fold listing that file, and that clicking the
+      file narrows the sent list to that prompt. Send one from a remote project
+      and confirm the row shows no commit line and no error.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+256. **Agents view: one lifecycle — collected → scheduled → sent.** A prompt
+    turned into a rule stayed in the collected list looking exactly like text
+    nobody had done anything with yet, and it stayed there *after the rule had
+    fired* too, next to a Sent row saying it had already gone — which is how the
+    same prompt gets sent twice.
+    - **A new Scheduled prompts section** between the library and Sent prompts.
+      A prompt with a live rule leaves the library and reads here with what it
+      is waiting for (which tabs carry it, when it next fires). The link is
+      still `lib/agentPromptScheduled`'s key — the prompt's own text — so
+      deleting the rule brings the prompt back to the library rather than
+      needing anything kept in step.
+    - **A one-time delivery retires the prompt.** `AgentScheduleHost`'s retire
+      step already records the run and deletes the finished rule; it now also
+      deletes the collected prompt carrying that text, so the prompt *moves* to
+      Sent prompts the way a "Send now" one always did. It only deletes — the
+      record has just been written, and archiving would file a second row for
+      one delivery. A **recurring** rule keeps its prompt in Scheduled, because
+      it is going to fire again.
+    - **The row is two lines**, in all three lists: the prompt takes the full
+      width of its own line and the buttons sit under it (`is-stacked`, plus a
+      gripless variant for the two lists whose order is not the library's). A
+      column of buttons beside the text squeezed the message into a gutter.
+    - The library's search, tag chips, count line and drag now run over the
+      *collected* prompts only; a reorder still writes the whole file order,
+      leaving the scheduled prompts in their own slots.
+    Frontend: `components/agents/AgentSchedulesView.tsx`,
+    `components/layout/AgentScheduleHost.tsx`, `styles/projects-tabs.css`,
+    `lib/i18n.ts` + the four dictionaries. No backend change.
+    Implemented 2026-09-02, **not live-tested**.
+    - [x] 🤖 Automated test — `AgentSchedulesView` (a scheduled prompt leaves
+      the library for the Scheduled section, the library's empty state, the
+      existing mark and unmarked cases).
+    - [ ] 🖐️ Manual test — collect a prompt, *Schedule…* it a minute out on an
+      agent tab, and confirm it moves to Scheduled prompts with its next run;
+      let it fire and confirm it leaves that section for Sent prompts and is
+      gone from the collected list. Repeat with a daily rule and confirm the
+      prompt stays in Scheduled after the first delivery. Check the rows read as
+      text-then-buttons in all three lists.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+257. **Agents view: a per-tab Continue switch that rides the rate-limit
+    windows.** A limit is reached, work stops, and the only thing standing
+    between the agent and the moment the limit lifts is somebody noticing. The
+    Agents view now carries a ⟳ **Continue** chip on every agent tab row: while
+    it is on, `components/layout/AgentContinueHost` reads that agent's own usage
+    panel, works out when the soonest window rolls over, submits a single
+    `continue` a minute later, then reads the panel again — which by then
+    describes the fresh window — and arms the next one. Iterating over the next
+    limit is the loop, not a special case.
+    - **The reading is free and needs no tab.** `agent_usage` runs the CLI's own
+      print-mode `/usage` (`services::agent_usage`); Claude's envelope comes back
+      with `num_turns: 0` and zero tokens, so asking how much quota is left
+      spends none. Cached 60 s, and a re-read after a send asks with `refresh`.
+    - **Not a scheduler.** Nothing is written to `agent_tasks.json` — a rule the
+      user never made has no business sitting in the ◷ menu beside the ones they
+      did. The only persisted trace is `TabEntry.autoContinue`, one boolean that
+      rides the ordinary layout persistence, so the switch survives a relaunch.
+      The *armed time* is deliberately live-only: a stored one would fire against
+      a window that had already turned over while Eldrun was closed.
+    - **It chooses nothing about the agent.** One word, submitted through
+      `lib/scheduledAgentInput` — the same path a scheduled prompt takes — so the
+      permission mode stays the agent's own and the idle/decision/settle gate
+      applies. The one deliberate loosening is in `deliverable`: a tab whose
+      output the activity store has never seen (an ordinary restored agent tab)
+      counts as quiet, because a missed rollover here is not retried in an hour
+      but at the *next* reset hours later.
+    - **It never guesses at a time.** `resolveResetAt` recognizes the shapes
+      Claude Code prints (`6:20pm`, `Mon 9am`, `tomorrow 09:00`, `18:20`) and
+      refuses everything else — a bare number in a date phrase is a day, not an
+      hour. A panel it cannot place is reported as such in the row, along with
+      an agent whose CLI publishes no panel at all: a switch that is on and
+      quietly doing nothing is the one thing this must not look like.
+    - **Every send leaves a record** on the project's Sent prompts, with the tab,
+      the agent, the session and the rollover it was due at.
+    - The usage parser moved `mobile-web/src/terminal/usageReport.ts` →
+      `shared/usageReport.ts`, so the phone's bars and the desktop's countdown
+      read one panel the same way.
+    Frontend: `components/layout/AgentContinueHost.tsx`, `stores/agentContinue.ts`,
+    `lib/agentUsage.ts`, `shared/usageReport.ts`, `stores/tabs.ts`
+    (`autoContinue` + `setAutoContinueInScope`), `components/agents/AgentSchedulesView.tsx`,
+    `lib/i18n.ts` + the four dictionaries. No backend change.
+    Implemented 2026-09-02, **not live-tested**.
+    - [x] 🤖 Automated test — `UsageReset` (every reset shape, and the refusals),
+      `AgentContinueHost` (off reads nothing, the arm, both refusals, the send +
+      its record, the busy and decision gates, and forgetting a switched-off tab).
+    - [ ] 🖐️ Manual test — turn ⟳ Continue on for a Claude tab and confirm the row
+      reads "continue in Nh · after Current session resets (…)" against what
+      `/usage` says in that tab. Let a window actually roll over and confirm one
+      `continue` lands about a minute later, that the tab was idle when it did,
+      that a Sent-prompts row records it, and that the row re-arms on the next
+      window rather than stopping. Turn it on for a Gemini tab and confirm it
+      says the CLI publishes no usage panel. Restart Eldrun and confirm the
+      switch comes back on and re-arms.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+258. **Agents view: the ◷ Schedules menu reads as two panes, not one scroll.**
+    The per-tab schedules dialog opened every time on the same three screens of
+    boilerplate, and the add/edit form sat under however many rules the tab had
+    — so making a rule meant scrolling past all of them, and editing one
+    scrolled the rule you were editing out of sight. The dialog is now a
+    two-pane menu: the saved rules take the wide column, the form takes a fixed
+    300px column beside them and stays put while the list scrolls (under ~780px
+    the panes stack again, rules first). The two paragraphs of delivery
+    semantics fold behind a "How delivery works" summary — the same `<details>`
+    treatment the other guides in the app use — while what is specific to *this*
+    tab (a non-resumable one) stays out of the fold as a warning of its own. The
+    status strip is one line instead of a card with a 20px numeral, section
+    headers are the canonical `.settings-section-title`, a rule's buttons sit on
+    the row's own last line rather than in a column squeezing the prompt text,
+    and the form's fields put their label over the control so a 300px pane fits
+    them. Frontend only: `components/agents/AgentScheduleDialog.tsx`,
+    `styles/projects-tabs.css`, one new `agentSchedule.howItWorks` string.
+    Implemented 2026-09-02, **not live-tested**.
+    - [ ] 🖐️ Manual test — open ◷ Schedules on an agent tab with a few rules:
+      the form sits beside the list and stays put while the rules scroll,
+      Edit fills it without moving the list, the guide opens and closes, a
+      non-resumable tab still shows its warning with the guide folded, and
+      narrowing the window (or a small screen) stacks the two panes cleanly.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+259. **Agents view: a tab's row is the way to the tab, and it shows the
+    finished state too.**
+    The Agents view named every agent tab and said what it was waiting for, and
+    then left you to find it: the row was a label, and getting to the agent
+    meant switching to the tab bar and hunting for the one that was glowing. The
+    tab's name is now a link to it, and a spelled-out `↗ Go to` sits with the
+    row's other actions for when a hover is not discoverable enough. Both take
+    the same jump the project pill's status bars take — `revealTabInScope`
+    first, so the tab is already the visible one when the scope arrives —
+    extracted from `PillStatusBars` into `lib/tabJump.ts` so the two surfaces
+    cannot drift into two answers to the same question; the shared helper also
+    covers a box scope and falls back to `setActive` in a popout, where the
+    layout lives in another window.
+    The state pill gained the state a tab border has always had and this view
+    swallowed: **finished, unseen**. It also stopped painting agent state in the
+    *schedule* palette — "needs a decision" was the error red while the tab it
+    named wore amber, which read as a third state. All four now use the tab
+    ring's own `--status-*` colours and its stroke style (working green-dotted,
+    done green-solid, decision amber, idle neutral), so the pill and the border
+    around the tab are one statement. Precedence matches `TabBar` and the pill
+    bars: decision over working over done.
+    Frontend only: `components/agents/AgentSchedulesView.tsx`,
+    `components/projects/PillStatusBars.tsx`, new `lib/tabJump.ts`,
+    `styles/projects-tabs.css`, three new strings in `lib/i18n.ts` + the four
+    dictionaries. Implemented 2026-09-02, **not live-tested**.
+    - [x] 🤖 Automated test — `AgentSchedulesView` (all four states and their
+      precedence; the jump from both the name and the ↗ button leaves the tab
+      active in its scope's own layout).
+    - [ ] 🖐️ Manual test — in the side panel's Agents view, click an agent tab's
+      name and confirm the tab comes up (and the project switches first when the
+      view is showing another scope); same from `↗ Go to`. Let an agent finish
+      without looking at its tab and confirm the row reads "Finished" in the
+      same green the tab's border wears, that a permission prompt turns both
+      amber, and that a working agent reads green-dotted in both places.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work

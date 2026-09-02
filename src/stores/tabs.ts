@@ -563,6 +563,14 @@ export interface TabEntry {
   // persistence exists for. Persisted with the tab, so a restored log tab does
   // not quietly regain a session on the next launch.
   ephemeral?: boolean;
+  // Auto-continue (agent tabs only): keep this agent going across its CLI's own
+  // rate-limit windows. `AgentContinueHost` reads the agent's usage panel, works
+  // out when the soonest window rolls over, and submits one "continue" a minute
+  // after it does — then reads the panel again and arms the next one. Persisted,
+  // because the whole point is a tab that picks itself up again, including
+  // across a relaunch; the ARMED time is not persisted (it is re-read on start,
+  // and a stored one would fire off a window that had already turned over).
+  autoContinue?: boolean;
   // For a custom agent (see CustomAgent) whose spec carries a "continue last
   // session" flag: the resume args this tab respawns with after a restart. Its
   // presence is what makes such a tab restart-resumable without the cmd being in
@@ -833,6 +841,8 @@ export interface SavedTabEntry {
   tmuxAttach?: string;
   // Persisted "never tmux-wrap this tab" marker (see TabEntry.ephemeral).
   ephemeral?: boolean;
+  // Persisted auto-continue switch (see TabEntry.autoContinue).
+  autoContinue?: boolean;
   // Persisted host-bound marker id (see TabEntry.hostBoundUid, #150).
   hostBoundUid?: string;
   mobileRequestHash?: string;
@@ -885,6 +895,7 @@ export function toSavedTabEntry(t: TabEntry): SavedTabEntry {
     hostBoundUid: t.hostBoundUid,
     mobileRequestHash: t.mobileRequestHash,
     ephemeral: t.ephemeral,
+    autoContinue: t.autoContinue,
   };
 }
 
@@ -1030,6 +1041,10 @@ interface TabsStore {
   // loud. Falls through to `renameTab` when they are the same, keeping the
   // detached-popout forwarding path intact.
   renameTabInScope: (scope: string, key: string, label: string) => void;
+  // Turn auto-continue on or off for ONE agent tab in `scope` (see
+  // TabEntry.autoContinue). Scoped like the rename above, because the Agents
+  // view is rendered for a scope that need not be the active one.
+  setAutoContinueInScope: (scope: string, key: string, on: boolean) => void;
   // Rewrite the embedPath (and label) of every in-app "embed" tab in the CURRENT
   // scope whose file was renamed/moved on disk — an exact match (`embedPath ===
   // oldAbs`) or, for a directory rename/move, any tab UNDER it (`embedPath`
@@ -2355,6 +2370,24 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
         s,
         scope,
         tabs.map((t) => (t.key === key ? { ...t, label: nextLabel } : t)),
+        s.layoutByScope[scope] ?? null,
+        s.focusedGroupByScope[scope] ?? null,
+      );
+    });
+  },
+
+  setAutoContinueInScope: (scope, key, on) => {
+    set((s) => {
+      const tabs = s.tabsByScope[scope];
+      const tab = tabs?.find((t) => t.key === key);
+      if (!tabs || !tab || !!tab.autoContinue === on) return {};
+      return writeScope(
+        s,
+        scope,
+        // `undefined` rather than `false` when off: the flag is absent on every
+        // tab that never had it, and writing an explicit false would put a field
+        // on disk for the default.
+        tabs.map((t) => (t.key === key ? { ...t, autoContinue: on || undefined } : t)),
         s.layoutByScope[scope] ?? null,
         s.focusedGroupByScope[scope] ?? null,
       );
@@ -4322,6 +4355,10 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
         // above is harmless on such a tab precisely because `shouldPersistTab`
         // refuses to use it.
         ephemeral: t.ephemeral,
+        // A tab that was continuing itself across rate-limit windows keeps doing
+        // so after a relaunch. Only the switch comes back: `AgentContinueHost`
+        // re-reads the CLI's usage panel and arms a fresh window.
+        autoContinue: t.autoContinue,
       };
     });
 

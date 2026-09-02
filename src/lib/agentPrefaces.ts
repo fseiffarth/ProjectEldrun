@@ -45,7 +45,7 @@ export const DEFAULT_PREFACE_COMMANDS: Record<string, string[]> = {
  * its list starts empty and is filled in from Settings.
  */
 export const DEFAULT_AGENT_MODELS: Record<string, string[]> = {
-  claude: ["opus", "sonnet", "haiku"],
+  claude: ["opus", "sonnet", "haiku", "fable"],
 };
 
 /**

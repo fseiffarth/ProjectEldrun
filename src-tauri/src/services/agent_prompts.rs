@@ -11,9 +11,12 @@ use crate::{
         AgentPromptsFile, ProjectAgentPrompt, ProjectAgentPromptInput, RecordedAgentPromptInput,
         SentAgentPrompt, SentAgentPromptInput,
     },
-    services::agent_tasks::{
-        sanitize_message, validate_id, validate_preface_command, MAX_MESSAGE_BYTES,
-        MAX_PREFACE_COMMANDS,
+    services::{
+        agent_tasks::{
+            sanitize_message, validate_id, validate_preface_command, MAX_MESSAGE_BYTES,
+            MAX_PREFACE_COMMANDS,
+        },
+        prompt_blame::{self, RepoHead, MAX_BLAME_FILES},
     },
     storage,
 };
@@ -26,6 +29,12 @@ pub const MAX_PROMPTS_PER_PROJECT: usize = 64;
 pub const MAX_HISTORY_PER_PROJECT: usize = 200;
 const MAX_TAB_LABEL_BYTES: usize = 256;
 const MAX_AGENT_BYTES: usize = 256;
+/// Tags are labels, not sentences: a handful per prompt, each a short token.
+/// The frontend's `lib/agentPromptTags` normalizes the same way and truncates
+/// at 32 characters, so the byte cap here is the guard, not the editor.
+pub const MAX_TAGS_PER_PROMPT: usize = 16;
+pub const MAX_TAG_BYTES: usize = 64;
+const MAX_BLAME_PATH_BYTES: usize = 1024;
 /// The delivery outcomes a history entry may carry, mirroring the frontend's
 /// `ScheduleResult`. Anything else is refused rather than stored as a word the
 /// UI has no pill for.
@@ -55,6 +64,39 @@ fn write(file: &AgentPromptsFile) -> Result<(), String> {
     storage::write_json_atomic(&path(), file).map_err(|e| format!("write {FILE_NAME}: {e}"))
 }
 
+/// One tag as it is stored: trimmed, without a leading `#`, lowercase, and
+/// with inner whitespace folded to `-` so a tag is always one token. Empty
+/// after that means "no tag", which the caller drops rather than stores.
+pub fn normalize_tag(raw: &str) -> String {
+    let clean = sanitize_message(raw);
+    let trimmed = clean.trim().trim_start_matches('#').trim();
+    trimmed
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join("-")
+        .to_lowercase()
+}
+
+/// Normalize, drop empties, dedupe in order, and refuse a list or a tag the
+/// file has no business holding.
+pub fn validate_tags(tags: &[String]) -> Result<Vec<String>, String> {
+    let mut out: Vec<String> = Vec::new();
+    for raw in tags {
+        let tag = normalize_tag(raw);
+        if tag.is_empty() || out.contains(&tag) {
+            continue;
+        }
+        if tag.len() > MAX_TAG_BYTES {
+            return Err(format!("a tag may be at most {MAX_TAG_BYTES} bytes"));
+        }
+        out.push(tag);
+    }
+    if out.len() > MAX_TAGS_PER_PROMPT {
+        return Err(format!("a prompt may carry at most {MAX_TAGS_PER_PROMPT} tags"));
+    }
+    Ok(out)
+}
+
 fn validate_input(input: ProjectAgentPromptInput) -> Result<ProjectAgentPromptInput, String> {
     validate_id("prompt id", &input.id)?;
     let message = sanitize_message(&input.message);
@@ -64,9 +106,14 @@ fn validate_input(input: ProjectAgentPromptInput) -> Result<ProjectAgentPromptIn
     if message.len() > MAX_MESSAGE_BYTES {
         return Err(format!("prompt exceeds {MAX_MESSAGE_BYTES} bytes"));
     }
+    let tags = match &input.tags {
+        Some(tags) => Some(validate_tags(tags)?),
+        None => None,
+    };
     Ok(ProjectAgentPromptInput {
         id: input.id,
         message,
+        tags,
     })
 }
 
@@ -83,6 +130,11 @@ fn apply_upsert(
         Some(index) => {
             prompts[index].message = input.message;
             prompts[index].updated_at = now.to_string();
+            // `None` is an editor that did not speak about tags (the phone),
+            // not one that cleared them.
+            if let Some(tags) = input.tags {
+                prompts[index].tags = tags;
+            }
         }
         None => {
             if prompts.len() >= MAX_PROMPTS_PER_PROJECT {
@@ -95,6 +147,7 @@ fn apply_upsert(
                 message: input.message,
                 created_at: now.to_string(),
                 updated_at: now.to_string(),
+                tags: input.tags.unwrap_or_default(),
             });
         }
     }
@@ -179,6 +232,7 @@ fn apply_archive(
     project_id: &str,
     prompt_id: &str,
     input: &SentAgentPromptInput,
+    head: Option<&RepoHead>,
     now: &str,
 ) -> Option<SentAgentPrompt> {
     let prompt = file
@@ -198,6 +252,11 @@ fn apply_archive(
         agent: input.agent.clone(),
         result: input.result.clone(),
         scheduled_for: input.scheduled_for.clone(),
+        tags: prompt.tags,
+        commit: head.map(|head| head.commit.clone()),
+        branch: head.and_then(|head| head.branch.clone()),
+        files: Vec::new(),
+        files_at: None,
     };
     push_history(file, project_id, sent.clone());
     Some(sent)
@@ -214,18 +273,32 @@ fn apply_record(
     project_id: &str,
     entry: &RecordedAgentPromptInput,
     input: &SentAgentPromptInput,
+    head: Option<&RepoHead>,
     now: &str,
 ) -> SentAgentPrompt {
+    // The row this delivery updates, if the send already wrote one. What the
+    // collected prompt brought with it — its collection time and its tags —
+    // is the send's to keep, not the delivery's to drop.
+    let existing = file
+        .history
+        .get(project_id)
+        .and_then(|history| history.iter().find(|item| item.id == entry.id))
+        .cloned();
     let created_at = entry
         .created_at
         .clone()
-        .or_else(|| {
-            file.history
-                .get(project_id)
-                .and_then(|history| history.iter().find(|item| item.id == entry.id))
-                .map(|item| item.created_at.clone())
-        })
+        .or_else(|| existing.as_ref().map(|item| item.created_at.clone()))
         .unwrap_or_else(|| now.to_string());
+    // The delivery is when the agent actually started from the tree, so its
+    // HEAD is the one that counts; the queue-time stamp stands in only when
+    // the delivery could not read one.
+    let (commit, branch) = match head {
+        Some(head) => (Some(head.commit.clone()), head.branch.clone()),
+        None => existing
+            .as_ref()
+            .map(|item| (item.commit.clone(), item.branch.clone()))
+            .unwrap_or_default(),
+    };
     let sent = SentAgentPrompt {
         id: entry.id.clone(),
         message: entry.message.clone(),
@@ -237,9 +310,66 @@ fn apply_record(
         agent: input.agent.clone(),
         result: input.result.clone(),
         scheduled_for: input.scheduled_for.clone(),
+        tags: existing.as_ref().map(|item| item.tags.clone()).unwrap_or_default(),
+        commit,
+        branch,
+        files: existing.as_ref().map(|item| item.files.clone()).unwrap_or_default(),
+        files_at: existing.and_then(|item| item.files_at),
     };
     push_history(file, project_id, sent.clone());
     sent
+}
+
+/// Write the files a delivered prompt touched onto its history row. Pure core
+/// of `blame`, so what is recorded is testable without git. `None` when the
+/// row is gone — the agent finished, but the user cleared the history first.
+fn apply_blame(
+    file: &mut AgentPromptsFile,
+    project_id: &str,
+    entry_id: &str,
+    files: Vec<String>,
+    now: &str,
+) -> Option<SentAgentPrompt> {
+    let entry = file
+        .history
+        .get_mut(project_id)?
+        .iter_mut()
+        .find(|item| item.id == entry_id)?;
+    entry.files = files;
+    entry.files_at = Some(now.to_string());
+    Some(entry.clone())
+}
+
+/// Put a project's collected prompts into the order the caller names.
+///
+/// The list is an ordered one — the prompt to send first belongs at the top —
+/// and the order is the file's own, so a drag has to be written down somewhere
+/// to survive a reload.
+///
+/// Ids the project does not have are ignored, and prompts the caller did not
+/// name keep their relative order at the END: the caller reordered the list it
+/// had, and a prompt collected (or arriving from another window) between that
+/// read and this write must not be dropped just because the drag never saw it.
+fn apply_reorder(file: &mut AgentPromptsFile, project_id: &str, ids: &[String]) -> Vec<ProjectAgentPrompt> {
+    let Some(prompts) = file.projects.get_mut(project_id) else {
+        return Vec::new();
+    };
+    let mut ordered: Vec<ProjectAgentPrompt> = Vec::with_capacity(prompts.len());
+    for id in ids {
+        if ordered.iter().any(|item| &item.id == id) {
+            continue;
+        }
+        if let Some(found) = prompts.iter().find(|item| &item.id == id) {
+            ordered.push(found.clone());
+        }
+    }
+    for prompt in prompts.iter() {
+        if !ordered.iter().any(|item| item.id == prompt.id) {
+            ordered.push(prompt.clone());
+        }
+    }
+    *prompts = ordered;
+    prompts.clone()
 }
 
 fn apply_delete(file: &mut AgentPromptsFile, project_id: &str, prompt_id: &str) {
@@ -278,6 +408,21 @@ pub fn delete(project_id: &str, prompt_id: &str) -> Result<Vec<ProjectAgentPromp
     Ok(file.projects.get(project_id).cloned().unwrap_or_default())
 }
 
+/// Persist a new order for a project's collected prompts. Every id is
+/// validated before anything is written, so a malformed list is refused rather
+/// than half-applied.
+pub fn reorder(project_id: &str, ids: Vec<String>) -> Result<Vec<ProjectAgentPrompt>, String> {
+    validate_id("project id", project_id)?;
+    for id in &ids {
+        validate_id("prompt id", id)?;
+    }
+    let _guard = lock();
+    let mut file = read()?;
+    let result = apply_reorder(&mut file, project_id, &ids);
+    write(&file)?;
+    Ok(result)
+}
+
 pub fn history(project_id: &str) -> Result<Vec<SentAgentPrompt>, String> {
     validate_id("project id", project_id)?;
     let _guard = lock();
@@ -294,9 +439,12 @@ pub fn archive(
     validate_id("project id", project_id)?;
     validate_id("prompt id", prompt_id)?;
     let input = validate_sent(input)?;
+    // Read before the lock: it spawns git (local projects only), and nothing
+    // in the file depends on it.
+    let head = prompt_blame::head(project_id);
     let _guard = lock();
     let mut file = read()?;
-    apply_archive(&mut file, project_id, prompt_id, &input, &storage::iso_now());
+    apply_archive(&mut file, project_id, prompt_id, &input, head.as_ref(), &storage::iso_now());
     write(&file)?;
     Ok(file.projects.get(project_id).cloned().unwrap_or_default())
 }
@@ -321,10 +469,52 @@ pub fn record(
         message,
         ..entry
     };
+    let head = prompt_blame::head(project_id);
     let _guard = lock();
     let mut file = read()?;
-    apply_record(&mut file, project_id, &entry, &input, &storage::iso_now());
+    apply_record(&mut file, project_id, &entry, &input, head.as_ref(), &storage::iso_now());
     write(&file)?;
+    Ok(file.history.get(project_id).cloned().unwrap_or_default())
+}
+
+/// Record which files a delivered prompt touched, from the delivery (or
+/// `since`, when the caller knows the moment the text was submitted better
+/// than the row's `sent_at`) until now. Called once, when the scheduler sees
+/// the tab idle again. Git runs OUTSIDE the lock — it is the slow part — and
+/// the row is re-read afterwards, so a history cleared in between is not
+/// resurrected. Returns the project's history.
+pub fn blame(
+    project_id: &str,
+    entry_id: &str,
+    since: Option<&str>,
+) -> Result<Vec<SentAgentPrompt>, String> {
+    validate_id("project id", project_id)?;
+    validate_id("history entry id", entry_id)?;
+    let (commit, sent_at) = {
+        let _guard = lock();
+        let file = read()?;
+        let entry = file
+            .history
+            .get(project_id)
+            .and_then(|history| history.iter().find(|item| item.id == entry_id))
+            .ok_or_else(|| "history entry not found".to_string())?;
+        (entry.commit.clone(), entry.sent_at.clone())
+    };
+    let since = match since {
+        Some(value) if prompt_blame::iso_to_epoch(value).is_some() => value.to_string(),
+        _ => sent_at,
+    };
+    let files = prompt_blame::files_touched(project_id, commit.as_deref(), &since);
+    let files = files
+        .into_iter()
+        .filter(|path| path.len() <= MAX_BLAME_PATH_BYTES && !path.chars().any(char::is_control))
+        .take(MAX_BLAME_FILES)
+        .collect();
+    let _guard = lock();
+    let mut file = read()?;
+    if apply_blame(&mut file, project_id, entry_id, files, &storage::iso_now()).is_some() {
+        write(&file)?;
+    }
     Ok(file.history.get(project_id).cloned().unwrap_or_default())
 }
 
@@ -361,7 +551,103 @@ mod tests {
         ProjectAgentPromptInput {
             id: id.into(),
             message: message.into(),
+            tags: None,
         }
+    }
+
+    fn tagged(id: &str, message: &str, tags: &[&str]) -> ProjectAgentPromptInput {
+        ProjectAgentPromptInput {
+            tags: Some(tags.iter().map(|t| t.to_string()).collect()),
+            ..input(id, message)
+        }
+    }
+
+    fn head(commit: &str, branch: Option<&str>) -> RepoHead {
+        RepoHead {
+            commit: commit.into(),
+            branch: branch.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn tags_are_normalized_deduped_and_capped() {
+        let tags = validate_tags(&[
+            " #Refactor ".into(),
+            "unit tests".into(),
+            "refactor".into(),
+            "".into(),
+            "#".into(),
+        ])
+        .unwrap();
+        assert_eq!(tags, vec!["refactor", "unit-tests"]);
+        assert!(validate_tags(&["x".repeat(MAX_TAG_BYTES + 1)]).is_err());
+        let many: Vec<String> = (0..MAX_TAGS_PER_PROMPT + 1).map(|i| format!("t{i}")).collect();
+        assert!(validate_tags(&many).is_err());
+        assert!(validate_tags(&many[..MAX_TAGS_PER_PROMPT]).is_ok());
+    }
+
+    #[test]
+    fn upsert_keeps_tags_unless_the_editor_names_them() {
+        let mut file = AgentPromptsFile::default();
+        apply_upsert(&mut file, "p", tagged("a", "one", &["paper", "tex"]), "t1").unwrap();
+        // The phone edits the text and says nothing about tags: they stay.
+        let prompts = apply_upsert(&mut file, "p", input("a", "two"), "t2").unwrap();
+        assert_eq!(prompts[0].tags, vec!["paper", "tex"]);
+        // An editor that names an empty list clears them.
+        let prompts = apply_upsert(&mut file, "p", tagged("a", "two", &[]), "t3").unwrap();
+        assert!(prompts[0].tags.is_empty());
+        // A new prompt without tags starts untagged.
+        let prompts = apply_upsert(&mut file, "p", input("b", "x"), "t4").unwrap();
+        assert!(prompts[1].tags.is_empty());
+    }
+
+    #[test]
+    fn archive_carries_tags_and_stamps_the_head() {
+        let mut file = AgentPromptsFile::default();
+        apply_upsert(&mut file, "p", tagged("a", "one", &["paper"]), "t1").unwrap();
+        let moved = apply_archive(
+            &mut file,
+            "p",
+            "a",
+            &sent("Claude"),
+            Some(&head("abcdef0123456789", Some("develop"))),
+            "t2",
+        )
+        .unwrap();
+        assert_eq!(moved.tags, vec!["paper"]);
+        assert_eq!(moved.commit.as_deref(), Some("abcdef0123456789"));
+        assert_eq!(moved.branch.as_deref(), Some("develop"));
+        assert!(moved.files.is_empty());
+        // Without a repo there is no blame, and no fake one either.
+        apply_upsert(&mut file, "p", input("b", "two"), "t3").unwrap();
+        let plain = apply_archive(&mut file, "p", "b", &sent("Claude"), None, "t4").unwrap();
+        assert!(plain.commit.is_none() && plain.branch.is_none());
+    }
+
+    #[test]
+    fn a_delivery_keeps_the_send_row_tags_and_takes_the_fresher_head() {
+        let mut file = AgentPromptsFile::default();
+        apply_upsert(&mut file, "p", tagged("a", "one", &["paper"]), "t1").unwrap();
+        apply_archive(&mut file, "p", "a", &sent("Claude"), Some(&head("1111111", Some("main"))), "t2")
+            .unwrap();
+        let entry = recorded("a", "one", "delivered");
+        // Delivered from a later commit: that is the one the agent started from.
+        let row = apply_record(&mut file, "p", &entry, &entry.sent, Some(&head("2222222", None)), "t3");
+        assert_eq!(row.tags, vec!["paper"]);
+        assert_eq!(row.commit.as_deref(), Some("2222222"));
+        assert!(row.branch.is_none());
+        // A delivery that could not read HEAD keeps what the send stamped.
+        let row = apply_record(&mut file, "p", &entry, &entry.sent, None, "t4");
+        assert_eq!(row.commit.as_deref(), Some("2222222"));
+        // The blame lands on the row and survives a later re-record.
+        let blamed = apply_blame(&mut file, "p", "a", vec!["src/a.rs".into()], "t5").unwrap();
+        assert_eq!(blamed.files, vec!["src/a.rs"]);
+        assert_eq!(blamed.files_at.as_deref(), Some("t5"));
+        let row = apply_record(&mut file, "p", &entry, &entry.sent, None, "t6");
+        assert_eq!(row.files, vec!["src/a.rs"]);
+        // A row that is gone records nothing.
+        assert!(apply_blame(&mut file, "p", "missing", vec![], "t7").is_none());
+        assert_eq!(file.history["p"].len(), 1, "still one prompt, one row");
     }
 
     #[test]
@@ -394,6 +680,31 @@ mod tests {
         assert_eq!(file.projects["p"].len(), MAX_PROMPTS_PER_PROJECT);
     }
 
+    #[test]
+    fn reorder_follows_the_named_order_and_keeps_the_rest() {
+        let mut file = AgentPromptsFile::default();
+        for id in ["a", "b", "c"] {
+            apply_upsert(&mut file, "p", input(id, id), "t").unwrap();
+        }
+        // A drag that moved `c` to the top, named against the list as read.
+        let prompts = apply_reorder(&mut file, "p", &["c".into(), "a".into(), "b".into()]);
+        assert_eq!(
+            prompts.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(),
+            ["c", "a", "b"]
+        );
+        // An unknown id is ignored, and a prompt the caller never saw — one
+        // collected between its read and this write — survives at the end.
+        apply_upsert(&mut file, "p", input("d", "d"), "t").unwrap();
+        let prompts = apply_reorder(&mut file, "p", &["b".into(), "gone".into(), "b".into()]);
+        assert_eq!(
+            prompts.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(),
+            ["b", "c", "a", "d"]
+        );
+        // Another project is untouched, and an unknown one is not created.
+        assert!(apply_reorder(&mut file, "q", &["a".into()]).is_empty());
+        assert!(!file.projects.contains_key("q"));
+    }
+
     fn sent(label: &str) -> SentAgentPromptInput {
         SentAgentPromptInput {
             tab_label: label.into(),
@@ -409,7 +720,7 @@ mod tests {
     fn archive_moves_the_prompt_and_keeps_its_created_at() {
         let mut file = AgentPromptsFile::default();
         apply_upsert(&mut file, "p", input("a", "one"), "t1").unwrap();
-        let moved = apply_archive(&mut file, "p", "a", &sent("Claude"), "t2").unwrap();
+        let moved = apply_archive(&mut file, "p", "a", &sent("Claude"), None, "t2").unwrap();
         assert_eq!(moved.created_at, "t1");
         assert_eq!(moved.sent_at, "t2");
         assert_eq!(moved.tab_label, "Claude");
@@ -417,7 +728,7 @@ mod tests {
         assert!(!file.projects.contains_key("p"));
         assert_eq!(file.history["p"].len(), 1);
         // A prompt that is already gone records nothing and does not panic.
-        assert!(apply_archive(&mut file, "p", "a", &sent("Claude"), "t3").is_none());
+        assert!(apply_archive(&mut file, "p", "a", &sent("Claude"), None, "t3").is_none());
     }
 
     #[test]
@@ -426,7 +737,7 @@ mod tests {
         for index in 0..MAX_HISTORY_PER_PROJECT + 3 {
             let id = format!("id-{index}");
             apply_upsert(&mut file, "p", input(&id, "x"), "t").unwrap();
-            apply_archive(&mut file, "p", &id, &sent("Claude"), "t").unwrap();
+            apply_archive(&mut file, "p", &id, &sent("Claude"), None, "t").unwrap();
         }
         let history = &file.history["p"];
         assert_eq!(history.len(), MAX_HISTORY_PER_PROJECT);
@@ -451,13 +762,13 @@ mod tests {
     fn a_delivery_updates_the_entry_its_send_already_wrote() {
         let mut file = AgentPromptsFile::default();
         apply_upsert(&mut file, "p", input("a", "one"), "t1").unwrap();
-        apply_archive(&mut file, "p", "a", &sent("Claude"), "t2").unwrap();
+        apply_archive(&mut file, "p", "a", &sent("Claude"), None, "t2").unwrap();
         // Queued: on the history, with no outcome yet.
         assert_eq!(file.history["p"].len(), 1);
         assert!(file.history["p"][0].result.is_none());
 
         let entry = recorded("a", "one", "delivered");
-        let recorded = apply_record(&mut file, "p", &entry, &entry.sent, "t3");
+        let recorded = apply_record(&mut file, "p", &entry, &entry.sent, None, "t3");
         assert_eq!(file.history["p"].len(), 1, "one prompt, one row");
         assert_eq!(recorded.result.as_deref(), Some("delivered"));
         assert_eq!(recorded.sent_at, "t3");
@@ -471,9 +782,9 @@ mod tests {
     fn a_schedule_that_was_never_collected_records_a_new_row() {
         let mut file = AgentPromptsFile::default();
         let first = recorded("s1@2026-09-02T09:00", "daily standup", "delivered");
-        apply_record(&mut file, "p", &first, &first.sent, "t1");
+        apply_record(&mut file, "p", &first, &first.sent, None, "t1");
         let second = recorded("s1@2026-09-03T09:00", "daily standup", "missed");
-        apply_record(&mut file, "p", &second, &second.sent, "t2");
+        apply_record(&mut file, "p", &second, &second.sent, None, "t2");
         let history = &file.history["p"];
         assert_eq!(history.len(), 2, "each occurrence is its own row");
         assert_eq!(history[1].result.as_deref(), Some("missed"));

@@ -54,7 +54,7 @@ describe("resolving the offered lists", () => {
   });
 
   it("offers models only where they are known or configured", () => {
-    expect(agentModelsFor("claude")).toEqual(["opus", "sonnet", "haiku"]);
+    expect(agentModelsFor("claude")).toEqual(["opus", "sonnet", "haiku", "fable"]);
     expect(agentModelsFor("codex")).toEqual([]);
     expect(agentModelsFor("codex", { codex: ["gpt-5-codex"] })).toEqual(["gpt-5-codex"]);
   });

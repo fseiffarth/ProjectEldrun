@@ -14,6 +14,8 @@ export interface ProjectAgentPrompt {
   message: string;
   created_at: string;
   updated_at: string;
+  /** Lowercase tokens the library is searched by (`lib/agentPromptTags`). */
+  tags?: string[];
 }
 
 /**
@@ -38,6 +40,17 @@ export interface SentAgentPrompt {
   result?: "delivered" | "missed" | "failed";
   /** The occurrence it was due at, as a local wall-clock key. */
   scheduled_for?: string;
+  /** The tags the prompt carried when it was collected. */
+  tags?: string[];
+  /** Prompt blame: the full hash HEAD pointed at when the prompt was
+   *  delivered, and the branch when there was one. Local repos only. */
+  commit?: string;
+  branch?: string;
+  /** The files that changed between the delivery and the agent going idle,
+   *  recorded once by `agent_prompt_blame`; `files_at` is when. Absent until
+   *  the scheduler has seen the tab idle again. */
+  files?: string[];
+  files_at?: string;
 }
 
 /** Send-time facts a history entry records. */
@@ -67,8 +80,14 @@ interface AgentPromptsStore {
   loading: Record<string, boolean>;
   load: (projectId: string) => Promise<ProjectAgentPrompt[]>;
   loadHistory: (projectId: string) => Promise<SentAgentPrompt[]>;
-  upsert: (projectId: string, prompt: { id: string; message: string }) => Promise<ProjectAgentPrompt[]>;
+  /** `tags` undefined leaves an existing prompt's tags alone (the phone edits
+   *  text only); an array replaces them, empty included. */
+  upsert: (
+    projectId: string,
+    prompt: { id: string; message: string; tags?: string[] },
+  ) => Promise<ProjectAgentPrompt[]>;
   remove: (projectId: string, promptId: string) => Promise<ProjectAgentPrompt[]>;
+  reorder: (projectId: string, ids: string[]) => Promise<ProjectAgentPrompt[]>;
   archive: (
     projectId: string,
     promptId: string,
@@ -79,6 +98,8 @@ interface AgentPromptsStore {
     entry: { id: string; message: string; sent: SentPromptFacts },
   ) => Promise<SentAgentPrompt[]>;
   clearHistory: (projectId: string, entryId?: string) => Promise<SentAgentPrompt[]>;
+  /** Record the files a delivered prompt touched (see `agent_prompt_blame`). */
+  blame: (projectId: string, entryId: string, since?: string) => Promise<SentAgentPrompt[]>;
   refreshLoaded: () => Promise<void>;
 }
 
@@ -105,7 +126,10 @@ export const useAgentPromptsStore = create<AgentPromptsStore>((set, get) => ({
   },
 
   upsert: async (projectId, prompt) => {
-    const prompts = await invoke<ProjectAgentPrompt[]>("agent_prompt_upsert", { projectId, prompt });
+    const prompts = await invoke<ProjectAgentPrompt[]>("agent_prompt_upsert", {
+      projectId,
+      prompt: { id: prompt.id, message: prompt.message, tags: prompt.tags ?? null },
+    });
     set((state) => ({ byProject: { ...state.byProject, [projectId]: prompts } }));
     return prompts;
   },
@@ -114,6 +138,29 @@ export const useAgentPromptsStore = create<AgentPromptsStore>((set, get) => ({
     const prompts = await invoke<ProjectAgentPrompt[]>("agent_prompt_delete", { projectId, promptId });
     set((state) => ({ byProject: { ...state.byProject, [projectId]: prompts } }));
     return prompts;
+  },
+
+  /**
+   * Persist a dragged order. The list is written optimistically before the
+   * command answers: the drop already moved the row on screen, and painting it
+   * back to where it was for the length of a round trip is what makes a
+   * reorder feel like it did not take.
+   */
+  reorder: async (projectId, ids) => {
+    const before = get().byProject[projectId] ?? [];
+    const staged = [
+      ...ids.map((id) => before.find((prompt) => prompt.id === id)).filter((p): p is ProjectAgentPrompt => !!p),
+      ...before.filter((prompt) => !ids.includes(prompt.id)),
+    ];
+    set((state) => ({ byProject: { ...state.byProject, [projectId]: staged } }));
+    try {
+      const prompts = await invoke<ProjectAgentPrompt[]>("agent_prompt_reorder", { projectId, ids });
+      set((state) => ({ byProject: { ...state.byProject, [projectId]: prompts } }));
+      return prompts;
+    } catch (cause) {
+      set((state) => ({ byProject: { ...state.byProject, [projectId]: before } }));
+      throw cause;
+    }
   },
 
   archive: async (projectId, promptId, sent) => {
@@ -140,6 +187,16 @@ export const useAgentPromptsStore = create<AgentPromptsStore>((set, get) => ({
     const history = await invoke<SentAgentPrompt[]>("agent_prompt_history_clear", {
       projectId,
       entryId: entryId ?? null,
+    });
+    set((state) => ({ historyByProject: { ...state.historyByProject, [projectId]: history } }));
+    return history;
+  },
+
+  blame: async (projectId, entryId, since) => {
+    const history = await invoke<SentAgentPrompt[]>("agent_prompt_blame", {
+      projectId,
+      entryId,
+      since: since ?? null,
     });
     set((state) => ({ historyByProject: { ...state.historyByProject, [projectId]: history } }));
     return history;

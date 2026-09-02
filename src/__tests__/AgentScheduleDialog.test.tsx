@@ -65,9 +65,8 @@ describe("AgentScheduleDialog", () => {
     await act(async () => {
       root = render(<AgentScheduleDialog scope="project-1" tab={tab} onClose={() => {}} />);
     });
-    await act(async () => {
-      fireEvent.change(root.getByDisplayValue("Daily"), { target: { value: "once" } });
-    });
+    // One-time is what the form opens on, so the calendar is already there.
+    expect(root.getByDisplayValue("One time")).toBeTruthy();
 
     expect(document.querySelector('input[type="datetime-local"]')).toBeNull();
     expect(document.querySelector(".datetime-field")).toBeTruthy();

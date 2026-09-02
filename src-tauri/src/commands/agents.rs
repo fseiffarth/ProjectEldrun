@@ -1094,6 +1094,163 @@ pub async fn agent_warmup(agent: String, message: String) -> Result<AgentWarmupL
     })
 }
 
+// ---------------------------------------------------------------------------
+// Usage panel (the phone's agent status sheet)
+// ---------------------------------------------------------------------------
+
+/// What one agent CLI says about its own usage, plus enough identity for a
+/// caller to render the answer *and* the refusals.
+///
+/// Not a `Result`: every branch here — unknown agent, no usage recipe, not
+/// installed, CLI complained — is a thing the reader should see named, next to
+/// the label of the agent it is about. Collapsing them into an error string
+/// would leave the sheet with nothing to title itself with.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentUsageReport {
+    /// Registry id the report is about (`claude`), as resolved from whatever
+    /// the caller named the agent.
+    pub agent: String,
+    /// Display label (`Claude Code`), or the caller's own string for an agent
+    /// the registry does not know.
+    pub label: String,
+    /// False when this CLI has no readable usage panel at all — the sheet says
+    /// so rather than showing an empty one.
+    pub supported: bool,
+    /// The panel exactly as the CLI printed it. Parsed by the reader.
+    pub raw: Option<String>,
+    /// Why there is no panel, in the CLI's own words where it had any.
+    pub error: Option<String>,
+    /// True when this answer came from the short-lived cache rather than from a
+    /// fresh run, so a reader can tell a stale figure from a live one.
+    pub cached: bool,
+}
+
+impl AgentUsageReport {
+    fn refused(agent: &str, label: &str, supported: bool, error: String) -> Self {
+        Self {
+            agent: agent.to_string(),
+            label: label.to_string(),
+            supported,
+            raw: None,
+            error: Some(error),
+            cached: false,
+        }
+    }
+}
+
+/// Read `agent`'s own usage panel by running its CLI's print mode once.
+///
+/// Free in every sense that matters: the run is client-side (Claude's envelope
+/// comes back with `num_turns: 0` and zero tokens), it needs no tab, no PTY and
+/// no project, and a successful read is cached for `CACHE_TTL` so reopening the
+/// sheet does not spawn anything. `refresh` skips the cache — that is what the
+/// sheet's own refresh means.
+#[tauri::command]
+pub async fn agent_usage(agent: String, refresh: Option<bool>) -> AgentUsageReport {
+    use crate::services::agent_usage as usage;
+
+    let Some(spec) = find_spec_by_id_or_bin(&agent) else {
+        return AgentUsageReport::refused(&agent, &agent, false, format!("unknown agent: {agent}"));
+    };
+    let Some(argv) = usage::usage_argv(spec.id) else {
+        return AgentUsageReport::refused(
+            spec.id,
+            spec.label,
+            false,
+            format!("{} has no usage readout that can be read without a tab", spec.label),
+        );
+    };
+    // A refresh still consults the cache, at a much shorter window: it means
+    // "ask the CLI again", not "spawn one process per tap".
+    let window = if refresh.unwrap_or(false) {
+        usage::REFRESH_FLOOR
+    } else {
+        usage::CACHE_TTL
+    };
+    if let Some(raw) = usage::cached_within(spec.id, window) {
+        return AgentUsageReport {
+            agent: spec.id.to_string(),
+            label: spec.label.to_string(),
+            supported: true,
+            raw: Some(raw),
+            error: None,
+            cached: true,
+        };
+    }
+    usage::forget(spec.id);
+    let Some(path) = resolve_spec_path(spec) else {
+        return AgentUsageReport::refused(
+            spec.id,
+            spec.label,
+            true,
+            format!("{} is not installed", spec.label),
+        );
+    };
+    // The state dir, not a project: a usage window is per account, and running
+    // in a project folder would put a CLI's first-run trust prompt in the way of
+    // a question that has nothing to do with that folder.
+    let cwd = match warmup_dir() {
+        Ok(dir) => dir,
+        Err(error) => return AgentUsageReport::refused(spec.id, spec.label, true, error),
+    };
+
+    let mut cmd = tokio::process::Command::from(crate::paths::command_no_window(&path));
+    cmd.args(&argv)
+        .current_dir(&cwd)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    #[cfg(unix)]
+    {
+        // Its own process group, for the reason the warm-up spawn gives: a
+        // Ctrl+C in Eldrun's launcher shell must not be what reaches this first.
+        cmd.process_group(0);
+    }
+    let output = match tokio::time::timeout(usage::USAGE_TIMEOUT, async {
+        cmd.spawn()
+            .map_err(|e| format!("cannot start {}: {e}", path.display()))?
+            .wait_with_output()
+            .await
+            .map_err(|e| format!("{} did not run: {e}", spec.label))
+    })
+    .await
+    {
+        Ok(Ok(output)) => output,
+        Ok(Err(error)) => return AgentUsageReport::refused(spec.id, spec.label, true, error),
+        // `kill_on_drop` reaps the child as the future is dropped here.
+        Err(_) => {
+            return AgentUsageReport::refused(
+                spec.id,
+                spec.label,
+                true,
+                format!(
+                    "{} did not answer within {}s",
+                    spec.label,
+                    usage::USAGE_TIMEOUT.as_secs()
+                ),
+            )
+        }
+    };
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    match usage::report_text(&stdout, &stderr, output.status.code()) {
+        Ok(raw) => {
+            usage::remember(spec.id, &raw);
+            AgentUsageReport {
+                agent: spec.id.to_string(),
+                label: spec.label.to_string(),
+                supported: true,
+                raw: Some(raw),
+                error: None,
+                cached: false,
+            }
+        }
+        Err(error) => AgentUsageReport::refused(spec.id, spec.label, true, error),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

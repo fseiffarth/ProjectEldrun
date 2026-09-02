@@ -12,6 +12,11 @@ pub struct ProjectAgentPrompt {
     pub message: String,
     pub created_at: String,
     pub updated_at: String,
+    /// Free-form labels (`refactor`, `tests`, `paper`), normalized lowercase
+    /// tokens without whitespace. What makes the collection a library rather
+    /// than a pile: a prompt is found by what it is for, not only by its words.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
 }
 
 /// A collected prompt that has been aimed at an agent tab, moved out of the
@@ -50,6 +55,27 @@ pub struct SentAgentPrompt {
     /// for a prompt that was never on a clock.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scheduled_for: Option<String>,
+    /// The tags the prompt carried when it was collected, kept so the library
+    /// stays searchable by tag after the send.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    /// Prompt blame (`services::prompt_blame`): the commit HEAD pointed at when
+    /// the prompt was delivered — the state of the project the agent started
+    /// from. Absent for a remote project, a scope without a repo, or an unborn
+    /// HEAD.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
+    /// The branch checked out at delivery, when HEAD was on one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    /// The files that changed between the delivery and the agent going idle —
+    /// working-tree edits written after the send plus anything committed since
+    /// `commit`. Recorded once, by `agent_prompt_blame`, when the scheduler sees
+    /// the tab idle again; `files_at` says when.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub files_at: Option<String>,
 }
 
 /// Send-time facts the frontend supplies; the service owns `sent_at` and
@@ -92,6 +118,11 @@ pub struct RecordedAgentPromptInput {
 pub struct ProjectAgentPromptInput {
     pub id: String,
     pub message: String,
+    /// `None` leaves an existing prompt's tags as they are — the phone edits
+    /// the text and knows nothing of tags — while `Some` replaces them, empty
+    /// included. A new prompt with `None` starts untagged.
+    #[serde(default)]
+    pub tags: Option<Vec<String>>,
 }
 
 fn agent_prompts_version() -> u8 {

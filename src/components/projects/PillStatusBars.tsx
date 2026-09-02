@@ -1,6 +1,6 @@
 import { useActivityStore, type StatusTab, type TabStatusCounts } from "../../stores/activity";
-import { useTabsStore, ROOT_SCOPE } from "../../stores/tabs";
-import { useProjectsStore } from "../../stores/projects";
+import { useTabsStore } from "../../stores/tabs";
+import { jumpToTab } from "../../lib/tabJump";
 import { useT, type TranslationKey } from "../../lib/i18n";
 
 /** Most status bars the strip will draw. A scope with more busy tabs than this
@@ -36,23 +36,6 @@ const BAR_TITLE_KEY: Record<StatusTab["state"], TranslationKey> = {
   "needs-decision": "pill.statusTabWaiting",
   finished: "pill.statusTabFinished",
 };
-
-/**
- * Show the tab a bar stands for: make it the visible tab of its subwindow, then
- * bring its scope up. That order is deliberate — `revealTabInScope` writes the
- * scope's own layout, which the switch then mirrors, so the tab is already
- * showing when the project arrives instead of appearing a frame later.
- *
- * A tab in a hidden subwindow or a detached window isn't in the scope's visible
- * tree; the switch still happens, since landing in the right project is the half
- * of the request that can be honoured.
- */
-function jumpToTab(scope: string, key: string) {
-  useTabsStore.getState().revealTabInScope(scope, key);
-  const { activeId, setActive } = useProjectsStore.getState();
-  const target = scope === ROOT_SCOPE ? null : scope;
-  if (activeId !== target) void setActive(target);
-}
 
 /**
  * One little bar per non-idle tab along the bottom edge of a pill, so a glance

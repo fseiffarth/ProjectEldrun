@@ -10,7 +10,7 @@ import { useProjectsStore } from "../../stores/projects";
 import { useT } from "../../lib/i18n";
 import { useExperimental } from "../../lib/experimental";
 import { cmdToKind, isDetachedPtyId, type TabKind } from "../../stores/tabs";
-import { notePtySpawn, noteUserInput, splitPtyId, useActivityStore } from "../../stores/activity";
+import { lastPtyOutputAt, notePtySpawn, noteUserInput, splitPtyId, useActivityStore } from "../../stores/activity";
 import { useAgentTaskStore } from "../../stores/agentTask";
 import { noteInput } from "../../lib/promptCount";
 import { METRIC, agentPromptLeaf, sub } from "../../lib/usageMetrics";
@@ -327,6 +327,10 @@ const AGENT_ZOOM_EVENT = "eldrun-agent-zoom";
 const DEFAULT_FONT_SIZE = 13;
 const MIN_FONT_SIZE = 8;
 const MAX_FONT_SIZE = 32;
+/** How long a tab must have been quiet before a scheduled prompt may be typed
+ *  into it. Shared by the local arming and the digest-backed fallback below so
+ *  a hidden pane is held to the same cushion as a visible one. */
+const SCHEDULED_SETTLE_MS = 1200;
 
 function clampFontSize(n: number): number {
   return Math.max(MIN_FONT_SIZE, Math.min(MAX_FONT_SIZE, Math.round(n)));
@@ -641,12 +645,37 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       // "working": scheduling must still wait until the TUI itself is quiet.
       scheduledSettleTimer.current = setTimeout(() => {
         if (!cancelled) scheduledReady.current = true;
-      }, 1200);
+      }, SCHEDULED_SETTLE_MS);
+    };
+    /**
+     * Whether a scheduled prompt may be typed into this tab right now.
+     *
+     * The local arming above is driven by `terminal-output`, which a HIDDEN pane
+     * never receives at all: the backend streams output only to visible views
+     * and condenses the rest into throttled `terminal-activity` digests. So a
+     * tab that has not been looked at since it was mounted — every agent tab but
+     * the active one after a relaunch — armed nothing, and the scheduler's
+     * `ready()` gate stayed false forever: a prompt aimed at it from the Agents
+     * view sat queued until it read "missed", while the agent sat idle. Delivery
+     * is deliberately not gated on the tab being focused, so readiness must not
+     * be either.
+     *
+     * The fallback reads the same output stamp the digests keep up to date
+     * (`stores/activity`, fed app-wide by `AppShell`), and applies the identical
+     * settle cushion: terminal-ready, output seen, and quiet since. Panes that do
+     * get their own stream keep using the local arming, which is finer-grained
+     * than the throttled digest.
+     */
+    const scheduledInputReady = () => {
+      if (scheduledReady.current) return true;
+      if (!terminalReadySeen.current) return false;
+      const last = lastPtyOutputAt(id);
+      return last !== undefined && Date.now() - last >= SCHEDULED_SETTLE_MS;
     };
     const unregisterScheduled = scheduleTargetId && !attachOnly
       ? registerScheduledAgentInput(scheduleTargetId, {
           ptyId: id,
-          ready: () => scheduledReady.current,
+          ready: scheduledInputReady,
           bracketedPaste: () => term.modes.bracketedPasteMode === true,
           recordAuthorizedInput: () => {
             noteUserInput(id);
@@ -957,6 +986,11 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
             pendingOutput.current = pendingOutput.current.slice(-PENDING_OUTPUT_CAP);
           }
           if (firstOutputAt.current === null) firstOutputAt.current = Date.now();
+          // A re-adopted tab's whole TUI can arrive as this one restored
+          // snapshot and never produce another live chunk. That is real output
+          // from a started agent, so it arms scheduling like any other — without
+          // this, an attached tab that stays quiet was permanently undeliverable.
+          armScheduledReady();
         }
         historyPending = false;
         if (openedRef.current && visibleRef.current) flushPending();

@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { deliveryRecordId, isFinishedOneTime } from "../../lib/agentPromptSend";
+import { promptScheduleKey } from "../../lib/agentPromptScheduled";
 import {
   scheduleVerdict,
   sortSchedules,
@@ -13,12 +14,21 @@ import {
   submitScheduledAgentMessage,
 } from "../../lib/scheduledAgentInput";
 import { lastPtyOutputAt, useActivityStore } from "../../stores/activity";
-import { recordScheduledDelivery } from "../../stores/agentPrompts";
+import { recordScheduledDelivery, useAgentPromptsStore } from "../../stores/agentPrompts";
 import { useAgentSchedulesStore } from "../../stores/agentSchedules";
 import { useTabsStore, type TabEntry } from "../../stores/tabs";
 
 const TICK_MS = 15_000;
 const OUTPUT_SETTLE_MS = 1_200;
+/**
+ * How long the blame wait after a delivery may hold a tab before it is given up
+ * on. The wait exists to stamp the files an agent touched onto the history row,
+ * and it blocks the next delivery to that tab so two prompts cannot overlap —
+ * which meant a delivery that never produced output (the agent exited, the CLI
+ * refused the paste) blocked *every* later send to that tab for the life of the
+ * window, silently. Blame is best-effort; delivery is not.
+ */
+const IDLE_WAIT_MAX_MS = 10 * 60_000;
 /**
  * Between the submissions of one delivery (a prefix command, then the next, then
  * the message) the tab is given time to act before the following line arrives.
@@ -144,6 +154,42 @@ async function retire(
     .getState()
     .remove(binding.projectId, binding.scheduleTargetId, schedule.id)
     .catch(() => {});
+  await retireCollected(binding.projectId, schedule.message);
+}
+
+/**
+ * Take a collected prompt out of the active list once the rule carrying its text
+ * has fired for the last time.
+ *
+ * "Send now" retires its prompt at send time (`sendCollectedPrompt`), so a
+ * scheduled one was the only prompt that stayed collected after it had been
+ * delivered — sitting in the Agents view as text still waiting to be sent, next
+ * to the history row saying it already had been, which is how the same prompt
+ * gets sent twice. This is that retirement, deliberately only on the path that
+ * has just deleted a **one-time** rule: a recurring rule is going to fire again,
+ * and its prompt belongs in the Scheduled section until it does.
+ *
+ * The delivery has already been recorded by the caller, so this only DELETES —
+ * archiving would write a second history row for one delivery. The link is the
+ * prompt's text, `lib/agentPromptScheduled`'s key, which is the same link the
+ * Scheduled section marks the row by; a prompt reworded since the rule was made
+ * simply stays collected, as it should, since the rule no longer carried it.
+ * Best-effort throughout: the record is the part that matters, and the next tick
+ * cannot retry this one (the rule is gone) but nothing is lost if it fails.
+ */
+async function retireCollected(projectId: string, message: string): Promise<void> {
+  const key = promptScheduleKey(message);
+  if (!key) return;
+  const store = useAgentPromptsStore.getState();
+  // Read the list fresh rather than off the store: this window may never have
+  // opened that scope's Agents view, and the send-now path has already deleted
+  // its own prompt, so a stale copy would be the one thing that could delete a
+  // prompt somebody re-collected in the meantime.
+  const prompts = await store.load(projectId).catch(() => []);
+  for (const prompt of prompts) {
+    if (promptScheduleKey(prompt.message) !== key) continue;
+    await store.remove(projectId, prompt.id).catch(() => {});
+  }
 }
 
 /**
@@ -153,7 +199,12 @@ async function retire(
  */
 export function AgentScheduleHost() {
   const running = useRef(false);
-  const waitingForIdle = useRef(new Map<string, { ptyId: string; submittedAt: number }>());
+  // `recordId` names the history row the delivery wrote, so the moment the
+  // tab is idle again — the agent has done what the prompt asked — the files
+  // it touched can be written onto that row (prompt blame, `agent_prompt_blame`).
+  const waitingForIdle = useRef(
+    new Map<string, { ptyId: string; submittedAt: number; recordId?: string; projectId: string }>(),
+  );
 
   useEffect(() => {
     ensureLiveTargetIds();
@@ -183,8 +234,25 @@ export function AgentScheduleHost() {
             const settled = Date.now() - lastOutput >= OUTPUT_SETTLE_MS;
             const idle = !activity.busyByTab[waiting.ptyId]
               && activity.attentionByTab[waiting.ptyId] !== "decision";
-            if (!producedOutput || !settled || !idle) continue;
-            waitingForIdle.current.delete(key);
+            const expired = Date.now() - waiting.submittedAt >= IDLE_WAIT_MAX_MS;
+            if (expired) {
+              // Give up on the blame stamp rather than on the tab: whatever
+              // happened to that delivery, the next prompt aimed here has to be
+              // deliverable. Falls through, so this very tick can send it.
+              waitingForIdle.current.delete(key);
+            } else if (!producedOutput || !settled || !idle) {
+              continue;
+            } else {
+              waitingForIdle.current.delete(key);
+              // Best-effort and off the delivery path: a row the user already
+              // cleared, or a project without a local repo, records nothing.
+              if (waiting.recordId) {
+                void useAgentPromptsStore
+                  .getState()
+                  .blame(waiting.projectId, waiting.recordId, new Date(waiting.submittedAt).toISOString())
+                  .catch(() => []);
+              }
+            }
           }
 
           let schedules = useAgentSchedulesStore.getState().byTarget[key];
@@ -233,9 +301,14 @@ export function AgentScheduleHost() {
             // The tab being focused is deliberately not part of this gate.
             if (!input || !input.ready()) break;
             const latestActivity = useActivityStore.getState();
+            // `?? 0`, not `?? Date.now()`: a PTY that has produced no output this
+            // session has nothing to settle after, and reading "no output" as
+            // "output just now" made the gate permanently false — a tab whose
+            // whole TUI arrived as a restored snapshot could never be delivered
+            // to at all.
             if (latestActivity.busyByTab[input.ptyId]
                 || latestActivity.attentionByTab[input.ptyId] === "decision"
-                || Date.now() - (lastPtyOutputAt(input.ptyId) ?? Date.now()) < OUTPUT_SETTLE_MS) break;
+                || Date.now() - (lastPtyOutputAt(input.ptyId) ?? 0) < OUTPUT_SETTLE_MS) break;
 
             const claimed = await invoke<boolean>("agent_schedule_claim", {
               projectId: binding.projectId,
@@ -254,7 +327,12 @@ export function AgentScheduleHost() {
               // Completion after all writes means a partial/write failure becomes
               // `failed`; the durable claim prevents retry in either case.
               await complete(binding, schedule.id, verdict.occurrence.key, "delivered");
-              waitingForIdle.current.set(key, { ptyId, submittedAt });
+              waitingForIdle.current.set(key, {
+                ptyId,
+                submittedAt,
+                projectId: binding.projectId,
+                recordId: deliveryRecordId(schedule, verdict.occurrence.key),
+              });
               await retire(binding, schedule, {
                 occurrence: verdict.occurrence.key,
                 result: "delivered",

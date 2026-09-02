@@ -81,7 +81,9 @@ export function AgentScheduleDialog({ scope, tab, onClose, initialMessage }: Pro
   const remove = useAgentSchedulesStore((state) => state.remove);
   const [editing, setEditing] = useState<string | null>(null);
   const [message, setMessage] = useState(initialMessage ?? "");
-  const [kind, setKind] = useState<ScheduleRule["type"]>("daily");
+  // One-time is the default: the common case is "run this prompt once, in a
+  // while", and a rule that repeats forever is the one worth picking on purpose.
+  const [kind, setKind] = useState<ScheduleRule["type"]>("once");
   const [time, setTime] = useState("09:00");
   const [once, setOnce] = useState(defaultOnce);
   const [weekdays, setWeekdays] = useState<number[]>([1, 2, 3, 4, 5]);
@@ -149,7 +151,7 @@ export function AgentScheduleDialog({ scope, tab, onClose, initialMessage }: Pro
   const reset = () => {
     setEditing(null);
     setMessage("");
-    setKind("daily");
+    setKind("once");
     setTime("09:00");
     setOnce(defaultOnce());
     setWeekdays([1, 2, 3, 4, 5]);
@@ -261,173 +263,185 @@ export function AgentScheduleDialog({ scope, tab, onClose, initialMessage }: Pro
             </small>
           </div>
 
-          <div className="agent-schedule-notice">
+          {/* Two paragraphs of delivery semantics that are true every time and
+              read once: folded away, so the rules — which change — open the
+              dialog. What is specific to THIS tab stays out of the fold. */}
+          <details className="agent-schedule-notice">
+            <summary>{t("agentSchedule.howItWorks")}</summary>
             <p>{t("agentSchedule.warning")}</p>
             <p>{t("agentSchedule.openOnly")}</p>
-            {!isResumableAgentTab(tab) && <p className="danger-text">{t("agentSchedule.nonResumable")}</p>}
-          </div>
+          </details>
+          {!isResumableAgentTab(tab) && (
+            <div className="agent-schedule-warn">{t("agentSchedule.nonResumable")}</div>
+          )}
 
-          <section className="agent-schedule-list">
-            <h3>{t("agentSchedule.saved")}</h3>
-            {loading && schedules.length === 0 ? <p>{t("common.loading")}</p> : null}
-            {!loading && schedules.length === 0 ? <p className="settings-help">{t("agentSchedule.none")}</p> : null}
-            {sortSchedules(schedules, now).map((schedule) => {
-              const status = scheduleStatus(schedule, now);
-              const next = nextScheduleOccurrence(schedule, now);
-              return (
-                <div className={`agent-schedule-row is-${status.kind}`} key={schedule.id}>
-                  <div className="agent-schedule-row-main">
-                    <div className="agent-schedule-row-head">
-                      <span className={`agent-schedule-pill is-${status.kind}`}>
-                        {t(`agentSchedule.status.${status.kind}` as `agentSchedule.status.${ScheduleStatusKind}`)}
-                      </span>
-                      <strong>{ruleText(schedule.rule)}</strong>
-                    </div>
-                    <span>{schedule.message}</span>
-                    {schedule.preface && schedule.preface.length > 0 && (
-                      <small className="agent-composer-preview">
-                        {t("agentPrompts.prefixPreview", { commands: schedule.preface.join(" · ") })}
+          {/* The list and the form sit side by side while the dialog is wide
+              enough for both: editing a rule used to scroll the rules out of
+              sight, and adding one meant scrolling past every rule to reach the
+              form. Under ~780px they stack again, list first. */}
+          <div className="agent-schedule-body">
+            <section className="agent-schedule-list">
+              <h3 className="settings-section-title">{t("agentSchedule.saved")}</h3>
+              {loading && schedules.length === 0 ? <p>{t("common.loading")}</p> : null}
+              {!loading && schedules.length === 0 ? <p className="settings-help">{t("agentSchedule.none")}</p> : null}
+              {sortSchedules(schedules, now).map((schedule) => {
+                const status = scheduleStatus(schedule, now);
+                const next = nextScheduleOccurrence(schedule, now);
+                return (
+                  <div className={`agent-schedule-row is-${status.kind}`} key={schedule.id}>
+                    <div className="agent-schedule-row-main">
+                      <div className="agent-schedule-row-head">
+                        <span className={`agent-schedule-pill is-${status.kind}`}>
+                          {t(`agentSchedule.status.${status.kind}` as `agentSchedule.status.${ScheduleStatusKind}`)}
+                        </span>
+                        <strong>{ruleText(schedule.rule)}</strong>
+                      </div>
+                      <span>{schedule.message}</span>
+                      {schedule.preface && schedule.preface.length > 0 && (
+                        <small className="agent-composer-preview">
+                          {t("agentPrompts.prefixPreview", { commands: schedule.preface.join(" · ") })}
+                        </small>
+                      )}
+                      <small className="agent-schedule-row-when">
+                        {next
+                          ? t("agentSchedule.nextAt", {
+                              value: whenLabel(next.at),
+                              relative: relativeToNow(next.at, now, lang),
+                            })
+                          : t("agentSchedule.noNext")}
+                        {status.kind === "due" ? ` · ${t("agentSchedule.dueHint")}` : ""}
+                        {schedule.last
+                          ? ` · ${t("agentSchedule.last", {
+                              result: t(`agentSchedule.result.${schedule.last.result}`),
+                              value: whenLabel(new Date(schedule.last.at)),
+                            })}`
+                          : ""}
                       </small>
-                    )}
-                    <small className="agent-schedule-row-when">
-                      {next
-                        ? t("agentSchedule.nextAt", {
-                            value: whenLabel(next.at),
-                            relative: relativeToNow(next.at, now, lang),
-                          })
-                        : t("agentSchedule.noNext")}
-                      {status.kind === "due" ? ` · ${t("agentSchedule.dueHint")}` : ""}
-                      {schedule.last
-                        ? ` · ${t("agentSchedule.last", {
-                            result: t(`agentSchedule.result.${schedule.last.result}`),
-                            value: whenLabel(new Date(schedule.last.at)),
-                          })}`
-                        : ""}
-                    </small>
+                    </div>
+                    <div className="agent-schedule-row-actions">
+                      <label>
+                        <input
+                          type="checkbox"
+                          checked={schedule.enabled}
+                          onChange={() => void upsert(scope, targetId, { ...schedule, enabled: !schedule.enabled }).catch((cause) => setError(String(cause)))}
+                        />
+                        {t("agentSchedule.enabled")}
+                      </label>
+                      <button className="settings-btn sm" type="button" onClick={() => beginEdit(schedule)}>{t("common.edit")}</button>
+                      <button className="settings-btn sm danger" type="button" onClick={() => void remove(scope, targetId, schedule.id).catch((cause) => setError(String(cause)))}>{t("common.delete")}</button>
+                    </div>
                   </div>
-                  <div className="agent-schedule-row-actions">
-                    <label>
-                      <input
-                        type="checkbox"
-                        checked={schedule.enabled}
-                        onChange={() => void upsert(scope, targetId, { ...schedule, enabled: !schedule.enabled }).catch((cause) => setError(String(cause)))}
-                      />
-                      {t("agentSchedule.enabled")}
-                    </label>
-                    <button className="settings-btn sm" type="button" onClick={() => beginEdit(schedule)}>{t("common.edit")}</button>
-                    <button className="settings-btn sm danger" type="button" onClick={() => void remove(scope, targetId, schedule.id).catch((cause) => setError(String(cause)))}>{t("common.delete")}</button>
-                  </div>
-                </div>
-              );
-            })}
-          </section>
+                );
+              })}
+            </section>
 
-          <section className="agent-schedule-form">
-            <h3>{editing ? t("agentSchedule.edit") : t("agentSchedule.add")}</h3>
-            <label>
-              <span>{t("agentSchedule.message")}</span>
-              <textarea value={message} onChange={(event) => setMessage(event.target.value)} rows={5} />
-            </label>
-            {/* Before the prompt: the agent's own slash commands, typed one at
-                a time ahead of the message, exactly as the side panel composer
-                sends them. The model goes last — a `/clear` before it would
-                drop some CLIs back to their default. */}
-            <div className="agent-schedule-field">
-              <span>{t("agentPrompts.prefixHeading")}</span>
-              {offered.length > 0 ? (
-                <div className="agent-composer-chips" role="group" aria-label={t("agentPrompts.prefixHeading")}>
-                  {offered.map((command) => (
-                    <button
-                      key={command}
-                      type="button"
-                      className={`agent-composer-chip${selected.includes(command) ? " active" : ""}`}
-                      aria-pressed={selected.includes(command)}
-                      title={t("agentPrompts.prefixChipTitle", { command })}
-                      onClick={() =>
-                        setSelected((current) =>
-                          current.includes(command)
-                            ? current.filter((entry) => entry !== command)
-                            : [...current, command],
-                        )
-                      }
-                    >
-                      {command}
-                    </button>
-                  ))}
+            <section className="agent-schedule-form">
+              <h3 className="settings-section-title">{editing ? t("agentSchedule.edit") : t("agentSchedule.add")}</h3>
+              <label>
+                <span>{t("agentSchedule.message")}</span>
+                <textarea value={message} onChange={(event) => setMessage(event.target.value)} rows={5} />
+              </label>
+              {/* Before the prompt: the agent's own slash commands, typed one at
+                  a time ahead of the message, exactly as the side panel composer
+                  sends them. The model goes last — a `/clear` before it would
+                  drop some CLIs back to their default. */}
+              <div className="agent-schedule-field">
+                <span>{t("agentPrompts.prefixHeading")}</span>
+                {offered.length > 0 ? (
+                  <div className="agent-composer-chips" role="group" aria-label={t("agentPrompts.prefixHeading")}>
+                    {offered.map((command) => (
+                      <button
+                        key={command}
+                        type="button"
+                        className={`agent-composer-chip${selected.includes(command) ? " active" : ""}`}
+                        aria-pressed={selected.includes(command)}
+                        title={t("agentPrompts.prefixChipTitle", { command })}
+                        onClick={() =>
+                          setSelected((current) =>
+                            current.includes(command)
+                              ? current.filter((entry) => entry !== command)
+                              : [...current, command],
+                          )
+                        }
+                      >
+                        {command}
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <small className="settings-help">{t("agentPrompts.prefixNone")}</small>
+                )}
+              </div>
+              {models.length > 0 && (
+                <div className="agent-schedule-field">
+                  <span>{t("agentPrompts.model")}</span>
+                  <Dropdown
+                    value={model}
+                    placeholder={t("agentPrompts.modelUnchanged")}
+                    title={t("agentPrompts.modelTitle")}
+                    options={[
+                      { value: "", label: t("agentPrompts.modelUnchanged") },
+                      ...models.map((name) => ({ value: name, label: name })),
+                    ]}
+                    onChange={setModel}
+                  />
+                </div>
+              )}
+              {preface.length > 0 && (
+                <div className="agent-schedule-field">
+                  <span />
+                  <small className="agent-composer-preview">
+                    {t("agentPrompts.prefixPreview", { commands: preface.join(" · ") })}
+                  </small>
+                </div>
+              )}
+              <label>
+                <span>{t("agentSchedule.recurrence")}</span>
+                <select value={kind} onChange={(event) => setKind(event.target.value as ScheduleRule["type"])}>
+                  <option value="once">{t("agentSchedule.once")}</option>
+                  <option value="daily">{t("agentSchedule.daily")}</option>
+                  <option value="weekdays">{t("agentSchedule.weekdays")}</option>
+                </select>
+              </label>
+              {kind === "once" ? (
+                // A <div>, not a <label>: a <button> is a labelable element, so
+                // wrapping the picker in one would make a click on the word
+                // "Local date and time" pop the calendar open.
+                <div className="agent-schedule-field">
+                  <span>{t("agentSchedule.dateTime")}</span>
+                  {/* A day picked from a drawn calendar and an hour in the clock
+                      the setting chose — `<input type="datetime-local">` could
+                      offer neither, and its six engine-ordered segments were the
+                      hardest thing in this dialog to aim at. */}
+                  <DateTimeField
+                    value={once}
+                    onChange={setOnce}
+                    minDate={todayStr(now)}
+                    aria-label={t("agentSchedule.dateTime")}
+                  />
                 </div>
               ) : (
-                <small className="settings-help">{t("agentPrompts.prefixNone")}</small>
+                <label>
+                  <span>{t("agentSchedule.time")}</span>
+                  <TimeField className="cal-input" value={time} onChange={setTime} aria-label={t("agentSchedule.time")} />
+                </label>
               )}
-            </div>
-            {models.length > 0 && (
-              <div className="agent-schedule-field">
-                <span>{t("agentPrompts.model")}</span>
-                <Dropdown
-                  value={model}
-                  placeholder={t("agentPrompts.modelUnchanged")}
-                  title={t("agentPrompts.modelTitle")}
-                  options={[
-                    { value: "", label: t("agentPrompts.modelUnchanged") },
-                    ...models.map((name) => ({ value: name, label: name })),
-                  ]}
-                  onChange={setModel}
-                />
+              {kind === "weekdays" && (
+                <div className="agent-schedule-weekdays">
+                  {weekdayNames.map((name, index) => {
+                    const day = index + 1;
+                    return <label key={day}><input type="checkbox" checked={weekdays.includes(day)} onChange={() => setWeekdays((current) => current.includes(day) ? current.filter((value) => value !== day) : [...current, day])} />{name}</label>;
+                  })}
+                </div>
+              )}
+              {oncePast && <div className="agent-schedule-warn">{t("agentSchedule.pastOnce")}</div>}
+              {error && <div className="project-dialog-error">{error}</div>}
+              <div className="agent-schedule-form-actions">
+                {editing && <button className="settings-btn" type="button" onClick={reset}>{t("common.cancel")}</button>}
+                <button className="settings-btn primary" type="button" disabled={saving} onClick={() => void save()}>{saving ? t("common.saving") : t("common.save")}</button>
               </div>
-            )}
-            {preface.length > 0 && (
-              <div className="agent-schedule-field">
-                <span />
-                <small className="agent-composer-preview">
-                  {t("agentPrompts.prefixPreview", { commands: preface.join(" · ") })}
-                </small>
-              </div>
-            )}
-            <label>
-              <span>{t("agentSchedule.recurrence")}</span>
-              <select value={kind} onChange={(event) => setKind(event.target.value as ScheduleRule["type"])}>
-                <option value="once">{t("agentSchedule.once")}</option>
-                <option value="daily">{t("agentSchedule.daily")}</option>
-                <option value="weekdays">{t("agentSchedule.weekdays")}</option>
-              </select>
-            </label>
-            {kind === "once" ? (
-              // A <div>, not a <label>: a <button> is a labelable element, so
-              // wrapping the picker in one would make a click on the word
-              // "Local date and time" pop the calendar open.
-              <div className="agent-schedule-field">
-                <span>{t("agentSchedule.dateTime")}</span>
-                {/* A day picked from a drawn calendar and an hour in the clock
-                    the setting chose — `<input type="datetime-local">` could
-                    offer neither, and its six engine-ordered segments were the
-                    hardest thing in this dialog to aim at. */}
-                <DateTimeField
-                  value={once}
-                  onChange={setOnce}
-                  minDate={todayStr(now)}
-                  aria-label={t("agentSchedule.dateTime")}
-                />
-              </div>
-            ) : (
-              <label>
-                <span>{t("agentSchedule.time")}</span>
-                <TimeField className="cal-input" value={time} onChange={setTime} aria-label={t("agentSchedule.time")} />
-              </label>
-            )}
-            {kind === "weekdays" && (
-              <div className="agent-schedule-weekdays">
-                {weekdayNames.map((name, index) => {
-                  const day = index + 1;
-                  return <label key={day}><input type="checkbox" checked={weekdays.includes(day)} onChange={() => setWeekdays((current) => current.includes(day) ? current.filter((value) => value !== day) : [...current, day])} />{name}</label>;
-                })}
-              </div>
-            )}
-            {oncePast && <div className="agent-schedule-warn">{t("agentSchedule.pastOnce")}</div>}
-            {error && <div className="project-dialog-error">{error}</div>}
-            <div className="agent-schedule-form-actions">
-              {editing && <button className="settings-btn" type="button" onClick={reset}>{t("common.cancel")}</button>}
-              <button className="settings-btn primary" type="button" disabled={saving} onClick={() => void save()}>{saving ? t("common.saving") : t("common.save")}</button>
-            </div>
-          </section>
+            </section>
+          </div>
         </div>
       </div>
     </div>,
