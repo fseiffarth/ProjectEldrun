@@ -18,7 +18,10 @@
 #
 # A *packaged* Eldrun (npm run package) deliberately matches neither pgrep
 # below: running the stable build as a daily driver beside one dev session is
-# the supported dogfooding setup — see start-eldrun-dev-sandbox.sh.
+# the supported dogfooding setup — see start-eldrun-dev-sandbox.sh. The frozen
+# "Eldrun (dev)" build (npm run package:dev) is NOT that: it shares the real
+# state with the hot-reload window and the two alternate, so it is refused
+# further down.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -37,6 +40,18 @@ dev_pids="$(pgrep -f "$ROOT/node_modules/.bin/tauri" || true)"
 if [ -n "$app_pids" ] || [ -n "$dev_pids" ]; then
   bail "an Eldrun dev session is already up (app=${app_pids:-none} dev=${dev_pids:-none})." \
        "Use that window, or stop it: pkill -f '$ROOT/node_modules/.bin/tauri'; pkill -f '$ROOT/target/debug/eldrun'"
+fi
+
+# The frozen "Eldrun (dev)" build (scripts/package-dev.sh) is the other window
+# of the one-at-a-time workflow: work in it, or in the hot-reload window, never
+# both (user, 2026-09-02). It runs on the real state, and a second instance on
+# that state corrupts it — a sandboxed session is refused too, so that the rule
+# has no exception to remember.
+FROZEN_BIN="$HOME/.local/share/eldrun/eldrun-dev"
+frozen_pids="$(pgrep -f "^$FROZEN_BIN" || true)"
+if [ -n "$frozen_pids" ]; then
+  bail "Eldrun (dev) is running (pid $frozen_pids); only one Eldrun runs at a time." \
+       "Close that window first, then start the hot-reload session."
 fi
 
 # No dev session of ours, but the port is taken: an orphaned vite whose

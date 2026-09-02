@@ -20,6 +20,7 @@
     "tauri:bundle": "tauri build --bundles appimage,deb",
     "tauri:bundle:mac": "tauri build --bundles dmg",
     "package": "./scripts/package-local.sh",
+    "package:dev": "./scripts/package-dev.sh",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint .",

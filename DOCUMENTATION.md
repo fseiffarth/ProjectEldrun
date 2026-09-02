@@ -118,8 +118,12 @@ sources. `scripts/guard-single-instance.sh` (wired into both `pretauri:dev`
 hooks) refuses a second session, including one that would silently attach to an
 orphaned vite on port 1420 and render its stale module graph.
 
-The desktop launchers are `docs/Eldrun.desktop` for the packaged app and
-`docs/EldrunHotReload.desktop` for the hot-reload dev server; both carry a
+The desktop launchers are `docs/Eldrun.desktop` for the packaged app,
+`docs/EldrunHotReload.desktop` for the hot-reload dev server, and
+`docs/EldrunDev.desktop` for a frozen release build of the working tree
+(`npm run package:dev` builds and installs it — real state, no hot reload;
+it and the hot-reload window run one at a time, each launcher refusing while
+the other is up); all carry a
 `/path/to/projecteldrun/...` placeholder to point at your checkout.
 
 ### Staying Current

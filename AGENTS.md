@@ -51,6 +51,13 @@ change was not run live.
   packaged daily-driver Eldrun (`npm run package`) without sharing any state —
   sessions live in the packaged build, out of HMR's reach. Still one dev
   session at a time (port 1420), and still launched by the user only.
+- `npm run package:dev` freezes the *current working tree* as a release binary
+  behind the "Eldrun (dev)" desktop entry (`start-eldrun-dev-build.sh`, binary
+  at `~/.local/share/eldrun/eldrun-dev`). No hot reload: the user works and
+  spots bugs in it, then checks fixes in the hot-reload window. Both use the
+  real state, so **only one runs at a time** — each launcher refuses with a
+  desktop notification while the other is up. Re-run it to move the frozen
+  window to a newer snapshot.
 
 ## Docs
 
