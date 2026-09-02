@@ -36,6 +36,7 @@ import {
 } from "./newTabItems";
 import { AddTabMenuList } from "./AddTabMenuList";
 import { useAddTabMenuData } from "./useAddTabMenuData";
+import { useAgentWorktreePicker } from "./agentWorktrees";
 import { CustomAgentDialog } from "./CustomAgentDialog";
 import { reseedDetached, startDetachedDropSession } from "./detachedDropTargets";
 import { TabHoverCard } from "./TabHoverCard";
@@ -243,6 +244,14 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
   const projectName = useProjectsStore(
     (s) => s.projects.find((p) => p.id === s.activeId)?.name ?? "",
   );
+  // "+ agent" on a project with linked worktrees asks which one first (#23).
+  // Local projects only: a local agent on a remote project has its cwd pinned
+  // to the mirror root at spawn, so a pick there could not be honored.
+  const worktreePicker = useAgentWorktreePicker({
+    projectCwd,
+    projectName,
+    enabled: !isRemoteScope,
+  });
 
   const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null);
   // Tab currently hovered → drives the styled hover card (the tab-bar
@@ -458,9 +467,15 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
     }
     // Build the full launch spec (session-id minting, ELDRUN_TAB_UID, args,
     // session-rename input) via the shared helper so the main and detached add
-    // menus can never drift.
-    addTab(buildStaticTabSpec(item, projectCwd, projectName, t));
+    // menus can never drift. An agent on a project with linked worktrees is
+    // asked which one first; the menu closes either way and the tab appears
+    // once the question is answered (or not at all if it is dismissed).
     setMenuPos(null);
+    void worktreePicker.specFor(item).then((spec) => {
+      if (!spec) return;
+      focusGroup(groupId);
+      addTab(spec);
+    });
   }
 
   /** Box "+" menu: a Files (Project) tab rooted at ONE member (the viewer

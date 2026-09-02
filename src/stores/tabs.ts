@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { restoredAgentCwd } from "../lib/agentWorktrees";
 import { create } from "zustand";
 import { useShallow } from "zustand/react/shallow";
 import type { InternalViewer } from "../lib/viewers/fileUtils";
@@ -4194,8 +4195,12 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       const kind =
         t.kind ??
         cmdToKind(t.cmd || (t.type === "files" ? FILES_TAB_CMD : ""));
-      // Agent tabs always start in the current project dir so stale saved cwds
-      // don't put the agent in the wrong directory after a project move/rename.
+      // Agent tabs start in the current project dir so stale saved cwds don't
+      // put the agent in the wrong directory after a project move/rename — with
+      // one exception: a cwd under THIS root's `.eldrun/worktrees/` is a linked
+      // worktree the agent was deliberately started in, and Claude keys its
+      // history by cwd, so resetting it is what made `--resume` come back as a
+      // fresh conversation (`restoredAgentCwd`).
       const isAgent = kind === "agent" || kind === "local_agent";
       const freshKey = nextKey(kind);
       keyMap.set(t.key, freshKey);

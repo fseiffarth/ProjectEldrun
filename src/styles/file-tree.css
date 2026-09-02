@@ -1929,6 +1929,55 @@
   white-space: pre-wrap;
 }
 
+/* A pick-one question (ChoiceDialog): each option is a full-width row button,
+   the "current" one framed in the accent so Enter's default is visible. */
+.file-delete-choices {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: min(50vh, 320px);
+  overflow-y: auto;
+}
+
+.file-delete-choice {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+  padding: 8px 10px;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-md);
+  background: var(--control-bg);
+  color: var(--text-primary);
+  cursor: var(--cur-pointer, pointer);
+}
+
+.file-delete-choice:hover,
+.file-delete-choice:focus-visible {
+  background: var(--control-hover-bg);
+  border-color: var(--accent);
+  outline: none;
+}
+
+.file-delete-choice.current {
+  border-color: var(--accent);
+}
+
+.file-delete-choice-label {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.file-delete-choice-detail {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* A message dialog reporting a failure: the text itself is the error, so it
    takes the danger color without the path box's frame (there is no path). */
 .file-delete-error-text {

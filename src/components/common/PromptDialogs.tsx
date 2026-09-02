@@ -1,4 +1,5 @@
 import { type ReactNode, useCallback, useState } from "react";
+import { UntestedTag } from "./UntestedTag";
 import { createPortal } from "react-dom";
 import { useT } from "../../lib/i18n";
 
@@ -56,6 +57,27 @@ export type ConfirmSpec = {
   confirmLabel?: string;
   /** Paints the confirm button as the destructive action. */
   danger?: boolean;
+};
+
+/** One entry of a pick-one question. */
+export type ChoiceOption = {
+  id: string;
+  label: ReactNode;
+  /** Secondary text beside the label (a branch name, a size). */
+  detail?: ReactNode;
+  /** Tooltip — the full path behind a short label. */
+  hint?: string;
+  /** The option Enter picks straight away; painted as the current one. */
+  current?: boolean;
+};
+
+/** A pick-one question the browser never had a box for. */
+export type ChoiceSpec = {
+  title: ReactNode;
+  body?: ReactNode;
+  options: ChoiceOption[];
+  /** The feature asking has not been live-verified yet. */
+  untested?: boolean;
 };
 
 /** A `window.alert` replacement. */
@@ -220,9 +242,62 @@ export function MessageDialog({
   );
 }
 
+/**
+ * Pick one of a few named things. Each option is its own button — the whole
+ * row, not a radio plus a confirm — because the question is always "which
+ * one", never "are you sure": one click answers it, Escape or the backdrop
+ * declines it. The `current` option takes focus so Enter is the default.
+ */
+export function ChoiceDialog({
+  title,
+  body,
+  options,
+  untested = false,
+  onCancel,
+  onPick,
+}: ChoiceSpec & { onCancel: () => void; onPick: (id: string) => void }) {
+  const t = useT();
+  const focusId = options.find((o) => o.current)?.id ?? options[0]?.id;
+  return (
+    <DialogShell onDismiss={onCancel}>
+      <h2>
+        {title}
+        {untested && <UntestedTag />}
+      </h2>
+      {body != null && <p className="file-delete-body">{body}</p>}
+      <div className="file-delete-choices" role="listbox" aria-label={typeof title === "string" ? title : undefined}>
+        {options.map((o) => (
+          <button
+            key={o.id}
+            type="button"
+            role="option"
+            aria-selected={!!o.current}
+            className={`file-delete-choice${o.current ? " current" : ""}`}
+            title={o.hint}
+            autoFocus={o.id === focusId}
+            onClick={() => onPick(o.id)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") onCancel();
+            }}
+          >
+            <span className="file-delete-choice-label">{o.label}</span>
+            {o.detail != null && <span className="file-delete-choice-detail">{o.detail}</span>}
+          </button>
+        ))}
+      </div>
+      <div className="file-delete-actions">
+        <button type="button" onClick={onCancel}>
+          {t("common.cancel")}
+        </button>
+      </div>
+    </DialogShell>
+  );
+}
+
 type Pending =
   | { kind: "prompt"; spec: TextPromptSpec; run?: (v: string) => Promise<void>; done: (v: string | null) => void }
   | { kind: "confirm"; spec: ConfirmSpec; done: (v: boolean) => void }
+  | { kind: "choice"; spec: ChoiceSpec; done: (v: string | null) => void }
   | { kind: "message"; spec: MessageSpec; done: () => void };
 
 /**
@@ -255,6 +330,13 @@ export function useDialogs() {
   const showMessage = useCallback(
     (spec: MessageSpec) =>
       new Promise<void>((resolve) => setPending({ kind: "message", spec, done: resolve })),
+    [],
+  );
+  const chooseOption = useCallback(
+    (spec: ChoiceSpec) =>
+      new Promise<string | null>((resolve) =>
+        setPending({ kind: "choice", spec, done: resolve }),
+      ),
     [],
   );
 
@@ -291,6 +373,21 @@ export function useDialogs() {
         }}
       />
     );
+  } else if (pending?.kind === "choice") {
+    const { spec, done } = pending;
+    dialogs = (
+      <ChoiceDialog
+        {...spec}
+        onCancel={() => {
+          setPending(null);
+          done(null);
+        }}
+        onPick={(id) => {
+          setPending(null);
+          done(id);
+        }}
+      />
+    );
   } else if (pending?.kind === "message") {
     const { spec, done } = pending;
     dialogs = (
@@ -304,5 +401,5 @@ export function useDialogs() {
     );
   }
 
-  return { promptText, confirmAction, showMessage, dialogs };
+  return { promptText, confirmAction, showMessage, chooseOption, dialogs };
 }

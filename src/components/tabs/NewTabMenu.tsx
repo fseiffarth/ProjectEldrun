@@ -15,7 +15,6 @@ import {
   SHELL_ITEMS,
   TAB_ACCENT,
   agentMenuEntries,
-  buildStaticTabSpec,
   compactAgentMenuEntries,
   isFileTabKind,
   itemLabel,
@@ -23,6 +22,7 @@ import {
 } from "./newTabItems";
 import { AddTabMenuList } from "./AddTabMenuList";
 import { useAddTabMenuData } from "./useAddTabMenuData";
+import { useAgentWorktreePicker } from "./agentWorktrees";
 import { useExperimental } from "../../lib/experimental";
 import { useT } from "../../lib/i18n";
 import { registerHostBoundTab } from "../../lib/hostBound";
@@ -79,8 +79,18 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
     boxMembers,
   } = useAddTabMenuData(scope);
 
-  // Outside-click / Escape closes the menu.
+  // "+ agent" on a project with linked worktrees asks which one first (#23).
+  // The popout cannot tell a remote project from a local one (it is inert to
+  // the projects store), so the listing is the mirror side's — a local call.
+  const worktreePicker = useAgentWorktreePicker({ projectCwd, projectName, enabled: true });
+  const { asking } = worktreePicker;
+
+  // Outside-click / Escape closes the menu — except while the worktree question
+  // is up: its dialog is portaled outside the menu, so a click into it would
+  // read as an outside click, unmount this menu, and take the pending answer
+  // (and the tab) with it. The dialog owns Escape for that stretch.
   useEffect(() => {
+    if (asking) return;
     const onDown = (e: MouseEvent) => {
       if (menuRef.current?.contains(e.target as Node)) return;
       onClose();
@@ -94,7 +104,7 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
       document.removeEventListener("mousedown", onDown);
       document.removeEventListener("keydown", onKey);
     };
-  }, [onClose]);
+  }, [asking, onClose]);
 
   // Keep the menu inside the viewport (mirrors TabBar's clamp).
   useLayoutEffect(() => {
@@ -114,8 +124,10 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
   }, [pos]);
 
   const pickStatic = (item: StaticMenuItem) => {
-    onPick(buildStaticTabSpec(item, projectCwd, projectName, t));
-    onClose();
+    void worktreePicker.specFor(item).then((spec) => {
+      if (spec) onPick(spec);
+      onClose();
+    });
   };
 
   const pickFixed = (spec: Omit<TabEntry, "key">) => {
@@ -177,6 +189,8 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
   };
 
   return createPortal(
+    <>
+    {worktreePicker.dialogs}
     <div
       className="tab-new-menu"
       ref={menuRef}
@@ -407,7 +421,8 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
             : []),
         ]}
       />
-    </div>,
+    </div>
+    </>,
     document.body,
   );
 }
