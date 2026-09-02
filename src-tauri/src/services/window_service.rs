@@ -101,6 +101,20 @@ pub fn project_detached_labels(
         .collect()
 }
 
+/// Registry keys for EVERY live detached popout, whatever project owns it —
+/// what the monitor-arrangement watcher (#240) iterates when a display is
+/// plugged in or unplugged, since that event has nothing to do with which
+/// project is active. Sorted so the order is stable.
+pub fn all_detached_labels(windows: &HashMap<String, TrackedWindow>) -> Vec<String> {
+    let mut out: Vec<String> = windows
+        .values()
+        .filter(|w| w.origin == ORIGIN_DETACHED_SUBWINDOW)
+        .map(|w| w.id.clone())
+        .collect();
+    out.sort();
+    out
+}
+
 /// Registry keys for all project-owned tracked windows in the given scope.
 pub fn project_tracked_ids(
     windows: &HashMap<String, TrackedWindow>,
@@ -396,5 +410,35 @@ mod tests {
             project_detached_labels(&no_wid, Some("p3")),
             vec!["detached-p3-g1".to_string()],
         );
+    }
+
+    #[test]
+    fn all_detached_labels_spans_every_project() {
+        // #240: unplugging a monitor strands popouts regardless of which project
+        // owns them, so the watcher must see them all — and nothing else.
+        let wins = registry(vec![
+            tracked(
+                "detached-p2-g1",
+                Some("p2"),
+                ORIGIN_DETACHED_SUBWINDOW,
+                Some(202),
+            ),
+            tracked(
+                "detached-p1-g3",
+                Some("p1"),
+                ORIGIN_DETACHED_SUBWINDOW,
+                Some(101),
+            ),
+            tracked("file-p1", Some("p1"), ORIGIN_SIDE_FILE_TREE, Some(303)),
+        ]);
+        assert_eq!(
+            all_detached_labels(&wins),
+            vec![
+                "detached-p1-g3".to_string(),
+                "detached-p2-g1".to_string(),
+            ],
+            "both popouts, sorted, and no side file tree",
+        );
+        assert!(all_detached_labels(&registry(vec![])).is_empty());
     }
 }

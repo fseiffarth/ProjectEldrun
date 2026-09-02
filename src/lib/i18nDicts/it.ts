@@ -1372,6 +1372,7 @@ export const dict: Dict = {
   "detachedTabs.scrollLeft": "Scorri le schede a sinistra",
   "detachedTabs.scrollRight": "Scorri le schede a destra",
   "detachedTabs.dragToMove": "Trascina per spostare questa finestra",
+  "detachedTabs.snapToScreen": "Trascina per spostare · doppio clic per adattarla a questo schermo",
   "detachedTabs.closeTab": "Chiudi scheda",
   "detachedTabs.newTab": "Nuova scheda",
   "detachedTabs.hideWindow": "Nascondi questa finestra nel pannello destro (recuperala da lì)",

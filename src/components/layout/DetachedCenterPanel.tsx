@@ -1,5 +1,6 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import { cursorPosition, getCurrentWindow } from "@tauri-apps/api/window";
 import { PhysicalPosition } from "@tauri-apps/api/dpi";
@@ -85,6 +86,12 @@ import { AgentScheduleDialog } from "../agents/AgentScheduleDialog";
 import { scheduleCacheKey, useAgentSchedulesStore } from "../../stores/agentSchedules";
 import { UntestedTag } from "../common/UntestedTag";
 import { nextScheduleOccurrence } from "../../lib/agentSchedule";
+
+/** #240: how close in time and space two title-bar presses must be to count as
+ *  a double-click. Hand-rolled because the WM eats the DOM `dblclick` (see
+ *  `onTitlebarPointerDown`), so these stand in for the platform's own setting. */
+const DOUBLE_CLICK_MS = 400;
+const DOUBLE_CLICK_SLOP = 8;
 
 /** Pixel coordinates of a group body, relative to the detached center panel. */
 interface Rect {
@@ -1243,6 +1250,22 @@ export function DetachedCenterPanel({
     void getCurrentWindow().startDragging().catch(() => {});
   };
 
+  // #240: double-click the title bar → fit this popout onto the screen it is on
+  // (backend `snap_detached_window`, which clamps it to that monitor and slides
+  // it fully inside). The rescue gesture for the window that survived an
+  // undock: a popout sized on a 2560x1440 external keeps that size when the
+  // display goes away, so on the laptop panel its bottom-right corner — and,
+  // borderless, every resize edge with it — is off-screen.
+  //
+  // Detected by HAND rather than with React's `onDoubleClick`, because the first
+  // press already handed the pointer to the WM: `startDragging` opens a
+  // `_NET_WM_MOVERESIZE` grab (and its Windows equivalent), and the click that
+  // ends it is consumed by the WM's move loop, so the webview never sees the
+  // `dblclick` DOM event that would follow. Pointer events, by contrast, arrive
+  // normally — the grab ends on release — so the second press is ours to read.
+  // `detail` is not usable either: the pointer-events spec pins it to 0.
+  const lastTitlebarPress = useRef({ t: 0, x: 0, y: 0 });
+
   // #42: grab the popout's outer title bar to move/dock the WHOLE window. Mirrors
   // the group-bar handle, but anchored to the always-full-width title strip so it
   // works the same whether or not the content is split. The window controls carry
@@ -1253,6 +1276,20 @@ export function DetachedCenterPanel({
     if (target.closest(".detached-titlebar-controls, .detached-titlebar-actions, button, .no-drag"))
       return;
     e.preventDefault();
+    const prev = lastTitlebarPress.current;
+    const now = Date.now();
+    lastTitlebarPress.current = { t: now, x: e.clientX, y: e.clientY };
+    if (
+      now - prev.t < DOUBLE_CLICK_MS &&
+      Math.hypot(e.clientX - prev.x, e.clientY - prev.y) < DOUBLE_CLICK_SLOP
+    ) {
+      // Second press of a double-click: snap instead of starting another move,
+      // and disarm so a third press starts a fresh count rather than snapping
+      // again on every press of a rapid burst.
+      lastTitlebarPress.current = { t: 0, x: 0, y: 0 };
+      void invoke("snap_detached_window", { label: getCurrentWindow().label }).catch(() => {});
+      return;
+    }
     // Move the whole popout window natively on every platform (see
     // `beginNativeWindowMove`) — no streamed dock gesture, so dragging the
     // titlebar never makes another window flash a dock/split preview.
@@ -1714,7 +1751,11 @@ export function DetachedCenterPanel({
             already grabbable. The star lives HERE and nowhere else — it marks
             the window frame, which is why it was taken back off every
             subwindow's tab bar. */}
-        <span className="detached-titlebar-logo" aria-hidden="true">
+        <span
+          className="detached-titlebar-logo"
+          aria-hidden="true"
+          title={t("detachedTabs.snapToScreen")}
+        >
           <StarIcon />
         </span>
         {/* #237: dock the whole window back into the main layout. The gesture

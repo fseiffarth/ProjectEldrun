@@ -641,6 +641,11 @@ pub fn run() {
                     workspace.lock().unwrap().backend.set_main_window_id(id);
                 }
             }
+            // #240: watch for the display arrangement changing and re-fit every
+            // detached popout onto a screen that still exists. Undocking from an
+            // external monitor otherwise leaves a borderless popout larger than
+            // the laptop panel, with its title bar and resize edges off-screen.
+            commands::subwindow::spawn_monitor_watcher(_app.handle().clone());
             // Install the global Claude SessionStart hook so Eldrun can follow a
             // tab's live session id across `/clear` (see services::agent_session).
             if let Err(e) = services::agent_session::install_session_start_hook() {
@@ -1211,6 +1216,7 @@ pub fn run() {
             commands::subwindow::detach_subwindow,
             commands::subwindow::attach_subwindow,
             commands::subwindow::detached_window_frontmost,
+            commands::subwindow::snap_detached_window,
             // The deck presenter's audience window (M#90)
             commands::presenter::open_presenter_window,
             commands::presenter::close_presenter_window,

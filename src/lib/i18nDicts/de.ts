@@ -1376,6 +1376,7 @@ export const dict: Dict = {
   "detachedTabs.scrollLeft": "Tabs nach links scrollen",
   "detachedTabs.scrollRight": "Tabs nach rechts scrollen",
   "detachedTabs.dragToMove": "Ziehen, um dieses Fenster zu verschieben",
+  "detachedTabs.snapToScreen": "Ziehen zum Verschieben · Doppelklick passt das Fenster an diesen Bildschirm an",
   "detachedTabs.closeTab": "Tab schließen",
   "detachedTabs.newTab": "Neuer Tab",
   "detachedTabs.hideWindow": "Dieses Fenster in das rechte Panel verstecken (von dort wiederherstellbar)",

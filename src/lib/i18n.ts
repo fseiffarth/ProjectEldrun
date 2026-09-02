@@ -1471,6 +1471,7 @@ export const en = {
   "detachedTabs.scrollLeft": "Scroll tabs left",
   "detachedTabs.scrollRight": "Scroll tabs right",
   "detachedTabs.dragToMove": "Drag to move this window",
+  "detachedTabs.snapToScreen": "Drag to move this window · double-click to fit it to this screen",
   "detachedTabs.closeTab": "Close tab",
   "detachedTabs.newTab": "New tab",
   "detachedTabs.hideWindow": "Hide this window into the side panel (bring it back from there)",

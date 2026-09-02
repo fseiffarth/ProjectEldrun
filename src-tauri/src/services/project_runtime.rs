@@ -249,9 +249,20 @@ pub fn switch(
                         },
                         &monitors,
                     );
-                    if let Some(g) = fitted {
-                        let _ = win.set_size(tauri::PhysicalSize::new(g.w, g.h));
-                        let _ = win.set_position(tauri::PhysicalPosition::new(g.x, g.y));
+                    match fitted {
+                        Some(g) => {
+                            let _ = win.set_size(tauri::PhysicalSize::new(g.w, g.h));
+                            let _ = win.set_position(tauri::PhysicalPosition::new(g.x, g.y));
+                        }
+                        // The display this popout was parked on is gone. Leaving
+                        // the WM's placement puts it on a real screen but at the
+                        // size it had on the old one — on a laptop panel that is
+                        // a borderless window hanging off two edges, with no
+                        // resize border left to grab. Fit it to the screen it
+                        // actually landed on instead (#240).
+                        None => {
+                            crate::commands::subwindow::snap_detached_to_screen(app, label);
+                        }
                     }
                 }
             }

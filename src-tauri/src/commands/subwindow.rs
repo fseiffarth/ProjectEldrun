@@ -373,6 +373,151 @@ fn fit_detached_bounds(
     }
 }
 
+/// Fit ONE live popout entirely onto the screen it is currently on (#240):
+/// never larger than that monitor, never hanging off an edge. Returns whether
+/// anything moved (a popout that already fits is left alone).
+///
+/// Reads the window's real geometry rather than any remembered rect — the whole
+/// point is to correct a window the *WM* just re-placed (a display was
+/// unplugged) or that the user dragged onto a smaller screen. Geometry is
+/// PHYSICAL px throughout, the canonical cross-window space.
+///
+/// A popout parked by a project switch is skipped: it is hidden, its on-screen
+/// geometry is whatever the WM left it while invisible, and the switch-back path
+/// (`project_runtime::switch` step 8b) is what re-places it — snapping a hidden
+/// window would only persist that garbage rect.
+///
+/// A maximized popout is unmaximized first, so the gesture always leaves a
+/// normal, draggable, edge-snappable window rather than a maximized one whose
+/// `set_size` the WM may ignore.
+pub fn snap_detached_to_screen(app: &AppHandle, label: &str) -> bool {
+    let Some(win) = app.get_webview_window(label) else {
+        return false;
+    };
+    if !win.is_visible().unwrap_or(false) {
+        return false;
+    }
+    let (Ok(pos), Ok(inner), Ok(outer)) = (win.outer_position(), win.inner_size(), win.outer_size())
+    else {
+        return false;
+    };
+    // Fit the OUTER rect — what the screen actually has to hold — while setting
+    // the INNER one, which is all `set_size` can set. The two differ only where a
+    // popout is decorated (macOS; `detached_decorations`), and there by exactly
+    // the title bar we'd otherwise push off the bottom of the screen.
+    let chrome_w = outer.width.saturating_sub(inner.width);
+    let chrome_h = outer.height.saturating_sub(inner.height);
+    let current = crate::schema::settings::WindowState {
+        x: pos.x,
+        y: pos.y,
+        w: outer.width,
+        h: outer.height,
+        maximized: false,
+    };
+    let monitors = crate::services::window_service::monitor_rects(&win);
+    let Some(g) = crate::services::window_state::snap_detached_geometry(current, &monitors) else {
+        return false;
+    };
+    if win.is_maximized().unwrap_or(false) {
+        let _ = win.unmaximize();
+    }
+    // Size before position so a resize can't shift the placement (same order the
+    // respawn and switch-back paths use).
+    let _ = win.set_size(PhysicalSize::new(
+        g.w.saturating_sub(chrome_w).max(1),
+        g.h.saturating_sub(chrome_h).max(1),
+    ));
+    let _ = win.set_position(PhysicalPosition::new(g.x, g.y));
+    true
+}
+
+/// Double-clicking a popout's title bar snaps it onto the screen it is on
+/// (#240). The rescue gesture for the window the user can no longer resize:
+/// a borderless popout sized on an external monitor keeps that size when the
+/// display goes away, and its resize edges go with it off the panel.
+#[tauri::command]
+pub fn snap_detached_window(app: AppHandle, label: String) -> bool {
+    snap_detached_to_screen(&app, &label)
+}
+
+/// How often the monitor-arrangement watcher re-reads the connected displays.
+/// One cheap runtime query; the cost of noticing an unplug late is a popout the
+/// user cannot reach, so this stays in the "within a breath" range rather than
+/// being tuned down to nothing.
+const MONITOR_POLL: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// How long to let the WM finish its own re-placement of every window before
+/// correcting the popouts. Unplugging a display moves windows in several steps
+/// on X11; snapping mid-flight would fight it and leave the popout wherever the
+/// last step put it.
+const MONITOR_SETTLE: std::time::Duration = std::time::Duration::from_millis(1200);
+
+/// Watch for the display arrangement changing and re-fit every live popout onto
+/// a real screen (#240).
+///
+/// Polled, not event-driven: neither Tauri nor tao surfaces a monitor
+/// hot-plug event, and the renderer sees nothing either (WebKitGTK stays silent
+/// for a monitor change that doesn't resize the window). One
+/// `available_monitors()` read every few seconds is far cheaper than the failure
+/// it prevents — undocking from an external display leaves a borderless popout
+/// larger than the laptop panel, with its title bar and every resize edge past
+/// the screen, i.e. a window with no way back.
+///
+/// The main window's own geometry is deliberately NOT touched: it is decorated,
+/// WM-managed, and the user can always grab it.
+pub fn spawn_monitor_watcher(app: AppHandle) {
+    std::thread::spawn(move || {
+        let mut seen: Option<Vec<crate::services::window_state::MonitorRect>> = None;
+        loop {
+            std::thread::sleep(MONITOR_POLL);
+            // Nothing to rescue → don't even read the monitors. The read is a
+            // round trip through the main-thread event loop, and the overwhelmingly
+            // common case is a session with no popout at all; waking the UI thread
+            // every few seconds for it would be a pure battery cost. Forgetting the
+            // baseline here is deliberate: the first poll after a popout appears
+            // re-establishes it, so a popout is never snapped for having been born
+            // between two reads.
+            let has_popouts = {
+                let reg = app.state::<WindowRegistryState>();
+                let reg = reg.lock().unwrap();
+                !crate::services::window_service::all_detached_labels(&reg.windows).is_empty()
+            };
+            if !has_popouts {
+                seen = None;
+                continue;
+            }
+            let Some(main) = app.get_webview_window(
+                crate::services::window_service::MAIN_WINDOW_LABEL,
+            ) else {
+                // No main window: shutting down, or not built yet.
+                continue;
+            };
+            let now = crate::services::window_service::monitor_rects(&main);
+            // An empty read is a compositor that hasn't settled, not "every
+            // display was unplugged" — treating it as a change would snap every
+            // popout against no monitors at all.
+            if now.is_empty() || seen.as_ref() == Some(&now) {
+                continue;
+            }
+            let first = seen.is_none();
+            seen = Some(now);
+            // The first read is the baseline, not a change.
+            if first {
+                continue;
+            }
+            std::thread::sleep(MONITOR_SETTLE);
+            let labels = {
+                let reg = app.state::<WindowRegistryState>();
+                let reg = reg.lock().unwrap();
+                crate::services::window_service::all_detached_labels(&reg.windows)
+            };
+            for label in labels {
+                snap_detached_to_screen(&app, &label);
+            }
+        }
+    });
+}
+
 /// Close a detached subwindow and remove it from the registry + parkable
 /// override. Idempotent: a missing window/registry entry is not an error (the
 /// group still docks back in the frontend store).

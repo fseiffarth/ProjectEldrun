@@ -1374,6 +1374,7 @@ export const dict: Dict = {
   "detachedTabs.scrollLeft": "Faire défiler les onglets vers la gauche",
   "detachedTabs.scrollRight": "Faire défiler les onglets vers la droite",
   "detachedTabs.dragToMove": "Faites glisser pour déplacer cette fenêtre",
+  "detachedTabs.snapToScreen": "Faites glisser pour déplacer · double-cliquez pour l’ajuster à cet écran",
   "detachedTabs.closeTab": "Fermer l'onglet",
   "detachedTabs.newTab": "Nouvel onglet",
   "detachedTabs.hideWindow": "Masquer cette fenêtre dans le panneau de droite (la récupérer depuis là)",

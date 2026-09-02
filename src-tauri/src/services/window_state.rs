@@ -150,6 +150,69 @@ pub fn resolve_detached_geometry(
     })
 }
 
+/// Geometry that fits a detached popout entirely onto the screen it is on
+/// (Group B #240) — the "snap to this screen" rescue.
+///
+/// Used by two callers with the same need: the title-bar double-click gesture,
+/// and the monitor-arrangement watcher that runs when a display is unplugged.
+/// Both start from a window whose rect may be *larger than* or *entirely off*
+/// every remaining screen — undocking from a 2560x1440 external onto a
+/// 1920x1080 laptop panel leaves a popout wider and taller than the only screen
+/// left, with its bottom-right corner (and, borderless, every resize edge)
+/// past the panel.
+///
+/// Unlike [`resolve_detached_geometry`], which validates a *remembered* rect and
+/// answers `None` when it can no longer be trusted (leaving the WM's placement),
+/// this one is about a window that is on screen right now and must stay
+/// reachable, so it never gives up on a live monitor list:
+///   * zero overlap with every monitor picks the monitor whose centre is
+///     nearest, rather than returning `None`;
+///   * the rect is clamped to that monitor's size and slid fully inside it.
+///
+/// `None` means "nothing to do": no monitors to fit onto, a degenerate rect, or
+/// a window that already fits exactly where it is — which is what keeps the
+/// watcher from re-applying the same geometry on every poll.
+pub fn snap_detached_geometry(
+    current: WindowState,
+    monitors: &[MonitorRect],
+) -> Option<WindowState> {
+    if current.w == 0 || current.h == 0 {
+        return None;
+    }
+    let best = monitors
+        .iter()
+        .copied()
+        .max_by_key(|m| overlap_area(&current, m))
+        .filter(|m| overlap_area(&current, m) > 0)
+        .or_else(|| nearest_monitor(&current, monitors))?;
+
+    let w = current.w.min(best.w);
+    let h = current.h.min(best.h);
+    let x = current.x.clamp(best.x, best.x + best.w as i32 - w as i32);
+    let y = current.y.clamp(best.y, best.y + best.h as i32 - h as i32);
+    let fitted = WindowState {
+        x,
+        y,
+        w,
+        h,
+        maximized: false,
+    };
+    (fitted.x != current.x || fitted.y != current.y || fitted.w != current.w || fitted.h != current.h)
+        .then_some(fitted)
+}
+
+/// The monitor whose centre is closest to the window's centre. Only consulted
+/// when the window overlaps none of them (its display was unplugged and the WM
+/// left it in the void), so "closest" is the best available notion of which
+/// screen the user last had it on.
+fn nearest_monitor(s: &WindowState, monitors: &[MonitorRect]) -> Option<MonitorRect> {
+    let (cx, cy) = (s.x as i64 + s.w as i64 / 2, s.y as i64 + s.h as i64 / 2);
+    monitors.iter().copied().min_by_key(|m| {
+        let (mx, my) = (m.x as i64 + m.w as i64 / 2, m.y as i64 + m.h as i64 / 2);
+        (cx - mx).pow(2) + (cy - my).pow(2)
+    })
+}
+
 /// Width/height of the intersection between a saved window rect and a monitor, in
 /// physical px. `i64` because `x + w` on two `i32`s can overflow in principle and
 /// these feed a comparison, not a coordinate.
@@ -387,5 +450,66 @@ mod tests {
             resolve_detached_geometry(ws(0, 0, 900, 0), &only_primary()),
             None
         );
+    }
+
+    // ── snap_detached_geometry (#240 fit-to-this-screen) ────────────────────
+
+    /// Undocked: the 2560x1440 external is gone, only the laptop panel is left.
+    fn only_laptop() -> Vec<MonitorRect> {
+        vec![MonitorRect {
+            x: 0,
+            y: 0,
+            w: 1920,
+            h: 1080,
+        }]
+    }
+
+    #[test]
+    fn snap_shrinks_a_popout_bigger_than_the_screen_it_sits_on() {
+        // THE bug: a popout sized on the external monitor keeps that size when
+        // the WM drops it onto the laptop panel, hanging off two edges.
+        let got = snap_detached_geometry(ws(0, 0, 2400, 1400), &only_laptop()).unwrap();
+        assert_eq!((got.w, got.h), (1920, 1080), "clamped to the screen");
+        assert_eq!((got.x, got.y), (0, 0));
+    }
+
+    #[test]
+    fn snap_slides_an_overhanging_popout_fully_into_view() {
+        let got = snap_detached_geometry(ws(1600, 800, 900, 640), &only_laptop()).unwrap();
+        assert_eq!((got.w, got.h), (900, 640), "it fits — only the origin was off");
+        assert_eq!((got.x, got.y), (1020, 440), "flush against right/bottom edges");
+    }
+
+    #[test]
+    fn snap_rescues_a_popout_left_on_no_monitor_at_all() {
+        // Unlike the switch-back resolver, zero overlap is not a reason to give
+        // up: this window is live and unreachable, so it lands on the nearest
+        // screen instead.
+        let got = snap_detached_geometry(ws(2600, 200, 900, 640), &only_laptop()).unwrap();
+        assert_eq!((got.x, got.y), (1020, 200), "pulled onto the laptop panel");
+        assert_eq!((got.w, got.h), (900, 640));
+    }
+
+    #[test]
+    fn snap_keeps_a_popout_on_the_secondary_monitor_it_is_already_on() {
+        // Two screens still connected: snapping fits it to DP-7, never yanks it
+        // to the primary.
+        let got = snap_detached_geometry(ws(3200, 900, 900, 640), &two_monitors()).unwrap();
+        assert_eq!((got.x, got.y), (2940, 440), "slid inside DP-7, not moved to DP-6");
+    }
+
+    #[test]
+    fn snap_is_a_no_op_for_a_popout_that_already_fits() {
+        // What keeps the monitor watcher from re-applying geometry every poll.
+        assert_eq!(
+            snap_detached_geometry(ws(200, 150, 900, 640), &two_monitors()),
+            None
+        );
+    }
+
+    #[test]
+    fn snap_without_monitors_or_with_a_degenerate_rect_does_nothing() {
+        assert_eq!(snap_detached_geometry(ws(0, 0, 900, 640), &[]), None);
+        assert_eq!(snap_detached_geometry(ws(0, 0, 0, 640), &only_laptop()), None);
     }
 }

@@ -1372,6 +1372,7 @@ export const dict: Dict = {
   "detachedTabs.scrollLeft": "Desplazar pestañas a la izquierda",
   "detachedTabs.scrollRight": "Desplazar pestañas a la derecha",
   "detachedTabs.dragToMove": "Arrastra para mover esta ventana",
+  "detachedTabs.snapToScreen": "Arrastra para mover · doble clic para ajustarla a esta pantalla",
   "detachedTabs.closeTab": "Cerrar pestaña",
   "detachedTabs.newTab": "Nueva pestaña",
   "detachedTabs.hideWindow": "Ocultar esta ventana en el panel derecho (recupérala desde ahí)",
