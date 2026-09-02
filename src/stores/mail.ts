@@ -14,6 +14,7 @@ import {
   mailSync,
   mailSyncCancel,
 } from "../lib/mail";
+import { translate, useI18nStore } from "../lib/i18n";
 import type {
   MailAccount,
   MailBody,
@@ -231,6 +232,24 @@ function defaultFolder(folders: MailFolder[]): MailFolder | undefined {
   return folders.find((f) => f.kind === "inbox") ?? folders[0];
 }
 
+/**
+ * Which header page is the current one.
+ *
+ * `setQuery` fires on **every keystroke** and `openFolder` on every rail click,
+ * so several `mail_headers`/`mail_priority_page` reads are routinely in flight
+ * at once — and over an encrypted store a search scans until its bound, which
+ * makes the *earlier*, shorter query the slow one often enough to matter. Every
+ * other await in this store already guards against its own staleness
+ * (`selectMessage` re-checks `selectedMessageId`); this is `loadPage`'s
+ * equivalent, and it has to be a counter rather than a re-read of the selection
+ * because two reads for the *same* folder — one per keystroke — differ only in
+ * which request they are.
+ *
+ * A superseded answer is dropped whole, `loadingHeaders` included: the newer
+ * request is still running and owns the spinner.
+ */
+let pageToken = 0;
+
 export const useMailStore = create<MailStore>((set, get) => ({
   accounts: [],
   accountsLoaded: false,
@@ -437,7 +456,12 @@ export const useMailStore = create<MailStore>((set, get) => ({
     });
     // A `false` means the message is no longer in the index — the row on screen
     // is stale, and the optimistic patch above just told the user otherwise.
-    if (ok === false) set({ error: "That message is no longer in the local index." });
+    if (ok === false) {
+      // Outside React, so the imperative translator — the pattern
+      // `stores/alarms` and `stores/projects` already use for a store-built
+      // sentence.
+      set({ error: translate(useI18nStore.getState().lang, "mail.messageGone") });
+    }
     await get().refreshPriorityCounts();
     // Unmarking from *inside* a priority list removes the row from that list, so
     // the page has to be re-read; nothing else here changes what a folder shows.
@@ -481,9 +505,11 @@ export const useMailStore = create<MailStore>((set, get) => ({
   loadPage: async (offset) => {
     const { selectedFolderId, selectedPriority, query, sort, sortDesc } = get();
     if (!selectedFolderId && !selectedPriority) {
-      set({ headers: [], headerTotal: 0, headerScanned: undefined });
+      pageToken += 1;
+      set({ headers: [], headerTotal: 0, headerScanned: undefined, loadingHeaders: false });
       return;
     }
+    const token = ++pageToken;
     set({ loadingHeaders: true });
     // The ONE fork between a folder and a priority list, and it is deliberately
     // here rather than in the pane: the two commands take the same paging, query
@@ -504,6 +530,10 @@ export const useMailStore = create<MailStore>((set, get) => ({
       set({ error: reason(err) });
       return null;
     });
+    // Superseded while this was in flight — the answer describes a folder, a
+    // list or a search string that is no longer on screen. Painting it would
+    // put the previous keystroke's results under the current one.
+    if (token !== pageToken) return;
     set({
       loadingHeaders: false,
       ...(page
