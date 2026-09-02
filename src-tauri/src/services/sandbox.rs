@@ -797,10 +797,10 @@ pub fn up(
     // Refresh the staged config copies from the host originals at every up.
     // `fs::copy` overwrites in place (same inode), so a running container's
     // bind mounts see the refreshed content too.
-    let mut rw_mounts = if strict_trash {
-        Vec::new()
+    let (mut rw_mounts, mut ro_mounts) = if strict_trash {
+        (Vec::new(), Vec::new())
     } else {
-        rw_mounts(
+        agent_home_mounts(
             &home,
             &live_sessions_own.to_string_lossy(),
             &live_sessions.to_string_lossy(),
@@ -813,15 +813,12 @@ pub fn up(
                 .map(|(src, dst)| format!("{src}:{dst}")),
         );
         rw_mounts.extend(
-            staged_claude_json_mount(&home, &stage, &[project_dir.to_string()])
+            staged_claude_json_mounts(&home, &stage, &[project_dir.to_string()])
+                .into_iter()
                 .map(|(src, dst)| format!("{src}:{dst}")),
         );
+        ro_mounts.extend(ro_mounts_for_hooks(&hooks_dir));
     }
-    let ro_mounts = if strict_trash {
-        Vec::new()
-    } else {
-        ro_mounts(&hooks_dir)
-    };
     let harden = harden_opts(spec);
     let image = image_for(project_id, spec);
 
@@ -1492,9 +1489,10 @@ fn detect_spec_sources(project_dir: &Path, spec: &mut SandboxSpec) {
 /// explicitly, per entry, by [`claude_transcript_mounts`], because *this*
 /// project's transcripts must be writable and every other project's must not.
 ///
-/// A trailing `*` matches by prefix (`daemon.*`). Everything not listed is still
-/// mounted — deliberately: an unknown new entry breaking resume is worse than an
-/// unknown new entry being reachable, and the named holes are the exploitable ones.
+/// A trailing `*` matches by prefix (`daemon*`), a leading one by suffix
+/// (`*.sh`). Everything not listed is still mounted — deliberately: an unknown
+/// new entry breaking resume is worse than an unknown new entry being reachable,
+/// and the named holes are the exploitable ones.
 const CLAUDE_UNMOUNTED: &[&str] = &[
     "shell-snapshots",
     "plugins",
@@ -1507,11 +1505,38 @@ const CLAUDE_UNMOUNTED: &[&str] = &[
     "sessions",
     "session-env",
     "stats-cache.json",
-    "daemon.*",
+    // `daemon*`, not `daemon.*`: the prefix used to end in a dot, so the
+    // `daemon/` **directory** itself — the one holding the daemon's private
+    // state — fell through the hole and was mounted read-write.
+    "daemon*",
     "settings.json",
     "settings.local.json",
+    // Same cross-project `projects` map (prompt history, `allowedTools`) that
+    // `staged_claude_json_mounts` exists to stage a *filtered* copy of, plus the
+    // `.bak`/`.backup.<ts>` siblings a restore reads back. Staged, not mounted.
+    ".claude.json*",
+    // Cross-session content with no part in resume: debug logs, feedback
+    // drafts, the paste cache, and uploaded files — the same class as
+    // `history.jsonl`, which has been denied here since the beginning.
+    "debug",
+    "feedback",
+    "paste-cache",
+    "uploads",
     CLAUDE_PROJECTS_ENTRY,
 ];
+
+/// Entries of `~/.claude`/`~/.codex` mounted **read-only** rather than left out:
+/// the agent genuinely reads them, but a write must never reach the host.
+///
+/// - `*.sh` — the statusline/hook scripts an agent's own `settings.json` points
+///   at. [`staged_config_mounts`] stops a contained agent *repointing* a hook;
+///   it does nothing about rewriting the script already pointed at, which the
+///   host's **uncontained** CLI then executes on its next launch. That is a
+///   straight fence-to-host code-execution path.
+/// - `*.md` — the user's global instructions (`~/.claude/CLAUDE.md`,
+///   `~/.codex/AGENTS.md`, and whatever they import). A write there is a
+///   standing prompt injection into every future uncontained session.
+const AGENT_READ_ONLY: &[&str] = &["*.sh", "*.md"];
 
 /// Entries of `~/.codex` that are not mounted. Much shorter than
 /// [`CLAUDE_UNMOUNTED`] on purpose: `sessions/` **must** stay mounted, because a
@@ -1521,45 +1546,61 @@ const CLAUDE_UNMOUNTED: &[&str] = &[
 /// `config.toml` is the staged-shadow destination (see [`staged_config_mounts`]).
 const CODEX_UNMOUNTED: &[&str] = &["history.jsonl", "config.toml"];
 
-/// Whether a directory entry name is excluded by a `*_UNMOUNTED` list. A pattern
-/// ending in `*` matches by prefix; everything else is an exact match.
-fn is_unmounted_entry(name: &str, patterns: &[&str]) -> bool {
-    patterns.iter().any(|p| match p.strip_suffix('*') {
-        Some(prefix) => name.starts_with(prefix),
-        None => *p == name,
+/// Whether a directory entry name matches one of a pattern list. A pattern
+/// ending in `*` matches by prefix, one starting with `*` by suffix; everything
+/// else is an exact match.
+fn matches_entry(name: &str, patterns: &[&str]) -> bool {
+    patterns.iter().any(|p| {
+        if let Some(prefix) = p.strip_suffix('*') {
+            name.starts_with(prefix)
+        } else if let Some(suffix) = p.strip_prefix('*') {
+            name.ends_with(suffix)
+        } else {
+            *p == name
+        }
     })
 }
 
-/// Per-entry identical-path mounts for one agent state dir, skipping the excluded
-/// entries. Mounting the children rather than the parent is what makes the
-/// exclusion real: an unmounted child is simply not reachable, and the container
-/// cannot create new top-level entries in the host's dir either.
-fn narrowed_agent_mounts(dir: &str, unmounted: &[&str]) -> Vec<String> {
+/// Per-entry identical-path mounts for one agent state dir as `(rw, ro)`,
+/// skipping the excluded entries. Mounting the children rather than the parent
+/// is what makes the exclusion real: an unmounted child is simply not reachable,
+/// and the container cannot create new top-level entries in the host's dir
+/// either. Entries matching [`AGENT_READ_ONLY`] land in the `ro` half.
+fn narrowed_agent_mounts(dir: &str, unmounted: &[&str]) -> (Vec<String>, Vec<String>) {
     let base = Path::new(dir);
     if !base.is_dir() {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     }
     let Ok(entries) = std::fs::read_dir(base) else {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     };
     let mut names: Vec<String> = entries
         .flatten()
         .filter_map(|e| e.file_name().to_str().map(str::to_string))
-        .filter(|n| !is_unmounted_entry(n, unmounted))
+        .filter(|n| !matches_entry(n, unmounted))
         .collect();
     // Deterministic order so the spec fingerprint doesn't flap with readdir order.
     names.sort();
-    names
-        .iter()
-        .map(|n| format!("{dir}/{n}:{dir}/{n}"))
-        .collect()
+    let (mut rw, mut ro) = (Vec::new(), Vec::new());
+    for name in &names {
+        let pair = format!("{dir}/{name}:{dir}/{name}");
+        if matches_entry(name, AGENT_READ_ONLY) {
+            ro.push(pair);
+        } else {
+            rw.push(pair);
+        }
+    }
+    (rw, ro)
 }
 
-/// Read-write mounts: the agent auth/state paths the resume machinery depends on.
+/// The agent auth/state mounts the resume machinery depends on, as
+/// `(read-write, read-only)` `src:dst` pairs.
 ///
 /// `~/.claude`/`~/.codex` are mounted **per entry** with an exclusion list rather
-/// than wholesale (see [`CLAUDE_UNMOUNTED`]); Gemini creds are mounted only when
-/// they exist so we never auto-create empty root-owned dirs in `$HOME`.
+/// than wholesale (see [`CLAUDE_UNMOUNTED`]); entries matching
+/// [`AGENT_READ_ONLY`] come back in the read-only half instead. Gemini creds are
+/// mounted only when they exist so we never auto-create empty root-owned dirs in
+/// `$HOME`.
 ///
 /// `live_sessions_src` is this project's **own** subdirectory of
 /// `<state_dir>/live_sessions`, mounted at `live_sessions_dst` — the canonical root
@@ -1569,30 +1610,30 @@ fn narrowed_agent_mounts(dir: &str, unmounted: &[&str]) -> Vec<String> {
 /// there. With the shared root mounted, a contained agent could overwrite another
 /// project's tab record and thereby choose which conversation an **uncontained**
 /// agent resumes.
-pub(crate) fn rw_mounts(
+pub(crate) fn agent_home_mounts(
     home: &str,
     live_sessions_src: &str,
     live_sessions_dst: &str,
-) -> Vec<String> {
-    let mut m = Vec::new();
-    m.extend(narrowed_agent_mounts(
-        &format!("{home}/.claude"),
-        CLAUDE_UNMOUNTED,
-    ));
-    m.extend(narrowed_agent_mounts(
-        &format!("{home}/.codex"),
-        CODEX_UNMOUNTED,
-    ));
+) -> (Vec<String>, Vec<String>) {
+    let (mut rw, mut ro) = (Vec::new(), Vec::new());
+    for (dir, unmounted) in [
+        (format!("{home}/.claude"), CLAUDE_UNMOUNTED),
+        (format!("{home}/.codex"), CODEX_UNMOUNTED),
+    ] {
+        let (entry_rw, entry_ro) = narrowed_agent_mounts(&dir, unmounted);
+        rw.extend(entry_rw);
+        ro.extend(entry_ro);
+    }
     // The in-container SessionStart hook writes a tab's live id here.
-    m.push(format!("{live_sessions_src}:{live_sessions_dst}"));
+    rw.push(format!("{live_sessions_src}:{live_sessions_dst}"));
     // Gemini credentials only — narrowed from the whole `~/.config` so unrelated
     // secrets (`gh`, `gcloud`, …) are never exposed to the container.
     for cand in [format!("{home}/.gemini"), format!("{home}/.config/gemini")] {
         if Path::new(&cand).is_dir() {
-            m.push(format!("{cand}:{cand}"));
+            rw.push(format!("{cand}:{cand}"));
         }
     }
-    m
+    (rw, ro)
 }
 
 // ── Claude transcripts: read every project, write only our own ────────────
@@ -1824,7 +1865,7 @@ fn harvest_all_transcripts() {
 /// Read-only identical-path mounts: just the hook *script* dir, which is shared
 /// with host-run agents and so must be immutable from inside the container (see
 /// the module doc). Mounted only when it exists on the host.
-pub(crate) fn ro_mounts(hooks_dir: &Path) -> Vec<String> {
+pub(crate) fn ro_mounts_for_hooks(hooks_dir: &Path) -> Vec<String> {
     let mut m = Vec::new();
     if hooks_dir.is_dir() {
         let h = hooks_dir.to_string_lossy();
@@ -1898,7 +1939,7 @@ pub(crate) fn staged_config_mounts(home: &str, stage: &Path) -> Vec<(String, Str
     mounts
 }
 
-/// Stage `~/.claude.json` and mount the copy at the real path.
+/// Stage the `.claude.json` files and mount each copy at its real path.
 ///
 /// This top-level file is Claude's identity and onboarding state: without it a
 /// fenced/contained tab looks like a fresh install and demands login **every
@@ -1915,18 +1956,41 @@ pub(crate) fn staged_config_mounts(home: &str, stage: &Path) -> Vec<(String, Str
 /// history stays invisible, and writes die with the stage. Refreshed in place
 /// at every up, like [`staged_config_mounts`]. A missing or unparsable host
 /// file stages `{}` (fresh-install behavior, which is then accurate).
-pub(crate) fn staged_claude_json_mount(
+///
+/// Two locations, because the file has moved between CLI versions:
+/// `$HOME/.claude.json` (staged unconditionally — a write must never create the
+/// host's) and `$HOME/.claude/.claude.json` (staged only when the host has it,
+/// so a version that does not use it is not handed a spurious fresh-install
+/// marker). `.claude.json*` is in [`CLAUDE_UNMOUNTED`] so the second one is
+/// never mounted raw alongside its own filtered stage.
+pub(crate) fn staged_claude_json_mounts(
     home: &str,
     stage: &Path,
     roots: &[String],
+) -> Vec<(String, String)> {
+    let home = Path::new(home);
+    let nested = home.join(".claude").join(".claude.json");
+    let mut out = Vec::new();
+    out.extend(staged_claude_json_copy(&home.join(".claude.json"), stage, roots));
+    if nested.is_file() {
+        out.extend(staged_claude_json_copy(&nested, stage, roots));
+    }
+    out
+}
+
+/// One `.claude.json` staged copy: read, filter the `projects` map to `roots`,
+/// write into `stage`, and return the `(copy, original path)` pair.
+fn staged_claude_json_copy(
+    src_path: &Path,
+    stage: &Path,
+    roots: &[String],
 ) -> Option<(String, String)> {
-    let src_path = Path::new(home).join(".claude.json");
     let src = src_path.to_string_lossy().into_owned();
     let leaf = src
         .trim_start_matches(['/', '\\'])
         .replace(['/', '\\', ':'], "_");
     let dst = stage.join(&leaf);
-    let mut value: serde_json::Value = std::fs::read(&src_path)
+    let mut value: serde_json::Value = std::fs::read(src_path)
         .ok()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
         .unwrap_or_else(|| serde_json::json!({}));
@@ -2415,8 +2479,9 @@ mod tests {
         .unwrap();
 
         let home_str = home.to_string_lossy().into_owned();
-        let (src, dst) =
-            staged_claude_json_mount(&home_str, &stage, std::slice::from_ref(&root)).unwrap();
+        let staged_mounts = staged_claude_json_mounts(&home_str, &stage, std::slice::from_ref(&root));
+        assert_eq!(staged_mounts.len(), 1, "no nested copy on this fake host");
+        let (src, dst) = staged_mounts[0].clone();
         assert_eq!(dst, host.to_string_lossy());
         assert!(Path::new(&src).starts_with(&stage));
         let staged: serde_json::Value =
@@ -2432,14 +2497,105 @@ mod tests {
         assert!(projects.contains_key(&root));
         assert!(projects.contains_key(&format!("{root}/sub")));
 
+        // The newer nested location is staged too, and only when the host has it.
+        let claude_dir = home.join(".claude");
+        std::fs::create_dir_all(&claude_dir).unwrap();
+        let nested = claude_dir.join(".claude.json");
+        std::fs::write(
+            &nested,
+            serde_json::json!({"projects": {"/elsewhere/secret": {"history": ["x"]}}})
+                .to_string(),
+        )
+        .unwrap();
+        let both = staged_claude_json_mounts(&home_str, &stage, std::slice::from_ref(&root));
+        assert_eq!(both.len(), 2, "got: {both:?}");
+        assert_eq!(both[1].1, nested.to_string_lossy());
+        assert_ne!(both[1].0, both[0].0, "the two copies must not collide");
+        let nested_staged: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&both[1].0).unwrap()).unwrap();
+        assert!(
+            nested_staged["projects"].as_object().unwrap().is_empty(),
+            "the nested copy is filtered the same way"
+        );
+        std::fs::remove_file(&nested).unwrap();
+
         // Missing host file: an empty object is staged, the original not created.
         std::fs::remove_file(&host).unwrap();
-        let (src2, _) = staged_claude_json_mount(&home_str, &stage, &[root]).unwrap();
-        assert_eq!(src2, src, "refreshed in place, not a second copy");
-        assert_eq!(std::fs::read(&src2).unwrap(), b"{}");
+        let again = staged_claude_json_mounts(&home_str, &stage, &[root]);
+        assert_eq!(again.len(), 1);
+        assert_eq!(again[0].0, src, "refreshed in place, not a second copy");
+        assert_eq!(std::fs::read(&again[0].0).unwrap(), b"{}");
         assert!(!host.exists(), "staging must never create the host original");
 
         std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn agent_home_mounts_deny_the_named_holes_and_read_only_the_scripts() {
+        let base = std::env::temp_dir().join(format!("eldrun-sbx-nar-{}", std::process::id()));
+        let home = base.join("home");
+        let claude = home.join(".claude");
+        std::fs::create_dir_all(&claude).unwrap();
+        for dir in ["daemon", "debug", "feedback", "paste-cache", "uploads", "todos"] {
+            std::fs::create_dir_all(claude.join(dir)).unwrap();
+        }
+        for file in [
+            ".claude.json",
+            ".claude.json.bak",
+            ".claude.json.backup.1",
+            ".credentials.json",
+            "statusline-command.sh",
+            "CLAUDE.md",
+        ] {
+            std::fs::write(claude.join(file), b"x").unwrap();
+        }
+
+        let home_str = home.to_string_lossy().into_owned();
+        let (rw, ro) = agent_home_mounts(&home_str, "/state/ls/p1", "/state/ls");
+        let mounted = |set: &[String], name: &str| {
+            let want = format!("{home_str}/.claude/{name}:{home_str}/.claude/{name}");
+            set.contains(&want)
+        };
+
+        // Denied outright: the daemon dir (the pattern used to be `daemon.*`,
+        // which never matched it), the stale cross-project `.claude.json`
+        // family, and the cross-session content dirs.
+        for name in [
+            "daemon",
+            ".claude.json",
+            ".claude.json.bak",
+            ".claude.json.backup.1",
+            "debug",
+            "feedback",
+            "paste-cache",
+            "uploads",
+        ] {
+            assert!(!mounted(&rw, name), "{name} must not be writable");
+            assert!(!mounted(&ro, name), "{name} must not be mounted at all");
+        }
+        // Readable, never writable: what the host executes or reads as
+        // instructions.
+        for name in ["statusline-command.sh", "CLAUDE.md"] {
+            assert!(mounted(&ro, name), "{name} must stay readable");
+            assert!(!mounted(&rw, name), "{name} must not be writable");
+        }
+        // Still mounted read-write: the auth file resume depends on, and any
+        // entry nobody named (the deliberate default).
+        assert!(mounted(&rw, ".credentials.json"));
+        assert!(mounted(&rw, "todos"));
+
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn entry_patterns_match_prefix_suffix_and_exact() {
+        assert!(matches_entry("daemon", &["daemon*"]));
+        assert!(matches_entry("daemon.log", &["daemon*"]));
+        assert!(!matches_entry("daemon", &["daemon.*"]));
+        assert!(matches_entry("hook.sh", &["*.sh"]));
+        assert!(!matches_entry("sh", &["*.sh"]));
+        assert!(matches_entry("settings.json", &["settings.json"]));
+        assert!(!matches_entry("settings.jsonc", &["settings.json"]));
     }
 
     // ── spec sources ──────────────────────────────────────────────────────
@@ -2787,28 +2943,28 @@ mod tests {
 
     #[test]
     fn unmounted_entry_matching_is_exact_with_a_star_prefix() {
-        assert!(is_unmounted_entry("shell-snapshots", CLAUDE_UNMOUNTED));
-        assert!(is_unmounted_entry("plugins", CLAUDE_UNMOUNTED));
-        assert!(is_unmounted_entry("agents", CLAUDE_UNMOUNTED));
+        assert!(matches_entry("shell-snapshots", CLAUDE_UNMOUNTED));
+        assert!(matches_entry("plugins", CLAUDE_UNMOUNTED));
+        assert!(matches_entry("agents", CLAUDE_UNMOUNTED));
         // Personal skills are instructions + optional `scripts/` that every
         // *uncontained* session of every project loads — the `agents/` hole one
         // directory over, and the reason the personal install scope exists at all.
-        assert!(is_unmounted_entry("skills", CLAUDE_UNMOUNTED));
-        assert!(is_unmounted_entry("history.jsonl", CLAUDE_UNMOUNTED));
+        assert!(matches_entry("skills", CLAUDE_UNMOUNTED));
+        assert!(matches_entry("history.jsonl", CLAUDE_UNMOUNTED));
         // `daemon.*` is a prefix pattern.
-        assert!(is_unmounted_entry("daemon.log", CLAUDE_UNMOUNTED));
-        assert!(is_unmounted_entry("daemon.sock", CLAUDE_UNMOUNTED));
+        assert!(matches_entry("daemon.log", CLAUDE_UNMOUNTED));
+        assert!(matches_entry("daemon.sock", CLAUDE_UNMOUNTED));
         // Not a prefix match for a non-star pattern.
-        assert!(!is_unmounted_entry("plugins-of-mine", CLAUDE_UNMOUNTED));
+        assert!(!matches_entry("plugins-of-mine", CLAUDE_UNMOUNTED));
         // Transcripts are excluded *here* because `claude_transcript_mounts`
         // owns that destination — per entry, rw for ours and `:ro` for the rest.
-        assert!(is_unmounted_entry("projects", CLAUDE_UNMOUNTED));
+        assert!(matches_entry("projects", CLAUDE_UNMOUNTED));
         // What resume needs stays mounted.
-        assert!(!is_unmounted_entry(".credentials.json", CLAUDE_UNMOUNTED));
+        assert!(!matches_entry(".credentials.json", CLAUDE_UNMOUNTED));
         // Codex keeps `sessions/` — a containerized Codex writes its rollouts there
         // and the host reads them back to decide whether a tab can resume.
-        assert!(!is_unmounted_entry("sessions", CODEX_UNMOUNTED));
-        assert!(is_unmounted_entry("history.jsonl", CODEX_UNMOUNTED));
+        assert!(!matches_entry("sessions", CODEX_UNMOUNTED));
+        assert!(matches_entry("history.jsonl", CODEX_UNMOUNTED));
     }
 
     #[test]
@@ -2824,7 +2980,7 @@ mod tests {
         std::fs::write(claude.join("settings.json"), b"{}").unwrap();
 
         let dir = claude.to_string_lossy().into_owned();
-        let mounts = narrowed_agent_mounts(&dir, CLAUDE_UNMOUNTED);
+        let (mounts, _) = narrowed_agent_mounts(&dir, CLAUDE_UNMOUNTED);
 
         // Compare whole mount strings rather than picking the entry name back
         // out of them. `dir` comes from `temp_dir()`, so on Windows it carries a
@@ -2843,11 +2999,11 @@ mod tests {
         assert!(!mounts.iter().any(|m| m.contains("settings.json")));
         assert!(!mounts.iter().any(|m| m.ends_with("/projects")));
         // Stable across calls, so the spec fingerprint doesn't flap.
-        assert_eq!(narrowed_agent_mounts(&dir, CLAUDE_UNMOUNTED), mounts);
+        assert_eq!(narrowed_agent_mounts(&dir, CLAUDE_UNMOUNTED).0, mounts);
         // A dir that isn't there mounts nothing (never auto-created).
-        assert!(
-            narrowed_agent_mounts(&base.join("nope").to_string_lossy(), CLAUDE_UNMOUNTED)
-                .is_empty()
+        assert_eq!(
+            narrowed_agent_mounts(&base.join("nope").to_string_lossy(), CLAUDE_UNMOUNTED),
+            (Vec::new(), Vec::new())
         );
 
         std::fs::remove_dir_all(&base).ok();
@@ -2855,7 +3011,7 @@ mod tests {
 
     #[test]
     fn live_sessions_is_mounted_per_project_at_the_canonical_path() {
-        let mounts = rw_mounts(
+        let (mounts, _) = agent_home_mounts(
             "/home/alice",
             "/state/live_sessions/p1",
             "/state/live_sessions",

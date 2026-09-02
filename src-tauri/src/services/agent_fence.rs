@@ -422,14 +422,18 @@ fn agent_state_mounts(scope_id: &str, roots: &[PathBuf]) -> (Vec<BindMount>, Vec
     let _ = std::fs::create_dir_all(&live_own);
     let _ = std::fs::create_dir_all(&stage);
 
-    let mut mounts: Vec<BindMount> = crate::services::sandbox::rw_mounts(
+    let (home_rw, home_ro) = crate::services::sandbox::agent_home_mounts(
         &home,
         &live_own.to_string_lossy(),
         &live_root.to_string_lossy(),
-    )
-    .into_iter()
-    .filter_map(|m| mount_pair(&m, false))
-    .collect();
+    );
+    let mut mounts: Vec<BindMount> = home_rw
+        .into_iter()
+        .filter_map(|m| mount_pair(&m, false))
+        .collect();
+    // Hook/statusline scripts and global instruction files: readable, never
+    // writable — a write there escapes the fence into an uncontained session.
+    mounts.extend(home_ro.into_iter().filter_map(|m| mount_pair(&m, true)));
     // One writable mount of the whole staging dir; the shadows below are
     // symlinked into it rather than mounted over their real paths.
     mounts.push(BindMount {
@@ -449,8 +453,8 @@ fn agent_state_mounts(scope_id: &str, roots: &[PathBuf]) -> (Vec<BindMount>, Vec
     // Without `~/.claude.json` (oauthAccount, onboarding) every fenced tab
     // demands a fresh login; see `staged_claude_json_mount` for why it is a
     // filtered copy rather than the host original.
-    if let Some((src, dst)) =
-        crate::services::sandbox::staged_claude_json_mount(&home, &stage, &roots_as_strings)
+    for (src, dst) in
+        crate::services::sandbox::staged_claude_json_mounts(&home, &stage, &roots_as_strings)
     {
         symlinks.extend(staged_symlink(&src, &dst));
     }
@@ -462,7 +466,7 @@ fn agent_state_mounts(scope_id: &str, roots: &[PathBuf]) -> (Vec<BindMount>, Vec
     mounts.extend(tx_rw.into_iter().filter_map(|m| mount_pair(&m, false)));
     mounts.extend(tx_ro.into_iter().filter_map(|m| mount_pair(&m, true)));
     mounts.extend(
-        crate::services::sandbox::ro_mounts(&state_dir.join("hooks"))
+        crate::services::sandbox::ro_mounts_for_hooks(&state_dir.join("hooks"))
             .into_iter()
             .filter_map(|m| mount_pair(&m, true)),
     );
