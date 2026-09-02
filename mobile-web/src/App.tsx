@@ -4,7 +4,7 @@ import { EldrunMark } from "./EldrunMark";
 import { hasPairedDevice, logoutAuth, resumeAuth } from "./auth";
 import { setUnauthorizedHandler, type TabRow } from "./api";
 import { classifyUnavailable, describeUnavailable, unavailableDetail, type UnavailableReason } from "./connection";
-import { forgetLastTab, rememberLastTab, restoreLastTab } from "./lastTab";
+import { forgetLastPlace, rememberLastPlace, restoreLastPlace, type LastPlace, type MobileSection } from "./lastPlace";
 import { hasLocalUnlock } from "./localLock";
 import { Pair } from "./screens/Pair";
 import { LocalUnlock } from "./screens/LocalUnlock";
@@ -22,9 +22,19 @@ import { Calendar } from "./screens/Calendar";
  * of the project list, not children of it, and the tab bar says so: each keeps
  * its own place, and the bar is the only way between them.
  */
-type Tab = "projects" | "todo" | "calendar" | "mail";
+type Tab = MobileSection;
 /** Where the Projects tab is standing: the list, or one project's tabs. */
 type ProjectView = { kind: "home" } | { kind: "project"; id: string };
+/**
+ * The whole of where the reader is standing, as `lastPlace` stores it. A
+ * terminal is full-bleed and sits on top of its project, so it wins over the
+ * section behind it.
+ */
+function currentPlace(tab: Tab, projectView: ProjectView, terminal: { project: string; tab: TabRow } | null): LastPlace {
+  if (terminal) return { section: "projects", projectId: terminal.project, tabId: terminal.tab.id };
+  if (tab !== "projects") return { section: tab };
+  return projectView.kind === "project" ? { section: "projects", projectId: projectView.id } : { section: "projects" };
+}
 const TABS: { id: Tab; icon: string; label: string }[] = [
   { id: "projects", icon: "🗂", label: "Projects" },
   { id: "todo", icon: "☑", label: "To-do" },
@@ -124,18 +134,21 @@ export function App() {
     void resumeAuth().then(async (result) => {
       if (result.kind === "paired") {
         rememberUnlockedSession();
-        const restored = await restoreLastTab();
+        const restored = await restoreLastPlace();
         reset();
         if (restored) {
-          // Leaving the Projects tab pointed at the restored terminal's project
-          // keeps its back chevron meaningful rather than dumping the reader on
-          // the project list.
-          setProjectView({ kind: "project", id: restored.projectId });
-          setTerminal({ project: restored.projectId, tab: restored.tab });
+          setTab(restored.section);
+          // Leaving the Projects tab pointed at the restored project keeps a
+          // terminal's back chevron meaningful rather than dumping the reader
+          // on the project list.
+          if (restored.projectId) {
+            setProjectView({ kind: "project", id: restored.projectId });
+            if (restored.tab) setTerminal({ project: restored.projectId, tab: restored.tab });
+          }
         }
       } else if (result.kind === "unpaired") {
         forgetUnlockedSession();
-        forgetLastTab();
+        forgetLastPlace();
       } else {
         fail(result.reason, result.detail);
         return;
@@ -149,7 +162,7 @@ export function App() {
     void Promise.all([hasPairedDevice(), hasLocalUnlock()]).then(([paired, locked]) => {
       if (!paired) {
         forgetUnlockedSession();
-        forgetLastTab();
+        forgetLastPlace();
         setAuth("unpaired");
       } else if (locked && hasUnlockedSession()) {
         resume();
@@ -161,6 +174,18 @@ export function App() {
     }).catch(() => fail("storage_blocked"));
   }, [resume, fail]);
   useEffect(() => begin(), [begin]);
+
+  // Where the reader is standing, kept in the phone's own storage so the next
+  // cold open — the normal way a PWA comes back — resumes there. It is derived
+  // from the state rather than written on the way into a terminal, which is what
+  // made one terminal every later launch's landing: leaving it, or moving to
+  // another section, wrote nothing, so the route outlived the visit. Only while
+  // paired, because a lock and a dropped session `reset()` this same state and
+  // that reset must not overwrite the place the next unlock returns to.
+  useEffect(() => {
+    if (auth !== "paired") return;
+    rememberLastPlace(currentPlace(tab, projectView, terminal));
+  }, [auth, tab, projectView, terminal]);
 
   useEffect(() => {
     setUnauthorizedHandler(() => {
@@ -179,10 +204,11 @@ export function App() {
       // best-effort logout; the next local unlock always performs the signed
       // challenge login anew.
       forgetUnlockedSession();
-      // The stored reference is an opaque, server-revalidated id, so it can
-      // safely outlive the lock. Clearing it here made `restoreLastTab` dead on
-      // a phone: backgrounding is the normal way to leave a PWA, so the tab was
-      // always already forgotten by the time the user unlocked.
+      // The stored place holds nothing but a section name and opaque,
+      // server-revalidated ids, so it can safely outlive the lock. Clearing it
+      // here made `restoreLastPlace` dead on a phone: backgrounding is the
+      // normal way to leave a PWA, so the place was always already forgotten by
+      // the time the user unlocked.
       reset();
       setAuth("locked");
       void logoutAuth().catch(() => undefined);
@@ -233,10 +259,7 @@ export function App() {
     };
   }, [reset]);
 
-  const openTerminal = (project: string, next: TabRow) => {
-    rememberLastTab(project, next.id);
-    setTerminal({ project, tab: next });
-  };
+  const openTerminal = (project: string, next: TabRow) => setTerminal({ project, tab: next });
   // A card named by an alert opens on the To-do tab; switching tabs by hand
   // clears it, so returning to the board later does not re-open the editor a
   // reader already closed.

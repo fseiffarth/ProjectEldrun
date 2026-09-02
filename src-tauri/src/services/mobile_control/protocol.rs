@@ -9,6 +9,10 @@ pub const MAX_ROWS: u16 = 200;
 pub const MAX_INPUT_FRAME: usize = 64 * 1024;
 pub const MAX_OUTPUT_QUEUE: usize = 1024 * 1024;
 pub const TERMINAL_PROTOCOL: &str = "eldrun-terminal.v1";
+/// The catalog truncates a tab label to this many characters when it
+/// publishes one, so a rename that came back longer would silently disagree
+/// with the row the phone is looking at. Rejected at the edge instead.
+pub const MAX_TAB_LABEL: usize = 120;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
@@ -176,6 +180,14 @@ pub struct TodoColumn {
     /// without it.
     #[serde(default)]
     pub archived: bool,
+    /// The intake column (`schema::calendar::TaskColumn::intake`): where a card
+    /// with no home lands. The phone needs it for the same two things the desktop
+    /// does — the column a new card is composed into, and where un-ticking a done
+    /// card sends it — and it cannot be inferred from this list, because the board
+    /// leads with the date columns and the intake one sits behind Doing. `default`
+    /// for the reason `archived` documents above.
+    #[serde(default)]
+    pub intake: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
 }
@@ -501,6 +513,15 @@ pub enum DesktopRequest {
         tmux_session: String,
         action: ScheduleMutation,
     },
+    /// Rename one agent tab. The label is the only thing the phone supplies;
+    /// the tab is named by the same `project_id` + `tmux_session` pair the
+    /// schedule requests use, so no key or path crosses the boundary.
+    RenameTab {
+        request_id: String,
+        project_id: String,
+        tmux_session: String,
+        label: String,
+    },
     Prompts {
         request_id: String,
         project_id: String,
@@ -509,6 +530,28 @@ pub enum DesktopRequest {
         request_id: String,
         project_id: String,
         action: PromptMutation,
+    },
+    /// The phone put this agent tab on screen (or took it off again). Nothing
+    /// is read back: it stamps the desktop's "this output has been seen" mark
+    /// for the tab, so a turn the user already watched on the phone stops
+    /// being reported as `done` by the next catalog read. Addressed by the
+    /// same `project_id` + `tmux_session` pair the other tab requests use.
+    TabSeen {
+        request_id: String,
+        project_id: String,
+        tmux_session: String,
+    },
+    /// What one agent tab is doing, and what its CLI says about its own quota.
+    /// Addressed by the same `project_id` + `tmux_session` pair the schedule and
+    /// rename requests use, so no key, path or command crosses the boundary.
+    /// `refresh` asks the desktop to run the CLI again instead of answering
+    /// from its short-lived cache.
+    AgentStatus {
+        request_id: String,
+        project_id: String,
+        tmux_session: String,
+        #[serde(default)]
+        refresh: bool,
     },
 }
 
@@ -528,9 +571,38 @@ impl DesktopRequest {
             | Self::MailMessage { request_id, .. }
             | Self::Schedules { request_id, .. }
             | Self::ScheduleMutate { request_id, .. }
+            | Self::RenameTab { request_id, .. }
             | Self::Prompts { request_id, .. }
-            | Self::PromptMutate { request_id, .. } => request_id,
+            | Self::PromptMutate { request_id, .. }
+            | Self::TabSeen { request_id, .. }
+            | Self::AgentStatus { request_id, .. } => request_id,
         }
+    }
+
+    /// How long the sidecar waits for the desktop's answer to this request.
+    ///
+    /// Two requests outlive the control-message SLA for reasons of their own: a
+    /// first message open may perform a bounded IMAP `BODY.PEEK`, and an agent
+    /// status may spawn the agent's CLI in print mode to read its usage panel
+    /// (`services::agent_usage::USAGE_TIMEOUT`). Everything else should still
+    /// fail fast when the desktop is wedged.
+    pub fn response_timeout(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(match self {
+            Self::MailMessage { .. } => 35,
+            Self::AgentStatus { .. } => 25,
+            _ => 10,
+        })
+    }
+
+    /// The desktop's own deadline for producing that answer. Always below
+    /// [`Self::response_timeout`], so a handler that overruns is reported as a
+    /// stated failure rather than as a socket that died under the sidecar.
+    pub fn desktop_timeout(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(match self {
+            Self::MailMessage { .. } => 30,
+            Self::AgentStatus { .. } => 20,
+            _ => 8,
+        })
     }
 }
 
@@ -553,6 +625,86 @@ pub struct AgentTabStatus {
     pub status: String,
 }
 
+/// One agent tab's scheduled-prompt summary, already computed by the desktop
+/// against its own clock and time zone. Like `AgentTabStatus` this is an
+/// internal desktop-control row keyed by tmux name; the sidecar folds it onto
+/// the opaque public tab before anything reaches the phone.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentTabSchedules {
+    pub tmux_session: String,
+    pub total: u32,
+    pub enabled: u32,
+    /// Desktop-local `YYYY-MM-DDTHH:MM` of the next run, when one is due.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next: Option<String>,
+}
+
+/// What one agent CLI answered when asked about its own quota.
+///
+/// The panel text travels **as the CLI printed it** and is parsed by the
+/// reader (`mobile-web/src/terminal/usageReport.ts`). That is deliberate: the
+/// format belongs to somebody else's CLI, so a change to it must degrade to a
+/// block a person can still read rather than to an empty card. The phone's
+/// "Terminal" half of the sheet shows exactly this text.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MobileAgentUsage {
+    /// Display label of the CLI the panel came from ("Claude Code").
+    pub label: String,
+    /// False when this CLI has no usage readout reachable without a tab. The
+    /// sheet then says so instead of showing an empty panel.
+    pub supported: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw: Option<String>,
+    /// Why there is no panel, in the CLI's own words where it had any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// True when this came from the desktop's short-lived cache rather than
+    /// from a fresh run, so the reader can tell a stale figure from a live one.
+    pub cached: bool,
+}
+
+/// Today's counters out of the desktop's own local rolling stats
+/// (`usage_stats.json`), for the project the tab is in.
+///
+/// The grain is the store's, not the tab's, and the two fields differ in it:
+/// `prompts` is counted per agent (`agent.prompt.<cmd>`), while the other three
+/// are recorded for the project as a whole — one figure covering every agent tab
+/// in it. Passed on as they are recorded and labelled that way on the phone,
+/// rather than being silently attributed to the one agent the sheet is about.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MobileAgentTally {
+    /// Prompts sent to *this agent* in this project today.
+    pub prompts: u64,
+    /// Seconds *any* agent tab in this project spent working today.
+    pub worked_s: u64,
+    /// Times any of them stopped to ask a decision.
+    pub decisions: u64,
+    /// Times any of them finished a turn.
+    pub done: u64,
+}
+
+/// The agent-tab status sheet's whole payload: what the desktop knows about the
+/// session, plus what its CLI says about the account behind it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MobileAgentStatus {
+    /// `working`, `question`, `done` or `idle` — the same classification the
+    /// catalog publishes, derived desktop-side from the tab's own output.
+    pub state: String,
+    /// The tab's label, and the agent behind it. Both are display strings the
+    /// desktop already shows; neither is a command line.
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    /// The desktop's own name for the project, for the line the tally is about.
+    pub project: String,
+    pub today: MobileAgentTally,
+    pub usage: MobileAgentUsage,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
 pub enum DesktopResponse {
@@ -560,6 +712,11 @@ pub enum DesktopResponse {
         agents: Vec<AgentCatalogEntry>,
         #[serde(default)]
         statuses: Vec<AgentTabStatus>,
+        /// Per-tab scheduled-prompt summaries, in the same shape and for the
+        /// same reason as `statuses`. Defaulted so a desktop that predates the
+        /// field still answers a catalog request.
+        #[serde(default)]
+        schedules: Vec<AgentTabSchedules>,
     },
     Activated,
     Created {
@@ -582,9 +739,20 @@ pub enum DesktopResponse {
         time_zone: String,
         next_runs: std::collections::BTreeMap<String, String>,
     },
+    /// The label the desktop actually stored, after its own trim — the phone
+    /// renders that rather than the text it typed.
+    Renamed {
+        label: String,
+    },
     Prompts {
         prompts: Vec<ProjectAgentPrompt>,
     },
+    AgentStatus {
+        report: MobileAgentStatus,
+    },
+    /// Acknowledges a [`DesktopRequest::TabSeen`]. Carries nothing: the phone
+    /// never waits on it, and the sidecar only needs to know the desktop took it.
+    Seen,
     Error {
         code: String,
         message: String,
@@ -667,7 +835,8 @@ impl TerminalEvent {
 #[cfg(test)]
 mod tests {
     use super::{
-        AgentTabStatus, DesktopRequest, DesktopResponse, MobileAlertItem, MobileAlertsSnapshot,
+        AgentTabSchedules, AgentTabStatus, DesktopRequest, DesktopResponse, MobileAlertItem,
+        MobileAlertsSnapshot,
         MobileMailView, MobilePromptInput, MobileScheduleInput, PromptMutation, ScheduleMutation,
     };
     use crate::schema::AgentScheduleRule;
@@ -687,9 +856,17 @@ mod tests {
                 tmux_session: "eldrun-project-0--agent-123456789".into(),
                 status: "question".into(),
             }],
+            schedules: vec![AgentTabSchedules {
+                tmux_session: "eldrun-project-0--agent-123456789".into(),
+                total: 3,
+                enabled: 2,
+                next: Some("2026-09-03T09:00".into()),
+            }],
         };
         let response_json = serde_json::to_value(response).expect("serialize catalog response");
         assert_eq!(response_json["statuses"][0]["status"], "question");
+        assert_eq!(response_json["schedules"][0]["enabled"], 2);
+        assert_eq!(response_json["schedules"][0]["next"], "2026-09-03T09:00");
     }
 
     #[test]
@@ -708,6 +885,28 @@ mod tests {
         let response = serde_json::to_value(DesktopResponse::Activated)
             .expect("serialize activation response");
         assert_eq!(response["status"], "activated");
+    }
+
+    #[test]
+    fn tab_seen_names_the_tab_the_way_every_other_tab_request_does() {
+        let request = DesktopRequest::TabSeen {
+            request_id: "request-seen".into(),
+            project_id: "raw-project".into(),
+            tmux_session: "eldrun-project-0--agent-123456789".into(),
+        };
+        assert_eq!(request.request_id(), "request-seen");
+        let json = serde_json::to_value(&request).expect("serialize seen request");
+        assert_eq!(json["type"], "tab_seen");
+        // The pair the desktop resolves the tab by — and nothing else. No key,
+        // path or command rides along on the "I looked at it" report.
+        assert_eq!(json["project_id"], "raw-project");
+        assert_eq!(json.as_object().expect("object").len(), 4);
+        let restored: DesktopRequest =
+            serde_json::from_value(json).expect("deserialize seen request");
+        assert!(matches!(restored, DesktopRequest::TabSeen { .. }));
+
+        let response = serde_json::to_value(DesktopResponse::Seen).expect("serialize seen response");
+        assert_eq!(response["status"], "seen");
     }
 
     #[test]

@@ -31,12 +31,18 @@ nav button,.keys button { flex:1; }
 .card { width:100%; text-align:left; justify-content:space-between; padding:16px; background:rgba(28,31,43,.92); }
 .card span:first-child { display:grid; gap:4px; }
 .card-trailing { flex:0 0 auto; gap:10px; }
-/* An agent tab's row: the card opens the session, the ◷ beside it opens that
-   tab's scheduled prompts without attaching. Same chrome as the card so the
-   two read as one row, not a card with a stray control. */
-.card-row { display:flex; align-items:stretch; gap:8px; }
-.card-row .card { flex:1; min-width:0; }
-.card-schedule { flex:0 0 auto; width:54px; padding:0; background:rgba(28,31,43,.92); font-size:1.3rem; }
+/* An agent tab reads as one block: the card opens the session, and under it a
+   foot says what is scheduled and carries the two controls that need no
+   session — rename, and the scheduled prompts. It is the desktop Agents view's
+   tab row, stacked for a 360px phone: a bare ◷ in the row's gutter never said
+   that scheduling had moved out here. */
+.tab-card { display:grid; border:1px solid #383c4d; border-radius:11px; background:rgba(28,31,43,.92); }
+.tab-card .card { border:0; background:transparent; }
+.tab-card-foot { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:8px; padding:0 16px 14px; }
+.tab-card-when { min-width:0; flex:1 1 auto; }
+.tab-card-actions { display:flex; flex:0 0 auto; gap:8px; }
+.card-action { padding:8px 12px; background:rgba(56,60,80,.8); font-size:.9rem; }
+.card-action.accent { background:#3b326e; border-color:#7c6cff; }
 .agent-status { padding:4px 8px; border:1px solid currentColor; border-radius:0; font-weight:700; text-transform:capitalize; }
 .agent-status.working { color:#6fe29c; background:#173827; }
 .agent-status.question { color:#ffd36b; background:#493b1d; }
@@ -248,13 +254,35 @@ button.mobile-alert-row { cursor:pointer; }
 .terminal-view-switch { display:flex; gap:3px; padding:3px; border:1px solid #34384a; border-radius:10px; background:#151822; }
 .terminal-view-switch button { padding:6px 9px; border:0; border-radius:7px; background:transparent; font-size:.76rem; }
 .terminal-body { position:relative; min-height:0; overflow:hidden; }
-.terminal { position:absolute; inset:0; min-height:0; padding:5px; overflow:hidden; overscroll-behavior:contain; touch-action:pan-x; }
+/* tmux sizes a window to its widest client, so the phone's emulator is a
+   desktop-width screen (see terminal/wideOutput.ts). Terminal view pans
+   across it — `touch-action:pan-x` hands horizontal drags to this scroller
+   and leaves vertical ones to the history drag in terminal/touchScroll.ts.
+   Without the scroller the right of every long line was simply cut off. */
+.terminal { position:absolute; inset:0; min-height:0; padding:5px; overflow-x:auto; overflow-y:hidden; overscroll-behavior:contain; touch-action:pan-x; -webkit-overflow-scrolling:touch; scrollbar-color:#454b62 #0b0d13; scrollbar-width:thin; }
+.terminal::-webkit-scrollbar { height:7px; }
+.terminal::-webkit-scrollbar-track { background:#0b0d13; }
+.terminal::-webkit-scrollbar-thumb { border-radius:0; background:#454b62; }
 .terminal.focus-source { visibility:hidden; pointer-events:none; }
 .terminal .xterm,.terminal .xterm-viewport { height:100%; overscroll-behavior:contain; }
-.terminal .xterm-viewport { overflow-x:auto; scrollbar-color:#454b62 #0b0d13; scrollbar-width:thin; }
+/* xterm gives `.xterm-screen` an explicit cols-wide pixel width. Letting the
+   terminal element grow to it is what gives the scroller something to
+   scroll, and keeps the themed viewport background under the panned-to
+   columns instead of ending a screenful in. */
+.terminal .xterm { width:max-content; min-width:100%; }
+.terminal .xterm-viewport { scrollbar-color:#454b62 #0b0d13; scrollbar-width:thin; }
 .terminal .xterm-viewport::-webkit-scrollbar { width:7px; }
 .terminal .xterm-viewport::-webkit-scrollbar-track { background:#0b0d13; }
 .terminal .xterm-viewport::-webkit-scrollbar-thumb { border-radius:0; background:#454b62; }
+/* Which edge still hides output. A phone shows no scrollbar until it is
+   already moving, so the fade is the only standing cue that the line runs
+   on. Hidden in Focus view, which re-wraps and never pans. */
+.terminal-wide-hint { position:absolute; inset:0; pointer-events:none; }
+.terminal-wide-hint::before,.terminal-wide-hint::after { content:""; position:absolute; top:0; bottom:0; width:20px; opacity:0; transition:opacity .16s ease; }
+.terminal-wide-hint::before { left:0; background:linear-gradient(270deg,rgba(11,13,19,0),rgba(11,13,19,.94)); }
+.terminal-wide-hint::after { right:0; background:linear-gradient(90deg,rgba(11,13,19,0),rgba(11,13,19,.94)); }
+.terminal-wide-hint.wide-left::before,.terminal-wide-hint.wide-right::after { opacity:1; }
+.terminal.focus-source ~ .terminal-wide-hint { display:none; }
 .alt-screen-notice { position:absolute; inset:0; display:grid; align-content:center; justify-items:center; gap:9px; padding:26px; text-align:center; background:linear-gradient(180deg,#10131b,#0b0d13); }
 .alt-screen-notice strong { color:#e7e9f2; font-size:1rem; }
 .alt-screen-notice span { max-width:30ch; color:#9298aa; font-size:.85rem; line-height:1.5; }
@@ -304,8 +332,29 @@ button.mobile-alert-row { cursor:pointer; }
 .composer-bar svg { width:20px; height:20px; fill:none; stroke:currentColor; stroke-width:1.9; stroke-linecap:round; stroke-linejoin:round; }
 .composer-bar .composer-dictate,.composer-bar .send-icon { display:grid; place-items:center; width:40px; min-width:40px; height:40px; padding:0; border:0; border-radius:10px; }
 .composer-add { display:grid; place-items:center; flex:0 0 auto; width:36px; height:36px; padding:0; border:0; border-radius:50%; background:transparent; color:#c8cdda; }
-.composer-chip { display:flex; align-items:center; flex:0 1 auto; gap:5px; min-width:0; max-width:34vw; overflow:hidden; padding:8px 13px; border:0; border-radius:999px; background:#232735; color:#e2e5f0; font-size:.82rem; white-space:nowrap; text-overflow:ellipsis; }
+/* Model / mode / status. The chips share one shrinkable group that owns the
+   whole gap between the + button and the dictate/send cluster, so they sit
+   centred in it instead of being shoved against the right-hand buttons: on a
+   phone the three chips at their natural width overflow the bar, and loose
+   chips filled the row edge to edge with the flex gap as their only margin.
+   `max-width` is a share of the group rather than a slice of the viewport for
+   the same reason — the viewport also has to hold three buttons. */
+.composer-chips { display:flex; align-items:center; justify-content:center; flex:1 1 auto; gap:6px; min-width:0; padding:0 5px; }
+/* `justify-content` is load-bearing: a chip is a flex container, so without it
+   the label sits against the left edge as soon as the bar shrinks the chip
+   below its content width. The label is wrapped in its own element for the same
+   reason — `text-overflow` has no effect on a flex container's anonymous text,
+   so a clipped label was cut mid-glyph. */
+.composer-chip { display:flex; align-items:center; justify-content:center; flex:0 1 auto; gap:5px; min-width:0; max-width:40%; overflow:hidden; padding:8px 13px; border:0; border-radius:999px; background:#232735; color:#e2e5f0; font-size:.82rem; }
 .composer-chip svg { width:15px; height:15px; flex:0 0 auto; }
+.composer-chip-label { min-width:0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+/* The status chip carries the same lamp the tab row shows, so the state is
+   readable without opening the sheet. `idle` is deliberately dim rather than
+   absent: a chip whose lamp disappears reads as broken. */
+.composer-chip-lamp { width:8px; height:8px; flex:0 0 auto; border-radius:50%; background:#5a6178; }
+.composer-chip-lamp.working { background:#6fe29c; box-shadow:0 0 7px #6fe29c; }
+.composer-chip-lamp.question { background:#ffd36b; box-shadow:0 0 7px #ffd36b; }
+.composer-chip-lamp.done { background:#91e6a9; }
 .composer-spacer { flex:1 0 0; }
 .composer-dictate { color:#dcd6ff; background:transparent; }
 .composer-dictate.listening { color:#fff; background:#7a3151; box-shadow:0 0 0 2px rgba(227,107,154,.22); }
@@ -331,6 +380,34 @@ button.mobile-alert-row { cursor:pointer; }
 .option-sheet h2 small { margin-left:6px; color:#8fb8ff; font-size:.62rem; text-transform:uppercase; }
 
 .schedule-sheet { max-height:92dvh; }
+/* The status sheet: the session's own state, then the CLI's usage panel as
+   bars (Formatted) or exactly as it printed (Terminal). */
+.status-sheet { max-height:92dvh; }
+.status-sheet header .terminal-view-switch { flex:0 0 auto; }
+.status-headline { display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin:0; padding:2px 6px; color:#9da3b6; font-size:.84rem; }
+.status-headline strong { padding:3px 9px; border-radius:999px; background:#242938; color:#c9cddb; font-size:.8rem; }
+.status-headline.working strong { background:#173827; color:#6fe29c; }
+.status-headline.question strong { background:#493b1d; color:#ffd36b; }
+.status-headline.done strong { background:#193a29; color:#91e6a9; }
+.usage-meter { display:grid; gap:5px; padding:11px; border:1px solid #383c4d; border-radius:12px; background:#1d202b; }
+.usage-meter > div:first-child { display:flex; gap:8px; align-items:baseline; }
+.usage-meter strong { flex:1; min-width:0; font-size:.9rem; overflow-wrap:anywhere; }
+.usage-meter > div:first-child span { font-variant-numeric:tabular-nums; color:#c9cddb; }
+.usage-meter small { color:#9da4b8; }
+.usage-bar { display:block; height:8px; border-radius:999px; background:#11141c; overflow:hidden; }
+.usage-bar span { display:block; height:100%; border-radius:999px; background:linear-gradient(90deg,#6c8dff,#8fb8ff); }
+.usage-notes { display:grid; gap:6px; margin:0; padding:0; list-style:none; }
+.usage-notes li { display:flex; flex-wrap:wrap; gap:8px; padding:9px 11px; border-radius:10px; background:#1a1e29; font-size:.84rem; }
+.usage-notes strong { color:#c9cddb; }
+.usage-notes span { color:#9da4b8; overflow-wrap:anywhere; }
+.usage-today { display:grid; gap:4px; padding:11px; border-top:1px solid #383c4d; }
+.usage-today strong { font-size:.9rem; }
+.usage-today span { color:#c9cddb; font-size:.86rem; }
+.usage-today small { color:#9da4b8; }
+/* The panel as the CLI printed it: box drawing only lines up in a monospace
+   face, and a phone is narrower than the panel, so this scrolls rather than
+   wrapping a bar chart into nonsense. */
+.usage-raw { margin:0; padding:11px; border:1px solid #383c4d; border-radius:12px; background:#11141c; color:#dfe3ee; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:.78rem; line-height:1.45; white-space:pre; overflow-x:auto; overscroll-behavior-x:contain; }
 .mobile-schedule-list { display:grid; gap:9px; }
 .mobile-schedule-list article { display:grid; gap:6px; padding:11px; border:1px solid #383c4d; border-radius:12px; background:#1d202b; }
 .mobile-schedule-list article p { margin:0; white-space:pre-wrap; }

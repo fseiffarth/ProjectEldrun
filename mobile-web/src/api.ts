@@ -1,6 +1,10 @@
 export interface ProjectRow { id: string; label: string; status: string; live_sessions: number; last_activity?: number }
 export type AgentStatus = "working" | "question" | "done";
-export interface TabRow { id: string; label: string; kind: "shell" | "agent"; agent_label?: string; agent_status?: AgentStatus; available: boolean; viewer_busy: boolean; last_activity?: number }
+/** The desktop's own one-line summary of a tab's scheduled prompts: what the
+ * Agents view prints under an agent tab, so the project overview says the same
+ * thing without opening the sheet. `next` is desktop-local wall clock. */
+export interface TabSchedules { total: number; enabled: number; next?: string }
+export interface TabRow { id: string; label: string; kind: "shell" | "agent"; agent_label?: string; agent_status?: AgentStatus; schedules?: TabSchedules; available: boolean; viewer_busy: boolean; last_activity?: number }
 export interface AgentRow { id: string; label: string; modes: ("plan" | "auto")[] }
 export type ScheduleRule =
   | { type: "once"; at: string }
@@ -20,7 +24,7 @@ export interface ScheduledPromptList { schedules: ScheduledPrompt[]; time_zone: 
 export interface ProjectPrompt { id: string; message: string; created_at: string; updated_at: string }
 export interface ProjectPromptList { prompts: ProjectPrompt[] }
 export interface ProjectDetail { project: ProjectRow; tabs: TabRow[]; desktop_available: boolean; agents: AgentRow[] }
-export interface TodoColumn { id: string; name: string; position: number; done: boolean; archived: boolean; color?: string }
+export interface TodoColumn { id: string; name: string; position: number; done: boolean; archived: boolean; intake: boolean; color?: string }
 export interface TodoSubtask { id: string; title: string; done: boolean }
 export interface TodoTaskInput {
   title: string;
@@ -56,7 +60,14 @@ export function normalizeTodoBoard(board: TodoBoard): TodoBoard {
     // `archived` is the newest of these fields, so a desktop older than it sends
     // a column without one; false is the honest reading — a board that has no
     // archive column has nothing for "hide archived" to hide.
-    columns: (board.columns ?? []).map((column) => ({ ...column, archived: column.archived ?? false })),
+    columns: (board.columns ?? []).map((column) => ({
+      ...column,
+      archived: column.archived ?? false,
+      // `intake` is newer still, and a desktop that does not send one had the
+      // board laid out so that the leftmost open column *was* the intake — which
+      // is what the callers fall back to when no column carries the flag.
+      intake: column.intake ?? false,
+    })),
     tasks: (board.tasks ?? []).map((task) => ({
       ...task,
       notes: task.notes ?? "",
@@ -164,8 +175,8 @@ export function setUnauthorizedHandler(handler: (() => void) | undefined): void 
  * splash in particular had no way back. */
 const REQUEST_TIMEOUT = 10_000;
 
-function withTimeout(signal?: AbortSignal | null): AbortSignal {
-  const timeout = AbortSignal.timeout(REQUEST_TIMEOUT);
+function withTimeout(signal: AbortSignal | null | undefined, ms: number): AbortSignal {
+  const timeout = AbortSignal.timeout(ms);
   if (!signal) return timeout;
   if (typeof AbortSignal.any === "function") return AbortSignal.any([signal, timeout]);
   // Pre-Baseline fallback: falling back to the caller's signal alone silently
@@ -178,14 +189,17 @@ function withTimeout(signal?: AbortSignal | null): AbortSignal {
   return both.signal;
 }
 
-export async function api<T>(path: string, init?: RequestInit): Promise<T> {
+/** `timeoutMs` overrides the default deadline for the one route that needs a
+ * longer one (see `getAgentStatus`); everything else keeps `REQUEST_TIMEOUT`,
+ * because a screen with no way back is worse than a failed request. */
+export async function api<T>(path: string, init?: RequestInit, timeoutMs = REQUEST_TIMEOUT): Promise<T> {
   let response: Response;
   try {
     response = await fetch(path, {
       ...init,
       credentials: "same-origin",
       cache: "no-store",
-      signal: withTimeout(init?.signal),
+      signal: withTimeout(init?.signal, timeoutMs),
       headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
     });
   } catch (error) {
@@ -208,6 +222,17 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   return body as T;
 }
 
+/** Mirrors the desktop's `protocol::MAX_TAB_LABEL`: the catalog truncates a
+ * label to this many characters when it publishes one, so a longer rename would
+ * come back as different text than was typed. */
+export const MAX_TAB_LABEL = 120;
+
+/** `PUT /api/v1/tabs/{id}` — rename one agent tab. The desktop owns the tab
+ * layout, so this is a bridge call and needs desktop Eldrun to be open. */
+export function renameTab(tabId: string, label: string): Promise<{ tab?: TabRow; label?: string }> {
+  return api(`/api/v1/tabs/${encodeURIComponent(tabId)}`, { method: "PUT", body: JSON.stringify({ label }) });
+}
+
 const schedulePath = (tabId: string) => `/api/v1/tabs/${encodeURIComponent(tabId)}/schedules`;
 
 export function getSchedules(tabId: string): Promise<ScheduledPromptList> {
@@ -227,6 +252,42 @@ export function updateSchedule(tabId: string, scheduleId: string, schedule: Sche
 
 export function deleteSchedule(tabId: string, scheduleId: string): Promise<ScheduledPromptList> {
   return api(`${schedulePath(tabId)}/${encodeURIComponent(scheduleId)}`, { method: "DELETE" });
+}
+
+/** What one agent CLI answered when asked about its own quota. `raw` is the
+ * panel as the CLI printed it — the sheet's Terminal half shows exactly that,
+ * and `shared/usageReport.ts` is the only thing that parses it. */
+export interface AgentUsagePanel { label: string; supported: boolean; raw?: string; error?: string; cached: boolean }
+/** Today's counters for the tab's project, at the grain the desktop records
+ * them: `prompts` is this agent's, the other three are the project's — every
+ * agent tab in it — which is what the sheet's wording says. */
+export interface AgentTally { prompts: number; worked_s: number; decisions: number; done: number }
+export interface AgentStatusReport {
+  state: "working" | "question" | "done" | "idle";
+  label: string;
+  agent?: string;
+  project: string;
+  today: AgentTally;
+  usage: AgentUsagePanel;
+}
+
+/** Reading the usage panel may run the agent's CLI once on the desktop, which
+ * is slower than any other control call — its own deadline, above the desktop's
+ * (20s) and the CLI's (15s), so a slow answer arrives rather than being cut. */
+const STATUS_TIMEOUT = 30_000;
+
+/** `GET /api/v1/tabs/{id}/status` — the composer's status chip. `refresh` asks
+ * the desktop to run the CLI again instead of answering from its short-lived
+ * cache; the desktop applies its own floor to that, so holding the button down
+ * cannot spawn a process per tap. */
+export async function getAgentStatus(tabId: string, refresh = false): Promise<AgentStatusReport> {
+  const query = refresh ? "?refresh=1" : "";
+  const { report } = await api<{ report: AgentStatusReport }>(
+    `/api/v1/tabs/${encodeURIComponent(tabId)}/status${query}`,
+    undefined,
+    STATUS_TIMEOUT,
+  );
+  return report;
 }
 
 /** A file the phone dropped into the tab's project inbox. `reference` is

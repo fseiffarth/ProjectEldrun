@@ -13,10 +13,13 @@ import { useActivityStore } from "../../stores/activity";
 import { persistScheduleBinding } from "../../stores/agentSchedules";
 import { sendCollectedPrompt, useAgentPromptsStore, type ProjectAgentPrompt } from "../../stores/agentPrompts";
 import { isTrashProject } from "../../lib/trashProject";
+import type { AgentUsageReport } from "../../lib/agentUsage";
+import { METRIC, agentLabel, agentPromptLeaf, sub } from "../../lib/usageMetrics";
+import { dayKey } from "../../lib/usageRollup";
 import { resolveProjectDirectory } from "../../types";
 import type { CalendarEvent, CalendarTask, Subtask, TaskColumn } from "../../types";
 import type { MailFolder, MailHeader } from "../../types/mail";
-import { addSubtask, boardColumns, columnOf, provisionalRank } from "../../lib/todoBoard";
+import { addSubtask, boardColumns, columnOf, dropAccepted, fallbackColumnId, provisionalRank } from "../../lib/todoBoard";
 import { addDays, monthGrid, toStamp } from "../../lib/calendarTime";
 import { eventColor } from "../../lib/calendarCategories";
 import { expandEvents } from "../../lib/recurrence";
@@ -30,13 +33,21 @@ import {
 } from "../tabs/newTabItems";
 import { useT } from "../../lib/i18n";
 import { useAlertsFeed, type AlertsFeed } from "../files/useAlertsFeed";
-import { desktopTimeZone, nextScheduleOccurrence, type ScheduleRule, type ScheduledAgentPrompt } from "../../lib/agentSchedule";
+import {
+  desktopTimeZone,
+  localOccurrenceKey,
+  nextScheduleOccurrence,
+  scheduleSummary,
+  type ScheduleRule,
+  type ScheduledAgentPrompt,
+} from "../../lib/agentSchedule";
 
 const MOBILE_DESKTOP_EVENT = "eldrun-mobile-desktop-request";
 
 interface AgentInfo { bin: string; installed: boolean }
 interface CatalogAgent { id: string; label: string; modes: string[] }
 interface AgentTabStatus { tmux_session: string; status: "working" | "question" | "done" }
+interface AgentTabSchedules { tmux_session: string; total: number; enabled: number; next?: string }
 interface CreateRequest {
   project_id: string;
   kind: "shell" | "agent";
@@ -117,6 +128,16 @@ type TodoAction =
   | { type: "column_rename"; column_id: string; name: string }
   | { type: "column_move"; column_id: string; delta: -1 | 1 }
   | { type: "column_delete"; column_id: string };
+interface MobileAgentUsage { label: string; supported: boolean; raw?: string; error?: string; cached: boolean }
+interface MobileAgentTally { prompts: number; worked_s: number; decisions: number; done: number }
+interface MobileAgentStatus {
+  state: "working" | "question" | "done" | "idle";
+  label: string;
+  agent?: string;
+  project: string;
+  today: MobileAgentTally;
+  usage: MobileAgentUsage;
+}
 interface MobileScheduleInput { enabled: boolean; message: string; rule: ScheduleRule }
 type ScheduleMutation =
   | { type: "create"; schedule: MobileScheduleInput }
@@ -142,10 +163,13 @@ type DesktopRequest =
   | { type: "mail_message"; request_id: string; folder_id: string; message_id: string; offset: number }
   | { type: "schedules"; request_id: string; project_id: string; tmux_session: string }
   | { type: "schedule_mutate"; request_id: string; project_id: string; tmux_session: string; action: ScheduleMutation }
+  | { type: "rename_tab"; request_id: string; project_id: string; tmux_session: string; label: string }
   | { type: "prompts"; request_id: string; project_id: string }
-  | { type: "prompt_mutate"; request_id: string; project_id: string; action: PromptMutation };
+  | { type: "prompt_mutate"; request_id: string; project_id: string; action: PromptMutation }
+  | { type: "agent_status"; request_id: string; project_id: string; tmux_session: string; refresh: boolean }
+  | { type: "tab_seen"; request_id: string; project_id: string; tmux_session: string };
 type DesktopResponse =
-| { status: "catalog"; agents: CatalogAgent[]; statuses: AgentTabStatus[] }
+| { status: "catalog"; agents: CatalogAgent[]; statuses: AgentTabStatus[]; schedules: AgentTabSchedules[] }
   | { status: "activated" }
   | { status: "created"; tmux_session: string }
   | { status: "todo"; board: TodoBoard }
@@ -153,7 +177,10 @@ type DesktopResponse =
   | { status: "calendar"; calendar: MobileCalendar }
   | { status: "mail"; mail: MobileMailView }
   | { status: "schedules"; schedules: ScheduledAgentPrompt[]; time_zone: string; next_runs: Record<string, string> }
+  | { status: "renamed"; label: string }
   | { status: "prompts"; prompts: ProjectAgentPrompt[] }
+  | { status: "agent_status"; report: MobileAgentStatus }
+  | { status: "seen" }
   | { status: "error"; code: string; message: string };
 
 interface CatalogChoice { public: CatalogAgent; item: StaticMenuItem }
@@ -196,19 +223,35 @@ async function agentChoices(): Promise<CatalogChoice[]> {
   );
 }
 
+/** The one gate every bridge handler applies before it touches a project: the
+ * per-project Mobile switch is on, and the project is none of the trust tiers
+ * the sidecar deliberately never reaches (remote, sandboxed, VM). Trash is the
+ * one sandboxed project that stays reachable, exactly as it is on the desktop. */
+function mobileProject(projectId: string | undefined) {
+  if (!projectId) return undefined;
+  const project = useProjectsStore.getState().projects.find((entry) => entry.id === projectId);
+  if (
+    !project
+    || project.remote
+    || (project.sandbox?.enabled && !isTrashProject(project))
+    || project.vm?.enabled
+    || !project.eldrun_mobile_access
+  ) {
+    return undefined;
+  }
+  return project;
+}
+
 /** The phone receives these already-derived activity facts only. The desktop
  * owns terminal output and prompt classification, while the sidecar maps the
  * tmux names back to opaque phone-visible tab ids. */
 function agentStatuses(projectId?: string): AgentTabStatus[] {
-  if (!projectId) return [];
-  const project = useProjectsStore.getState().projects.find((entry) => entry.id === projectId);
-  if (!project || project.remote || (project.sandbox?.enabled && !isTrashProject(project)) || project.vm?.enabled || !project.eldrun_mobile_access) {
-    return [];
-  }
+  const project = mobileProject(projectId);
+  if (!project) return [];
   const activity = useActivityStore.getState();
-  return (useTabsStore.getState().tabsByScope[projectId] ?? []).flatMap((tab) => {
+  return (useTabsStore.getState().tabsByScope[project.id] ?? []).flatMap((tab) => {
     if (tab.kind !== "agent" || !tab.tmuxSession) return [];
-    const ptyId = `${projectId}:${tab.key}`;
+    const ptyId = `${project.id}:${tab.key}`;
     const status: AgentTabStatus["status"] | null = activity.busyByTab[ptyId]
       ? "working"
       : activity.attentionByTab[ptyId] === "decision"
@@ -220,10 +263,38 @@ function agentStatuses(projectId?: string): AgentTabStatus[] {
   });
 }
 
+/** Each agent tab's scheduled-prompt summary, computed here against the desktop
+ * clock the way the Agents view computes the line under a tab. It rides with the
+ * catalog because the phone's project overview shows one line per tab: asking
+ * per tab would be a desktop round trip per agent on every 5s poll. */
+async function agentScheduleSummaries(projectId?: string): Promise<AgentTabSchedules[]> {
+  const project = mobileProject(projectId);
+  if (!project) return [];
+  const targets = (useTabsStore.getState().tabsByScope[project.id] ?? []).flatMap((tab) =>
+    tab.kind === "agent" && tab.tmuxSession && tab.scheduleTargetId
+      ? [{ tmux: tab.tmuxSession, target: tab.scheduleTargetId }]
+      : [],
+  );
+  const now = new Date();
+  return Promise.all(targets.map(async ({ tmux, target }) => {
+    const schedules = await invoke<ScheduledAgentPrompt[]>("agent_schedules_list", {
+      projectId: project.id,
+      scheduleTargetId: target,
+    }).catch(() => [] as ScheduledAgentPrompt[]);
+    const summary = scheduleSummary(schedules, now);
+    return {
+      tmux_session: tmux,
+      total: summary.total,
+      enabled: summary.enabled,
+      next: summary.next ? localOccurrenceKey(summary.next) : undefined,
+    };
+  }));
+}
+
 async function create(request: CreateRequest, t: ReturnType<typeof useT>): Promise<DesktopResponse> {
   const projects = useProjectsStore.getState();
-  const project = projects.projects.find((entry) => entry.id === request.project_id);
-  if (!project || project.remote || (project.sandbox?.enabled && !isTrashProject(project)) || project.vm?.enabled || !project.eldrun_mobile_access) {
+  const project = mobileProject(request.project_id);
+  if (!project) {
     return { status: "error", code: "project_ineligible", message: "Project is not enabled for Mobile access" };
   }
   const cwd = resolveProjectDirectory(project);
@@ -274,12 +345,11 @@ async function create(request: CreateRequest, t: ReturnType<typeof useT>): Promi
 }
 
 async function activate(projectId: string): Promise<DesktopResponse> {
-  const projects = useProjectsStore.getState();
-  const project = projects.projects.find((entry) => entry.id === projectId);
-  if (!project || project.remote || (project.sandbox?.enabled && !isTrashProject(project)) || project.vm?.enabled || !project.eldrun_mobile_access) {
+  const project = mobileProject(projectId);
+  if (!project) {
     return { status: "error", code: "project_ineligible", message: "Project is not enabled for Mobile access" };
   }
-  await projects.activateProject(project.id);
+  await useProjectsStore.getState().activateProject(project.id);
   return { status: "activated" };
 }
 
@@ -288,6 +358,27 @@ function scheduleTargetTab(projectId: string, tmuxSession: string) {
     (entry.kind === "agent" || entry.kind === "local_agent")
       && (entry.tmuxSession === tmuxSession || entry.tmuxAttach === tmuxSession),
   );
+}
+
+/** The catalog publishes a tab label truncated to 120 characters, so a longer
+ * one would render on the phone as something other than what was stored. The
+ * sidecar rejects those already; this is the desktop-side repeat of the same
+ * rule, because the bridge is reachable without going through that route. */
+const MAX_TAB_LABEL = 120;
+
+function renameAgentTab(projectId: string, tmuxSession: string, label: string): DesktopResponse {
+  const project = mobileProject(projectId);
+  if (!project) {
+    return { status: "error", code: "project_ineligible", message: "Project is not enabled for Mobile access" };
+  }
+  const next = label.trim();
+  if (!next || [...next].length > MAX_TAB_LABEL || [...next].some((char) => char < " " || char === "\u007f")) {
+    return { status: "error", code: "invalid_label", message: "Tab label is not usable" };
+  }
+  const tab = scheduleTargetTab(project.id, tmuxSession);
+  if (!tab) return { status: "error", code: "tab_not_found", message: "Agent tab is unavailable" };
+  useTabsStore.getState().renameTabInScope(project.id, tab.key, next);
+  return { status: "renamed", label: next };
 }
 
 function scheduleTarget(projectId: string, tmuxSession: string): string | null {
@@ -381,6 +472,89 @@ async function mutatePrompt(projectId: string, action: PromptMutation): Promise<
   return promptsFor(projectId);
 }
 
+/** Today's UTC day key — the same bucket the desktop recap calls "today", so
+ * the phone and the laptop never disagree about which figures they are showing. */
+function todayTally(report: { days: Record<string, Record<string, number>> } | null, leaf: string): MobileAgentTally {
+  const day = report?.days?.[dayKey(Date.now())] ?? {};
+  return {
+    prompts: day[sub(METRIC.AGENT_PROMPT, leaf)] ?? 0,
+    // Worked seconds, decisions and finished turns are recorded per *project*,
+    // not per agent — one number for every agent tab in it. Passed on at that
+    // grain and labelled so on the phone, rather than being silently attributed
+    // to the one agent the sheet happens to be about.
+    worked_s: day[METRIC.AGENT_WORKED_S] ?? 0,
+    decisions: day[METRIC.AGENT_DECISION] ?? 0,
+    done: day[METRIC.AGENT_DONE] ?? 0,
+  };
+}
+
+/**
+ * The phone's status button on an agent tab: what the desktop already knows
+ * about that session, plus what the agent's own CLI says about the account
+ * behind it.
+ *
+ * The two halves have deliberately different sources. The state and the tally
+ * are the desktop's own — the activity store's classification of the tab's
+ * output, and the local rolling counters — and cost nothing to read. The usage
+ * panel is the CLI's, read by running its print mode once (`agent_usage`);
+ * that is why a `refresh` exists at all, and why an agent without a readable
+ * panel comes back as `supported: false` rather than as an empty card.
+ */
+async function agentStatusFor(
+  projectId: string,
+  tmuxSession: string,
+  refresh: boolean,
+): Promise<DesktopResponse> {
+  const project = mobileProject(projectId);
+  if (!project) {
+    return { status: "error", code: "project_ineligible", message: "Project is not enabled for Mobile access" };
+  }
+  const tab = scheduleTargetTab(project.id, tmuxSession);
+  if (!tab) return { status: "error", code: "tab_not_found", message: "Agent tab is unavailable" };
+  const activity = useActivityStore.getState();
+  const ptyId = `${project.id}:${tab.key}`;
+  const state: MobileAgentStatus["state"] = activity.busyByTab[ptyId]
+    ? "working"
+    : activity.attentionByTab[ptyId] === "decision"
+      ? "question"
+      : activity.attentionByTab[ptyId] === "done"
+        ? "done"
+        : "idle";
+  const leaf = agentPromptLeaf(tab) ?? tab.cmd;
+  // Neither read may take the sheet down with it: a usage run that fails still
+  // leaves a status worth showing, and a stats file that will not load must not
+  // hide the quota panel the reader opened this for.
+  const [usage, summary] = await Promise.all([
+    invoke<AgentUsageReport>("agent_usage", { agent: tab.cmd, refresh }).catch((error): AgentUsageReport => ({
+      agent: tab.cmd,
+      label: agentLabel(leaf),
+      supported: false,
+      error: String(error),
+      cached: false,
+    })),
+    invoke<{ days: Record<string, Record<string, number>> }>("usage_summary", {
+      projectId: project.id,
+    }).catch(() => null),
+  ]);
+  return {
+    status: "agent_status",
+    report: {
+      state,
+      label: tab.label,
+      agent: agentLabel(leaf),
+      project: project.name,
+      today: todayTally(summary, leaf),
+      usage: {
+        label: usage.label,
+        supported: usage.supported,
+        raw: usage.raw,
+        error: usage.error,
+        cached: usage.cached,
+      },
+    },
+  };
+}
+
 async function taskId(task: CalendarTask) {
   return invoke<string>("mobile_opaque_id", { domain: "task", value: task.id });
 }
@@ -430,6 +604,9 @@ async function todoSnapshot(): Promise<TodoBoard> {
       // The phone filters archived cards on the flag, not on the column's name:
       // a rename must not change what its "hide archived" switch hides.
       archived: column.archived ?? false,
+      // Likewise the intake column, which the phone composes new cards into: it
+      // is flagged rather than positional, and the board no longer leads with it.
+      intake: column.id === fallbackColumnId(columns),
       color: column.color || undefined,
     })),
     tasks: await Promise.all(calendar.tasks.map(async (task) => ({
@@ -552,6 +729,17 @@ async function todoMutate(action: TodoAction): Promise<DesktopResponse> {
     if (action.type === "move") {
       const target = columns.find((column) => column.id === action.column);
       if (!target) return { status: "error", code: "invalid_column", message: "Board column is unavailable" };
+      // Overdue, Today and the intake column are the card's *deadline* speaking,
+      // not a placement anyone owns (`lib/todoBoard`'s `dateColumn`). Accepting a
+      // move the next snapshot undoes would look, from the phone, exactly like a
+      // board that drops writes — so it is refused, and says why.
+      if (!dropAccepted(task, target.id, columns)) {
+        return {
+          status: "error",
+          code: "column_follows_date",
+          message: "That column follows the card's date — change the deadline instead",
+        };
+      }
       const count = calendar.tasks.filter((entry) => entry.id !== task.id && columnOf(entry, columns) === target.id).length;
       const index = Math.max(0, Math.min(action.index ?? count, count));
       await calendar.moveTasks([{
@@ -838,6 +1026,22 @@ async function mailMessage(folderId: string, messageId: string, offset: number):
   };
 }
 
+/** The phone had this agent tab on its screen. That is the same act the tab bar
+ * reports when the tab is switched to, so it goes through the same door: the
+ * output counts as read, the `done` lamp retires, and a live decision prompt
+ * deliberately survives it — being looked at is not being answered. Silent when
+ * the tab is gone; a phone reading a session the desktop no longer lists has
+ * nothing to mark. */
+function markTabSeen(projectId: string, tmuxSession: string): DesktopResponse {
+  const project = mobileProject(projectId);
+  if (!project) {
+    return { status: "error", code: "project_ineligible", message: "Project is not enabled for Mobile access" };
+  }
+  const tab = scheduleTargetTab(project.id, tmuxSession);
+  if (tab) useActivityStore.getState().clearAttention(`${project.id}:${tab.key}`);
+  return { status: "seen" };
+}
+
 async function handleRequest(
   request: DesktopRequest,
   t: ReturnType<typeof useT>,
@@ -848,6 +1052,7 @@ async function handleRequest(
       status: "catalog",
       agents: (await agentChoices()).map((entry) => entry.public),
       statuses: agentStatuses(request.project_id),
+      schedules: await agentScheduleSummaries(request.project_id),
     };
     case "activate": return activate(request.project_id);
     case "create": return create(request.request, t);
@@ -859,10 +1064,13 @@ async function handleRequest(
     case "mail_overview": return mailOverview();
     case "mail_folder": return mailFolderPage(request.folder_id, request.offset);
     case "mail_message": return mailMessage(request.folder_id, request.message_id, request.offset);
+    case "rename_tab": return renameAgentTab(request.project_id, request.tmux_session, request.label);
     case "schedules": return schedulesFor(request.project_id, request.tmux_session);
     case "schedule_mutate": return mutateSchedule(request.project_id, request.tmux_session, request.action);
     case "prompts": return promptsFor(request.project_id);
     case "prompt_mutate": return mutatePrompt(request.project_id, request.action);
+    case "agent_status": return agentStatusFor(request.project_id, request.tmux_session, request.refresh);
+    case "tab_seen": return markTabSeen(request.project_id, request.tmux_session);
   }
 }
 
@@ -903,7 +1111,7 @@ export function MobileBridgeHost() {
           }).catch(() => {});
         }
       };
-      if (request.type === "create" || request.type === "activate" || request.type === "todo_mutate" || request.type === "calendar_mutate" || request.type === "schedule_mutate" || request.type === "prompt_mutate") {
+      if (request.type === "create" || request.type === "activate" || request.type === "rename_tab" || request.type === "todo_mutate" || request.type === "calendar_mutate" || request.type === "schedule_mutate" || request.type === "prompt_mutate") {
         mutationQueue = mutationQueue.then(run, run);
       } else {
         void run();

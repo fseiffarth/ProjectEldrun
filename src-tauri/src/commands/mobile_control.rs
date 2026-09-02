@@ -889,13 +889,11 @@ where
         return;
     };
     let id = request.request_id().to_string();
-    // Reading an uncached message may perform one bounded
-    // BODY.PEEK. Keep quick control requests on their short SLA.
-    let response_timeout = if matches!(&request, DesktopRequest::MailMessage { .. }) {
-        std::time::Duration::from_secs(30)
-    } else {
-        std::time::Duration::from_secs(8)
-    };
+    // Reading an uncached message may perform one bounded BODY.PEEK, and an
+    // agent status may run the agent's CLI once. Both stay below the sidecar's
+    // own deadline so a slow answer is stated, not lost; every other control
+    // request keeps its short SLA.
+    let response_timeout = request.desktop_timeout();
     let (tx, rx) = oneshot::channel();
     state.pending.lock().unwrap().insert(id.clone(), tx);
     if app.emit_to("main", MOBILE_DESKTOP_EVENT, request).is_err() {

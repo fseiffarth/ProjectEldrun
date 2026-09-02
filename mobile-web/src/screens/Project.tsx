@@ -1,7 +1,22 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, type AgentRow, type ProjectDetail, type TabRow } from "../api";
+import { api, type AgentRow, type ProjectDetail, type TabRow, type TabSchedules } from "../api";
 import { PromptsSheet } from "./PromptsSheet";
+import { RenameSheet } from "./RenameSheet";
 import { ScheduleSheet } from "./ScheduleSheet";
+
+/** The line under an agent tab, in the words the desktop's Agents view uses:
+ * how many prompts are scheduled and when the first one fires. The desktop
+ * computed both against its own clock, so the phone only formats them. */
+function scheduleLine(schedules: TabSchedules | undefined): string {
+  if (!schedules) return "Schedules need desktop Eldrun";
+  if (schedules.total === 0) return "No scheduled prompts";
+  const count = schedules.enabled === schedules.total
+    ? `${schedules.total} scheduled`
+    : `${schedules.enabled} of ${schedules.total} scheduled`;
+  // Desktop-local wall clock, year trimmed: the sheet below spells out the
+  // time zone this belongs to.
+  return `${count} · ${schedules.next ? `next ${schedules.next.slice(5).replace("T", " ")}` : "no next run"}`;
+}
 
 export function Project({ id, back, terminal }: { id: string; back: () => void; terminal: (tab: TabRow) => void }) {
   const [detail, setDetail] = useState<ProjectDetail | null>(null);
@@ -14,6 +29,9 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
   /** The project's collected prompts (no tab); "Schedule…" there hands a
    * prompt to the per-tab sheet above with the text prefilled. */
   const [promptsOpen, setPromptsOpen] = useState(false);
+  /** The agent tab being renamed. The desktop owns the tab layout, so the sheet
+   * writes through the bridge and the next poll brings the new label back. */
+  const [renameTab, setRenameTab] = useState<TabRow | null>(null);
   const pendingKeys = useRef(new Map<string, string>());
   const inFlight = useRef(false);
   const load = useCallback(() => {
@@ -65,9 +83,18 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
     <header><button className="back" onClick={back}>‹</button><h1>{detail?.project.label ?? "Project"}</h1></header>
     {!detail?.desktop_available && <p className="notice">Desktop unavailable — existing sessions can still be opened, but activating a project and creating tabs require Eldrun.</p>}
     {error && <p className="error">{error}</p>}
-    <section className="cards">{detail?.tabs.map((tab) => <div className="card-row" key={tab.id}>
+    <section className="cards">{detail?.tabs.map((tab) => <div className="tab-card" key={tab.id}>
       <button className="card" disabled={!tab.available} onClick={() => terminal(tab)}><span><strong>{tab.label}</strong><small>{tab.kind}{tab.viewer_busy ? " · open elsewhere" : tab.available ? " · live" : " · gone"}</small></span><span className="card-trailing">{tab.agent_status && <small className={`agent-status ${tab.agent_status}`}>{tab.agent_status}</small>}<span>›</span></span></button>
-      {tab.kind === "agent" && <button className="card-schedule" onClick={() => setScheduleTab({ tab })} aria-haspopup="dialog" aria-expanded={scheduleTab?.tab.id === tab.id} aria-label={`Scheduled prompts for ${tab.label}`} title="Scheduled prompts">◷</button>}
+      {/* Scheduling lives out here beside the tab, not inside the session:
+          reaching a schedule must not mean attaching a terminal, and this is
+          the same place — and the same summary line — the desktop puts it. */}
+      {tab.kind === "agent" && <div className="tab-card-foot">
+        <small className="tab-card-when" title={tab.schedules?.next ? `Next run ${tab.schedules.next.replace("T", " ")} (desktop time)` : undefined}>◷ {scheduleLine(tab.schedules)}</small>
+        <div className="tab-card-actions">
+          <button className="card-action" onClick={() => setRenameTab(tab)} aria-haspopup="dialog" aria-expanded={renameTab?.id === tab.id} aria-label={`Rename ${tab.label}`}>✎ Rename</button>
+          <button className="card-action accent" onClick={() => setScheduleTab({ tab })} aria-haspopup="dialog" aria-expanded={scheduleTab?.tab.id === tab.id} aria-label={`Scheduled prompts for ${tab.label}`}>◷ Schedules</button>
+        </div>
+      </div>}
     </div>)}</section>
     {detail?.project.status === "inactive" && <section className="create"><button className="primary" disabled={activating || !detail.desktop_available} onClick={() => void activate()}>Activate project</button></section>}
     <section className="create"><button disabled={!detail} onClick={() => setPromptsOpen(true)} aria-haspopup="dialog" aria-expanded={promptsOpen}>◷ Collected prompts</button></section>
@@ -75,6 +102,7 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
       {detail?.agents.map((agent) => <div className="agent-create" key={agent.id}><button disabled={creating || !detail.desktop_available} onClick={() => void create("agent", agent)}>{agent.label}</button>{agent.modes.map((mode) => <button className="mode" disabled={creating || !detail.desktop_available} key={mode} onClick={() => void create("agent", agent, mode)}>{mode}</button>)}</div>)}
     </section>
     {promptsOpen && detail && <PromptsSheet projectId={id} tabs={detail.tabs} onClose={() => setPromptsOpen(false)} onSchedule={(tab, initialMessage) => { setPromptsOpen(false); setScheduleTab({ tab, initialMessage }); }} />}
+    {renameTab && <RenameSheet tab={renameTab} onClose={() => setRenameTab(null)} onRenamed={() => { setRenameTab(null); void load(); }} />}
     {scheduleTab && <ScheduleSheet tabId={scheduleTab.tab.id} label={scheduleTab.tab.label} initialMessage={scheduleTab.initialMessage} onClose={() => setScheduleTab(null)} />}
   </main>;
 }

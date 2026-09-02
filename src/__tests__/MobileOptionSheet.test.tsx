@@ -66,10 +66,13 @@ async function paint(screenText: string) {
   const payload = new ArrayBuffer(bytes.byteLength);
   new Uint8Array(payload).set(bytes);
   act(() => FakeWebSocket.instances[0].onmessage?.({ data: payload } as MessageEvent));
-  await act(async () => { await new Promise((resolve) => window.setTimeout(resolve, 200)); });
+  await settle(200);
 }
 
-const settle = (ms: number) => act(async () => { await new Promise((resolve) => window.setTimeout(resolve, ms)); });
+/** Advances the clock by `ms`. Fake timers, not wall time: the mode walk waits
+ * MODE_SETTLE between two Shift+Tabs and the assertions here sit inside that
+ * gap, which a loaded CI runner would otherwise overrun. */
+const settle = (ms: number) => act(async () => { await vi.advanceTimersByTimeAsync(ms); });
 
 const PICKER = [
   "Select Model",
@@ -88,9 +91,13 @@ describe("Eldrun Mobile composer sheets", () => {
     FakeWebSocket.keys = [];
     vi.stubGlobal("WebSocket", FakeWebSocket);
     Object.defineProperty(HTMLElement.prototype, "scrollTo", { configurable: true, value: vi.fn() });
+    vi.useFakeTimers();
   });
 
-  afterEach(() => vi.unstubAllGlobals());
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
 
   it("lists the session's own model picker and answers it with a tap", async () => {
     render(<Terminal tab={TAB} back={() => {}} />);

@@ -656,6 +656,202 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     - [ ] ✅ Works
     - [ ] ❌ Doesn't work
 
+- [~] **31t — Rename an agent tab from the phone** (2026-09-02; ✅ code-complete
+  and automated tests passing, ⚠️ phone QA pending). A tab's name was the one
+  thing the phone could read but never change, so a session opened from the sofa
+  stayed "Claude" until the laptop was reachable. Each agent row on the project
+  screen now carries a ✎ beside its ◷, opening a sheet that renames the tab
+  through `PUT /api/v1/tabs/{id}` — authenticated, exact-origin, agent tabs only
+  (`host::agent_tab_target`, the same resolver the schedule routes use). The
+  sidecar owns no tab layout, so the write is a desktop-bridge call
+  (`DesktopRequest::RenameTab`) that lands in `renameTabInScope`; the reply
+  carries the label the desktop actually stored, and the route answers with the
+  freshly-loaded catalog row so the list shows the new name without waiting a
+  poll. A label is refused rather than silently rewritten when it is blank,
+  longer than the catalog's 120-character publish cap, or carries control
+  characters that would reach a terminal title verbatim — checked on both sides
+  of the bridge, because the bridge is reachable without the route. Same
+  composer-chip fix in passing: Model/mode/Schedule are flex containers with no
+  `justify-content`, so a shrunk chip held its label against the left edge, and
+  `text-overflow` never applied to a flex container's anonymous text — the
+  labels now sit in a `.composer-chip-label` that centers and ellipsizes. The
+  embedded PWA is compiled in, so this needs a rebuild + restart to reach a
+  phone. Locked by `MobileTabRename.test.tsx` and the `host.rs` rename route
+  test.
+  - [ ] 🖐️ Manual phone QA — rename an agent tab from the project screen and
+    watch the desktop tab title follow; reopen the PWA and see the new name;
+    confirm a blank name cannot be saved and an over-long one is refused; with
+    desktop Eldrun closed the sheet says to open it rather than failing
+    silently; no ✎ appears on a shell tab; check the Model/mode/Schedule chips
+    read centered in a narrow terminal.
+  - [ ] ✅ Works
+  - [ ] ❌ Doesn't work
+- [~] **31u — Mobile status chip: the session's state and the agent's own usage**
+  (2026-09-02; ✅ code-complete and automated tests passing, ⚠️ phone QA
+  pending — and a rebuild + restart first, since the phone serves the bundle
+  baked into the binary). A **Status** chip joins ＋ / model / mode / ◷ Schedule
+  on the agent composer, carrying the tab's own lamp, and opens a sheet with the
+  same **Formatted | Terminal** switch the header uses for the session itself.
+  - **Two sources, deliberately.** The state (working / waiting on you /
+    finished / idle) and today's tally are the *desktop's* and cost nothing —
+    the activity store's classification of that tab's output, and
+    `usage_summary`'s counters. The quota panel is the *CLI's*, read by running
+    `claude -p "/usage" --output-format json` once
+    (`src-tauri/src/services/agent_usage.rs`). That run is client-side —
+    `num_turns: 0`, zero tokens, ~0.5s — so asking how much quota is left
+    spends none, which is the whole reason a phone may trigger it. Claude Code
+    is the only recipe: `/status` is not available in print mode and no other
+    CLI documents a non-interactive usage readout, so every other agent is
+    reported **unsupported** rather than shown an empty panel.
+  - **The raw text is always one tap away.** The panel travels exactly as the
+    CLI printed it (ANSI stripped, 8 KiB cap that marks its cut) and
+    `mobile-web/src/terminal/usageReport.ts` is the only thing that parses it —
+    positive matches only, a line nothing claims kept as a note, and a panel
+    nothing claimed at all reported as unrecognized *with* the raw block. A
+    release that reshapes the format costs the reader a nicer layout, never the
+    figures.
+  - **The tally is labelled at the grain it is recorded.** `agent.prompt.<cmd>`
+    is this agent's; worked seconds, decisions and finished turns are the
+    *project's* — every agent tab in it — and the sheet says so rather than
+    attributing all four to the agent it is about.
+  - Bounds: a 60s desktop cache, a 10s floor under the sheet's own Refresh (so
+    holding the button cannot spawn a process per tap), and one deadline per
+    hop, each above the one below it — CLI 15s < desktop 20s < sidecar 25s <
+    phone 30s. The three copies of the mail-message timeout `matches!` became
+    `DesktopRequest::response_timeout`/`desktop_timeout` on the way.
+  - Tested in `src/__tests__/MobileUsageReport.test.ts` (7) and
+    `src/__tests__/MobileStatusSheet.test.tsx` (7), plus the service's own Rust
+    tests.
+  - [ ] 🖐️ Manual phone QA — on a Claude tab: the Status chip shows the tab's
+    lamp and opens with the session state, the model/mode/context the composer
+    already reads, and the 5h + weekly bars with their resets; Terminal shows
+    the same panel as the CLI printed it; Refresh re-reads (and says "Cached"
+    when it did not); on a Codex tab the sheet still shows the state and the
+    tally but says Codex has no readable usage; with desktop Eldrun closed it
+    names Eldrun rather than "request failed"
+    - [ ] ✅ Works
+    - [ ] ❌ Doesn't work
+
+- [~] **31v — Mobile Focus stops above the session's own input box**
+  (2026-09-02; ✅ code-complete and automated tests passing, ⚠️ phone QA pending
+  — and a rebuild + restart first, since the phone serves the bundle baked into
+  the binary). Every agent TUI pins the same block to the bottom of its screen:
+  a labelled rule, the input box, the statusline, and a hint line naming keys a
+  phone has no way to press. Focus painted all of it, so on a Claude Code
+  session with a custom statusline four lines of chrome sat under every answer
+  and pushed the reading the user came for off the top of a phone screen — while
+  the composer right below it *is* that input box and its chips already carry
+  the path, branch, model, mode and context. `inputFrameStart`
+  (`mobile-web/src/terminal/statusLine.ts`, beside the parser that reads those
+  same lines into the chips) returns where the frame begins and the reading view
+  cuts there; Copy copies what is left. The scoping is `sessionStatus`'s — agent
+  tabs only, the last 8 lines only — plus one guard: a select dialog's rows open
+  with the input line's own marker (`❯ 1. Yes`), and hiding a question the
+  session is waiting on would be the one unrecoverable mistake here, so a
+  numbered row means no frame and nothing is cut. Blank rows and the box's
+  labelled top rule directly above go with it, or the output would trail off
+  into a rule and a gap. Tested in `src/__tests__/MobileSelectPrompt.test.ts`
+  (3 cases).
+  - [ ] 🖐️ Manual phone QA — open a Claude agent tab in Focus: the answer ends
+    at the last real output line, with no rule, no `❯`, no statusline and no
+    "auto mode on" hint under it; the model/mode/context chips still read
+    correctly; Copy copies without the chrome; when the agent asks a permission
+    question the numbered options stay visible and answerable; Terminal view is
+    unchanged; a shell tab is unchanged.
+    - [ ] ✅ Works
+    - [ ] ❌ Doesn't work
+
+- [~] **31s — Mobile Terminal view reaches the whole session** (2026-09-02;
+  ✅ code-complete and automated tests passing, ⚠️ phone QA pending). tmux sizes
+  a window to its widest attached client, so the bridge hands the phone the
+  desktop's geometry (`pty_bridge::window_size`) rather than a cursor-following
+  slice — but Terminal view then clipped it: `.terminal` was `overflow:hidden`,
+  so everything past ~44 of ~180 columns was simply unreachable, and only Focus
+  view (which re-wraps) could show it. The terminal element is now the
+  horizontal scroller its own `touch-action:pan-x` always implied, and `.xterm`
+  grows to `max-content` so xterm's cols-wide `.xterm-screen` has somewhere to
+  overflow *into* and the themed background follows the panned-to columns.
+  Vertical drags still scroll history: `terminal/touchScroll.ts` decides the
+  axis once per gesture and hands a sideways drag back to the browser —
+  necessary for the Touch Events fallback, whose `preventDefault` would
+  otherwise eat the pan — and takes pointer capture only after a drag proves
+  vertical. Because a phone draws no scrollbar at rest, `terminal/wideOutput.ts`
+  fades whichever edge still hides output (a `ResizeObserver` catches the
+  desktop widening the window mid-session).
+
+  The **rows** are adopted from the same window, so the fold cut the other axis
+  too, and there it hid the *newest* output: a 50-row screen in a ~20-row box
+  left the live prompt permanently below the edge, unreachable — scrolling the
+  buffer only moves history through the same clipped screen. The view now opens
+  anchored to the last rows, and the vertical drag consumes the hidden rows
+  before it reaches the scrollback, so one gesture runs continuously over
+  `[scrollback] + [rows below the fold]`. A session that fits has no overflow to
+  consume and scrolls history from the first pixel exactly as before, and only a
+  changed row count re-anchors, so a reader panned up keeps their place. The
+  embedded PWA is compiled in, so this needs a rebuild + restart to reach a
+  phone. Locked by `MobileWideOutput.test.ts` and
+  `MobileTerminalTouchScroll.test.ts`.
+  - [ ] 🖐️ Manual phone QA — with a desktop-width tmux window, open Terminal
+    view on a session with long lines: a sideways drag pans to the end of the
+    line and back, an up/down drag still scrolls history (not the pan), the
+    right edge fades while output continues past it and stops fading at the far
+    right; Focus view shows no fades and still re-wraps; widening the desktop
+    window mid-session brings the right fade back.
+  - [ ] 🖐️ Manual phone QA (rows) — with a desktop window taller than the phone
+    shows, Terminal view opens on the live prompt, not on the middle of the
+    screen; dragging down reveals the rows above it and then runs on into
+    scrollback without a jump; dragging back reaches the prompt again; a short
+    session (desktop window no taller than the phone's box) scrolls history from
+    the first pixel as before.
+  - [ ] ✅ Works
+  - [ ] ❌ Doesn't work
+- [~] **31s — The phone's `done` tag clears when the tab is read** (2026-09-02;
+  ✅ code-complete and automated tests passing, ⚠️ phone QA pending). The
+  `done` pill on the project screen is the desktop's own attention flag, and
+  nothing on the phone ever retired it: opening the tab, reading the finished
+  turn and backing out left the pill exactly where it was, so every tab the
+  agent had ever finished a turn in stayed flagged until somebody switched to
+  it on the laptop. Attaching a terminal now reports the tab seen
+  (`DesktopRequest::TabSeen` → `clearAttention`), and so does detaching — the
+  two edges of "it was on the phone's screen" — which is the same door the
+  desktop's own tab switch uses: the output counts as read, and a live decision
+  prompt deliberately survives it, because being looked at is not being
+  answered. Fire-and-forget from the sidecar, so a wedged desktop cannot hold
+  up the attach, and shell tabs (which raise no flag) send nothing. The
+  composer's status lamp stops showing a stale `done` for the tab being read,
+  since its row is frozen for the whole session. Backend + desktop change: this
+  needs a rebuild + restart, and the embedded PWA is compiled in. Locked by
+  `MobileTabSeen.test.tsx`, `MobileTerminalStatusLamp.test.tsx` and the
+  `protocol.rs` seen-request test.
+  - [ ] 🖐️ Manual phone QA — let an agent finish a turn with the phone
+    elsewhere, see `done` on the project screen, open the tab and back out: the
+    pill is gone (and gone on the desktop tab bar too); a tab still waiting on a
+    question keeps its `question` pill after a look; with desktop Eldrun closed
+    the terminal still attaches normally.
+  - [ ] ✅ Works
+  - [ ] ❌ Doesn't work
+- [~] **31r — The phone comes back where it was** (2026-09-02; ✅ code-complete
+  and automated tests passing, ⚠️ phone QA pending). Eldrun Mobile saved only
+  the terminal it was last *sent into* (`rememberLastTab` fired on the way in
+  and nothing ever fired on the way out), so one visit to a terminal became
+  every later cold open's landing screen — backing out of it, or spending the
+  session on the To-do board, changed nothing. The slot now holds the whole
+  place (`mobile-web/src/lastPlace.ts`): the tab-bar section, and under
+  Projects the project and the terminal on top of it, if any. It is derived
+  from the app state in an effect rather than written by one navigation, so
+  leaving a terminal or switching sections records the departure too. A saved
+  tab the host no longer has degrades to that project's tab list instead of
+  dropping the reader on the project list. The old `{projectId, tabId}` value
+  still reads back as the terminal it named, so an update does not lose a
+  phone's place. The embedded PWA is compiled in, so this needs a rebuild +
+  restart to reach a phone. Locked by `MobileLastPlace.test.ts`.
+  - [ ] 🖐️ Manual phone QA — open a terminal, back out of it, close and reopen
+    the PWA: it lands on that project's tab list, not in the terminal; leave
+    the app standing on To-do (or Calendar/Mail) and reopen: it lands there;
+    open a terminal and reopen while it is open: it lands in the terminal;
+    close the desktop tab and reopen the PWA: it lands on the project.
+  - [ ] ✅ Works
+  - [ ] ❌ Doesn't work
 - [~] **31q — Mobile collected prompts** (2026-09-02; ✅ code-complete and
   automated tests passing, ⚠️ phone QA pending). "◷ Collected prompts" on the
   project screen opens the project's tab-free prompt list (desktop #249)
@@ -674,10 +870,10 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
   - [ ] ✅ Works
   - [ ] ❌ Doesn't work
 - [~] **31p — Mobile per-tab schedule sheet** (2026-09-01; ✅ code-complete and
-  automated tests passing, ⚠️ phone QA pending). The ◷ beside each agent tab on
-  the project's tab list and the Schedule chip in its terminal manage the same
-  one-time/daily/weekday definitions through authenticated opaque-tab
-  endpoints. The phone sees the desktop time zone but never the raw
+  automated tests passing, ⚠️ phone QA pending). Every agent tab on the
+  project's tab overview carries its own schedule line and a **◷ Schedules**
+  button, which manage one-time/daily/weekday definitions through authenticated
+  opaque-tab endpoints. The phone sees the desktop time zone but never the raw
   project id, tmux name, path, or schedule target id. With the sidecar still
   reachable and desktop Eldrun closed, terminal access remains available while
   the sheet disables writes and says to open desktop Eldrun.
@@ -686,6 +882,13 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     the restore path computed the schedule target id on its resume-check helper
     object and never put it on the tab entry (see group-s). Not yet re-verified
     on a phone; the embedded PWA needs a restart to pick up the moved control.
+  - 2026-09-02: scheduling now lives **only** in the project tab overview, the
+    way the desktop Agents view has it — the terminal's `◷ Schedule` composer
+    chip is gone, and each agent tab prints the desktop's own summary line
+    ("2 of 3 scheduled · next 09-03 09:00") beside ✎ Rename and ◷ Schedules.
+    The summary rides with the catalog response (`AgentTabSchedules`), so the
+    overview stays at one round trip per poll. Needs a rebuild **and** a
+    desktop restart: both the sidecar and the bridge changed.
   - [ ] 🖐️ Manual phone QA — CRUD a schedule and see the desktop dialog/indicator
     refresh; edit it on desktop and see the open sheet refresh; close desktop
     Eldrun and verify the explanatory disabled state without losing terminal

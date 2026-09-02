@@ -335,13 +335,9 @@ pub async fn desktop_call(
     socket: &Path,
     request: &DesktopRequest,
 ) -> Result<DesktopResponse, String> {
-    // A first message open may need a bounded IMAP BODY.PEEK fetch. The other
-    // control calls should still fail fast when the desktop is wedged.
-    let response_timeout = if matches!(request, DesktopRequest::MailMessage { .. }) {
-        std::time::Duration::from_secs(35)
-    } else {
-        std::time::Duration::from_secs(10)
-    };
+    // Per-request: a mail open and an agent-status read each outlive the
+    // control-message SLA for their own reason (see `DesktopRequest`).
+    let response_timeout = request.response_timeout();
     let mut stream = tokio::time::timeout(
         std::time::Duration::from_secs(2),
         tokio::net::UnixStream::connect(socket),
@@ -360,11 +356,7 @@ pub async fn desktop_call(
     socket: &Path,
     request: &DesktopRequest,
 ) -> Result<DesktopResponse, String> {
-    let response_timeout = if matches!(request, DesktopRequest::MailMessage { .. }) {
-        std::time::Duration::from_secs(35)
-    } else {
-        std::time::Duration::from_secs(10)
-    };
+    let response_timeout = request.response_timeout();
     let token = pipe::read_token(socket).map_err(|_| "desktop_unavailable")?;
     let mut stream = pipe::connect(socket).await.map_err(|_| "desktop_unavailable")?;
     write_frame(&mut stream, &token).await?;

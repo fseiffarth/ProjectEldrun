@@ -57,10 +57,27 @@ function inputOf(task: TodoCard): TodoTaskInput {
   return input;
 }
 
+/**
+ * The column a card with no home belongs in — the desktop's `fallbackColumnId`,
+ * over the wire.
+ *
+ * Not "the first open column" any more: the board leads with Overdue and Today,
+ * whose contents are decided by a card's deadline rather than by anyone putting
+ * something there, and the intake column sits behind Doing. The positional rule
+ * is kept only as the fallback for an older desktop that sends no flag, where it
+ * was the right answer.
+ */
+function intakeColumn(columns: TodoColumn[]): string {
+  const column = columns.find((entry) => entry.intake)
+    ?? columns.find((entry) => !entry.done && !entry.archived)
+    ?? columns[0];
+  return column?.id ?? "";
+}
+
 function blankTask(board: TodoBoard): TodoTaskInput {
   return {
     title: "", notes: "", due: localDate(), priority: 0, percent: 0,
-    column: board.columns.find((column) => !column.done)?.id ?? board.columns[0]?.id ?? "",
+    column: intakeColumn(board.columns),
     calendar_id: board.calendars[0]?.id ?? "", project_id: null, tags: [], subtasks: [],
   };
 }
@@ -114,7 +131,7 @@ export function Todo({ card }: { card?: string }) {
   const move = (task: TodoCard, column: string, index?: number) => void mutate({ type: "move", task_id: task.id, column, index });
   const toggle = (task: TodoCard) => {
     const target = task.done
-      ? columns.find((column) => !column.done)?.id
+      ? intakeColumn(columns)
       : columns.find((column) => column.done)?.id;
     if (target) move(task, target);
     else void mutate({ type: "update", task_id: task.id, task: { ...inputOf(task), percent: task.done ? 0 : 100 } });

@@ -23,12 +23,12 @@ use super::{
     admin,
     auth::AuthStore,
     config::{verify_tailscale_serve, HostConfig},
-    discovery::{Catalog, CatalogCache},
+    discovery::{Catalog, CatalogCache, TabSchedules},
     inbox,
     limits,
     protocol::{
         CalendarAction, CreateTabRequest, DesktopRequest, DesktopResponse, MobilePromptInput,
-        MobileScheduleInput, PromptMutation, ScheduleMutation, TodoAction, MAX_CONTROL_MESSAGE, MAX_INPUT_FRAME, TERMINAL_PROTOCOL,
+        MobileScheduleInput, PromptMutation, ScheduleMutation, TodoAction, MAX_CONTROL_MESSAGE, MAX_INPUT_FRAME, MAX_TAB_LABEL, TERMINAL_PROTOCOL,
     },
     pty_bridge::{self, TerminalRegistry},
 };
@@ -337,7 +337,7 @@ async fn project(
         .collect::<Vec<_>>();
     let desktop_socket = state.config.control_dir.join("desktop-control.sock");
     let desktop_available = desktop_socket.exists();
-    let (agents, statuses) = if desktop_available {
+    let (agents, statuses, schedules) = if desktop_available {
         let request_id = Base64UrlUnpadded::encode_string(&random_16());
         match admin::desktop_call(
             &desktop_socket,
@@ -348,19 +348,37 @@ async fn project(
         )
         .await
         {
-            Ok(DesktopResponse::Catalog { agents, statuses }) => (agents, statuses),
-            _ => (vec![], vec![]),
+            Ok(DesktopResponse::Catalog {
+                agents,
+                statuses,
+                schedules,
+            }) => (agents, statuses, schedules),
+            _ => (vec![], vec![], vec![]),
         }
     } else {
-        (vec![], vec![])
+        (vec![], vec![], vec![])
     };
     let statuses = statuses
         .into_iter()
         .map(|status| (status.tmux_session, status.status))
         .collect::<HashMap<_, _>>();
+    let mut schedules = schedules
+        .into_iter()
+        .map(|row| {
+            (
+                row.tmux_session,
+                TabSchedules {
+                    total: row.total,
+                    enabled: row.enabled,
+                    next: row.next,
+                },
+            )
+        })
+        .collect::<HashMap<_, _>>();
     for (tab, resolved) in tabs.iter_mut().zip(&project.tabs) {
         if tab.kind == "agent" {
             tab.agent_status = statuses.get(&resolved.tmux_name).cloned();
+            tab.schedules = schedules.remove(&resolved.tmux_name);
         }
     }
     (
@@ -870,6 +888,91 @@ async fn tab(
     (StatusCode::OK, Json(json!({ "tab": row })))
 }
 
+/// A phone-supplied tab label. Anything the catalog would later truncate, or
+/// that would smuggle control characters into a terminal title, is refused here
+/// rather than stored and quietly re-rendered as something else.
+fn clean_tab_label(raw: &str) -> Option<String> {
+    let label = raw.trim();
+    if label.is_empty()
+        || label.chars().count() > MAX_TAB_LABEL
+        || label.chars().any(char::is_control)
+    {
+        return None;
+    }
+    Some(label.to_string())
+}
+
+/// `PUT /api/v1/tabs/{id}` — rename one agent tab. The desktop owns the write
+/// (the tab layout is its state, not the sidecar's), so this is a bridge call;
+/// the fresh catalog read afterwards is what makes the new label visible to the
+/// caller in the same response instead of one poll later.
+async fn rename_tab(
+    State(state): State<HostState>,
+    headers: HeaderMap,
+    Path(tab_id): Path<String>,
+    body: Bytes,
+) -> impl IntoResponse {
+    if let Err(error) = authenticate(&headers, &state) {
+        return error;
+    }
+    if !exact_origin(&headers, &state) {
+        return api_error(StatusCode::FORBIDDEN, "invalid_origin");
+    }
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct RenameBody {
+        label: String,
+    }
+    let Ok(request) = serde_json::from_slice::<RenameBody>(&body) else {
+        return api_error(StatusCode::BAD_REQUEST, "invalid_request");
+    };
+    let Some(label) = clean_tab_label(&request.label) else {
+        return api_error(StatusCode::BAD_REQUEST, "invalid_label");
+    };
+    let (project_id, tmux_session) = match agent_tab_target(&state, &tab_id) {
+        Ok(target) => target,
+        Err(error) => return error,
+    };
+    let desktop_socket = state.config.control_dir.join("desktop-control.sock");
+    let request_id = Base64UrlUnpadded::encode_string(&random_16());
+    match admin::desktop_call(
+        &desktop_socket,
+        &DesktopRequest::RenameTab {
+            request_id,
+            project_id,
+            tmux_session: tmux_session.clone(),
+            label,
+        },
+    )
+    .await
+    {
+        Ok(DesktopResponse::Renamed { label }) => {
+            let row = catalog_fresh(&state)
+                .ok()
+                .and_then(|next| next.tab(&tab_id).map(|(_, tab)| tab.public.clone()));
+            match row {
+                Some(mut row) => {
+                    row.viewer_busy = state.terminal_registry.is_busy(&tmux_session);
+                    (StatusCode::OK, Json(json!({ "tab": row })))
+                }
+                // The desktop persists asynchronously, so a catalog that has not
+                // caught up yet is not a failed rename; answer with what the
+                // desktop stored and let the screen's poll bring the rest.
+                None => (StatusCode::OK, Json(json!({ "label": label }))),
+            }
+        }
+        Ok(DesktopResponse::Error { code, .. }) => api_error(
+            match code.as_str() {
+                "desktop_unavailable" => StatusCode::SERVICE_UNAVAILABLE,
+                "tab_not_found" => StatusCode::NOT_FOUND,
+                _ => StatusCode::BAD_REQUEST,
+            },
+            &code,
+        ),
+        _ => api_error(StatusCode::SERVICE_UNAVAILABLE, "desktop_unavailable"),
+    }
+}
+
 fn schedule_desktop_error(
     response: Result<DesktopResponse, String>,
 ) -> (StatusCode, Json<serde_json::Value>) {
@@ -898,7 +1001,10 @@ fn schedule_desktop_error(
     }
 }
 
-fn schedule_target(
+/// Resolve an opaque tab id to the (raw project id, tmux name) pair the
+/// desktop bridge addresses an agent tab by. Shared by the schedule routes and
+/// the rename route; neither value is ever serialized back to the phone.
+fn agent_tab_target(
     state: &HostState,
     tab_id: &str,
 ) -> Result<(String, String), (StatusCode, Json<serde_json::Value>)> {
@@ -920,7 +1026,7 @@ async fn schedules(
     if let Err(error) = authenticate(&headers, &state) {
         return error;
     }
-    let (project_id, tmux_session) = match schedule_target(&state, &tab_id) {
+    let (project_id, tmux_session) = match agent_tab_target(&state, &tab_id) {
         Ok(target) => target,
         Err(error) => return error,
     };
@@ -939,12 +1045,68 @@ async fn schedules(
     )
 }
 
+/// `?refresh=1` — ask the desktop to run the agent's CLI again rather than
+/// answering from its own short-lived cache. Anything else reads as "no".
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct AgentStatusQuery {
+    refresh: Option<String>,
+}
+
+/// `GET /api/v1/tabs/{tab_id}/status` — the phone's status button on an agent
+/// tab. The desktop answers with what the session is doing plus the panel its
+/// CLI prints for `/usage`; reading that panel may spawn the CLI once in print
+/// mode, which is why this request carries a longer deadline than the other
+/// control calls (`DesktopRequest::response_timeout`).
+async fn agent_status(
+    State(state): State<HostState>,
+    headers: HeaderMap,
+    Path(tab_id): Path<String>,
+    Query(query): Query<AgentStatusQuery>,
+) -> impl IntoResponse {
+    if let Err(error) = authenticate(&headers, &state) {
+        return error;
+    }
+    let (project_id, tmux_session) = match agent_tab_target(&state, &tab_id) {
+        Ok(target) => target,
+        Err(error) => return error,
+    };
+    let refresh = matches!(query.refresh.as_deref(), Some("1" | "true"));
+    let desktop_socket = state.config.control_dir.join("desktop-control.sock");
+    let request_id = Base64UrlUnpadded::encode_string(&random_16());
+    match admin::desktop_call(
+        &desktop_socket,
+        &DesktopRequest::AgentStatus {
+            request_id,
+            project_id,
+            tmux_session,
+            refresh,
+        },
+    )
+    .await
+    {
+        Ok(DesktopResponse::AgentStatus { report }) => (
+            StatusCode::OK,
+            Json(json!({ "report": report })),
+        ),
+        Ok(DesktopResponse::Error { code, .. }) => api_error(
+            if code == "tab_not_found" {
+                StatusCode::NOT_FOUND
+            } else {
+                StatusCode::BAD_REQUEST
+            },
+            &code,
+        ),
+        _ => api_error(StatusCode::SERVICE_UNAVAILABLE, "desktop_unavailable"),
+    }
+}
+
 async fn schedule_mutation(
     state: &HostState,
     tab_id: &str,
     action: ScheduleMutation,
 ) -> (StatusCode, Json<serde_json::Value>) {
-    let (project_id, tmux_session) = match schedule_target(state, tab_id) {
+    let (project_id, tmux_session) = match agent_tab_target(state, tab_id) {
         Ok(target) => target,
         Err(error) => return error,
     };
@@ -1235,6 +1397,33 @@ async fn prompt_send(
     .await
 }
 
+/// Tell the desktop a phone had this agent tab on screen, so its activity
+/// store marks the tab's output read (see `clearAttention`). Fire-and-forget:
+/// nothing in the terminal path may wait on the desktop, which is why this
+/// spawns rather than awaits — a wedged bridge would otherwise hold the
+/// WebSocket attach for the full control-call deadline.
+fn mark_tab_seen(socket: &std::path::Path, project_id: Option<String>, tmux_session: String) {
+    let Some(project_id) = project_id else {
+        return;
+    };
+    let socket = socket.to_path_buf();
+    tokio::spawn(async move {
+        if !socket.exists() {
+            return;
+        }
+        let request_id = Base64UrlUnpadded::encode_string(&random_16());
+        let _ = admin::desktop_call(
+            &socket,
+            &DesktopRequest::TabSeen {
+                request_id,
+                project_id,
+                tmux_session,
+            },
+        )
+        .await;
+    });
+}
+
 async fn terminal(
     State(state): State<HostState>,
     headers: HeaderMap,
@@ -1257,12 +1446,15 @@ async fn terminal(
     let Ok(catalog) = catalog(&state) else {
         return api_error(StatusCode::SERVICE_UNAVAILABLE, "catalog_unavailable").into_response();
     };
-    let Some((_, tab)) = catalog.tab(&tab_id) else {
+    let Some((tab_project, tab)) = catalog.tab(&tab_id) else {
         return api_error(StatusCode::NOT_FOUND, "tab_not_found").into_response();
     };
     if !tab.public.available {
         return api_error(StatusCode::GONE, "session_gone").into_response();
     }
+    // Only an agent tab carries a status the phone can retire; a shell raises
+    // none, so it never needs the desktop told about it.
+    let seen_project = (tab.public.kind == "agent").then(|| tab_project.raw_id.clone());
     // Deliberately no `session_busy` pre-check: the bridge now displaces a
     // stale viewer instead, so a phone that was backgrounded before its
     // `detached` frame flushed does not lock the user out of their own agent
@@ -1274,6 +1466,8 @@ async fn terminal(
     let token = cookie_token(&headers).unwrap_or_default().to_string();
     let state_dir = state.config.state_dir.clone();
     let catalog = state.catalog.clone();
+    let desktop_socket = state.config.control_dir.join("desktop-control.sock");
+    let seen_tmux = tmux.clone();
     // `DefaultBodyLimit` does not reach WebSocket frames, and tungstenite's
     // default is 64 MiB — so `MAX_INPUT_FRAME` was only checked *after* the
     // server had already buffered a thousandfold more than it allows.
@@ -1281,10 +1475,17 @@ async fn terminal(
         .max_message_size(MAX_INPUT_FRAME)
         .max_frame_size(MAX_INPUT_FRAME)
         .on_upgrade(move |socket| async move {
+            // Opening the tab on the phone reads its output, exactly as
+            // switching to it on the desktop does — and closing it again is the
+            // last moment the screen was in front of somebody. Both edges are
+            // stamped, so a turn that finished while the phone was watching
+            // does not come back as an unread `done` the moment it detaches.
+            mark_tab_seen(&desktop_socket, seen_project.clone(), seen_tmux.clone());
             let _ = pty_bridge::attach(
                 socket, tmux, registry, auth, token, state_dir, tab_id, catalog,
             )
             .await;
+            mark_tab_seen(&desktop_socket, seen_project, seen_tmux);
         })
 }
 
@@ -1431,7 +1632,7 @@ fn router(state: HostState) -> Router {
             "/api/v1/projects/{project_id}/prompts/{prompt_id}/send",
             post(prompt_send),
         )
-        .route("/api/v1/tabs/{tab_id}", get(tab))
+        .route("/api/v1/tabs/{tab_id}", get(tab).put(rename_tab))
         .route(
             "/api/v1/tabs/{tab_id}/schedules",
             get(schedules).post(schedule_create),
@@ -1440,6 +1641,7 @@ fn router(state: HostState) -> Router {
             "/api/v1/tabs/{tab_id}/schedules/{schedule_id}",
             put(schedule_update).delete(schedule_delete),
         )
+        .route("/api/v1/tabs/{tab_id}/status", get(agent_status))
         .route("/api/v1/tabs/{tab_id}/terminal", get(terminal))
         // The phone's drop box takes a whole photo; every other body stays at
         // the control-message limit below (the inner layer wins).
@@ -1791,6 +1993,18 @@ mod tests {
             let (status, _, body) = host.send(post_json(uri, ORIGIN, &create)).await;
             assert_eq!(status, StatusCode::UNAUTHORIZED, "{uri} answered: {body}");
         }
+        // The rename route is the one mutation that is a PUT on a GET path.
+        let put = Request::builder()
+            .method("PUT")
+            .uri("/api/v1/tabs/anything")
+            .header(header::ORIGIN, ORIGIN)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                serde_json::to_vec(&serde_json::json!({ "label": "x" })).expect("body"),
+            ))
+            .expect("request");
+        let (status, _, body) = host.send(put).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "answered: {body}");
     }
 
     #[tokio::test]
@@ -1818,6 +2032,67 @@ mod tests {
         assert!(!body.contains(RAW_PROJECT));
         assert!(!body.contains(&host.root.to_string_lossy().to_string()));
         assert!(!body.contains("scheduleTargetId"));
+    }
+
+    #[test]
+    fn a_tab_label_is_refused_before_it_can_be_silently_truncated_or_smuggled() {
+        assert_eq!(clean_tab_label("  Review  ").as_deref(), Some("Review"));
+        assert_eq!(clean_tab_label("   "), None);
+        assert!(clean_tab_label(&"x".repeat(MAX_TAB_LABEL)).is_some());
+        assert_eq!(clean_tab_label(&"x".repeat(MAX_TAB_LABEL + 1)), None);
+        // A control character would reach a terminal title verbatim.
+        assert_eq!(clean_tab_label("Claude\u{1b}]0;pwned\u{7}"), None);
+        assert_eq!(clean_tab_label("Claude\nrm -rf"), None);
+        // The cap counts characters, not bytes: an emoji name is not 4x longer.
+        assert!(clean_tab_label(&"\u{1f680}".repeat(MAX_TAB_LABEL)).is_some());
+    }
+
+    #[tokio::test]
+    async fn renaming_a_tab_needs_the_desktop_bridge_a_same_origin_and_a_usable_label() {
+        let host = Fixture::with_project();
+        let cookie = host.pair_device(&signing_key(16)).await.0;
+        let (_, _, projects_body) = host.send(get_as("/api/v1/projects", &cookie)).await;
+        let project_id = json(&projects_body)["projects"][0]["id"]
+            .as_str()
+            .expect("opaque project id")
+            .to_string();
+        let (_, _, project_body) = host
+            .send(get_as(&format!("/api/v1/projects/{project_id}"), &cookie))
+            .await;
+        let tab_id = json(&project_body)["tabs"][0]["id"]
+            .as_str()
+            .expect("opaque tab id")
+            .to_string();
+
+        let rename = |origin: &'static str, label: &str| {
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/v1/tabs/{tab_id}"))
+                .header(header::ORIGIN, origin)
+                .header(header::COOKIE, cookie_pair(&cookie))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&serde_json::json!({ "label": label })).expect("body"),
+                ))
+                .expect("request")
+        };
+
+        // Origin is checked before the label and before any desktop call.
+        let (status, _, body) = host.send(rename("https://evil.example", "Owned")).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "answered: {body}");
+
+        let (status, _, body) = host.send(rename(ORIGIN, "   ")).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "answered: {body}");
+        assert_eq!(json(&body)["error"], "invalid_label");
+
+        // A well-formed rename with no desktop window is unavailable, not an
+        // error the phone should read as "the name was rejected" — and it still
+        // leaks neither the raw project id nor the tmux name.
+        let (status, _, body) = host.send(rename(ORIGIN, "Release review")).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "answered: {body}");
+        assert_eq!(json(&body)["error"], "desktop_unavailable");
+        assert!(!body.contains(RAW_PROJECT));
+        assert!(!body.contains("eldrun-"));
     }
 
     #[tokio::test]

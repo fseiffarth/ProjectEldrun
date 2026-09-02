@@ -20,11 +20,12 @@ import {
 } from "../terminal/readableHistory";
 import { type TerminalEvent } from "../terminal/protocol";
 import { installTerminalTouchScroll } from "../terminal/touchScroll";
-import { sessionStatus, shortenPath, type SessionStatus } from "../terminal/statusLine";
+import { installWideOutputHint, type WideOutputHint } from "../terminal/wideOutput";
+import { inputFrameStart, sessionStatus, shortenPath, type SessionStatus } from "../terminal/statusLine";
 import { readSelectPrompt, selectKeys } from "../terminal/selectPrompt";
 import { currentMode, modeChoices, shiftTabKey } from "../terminal/agentModes";
 import { agentInputWrites } from "../terminal/composer";
-import { ScheduleSheet } from "./ScheduleSheet";
+import { StatusSheet } from "./StatusSheet";
 import {
   prepareOnDeviceSpeech,
   sanitizeVoiceTranscript,
@@ -185,6 +186,7 @@ function OptionSheet({ title, note, options, waiting, busy, onPick, onClose }: {
 
 export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
   const host = useRef<HTMLDivElement>(null);
+  const wideHint = useRef<HTMLDivElement>(null);
   const readableHost = useRef<HTMLElement>(null);
   const composerInput = useRef<HTMLTextAreaElement>(null);
   /** Re-reads the emulated screen on demand — used when Focus is opened, so the
@@ -236,7 +238,9 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
    * before the session has drawn the picker it lists. */
   const [modelSheet, setModelSheet] = useState(false);
   const [modeSheet, setModeSheet] = useState(false);
-  const [scheduleSheet, setScheduleSheet] = useState(false);
+  /** The status chip's sheet: the session's state and the CLI's own usage
+   * panel. Opening it asks the desktop, which may run the CLI once. */
+  const [statusSheet, setStatusSheet] = useState(false);
   /** The composer's **+**: a phone file into the project inbox, or an `@`. */
   const [addSheet, setAddSheet] = useState(false);
   const [uploads, setUploads] = useState<InboxUpload[]>([]);
@@ -280,7 +284,7 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     setSendFailed(false);
     setModelSheet(false);
     setModeSheet(false);
-    setScheduleSheet(false);
+    setStatusSheet(false);
     setAddSheet(false);
     setUploads([]);
     uploadRun.current += 1;
@@ -425,7 +429,23 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     // the phone from receiving a silently cropped, cursor-following slice; the
     // offscreen emulator's column count never had to match the physical screen.
     let windowSize: { cols: number; rows: number } | undefined;
+    let wide: WideOutputHint | undefined;
+    let anchorFrame = 0;
+    // The screen is as tall as the desktop window, so on a phone its last rows
+    // — the live prompt and the newest output — sit below the fold. Show that
+    // end of it; the rows above are one drag away (terminal/touchScroll.ts).
+    // Deferred a frame because xterm sizes the screen element on its own
+    // render, after this returns.
+    const anchorNewest = () => {
+      cancelAnimationFrame(anchorFrame);
+      anchorFrame = requestAnimationFrame(() => {
+        const box = host.current;
+        if (box) box.scrollTop = box.scrollHeight;
+        wide?.sync();
+      });
+    };
     const applySize = () => {
+      const rows = term.rows;
       if (windowSize) {
         if (term.cols !== windowSize.cols || term.rows !== windowSize.rows) {
           term.resize(windowSize.cols, windowSize.rows);
@@ -433,6 +453,10 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
       } else {
         fit.fit();
       }
+      // Only a changed row count moves the view: a reader panned up into the
+      // screen keeps their place through an unrelated resize.
+      if (term.rows !== rows) anchorNewest();
+      wide?.sync();
       if (ws?.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
       }
@@ -557,6 +581,11 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     }
     const terminalHost = host.current;
     const removeTouchScroll = installTerminalTouchScroll(terminalHost, term);
+    // A fresh session starts at column one, whatever the previous tab was
+    // panned to.
+    terminalHost.scrollLeft = 0;
+    if (wideHint.current) wide = installWideOutputHint(terminalHost, wideHint.current);
+    anchorNewest();
     let resizeTimer = 0;
     let resizeFrame = 0;
     const resize = () => {
@@ -613,11 +642,13 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
       cancelAnimationFrame(resizeFrame);
       cancelAnimationFrame(readableFrame);
       cancelAnimationFrame(readableScrollFrame);
+      cancelAnimationFrame(anchorFrame);
       window.removeEventListener("pagehide", release);
       window.removeEventListener("resize", resize);
       window.visualViewport?.removeEventListener("resize", resize);
       resizeObserver?.disconnect();
       removeTouchScroll();
+      wide?.dispose();
     };
   }, [tab.id]);
   useEffect(() => { if (view === "focus") refreshReadable.current(); }, [view]);
@@ -764,6 +795,13 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
   /** Shift+Tab — the mode cycle Claude Code, Codex and Qwen Code all bind,
    * encoded the way this family's TUI reads it (`shiftTabKey`). The chip label
    * follows the status line the TUI redraws, so the feedback is real. */
+  /** The chip's lamp comes from the row this screen was opened with, and that
+   * row is frozen for the whole session (it even survives a restart, via
+   * `lastPlace`). A `done` on it is by definition already read — the tab is on
+   * screen — so it is not shown here, the same way the desktop's tab bar hides
+   * the viewed tab's own glow. The desktop retires the flag for real when the
+   * attach reports the tab seen. */
+  const lamp = tab.agent_status === "done" ? "idle" : tab.agent_status ?? "idle";
   const shiftTab = shiftTabKey(agentLabel);
   const cycleMode = () => press(shiftTab);
   const modes = useMemo(() => modeChoices(status?.mode, agentLabel), [status?.mode, agentLabel]);
@@ -811,7 +849,7 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     setSwitching("");
     setSwitchFailed(value);
   };
-  const sheetUp = modelSheet || modeSheet;
+  const sheetUp = modelSheet || modeSheet || statusSheet;
   useLayoutEffect(() => {
     setFrozenLines(sheetUp ? linesRef.current : null);
   }, [sheetUp]);
@@ -864,6 +902,14 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
       addContext();
     }
   };
+  /** What the reading view paints: the live screen, or the frame it held when
+   * a composer sheet opened — minus the session's own input frame, which the
+   * composer and its chips already are. */
+  const shown = frozenLines ?? lines;
+  const painted = useMemo(
+    () => (tab.kind === "agent" ? shown.slice(0, inputFrameStart(shown)) : shown),
+    [tab.kind, shown],
+  );
   const copyReadable = async () => {
     try {
       // Copy exactly what the reading view is showing: the revealed history,
@@ -871,7 +917,7 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
       await navigator.clipboard.writeText(readableText([
         ...visibleChunks.flatMap((chunk) => chunk.lines),
         ...earlier.open,
-        ...lines,
+        ...painted,
       ]));
       setCopied(true);
       window.clearTimeout(copiedTimer.current);
@@ -984,9 +1030,6 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     pending: choice.value === switching,
   }));
   const failedMode = modes.find((choice) => choice.value === switchFailed);
-  /** What the reading view paints: the live screen, or the frame it held when
-   * a composer sheet opened. */
-  const shown = frozenLines ?? lines;
   const addOptions: SheetOption[] = [
     { key: "phone", label: "From this phone", description: "A photo, screenshot or file — saved to the project's inbox and referenced in the message", current: false },
     { key: "project", label: "A project file (@)", description: "Type a path after the @ for the agent to read", current: false },
@@ -994,6 +1037,7 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
   return <main className={`terminal-screen ${tab.kind}-tab`} style={viewportHeight ? { height: viewportHeight } : undefined}><header><button className="back" onClick={back}>‹</button><div className="terminal-title"><h1>{tab.label}</h1><small>{tab.kind === "agent" ? "Agent session" : "Shell session"}</small></div><div className="terminal-view-switch" aria-label="Output view"><button className={view === "focus" ? "selected" : ""} aria-pressed={view === "focus"} onClick={() => setView("focus")}>Focus</button><button className={view === "terminal" ? "selected" : ""} aria-pressed={view === "terminal"} onClick={() => setView("terminal")}>Terminal</button></div><span className={connected ? "lamp" : "lamp off"} /></header>
     <div className="terminal-body">
       <div ref={host} className={`terminal${view === "focus" ? " focus-source" : ""}`} />
+      <div ref={wideHint} className="terminal-wide-hint" aria-hidden="true" />
       {view === "focus" && altScreen && <div className="alt-screen-notice"><strong>Full-screen program</strong><span>This session is drawing its own screen, which has no scrollback to read. Switch to Terminal to see it.</span><button className="primary" onClick={() => setView("terminal")}>Open Terminal view</button></div>}
       {view === "focus" && !altScreen && <>
         <section ref={readableHost} className="readable-output" aria-label="Session output" aria-live="polite"
@@ -1001,7 +1045,7 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
             const stream = event.currentTarget;
             setAtBottom(stream.scrollHeight - stream.scrollTop - stream.clientHeight < 120);
           }}>
-          {shown.length === 0 && visibleChunks.length === 0 && earlier.open.length === 0
+          {painted.length === 0 && visibleChunks.length === 0 && earlier.open.length === 0
             ? <div className="readable-empty"><strong>Waiting for output</strong><span>The exact terminal is running behind this view.</span></div>
             : <div className="readable-lines">
                 {clipped && <div className="readable-notice">{TRUNCATION_NOTICE}</div>}
@@ -1009,7 +1053,7 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
                 {hiddenLines === 0 && earlier.dropped && <div className="readable-notice">{TRUNCATION_NOTICE}</div>}
                 {visibleChunks.map((chunk) => <HistoryLines key={chunk.id} lines={chunk.lines} />)}
                 {earlier.open.map((line) => <ReadableRow key={line.key} line={line} />)}
-                {shown.map((line) => <ReadableRow key={line.key} line={line} />)}
+                {painted.map((line) => <ReadableRow key={line.key} line={line} />)}
               </div>}
         </section>
         {lines.length > 0 && <div className="readable-tools">
@@ -1037,11 +1081,13 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
           {tab.kind === "agent" && <>
             <input ref={fileInput} type="file" multiple hidden aria-hidden="true" tabIndex={-1} data-testid="inbox-file-input" onChange={(event) => { attachFromPhone(event.target.files); event.target.value = ""; }} />
             <button className="composer-add" disabled={!connected} onClick={() => setAddSheet(true)} aria-label="Add to the message" aria-haspopup="dialog" aria-expanded={addSheet} title="Add a photo or file from this phone, or a project file (@)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg></button>
-            <button className="composer-chip" disabled={!connected} onClick={selectModel} aria-haspopup="dialog" aria-expanded={modelSheet} title="Choose the model (/model)">{status?.model ?? "Model"}</button>
-            <button className="composer-chip" disabled={!connected} onClick={openModeSheet} aria-haspopup={modes.length > 0 ? "dialog" : undefined} aria-expanded={modes.length > 0 ? modeSheet : undefined} title={modes.length > 0 ? "Choose the permission mode" : "Switch mode (Shift+Tab)"}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2 4.5 13.5H11L10 22l8.5-11.5H12L13 2Z" /></svg>{status?.mode ?? activeMode ?? "Mode"}</button>
-            <button className="composer-chip" onClick={() => setScheduleSheet(true)} aria-haspopup="dialog" aria-expanded={scheduleSheet} title="Scheduled prompts">◷ Schedule</button>
+            <div className="composer-chips">
+              <button className="composer-chip" disabled={!connected} onClick={selectModel} aria-haspopup="dialog" aria-expanded={modelSheet} title="Choose the model (/model)"><span className="composer-chip-label">{status?.model ?? "Model"}</span></button>
+              <button className="composer-chip" disabled={!connected} onClick={openModeSheet} aria-haspopup={modes.length > 0 ? "dialog" : undefined} aria-expanded={modes.length > 0 ? modeSheet : undefined} title={modes.length > 0 ? "Choose the permission mode" : "Switch mode (Shift+Tab)"}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2 4.5 13.5H11L10 22l8.5-11.5H12L13 2Z" /></svg><span className="composer-chip-label">{status?.mode ?? activeMode ?? "Mode"}</span></button>
+              <button className="composer-chip" onClick={() => setStatusSheet(true)} aria-haspopup="dialog" aria-expanded={statusSheet} title="Session status and the agent's own usage"><span className={`composer-chip-lamp ${lamp}`} aria-hidden="true" /><span className="composer-chip-label">Status</span></button>
+            </div>
           </>}
-          <span className="composer-spacer" />
+          {tab.kind !== "agent" && <span className="composer-spacer" />}
           {tab.kind === "agent" && <button className={`composer-dictate${listening ? " listening" : ""}`} disabled={!connected || !voiceAvailable || preparingVoice} title={voiceAvailable ? "Dictate a message" : "Voice typing is unavailable in this browser; use the keyboard microphone."} aria-label={dictateLabel} aria-pressed={listening} onClick={listening ? stopVoice : () => void startVoice()}>{listening ? <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1" /></svg> : <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M6 11a6 6 0 0 0 12 0M12 17v4M8 21h8" /></svg>}</button>}
           <button className="send-icon" disabled={!connected || !draft.trim()} onClick={submitDraft} aria-label="Send" title="Send"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 4 16 8-16 8 3-8-3-8Z" /><path d="M7 12h13" /></svg></button>
         </div>
@@ -1077,6 +1123,6 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
       onPick={(key) => void applyMode(key)}
       onClose={() => { if (!switching) setModeSheet(false); }}
     />}
-    {scheduleSheet && <ScheduleSheet tabId={tab.id} label={tab.label} onClose={() => setScheduleSheet(false)} />}
+    {statusSheet && <StatusSheet tab={tab} live={status} onClose={() => setStatusSheet(false)} />}
   </main>;
 }

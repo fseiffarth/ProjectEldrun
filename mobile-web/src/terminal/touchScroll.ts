@@ -1,30 +1,69 @@
 /**
- * Scroll xterm history from a phone drag.  Pointer Events are the reliable
- * touch stream in current Android/iOS browsers; some older embedded webviews
- * only expose Touch Events, so keep that path as a fallback.
+ * Scroll a phone drag through the session.  The emulator carries the desktop
+ * tmux window's geometry, so its screen is usually taller than the phone's
+ * box as well as wider: the drag therefore pans the box over the rows it hides
+ * before it moves the buffer, which is one continuous gesture over
+ * `[scrollback] + [the rows below the fold]`.  A session that fits has no
+ * overflow to consume and scrolls history from the first pixel, as before.
+ *
+ * Pointer Events are the reliable touch stream in current Android/iOS
+ * browsers; some older embedded webviews only expose Touch Events, so keep
+ * that path as a fallback.
  */
 export interface TerminalScroller {
   scrollLines(lines: number): void;
 }
 
 const PIXELS_PER_LINE = 14;
+/** How far a drag must lean sideways before it counts as a pan, not a scroll. */
+const AXIS_SLACK = 8;
 
 export function installTerminalTouchScroll(host: HTMLElement, terminal: TerminalScroller) {
   let activeId: number | undefined;
   let lastY: number | undefined;
+  let startX: number | undefined;
+  let startY: number | undefined;
+  let panning = false;
   let remainder = 0;
 
-  const begin = (id: number, clientY: number) => {
+  /**
+   * Moves the box over the emulated screen and returns the pixels it could not
+   * take, so a drag that runs out of hidden rows continues into the buffer.
+   * `.terminal` is `overflow-y:hidden` — user scrolling is this function, not
+   * the browser's — but a hidden box still scrolls programmatically.
+   */
+  const panRows = (delta: number) => {
+    const room = host.scrollHeight - host.clientHeight;
+    if (room <= 0) return delta;
+    const before = host.scrollTop;
+    host.scrollTop = Math.min(room, Math.max(0, before + delta));
+    return delta - (host.scrollTop - before);
+  };
+  const begin = (id: number, clientX: number, clientY: number) => {
     if (activeId !== undefined) return false;
     activeId = id;
     lastY = clientY;
+    startX = clientX;
+    startY = clientY;
+    panning = false;
     remainder = 0;
     return true;
   };
-  const move = (id: number, clientY: number) => {
-    if (id !== activeId || lastY === undefined) return false;
+  const move = (id: number, clientX: number, clientY: number) => {
+    if (id !== activeId || lastY === undefined || panning) return false;
+    // The session is usually wider than the phone, so a sideways drag pans it
+    // across the screen — and that scroller is the browser's own (`.terminal`
+    // in style.css). Swallowing the gesture here, as the Touch Events path
+    // must to scroll history at all, would leave the right of every long line
+    // unreachable. Decided once per gesture, before the first line moves.
+    const sideways = Math.abs(clientX - (startX ?? clientX));
+    if (sideways > AXIS_SLACK && sideways > Math.abs(clientY - (startY ?? clientY))) {
+      panning = true;
+      return false;
+    }
     remainder += lastY - clientY;
     lastY = clientY;
+    remainder = panRows(remainder);
     const lines = remainder < 0
       ? Math.ceil(remainder / PIXELS_PER_LINE)
       : Math.floor(remainder / PIXELS_PER_LINE);
@@ -38,25 +77,30 @@ export function installTerminalTouchScroll(host: HTMLElement, terminal: Terminal
     if (id !== activeId) return false;
     activeId = undefined;
     lastY = undefined;
+    startX = undefined;
+    startY = undefined;
+    panning = false;
     remainder = 0;
     return true;
   };
 
   const pointerStart = (event: PointerEvent) => {
     if (event.pointerType && event.pointerType !== "touch") return;
-    if (!begin(event.pointerId, event.clientY)) return;
-    host.setPointerCapture?.(event.pointerId);
-    // Do not let xterm turn this drag into a terminal mouse gesture.
+    if (!begin(event.pointerId, event.clientX, event.clientY)) return;
+    // Do not let xterm turn this drag into a terminal mouse gesture. Capture
+    // waits for the first move: taking the pointer here would risk the gesture
+    // never reaching the browser's own horizontal pan of the wide session.
     event.stopPropagation();
   };
   const pointerMove = (event: PointerEvent) => {
-    if (!move(event.pointerId, event.clientY)) return;
+    if (!move(event.pointerId, event.clientX, event.clientY)) return;
+    host.setPointerCapture?.(event.pointerId);
     event.preventDefault();
     event.stopPropagation();
   };
   const pointerEnd = (event: PointerEvent) => {
     if (!end(event.pointerId)) return;
-    host.releasePointerCapture?.(event.pointerId);
+    if (host.hasPointerCapture?.(event.pointerId)) host.releasePointerCapture?.(event.pointerId);
     event.stopPropagation();
   };
 
@@ -69,13 +113,13 @@ export function installTerminalTouchScroll(host: HTMLElement, terminal: Terminal
   };
   const touchStart = (event: TouchEvent) => {
     const touch = event.changedTouches.item(0);
-    if (!touch || !begin(touch.identifier, touch.clientY)) return;
+    if (!touch || !begin(touch.identifier, touch.clientX, touch.clientY)) return;
     event.stopPropagation();
   };
   const touchMove = (event: TouchEvent) => {
     if (activeId === undefined) return;
     const touch = touchAt(event.touches, activeId);
-    if (!touch || !move(touch.identifier, touch.clientY)) return;
+    if (!touch || !move(touch.identifier, touch.clientX, touch.clientY)) return;
     event.preventDefault();
     event.stopPropagation();
   };

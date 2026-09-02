@@ -41,7 +41,7 @@ independent of all of them and touches only the PWA's own lock.
 When an agent tab transitions to `question` (and optionally `done`), the
 paired phone shows a system notification while the PWA is closed or
 backgrounded. Tapping it opens the app, which unlocks and lands on that tab
-via the existing `lastTab` restore path.
+via the existing `lastPlace` restore path.
 
 ### A.2 What exists
 
@@ -118,9 +118,10 @@ live WebSocket is suppressed (the user is already looking at it — the
 
 **Client.** `sw.js` gains `push` and `notificationclick` handlers. On click:
 `clients.openWindow("/")`; the app resumes through the normal lock →
-challenge login → `restoreLastTab` flow, with the pushed tab id written into
-the same `localStorage` slot `rememberLastTab` uses (the id is opaque and
-server-revalidated, so this is safe by the same argument as `lastTab.ts`).
+challenge login → `restoreLastPlace` flow, with the pushed tab id written into
+the same `localStorage` slot `rememberLastPlace` uses, as a place under
+Projects (the id is opaque and server-revalidated, so this is safe by the same
+argument as `lastPlace.ts`).
 
 ### A.5 Delivery and gates
 
@@ -180,8 +181,8 @@ so a retried tap cannot spawn two resumes.
 **Client.** The notice renders Relaunch only when `tab.kind`'s relaunch is
 plausible and `desktop_available` was true at last load; on success it
 replaces the current screen's `tab` (same `Terminal` component, new tab id —
-the `tab.id` keyed effects tear down and reattach naturally) and updates
-`rememberLastTab`.
+the `tab.id` keyed effects tear down and reattach naturally); the app's own
+place effect records the new id.
 
 ### B.3 Boundaries kept
 

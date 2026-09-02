@@ -10,10 +10,11 @@ import {
   type ScheduledPromptInput,
 } from "../api";
 
-/** Per-tab scheduled prompts, shared by the project tab-list shortcut and the
- * live agent terminal's Schedule chip. Everything here goes through the opaque
- * tab id; the phone never learns the desktop's project id, tmux name or target
- * id. */
+/** Per-tab scheduled prompts, opened from the project tab overview — the phone's
+ * counterpart to the desktop Agents view, and deliberately not from inside the
+ * session, so scheduling a prompt never means attaching a terminal. Everything
+ * here goes through the opaque tab id; the phone never learns the desktop's
+ * project id, tmux name or target id. */
 const MOBILE_WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
 function mobileLocalDateTime(): string {

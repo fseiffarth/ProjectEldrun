@@ -74,6 +74,18 @@ pub struct PublicProject {
     pub last_activity: Option<u64>,
 }
 
+/// The one-line schedule summary the desktop's Agents view puts under an agent
+/// tab, carried in the tab row itself so the phone's project overview reads the
+/// same thing without a per-tab round trip.
+#[derive(Debug, Clone, Serialize)]
+pub struct TabSchedules {
+    pub total: u32,
+    pub enabled: u32,
+    /// Desktop-local `YYYY-MM-DDTHH:MM` of the next run, when one is due.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct PublicTab {
     pub id: String,
@@ -85,6 +97,10 @@ pub struct PublicTab {
     /// This intentionally never stores or infers terminal text in the sidecar.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_status: Option<String>,
+    /// How many prompts this agent tab has scheduled, and when the first fires.
+    /// Absent for a shell tab and while the desktop is closed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub schedules: Option<TabSchedules>,
     pub available: bool,
     pub viewer_busy: bool,
     pub last_activity: Option<u64>,
@@ -325,6 +341,7 @@ impl Catalog {
                     agent_label: (tab.kind == "agent")
                         .then(|| tab.label.chars().take(120).collect()),
                     agent_status: None,
+                    schedules: None,
                     available: live_row.is_some(),
                     viewer_busy: false,
                     last_activity: live_row.map(|r| r.activity),

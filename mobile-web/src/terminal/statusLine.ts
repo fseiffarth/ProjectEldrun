@@ -160,3 +160,51 @@ export function shortenPath(path: string): string {
   if (parts.length <= 2) return path;
   return `…/${parts.slice(-2).join("/")}`;
 }
+
+/** A numbered dialog row (`❯ 1. Yes`), which opens with the same marker as the
+ * input line. It is a question waiting for an answer, never the composer. */
+const OPTION_ROW = /^\s*[>›❯*]\s*\d{1,2}[.)]\s/u;
+
+/** The rule an agent draws across the top of its input box, with the project
+ * or model name sitting in it (`──────── ProjectEldrun ─`). `readableScreen`
+ * already drops a bare rule; this one carries a word, so it survives as far as
+ * here — and on a phone it is still decoration, not output. */
+function labelledRule(text: string) {
+  if (!/[─―—]{8,}/u.test(text)) return false;
+  const rest = text.replace(/[\s─―—-]+/gu, "");
+  return rest.length > 0 && rest.length <= 32;
+}
+
+/**
+ * Where the frame an agent TUI pins to the bottom of every screen begins — its
+ * input box and the status/shortcut lines under it — or `lines.length` when the
+ * bottom of the screen is not one.
+ *
+ * The reading view cuts there. Nothing is lost: the composer below *is* that
+ * input box, `sessionStatus` reads the same lines into the chips beside it, and
+ * the shortcut hints name keys a phone has no way to press. Painted as well,
+ * they only pushed the output the reader came for off the top of the screen.
+ *
+ * The scoping is `sessionStatus`'s, plus one guard: a select dialog's rows open
+ * with the same marker as the input line, and hiding a question the session is
+ * waiting on would be the one unrecoverable mistake here.
+ */
+export function inputFrameStart(lines: readonly StatusLineLike[]): number {
+  let start = -1;
+  for (let index = lines.length - 1; index >= 0 && index >= lines.length - SEARCH_WINDOW; index -= 1) {
+    const text = lines[index].text;
+    if (!INPUT_LINE.test(text)) continue;
+    if (OPTION_ROW.test(text)) return lines.length;
+    start = index;
+    break;
+  }
+  if (start < 0) return lines.length;
+  // The box's own top edge and the blank rows the TUI keeps above it belong to
+  // the frame; left behind they would trail the output with a rule and a gap.
+  while (start > 0) {
+    const above = lines[start - 1].text;
+    if (!above.trim() || labelledRule(above)) start -= 1;
+    else break;
+  }
+  return start;
+}

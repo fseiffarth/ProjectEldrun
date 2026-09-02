@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { readSelectPrompt, selectKeys } from "../../mobile-web/src/terminal/selectPrompt";
 import { currentMode, modeChoices } from "../../mobile-web/src/terminal/agentModes";
-import { sessionStatus } from "../../mobile-web/src/terminal/statusLine";
+import { inputFrameStart, sessionStatus } from "../../mobile-web/src/terminal/statusLine";
 
 const lines = (...texts: string[]) => texts.map((text) => ({ text }));
 const ESC = String.fromCharCode(27);
@@ -139,5 +139,43 @@ describe("Eldrun Mobile permission modes", () => {
   it("reads Codex's bare auto mode without claiming Claude's auto-compact", () => {
     expect(sessionStatus(lines("> ", "auto"))?.mode).toBe("auto");
     expect(sessionStatus(lines("> ", "~/projects/auto  ·  auto-compact left: 12%"))?.mode).toBeUndefined();
+  });
+});
+
+describe("Eldrun Mobile input frame", () => {
+  const cut = (...texts: string[]) => {
+    const rows = lines(...texts);
+    return rows.slice(0, inputFrameStart(rows)).map((row) => row.text);
+  };
+
+  it("cuts the input box, its rule and the status lines under it", () => {
+    // The bottom of a live Claude Code screen, as readableScreen renders it:
+    // the box's side edges are already stripped, its labelled top rule is not.
+    expect(cut(
+      "● Done — the reading view now stops above the box.",
+      "",
+      `${"\u2500".repeat(40)} ProjectEldrun \u2500`,
+      "\u276f",
+      "  ~/eldrun/projects/projecteldrun (develop) \u00b7 Opus 5 \u00b7 ctx 93%",
+      "  \u23f5\u23f5 auto mode on (shift+tab to cycle)",
+    )).toEqual(["● Done — the reading view now stops above the box."]);
+  });
+
+  it("keeps a dialog the session is waiting on", () => {
+    // `\u276f 1. Yes` opens with the input line's own marker. Cutting there
+    // would hide the question and leave the reader tapping at nothing.
+    const dialog = [
+      "Do you want to proceed?",
+      "\u276f 1. Yes",
+      "  2. No, and tell Claude what to do differently",
+    ];
+    expect(cut(...dialog)).toEqual(dialog);
+  });
+
+  it("keeps a screen that is not showing an input frame at all", () => {
+    const output = ["$ npm test", " \u2713 MobileReadableScreen.test.ts (11 tests)", ""];
+    expect(cut(...output)).toEqual(output);
+    // A prompt further up than the frame window is scrolled-past output.
+    expect(cut("\u276f ", "a", "b", "c", "d", "e", "f", "g", "h", "i").length).toBe(10);
   });
 });

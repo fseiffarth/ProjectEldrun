@@ -176,14 +176,17 @@ describe("Eldrun Mobile composer + and the frozen reading view", () => {
     expect(screen.getByRole("dialog", { name: "Permission mode" })).toBeTruthy();
 
     // The session repaints under the sheet; the reading view does not follow.
-    await paint("Earlier answer\n> \nplan mode on (shift+tab to cycle)");
-    expect(screen.queryByText("plan mode on (shift+tab to cycle)")).toBeNull();
+    await paint("Earlier answer\nLater answer\n> \nplan mode on (shift+tab to cycle)");
+    expect(screen.queryByText("Later answer")).toBeNull();
     // …but the sheet read the live screen: Plan is now the current mode.
     const plan = screen.getAllByRole("button").find((button) => button.querySelector("strong")?.textContent === "Plan");
     expect(plan?.getAttribute("aria-current")).toBe("true");
 
     fireEvent.click(screen.getByRole("button", { name: "Close" }));
     expect(screen.queryByRole("dialog")).toBeNull();
-    expect(screen.getByText("plan mode on (shift+tab to cycle)")).toBeTruthy();
+    expect(screen.getByText("Later answer")).toBeTruthy();
+    // The input box and the status line under it are the composer's own job:
+    // the chips carry those facts, so the reading view never paints them.
+    expect(screen.queryByText("plan mode on (shift+tab to cycle)")).toBeNull();
   });
 });
