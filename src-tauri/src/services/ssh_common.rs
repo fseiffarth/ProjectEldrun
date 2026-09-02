@@ -1051,8 +1051,20 @@ fn askpass_owner_pid(name: &str) -> Option<u32> {
 /// guarantee should not depend on when it is called.
 #[cfg(unix)]
 pub fn sweep_stale_askpass() {
-    let dir = crate::storage::state_dir().join("ssh-askpass");
-    let Ok(entries) = std::fs::read_dir(&dir) else {
+    sweep_stale_askpass_in(&crate::storage::state_dir().join("ssh-askpass"));
+}
+
+/// The sweep above, against a named directory.
+///
+/// Split out for the test, which must not reach the behaviour through
+/// `ELDRUN_STATE_DIR`: that variable is process-wide, the suite runs its tests
+/// concurrently in one process, and the shim tests two screens up create and
+/// then *exec* a shim under whatever the state dir says at that instant — so
+/// redirecting it here deleted their shim's directory out from under them and
+/// failed them with `ENOENT`, intermittently and nowhere near the cause.
+#[cfg(unix)]
+fn sweep_stale_askpass_in(dir: &std::path::Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
     let self_pid = std::process::id();
@@ -1893,9 +1905,10 @@ mod tests {
             std::fs::write(p, b"x").expect("write");
         }
 
-        std::env::set_var("ELDRUN_STATE_DIR", dir.path());
-        sweep_stale_askpass();
-        std::env::remove_var("ELDRUN_STATE_DIR");
+        // Against the directory directly, never through `ELDRUN_STATE_DIR`: that
+        // is process-wide, and a concurrent test in this same binary execs a
+        // shim resolved from it.
+        sweep_stale_askpass_in(&askpass);
 
         assert!(!dead.exists(), "a shim whose owner is gone must be removed");
         assert!(live.exists(), "a live process's shim must survive");
