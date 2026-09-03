@@ -282,6 +282,25 @@ pub async fn mobile_host_status() -> MobileHostRuntimeStatus {
 /// whole `eldrun_lib` anyway (same size, nothing gained) and Tauri's
 /// `universal-apple-darwin` build never lipo-merges secondary cargo binaries,
 /// which broke every macOS bundle at the copy step.
+///
+/// On Linux that source is the magic link itself, not the path
+/// `std::env::current_exe()` resolves it to. The two differ exactly when the
+/// running image's path no longer holds it — a dev rebuild over
+/// `target/debug/eldrun`, a re-run of `package:dev`, an in-app update swapping
+/// the AppImage — where the kernel appends ` (deleted)` and the resolved path
+/// opens as `ENOENT`. [`mobile_host_apply`] then fails at its copy step with
+/// `read mobile host: No such file or directory (os error 2)` *before* it
+/// reaches the service manager, so Reconnect cannot bring Mobile back at all
+/// and the journal records nothing to say why — while the binary being
+/// replaced under a live window is the very moment the user reaches for that
+/// button. Opening `/proc/self/exe` reads the running inode whether or not any
+/// path still names it. Other platforms have no such link and keep the path.
+#[cfg(target_os = "linux")]
+fn mobile_binary_source() -> Result<PathBuf, String> {
+    Ok(PathBuf::from("/proc/self/exe"))
+}
+
+#[cfg(not(target_os = "linux"))]
 fn mobile_binary_source() -> Result<PathBuf, String> {
     std::env::current_exe().map_err(|e| e.to_string())
 }
@@ -880,8 +899,30 @@ pub async fn mobile_tailscale_serve_status() -> TailscaleServeStatus {
 
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
-    use super::systemd_unit;
+    use super::{install_mobile_binary, mobile_binary_source, systemd_unit};
     use std::path::Path;
+
+    /// The install must read the running *image*, not a path that may no longer
+    /// name it: a rebuild or an update over a live Eldrun makes
+    /// `current_exe()` resolve to `… (deleted)`, and the reinstall behind
+    /// Reconnect then dies at its copy step with `os error 2` before the
+    /// service manager is asked for anything.
+    #[test]
+    fn the_sidecar_is_copied_from_the_running_image_not_a_path_that_can_vanish() {
+        let source = mobile_binary_source().expect("source");
+        assert_eq!(
+            source,
+            Path::new("/proc/self/exe"),
+            "a resolved path can carry ` (deleted)` and open as ENOENT"
+        );
+        let temp = tempfile::tempdir().expect("temp directory");
+        let target = install_mobile_binary(&source, temp.path()).expect("install");
+        assert_eq!(
+            std::fs::read(&target).expect("installed bytes"),
+            std::fs::read(&source).expect("running image"),
+            "the installed sidecar should be this binary"
+        );
+    }
 
     #[test]
     fn systemd_unit_quotes_installed_and_state_paths() {

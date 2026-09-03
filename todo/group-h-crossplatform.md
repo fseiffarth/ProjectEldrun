@@ -593,6 +593,33 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     - [ ] ✅ Works
     - [ ] ❌ Doesn't work
 
+- [~] **31w — Reconnect survives the binary being replaced under a live
+  window** (2026-09-03; ✅ code-complete and automated tests passing, ⚠️ not
+  live-verified — the fix reaches the running window only after a deliberate
+  restart). Reconnect (and Settings → Mobile's enable) reinstalls the sidecar
+  by copying the running Eldrun binary, and it took its source from
+  `std::env::current_exe()` — which on Linux is `/proc/self/exe` *resolved to a
+  path*. Replace the running image and that path comes back
+  `…/eldrun (deleted)`: `mobile_host_apply` then died at its copy step with
+  `read mobile host: No such file or directory (os error 2)` before the service
+  manager was asked for anything, so the journal recorded nothing at all and
+  Mobile could not be brought back without relaunching Eldrun. Every way the
+  binary is replaced under a live window hits it — any `cargo build`/`cargo
+  test` relinking `target/debug/eldrun` under the hot-reload window, the
+  post-commit auto-freeze rewriting `~/.local/share/eldrun/eldrun-dev` under the
+  frozen one, an in-app update — i.e. exactly when the user reaches for
+  Reconnect, and now on every commit. The source is now the magic link
+  itself, which opens the running inode whether or not a path still names it;
+  other platforms have no such link and keep `current_exe`. Locked by
+  `the_sidecar_is_copied_from_the_running_image_not_a_path_that_can_vanish`.
+  - [ ] 🖐️ Manual test — with Eldrun running, rebuild it (or re-run
+    `npm run package:dev`) so its binary is replaced, then press Reconnect in
+    the Mobile menu: the host restarts (`journalctl --user -u
+    eldrun-mobile-host` shows a fresh `Started`) instead of reporting
+    `os error 2`, and the phone reaches it again.
+  - [ ] ✅ Works
+  - [ ] ❌ Doesn't work
+
 - [~] **31o — Mobile names which machine failed, instead of "Host unavailable"**
   (2026-09-01; ✅ Code-complete, ⚠️ needs live QA on a phone — and a rebuild +
   restart first, since the phone serves the bundle baked into the binary).
