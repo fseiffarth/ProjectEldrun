@@ -40,7 +40,15 @@ change was not run live.
   escape hatch.
 - The cost is a backend fix that compiles and is silently not in the window.
   **Run `npm run backend:stale` after backend edits and report the result**;
-  never restart the app to apply them.
+  never restart the app to apply them. It knows every shape Eldrun runs in
+  (hot-reload, frozen `package:dev`, packaged, AppImage), and it asks the
+  running Mobile sidecar over loopback which PWA bundle it is actually serving
+  — mtimes are a proxy, that answer is not.
+- The phone's PWA is embedded into the binary too (`build.rs` bakes
+  `mobile-dist/` in), so it goes stale on its own schedule and nothing in the
+  window says so. `beforeDevCommand` re-bundles it on every dev start, and a
+  `post-commit` hook reports the seam when it drifts anyway; `npm run
+  mobile:bundle` rebuilds it without the type-check, `mobile:build` with.
 - Double-starts are blocked by `scripts/guard-single-instance.sh` (wired into
   the launcher and the `pretauri:dev` hook). It also refuses when port 1420 is
   held by an orphaned vite — a second `tauri dev` would otherwise attach to the
@@ -175,8 +183,9 @@ whose per-group files live in `todo/`.
    `scripts/privacy-check.sh <base> <head>` for a range. Never hardcode
    institution or lab hostnames. Commits must use the GitHub `noreply` author
    email, never the real address.
-5. Enable the hooks once per clone — this arms **both** the version bump and the
-   privacy scan: `git config core.hooksPath .githooks`. Pushes are auto-patch-
+5. Enable the hooks once per clone — this arms the version bump, the privacy
+   scan, and the post-commit stale-PWA notice:
+   `git config core.hooksPath .githooks`. Pushes are auto-patch-
    bumped and packaged by CI (`scripts/bump-version.sh` takes `minor|major`).
    Releases are manual: push a `v*` tag. `npm run package` builds the same
    artifact locally, installing the AppImage outside the checkout.

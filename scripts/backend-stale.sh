@@ -17,6 +17,16 @@
 # Exit 1 = a rebuild/restart is needed to pick up the changes.
 set -euo pipefail
 
+# --mobile-only reports just the embedded-PWA seam. Backend staleness is
+# EXPECTED here — `--no-watch` exists precisely so src-tauri edits pile up
+# until the user restarts deliberately (AGENTS.md "Running") — so anything
+# that fires on its own must not shout about it, or it becomes noise and gets
+# ignored. The embedded mobile bundle is the seam nothing else announces.
+mobile_only=0
+if [ "${1:-}" = "--mobile-only" ]; then
+  mobile_only=1
+fi
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_DIR="${ELDRUN_APP_DIR:-$HOME/.local/share/eldrun}"
 STATE_DIR="${ELDRUN_STATE_DIR:-$APP_DIR}"
@@ -107,7 +117,9 @@ fi
 built_entry="$(mobile_entry "$ROOT/mobile-dist/index.html")"
 
 if [ -z "$app_pid" ] && [ -z "$served_entry" ]; then
-  echo "No Eldrun is running — nothing to be stale against."
+  if [ "$mobile_only" = "0" ]; then
+    echo "No Eldrun is running — nothing to be stale against."
+  fi
   exit 0
 fi
 
@@ -133,7 +145,7 @@ done < <(
     -printf '%T@ %p\n'
 )
 
-if [ "$started" != "0" ] && [ "$newest" -gt "$started" ]; then
+if [ "$mobile_only" = "0" ] && [ "$started" != "0" ] && [ "$newest" -gt "$started" ]; then
   stale=1
   rel="${newest_file#"$ROOT"/}"
   backend_msg="BACKEND IS STALE — the running window predates your backend changes.
@@ -168,6 +180,9 @@ $probe_note"
 fi
 
 if [ "$stale" = "0" ]; then
+  if [ "$mobile_only" = "1" ]; then
+    exit 0
+  fi
   if [ -n "$app_pid" ]; then
     echo "Backend is current: running pid $app_pid ($app_kind) started after the newest"
     echo "src-tauri change, and its embedded mobile PWA matches mobile-dist/."
