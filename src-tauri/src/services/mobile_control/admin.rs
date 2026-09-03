@@ -195,16 +195,25 @@ pub mod pipe {
     ) -> Result<tokio::net::windows::named_pipe::NamedPipeClient, String> {
         use tokio::net::windows::named_pipe::ClientOptions;
         let name = pipe_name(socket);
+        // `ERROR_PIPE_BUSY`: every instance is taken — the one condition a
+        // retry can resolve, since the listener creates the next instance right
+        // after each accept.
+        const ERROR_PIPE_BUSY: i32 = 231;
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
         loop {
             match ClientOptions::new().open(&name) {
                 Ok(client) => return Ok(client),
-                Err(error) => {
+                Err(error) if error.raw_os_error() == Some(ERROR_PIPE_BUSY) => {
                     if tokio::time::Instant::now() >= deadline {
                         return Err(error.to_string());
                     }
                     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                 }
+                // Anything else — above all "no such pipe", the desktop or the
+                // host simply not running — is the answer, not a wait: retrying
+                // it made every bridge call with the desktop closed sit out the
+                // whole deadline before it could say `desktop_unavailable`.
+                Err(error) => return Err(error.to_string()),
             }
         }
     }
@@ -345,10 +354,15 @@ pub async fn desktop_call(
     .await
     .map_err(|_| "desktop_unavailable")?
     .map_err(|_| "desktop_unavailable")?;
-    write_frame(&mut stream, request).await?;
-    tokio::time::timeout(response_timeout, read_frame(&mut stream))
-        .await
-        .map_err(|_| "desktop_unavailable")?
+    // The request write sits inside the deadline too: a desktop that accepted
+    // the connection and then stopped reading is as gone as one that never
+    // answered.
+    tokio::time::timeout(response_timeout, async {
+        write_frame(&mut stream, request).await?;
+        read_frame(&mut stream).await
+    })
+    .await
+    .map_err(|_| "desktop_unavailable")?
 }
 
 #[cfg(windows)]
@@ -359,11 +373,13 @@ pub async fn desktop_call(
     let response_timeout = request.response_timeout();
     let token = pipe::read_token(socket).map_err(|_| "desktop_unavailable")?;
     let mut stream = pipe::connect(socket).await.map_err(|_| "desktop_unavailable")?;
-    write_frame(&mut stream, &token).await?;
-    write_frame(&mut stream, request).await?;
-    tokio::time::timeout(response_timeout, read_frame(&mut stream))
-        .await
-        .map_err(|_| "desktop_unavailable")?
+    tokio::time::timeout(response_timeout, async {
+        write_frame(&mut stream, &token).await?;
+        write_frame(&mut stream, request).await?;
+        read_frame(&mut stream).await
+    })
+    .await
+    .map_err(|_| "desktop_unavailable")?
 }
 
 #[cfg(not(any(unix, windows)))]

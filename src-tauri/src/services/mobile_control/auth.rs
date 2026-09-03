@@ -396,20 +396,11 @@ impl AuthStore {
         self.save_devices()?;
         let next = random_bytes::<32>()?;
         let key_path = self.control_dir.join("host.key");
-        let mut options = fs::OpenOptions::new();
-        options.create(true).write(true).truncate(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        {
-            use std::io::Write;
-            let mut file = options.open(&key_path).map_err(|e| e.to_string())?;
-            file.write_all(&next)
-                .and_then(|_| file.sync_all())
-                .map_err(|e| e.to_string())?;
-        }
+        // Written beside and renamed over, never truncated in place: a crash
+        // between the truncate and the write left a zero-byte key, on which
+        // every later start failed with "host.key has invalid length" until
+        // somebody found and deleted the file by hand.
+        store::write_bytes_atomic(&key_path, &next, 0o600)?;
         store::ensure_private_file(&key_path)?;
         self.host_key = next.to_vec();
         self.audit("forgot_all", None);
@@ -542,6 +533,25 @@ mod tests {
         }
         assert!(auth.attempts.len() <= 3, "buckets: {}", auth.attempts.len());
         auth.challenge(&device).expect("real device still served");
+    }
+
+    #[test]
+    fn forgetting_all_rotates_the_host_key_without_a_moment_of_empty_file() {
+        let (dir, mut auth) = store();
+        let before = auth.host_key().to_vec();
+        auth.forget_all().expect("forget all");
+        let after = auth.host_key().to_vec();
+        assert_ne!(before, after);
+        assert_eq!(after.len(), 32);
+        assert_eq!(fs::read(dir.path().join("host.key")).expect("key file"), after);
+        assert!(
+            !dir.path().join("host.tmp").exists(),
+            "the staging file must be renamed away"
+        );
+        // The rotated key is what the next start reads.
+        let reopened = AuthStore::open(dir.path(), "https://desk.example.ts.net".into())
+            .expect("reopen after rotation");
+        assert_eq!(reopened.host_key(), after.as_slice());
     }
 
     #[test]

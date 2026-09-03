@@ -8,13 +8,21 @@ pub fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T, String> {
 }
 
 pub fn write_json_atomic<T: Serialize>(path: &Path, value: &T, mode: u32) -> Result<(), String> {
+    let bytes = serde_json::to_vec_pretty(value).map_err(|e| e.to_string())?;
+    write_bytes_atomic(path, &bytes, mode)
+}
+
+/// Write `bytes` to a sibling created with `mode`, then rename it over `path`,
+/// so a reader sees either the old contents or the new ones and never a
+/// truncated file. The sibling carries the private mode from creation, so key
+/// material is never world-readable for even an instant.
+pub fn write_bytes_atomic(path: &Path, bytes: &[u8], mode: u32) -> Result<(), String> {
     // On Windows the profile directory's ACL stands in for the mode bits.
     #[cfg(not(unix))]
     let _ = mode;
     let parent = path.parent().ok_or("state path has no parent")?;
     fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
     let tmp = path.with_extension("tmp");
-    let bytes = serde_json::to_vec_pretty(value).map_err(|e| e.to_string())?;
     let mut options = fs::OpenOptions::new();
     options.create(true).truncate(true).write(true);
     #[cfg(unix)]
@@ -25,7 +33,7 @@ pub fn write_json_atomic<T: Serialize>(path: &Path, value: &T, mode: u32) -> Res
     let mut file = options
         .open(&tmp)
         .map_err(|e| format!("open {}: {e}", tmp.display()))?;
-    file.write_all(&bytes)
+    file.write_all(bytes)
         .and_then(|_| file.sync_all())
         .map_err(|e| e.to_string())?;
     #[cfg(unix)]

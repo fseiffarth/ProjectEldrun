@@ -306,13 +306,18 @@ impl Catalog {
                 .join("sessions")
                 .join(project_key(&project.id))
                 .join("terminals.json");
-            let session: SessionFile = match fs::read(&session_path) {
-                Ok(bytes) => serde_json::from_slice(&bytes)
-                    .map_err(|error| format!("parse session {}: {error}", project.id))?,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                    SessionFile { tab_layout: vec![] }
-                }
-                Err(error) => return Err(format!("read session {}: {error}", project.id)),
+            // One project's session file is that project's problem, not the
+            // catalog's. The desktop writes it atomically, so a file that does
+            // not parse is real corruption or a shape this build does not read
+            // — and it used to fail the whole load, which the cache then
+            // answered from its last valid snapshot on every request, forever:
+            // one bad file froze every project the phone could see, with
+            // nothing anywhere to say why. Such a project simply has no
+            // attachable tabs until the desktop rewrites the file.
+            let session = match fs::read(&session_path) {
+                Ok(bytes) => serde_json::from_slice::<SessionFile>(&bytes)
+                    .unwrap_or_else(|_| SessionFile { tab_layout: vec![] }),
+                Err(_) => SessionFile { tab_layout: vec![] },
             };
             let mut tabs = Vec::new();
             // project-tree-read: ok — this is the state-dir terminal-session snapshot.
@@ -409,6 +414,60 @@ mod tests {
         assert!(expected_tmux("p1", "shell", "eldrun-p1--shell-123456789"));
         assert!(!expected_tmux("p1", "shell", "eldrun-p2--shell-123456789"));
         assert!(!expected_tmux("p1", "shell", "eldrun-p1--agent-123456789"));
+    }
+
+    #[test]
+    fn one_corrupt_session_file_costs_that_project_its_tabs_not_the_whole_catalog() {
+        let dir = tempfile::tempdir().expect("state dir");
+        let state = dir.path();
+        let root_a = state.join("a");
+        let root_b = state.join("b");
+        fs::create_dir_all(&root_a).expect("root a");
+        fs::create_dir_all(&root_b).expect("root b");
+        let project = |id: &str, name: &str, root: &Path| {
+            serde_json::json!({
+                "id": id,
+                "name": name,
+                "status": "active",
+                "directory": root.to_string_lossy(),
+                "eldrun_mobile_access": true,
+            })
+        };
+        fs::write(
+            state.join("projects.json"),
+            serde_json::to_vec(&serde_json::json!([
+                project("p-a", "A", &root_a),
+                project("p-b", "B", &root_b),
+            ]))
+            .expect("projects"),
+        )
+        .expect("write projects");
+        let sessions = state.join("sessions");
+        fs::create_dir_all(sessions.join("p-a")).expect("session a");
+        fs::create_dir_all(sessions.join("p-b")).expect("session b");
+        fs::write(
+            sessions.join("p-a").join("terminals.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "tabLayout": [{
+                    "label": "Shell",
+                    "cmd": "bash",
+                    "cwd": root_a.to_string_lossy(),
+                    "kind": "shell",
+                    "tmuxSession": "eldrun-p-a--shell-123456789",
+                }]
+            }))
+            .expect("session"),
+        )
+        .expect("write session a");
+        fs::write(sessions.join("p-b").join("terminals.json"), b"{ not json").expect("corrupt b");
+
+        let catalog = Catalog::load(state, &[7; 32])
+            .expect("one unreadable session file must not fail the whole catalog");
+        assert_eq!(catalog.projects.len(), 2);
+        let a = catalog.projects.iter().find(|p| p.raw_id == "p-a").expect("A");
+        let b = catalog.projects.iter().find(|p| p.raw_id == "p-b").expect("B");
+        assert_eq!(a.tabs.len(), 1, "the healthy project keeps its tabs");
+        assert!(b.tabs.is_empty(), "the corrupt one has none, and is still listed");
     }
 
     #[test]
