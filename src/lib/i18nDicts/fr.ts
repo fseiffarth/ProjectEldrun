@@ -1467,6 +1467,8 @@ export const dict: Dict = {
   "vpnNotice.desc": "Cet ordinateur transite déjà par un tunnel, ce projet n'en a donc pas besoin d'un second. Gérez les tunnels depuis le contrôle VPN de l'en-tête.",
   "connLog.ariaLabel": "Journal de connexion OpenVPN",
   "connLog.startingVpn": "Démarrage d'OpenVPN…",
+  "connLog.copy": "Copier tout le journal de connexion",
+  "connLog.copied": "Journal de connexion copié",
   "folderPicker.upOneFolder": "Remonter d'un dossier",
   "folderPicker.up": "Remonter",
   "folderPicker.noSubfolders": "Aucun sous-dossier ici.",

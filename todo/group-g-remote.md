@@ -1461,3 +1461,34 @@ untested tag until a VM has actually booted on this machine).
   `/home/eldrun/project`), `git init` + commit inside, deactivate (VM powers
   down), reactivate, delete. Then a clone-into-VM import against a real repo,
   and a blocked-CONNECT check (curl example.com from inside → 403 + pill log).
+
+92. ✅ **A failed VPN connect is readable, and an expired certificate is named.**
+    Two separate holes met in one report: the headless handshake log was the only
+    record of *why* a connect failed, and it could not be copied — the app root sets
+    `user-select: none` (`styles/base.css`) and `.connection-log` never opted back
+    in, so the one piece of text worth handing to someone else was unselectable.
+    Fixed in `components/common/ConnectionLog.tsx` (shared by `VpnPasswordPrompt`
+    and `RemoteConnectDialog`, so both surfaces get it): the lines are selectable,
+    and a Copy chip sits *outside* the scroller — the log auto-scrolls to the newest
+    line, so a button inside it would scroll out of view exactly when a failure
+    makes it worth pressing. It copies every line, not the visible ones. The xterm
+    surfaces (root-terminal tunnel, the dialog's embedded login terminal) already
+    copied on select and are unchanged.
+    The second half is `explain_openvpn_error`: OpenVPN does not refuse to start on
+    an expired **client** certificate. It prints one warning, sends the cert anyway,
+    the server drops the handshake in silence, and 60 seconds later the log says
+    `TLS key negotiation failed to occur within 60 seconds (check your network
+    connectivity)` — pointing at the one thing that is fine — then restarts on
+    `SIGUSR1[soft,tls-error]` and does it again. Eldrun matched only that timeout,
+    so it repeated the wrong advice. The expired-cert check now runs *first*
+    (symptom must not outrank cause), and a peer-chain `VERIFY ERROR` is reported
+    separately, since an expired server cert needs a different person to fix it.
+    - [x] 🤖 Automated tests — `explain_openvpn_error_names_an_expired_client_certificate`
+      (asserts the timeout line does *not* win), `explain_openvpn_error_separates_a_bad_server_certificate`
+      (`services/openvpn.rs`).
+    - [ ] 🖐️ Manual test — with a config whose client certificate has expired,
+      connect from the header VPN menu: the log is selectable, the Copy chip yields
+      the whole handshake, and the error names the expired certificate instead of
+      network connectivity.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work

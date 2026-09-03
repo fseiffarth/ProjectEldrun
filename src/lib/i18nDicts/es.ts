@@ -1465,6 +1465,8 @@ export const dict: Dict = {
   "vpnNotice.desc": "Este ordenador ya enruta a través de un túnel, así que este proyecto no necesita un segundo. Gestiona los túneles desde el control VPN de la cabecera.",
   "connLog.ariaLabel": "Registro de conexión OpenVPN",
   "connLog.startingVpn": "Iniciando OpenVPN…",
+  "connLog.copy": "Copiar todo el registro de conexión",
+  "connLog.copied": "Registro de conexión copiado",
   "folderPicker.upOneFolder": "Subir una carpeta",
   "folderPicker.up": "Subir",
   "folderPicker.noSubfolders": "No hay subcarpetas aquí.",

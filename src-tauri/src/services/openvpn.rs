@@ -814,6 +814,38 @@ fn write_credfiles(
 pub fn explain_openvpn_error(log: &str) -> Option<String> {
     let s = log.to_ascii_lowercase();
 
+    // An expired CLIENT certificate, first — because its *symptom* is the TLS
+    // timeout checked further down, and that check would otherwise answer a
+    // solved question with a guess. OpenVPN does not refuse to start on an
+    // expired cert: it prints one warning, sends it anyway, and the server drops
+    // the handshake in silence. The client then sits through the full 60-second
+    // `TLS key negotiation failed` window, takes `SIGUSR1[soft,tls-error]`, and
+    // restarts — so what the user sees is a tunnel retrying forever and a log
+    // whose loudest line ("check your network connectivity") points at the one
+    // thing that is fine. The warning is many screens above by then, and Eldrun's
+    // own tail may not even reach back to it, which is exactly why this is worth
+    // naming rather than leaving to be read.
+    if s.contains("your certificate has expired") {
+        return Some(
+            "This VPN config's client certificate has expired — the server drops the handshake, \
+             so OpenVPN retries until it times out. The certificate has to be reissued; nothing \
+             typed here can connect until it is."
+                .to_string(),
+        );
+    }
+    // The other end of the same problem: the SERVER's certificate is the one out
+    // of its validity window. Distinguished from the above by OpenVPN's own
+    // wording — `VERIFY ERROR` is the peer chain, `your certificate` is ours —
+    // because the two need completely different people to fix them.
+    if s.contains("verify error") && (s.contains("certificate has expired") || s.contains("certificate is not yet valid"))
+    {
+        return Some(
+            "The VPN server's certificate did not verify — it is expired or not yet valid. Check \
+             this machine's clock first, then whether the config is still current."
+                .to_string(),
+        );
+    }
+
     // Wrong private-key passphrase. OpenVPN/OpenSSL word this several ways
     // depending on version and key format; all of them mean the same thing.
     if s.contains("private key password verification failed")
@@ -3322,6 +3354,36 @@ mod tests {
 
         let tun = explain_openvpn_error("ERROR: Cannot open TUN/TAP dev /dev/net/tun").unwrap();
         assert!(tun.contains("tunnel device"), "{tun}");
+    }
+
+    /// An expired client certificate must outrank the TLS-timeout branch. Both
+    /// lines appear in the SAME log — the warning at handshake start, the timeout
+    /// 60 seconds later — so whichever check runs first decides what the user is
+    /// told, and only one of them names something they can act on.
+    #[test]
+    fn explain_openvpn_error_names_an_expired_client_certificate() {
+        let log = "WARNING: Your certificate has expired!\n\
+                   VERIFY OK: depth=1\n\
+                   TLS Error: TLS key negotiation failed to occur within 60 seconds\n\
+                   TLS Error: TLS handshake failed";
+        let msg = explain_openvpn_error(log).unwrap();
+        assert!(msg.contains("client certificate has expired"), "{msg}");
+        assert!(
+            !msg.contains("TLS handshake failed"),
+            "the timeout is the symptom, not the diagnosis: {msg}"
+        );
+    }
+
+    /// The peer's chain failing verification is a different problem with a
+    /// different owner, so it must not be reported as the user's own cert.
+    #[test]
+    fn explain_openvpn_error_separates_a_bad_server_certificate() {
+        let msg = explain_openvpn_error(
+            "VERIFY ERROR: depth=0, error=certificate has expired: CN=vpn.example",
+        )
+        .unwrap();
+        assert!(msg.contains("server's certificate"), "{msg}");
+        assert!(msg.contains("clock"), "{msg}");
     }
 
     #[test]

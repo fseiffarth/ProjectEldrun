@@ -1566,6 +1566,8 @@ export const en = {
   "vpnNotice.desc": "This computer already routes through a tunnel, so this project needs no second one. Manage tunnels from the VPN control in the header.",
   "connLog.ariaLabel": "OpenVPN connection log",
   "connLog.startingVpn": "Starting OpenVPN…",
+  "connLog.copy": "Copy the whole connection log",
+  "connLog.copied": "Connection log copied",
   "folderPicker.upOneFolder": "Up one folder",
   "folderPicker.up": "Up",
   "folderPicker.noSubfolders": "No sub-folders here.",
