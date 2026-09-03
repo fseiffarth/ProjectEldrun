@@ -151,10 +151,16 @@ export interface MobileCalendar {
 }
 export interface MobileMailFolder { id: string; name: string; kind: string; unread: number; total: number }
 export interface MobileMailAccount { id: string; label: string; address: string; folders: MobileMailFolder[] }
-export interface MobileMailHeader { id: string; subject: string; sender: { name?: string; address: string }; date: string; seen: boolean; has_attachments: boolean; preview: string }
+export interface MobileMailHeader { id: string; subject: string; sender: { name?: string; address: string }; date: string; seen: boolean; flagged?: boolean; answered?: boolean; has_attachments: boolean; preview: string }
 export interface MobileMailAttachment { filename: string; mime: string; size: number }
+/** The only flag writes the phone may ask for. Delete and move do not exist here. */
+export type MailMarkAction = "seen" | "unseen" | "flag" | "unflag";
+/** What the connected desktop lets this phone *do* to mail, beyond reading.
+ * Both are desktop settings, default off; the phone hides the controls rather
+ * than discovering a refusal. Absent from an older desktop means off. */
+export interface MobileMailWrites { actions?: boolean; reply?: boolean }
 export type MobileMailView =
-  | { view: "overview"; accounts: MobileMailAccount[] }
+  | ({ view: "overview"; accounts: MobileMailAccount[] } & MobileMailWrites)
   | { view: "folder"; folder: MobileMailFolder; messages: MobileMailHeader[]; total: number; offset: number }
   | { view: "message"; message: MobileMailHeader; body: string; truncated: boolean; attachments: MobileMailAttachment[] };
 

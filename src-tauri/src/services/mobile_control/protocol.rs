@@ -381,6 +381,12 @@ pub struct MobileMailHeader {
     pub sender: MobileMailSender,
     pub date: String,
     pub seen: bool,
+    /// The IMAP `\\Flagged` star and `\\Answered` mark. Defaulted so a desktop
+    /// that predates them still answers a folder request.
+    #[serde(default)]
+    pub flagged: bool,
+    #[serde(default)]
+    pub answered: bool,
     pub has_attachments: bool,
     pub preview: String,
 }
@@ -398,6 +404,14 @@ pub struct MobileMailAttachment {
 pub enum MobileMailView {
     Overview {
         accounts: Vec<MobileMailAccount>,
+        /// Whether the desktop currently accepts [`DesktopRequest::MailMark`]
+        /// and [`DesktopRequest::MailReply`] from a phone. Both are desktop
+        /// settings the sidecar cannot read; it only relays the answer so the
+        /// phone can hide the controls instead of discovering a refusal.
+        #[serde(default)]
+        actions: bool,
+        #[serde(default)]
+        reply: bool,
     },
     Folder {
         folder: MobileMailFolder,
@@ -412,6 +426,22 @@ pub enum MobileMailView {
         attachments: Vec<MobileMailAttachment>,
     },
 }
+
+/// The only flag writes a phone may ask for. Delete and move are deliberately
+/// absent: destructive from a pocketable device, and the desktop has undo
+/// surfaces the phone lacks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MailMarkAction {
+    Seen,
+    Unseen,
+    Flag,
+    Unflag,
+}
+
+/// Longest reply body a phone may submit, in bytes. A phone reply is a short
+/// answer typed on a small keyboard; anything longer belongs on the desktop.
+pub const MAX_MAIL_REPLY_BYTES: usize = 16 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
@@ -502,6 +532,27 @@ pub enum DesktopRequest {
         message_id: String,
         offset: u32,
     },
+    /// Set or clear one flag on one message. Carries the same `offset` the
+    /// read requests do, because the desktop resolves an opaque message id by
+    /// re-reading exactly the page that issued it.
+    MailMark {
+        request_id: String,
+        folder_id: String,
+        message_id: String,
+        offset: u32,
+        action: MailMarkAction,
+    },
+    /// Reply to one message with plain text. The phone supplies **only** the
+    /// body: the recipient, subject, and threading headers are derived by the
+    /// desktop from its own copy of the original, so a paired phone can answer
+    /// people who already wrote to the user and nobody else.
+    MailReply {
+        request_id: String,
+        folder_id: String,
+        message_id: String,
+        offset: u32,
+        body: String,
+    },
     Schedules {
         request_id: String,
         project_id: String,
@@ -587,6 +638,8 @@ impl DesktopRequest {
             | Self::MailOverview { request_id }
             | Self::MailFolder { request_id, .. }
             | Self::MailMessage { request_id, .. }
+            | Self::MailMark { request_id, .. }
+            | Self::MailReply { request_id, .. }
             | Self::Schedules { request_id, .. }
             | Self::ScheduleMutate { request_id, .. }
             | Self::RenameTab { request_id, .. }
@@ -601,14 +654,16 @@ impl DesktopRequest {
 
     /// How long the sidecar waits for the desktop's answer to this request.
     ///
-    /// Two requests outlive the control-message SLA for reasons of their own: a
-    /// first message open may perform a bounded IMAP `BODY.PEEK`, and an agent
-    /// status may spawn the agent's CLI in print mode to read its usage panel
-    /// (`services::agent_usage::USAGE_TIMEOUT`). Everything else should still
-    /// fail fast when the desktop is wedged.
+    /// A few requests outlive the control-message SLA for reasons of their
+    /// own: a first message open may perform a bounded IMAP `BODY.PEEK`, a
+    /// flag write or a reply talks to the IMAP/SMTP server before answering,
+    /// and an agent status may spawn the agent's CLI in print mode to read its
+    /// usage panel (`services::agent_usage::USAGE_TIMEOUT`). Everything else
+    /// should still fail fast when the desktop is wedged.
     pub fn response_timeout(&self) -> std::time::Duration {
         std::time::Duration::from_secs(match self {
-            Self::MailMessage { .. } => 35,
+            Self::MailMessage { .. } | Self::MailMark { .. } => 35,
+            Self::MailReply { .. } => 65,
             Self::AgentStatus { .. } => 25,
             _ => 10,
         })
@@ -619,7 +674,8 @@ impl DesktopRequest {
     /// stated failure rather than as a socket that died under the sidecar.
     pub fn desktop_timeout(&self) -> std::time::Duration {
         std::time::Duration::from_secs(match self {
-            Self::MailMessage { .. } => 30,
+            Self::MailMessage { .. } | Self::MailMark { .. } => 30,
+            Self::MailReply { .. } => 60,
             Self::AgentStatus { .. } => 20,
             _ => 8,
         })
@@ -1045,6 +1101,8 @@ mod tests {
                     },
                     date: "2026-08-25T12:00:00Z".into(),
                     seen: true,
+                    flagged: false,
+                    answered: false,
                     has_attachments: false,
                     preview: "Preview".into(),
                 },
@@ -1138,5 +1196,61 @@ mod tests {
         assert_eq!(response_json["status"], "calendar");
         assert_eq!(response_json["calendar"]["events"][0]["title"], "Planning");
         assert_eq!(response_json["calendar"]["events"][0]["id"], "opaque-event");
+    }
+
+    /// The terminal control plane, byte for byte as `mobile-web/src/terminal/
+    /// protocol.ts` shapes it: every frame the phone sends decodes, nothing it
+    /// does not name is accepted, and every server frame survives a round trip.
+    #[test]
+    fn terminal_frames_match_the_phones_wire_shapes_exactly() {
+        use super::{TerminalControl, TerminalEvent};
+        let control = |raw: &str| serde_json::from_str::<TerminalControl>(raw);
+        assert!(matches!(control(r#"{"type":"ready"}"#), Ok(TerminalControl::Ready)));
+        assert!(matches!(control(r#"{"type":"ping"}"#), Ok(TerminalControl::Ping)));
+        assert!(matches!(
+            control(r#"{"type":"detached"}"#),
+            Ok(TerminalControl::Detached)
+        ));
+        assert!(matches!(
+            control(r#"{"type":"resize","cols":80,"rows":24}"#),
+            Ok(TerminalControl::Resize { cols: 80, rows: 24 })
+        ));
+        // Anything the protocol does not name is refused, never guessed at.
+        // The one gap is serde's, and documented here so nobody relies on the
+        // `deny_unknown_fields` on the enum for it: an internally tagged enum
+        // enforces the attribute on its struct variants (`resize` above) but
+        // not on its unit variants, whose extra fields are ignored — harmless,
+        // since a unit variant carries nothing an extra field could reach.
+        assert!(matches!(
+            control(r#"{"type":"ping","extra":1}"#),
+            Ok(TerminalControl::Ping)
+        ));
+        for bad in [
+            r#"{"type":"resize","cols":80}"#,
+            r#"{"type":"resize","cols":-1,"rows":24}"#,
+            r#"{"type":"resize","cols":80,"rows":24,"pixel_width":1}"#,
+            r#"{"type":"exec","cmd":"id"}"#,
+            r#"{}"#,
+            "[]",
+            "",
+        ] {
+            assert!(control(bad).is_err(), "accepted {bad:?}");
+        }
+        for event in [
+            TerminalEvent::Pong,
+            TerminalEvent::Replay,
+            TerminalEvent::Window {
+                cols: 180,
+                rows: 48,
+            },
+            TerminalEvent::Closing {
+                reason: "replaced".into(),
+                retry: false,
+            },
+        ] {
+            let restored: TerminalEvent =
+                serde_json::from_str(&event.to_frame()).expect("server frame round trip");
+            assert_eq!(restored, event);
+        }
     }
 }

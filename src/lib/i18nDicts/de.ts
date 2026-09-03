@@ -278,6 +278,11 @@ export const dict: Dict = {
     "Zeigt den Status des Eldrun-Mobile-Hosts und Schnellzugriffe zum Neuverbinden neben der Akkuanzeige.",
 
   "mobile.title": "Eldrun Mobile",
+  "mobile.mailWrites": "Mail vom Telefon",
+  "mobile.mailActions": "Vom Telefon als gelesen markieren und markieren",
+  "mobile.mailActionsHelp": "Ein gekoppeltes Telefon darf eine Nachricht als gelesen oder ungelesen markieren und den Stern setzen oder entfernen. Der Desktop setzt das Flag über seine eigene Mail-Sitzung und antwortet mit der aktualisierten Liste. Löschen und Verschieben bleiben auf dem Desktop, wo sie rückgängig gemacht werden können.",
+  "mobile.mailReply": "Vom Telefon antworten",
+  "mobile.mailReplyHelp": "Ein gekoppeltes Telefon darf eine Nur-Text-Antwort auf eine Nachricht senden, die es gerade liest. Das Telefon liefert nur den Text: Empfänger, Betreff und Verkettung stammen aus der Originalnachricht, sodass ein Telefon nur Personen antworten kann, die dir bereits geschrieben haben. Keine neuen Mails, keine Anhänge, kein Signieren oder Verschlüsseln. Ein verlorenes Telefon kann mit dieser Einstellung in deinem Namen Mails senden, bis du es widerrufst.",
   "mobile.settingsHelp": "Privater Zugriff auf Projekt-Terminals über Tailscale Serve. Der Host lauscht nur auf Loopback, und jeder Browser muss gekoppelt werden. Er läuft, solange Eldrun läuft: mit der App gestartet, beim Beenden der App gestoppt.",
   "mobile.healthOffTitle": "Mobile ist aus",
   "mobile.healthOffDetail": "Derzeit ist kein Eldrun-Mobile-Host veröffentlicht.",

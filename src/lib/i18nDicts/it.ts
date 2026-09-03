@@ -276,6 +276,11 @@ export const dict: Dict = {
     "Mostra lo stato dell'host Eldrun Mobile e i comandi di riconnessione rapida accanto all'indicatore della batteria.",
 
   "mobile.title": "Eldrun Mobile",
+  "mobile.mailWrites": "Posta dal telefono",
+  "mobile.mailActions": "Segnare come letto e mettere la stella dal telefono",
+  "mobile.mailActionsHelp": "Un telefono abbinato può segnare un messaggio come letto o non letto e mettere o togliere la stella. Il desktop applica il flag tramite la propria sessione di posta e risponde con l'elenco aggiornato. Eliminare e spostare restano sul desktop, dove si possono annullare.",
+  "mobile.mailReply": "Rispondere dal telefono",
+  "mobile.mailReplyHelp": "Un telefono abbinato può inviare una risposta in testo semplice a un messaggio che sta leggendo. Il telefono fornisce solo il testo: destinatario, oggetto e thread derivano dal messaggio originale, quindi un telefono può rispondere solo a chi ti ha già scritto. Niente nuove mail, niente allegati, niente firma o cifratura. Un telefono smarrito con questa opzione attiva può inviare posta a tuo nome finché non la revochi.",
   "mobile.settingsHelp": "Accesso privato ai terminali di progetto tramite Tailscale Serve. L'host ascolta solo sul loopback e ogni browser deve essere abbinato. Resta attivo finché Eldrun è aperto: avviato con l'app, fermato alla sua chiusura.",
   "mobile.healthOffTitle": "Mobile è spento",
   "mobile.healthOffDetail": "Al momento non è pubblicato alcun host Eldrun Mobile.",

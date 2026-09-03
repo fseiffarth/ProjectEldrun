@@ -81,8 +81,13 @@ notes, date/time, progress, tags, project/calendar assignment, and checklists),
 complete, move, delete, and manage columns via the desktop bridge. Mail lists
 configured accounts, cached folders and
 paged cached headers, and opens a message as bounded plain text with attachment
-metadata. It has no sync, compose/reply, flag/read-state mutation, link-opening,
-attachment download, or remote-content controls. It does not
+metadata. Two writes exist, each behind its own default-off desktop setting
+(`eldrun_mobile_host.mail_actions` / `.mail_reply`, 2026-09-03): mark
+read/unread and star/unstar, and a plain-text **reply** whose recipient,
+subject and threading the desktop derives from the original — the phone
+supplies only the text, so it can answer people who already wrote and nobody
+else. It has no sync, fresh compose, delete, move, link-opening, attachment
+download, signing/encryption, or remote-content controls. It does not
 mirror the desktop layout or stream the desktop screen.
 
 The first client is a responsive installable PWA served privately by the host.
@@ -99,8 +104,9 @@ A native iOS/Android wrapper may follow, but it must reuse this API and protocol
 - project and eligible-tab discovery;
 - a to-do board mediated by the connected desktop, with the desktop board's
   card and column editing operations;
-- read-only mail account/folder browsing and bounded message reading, mediated
-  by the connected desktop and using opaque phone-visible ids;
+- mail account/folder browsing and bounded message reading, mediated by the
+  connected desktop and using opaque phone-visible ids, plus the two gated
+  writes above (flag marks and a recipient-derived plain-text reply);
 - a bounded month calendar mediated by the connected desktop, with
   desktop-expanded occurrences plus event and ordinary-calendar management;
 - creation of a permitted shell or resumable configured agent while Eldrun is
@@ -655,6 +661,8 @@ POST   /api/v1/calendar?month=YYYY-MM
 GET    /api/v1/mail
 GET    /api/v1/mail/folders/:folder_id?offset=...
 GET    /api/v1/mail/folders/:folder_id/messages/:message_id?offset=...
+POST   /api/v1/mail/folders/:folder_id/messages/:message_id/mark   {action, offset}
+POST   /api/v1/mail/folders/:folder_id/messages/:message_id/reply  {body, offset}
 GET    /api/v1/projects?view=active|search&q=...
 GET    /api/v1/projects/:project_id
 POST   /api/v1/projects/:project_id/activate

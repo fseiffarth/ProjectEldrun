@@ -29,8 +29,10 @@ use super::{
     inbox,
     limits,
     protocol::{
-        CalendarAction, CreateTabRequest, DesktopRequest, DesktopResponse, MobilePromptInput,
-        MobileScheduleInput, PromptMutation, ScheduleMutation, TodoAction, MAX_CONTROL_MESSAGE, MAX_INPUT_FRAME, MAX_TAB_LABEL, TERMINAL_PROTOCOL,
+        CalendarAction, CreateTabRequest, DesktopRequest, DesktopResponse, MailMarkAction,
+        MobilePromptInput, MobileScheduleInput, PromptMutation, ScheduleMutation, TodoAction,
+        MAX_CONTROL_MESSAGE, MAX_INPUT_FRAME, MAX_MAIL_REPLY_BYTES, MAX_TAB_LABEL,
+        TERMINAL_PROTOCOL,
     },
     pty_bridge::{self, TerminalRegistry},
 };
@@ -81,6 +83,26 @@ struct ProjectQuery {
 #[serde(deny_unknown_fields)]
 struct MailQuery {
     offset: Option<u32>,
+}
+
+/// Body of a mail flag write. `offset` names the folder page that issued the
+/// opaque message id, exactly as the read routes take it in the query.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MailMarkBody {
+    action: MailMarkAction,
+    #[serde(default)]
+    offset: u32,
+}
+
+/// Body of a phone reply: the text and nothing else. Recipient, subject and
+/// threading are the desktop's to derive from the original message.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MailReplyBody {
+    body: String,
+    #[serde(default)]
+    offset: u32,
 }
 
 #[derive(Deserialize, Default)]
@@ -786,6 +808,10 @@ fn mail_response(
                 StatusCode::SERVICE_UNAVAILABLE
             } else if code.ends_with("_not_found") {
                 StatusCode::NOT_FOUND
+            } else if code.ends_with("_disabled") {
+                // The desktop setting is off: a refusal the phone should read
+                // as "not allowed here", not as a malformed request.
+                StatusCode::FORBIDDEN
             } else {
                 StatusCode::BAD_REQUEST
             },
@@ -864,6 +890,87 @@ async fn mail_message(
                 folder_id,
                 message_id,
                 offset,
+            },
+        )
+        .await,
+    )
+}
+
+/// The two mail mutations. Both are origin-checked like every other write,
+/// validated here only for shape, and gated **on the desktop**: the sidecar
+/// cannot read mail settings and must not start to. The desktop answers with
+/// the refreshed folder page so the phone's list is right without a second
+/// round trip.
+async fn mail_mark(
+    State(state): State<HostState>,
+    headers: HeaderMap,
+    Path((folder_id, message_id)): Path<(String, String)>,
+    body: Bytes,
+) -> impl IntoResponse {
+    if let Err(error) = authenticate(&headers, &state) {
+        return error;
+    }
+    if !exact_origin(&headers, &state) {
+        return api_error(StatusCode::FORBIDDEN, "invalid_origin");
+    }
+    let Ok(mark) = serde_json::from_slice::<MailMarkBody>(&body) else {
+        return api_error(StatusCode::BAD_REQUEST, "invalid_request");
+    };
+    if !valid_mail_id(&folder_id) || !valid_mail_id(&message_id) || mark.offset > 100_000 {
+        return api_error(StatusCode::BAD_REQUEST, "invalid_request");
+    }
+    let desktop_socket = state.config.control_dir.join("desktop-control.sock");
+    let request_id = Base64UrlUnpadded::encode_string(&random_16());
+    mail_response(
+        admin::desktop_call(
+            &desktop_socket,
+            &DesktopRequest::MailMark {
+                request_id,
+                folder_id,
+                message_id,
+                offset: mark.offset,
+                action: mark.action,
+            },
+        )
+        .await,
+    )
+}
+
+async fn mail_reply(
+    State(state): State<HostState>,
+    headers: HeaderMap,
+    Path((folder_id, message_id)): Path<(String, String)>,
+    body: Bytes,
+) -> impl IntoResponse {
+    if let Err(error) = authenticate(&headers, &state) {
+        return error;
+    }
+    if !exact_origin(&headers, &state) {
+        return api_error(StatusCode::FORBIDDEN, "invalid_origin");
+    }
+    let Ok(reply) = serde_json::from_slice::<MailReplyBody>(&body) else {
+        return api_error(StatusCode::BAD_REQUEST, "invalid_request");
+    };
+    if !valid_mail_id(&folder_id) || !valid_mail_id(&message_id) || reply.offset > 100_000 {
+        return api_error(StatusCode::BAD_REQUEST, "invalid_request");
+    }
+    if reply.body.trim().is_empty() {
+        return api_error(StatusCode::BAD_REQUEST, "empty_reply");
+    }
+    if reply.body.len() > MAX_MAIL_REPLY_BYTES {
+        return api_error(StatusCode::PAYLOAD_TOO_LARGE, "reply_too_long");
+    }
+    let desktop_socket = state.config.control_dir.join("desktop-control.sock");
+    let request_id = Base64UrlUnpadded::encode_string(&random_16());
+    mail_response(
+        admin::desktop_call(
+            &desktop_socket,
+            &DesktopRequest::MailReply {
+                request_id,
+                folder_id,
+                message_id,
+                offset: reply.offset,
+                body: reply.body,
             },
         )
         .await,
@@ -1727,6 +1834,14 @@ fn router(state: HostState) -> Router {
             "/api/v1/mail/folders/{folder_id}/messages/{message_id}",
             get(mail_message),
         )
+        .route(
+            "/api/v1/mail/folders/{folder_id}/messages/{message_id}/mark",
+            post(mail_mark),
+        )
+        .route(
+            "/api/v1/mail/folders/{folder_id}/messages/{message_id}/reply",
+            post(mail_reply),
+        )
         .route("/api/v1/projects", get(projects))
         .route("/api/v1/projects/{project_id}", get(project))
         .route(
@@ -2109,6 +2224,8 @@ mod tests {
             "/api/v1/tabs/anything/desktop-images",
             "/api/v1/projects/anything/prompts",
             "/api/v1/projects/anything/prompts/anything/send",
+            "/api/v1/mail/folders/anything/messages/anything/mark",
+            "/api/v1/mail/folders/anything/messages/anything/reply",
         ] {
             let (status, _, body) = host.send(post_json(uri, ORIGIN, &create)).await;
             assert_eq!(status, StatusCode::UNAUTHORIZED, "{uri} answered: {body}");
@@ -2213,6 +2330,87 @@ mod tests {
         assert_eq!(json(&body)["error"], "desktop_unavailable");
         assert!(!body.contains(RAW_PROJECT));
         assert!(!body.contains("eldrun-"));
+    }
+
+    #[tokio::test]
+    async fn mail_writes_check_origin_and_shape_before_the_desktop_bridge() {
+        let host = Fixture::bare();
+        let cookie = host.pair_device(&signing_key(17)).await.0;
+        let post = |uri: &str, origin: &'static str, body: Value| {
+            Request::builder()
+                .method("POST")
+                .uri(uri.to_string())
+                .header(header::ORIGIN, origin)
+                .header(header::COOKIE, cookie_pair(&cookie))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(serde_json::to_vec(&body).expect("body")))
+                .expect("request")
+        };
+        let mark = "/api/v1/mail/folders/folder-1/messages/message-1/mark";
+        let reply = "/api/v1/mail/folders/folder-1/messages/message-1/reply";
+
+        // Origin first, before the body is even parsed.
+        let (status, _, body) = host
+            .send(post(mark, "https://evil.example", serde_json::json!({ "action": "seen" })))
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "answered: {body}");
+        assert_eq!(json(&body)["error"], "invalid_origin");
+
+        // Only the four flag verbs exist: no delete, no move, no free-form flag.
+        for action in ["deleted", "move", "\\Seen", ""] {
+            let (status, _, body) = host
+                .send(post(mark, ORIGIN, serde_json::json!({ "action": action })))
+                .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{action} answered: {body}");
+            assert_eq!(json(&body)["error"], "invalid_request", "{action}");
+        }
+        // Ids are validated exactly as the read routes validate them.
+        let (status, _, body) = host
+            .send(post(
+                "/api/v1/mail/folders/../messages/message-1/mark",
+                ORIGIN,
+                serde_json::json!({ "action": "seen" }),
+            ))
+            .await;
+        assert!(
+            status == StatusCode::BAD_REQUEST || status == StatusCode::NOT_FOUND,
+            "answered: {body}"
+        );
+
+        // A reply carries text and nothing else: no recipient, subject or
+        // headers are accepted from the phone.
+        let (status, _, body) = host
+            .send(post(
+                reply,
+                ORIGIN,
+                serde_json::json!({ "body": "Thanks", "to": "someone@example.test" }),
+            ))
+            .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "answered: {body}");
+        let (status, _, body) = host
+            .send(post(reply, ORIGIN, serde_json::json!({ "body": "   " })))
+            .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "answered: {body}");
+        assert_eq!(json(&body)["error"], "empty_reply");
+        let (status, _, body) = host
+            .send(post(
+                reply,
+                ORIGIN,
+                serde_json::json!({ "body": "x".repeat(MAX_MAIL_REPLY_BYTES + 1) }),
+            ))
+            .await;
+        assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE, "answered: {body}");
+
+        // Well-formed writes with no desktop window are unavailable, not
+        // silently accepted: the sidecar never touches mail itself.
+        for (uri, body) in [
+            (mark, serde_json::json!({ "action": "flag", "offset": 25 })),
+            (reply, serde_json::json!({ "body": "On my way." })),
+        ] {
+            let (status, _, answer) = host.send(post(uri, ORIGIN, body)).await;
+            assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{uri} answered: {answer}");
+            assert_eq!(json(&answer)["error"], "desktop_unavailable", "{uri}");
+        }
     }
 
     #[tokio::test]

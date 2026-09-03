@@ -24,7 +24,7 @@ Priority order and rationale:
 | B | Dead-session relaunch | Completes the session-gone notice added 2026-08-26; one tap from "ended" back to a resumed agent. |
 | C | PWA code-splitting | Small, standalone, pays for itself on every cold cellular load. |
 | D | Read-only file browsing | "What did the agent just write" without opening a shell. |
-| E | Mobile mail actions | Mark-read/flag through the desktop bridge. |
+| E | Mobile mail actions | Mark-read/flag through the desktop bridge. **Landed 2026-09-03**, plus a recipient-derived reply — see E.3. |
 | F | Multi-host awareness | Honest display of worker-host tabs; attach stays out of scope. |
 | G | Hardened local unlock (WebAuthn PRF) | Ranked apart from A–F: raises the app lock from a UI gate to encryption-at-rest of the device key, where the platform authenticator supports it. |
 
@@ -333,6 +333,32 @@ threat model entirely).
 Acceptance: mark-read on the phone shows read in the desktop client after its
 next sync tick; gate off → no buttons and a refused request; the flag write
 failing server-side surfaces the error string, never a silently stale list.
+
+### E.3 What landed (2026-09-03, code-complete, phone QA pending — 31t)
+
+The design above, with three deliberate deviations and one addition:
+
+- the gate lives on the host settings object as
+  `eldrun_mobile_host.mail_actions` rather than as a top-level key, so it
+  travels with the rest of Mobile's configuration and is read only by the
+  desktop bridge (`MobileBridgeHost`), never by the sidecar;
+- the bridge request carries the folder page `offset`, because the desktop
+  resolves an opaque message id by re-reading exactly the page that issued
+  it — the same rule the read requests follow;
+- the desktop applies the flag through the existing per-message `mail_flag`
+  command (local index first, then the server, a refusal reported), not
+  `set_flags_bulk`: one message per tap is the whole workload.
+- **Reply-only, added under a second, separate default-off gate
+  (`eldrun_mobile_host.mail_reply`).** The phone submits plain text and
+  nothing else (`POST …/reply {body, offset}`, ≤ 16 KiB). The desktop derives
+  the recipient from the original's `From`, the subject behind the reply
+  prefix, quotes the original below the text, sets `In-Reply-To` from the RFC
+  `Message-ID`, and sends through its own draft path with sign and encrypt
+  off; a failed send leaves the draft in Drafts and reports the reason. The
+  bound is the point: a paired phone can answer people who already wrote to
+  the user and nobody else. Fresh compose, attachments, CC/BCC, forward, and
+  OpenPGP stay on the desktop. The phone asks a second, explicit confirmation
+  naming the recipient before anything leaves it.
 
 ---
 

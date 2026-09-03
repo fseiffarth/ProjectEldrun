@@ -836,6 +836,32 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     the first pixel as before.
   - [ ] ✅ Works
   - [ ] ❌ Doesn't work
+- [~] **31t — Mail writes from the phone: mark read/star and reply-only**
+  (2026-09-03; ✅ code-complete and automated tests passing, ⚠️ phone QA
+  pending). Mail was the one companion surface with no write at all, and the
+  reason was the outbound threat model, not the architecture. Two writes now
+  exist behind two separate default-off switches in Settings → Eldrun Mobile
+  → *Mail from the phone*: `mail_actions` (mark read/unread, star/unstar via
+  `POST …/messages/:id/mark`) and `mail_reply` (a plain-text reply via
+  `POST …/messages/:id/reply` where the phone supplies only the text — the
+  desktop derives recipient, subject, quote and `In-Reply-To` from the
+  original, so a phone can answer people who already wrote and nobody else).
+  Both are gated on the desktop bridge (`MobileBridgeHost`), never in the
+  sidecar; the overview reports `actions`/`reply` so the phone hides the
+  controls rather than discovering a refusal. Delete, move, fresh compose,
+  attachments and OpenPGP stay on the desktop.
+    - [ ] 🖐️ Manual test — both switches off: open a message on the phone;
+      expect no Mark/Star buttons and no reply box, and the read-only notice.
+    - [ ] 🖐️ Manual test — `mail_actions` on: Mark read / ★ Star on the phone;
+      expect the row to update from the desktop's answer and the desktop mail
+      client to show the same state after its next sync.
+    - [ ] 🖐️ Manual test — `mail_reply` on: type a reply, tap *Send reply…*,
+      expect the confirmation naming the sender's address; confirm; expect
+      "Reply sent from the desktop", the ↩ mark on the row, the reply in the
+      desktop's Sent folder threaded under the original, and the mail to
+      arrive at the sender.
+    - [ ] 🖐️ Manual test — flip a switch off while the phone has the message
+      open; tap the control; expect the "Switched off in Eldrun" explanation.
 - [~] **31s — The phone's `done` tag clears when the tab is read** (2026-09-02;
   ✅ code-complete and automated tests passing, ⚠️ phone QA pending). The
   `done` pill on the project screen is the desktop's own attention flag, and

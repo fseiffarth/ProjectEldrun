@@ -276,6 +276,11 @@ export const dict: Dict = {
     "Muestra el estado del host de Eldrun Mobile y los controles de reconexión rápida junto al indicador de batería.",
 
   "mobile.title": "Eldrun Mobile",
+  "mobile.mailWrites": "Correo desde el teléfono",
+  "mobile.mailActions": "Marcar como leído y destacar desde el teléfono",
+  "mobile.mailActionsHelp": "Un teléfono emparejado puede marcar un mensaje como leído o no leído y poner o quitar su estrella. El escritorio aplica la marca a través de su propia sesión de correo y responde con la lista actualizada. Eliminar y mover se quedan en el escritorio, donde se pueden deshacer.",
+  "mobile.mailReply": "Responder desde el teléfono",
+  "mobile.mailReplyHelp": "Un teléfono emparejado puede enviar una respuesta en texto plano a un mensaje que esté leyendo. El teléfono solo aporta el texto: el destinatario, el asunto y el hilo salen del mensaje original, de modo que un teléfono solo puede responder a quienes ya te escribieron. Sin correos nuevos, sin adjuntos, sin firma ni cifrado. Un teléfono perdido con esto activado puede enviar correo en tu nombre hasta que lo revoques.",
   "mobile.settingsHelp": "Acceso privado a los terminales de proyecto a través de Tailscale Serve. El host escucha solo en loopback y cada navegador debe emparejarse. Funciona mientras Eldrun funciona: se inicia con la aplicación y se detiene al cerrarla.",
   "mobile.healthOffTitle": "Mobile está apagado",
   "mobile.healthOffDetail": "Actualmente no hay ningún host de Eldrun Mobile publicado.",

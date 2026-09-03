@@ -41,6 +41,15 @@ pub struct EldrunMobileHostSettings {
     pub port: Option<u16>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub serve_origin: Option<String>,
+    /// May a paired phone mark a message read/unread or star it? Default off.
+    /// Read by the desktop bridge only; the sidecar never sees mail settings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mail_actions: Option<bool>,
+    /// May a paired phone send a plain-text reply to a message it is reading?
+    /// Default off, and independent of `mail_actions`: a flag write and an
+    /// outbound mail are different risks and are switched separately.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mail_reply: Option<bool>,
 }
 
 /// `~/.local/share/eldrun/settings.json`.

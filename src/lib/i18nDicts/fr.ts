@@ -277,6 +277,11 @@ export const dict: Dict = {
     "Affiche l'état de l'hôte Eldrun Mobile et les commandes de reconnexion rapide à côté de l'indicateur de batterie.",
 
   "mobile.title": "Eldrun Mobile",
+  "mobile.mailWrites": "Courrier depuis le téléphone",
+  "mobile.mailActions": "Marquer comme lu et étoiler depuis le téléphone",
+  "mobile.mailActionsHelp": "Un téléphone appairé peut marquer un message comme lu ou non lu et poser ou retirer son étoile. Le bureau applique le drapeau via sa propre session de courrier et répond avec la liste actualisée. Supprimer et déplacer restent sur le bureau, où ils peuvent être annulés.",
+  "mobile.mailReply": "Répondre depuis le téléphone",
+  "mobile.mailReplyHelp": "Un téléphone appairé peut envoyer une réponse en texte brut à un message qu'il est en train de lire. Le téléphone ne fournit que le texte : le destinataire, l'objet et le fil proviennent du message d'origine, si bien qu'un téléphone ne peut répondre qu'aux personnes qui vous ont déjà écrit. Pas de nouveau courrier, pas de pièces jointes, ni signature ni chiffrement. Un téléphone perdu avec ce réglage actif peut envoyer du courrier en votre nom jusqu'à sa révocation.",
   "mobile.settingsHelp": "Accès privé aux terminaux de projet via Tailscale Serve. L'hôte n'écoute que sur le loopback et chaque navigateur doit être appairé. Il tourne tant qu'Eldrun tourne : démarré avec l'application, arrêté à sa fermeture.",
   "mobile.healthOffTitle": "Mobile est désactivé",
   "mobile.healthOffDetail": "Aucun hôte Eldrun Mobile n'est actuellement publié.",

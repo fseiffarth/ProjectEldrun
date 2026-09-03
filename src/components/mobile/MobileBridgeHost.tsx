@@ -23,7 +23,18 @@ import { addSubtask, boardColumns, columnOf, dropAccepted, fallbackColumnId, pro
 import { addDays, monthGrid, toStamp } from "../../lib/calendarTime";
 import { eventColor } from "../../lib/calendarCategories";
 import { expandEvents } from "../../lib/recurrence";
-import { mailAccountsList, mailBody, mailFolders, mailHeaders } from "../../lib/mail";
+import {
+  formatAddress,
+  formatMailDate,
+  mailAccountsList,
+  mailBody,
+  mailDraftSave,
+  mailDraftSend,
+  mailFlag,
+  mailFolders,
+  mailHeaders,
+  stripFormatControls,
+} from "../../lib/mail";
 import {
   AGENT_ITEMS,
   SHELL_ITEMS,
@@ -31,7 +42,8 @@ import {
   customAgentToItem,
   type StaticMenuItem,
 } from "../tabs/newTabItems";
-import { useT } from "../../lib/i18n";
+import { useI18nStore, useT } from "../../lib/i18n";
+import { resolveUse24h } from "../../lib/timeFormat";
 import { useAlertsFeed, type AlertsFeed } from "../files/useAlertsFeed";
 import {
   desktopTimeZone,
@@ -113,10 +125,11 @@ type CalendarAction =
   | { type: "delete_calendar"; calendar_id: string };
 interface MobileMailFolder { id: string; name: string; kind: string; unread: number; total: number }
 interface MobileMailAccount { id: string; label: string; address: string; folders: MobileMailFolder[] }
-interface MobileMailHeader { id: string; subject: string; sender: { name?: string; address: string }; date: string; seen: boolean; has_attachments: boolean; preview: string }
+interface MobileMailHeader { id: string; subject: string; sender: { name?: string; address: string }; date: string; seen: boolean; flagged: boolean; answered: boolean; has_attachments: boolean; preview: string }
 interface MobileMailAttachment { filename: string; mime: string; size: number }
+type MailMarkAction = "seen" | "unseen" | "flag" | "unflag";
 type MobileMailView =
-  | { view: "overview"; accounts: MobileMailAccount[] }
+  | { view: "overview"; accounts: MobileMailAccount[]; actions: boolean; reply: boolean }
   | { view: "folder"; folder: MobileMailFolder; messages: MobileMailHeader[]; total: number; offset: number }
   | { view: "message"; message: MobileMailHeader; body: string; truncated: boolean; attachments: MobileMailAttachment[] };
 type TodoAction =
@@ -161,6 +174,8 @@ type DesktopRequest =
   | { type: "mail_overview"; request_id: string }
   | { type: "mail_folder"; request_id: string; folder_id: string; offset: number }
   | { type: "mail_message"; request_id: string; folder_id: string; message_id: string; offset: number }
+  | { type: "mail_mark"; request_id: string; folder_id: string; message_id: string; offset: number; action: MailMarkAction }
+  | { type: "mail_reply"; request_id: string; folder_id: string; message_id: string; offset: number; body: string }
   | { type: "schedules"; request_id: string; project_id: string; tmux_session: string }
   | { type: "schedule_mutate"; request_id: string; project_id: string; tmux_session: string; action: ScheduleMutation }
   | { type: "rename_tab"; request_id: string; project_id: string; tmux_session: string; label: string }
@@ -947,9 +962,21 @@ async function publicMailHeader(header: MailHeader): Promise<MobileMailHeader> {
     },
     date: header.date,
     seen: header.seen,
+    flagged: header.flagged,
+    answered: header.answered,
     has_attachments: header.has_attachments,
     preview: boundedText(header.preview, 600).value,
   };
+}
+
+/** The two phone-side mail writes are desktop settings, read here and nowhere
+ * else: the sidecar cannot see mail settings, so it relays the desktop's
+ * refusal and the phone hides the controls from the overview's answer. Both
+ * default off and are switched separately — a flag write and an outbound
+ * mail are different risks. */
+function mailWriteGates() {
+  const host = useSettingsStore.getState().settings?.eldrun_mobile_host;
+  return { actions: host?.mail_actions === true, reply: host?.mail_reply === true };
 }
 
 async function configuredMailAccounts() {
@@ -975,7 +1002,7 @@ async function mailOverview(): Promise<DesktopResponse> {
       }))),
     });
   }
-  return { status: "mail", mail: { view: "overview", accounts: rows } };
+  return { status: "mail", mail: { view: "overview", accounts: rows, ...mailWriteGates() } };
 }
 
 async function resolveMailFolder(folderId: string): Promise<MailFolder | null> {
@@ -1003,11 +1030,16 @@ async function mailFolderPage(folderId: string, offset: number): Promise<Desktop
   };
 }
 
-async function mailMessage(folderId: string, messageId: string, offset: number): Promise<DesktopResponse> {
+/** Resolve an opaque message id by re-reading exactly the page that issued it.
+ * This both resolves it without exposing the store key and refuses a
+ * stale/cross-folder capability. */
+async function resolveMailMessage(
+  folderId: string,
+  messageId: string,
+  offset: number,
+): Promise<{ folder: MailFolder; header: MailHeader } | Extract<DesktopResponse, { status: "error" }>> {
   const folder = await resolveMailFolder(folderId);
   if (!folder) return { status: "error", code: "folder_not_found", message: "Mail folder is unavailable" };
-  // Re-read exactly the page that issued the opaque id. This both resolves it
-  // without exposing the store key and refuses a stale/cross-folder capability.
   const page = await mailHeaders(folder.id, offset, MAIL_PAGE_SIZE, null);
   const pairs = await Promise.all(page.items.map(async (header) => ({
     header,
@@ -1015,6 +1047,13 @@ async function mailMessage(folderId: string, messageId: string, offset: number):
   })));
   const header = pairs.find((entry) => entry.id === messageId)?.header;
   if (!header) return { status: "error", code: "message_not_found", message: "Mail message is unavailable" };
+  return { folder, header };
+}
+
+async function mailMessage(folderId: string, messageId: string, offset: number): Promise<DesktopResponse> {
+  const resolved = await resolveMailMessage(folderId, messageId, offset);
+  if ("status" in resolved) return resolved;
+  const { header } = resolved;
 
   const body = await mailBody(header.id, false);
   const source = body.text ?? (body.html
@@ -1035,6 +1074,81 @@ async function mailMessage(folderId: string, messageId: string, offset: number):
       })),
     },
   };
+}
+
+/** Set or clear one flag from the phone. The desktop's own `mailFlag` does the
+ * work — local index first, then the server, a refusal reported — and the
+ * answer is the refreshed page so the phone's list is right without a second
+ * round trip. Only the four verbs exist; delete and move never reach here. */
+async function mailMark(folderId: string, messageId: string, offset: number, action: MailMarkAction): Promise<DesktopResponse> {
+  if (!mailWriteGates().actions) {
+    return { status: "error", code: "mail_actions_disabled", message: "Mail actions from the phone are switched off in Eldrun" };
+  }
+  const resolved = await resolveMailMessage(folderId, messageId, offset);
+  if ("status" in resolved) return resolved;
+  const flag = action === "seen" || action === "unseen" ? "seen" : "flagged";
+  const value = action === "seen" || action === "flag";
+  try {
+    await mailFlag(resolved.header.id, flag, value);
+  } catch (reason) {
+    return { status: "error", code: "mail_mark_failed", message: boundedText(String(reason), 400).value };
+  }
+  return mailFolderPage(folderId, offset);
+}
+
+/** A plain-text reply typed on the phone. The phone supplied the text and
+ * nothing else: the recipient is the original's `From`, the subject its
+ * subject behind the reply prefix, and `In-Reply-To` its RFC `Message-ID` —
+ * the same derivation the desktop composer makes, so a phone can only answer
+ * someone who already wrote. Sent through the desktop's draft path with sign
+ * and encrypt off; a send that fails leaves the draft in Drafts and reports
+ * the reason. */
+async function mailReply(
+  folderId: string,
+  messageId: string,
+  offset: number,
+  text: string,
+  t: ReturnType<typeof useT>,
+): Promise<DesktopResponse> {
+  if (!mailWriteGates().reply) {
+    return { status: "error", code: "mail_reply_disabled", message: "Replies from the phone are switched off in Eldrun" };
+  }
+  if (!text.trim()) return { status: "error", code: "empty_reply", message: "The reply is empty" };
+  const resolved = await resolveMailMessage(folderId, messageId, offset);
+  if ("status" in resolved) return resolved;
+  const { header } = resolved;
+  if (!header.from.address) {
+    return { status: "error", code: "no_reply_address", message: "The original message carries no sender address" };
+  }
+  const subjectBase = stripFormatControls(header.subject);
+  const subject = (subjectBase.toLowerCase().startsWith("re:") ? subjectBase : `${t("mail.replyPrefix")}${subjectBase}`)
+    .replace(/[\r\n]/g, " ");
+  const original = await mailBody(header.id, false).catch(() => null);
+  const quoted = (original?.text ?? "").split("\n").map((line) => `> ${line}`).join("\n");
+  const lang = useI18nStore.getState().lang;
+  const settings = useSettingsStore.getState().settings;
+  const use24h = resolveUse24h(settings?.time_format_24h, settings?.calendar_time_format_24h, lang);
+  const intro = t("mail.quotedIntro", { date: formatMailDate(header.date, lang, use24h), sender: formatAddress(header.from) });
+  try {
+    const saved = await mailDraftSave({
+      id: "",
+      account_id: header.account_id,
+      to: [header.from.address],
+      cc: [],
+      bcc: [],
+      subject,
+      body_text: original?.text ? `${text}\n\n${intro}\n${quoted}` : text,
+      ...(header.rfc_message_id ? { in_reply_to: header.rfc_message_id } : {}),
+      staged: [],
+    });
+    const result = await mailDraftSend(saved.id);
+    if (result.error) {
+      return { status: "error", code: "mail_reply_failed", message: boundedText(result.error, 400).value };
+    }
+  } catch (reason) {
+    return { status: "error", code: "mail_reply_failed", message: boundedText(String(reason), 400).value };
+  }
+  return mailFolderPage(folderId, offset);
 }
 
 /** The phone had this agent tab on its screen. That is the same act the tab bar
@@ -1106,6 +1220,8 @@ async function handleRequest(
     case "mail_overview": return mailOverview();
     case "mail_folder": return mailFolderPage(request.folder_id, request.offset);
     case "mail_message": return mailMessage(request.folder_id, request.message_id, request.offset);
+    case "mail_mark": return mailMark(request.folder_id, request.message_id, request.offset, request.action);
+    case "mail_reply": return mailReply(request.folder_id, request.message_id, request.offset, request.body, t);
     case "rename_tab": return renameAgentTab(request.project_id, request.tmux_session, request.label);
     case "schedules": return schedulesFor(request.project_id, request.tmux_session);
     case "schedule_mutate": return mutateSchedule(request.project_id, request.tmux_session, request.action);
@@ -1155,7 +1271,7 @@ export function MobileBridgeHost() {
           }).catch(() => {});
         }
       };
-      if (request.type === "create" || request.type === "activate" || request.type === "rename_tab" || request.type === "todo_mutate" || request.type === "calendar_mutate" || request.type === "schedule_mutate" || request.type === "prompt_mutate") {
+      if (request.type === "create" || request.type === "activate" || request.type === "rename_tab" || request.type === "todo_mutate" || request.type === "calendar_mutate" || request.type === "schedule_mutate" || request.type === "prompt_mutate" || request.type === "mail_mark" || request.type === "mail_reply") {
         mutationQueue = mutationQueue.then(run, run);
       } else {
         void run();

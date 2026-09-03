@@ -4,6 +4,7 @@ import { useSettingsStore } from "../../stores/settings";
 import { useProjectsStore } from "../../stores/projects";
 import { ROOT_SCOPE, useTabsStore } from "../../stores/tabs";
 import { SettingsCard, SettingsList, ToggleRow } from "../layout/settingsUi";
+import { UntestedTag } from "../common/UntestedTag";
 import { isTrashProject } from "../../lib/trashProject";
 import { IS_WINDOWS } from "../../lib/platform";
 import { translate, useI18nStore, useT } from "../../lib/i18n";
@@ -236,6 +237,24 @@ export function MobileSettings() {
     };
   }, [refresh]);
 
+  /** The two phone-side mail writes. Each is its own switch, default off, and
+   * read by the desktop bridge alone — the sidecar never sees mail settings.
+   * They ride on the stored host settings untouched otherwise, so flipping one
+   * never re-verifies Serve or restarts the host. */
+  const setMailGate = async (gate: "mail_actions" | "mail_reply", on: boolean) => {
+    setError(null);
+    try {
+      await updateSettings({
+        eldrun_mobile_host: {
+          ...(stored ?? { enabled: false }),
+          [gate]: on || undefined,
+        },
+      });
+    } catch (reason) {
+      setError(String(reason));
+    }
+  };
+
   const apply = async (enabled: boolean) => {
     setBusy(true);
     setError(null);
@@ -259,6 +278,8 @@ export function MobileSettings() {
           display_name: displayName.trim() || "Workstation",
           port: parsedPort || 8742,
           serve_origin: origin.trim() || undefined,
+          mail_actions: stored?.mail_actions,
+          mail_reply: stored?.mail_reply,
         },
       });
       await invoke("mobile_host_apply", { enabled });
@@ -340,6 +361,8 @@ export function MobileSettings() {
           display_name: detected.display_name,
           port: detected.port,
           serve_origin: detected.origin,
+          mail_actions: stored?.mail_actions,
+          mail_reply: stored?.mail_reply,
         },
       });
     } catch (reason) {
@@ -384,6 +407,8 @@ export function MobileSettings() {
           display_name: displayName.trim() || "Workstation",
           port: Number(port) || 8742,
           serve_origin: origin.trim() || undefined,
+          mail_actions: stored?.mail_actions,
+          mail_reply: stored?.mail_reply,
         },
       });
       await invoke("mobile_host_apply", { enabled: false });
@@ -546,6 +571,22 @@ export function MobileSettings() {
       </p>
       {refreshError && <div className="project-dialog-error">{refreshError}</div>}
       {error && <div className="project-dialog-error">{error}</div>}
+
+      <div className="settings-subheader">{t("mobile.mailWrites")}</div>
+      <ToggleRow
+        label={<>{t("mobile.mailActions")} <UntestedTag /></>}
+        checked={stored?.mail_actions ?? false}
+        disabled={busy}
+        onChange={(event) => void setMailGate("mail_actions", event.target.checked)}
+      />
+      <p className="settings-help">{t("mobile.mailActionsHelp")}</p>
+      <ToggleRow
+        label={<>{t("mobile.mailReply")} <UntestedTag /></>}
+        checked={stored?.mail_reply ?? false}
+        disabled={busy}
+        onChange={(event) => void setMailGate("mail_reply", event.target.checked)}
+      />
+      <p className="settings-help">{t("mobile.mailReplyHelp")}</p>
 
       <div className="settings-subheader">{t("mobile.projectAccess")}</div>
       <p className="settings-help">
