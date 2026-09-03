@@ -27,6 +27,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import type { HpcInfo, ProjectEntry } from "../types";
+import type { TranslationKey } from "./i18n";
 
 export type { HpcInfo };
 
@@ -311,6 +312,4 @@ export function shouldWarnExpiry(ws: HpcWorkspace | undefined): boolean {
  *  same way. Eldrun's byte-sync walks the host tree lstat-typed and skips
  *  symlinks by design, so a linked workspace is reachable to the *host's* tools
  *  (job scripts, `cd`), not to the mirror. */
-export const linkedWorkspaceCaveat =
-  "The link is for your job scripts on the host — Eldrun's file sync does not follow it, " +
-  "so files written inside the workspace are not mirrored locally.";
+export const linkedWorkspaceCaveat: TranslationKey = "hpcWorkspace.linkCaveat";

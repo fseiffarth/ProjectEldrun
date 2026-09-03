@@ -1839,6 +1839,7 @@ dependencies = [
  "tower",
  "url",
  "webkit2gtk",
+ "webview2-com",
  "windows 0.61.3",
  "xcb",
  "zbus 4.4.0",

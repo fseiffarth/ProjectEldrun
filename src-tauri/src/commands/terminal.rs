@@ -437,14 +437,10 @@ pub async fn pty_spawn(
         crate::services::sandbox::kill_tab_process(&opts.id);
     }
     if opts.sandbox && !opts.local_only {
-        #[cfg(unix)]
+        // Every host, Windows included: the mount destinations and `-w` are
+        // spelled for the container by `sandbox::container_path`, so a `C:\`
+        // project lands at `/c/…` inside the Linux container.
         crate::services::sandbox::wrap_pty_options_docker(&mut opts)?;
-        // The container maps host paths into a Linux container, so on Windows
-        // the container-side mount destinations would be host paths (`C:\…`)
-        // that mean nothing inside it. Refuse rather than silently spawning a
-        // tab the user asked to contain with no container at all.
-        #[cfg(windows)]
-        return Err("Project containers are not supported on Windows yet. Turn the container toggle off for this project to run this tab.".to_string());
     } else if !opts.local_only {
         // `wrap_pty_options` below spawns a bare `ssh` with no BatchMode and no
         // askpass — it only ever rides an already-authenticated ControlMaster.
@@ -488,9 +484,10 @@ pub async fn pty_spawn(
         crate::services::ssh_exec::wrap_pty_options(&mut opts)?;
     }
 
-    // Apply the outer bubblewrap boundary after docker/ssh selection but before
-    // local tmux.  This keeps the tmux server on the host while the command
-    // *inside* its session is fenced.  A missing/blocked bwrap fails closed.
+    // Apply the outer fence boundary (bubblewrap on Linux, sandbox-exec on
+    // macOS) after docker/ssh selection but before local tmux.  This keeps the
+    // tmux server on the host while the command *inside* its session is
+    // fenced.  A missing/blocked fence tool fails closed.
     let mut fenced_registration: Option<(String, String)> = None;
     if let Some(roots) = fence_roots.as_deref() {
         let decision = crate::services::agent_fence::decide(
@@ -498,7 +495,7 @@ pub async fn pty_spawn(
             roots.to_vec(),
             remote_agent_run,
             crate::services::agent_fence::policy_enabled(opts.project_id.as_deref()),
-            cfg!(target_os = "linux"),
+            crate::services::agent_fence::platform_fenceable(),
             crate::services::agent_fence::bwrap_available(),
         );
         match decision {
@@ -511,12 +508,23 @@ pub async fn pty_spawn(
                     .unwrap_or_else(|| "root".to_string());
                 #[cfg(target_os = "linux")]
                 crate::services::agent_fence::wrap_pty_options_bwrap(&mut opts, roots, &scope_id)?;
+                #[cfg(target_os = "macos")]
+                crate::services::agent_fence::wrap_pty_options_sandbox_exec(
+                    &mut opts, roots, &scope_id,
+                )?;
                 fenced_registration = Some((opts.id.clone(), scope_id));
             }
             crate::services::agent_fence::FenceDecision::Unavailable { install_hint } => {
-                return Err(format!(
-                    "Agent fence: bubblewrap is unavailable, so this agent was not started. Install it with `{install_hint}`, or turn the Agent fence off for this project."
-                ));
+                let tool = crate::services::agent_fence::fence_tool_name();
+                return Err(if cfg!(target_os = "macos") {
+                    format!(
+                        "Agent fence: {tool} is unavailable on this Mac, so this agent was not started. Turn the Agent fence off for this project."
+                    )
+                } else {
+                    format!(
+                        "Agent fence: {tool} is unavailable, so this agent was not started. Install it with `{install_hint}`, or turn the Agent fence off for this project."
+                    )
+                });
             }
             _ => {}
         }

@@ -4,7 +4,8 @@
 //! Tauri `WebviewWindow` rendering the same React bundle under a
 //! `?detached=<project>:<group>` query. The detached window is registered as a
 //! project-owned `TrackedWindow` (origin `detached_subwindow`) and its resolved
-//! native id (X11 window on Linux, HWND on Windows) is opted into the workspace
+//! native id (X11 window on Linux, HWND on Windows, CGWindowID on macOS) is
+//! opted into the workspace
 //! backend's parkable override, so the existing `project_runtime::switch`
 //! hide/show path parks it when its project goes inactive and re-shows it on
 //! switch-back — no parallel parking path.
@@ -249,7 +250,8 @@ pub async fn detach_subwindow(
 
     // Resolve the native window id so the switch path can park this popout. On
     // X11 we match the unique title (bypasses the protected filter); on Windows
-    // we read the HWND straight off the Tauri window by its label.
+    // and macOS we read the HWND / NSWindow number straight off the Tauri
+    // window by its label.
     let window_id = resolve_detached_window_id(&app, &label, &title);
 
     if let Some(wid) = window_id {
@@ -580,9 +582,9 @@ pub fn detached_window_frontmost(
                     .map(|top| top == wid)
                     .unwrap_or(false)
             }
-            // macOS: future-proofing — `resolve_detached_window_id` stays None
-            // on macOS v1, so this arm is only reached once popouts learn their
-            // CGWindowID.
+            // macOS: the popout's CGWindowID comes from its NSWindow number
+            // (`resolve_detached_window_id`), the same id space CGWindowList
+            // enumerates, so the occlusion walk compares like with like.
             #[cfg(target_os = "macos")]
             {
                 crate::platform::macos::frontmost_window_under_pointer()
@@ -613,7 +615,31 @@ fn resolve_detached_window_id(app: &AppHandle, label: &str, _title: &str) -> Opt
     Some(hwnd.0 as usize as u64)
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+/// macOS: the popout's `CGWindowID` is its `NSWindow.windowNumber`, read off
+/// the Tauri window by its label — the same binding `lib.rs` does for the MAIN
+/// window at setup. AppKit wants NSWindow access on the main thread, and this
+/// runs from an async command on a worker, so the read is marshalled through
+/// `run_on_main_thread` and awaited with a bound (a wedged main loop must not
+/// hang the detach; the popout then simply is not parkable this session).
+#[cfg(target_os = "macos")]
+fn resolve_detached_window_id(app: &AppHandle, label: &str, _title: &str) -> Option<u64> {
+    let win = app.get_webview_window(label)?;
+    let (tx, rx) = std::sync::mpsc::channel::<Option<u64>>();
+    let on_main = win.clone();
+    win.run_on_main_thread(move || {
+        let id = on_main
+            .ns_window()
+            .ok()
+            .and_then(|ns| crate::platform::macos::ns_window_id(ns as *mut std::ffi::c_void));
+        let _ = tx.send(id);
+    })
+    .ok()?;
+    rx.recv_timeout(std::time::Duration::from_secs(2))
+        .ok()
+        .flatten()
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
 fn resolve_detached_window_id(_app: &AppHandle, _label: &str, _title: &str) -> Option<u64> {
     None
 }

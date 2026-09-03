@@ -306,7 +306,7 @@ fn hook_script_path() -> PathBuf {
 /// suffices, but on Windows `cmd.exe` cannot execute that script, so we invoke the
 /// PowerShell hook explicitly. `-File` makes PowerShell read the script while still
 /// forwarding the hook's stdin JSON payload to it.
-fn hook_command() -> String {
+pub(crate) fn hook_command() -> String {
     let path = hook_script_path();
     #[cfg(windows)]
     {
@@ -642,7 +642,39 @@ fn write_hook_script() -> std::io::Result<()> {
         perm.set_mode(0o755);
         std::fs::set_permissions(&script_path, perm)?;
     }
+    // Windows: the project container is Linux, so beside the registered
+    // PowerShell hook write the POSIX twin the staged in-container configs
+    // point at (`sandbox::rewrite_hook_for_container`), with the live-sessions
+    // dir spelled the way the container sees the bind mount.
+    #[cfg(windows)]
+    {
+        let container_live = crate::services::sandbox::container_path(&live_dir.to_string_lossy());
+        std::fs::write(
+            container_hook_script_path(),
+            posix_hook_script_body(&container_live),
+        )?;
+    }
     Ok(())
+}
+
+/// The POSIX hook script's path when it is the *container* twin of a
+/// PowerShell host hook (Windows only; on Unix the POSIX script IS the hook).
+#[cfg(windows)]
+fn container_hook_script_path() -> PathBuf {
+    storage::state_dir()
+        .join("hooks")
+        .join("eldrun_session_start.sh")
+}
+
+/// The hook `command` a Linux container on a Windows host runs: the POSIX twin
+/// at the hooks dir's container-side path. Read-only inside the container like
+/// the rest of the hooks dir.
+#[cfg(windows)]
+pub(crate) fn container_hook_command() -> String {
+    let script = crate::services::sandbox::container_path(
+        &container_hook_script_path().to_string_lossy(),
+    );
+    format!("sh '{script}'")
 }
 
 /// POSIX-sh hook body. Reads the hook JSON on stdin and records, per tab key:
@@ -665,6 +697,12 @@ fn write_hook_script() -> std::io::Result<()> {
 /// children, never by Codex) is refused outright.
 #[cfg(not(windows))]
 fn hook_script_body(live_dir: &str) -> String {
+    posix_hook_script_body(live_dir)
+}
+
+/// The POSIX body itself — the hook on Unix, and on Windows the container twin
+/// (see `write_hook_script`), so it is compiled everywhere.
+fn posix_hook_script_body(live_dir: &str) -> String {
     format!(
         "#!/bin/sh\n\
          # Eldrun agent hook (SessionStart + Stop) — records Claude's live session\n\
@@ -1213,6 +1251,11 @@ mod tests {
         assert!(body.contains("\"session_id\""));
         assert!(body.contains("\"permission_mode\""));
         assert!(body.contains(".mode"));
+        // The container twin bakes the container-side path, POSIX-style.
+        let twin = posix_hook_script_body("/c/Users/x/AppData/Roaming/eldrun/live_sessions");
+        assert!(twin.starts_with("#!/bin/sh"));
+        assert!(twin.contains("/c/Users/x/AppData/Roaming/eldrun/live_sessions"));
+        assert!(container_hook_command().starts_with("sh '/"));
     }
 
     /// Run the POSIX hook body as the agents would: `sh <script>` with the tab

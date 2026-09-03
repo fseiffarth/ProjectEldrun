@@ -19,6 +19,8 @@ use base64ct::{Base64UrlUnpadded, Encoding};
 use serde::Deserialize;
 use serde_json::json;
 
+use crate::services::desktop_images;
+
 use super::{
     admin,
     auth::AuthStore,
@@ -1551,6 +1553,119 @@ async fn inbox_upload(
     }
 }
 
+/// The project an inbox-bound request is for, by its tab — the tab names the
+/// project and nothing else, exactly as `inbox_upload` reads it.
+fn inbox_project(
+    state: &HostState,
+    tab_id: &str,
+) -> Result<String, (StatusCode, Json<serde_json::Value>)> {
+    let catalog = catalog(state)?;
+    let Some((project, _)) = catalog.tab(tab_id) else {
+        return Err(api_error(StatusCode::NOT_FOUND, "tab_not_found"));
+    };
+    Ok(project.raw_id.clone())
+}
+
+/// The desktop's refusal of a desktop-image request, as the phone's status.
+/// The inbox codes map exactly as `inbox_upload` maps them, so the phone
+/// reads one vocabulary for both ways of filling the inbox.
+fn desktop_image_error(code: &str) -> (StatusCode, Json<serde_json::Value>) {
+    api_error(
+        match code {
+            "tab_not_found" | "project_ineligible" | "image_not_found" => StatusCode::NOT_FOUND,
+            "no_clipboard_image" | "project_unavailable" => StatusCode::CONFLICT,
+            "file_too_large" => StatusCode::PAYLOAD_TOO_LARGE,
+            "inbox_full" => StatusCode::INSUFFICIENT_STORAGE,
+            "desktop_unavailable" => StatusCode::SERVICE_UNAVAILABLE,
+            _ => StatusCode::BAD_REQUEST,
+        },
+        code,
+    )
+}
+
+/// `GET /api/v1/tabs/{tab_id}/desktop-images` — the composer's **+ → From the
+/// desktop**: what the desktop would copy into this tab's project inbox (its
+/// clipboard image, recent screenshots and pictures). Opaque ids and folder
+/// labels only; the desktop keeps every path.
+async fn desktop_images(
+    State(state): State<HostState>,
+    headers: HeaderMap,
+    Path(tab_id): Path<String>,
+) -> impl IntoResponse {
+    if let Err(error) = authenticate(&headers, &state) {
+        return error;
+    }
+    let project_id = match inbox_project(&state, &tab_id) {
+        Ok(raw) => raw,
+        Err(error) => return error,
+    };
+    let request_id = Base64UrlUnpadded::encode_string(&random_16());
+    let desktop_socket = state.config.control_dir.join("desktop-control.sock");
+    match admin::desktop_call(
+        &desktop_socket,
+        &DesktopRequest::DesktopImages {
+            request_id,
+            project_id,
+        },
+    )
+    .await
+    {
+        Ok(DesktopResponse::DesktopImages { images }) => {
+            (StatusCode::OK, Json(json!({ "images": images })))
+        }
+        Ok(DesktopResponse::Error { code, .. }) => desktop_image_error(&code),
+        _ => api_error(StatusCode::SERVICE_UNAVAILABLE, "desktop_unavailable"),
+    }
+}
+
+#[derive(Deserialize)]
+struct AttachDesktopImageBody {
+    image_id: String,
+}
+
+/// `POST /api/v1/tabs/{tab_id}/desktop-images` — copy one listed image into
+/// the tab's project inbox. Answers like `inbox_upload`: the stored name, the
+/// project-relative `.eldrun/inbox/<file>` reference, the size.
+async fn attach_desktop_image(
+    State(state): State<HostState>,
+    headers: HeaderMap,
+    Path(tab_id): Path<String>,
+    body: Bytes,
+) -> impl IntoResponse {
+    if let Err(error) = mutation_guard(&headers, &state) {
+        return error;
+    }
+    let Ok(request) = serde_json::from_slice::<AttachDesktopImageBody>(&body) else {
+        return api_error(StatusCode::BAD_REQUEST, "invalid_request");
+    };
+    if !desktop_images::valid_id(&request.image_id) {
+        return api_error(StatusCode::BAD_REQUEST, "invalid_request");
+    }
+    let project_id = match inbox_project(&state, &tab_id) {
+        Ok(raw) => raw,
+        Err(error) => return error,
+    };
+    let request_id = Base64UrlUnpadded::encode_string(&random_16());
+    let desktop_socket = state.config.control_dir.join("desktop-control.sock");
+    match admin::desktop_call(
+        &desktop_socket,
+        &DesktopRequest::AttachDesktopImage {
+            request_id,
+            project_id,
+            image_id: request.image_id,
+        },
+    )
+    .await
+    {
+        Ok(DesktopResponse::Attached { attachment }) => (
+            StatusCode::CREATED,
+            Json(json!({ "attachment": attachment })),
+        ),
+        Ok(DesktopResponse::Error { code, .. }) => desktop_image_error(&code),
+        _ => api_error(StatusCode::SERVICE_UNAVAILABLE, "desktop_unavailable"),
+    }
+}
+
 async fn static_asset(Path(path): Path<String>) -> Response<Body> {
     asset_response(&format!("/{path}"))
 }
@@ -1648,6 +1763,10 @@ fn router(state: HostState) -> Router {
         .route(
             "/api/v1/tabs/{tab_id}/inbox",
             post(inbox_upload).layer(DefaultBodyLimit::max(inbox::MAX_INBOX_FILE)),
+        )
+        .route(
+            "/api/v1/tabs/{tab_id}/desktop-images",
+            get(desktop_images).post(attach_desktop_image),
         )
         .route("/", get(index))
         .route("/{*path}", get(static_asset))
@@ -1951,6 +2070,7 @@ mod tests {
         "/api/v1/tabs/anything",
         "/api/v1/tabs/anything/schedules",
         "/api/v1/projects/anything/prompts",
+        "/api/v1/tabs/anything/desktop-images",
     ];
 
     #[test]
@@ -1987,6 +2107,7 @@ mod tests {
             "/api/v1/calendar",
             "/api/v1/tabs/anything/schedules",
             "/api/v1/tabs/anything/inbox",
+            "/api/v1/tabs/anything/desktop-images",
             "/api/v1/projects/anything/prompts",
             "/api/v1/projects/anything/prompts/anything/send",
         ] {
@@ -2535,6 +2656,65 @@ mod tests {
             .header(header::CONTENT_TYPE, "image/jpeg")
             .body(Body::from(bytes))
             .expect("request")
+    }
+
+    #[tokio::test]
+    async fn desktop_images_need_the_bridge_a_known_tab_a_same_origin_and_a_listed_id() {
+        let host = Fixture::with_project();
+        let cookie = host.pair_device(&signing_key(31)).await.0;
+        let tab_id = fixture_tab_id(&host, &cookie).await;
+        let attach = |tab: &str, origin: &str, body: Value| {
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/v1/tabs/{tab}/desktop-images"))
+                .header(header::ORIGIN, origin)
+                .header(header::COOKIE, cookie_pair(&cookie))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(serde_json::to_vec(&body).expect("body")))
+                .expect("request")
+        };
+
+        // No desktop window: unavailable, and neither the raw project id nor
+        // the project path leaks out of the answer.
+        let (status, _, body) = host
+            .send(get_as(&format!("/api/v1/tabs/{tab_id}/desktop-images"), &cookie))
+            .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "answered: {body}");
+        assert_eq!(json(&body)["error"], "desktop_unavailable");
+        assert!(!body.contains(RAW_PROJECT));
+        assert!(!body.contains(host.root.to_str().unwrap()));
+
+        let (status, _, body) = host
+            .send(get_as("/api/v1/tabs/not-a-tab/desktop-images", &cookie))
+            .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "answered: {body}");
+
+        // Origin, then the id's shape, before any desktop call — a path-shaped
+        // id is refused as malformed, never resolved.
+        let clipboard = serde_json::json!({ "image_id": "clipboard" });
+        let (status, _, body) = host
+            .send(attach(&tab_id, "https://evil.example", clipboard.clone()))
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "answered: {body}");
+        for bad in ["", "../../etc/passwd", "/home/x/shot.png", "0123", "not-hex-but-32-characters-long!!"] {
+            let (status, _, body) = host
+                .send(attach(&tab_id, ORIGIN, serde_json::json!({ "image_id": bad })))
+                .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{bad:?} answered: {body}");
+            assert_eq!(json(&body)["error"], "invalid_request");
+        }
+        let (status, _, body) = host
+            .send(attach(&tab_id, ORIGIN, serde_json::json!({ "nope": 1 })))
+            .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "answered: {body}");
+
+        let (status, _, body) = host.send(attach(&tab_id, ORIGIN, clipboard.clone())).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "answered: {body}");
+        assert_eq!(json(&body)["error"], "desktop_unavailable");
+        let (status, _, body) = host.send(attach("not-a-tab", ORIGIN, clipboard)).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "answered: {body}");
+        // Nothing reached the inbox without a desktop to copy from.
+        assert!(!host.root.join(inbox::INBOX_DIR).exists());
     }
 
     #[tokio::test]

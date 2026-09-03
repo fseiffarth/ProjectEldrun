@@ -102,8 +102,15 @@ Composition is explicit:
 - An agent running over SSH is outside the local kernel's reach, so the fence is
   not enforced and the UI says “remote host”. A local-only tab of a remote project
   runs in and is fenced to its local mirror.
-- macOS and Windows have no v1 enforcement backend; the status says so rather
-  than presenting a false guarantee.
+- macOS enforces through a `sandbox-exec` Seatbelt profile built from the same
+  mount planners as the Linux fence: writes are denied outside the roots and
+  the agent's own state, the rest of `$HOME` is hidden. Seatbelt can deny but
+  not redirect, so the agents' hook-registration files are read-only there
+  (an agent rewriting its own `settings.json` gets `EPERM`) instead of shadowed
+  by a throwaway copy, and `~/.claude.json` is exposed unfiltered rather than
+  as the per-project filtered copy Linux stages.
+- Windows has no unprivileged filesystem sandbox to build a fence on; the
+  status says so rather than presenting a false guarantee.
 - Shell/script tabs are the user's terminals and are never fenced.
 
 The boundary is filesystem-only: network access is shared. A nested bubblewrap

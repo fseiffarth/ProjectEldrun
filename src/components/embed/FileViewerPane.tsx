@@ -147,7 +147,7 @@ import {
   readFileBytes,
   writeFileText,
   fileMtime,
-  describeFileError,
+  describeFileErrorKey,
 } from "./fileAccess";
 import { DiffView } from "./DiffView";
 import { SyncMergeView } from "./SyncMergeView";
@@ -1269,9 +1269,14 @@ const RELOAD_POLL_MS = 1500;
  */
 export function useEditableFile(path: string) {
   const scope = useFileScope();
+  const t = useT();
   const paneVisible = usePaneVisible();
   const [content, setContent] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  // The failure is held as a translation KEY, not a sentence: the read effects
+  // must not depend on `t` (a language flip would re-run them and discard an
+  // unsaved draft), and holding the key makes the message follow the language.
+  const [errorKey, setErrorKey] = useState<TranslationKey | null>(null);
+  const error = errorKey ? t(errorKey) : null;
   const [baseline, setBaseline] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -1309,7 +1314,7 @@ export function useEditableFile(path: string) {
   useEffect(() => {
     let cancelled = false;
     setContent(null);
-    setError(null);
+    setErrorKey(null);
     setBaseline(null);
     setExternalChange(false);
     lastMtime.current = null;
@@ -1318,7 +1323,7 @@ export function useEditableFile(path: string) {
         if (cancelled) return;
         seedFromDisk(text);
       })
-      .catch((e) => { if (!cancelled) setError(describeFileError(e)); });
+      .catch((e) => { if (!cancelled) setErrorKey(describeFileErrorKey(e)); });
     fileMtime(path, scope)
       .then((m) => { if (!cancelled) lastMtime.current = m; })
       .catch(() => {});
@@ -1906,20 +1911,25 @@ const INDENT_GUIDE_LANGS = (lang: Lang) => lang !== "plain" && lang !== "markdow
  * machinery. Returns the raw text (or null while loading) and an error string.
  */
 export function useReadonlyFile(path: string) {
+  const t = useT();
   const scope = useFileScope();
   const paneVisible = usePaneVisible();
   const [content, setContent] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  // The failure is held as a translation KEY, not a sentence: the read effects
+  // must not depend on `t` (a language flip would re-run them and discard an
+  // unsaved draft), and holding the key makes the message follow the language.
+  const [errorKey, setErrorKey] = useState<TranslationKey | null>(null);
+  const error = errorKey ? t(errorKey) : null;
   const lastMtime = useRef<number | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     setContent(null);
-    setError(null);
+    setErrorKey(null);
     lastMtime.current = null;
     readFileText(path, scope)
       .then((text) => { if (!cancelled) setContent(text); })
-      .catch((e) => { if (!cancelled) setError(describeFileError(e)); });
+      .catch((e) => { if (!cancelled) setErrorKey(describeFileErrorKey(e)); });
     fileMtime(path, scope)
       .then((m) => { if (!cancelled) lastMtime.current = m; })
       .catch(() => {});
@@ -7893,9 +7903,14 @@ function MarkdownView({
  *  URL is revoked then, and the last URL is revoked on unmount. */
 function useBlobUrl(path: string, type: string) {
   const scope = useFileScope();
+  const t = useT();
   const paneVisible = usePaneVisible();
   const [url, setUrl] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  // The failure is held as a translation KEY, not a sentence: the read effects
+  // must not depend on `t` (a language flip would re-run them and discard an
+  // unsaved draft), and holding the key makes the message follow the language.
+  const [errorKey, setErrorKey] = useState<TranslationKey | null>(null);
+  const error = errorKey ? t(errorKey) : null;
   const urlRef = useRef<string | null>(null);
   const lastMtime = useRef<number | null>(null);
   // Bumped whenever the file's mtime advances on disk, forcing a byte reload.
@@ -7906,7 +7921,7 @@ function useBlobUrl(path: string, type: string) {
   // until the fresh bytes arrive, so the view doesn't flash.
   useEffect(() => {
     setUrl(null);
-    setError(null);
+    setErrorKey(null);
     lastMtime.current = null;
   }, [path]);
 
@@ -7924,7 +7939,7 @@ function useBlobUrl(path: string, type: string) {
         setUrl(objectUrl);
         if (prev) URL.revokeObjectURL(prev);
       })
-      .catch((e) => { if (!cancelled) setError(describeFileError(e)); });
+      .catch((e) => { if (!cancelled) setErrorKey(describeFileErrorKey(e)); });
     return () => { cancelled = true; };
   }, [path, type, diskVersion, scope]);
 

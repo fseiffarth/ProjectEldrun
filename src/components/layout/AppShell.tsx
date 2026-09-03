@@ -127,6 +127,7 @@ function clampPanelWidth(px: number): number {
  * has a minimum display time so a warm launch does not flash a single frame.
  */
 function StartupSplash({ ready }: { ready: boolean }) {
+  const t = useT();
   const [closing, setClosing] = useState(false);
   const [shown, setShown] = useState(true);
 
@@ -142,7 +143,7 @@ function StartupSplash({ ready }: { ready: boolean }) {
   }, [ready]);
 
   if (!shown) return null;
-  const message = ready ? "Workspace ready" : "Opening your workspace…";
+  const message = t(ready ? "startup.ready" : "startup.opening");
 
   return (
     <div

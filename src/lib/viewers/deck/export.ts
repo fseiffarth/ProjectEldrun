@@ -21,6 +21,7 @@
  * a remote one.
  */
 
+import { translate, useI18nStore } from "../../i18n";
 import {
   PDFDocument,
   degrees,
@@ -226,7 +227,7 @@ export async function exportDeck(input: ExportInputs): Promise<ExportResult> {
     // pdf-lib refuses to save a document with no pages, and a deck with no
     // slides should produce an empty-looking PDF rather than an exception.
     out.addPage([deck.pageWidth, deck.pageHeight]);
-    warnings.push("This deck has no slides; the export is a single blank page.");
+    warnings.push(translate(useI18nStore.getState().lang, "deckExport.noSlides"));
   }
 
   return { bytes: await out.save(), pages: out.getPageCount(), warnings };
@@ -407,12 +408,24 @@ async function drawObject(
           const embedded = customFontPath(s.family) != null;
           const bad = unencodableIn(text);
           const safe = toEncodable(text);
+          const lang = useI18nStore.getState().lang;
           ctx.warnings.push(
-            `Text "${preview(obj.text)}" contains ${
-              bad.length ? bad.map((c) => `"${c}"`).join(", ") : "characters"
-            }, which ${
-              embedded ? "the chosen font has no glyphs for" : "the built-in PDF fonts cannot write"
-            }; ${bad.length === 1 ? "it was" : "they were"} left out of the export.`,
+            translate(
+              lang,
+              bad.length === 1
+                ? "deckExport.unencodableTextOne"
+                : "deckExport.unencodableText",
+              {
+                text: preview(obj.text),
+                chars: bad.length
+                  ? bad.map((c) => `"${c}"`).join(", ")
+                  : translate(lang, "deckExport.unencodableCharsWord"),
+                why: translate(
+                  lang,
+                  embedded ? "deckExport.whyNoGlyphs" : "deckExport.whyBuiltinFont",
+                ),
+              },
+            ),
           );
           if (!safe) return;
           try {

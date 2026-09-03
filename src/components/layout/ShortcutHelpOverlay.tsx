@@ -96,7 +96,7 @@ export function ShortcutHelpOverlay() {
                 <div className="shortcut-help-row" key={d.action}>
                   <kbd>{chordLabel(resolveChord(d.action, overrides))}</kbd>
                   <span className="shortcut-help-label">
-                    {d.label}
+                    {t(d.labelKey)}
                     {overrides?.[d.action] && (
                       <span className="shortcut-help-custom">
                         {" "}

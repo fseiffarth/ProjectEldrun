@@ -30,11 +30,29 @@ if [ -z "$key" ]; then
 fi
 
 if ! grep -qF -- "$key" "$BINARY"; then
-  cat >&2 <<MSG
-assert-embedded-frontend: $BINARY does not embed the frontend ($key missing).
+  # Two very different builds fail this check, and saying "dev binary" for both
+  # sends the reader after a feature flag that was never the problem. A binary
+  # holding *some* bundle key embedded a frontend, just an older one: vite
+  # renames every asset on rebuild, so the embedded keys and the current ones
+  # simply do not overlap (2026-09-03).
+  embedded="$(grep -aoE '/assets/index-[A-Za-z0-9_-]+\.js' "$BINARY" | sort -u | tr '\n' ' ')"
+  if [ -n "$embedded" ]; then
+    cat >&2 <<MSG
+assert-embedded-frontend: $BINARY embeds a STALE frontend.
+  built with: $embedded
+  dist/ has:  $key
+  The binary was linked against an older dist/ — cargo reused the cached rlib
+  instead of re-embedding, because the assets the depfile names were deleted
+  rather than modified. Force the re-embed with:
+    touch src-tauri/src/lib.rs && npm run package:dev
+MSG
+  else
+    cat >&2 <<MSG
+assert-embedded-frontend: $BINARY does not embed the frontend at all ($key missing).
   It was built without the \`custom-protocol\` feature, so it is a dev binary and
   would open "Could not connect to localhost" instead of the app.
   Rebuild it with: cargo build --release --features custom-protocol
 MSG
+  fi
   exit 1
 fi

@@ -618,6 +618,55 @@ export function applyLocationToTabs(
   return tabs.map((t) => (t.key === key ? { ...t, location } : t));
 }
 
+/** #240: how close in time and space two title-bar presses must be to count as
+ *  a double-click. Hand-rolled because the WM eats the DOM `dblclick` (see
+ *  `DetachedCenterPanel.onTitlebarPointerDown`), so these stand in for the
+ *  platform's own setting. */
+export const TITLEBAR_DOUBLE_CLICK_MS = 400;
+export const TITLEBAR_DOUBLE_CLICK_SLOP = 8;
+
+/** One title-bar press: when it happened and where, in this window's client px. */
+export interface TitlebarPress {
+  t: number;
+  x: number;
+  y: number;
+}
+
+/**
+ * #240: what a press on a popout's title bar means — start an OS window move, or
+ * (second press of a double-click) fit the window back onto its screen. Pure, so
+ * the discrimination below is unit-testable without a WM.
+ *
+ * The time+distance pair alone is NOT enough, and that is the whole reason this
+ * is a function: a title-bar drag moves the WINDOW UNDER THE CURSOR, so the grab
+ * point keeps the same CLIENT coordinates however far the window travelled. Drag
+ * the popout, release, grab it again to carry on — the ordinary way anyone nudges
+ * a window across a desk — and the second grab is, in client px, the same point
+ * within a few hundred ms of the first: indistinguishable from a double-click.
+ * That read every quick re-grab as "snap", and a snap consumes the press instead
+ * of moving, so the popout stopped answering the drag that was under way.
+ *
+ * `lastMoveAt` breaks the tie: a press that follows an OS move of this window is
+ * a re-grab of a window that just travelled, never the second half of a
+ * double-click (which moves nothing). Its failure direction is the safe one — a
+ * stray Moved event only costs one snap gesture, while a missed one costs the
+ * user a window that will not move.
+ */
+export function decideTitlebarPress(input: {
+  /** The previous press, or `t: 0` for "no press armed". */
+  prev: TitlebarPress;
+  now: TitlebarPress;
+  /** When the OS last reported this window MOVED (0 = never). */
+  lastMoveAt: number;
+}): "snap" | "move" {
+  const { prev, now, lastMoveAt } = input;
+  if (!prev.t) return "move";
+  if (now.t - prev.t >= TITLEBAR_DOUBLE_CLICK_MS) return "move";
+  if (Math.hypot(now.x - prev.x, now.y - prev.y) >= TITLEBAR_DOUBLE_CLICK_SLOP) return "move";
+  if (lastMoveAt > prev.t) return "move";
+  return "snap";
+}
+
 /**
  * #42: the UNIFIED cross-window drop decision for a single dragged tab. Keyed on
  * the physical desktop cursor's relationship to the windows, this resolves a drag

@@ -1,6 +1,7 @@
 import { useTabsStore } from "../stores/tabs";
 import { useProjectsStore } from "../stores/projects";
 import { AGENT_ITEMS, buildStaticTabSpec } from "../components/tabs/newTabItems";
+import { translate, useI18nStore } from "./i18n";
 
 /**
  * Whether Codex is actually running Eldrun's `SessionStart` hook — the precise
@@ -57,11 +58,10 @@ export function openCodexHooksTab(): void {
     // `item` is a built-in agent (no `labelKey`), so buildStaticTabSpec never
     // resolves a translation through this — the label below overrides it anyway.
     ...buildStaticTabSpec(item, rootDir, "", (key) => key),
-    label: "Codex — hooks",
+    label: translate(useI18nStore.getState().lang, "codexHooks.tabLabel"),
     initialInput: "/hooks",
   });
   useProjectsStore.setState({
-    switchToast:
-      "Opened Codex in the root terminal — in the list, switch on the “When a new session starts” row whose command is eldrun_session_start",
+    switchToast: translate(useI18nStore.getState().lang, "codexHooks.toast"),
   });
 }

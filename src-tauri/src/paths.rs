@@ -131,6 +131,10 @@ fn supplemental_path_dirs_for(
                         .join("bin")
                         .join("x64"),
                 );
+                // The official QEMU Windows installer (qemu.org) puts
+                // `qemu-system-*.exe` and `qemu-img.exe` here and adds nothing
+                // to PATH; the VM tier resolves them through this.
+                dirs.push(PathBuf::from(pf).join("qemu"));
             }
         }
         OsKind::Unix => {}

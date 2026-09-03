@@ -5,8 +5,11 @@ import "@xterm/xterm/css/xterm.css";
 import {
   ApiError,
   api,
+  attachDesktopImage,
+  listDesktopImages,
   MAX_INBOX_FILE,
   uploadToInbox,
+  type DesktopImage,
   type TabRow,
 } from "../api";
 import { TERMINAL_PROTOCOL } from "../terminal/protocol";
@@ -105,15 +108,54 @@ const UPLOAD_FAILURES: Record<string, string> = {
   tab_not_found: "could not be saved — this session's project is no longer shared.",
   timeout: "took too long to send.",
   offline: "did not reach the desktop — the connection dropped.",
+  // The desktop's own refusals when the file comes from its side.
+  image_not_found: "is no longer on the desktop.",
+  no_clipboard_image: "is gone — the desktop's clipboard no longer holds an image.",
+  project_ineligible: "could not be saved — this project is no longer shared.",
+  desktop_unavailable: "could not be copied — the desktop window is not answering.",
 };
 
-/** A file on its way from the phone into the project inbox, or one that did
- * not make it. A delivered one leaves the list: its `@` reference is in the
- * draft, which is the record. */
+/** Why the desktop could not say what it has to attach. */
+const DESKTOP_LIST_FAILURES: Record<string, string> = {
+  desktop_unavailable: "The desktop window is not answering.",
+  tab_not_found: "This session's project is no longer shared.",
+  project_ineligible: "This project is no longer shared with the phone.",
+  timeout: "The desktop took too long to answer.",
+  offline: "The connection dropped.",
+};
+
+/** A file on its way into the project inbox — from the phone, or copied on
+ * the desktop's side — or one that did not make it. A delivered one leaves
+ * the list: its `@` reference is in the draft, which is the record. */
 interface InboxUpload {
   id: number;
   name: string;
+  /** Where the bytes come from; a desktop copy never leaves the desktop. */
+  source: "phone" | "desktop";
   failure?: string;
+}
+
+function ageLabel(seconds: number) {
+  if (seconds < 60) return "just now";
+  if (seconds < 3_600) return `${Math.round(seconds / 60)} min ago`;
+  if (seconds < 86_400) return `${Math.round(seconds / 3_600)} h ago`;
+  return `${Math.round(seconds / 86_400)} d ago`;
+}
+
+function sizeLabel(size: number) {
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${Math.round(size / 1024)} KB`;
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/** "Screenshots · 3 min ago · 1.2 MB", or "Clipboard · 1920×1080". */
+function desktopImageDescription(image: DesktopImage) {
+  return [
+    image.source,
+    image.age_secs != null ? ageLabel(image.age_secs) : "",
+    image.size != null ? sizeLabel(image.size) : "",
+    image.width != null && image.height != null ? `${image.width}×${image.height}` : "",
+  ].filter(Boolean).join(" · ");
 }
 
 /** One logical line of the session, with the colours the program actually
@@ -241,8 +283,13 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
   /** The status chip's sheet: the session's state and the CLI's own usage
    * panel. Opening it asks the desktop, which may run the CLI once. */
   const [statusSheet, setStatusSheet] = useState(false);
-  /** The composer's **+**: a phone file into the project inbox, or an `@`. */
+  /** The composer's **+**: a phone file into the project inbox, an image
+   * already on the desktop, or an `@`. */
   const [addSheet, setAddSheet] = useState(false);
+  /** The "From the desktop" list: `null` while the desktop is being asked. */
+  const [desktopSheet, setDesktopSheet] = useState(false);
+  const [desktopImages, setDesktopImages] = useState<DesktopImage[] | null>(null);
+  const [desktopFailure, setDesktopFailure] = useState("");
   const [uploads, setUploads] = useState<InboxUpload[]>([]);
   const fileInput = useRef<HTMLInputElement>(null);
   /** Bumped when the tab changes so a late upload result lands nowhere. */
@@ -286,6 +333,7 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     setModeSheet(false);
     setStatusSheet(false);
     setAddSheet(false);
+    setDesktopSheet(false);
     setUploads([]);
     uploadRun.current += 1;
     setSwitching("");
@@ -849,7 +897,7 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     setSwitching("");
     setSwitchFailed(value);
   };
-  const sheetUp = modelSheet || modeSheet || statusSheet;
+  const sheetUp = modelSheet || modeSheet || statusSheet || desktopSheet;
   useLayoutEffect(() => {
     setFrozenLines(sheetUp ? linesRef.current : null);
   }, [sheetUp]);
@@ -873,10 +921,10 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
       const id = ++uploadSeq.current;
       const name = file.name || "attachment";
       if (file.size > MAX_INBOX_FILE) {
-        setUploads((current) => [...current, { id, name, failure: UPLOAD_FAILURES.file_too_large }]);
+        setUploads((current) => [...current, { id, name, source: "phone", failure: UPLOAD_FAILURES.file_too_large }]);
         continue;
       }
-      setUploads((current) => [...current, { id, name }]);
+      setUploads((current) => [...current, { id, name, source: "phone" }]);
       void uploadToInbox(tab.id, file, name).then(
         (attachment) => {
           if (uploadRun.current !== run) return;
@@ -894,10 +942,55 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     composerInput.current?.focus();
   };
   const dismissUpload = (id: number) => setUploads((current) => current.filter((upload) => upload.id !== id));
+  /** Opens the desktop's list and asks for it. The list is read once per
+   * opening — the sheet shows what the desktop had when it was asked, and a
+   * screenshot taken meanwhile is one close-and-reopen away. */
+  const openDesktopSheet = () => {
+    const run = uploadRun.current;
+    setDesktopImages(null);
+    setDesktopFailure("");
+    setDesktopSheet(true);
+    void listDesktopImages(tab.id).then(
+      (images) => { if (uploadRun.current === run) setDesktopImages(images); },
+      (error: unknown) => {
+        if (uploadRun.current !== run) return;
+        const code = error instanceof ApiError ? error.code : "";
+        setDesktopFailure(DESKTOP_LIST_FAILURES[code] ?? "The desktop could not list its images.");
+        setDesktopImages([]);
+      },
+    );
+  };
+  /** Asks the desktop to copy one listed image into the project inbox and
+   * writes the reference into the draft as it lands — the same row and the
+   * same `@` a file sent from the phone gets. */
+  const attachFromDesktop = (imageId: string) => {
+    const image = desktopImages?.find((entry) => entry.id === imageId);
+    setDesktopSheet(false);
+    if (!image) return;
+    const run = uploadRun.current;
+    const id = ++uploadSeq.current;
+    setUploads((current) => [...current, { id, name: image.name, source: "desktop" }]);
+    void attachDesktopImage(tab.id, image.id).then(
+      (attachment) => {
+        if (uploadRun.current !== run) return;
+        setUploads((current) => current.filter((upload) => upload.id !== id));
+        appendToDraft(`@${attachment.reference}`);
+      },
+      (error: unknown) => {
+        if (uploadRun.current !== run) return;
+        const code = error instanceof ApiError ? error.code : "";
+        const failure = UPLOAD_FAILURES[code] ?? "could not be copied into the project inbox.";
+        setUploads((current) => current.map((upload) => upload.id === id ? { ...upload, failure } : upload));
+      },
+    );
+    composerInput.current?.focus();
+  };
   const pickAdd = (key: string) => {
     setAddSheet(false);
     if (key === "phone") {
       fileInput.current?.click();
+    } else if (key === "desktop") {
+      openDesktopSheet();
     } else {
       addContext();
     }
@@ -1032,8 +1125,15 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
   const failedMode = modes.find((choice) => choice.value === switchFailed);
   const addOptions: SheetOption[] = [
     { key: "phone", label: "From this phone", description: "A photo, screenshot or file — saved to the project's inbox and referenced in the message", current: false },
+    { key: "desktop", label: "From the desktop", description: "The desktop's clipboard image or a recent screenshot or picture — copied to the project's inbox and referenced in the message", current: false },
     { key: "project", label: "A project file (@)", description: "Type a path after the @ for the agent to read", current: false },
   ];
+  const desktopOptions: SheetOption[] = (desktopImages ?? []).map((image) => ({
+    key: image.id,
+    label: image.name,
+    description: desktopImageDescription(image),
+    current: false,
+  }));
   return <main className={`terminal-screen ${tab.kind}-tab`} style={viewportHeight ? { height: viewportHeight } : undefined}><header><button className="back" onClick={back}>‹</button><div className="terminal-title"><h1>{tab.label}</h1><small>{tab.kind === "agent" ? "Agent session" : "Shell session"}</small></div><div className="terminal-view-switch" aria-label="Output view"><button className={view === "focus" ? "selected" : ""} aria-pressed={view === "focus"} onClick={() => setView("focus")}>Focus</button><button className={view === "terminal" ? "selected" : ""} aria-pressed={view === "terminal"} onClick={() => setView("terminal")}>Terminal</button></div><span className={connected ? "lamp" : "lamp off"} /></header>
     <div className="terminal-body">
       <div ref={host} className={`terminal${view === "focus" ? " focus-source" : ""}`} />
@@ -1069,7 +1169,7 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
       {lastSent && <div className="last-sent"><span>Sent</span><p>{lastSent}</p></div>}
       {uploads.map((upload) => upload.failure
         ? <div key={upload.id} className="inbox-upload error" role="alert"><strong>{upload.name}</strong><span>{upload.failure}</span><button onClick={() => dismissUpload(upload.id)} aria-label={`Dismiss ${upload.name}`}>✕</button></div>
-        : <div key={upload.id} className="inbox-upload" role="status"><strong>{upload.name}</strong><span>Sending to the project inbox…</span></div>)}
+        : <div key={upload.id} className="inbox-upload" role="status"><strong>{upload.name}</strong><span>{upload.source === "desktop" ? "Copying from the desktop…" : "Sending to the project inbox…"}</span></div>)}
       {status && (status.path || status.branch || status.context) && <div className="session-facts" title={status.path}>
         {status.path && <span className="fact-path">{shortenPath(status.path)}</span>}
         {status.branch && <span className="fact-branch">⎇ {status.branch}</span>}
@@ -1080,7 +1180,7 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
         <div className="composer-bar">
           {tab.kind === "agent" && <>
             <input ref={fileInput} type="file" multiple hidden aria-hidden="true" tabIndex={-1} data-testid="inbox-file-input" onChange={(event) => { attachFromPhone(event.target.files); event.target.value = ""; }} />
-            <button className="composer-add" disabled={!connected} onClick={() => setAddSheet(true)} aria-label="Add to the message" aria-haspopup="dialog" aria-expanded={addSheet} title="Add a photo or file from this phone, or a project file (@)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg></button>
+            <button className="composer-add" disabled={!connected} onClick={() => setAddSheet(true)} aria-label="Add to the message" aria-haspopup="dialog" aria-expanded={addSheet} title="Add a photo or file from this phone, an image from the desktop, or a project file (@)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg></button>
             <div className="composer-chips">
               <button className="composer-chip" disabled={!connected} onClick={selectModel} aria-haspopup="dialog" aria-expanded={modelSheet} title="Choose the model (/model)"><span className="composer-chip-label">{status?.model ?? "Model"}</span></button>
               <button className="composer-chip" disabled={!connected} onClick={openModeSheet} aria-haspopup={modes.length > 0 ? "dialog" : undefined} aria-expanded={modes.length > 0 ? modeSheet : undefined} title={modes.length > 0 ? "Choose the permission mode" : "Switch mode (Shift+Tab)"}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2 4.5 13.5H11L10 22l8.5-11.5H12L13 2Z" /></svg><span className="composer-chip-label">{status?.mode ?? activeMode ?? "Mode"}</span></button>
@@ -1111,6 +1211,19 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
       busy={false}
       onPick={pickAdd}
       onClose={() => setAddSheet(false)}
+    />}
+    {desktopSheet && <OptionSheet
+      title="From the desktop"
+      note={desktopFailure
+        ? { text: desktopFailure, error: true }
+        : desktopImages?.length ? { text: "Pick one to copy it into the project's inbox and reference it in the message." } : undefined}
+      options={desktopOptions}
+      waiting={desktopImages === null
+        ? "Looking on the desktop…"
+        : desktopFailure ? "Close and try again." : "Nothing to attach — copy an image or take a screenshot on the desktop first."}
+      busy={false}
+      onPick={attachFromDesktop}
+      onClose={() => setDesktopSheet(false)}
     />}
     {modeSheet && <OptionSheet
       title="Permission mode"

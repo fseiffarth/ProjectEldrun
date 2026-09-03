@@ -90,8 +90,10 @@ Doctor probe (`vm_doctor` command, surfaced in the creation dialog like the
 sandbox's docker preflight): qemu binary present, `/dev/kvm` accessible
 (user in `kvm` group), `qemu-img`, `genisoimage`/`cloud-localds`, disk space.
 Fail with actionable text; the tier is simply unavailable (greyed, with the
-reason) when the probe fails. Linux-only initially — hidden elsewhere, like
-the container toggle on Windows.
+reason) when the probe fails. Linux-only initially; since 2026-09-03 the probe
+and boot have macOS (Hypervisor.framework, arm64 guests on Apple silicon) and
+Windows (WHPX, TCP QMP, no `-daemonize`) arms, and the seed ISO is written
+in-process (`services::iso9660`) where no mkisofs-class tool exists.
 
 ### State layout
 

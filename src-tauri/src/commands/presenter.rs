@@ -229,71 +229,180 @@ pub fn close_presenter_window(app: AppHandle, label: String) -> Result<(), Strin
 // presses, so the screensaver blanks the projector mid-answer. Nothing in the
 // deck subsystem asked the OS not to, so it did.
 //
-// Linux gets the real thing; every other platform is a documented no-op, exactly
-// as `platform/` already degrades. The cost of being wrong here is asymmetric —
-// an inhibit that never released would leave the user's machine unable to sleep
-// for the rest of the session — so the process is held in a mutex, is
-// idempotent, and is released on the presenter's unmount, on app exit, and by
-// the child dying with us if all else fails.
+// Every desktop gets the real thing, each through its own native spelling:
+// Linux holds a `systemd-inhibit` child, macOS a `caffeinate` child, Windows a
+// thread that asserted `SetThreadExecutionState`. The cost of being wrong here
+// is asymmetric — an inhibit that never released would leave the user's machine
+// unable to sleep for the rest of the session — so the holder lives in a mutex,
+// is idempotent, and is released on the presenter's unmount, on app exit, and
+// by the child (or thread) dying with us if all else fails.
 
-/// The live inhibitor, if any. `None` = nothing is held.
-static INHIBIT: std::sync::Mutex<Option<std::process::Child>> = std::sync::Mutex::new(None);
+/// What is keeping the machine awake. One variant per mechanism; dropping the
+/// value is not enough on its own (a `Child` needs its kill), so release goes
+/// through [`Inhibitor::release`].
+enum Inhibitor {
+    /// A long-lived child whose lifetime *is* the inhibition (`systemd-inhibit
+    /// … sleep infinity` on Linux, `caffeinate -w <our pid>` on macOS). Killing
+    /// it releases; a crashed Eldrun releases it too — `systemd-inhibit` dies
+    /// with its parent, and `caffeinate -w` exits when the pid it watches does.
+    #[cfg(not(target_os = "windows"))]
+    Child(std::process::Child),
+    /// A thread holding `ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED`.
+    /// The execution state is per-*thread* and stays asserted while the thread
+    /// lives, so the thread parks on this channel and clears the state when the
+    /// sender is dropped. A crashed Eldrun takes the thread with it, and the
+    /// kernel drops a dead thread's request.
+    #[cfg(target_os = "windows")]
+    Thread(std::sync::mpsc::Sender<()>),
+}
 
-/// Ask the desktop not to blank the screen while a talk is on.
-///
-/// `xdg-screensaver suspend <window-id>` is the portable spelling and needs an
-/// X11 window id we do not have here, so this uses `systemd-inhibit` with a
-/// long-lived child instead: the inhibition lasts exactly as long as the child,
-/// which means killing it is the release and a crashed Eldrun releases it too.
-/// Falls back to reporting `false` rather than erroring — a talk must not fail to
-/// start because a desktop has no inhibit mechanism.
-#[tauri::command]
-pub fn presenter_inhibit_sleep(reason: String) -> Result<bool, String> {
-    #[cfg(target_os = "linux")]
-    {
-        let mut held = INHIBIT
-            .lock()
-            .map_err(|_| "inhibit lock poisoned".to_string())?;
-        if held.is_some() {
-            // Idempotent: two presenters (main window + a popout) share one.
-            return Ok(true);
-        }
-        // The reason string is shown by the desktop's own "what is keeping this
-        // machine awake" UI, so it is passed as a single argv element (never a
-        // shell) and clipped to something a list can render.
-        let why: String = reason
-            .chars()
-            .filter(|c| !c.is_control())
-            .take(80)
-            .collect();
-        let child = crate::paths::command_no_window("systemd-inhibit")
-            .args([
-                "--what=idle:sleep",
-                "--who=Eldrun",
-                &format!("--why={}", if why.is_empty() { "Presenting" } else { &why }),
-                "--mode=block",
-                "sleep",
-                "infinity",
-            ])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn();
-        match child {
-            Ok(c) => {
-                *held = Some(c);
-                Ok(true)
+impl Inhibitor {
+    fn release(self) {
+        match self {
+            #[cfg(not(target_os = "windows"))]
+            Inhibitor::Child(mut child) => {
+                let _ = child.kill();
+                let _ = child.wait();
             }
-            // No systemd-inhibit on PATH. Nothing to report to the user: the talk
-            // works, the screen may blank, and a modal about it mid-presentation
-            // would be worse than the thing it warns about.
-            Err(_) => Ok(false),
+            #[cfg(target_os = "windows")]
+            Inhibitor::Thread(sender) => drop(sender),
         }
     }
-    #[cfg(not(target_os = "linux"))]
-    {
-        let _ = reason;
-        Ok(false)
+}
+
+/// The live inhibitor, if any. `None` = nothing is held.
+static INHIBIT: std::sync::Mutex<Option<Inhibitor>> = std::sync::Mutex::new(None);
+
+/// Clip the user-facing reason to something a desktop's "what is keeping this
+/// machine awake" list can render: no control characters, at most 80 chars,
+/// never empty.
+fn inhibit_reason(reason: &str) -> String {
+    let why: String = reason
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(80)
+        .collect();
+    if why.is_empty() {
+        "Presenting".to_string()
+    } else {
+        why
+    }
+}
+
+/// Linux: `systemd-inhibit` with a long-lived child. `xdg-screensaver suspend
+/// <window-id>` is the portable spelling and needs an X11 window id we do not
+/// have here, so the inhibition lasts exactly as long as the child instead.
+/// `None` when there is no `systemd-inhibit` on PATH.
+#[cfg(target_os = "linux")]
+fn acquire_inhibitor(reason: &str) -> Option<Inhibitor> {
+    // The reason string is shown by the desktop's own "what is keeping this
+    // machine awake" UI, so it is passed as a single argv element (never a
+    // shell).
+    let child = crate::paths::command_no_window("systemd-inhibit")
+        .args([
+            "--what=idle:sleep",
+            "--who=Eldrun",
+            &format!("--why={}", inhibit_reason(reason)),
+            "--mode=block",
+            "sleep",
+            "infinity",
+        ])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()?;
+    Some(Inhibitor::Child(child))
+}
+
+/// macOS: the system's own `caffeinate`, asserting "no display sleep" (`-d`) and
+/// "no idle sleep" (`-i`). `-w <pid>` ties its lifetime to Eldrun's: it exits on
+/// its own the moment this process is gone, which is the crash-safety the Linux
+/// child gets from dying with its parent. Always present on macOS (it ships in
+/// `/usr/bin`), so a `None` here means the spawn itself failed.
+#[cfg(target_os = "macos")]
+fn acquire_inhibitor(reason: &str) -> Option<Inhibitor> {
+    // `caffeinate` shows no reason string anywhere; keep the parameter for the
+    // shared signature and the log line.
+    let _ = inhibit_reason(reason);
+    let child = crate::paths::command_no_window("caffeinate")
+        .args(["-d", "-i", "-w", &std::process::id().to_string()])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()?;
+    Some(Inhibitor::Child(child))
+}
+
+/// Windows: `SetThreadExecutionState` on a dedicated thread. The request is
+/// per-thread, so the thread that asserts it must stay alive for as long as the
+/// inhibition should hold — it parks on a channel and clears the state when the
+/// holder is dropped. `None` when the assertion itself was refused.
+#[cfg(target_os = "windows")]
+fn acquire_inhibitor(reason: &str) -> Option<Inhibitor> {
+    use windows::Win32::System::Power::{
+        SetThreadExecutionState, ES_CONTINUOUS, ES_DISPLAY_REQUIRED, ES_SYSTEM_REQUIRED,
+    };
+
+    let _ = inhibit_reason(reason);
+    let (tx, rx) = std::sync::mpsc::channel::<()>();
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel::<bool>();
+    let spawned = std::thread::Builder::new()
+        .name("eldrun-presenter-awake".to_string())
+        .spawn(move || {
+            // SAFETY: plain Win32 call with no pointer arguments; a zero return
+            // means the request was refused.
+            let asserted = unsafe {
+                SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED)
+            };
+            let ok = asserted.0 != 0;
+            let _ = ready_tx.send(ok);
+            if !ok {
+                return;
+            }
+            // Parks until the sender is dropped (release, or app exit).
+            let _ = rx.recv();
+            // SAFETY: as above; clearing the flags is the documented release.
+            unsafe {
+                SetThreadExecutionState(ES_CONTINUOUS);
+            }
+        });
+    if spawned.is_err() {
+        return None;
+    }
+    match ready_rx.recv() {
+        Ok(true) => Some(Inhibitor::Thread(tx)),
+        _ => None,
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+fn acquire_inhibitor(reason: &str) -> Option<Inhibitor> {
+    let _ = inhibit_reason(reason);
+    None
+}
+
+/// Ask the OS not to blank the screen or sleep while a talk is on.
+///
+/// Falls back to reporting `false` rather than erroring — a talk must not fail to
+/// start because a desktop has no inhibit mechanism, and a modal about it
+/// mid-presentation would be worse than the thing it warns about.
+#[tauri::command]
+pub fn presenter_inhibit_sleep(reason: String) -> Result<bool, String> {
+    let mut held = INHIBIT
+        .lock()
+        .map_err(|_| "inhibit lock poisoned".to_string())?;
+    if held.is_some() {
+        // Idempotent: two presenters (main window + a popout) share one.
+        return Ok(true);
+    }
+    match acquire_inhibitor(&reason) {
+        Some(inhibitor) => {
+            *held = Some(inhibitor);
+            Ok(true)
+        }
+        None => Ok(false),
     }
 }
 
@@ -304,9 +413,8 @@ pub fn presenter_release_sleep() -> Result<(), String> {
     let mut held = INHIBIT
         .lock()
         .map_err(|_| "inhibit lock poisoned".to_string())?;
-    if let Some(mut child) = held.take() {
-        let _ = child.kill();
-        let _ = child.wait();
+    if let Some(inhibitor) = held.take() {
+        inhibitor.release();
     }
     Ok(())
 }

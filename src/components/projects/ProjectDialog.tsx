@@ -242,9 +242,9 @@ export function ProjectDialog({
   // this is the one moment it is cheap: flipping it later restarts every tab of
   // the project (and costs a non-resumable agent its conversation). Same
   // availability gate as the menu item — a remote project's tabs already run on
-  // its host, and the backend refuses on Windows (host paths mean nothing inside
-  // a Linux container).
-  const containerAvailable = !isRemoteProject && !IS_WINDOWS;
+  // its host. Every desktop otherwise: on Windows the backend spells the mounts
+  // for Docker Desktop (`sandbox::container_path`).
+  const containerAvailable = !isRemoteProject;
   // The VM tier is offered for a NEW project or a plain clone import — the two
   // creation shapes whose bytes can land inside the guest directly (a clone
   // runs *inside* the VM; a new project starts empty there). A folder/fork
@@ -646,7 +646,7 @@ export function ProjectDialog({
       const tabsStore = useTabsStore.getState();
       tabsStore.setScope(project.id);
       tabsStore.addTab({
-        label: "Clone into VM",
+        label: t("projectDialog.cloneIntoVmTab"),
         cmd: "git",
         args: ["clone", "--progress", repoUrl.trim(), "."],
         env: {},
@@ -792,7 +792,7 @@ export function ProjectDialog({
             // never adopted silently, since `docker build` runs it as root.
             const { source } = outcome;
             const adopt = await confirm(describeDetectedSpecSource(source), {
-              title: "Use this repo's own container?",
+              title: t("scaffold.adoptTitle"),
               kind: "warning",
             });
             outcome = await invoke<SandboxToggleOutcome>("set_project_sandbox", {
@@ -906,10 +906,19 @@ export function ProjectDialog({
     });
   };
 
+  // Resolved here rather than in `scaffold.ts` so the dropdown re-renders when
+  // the language changes.
+  const fillOptions = SCAFFOLD_FILL_OPTIONS.map((o) => ({ value: o.value, label: t(o.labelKey) }));
+
   const scaffoldStatusText = (item: ScaffoldPreviewItem) => {
-    if (item.path === ".git") return item.exists ? "Already there" : "Missing";
-    const base = item.exists ? "Already there, will be kept" : "Missing, will be added";
-    return AGENT_POINTER_DOCS.has(item.path) ? `${base} · points at AGENTS.md` : base;
+    if (item.path === ".git")
+      return t(item.exists ? "projectDialog.scaffoldAlreadyThere" : "projectDialog.scaffoldMissing");
+    const base = t(
+      item.exists ? "projectDialog.scaffoldKept" : "projectDialog.scaffoldWillBeAdded",
+    );
+    return AGENT_POINTER_DOCS.has(item.path)
+      ? t("projectDialog.scaffoldPointsAtAgents", { base })
+      : base;
   };
 
   // The shared project name + description fields. They live in the always-visible
@@ -1335,7 +1344,7 @@ export function ProjectDialog({
               <button
                 type="button"
                 onClick={() =>
-                  runInstallInTab("VM base image", vmDoctor.fetch_command!, "bash")
+                  runInstallInTab("VM base image", vmDoctor.fetch_command!, IS_WINDOWS ? "default" : "bash")
                 }
               >
                 {t("projectDialog.vmFetchBaseBtn")}
@@ -1394,7 +1403,7 @@ export function ProjectDialog({
                 onChange={(v) => {
                   if (v) applyScaffoldFillAll(v);
                 }}
-                options={SCAFFOLD_FILL_OPTIONS}
+                options={fillOptions}
               />
             </label>
 
@@ -1412,7 +1421,7 @@ export function ProjectDialog({
                       onChange={(v) =>
                         setScaffoldFillModes((current) => ({ ...current, [item.path]: v }))
                       }
-                      options={SCAFFOLD_FILL_OPTIONS}
+                      options={fillOptions}
                     />
                   ) : (
                     <span className="scaffold-row-status">{t("projectDialog.statusOnly")}</span>

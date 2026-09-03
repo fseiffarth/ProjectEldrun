@@ -296,12 +296,17 @@ export function MobileSettings() {
       // Support on macOS) and must not be re-derived here.
       const scriptPath = await invoke<string>("mobile_prepare_phone_install_script");
       const tabs = useTabsStore.getState();
+      // The backend hands back a PowerShell script on Windows (no bash/jq in
+      // a Windows root terminal) and a POSIX one elsewhere; run each with its
+      // own interpreter in the OS default shell.
       tabs.addTabToScope(ROOT_SCOPE, {
         label: tr("mobile.phoneInstallTab"),
-        cmd: "/bin/bash",
+        cmd: IS_WINDOWS ? "" : "/bin/bash",
         cwd: rootDir ?? "",
         kind: "shell",
-        initialInput: `bash "${scriptPath.replace(/(["\\$`])/g, "\\$1")}"`,
+        initialInput: IS_WINDOWS
+          ? `powershell -NoProfile -ExecutionPolicy Bypass -File "${scriptPath}"`
+          : `bash "${scriptPath.replace(/(["\\$`])/g, "\\$1")}"`,
       });
       useProjectsStore.setState({
         switchToast: tr("mobile.phoneInstallToast"),
@@ -431,21 +436,19 @@ export function MobileSettings() {
       <p className="settings-help">
         {t("mobile.scopeHelp")}
       </p>
-      {/* The handoff is a bash+jq script; on Windows the trusted URL is
-          still visible in the status row above, so hide only the QR flow. */}
-      {!IS_WINDOWS && (
-        <div className="mobile-phone-install">
-          <div>
-            <strong>{t("mobile.phoneInstallTitle")}</strong>
-            <p>
-              {t("mobile.phoneInstallHelp")}
-            </p>
-          </div>
-          <button type="button" className="settings-btn sm primary mobile-phone-install-button" onClick={() => void installOnPhone()}>
-            {t("mobile.phoneInstallButton")}
-          </button>
+      {/* The handoff script has a PowerShell twin on Windows, so the QR flow
+          is offered on every desktop. */}
+      <div className="mobile-phone-install">
+        <div>
+          <strong>{t("mobile.phoneInstallTitle")}</strong>
+          <p>
+            {t("mobile.phoneInstallHelp")}
+          </p>
         </div>
-      )}
+        <button type="button" className="settings-btn sm primary mobile-phone-install-button" onClick={() => void installOnPhone()}>
+          {t("mobile.phoneInstallButton")}
+        </button>
+      </div>
       <details className="mobile-settings-guide" open>
         <summary>{t("mobile.guideSummary")}</summary>
         <div className="mobile-settings-guide-body">

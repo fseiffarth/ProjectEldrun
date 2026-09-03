@@ -252,7 +252,7 @@ pub fn format_crash_line(code: u32, addr: usize, buf: &mut [u8]) -> usize {
 /// showing its last frame — an apparent freeze. Hook WebKit's
 /// web-process-terminated signal to log the reason to crash.log and reload
 /// the page, which respawns the renderer.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 fn install_webview_crash_reporter(app: &tauri::App) {
     use tauri::Manager;
 
@@ -298,12 +298,114 @@ pub(crate) fn hook_webview_crash_reporter(window: &tauri::WebviewWindow) {
     });
 }
 
-/// Every other platform reports renderer crashes through its own channel (the
-/// SEH filter on Windows, the signal handlers elsewhere), so this is a no-op
-/// with the same signature rather than a `cfg` at every call site.
-#[cfg(not(target_os = "linux"))]
+/// Windows: hook WebView2's `ProcessFailed` event on the window's
+/// `ICoreWebView2` — the WebView2 spelling of WebKitGTK's
+/// `web-process-terminated`. A renderer that exits (crash, OOM kill) leaves the
+/// same last-frame "freeze" it does on Linux, so it is logged to crash.log and
+/// the page reloaded, under the same reload cap. A dead *browser* process is
+/// logged only: the whole WebView2 is gone with it and `Reload` has nothing to
+/// talk to (the user's remedy is a relaunch, which the log line now explains).
+/// An unresponsive renderer is logged and left alone — it may recover, and a
+/// reload would destroy whatever it was doing.
+#[cfg(target_os = "windows")]
+pub(crate) fn hook_webview_crash_reporter(window: &tauri::WebviewWindow) {
+    use webview2_com::Microsoft::Web::WebView2::Win32::{
+        COREWEBVIEW2_PROCESS_FAILED_KIND, COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED,
+        COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED,
+        COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_UNRESPONSIVE,
+    };
+    use webview2_com::ProcessFailedEventHandler;
+
+    static RELOADS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    const MAX_RELOADS: u32 = 5;
+
+    let label = window.label().to_string();
+    let _ = window.with_webview(move |webview| {
+        // SAFETY: COM calls on the live controller Tauri handed us, on the
+        // thread `with_webview` runs on (the webview's own); the handler is
+        // reference-counted by WebView2 for as long as it is registered.
+        unsafe {
+            let Ok(core) = webview.controller().CoreWebView2() else {
+                return;
+            };
+            let handler = ProcessFailedEventHandler::create(Box::new(move |sender, args| {
+                let mut kind = COREWEBVIEW2_PROCESS_FAILED_KIND::default();
+                if let Some(args) = args.as_ref() {
+                    let _ = args.ProcessFailedKind(&mut kind);
+                }
+                let what = match kind {
+                    COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED => "renderer exited",
+                    COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_UNRESPONSIVE => {
+                        "renderer unresponsive"
+                    }
+                    COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED => {
+                        "browser process exited (WebView2 is gone; relaunch Eldrun)"
+                    }
+                    _ => "helper process failed",
+                };
+                let msg = format!(
+                    "=== WEBVIEW '{label}' PROCESS FAILED {} kind={} ({what}) ===",
+                    iso_now(),
+                    kind.0
+                );
+                crash_log_append(&msg);
+                eprintln!("{msg}");
+                if kind == COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED
+                    && RELOADS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < MAX_RELOADS
+                {
+                    if let Some(view) = sender.as_ref() {
+                        let _ = view.Reload();
+                    }
+                }
+                Ok(())
+            }));
+            let mut token = 0i64;
+            let _ = core.add_ProcessFailed(&handler, &mut token);
+        }
+    });
+}
+
+/// macOS: `webViewWebContentProcessDidTerminate` is delivered through wry's
+/// navigation delegate, which Tauri exposes only as ONE app-wide hook on the
+/// builder (`on_web_content_process_terminate`), not per window — so the
+/// per-window call is a no-op here and [`with_webview_crash_reporter`] installs
+/// the hook once for every window, present and future. (Any other platform
+/// reports through its signal handlers.)
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
 pub(crate) fn hook_webview_crash_reporter(window: &tauri::WebviewWindow) {
     let _ = window;
+}
+
+/// macOS: install the app-wide content-process-terminated hook on the builder.
+/// WebKit does NOT reload on its own after its WebContent process dies — the
+/// window keeps its last frame, the same apparent freeze the Linux hook
+/// exists for — so the handler logs to crash.log and reloads, under the same
+/// reload cap. Applies to every window the app ever builds (popouts, the
+/// presenter, live browser pages), which is why it lives on the builder rather
+/// than beside the per-window Linux/Windows hooks.
+#[cfg(target_os = "macos")]
+fn with_webview_crash_reporter(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry> {
+    static RELOADS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    const MAX_RELOADS: u32 = 5;
+    builder.on_web_content_process_terminate(|webview| {
+        let msg = format!(
+            "=== WEBVIEW '{}' TERMINATED {} (WebContent process died) ===",
+            webview.label(),
+            iso_now()
+        );
+        crash_log_append(&msg);
+        eprintln!("{msg}");
+        if RELOADS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < MAX_RELOADS {
+            let _ = webview.reload();
+        }
+    })
+}
+
+/// Linux and Windows hook each window as it is built (see
+/// [`hook_webview_crash_reporter`]); nothing to add to the builder.
+#[cfg(not(target_os = "macos"))]
+fn with_webview_crash_reporter(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry> {
+    builder
 }
 
 /// WebKitGTK draws the scrollbars INSIDE the web content with the native GTK
@@ -519,7 +621,7 @@ pub fn run() {
     let usage_watch = services::usage_stats::new_state();
     let mobile_desktop = commands::mobile_control::MobileDesktopState::default();
 
-    tauri::Builder::default()
+    with_webview_crash_reporter(tauri::Builder::default())
         .manage(pty_registry)
         .manage(win_registry)
         .manage(workspace)
@@ -587,7 +689,7 @@ pub fn run() {
                         );
                     }));
             }
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "windows"))]
             install_webview_crash_reporter(_app);
             // Recolor WebKitGTK's native in-content scrollbars (page CSS can't —
             // `scrollbar-color` is ignored on this build). Runs on the GTK main
@@ -768,6 +870,8 @@ pub fn run() {
             commands::mobile_control::mobile_host_apply,
             commands::mobile_control::mobile_verify_tailscale_serve,
             commands::mobile_control::mobile_tailscale_serve_status,
+            commands::mobile_control::mobile_desktop_images,
+            commands::mobile_control::mobile_attach_desktop_image,
             commands::default_apps::get_default_apps,
             commands::default_apps::save_default_apps,
             // Projects

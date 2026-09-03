@@ -28,19 +28,19 @@
 //!
 //! # Windows
 //!
-//! Refused in v1, and [`browser_capabilities`] is how the frontend learns that
-//! rather than discovering it from a failed call. The reason is WebView2's
-//! permission model: with no `PermissionRequested` handler its default state is
-//! `Default`, which draws **Edge's own** permission prompt — a dialog Eldrun did
-//! not write, whose "Allow" grants a browsed page the camera, and whose answer
-//! is persisted into the profile. wry registers a handler only when clipboard
-//! access is enabled, and that handler only ever allows clipboard reads. Its
-//! TLS interstitial is a second, independent case of a decision surface we do
-//! not control. Same call `services::sandbox` already makes for Docker on
-//! Windows: refuse clearly rather than ship something weaker than the user was
-//! promised. Re-enabling needs a real per-permission handler registered on the
-//! raw `ICoreWebView2` through `webview2-com`, which is Windows-only unsafe COM
-//! against a raw pointer and deserves its own review.
+//! Refused in v1 because of WebView2's permission model: with no
+//! `PermissionRequested` handler its default state is `Default`, which draws
+//! **Edge's own** permission prompt — a dialog Eldrun did not write, whose
+//! "Allow" grants a browsed page the camera, and whose answer is persisted into
+//! the profile. wry registers a handler only for clipboard reads, and that one
+//! only ever *allows*. Lifted since: [`deny_all_permissions`] registers a
+//! deny-everything handler on the raw `ICoreWebView2` through `webview2-com`
+//! (Windows-only COM against the controller Tauri hands `with_webview`), which
+//! fires before the prompt would be drawn and answers it with `DENY` — the same
+//! "a browsed page gets no device, ever" contract WebKitGTK's unhandled
+//! `permission-request` gives the Linux window. The tripwire test below is what
+//! keeps that handler deny-only. WebView2's TLS interstitial remains a decision
+//! surface we do not draw; the navigation gate is what stands in front of it.
 
 use std::path::PathBuf;
 
@@ -73,27 +73,29 @@ const EV_DOWNLOAD_REQUESTED: &str = "browser:download-requested";
 const EV_BLOCKED: &str = "browser:blocked";
 const EV_LIVE_CLOSED: &str = "browser:live-closed";
 
-/// Whether this build can open a **live-page window**.
+/// Whether this build can open a **live-page window**. Every platform can.
 ///
-/// False on Windows: WebView2's default permission state draws *Edge's own*
-/// prompt, whose Allow grants a browsed page the camera. That dialog is not
-/// ours to reword, restyle or refuse, so the window is not offered at all —
-/// the same posture `services::sandbox` takes for #86.
-#[cfg(not(target_os = "windows"))]
+/// Windows used to be refused here: WebView2's *default* permission state
+/// draws Edge's own prompt, whose Allow grants a browsed page the camera, and
+/// that dialog is not ours to reword or restyle. It is ours to **pre-empt**,
+/// though — `ICoreWebView2::add_PermissionRequested` fires before the prompt
+/// and a handler that sets the state to `DENY` means no prompt is ever drawn.
+/// [`deny_all_permissions`] installs exactly that on the live window, which is
+/// the same "a browsed page gets no device, ever" contract the Linux window
+/// keeps through WebKitGTK's permission-request signal.
 const LIVE_SUPPORTED: bool = true;
-#[cfg(target_os = "windows")]
-const LIVE_SUPPORTED: bool = false;
 
 /// Whether this build can serve **reader mode**. Every platform can.
 ///
 /// Deliberately a separate constant from [`LIVE_SUPPORTED`] rather than a use of
-/// it. The Windows refusal is *entirely* about a webview's permission model, and
+/// it. A live-page refusal is *entirely* about a webview's permission model, and
 /// reader mode has no webview: it is rustls plus `ammonia` in Rust, rendered
 /// into a `sandbox=""` srcdoc frame in the main window. Sharing one constant is
-/// how this became an over-broad refusal the first time — a platform gate that
-/// names its reason cannot silently spread to a surface the reason does not
-/// apply to. None of the Unix-only download hardening is on this path either;
-/// all of it hangs off the live window's `on_download`.
+/// how this became an over-broad refusal the first time (the Windows gate, since
+/// lifted) — a platform gate that names its reason cannot silently spread to a
+/// surface the reason does not apply to. None of the Unix-only download
+/// hardening is on this path either; all of it hangs off the live window's
+/// `on_download`.
 const READER_SUPPORTED: bool = true;
 
 // ── Capability report ───────────────────────────────────────────────────────
@@ -121,7 +123,7 @@ pub async fn browser_capabilities() -> Result<BrowserCapabilities, String> {
                     .to_string(),
             ),
             (false, _) => {
-                Some("Live pages are not available on Windows yet. Reader mode works.".to_string())
+                Some("Live pages are not available on this platform. Reader mode works.".to_string())
             }
         },
     })
@@ -245,21 +247,53 @@ pub async fn browser_open_live(app: AppHandle, url: String) -> Result<LiveWindow
     let parsed = url::Url::parse(&url).map_err(|_| "unparsable".to_string())?;
     let display_url = verdict.display_url.clone();
 
-    #[cfg(target_os = "windows")]
-    {
-        let _ = (app, parsed, display_url);
-        Err(UNSUPPORTED.to_string())
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        let label = engine::next_live_label();
-        engine::live_register(&label, &parsed);
-        spawn_live_window(&app, &label, parsed)?;
-        Ok(LiveWindowRef { label, display_url })
-    }
+    let label = engine::next_live_label();
+    engine::live_register(&label, &parsed);
+    spawn_live_window(&app, &label, parsed)?;
+    Ok(LiveWindowRef { label, display_url })
 }
 
+/// Windows: refuse every permission a browsed page asks for — camera,
+/// microphone, geolocation, notifications, clipboard, the lot — before WebView2
+/// can draw Edge's prompt for it. The handler runs after wry's own (which
+/// allows clipboard-read for ordinary app windows); the last `SetState` wins,
+/// and for a window that shows the open web the answer is no. Best-effort in
+/// the sense that a failed hook install leaves the engine's default in place,
+/// which is a *prompt*, never a silent grant.
+#[cfg(target_os = "windows")]
+fn deny_all_permissions(win: &tauri::WebviewWindow) {
+    use webview2_com::Microsoft::Web::WebView2::Win32::COREWEBVIEW2_PERMISSION_STATE_DENY;
+    use webview2_com::PermissionRequestedEventHandler;
+
+    let _ = win.with_webview(|webview| {
+        // SAFETY: COM calls on the live controller Tauri handed us, on the
+        // webview's own thread; WebView2 holds the handler while registered.
+        unsafe {
+            let Ok(core) = webview.controller().CoreWebView2() else {
+                return;
+            };
+            let handler = PermissionRequestedEventHandler::create(Box::new(|_, args| {
+                if let Some(args) = args.as_ref() {
+                    args.SetState(COREWEBVIEW2_PERMISSION_STATE_DENY)?;
+                }
+                Ok(())
+            }));
+            let mut token = 0i64;
+            let _ = core.add_PermissionRequested(&handler, &mut token);
+        }
+    });
+}
+
+/// Linux: WebKitGTK answers a permission request it has no handler for by
+/// *denying* it (the `permission-request` signal's default handler returns
+/// `FALSE`), so a live window that installs none already grants nothing. macOS:
+/// WKWebView asks its UI delegate, and wry's delegate implements no media/
+/// geolocation grant, so the request is denied there too. Nothing to install.
 #[cfg(not(target_os = "windows"))]
+fn deny_all_permissions(win: &tauri::WebviewWindow) {
+    let _ = win;
+}
+
 fn spawn_live_window(app: &AppHandle, label: &str, url: url::Url) -> Result<(), String> {
     use tauri::webview::{DownloadEvent, NewWindowResponse, PageLoadEvent};
     use tauri::{WebviewUrl, WebviewWindowBuilder};
@@ -364,6 +398,7 @@ fn spawn_live_window(app: &AppHandle, label: &str, url: url::Url) -> Result<(), 
     // precisely the thing that induces a renderer crash. Hook this one too, or
     // the crash it causes is a blank window with no `crash.log` line.
     crate::hook_webview_crash_reporter(&win);
+    deny_all_permissions(&win);
 
     let close_app = app.clone();
     let close_label = label.to_string();
@@ -936,17 +971,23 @@ mod tests {
     /// installs an *allow* handler for clipboard reads on Windows, so it is on
     /// the banned list below too.
     ///
+    /// Windows is the one place a handler IS installed, because there the
+    /// engine's unhandled default is a *prompt*, not a denial. That handler is
+    /// allowed on exactly one condition, checked here: every state it ever sets
+    /// is `DENY`. An `ALLOW` anywhere in the backend stays banned outright.
+    ///
     /// Clipboard read matters disproportionately in this app: whatever the user
     /// last copied is unusually likely to be a password, an SSH command line or
     /// an API token — Eldrun has a credential-paste-to-PTY path precisely
     /// because credentials move through it.
     #[test]
     fn nothing_installs_a_permission_or_clipboard_handler() {
+        let register = concat!("add_Permiss", "ionRequested");
+        let deny = concat!("COREWEBVIEW2_PERM", "ISSION_STATE_DENY");
         for (name, src) in all_backend_sources() {
             for banned in [
                 concat!("enable_clip", "board_access"),
                 concat!("connect_permi", "ssion_request"),
-                concat!("add_Permiss", "ionRequested"),
                 concat!("COREWEBVIEW2_PERM", "ISSION_STATE_ALLOW"),
                 concat!("request_media_ca", "pture_permission"),
             ] {
@@ -954,6 +995,20 @@ mod tests {
                     !src.contains(banned),
                     "`{banned}` in {name}: permissions are denied by NOT handling the \
                      request; a handler is how that regresses"
+                );
+            }
+            if src.contains(register) {
+                assert!(
+                    name.ends_with("browser.rs"),
+                    "`{register}` in {name}: only the live browser window may \
+                     register a permission handler, and only a deny-only one"
+                );
+                let set_state = concat!("SetSt", "ate(");
+                let set_states = src.matches(set_state).count();
+                let denials = src.matches(&format!("{set_state}{deny})")).count();
+                assert!(
+                    set_states > 0 && set_states == denials,
+                    "{name}: every permission state the handler sets must be DENY"
                 );
             }
         }
@@ -1177,15 +1232,15 @@ mod tests {
     #[allow(clippy::assertions_on_constants)]
     #[test]
     fn the_platform_report_matches_the_cfg_gate() {
-        if cfg!(target_os = "windows") {
-            assert!(!LIVE_SUPPORTED, "WebView2's permission prompt is not ours");
-        } else {
-            assert!(LIVE_SUPPORTED);
-        }
+        assert!(
+            LIVE_SUPPORTED,
+            "every desktop can open the live window: Windows pre-empts WebView2's \
+             permission prompt with a deny-only handler (see deny_all_permissions)"
+        );
         assert!(
             READER_SUPPORTED,
             "reader mode has no webview and no permission surface — it works on \
-             every platform, and the Windows refusal must never spread to it"
+             every platform, and a live-page refusal must never spread to it"
         );
     }
 

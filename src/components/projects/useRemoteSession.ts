@@ -19,6 +19,7 @@ import {
   resolveRemoteStartDir,
 } from "../../lib/remoteConnect";
 import { useSettingsStore } from "../../stores/settings";
+import { useT, type TranslationKey } from "../../lib/i18n";
 import type { LogLine } from "../common/ConnectionLog";
 
 type ConnStatus = "idle" | "connecting" | "connected" | "error";
@@ -30,11 +31,10 @@ const VPN_READY_MARKER = "Initialization Sequence Completed";
 
 // What the bounded ControlMaster poll says when it runs out. A give-up has to be
 // *stated*: the lamp is the only thing the user can see, and an amber one that
-// never resolves is indistinguishable from one still trying. (Raw English, as the
-// rest of this hook's error strings are — the i18n boundary here is
-// `RemoteProjectSection`, which renders them.)
-const POLL_GAVE_UP =
-  "No login detected after two minutes. Finish signing in in the terminal, then press “I've logged in — browse”.";
+// never resolves is indistinguishable from one still trying. Translated where the
+// sentence is produced, rather than in `RemoteProjectSection`, which renders these
+// alongside raw backend errors it has no key for.
+const POLL_GAVE_UP: TranslationKey = "remoteSession.pollGaveUp";
 
 // Shape of the `terminal-output` event payload (PTY id + a raw output chunk),
 // matching the backend emit and TerminalView's own listener.
@@ -61,6 +61,7 @@ const nextDialogTermId = (kind: string) => `dialog-${kind}-${++dialogTermSeq}`;
  * stays a single cohesive form component; behavior is unchanged.
  */
 export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
+  const t = useT();
   // Mirrors the global `connections_headless` setting (default ON): headless →
   // the password/passphrase is typed into Eldrun's own fields and the backend
   // connects directly (`connectSsh`/`connectVpn`), same as activation's
@@ -632,7 +633,7 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
           // screen to act on — the user is watching a terminal that looks fine and
           // a dialog that will never advance. `tryBrowseNow` re-arms it.
           setSshStatus("error");
-          setSshError(POLL_GAVE_UP);
+          setSshError(t(POLL_GAVE_UP));
           return;
         }
         sshPollTimer.current = setTimeout(() => pollSshReady(parsed, attempt + 1), 3000);
@@ -656,7 +657,7 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
     const parsed = parseSshAddress(sshAddress);
     if (!parsed) {
       setSshStatus("error");
-      setSshError("Enter an address like user@host or host:2222");
+      setSshError(t("remoteSession.addressHint"));
       return;
     }
     try {
@@ -721,7 +722,7 @@ export function useRemoteSession({ kind }: { kind: "new" | "import" }) {
     const parsed = parseSshAddress(sshAddress);
     if (!parsed) {
       setSshStatus("error");
-      setSshError("Enter an address like user@host or host:2222");
+      setSshError(t("remoteSession.addressHint"));
       return;
     }
     // Empty password → the backend falls back to a saved one for this host, then to

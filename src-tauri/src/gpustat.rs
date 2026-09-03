@@ -24,8 +24,18 @@
 //! - **`nvidia-smi`** (Linux + Windows): the only portable read of NVIDIA memory.
 //!   A process spawn, so its absence is remembered ([`NVIDIA_RETRY`]) instead of
 //!   being paid for on every poll.
-//! - Anything else (macOS, unknown drivers) samples nothing and the UI falls back
-//!   to the Ollama figure.
+//! - **DXGI** (Windows): `IDXGIAdapter3::QueryVideoMemoryInfo` for every
+//!   hardware adapter — the local (VRAM) and non-local (shared system memory)
+//!   segment groups, which are exactly the two pools above. In-process COM, no
+//!   spawn, no tool. Utilization is not in DXGI (that is a PDH counter), so
+//!   `busy_percent` stays `None`. NVIDIA adapters are left to `nvidia-smi`
+//!   whenever it answers, so a card is never listed twice.
+//! - **IOKit registry** (macOS): `ioreg -c IOAccelerator` as a plist, whose
+//!   `PerformanceStatistics` carries device utilization and the in-use system
+//!   memory the driver reports. Apple silicon has one unified pool, reported as
+//!   the *shared* pool against the machine's physical memory; a discrete card on
+//!   an Intel Mac reports its VRAM figures where the driver publishes them.
+//! - Anything else samples nothing and the UI falls back to the Ollama figure.
 
 use serde::Serialize;
 use std::collections::HashMap;
@@ -132,8 +142,251 @@ pub fn snapshot() -> Vec<GpuSample> {
 /// from `nvidia-smi` alone.
 fn sample() -> Vec<GpuSample> {
     let mut gpus = drm_sample();
-    gpus.extend(nvidia_sample());
+    let nvidia = nvidia_sample();
+    #[cfg(target_os = "windows")]
+    gpus.extend(dxgi_sample(!nvidia.is_empty()));
+    #[cfg(target_os = "macos")]
+    gpus.extend(ioreg_sample());
+    gpus.extend(nvidia);
     gpus
+}
+
+// ── DXGI (Windows) ───────────────────────────────────────────────────────────
+
+/// PCI vendor id of NVIDIA, the adapters `nvidia-smi` already covers.
+#[cfg(any(target_os = "windows", test))]
+const VENDOR_NVIDIA: u32 = 0x10DE;
+
+/// The DXGI facts one adapter reports, split out from the COM walk so the
+/// mapping onto a [`GpuSample`] is pure and testable on a machine without DXGI.
+#[cfg(any(target_os = "windows", test))]
+#[derive(Debug, Default, Clone, PartialEq)]
+pub(crate) struct DxgiAdapter {
+    pub name: String,
+    pub vendor_id: u32,
+    pub software: bool,
+    pub dedicated_video_memory: u64,
+    pub shared_system_memory: u64,
+    pub local_usage: u64,
+    pub local_budget: u64,
+    pub non_local_usage: u64,
+}
+
+/// Map one adapter onto the two-pool sample. `None` for the software adapter
+/// (the "Microsoft Basic Render Driver" every machine lists) and, when
+/// `skip_nvidia`, for NVIDIA cards `nvidia-smi` is already reporting. A card
+/// that declares no dedicated memory (an iGPU) still reports its *shared* pool,
+/// which is where its working set actually lives — but only if the driver
+/// states a total for it, mirroring the DRM rule that a zero total is "no
+/// accounting", not "no memory".
+#[cfg(any(target_os = "windows", test))]
+pub(crate) fn dxgi_gpu_sample(adapter: &DxgiAdapter, skip_nvidia: bool) -> Option<GpuSample> {
+    if adapter.software || (skip_nvidia && adapter.vendor_id == VENDOR_NVIDIA) {
+        return None;
+    }
+    let vram_total = adapter.dedicated_video_memory;
+    let shared_total = adapter.shared_system_memory;
+    if vram_total == 0 && shared_total == 0 {
+        return None;
+    }
+    Some(GpuSample {
+        name: adapter.name.clone(),
+        driver: "dxgi".to_string(),
+        vram_used: adapter.local_usage.min(vram_total),
+        vram_total,
+        shared_used: adapter.non_local_usage.min(shared_total),
+        shared_total,
+        busy_percent: None,
+        ..GpuSample::default()
+    })
+}
+
+#[cfg(target_os = "windows")]
+fn dxgi_sample(skip_nvidia: bool) -> Vec<GpuSample> {
+    dxgi_adapters()
+        .iter()
+        .filter_map(|a| dxgi_gpu_sample(a, skip_nvidia))
+        .collect()
+}
+
+/// Enumerate the hardware adapters through DXGI 1.4. Best-effort: an OS or
+/// driver without `IDXGIAdapter3` (pre-Windows 10) yields no adapters rather
+/// than an error, and a failed memory query leaves that pool's usage at zero
+/// against its declared total.
+#[cfg(target_os = "windows")]
+fn dxgi_adapters() -> Vec<DxgiAdapter> {
+    use windows::core::Interface;
+    use windows::Win32::Graphics::Dxgi::{
+        CreateDXGIFactory1, IDXGIAdapter3, IDXGIFactory1, DXGI_ADAPTER_FLAG_SOFTWARE,
+        DXGI_MEMORY_SEGMENT_GROUP_LOCAL, DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL,
+        DXGI_QUERY_VIDEO_MEMORY_INFO,
+    };
+
+    let mut out = Vec::new();
+    // SAFETY: plain DXGI COM calls; every interface is reference-counted and
+    // released by its wrapper's Drop, and every out-param is a valid, sized
+    // struct on this stack frame.
+    unsafe {
+        let Ok(factory) = CreateDXGIFactory1::<IDXGIFactory1>() else {
+            return out;
+        };
+        for index in 0.. {
+            let Ok(adapter) = factory.EnumAdapters1(index) else {
+                break;
+            };
+            let Ok(desc) = adapter.GetDesc1() else {
+                continue;
+            };
+            let end = desc
+                .Description
+                .iter()
+                .position(|&u| u == 0)
+                .unwrap_or(desc.Description.len());
+            let mut entry = DxgiAdapter {
+                name: String::from_utf16_lossy(&desc.Description[..end]),
+                vendor_id: desc.VendorId,
+                software: desc.Flags & (DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32) != 0,
+                dedicated_video_memory: desc.DedicatedVideoMemory as u64,
+                shared_system_memory: desc.SharedSystemMemory as u64,
+                ..DxgiAdapter::default()
+            };
+            if let Ok(adapter3) = adapter.cast::<IDXGIAdapter3>() {
+                let mut info = DXGI_QUERY_VIDEO_MEMORY_INFO::default();
+                if adapter3
+                    .QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &mut info)
+                    .is_ok()
+                {
+                    entry.local_usage = info.CurrentUsage;
+                    entry.local_budget = info.Budget;
+                }
+                let mut info = DXGI_QUERY_VIDEO_MEMORY_INFO::default();
+                if adapter3
+                    .QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL, &mut info)
+                    .is_ok()
+                {
+                    entry.non_local_usage = info.CurrentUsage;
+                }
+            }
+            out.push(entry);
+        }
+    }
+    out
+}
+
+// ── IOKit registry (macOS) ───────────────────────────────────────────────────
+
+/// Parse `ioreg -r -c IOAccelerator -a -d 1` (an XML plist array, one
+/// dictionary per accelerator) into samples. `mem_total` is the machine's
+/// physical memory, the ceiling of Apple silicon's unified pool.
+///
+/// The keys are the driver's, and vary by GPU: Apple silicon publishes
+/// `PerformanceStatistics` → `Device Utilization %` and `In use system memory`
+/// (bytes); an AMD card on an Intel Mac publishes `vramUsedBytes` /
+/// `vramFreeBytes` in the same dictionary. Each figure is read if present and
+/// left unset if not — never a zero standing in for a reading. An accelerator
+/// with no memory figure at all (a display-only bridge) is skipped.
+#[cfg(any(target_os = "macos", test))]
+pub(crate) fn parse_ioreg_accelerators(plist_xml: &[u8], mem_total: u64) -> Vec<GpuSample> {
+    let Ok(root) = plist::Value::from_reader_xml(plist_xml) else {
+        return Vec::new();
+    };
+    let Some(items) = root.as_array() else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for (index, item) in items.iter().enumerate() {
+        let Some(dict) = item.as_dictionary() else {
+            continue;
+        };
+        let stats = dict
+            .get("PerformanceStatistics")
+            .and_then(|v| v.as_dictionary());
+        let num = |key: &str| -> Option<u64> {
+            let v = stats?.get(key)?;
+            v.as_unsigned_integer()
+                .or_else(|| v.as_signed_integer().map(|i| i.max(0) as u64))
+                .or_else(|| v.as_real().map(|f| f.max(0.0) as u64))
+        };
+        let vram_used = num("vramUsedBytes");
+        let vram_free = num("vramFreeBytes");
+        let in_use = num("In use system memory");
+        let (vram_used, vram_total) = match (vram_used, vram_free) {
+            (Some(used), Some(free)) => (used, used + free),
+            _ => (0, 0),
+        };
+        let (shared_used, shared_total) = match in_use {
+            Some(used) if mem_total > 0 => (used.min(mem_total), mem_total),
+            _ => (0, 0),
+        };
+        if vram_total == 0 && shared_total == 0 {
+            continue;
+        }
+        let name = dict
+            .get("model")
+            .and_then(|v| match v {
+                plist::Value::Data(bytes) => {
+                    Some(String::from_utf8_lossy(bytes).trim_end_matches('\0').to_string())
+                }
+                plist::Value::String(s) => Some(s.clone()),
+                _ => None,
+            })
+            .filter(|s| !s.is_empty())
+            .or_else(|| dict.get("IOClass").and_then(|v| v.as_string()).map(str::to_string))
+            .unwrap_or_else(|| format!("GPU {index}"));
+        out.push(GpuSample {
+            name,
+            driver: dict
+                .get("CFBundleIdentifier")
+                .and_then(|v| v.as_string())
+                .unwrap_or("iokit")
+                .to_string(),
+            vram_used,
+            vram_total,
+            shared_used,
+            shared_total,
+            busy_percent: num("Device Utilization %").map(|p| p as f64),
+            ..GpuSample::default()
+        });
+    }
+    out
+}
+
+#[cfg(target_os = "macos")]
+fn ioreg_sample() -> Vec<GpuSample> {
+    let output = crate::paths::command_no_window("ioreg")
+        .args(["-r", "-c", "IOAccelerator", "-a", "-d", "1"])
+        .output();
+    let Ok(out) = output else {
+        return Vec::new();
+    };
+    if !out.status.success() {
+        return Vec::new();
+    }
+    parse_ioreg_accelerators(&out.stdout, macos_physical_memory())
+}
+
+/// `hw.memsize`: the unified pool's ceiling on Apple silicon.
+#[cfg(target_os = "macos")]
+fn macos_physical_memory() -> u64 {
+    let mut value: u64 = 0;
+    let mut size = std::mem::size_of::<u64>();
+    // SAFETY: `sysctlbyname` writes at most `size` bytes into `value`; a
+    // non-zero return leaves it untouched (zero), which the parser treats as
+    // "no ceiling known".
+    let rc = unsafe {
+        libc::sysctlbyname(
+            c"hw.memsize".as_ptr(),
+            &mut value as *mut u64 as *mut libc::c_void,
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if rc == 0 {
+        value
+    } else {
+        0
+    }
 }
 
 // ── DRM sysfs (Linux) ────────────────────────────────────────────────────────
@@ -793,6 +1046,98 @@ mod tests {
         assert_eq!(sample.shared_used, 18_052_190_208);
         assert_eq!(sample.shared_total, 65_855_619_072);
         assert_eq!(sample.busy_percent, Some(95.0));
+    }
+
+    #[test]
+    fn dxgi_adapter_maps_onto_the_two_pools_and_skips_the_software_one() {
+        let igpu = DxgiAdapter {
+            name: "Intel(R) Iris(R) Xe Graphics".into(),
+            vendor_id: 0x8086,
+            software: false,
+            dedicated_video_memory: 128 << 20,
+            shared_system_memory: 16 << 30,
+            local_usage: 64 << 20,
+            local_budget: 100 << 20,
+            non_local_usage: 3 << 30,
+        };
+        let sample = dxgi_gpu_sample(&igpu, true).expect("hardware adapter reported");
+        assert_eq!(sample.driver, "dxgi");
+        assert_eq!(sample.vram_total, 128 << 20);
+        assert_eq!(sample.vram_used, 64 << 20);
+        assert_eq!(sample.shared_total, 16 << 30);
+        assert_eq!(sample.shared_used, 3 << 30);
+        assert_eq!(sample.busy_percent, None, "DXGI has no utilization counter");
+
+        let basic = DxgiAdapter {
+            name: "Microsoft Basic Render Driver".into(),
+            software: true,
+            shared_system_memory: 16 << 30,
+            ..DxgiAdapter::default()
+        };
+        assert!(dxgi_gpu_sample(&basic, false).is_none());
+
+        let nv = DxgiAdapter {
+            name: "NVIDIA GeForce RTX 4070".into(),
+            vendor_id: VENDOR_NVIDIA,
+            dedicated_video_memory: 12 << 30,
+            ..DxgiAdapter::default()
+        };
+        assert!(dxgi_gpu_sample(&nv, true).is_none(), "nvidia-smi owns it");
+        assert!(dxgi_gpu_sample(&nv, false).is_some(), "…unless nvidia-smi is absent");
+        // Usage can never exceed the declared total.
+        let odd = DxgiAdapter {
+            dedicated_video_memory: 1 << 30,
+            local_usage: 5 << 30,
+            ..nv.clone()
+        };
+        assert_eq!(dxgi_gpu_sample(&odd, false).unwrap().vram_used, 1 << 30);
+    }
+
+    #[test]
+    fn ioreg_accelerators_parse_apple_silicon_and_discrete_shapes() {
+        let xml = br#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<array>
+  <dict>
+    <key>IOClass</key><string>AGXAcceleratorG13G</string>
+    <key>CFBundleIdentifier</key><string>com.apple.AGXAcceleratorG13G</string>
+    <key>model</key><data>QXBwbGUgTTE=</data>
+    <key>PerformanceStatistics</key>
+    <dict>
+      <key>Device Utilization %</key><integer>37</integer>
+      <key>In use system memory</key><integer>2147483648</integer>
+      <key>Renderer Utilization %</key><integer>12</integer>
+    </dict>
+  </dict>
+  <dict>
+    <key>IOClass</key><string>AMDRadeonX6000_AMDNaviGraphicsAccelerator</string>
+    <key>PerformanceStatistics</key>
+    <dict>
+      <key>vramUsedBytes</key><integer>1073741824</integer>
+      <key>vramFreeBytes</key><integer>7516192768</integer>
+      <key>Device Utilization %</key><integer>5</integer>
+    </dict>
+  </dict>
+  <dict>
+    <key>IOClass</key><string>IOAcceleratorBridge</string>
+  </dict>
+</array>
+</plist>"#;
+        let gpus = parse_ioreg_accelerators(xml, 16 << 30);
+        assert_eq!(gpus.len(), 2, "the bridge with no memory figure is skipped");
+        assert_eq!(gpus[0].name, "Apple M1");
+        assert_eq!(gpus[0].driver, "com.apple.AGXAcceleratorG13G");
+        assert_eq!(gpus[0].vram_total, 0, "unified memory: no dedicated pool");
+        assert_eq!(gpus[0].shared_used, 2 << 30);
+        assert_eq!(gpus[0].shared_total, 16 << 30);
+        assert_eq!(gpus[0].busy_percent, Some(37.0));
+        assert_eq!(gpus[1].name, "AMDRadeonX6000_AMDNaviGraphicsAccelerator");
+        assert_eq!(gpus[1].vram_used, 1 << 30);
+        assert_eq!(gpus[1].vram_total, 8 << 30);
+        assert_eq!(gpus[1].busy_percent, Some(5.0));
+        // Garbage in, nothing out.
+        assert!(parse_ioreg_accelerators(b"not a plist", 1).is_empty());
     }
 
     #[test]

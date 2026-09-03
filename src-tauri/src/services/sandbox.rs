@@ -26,6 +26,16 @@
 //! host-absolute cwds, so the *same* session resumes correctly whether the
 //! toggle is on or off.
 //!
+//! **Windows** is the one host where "identical" cannot be literal: a Linux
+//! container has no `C:\`. Every host path crossing into the container goes
+//! through [`container_path`], the fixed, invertible Docker Desktop spelling
+//! (`C:\Users\a\p` → `/c/Users/a/p`), and it is applied at exactly one layer —
+//! the argv builders — so every mount planner above them keeps reasoning in
+//! host paths. `--user` is omitted there (Docker Desktop maps bind-mounted
+//! files to the Windows user regardless of the in-container uid), and the
+//! SessionStart hook the staged configs point at is swapped for a POSIX twin
+//! (see [`staged_config_mounts`]) because the registered one is PowerShell.
+//!
 //! ## What the container can reach (blast radius)
 //!
 //! Only these host paths are bind-mounted, each at its identical absolute path:
@@ -285,9 +295,14 @@ pub fn docker_create_args(
         a.push("--label".to_string());
         a.push(format!("eldrun.spec={fp}"));
     }
+    // `--user` carries the host identity in so files the container writes are
+    // the user's. On Windows there is no host uid to carry (`host_uid_gid` is
+    // `(0, 0)`) and Docker Desktop maps bind-mounted files to the Windows user
+    // anyway, so the flag is simply not passed.
+    if (uid, gid) != (0, 0) {
+        a.extend(["--user".to_string(), format!("{uid}:{gid}")]);
+    }
     a.extend([
-        "--user".to_string(),
-        format!("{uid}:{gid}"),
         // Hardening: no privilege escalation, no Linux capabilities, bounded
         // process count. Docker's socket is deliberately never mounted.
         "--security-opt".to_string(),
@@ -297,9 +312,9 @@ pub fn docker_create_args(
         "--pids-limit".to_string(),
         harden.pids_limit.to_string(),
         "-e".to_string(),
-        format!("HOME={home}"),
+        format!("HOME={}", container_path(home)),
         "-w".to_string(),
-        project_dir.to_string(),
+        container_path(project_dir),
     ]);
     if let Some(mem) = &harden.memory {
         a.push("--memory".to_string());
@@ -321,19 +336,19 @@ pub fn docker_create_args(
         a.push("/tmp".to_string());
     }
     // The project dir (the only project bytes exposed), always mounted rw at
-    // its identical path.
+    // its identical path (its container spelling on Windows).
     a.push("-v".to_string());
-    a.push(format!("{project_dir}:{project_dir}"));
+    a.push(format!("{project_dir}:{}", container_path(project_dir)));
     for m in rw_mounts {
         a.push("-v".to_string());
-        a.push(m.clone());
+        a.push(volume_arg(m, false));
     }
     // Read-only mounts (the hook script dir). A nested `:ro` file mount over an
     // rw parent dir works regardless of argv order: docker applies bind mounts
     // parent-first by destination depth.
     for m in ro_mounts {
         a.push("-v".to_string());
-        a.push(format!("{m}:ro"));
+        a.push(volume_arg(m, true));
     }
     a.push(image.to_string());
     // The container's sole job is to exist; tabs are `docker exec`s into it.
@@ -361,7 +376,7 @@ pub fn docker_exec_args(
         "-i".to_string(),
         "-t".to_string(),
         "-w".to_string(),
-        cwd.to_string(),
+        container_path(cwd),
         "-e".to_string(),
         "TERM=xterm-256color".to_string(),
         "-e".to_string(),
@@ -732,6 +747,75 @@ pub fn wrap_pty_options_docker(opts: &mut PtyOptions) -> Result<(), String> {
     Ok(())
 }
 
+// ── Host → container paths ────────────────────────────────────────────────
+
+/// The container-side spelling of a host path.
+///
+/// Linux/macOS: the path itself (identical-path mounting). Windows: Docker
+/// Desktop's convention — the drive letter becomes a lowercase root
+/// directory and separators turn forward (`C:\Users\a` → `/c/Users/a`); a UNC
+/// path `\\server\share\x` becomes `/server/share/x`. Pure over `windows`
+/// so the mapping is tested on every OS; [`container_path`] passes the real
+/// target.
+pub(crate) fn container_path_for(host: &str, windows: bool) -> String {
+    if !windows {
+        return host.to_string();
+    }
+    let forward = host.replace('\\', "/");
+    let bytes = forward.as_bytes();
+    if bytes.len() >= 2 && bytes[1] == b':' && bytes[0].is_ascii_alphabetic() {
+        let drive = (bytes[0] as char).to_ascii_lowercase();
+        let rest = forward[2..].trim_start_matches('/');
+        if rest.is_empty() {
+            format!("/{drive}")
+        } else {
+            format!("/{drive}/{rest}")
+        }
+    } else if let Some(unc) = forward.strip_prefix("//") {
+        format!("/{unc}")
+    } else {
+        forward
+    }
+}
+
+pub(crate) fn container_path(host: &str) -> String {
+    container_path_for(host, cfg!(windows))
+}
+
+/// Split a `src:dst` mount pair. Every planner writes the pair with a host
+/// path on both sides, and on Windows both carry a drive colon, so the
+/// separator is the first `:` that is followed by a path start (`/`, `\`, or
+/// another `X:` drive) — never the one at index 1 of a drive path.
+pub(crate) fn split_mount_pair(pair: &str) -> (&str, &str) {
+    let bytes = pair.as_bytes();
+    for (i, &b) in bytes.iter().enumerate() {
+        if b != b':' || i < 2 {
+            continue;
+        }
+        let next = bytes.get(i + 1).copied();
+        let starts_path = matches!(next, Some(b'/') | Some(b'\\'))
+            || (next.is_some_and(|c| c.is_ascii_alphabetic()) && bytes.get(i + 2) == Some(&b':'));
+        if starts_path {
+            return (&pair[..i], &pair[i + 1..]);
+        }
+    }
+    // A pair with no recognisable separator (a plain POSIX `a:b` where `b` has
+    // no leading slash): fall back to the first colon, the historical rule.
+    pair.split_once(':').unwrap_or((pair, pair))
+}
+
+/// `-v` value for a planner pair: the host source verbatim, the destination in
+/// the container's spelling.
+fn volume_arg(pair: &str, read_only: bool) -> String {
+    let (src, dst) = split_mount_pair(pair);
+    let dst = container_path(dst);
+    if read_only {
+        format!("{src}:{dst}:ro")
+    } else {
+        format!("{src}:{dst}")
+    }
+}
+
 // ── Container lifecycle ───────────────────────────────────────────────────
 
 /// Serializes every create/remove so racing project switches (or a switch
@@ -894,29 +978,21 @@ pub fn up(
 }
 
 /// Activation warm-up: `up()` for a project *iff* it is a container-toggled,
-/// local project. `Ok(None)` when the toggle is off / the project is remote /
-/// not on Unix — callers treat that as "nothing to do".
+/// local project. `Ok(None)` when the toggle is off / the project is remote —
+/// callers treat that as "nothing to do".
 pub fn up_for_project(project_id: &str) -> Result<Option<String>, String> {
-    #[cfg(not(unix))]
-    {
-        let _ = project_id;
-        Ok(None)
+    if crate::services::remote::remote_target_for(project_id).is_some() {
+        return Ok(None);
     }
-    #[cfg(unix)]
-    {
-        if crate::services::remote::remote_target_for(project_id).is_some() {
-            return Ok(None);
-        }
-        let Some(spec) = sandbox_spec_for(project_id) else {
-            return Ok(None);
-        };
-        if !spec.enabled {
-            return Ok(None);
-        }
-        let dir = project_dir_for(project_id)
-            .ok_or_else(|| format!("project '{project_id}' has no directory"))?;
-        up(project_id, Some(&spec), &dir).map(Some)
+    let Some(spec) = sandbox_spec_for(project_id) else {
+        return Ok(None);
+    };
+    if !spec.enabled {
+        return Ok(None);
     }
+    let dir = project_dir_for(project_id)
+        .ok_or_else(|| format!("project '{project_id}' has no directory"))?;
+    up(project_id, Some(&spec), &dir).map(Some)
 }
 
 /// Tear down a project's session container (`rm -f` by name). Idempotent,
@@ -1172,11 +1248,15 @@ fn preflight_docker() -> Result<(), String> {
 fn preflight_daemon() -> Result<(), String> {
     match docker(&["info", "--format", "{{.ServerVersion}}"]) {
         Ok(o) if o.status.success() => Ok(()),
-        _ => Err(
+        _ => Err(if cfg!(target_os = "linux") {
             "Project container: Docker isn't running. Start the Docker service (e.g. \
              `systemctl start docker`), or turn the container toggle off for this project."
-                .to_string(),
-        ),
+                .to_string()
+        } else {
+            "Project container: Docker isn't running. Start Docker Desktop, or turn the \
+             container toggle off for this project."
+                .to_string()
+        }),
     }
 }
 
@@ -1933,10 +2013,44 @@ pub(crate) fn staged_config_mounts(home: &str, stage: &Path) -> Vec<(String, Str
             std::fs::write(&dst, default_agent_config(rel)).is_ok()
         };
         if staged {
+            #[cfg(windows)]
+            rewrite_hook_for_container(&dst);
             mounts.push((dst.to_string_lossy().into_owned(), src));
         }
     }
     mounts
+}
+
+/// Windows: point a staged config copy's SessionStart hook at the POSIX twin.
+///
+/// The host registers a PowerShell hook (`eldrun_session_start.ps1`), which a
+/// Linux container cannot run — the record that lets a tab resume its session
+/// would simply never be written. `agent_session` also writes the POSIX body
+/// beside it (with the *container-side* live-sessions path baked in), and this
+/// swaps the command in the copy — never the host original — so the same
+/// hook contract holds inside the container. Both serializations are covered:
+/// Claude's JSON (serde-escaped string) and Codex's TOML (literal string).
+#[cfg(windows)]
+fn rewrite_hook_for_container(staged: &Path) {
+    let Ok(text) = std::fs::read_to_string(staged) else {
+        return;
+    };
+    let host_cmd = crate::services::agent_session::hook_command();
+    let container_cmd = crate::services::agent_session::container_hook_command();
+    let rewritten = if staged.extension().and_then(|e| e.to_str()) == Some("json") {
+        let (Ok(from), Ok(to)) = (
+            serde_json::to_string(&host_cmd),
+            serde_json::to_string(&container_cmd),
+        ) else {
+            return;
+        };
+        text.replace(&from, &to)
+    } else {
+        text.replace(&format!("'{host_cmd}'"), &format!("'{container_cmd}'"))
+    };
+    if rewritten != text {
+        let _ = std::fs::write(staged, rewritten);
+    }
 }
 
 /// Stage the `.claude.json` files and mount each copy at its real path.
@@ -2141,6 +2255,57 @@ mod tests {
             &HardenOpts::default(),
             fingerprint,
         )
+    }
+
+    // ── Host → container paths ────────────────────────────────────────────
+
+    #[test]
+    fn windows_host_paths_take_docker_desktops_spelling() {
+        assert_eq!(container_path_for(r"C:\Users\a\p", true), "/c/Users/a/p");
+        assert_eq!(container_path_for(r"D:\", true), "/d");
+        assert_eq!(container_path_for("C:/Users/a", true), "/c/Users/a");
+        assert_eq!(container_path_for(r"\\srv\share\x", true), "/srv/share/x");
+        // Unix hosts are identical-path.
+        assert_eq!(container_path_for("/home/a/p", false), "/home/a/p");
+        assert_eq!(container_path_for(r"C:\odd", false), r"C:\odd");
+    }
+
+    #[test]
+    fn mount_pairs_split_around_drive_colons() {
+        assert_eq!(split_mount_pair("/a/b:/a/b"), ("/a/b", "/a/b"));
+        assert_eq!(
+            split_mount_pair(r"C:\Users\a\.claude:C:\Users\a\.claude"),
+            (r"C:\Users\a\.claude", r"C:\Users\a\.claude")
+        );
+        // A staged copy under the state dir mounted over a home path.
+        assert_eq!(
+            split_mount_pair(r"C:\state\stage\x.json:C:\Users\a\.claude\settings.json"),
+            (r"C:\state\stage\x.json", r"C:\Users\a\.claude\settings.json")
+        );
+        // Already-translated destination.
+        assert_eq!(
+            split_mount_pair(r"C:\Users\a\p:/c/Users/a/p"),
+            (r"C:\Users\a\p", "/c/Users/a/p")
+        );
+    }
+
+    #[test]
+    fn create_argv_without_a_host_identity_omits_user() {
+        let out = docker_create_args(
+            "eldrun-p1",
+            "p1",
+            "img:latest",
+            "/home/alice",
+            0,
+            0,
+            "/home/alice/eldrun/projects/p1",
+            &rw("/home/alice"),
+            &ro(),
+            &HardenOpts::default(),
+            None,
+        );
+        assert!(!out.contains(&"--user".to_string()));
+        assert!(has_flag_value(&out, "--cap-drop", "ALL"), "hardening stays");
     }
 
     // ── Naming / fingerprint ──────────────────────────────────────────────

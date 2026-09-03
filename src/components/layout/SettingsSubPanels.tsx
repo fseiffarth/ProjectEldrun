@@ -536,23 +536,23 @@ interface AgentInfo {
  */
 const NODE_INSTALL: Record<
   "windows" | "macos" | "linux",
-  { command: string; shell: string; shellKind: InstallShellKind }
+  { command: string; shellKey: TranslationKey; shellKind: InstallShellKind }
 > = {
   linux: {
     command:
       'curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash && export NVM_DIR="$HOME/.nvm" && . "$NVM_DIR/nvm.sh" && nvm install --lts',
-    shell: "bash",
+    shellKey: "install.shellBash",
     shellKind: "bash",
   },
   macos: {
     command:
       'curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash && export NVM_DIR="$HOME/.nvm" && . "$NVM_DIR/nvm.sh" && nvm install --lts',
-    shell: "bash",
+    shellKey: "install.shellBash",
     shellKind: "bash",
   },
   windows: {
     command: "winget install OpenJS.NodeJS.LTS",
-    shell: "PowerShell or Command Prompt",
+    shellKey: "install.shellPowerShellOrCmd",
     shellKind: "default",
   },
 };
@@ -731,7 +731,7 @@ function NodeRuntimeNotice() {
   // While probing, or once npm is present, there is nothing to nudge about.
   if (hasNpm !== false) return null;
 
-  const { command, shell, shellKind } = NODE_INSTALL[PLATFORM];
+  const { command, shellKey, shellKind } = NODE_INSTALL[PLATFORM];
   return (
     <div className="ollama-vibe-section agent-list-entry">
       <div className="settings-subheader">
@@ -740,14 +740,14 @@ function NodeRuntimeNotice() {
       </div>
       <p className="settings-help">
         {t("agents.nodeHelpPre")} <code>npm</code> {t("agents.nodeHelpMid")}{" "}
-        <strong>{shell}</strong> {t("agents.nodeHelpPost")}
+        <strong>{t(shellKey)}</strong> {t("agents.nodeHelpPost")}
       </p>
       <div className="ollama-install-cmd-row">
         <code className="ollama-install-cmd">{command}</code>
         <button
           type="button"
           className="ollama-action-btn primary"
-          onClick={() => runInstallInTab("Install Node.js (npm)", command, shellKind)}
+          onClick={() => runInstallInTab(t("install.nodeTabLabel"), command, shellKind)}
         >
           {t("agents.runInTerminal")}
         </button>
@@ -1518,7 +1518,7 @@ export function AgentsPanel({ onBack, onClose }: SubPanelProps) {
                   type="button"
                   className="ollama-action-btn"
                   onClick={() =>
-                    runInstallInTab(`Remove ${a.label}`, a.uninstall_cmd, a.shell_kind)
+                    runInstallInTab(t("install.removeTabLabel", { label: a.label }), a.uninstall_cmd, a.shell_kind)
                   }
                 >
                   {t("agents.runInTerminal")}
@@ -1529,7 +1529,7 @@ export function AgentsPanel({ onBack, onClose }: SubPanelProps) {
                     className="ollama-action-btn"
                     title={t("agents.runWithSudoTitle")}
                     onClick={() =>
-                      runInstallInTab(`Remove ${a.label}`, a.uninstall_cmd_sudo, a.shell_kind)
+                      runInstallInTab(t("install.removeTabLabel", { label: a.label }), a.uninstall_cmd_sudo, a.shell_kind)
                     }
                   >
                     {t("agents.runWithSudo")}
@@ -1589,7 +1589,7 @@ export function AgentsPanel({ onBack, onClose }: SubPanelProps) {
                   type="button"
                   className="ollama-action-btn primary"
                   onClick={() =>
-                    runInstallInTab(`Install ${a.label}`, a.install_cmd, a.shell_kind)
+                    runInstallInTab(t("install.agentTabLabel", { label: a.label }), a.install_cmd, a.shell_kind)
                   }
                 >
                   {t("agents.runInTerminal")}
@@ -1605,7 +1605,7 @@ export function AgentsPanel({ onBack, onClose }: SubPanelProps) {
                     className="ollama-action-btn"
                     title={t("agents.runWithSudoTitle")}
                     onClick={() =>
-                      runInstallInTab(`Install ${a.label}`, a.install_cmd_sudo, a.shell_kind)
+                      runInstallInTab(t("install.agentTabLabel", { label: a.label }), a.install_cmd_sudo, a.shell_kind)
                     }
                   >
                     {t("agents.runWithSudo")}
@@ -2382,7 +2382,7 @@ export function OllamaPanel({ onBack, onClose }: SubPanelProps) {
               className="ollama-action-btn primary"
               onClick={() =>
                 runInstallInTab(
-                  "Install Vibe",
+                  t("install.vibeTabLabel"),
                   vibeStrategy?.command ?? VIBE_INSTALL_CMD,
                   vibeStrategy?.os === "windows" ? "powershell" : "bash",
                 )
@@ -2464,7 +2464,7 @@ export function OllamaPanel({ onBack, onClose }: SubPanelProps) {
                 type="button"
                 className="ollama-action-btn primary"
                 onClick={() =>
-                  runInstallInTab("Install Ollama", installCmd, isWindows ? "default" : "bash")
+                  runInstallInTab(t("install.ollamaTabLabel"), installCmd, isWindows ? "default" : "bash")
                 }
               >
                 {t("ollama.runInTerminal")}

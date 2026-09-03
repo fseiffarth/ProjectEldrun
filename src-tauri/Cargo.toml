@@ -268,6 +268,10 @@ webkit2gtk = { version = "=2.0.2", features = ["v2_40"] }
 gtk = "0.18"
 
 [target.'cfg(target_os = "windows")'.dependencies]
+# Same crate/version wry uses; needed to hook `ProcessFailed` on the raw
+# `ICoreWebView2` for the webview crash reporter (the WebView2 spelling of the
+# `web-process-terminated` hook the Linux build takes from `webkit2gtk`).
+webview2-com = "0.38"
 windows = { version = "0.61", features = [
     "Win32_Foundation",
     # Native screen capture (BitBlt the virtual screen → PNG) in `screenshot.rs`.
@@ -288,10 +292,18 @@ windows = { version = "0.61", features = [
     # readout (the Windows analogue of Linux's `/proc` parsing in `sysstat.rs`).
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_ProcessStatus",
+    # Keep the projector awake during a deck talk: `SetThreadExecutionState`
+    # (`commands/presenter.rs`), the Windows spelling of `systemd-inhibit`.
+    "Win32_System_Power",
     # Named-pipe IPC with the OpenVPN Interactive Service (`PeekNamedPipe`,
     # `SetNamedPipeHandleState`) so headless VPN connects stay unelevated
     # (`services/openvpn.rs`).
     "Win32_System_Pipes",
+    # GPU memory pools for the header/monitor readouts on non-NVIDIA cards:
+    # `IDXGIAdapter3::QueryVideoMemoryInfo` (`gpustat.rs`), the in-process
+    # counterpart of the DRM sysfs read on Linux.
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
     # Whole-system monitor sample (`GetSystemTimes`, `GlobalMemoryStatusEx`,
     # `GetSystemInfo`, `GetTickCount64`) in `sysstat.rs`.
     "Win32_System_SystemInformation",
@@ -308,6 +320,10 @@ libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"
+# The macOS GPU sampler's `ioreg` plist parser is pure and gated
+# `any(target_os = "macos", test)`, so its fixture test runs on every OS;
+# the crate is already the macOS runtime dependency above.
+plist = "1"
 # `oneshot` drives the mobile host's real router — middleware, body limit
 # and all — without binding a port or reaching tailscaled.
 tower = { version = "0.5", features = ["util"] }

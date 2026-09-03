@@ -42,7 +42,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import type { PDFDocumentProxy } from "pdfjs-dist";
 import { UntestedTag } from "../../common/UntestedTag";
 import {
-  describeFileError,
+  describeFileErrorKey,
   fileMtime,
   readFileBytes,
   readFileText,
@@ -338,7 +338,7 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
         const text = await readFileText(path, scope);
         parsed = parseDeck(text);
       } catch (e) {
-        if (!cancelled) setError(describeFileError(e));
+        if (!cancelled) setError(t(describeFileErrorKey(e)));
         return;
       }
       if (cancelled) return;
@@ -359,7 +359,7 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
       } catch (e) {
         // A missing base plate is not a broken deck — the layers are still
         // intact and worth showing. Say so rather than failing the whole view.
-        if (!cancelled) setNotice(t("deckView.basePdfError", { msg: describeFileError(e) }));
+        if (!cancelled) setNotice(t("deckView.basePdfError", { msg: t(describeFileErrorKey(e)) }));
       }
       if (cancelled) {
         opened?.loadingTask.destroy();
@@ -438,11 +438,11 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
       deckMtimeRef.current = await fileMtime(path, scope).catch(() => deckMtimeRef.current);
     } catch (e) {
       // Still dirty — a failed write must not look like a saved one.
-      setError(describeFileError(e));
+      setError(t(describeFileErrorKey(e)));
     } finally {
       setSaving(false);
     }
-  }, [path, scope]);
+  }, [path, scope, t]);
 
   const flushRef = useRef(flush);
   flushRef.current = flush;
@@ -948,7 +948,7 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
         }) + (out.warnings.length ? ` ${out.warnings.join(" ")}` : ""),
       );
     } catch (e) {
-      setError(describeFileError(e));
+      setError(t(describeFileErrorKey(e)));
     } finally {
       setExporting(false);
     }
@@ -1008,7 +1008,7 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
       setNotice(t(hasTex ? "deckView.recompiledBasePdf" : "deckView.createdStarterTex"));
       setReloadNonce((n) => n + 1);
     } catch (e) {
-      setError(describeFileError(e));
+      setError(t(describeFileErrorKey(e)));
     } finally {
       setGenerating(false);
     }
@@ -1161,7 +1161,7 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
       ]);
       setSelection(new Set([id]));
     } catch (e) {
-      setError(describeFileError(e));
+      setError(t(describeFileErrorKey(e)));
     } finally {
       markTexBusy(id, false);
     }
@@ -1204,7 +1204,7 @@ export function DeckView({ path, onOpenExternally, tabKey, groupId }: DeckViewPr
         }
         refreshImage(obj.src);
       } catch (e) {
-        setError(describeFileError(e));
+        setError(t(describeFileErrorKey(e)));
       } finally {
         markTexBusy(obj.id, false);
       }

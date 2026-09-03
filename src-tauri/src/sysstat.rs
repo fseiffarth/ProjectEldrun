@@ -396,7 +396,51 @@ pub fn process_memory(pid: u32, top: usize) -> Option<(RssBreakdown, Vec<(String
     Some((breakdown, aggregate_smaps_rss(&smaps, top)))
 }
 
-#[cfg(not(target_os = "linux"))]
+/// Windows: the working set and its private share, via `GetProcessMemoryInfo`.
+///
+/// `anon` here is the **private working set** (`PROCESS_MEMORY_COUNTERS_EX2`,
+/// Windows 10 20H1+): resident pages no other process shares — the heap, in the
+/// sense the watchdog cares about. `file` is the rest of the working set (mapped
+/// images and shareable pages), `shmem` the shared commit charge. On an older
+/// Windows the EX2 layout is refused, and the split falls back to the commit
+/// charge (`PrivateUsage`) clipped to the working set — an upper bound on the
+/// private share rather than a measurement, so the two are labelled apart in the
+/// mapping list. There is no per-mapping resident size short of walking
+/// `VirtualQueryEx` over the whole address space, so `top` is the one-line
+/// summary of which figure was used instead.
+#[cfg(target_os = "windows")]
+pub fn process_memory(pid: u32, top: usize) -> Option<(RssBreakdown, Vec<(String, u64)>)> {
+    let (breakdown, source) = platform::memory_breakdown(pid)?;
+    let mut rows = vec![
+        (source.to_string(), breakdown.anon_kib),
+        ("[working set: shared/mapped]".to_string(), breakdown.file_kib),
+    ];
+    rows.retain(|(_, kib)| *kib > 0);
+    rows.truncate(top);
+    Some((breakdown, rows))
+}
+
+/// macOS: the resident set and the physical footprint, via `proc_pid_rusage`.
+///
+/// `anon` is the process's **physical footprint** (its own dirty + compressed
+/// pages, the figure Activity Monitor's "Memory" column shows) clipped to the
+/// resident size; `file` is the remainder of the resident set (clean mapped
+/// pages). The kernel exposes no per-mapping resident sizes for another
+/// process without `task_for_pid`, so `top` carries the same two-line summary as
+/// the Windows arm.
+#[cfg(target_os = "macos")]
+pub fn process_memory(pid: u32, top: usize) -> Option<(RssBreakdown, Vec<(String, u64)>)> {
+    let breakdown = platform::memory_breakdown(pid)?;
+    let mut rows = vec![
+        ("[physical footprint]".to_string(), breakdown.anon_kib),
+        ("[resident: clean/mapped]".to_string(), breakdown.file_kib),
+    ];
+    rows.retain(|(_, kib)| *kib > 0);
+    rows.truncate(top);
+    Some((breakdown, rows))
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
 pub fn process_memory(_pid: u32, _top: usize) -> Option<(RssBreakdown, Vec<(String, u64)>)> {
     None
 }
@@ -1362,6 +1406,35 @@ fn parse_host_processor_ticks(ticks: &[u32], ns_per_tick: u64) -> Vec<CpuTimes> 
 /// Map a BSD `pbi_status` process state to the Linux-style single letter the
 /// monitor pane already renders: SRUN→R, SSLEEP→S, SSTOP→T, SZOMB→Z (SIDL→I;
 /// anything unknown → empty).
+/// Decode a `KERN_PROCARGS2` buffer into a space-joined argv.
+///
+/// Layout: a native-endian `u32` argc, the executable path (NUL-terminated,
+/// then padded with further NULs up to an alignment the kernel chooses), then
+/// `argc` NUL-terminated argv strings, then the environment. Only the argv
+/// strings are taken — the environment is exactly the part a monitor must not
+/// read (it is where tokens live) — and the exec path is not repeated, since
+/// `argv[0]` already names the program.
+#[cfg(any(target_os = "macos", test))]
+fn parse_procargs2(buf: &[u8]) -> Option<String> {
+    let argc = u32::from_ne_bytes(buf.get(0..4)?.try_into().ok()?) as usize;
+    let rest = &buf[4..];
+    // Skip the exec path and its NUL padding.
+    let path_end = rest.iter().position(|&b| b == 0)?;
+    let mut cursor = path_end;
+    while cursor < rest.len() && rest[cursor] == 0 {
+        cursor += 1;
+    }
+    let mut args: Vec<String> = Vec::with_capacity(argc);
+    for part in rest[cursor..].split(|&b| b == 0) {
+        if args.len() == argc {
+            break;
+        }
+        args.push(String::from_utf8_lossy(part).into_owned());
+    }
+    let joined = args.join(" ");
+    (!joined.is_empty()).then_some(joined)
+}
+
 #[cfg(any(target_os = "macos", test))]
 fn bsd_process_state(status: u32) -> String {
     match status {
@@ -1711,10 +1784,85 @@ mod platform {
         parent_map().get(&pid).copied()
     }
 
-    /// Not resolved on Windows (only used by the Linux-specific `tauri dev`
-    /// process-root heuristic); returns `None` so callers fall back gracefully.
-    pub fn cmdline(_pid: u32) -> Option<String> {
-        None
+    /// The process's **image path** (`QueryFullProcessImageNameW`), standing in
+    /// for its command line. The real argv lives in the target's PEB and needs
+    /// `NtQueryInformationProcess` + `ReadProcessMemory`, which is more access
+    /// than a monitor should take; every caller only matches on the program
+    /// name (the renderer watchdog looks for `msedgewebview2`, the dev-root
+    /// heuristic for `tauri dev`, which simply never matches here), and the
+    /// image path answers that.
+    pub fn cmdline(pid: u32) -> Option<String> {
+        use windows::core::PWSTR;
+        use windows::Win32::System::Threading::{QueryFullProcessImageNameW, PROCESS_NAME_WIN32};
+        with_process(pid, |handle| {
+            let mut buf = [0u16; 1024];
+            let mut len = buf.len() as u32;
+            // SAFETY: the buffer is sized by `len`, which the call updates to the
+            // number of characters written (excluding the terminator).
+            unsafe { QueryFullProcessImageNameW(handle, PROCESS_NAME_WIN32, PWSTR(buf.as_mut_ptr()), &mut len) }
+                .ok()?;
+            let path = String::from_utf16_lossy(&buf[..len as usize]);
+            (!path.is_empty()).then_some(path)
+        })
+    }
+
+    /// The working-set breakdown for [`super::process_memory`]: `(breakdown,
+    /// label of the figure used for the private share)`. Tries the EX2 layout
+    /// (private working set) first and falls back to EX (commit charge) on a
+    /// Windows that refuses the larger struct.
+    pub fn memory_breakdown(pid: u32) -> Option<(super::RssBreakdown, &'static str)> {
+        use windows::Win32::System::ProcessStatus::{
+            PROCESS_MEMORY_COUNTERS_EX, PROCESS_MEMORY_COUNTERS_EX2,
+        };
+        with_process(pid, |handle| {
+            let mut ex2 = PROCESS_MEMORY_COUNTERS_EX2::default();
+            // SAFETY: `ex2` is a valid, correctly sized out-param; the call
+            // writes at most `cb` bytes into it. `GetProcessMemoryInfo` takes the
+            // base `PROCESS_MEMORY_COUNTERS` pointer for every layout and reads
+            // `cb` to know which one it was handed.
+            let ok = unsafe {
+                GetProcessMemoryInfo(
+                    handle,
+                    &mut ex2 as *mut PROCESS_MEMORY_COUNTERS_EX2 as *mut PROCESS_MEMORY_COUNTERS,
+                    std::mem::size_of::<PROCESS_MEMORY_COUNTERS_EX2>() as u32,
+                )
+            }
+            .is_ok();
+            if ok && ex2.PrivateWorkingSetSize > 0 {
+                let rss = ex2.WorkingSetSize as u64 / 1024;
+                let anon = (ex2.PrivateWorkingSetSize as u64 / 1024).min(rss);
+                return Some((
+                    super::RssBreakdown {
+                        rss_kib: rss,
+                        anon_kib: anon,
+                        file_kib: rss - anon,
+                        shmem_kib: ex2.SharedCommitUsage / 1024,
+                    },
+                    "[private working set]",
+                ));
+            }
+            let mut ex = PROCESS_MEMORY_COUNTERS_EX::default();
+            // SAFETY: as above, for the EX layout.
+            unsafe {
+                GetProcessMemoryInfo(
+                    handle,
+                    &mut ex as *mut PROCESS_MEMORY_COUNTERS_EX as *mut PROCESS_MEMORY_COUNTERS,
+                    std::mem::size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32,
+                )
+            }
+            .ok()?;
+            let rss = ex.WorkingSetSize as u64 / 1024;
+            let anon = (ex.PrivateUsage as u64 / 1024).min(rss);
+            Some((
+                super::RssBreakdown {
+                    rss_kib: rss,
+                    anon_kib: anon,
+                    file_kib: rss - anon,
+                    shmem_kib: 0,
+                },
+                "[private commit, clipped to working set]",
+            ))
+        })
     }
 
     fn filetime_units(ft: FILETIME) -> u64 {
@@ -1999,10 +2147,71 @@ mod platform {
         Some(bsd_info(pid)?.pbi_ppid)
     }
 
-    /// Process args on macOS are only reachable via `sysctl KERN_PROCARGS2`; the
-    /// sole caller is a Linux-only "tauri dev" heuristic, so we skip it.
-    pub fn cmdline(_pid: u32) -> Option<String> {
-        None
+    /// Command line via `sysctl KERN_PROCARGS2`, the one documented read of
+    /// another process's argv on macOS. Readable for the caller's own processes
+    /// (which is all the process-tree walk ever asks about); a foreign pid
+    /// answers `EPERM` and so `None`.
+    pub fn cmdline(pid: u32) -> Option<String> {
+        let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid as libc::c_int];
+        let mut size: libc::size_t = 0;
+        // SAFETY: a null buffer with `size` 0 asks only for the required length;
+        // the second call is bounded by the buffer we sized to that answer, and
+        // `size` is updated to what was actually written.
+        unsafe {
+            if libc::sysctl(
+                mib.as_mut_ptr(),
+                mib.len() as libc::c_uint,
+                std::ptr::null_mut(),
+                &mut size,
+                std::ptr::null_mut(),
+                0,
+            ) != 0
+                || size == 0
+            {
+                return None;
+            }
+            let mut buf = vec![0u8; size];
+            if libc::sysctl(
+                mib.as_mut_ptr(),
+                mib.len() as libc::c_uint,
+                buf.as_mut_ptr() as *mut libc::c_void,
+                &mut size,
+                std::ptr::null_mut(),
+                0,
+            ) != 0
+            {
+                return None;
+            }
+            buf.truncate(size);
+            super::parse_procargs2(&buf)
+        }
+    }
+
+    /// Resident set + physical footprint via `proc_pid_rusage(RUSAGE_INFO_V0)`,
+    /// for [`super::process_memory`].
+    pub fn memory_breakdown(pid: u32) -> Option<super::RssBreakdown> {
+        // SAFETY: `info` is a zero-initialized `rusage_info_v0`, the layout the
+        // `RUSAGE_INFO_V0` flavor writes; a non-zero return means nothing was
+        // written and the value is discarded.
+        unsafe {
+            let mut info: libc::rusage_info_v0 = std::mem::zeroed();
+            let ret = libc::proc_pid_rusage(
+                pid as libc::c_int,
+                libc::RUSAGE_INFO_V0,
+                &mut info as *mut libc::rusage_info_v0 as *mut libc::rusage_info_t,
+            );
+            if ret != 0 {
+                return None;
+            }
+            let rss = info.ri_resident_size / 1024;
+            let anon = (info.ri_phys_footprint / 1024).min(rss);
+            Some(super::RssBreakdown {
+                rss_kib: rss,
+                anon_kib: anon,
+                file_kib: rss - anon,
+                shmem_kib: 0,
+            })
+        }
     }
 
     /// pid → ppid for every live process: enumerate all pids with
@@ -2395,6 +2604,22 @@ pub(crate) fn lock_cache_for_test() -> std::sync::MutexGuard<'static, ()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn procargs2_yields_argv_without_the_environment() {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&3u32.to_ne_bytes());
+        buf.extend_from_slice(b"/Applications/X.app/Contents/MacOS/x\0\0\0");
+        buf.extend_from_slice(b"x\0--type=renderer\0--flag\0");
+        buf.extend_from_slice(b"SECRET=placeholder\0HOME=/Users/a\0");
+        assert_eq!(
+            super::parse_procargs2(&buf).as_deref(),
+            Some("x --type=renderer --flag")
+        );
+        // Short / malformed buffers answer nothing rather than panic.
+        assert_eq!(super::parse_procargs2(b"\x01\x00"), None);
+        assert_eq!(super::parse_procargs2(&0u32.to_ne_bytes()), None);
+    }
+
     use super::*;
 
     #[test]

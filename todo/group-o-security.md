@@ -92,8 +92,15 @@ auth) and the local/remote git push axis (#21).*
     the "reset to `~/Downloads`" path still wrote into browser config — so we leave
     browser download settings fully alone.
 
-86. **Docker sandbox on Windows (currently refused).** *(This is group-O's #86;
-    group-G has a different #86.)* **Two premises below are now stale:**
+86. **Docker sandbox on Windows (BUILT 2026-09-03 · 🧪 Untested).** *(This is
+    group-O's #86; group-G has a different #86.)* Done as described in the
+    remaining-work line: `sandbox::container_path` spells every host path for
+    Docker Desktop (`C:\x` → `/c/x`) at the argv layer only, `--user` is
+    omitted on Windows, the staged Claude/Codex configs point at a POSIX twin
+    of the SessionStart hook (`eldrun_session_start.sh`, written beside the
+    PowerShell one) so in-container resume records still land, and the
+    frontend gates are lifted. Still needs the real Docker Desktop box below.
+    **Two premises below are now stale:**
     `services::sandbox` is **no longer** `#[cfg(unix)]` — it compiles everywhere
     (`services/mod.rs:30-36`), and the refusal lives at the call site
     (`commands/terminal.rs:149-150`). Its `staged_config_mounts_copies_and_shadows_host_originals`

@@ -30,40 +30,41 @@
 //! the one residual case where its pre-crash bytes book once; a rare, bounded
 //! over-count, versus silently losing every seed.)
 //!
-//! Linux-only: the counters come from `ss`, matching `commands::network`. On
-//! other platforms [`start`] is a no-op.
+//! Linux and macOS: the counters come from `ss` and `nettop` respectively,
+//! matching `commands::network`. Windows OpenSSH has no ControlMaster, so there
+//! is no shared socket to sample and [`start`] is a no-op there.
 
 use crate::services::remote::RemotePoolState;
 
 /// How often to sample each connected project's link counters.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 const SAMPLE_INTERVAL_SECS: u64 = 5;
 /// Flush the in-memory accumulator to disk every this-many ticks (~30 s). The
 /// bytes for a project persist in memory between flushes, so a slower cadence
 /// only widens the tail lost on a hard kill — not steady-state accuracy.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 const FLUSH_EVERY_TICKS: u64 = 6;
 
 /// Start the background traffic sampler. Spawns a single detached task that runs
-/// for the life of the process. A no-op on non-Linux platforms.
+/// for the life of the process. A no-op on Windows (no ControlMaster there).
 pub fn start(pool: RemotePoolState) {
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         tauri::async_runtime::spawn(run(pool));
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         let _ = pool;
     }
 }
 
-#[cfg(target_os = "linux")]
-mod linux {
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod sampler {
     use std::collections::HashMap;
     use std::time::Duration;
 
     use super::{FLUSH_EVERY_TICKS, SAMPLE_INTERVAL_SECS};
-    use crate::commands::network::{linux_ssh_link_shared, SsDump};
+    use crate::commands::network::{local_ssh_link_shared, SsDump};
     use crate::schema::net_usage::{self, ByteCounts};
     use crate::services::remote::{self, RemotePoolState};
     use crate::storage;
@@ -157,7 +158,7 @@ mod linux {
                     let mut ss = SsDump::default();
                     ids.into_iter()
                         .map(|id| {
-                            let snap = linux_ssh_link_shared(&id, &mut ss);
+                            let snap = local_ssh_link_shared(&id, &mut ss);
                             (id, snap)
                         })
                         .collect()
@@ -301,5 +302,5 @@ mod linux {
     }
 }
 
-#[cfg(target_os = "linux")]
-use linux::run;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use sampler::run;

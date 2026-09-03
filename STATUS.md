@@ -11,6 +11,10 @@ Last reviewed: 2026-08-31
 - Version: `0.1.58` (Tauri 2 + React + TypeScript). Python/GTK4 code dropped.
 - Primary target: Linux desktop (X11 and KDE Wayland). Windows ships as an
   alpha (CI-verified only); macOS has core parity but cannot be built on Linux.
+  As of 2026-09-03 every Linux feature has a Windows and macOS arm where the
+  OS allows one (see the README platform table); the remaining refusals
+  (Windows agent fence, tmux persistence, ControlMaster counters) are reported
+  in the UI. None of the new arms has run on real Windows/macOS hardware.
 - All 10 migration phases from TauriRust.md are complete and merged.
 - **Landed since this file was last accurate (v0.1.0 → v0.1.45):** mount-free
   remote/SSH projects with git lockstep + multi-host workers, per-project Docker

@@ -357,7 +357,7 @@ function PublishWindow({
           <button type="button" className="dialog-close-btn" onClick={onClose}>×</button>
         </div>
         <div className="project-dialog-path">
-          {t("pill.currentPrefix")} {gitTypeLabel(project.git_type, project.git_provider)}
+          {t("pill.currentPrefix")} {gitTypeLabel(project.git_type, project.git_provider, t)}
           {isRemoteWork && !runsLocally && ` ${t("pill.runsOnWorkRemote")}`}
         </div>
         <label>
@@ -1182,7 +1182,7 @@ function MigrateProviderWindow({
           <button type="button" className="dialog-close-btn" onClick={onClose}>×</button>
         </div>
         <div className="project-dialog-path">
-          {t("pill.currentPrefix")} {gitTypeLabel(project.git_type, project.git_provider)}
+          {t("pill.currentPrefix")} {gitTypeLabel(project.git_type, project.git_provider, t)}
           {isRemoteWork && !runsLocally && ` ${t("pill.runsOnWorkRemote")}`}
         </div>
         <label>
@@ -1410,10 +1410,13 @@ export function ProjectPill({
     if (doomed.length > 0) {
       const names = [...new Set(doomed.map((t) => t.cmd))].join(", ");
       const ok = await confirm(
-        `Turning the container ${enabling ? "on" : "off"} restarts every tab of this project. ` +
-          `${doomed.length} agent tab${doomed.length > 1 ? "s" : ""} (${names}) cannot resume ` +
-          `and will lose the conversation. Continue?`,
-        { title: "Restart this project's tabs?", kind: "warning" },
+        t(
+          doomed.length > 1
+            ? "pill.containerRestartConfirm"
+            : "pill.containerRestartConfirmOne",
+          { state: t(enabling ? "common.on" : "common.off"), count: doomed.length, names },
+        ),
+        { title: t("pill.containerRestartTitle"), kind: "warning" },
       );
       if (!ok) return;
     }
@@ -1423,7 +1426,7 @@ export function ProjectPill({
       // never adopted silently, since `docker build` runs it as root.
       const { source } = outcome;
       const adopt = await confirm(describeDetectedSpecSource(source), {
-        title: "Use this repo's own container?",
+        title: t("scaffold.adoptTitle"),
         kind: "warning",
       });
       outcome = await setProjectSandbox(project.id, enabling, { hash: source.hash, adopt });
@@ -1435,20 +1438,20 @@ export function ProjectPill({
         { projectId: project.id },
       );
       if (pf.status === "image_missing" && pf.build_command) {
-        runInstallInTab(`container image ${pf.image}`, pf.build_command, "bash");
+        runInstallInTab(t("pill.containerImageTab", { image: pf.image }), pf.build_command, "bash");
       } else if (pf.status === "daemon_down") {
         useProjectsStore.setState({
-          switchToast: "Docker isn't running — start it before opening tabs in this project",
+          switchToast: t("pill.dockerNotRunning"),
         });
       } else if (pf.status === "no_docker") {
         useProjectsStore.setState({
-          switchToast: "Docker isn't installed — the container toggle needs it",
+          switchToast: t("pill.dockerNotInstalled"),
         });
       }
     } catch {
       // Preflight is advisory; a real problem still surfaces in the next tab spawn.
     }
-  }, [project.id, project.sandbox?.enabled, setProjectSandbox]);
+  }, [project.id, project.sandbox?.enabled, setProjectSandbox, t]);
 
   const setProjectAutoConnect = useProjectsStore((s) => s.setProjectAutoConnect);
   const setProjectPersistSessions = useProjectsStore((s) => s.setProjectPersistSessions);
@@ -2085,9 +2088,9 @@ export function ProjectPill({
               </button>
             )}
             {/* Project container (#38): local projects only (a remote project's
-                tabs already run on its host), hidden on Windows (the backend
-                refuses — host paths mean nothing inside a Linux container). */}
-            {!project.remote && !IS_WINDOWS && (
+                tabs already run on its host). Offered on every desktop — on
+                Windows the backend spells the mounts for Docker Desktop. */}
+            {!project.remote && (
               <>
                 <button
                   onClick={() => {
@@ -2500,9 +2503,9 @@ export function ProjectPill({
       {movePickerInitial !== null && (
         <FolderPickerDialog
           initialPath={movePickerInitial}
-          title={`${project.name} — move mirror folder to…`}
-          confirmLabel="Move here"
-          nameLabel="Local folder name"
+          title={t("pill.moveMirrorPickerTitle", { name: project.name })}
+          confirmLabel={t("pill.moveHere")}
+          nameLabel={t("pill.moveLocalFolderName")}
           nameInitial={project.name}
           onConfirm={confirmMove}
           onClose={() => setMovePickerInitial(null)}

@@ -167,7 +167,9 @@ type DesktopRequest =
   | { type: "prompts"; request_id: string; project_id: string }
   | { type: "prompt_mutate"; request_id: string; project_id: string; action: PromptMutation }
   | { type: "agent_status"; request_id: string; project_id: string; tmux_session: string; refresh: boolean }
-  | { type: "tab_seen"; request_id: string; project_id: string; tmux_session: string };
+  | { type: "tab_seen"; request_id: string; project_id: string; tmux_session: string }
+  | { type: "desktop_images"; request_id: string; project_id: string }
+  | { type: "attach_desktop_image"; request_id: string; project_id: string; image_id: string };
 type DesktopResponse =
 | { status: "catalog"; agents: CatalogAgent[]; statuses: AgentTabStatus[]; schedules: AgentTabSchedules[] }
   | { status: "activated" }
@@ -181,7 +183,16 @@ type DesktopResponse =
   | { status: "prompts"; prompts: ProjectAgentPrompt[] }
   | { status: "agent_status"; report: MobileAgentStatus }
   | { status: "seen" }
+  | { status: "desktop_images"; images: DesktopImage[] }
+  | { status: "attached"; attachment: InboxAttachment }
   | { status: "error"; code: string; message: string };
+
+/** One image the desktop offers the phone's composer — an opaque id and a
+ * folder label, never a path (`services::desktop_images`). */
+interface DesktopImage { id: string; name: string; source: string; size?: number; age_secs?: number; width?: number; height?: number }
+/** A file that landed in the project's `.eldrun/inbox/`: what the phone's own
+ * upload gets back, so the two ways of filling the inbox read alike. */
+interface InboxAttachment { name: string; reference: string; size: number }
 
 interface CatalogChoice { public: CatalogAgent; item: StaticMenuItem }
 
@@ -1042,6 +1053,37 @@ function markTabSeen(projectId: string, tmuxSession: string): DesktopResponse {
   return { status: "seen" };
 }
 
+// ── Composer + → From the desktop ────────────────────────────────────────────
+// The phone lists what this desktop would copy into the project inbox and
+// names one entry by its opaque id. Both calls need the project to be one the
+// phone may reach at all; the backend command does the folder scan, the
+// clipboard read and the inbox write, and answers a refusal with a wire code
+// the phone maps to a sentence.
+
+async function desktopImagesFor(projectId: string): Promise<DesktopResponse> {
+  if (!mobileProject(projectId)) {
+    return { status: "error", code: "project_ineligible", message: "Project is not enabled for Mobile access" };
+  }
+  return { status: "desktop_images", images: await invoke<DesktopImage[]>("mobile_desktop_images") };
+}
+
+async function attachDesktopImage(projectId: string, imageId: string): Promise<DesktopResponse> {
+  const project = mobileProject(projectId);
+  if (!project) {
+    return { status: "error", code: "project_ineligible", message: "Project is not enabled for Mobile access" };
+  }
+  try {
+    const attachment = await invoke<InboxAttachment>("mobile_attach_desktop_image", {
+      projectDir: resolveProjectDirectory(project),
+      imageId,
+    });
+    return { status: "attached", attachment };
+  } catch (error) {
+    const code = typeof error === "string" && /^[a-z_]+$/.test(error) ? error : "write_failed";
+    return { status: "error", code, message: "The image could not be copied into the project inbox" };
+  }
+}
+
 async function handleRequest(
   request: DesktopRequest,
   t: ReturnType<typeof useT>,
@@ -1071,6 +1113,8 @@ async function handleRequest(
     case "prompt_mutate": return mutatePrompt(request.project_id, request.action);
     case "agent_status": return agentStatusFor(request.project_id, request.tmux_session, request.refresh);
     case "tab_seen": return markTabSeen(request.project_id, request.tmux_session);
+    case "desktop_images": return desktopImagesFor(request.project_id);
+    case "attach_desktop_image": return attachDesktopImage(request.project_id, request.image_id);
   }
 }
 

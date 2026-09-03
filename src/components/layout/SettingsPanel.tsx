@@ -209,8 +209,10 @@ function ShortcutsSettings({ onBack, onClose }: SubPanelProps) {
 
   const hasOverrides = Object.keys(overrides).length > 0;
   const conflicts = findConflicts(overrides);
-  const labelOf = (action: ShortcutAction) =>
-    SHORTCUT_DEFS.find((d) => d.action === action)?.label ?? action;
+  const labelOf = (action: ShortcutAction) => {
+    const def = SHORTCUT_DEFS.find((d) => d.action === action);
+    return def ? t(def.labelKey) : action;
+  };
 
   // While capturing, the next real key sets the chord. Capture at the window
   // level so the keystroke is grabbed even though our hidden field, not a
@@ -247,7 +249,7 @@ function ShortcutsSettings({ onBack, onClose }: SubPanelProps) {
       <div className="shortcut-entry" key={def.action}>
         <div className="settings-row shortcut-row">
           <span className="settings-role-label">
-            {def.label}
+            {t(def.labelKey)}
             {def.untested && <> <UntestedTag /></>}
           </span>
           <button
@@ -848,7 +850,7 @@ export function SettingsDialog({
                 <Dropdown
                   value={currentTheme}
                   onChange={(v) => void setTheme(v as Theme)}
-                  options={THEMES.map((theme) => ({ value: theme.value, label: theme.label }))}
+                  options={THEMES.map((theme) => ({ value: theme.value, label: t(theme.labelKey) }))}
                 />
               }
             />
@@ -906,18 +908,17 @@ export function SettingsDialog({
               />
             )}
 
-            {!IS_WINDOWS && (
-              <>
-                <SettingsSection title={t("settings.mobile")} />
-                <MobileSettings />
-                <ToggleCard
-                  label={t("settings.mobileIndicator")}
-                  checked={settings?.mobile_indicator ?? true}
-                  onChange={(e) => void updateSettings({ mobile_indicator: e.target.checked })}
-                  help={t("settings.mobileIndicatorHelp")}
-                />
-              </>
-            )}
+            {/* Eldrun Mobile runs its host sidecar on every desktop (systemd
+                user unit, launchd agent, or the Windows Run key), so the
+                section is not platform-gated. */}
+            <SettingsSection title={t("settings.mobile")} />
+            <MobileSettings />
+            <ToggleCard
+              label={t("settings.mobileIndicator")}
+              checked={settings?.mobile_indicator ?? true}
+              onChange={(e) => void updateSettings({ mobile_indicator: e.target.checked })}
+              help={t("settings.mobileIndicatorHelp")}
+            />
 
             <SettingsSection title={t("settings.remoteFeatures")} />
             <SettingsCard>

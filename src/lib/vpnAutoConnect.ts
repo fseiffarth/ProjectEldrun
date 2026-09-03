@@ -10,6 +10,7 @@ import {
 import { canConnectVpnSilently, connectVpnSilently } from "./vpnConnect";
 import { keyringState } from "./keyring";
 import { openConnectionInRoot } from "./remoteConnect";
+import { translate, useI18nStore } from "./i18n";
 
 /**
  * "Connect this tunnel on launch" — the machine-level twin of a project's
@@ -149,7 +150,9 @@ export async function autoConnectVpnOnLaunch(): Promise<void> {
     // instead and leave the remedy one click away in the header.
     if (isVpnCredentialSaved(config) && (await keyringState()) === "locked") {
       useProjectsStore.setState({
-        connToast: `VPN not started · ${fileOf(config)} — your OS keyring is locked, so its saved credentials can't be read. Unlock it from the VPN menu.`,
+        connToast: translate(useI18nStore.getState().lang, "vpnAutoConnect.keyringLockedToast", {
+          config: fileOf(config),
+        }),
       });
     }
     console.warn("VPN auto-connect skipped: credentials no longer allow a silent connect");
@@ -160,7 +163,9 @@ export async function autoConnectVpnOnLaunch(): Promise<void> {
     await connectVpnSilently(config, username);
     useVpnStatusStore.getState().setState(config, "connected");
     useProjectsStore.setState({
-      connToast: `VPN up · ${fileOf(config)} — this computer's traffic now routes through the tunnel`,
+      connToast: translate(useI18nStore.getState().lang, "vpnAutoConnect.upToast", {
+        config: fileOf(config),
+      }),
     });
   } catch (error) {
     useVpnStatusStore.getState().setState(config, "off");

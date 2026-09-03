@@ -176,7 +176,7 @@ export function ProjectHoverCard({
   const dir = resolveProjectDirectory(project);
   const localMirror = resolveLocalMirror(project);
   const gitRemote = formatGitRemote(project.git_origin_url);
-  const typeTags = showTags ? projectTypeTags(project, scaffoldMissing) : [];
+  const typeTags = showTags ? projectTypeTags(project, scaffoldMissing, t) : [];
 
   return createPortal(
     <div

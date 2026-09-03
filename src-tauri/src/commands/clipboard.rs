@@ -162,7 +162,7 @@ fn decode_png_bytes_rgba(bytes: &[u8]) -> Result<(usize, usize, Vec<u8>), String
 }
 
 /// Encode raw RGBA8 pixels as a PNG byte buffer.
-fn encode_png(width: usize, height: usize, rgba: &[u8]) -> Result<Vec<u8>, String> {
+pub(crate) fn encode_png(width: usize, height: usize, rgba: &[u8]) -> Result<Vec<u8>, String> {
     let expected = width.checked_mul(height).and_then(|p| p.checked_mul(4));
     if expected != Some(rgba.len()) {
         return Err("clipboard image has an unexpected size".to_string());

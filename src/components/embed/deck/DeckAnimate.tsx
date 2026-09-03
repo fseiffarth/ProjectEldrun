@@ -71,7 +71,7 @@ export function DeckAnimate({
   const pickGif = async () => {
     const chosen = await open({
       multiple: false,
-      filters: [{ name: "Animated GIF", extensions: ["gif"] }],
+      filters: [{ name: t("deckAnimate.gifFilter"), extensions: ["gif"] }],
     });
     if (typeof chosen !== "string") return;
     onSlideChange((s) => ({

@@ -39,9 +39,10 @@ And an opt-in companion PWA, **[Eldrun Mobile](#eldrun-mobile-companion-pwa)**,
 reaches the same agent and shell tabs from a phone over your own private
 tailnet — read what an agent is doing and answer it from another room.
 
-Built with **Tauri 2 + React + TypeScript**. Linux (X11 / KDE Wayland) and
-Windows both get native workspace, app-launch, and default-app integration
-today; macOS runs as a shell with a no-op workspace backend (on the roadmap).
+Built with **Tauri 2 + React + TypeScript**. Linux (X11 / KDE Wayland),
+Windows, and macOS all get native workspace, app-launch, and default-app
+integration; Linux is the verified reference, the other two are code-complete
+and CI-built but not yet exercised on real hardware (see the platform table).
 
 ---
 
@@ -87,13 +88,14 @@ AI/task metadata, and workflow state, so a project carries everything it needs t
 be resumed exactly where you left it, whether that is on this laptop or on a
 login node three networks away.
 
-The implementation runs natively on **Linux (X11 and KDE Wayland)** and
-**Windows** today — both with real per-project window parking — and the design is
-cross-platform by intent. The long-term shape is a stable Eldrun core behind
-pluggable compositor/window backends (X11, KDE/KWin, Hyprland, GNOME Shell, i3,
-Sway, and other Wayland environments; the Win32 backend on Windows), native macOS
-support, and eventually an Eldrun-native compositor for full control of projects,
-windows, and layout.
+The implementation runs natively on **Linux (X11 and KDE Wayland)**,
+**Windows**, and **macOS** — each with per-project window parking in its own
+idiom (desktops, `SW_HIDE`, app hide/unhide) — and the design is cross-platform
+by intent. The long-term shape is a stable Eldrun core behind pluggable
+compositor/window backends (X11, KDE/KWin, Hyprland, GNOME Shell, i3, Sway, and
+other Wayland environments; the Win32 backend on Windows; AppKit on macOS), and
+eventually an Eldrun-native compositor for full control of projects, windows,
+and layout.
 
 See [VISION.md](docs/VISION.md) for the full strategy and platform rationale.
 
@@ -604,8 +606,8 @@ configuration.
 | **Linux — X11**           | Yes                | Two-desktop workspace parking model (EWMH/xcb). Primary development target.                  |
 | **Linux — KDE Wayland**   | Yes                | Per-project virtual desktop model via KWin DBus scripting. KDE 5 and KDE 6 supported.        |
 | **Linux — other Wayland** | Partial            | Null backend (no workspace switching, no sticky windows). Terminal and file management work. |
-| **Windows**               | Yes                | Win32 `SW_HIDE`/`SW_SHOW` parking model (+ best-effort virtual-desktop pinning). Start-Menu app launch with `.lnk`/icon resolution, default-app mapping, external-window tracking, OpenVPN, SSH/SFTP remote projects, and Claude/Codex agent resume. |
-| **macOS**                 | Experimental shell | Null workspace backend (no per-project window parking). Local Ollama detection works; app launching and file defaults fall back to the OS. |
+| **Windows**               | Yes (alpha)        | Win32 `SW_HIDE`/`SW_SHOW` parking model (+ best-effort virtual-desktop pinning). Start-Menu app launch with `.lnk`/icon resolution, shell file associations, external-window tracking, OpenVPN, SSH/SFTP remote projects, Claude/Codex agent resume, project containers via Docker Desktop, project VMs via QEMU + WHPX, Eldrun Mobile (Run-key sidecar), in-app browser live pages (deny-all permission handler), DXGI GPU readouts, and a WebView2 renderer crash reporter. No agent fence (no unprivileged sandbox on Windows), no tmux session persistence, no ControlMaster link counters. CI-verified only. |
+| **macOS**                 | Yes (unverified)   | App-granular window parking via `NSRunningApplication` hide/unhide (no public per-window API), `.app` scanner, LaunchServices file defaults, Keychain, `caffeinate` presenter inhibitor, `sandbox-exec` agent fence, project containers (Docker Desktop), project VMs via QEMU + HVF (arm64 guests on Apple silicon), Eldrun Mobile (launchd agent), `nettop` SSH-link counters, IOKit GPU readouts. Compiles and tests on the CI macOS runner; not yet exercised on real hardware. |
 
 ### Platform and packaging
 
@@ -624,7 +626,10 @@ configuration.
   otherwise open in the OS default app (`xdg-open` / shell open) and are tracked
   as external windows.
 - KDE Wayland workspace management needs live-session QA.
-- macOS runs on the null workspace backend (no per-project window parking).
+- macOS parks at *application* granularity (hide/unhide the owning app): a
+  single window of a multi-window app cannot be parked on its own, and a
+  launched app cannot be placed on a chosen monitor (no public API for
+  positioning another app's window).
 - Terminal/tab layout is persisted per project; shell, file-viewer, and
   resumable Claude/Codex agent tabs are restored on relaunch, but other agent
   tabs (Gemini, Vibe) and live PTY scrollback are not.
@@ -639,11 +644,17 @@ configuration.
   been pointed at a real server, and the SLURM/HPC features await real-cluster
   QA. Features in that state carry an *untested* pill in the UI, and the pill is
   removed per item only once it has actually been exercised.
-- Eldrun Mobile is Linux-only today (the macOS LaunchAgent phase is the
-  follow-up), requires Tailscale on both ends, and its real-phone security and
-  acceptance QA is still open.
-- Containerized projects are local-only and hidden or refused on platforms
-  without Docker; VM projects need QEMU/KVM.
+- Eldrun Mobile runs its host sidecar on all three desktops (systemd user
+  unit, launchd agent, Windows Run key), requires Tailscale on both ends, and
+  its real-phone security and acceptance QA is still open.
+- Containerized projects are local-only and need Docker (Docker Desktop on
+  Windows/macOS, where they have never been run); VM projects need QEMU with
+  hardware acceleration (KVM, Hypervisor.framework, or the Windows Hypervisor
+  Platform) and have never been booted on any host.
+- Windows has no agent fence (there is no unprivileged filesystem sandbox to
+  build one on), no tmux-backed local session persistence, and no SSH
+  ControlMaster to read link traffic from; each is reported in the UI rather
+  than silently skipped.
 - The Agent Skills library is Claude-only, with no manifest, versioning, or
   cross-agent generalization — deliberately out of the MVP.
 

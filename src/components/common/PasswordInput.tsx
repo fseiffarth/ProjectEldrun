@@ -1,4 +1,5 @@
 import { forwardRef, useState, type InputHTMLAttributes } from "react";
+import { useT } from "../../lib/i18n";
 
 /**
  * Masked text input with a built-in show/hide toggle — a drop-in replacement for
@@ -15,6 +16,7 @@ export const PasswordInput = forwardRef<
   HTMLInputElement,
   Omit<InputHTMLAttributes<HTMLInputElement>, "type">
 >(function PasswordInput({ className, ...rest }, ref) {
+  const t = useT();
   const [shown, setShown] = useState(false);
   return (
     <span className="password-input-wrap">
@@ -28,8 +30,8 @@ export const PasswordInput = forwardRef<
         type="button"
         className="password-reveal-btn"
         tabIndex={-1}
-        aria-label={shown ? "Hide password" : "Show password"}
-        title={shown ? "Hide password" : "Show password"}
+        aria-label={t(shown ? "passwordInput.hide" : "passwordInput.show")}
+        title={t(shown ? "passwordInput.hide" : "passwordInput.show")}
         onClick={() => setShown((s) => !s)}
       >
         {shown ? <EyeOffIcon /> : <EyeIcon />}

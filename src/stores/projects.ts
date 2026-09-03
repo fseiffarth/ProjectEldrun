@@ -139,12 +139,18 @@ function autoConnectIneligible(scope: string, sshArgs: SshArgs, state: SavedPass
   // sitting on the ring to go save it again — the one instruction that cannot help.
   // Same split, and deliberately the same wording, as the machine-wide VPN twin in
   // `lib/vpnAutoConnect`: one feature, one explanation.
-  const reason =
+  const lang = useI18nStore.getState().lang;
+  const reason = translate(
+    lang,
     state.keyring === "unlocked"
-      ? `no saved SSH password for ${target} — connect once with "Save password" ticked`
-      : `your OS keyring is locked, so the password saved for ${target} can't be read. Unlock it from the VPN menu.`;
+      ? "autoConnect.reasonNoSavedPassword"
+      : "autoConnect.reasonKeyringLocked",
+    { target },
+  );
   console.warn(`auto-connect skipped · ${scope}: ${reason}`);
-  useProjectsStore.setState({ connToast: `Auto-connect skipped · ${scope} — ${reason}` });
+  useProjectsStore.setState({
+    connToast: translate(lang, "autoConnect.skippedToast", { scope, reason }),
+  });
 }
 
 /** The saved-password answer every eligibility check asks for, with the one failure

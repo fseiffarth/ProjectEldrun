@@ -871,7 +871,7 @@ function WorkspaceStep({
                 />
                 <span>
                   <strong>{t("hpcWizard.inBrowsedStrong")}</strong>{t("hpcWizard.inBrowsedDesc")}{" "}
-                  <code>./{linkName || "data"}</code>. {linkedWorkspaceCaveat}
+                  <code>./{linkName || "data"}</code>. {t(linkedWorkspaceCaveat)}
                 </span>
               </label>
               {layout === "link" && (

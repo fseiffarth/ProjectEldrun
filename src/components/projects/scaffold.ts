@@ -1,5 +1,6 @@
 import type { DetectedSpecSource, ProjectEntry } from "../../types";
 import { resolveProjectDirectory } from "../../types";
+import { translate, useI18nStore, type TranslationKey } from "../../lib/i18n";
 
 export const TERMINAL_OPTIONS = ["claude", "codex", "gemini", "vibe"];
 
@@ -7,16 +8,10 @@ export const TERMINAL_OPTIONS = ["claude", "codex", "gemini", "vibe"];
  *  dialog's container row, so a repo-supplied Dockerfile is never adopted with
  *  two different explanations of what that costs. */
 export function describeDetectedSpecSource(source: DetectedSpecSource): string {
-  if (source.kind === "dockerfile") {
-    return (
-      `This project declares its own container build (${source.value}). Building it runs ` +
-      "the repository's own commands as root, with full network access — a larger blast " +
-      "radius than Eldrun's default image. Use it instead of the default?"
-    );
-  }
-  return (
-    `This project's devcontainer declares its own image ("${source.value}"). ` +
-    "The container will pull and run it directly instead of Eldrun's default image. Use it?"
+  return translate(
+    useI18nStore.getState().lang,
+    source.kind === "dockerfile" ? "scaffold.adoptDockerfile" : "scaffold.adoptDevcontainer",
+    { value: source.value },
   );
 }
 
@@ -55,20 +50,23 @@ export function scaffoldRepairIsEmpty(report: ScaffoldRepairReport) {
 
 /** Human-readable one-line summary of what a repair report changed. */
 export function summarizeScaffoldRepair(report: ScaffoldRepairReport): string {
+  const lang = useI18nStore.getState().lang;
   const parts: string[] = [];
   if (report.createdFiles.length > 0) {
-    parts.push(`added ${report.createdFiles.join(", ")}`);
+    parts.push(translate(lang, "scaffold.repairAdded", { files: report.createdFiles.join(", ") }));
   }
   if (report.updatedFiles && report.updatedFiles.length > 0) {
-    parts.push(`updated ${report.updatedFiles.join(", ")}`);
+    parts.push(translate(lang, "scaffold.repairUpdated", { files: report.updatedFiles.join(", ") }));
   }
   if (report.gitignoreLinesAdded.length > 0) {
+    // `.gitignore` and the lines added to it are literal file content, so the
+    // whole fragment stays as it is — there is nothing here to translate.
     parts.push(`.gitignore +${report.gitignoreLinesAdded.join(", ")}`);
   }
   if (report.gitInitialized) {
     parts.push("git init");
   }
-  return parts.length > 0 ? parts.join("; ") : "already up to date";
+  return parts.length > 0 ? parts.join("; ") : translate(lang, "scaffold.repairUpToDate");
 }
 
 /** Same summary, prefixed with the project name — for a toast/log covering
@@ -77,15 +75,17 @@ export function describeScaffoldRepair(repair: ProjectScaffoldRepair): string {
   return `${repair.name}: ${summarizeScaffoldRepair(repair.report)}`;
 }
 
-export const SCAFFOLD_FILL_OPTIONS = [
-  { value: "none", label: "No filling" },
-  { value: "manual", label: "Manual" },
-  { value: "validation", label: "Validation" },
-  { value: "agent_choice", label: "Agent choice" },
-  { value: "claude", label: "Fill by Claude" },
-  { value: "codex", label: "Fill by Codex" },
-  { value: "gemini", label: "Fill by Gemini" },
-  { value: "vibe", label: "Fill by Mistral" },
+/** The fill-mode dropdown's options. Only the key is stored here; the caller
+ *  resolves it with its own `t`, so the dropdown re-renders on a language flip. */
+export const SCAFFOLD_FILL_OPTIONS: { value: string; labelKey: TranslationKey }[] = [
+  { value: "none", labelKey: "scaffold.fill.none" },
+  { value: "manual", labelKey: "scaffold.fill.manual" },
+  { value: "validation", labelKey: "scaffold.fill.validation" },
+  { value: "agent_choice", labelKey: "scaffold.fill.agentChoice" },
+  { value: "claude", labelKey: "scaffold.fill.claude" },
+  { value: "codex", labelKey: "scaffold.fill.codex" },
+  { value: "gemini", labelKey: "scaffold.fill.gemini" },
+  { value: "vibe", labelKey: "scaffold.fill.vibe" },
 ];
 
 export const AGENT_SCAFFOLD_FILL_MODES = new Set([

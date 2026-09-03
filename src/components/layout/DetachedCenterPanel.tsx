@@ -19,6 +19,7 @@ import {
   DETACHED_DRAG_START,
   DETACHED_PANES,
   DETACHED_PANES_REQUEST,
+  decideTitlebarPress,
   detachedDropPreviewEvent,
   type DetachedDragEnd,
   type DetachedDragMove,
@@ -27,6 +28,7 @@ import {
   type DetachedPanes,
   type DetachedPanesRequest,
   type PaneRect,
+  type TitlebarPress,
 } from "../../stores/detached";
 import { FileDropContext, type FileDropController } from "../files/fileDropContext";
 import { fileDropPayloads } from "../tabs/commitFileDrop";
@@ -86,12 +88,6 @@ import { AgentScheduleDialog } from "../agents/AgentScheduleDialog";
 import { scheduleCacheKey, useAgentSchedulesStore } from "../../stores/agentSchedules";
 import { UntestedTag } from "../common/UntestedTag";
 import { nextScheduleOccurrence } from "../../lib/agentSchedule";
-
-/** #240: how close in time and space two title-bar presses must be to count as
- *  a double-click. Hand-rolled because the WM eats the DOM `dblclick` (see
- *  `onTitlebarPointerDown`), so these stand in for the platform's own setting. */
-const DOUBLE_CLICK_MS = 400;
-const DOUBLE_CLICK_SLOP = 8;
 
 /** Pixel coordinates of a group body, relative to the detached center panel. */
 interface Rect {
@@ -1264,7 +1260,34 @@ export function DetachedCenterPanel({
   // `dblclick` DOM event that would follow. Pointer events, by contrast, arrive
   // normally — the grab ends on release — so the second press is ours to read.
   // `detail` is not usable either: the pointer-events spec pins it to 0.
-  const lastTitlebarPress = useRef({ t: 0, x: 0, y: 0 });
+  //
+  // What the press pair alone cannot tell apart — and the reason the decision is
+  // the pure `decideTitlebarPress` — is a DOUBLE-CLICK from a RE-GRAB: a title-bar
+  // drag carries the window under the cursor, so the grab point holds the same
+  // client coordinates no matter how far the window went. Dragging the popout,
+  // releasing, and grabbing again to carry on therefore looks exactly like a
+  // double-click, and since the snap branch consumes the press instead of moving,
+  // the popout stopped answering the drag under way. `lastWindowMoveAt` is the
+  // tiebreaker: a press that follows an OS move of this window is a re-grab.
+  const lastTitlebarPress = useRef<TitlebarPress>({ t: 0, x: 0, y: 0 });
+
+  // When the OS last reported this window moved. Cheap and event-driven (the same
+  // `onMoved` the popout already persists its geometry from, in `DetachedApp`).
+  const lastWindowMoveAt = useRef(0);
+  useEffect(() => {
+    let un: (() => void) | undefined;
+    let disposed = false;
+    getCurrentWindow()
+      .onMoved(() => {
+        lastWindowMoveAt.current = Date.now();
+      })
+      .then((fn) => (disposed ? fn() : (un = fn)))
+      .catch(() => {});
+    return () => {
+      disposed = true;
+      un?.();
+    };
+  }, []);
 
   // #42: grab the popout's outer title bar to move/dock the WHOLE window. Mirrors
   // the group-bar handle, but anchored to the always-full-width title strip so it
@@ -1277,17 +1300,29 @@ export function DetachedCenterPanel({
       return;
     e.preventDefault();
     const prev = lastTitlebarPress.current;
-    const now = Date.now();
-    lastTitlebarPress.current = { t: now, x: e.clientX, y: e.clientY };
-    if (
-      now - prev.t < DOUBLE_CLICK_MS &&
-      Math.hypot(e.clientX - prev.x, e.clientY - prev.y) < DOUBLE_CLICK_SLOP
-    ) {
+    const press: TitlebarPress = { t: Date.now(), x: e.clientX, y: e.clientY };
+    lastTitlebarPress.current = press;
+    if (decideTitlebarPress({ prev, now: press, lastMoveAt: lastWindowMoveAt.current }) === "snap") {
       // Second press of a double-click: snap instead of starting another move,
       // and disarm so a third press starts a fresh count rather than snapping
       // again on every press of a rapid burst.
       lastTitlebarPress.current = { t: 0, x: 0, y: 0 };
-      void invoke("snap_detached_window", { label: getCurrentWindow().label }).catch(() => {});
+      // A press must never do NOTHING: if the snap can't happen — the backend has
+      // no `snap_detached_window` (a window whose Rust side predates #240; backend
+      // edits don't hot-reload), or the fit found no monitor to land on — fall
+      // back to the ordinary move so the title bar still answers. Only while the
+      // button is still down: `_NET_WM_MOVERESIZE` sent after the release glues
+      // the window to a cursor with no button held.
+      let released = false;
+      const onUp = () => { released = true; };
+      window.addEventListener("pointerup", onUp, { once: true });
+      const settle = (snapped: boolean) => {
+        window.removeEventListener("pointerup", onUp);
+        if (!snapped && !released) beginNativeWindowMove();
+      };
+      void invoke<boolean>("snap_detached_window", { label: getCurrentWindow().label })
+        .then((ok) => settle(ok !== false))
+        .catch(() => settle(false));
       return;
     }
     // Move the whole popout window natively on every platform (see

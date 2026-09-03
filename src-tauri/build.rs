@@ -65,7 +65,26 @@ fn generate_mobile_assets() {
     fs::write(out, generated).expect("write mobile assets");
 }
 
+/// The desktop frontend is embedded by `generate_context!()` at macro expansion
+/// time, and the only record of that is the crate's rustc depfile, which names
+/// each asset by its vite content hash. On a rebuild those assets are not
+/// modified, they are *renamed* — the recorded paths vanish — and cargo reused
+/// the cached rlib rather than treating the deletion as dirty. The result was a
+/// frozen `package:dev` binary whose frontend predated the `npm run build` that
+/// had run three minutes earlier (2026-09-03), which the install-time assert
+/// caught only as "does not embed the frontend". Watching the directory the way
+/// mobile-dist is watched invalidates this script, and with it the crate, on
+/// every bundle write.
+fn watch_frontend_dist() {
+    let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("manifest dir"));
+    println!(
+        "cargo:rerun-if-changed={}",
+        manifest.join("../dist").display()
+    );
+}
+
 fn main() {
+    watch_frontend_dist();
     generate_mobile_assets();
     tauri_build::build()
 }

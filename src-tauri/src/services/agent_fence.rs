@@ -1,11 +1,14 @@
-//! Linux filesystem fence for locally-running agent tabs.
+//! Filesystem fence for locally-running agent tabs (Linux and macOS).
 //!
 //! The project container remains the stronger, opt-in boundary.  For ordinary
-//! local agent tabs this module wraps the agent in `bubblewrap`: the host root is
-//! read-only, `$HOME`, `/tmp`, and `/run` are private, and only the owning
-//! project (plus every box it belongs to) is mounted read-write.  Shell tabs,
-//! remote-host tabs, containerized tabs, and non-Linux hosts are deliberately
-//! left alone and reported honestly by [`status_for_scope`].
+//! local agent tabs this module wraps the agent in the OS's unprivileged
+//! sandbox: `bubblewrap` on Linux (the host root is read-only, `$HOME`, `/tmp`,
+//! and `/run` are private, and only the owning project plus every box it
+//! belongs to is mounted read-write) and `sandbox-exec` on macOS (a Seatbelt
+//! profile that denies writes outside the same roots and hides the rest of
+//! `$HOME` — see [`sandbox_exec_profile`] for what it can and cannot mirror).
+//! Shell tabs, remote-host tabs, containerized tabs, and Windows hosts are
+//! deliberately left alone and reported honestly by [`status_for_scope`].
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -19,6 +22,23 @@ use crate::terminal::PtyOptions;
 use crate::{paths, storage};
 
 pub const INSTALL_HINT: &str = "sudo apt install bubblewrap";
+
+/// The sandboxing tool this OS's fence is built on, for messages.
+pub fn fence_tool_name() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "sandbox-exec"
+    } else {
+        "bubblewrap"
+    }
+}
+
+/// Whether this OS has a fence implementation at all: Linux (bubblewrap) and
+/// macOS (sandbox-exec). Windows has no unprivileged filesystem sandbox a
+/// process can wrap another in, so agents there run unfenced and the pill says
+/// so.
+pub fn platform_fenceable() -> bool {
+    cfg!(any(target_os = "linux", target_os = "macos"))
+}
 
 /// The backend authority decision.  `Unavailable` is fail-closed at spawn.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -80,14 +100,16 @@ pub fn is_agent(opts: &PtyOptions) -> bool {
 }
 
 /// Pure decision matrix.  Root resolution and remote detection are passed in so
-/// the policy is testable without touching the state directory.
+/// the policy is testable without touching the state directory. `fenceable` is
+/// [`platform_fenceable`] and `tool_ok` is [`bwrap_available`] (the fence tool
+/// probe, whichever tool that is on this OS).
 pub fn decide(
     opts: &PtyOptions,
     roots: Vec<PathBuf>,
     remote_run: bool,
     policy_on: bool,
-    platform_linux: bool,
-    bwrap_ok: bool,
+    fenceable: bool,
+    tool_ok: bool,
 ) -> FenceDecision {
     if !is_agent(opts) {
         return FenceDecision::NotApplicable { reason: "shell" };
@@ -102,13 +124,13 @@ pub fn decide(
             reason: "remote host",
         };
     }
-    if !platform_linux {
+    if !fenceable {
         return FenceDecision::NotApplicable { reason: "platform" };
     }
     if !policy_on {
         return FenceDecision::NotApplicable { reason: "off" };
     }
-    if !bwrap_ok {
+    if !tool_ok {
         return FenceDecision::Unavailable {
             install_hint: INSTALL_HINT,
         };
@@ -351,7 +373,7 @@ fn normalize_lexically(path: &Path) -> PathBuf {
 
 /// PATH as the fenced command will see it: an explicit per-tab override wins,
 /// otherwise the launcher-augmented PATH the PTY is spawned with.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn command_search_dirs(opts: &PtyOptions) -> Vec<PathBuf> {
     let path = opts
         .env
@@ -363,11 +385,25 @@ fn command_search_dirs(opts: &PtyOptions) -> Vec<PathBuf> {
 }
 
 /// Probe the actual unprivileged sandbox operation once, rather than merely
-/// checking that a binary named `bwrap` exists.
+/// checking that a binary named `bwrap` exists. On macOS the probe is the
+/// equivalent `sandbox-exec` no-op profile (the tool ships with the OS, but a
+/// managed Mac can have it policy-blocked). The name is kept for the frontend's
+/// `bwrap_available` field, which on macOS means "sandbox-exec works".
 pub fn bwrap_available() -> bool {
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         false
+    }
+    #[cfg(target_os = "macos")]
+    {
+        static AVAILABLE: OnceLock<bool> = OnceLock::new();
+        *AVAILABLE.get_or_init(|| {
+            crate::paths::command_no_window("/usr/bin/sandbox-exec")
+                .args(["-p", "(version 1)(allow default)", "/usr/bin/true"])
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+        })
     }
     #[cfg(target_os = "linux")]
     {
@@ -574,6 +610,192 @@ pub fn wrap_pty_options_bwrap(
     Ok(())
 }
 
+/// Everything the macOS profile needs to know, resolved by
+/// [`sandbox_exec_inputs`] and rendered by [`sandbox_exec_profile`] — split so
+/// the rendering is pure and its invariants are unit tested on any OS.
+#[cfg(any(target_os = "macos", test))]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct SeatbeltInputs {
+    pub home: String,
+    /// Read-write roots: the project / box member trees.
+    pub roots: Vec<String>,
+    /// Read-write directories and files outside the roots (agent state the
+    /// resume machinery needs, the live-session record, temp dirs).
+    pub writable: Vec<String>,
+    /// Read-only paths inside `$HOME` that stay visible (everything else under
+    /// home is hidden, like the empty home tmpfs on Linux).
+    pub readable: Vec<String>,
+    /// Paths that must never be written even though a broader allow covers
+    /// them: the agents' hook-registration files and the hook scripts.
+    pub protected: Vec<String>,
+}
+
+/// Quote a path for the Seatbelt profile language: a Scheme string literal.
+#[cfg(any(target_os = "macos", test))]
+fn sbpl_string(path: &str) -> String {
+    let mut out = String::with_capacity(path.len() + 2);
+    out.push('"');
+    for c in path.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            _ => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// Render the Seatbelt profile. Pure.
+///
+/// What it mirrors from the bubblewrap fence, and what it cannot:
+/// - **Writes** are denied everywhere except the roots, the agent's own state
+///   dirs, temp, and the live-session record — the same set Linux bind-mounts
+///   read-write. Rules are evaluated last-match-wins, so the per-file
+///   `protected` denials come after the directory allows that would otherwise
+///   cover them.
+/// - **Reads** under `$HOME` are denied except the listed `readable` paths and
+///   the roots, which is the empty-home posture Linux gets from a tmpfs. The
+///   home directory's own metadata stays readable so path resolution works.
+/// - **Not mirrored:** the writable *shadow copies* of the hook-registration
+///   files. Seatbelt can allow or deny a path but cannot redirect one, so those
+///   files are simply read-only here — an agent that tries to rewrite its own
+///   `settings.json` gets `EPERM` and carries on, rather than writing into a
+///   throwaway copy. The hook scripts they point at are read-only in both.
+/// - Network, process spawning and the device tree are left at the platform
+///   default, as bubblewrap leaves them (it unshares only the pid namespace).
+#[cfg(any(target_os = "macos", test))]
+pub(crate) fn sandbox_exec_profile(inputs: &SeatbeltInputs) -> String {
+    let mut p = String::from("(version 1)\n(allow default)\n");
+    // Reads: hide $HOME, then restore what the agent needs to see.
+    p.push_str(&format!(
+        "(deny file-read* (subpath {}))\n(allow file-read-metadata (literal {}))\n",
+        sbpl_string(&inputs.home),
+        sbpl_string(&inputs.home)
+    ));
+    for path in inputs.readable.iter().chain(&inputs.roots).chain(&inputs.writable) {
+        p.push_str(&format!("(allow file-read* (subpath {}))\n", sbpl_string(path)));
+    }
+    // Writes: nothing, then the roots and the agent's own state.
+    p.push_str("(deny file-write*)\n");
+    for path in inputs.roots.iter().chain(&inputs.writable) {
+        p.push_str(&format!("(allow file-write* (subpath {}))\n", sbpl_string(path)));
+    }
+    // Last, so they win over the directory allows above.
+    for path in &inputs.protected {
+        p.push_str(&format!(
+            "(deny file-write* (subpath {}))\n",
+            sbpl_string(path)
+        ));
+    }
+    p
+}
+
+/// Resolve the profile inputs for a scope from the same mount planners the
+/// bubblewrap fence uses, so the two fences agree on what an agent may touch.
+#[cfg(target_os = "macos")]
+fn sandbox_exec_inputs(opts: &PtyOptions, roots: &[PathBuf], scope_id: &str) -> SeatbeltInputs {
+    let home = paths::home_dir_string();
+    let state_dir = storage::state_dir();
+    let (mounts, _symlinks) = agent_state_mounts(scope_id, roots);
+    let mut writable: Vec<String> = Vec::new();
+    let mut readable: Vec<String> = Vec::new();
+    let mut protected: Vec<String> = Vec::new();
+    for mount in &mounts {
+        // On Linux the staged copies are mounted at STAGE_MOUNT and symlinked
+        // over the originals; here the originals themselves stay in place, so
+        // the stage dir is irrelevant and the originals are protected below.
+        if mount.dst == STAGE_MOUNT {
+            continue;
+        }
+        if mount.read_only {
+            readable.push(mount.dst.clone());
+        } else {
+            writable.push(mount.dst.clone());
+        }
+    }
+    // The hook-registration files the Linux fence shadows: read-only here.
+    for rel in [
+        ".claude/settings.json",
+        ".claude/settings.local.json",
+        ".codex/config.toml",
+    ] {
+        protected.push(format!("{home}/{rel}"));
+    }
+    protected.push(state_dir.join("hooks").to_string_lossy().into_owned());
+    // Claude's identity/onboarding file: readable and writable so a fenced tab
+    // is not a fresh install (see `staged_claude_json_mounts` for why Linux
+    // stages a filtered copy instead — Seatbelt cannot substitute a file).
+    for name in [".claude.json", ".claude/.claude.json"] {
+        let path = format!("{home}/{name}");
+        if Path::new(&path).is_file() {
+            writable.push(path);
+        }
+    }
+    // Temp dirs: macOS gives each user a private one under /var/folders.
+    for tmp in ["/private/tmp", "/tmp", "/private/var/folders", "/var/folders"] {
+        writable.push(tmp.to_string());
+    }
+    if let Some(dir) = std::env::var_os("TMPDIR") {
+        writable.push(dir.to_string_lossy().into_owned());
+    }
+    readable.extend(configured_read_only_paths());
+    let visible = readable.clone();
+    readable.extend(command_bind_paths(
+        &opts.cmd,
+        &command_search_dirs(opts),
+        &paths::home_dir(),
+        &visible,
+    ));
+    SeatbeltInputs {
+        home,
+        roots: roots.iter().map(|r| r.to_string_lossy().into_owned()).collect(),
+        writable,
+        readable,
+        protected,
+    }
+}
+
+/// Rewrite a local agent spawn into its `sandbox-exec` boundary (macOS). The
+/// profile is written per scope under the sandbox stage dir and handed to
+/// `sandbox-exec -f`; the command is resolved to an absolute path first so the
+/// exec inside the sandbox never depends on PATH lookup.
+#[cfg(target_os = "macos")]
+pub fn wrap_pty_options_sandbox_exec(
+    opts: &mut PtyOptions,
+    roots: &[PathBuf],
+    scope_id: &str,
+) -> Result<(), String> {
+    if !bwrap_available() {
+        return Err(
+            "Agent fence: sandbox-exec is unavailable on this Mac, so this agent was not started. Turn the Agent fence off for this project."
+                .to_string(),
+        );
+    }
+    let inputs = sandbox_exec_inputs(opts, roots, scope_id);
+    let profile = sandbox_exec_profile(&inputs);
+    let stage = crate::services::sandbox::stage_dir(scope_id);
+    std::fs::create_dir_all(&stage).map_err(|e| format!("Agent fence: {e}"))?;
+    let profile_path = stage.join("fence.sb");
+    std::fs::write(&profile_path, profile).map_err(|e| format!("Agent fence: {e}"))?;
+    let resolved = if opts.cmd.contains('/') {
+        PathBuf::from(&opts.cmd)
+    } else {
+        paths::resolve_executable(&opts.cmd).unwrap_or_else(|| PathBuf::from(&opts.cmd))
+    };
+    let mut args = vec![
+        "-f".to_string(),
+        profile_path.to_string_lossy().into_owned(),
+        resolved.to_string_lossy().into_owned(),
+    ];
+    args.extend(opts.args.iter().cloned());
+    opts.cmd = "/usr/bin/sandbox-exec".to_string();
+    opts.args = args;
+    opts.env
+        .insert("ELDRUN_AGENT_FENCE".to_string(), "1".to_string());
+    Ok(())
+}
+
 pub fn box_root_arg(cmd: &str) -> Option<&'static str> {
     match basename(cmd) {
         "claude" | "codex" => Some("--add-dir"),
@@ -604,9 +826,7 @@ pub fn add_box_root_args(opts: &mut PtyOptions, roots: &[PathBuf], own_dir: &Pat
 }
 
 fn platform_reason() -> &'static str {
-    if cfg!(target_os = "macos") {
-        "macOS"
-    } else if cfg!(windows) {
+    if cfg!(windows) {
         "Windows"
     } else {
         "this platform"
@@ -654,7 +874,7 @@ pub fn status_for_scope(scope_id: &str) -> AgentFenceStatus {
         roots,
         remote_run,
         policy_for_scope(&projects, Some(scope_id)),
-        cfg!(target_os = "linux"),
+        platform_fenceable(),
         available,
     );
     let (enforced, reason) = match decision {
@@ -663,7 +883,7 @@ pub fn status_for_scope(scope_id: &str) -> AgentFenceStatus {
             (false, platform_reason().to_string())
         }
         FenceDecision::NotApplicable { reason } => (false, reason.to_string()),
-        FenceDecision::Unavailable { .. } => (false, "bubblewrap unavailable".to_string()),
+        FenceDecision::Unavailable { .. } => (false, format!("{} unavailable", fence_tool_name())),
     };
     AgentFenceStatus {
         enforced,
@@ -731,6 +951,42 @@ mod tests {
             tmux_attach: None,
             host_bound_uid: None,
         }
+    }
+
+    #[test]
+    fn seatbelt_profile_denies_writes_then_restores_roots_and_protects_hooks() {
+        let inputs = SeatbeltInputs {
+            home: "/Users/a".into(),
+            roots: vec!["/Users/a/eldrun/projects/p".into()],
+            writable: vec!["/Users/a/.claude".into(), "/private/tmp".into()],
+            readable: vec!["/Users/a/.gitconfig".into()],
+            protected: vec![
+                "/Users/a/.claude/settings.json".into(),
+                "/Users/a/.local/share/eldrun/hooks".into(),
+            ],
+        };
+        let profile = sandbox_exec_profile(&inputs);
+        let lines: Vec<&str> = profile.lines().collect();
+        assert_eq!(lines[0], "(version 1)");
+        assert_eq!(lines[1], "(allow default)");
+        let pos = |needle: &str| {
+            lines
+                .iter()
+                .position(|l| l.contains(needle))
+                .unwrap_or_else(|| panic!("missing: {needle}"))
+        };
+        // Home is hidden before anything under it is restored.
+        assert!(pos("(deny file-read* (subpath \"/Users/a\"))") < pos("(allow file-read* (subpath \"/Users/a/.gitconfig\"))"));
+        assert!(profile.contains("(allow file-read-metadata (literal \"/Users/a\"))"));
+        // Writes are denied globally, then the root and the agent state come back.
+        assert!(pos("(deny file-write*)") < pos("(allow file-write* (subpath \"/Users/a/eldrun/projects/p\"))"));
+        assert!(pos("(deny file-write*)") < pos("(allow file-write* (subpath \"/Users/a/.claude\"))"));
+        // The protected paths are denied LAST so they win over the .claude allow.
+        let hook_deny = pos("(deny file-write* (subpath \"/Users/a/.claude/settings.json\"))");
+        assert!(hook_deny > pos("(allow file-write* (subpath \"/Users/a/.claude\"))"));
+        assert_eq!(lines.last().unwrap(), &"(deny file-write* (subpath \"/Users/a/.local/share/eldrun/hooks\"))");
+        // Quoting: a path with a quote or backslash stays one Scheme string.
+        assert_eq!(sbpl_string("/a/b\"c\\d"), "\"/a/b\\\"c\\\\d\"");
     }
 
     #[test]

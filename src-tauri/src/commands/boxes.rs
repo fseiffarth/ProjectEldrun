@@ -7,9 +7,9 @@
 //! back-reference is retired (the frontend strips stale persisted keys on load).
 //! This module never writes `projects.json`.
 //!
-//! A box folder also carries one **symlink per member** (Unix; Windows skipped)
-//! beside the generated agent docs, so agent CLIs launched in the box folder can
-//! traverse straight into each member's tree. Eldrun's own file confinement
+//! A box folder also carries one **link per member** (a symlink on Unix, a
+//! directory junction on Windows) beside the generated agent docs, so agent CLIs
+//! launched in the box folder can traverse straight into each member's tree. Eldrun's own file confinement
 //! deliberately does NOT follow these links — the multi-root Files view (and the
 //! explicit allowed-roots set in `compute_box_allowed_roots`) is Eldrun's file
 //! surface; the links exist purely for the agents' benefit. Ownership of the
@@ -269,20 +269,20 @@ fn plan_member_links(
     out
 }
 
-/// Create/refresh the per-member symlinks in `folder` (Unix). The rules:
+/// Create/refresh the per-member links in `folder`. The rules:
 ///
-/// - Only manifest-owned entries that are STILL symlinks are ever removed, and
-///   only when their member vanished or its target changed — a non-symlink at
+/// - Only manifest-owned entries that are STILL links are ever removed, and
+///   only when their member vanished or its target changed — a non-link at
 ///   an owned name (the user replaced it) is left alone forever.
 /// - A user path shadowing a member's natural name costs the member a suffixed
 ///   link name, never the user their file.
 /// - A dangling target is still linked: a member whose folder does not exist
 ///   yet (or is temporarily unmounted) keeps its place.
 ///
-/// On Windows this is a documented no-op: creating symlinks needs a privilege
-/// ordinary users don't hold, and the multi-root Files view already covers the
-/// box surface there.
-#[cfg(unix)]
+/// The link is a symlink on Unix and a **directory junction** on Windows (see
+/// [`make_member_link`]): a symlink there needs a privilege ordinary accounts
+/// do not hold, a junction does not, and both read back through the same
+/// `symlink_metadata` / `read_link` calls this planner relies on.
 fn write_box_member_links(folder: &Path, members: &[(String, PathBuf)]) -> std::io::Result<()> {
     let manifest_path = folder.join(BOX_LINKS_MANIFEST);
     let manifest: BoxLinksManifest = if manifest_path.exists() {
@@ -327,28 +327,28 @@ fn write_box_member_links(folder: &Path, members: &[(String, PathBuf)]) -> std::
             .map(|m| m.file_type().is_symlink())
             .unwrap_or(false);
         if is_symlink {
-            let _ = fs::remove_file(&path);
+            let _ = remove_member_link(&path);
         }
     }
 
-    // Create pass: make each planned link, replacing an owned symlink whose
-    // target moved (already removed above). An existing symlink already
+    // Create pass: make each planned link, replacing an owned link whose
+    // target moved (already removed above). An existing link already
     // pointing at the right target is left as-is.
     for (name, dir) in &plan {
         let path = folder.join(name);
         match path.symlink_metadata() {
             Ok(meta) if meta.file_type().is_symlink() => {
-                if fs::read_link(&path).ok().as_deref() == Some(dir.as_path()) {
+                if link_points_at(&path, dir) {
                     continue;
                 }
-                // An owned symlink to the old target was removed above; a
-                // FOREIGN symlink can't reach here (its name is in `taken`).
-                let _ = fs::remove_file(&path);
+                // An owned link to the old target was removed above; a
+                // FOREIGN link can't reach here (its name is in `taken`).
+                let _ = remove_member_link(&path);
             }
-            Ok(_) => continue, // never replace a non-symlink user path
+            Ok(_) => continue, // never replace a non-link user path
             Err(_) => {}
         }
-        let _ = std::os::unix::fs::symlink(dir, &path);
+        let _ = make_member_link(dir, &path);
     }
 
     crate::storage::write_json(&manifest_path, &desired)
@@ -356,11 +356,64 @@ fn write_box_member_links(folder: &Path, members: &[(String, PathBuf)]) -> std::
     Ok(())
 }
 
-#[cfg(not(unix))]
-fn write_box_member_links(_folder: &Path, _members: &[(String, PathBuf)]) -> std::io::Result<()> {
-    // Windows: symlink creation needs a privilege ordinary users don't hold —
-    // the multi-root Files view is the box surface there. Documented no-op.
-    Ok(())
+/// Whether the link at `link` already resolves to `target`. Windows reads a
+/// junction's substitute name back with the kernel's `\\?\` prefix, which the
+/// planner never wrote, so the comparison strips it on both sides.
+fn link_points_at(link: &Path, target: &Path) -> bool {
+    fn plain(p: &Path) -> String {
+        let s = p.to_string_lossy();
+        s.strip_prefix(r"\\?\").unwrap_or(&s).to_string()
+    }
+    fs::read_link(link)
+        .map(|got| plain(&got) == plain(target))
+        .unwrap_or(false)
+}
+
+/// Unix: a plain symlink.
+#[cfg(unix)]
+fn make_member_link(target: &Path, link: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(target, link)
+}
+
+#[cfg(unix)]
+fn remove_member_link(link: &Path) -> std::io::Result<()> {
+    fs::remove_file(link)
+}
+
+/// Windows: a **directory junction** (`mklink /J`), not a symlink. Creating a
+/// symlink needs `SeCreateSymbolicLinkPrivilege` (or Developer Mode), which an
+/// ordinary account does not hold; a junction is a reparse point any user may
+/// create, and std treats it as a symlink for `is_symlink`, `read_link` and
+/// `remove_dir`. Agent CLIs launched in the box folder traverse it like any
+/// directory. The target is passed absolute and a missing one is accepted
+/// (a dangling junction, mirroring the Unix rule). Spawned through `cmd` because
+/// `mklink` is a shell builtin; the two paths are quoted verbatim and a Windows
+/// path can never contain `"`.
+#[cfg(windows)]
+fn make_member_link(target: &Path, link: &Path) -> std::io::Result<()> {
+    use std::os::windows::process::CommandExt;
+    let out = crate::paths::command_no_window("cmd")
+        .raw_arg(format!(
+            "/C mklink /J \"{}\" \"{}\"",
+            link.display(),
+            target.display()
+        ))
+        .output()?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other(
+            String::from_utf8_lossy(&out.stderr).trim().to_string(),
+        ))
+    }
+}
+
+/// Windows: a junction is removed as an (empty) directory — that unlinks the
+/// reparse point and never touches the member folder it pointed at. A file
+/// symlink (the user made one by hand) removes as a file.
+#[cfg(windows)]
+fn remove_member_link(link: &Path) -> std::io::Result<()> {
+    fs::remove_dir(link).or_else(|_| fs::remove_file(link))
 }
 
 /// Splice a freshly-built link block into existing file content, replacing any
@@ -876,6 +929,43 @@ mod tests {
         let members = vec![("···".to_string(), PathBuf::from("/p/x"))];
         let plan = plan_member_links(&members, &HashSet::new());
         assert_eq!(plan[0].0, "project");
+    }
+
+    /// Windows: the same planner over junctions. Runs on the CI Windows job,
+    /// which is the one place a junction can actually be created and read back.
+    #[cfg(windows)]
+    mod link_farm_windows {
+        use super::*;
+
+        #[test]
+        fn creates_junctions_reads_them_back_and_removes_only_its_own() {
+            let tmp = tempfile::tempdir().unwrap();
+            let t1 = tmp.path().join("m1");
+            let t2 = tmp.path().join("m2");
+            fs::create_dir(&t1).unwrap();
+            fs::create_dir(&t2).unwrap();
+            let folder = tmp.path().join("box");
+            fs::create_dir(&folder).unwrap();
+
+            write_box_member_links(
+                &folder,
+                &[("One".to_string(), t1.clone()), ("Two".to_string(), t2)],
+            )
+            .unwrap();
+            let one = folder.join("one");
+            assert!(one.symlink_metadata().unwrap().file_type().is_symlink());
+            assert!(link_points_at(&one, &t1));
+            // A junction traverses like a directory.
+            fs::write(t1.join("inside.txt"), b"x").unwrap();
+            assert!(one.join("inside.txt").is_file());
+
+            // Idempotent, then member two vanishes: only its junction goes, and
+            // removing it leaves the member folder intact.
+            write_box_member_links(&folder, &[("One".to_string(), t1.clone())]).unwrap();
+            assert!(one.symlink_metadata().is_ok());
+            assert!(folder.join("two").symlink_metadata().is_err());
+            assert!(tmp.path().join("m2").is_dir(), "the member folder itself survives");
+        }
     }
 
     #[cfg(unix)]

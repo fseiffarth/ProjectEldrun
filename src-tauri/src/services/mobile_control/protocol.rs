@@ -553,6 +553,24 @@ pub enum DesktopRequest {
         #[serde(default)]
         refresh: bool,
     },
+    /// What the desktop can hand the phone's composer as an image: the
+    /// clipboard's image and the recent files of the screenshot and picture
+    /// folders (`services::desktop_images`). Only opaque ids and labels come
+    /// back; the project is named so an ineligible one is refused before
+    /// anything is read.
+    DesktopImages {
+        request_id: String,
+        project_id: String,
+    },
+    /// Copy one of those images into the project's inbox — the same
+    /// `.eldrun/inbox/` drop box a file sent from the phone lands in — and
+    /// answer with the project-relative reference. `image_id` is one the
+    /// desktop listed; a path never crosses.
+    AttachDesktopImage {
+        request_id: String,
+        project_id: String,
+        image_id: String,
+    },
 }
 
 impl DesktopRequest {
@@ -575,7 +593,9 @@ impl DesktopRequest {
             | Self::Prompts { request_id, .. }
             | Self::PromptMutate { request_id, .. }
             | Self::TabSeen { request_id, .. }
-            | Self::AgentStatus { request_id, .. } => request_id,
+            | Self::AgentStatus { request_id, .. }
+            | Self::DesktopImages { request_id, .. }
+            | Self::AttachDesktopImage { request_id, .. } => request_id,
         }
     }
 
@@ -705,6 +725,17 @@ pub struct MobileAgentStatus {
     pub usage: MobileAgentUsage,
 }
 
+/// A file that landed in a project's `.eldrun/inbox/`, as the phone sees it:
+/// the stored name, the project-relative reference it puts after an `@`, and
+/// the size. Mirrors `inbox::Stored` on the wire.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct MobileInboxAttachment {
+    pub name: String,
+    pub reference: String,
+    pub size: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
 pub enum DesktopResponse {
@@ -753,6 +784,14 @@ pub enum DesktopResponse {
     /// Acknowledges a [`DesktopRequest::TabSeen`]. Carries nothing: the phone
     /// never waits on it, and the sidecar only needs to know the desktop took it.
     Seen,
+    DesktopImages {
+        images: Vec<crate::services::desktop_images::DesktopImage>,
+    },
+    /// A desktop image copied into the project inbox: the same three fields
+    /// the phone's own upload gets back.
+    Attached {
+        attachment: MobileInboxAttachment,
+    },
     Error {
         code: String,
         message: String,

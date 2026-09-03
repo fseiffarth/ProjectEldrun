@@ -8,6 +8,7 @@ import { forgetPty } from "../lib/promptCount";
 import { METRIC, agentMetricLeaf, sub } from "../lib/usageMetrics";
 import { useLinkRoutingStore } from "./linkRouting";
 import { bumpUsage } from "./usage";
+import { translate, useI18nStore } from "../lib/i18n";
 import { newTmuxSessionName } from "../lib/tmuxSession";
 import { useRunHostPrefStore } from "./runHostPref";
 import { withdrawnTabKinds } from "../lib/experimental";
@@ -164,10 +165,13 @@ export function localityHostLabel(
   loc: TabLocation | undefined,
   opts: { primaryHost?: string; computeHosts?: LocalityHost[] } = {},
 ): string {
+  const lang = useI18nStore.getState().lang;
   const hostId = remoteHostIdOf(loc);
-  if (hostId === null) return "Local (mirror)";
+  if (hostId === null) return translate(lang, "tabLocality.localMirrorItem");
   if (hostId === "primary") {
-    return opts.primaryHost ? `Primary (${opts.primaryHost})` : "Primary";
+    return opts.primaryHost
+      ? translate(lang, "tabLocality.primaryWithHost", { host: opts.primaryHost })
+      : translate(lang, "tabLocality.primary");
   }
   const w = opts.computeHosts?.find((h) => h.id === hostId);
   return w?.label || w?.host || hostId;

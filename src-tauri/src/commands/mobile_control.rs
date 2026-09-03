@@ -2,12 +2,14 @@ use std::{
     collections::HashMap,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
+    time::{Duration, SystemTime},
 };
 
 use tauri::{AppHandle, Emitter, State};
 use tokio::sync::oneshot;
 
 use crate::{
+    services::desktop_images::{self, DesktopImage, ImageFolder},
     services::mobile_control::{
         admin::{self, read_frame, write_frame},
         config::{
@@ -15,16 +17,31 @@ use crate::{
             DetectedServeSettings, HostConfig,
         },
         discovery::opaque_control_id,
-        protocol::{AdminRequest, AdminResponse, DesktopRequest, DesktopResponse},
+        inbox,
+        protocol::{
+            AdminRequest, AdminResponse, DesktopRequest, DesktopResponse, MobileInboxAttachment,
+        },
     },
     storage,
 };
 
 pub const MOBILE_DESKTOP_EVENT: &str = "eldrun-mobile-desktop-request";
+#[cfg(not(windows))]
 const INSTALL_PHONE_SCRIPT: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../scripts/install_phone.sh"
 ));
+/// The PowerShell twin (same checks, same output) for Windows, where the root
+/// terminal has no bash/jq to run the POSIX script with.
+#[cfg(windows)]
+const INSTALL_PHONE_SCRIPT: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../scripts/install_phone.ps1"
+));
+#[cfg(not(windows))]
+const INSTALL_PHONE_SCRIPT_NAME: &str = "install_phone.sh";
+#[cfg(windows)]
+const INSTALL_PHONE_SCRIPT_NAME: &str = "install_phone.ps1";
 
 #[derive(Clone, Default)]
 pub struct MobileDesktopState {
@@ -56,14 +73,137 @@ pub fn mobile_opaque_id(domain: String, value: String) -> Result<String, String>
     opaque_control_id(&storage::state_dir(), &domain, &value)
 }
 
+// ── Composer + → From the desktop ────────────────────────────────────────────
+// The phone lists what the desktop would copy into the project inbox and
+// names one entry by the opaque id the list gave it. The folder scan and the
+// id scheme live in `services::desktop_images`; this adapter adds the two
+// things that need the desktop process — the platform's folder set and the
+// clipboard, which needs a display connection — and writes through the same
+// `inbox::store` a file sent from the phone goes through.
+
+/// The platform's screenshot and picture folders plus Eldrun's own screenshot
+/// staging area, where a shot taken through the Screenshot app waits for its
+/// filing answer. Linux honours `user-dirs.dirs`, so a localized `~/Bilder`
+/// is found.
+fn desktop_image_folders() -> Vec<ImageFolder> {
+    let home = crate::paths::home_dir();
+    let user_dirs = if cfg!(target_os = "linux") {
+        let config = std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute())
+            .unwrap_or_else(|| home.join(".config"));
+        std::fs::read_to_string(config.join("user-dirs.dirs"))
+            .map(|text| desktop_images::parse_user_dirs(&text, &home))
+            .unwrap_or_default()
+    } else {
+        HashMap::new()
+    };
+    let mut folders =
+        desktop_images::image_folders(crate::paths::OsKind::current(), &home, &user_dirs);
+    folders.push(ImageFolder {
+        label: "Eldrun screenshots".into(),
+        path: storage::state_dir().join("screenshots-pending"),
+    });
+    folders
+}
+
+/// The clipboard's image as a list entry, or `None` when it holds none — or
+/// when the probe does not answer in time: on X11 `arboard` waits out a
+/// selection transfer timeout when there is no image, and the sidecar's
+/// deadline for the whole list is a few seconds.
+async fn clipboard_image_entry() -> Option<DesktopImage> {
+    let probe = tauri::async_runtime::spawn_blocking(|| {
+        let mut clipboard = arboard::Clipboard::new().ok()?;
+        let image = clipboard.get_image().ok()?;
+        Some((image.width as u32, image.height as u32))
+    });
+    let (width, height) = tokio::time::timeout(Duration::from_secs(3), probe)
+        .await
+        .ok()?
+        .ok()??;
+    Some(DesktopImage {
+        id: desktop_images::CLIPBOARD_ID.into(),
+        name: "Clipboard image".into(),
+        source: "Clipboard".into(),
+        size: None,
+        age_secs: None,
+        width: Some(width),
+        height: Some(height),
+    })
+}
+
+/// Everything the phone may attach from this desktop, clipboard first.
+#[tauri::command]
+pub async fn mobile_desktop_images() -> Vec<DesktopImage> {
+    let folders = desktop_image_folders();
+    let (clipboard, files) = tokio::join!(clipboard_image_entry(), async {
+        tauri::async_runtime::spawn_blocking(move || {
+            desktop_images::list(&folders, SystemTime::now())
+        })
+        .await
+        .unwrap_or_default()
+    });
+    let mut images = Vec::with_capacity(files.len() + 1);
+    images.extend(clipboard);
+    images.extend(files);
+    images
+}
+
+/// Copy one listed image into `project_dir`'s inbox. The `Err` is a wire code
+/// the phone maps to a sentence — never a path or an OS message.
+#[tauri::command]
+pub async fn mobile_attach_desktop_image(
+    project_dir: String,
+    image_id: String,
+) -> Result<MobileInboxAttachment, String> {
+    if !desktop_images::valid_id(&image_id) {
+        return Err("image_not_found".into());
+    }
+    let root = PathBuf::from(project_dir);
+    tauri::async_runtime::spawn_blocking(move || {
+        let (name, bytes) = if image_id == desktop_images::CLIPBOARD_ID {
+            let mut clipboard =
+                arboard::Clipboard::new().map_err(|_| "no_clipboard_image".to_string())?;
+            let image = clipboard
+                .get_image()
+                .map_err(|_| "no_clipboard_image".to_string())?;
+            let png =
+                crate::commands::clipboard::encode_png(image.width, image.height, &image.bytes)
+                    .map_err(|_| "no_clipboard_image".to_string())?;
+            ("clipboard.png".to_string(), png)
+        } else {
+            let path = desktop_images::resolve(&desktop_image_folders(), &image_id)
+                .ok_or_else(|| "image_not_found".to_string())?;
+            let bytes = std::fs::read(&path).map_err(|_| "image_not_found".to_string())?;
+            let name = path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "image".into());
+            (name, bytes)
+        };
+        inbox::store(&root, &name, &bytes)
+            .map(|stored| MobileInboxAttachment {
+                name: stored.name,
+                reference: stored.reference,
+                size: stored.size,
+            })
+            .map_err(|error| error.code().to_string())
+    })
+    .await
+    .map_err(|_| "write_failed".to_string())?
+}
+
 /// Materialize the phone-install handoff where the root terminal can run it,
 /// returning the script's path — the state dir differs per OS, so the caller
 /// must not re-derive it. Keep the script embedded so this action also works
 /// from a packaged app, whose installation directory does not contain the
-/// source checkout.
+/// source checkout. POSIX shell on Linux/macOS, PowerShell on Windows; the
+/// frontend picks the matching interpreter from the extension.
 #[tauri::command]
 pub fn mobile_prepare_phone_install_script() -> Result<String, String> {
-    let path = storage::state_dir().join("mobile-control/install_phone.sh");
+    let path = storage::state_dir()
+        .join("mobile-control")
+        .join(INSTALL_PHONE_SCRIPT_NAME);
     let parent = path
         .parent()
         .ok_or("could not determine the Mobile control directory")?;

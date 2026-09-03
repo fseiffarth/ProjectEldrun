@@ -562,6 +562,37 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     - [ ] ✅ Works
     - [ ] ❌ Doesn't work
 
+- [~] **31u — Mobile Focus: + attaches an image from the desktop** (2026-09-03;
+  ✅ Code-complete, ⚠️ needs live QA on a phone — and a rebuild + restart
+  first: the phone serves the bundle baked into the binary, and the desktop
+  bridge gained two requests). What the Claude app's paperclip does for an
+  image on the *desktop*: a screenshot just taken, a picture just downloaded,
+  the clipboard — without a hunt through a file picker on the wrong device.
+  - **+ → "From the desktop"** opens a sheet the desktop fills (`GET
+    /api/v1/tabs/{id}/desktop-images`): the clipboard's image when there is
+    one, then the newest 40 images of the platform's screenshot/picture
+    folders (Linux honours `user-dirs.dirs`; macOS lists the Desktop first)
+    and Eldrun's own screenshot staging area — name, folder label, age, size.
+    Picking one (`POST …/desktop-images` `{image_id}`) has the desktop copy it
+    into the same `.eldrun/inbox/` a phone upload lands in, and the phone
+    writes `@.eldrun/inbox/<file>` into the draft as it lands, with the same
+    pending/failed row as a phone file.
+  - **No path crosses.** Each file is named by an opaque id (a hash of its
+    path, `services::desktop_images`); attaching re-scans the same folders for
+    that id, so the phone can only ever name something the desktop would have
+    listed. The sidecar refuses a malformed id before any desktop call. The
+    clipboard is read on the desktop (`arboard`, bounded to 3 s so an X11
+    transfer timeout cannot exhaust the bridge deadline) and encoded to PNG.
+  - [ ] 🖐️ Manual test — take a screenshot on the desktop (or copy an image);
+    on the phone: + → From the desktop → the sheet lists "Clipboard image ·
+    W×H" first and the screenshot under "Screenshots"/"Eldrun screenshots" →
+    pick one → "Copying from the desktop…" row, then `@.eldrun/inbox/….png `
+    lands in the draft and the file is in `<project>/.eldrun/inbox/`; send and
+    Claude reads it. Clear the clipboard, reopen the sheet → no clipboard row.
+    With Eldrun closed → the sheet says the desktop is not answering.
+    - [ ] ✅ Works
+    - [ ] ❌ Doesn't work
+
 - [~] **31o — Mobile names which machine failed, instead of "Host unavailable"**
   (2026-09-01; ✅ Code-complete, ⚠️ needs live QA on a phone — and a rebuild +
   restart first, since the phone serves the bundle baked into the binary).

@@ -486,14 +486,14 @@ export function ProjectFilesSettingsDialog({
             return (
               <div className="viewer-pref-row" key={vt.id}>
                 <span className="viewer-pref-label">
-                  <span className="viewer-pref-name">{vt.label}</span>
+                  <span className="viewer-pref-name">{t(vt.labelKey)}</span>
                   <span className="viewer-pref-exts">{vt.extensions.join(" ")}</span>
                 </span>
                 <Toggle
                   size="sm"
                   checked={enabled}
                   onChange={(e) => patch({ enabled: e.target.checked })}
-                  aria-label={`${vt.label} — ${t("agents.enabled")}`}
+                  aria-label={`${t(vt.labelKey)} — ${t("agents.enabled")}`}
                 />
                 {vt.autocomplete ? (
                   <>
@@ -502,7 +502,7 @@ export function ProjectFilesSettingsDialog({
                       checked={pref.autocomplete === true}
                       disabled={!enabled}
                       onChange={(e) => patch({ autocomplete: e.target.checked })}
-                      aria-label={`${vt.label} — ${t("localModel.role.autocomplete")}`}
+                      aria-label={`${t(vt.labelKey)} — ${t("localModel.role.autocomplete")}`}
                     />
                     {/* #45 default completion-length mode; toggled live
                         in-editor with Shift+Tab while a suggestion shows. */}
@@ -527,7 +527,7 @@ export function ProjectFilesSettingsDialog({
                       checked={pref.grammar_check === true}
                       disabled={!enabled}
                       onChange={(e) => patch({ grammar_check: e.target.checked })}
-                      aria-label={`${vt.label} — ${t("localModel.role.grammar")}`}
+                      aria-label={`${t(vt.labelKey)} — ${t("localModel.role.grammar")}`}
                     />
                     {/* Dictionary (Hunspell) spell check — deterministic and
                         model-free, red-underlines typos in the editor. */}
@@ -536,7 +536,7 @@ export function ProjectFilesSettingsDialog({
                       checked={pref.spell_check === true}
                       disabled={!enabled}
                       onChange={(e) => patch({ spell_check: e.target.checked })}
-                      aria-label={`${vt.label} — ${t("fileViewer.spellingLabel")}`}
+                      aria-label={`${t(vt.labelKey)} — ${t("fileViewer.spellingLabel")}`}
                     />
                   </>
                 ) : (

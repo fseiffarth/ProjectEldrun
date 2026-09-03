@@ -2,6 +2,7 @@ import type { LinkOpenTarget } from "./browser";
 import type { PyMainVerdict } from "../lib/pythonMainCache";
 import type { AgentCron } from "../lib/agentCron";
 import type { CursorPack } from "../lib/cursorPacks";
+import type { TranslationKey } from "../lib/i18n";
 
 export interface GlobalAppEntry {
   exec: string;
@@ -1464,14 +1465,14 @@ export type Theme =
   | "fancy_light"
   | "light_lavender";
 
-export const THEMES: { value: Theme; label: string }[] = [
-  { value: "system", label: "System (follow OS)" },
-  { value: "fancy_dark", label: "Fancy Dark" },
-  { value: "soft_dark", label: "Soft Dark" },
-  { value: "dark", label: "Plain Dark" },
-  { value: "light", label: "Plain Light" },
-  { value: "fancy_light", label: "Fancy Light" },
-  { value: "light_lavender", label: "Light Lavender" },
+export const THEMES: { value: Theme; labelKey: TranslationKey }[] = [
+  { value: "system", labelKey: "theme.name.system" },
+  { value: "fancy_dark", labelKey: "theme.name.fancyDark" },
+  { value: "soft_dark", labelKey: "theme.name.softDark" },
+  { value: "dark", labelKey: "theme.name.dark" },
+  { value: "light", labelKey: "theme.name.light" },
+  { value: "fancy_light", labelKey: "theme.name.fancyLight" },
+  { value: "light_lavender", labelKey: "theme.name.lightLavender" },
 ];
 
 /** One saved look from the Theme Customizer (`Settings.ui_theme_presets`).

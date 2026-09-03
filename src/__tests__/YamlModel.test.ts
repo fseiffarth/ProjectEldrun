@@ -214,7 +214,7 @@ describe("parseYaml", () => {
   });
 
   it("refuses a construct it cannot classify instead of guessing", () => {
-    expect(parseYaml("\tkey: 1\n").error?.message).toMatch(/tabs/i);
+    expect(parseYaml("\tkey: 1\n").error?.messageKey).toBe("yamlParse.tabs");
     expect(parseYaml("? complex\n: value\n").error).not.toBeNull();
   });
 
@@ -746,7 +746,7 @@ describe("flow collections", () => {
   });
 
   it("refuses an unclosed collection rather than showing half a tree", () => {
-    expect(parseYaml("a: {b: 1\n").error?.message).toMatch(/never closed/);
+    expect(parseYaml("a: {b: 1\n").error?.messageKey).toBe("yamlParse.neverClosed");
   });
 });
 

@@ -55,7 +55,10 @@ export type ShortcutGroup = "navigation" | "tabs" | "steering" | "tex";
 
 export interface ShortcutDef {
   action: ShortcutAction;
-  label: string;
+  /** i18n key for the row's description, resolved by the cheat sheet and the
+   *  settings panel — the label itself lives in `lib/i18n` like every other
+   *  user-facing string. */
+  labelKey: TranslationKey;
   /** Which `SHORTCUT_GROUPS` section the action is listed under. */
   group: ShortcutGroup;
   /** The built-in default chord, used whenever the user hasn't rebound it. */
@@ -82,73 +85,73 @@ export const SHORTCUT_GROUPS: { id: ShortcutGroup; labelKey: TranslationKey }[] 
 export const SHORTCUT_DEFS: ShortcutDef[] = [
   {
     action: "toggleFullscreen",
-    label: "Toggle subwindow fullscreen",
+    labelKey: "shortcut.toggleFullscreen",
     group: "tabs",
     default: { key: "Enter", ctrl: true },
   },
   {
     action: "cycleProject",
-    label: "Cycle to next project",
+    labelKey: "shortcut.cycleProject",
     group: "navigation",
     default: { key: "Tab", ctrl: true, shift: true },
   },
   {
     action: "prevTab",
-    label: "Previous tab in subwindow",
+    labelKey: "shortcut.prevTab",
     group: "tabs",
     default: { key: "ArrowLeft", shift: true },
   },
   {
     action: "nextTab",
-    label: "Next tab in subwindow",
+    labelKey: "shortcut.nextTab",
     group: "tabs",
     default: { key: "ArrowRight", shift: true },
   },
   {
     action: "subwindowUp",
-    label: "Cycle focused subwindow up",
+    labelKey: "shortcut.subwindowUp",
     group: "navigation",
     default: { key: "ArrowUp", shift: true },
   },
   {
     action: "subwindowDown",
-    label: "Cycle focused subwindow down",
+    labelKey: "shortcut.subwindowDown",
     group: "navigation",
     default: { key: "ArrowDown", shift: true },
   },
   {
     action: "cycleTabs",
-    label: "Cycle tabs in subwindow",
+    labelKey: "shortcut.cycleTabs",
     group: "tabs",
     default: { key: "Tab", shift: true },
   },
   {
     action: "hideSubwindow",
-    label: "Hide focused subwindow",
+    labelKey: "shortcut.hideSubwindow",
     group: "tabs",
     default: { key: "h", ctrl: true, shift: true },
   },
   {
     action: "toggleSubwindowFiles",
-    label: "Toggle subwindow file viewer",
+    labelKey: "shortcut.toggleSubwindowFiles",
     group: "tabs",
     default: { key: "f", shift: true },
   },
   {
     action: "closeSubwindow",
-    label: "Close focused subwindow",
+    labelKey: "shortcut.closeSubwindow",
     group: "tabs",
     default: { key: "w", ctrl: true, shift: true },
   },
   {
     action: "closeTab",
-    label: "Close active tab",
+    labelKey: "shortcut.closeTab",
     group: "tabs",
     default: { key: "w", ctrl: true },
   },
   {
     action: "closeAllTabs",
-    label: "Close all tabs in project",
+    labelKey: "shortcut.closeAllTabs",
     group: "tabs",
     default: { key: "w", ctrl: true, shift: true, alt: true },
   },
@@ -158,7 +161,7 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
   // terminal chord (Ctrl+Space is emacs set-mark; the Shift keeps clear of it).
   {
     action: "steeringMode",
-    label: "Enter keyboard steering mode",
+    labelKey: "shortcut.steeringMode",
     group: "steering",
     default: { key: " ", ctrl: true, shift: true },
     untested: true,
@@ -167,14 +170,14 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
   // Shift+← default.
   {
     action: "cycleProjectBack",
-    label: "Cycle to previous project",
+    labelKey: "shortcut.cycleProjectBack",
     group: "navigation",
     default: { key: "ArrowLeft", ctrl: true, shift: true },
     untested: true,
   },
   {
     action: "shortcutHelp",
-    label: "Open shortcut help",
+    labelKey: "shortcut.shortcutHelp",
     group: "steering",
     default: { key: "F1" },
     untested: true,
@@ -190,14 +193,14 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
   // selection never runs.
   {
     action: "texUp",
-    label: "TeX workspace: up to the parent document",
+    labelKey: "shortcut.texUp",
     group: "tex",
     default: { key: "ArrowUp", ctrl: true, shift: true },
     untested: true,
   },
   {
     action: "texBack",
-    label: "TeX workspace: back to the previous file",
+    labelKey: "shortcut.texBack",
     group: "tex",
     default: { key: "ArrowDown", ctrl: true, shift: true },
     untested: true,

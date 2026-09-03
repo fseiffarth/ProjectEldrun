@@ -702,8 +702,9 @@ pub fn is_embeddable_exec(exec: &str) -> bool {
 ///   1. an explicitly passed `handler`;
 ///   2. the project's `default_apps` map, then the global one, keyed by the
 ///      file extension (including the leading dot, e.g. `.md`);
-///   3. the system default via `xdg-mime query default <mime>` → the matching
-///      `.desktop` entry's `Exec` first token.
+///   3. the system default: `xdg-mime query default <mime>` → the matching
+///      `.desktop` entry's `Exec` first token on Linux, the shell association
+///      on Windows, LaunchServices on macOS.
 ///
 /// Returns `None` when nothing resolves (capability then degrades to external).
 ///
@@ -736,13 +737,21 @@ pub fn resolve_default_handler(
     resolve_handler_via_mime(path)
 }
 
-/// System-default handler via `xdg-mime` → `.desktop` `Exec` first token.
-///
-/// Linux-only: `xdg-mime` and `.desktop` entries are a freedesktop concept. On
-/// other platforms this is a no-op (`None`) so the caller falls back to
+/// The system's default handler for `path`, by each OS's own registry:
+/// `xdg-mime` → `.desktop` `Exec` first token on Linux, the shell file
+/// association (`AssocQueryString`) on Windows, LaunchServices on macOS.
+/// `None` when nothing is registered, so the caller falls back to
 /// `opener::open` / the OS default.
 fn resolve_handler_via_mime(path: &str) -> Option<String> {
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "windows")]
+    {
+        windows_default_handler(path)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        macos_default_handler(path)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
     {
         let _ = path;
         None
@@ -777,6 +786,137 @@ fn resolve_handler_via_mime(path: &str) -> Option<String> {
             }
         }
         None
+    }
+}
+
+/// Windows: the executable the shell would launch for the file's extension,
+/// via `AssocQueryStringW(ASSOCSTR_EXECUTABLE)` — the same registry walk
+/// (`HKCR\.ext` → ProgId → `shell\open\command`, honouring the user's
+/// per-extension choice) Explorer's double-click does. Two calls: the first
+/// with no buffer sizes the answer.
+#[cfg(target_os = "windows")]
+fn windows_default_handler(path: &str) -> Option<String> {
+    use windows::core::{PCWSTR, PWSTR};
+    use windows::Win32::UI::Shell::{AssocQueryStringW, ASSOCF_NONE, ASSOCSTR_EXECUTABLE};
+
+    let ext = Path::new(path).extension()?.to_string_lossy();
+    let assoc: Vec<u16> = format!(".{ext}").encode_utf16().chain(Some(0)).collect();
+    let mut len: u32 = 0;
+    // SAFETY: `assoc` is NUL-terminated; with no out buffer the call only
+    // writes the required length into `len`. The second call's buffer is sized
+    // from that answer and `len` bounds what is read back.
+    unsafe {
+        let probe = AssocQueryStringW(
+            ASSOCF_NONE,
+            ASSOCSTR_EXECUTABLE,
+            PCWSTR(assoc.as_ptr()),
+            PCWSTR::null(),
+            None,
+            &mut len,
+        );
+        // S_OK / S_FALSE both mean "length written"; a failure HRESULT means
+        // no association.
+        if probe.is_err() || len == 0 {
+            return None;
+        }
+        let mut buf = vec![0u16; len as usize];
+        AssocQueryStringW(
+            ASSOCF_NONE,
+            ASSOCSTR_EXECUTABLE,
+            PCWSTR(assoc.as_ptr()),
+            PCWSTR::null(),
+            Some(PWSTR(buf.as_mut_ptr())),
+            &mut len,
+        )
+        .ok()
+        .ok()?;
+        let end = buf.iter().position(|&u| u == 0).unwrap_or(buf.len());
+        let exe = String::from_utf16_lossy(&buf[..end]);
+        (!exe.is_empty()).then_some(exe)
+    }
+}
+
+/// macOS: the application bundle LaunchServices would open `path` with
+/// (`LSCopyDefaultApplicationURLForURL`, all roles) — the user's "Open With →
+/// Always Open With" choice included. Returns the `.app` path, which the
+/// launcher already knows how to run (see the `.app` branch in
+/// `launch_command`). Raw CoreFoundation FFI in the same style as
+/// `platform/macos.rs`: every Create/Copy ref is released before returning.
+#[cfg(target_os = "macos")]
+fn macos_default_handler(path: &str) -> Option<String> {
+    use std::ffi::c_void;
+
+    type CFTypeRef = *const c_void;
+    type CFURLRef = *const c_void;
+    type CFStringRef = *const c_void;
+    /// `kLSRolesAll`.
+    const LS_ROLES_ALL: u32 = 0xFFFF_FFFF;
+    /// `kCFURLPOSIXPathStyle`.
+    const POSIX_PATH_STYLE: isize = 0;
+    /// `kCFStringEncodingUTF8`.
+    const UTF8: u32 = 0x0800_0100;
+
+    #[link(name = "CoreFoundation", kind = "framework")]
+    extern "C" {
+        fn CFURLCreateFromFileSystemRepresentation(
+            alloc: *const c_void,
+            buffer: *const u8,
+            buf_len: isize,
+            is_directory: bool,
+        ) -> CFURLRef;
+        fn CFURLCopyFileSystemPath(url: CFURLRef, style: isize) -> CFStringRef;
+        fn CFStringGetCString(
+            string: CFStringRef,
+            buffer: *mut std::ffi::c_char,
+            buffer_size: isize,
+            encoding: u32,
+        ) -> bool;
+        fn CFRelease(cf: CFTypeRef);
+    }
+    #[link(name = "CoreServices", kind = "framework")]
+    extern "C" {
+        fn LSCopyDefaultApplicationURLForURL(
+            url: CFURLRef,
+            role_mask: u32,
+            out_error: *mut *const c_void,
+        ) -> CFURLRef;
+    }
+
+    let bytes = path.as_bytes();
+    // SAFETY: every ref created here is released on every path out; the
+    // C-string buffer is sized for `PATH_MAX` and `CFStringGetCString` reports
+    // truncation as `false`.
+    unsafe {
+        let file_url = CFURLCreateFromFileSystemRepresentation(
+            std::ptr::null(),
+            bytes.as_ptr(),
+            bytes.len() as isize,
+            false,
+        );
+        if file_url.is_null() {
+            return None;
+        }
+        let app_url =
+            LSCopyDefaultApplicationURLForURL(file_url, LS_ROLES_ALL, std::ptr::null_mut());
+        CFRelease(file_url);
+        if app_url.is_null() {
+            return None;
+        }
+        let app_path = CFURLCopyFileSystemPath(app_url, POSIX_PATH_STYLE);
+        CFRelease(app_url);
+        if app_path.is_null() {
+            return None;
+        }
+        let mut buf = [0i8; 1024];
+        let ok = CFStringGetCString(app_path, buf.as_mut_ptr(), buf.len() as isize, UTF8);
+        CFRelease(app_path);
+        if !ok {
+            return None;
+        }
+        let out = std::ffi::CStr::from_ptr(buf.as_ptr())
+            .to_string_lossy()
+            .into_owned();
+        (!out.is_empty()).then_some(out)
     }
 }
 

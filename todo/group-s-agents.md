@@ -932,3 +932,31 @@ unchanged; the new agents are additive.
       amber, and that a working agent reads green-dotted in both places.
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work
+
+260. **A state file must survive being read by a build that did not write it.**
+    The Prompts view came up empty behind
+    `read agent_prompts.json: unknown field commit`. Blame (#255) added
+    `commit`/`branch`/`files` to the history rows, and `AgentPromptsFile` and
+    both of its row structs carried `deny_unknown_fields`: any build older than
+    that field — a packaged Eldrun, a frozen `package:dev` snapshot, whatever
+    started before the rebuild — refused the **whole** file rather than the one
+    key it did not know, so the entire library and its history went dark on a
+    machine where several builds legitimately read the same state.
+    `deny_unknown_fields` now sits only on the `*Input` payloads, where a
+    frontend built from this tree is the caller and a typo should be loud. The
+    three persisted structs tolerate what they do not understand and drop it,
+    which is the same rule every other schema in `schema/` already follows.
+    An older build still *writes back* without the keys it dropped, so a
+    downgrade loses blame data — losing three optional fields beats losing the
+    library. Backend only: `schema/agent_prompts.rs`, plus two schema tests
+    (an unknown key at every level loads; an input payload still refuses one).
+    Fixed 2026-09-03, **not live-tested**.
+    - [x] 🤖 Automated test — `schema::agent_prompts` (a file with unknown keys
+      at the top level, on a collected prompt and on a history row loads with
+      its known fields intact; `ProjectAgentPromptInput` still rejects one).
+    - [ ] 🖐️ Manual test — with an Eldrun restarted on this tree, open the side
+      panel's Agents view and confirm the collected prompts and the Sent list
+      come back with no error banner, and that a prompt's commit/branch still
+      shows on its sent row.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work

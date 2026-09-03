@@ -540,7 +540,8 @@ export function ThemeCustomizerDialog({
   };
 
   const presetMeta = (preset: ThemePreset): string => {
-    const theme = THEMES.find((x) => x.value === preset.theme)?.label ?? "—";
+    const known = THEMES.find((x) => x.value === preset.theme);
+    const theme = known ? t(known.labelKey) : "—";
     const n = Object.keys(preset.vars).length;
     return n > 0
       ? t("theme.presets.meta", { theme, n })

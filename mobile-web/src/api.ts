@@ -327,6 +327,38 @@ export function sendPrompt(projectId: string, promptId: string, tabId: string): 
   return api(`${promptsPath(projectId)}/${encodeURIComponent(promptId)}/send`, { method: "POST", body: JSON.stringify({ tab_id: tabId }) });
 }
 
+/** One image the desktop offers the composer: the clipboard's image or a
+ * recent file of its screenshot/picture folders. `id` is opaque and `source`
+ * a folder *label* — the desktop keeps every path. */
+export interface DesktopImage {
+  id: string;
+  name: string;
+  source: string;
+  size?: number;
+  age_secs?: number;
+  width?: number;
+  height?: number;
+}
+
+/** `GET /api/v1/tabs/{id}/desktop-images` — what the desktop would copy into
+ * this tab's project inbox. The desktop may probe its clipboard for this,
+ * which is bounded on its side. */
+export async function listDesktopImages(tabId: string): Promise<DesktopImage[]> {
+  const { images } = await api<{ images: DesktopImage[] }>(`/api/v1/tabs/${encodeURIComponent(tabId)}/desktop-images`);
+  return images;
+}
+
+/** `POST /api/v1/tabs/{id}/desktop-images` — copy one listed image into the
+ * project inbox; answers like the phone's own upload, with the reference. */
+export async function attachDesktopImage(tabId: string, imageId: string): Promise<InboxAttachment> {
+  const { attachment } = await api<{ attachment: InboxAttachment }>(
+    `/api/v1/tabs/${encodeURIComponent(tabId)}/desktop-images`,
+    { method: "POST", body: JSON.stringify({ image_id: imageId }) },
+    30_000,
+  );
+  return attachment;
+}
+
 export async function uploadToInbox(tabId: string, file: Blob, name: string): Promise<InboxAttachment> {
   let response: Response;
   try {

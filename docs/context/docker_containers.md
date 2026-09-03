@@ -16,7 +16,12 @@ the pill's "Container settings…" survive off/on), the first enable
 auto-adopts an in-repo `Dockerfile`/devcontainer image, and a missing image
 becomes a one-click build tab. Flipping the toggle respawns every live tab —
 the pill confirms when a non-resumable agent conversation would be lost.
-Local projects only; hidden on Windows.
+Local projects only. On Windows (Docker Desktop) every host path crossing into
+the Linux container is spelled `C:\x` → `/c/x` by `sandbox::container_path` at
+the argv layer only, so the mount planners keep reasoning in host paths;
+`--user` is omitted (Docker Desktop maps bind-mounted files to the Windows
+user anyway), and the staged Claude/Codex configs point at a POSIX twin of the
+PowerShell SessionStart hook so in-container resume records still land.
 
 **What it applies to is a second choice** (`SandboxSpec.scope`, the pill's
 "What runs in the container"), because the container's job is to keep *the

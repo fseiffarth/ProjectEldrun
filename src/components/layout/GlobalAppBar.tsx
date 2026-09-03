@@ -15,9 +15,9 @@ import { useT, type TranslationKey } from "../../lib/i18n";
 
 // A platform-appropriate example path for the executable-picker placeholder
 // (a Windows .exe vs a Unix bin path).
-const EXEC_PLACEHOLDER = IS_WINDOWS
-  ? "Command path, e.g. C:\\Program Files\\Mozilla Firefox\\firefox.exe"
-  : "Command path, e.g. /usr/bin/firefox";
+const EXEC_PLACEHOLDER_KEY: TranslationKey = IS_WINDOWS
+  ? "globalApp.execPlaceholderWindows"
+  : "globalApp.execPlaceholder";
 
 export const GLOBAL_APP_ROLES: Array<{ key: string; labelKey: TranslationKey; fallback: string }> = [
   { key: "browser", labelKey: "globalApp.role.browser", fallback: "🌐" },
@@ -229,7 +229,7 @@ export function GlobalAppBar() {
           <div className="global-app-edit-row">
             <input
               value={edit.exec}
-              placeholder={EXEC_PLACEHOLDER}
+              placeholder={t(EXEC_PLACEHOLDER_KEY)}
               onChange={(event) => setEdit({ ...edit, exec: event.target.value })}
               onKeyDown={(event) => {
                 if (event.key === "Enter") saveEdit();

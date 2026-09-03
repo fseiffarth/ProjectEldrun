@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { fileMtime, readFileText, writeFileText } from "../components/embed/fileAccess";
+import { translate, useI18nStore } from "../lib/i18n";
 import { resolvePath } from "../lib/paths";
 import {
   REMARKS_FILE, REMARKS_TEMPLATE, addRemark as addRemarkText,
@@ -70,7 +71,7 @@ export const useProjectRemarksStore = create<ProjectRemarksStore>((set, get) => 
       const next = change(src);
       if (next == null) {
         await loadFresh(projectId, projectDir);
-        throw new Error("The file remark changed on disk. Reloaded the latest REMARKS.md.");
+        throw new Error(translate(useI18nStore.getState().lang, "projectRemarks.reloadedStale"));
       }
       await writeFileText(path, next, projectId);
       commit(projectId, next, await fileMtime(path, projectId).catch(() => null));

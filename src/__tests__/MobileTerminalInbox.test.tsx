@@ -165,6 +165,74 @@ describe("Eldrun Mobile composer + and the frozen reading view", () => {
     expect(failed()[0]).toContain("notes.txt");
   });
 
+  it("lists the desktop's images from the + and attaches one by its opaque id", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(200, { images: [
+        { id: "clipboard", name: "Clipboard image", source: "Clipboard", width: 1920, height: 1080 },
+        { id: "0123456789abcdef0123456789abcdef", name: "Screenshot_2026-09-03.png", source: "Screenshots", size: 1_300_000, age_secs: 200 },
+      ] }))
+      .mockResolvedValueOnce(jsonResponse(201, {
+        attachment: { name: "20260903-100000-Screenshot_2026-09-03.png", reference: ".eldrun/inbox/20260903-100000-Screenshot_2026-09-03.png", size: 1_300_000 },
+      }));
+    vi.stubGlobal("fetch", fetchMock);
+    render(<Terminal tab={TAB} back={() => {}} />);
+    await act(async () => {});
+    fireEvent.change(composer(), { target: { value: "fix this" } });
+
+    fireEvent.click(screen.getByRole("button", { name: "Add to the message" }));
+    expect(screen.getByRole("dialog", { name: "Add to the message" }).textContent).toContain("From the desktop");
+    fireEvent.click(screen.getByRole("button", { name: /From the desktop/ }));
+    // The list is asked for as the sheet opens, and the sheet says so.
+    const sheet = screen.getByRole("dialog", { name: "From the desktop" });
+    expect(sheet.textContent).toContain("Looking on the desktop…");
+    await settle(0);
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/v1/tabs/tab-7/desktop-images");
+    expect(sheet.textContent).toContain("Clipboard image");
+    expect(sheet.textContent).toContain("Clipboard · 1920×1080");
+    expect(sheet.textContent).toContain("Screenshots · 3 min ago · 1.2 MB");
+
+    fireEvent.click(screen.getByRole("button", { name: /Screenshot_2026-09-03\.png/ }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    // A pending row names the file while the desktop copies it.
+    expect(screen.getByRole("status").textContent).toContain("Copying from the desktop");
+    await settle(0);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const [url, init] = fetchMock.mock.calls[1] as [string, RequestInit];
+    expect(url).toBe("/api/v1/tabs/tab-7/desktop-images");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(String(init.body))).toEqual({ image_id: "0123456789abcdef0123456789abcdef" });
+    expect(composer().value).toBe("fix this @.eldrun/inbox/20260903-100000-Screenshot_2026-09-03.png ");
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+
+  it("says when the desktop has nothing to attach, and names a copy that failed", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(200, { images: [] }))
+      .mockResolvedValueOnce(jsonResponse(200, { images: [{ id: "clipboard", name: "Clipboard image", source: "Clipboard" }] }))
+      .mockResolvedValueOnce(jsonResponse(409, { error: "no_clipboard_image" }));
+    vi.stubGlobal("fetch", fetchMock);
+    render(<Terminal tab={TAB} back={() => {}} />);
+    await act(async () => {});
+
+    fireEvent.click(screen.getByRole("button", { name: "Add to the message" }));
+    fireEvent.click(screen.getByRole("button", { name: /From the desktop/ }));
+    await settle(0);
+    expect(screen.getByRole("dialog", { name: "From the desktop" }).textContent).toContain("Nothing to attach");
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+
+    // Re-opening asks again: the clipboard has an image now, but it is gone
+    // again by the time the desktop goes to copy it.
+    fireEvent.click(screen.getByRole("button", { name: "Add to the message" }));
+    fireEvent.click(screen.getByRole("button", { name: /From the desktop/ }));
+    await settle(0);
+    fireEvent.click(screen.getByRole("button", { name: /Clipboard image/ }));
+    await settle(0);
+    const failed = Array.from(document.querySelectorAll(".inbox-upload.error")).map((row) => row.textContent ?? "");
+    expect(failed.some((text) => text.includes("Clipboard image") && text.includes("no longer holds an image"))).toBe(true);
+    expect(composer().value).toBe("");
+  });
+
   it("holds the reading view still while a composer sheet is up and resumes when it closes", async () => {
     render(<Terminal tab={TAB} back={() => {}} />);
     await act(async () => {});

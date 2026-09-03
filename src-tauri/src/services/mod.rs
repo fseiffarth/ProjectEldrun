@@ -20,6 +20,9 @@ pub mod browser_engine;
 // CalDAV accounts (docs/caldav_plan.md): the WebDAV transport half. Hand-rolled
 // on reqwest + roxmltree; iCalendar itself is still parsed by src/lib/ics.ts.
 pub mod caldav;
+// What the phone's composer may attach from the desktop: recent screenshots and
+// pictures by opaque id, copied into the project inbox on request.
+pub mod desktop_images;
 pub mod codex_bind;
 pub mod git_credentials;
 // The default branch (`main`) for repositories Eldrun creates, and the
@@ -70,9 +73,10 @@ pub mod terminal_service;
 pub mod tmux_local;
 pub mod usage_stats;
 // Project VMs (`docs/vm_projects_plan.md`): the third trust tier — the whole
-// project inside a QEMU/KVM guest reached only over SSH/SFTP (no shared
-// filesystem), plus its allowlisting egress proxy. Linux-only at runtime;
-// compiles everywhere (the doctor reports `supported: false` elsewhere).
+// project inside a hardware-accelerated QEMU guest (KVM on Linux, HVF on
+// macOS, WHPX on Windows) reached only over SSH/SFTP (no shared filesystem),
+// plus its allowlisting egress proxy and the built-in cloud-init seed writer.
+pub mod iso9660;
 pub mod vm;
 pub mod vm_proxy;
 // Shared web-safety primitives (URL policy, host display, filename sanitizing)

@@ -1,3 +1,16 @@
+//! `agent_prompts.json`: the collected-prompt library and its send history.
+//!
+//! Two kinds of struct live here and they deserialize under opposite rules.
+//! The `*Input` ones arrive over IPC from a frontend built from this same tree,
+//! so they `deny_unknown_fields` and a caller's typo is loud. The persisted
+//! ones are read back off disk, and a state file outlives the build that wrote
+//! it: a packaged Eldrun, a frozen `package:dev` snapshot and a dev window all
+//! read the same file, so the newest of them adding one optional field would
+//! otherwise make every older build reject the whole library with
+//! `unknown field ...` and show the user nothing. They tolerate unknown fields
+//! and drop what they do not understand — the entry stays readable, and only
+//! what the writer knew about survives a round trip through an older build.
+
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
@@ -6,7 +19,6 @@ use serde::{Deserialize, Serialize};
 /// schedule (or a send-now one-time schedule) only when the user aims it at an
 /// agent tab; until then it is text that belongs to the project.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct ProjectAgentPrompt {
     pub id: String,
     pub message: String,
@@ -25,7 +37,6 @@ pub struct ProjectAgentPrompt {
 /// tell that to" is the question the list exists to answer, and a session id
 /// outlives the tab that carried it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct SentAgentPrompt {
     pub id: String,
     pub message: String,
@@ -130,7 +141,6 @@ fn agent_prompts_version() -> u8 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct AgentPromptsFile {
     #[serde(default = "agent_prompts_version")]
     pub version: u8,
@@ -149,5 +159,70 @@ impl Default for AgentPromptsFile {
             projects: BTreeMap::new(),
             history: BTreeMap::new(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The regression this file's tolerance exists for: a build that wrote a
+    /// field a reader has never heard of — `commit` was exactly this once —
+    /// must not make the reader reject the whole library. The entry loads, the
+    /// known fields are intact, and only the unknown one is dropped.
+    #[test]
+    fn unknown_fields_do_not_reject_the_file() {
+        let json = r#"{
+            "version": 1,
+            "from_a_later_build": true,
+            "projects": {
+                "p1": [
+                    {
+                        "id": "a",
+                        "message": "hello",
+                        "created_at": "2026-01-01T00:00:00Z",
+                        "updated_at": "2026-01-01T00:00:00Z",
+                        "tags": ["tests"],
+                        "pinned": true
+                    }
+                ]
+            },
+            "history": {
+                "p1": [
+                    {
+                        "id": "b",
+                        "message": "sent",
+                        "created_at": "2026-01-01T00:00:00Z",
+                        "sent_at": "2026-01-02T00:00:00Z",
+                        "tab_label": "Agent 1",
+                        "commit": "abcdef0123456789",
+                        "branch": "develop",
+                        "verdict": "from a later build"
+                    }
+                ]
+            }
+        }"#;
+
+        let file: AgentPromptsFile = serde_json::from_str(json).expect("unknown fields must load");
+        assert_eq!(file.version, 1);
+
+        let prompt = &file.projects["p1"][0];
+        assert_eq!(prompt.id, "a");
+        assert_eq!(prompt.message, "hello");
+        assert_eq!(prompt.tags, vec!["tests".to_string()]);
+
+        let sent = &file.history["p1"][0];
+        assert_eq!(sent.id, "b");
+        assert_eq!(sent.tab_label, "Agent 1");
+        assert_eq!(sent.commit.as_deref(), Some("abcdef0123456789"));
+        assert_eq!(sent.branch.as_deref(), Some("develop"));
+    }
+
+    /// The other half of the split: an editor payload is not a state file, and
+    /// a field the frontend made up is still refused rather than ignored.
+    #[test]
+    fn input_payloads_stay_strict() {
+        let json = r#"{"id": "a", "message": "hi", "colour": "red"}"#;
+        assert!(serde_json::from_str::<ProjectAgentPromptInput>(json).is_err());
     }
 }

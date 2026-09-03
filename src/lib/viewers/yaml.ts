@@ -45,6 +45,8 @@
  * Pure: no React, no Tauri, no fs. Unit-tested in `src/__tests__/Yaml*.test.ts`.
  */
 
+import type { TranslationKey } from "../i18n";
+
 export type YamlKind = "map" | "seq" | "scalar";
 
 /** How a scalar is written, so an edit round-trips in the author's own style.
@@ -131,8 +133,9 @@ export function isFlow(node: YamlNode): boolean {
 export interface YamlDoc {
   /** One synthetic root per YAML document (`---`-separated); usually just one. */
   docs: YamlNode[];
-  /** First construct the tree could not classify — the tree defers to Source. */
-  error: { line: number; message: string } | null;
+  /** First construct the tree could not classify — the tree defers to Source.
+   *  The reason is an i18n key (plus its vars), resolved by whoever renders it. */
+  error: { line: number; messageKey: TranslationKey; messageVars?: Record<string, string> } | null;
   /** The document's own indent step, so inserted lines match the file's style. */
   indentStep: number;
   /** JSON dialect: no plain scalars, so what is written is quoted or numeric. */
@@ -527,8 +530,12 @@ interface FlowScalar {
 // ── Parser ──────────────────────────────────────────────────────────────────
 
 class Bail extends Error {
-  constructor(readonly line: number, readonly reason: string) {
-    super(reason);
+  constructor(
+    readonly line: number,
+    readonly reasonKey: TranslationKey,
+    readonly reasonVars?: Record<string, string>,
+  ) {
+    super(reasonKey);
   }
 }
 
@@ -550,7 +557,16 @@ export function parseYaml(text: string, opts: { strict?: boolean } = {}): YamlDo
     return { docs, error: null, indentStep: parser.indentStep(docs), strict };
   } catch (e) {
     if (e instanceof Bail) {
-      return { docs: [], error: { line: e.line + 1, message: e.reason }, indentStep: 2, strict };
+      return {
+        docs: [],
+        error: {
+          line: e.line + 1,
+          messageKey: e.reasonKey,
+          ...(e.reasonVars ? { messageVars: e.reasonVars } : {}),
+        },
+        indentStep: 2,
+        strict,
+      };
     }
     throw e;
   }
@@ -675,7 +691,7 @@ class Parser {
     this.skipIgnorable();
     if (this.atBoundary()) return null;
     if (/^\t/.test(this.lines[this.i])) {
-      throw new Bail(this.i, "This file indents with tabs, which YAML does not allow.");
+      throw new Bail(this.i, "yamlParse.tabs");
     }
     const line = this.view[this.i];
     // A document written in flow/JSON syntax, however many lines it spans. This is
@@ -732,10 +748,10 @@ class Parser {
       const line = this.view[this.i];
       const ind = indentOf(line);
       if (ind < indent) break;
-      if (ind > indent) throw new Bail(this.i, "Unexpected indentation.");
+      if (ind > indent) throw new Bail(this.i, "yamlParse.indent");
       if (this.isSeqDash(line, ind)) break;
       if (line.slice(ind).startsWith("? ")) {
-        throw new Bail(this.i, "Explicit keys (`? `) aren't supported by the tree.");
+        throw new Bail(this.i, "yamlParse.explicitKey");
       }
 
       const child = this.parseMapEntry(indent, path, docIndex);
@@ -751,7 +767,7 @@ class Parser {
     const at = this.i;
     const line = this.view[at];
     const k = readKey(line, indent);
-    if (!k) throw new Bail(at, "This line isn't a `key: value` pair the tree can read.");
+    if (!k) throw new Bail(at, "yamlParse.notAPairLine");
     const childPath = [...path, k.key];
     const v = readValue(line, k.afterColon);
     this.i++;
@@ -1093,7 +1109,7 @@ class Parser {
       p = next;
     }
     if (p >= t.length || t[p] !== close) {
-      throw new Bail(this.lineOf(at), `This \`${t[at]}\` is never closed.`);
+      throw new Bail(this.lineOf(at), "yamlParse.neverClosed", { open: t[at] });
     }
     const end = p + 1;
     const line = this.lineOf(at);
@@ -1137,7 +1153,7 @@ class Parser {
     const t = this.text;
     const k = this.readFlowKey(at);
     if (!k) {
-      throw new Bail(this.lineOf(at), "This isn't a `key: value` pair the tree can read.");
+      throw new Bail(this.lineOf(at), "yamlParse.notAPair");
     }
     const childPath = [...path, k.key];
     const p = this.ws(k.colonEnd);
@@ -1238,7 +1254,7 @@ class Parser {
     const c = t[at];
     if (c === '"' || c === "'") {
       const end = scanQuoted(t, at);
-      if (end < 0) throw new Bail(this.lineOf(at), "This quoted value is never closed.");
+      if (end < 0) throw new Bail(this.lineOf(at), "yamlParse.quoteNeverClosed");
       const raw = t.slice(at, end);
       return {
         raw, value: decodeQuoted(raw),

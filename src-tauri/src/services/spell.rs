@@ -72,8 +72,76 @@ pub fn dict_dirs() -> Vec<PathBuf> {
             dirs.push(PathBuf::from(home).join("Library").join("Spelling"));
         }
         dirs.push(PathBuf::from("/Library/Spelling"));
+        dirs.push(PathBuf::from("/opt/homebrew/share/hunspell"));
+        dirs.push(PathBuf::from("/usr/local/share/hunspell"));
     }
+    #[cfg(target_os = "windows")]
+    {
+        // Windows ships no system Hunspell directory. `%APPDATA%\hunspell` is the
+        // conventional user drop location (what `hunspell.exe` builds and the
+        // MSYS2/Chocolatey packages document), so honour it before falling back
+        // to the LibreOffice bundles below.
+        if let Some(appdata) = std::env::var_os("APPDATA") {
+            dirs.push(PathBuf::from(appdata).join("hunspell"));
+        }
+    }
+    dirs.extend(libreoffice_dict_dirs());
     dirs
+}
+
+/// LibreOffice bundles its dictionaries as extensions (`dict-en`, `dict-de`,
+/// …), one directory per language family, with ordinary `.aff`/`.dic` pairs
+/// inside. On Windows and macOS that is often the *only* Hunspell set on the
+/// machine, so an installed LibreOffice makes spell checking work with nothing
+/// else to download. Read-only here (a system dictionary is never removable),
+/// and every location that does not exist is simply skipped.
+fn libreoffice_dict_dirs() -> Vec<PathBuf> {
+    let mut roots: Vec<PathBuf> = Vec::new();
+    #[cfg(target_os = "linux")]
+    {
+        roots.push(PathBuf::from("/usr/lib/libreoffice/share/extensions"));
+        roots.push(PathBuf::from("/usr/lib64/libreoffice/share/extensions"));
+        roots.push(PathBuf::from("/opt/libreoffice/share/extensions"));
+        roots.push(PathBuf::from("/snap/libreoffice/current/lib/libreoffice/share/extensions"));
+    }
+    #[cfg(target_os = "macos")]
+    {
+        roots.push(PathBuf::from(
+            "/Applications/LibreOffice.app/Contents/Resources/extensions",
+        ));
+    }
+    #[cfg(target_os = "windows")]
+    {
+        for var in ["ProgramFiles", "ProgramFiles(x86)", "ProgramW6432"] {
+            if let Some(pf) = std::env::var_os(var) {
+                roots.push(PathBuf::from(pf).join("LibreOffice").join("share").join("extensions"));
+            }
+        }
+    }
+    libreoffice_dict_dirs_under(&roots)
+}
+
+/// The `dict-*` extension directories directly under each LibreOffice
+/// `extensions` root. Pure over the given roots, so the discovery is testable
+/// against a temp tree on any OS.
+fn libreoffice_dict_dirs_under(roots: &[PathBuf]) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for root in roots {
+        let Ok(entries) = std::fs::read_dir(root) else {
+            continue;
+        };
+        let mut found: Vec<PathBuf> = entries
+            .flatten()
+            .filter(|e| {
+                e.file_name().to_string_lossy().starts_with("dict-")
+                    && e.file_type().map(|t| t.is_dir()).unwrap_or(false)
+            })
+            .map(|e| e.path())
+            .collect();
+        found.sort();
+        out.extend(found);
+    }
+    out
 }
 
 /// An installed dictionary. `removable` when it lives in the first directory
@@ -981,6 +1049,19 @@ pub fn spell_tokens(masked: &str) -> Vec<(u32, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn libreoffice_extension_roots_yield_only_dict_dirs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("extensions");
+        std::fs::create_dir_all(root.join("dict-en")).unwrap();
+        std::fs::create_dir_all(root.join("dict-de")).unwrap();
+        std::fs::create_dir_all(root.join("wiki-publisher")).unwrap();
+        std::fs::write(root.join("dict-fr"), b"not a dir").unwrap();
+        let missing = tmp.path().join("nope");
+        let dirs = libreoffice_dict_dirs_under(&[missing, root.clone()]);
+        assert_eq!(dirs, vec![root.join("dict-de"), root.join("dict-en")]);
+    }
 
     /// A tiny in-memory dictionary: enough Hunspell to exercise the check.
     fn tiny_dict() -> Dictionary {

@@ -1137,7 +1137,7 @@ export function ProjectFilesView({
     return () => { cancelled = true; };
   }, [projectId]);
 
-  const typeTags = project ? projectTypeTags(project, scaffoldMissing) : [];
+  const typeTags = project ? projectTypeTags(project, scaffoldMissing, t) : [];
 
   // Right-click menu on the SSH (remote) tag: open the one unified "Remote machines"
   // hub, which connects/manages every host and adds workers

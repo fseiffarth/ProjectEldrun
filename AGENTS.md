@@ -91,7 +91,11 @@ area you're touching; never read speculatively.
 Longer-lived plans and matrices live in `docs/` — e.g.
 `multi_host_remote_plan.md`, `git_lockstep_case_matrix.md`,
 `eldrun_mobile_agent_plan.md`. `docs/competitive_landscape.md` holds the
-positioning-vs-positioning read on overlapping tools. Project docs:
+positioning-vs-positioning read on overlapping tools.
+`docs/third_party_update_checklist.md` lists every flag, path, and output
+format Eldrun assumes of the tools it wraps (agent CLIs, Ollama, Tailscale,
+tmux, Docker, QEMU, bwrap, OpenVPN, SSH, SLURM, TeX, mail/CalDAV servers,
+desktop shells) — walk the matching section when one of them updates. Project docs:
 `README.md`, `DOCUMENTATION.md`, `ROADMAP.md`, `STATUS.md`, and `TODO.md` —
 whose per-group files live in `todo/`.
 
@@ -293,8 +297,11 @@ loopback port, and from there is an ordinary `RemoteSpec` with `vm: true`.
 
 ## Backend notes
 
-- `services::agent_fence` owns the default-on Linux bubblewrap fence for local
-  agents; writable roots derive from `box_allowed_roots`, and missing/unusable
+- `services::agent_fence` owns the default-on agent fence for local agents:
+  bubblewrap on Linux, a `sandbox-exec` Seatbelt profile on macOS (which can
+  deny but not shadow, so the hook-registration files are read-only there),
+  and honestly unfenced on Windows. Writable roots derive from
+  `box_allowed_roots`, and a missing/unusable
   bubblewrap fails closed rather than silently launching on the host.
 - Remote GPU snapshots are parsed through the same local `gpustat` parsers so
   host readings match local ones field-for-field.

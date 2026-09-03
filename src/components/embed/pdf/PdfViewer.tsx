@@ -24,7 +24,7 @@ import {
   readFileText,
   writeFileBytes,
   fileMtime,
-  describeFileError,
+  describeFileErrorKey,
 } from "../fileAccess";
 import { useExperimental } from "../../../lib/experimental";
 import { emptyDeck } from "../../../lib/viewers/deck/model";
@@ -1644,11 +1644,11 @@ function PdfCanvas({
         label: basename(deckPath),
       });
     } catch (e) {
-      setError(describeFileError(e));
+      setError(t(describeFileErrorKey(e)));
     } finally {
       setMakingDeck(false);
     }
-  }, [path, scope, tabKey]);
+  }, [path, scope, tabKey, t]);
   const viewPos = useViewerState(tabKey);
   const [doc, setDoc] = useState<PDFDocumentProxy | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -1886,10 +1886,10 @@ function PdfCanvas({
         setPresentOpen(true);
         seedPresent();
       } catch (e) {
-        setError(describeFileError(e));
+        setError(t(describeFileErrorKey(e)));
       }
     })();
-  }, [presentLabel, seedPresent]);
+  }, [presentLabel, seedPresent, t]);
 
   // The present window asks until it is answered (it and this listener race on
   // open). Subscribed only once this tab has opened one: a listener per PDF tab

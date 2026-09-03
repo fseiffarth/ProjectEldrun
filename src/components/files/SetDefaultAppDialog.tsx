@@ -166,7 +166,7 @@ export function SetDefaultAppDialog({ ext, fileName, localFile, onClose }: Props
         else delete next[ext];
         await invoke("save_default_apps", { defaultApps: next });
       } else {
-        if (!localFile) throw new Error("No project file for project scope");
+        if (!localFile) throw new Error(t("setDefaultApp.errNoProjectFile"));
         const base = projectJson ?? (await invoke<ProjectJson>("load_project", { localFile }));
         const map = { ...readDefaultApps(base) };
         if (nextExec) map[ext] = nextExec;

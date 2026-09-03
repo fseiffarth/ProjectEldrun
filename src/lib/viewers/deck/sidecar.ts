@@ -1,7 +1,9 @@
 /**
  * Reading, writing and — the part that matters — **re-anchoring** a deck sidecar
  * (`docs/deck_presenter_plan.md` §2.1/§2.2). All pure: nothing here touches the
- * filesystem, so every branch is testable and the viewer owns the I/O.
+ * filesystem, so every branch is testable and the viewer owns the I/O. The one
+ * outside read is the current language, for the loss reasons this hands back as
+ * finished sentences (`lib/i18n`, synchronous and English by default in tests).
  *
  * Two jobs, and the second is the reason the feature is usable at all.
  *
@@ -19,6 +21,7 @@
  * eats annotations is what makes people stop trusting a tool.
  */
 
+import { translate, useI18nStore } from "../../i18n";
 import {
   DECK_VERSION,
   type Deck,
@@ -358,7 +361,7 @@ function normalizeObjects(
     if (o) out.push(o);
     else {
       report("object");
-      lose("an object of a kind this build cannot render");
+      lose(translate(useI18nStore.getState().lang, "deckSidecar.lossUnknownObject"));
     }
   }
   return out;
@@ -447,7 +450,7 @@ export function normalizeDeck(
       if (slide) slides.push(slide);
       else {
         report("slide");
-        lose("a slide that could not be read at all");
+        lose(translate(useI18nStore.getState().lang, "deckSidecar.lossUnreadableSlide"));
       }
     }
   }
@@ -498,7 +501,7 @@ export function normalizeDeck(
 
   if (version > DECK_VERSION) {
     repairs.push(`written by a newer Eldrun (deck v${version})`);
-    lose(`it was written by a newer Eldrun (deck v${version}), whose fields this build drops`);
+    lose(translate(useI18nStore.getState().lang, "deckSidecar.lossNewerVersion", { version }));
   }
 
   return {
