@@ -307,7 +307,16 @@ export function App() {
         : tab === "calendar" ? <Calendar key={reseed} />
           : projectView.kind === "project"
             ? <Project id={projectView.id} back={() => setProjectView({ kind: "home" })} terminal={(row) => openTerminal(projectView.id, row)} />
-            : <Home open={(id) => setProjectView({ kind: "project", id })} todo={openTodo} mail={() => setTab("mail")} />}
+            : <Home
+              open={(id) => setProjectView({ kind: "project", id })}
+              // Straight into the session, leaving the Projects tab on its
+              // list: the agents mode is a triage list, and its loop is
+              // list → tab → back to the list, not a detour through the
+              // project the tab happens to live in.
+              openTab={(projectId, row) => openTerminal(projectId, row)}
+              todo={openTodo}
+              mail={() => setTab("mail")}
+            />}
     <TabBar active={tab} open={openSection} />
   </div>;
 }

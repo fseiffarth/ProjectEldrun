@@ -6,6 +6,18 @@ export type AgentStatus = "working" | "question" | "done";
 export interface TabSchedules { total: number; enabled: number; next?: string }
 export interface TabRow { id: string; label: string; kind: "shell" | "agent"; agent_label?: string; agent_status?: AgentStatus; schedules?: TabSchedules; available: boolean; viewer_busy: boolean; last_activity?: number }
 export interface AgentRow { id: string; label: string; modes: ("plan" | "auto")[] }
+/** One agent tab in the cross-project activity list: an ordinary tab row plus
+ * the project it lives in, because that list is flat and a tab label on its own
+ * does not say where the session is. */
+export interface ActivityTab extends TabRow { project_id: string; project_label: string }
+export interface ActivityList { tabs: ActivityTab[]; desktop_available: boolean }
+
+/** `GET /api/v1/activity` — every agent tab the desktop reports as working,
+ * waiting on a decision, or done, across every project this phone may reach.
+ * The desktop classifies; with none open the list is empty rather than wrong. */
+export function getActivity(signal?: AbortSignal): Promise<ActivityList> {
+  return api<ActivityList>("/api/v1/activity", { signal });
+}
 export type ScheduleRule =
   | { type: "once"; at: string }
   | { type: "daily"; time: string }

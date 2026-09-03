@@ -35,7 +35,7 @@ describe("Mobile home — project list states", () => {
     fetchMock.mockImplementation((input: string | URL | Request) => String(input).startsWith("/api/v1/alerts")
       ? Promise.resolve(new Response(JSON.stringify({ alerts: { enabled: false, items: [] } }), { status: 200 }))
       : new Promise<Response>((resolve) => { release = resolve; }));
-    render(<Home open={noop} todo={noop} mail={noop} />);
+    render(<Home open={noop} openTab={noop} todo={noop} mail={noop} />);
     expect(screen.getByRole("status").textContent).toContain("Loading projects");
     // The list request is issued from a timer, so wait for it to be in flight.
     await waitFor(() => expect(fetchMock.mock.calls.some(([input]) => String(input).startsWith("/api/v1/projects"))).toBe(true));
@@ -46,13 +46,13 @@ describe("Mobile home — project list states", () => {
 
   it("explains an empty active list and points at search", async () => {
     answer([]);
-    render(<Home open={noop} todo={noop} mail={noop} />);
+    render(<Home open={noop} openTab={noop} todo={noop} mail={noop} />);
     expect((await screen.findByText(/No project is active right now/)).textContent).toContain("Search");
   });
 
   it("distinguishes an empty search from one not yet typed", async () => {
     answer([]);
-    render(<Home open={noop} todo={noop} mail={noop} />);
+    render(<Home open={noop} openTab={noop} todo={noop} mail={noop} />);
     await screen.findByText(/No project is active right now/);
     fireEvent.click(screen.getByRole("button", { name: "Search" }));
     expect(await screen.findByText(/Type a project's name/)).toBeTruthy();
@@ -62,7 +62,7 @@ describe("Mobile home — project list states", () => {
 
   it("keeps the last list, and no empty-state copy, when the host drops", async () => {
     answer([{ id: "p1", label: "Alpha", status: "active", live_sessions: 1 }]);
-    render(<Home open={noop} todo={noop} mail={noop} />);
+    render(<Home open={noop} openTab={noop} todo={noop} mail={noop} />);
     await screen.findByText("Alpha");
     fetchMock.mockImplementation(() => Promise.reject(new TypeError("Failed to fetch")));
     fireEvent.click(screen.getByRole("button", { name: "Search" }));

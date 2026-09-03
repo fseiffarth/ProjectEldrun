@@ -9,7 +9,13 @@ const PREFIX = "eldrun.mobile.";
 
 type FlagStorage = Pick<Storage, "getItem" | "setItem">;
 
-export type MobileFlag = "todoHideDone" | "todoHideArchived";
+/** `projectsAgents` is the Projects section's mode rather than a filter: with it
+ * set, that tab opens on the flat cross-project list of agent tabs that are
+ * working, waiting or done. It is stored for the same reason as the others —
+ * the section is re-mounted by every tab switch and by every trip into a
+ * terminal, and re-picking the mode on each return is the whole cost of using
+ * it as a triage list. */
+export type MobileFlag = "todoHideDone" | "todoHideArchived" | "projectsAgents";
 
 /**
  * `fallback` is what an unset flag means, and it is a real parameter rather than

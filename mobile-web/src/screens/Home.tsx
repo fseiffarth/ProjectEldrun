@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
-import { api, type MobileAlertItem, type MobileAlerts, type ProjectRow } from "../api";
+import { api, type ActivityTab, type MobileAlertItem, type MobileAlerts, type ProjectRow } from "../api";
 import { classifyUnavailable, describeUnavailable, type UnavailableReason } from "../connection";
+import { readFlag, writeFlag } from "../prefs";
+import { Activity } from "./Activity";
 // Kept in lockstep with the desktop and mobile-host package versions by the
 // release bump, so the phone always reports the build it is running.
 import { version as APP_VERSION } from "../../../package.json";
@@ -58,8 +60,20 @@ function AlertRows({ alerts, todo, mail }: { alerts: MobileAlerts; todo: (card?:
   </section>;
 }
 
-export function Home({ open, todo, mail }: { open: (id: string) => void; todo: (card?: string) => void; mail: () => void }) {
-  const [view, setView] = useState<"active" | "search">("active");
+/** The three modes of the Projects section. `agents` is not a filter over the
+ * project list but a different list entirely — every project's agent tabs that
+ * are working, waiting or done, flat — so it is the one mode worth remembering
+ * across the re-mounts a tab switch and a terminal visit cause. */
+type HomeView = "active" | "agents" | "search";
+const HOME_VIEWS: [HomeView, string][] = [["active", "Active"], ["agents", "Agents"], ["search", "Search"]];
+
+export function Home({ open, openTab, todo, mail }: {
+  open: (id: string) => void;
+  openTab: (projectId: string, tab: ActivityTab) => void;
+  todo: (card?: string) => void;
+  mail: () => void;
+}) {
+  const [view, setView] = useState<HomeView>(() => (readFlag("projectsAgents") ? "agents" : "active"));
   const [query, setQuery] = useState("");
   const [rows, setRows] = useState<ProjectRow[]>([]);
   /** Whether any list has come back yet. Until it has, an empty `rows` is
@@ -69,7 +83,17 @@ export function Home({ open, todo, mail }: { open: (id: string) => void; todo: (
   /** Null while the list is loading fine; otherwise why it is not. */
   const [offline, setOffline] = useState<UnavailableReason | null>(null);
   const [alerts, setAlerts] = useState<MobileAlerts | null>(null);
+  /** Only the agents mode is remembered: the other two differ by a query the
+   * reader has to type anyway, and a Projects tab that opened on an empty
+   * search box would be a worse landing than the active list. */
+  const choose = (next: HomeView) => {
+    setView(next);
+    writeFlag("projectsAgents", next === "agents");
+  };
   useEffect(() => {
+    // The agents mode reads its own list; leaving this poll running behind it
+    // would be a catalog load per tick for a list nothing is showing.
+    if (view === "agents") return;
     // Without an abort, typing "ab" then "abc" on mobile data could land the
     // older response last and leave the wrong result set on screen.
     const controller = new AbortController();
@@ -85,6 +109,10 @@ export function Home({ open, todo, mail }: { open: (id: string) => void; todo: (
     };
   }, [view, query]);
   useEffect(() => {
+    // Alerts sit under the project list and are deliberately not part of the
+    // agents mode, which shows agent tabs and nothing else; polling a feed
+    // that mode does not draw would be a minute-timer for nobody.
+    if (view === "agents") return;
     let disposed = false;
     const load = () => {
       void api<{ alerts: MobileAlerts }>("/api/v1/alerts")
@@ -99,7 +127,7 @@ export function Home({ open, todo, mail }: { open: (id: string) => void; todo: (
       disposed = true;
       window.clearInterval(timer);
     };
-  }, []);
+  }, [view]);
   return <main className="screen">
     <header className="home-header">
       <div className="home-brand" aria-label="Eldrun">
@@ -111,20 +139,28 @@ export function Home({ open, todo, mail }: { open: (id: string) => void; todo: (
       <div className="mobile-build"><small>Eldrun Mobile v{APP_VERSION}</small><span className={offline ? "lamp off" : "lamp"} /></div>
     </header>
     <div className="projects-row">
-      <h1>Projects</h1>
+      <h1>{view === "agents" ? "Agents" : "Projects"}</h1>
     </div>
-    <nav><button className={view === "active" ? "selected" : ""} onClick={() => setView("active")}>Active</button><button className={view === "search" ? "selected" : ""} onClick={() => setView("search")}>Search</button></nav>
-    {view === "search" && <input className="search" placeholder="Project name" value={query} autoFocus onChange={(event) => setQuery(event.target.value)} />}
-    {offline && <p className="error connection-error">
-      <strong>{describeUnavailable(offline).title}</strong>
-      <span>{describeUnavailable(offline).hint}</span>
-      <span>{rows.length ? "Showing the last list this session loaded." : "Project data is never loaded from cache."}</span>
-    </p>}
-    {!loaded && !offline && <p className="projects-empty" role="status">Loading projects…</p>}
-    {loaded && rows.length === 0 && <p className="projects-empty">{view === "search"
-      ? query.trim() ? "No project by that name has Eldrun Mobile access." : "Type a project's name to find it."
-      : "No project is active right now. Search finds any project with Eldrun Mobile access."}</p>}
-    <section className="cards">{rows.map((project) => <button className="card" key={project.id} onClick={() => open(project.id)}><span><strong>{project.label}</strong><small>{project.status}</small></span><span className="count">{project.live_sessions}</span></button>)}</section>
-    {alerts && <AlertRows alerts={alerts} todo={todo} mail={mail} />}
+    <nav>{HOME_VIEWS.map(([id, label]) => <button
+      key={id}
+      className={view === id ? "selected" : ""}
+      aria-pressed={view === id}
+      onClick={() => choose(id)}
+    >{label}</button>)}</nav>
+    {view === "agents" && <Activity open={openTab} onConnection={setOffline} />}
+    {view !== "agents" && <>
+      {view === "search" && <input className="search" placeholder="Project name" value={query} autoFocus onChange={(event) => setQuery(event.target.value)} />}
+      {offline && <p className="error connection-error">
+        <strong>{describeUnavailable(offline).title}</strong>
+        <span>{describeUnavailable(offline).hint}</span>
+        <span>{rows.length ? "Showing the last list this session loaded." : "Project data is never loaded from cache."}</span>
+      </p>}
+      {!loaded && !offline && <p className="projects-empty" role="status">Loading projects…</p>}
+      {loaded && rows.length === 0 && <p className="projects-empty">{view === "search"
+        ? query.trim() ? "No project by that name has Eldrun Mobile access." : "Type a project's name to find it."
+        : "No project is active right now. Search finds any project with Eldrun Mobile access."}</p>}
+      <section className="cards">{rows.map((project) => <button className="card" key={project.id} onClick={() => open(project.id)}><span><strong>{project.label}</strong><small>{project.status}</small></span><span className="count">{project.live_sessions}</span></button>)}</section>
+      {alerts && <AlertRows alerts={alerts} todo={todo} mail={mail} />}
+    </>}
   </main>;
 }

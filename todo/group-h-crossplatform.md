@@ -450,6 +450,43 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     - [ ] ✅ Works
     - [ ] ❌ Doesn't work
 
+- [~] **31x — Mobile Agents mode: every waiting session, no project grouping**
+  (2026-09-03; ✅ code-complete and automated tests passing, ⚠️ phone QA pending
+  — and a rebuild + restart first, since the phone serves the bundle baked into
+  the binary). The phone is picked up to answer one question — *is anything
+  waiting for me* — and the project grouping stood squarely in front of it: the
+  reader opened each project in turn to find the one session that had stopped to
+  ask something. The Projects tab now has a third mode beside Active and Search.
+  **Agents** lists every agent tab that is working, waiting on a decision, or
+  done, flat across every project the phone may reach, waiting-first and
+  finished-last, each row carrying its project name and the same status pill the
+  project overview draws. Tapping one goes straight into the session and back
+  out to the list, not through the project it lives in; nothing quiet is listed,
+  so an empty list means an empty list. The mode is remembered
+  (`prefs.projectsAgents`) because a tab switch and every terminal visit
+  re-mount the section, and re-picking it each time is the whole cost of using
+  it as a triage list. New `GET /api/v1/activity` answers the whole list in one
+  desktop round trip (`DesktopRequest::Activity` — a per-project `Catalog` call
+  would be one round trip per project on every 5s poll, and the flat list needs
+  neither the agent menu nor the schedule summaries). The desktop still owns the
+  classification and the sidecar still never reads terminal output, so with no
+  desktop window the screen says *that* rather than showing every tab as quiet;
+  the bridge gates each project through the same `mobileProject` check as every
+  other handler, so the Mobile switch and the remote/sandbox/VM tiers hold.
+  Behind the mode, neither the project list nor the alerts feed is polled.
+  Locked by `src/__tests__/MobileAgentsMode.test.tsx` and the `host.rs` activity
+  route tests.
+  - [ ] 🖐️ Manual phone QA — with two projects each holding a busy agent tab:
+    open Projects → **Agents** and see both, waiting-first, each naming its
+    project; tap one and land in the session, back out to the list still in
+    Agents mode; leave to To-do and return (still Agents); switch to Active and
+    return (Projects again); watch a tab's pill follow the desktop as it goes
+    working → question → done; close desktop Eldrun and see the "Desktop
+    unavailable" line instead of an empty-and-quiet reading; with everything
+    idle, confirm the list is empty and says so
+  - [ ] ✅ Works
+  - [ ] ❌ Doesn't work
+
 - [~] **31i — Mobile lazy terminal history, whole session** (2026-08-28;
   ✅ Code-complete, ⚠️ needs live QA on a phone; the tmux `history-limit` half
   needs a backend restart and takes effect per newly created session).
