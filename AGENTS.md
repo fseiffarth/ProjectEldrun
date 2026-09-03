@@ -98,8 +98,11 @@ area you're touching; never read speculatively.
 
 Longer-lived plans and matrices live in `docs/` — e.g.
 `multi_host_remote_plan.md`, `git_lockstep_case_matrix.md`,
-`eldrun_mobile_agent_plan.md`. `docs/competitive_landscape.md` holds the
-positioning-vs-positioning read on overlapping tools.
+`eldrun_mobile_agent_plan.md`. `docs/remote_sync_guide.md` is the step-by-step
+*how it works* for remote-project syncing (byte-sync + git lockstep: colours,
+menu items, pass order, symptom → fix); read it before touching either engine.
+`docs/competitive_landscape.md` holds the positioning-vs-positioning read on
+overlapping tools.
 `docs/third_party_update_checklist.md` lists every flag, path, and output
 format Eldrun assumes of the tools it wraps (agent CLIs, Ollama, Tailscale,
 tmux, Docker, QEMU, bwrap, OpenVPN, SSH, SLURM, TeX, mail/CalDAV servers,

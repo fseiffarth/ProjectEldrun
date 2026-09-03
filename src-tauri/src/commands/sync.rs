@@ -247,19 +247,28 @@ pub async fn sync_set_auto(
     let mut guard = manifest.lock().await;
     let m = ensure_loaded(&mut guard, &project_id);
     for rel in &rel_paths {
-        let entry = m.entry(rel.clone()).or_default();
-        entry.auto_sync = auto;
-        // OFF writes an explicit exclusion (overrides an ancestor/project-wide
-        // auto); ON clears any prior exclusion and marks the path tracked.
-        entry.auto_off = !auto;
-        if auto {
-            entry.selected = true;
-        }
-        if is_dir {
-            entry.is_dir = true;
-        }
+        apply_auto_marker(m.entry(rel.clone()).or_default(), auto, is_dir);
     }
     remote_sync::save_manifest(&project_id, m)
+}
+
+/// The marker write behind [`sync_set_auto`], on one entry. OFF records an explicit
+/// `auto_off` (overrides an ancestor/project-wide auto); ON marks the path tracked
+/// and clears **both** carve-outs — `auto_off` and `excluded`. The exclusion has to
+/// go too: `is_auto` and `is_excluded` both consult a path's own `excluded` before
+/// its `auto_sync`, so an entry carrying both was still excluded, and turning auto
+/// on for a folder the giant-folder prompt had excluded was a silent no-op — the
+/// glyph flipped, the engine kept skipping. Pure, unit-tested.
+fn apply_auto_marker(entry: &mut remote_sync::SyncEntry, auto: bool, is_dir: bool) {
+    entry.auto_sync = auto;
+    entry.auto_off = !auto;
+    if auto {
+        entry.selected = true;
+        entry.excluded = false;
+    }
+    if is_dir {
+        entry.is_dir = true;
+    }
 }
 
 /// What turning auto-sync ON over a host subtree would start pulling.
@@ -540,6 +549,26 @@ pub async fn sync_status(
     // Re-stat selected files when the pool is live; if cold, fall back to the
     // stored base (green for selected) rather than erroring out the whole panel.
     let sftp = pooled_sftp(pool.inner(), &project_id).await;
+    // With lockstep on, the git-tracked tree is lockstep's (#28p D1): those files
+    // travel as commits, byte-sync never touches them, and their manifest bases
+    // (seeded at pairing, re-stamped after a checkout) go stale the moment a
+    // fast-forward rewrites the *other* side. Stat'ing them here painted every
+    // file a commit changed amber/orange until the content check happened to
+    // heal it — and never healed one over the content-verify cutoff, leaving
+    // orange rows whose pull/push buttons could not act (`drop_lockstep_tracked`
+    // withholds them). Resolve the set once, off the async thread (git spawns).
+    let lockstep_tracked: HashSet<String> = {
+        let pid = project_id.clone();
+        tokio::task::spawn_blocking(move || {
+            if crate::services::git_peer::load_state(&pid).enabled {
+                crate::services::git_peer::tracked_paths(&pid)
+            } else {
+                HashSet::new()
+            }
+        })
+        .await
+        .unwrap_or_default()
+    };
     let mut out = Vec::with_capacity(entries.len());
     // Partition without any network first: only selected FILES against a live
     // pool need a host re-stat. Everything else (unselected → none, directories →
@@ -573,6 +602,24 @@ pub async fn sync_status(
             out.push(SyncStatusEntry {
                 rel_path: rel,
                 is_dir: true,
+                selected: true,
+                state: SyncState::Green,
+                auto_sync: auto,
+                excluded: entry.excluded,
+                host_mtime: None,
+                local_mtime: None,
+                host_diverged: false,
+                local_diverged: false,
+                host_checked: false,
+            });
+        } else if lockstep_tracked.contains(&rel) {
+            // Lockstep-owned: in step as of the last commit on either side, kept so
+            // by `git_peer`, and reported green exactly as the pairing seed meant it
+            // to read. Not stat'd — the host was not consulted for this row, and an
+            // uncommitted local edit is git's `M` marker, not a byte-sync divergence.
+            out.push(SyncStatusEntry {
+                rel_path: rel,
+                is_dir: false,
                 selected: true,
                 state: SyncState::Green,
                 auto_sync: auto,
@@ -1679,7 +1726,25 @@ async fn pull_subtree(
         let skipped = before - kept.len();
         (kept, skipped)
     };
-    let (files, _skipped_tracked) = drop_lockstep_tracked(project_id, files, |file| &file.rel);
+    let walked = files.len() + skipped_excluded;
+    let (files, skipped_tracked) = drop_lockstep_tracked(project_id, files, |file| &file.rel);
+    // The pull twin of `sync_push`'s refusal: a targeted pull (a named file or folder)
+    // whose every candidate was withheld used to return `Ok(0)`, which the tree then
+    // reported as "pulled" — the exact silent no-op a tracked file's orange row
+    // produced when its "take host" was clicked. A whole-project pull ("") keeps
+    // returning Ok: an empty host tree is a legitimate steady state there.
+    if files.is_empty() && !rel.is_empty() {
+        return Err(if skipped_tracked > 0 && skipped_excluded == 0 {
+            format!(
+                "'{rel}' is git-tracked and travels as a commit through Git Lockstep — \
+                 nothing was byte-pulled"
+            )
+        } else if walked > 0 {
+            format!("'{rel}' is excluded from sync — nothing was pulled")
+        } else {
+            format!("'{rel}' has nothing to pull — the host holds no regular file there")
+        });
+    }
 
     let total = files.len();
     emit(app, project_id, "start", rel, 0, total);
@@ -1874,6 +1939,31 @@ mod tests {
         let (kept, omitted) = drop_tracked_files(files.clone(), &tracked, false, String::as_str);
         assert_eq!(kept, files);
         assert_eq!(omitted, 0);
+    }
+
+    #[test]
+    fn turning_auto_on_lifts_an_exclusion_and_off_records_a_carve_out() {
+        use crate::services::remote_sync::{is_auto, is_excluded, Manifest, SyncEntry};
+        // The giant-folder prompt's answer: excluded, auto forced off.
+        let mut e = SyncEntry {
+            is_dir: true,
+            excluded: true,
+            auto_off: true,
+            ..Default::default()
+        };
+        super::apply_auto_marker(&mut e, true, true);
+        assert!(e.auto_sync && e.selected && !e.auto_off);
+        assert!(!e.excluded, "auto-on must lift the exclusion or it is a no-op");
+        // …and the two nearest-marker walks now agree the subtree is in scope.
+        let mut m = Manifest::new();
+        m.insert("data".into(), e.clone());
+        assert!(is_auto(&m, "data/x.bin"));
+        assert!(!is_excluded(&m, "data/x.bin", ""));
+
+        super::apply_auto_marker(&mut e, false, true);
+        assert!(!e.auto_sync && e.auto_off);
+        assert!(e.selected, "off leaves manual tracking alone");
+        assert!(!e.excluded, "off is a carve-out, not an exclusion");
     }
 
     #[test]

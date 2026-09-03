@@ -1,6 +1,8 @@
 # Git lockstep + byte-sync
 
-Referenced from `AGENTS.md`.
+Referenced from `AGENTS.md`. The step-by-step *how it works* (colours, menu
+items, pass order, symptom → fix) is `docs/remote_sync_guide.md`; this file is
+the *why*.
 
 - **Two transports keep a remote project in step, and they split the tree by
   git.** *Git lockstep* (`services::git_peer`) owns the **git-tracked** files and
@@ -119,3 +121,37 @@ Referenced from `AGENTS.md`.
   staged beside the mirror destination before rename, matching the push side's
   temp-and-rename rule. A crash therefore leaves an old or new complete mirror
   file, not a truncated file that masquerades as a divergence.
+- **A commit is not a checkout** (`head_target_moved`). Head-move detection
+  compares the checkout *target* — branch name, or the sha while detached — not
+  the whole `HeadRef`. Comparing shas made every commit on the mirror replay as
+  `git checkout <branch>` on the host, which is a no-op while both sides sit on
+  that branch and a silent branch switch on the host (under its running jobs)
+  whenever they do not. When **both** sides changed target since the last look,
+  no side is picked: the pass reconciles refs only and `head_mismatch` reports
+  it, exactly as for any other case where there is no principled follower.
+- **A pass must not wake itself.** Every pass writes inside the mirror's `.git`
+  (bundle, `refs/eldrun/*`, fetched objects, `index`) — the directory the
+  lockstep watcher observes. While green the D5 early-out absorbed that; while
+  red nothing did, so a diverged or blocked project re-ran the full SSH pass
+  every debounce window. `poll_loop` now records the mirror's ref signature
+  after each pass and skips a watcher burst that leaves it unchanged
+  (`watcher_burst_is_own`); the 12 s poll still covers anything real in that
+  window. Byte-sync's mirror watcher ignores `.git`/`.eldrun` outright
+  (`event_touches_synced_bytes`) — it never moves a byte of either, and every
+  lockstep pass used to cost it a host walk.
+- **Lockstep-owned rows are not stat'd** (`sync_status`). The pairing seed puts
+  every tracked file in the manifest so the tree reads green, but with lockstep
+  on their bases go stale the moment a fast-forward rewrites the *other* side;
+  stat'ing them painted every committed change amber/orange until the content
+  check healed it (never, over the 1 MiB cutoff), with pull/push buttons that
+  `drop_lockstep_tracked` then refused. They are reported green, unchecked, and
+  a targeted pull/push of one says why it moved nothing instead of `Ok(0)`.
+- **Auto-on lifts the path's own exclusion.** `is_auto` and `is_excluded` both
+  consult `excluded` before `auto_sync`, so an entry carrying both stayed
+  excluded — *Auto-sync this folder* on a giant-folder-excluded tree flipped the
+  glyph and changed nothing. `sync_set_auto(true)` clears `excluded`; the
+  store patches the same.
+- **A linked-worktree block needs a write** (`would_move_ref`). Only a create,
+  a fast-forward, or a forced reset writes the dest's ref; a dest-ahead branch
+  under a plain reconcile is the *other* leg's fast-forward, and blocking it
+  reported a red "left alone" for every worktree that was merely ahead.

@@ -164,6 +164,47 @@ describe("sync store actions", () => {
     expect(row?.state).toBe("green");
   });
 
+  it("setAuto on lifts the path's own exclusion, off leaves it", async () => {
+    invokeMock.mockImplementation((cmd: string) =>
+      cmd === "sync_status" ? new Promise(() => {}) : Promise.resolve(undefined),
+    );
+    // The giant-folder prompt's standing answer: excluded, auto off.
+    useSyncStore.setState({
+      byProject: {
+        p1: {
+          data: {
+            state: "none",
+            selected: false,
+            isDir: true,
+            auto: false,
+            excluded: true,
+            hostMtime: null,
+            localMtime: null,
+            hostDiverged: false,
+            localDiverged: false,
+            hostChecked: false,
+          },
+        },
+      },
+    });
+    void useSyncStore.getState().setAuto("p1", ["data"], true, true);
+    await Promise.resolve();
+    await Promise.resolve();
+    // The backend clears `excluded` on auto-on (the two markers cannot coexist —
+    // an excluded entry stays excluded whatever its auto flag says); the cache
+    // must say the same or the row keeps its "Include in sync" label.
+    const on = useSyncStore.getState().byProject["p1"]?.["data"];
+    expect(on?.auto).toBe(true);
+    expect(on?.excluded).toBe(false);
+
+    void useSyncStore.getState().setAuto("p1", ["data"], false, true);
+    await Promise.resolve();
+    await Promise.resolve();
+    const off = useSyncStore.getState().byProject["p1"]?.["data"];
+    expect(off?.auto).toBe(false);
+    expect(off?.excluded).toBe(false);
+  });
+
   it("setAuto marks the path before sync_status answers", async () => {
     invokeMock.mockImplementation((cmd: string) =>
       cmd === "sync_status" ? new Promise(() => {}) : Promise.resolve(undefined),

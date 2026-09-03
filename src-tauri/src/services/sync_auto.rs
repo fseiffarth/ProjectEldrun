@@ -128,6 +128,15 @@ pub async fn start(
         return;
     }
     let mut guard = state.lock().await;
+    // A loop that ended on its own (the host was tagged HPC mid-session) leaves a
+    // finished task behind; treating that as "already running" would refuse every
+    // restart until the next disconnect, so untagging the host would change nothing.
+    if guard
+        .get(project_id)
+        .is_some_and(|t| t.join.is_finished())
+    {
+        guard.remove(project_id);
+    }
     if guard.contains_key(project_id) {
         return; // already running
     }
@@ -237,9 +246,17 @@ async fn ensure_watcher(
         }
     }
     let tx = tx.clone();
+    let root = mirror.to_path_buf();
     let Ok(mut w) = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
-        if res.is_ok() {
-            let _ = tx.send(());
+        // The recursive watch covers `.git` and `.eldrun` too, and byte-sync never
+        // moves a byte of either — yet every lockstep pass (bundle, fetch, refs),
+        // every `git status` stat-cache refresh and every tab-runtime write under
+        // `.eldrun` used to queue a full host walk here. Only a write to something
+        // byte-sync could actually act on gets to wake the loop.
+        if let Ok(ev) = res {
+            if event_touches_synced_bytes(&root, &ev.paths) {
+                let _ = tx.send(());
+            }
         }
     }) else {
         return; // no watcher → interval passes still run, just less promptly
@@ -247,6 +264,28 @@ async fn ensure_watcher(
     if w.watch(mirror, RecursiveMode::Recursive).is_ok() {
         *slot = Some(w);
     }
+}
+
+/// Whether a watcher event names at least one path byte-sync could act on — i.e.
+/// anything that is **not** inside the mirror's `.git` or `.eldrun` directories
+/// (both are never byte-mirrored: git state travels through lockstep, `.eldrun` is
+/// Eldrun's own runtime dir). An event with no paths at all (some backends emit
+/// rescan/overflow notices that way) counts as "could be anything" and wakes the
+/// loop. Pure.
+pub fn event_touches_synced_bytes(mirror: &std::path::Path, paths: &[std::path::PathBuf]) -> bool {
+    if paths.is_empty() {
+        return true;
+    }
+    paths.iter().any(|p| {
+        let rel = match p.strip_prefix(mirror) {
+            Ok(r) => r,
+            Err(_) => return true, // outside the mirror as we know it → don't guess
+        };
+        !matches!(
+            rel.components().next(),
+            Some(std::path::Component::Normal(first)) if first == ".git" || first == ".eldrun"
+        )
+    })
 }
 
 /// The per-project loop: reconcile on a fixed interval (host changes) and shortly
@@ -531,6 +570,31 @@ mod tests {
         let mut c = set(&["src/a.rs", "notes.md", "build/out.bin"]);
         drop_tracked(&mut c, &hset(&["src/a.rs", "README.md"]), true);
         assert_eq!(c, set(&["notes.md", "build/out.bin"]));
+    }
+
+    #[test]
+    fn git_and_eldrun_writes_do_not_wake_the_byte_sync_loop() {
+        use std::path::{Path, PathBuf};
+        let mirror = Path::new("/m/mirror");
+        let p = |s: &str| PathBuf::from(s);
+        // Lockstep's own writes and git's stat-cache refreshes all live here.
+        assert!(!event_touches_synced_bytes(
+            mirror,
+            &[p("/m/mirror/.git/index"), p("/m/mirror/.git/refs/eldrun/peer/main")]
+        ));
+        assert!(!event_touches_synced_bytes(mirror, &[p("/m/mirror/.eldrun/tabs.json")]));
+        // A real file write anywhere else does — even alongside a .git one.
+        assert!(event_touches_synced_bytes(
+            mirror,
+            &[p("/m/mirror/.git/index"), p("/m/mirror/src/a.rs")]
+        ));
+        // A file merely *named* like the dirs is not inside them.
+        assert!(event_touches_synced_bytes(mirror, &[p("/m/mirror/.gitignore")]));
+        assert!(event_touches_synced_bytes(mirror, &[p("/m/mirror/sub/.git/config")]));
+        // No paths (a rescan/overflow notice) and a path outside the mirror both
+        // err toward running the pass rather than skipping it.
+        assert!(event_touches_synced_bytes(mirror, &[]));
+        assert!(event_touches_synced_bytes(mirror, &[p("/elsewhere/x")]));
     }
 
     #[test]

@@ -489,10 +489,19 @@ export const useSyncStore = create<SyncStore>((set, get) => ({
 
   setAuto: async (projectId, relPaths, auto, isDir) => {
     await invoke("sync_set_auto", { projectId, relPaths, auto, isDir });
+    // Mirror the backend's marker write: auto ON also lifts the path's own
+    // exclusion (the two markers cannot coexist — an excluded entry stays
+    // excluded whatever its auto flag says, so the backend clears it). OFF is a
+    // carve-out, not an exclusion, and leaves `excluded` as it was.
     set((s) => ({
       byProject: {
         ...s.byProject,
-        [projectId]: patchMarkers(s.byProject[projectId], relPaths, { auto }, isDir),
+        [projectId]: patchMarkers(
+          s.byProject[projectId],
+          relPaths,
+          auto ? { auto, excluded: false } : { auto },
+          isDir,
+        ),
       },
     }));
     await get().refreshStatus(projectId);

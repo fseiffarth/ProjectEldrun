@@ -1216,6 +1216,44 @@ container) — as opposed to the git **push** axis (#21/#22).*
 
 ---
 
+    - [x] **28r — Sync + lockstep read-through** (2026-09-03; ✅ Code-complete ·
+      🧪 Live-host QA owed; guide written). A full read of `remote_sync`,
+      `sync_auto`, `git_peer`, `commands::sync`, `local_loss`, `worker_sync`
+      and the sync store, concentrating on the git + byte-sync seam. Six
+      defects fixed, all unit-tested where pure; the orchestration halves are
+      owed a `lockstep_drv` run:
+      - **Lockstep spun on its own `.git` writes while red.** Every pass writes
+        the bundle/incoming refs/objects inside the mirror's `.git`, which the
+        watcher observes; a non-green state never early-outs, so a diverged or
+        blocked project re-ran the full SSH pass every ~1 s. `poll_loop` skips a
+        burst that leaves the mirror's ref signature as the last pass left it
+        (`watcher_burst_is_own`); byte-sync's watcher ignores `.git`/`.eldrun`
+        (`event_touches_synced_bytes`).
+      - **A commit was a checkout.** `detect_and_sync` compared whole
+        `HeadRef`s (sha included), so every mirror commit replayed
+        `git checkout <branch>` on the host — a silent branch switch whenever
+        the host sat elsewhere. Now `head_target_moved` (branch / detached sha);
+        both sides moving reconciles refs only and reports "Out of step".
+      - **Linked-worktree false block**: a dest-ahead branch under a plain
+        reconcile writes nothing, yet was reported "left alone" → red
+        (`would_move_ref`).
+      - **Lockstep-owned rows were stat'd and painted orange** after every
+        commit (bases seeded at pairing go stale when the other side ff's);
+        `sync_status` now reports tracked files green, unchecked, and a
+        targeted pull whose candidates were all withheld errors with the reason
+        instead of `Ok(0)` (the push already did).
+      - **Auto-on over an excluded folder was a no-op** (`excluded` outranks
+        `auto_sync` in both marker walks); `sync_set_auto(true)` clears it, the
+        store patches the same.
+      - **A loop that ended on the HPC tag blocked its own restart** until
+        reconnect (`start` treated the finished task as running).
+      - Docs: `docs/remote_sync_guide.md` (how it works, step by step, symptom
+        → fix), `docs/context/git_sync.md` rationale bullets, case-matrix rows
+        14b/17b/21c + the timing note.
+      - Known, documented, not changed: a file present on **both** sides that
+        was never synced has no base, is skipped by every auto pass and shows
+        as "new local"; one manual pull/push adopts it.
+
 ### G.24 — Remote-connect hardening: deferred follow-ups
 
 The 2026-07-25 audit + fix pass (5 analysis agents, 5 implementation agents, one
