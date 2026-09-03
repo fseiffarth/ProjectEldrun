@@ -58,7 +58,11 @@ export function classifyUnavailable(error: unknown): UnavailableReason {
   // Checked before the proxy branch below: this is also a 5xx, but it is one
   // our own sidecar sent, and it means the opposite thing.
   if (error.code === "desktop_unavailable") return "desktop_down";
-  if (error.status === 429) return "busy";
+  // The sidecar's own limiter (`auth.rs` `rate_limit`) never answers 429: it
+  // reports `too_many_attempts` on the route's usual failure status — 400 for
+  // a challenge, 401 for a login — so the code is the only reliable tell. A
+  // 429 is still honoured for a proxy in front of it.
+  if (error.status === 429 || error.code === "too_many_attempts") return "busy";
   if (error.status === 403 && error.code === "invalid_origin") return "blocked_origin";
   // Every error the sidecar itself sends carries a JSON `error` code, so a
   // bare `request_failed` on a gateway status is the tell that the body came

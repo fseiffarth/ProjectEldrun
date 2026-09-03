@@ -62,4 +62,27 @@ describe("Mobile project tab list — scheduled prompts", () => {
     render(<Project id="p1" back={() => {}} terminal={vi.fn()} />);
     expect(await screen.findByText("◷ 2 of 3 scheduled · next 09-03 09:00")).toBeTruthy();
   });
+
+  it("stops polling the sheet while the app is hidden and catches up on return", async () => {
+    // Only the interval is faked, so the async queries above it stay real.
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    try {
+      render(<Project id="p1" back={() => {}} terminal={vi.fn()} />);
+      fireEvent.click(await screen.findByRole("button", { name: "Scheduled prompts for Claude" }));
+      await screen.findByRole("dialog", { name: "Scheduled prompts for Claude" });
+      const scheduleCalls = () => fetchMock.mock.calls.filter(([input]) => String(input).endsWith("/schedules")).length;
+      await waitFor(() => expect(scheduleCalls()).toBe(1));
+
+      Object.defineProperty(document, "visibilityState", { value: "hidden", configurable: true });
+      vi.advanceTimersByTime(15_000);
+      expect(scheduleCalls()).toBe(1);
+
+      Object.defineProperty(document, "visibilityState", { value: "visible", configurable: true });
+      document.dispatchEvent(new Event("visibilitychange"));
+      await waitFor(() => expect(scheduleCalls()).toBe(2));
+    } finally {
+      Reflect.deleteProperty(document, "visibilityState");
+      vi.useRealTimers();
+    }
+  });
 });

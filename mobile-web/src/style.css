@@ -89,7 +89,7 @@ button.mobile-alert-row { cursor:pointer; }
 .mobile-alert-copy { display:grid; min-width:0; gap:3px; }
 .mobile-alert-copy strong,.mobile-alert-copy small { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; unicode-bidi:plaintext; }
 .mobile-alert-row time { color:#b7bac8; font-size:.78rem; white-space:nowrap; }
-.mobile-alerts-empty { margin:0; padding:16px; border:1px solid #383c4d; border-radius:11px; color:#9498aa; text-align:center; }
+.mobile-alerts-empty,.projects-empty { margin:0; padding:16px; border:1px solid #383c4d; border-radius:11px; color:#9498aa; text-align:center; }
 .todo-create { display:grid; grid-template-columns:1fr 120px auto; gap:8px; margin:14px 0; }
 /* Adding a column is a rare, structural act, and it now sits at the foot of the
    column list where a new column would land — drawn as a ghost so it reads as

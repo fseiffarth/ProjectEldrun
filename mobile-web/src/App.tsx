@@ -257,7 +257,12 @@ export function App() {
       for (const event of ACTIVITY_EVENTS) document.removeEventListener(event, noteActivity, options);
       document.removeEventListener("visibilitychange", onVisibility);
     };
-  }, [reset]);
+    // `auth` is a dependency so that an unlock counts as activity. The default
+    // unlock is the fingerprint sheet raised as the screen opens — OS UI that
+    // never touches this document — so after it `lastActive` still dated from
+    // before the lock, no timer was armed, and the next glance away and back
+    // (`onVisibility`) locked the app again seconds after it was unlocked.
+  }, [reset, auth]);
 
   const openTerminal = (project: string, next: TabRow) => setTerminal({ project, tab: next });
   // A card named by an alert opens on the To-do tab; switching tabs by hand

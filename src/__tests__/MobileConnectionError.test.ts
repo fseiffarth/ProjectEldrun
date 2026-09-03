@@ -54,6 +54,11 @@ describe("classifyUnavailable", () => {
   it("names a timeout and a rate limit", () => {
     expect(classifyUnavailable(new ApiError(0, "timeout"))).toBe("timeout");
     expect(classifyUnavailable(new ApiError(429, "rate_limited"))).toBe("busy");
+    // The sidecar's own limiter never sends 429: `too_many_attempts` rides the
+    // route's usual failure status — 400 on a challenge, 401 on a login — and
+    // both used to read as "Your desktop reported an error".
+    expect(classifyUnavailable(new ApiError(400, "too_many_attempts"))).toBe("busy");
+    expect(classifyUnavailable(new ApiError(401, "too_many_attempts"))).toBe("busy");
   });
 
   it("falls back to a server error for anything unplaceable", () => {

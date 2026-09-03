@@ -62,6 +62,10 @@ export function Home({ open, todo, mail }: { open: (id: string) => void; todo: (
   const [view, setView] = useState<"active" | "search">("active");
   const [query, setQuery] = useState("");
   const [rows, setRows] = useState<ProjectRow[]>([]);
+  /** Whether any list has come back yet. Until it has, an empty `rows` is
+   * "still loading", not "nothing here" — and a first open with no active
+   * project drew nothing at all under the heading, which read as broken. */
+  const [loaded, setLoaded] = useState(false);
   /** Null while the list is loading fine; otherwise why it is not. */
   const [offline, setOffline] = useState<UnavailableReason | null>(null);
   const [alerts, setAlerts] = useState<MobileAlerts | null>(null);
@@ -72,7 +76,7 @@ export function Home({ open, todo, mail }: { open: (id: string) => void; todo: (
     const timer = window.setTimeout(() => {
       const suffix = view === "search" ? `?view=search&q=${encodeURIComponent(query)}` : "?view=active";
       void api<{ projects: ProjectRow[] }>(`/api/v1/projects${suffix}`, { signal: controller.signal })
-        .then((body) => { setRows(body.projects); setOffline(null); })
+        .then((body) => { setRows(body.projects); setOffline(null); setLoaded(true); })
         .catch((error: unknown) => { if (!controller.signal.aborted) setOffline(classifyUnavailable(error)); });
     }, view === "search" ? 180 : 0);
     return () => {
@@ -116,6 +120,10 @@ export function Home({ open, todo, mail }: { open: (id: string) => void; todo: (
       <span>{describeUnavailable(offline).hint}</span>
       <span>{rows.length ? "Showing the last list this session loaded." : "Project data is never loaded from cache."}</span>
     </p>}
+    {!loaded && !offline && <p className="projects-empty" role="status">Loading projects…</p>}
+    {loaded && rows.length === 0 && <p className="projects-empty">{view === "search"
+      ? query.trim() ? "No project by that name has Eldrun Mobile access." : "Type a project's name to find it."
+      : "No project is active right now. Search finds any project with Eldrun Mobile access."}</p>}
     <section className="cards">{rows.map((project) => <button className="card" key={project.id} onClick={() => open(project.id)}><span><strong>{project.label}</strong><small>{project.status}</small></span><span className="count">{project.live_sessions}</span></button>)}</section>
     {alerts && <AlertRows alerts={alerts} todo={todo} mail={mail} />}
   </main>;

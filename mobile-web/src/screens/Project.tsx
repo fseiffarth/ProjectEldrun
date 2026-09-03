@@ -37,7 +37,7 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
   const load = useCallback(() => {
     if (inFlight.current) return Promise.resolve();
     inFlight.current = true;
-    return api<ProjectDetail>(`/api/v1/projects/${id}`)
+    return api<ProjectDetail>(`/api/v1/projects/${encodeURIComponent(id)}`)
       .then((next) => { setDetail(next); setError(""); })
       // Keep the last good view rather than blanking the tab list: on a poll
       // this fast, one dropped packet used to wipe the screen and flash the
@@ -67,7 +67,7 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
     const idempotencyKey = pendingKeys.current.get(action) ?? crypto.randomUUID();
     pendingKeys.current.set(action, idempotencyKey);
     try {
-      const body = await api<{ tab: TabRow }>(`/api/v1/projects/${id}/tabs`, { method: "POST", body: JSON.stringify({ project_id: id, kind, agent_id: agent?.id, mode, idempotency_key: idempotencyKey }) });
+      const body = await api<{ tab: TabRow }>(`/api/v1/projects/${encodeURIComponent(id)}/tabs`, { method: "POST", body: JSON.stringify({ project_id: id, kind, agent_id: agent?.id, mode, idempotency_key: idempotencyKey }) });
       pendingKeys.current.delete(action);
       terminal(body.tab);
     } catch (reason) { setError(String(reason)); void load(); } finally { setCreating(false); }
@@ -75,13 +75,16 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
   const activate = async () => {
     setActivating(true); setError("");
     try {
-      await api(`/api/v1/projects/${id}/activate`, { method: "POST" });
+      await api(`/api/v1/projects/${encodeURIComponent(id)}/activate`, { method: "POST" });
       void load();
     } catch (reason) { setError(String(reason)); void load(); } finally { setActivating(false); }
   };
   return <main className="screen">
     <header><button className="back" onClick={back}>‹</button><h1>{detail?.project.label ?? "Project"}</h1></header>
-    {!detail?.desktop_available && <p className="notice">Desktop unavailable — existing sessions can still be opened, but activating a project and creating tabs require Eldrun.</p>}
+    {/* Only once the host has answered: `!detail?.desktop_available` was also
+        true while the first load was in flight, so every project opened on a
+        "Desktop unavailable" notice that vanished a moment later. */}
+    {detail && !detail.desktop_available && <p className="notice">Desktop unavailable — existing sessions can still be opened, but activating a project and creating tabs require Eldrun.</p>}
     {error && <p className="error">{error}</p>}
     <section className="cards">{detail?.tabs.map((tab) => <div className="tab-card" key={tab.id}>
       <button className="card" disabled={!tab.available} onClick={() => terminal(tab)}><span><strong>{tab.label}</strong><small>{tab.kind}{tab.viewer_busy ? " · open elsewhere" : tab.available ? " · live" : " · gone"}</small></span><span className="card-trailing">{tab.agent_status && <small className={`agent-status ${tab.agent_status}`}>{tab.agent_status}</small>}<span>›</span></span></button>
