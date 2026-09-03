@@ -257,11 +257,10 @@ async fn status(State(state): State<HostState>, headers: HeaderMap) -> impl Into
     if let Err(error) = authenticate(&headers, &state) {
         return error;
     }
-    let desktop_available = state
-        .config
-        .control_dir
-        .join("desktop-control.sock")
-        .exists();
+    // A live probe, not a file check: the socket file outlives a desktop exit
+    // (and every crash), and on Windows the nominal path is never a file.
+    let desktop_available =
+        admin::desktop_reachable(&state.config.control_dir.join("desktop-control.sock")).await;
     (
         StatusCode::OK,
         Json(
@@ -338,27 +337,27 @@ async fn project(
         })
         .collect::<Vec<_>>();
     let desktop_socket = state.config.control_dir.join("desktop-control.sock");
-    let desktop_available = desktop_socket.exists();
-    let (agents, statuses, schedules) = if desktop_available {
-        let request_id = Base64UrlUnpadded::encode_string(&random_16());
-        match admin::desktop_call(
-            &desktop_socket,
-            &DesktopRequest::Catalog {
-                request_id,
-                project_id: Some(project.raw_id.clone()),
-            },
-        )
-        .await
-        {
-            Ok(DesktopResponse::Catalog {
-                agents,
-                statuses,
-                schedules,
-            }) => (agents, statuses, schedules),
-            _ => (vec![], vec![], vec![]),
-        }
-    } else {
-        (vec![], vec![], vec![])
+    // `desktop_available` is whether the desktop *answered*, not whether its
+    // socket file exists: that file outlives an exit (and every crash), so the
+    // phone was told the desktop was there for as long as it stayed closed —
+    // and on Windows the nominal path is never a file, so it was never told.
+    // A closed desktop refuses the connect at once, on both.
+    let request_id = Base64UrlUnpadded::encode_string(&random_16());
+    let (desktop_available, agents, statuses, schedules) = match admin::desktop_call(
+        &desktop_socket,
+        &DesktopRequest::Catalog {
+            request_id,
+            project_id: Some(project.raw_id.clone()),
+        },
+    )
+    .await
+    {
+        Ok(DesktopResponse::Catalog {
+            agents,
+            statuses,
+            schedules,
+        }) => (true, agents, statuses, schedules),
+        _ => (false, vec![], vec![], vec![]),
     };
     let statuses = statuses
         .into_iter()
@@ -1410,9 +1409,9 @@ fn mark_tab_seen(socket: &std::path::Path, project_id: Option<String>, tmux_sess
     };
     let socket = socket.to_path_buf();
     tokio::spawn(async move {
-        if !socket.exists() {
-            return;
-        }
+        // No `exists()` pre-check: a closed desktop refuses the connect at
+        // once, and on Windows the nominal socket path is never a file, so the
+        // check silently dropped every report there.
         let request_id = Base64UrlUnpadded::encode_string(&random_16());
         let _ = admin::desktop_call(
             &socket,
@@ -2774,5 +2773,38 @@ mod tests {
         let (status, ..) = host.send(request).await;
         assert_eq!(status, StatusCode::FORBIDDEN);
         assert!(!host.root.join(inbox::INBOX_DIR).exists(), "a refused upload wrote to disk");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn desktop_availability_is_what_answers_not_what_file_was_left_behind() {
+        let host = Fixture::with_project();
+        let cookie = host.pair_device(&signing_key(53)).await.0;
+        let socket = host.state.config.control_dir.join("desktop-control.sock");
+
+        // The file a desktop leaves when it exits — or crashes. `exists()` read
+        // it as a desktop for as long as the desktop stayed closed.
+        std::fs::write(&socket, b"").expect("stale socket file");
+        let (status, _, body) = host.send(get_as("/api/v1/status", &cookie)).await;
+        assert_eq!(status, StatusCode::OK, "answered: {body}");
+        assert_eq!(json(&body)["desktop_available"], false, "{body}");
+        let (_, _, body) = host
+            .send(get_as("/api/v1/projects?view=search&q=aurora", &cookie))
+            .await;
+        let opaque = json(&body)["projects"][0]["id"].as_str().unwrap().to_string();
+        let (status, _, body) = host
+            .send(get_as(&format!("/api/v1/projects/{opaque}"), &cookie))
+            .await;
+        assert_eq!(status, StatusCode::OK, "answered: {body}");
+        assert_eq!(json(&body)["desktop_available"], false, "{body}");
+        assert!(!body.contains(RAW_PROJECT));
+
+        // Something listening there is a desktop.
+        std::fs::remove_file(&socket).expect("remove stale file");
+        let listener = tokio::net::UnixListener::bind(&socket).expect("bind");
+        let (status, _, body) = host.send(get_as("/api/v1/status", &cookie)).await;
+        assert_eq!(status, StatusCode::OK, "answered: {body}");
+        assert_eq!(json(&body)["desktop_available"], true, "{body}");
+        drop(listener);
     }
 }

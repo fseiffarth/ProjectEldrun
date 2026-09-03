@@ -387,6 +387,59 @@ pub async fn desktop_call(_: &Path, _: &DesktopRequest) -> Result<DesktopRespons
     Err("desktop_unavailable".into())
 }
 
+/// Whether a desktop is *answering* on its control socket, as opposed to
+/// having left the socket file behind.
+///
+/// `socket.exists()` was the check, and it was wrong both ways: on Unix the
+/// file outlives a desktop exit — and every crash — so the phone was told the
+/// desktop was there for as long as it stayed closed; on Windows the nominal
+/// path is never a file at all, so it was never told. A connect to a Unix
+/// socket nobody listens on fails with `ECONNREFUSED` at once, and the
+/// desktop's accept loop reads an EOF from the probe and moves on.
+#[cfg(unix)]
+pub async fn desktop_reachable(socket: &Path) -> bool {
+    matches!(
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            tokio::net::UnixStream::connect(socket),
+        )
+        .await,
+        Ok(Ok(_))
+    )
+}
+
+#[cfg(windows)]
+pub async fn desktop_reachable(socket: &Path) -> bool {
+    pipe::connect(socket).await.is_ok()
+}
+
+#[cfg(not(any(unix, windows)))]
+pub async fn desktop_reachable(_: &Path) -> bool {
+    false
+}
+
 pub fn io_other(message: String) -> io::Error {
     io::Error::other(message)
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::desktop_reachable;
+
+    #[tokio::test]
+    async fn a_desktop_is_reachable_only_while_something_listens_on_its_socket() {
+        let dir = tempfile::tempdir().expect("control dir");
+        let socket = dir.path().join("desktop-control.sock");
+        assert!(!desktop_reachable(&socket).await, "no socket at all");
+        // The file a desktop leaves behind when it exits — or crashes.
+        std::fs::write(&socket, b"").expect("stale socket file");
+        assert!(
+            !desktop_reachable(&socket).await,
+            "a stale socket file is not a desktop"
+        );
+        std::fs::remove_file(&socket).expect("remove stale file");
+        let listener = tokio::net::UnixListener::bind(&socket).expect("bind");
+        assert!(desktop_reachable(&socket).await);
+        drop(listener);
+    }
 }

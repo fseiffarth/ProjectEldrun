@@ -1074,7 +1074,16 @@ pub fn start_desktop_bridge(app: AppHandle, state: MobileDesktopState) {
             return;
         };
         let _ = std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600));
-        while let Ok((stream, _)) = listener.accept().await {
+        loop {
+            // One transient accept failure (EMFILE, ECONNABORTED) must not end
+            // the bridge for the rest of the session — it did, and from then
+            // on every phone request that needs the desktop read
+            // `desktop_unavailable` with the window wide open. The same net
+            // `admin::serve` has.
+            let Ok((stream, _)) = listener.accept().await else {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                continue;
+            };
             if !trusted_peer(&stream) {
                 continue;
             }
