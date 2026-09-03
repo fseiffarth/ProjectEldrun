@@ -108,6 +108,16 @@ describe("Eldrun Mobile permission modes", () => {
       .toEqual(["working", "plan", "read only", "auto", "full access"]);
   });
 
+  it("never hands a labelled tab another family's list for a mode its own does not know", () => {
+    // Claude Code drawing "auto mode": bare "auto" is claimed by Codex and Qwen,
+    // and the sheet used to walk the Claude session through Codex's choices.
+    // The label names the family; a mode it does not list earns no list.
+    expect(modeChoices("auto", "Claude")).toEqual([]);
+    expect(modeChoices("read only", "Qwen")).toEqual([]);
+    // Unlabelled, the first claimant still wins, as before.
+    expect(modeChoices("auto")[0].value).toBe("working");
+  });
+
   it("reads a frame without mode text as a silent-mode family's default", () => {
     // Claude Code prints nothing while in default mode, so the label alone
     // earns the list — but only for a family that has a silent mode.

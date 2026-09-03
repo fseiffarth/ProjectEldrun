@@ -1566,7 +1566,7 @@ async fn terminal(
     // Deliberately no `session_busy` pre-check: the bridge now displaces a
     // stale viewer instead, so a phone that was backgrounded before its
     // `detached` frame flushed does not lock the user out of their own agent
-    // until the 60-second idle reaper fires. A genuinely live viewer that
+    // until the idle reaper (`pty_bridge::IDLE_TIMEOUT`) fires. A genuinely live viewer that
     // refuses to yield still produces `session_busy`, from the bridge.
     let tmux = tab.tmux_name.clone();
     let registry = state.terminal_registry.clone();

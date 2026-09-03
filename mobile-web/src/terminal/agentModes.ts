@@ -119,7 +119,15 @@ export function modeChoices(mode?: string, agentLabel?: string): ModeChoice[] {
   const claimants = FAMILIES.filter((family) =>
     family.choices.some((choice) => claims(choice, normalized)));
   if (claimants.length === 0) return [];
-  return (labelled && claimants.includes(labelled) ? labelled : claimants[0]).choices;
+  if (labelled) {
+    // The label names the session's family. A mode that family does not list
+    // (a Claude Code tab showing a mode newer than this table) is *that*
+    // family's unknown mode, not a reason to hand the tab another family's
+    // list — the sheet would have walked a Claude session through Codex's
+    // choices. No list: the chip keeps cycling, which is the honest fallback.
+    return claimants.includes(labelled) ? labelled.choices : [];
+  }
+  return claimants[0].choices;
 }
 
 /** Which listed choice the session is in right now, by value or alias.

@@ -12,7 +12,7 @@ import {
   type DesktopImage,
   type TabRow,
 } from "../api";
-import { TERMINAL_PROTOCOL } from "../terminal/protocol";
+import { TERMINAL_PROTOCOL, TERMINAL_SIZE } from "../terminal/protocol";
 import { readableRange, readableScreen, readableText, TRUNCATION_NOTICE, type ReadableLine } from "../terminal/readableScreen";
 import {
   absorbHistory,
@@ -383,12 +383,24 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     // showing wrong lines.
     const history = emptyHistory();
     type TrimEvent = (listener: (amount: number) => void) => { dispose(): void };
-    const trimEvent = (term as unknown as {
+    const trimEventOf = () => (term as unknown as {
       _core?: { _bufferService?: { buffers?: { normal?: { lines?: { onTrim?: TrimEvent } } } } };
     })._core?._bufferService?.buffers?.normal?.lines?.onTrim;
-    const trimWatch = typeof trimEvent === "function"
-      ? trimEvent((amount) => shiftHistory(history, amount))
-      : undefined;
+    let trimWatch: { dispose(): void } | undefined;
+    // `term.reset()` — the replay boundary below — builds a *new* normal
+    // buffer, and a listener on the old one's trim emitter then never fires
+    // again. Left as it was, the first reconnect silently detached the log from
+    // trims: once the 10k scrollback filled, `history.end` stopped following the
+    // buffer and the absorbed rows drifted onto the wrong lines. Re-armed after
+    // every reset instead.
+    const watchTrim = () => {
+      trimWatch?.dispose();
+      const trimEvent = trimEventOf();
+      trimWatch = typeof trimEvent === "function"
+        ? trimEvent((amount) => shiftHistory(history, amount))
+        : undefined;
+    };
+    watchTrim();
     const resetHistory = () => {
       history.chunks = [];
       history.open = [];
@@ -405,11 +417,18 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
       const buffer = term.buffer?.active;
       if (!buffer) return;
       const stream = readableHost.current;
-      // The reading view is unmounted in Terminal view, so re-reading the whole
-      // screen there was pure waste on a phone battery.
-      if (!stream) return;
+      // The reading view is unmounted in Terminal view. A shell tab has no
+      // other reader of these lines, so re-reading the screen there is pure
+      // waste on a phone battery — but an agent tab's composer chips still do:
+      // the mode walk confirms every Shift+Tab against the redrawn status line
+      // and the model sheet lists the picker, both from `lines`. Left stale in
+      // Terminal view, a walk pressed its full lap and reported a failure on a
+      // session that had switched on the second press. The lazy history keeps
+      // this to the live tail, so the rebuild is cheap; only the scroll follow
+      // needs the stream.
+      if (!stream && tab.kind !== "agent") return;
       lastReadable = Date.now();
-      const followOutput = stream.scrollHeight - stream.scrollTop - stream.clientHeight < 120;
+      const followOutput = stream != null && stream.scrollHeight - stream.scrollTop - stream.clientHeight < 120;
       // The alternate screen has no scrollback, so the reading view would show
       // only the visible frame, rebuild it on every redraw, and lose the lot
       // when the program exits. Say so instead of showing a collapsing view —
@@ -438,7 +457,7 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
         setLines(screen.lines);
         setClipped(screen.clipped);
       }
-      if (followOutput) {
+      if (stream && followOutput) {
         cancelAnimationFrame(readableScrollFrame);
         readableScrollFrame = requestAnimationFrame(() => {
           stream.scrollTo({ top: stream.scrollHeight });
@@ -500,6 +519,13 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
         }
       } else {
         fit.fit();
+        // Without a window frame the fitted size is what goes to the desktop,
+        // and a size outside the protocol's bounds is answered with a close
+        // that never retries. A landscape phone with its keyboard up fits fewer
+        // rows than the floor; clamp to what the desktop accepts.
+        const cols = Math.min(TERMINAL_SIZE.maxCols, Math.max(TERMINAL_SIZE.minCols, term.cols));
+        const rows = Math.min(TERMINAL_SIZE.maxRows, Math.max(TERMINAL_SIZE.minRows, term.rows));
+        if (cols !== term.cols || rows !== term.rows) term.resize(cols, rows);
       }
       // Only a changed row count moves the view: a reader panned up into the
       // screen keeps their place through an unrelated resize.
@@ -521,6 +547,10 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
         lastPong = Date.now();
         setConnected(true);
         setSendFailed(false);
+        // A retryable close (`idle_timeout`) explained itself and then
+        // reconnected; the explanation must not outlive the outage, or it sat
+        // over the composer for the rest of the session.
+        setStoppedReason("");
         next.send(JSON.stringify({ type: "ready" }));
         applySize();
       };
@@ -600,6 +630,7 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
           // The history log goes with it: the replay re-delivers the session,
           // so keeping the absorbed copy would double every line.
           term.reset();
+          watchTrim();
           resetHistory();
           setLines([]);
           return;
@@ -636,10 +667,12 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     anchorNewest();
     let resizeTimer = 0;
     let resizeFrame = 0;
+    // A pending reading-view frame is left alone: the keyboard opening fires a
+    // burst of viewport resizes, and cancelling the frame here dropped the
+    // rebuild of whatever output had just arrived — the next byte, if any,
+    // was the only thing that brought it back.
     const resize = () => {
       cancelAnimationFrame(resizeFrame);
-      cancelAnimationFrame(readableFrame);
-      cancelAnimationFrame(readableScrollFrame);
       resizeFrame = requestAnimationFrame(() => {
         clearTimeout(resizeTimer);
         resizeTimer = window.setTimeout(applySize, 100);
@@ -1176,7 +1209,15 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
         {status.context && <span className="fact-context">{status.context} context</span>}
       </div>}
       <div className="prompt-composer">
-        <textarea ref={composerInput} value={draft} disabled={!connected} rows={1} aria-label={tab.kind === "agent" ? "Message agent" : "Shell command"} placeholder={connected ? (tab.kind === "agent" ? "Message the agent…" : "Type a command…") : "Reconnecting…"} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); submitDraft(); } }} />
+        <textarea ref={composerInput} value={draft} disabled={!connected} rows={1} aria-label={tab.kind === "agent" ? "Message agent" : "Shell command"} placeholder={connected ? (tab.kind === "agent" ? "Message the agent…" : "Type a command…") : "Reconnecting…"} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => {
+          if (event.key !== "Enter" || event.shiftKey) return;
+          // Enter confirms a candidate inside an IME composition (CJK keyboards,
+          // and 229 is what Android keyboards report mid-composition); that
+          // one belongs to the keyboard, not to the send.
+          if (event.nativeEvent.isComposing || event.keyCode === 229) return;
+          event.preventDefault();
+          submitDraft();
+        }} />
         <div className="composer-bar">
           {tab.kind === "agent" && <>
             <input ref={fileInput} type="file" multiple hidden aria-hidden="true" tabIndex={-1} data-testid="inbox-file-input" onChange={(event) => { attachFromPhone(event.target.files); event.target.value = ""; }} />

@@ -101,6 +101,33 @@ describe("Eldrun Mobile terminal touch scrolling", () => {
     expect(scrollLines).toHaveBeenCalledWith(4);
   });
 
+  it("keeps the same drag's touch events away from xterm's own touch scrolling", () => {
+    // A phone fires Touch Events alongside Pointer Events. xterm listens for
+    // them on its element inside the host and scrolls its viewport by the raw
+    // delta, so the pointer path alone scrolled every drag twice.
+    vi.stubGlobal("PointerEvent", class PointerEvent {});
+    const host = document.createElement("div");
+    const xtermElement = document.createElement("div");
+    host.appendChild(xtermElement);
+    const reachedXterm = vi.fn();
+    xtermElement.addEventListener("touchstart", reachedXterm);
+    xtermElement.addEventListener("touchmove", reachedXterm);
+    const remove = installTerminalTouchScroll(host, { scrollLines: vi.fn() });
+
+    const start = new Event("touchstart", { bubbles: true, cancelable: true });
+    xtermElement.dispatchEvent(start);
+    const move = new Event("touchmove", { bubbles: true, cancelable: true });
+    xtermElement.dispatchEvent(move);
+    expect(reachedXterm).not.toHaveBeenCalled();
+    // Only the propagation is stopped: what the browser does with the gesture
+    // (the host's `touch-action`) is untouched.
+    expect(move.defaultPrevented).toBe(false);
+
+    remove();
+    xtermElement.dispatchEvent(new Event("touchmove", { bubbles: true }));
+    expect(reachedXterm).toHaveBeenCalledTimes(1);
+  });
+
   it("leaves mouse pointers alone", () => {
     vi.stubGlobal("PointerEvent", class PointerEvent {});
     const host = document.createElement("div");

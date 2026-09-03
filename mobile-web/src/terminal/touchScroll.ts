@@ -131,15 +131,28 @@ export function installTerminalTouchScroll(host: HTMLElement, terminal: Terminal
 
   const options: AddEventListenerOptions = { capture: true, passive: false };
   if ("PointerEvent" in window) {
+    // A phone fires Touch Events alongside Pointer Events, and stopping the
+    // pointer stream does nothing to the touch one. xterm listens for
+    // `touchstart`/`touchmove` on its own element and scrolls its viewport by
+    // the raw finger delta — so a drag that this handler already turned into
+    // `scrollLines` was scrolled a second time by xterm, at a different rate.
+    // Only the propagation is stopped: `touch-action` on the host decides what
+    // the browser itself does with the gesture, and a sideways pan stays its.
+    const swallowTouch = (event: TouchEvent) => event.stopPropagation();
+    const touchOptions: AddEventListenerOptions = { capture: true, passive: true };
     host.addEventListener("pointerdown", pointerStart, options);
     host.addEventListener("pointermove", pointerMove, options);
     host.addEventListener("pointerup", pointerEnd, options);
     host.addEventListener("pointercancel", pointerEnd, options);
+    host.addEventListener("touchstart", swallowTouch, touchOptions);
+    host.addEventListener("touchmove", swallowTouch, touchOptions);
     return () => {
       host.removeEventListener("pointerdown", pointerStart, true);
       host.removeEventListener("pointermove", pointerMove, true);
       host.removeEventListener("pointerup", pointerEnd, true);
       host.removeEventListener("pointercancel", pointerEnd, true);
+      host.removeEventListener("touchstart", swallowTouch, true);
+      host.removeEventListener("touchmove", swallowTouch, true);
     };
   }
   host.addEventListener("touchstart", touchStart, options);
