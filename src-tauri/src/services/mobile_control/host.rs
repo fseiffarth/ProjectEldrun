@@ -16,7 +16,7 @@ use axum::{
     Json, Router,
 };
 use base64ct::{Base64UrlUnpadded, Encoding};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::services::desktop_images;
@@ -25,7 +25,7 @@ use super::{
     admin,
     auth::AuthStore,
     config::{verify_tailscale_serve, HostConfig},
-    discovery::{Catalog, CatalogCache, TabSchedules},
+    discovery::{Catalog, CatalogCache, PublicTab, TabSchedules},
     inbox,
     limits,
     protocol::{
@@ -333,6 +333,91 @@ async fn projects(
         )
     });
     (StatusCode::OK, Json(json!({ "projects": rows })))
+}
+
+/// One agent tab of any project, the way the phone's cross-project activity
+/// list needs it: the ordinary tab row, plus the project it lives in. The list
+/// is flat by design — a label on its own would not say where a session is —
+/// and both project fields are the same opaque id and display label the project
+/// list already publishes.
+#[derive(Serialize)]
+struct ActivityRow {
+    #[serde(flatten)]
+    tab: PublicTab,
+    project_id: String,
+    project_label: String,
+}
+
+/// Where a status sorts in the activity list. A session waiting on a decision is
+/// blocked on the reader and comes first; a finished one is the least urgent of
+/// the three. Anything else never reaches this list.
+fn activity_rank(status: &str) -> u8 {
+    match status {
+        "question" => 0,
+        "working" => 1,
+        _ => 2,
+    }
+}
+
+/// `GET /api/v1/activity` — every agent tab the desktop reports as working,
+/// waiting on a decision, or done, across every project this phone may reach,
+/// in one flat list. One desktop round trip serves the whole list: a per-project
+/// `Catalog` call would be one round trip per project on every poll.
+async fn activity(State(state): State<HostState>, headers: HeaderMap) -> impl IntoResponse {
+    if let Err(error) = authenticate(&headers, &state) {
+        return error;
+    }
+    let Ok(catalog_snapshot) = catalog(&state) else {
+        return api_error(StatusCode::SERVICE_UNAVAILABLE, "catalog_unavailable");
+    };
+    let desktop_socket = state.config.control_dir.join("desktop-control.sock");
+    let request_id = Base64UrlUnpadded::encode_string(&random_16());
+    let (desktop_available, statuses) = match admin::desktop_call(
+        &desktop_socket,
+        &DesktopRequest::Activity { request_id },
+    )
+    .await
+    {
+        Ok(DesktopResponse::Activity { statuses }) => (true, statuses),
+        _ => (false, vec![]),
+    };
+    // Tmux session names are unique across the whole server, so one map covers
+    // every project's tabs.
+    let statuses = statuses
+        .into_iter()
+        .map(|status| (status.tmux_session, status.status))
+        .collect::<HashMap<_, _>>();
+    let mut rows = Vec::new();
+    for project in &catalog_snapshot.projects {
+        for resolved in &project.tabs {
+            if resolved.public.kind != "agent" {
+                continue;
+            }
+            let Some(status) = statuses.get(&resolved.tmux_name) else {
+                continue;
+            };
+            let mut tab = resolved.public.clone();
+            tab.agent_status = Some(status.clone());
+            tab.viewer_busy = state.terminal_registry.is_busy(&resolved.tmux_name);
+            rows.push(ActivityRow {
+                tab,
+                project_id: project.public.id.clone(),
+                project_label: project.public.label.clone(),
+            });
+        }
+    }
+    rows.sort_by(|a, b| {
+        activity_rank(a.tab.agent_status.as_deref().unwrap_or_default())
+            .cmp(&activity_rank(
+                b.tab.agent_status.as_deref().unwrap_or_default(),
+            ))
+            .then(b.tab.last_activity.cmp(&a.tab.last_activity))
+            .then(a.tab.label.to_lowercase().cmp(&b.tab.label.to_lowercase()))
+    });
+    (
+        StatusCode::OK,
+        Json(json!({ "tabs": rows, "desktop_available": desktop_available })),
+    )
 }
 
 async fn project(
@@ -1842,6 +1927,7 @@ fn router(state: HostState) -> Router {
             "/api/v1/mail/folders/{folder_id}/messages/{message_id}/reply",
             post(mail_reply),
         )
+        .route("/api/v1/activity", get(activity))
         .route("/api/v1/projects", get(projects))
         .route("/api/v1/projects/{project_id}", get(project))
         .route(
@@ -2179,6 +2265,7 @@ mod tests {
         "/api/v1/mail",
         "/api/v1/mail/folders/anything",
         "/api/v1/mail/folders/anything/messages/anything",
+        "/api/v1/activity",
         "/api/v1/projects",
         "/api/v1/projects/anything",
         "/api/v1/tabs/anything",
@@ -2269,6 +2356,26 @@ mod tests {
         assert!(!body.contains(RAW_PROJECT));
         assert!(!body.contains(&host.root.to_string_lossy().to_string()));
         assert!(!body.contains("scheduleTargetId"));
+    }
+
+    #[tokio::test]
+    async fn the_activity_list_answers_an_empty_list_when_no_desktop_classifies_tabs() {
+        let host = Fixture::with_project();
+        let cookie = host.pair_device(&signing_key(21)).await.0;
+        let (status, _, body) = host.send(get_as("/api/v1/activity", &cookie)).await;
+        // A closed desktop is not an error here: the phone shows the list empty
+        // and says why, the same way the project overview does.
+        assert_eq!(status, StatusCode::OK, "answered: {body}");
+        assert_eq!(json(&body)["desktop_available"], false);
+        assert_eq!(json(&body)["tabs"].as_array().expect("tabs").len(), 0);
+        assert!(!body.contains(RAW_PROJECT));
+        assert!(!body.contains("eldrun-"));
+    }
+
+    #[test]
+    fn the_activity_list_puts_a_waiting_session_first_and_a_finished_one_last() {
+        assert!(activity_rank("question") < activity_rank("working"));
+        assert!(activity_rank("working") < activity_rank("done"));
     }
 
     #[test]

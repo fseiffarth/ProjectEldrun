@@ -489,6 +489,14 @@ pub enum DesktopRequest {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         project_id: Option<String>,
     },
+    /// Every mobile-eligible project's agent-tab statuses in one answer, for
+    /// the phone's cross-project activity list. A `Catalog` per project would be
+    /// one desktop round trip per project on every poll, and the phone's flat
+    /// list has no use for the rest of a catalog: no agent menu, and no
+    /// schedule summaries, which cost a backend call per agent tab.
+    Activity {
+        request_id: String,
+    },
     Activate {
         request_id: String,
         project_id: String,
@@ -628,6 +636,7 @@ impl DesktopRequest {
     pub fn request_id(&self) -> &str {
         match self {
             Self::Catalog { request_id, .. }
+            | Self::Activity { request_id }
             | Self::Activate { request_id, .. }
             | Self::Create { request_id, .. }
             | Self::Todo { request_id }
@@ -804,6 +813,14 @@ pub enum DesktopResponse {
         /// field still answers a catalog request.
         #[serde(default)]
         schedules: Vec<AgentTabSchedules>,
+    },
+    /// Answer to [`DesktopRequest::Activity`]: the agent tabs of every eligible
+    /// project that are working, waiting on a decision, or done. Keyed by tmux
+    /// name like `Catalog`'s `statuses`, and mapped onto opaque tab ids by the
+    /// sidecar before anything reaches the phone.
+    Activity {
+        #[serde(default)]
+        statuses: Vec<AgentTabStatus>,
     },
     Activated,
     Created {

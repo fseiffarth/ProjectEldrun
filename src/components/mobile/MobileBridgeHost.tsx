@@ -164,6 +164,7 @@ type PromptMutation =
   | { type: "send"; prompt_id: string; tmux_session: string };
 type DesktopRequest =
 | { type: "catalog"; request_id: string; project_id?: string }
+  | { type: "activity"; request_id: string }
   | { type: "activate"; request_id: string; project_id: string }
   | { type: "create"; request_id: string; request: CreateRequest }
   | { type: "todo"; request_id: string }
@@ -187,6 +188,7 @@ type DesktopRequest =
   | { type: "attach_desktop_image"; request_id: string; project_id: string; image_id: string };
 type DesktopResponse =
 | { status: "catalog"; agents: CatalogAgent[]; statuses: AgentTabStatus[]; schedules: AgentTabSchedules[] }
+  | { status: "activity"; statuses: AgentTabStatus[] }
   | { status: "activated" }
   | { status: "created"; tmux_session: string }
   | { status: "todo"; board: TodoBoard }
@@ -273,11 +275,14 @@ function mobileProject(projectId: string | undefined) {
  * tmux names back to opaque phone-visible tab ids. */
 function agentStatuses(projectId?: string): AgentTabStatus[] {
   const project = mobileProject(projectId);
-  if (!project) return [];
+  return project ? projectAgentStatuses(project.id) : [];
+}
+
+function projectAgentStatuses(projectId: string): AgentTabStatus[] {
   const activity = useActivityStore.getState();
-  return (useTabsStore.getState().tabsByScope[project.id] ?? []).flatMap((tab) => {
+  return (useTabsStore.getState().tabsByScope[projectId] ?? []).flatMap((tab) => {
     if (tab.kind !== "agent" || !tab.tmuxSession) return [];
-    const ptyId = `${project.id}:${tab.key}`;
+    const ptyId = `${projectId}:${tab.key}`;
     const status: AgentTabStatus["status"] | null = activity.busyByTab[ptyId]
       ? "working"
       : activity.attentionByTab[ptyId] === "decision"
@@ -287,6 +292,17 @@ function agentStatuses(projectId?: string): AgentTabStatus[] {
           : null;
     return status ? [{ tmux_session: tab.tmuxSession, status }] : [];
   });
+}
+
+/** The same facts for *every* project the phone may reach, for its flat
+ * activity list. It walks the project list rather than the tab store's scopes
+ * so that the Mobile switch and the trust tiers gate each one: a scope key is
+ * not a permission, and the store also holds root and box scopes that are no
+ * project at all. */
+function allAgentStatuses(): AgentTabStatus[] {
+  return useProjectsStore.getState().projects.flatMap((entry) =>
+    mobileProject(entry.id) ? projectAgentStatuses(entry.id) : [],
+  );
 }
 
 /** Each agent tab's scheduled-prompt summary, computed here against the desktop
@@ -1210,6 +1226,7 @@ async function handleRequest(
       statuses: agentStatuses(request.project_id),
       schedules: await agentScheduleSummaries(request.project_id),
     };
+    case "activity": return { status: "activity", statuses: allAgentStatuses() };
     case "activate": return activate(request.project_id);
     case "create": return create(request.request, t);
     case "todo": return { status: "todo", board: await todoSnapshot() };
