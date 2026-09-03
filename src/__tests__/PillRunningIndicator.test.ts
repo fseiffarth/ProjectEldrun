@@ -211,6 +211,31 @@ describe("activity store attention state", () => {
     expect(useActivityStore.getState().attentionByScope["proj-a"]).toBe("decision");
   });
 
+  it("flags a Codex prompt still blinking its terminal title as a decision", () => {
+    // Codex does not go silent while it waits: a blocked tab keeps alternating
+    // its terminal title between "[ ! ] Action Required" and "[ . ] Action
+    // Required" on a ~100ms timer, forever. Those frames paint no text, so they
+    // must not count as activity — otherwise the tab never reaches
+    // DECISION_QUIET_MS and sits on "working" for as long as the prompt stands.
+    // Its menu is diff-rendered too: no spaces survive, and the "No" is third.
+    const id = "proj-a:agent-1";
+    sustainOutput(id);
+    notePtyOutput(
+      id,
+      "Would you like to run the following command?\r\n" +
+        "\x1b[38;5;6;49m› 1. Yes, just this once\x1b[0m\r\n" +
+        "\x1b[8;3H2.Yes,and\x1b[8;14Hdon't\x1b[8;20Hask\x1b[8;24Hagain\r\n" +
+        "\x1b[9;3H3.No,and\x1b[9;12Htell\x1b[9;17HCodex\r\n",
+    );
+    for (let frame = 0; frame < 12; frame += 1) {
+      vi.advanceTimersByTime(100);
+      notePtyOutput(id, `\x1b]0;[ ${frame % 2 === 0 ? "!" : "."} ] Action Required\x07`);
+    }
+    useActivityStore.getState().recompute();
+    expect(useActivityStore.getState().attentionByTab[id]).toBe("decision");
+    expect(useActivityStore.getState().attentionByScope["proj-a"]).toBe("decision");
+  });
+
   it("never flags uncommanded output as done (resume/restart replay)", () => {
     // The restored-tab case: on launch or project reopen the agent replays its
     // banner and prior transcript, then goes quiet. Nobody typed anything, so

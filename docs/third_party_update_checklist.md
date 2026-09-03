@@ -141,7 +141,8 @@ aliases.
 **Where** `services/agent_session.rs` (`resolve_codex_session`,
 `register_codex_hook`, `codex_hook_state`), `services/codex_bind.rs`,
 `src/lib/codexHooks.ts`, `commands/ollama.rs` (`non_thinking_args`,
-`write_local_catalog`), `mobile-web/src/terminal/agentModes.ts`.
+`write_local_catalog`), `mobile-web/src/terminal/agentModes.ts`,
+`src/lib/agentPrompt.ts` + `src/stores/activity.ts` (the decision lamp).
 
 **Assumes**
 
@@ -160,6 +161,21 @@ aliases.
   `model.json` (written under Eldrun's own state dir, not `~/.codex`).
 - Preface commands `/new /compact /status`; `/status` is *not* available in
   exec mode, so there is no usage recipe.
+- The decision lamp reads Codex's screen off the PTY, and two habits of its
+  ratatui TUI are load-bearing (verified against 0.153.0):
+  - **A blocked Codex is not a quiet Codex.** It keeps repainting its terminal
+    title on a ~100ms timer — a braille frame while working, and while blocked
+    an `ESC ] 0 ; [ ! ] Action Required BEL` alternating with `[ . ]`. Those
+    frames paint no text, and `notePtyOutput` therefore drops them; if a
+    release starts animating VISIBLE cells behind an approval instead, the tab
+    never goes quiet and the orange bar never lights.
+  - **Approval menus are numbered rows whose labels decide, not their index.**
+    Codex offers two flavours of yes before the no ("Yes, just this once",
+    "Yes, and don't ask again for this command in this session", "No, and tell
+    Codex what to do differently"), and the diff renderer skips unchanged cells
+    so the row arrives as `2.Yes,and…` — spaces gone, glued to the row above.
+    `agentPrompt.ts` matches the first word of each option; renaming the
+    options away from yes/no/allow/cancel wording is what would break it.
 - Mobile: modes `working (silent) | plan | read only | auto | full access`;
   Shift+Tab is sent as CSI-u. Verified against codex-cli 0.151.0.
 
@@ -171,6 +187,7 @@ codex --help; codex exec --help | grep skip-git-repo-check
 head -c 300 "$(ls -t ~/.codex/sessions/*/*/*/rollout-*.jsonl | head -1)"
 grep -n 'hooks' ~/.codex/config.toml
 cargo test --manifest-path src-tauri/Cargo.toml codex
+npx vitest run src/__tests__/agentPrompt.test.ts
 ```
 
 ### 1.3 Gemini CLI

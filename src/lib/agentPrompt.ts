@@ -11,19 +11,56 @@
  */
 
 // A pointer glyph marking a numbered choice, e.g. "❯ 1. Yes" / "▶ 2) No" — the
-// shape Claude Code and Codex use for approval/selection prompts.
-const POINTER_CHOICE = /[❯▶►➤»›]\s*\d+[.)]\s/u;
-
-// A yes/no (or allow/deny) style numbered menu visible on screen, matched
-// independently of the pointer glyph (some renderers drop it while scrolling).
-const AFFIRM = /\b1[.)]\s*(yes|proceed|allow|approve|continue)/i;
-const DENY = /\b2[.)]\s*(no|keep|cancel|reject|deny|don'?t)/i;
+// shape Claude Code and Codex use for approval/selection prompts. The space
+// after the number is optional because Codex's TUI (ratatui) repaints by
+// diffing cells and jumping the cursor over the unchanged ones, so the padding
+// between words never reaches the wire at all.
+const POINTER_CHOICE = /[❯▶►➤»›]\s*\d+[.)]\s*[^\s\d]/u;
 
 // A pointer glyph directly beside a bare yes/no-style word, e.g. "❯ Yes" /
 // "❯ Allow" — the shape a simple binary confirmation takes when it isn't
 // numbered (only multi-choice menus number their options).
 const POINTER_WORD =
   /[❯▶►➤»›]\s*(yes|no|proceed|allow|approve|continue|cancel|reject|deny|don'?t)\b/i;
+
+// One row of a numbered menu: the option's number and the FIRST WORD of its
+// label. Matched independently of the pointer glyph, which a partial redraw can
+// leave out (Codex's composer already draws a "›" in the cell the selection
+// pointer lands in, and an unchanged cell is not re-sent).
+//
+// The leading `(\D|^)` stops the number from being the tail of a longer one
+// while still matching a row glued to the one before it: that same diffing
+// renderer sends a real Codex menu as "› 1. Yes, continue2.No,quit", spaces and
+// all removed.
+const MENU_OPTION = /(\D|^)(\d{1,2})[.)][ \t]*([A-Za-z]+(?:'[A-Za-z]+)?)/g;
+
+// The two ways a menu row can answer a permission question. Classifying the
+// LABEL rather than the option's NUMBER is what makes this work across agents:
+// Claude puts its "No" second, Codex third — it offers two flavours of yes first
+// ("Yes, just this once", then "Yes, and don't ask again for this command in
+// this session"), which is exactly the menu the old number-locked pair missed.
+const AFFIRM_WORD = /^(?:yes|allow|approve|accept|proceed|continue|run|apply|ok)$/i;
+const DENY_WORD =
+  /^(?:no|don'?t|deny|reject|decline|cancel|keep|skip|stop|abort|quit)$/i;
+
+/**
+ * True when the text holds a numbered menu offering both an affirmative and a
+ * negative answer — under any two numbers, in any order.
+ */
+function hasYesNoMenu(plain: string): boolean {
+  MENU_OPTION.lastIndex = 0;
+  let affirm = -1;
+  let deny = -1;
+  let m: RegExpExecArray | null;
+  while ((m = MENU_OPTION.exec(plain)) !== null) {
+    const option = Number(m[2]);
+    const label = m[3];
+    if (affirm < 0 && AFFIRM_WORD.test(label)) affirm = option;
+    if (deny < 0 && DENY_WORD.test(label)) deny = option;
+    if (affirm >= 0 && deny >= 0 && affirm !== deny) return true;
+  }
+  return false;
+}
 
 // Terminal escape sequences, peeled off in this order: OSC (`ESC ] … BEL|ST`),
 // which can carry an arbitrary payload such as a window title; then CSI
@@ -62,8 +99,7 @@ export function stripAnsi(text: string): string {
 export function looksLikeDecisionPromptStripped(plain: string): boolean {
   if (POINTER_CHOICE.test(plain)) return true;
   if (POINTER_WORD.test(plain)) return true;
-  if (AFFIRM.test(plain) && DENY.test(plain)) return true;
-  return false;
+  return hasYesNoMenu(plain);
 }
 
 /**

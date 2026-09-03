@@ -94,6 +94,18 @@ const PTY_MAPS: Record<string, unknown>[] = [
  *  safe to call often. */
 export function notePtyOutput(ptyId: string, data = "") {
   const now = Date.now();
+  const text = data ? stripAnsi(data) : "";
+  // A frame that paints no text — a terminal-title update, a cursor move, a
+  // blanked cell — says nothing about what the agent is doing, and a BLOCKED
+  // Codex tab emits nothing else: its title alternates between
+  // "[ ! ] Action Required" and "[ . ] Action Required" on a ~100ms timer for as
+  // long as an approval sits unanswered (the same timer spins a braille frame
+  // into the title while it works). Counting those as activity is what kept such
+  // a tab stuck on "working": the quiet never reached DECISION_QUIET_MS, so its
+  // tail was never classified and the decision lamp never lit. Claude Code's
+  // prompts do not hit this — it goes properly silent — which is why the bug
+  // looked Codex-only.
+  if (data && !text.trim()) return;
   const prev = lastOutputByPty[ptyId];
   // Start of a fresh burst after quiet (or the very first output): reset the
   // onset. Output within the busy window keeps the existing onset, so a
@@ -107,8 +119,8 @@ export function notePtyOutput(ptyId: string, data = "") {
     tailByPty[ptyId] = "";
   }
   lastOutputByPty[ptyId] = now;
-  if (data) {
-    const tail = (tailByPty[ptyId] ?? "") + stripAnsi(data);
+  if (text) {
+    const tail = (tailByPty[ptyId] ?? "") + text;
     tailByPty[ptyId] = tail.length > TAIL_CAP ? tail.slice(-TAIL_CAP) : tail;
   }
 }
