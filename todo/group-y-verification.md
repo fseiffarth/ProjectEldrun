@@ -169,4 +169,43 @@ missing capability — is the project's dominant risk.
        - [ ] ✅ Works
        - [ ] ❌ Doesn't work
 
+167. **The frozen dev build goes stale between commits.** ✅ DONE 2026-09-03
+     (code-complete, one live build verified; the coalescing and failure paths
+     are unproven). `npm run package:dev` freezes the working tree, so the
+     window the day's work happens in was only ever as fresh as the last time
+     somebody remembered to re-run it — the same class of silent drift the
+     embedded-PWA notice exists for, one level up. The `post-commit` hook now
+     queues `scripts/package-dev-auto.sh --queue` after the stale-PWA check:
+     - **Detached**, so `git commit` returns immediately and closing the
+       terminal does not take the build with it.
+     - **Coalesced** through a pending marker plus a pid'd lock directory: a
+       commit landing mid-build earns exactly one more pass, so a rebase costs
+       one or two builds and the installed binary matches the LAST tree.
+     - **Low priority** (`chrt --idle 0` + `ionice -c 3` + `nice -n 19`) — a
+       3-4 minute release build at full tilt is felt in every keystroke of the
+       window it exists to serve.
+     - **Declines** in CI, from a linked worktree (freezing an agent's tree
+       over the user's binary is the surprise this must not be), and under
+       `git config eldrun.autoDevBuild false` / `ELDRUN_NO_AUTO_DEV_BUILD=1`.
+     - **Skips a no-op**: the signature is HEAD plus the dirty tree, stamped
+       after each successful install.
+     - Builds and installs only. It never launches or stops Eldrun; a running
+       frozen window keeps its old inode, and the completion notification is
+       what says to relaunch.
+     - [ ] 🖐️ Manual test — commit twice in quick succession: expect one
+       "rebuilding the frozen snapshot" line per commit, a single build in
+       `~/.local/share/eldrun/package-dev-auto.log` with a second pass at the
+       end, and one "Eldrun (dev) rebuilt" notification naming the newer sha.
+       - [ ] ✅ Works
+       - [ ] ❌ Doesn't work
+     - [ ] 🖐️ Manual test — `git config eldrun.autoDevBuild false`, commit:
+       expect no line, no build, and `--status` to say why.
+       - [ ] ✅ Works
+       - [ ] ❌ Doesn't work
+     - [ ] 🖐️ Manual test — break the build (a type error), commit: expect the
+       critical notification pointing at the log, and the previously installed
+       binary left untouched.
+       - [ ] ✅ Works
+       - [ ] ❌ Doesn't work
+
 ---

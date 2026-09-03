@@ -22,9 +22,19 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 check="$ROOT/scripts/backend-stale.sh"
-[ -x "$check" ] || exit 0
-
-if ! report="$("$check" --mobile-only 2>/dev/null)"; then
-  [ -n "$report" ] && printf '\n%s\n\n' "$report"
+if [ -x "$check" ]; then
+  # Before the rebuild below is queued, so this reports the drift the commit
+  # was made against rather than the one the queued build is already fixing.
+  if ! report="$("$check" --mobile-only 2>/dev/null)"; then
+    [ -n "$report" ] && printf '\n%s\n\n' "$report"
+  fi
 fi
+
+# Move the frozen "Eldrun (dev)" snapshot to what was just committed (user,
+# 2026-09-03). Returns at once — the build runs detached, nice'd, and coalesces
+# with any other commit's — and never launches anything. Off:
+# `git config eldrun.autoDevBuild false`, or ELDRUN_NO_AUTO_DEV_BUILD=1 for one
+# commit.
+freeze="$ROOT/scripts/package-dev-auto.sh"
+[ -x "$freeze" ] && "$freeze" --queue || true
 exit 0

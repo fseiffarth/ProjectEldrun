@@ -66,6 +66,18 @@ change was not run live.
   real state, so **only one runs at a time** — each launcher refuses with a
   desktop notification while the other is up. Re-run it to move the frozen
   window to a newer snapshot.
+- **Every commit re-freezes it by itself** (user, 2026-09-03): the `post-commit`
+  hook queues `scripts/package-dev-auto.sh`, which builds detached (the commit
+  never waits), nice'd/`SCHED_IDLE` so it does not fight the window it serves,
+  and coalescing — a commit landing mid-build queues one more pass instead of a
+  second build, so a rebase costs one or two and ends on the *last* tree. It
+  installs and notifies; it never launches or stops anything, and a running
+  frozen window keeps its old inode until the user relaunches it. It declines
+  in CI and from a linked worktree (freezing an agent's tree over the user's
+  binary is exactly the surprise to avoid). Off with `git config
+  eldrun.autoDevBuild false`, or `ELDRUN_NO_AUTO_DEV_BUILD=1` for one commit;
+  `scripts/package-dev-auto.sh --status` says what it is doing and
+  `~/.local/share/eldrun/package-dev-auto.log` holds the last build's output.
 
 ## Docs
 
