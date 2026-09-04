@@ -701,32 +701,93 @@
   --file-root-accent: var(--accent);
 }
 
+/* The header BAND: the reorder grip (member roots only) plus the collapse
+   button. The ROW is what sticks to the top of the scroller — the button used
+   to, and a grip left outside it would have slid out from under the row it
+   belongs to. */
+.file-root-headrow {
+  display: flex;
+  align-items: center;
+  background: color-mix(in srgb, var(--file-root-accent) 10%, var(--bg-panel));
+  border-bottom: 1px solid var(--border-color);
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.file-root.is-collapsed .file-root-headrow {
+  border-bottom: none;
+}
+
+.file-root-headrow:hover {
+  background: color-mix(in srgb, var(--file-root-accent) 18%, var(--bg-panel));
+}
+
 .file-root-header {
   display: flex;
   align-items: center;
   gap: 6px;
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   padding: 5px 7px;
-  background: color-mix(in srgb, var(--file-root-accent) 10%, var(--bg-panel));
+  background: transparent;
   color: var(--text-primary);
   border: none;
-  border-bottom: 1px solid var(--border-color);
   font: inherit;
   font-size: 11px;
   font-weight: 600;
   cursor: var(--cur-pointer, pointer);
-  position: sticky;
-  top: 0;
-  z-index: 1;
   white-space: nowrap;
 }
 
-.file-root.is-collapsed .file-root-header {
-  border-bottom: none;
+/* Reorder grip: the ONLY part of a member root that starts a drag, so the
+   header stays a plain collapse toggle. Pointer-driven (see
+   `useMemberReorder`) — `touch-action: none` is what stops the panel scrolling
+   instead of dragging, and `cursor: grab` is the whole affordance. Wears the
+   machine list's grip metrics deliberately; the two gestures are the same one. */
+.file-root-grip {
+  flex-shrink: 0;
+  width: 14px;
+  align-self: stretch;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  margin-left: 3px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1;
+  opacity: 0.5;
+  cursor: var(--cur-grab, grab);
+  touch-action: none;
 }
 
-.file-root-header:hover {
-  background: color-mix(in srgb, var(--file-root-accent) 18%, var(--bg-panel));
+.file-root-grip:hover,
+.file-root-grip:focus-visible {
+  opacity: 1;
+  color: var(--text-primary);
+}
+
+.file-root-grip:active {
+  cursor: var(--cur-grabbing, grabbing);
+}
+
+/* The section being dragged dims in place; the list under it holds still, and
+   only the insertion line moves. Both cues are paint-only (opacity and an
+   outset shadow in the 8px gap between sections), so no layout shifts and the
+   header bands measured at pointerdown stay valid for the whole gesture. */
+.file-root.is-reorder-dragging {
+  opacity: 0.55;
+}
+
+.file-root.is-drop-before {
+  box-shadow: 0 -3px 0 -1px var(--accent);
+}
+
+.file-root.is-drop-after {
+  box-shadow: 0 3px 0 -1px var(--accent);
 }
 
 .file-root-caret {

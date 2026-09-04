@@ -3447,6 +3447,8 @@ export const en = {
   "fileSourceSwitch.remote": "Remote",
   "fileRoot.kindBox": "box",
   "fileRoot.kindProject": "project",
+  "fileRoot.gripAria": "Reorder project",
+  "fileRoot.gripTitle": "Drag to reorder this project in the box — or focus it and use ↑/↓.",
   "projectFilesPane.autoSyncOnTitle": "Auto-syncing the whole project (⟳). Click to stop. Individual files/folders can still be excluded or included from their right-click menu.",
   "projectFilesPane.autoSyncOffTitle": "Auto-sync the whole project bidirectionally (host ⇄ local mirror). Diverged files are left for manual resolution; per-file/folder toggles override this.",
   "projectFilesPane.autoSyncOn": "⟳ Auto-sync: all",

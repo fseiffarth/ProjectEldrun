@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { FileTree } from "./FileTree";
 import { DownloadsSection } from "./DownloadsSection";
@@ -237,6 +237,24 @@ export function useBoxRoots(scope: string): { activeBox: ProjectBox | null; boxR
   return { activeBox, boxRoots };
 }
 
+/** Everything one member section needs to take part in the pointer-driven
+ *  reorder the pane owns: the grip's handlers, the one ref the drag measures
+ *  against (the header band — sections are as tall as the tree inside them, so
+ *  hit-testing whole sections would put a drop target hundreds of pixels away
+ *  from the thing it names), and which side of this root the insertion line is
+ *  on. Absent on the box's own folder root, which always leads the list. */
+export interface RootReorder {
+  headerRef: (el: HTMLDivElement | null) => void;
+  onGripDown: (e: React.PointerEvent<HTMLElement>) => void;
+  onGripMove: (e: React.PointerEvent<HTMLElement>) => void;
+  onGripEnd: (e: React.PointerEvent<HTMLElement>, commit: boolean) => void;
+  /** Keyboard equivalent of the drag, on the focused grip (±1 slot). */
+  onGripNudge: (delta: number) => void;
+  dragging: boolean;
+  dropBefore: boolean;
+  dropAfter: boolean;
+}
+
 /** One collapsible root inside the box multi-root file view. Reuses `FileTree`
  *  as-is for a single directory; per-root navigation persists via the projects
  *  store's `sidePanelFolderByProject` map keyed by the root's id.
@@ -264,6 +282,7 @@ function BoxRootSection({
   searchOpen,
   onSearchOpenChange,
   refreshNonce,
+  reorder,
 }: BoxRoot & {
   sortKey: SortKey;
   descending: boolean;
@@ -272,6 +291,7 @@ function BoxRootSection({
   searchOpen?: boolean;
   onSearchOpenChange?: (open: boolean) => void;
   refreshNonce?: number;
+  reorder?: RootReorder;
 }) {
   const t = useT();
   const [collapsed, setCollapsed] = useState(false);
@@ -302,24 +322,54 @@ function BoxRootSection({
   });
   const toolbarBtnStyle = { fontSize: 10, padding: "1px 6px", height: 20, marginLeft: 2 } as const;
   return (
-    <div className={`file-root file-root--${variant}${collapsed ? " is-collapsed" : ""}`}>
-      <button
-        type="button"
-        className="file-root-header"
-        onClick={() => setCollapsed((c) => !c)}
-        title={dir}
-      >
-        <span className="file-root-caret" aria-hidden>
-          {collapsed ? "▸" : "▾"}
-        </span>
-        <span className="file-root-icon" aria-hidden>
-          {icon}
-        </span>
-        <span className="file-root-name">{label}</span>
-        <span className="file-root-kind">
-          {t(variant === "box" ? "fileRoot.kindBox" : "fileRoot.kindProject")}
-        </span>
-      </button>
+    <div
+      className={`file-root file-root--${variant}${collapsed ? " is-collapsed" : ""}${
+        reorder?.dragging ? " is-reorder-dragging" : ""
+      }${reorder?.dropBefore ? " is-drop-before" : ""}${
+        reorder?.dropAfter ? " is-drop-after" : ""
+      }`}
+    >
+      {/* The header BAND, not the header button: the grip has to sit inside the
+          sticky row (a button inside a button is not markup), so the row is what
+          sticks and the button is an ordinary child of it. */}
+      <div className="file-root-headrow" ref={reorder?.headerRef}>
+        {reorder && (
+          <button
+            type="button"
+            className="file-root-grip"
+            aria-label={t("fileRoot.gripAria")}
+            title={t("fileRoot.gripTitle")}
+            onPointerDown={reorder.onGripDown}
+            onPointerMove={reorder.onGripMove}
+            onPointerUp={(e) => reorder.onGripEnd(e, true)}
+            onPointerCancel={(e) => reorder.onGripEnd(e, false)}
+            onKeyDown={(e) => {
+              if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
+              e.preventDefault();
+              reorder.onGripNudge(e.key === "ArrowUp" ? -1 : 1);
+            }}
+          >
+            ⠿
+          </button>
+        )}
+        <button
+          type="button"
+          className="file-root-header"
+          onClick={() => setCollapsed((c) => !c)}
+          title={dir}
+        >
+          <span className="file-root-caret" aria-hidden>
+            {collapsed ? "▸" : "▾"}
+          </span>
+          <span className="file-root-icon" aria-hidden>
+            {icon}
+          </span>
+          <span className="file-root-name">{label}</span>
+          <span className="file-root-kind">
+            {t(variant === "box" ? "fileRoot.kindBox" : "fileRoot.kindProject")}
+          </span>
+        </button>
+      </div>
       {!collapsed && variant === "member" && (
         <div className="side-panel-toolbar side-panel-toolbar--box-root">
           {(["files", "git"] as const).map((v) => (
@@ -437,6 +487,112 @@ function BoxRootSection({
   );
 }
 
+/**
+ * Reorder the MEMBER roots of the open box by dragging their grips — the box's
+ * member order is the order this panel (and the box's agent-doc link block)
+ * lists them in, so "move this project up" had no gesture at all: the only way
+ * to change it was to retype the whole membership in the box editor.
+ *
+ * On POINTER events, never HTML5 DnD — the same choice `MachinesIndicator`,
+ * `TabBar` and the project pills all made, because a native drag under
+ * WebKitGTK can hang mid-gesture and a drop that misses its target never fires,
+ * stranding the row. The grip takes a pointer capture, so `pointerup` /
+ * `pointercancel` are guaranteed to arrive and end the drag.
+ *
+ * Hit-testing is against the HEADER BANDS, not the sections: a section is as
+ * tall as the file tree inside it, so section midpoints would put the drop
+ * target an entire tree away from the header that names it. Each band is
+ * measured ONCE, at pointerdown — nothing in the drag changes layout (the
+ * feedback is an insertion line and an opacity, not a parting shift), so the
+ * rects stay true for the whole gesture and the cursor can never chase a row it
+ * is itself moving.
+ */
+function useMemberReorder(
+  activeBox: ProjectBox | null,
+  memberOrder: string[],
+): (rootId: string) => RootReorder {
+  // The gesture is held in a REF and mirrored into state: the ref is what the
+  // handlers read (three pointer events arriving in one batch would otherwise
+  // all see the pre-render `null` and the drop would be dropped), the state is
+  // what re-renders the insertion line.
+  const dragRef = useRef<{ id: string; to: number } | null>(null);
+  const [drag, setDrag] = useState<{ id: string; to: number } | null>(null);
+  const setDragBoth = (next: { id: string; to: number } | null) => {
+    dragRef.current = next;
+    setDrag(next);
+  };
+  const headerRefs = useRef(new Map<string, HTMLDivElement>());
+  const rects = useRef<{ id: string; top: number; height: number }[]>([]);
+
+  /** The slot the dragged root would land in, as an index into the member list
+   *  WITHOUT it — which is exactly what `commit` splices at. */
+  const dropSlot = (id: string, clientY: number) =>
+    rects.current.filter((r) => r.id !== id && clientY > r.top + r.height / 2).length;
+
+  const commit = (id: string, to: number) => {
+    if (!activeBox) return;
+    const from = memberOrder.indexOf(id);
+    if (from < 0 || to < 0 || to > memberOrder.length - 1 || to === from) return;
+    const next = [...memberOrder];
+    next.splice(from, 1);
+    next.splice(to, 0, id);
+    // Rewrite only the slots the VIEW can address. A box may hold member ids
+    // this panel shows no root for (a project that is gone, or one whose folder
+    // doesn't resolve); they keep their positions in `member_ids` instead of
+    // being reshuffled — or dropped — by a gesture that never named them.
+    const shown = new Set(memberOrder);
+    let i = 0;
+    const memberIds = activeBox.member_ids.map((mid) => (shown.has(mid) ? next[i++] : mid));
+    void useBoxesStore.getState().setBoxMembers(activeBox.id, memberIds);
+  };
+
+  return (rootId: string): RootReorder => ({
+    headerRef: (el) => {
+      if (el) headerRefs.current.set(rootId, el);
+      else headerRefs.current.delete(rootId);
+    },
+    onGripDown: (e) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      e.stopPropagation();
+      e.currentTarget.setPointerCapture(e.pointerId);
+      rects.current = memberOrder.map((id) => {
+        const r = headerRefs.current.get(id)?.getBoundingClientRect();
+        return { id, top: r?.top ?? 0, height: r?.height ?? 0 };
+      });
+      setDragBoth({ id: rootId, to: dropSlot(rootId, e.clientY) });
+    },
+    onGripMove: (e) => {
+      const live = dragRef.current;
+      if (!live || live.id !== rootId) return;
+      const to = dropSlot(rootId, e.clientY);
+      if (to !== live.to) setDragBoth({ id: rootId, to });
+    },
+    onGripEnd: (e, doCommit) => {
+      const live = dragRef.current;
+      if (!live || live.id !== rootId) return;
+      setDragBoth(null);
+      if (doCommit) commit(rootId, dropSlot(rootId, e.clientY));
+    },
+    onGripNudge: (delta) => commit(rootId, memberOrder.indexOf(rootId) + delta),
+    dragging: drag?.id === rootId,
+    // The insertion line sits before the root now occupying the landing slot —
+    // or after the last one, when the drop is past every remaining root. Both
+    // are drawn in the section's outer margin (a box-shadow), so showing one
+    // moves no layout and the measured bands stay valid.
+    dropBefore: (() => {
+      if (!drag || drag.id === rootId) return false;
+      const rest = memberOrder.filter((id) => id !== drag.id);
+      return rest[drag.to] === rootId;
+    })(),
+    dropAfter: (() => {
+      if (!drag || drag.id === rootId) return false;
+      const rest = memberOrder.filter((id) => id !== drag.id);
+      return drag.to === rest.length && rest[rest.length - 1] === rootId;
+    })(),
+  });
+}
+
 interface Props {
   /** Tab scope this view belongs to: a project id, a `box:<id>` scope, or "root". */
   scope: string;
@@ -535,6 +691,11 @@ export function ProjectFilesPane({
 }: Props) {
   const t = useT();
   const { activeBox, boxRoots } = useBoxRoots(scope);
+  const memberOrder = useMemo(
+    () => boxRoots.filter((r) => r.variant === "member").map((r) => r.rootId),
+    [boxRoots],
+  );
+  const reorderFor = useMemberReorder(activeBox, memberOrder);
   const projectId = project?.id ?? null;
   const isRemoteProject = !!project?.remote;
   const { remoteSshState, remoteBlocked } = useRemoteBlocked(projectId, isRemoteProject);
@@ -721,6 +882,9 @@ export function ProjectFilesPane({
               <BoxRootSection
                 key={r.rootId}
                 {...r}
+                // Only the members reorder: the box's own folder root always
+                // leads the list, so it carries no grip.
+                reorder={r.variant === "member" ? reorderFor(r.rootId) : undefined}
                 sortKey={sortKey}
                 descending={descending}
                 onSortChange={compact ? undefined : onSortChange}

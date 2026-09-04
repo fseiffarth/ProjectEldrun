@@ -3293,6 +3293,8 @@ export const dict: Dict = {
   "fileSourceSwitch.remote": "Remoto",
   "fileRoot.kindBox": "box",
   "fileRoot.kindProject": "progetto",
+  "fileRoot.gripAria": "Riordina progetto",
+  "fileRoot.gripTitle": "Trascina per riordinare questo progetto nel box — oppure mettilo a fuoco e usa ↑/↓.",
   "projectFilesPane.autoSyncOnTitle": "Sincronizzazione automatica dell'intero progetto (⟳). Clic per fermare. I singoli file/cartelle possono comunque essere esclusi o inclusi dal loro menu contestuale.",
   "projectFilesPane.autoSyncOffTitle": "Sincronizza automaticamente l'intero progetto in modo bidirezionale (host ⇄ mirror locale). I file divergenti vengono lasciati per la risoluzione manuale; gli interruttori per file/cartella hanno la priorità.",
   "projectFilesPane.autoSyncOn": "⟳ Auto-sinc: tutto",

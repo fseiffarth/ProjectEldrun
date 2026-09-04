@@ -3298,6 +3298,8 @@ export const dict: Dict = {
   "fileSourceSwitch.remote": "Remote",
   "fileRoot.kindBox": "Box",
   "fileRoot.kindProject": "Projekt",
+  "fileRoot.gripAria": "Projekt neu anordnen",
+  "fileRoot.gripTitle": "Ziehen, um dieses Projekt in der Box neu anzuordnen — oder fokussieren und ↑/↓ benutzen.",
   "projectFilesPane.autoSyncOnTitle": "Das gesamte Projekt wird automatisch synchronisiert (⟳). Klicken zum Stoppen. Einzelne Dateien/Ordner können weiterhin über ihr Kontextmenü ausgeschlossen oder eingeschlossen werden.",
   "projectFilesPane.autoSyncOffTitle": "Das gesamte Projekt bidirektional automatisch synchronisieren (Host ⇄ lokaler Spiegel). Abweichende Dateien werden zur manuellen Lösung belassen; Umschalter pro Datei/Ordner überschreiben dies.",
   "projectFilesPane.autoSyncOn": "⟳ Auto-Sync: alle",
