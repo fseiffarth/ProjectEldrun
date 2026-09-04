@@ -14,8 +14,9 @@
 > **You don't open applications — you open projects.**
 > **And you don't move to the machine your work runs on — the project takes it
 > with you.**
+> **And whichever agent you run, you answer it from your phone.**
 
-Eldrun stands on **two pillars**.
+Eldrun stands on **three pillars**.
 
 **One project = one desktop.** Eldrun is a project-centric desktop layer, not
 just an app that launches or embeds other apps: projects own their windows and
@@ -35,9 +36,14 @@ memorizing the commands. The goal is that *running a project on a cluster costs
 about as much ceremony as running it locally*. See
 [Remote machines & HPC clusters](#remote-machines--hpc-clusters-the-second-differentiator).
 
-And an opt-in companion PWA, **[Eldrun Mobile](#eldrun-mobile-companion-pwa)**,
+**Every agent = one phone.** An opt-in companion PWA,
+**[Eldrun Mobile](#every-agent-from-your-phone-the-third-differentiator)**,
 reaches the same agent and shell tabs from a phone over your own private
-tailnet — read what an agent is doing and answer it from another room.
+tailnet — read what an agent is doing and answer it from another room. That is
+remote control for **every agent CLI Eldrun runs** — Claude, Codex, Gemini,
+Qwen, Grok, Cursor, Copilot, OpenCode and the rest — whether or not its vendor
+ships a phone app for it, and without any vendor's relay in between. See
+[Every agent from your phone](#every-agent-from-your-phone-the-third-differentiator).
 
 Built with **Tauri 2 + React + TypeScript**. Linux (X11 / KDE Wayland),
 Windows, and macOS all get native workspace, app-launch, and default-app
@@ -48,15 +54,21 @@ and CI-built but not yet exercised on real hardware (see the platform table).
 
 ## Why Eldrun
 
-When you juggle several projects at once, every project's windows — browsers,
-terminals, file managers, docs, agents — pile onto one desktop. Switching from
+Are you also annoyed by switching between agent tabs or apps, keeping track of
+which tab or agent works on which project? This is why Eldrun exists. When you
+juggle several projects at once, every project's windows — browsers, terminals,
+file managers, docs, agent sessions — pile onto one desktop. Switching from
 project A to project B means digging through dozens of windows for the handful
-that belong where you're going, and losing the rest in the noise.
+that belong where you're going, remembering which Claude or Codex tab was
+started for which repo, and losing the rest in the noise.
 
 Eldrun flips the model. **Select a project, and the desktop becomes that
 project:** its windows come forward, the previous project's windows park out of
 the way, the default-app mappings re-route, and time tracking switches. One
-project visible at a time, everything else cleanly out of sight.
+project visible at a time, everything else cleanly out of sight. And if you
+need to work on two projects at the same time, simply *box* them — the box
+behaves like one project with a shared desktop, file tree, and agent tabs —
+and unbox afterwards, leaving both projects exactly as they were.
 
 Inside a project, Eldrun is an operational cockpit — a root control terminal for
 the workspace, agent terminals scoped to the project (Claude, Codex, Gemini, or
@@ -107,7 +119,9 @@ See [VISION.md](docs/VISION.md) for the full strategy and platform rationale.
 desktop swaps to it. **②** inside, a tiling tab layout hosts agent terminals
 (26 built-in CLIs plus your own, resumable, with a per-tab Plan/Auto mode),
 shells, native file viewers, and the app tabs Eldrun renders itself instead of
-sending you to another window. Alongside them sit the side panel (Files · Git
+sending you to another window — every one of those agent tabs is also readable
+and answerable from a phone through Eldrun Mobile, whichever vendor it belongs
+to. Alongside them sit the side panel (Files · Git
 · Search · Apps) and the header, where mail, the calendar, the to-do board, the
 machine hub, and the VPN live next to the global app toolbar. **③** the
 project-desktop layer — window parking, default-app mapping, time tracking and
@@ -139,9 +153,19 @@ JupyterHub, a hand-rolled `ssh` + `rsync` + tmux setup) attaches *one editor* to
 and `squeue`, an `srun` shell on a compute node, keeping several machines in
 step — stays a terminal exercise you repeat per project.
 
+The vendor phone apps and remote-control features (Claude Code's remote
+control, the Codex app, the Gemini app) each reach *their own* agent, and only
+through *their own* relay. An agent from a vendor without one — or the one you
+started in a plain terminal — cannot be reached at all. Eldrun Mobile reaches
+every agent tab in every project from the phone over your own tailnet, because
+it attaches to the tab's session on your desktop rather than to a vendor
+service: one phone app for all agents, independent of whether one exists for
+that agent.
+
 Eldrun occupies the gap none of them fill: project ownership of *windows and
-desktop context*, and project ownership of *the machines the work runs on*, with
-agent terminals built in on both. It is complementary to the
+desktop context*, project ownership of *the machines the work runs on*, and one
+phone-side remote for every agent, with
+agent terminals built in throughout. It is complementary to the
 task orchestrators rather than a replacement — you can run one inside an Eldrun
 project terminal for parallel task delegation while Eldrun handles switching the
 desktop between projects.
@@ -290,9 +314,46 @@ without an sshfs/FUSE mount anywhere.
   is uploaded. Nothing is site-specific: the host is asked which filesystems and
   limits it offers.
 
+### Every agent from your phone (the third differentiator)
+
+**Eldrun Mobile** is an **opt-in** phone/tablet companion that reaches this
+desktop's *agent and shell tabs* — read what an agent is doing and answer it
+from another room. It is a compact terminal-control product, not a mobile copy
+of the workspace, and it is the same product for every agent CLI: the vendor
+does not have to ship a phone app for the agent you are running.
+
+- **Every agent, whether or not its vendor has a phone app.** Any agent tab
+  with a resumable session is reachable — Claude, Codex, Gemini, Qwen,
+  OpenCode, Copilot, Cursor, Grok, Antigravity, Vibe, or a custom command with
+  its own resume arguments — because the phone attaches to the tab's tmux
+  session on your desktop rather than to a vendor API. Claude's own
+  remote-control feature stays what it is (Claude-only, through Anthropic's
+  relay) and is independent of this.
+- An **Agents** mode lists every session that is working, waiting on a
+  decision, or done, flat across all opted-in projects and waiting-first — the
+  one question a phone is picked up to ask. Tapping a row lands in that
+  session.
+- A loopback-only sidecar on the desktop, published to your own **Tailscale
+  tailnet** with `tailscale serve`; there is no public endpoint and no Eldrun
+  server in the middle. Devices are paired and authenticated explicitly, and the
+  desktop mediates every tab creation.
+- Raw project ids, paths, commands, and tmux targets never cross the browser
+  API — the sidecar core (`services::mobile_control`) is `AppHandle`-free and
+  path-free by construction.
+- The phone gets a touch terminal (readable-screen mode, touch scrolling, a
+  composer, voice input), a to-do board, last-tab restore, an offline shell, and
+  a local lock. Access is granted **per project**; remote and VM projects are
+  excluded, as are containerized ones — with the Trash workspace as the single
+  deliberate exception.
+- A desktop header control shows host status; Settings carries the opt-in, the
+  security-health readout, and a read-only phone-install handoff.
+
+*Linux MVP; the macOS LaunchAgent phase and real-phone security QA remain.*
+
 ### Project cockpit
 
-- **Agent-terminal orchestration**: create Claude, Codex, Gemini, or plain shell
+- **Agent-terminal orchestration**: create Claude, Codex, Gemini, a dozen other
+  agent CLIs, or plain shell
   tabs from the tab bar; create local Ollama-backed Vibe tabs from installed
   models; rename, close, and reorder them by drag and drop. The `+` menu's
   Agents group is searchable, its quick picks are configurable, and you can
@@ -476,29 +537,6 @@ follows debug mode, so they are all on in a development build.
   per project. It opens once on the first launch of each day. Nothing leaves the
   machine and nothing is uploaded anywhere.
 
-### Eldrun Mobile (companion PWA)
-
-An **opt-in** phone/tablet companion that reaches this desktop's *agent and
-shell tabs* — read what an agent is doing and answer it from another room. It is
-a compact terminal-control product, not a mobile copy of the workspace.
-
-- A loopback-only sidecar on the desktop, published to your own **Tailscale
-  tailnet** with `tailscale serve`; there is no public endpoint and no Eldrun
-  server in the middle. Devices are paired and authenticated explicitly, and the
-  desktop mediates every tab creation.
-- Raw project ids, paths, commands, and tmux targets never cross the browser
-  API — the sidecar core (`services::mobile_control`) is `AppHandle`-free and
-  path-free by construction.
-- The phone gets a touch terminal (readable-screen mode, touch scrolling, a
-  composer, voice input), a to-do board, last-tab restore, an offline shell, and
-  a local lock. Access is granted **per project**; remote and VM projects are
-  excluded, as are containerized ones — with the Trash workspace as the single
-  deliberate exception.
-- A desktop header control shows host status; Settings carries the opt-in, the
-  security-health readout, and a read-only phone-install handoff.
-
-*Linux MVP; the macOS LaunchAgent phase and real-phone security QA remain.*
-
 ### Learning the app
 
 - **Guided tour and lessons**: a first-run tour plus ~30 step-by-step lessons
@@ -562,9 +600,8 @@ current integration state.
 | **Vibe** (`vibe`)                          | Yes        | No      | Listed as a selectable agent command; same tab lifecycle.                                                                                           |
 | **Ollama via Vibe** (`vibe` + local model) | Yes        | Partial | Installed Ollama models appear under Local Agents. Each local tab gets an isolated per-model `VIBE_HOME` under `~/.local/share/eldrun/vibe_local/`. |
 | **Shell**                                  | Yes        | Yes     | Plain interactive shell tab in the project directory.                                                                                               |
-| Mistral CLI                                | No         | No      | Not integrated. Can be used in a plain shell tab.                                                                                                   |
-| Qwen CLI                                   | No         | No      | Not integrated.                                                                                                                                     |
-| Grok CLI                                   | No         | No      | Not integrated.                                                                                                                                     |
+| **Qwen, OpenCode, Copilot, Cursor, Grok, Antigravity** | Yes | No | In the **+** menu; each restores through its CLI's own continue-last flag (`--continue`, `--session latest`), so the tab is resumable and reachable from Eldrun Mobile. |
+| Kiro, Cline, Aider, OpenClaw, Goose, OpenHands, Pi, Plandex, SWE-agent, Mentat, GPT Engineer, Crush | Yes | No | Launched by name from the **+** menu; no resume, so the tab is recreated fresh on relaunch and is not reachable from the phone. |
 
 The active agent command (`claude`, `codex`, `gemini`, or `vibe`) is set in
 Settings. If the configured command is not found in `$PATH`, Eldrun falls back
