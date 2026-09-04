@@ -608,6 +608,9 @@ pub async fn local_tmux_kill(session: String) -> Result<(), String> {
             .args(crate::services::tmux_local::local_tmux_kill_args(&session))
             .output()
             .map_err(|e| format!("could not run tmux: {e}"))?;
+        // Killed or already gone either way: its launcher (if the command line
+        // needed one) has nothing left to launch.
+        crate::services::tmux_local::remove_launcher(&session);
         if !output.status.success() {
             let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
             // Explicit close is idempotent: a session that already exited is

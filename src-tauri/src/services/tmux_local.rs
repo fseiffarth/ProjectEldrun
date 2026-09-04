@@ -32,6 +32,28 @@ use crate::terminal::PtyOptions;
 /// them available for restore.
 pub const ELDRUN_LOCAL_TMUX_PREFIX: &str = "eldrun-";
 
+/// What the tmux **client** can hand its server in one message. The argv is
+/// sent as a single imsg and refused with `command too long` (the tab then
+/// shows nothing but `[process exited]`) once every item plus its NUL
+/// terminator exceeds `MAX_IMSGSIZE` (16384 in every tmux release). A fenced
+/// agent tab hit this: the bubblewrap wrap emits one `--bind`/`--ro-bind`
+/// item pair per `~/.claude`/`~/.codex` entry and per transcript dir, so a
+/// well-used machine's fence alone runs to tens of kilobytes — and a
+/// Mobile-reachable agent tab nests all of it inside the tmux command line.
+pub const TMUX_ARGV_LIMIT: usize = 16384;
+
+/// Above this the command line moves into a [`launcher_script`] instead of
+/// riding the tmux argv. Well under [`TMUX_ARGV_LIMIT`]: the message also
+/// carries a header and the client's own cwd/environment bookkeeping, and the
+/// limit is an unrecoverable launch failure rather than a slowdown.
+const TMUX_ARGV_BUDGET: usize = 12 * 1024;
+
+/// The bytes a tmux client sends for `args` — each item and its terminator —
+/// which is exactly what it measures against [`TMUX_ARGV_LIMIT`].
+pub fn argv_bytes(args: &[String]) -> usize {
+    args.iter().map(|a| a.len() + 1).sum()
+}
+
 /// Which of a `tmux ls` listing's sessions a clean quit ends: every session
 /// Eldrun minted, and nothing else. Pure, so the ownership rule is tested
 /// without a tmux server.
@@ -105,6 +127,8 @@ pub fn kill_eldrun_sessions() -> Result<(), String> {
             }
         }
     }
+    // Every Eldrun session is ending here, so every launcher is stale too.
+    let _ = std::fs::remove_dir_all(crate::storage::state_dir().join("tmux-launch"));
     if failures.is_empty() {
         Ok(())
     } else {
@@ -289,6 +313,70 @@ fn local_tmux_args_with(
     env: &HashMap<String, String>,
     session_env: bool,
 ) -> Vec<String> {
+    let line = command_line(target_cmd, target_args, env, session_env);
+    local_tmux_args_for(session, line.as_deref(), env, session_env)
+}
+
+/// The inline `<cmd> <args>` half of a command tab's tmux target, with the
+/// `export`s ahead of it when the tmux has no `new-session -e`. `None` for a
+/// shell tab (no command). Everything is [`shell_quote`]d, so it is the same
+/// text whether it lands on the tmux argv or in a [`launcher_script`].
+fn command_line(
+    target_cmd: &str,
+    target_args: &[String],
+    env: &HashMap<String, String>,
+    session_env: bool,
+) -> Option<String> {
+    if target_cmd.is_empty() {
+        return None;
+    }
+    let mut line = String::new();
+    if !session_env {
+        for (k, v) in session_env_pairs(env) {
+            line.push_str(&format!("export {}={}; ", k, shell_quote(v)));
+        }
+    }
+    line.push_str(&shell_quote(target_cmd));
+    for a in target_args {
+        line.push(' ');
+        line.push_str(&shell_quote(a));
+    }
+    Some(line)
+}
+
+/// A `#!/bin/sh` script that `exec`s the command tab's command — the carrier
+/// for a command line too long for the tmux argv (see [`TMUX_ARGV_LIMIT`]).
+/// tmux then runs `'<script>'; exec "$SHELL" -l`, which is the inline shape
+/// with the long part moved out; the script `exec`s so the command replaces
+/// the script's shell exactly as it replaced nothing before. Pure: the caller
+/// writes it (see [`wrap_pty_options_local`]).
+pub(crate) fn launcher_script(
+    target_cmd: &str,
+    target_args: &[String],
+    env: &HashMap<String, String>,
+    session_env: bool,
+) -> String {
+    let mut script = String::from("#!/bin/sh\n");
+    if !session_env {
+        for (k, v) in session_env_pairs(env) {
+            script.push_str(&format!("export {k}={}\n", shell_quote(v)));
+        }
+    }
+    // Exports are lines of their own above, so the command line itself is
+    // rendered without them (`session_env = true`) and `exec`'d as one.
+    let line = command_line(target_cmd, target_args, env, true).unwrap_or_default();
+    script.push_str(&format!("exec {line}\n"));
+    script
+}
+
+/// [`local_tmux_args_with`] with the command half already rendered: `line` is
+/// what tmux runs before the trailing login shell, or `None` for a shell tab.
+fn local_tmux_args_for(
+    session: &str,
+    line: Option<&str>,
+    env: &HashMap<String, String>,
+    session_env: bool,
+) -> Vec<String> {
     let pairs = session_env_pairs(env);
     let mut args: Vec<String> = vec![
         "set-option".into(),
@@ -309,22 +397,10 @@ fn local_tmux_args_with(
     }
     args.push("-s".into());
     args.push(session.to_string());
-    if !target_cmd.is_empty() {
+    if let Some(line) = line {
         // One positional arg = the command line tmux runs via `sh -c`. Keeping a
         // login shell after it is what makes a finished run reattachable.
-        let mut line = String::new();
-        if !session_env {
-            for (k, v) in &pairs {
-                line.push_str(&format!("export {}={}; ", k, shell_quote(v)));
-            }
-        }
-        line.push_str(&shell_quote(target_cmd));
-        for a in target_args {
-            line.push(' ');
-            line.push_str(&shell_quote(a));
-        }
-        line.push_str("; exec \"${SHELL:-/bin/bash}\" -l");
-        args.push(line);
+        args.push(format!("{line}; exec \"${{SHELL:-/bin/bash}}\" -l"));
     }
     // Session options as trailing tmux commands (standalone ';' tokens split argv).
     for tok in [
@@ -398,9 +474,59 @@ pub fn wrap_pty_options_local(opts: &mut PtyOptions) {
     let Some(session) = opts.tmux_session.clone() else {
         return;
     };
-    let args = local_tmux_args(&session, &opts.cmd, &opts.args, &opts.env);
+    let session_env = tmux_supports_session_env();
+    let mut args = local_tmux_args_with(&session, &opts.cmd, &opts.args, &opts.env, session_env);
+    if !opts.cmd.is_empty() && argv_bytes(&args) > TMUX_ARGV_BUDGET {
+        // Past the client's message limit, tmux would exit with `command too
+        // long` and the tab with `[process exited]`. Move the command into a
+        // script and hand tmux its path instead.
+        let script = launcher_script(&opts.cmd, &opts.args, &opts.env, session_env);
+        match write_launcher(&session, &script) {
+            Ok(path) => {
+                let line = shell_quote(&path.to_string_lossy());
+                args = local_tmux_args_for(&session, Some(&line), &opts.env, session_env);
+            }
+            Err(e) => {
+                // Leave the long argv in place: tmux's own error is the honest
+                // report, and the tab shows it.
+                eprintln!("tmux_local: could not write launcher for '{session}': {e}");
+            }
+        }
+    }
     opts.cmd = "tmux".to_string();
     opts.args = args;
+}
+
+/// Where a session's [`launcher_script`] lives:
+/// `<state_dir>/tmux-launch/<session>.sh`. Keyed by the session name so a
+/// respawn of the same tab overwrites its own script, and sanitized like the
+/// other state-dir keys so a session name never becomes a path.
+fn launcher_path(session: &str) -> std::path::PathBuf {
+    crate::storage::state_dir()
+        .join("tmux-launch")
+        .join(format!("{}.sh", crate::storage::project_key(session)))
+}
+
+/// Write `script` as the session's launcher, executable by its owner only.
+fn write_launcher(session: &str, script: &str) -> std::io::Result<std::path::PathBuf> {
+    let path = launcher_path(session);
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(&path, script)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(path)
+}
+
+/// Drop a session's launcher once the session is gone. The script only
+/// matters while `new-session -A` might still *create* the session; a
+/// respawn writes a fresh one, so nothing is lost by removing it early.
+pub fn remove_launcher(session: &str) {
+    let _ = std::fs::remove_file(launcher_path(session));
 }
 
 #[cfg(test)]
@@ -514,6 +640,61 @@ mod tests {
             "export ELDRUN_TAB_UID='tab-uid-1'; export Q='a'\\''b c'; \
              'claude'; exec \"${SHELL:-/bin/bash}\" -l"
         );
+    }
+
+    #[test]
+    fn launcher_script_execs_the_same_quoted_line() {
+        // The script carries exactly the text the inline form would have put on
+        // the tmux argv — exports first when the tmux lacks `-e`, then the
+        // quoted command — behind `exec`, so the command replaces the script's
+        // shell the way it replaced nothing inline.
+        let env = env_of(&[("ELDRUN_TAB_UID", "tab-uid-1")]);
+        let args = vec!["--bind".to_string(), "/a b".to_string(), "it's".to_string()];
+        assert_eq!(
+            launcher_script("bwrap", &args, &env, true),
+            "#!/bin/sh\nexec 'bwrap' '--bind' '/a b' 'it'\\''s'\n"
+        );
+        assert_eq!(
+            launcher_script("bwrap", &args, &env, false),
+            "#!/bin/sh\nexport ELDRUN_TAB_UID='tab-uid-1'\nexec 'bwrap' '--bind' '/a b' 'it'\\''s'\n"
+        );
+    }
+
+    #[test]
+    fn a_fence_sized_argv_is_over_budget_and_the_launcher_form_is_not() {
+        // A fenced agent on a well-used machine: one `--ro-bind src dst` per
+        // transcript dir, and 120 of those already pass tmux's message
+        // limit — which is `command too long` and a dead tab. The launcher
+        // form of the same tab is a few hundred bytes regardless.
+        let mut fence: Vec<String> = Vec::new();
+        for i in 0..120 {
+            let p = format!("/home/user/.claude/projects/-home-user-eldrun-projects-project-{i:03}");
+            fence.extend(["--ro-bind".to_string(), p.clone(), p]);
+        }
+        fence.extend(["--".to_string(), "claude".to_string()]);
+        let env = env_of(&[("ELDRUN_TAB_UID", "tab-uid-1")]);
+        let inline = local_tmux_args_with("eldrun-x", "bwrap", &fence, &env, true);
+        assert!(argv_bytes(&inline) > TMUX_ARGV_LIMIT, "{}", argv_bytes(&inline));
+
+        let line = shell_quote("/state/tmux-launch/eldrun-x.sh");
+        let launched = local_tmux_args_for("eldrun-x", Some(&line), &env, true);
+        assert!(argv_bytes(&launched) < TMUX_ARGV_BUDGET);
+        let dash_s = launched.iter().position(|a| a == "-s").unwrap();
+        assert_eq!(
+            launched[dash_s + 2],
+            "'/state/tmux-launch/eldrun-x.sh'; exec \"${SHELL:-/bin/bash}\" -l"
+        );
+        // The env still rides `-e`; only the command moved.
+        assert!(launched.iter().any(|a| a == "ELDRUN_TAB_UID=tab-uid-1"));
+        // A shell tab has no command line to move, launcher or not.
+        assert!(command_line("", &[], &env, true).is_none());
+    }
+
+    #[test]
+    fn launcher_path_cannot_leave_the_launch_dir() {
+        let path = launcher_path("../../etc/x y");
+        assert_eq!(path.file_name().unwrap().to_str().unwrap(), "______etc_x_y.sh");
+        assert!(path.parent().unwrap().ends_with("tmux-launch"));
     }
 
     #[test]

@@ -325,7 +325,10 @@ should treat as eligible or not.
 too); `-e KEY=VAL` on `new-session` needs **≥ 3.2** (older exports the key
 from the shell instead); `history-limit` option; `ls -F …`, `kill-session -t`,
 `rename-session -t`, `capture-pane` before attach; standalone `;` splits argv;
-new sessions inherit the *server's* global environment.
+new sessions inherit the *server's* global environment; the client refuses an
+argv over `MAX_IMSGSIZE` (16384 bytes) with `command too long`, which is why a
+long command line (a fenced agent's bubblewrap argv) is moved into
+`<state_dir>/tmux-launch/<session>.sh` (`tmux_local::TMUX_ARGV_LIMIT`).
 
 **Verify** `tmux -V`; `cargo test --manifest-path src-tauri/Cargo.toml tmux`.
 Also check the remote host's tmux, which is usually older.

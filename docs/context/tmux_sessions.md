@@ -16,7 +16,13 @@ Referenced from `AGENTS.md`.
   **Default ON** via `settings.persist_local_sessions`. `services::tmux_local`
   rewrites the local spawn's `{cmd,args}` into a `tmux` argv in
   `commands::terminal::pty_spawn`, *after* the ssh/docker branch so only a
-  genuinely local tab is wrapped.
+  genuinely local tab is wrapped. The tmux client sends that argv to its
+  server in one 16 KB message and exits with `command too long` past it — a
+  fenced agent's bubblewrap argv (one mount pair per `~/.claude`/`~/.codex`
+  entry and per transcript dir) gets there on a well-used machine. Over a
+  budget, the command line moves into `<state_dir>/tmux-launch/<session>.sh`
+  and tmux runs the script's path; the script `exec`s the same quoted line.
+  Removed with the session (explicit kill, clean quit); a respawn rewrites it.
 
 Scoped to **shell tabs** (Python runs open one; a command runs inside the
 session's login shell, which outlives it → the run reattaches, not re-runs) and,
