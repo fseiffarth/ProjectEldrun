@@ -2496,7 +2496,16 @@
 }
 .fv-measure-line {
   white-space: pre-wrap;
-  overflow-wrap: anywhere;
+  /* The SAME break rules as the textarea and the overlay layers (`.is-wrapped`
+     below): `normal`, not `anywhere`. The mirror's only job is to count the rows
+     each logical line occupies in the textarea, so a rule the textarea does not
+     follow makes the count wrong. With `anywhere` here a single unbreakable
+     token wider than the editor — a `%%%%…` banner, a spaceless
+     `\documentclass[…]` — measured as two rows while the textarea and the
+     coloured layers clip it to one, and every gutter cell and caret mark below
+     that line sat one row too low (the gutter said line 5 where the caret was on
+     line 6, so a delete taken on trust hit the wrong line). */
+  overflow-wrap: normal;
   word-break: normal;
 }
 
@@ -3653,6 +3662,7 @@
    below) rather than force-broken, which for prose LaTeX is rare and preferable to
    a drifting caret. */
 .file-viewer-code-area.is-wrapped .file-viewer-code-editor,
+.file-viewer-code-area.is-wrapped .file-viewer-indent-layer,
 .file-viewer-code-area.is-wrapped .file-viewer-highlight,
 .file-viewer-code-area.is-wrapped .file-viewer-link-layer,
 .file-viewer-code-area.is-wrapped .file-viewer-search-layer,
@@ -3670,6 +3680,7 @@
    vertical scrollbar) via an inline width, so they wrap line-for-line with the
    caret. Drop the defaults that would otherwise force them back to the full box
    width (min-width:100% on the highlight, right:0 from inset on the others). */
+.file-viewer-code-area.is-wrapped .file-viewer-indent-layer,
 .file-viewer-code-area.is-wrapped .file-viewer-highlight,
 .file-viewer-code-area.is-wrapped .file-viewer-link-layer,
 .file-viewer-code-area.is-wrapped .file-viewer-search-layer,
