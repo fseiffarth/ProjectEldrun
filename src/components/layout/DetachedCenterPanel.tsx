@@ -1802,18 +1802,31 @@ export function DetachedCenterPanel({
           the popout was split; an outer frame keeps them pinned. The empty strip
           is a drag handle for moving / docking the whole window. */}
       <div className="detached-titlebar detached-drag-handle" onPointerDown={onTitlebarPointerDown}>
-        {/* The brand mark alone — no move grip. The strip IS the handle (every
-            pixel of it that isn't the window controls starts the drag), so a ⠿
-            marking one corner of it only pointed at a smaller part of what was
-            already grabbable. The star lives HERE and nowhere else — it marks
-            the window frame, which is why it was taken back off every
-            subwindow's tab bar. */}
+        {/* The star marks the window frame — it lives HERE and nowhere else,
+            which is why it was taken back off every subwindow's tab bar. */}
         <span
           className="detached-titlebar-logo"
           aria-hidden="true"
           title={t("detachedTabs.snapToScreen")}
         >
           <StarIcon />
+        </span>
+        {/* Explicit move grip, mirroring the main window's header `⠿` (and the
+            subwindow tab bars' own). The whole strip is already a handle — every
+            pixel that isn't the window controls starts the drag — but an
+            undecorated popout shows nothing that says so, and a title bar filled
+            edge-to-edge by the controls leaves nothing obvious to aim at. Same
+            reasoning as `.app-drag-grip` in the main header: the region is
+            grabbable either way, the grip is the always-present affordance. A
+            plain (non-button) element that matches none of the no-drag selectors,
+            so its pointerdown bubbles to `onTitlebarPointerDown` and drives the
+            same native move — including the double-click-to-snap it decides. */}
+        <span
+          className="tab-drag-grip"
+          title={t("detachedTabs.dragToMove")}
+          aria-hidden="true"
+        >
+          ⠿
         </span>
         {/* #237: dock the whole window back into the main layout. The gesture
             that used to do this (drag the popout onto the main window) went with

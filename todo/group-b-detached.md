@@ -740,6 +740,28 @@ writes are now forwarded rather than dropped.
        - [ ] ✅ Works
        - [ ] ❌ Doesn't work
 
+262. **A popout's title bar has no visible move handle.** The whole strip has
+     been a drag region since #42 — every pixel of it that isn't the window
+     controls hands the press to the WM — but an undecorated window shows
+     nothing that says so, and once the dock-back ⤓ and the min/max/close
+     cluster fill the right end there is no marked place to aim at. The main
+     window carries an explicit `⠿` (`.app-drag-grip`) in its header for
+     exactly this reason, and so does every subwindow tab bar inside a popout
+     (`.tab-drag-grip`); only the popout's own frame went without. The title bar
+     now renders the same `.tab-drag-grip` beside the star — a plain element
+     matching none of the no-drag selectors, so its pointerdown bubbles to
+     `onTitlebarPointerDown` and drives the same native move (and the same
+     double-click-to-snap) the bare strip already did. No behaviour changed;
+     the affordance is what was missing.
+     - [x] 🤖 Automated test — n/a (markup-only; the drag path itself is
+       `decideTitlebarPress`, already covered).
+     - [ ] 🖐️ Manual test — pop a tab out: a `⠿` sits at the top-left of the
+       popout's title bar, next to the star. Drag it — the window follows the
+       cursor. Double-click it — the window snaps onto its screen (#240), the
+       same as double-clicking the bare strip.
+       - [ ] ✅ Works
+       - [ ] ❌ Doesn't work
+
 ---
 
 **Verified sound by the same audit** (so nobody re-audits it): seed handshake
