@@ -80,25 +80,42 @@ pub fn project_window_ids(
         .collect()
 }
 
-/// Tauri window labels for the project's DETACHED subwindows (#42).
+/// Tauri window labels of every live popout, split into (this scope's,
+/// everyone else's) (#42).
 ///
 /// The detached window's registry key IS its Tauri label, so callers can
 /// `app.get_webview_window(label)` to drive a Tauri-level `hide()`/`show()`.
 /// This runs REGARDLESS of the workspace backend: on X11 the desktop-park
 /// (via `hide_window`) and this Tauri hide both apply; on Wayland/KDE/null —
 /// where desktop-parking is a no-op — the Tauri hide is the ONLY mechanism that
-/// keeps an inactive project's detached window from floating over other
-/// projects.
-pub fn project_detached_labels(
+/// keeps an inactive scope's detached window from floating over every other one.
+///
+/// Popouts are keyed by TAB SCOPE, not by project: `detach_subwindow` registers
+/// each under the scope its group belonged to — a project id, `"root"`, or
+/// `box:<id>` — in the registry's `project_id` field. Deriving visibility from
+/// the ACTIVE SCOPE rather than from a project switch's `project_id` is what
+/// makes the non-project scopes work: entering a box changes the scope without
+/// any project switch at all, and the root scope is one no `project_id` can name
+/// (it is `None` there, while its popouts are registered under `"root"`), so both
+/// used to leave the outgoing scope's popout floating over the new one.
+pub fn detached_labels_by_scope(
     windows: &HashMap<String, TrackedWindow>,
-    project_id: Option<&str>,
-) -> Vec<String> {
-    windows
+    scope: &str,
+) -> (Vec<String>, Vec<String>) {
+    let (mut mine, mut others) = (Vec::new(), Vec::new());
+    for w in windows
         .values()
-        .filter(move |w| w.project_id.as_deref() == project_id)
         .filter(|w| w.origin == ORIGIN_DETACHED_SUBWINDOW)
-        .map(|w| w.id.clone())
-        .collect()
+    {
+        if w.project_id.as_deref() == Some(scope) {
+            mine.push(w.id.clone());
+        } else {
+            others.push(w.id.clone());
+        }
+    }
+    mine.sort();
+    others.sort();
+    (mine, others)
 }
 
 /// Registry keys for EVERY live detached popout, whatever project owns it —
@@ -374,11 +391,11 @@ mod tests {
     }
 
     #[test]
-    fn detached_labels_select_only_this_projects_detached_windows() {
+    fn detached_labels_split_by_scope() {
         // #42: the Wayland/null fallback hides/shows detached windows by Tauri
-        // LABEL (== registry id). Only this project's detached windows, and not
-        // its non-detached project-owned windows (those go through the X11/desktop
-        // path), should be returned.
+        // LABEL (== registry id). The active scope's popouts are shown, EVERY
+        // other popout is hidden, and non-detached project-owned windows (which
+        // go through the X11/desktop path) appear in neither list.
         let wins = registry(vec![
             tracked(
                 "detached-p1-g3",
@@ -394,10 +411,12 @@ mod tests {
             ),
             tracked("file-p1", Some("p1"), ORIGIN_SIDE_FILE_TREE, Some(303)),
         ]);
-        let p1 = project_detached_labels(&wins, Some("p1"));
-        assert_eq!(p1, vec!["detached-p1-g3".to_string()]);
-        let p2 = project_detached_labels(&wins, Some("p2"));
-        assert_eq!(p2, vec!["detached-p2-g1".to_string()]);
+        let (mine, others) = detached_labels_by_scope(&wins, "p1");
+        assert_eq!(mine, vec!["detached-p1-g3".to_string()]);
+        assert_eq!(others, vec!["detached-p2-g1".to_string()]);
+        let (mine, others) = detached_labels_by_scope(&wins, "p2");
+        assert_eq!(mine, vec!["detached-p2-g1".to_string()]);
+        assert_eq!(others, vec!["detached-p1-g3".to_string()]);
         // A detached window with no resolved X11 id is STILL hidden via Tauri
         // (its label exists regardless of `window_id`).
         let no_wid = registry(vec![tracked(
@@ -407,8 +426,56 @@ mod tests {
             None,
         )]);
         assert_eq!(
-            project_detached_labels(&no_wid, Some("p3")),
+            detached_labels_by_scope(&no_wid, "p3").0,
             vec!["detached-p3-g1".to_string()],
+        );
+    }
+
+    #[test]
+    fn detached_labels_hide_project_popouts_in_a_box_or_root_scope() {
+        // The reported bug: a project's popout stayed floating after entering a
+        // `box:<id>` scope, because the only hide path keyed off a project
+        // switch's `project_id` and entering a box performs none. Scope-keyed,
+        // a box scope shows its own popouts and hides every project's — and the
+        // root scope (whose popouts register under "root", never `None`) does
+        // the same.
+        let wins = registry(vec![
+            tracked(
+                "detached-p1-g1",
+                Some("p1"),
+                ORIGIN_DETACHED_SUBWINDOW,
+                Some(101),
+            ),
+            tracked(
+                "detached-box:b7-g1",
+                Some("box:b7"),
+                ORIGIN_DETACHED_SUBWINDOW,
+                Some(202),
+            ),
+            tracked(
+                "detached-root-g1",
+                Some("root"),
+                ORIGIN_DETACHED_SUBWINDOW,
+                Some(303),
+            ),
+        ]);
+        let (mine, others) = detached_labels_by_scope(&wins, "box:b7");
+        assert_eq!(mine, vec!["detached-box:b7-g1".to_string()]);
+        assert_eq!(
+            others,
+            vec![
+                "detached-p1-g1".to_string(),
+                "detached-root-g1".to_string()
+            ],
+        );
+        let (mine, others) = detached_labels_by_scope(&wins, "root");
+        assert_eq!(mine, vec!["detached-root-g1".to_string()]);
+        assert_eq!(
+            others,
+            vec![
+                "detached-box:b7-g1".to_string(),
+                "detached-p1-g1".to_string()
+            ],
         );
     }
 

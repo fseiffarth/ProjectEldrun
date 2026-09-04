@@ -2,13 +2,19 @@
 //!
 //! A tiling subwindow (a tab group) is "popped out" into its own borderless
 //! Tauri `WebviewWindow` rendering the same React bundle under a
-//! `?detached=<project>:<group>` query. The detached window is registered as a
-//! project-owned `TrackedWindow` (origin `detached_subwindow`) and its resolved
+//! `?detached=<scope>&group=<group>` query. The detached window is registered as
+//! a scope-owned `TrackedWindow` (origin `detached_subwindow`) and its resolved
 //! native id (X11 window on Linux, HWND on Windows, CGWindowID on macOS) is
 //! opted into the workspace
 //! backend's parkable override, so the existing `project_runtime::switch`
 //! hide/show path parks it when its project goes inactive and re-shows it on
 //! switch-back — no parallel parking path.
+//!
+//! A popout belongs to a tab SCOPE (a project id, `"root"`, or `box:<id>`), and
+//! the scope changes in ways no project switch describes — entering a box is one,
+//! and the root is a scope a switch's `project_id` cannot name. So the Tauri-level
+//! park is expressed once, over scopes ([`sync_detached_visibility`]), and both
+//! the switch and the frontend's `setScope` drive it.
 //!
 //! Persistence is session-only: a detached group re-docks into the main layout
 //! on restart (no OS-window respawn). The MAIN window owns project.json writes;
@@ -431,6 +437,137 @@ pub fn snap_detached_to_screen(app: &AppHandle, label: &str) -> bool {
     ));
     let _ = win.set_position(PhysicalPosition::new(g.x, g.y));
     true
+}
+
+/// The scope string the ROOT terminal's tabs — and its popouts — live under.
+/// The frontend's `ROOT_SCOPE`; a switch's `project_id` of `None` means exactly
+/// this scope, which is why the popout paths must translate rather than pass the
+/// `Option` through (a root popout registers under `"root"`, never `None`).
+pub const ROOT_SCOPE: &str = "root";
+
+/// Park the given popouts: remember where each one is, then hide it (#42).
+///
+/// Backend-independent. On X11 it complements the desktop-park in
+/// `project_runtime::switch`; on Wayland/KDE/null (where desktop-parking is a
+/// no-op) it is the ONLY mechanism keeping an inactive scope's popout from
+/// floating over every other scope.
+///
+/// The geometry is captured in PHYSICAL px (scale-invariant, so it re-applies
+/// onto the SAME monitor) BEFORE hiding, because `hide()`/`show()` lets the WM
+/// re-place the window — typically onto the primary monitor — so the un-park
+/// must put it back explicitly ([`show_detached_windows`]) or a multi-monitor
+/// popout lands on the wrong screen. An ALREADY-hidden popout is skipped for the
+/// capture: its on-screen geometry while invisible is whatever the WM left it,
+/// and recording that would overwrite the good rect taken when it was parked.
+pub fn hide_detached_windows(
+    app: &AppHandle,
+    win_registry: &WindowRegistryState,
+    labels: &[String],
+) {
+    for label in labels {
+        let Some(win) = app.get_webview_window(label) else {
+            continue;
+        };
+        if win.is_visible().unwrap_or(false) {
+            if let (Ok(pos), Ok(size)) = (win.outer_position(), win.inner_size()) {
+                win_registry.lock().unwrap().detached_bounds.insert(
+                    label.clone(),
+                    crate::commands::apps::DetachedBounds {
+                        x: pos.x,
+                        y: pos.y,
+                        w: size.width,
+                        h: size.height,
+                    },
+                );
+            }
+        }
+        let _ = win.hide();
+    }
+}
+
+/// Un-park the given popouts, back onto the screen they were parked from (#42).
+///
+/// Mirrors [`hide_detached_windows`]. `unminimize()` first in case a backend
+/// minimized rather than hid them; the remembered rect is then validated against
+/// the currently-connected monitors, so an unplugged display can't strand a
+/// popout off-screen.
+pub fn show_detached_windows(
+    app: &AppHandle,
+    win_registry: &WindowRegistryState,
+    labels: &[String],
+) {
+    for label in labels {
+        let Some(win) = app.get_webview_window(label) else {
+            continue;
+        };
+        let _ = win.unminimize();
+        let _ = win.show();
+        // Put the popout back where it was before it was parked: the show()
+        // above lets the WM move it (often onto the wrong monitor), so re-apply
+        // the geometry captured at hide time. Size before position so a resize
+        // can't shift the placement. PHYSICAL px → correct monitor regardless of
+        // per-monitor scaling (#42).
+        let saved = win_registry
+            .lock()
+            .unwrap()
+            .detached_bounds
+            .get(label)
+            .copied();
+        let Some(b) = saved else { continue };
+        let monitors = crate::services::window_service::monitor_rects(&win);
+        match crate::services::window_state::resolve_detached_geometry(
+            crate::schema::settings::WindowState {
+                x: b.x,
+                y: b.y,
+                w: b.w,
+                h: b.h,
+                maximized: false,
+            },
+            &monitors,
+        ) {
+            Some(g) => {
+                let _ = win.set_size(PhysicalSize::new(g.w, g.h));
+                let _ = win.set_position(PhysicalPosition::new(g.x, g.y));
+            }
+            // The display this popout was parked on is gone. Leaving the WM's
+            // placement puts it on a real screen but at the size it had on the
+            // old one — on a laptop panel that is a borderless window hanging off
+            // two edges, with no resize border left to grab. Fit it to the screen
+            // it actually landed on instead (#240).
+            None => {
+                snap_detached_to_screen(app, label);
+            }
+        }
+    }
+}
+
+/// Bring every live popout in line with the scope the main window is showing:
+/// this scope's are un-parked, every other scope's is parked.
+///
+/// The ONE place popout visibility is decided, for every way the scope can
+/// change — a project switch, the root, and entering a box (which performs no
+/// project switch at all, and so used to leave the outgoing project's popout
+/// floating over the box's tabs).
+pub fn sync_detached_visibility(app: &AppHandle, win_registry: &WindowRegistryState, scope: &str) {
+    let (mine, others) = {
+        let wins = win_registry.lock().unwrap();
+        crate::services::window_service::detached_labels_by_scope(&wins.windows, scope)
+    };
+    hide_detached_windows(app, win_registry, &others);
+    show_detached_windows(app, win_registry, &mine);
+}
+
+/// Frontend hook for the above: the tabs store calls this whenever the active
+/// scope changes. A project switch also runs the same sync from
+/// `project_runtime::switch` (which owns the desktop-level park of the project's
+/// other windows); both aim at the same scope, and both are idempotent.
+#[tauri::command]
+pub fn sync_detached_scope(
+    app: AppHandle,
+    win_registry: State<'_, WindowRegistryState>,
+    scope: String,
+) {
+    sync_detached_visibility(&app, &win_registry, &scope);
 }
 
 /// Double-clicking a popout's title bar snaps it onto the screen it is on

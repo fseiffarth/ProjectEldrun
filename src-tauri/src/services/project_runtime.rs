@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter};
 
 use crate::commands::apps::WindowRegistryState;
 use crate::commands::workspace::WorkspaceStateArc;
@@ -63,6 +63,10 @@ pub fn switch(
     next_local_file: Option<&str>,
     snapshot: &PreviousProjectSnapshot,
 ) -> Result<ProjectRuntimeSwitchedPayload, String> {
+    // Popouts are registered per TAB SCOPE, and the root scope's name is "root"
+    // — a `project_id` of `None` names it here (see `subwindow::ROOT_SCOPE`).
+    let next_scope = project_id.unwrap_or(crate::commands::subwindow::ROOT_SCOPE);
+
     // 1. Flush elapsed time for the previous project.
     if snapshot.flush_secs > 0.0 {
         if let Some(prev_id) = previous_project_id {
@@ -153,39 +157,19 @@ pub fn switch(
         window_service::hide_windows(&*ws.backend, &prev_wids);
     }
 
-    // 5b. #42: Tauri-level hide of the previous project's DETACHED subwindows.
-    //     Backend-independent: on X11 it complements the desktop-park above; on
-    //     Wayland/KDE/null (where desktop-parking is a no-op) it is the ONLY
-    //     mechanism keeping an inactive project's detached window from floating
-    //     over every project. Re-shown in step 8b on switch-back.
-    {
-        let prev_labels = {
+    // 5b. #42: Tauri-level park of every popout that does NOT belong to the
+    //     scope being switched to (this project, or the root). Keyed by SCOPE,
+    //     not by the outgoing project id: a root popout registers under "root"
+    //     while a switch away from the root passes `None`, so the old
+    //     previous-project form never matched it. Un-parked in step 8b.
+    crate::commands::subwindow::hide_detached_windows(
+        app,
+        win_registry,
+        &{
             let wins = win_registry.lock().unwrap();
-            window_service::project_detached_labels(&wins.windows, previous_project_id)
-        };
-        for label in &prev_labels {
-            if let Some(win) = app.get_webview_window(label) {
-                // Capture the popout's real on-screen geometry (PHYSICAL px, so
-                // it is scale-invariant and re-applies onto the SAME monitor)
-                // BEFORE hiding it. hide()/show() lets the WM re-place the window
-                // — typically onto the primary monitor — so switch-back must put
-                // it back explicitly (step 8b), or a multi-monitor popout lands on
-                // the wrong screen (#42).
-                if let (Ok(pos), Ok(size)) = (win.outer_position(), win.inner_size()) {
-                    win_registry.lock().unwrap().detached_bounds.insert(
-                        label.clone(),
-                        crate::commands::apps::DetachedBounds {
-                            x: pos.x,
-                            y: pos.y,
-                            w: size.width,
-                            h: size.height,
-                        },
-                    );
-                }
-                let _ = win.hide();
-            }
-        }
-    }
+            window_service::detached_labels_by_scope(&wins.windows, next_scope).1
+        },
+    );
 
     // 6. Save previous window session IDs to .eldrun/sessions/windows.json.
     if let Some(local_file) = previous_local_file {
@@ -211,63 +195,17 @@ pub fn switch(
         window_service::show_windows(&*ws.backend, &next_wids);
     }
 
-    // 8b. #42: Tauri-level re-show of the next project's detached subwindows
-    //     (mirrors 5b). On Wayland/null this un-hides them; on X11 it pairs with
-    //     the desktop un-park in step 8. `unminimize()` first in case a backend
-    //     minimized rather than hid them.
-    {
-        let next_labels = {
+    // 8b. #42: Tauri-level un-park of the next scope's popouts (mirrors 5b).
+    //     On Wayland/null this un-hides them; on X11 it pairs with the desktop
+    //     un-park in step 8, and it restores the geometry captured at park time.
+    crate::commands::subwindow::show_detached_windows(
+        app,
+        win_registry,
+        &{
             let wins = win_registry.lock().unwrap();
-            window_service::project_detached_labels(&wins.windows, project_id)
-        };
-        for label in &next_labels {
-            if let Some(win) = app.get_webview_window(label) {
-                let _ = win.unminimize();
-                let _ = win.show();
-                // Put the popout back where it was before it was parked: the
-                // show() above lets the WM move it (often onto the wrong
-                // monitor), so re-apply the geometry captured at hide-time (step
-                // 5b), validated against the currently-connected monitors so an
-                // unplugged display can't strand it off-screen. Size before
-                // position so a resize can't shift the placement. PHYSICAL px →
-                // correct monitor regardless of per-monitor scaling (#42).
-                let saved = win_registry
-                    .lock()
-                    .unwrap()
-                    .detached_bounds
-                    .get(label)
-                    .copied();
-                if let Some(b) = saved {
-                    let monitors = window_service::monitor_rects(&win);
-                    let fitted = crate::services::window_state::resolve_detached_geometry(
-                        crate::schema::settings::WindowState {
-                            x: b.x,
-                            y: b.y,
-                            w: b.w,
-                            h: b.h,
-                            maximized: false,
-                        },
-                        &monitors,
-                    );
-                    match fitted {
-                        Some(g) => {
-                            let _ = win.set_size(tauri::PhysicalSize::new(g.w, g.h));
-                            let _ = win.set_position(tauri::PhysicalPosition::new(g.x, g.y));
-                        }
-                        // The display this popout was parked on is gone. Leaving
-                        // the WM's placement puts it on a real screen but at the
-                        // size it had on the old one — on a laptop panel that is
-                        // a borderless window hanging off two edges, with no
-                        // resize border left to grab. Fit it to the screen it
-                        // actually landed on instead (#240).
-                        None => {
-                            crate::commands::subwindow::snap_detached_to_screen(app, label);
-                        }
-                    }
-                }
-            }
-        }
-    }
+            window_service::detached_labels_by_scope(&wins.windows, next_scope).0
+        },
+    );
 
     // 9. Collect opened window IDs and return the completed payload.
     let opened_window_ids = {

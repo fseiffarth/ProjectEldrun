@@ -2160,6 +2160,18 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     if (prev !== scope && prev.startsWith(BOX_SCOPE_PREFIX)) {
       void get().persistScope(prev, "").catch(() => {});
     }
+    // #42: popouts follow the SCOPE, not the project. A popout is an OS window
+    // of its own, so nothing about a scope change hides it — the backend parks
+    // the outgoing scope's popouts and un-parks the incoming scope's. That park
+    // used to ride on `switch_project_runtime` alone, which entering a `box:<id>`
+    // scope never performs (`openBox` only sets the scope), so a project's popout
+    // kept floating over the box's tabs. Every scope change funnels through here,
+    // so this is the one call that covers all of them. Never from a popout's own
+    // heap (`getDetachedWindowContext`): its store mirrors ONE group and its idea
+    // of "the scope" must not drive which windows the main window shows.
+    if (prev !== scope && !getDetachedWindowContext()) {
+      void invoke("sync_detached_scope", { scope }).catch(() => {});
+    }
     set((s) => {
       const tabs = s.tabsByScope[scope] ?? [];
       const layout = s.layoutByScope[scope] ?? null;

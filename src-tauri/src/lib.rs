@@ -1323,6 +1323,7 @@ pub fn run() {
             commands::subwindow::attach_subwindow,
             commands::subwindow::detached_window_frontmost,
             commands::subwindow::snap_detached_window,
+            commands::subwindow::sync_detached_scope,
             // The deck presenter's audience window (M#90)
             commands::presenter::open_presenter_window,
             commands::presenter::close_presenter_window,

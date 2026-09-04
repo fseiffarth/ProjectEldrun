@@ -20,7 +20,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { vi } from "vitest";
 
-vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
+vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(() => Promise.resolve()) }));
 
 import { useTabsStore } from "../stores/tabs";
 
