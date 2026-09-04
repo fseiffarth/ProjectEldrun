@@ -72,9 +72,16 @@ change was not run live.
   and coalescing — a commit landing mid-build queues one more pass instead of a
   second build, so a rebase costs one or two and ends on the *last* tree. It
   installs and notifies; it never launches or stops anything, and a running
-  frozen window keeps its old inode until the user relaunches it. It declines
-  in CI and from a linked worktree (freezing an agent's tree over the user's
-  binary is exactly the surprise to avoid). Off with `git config
+  frozen window keeps its old inode until the user relaunches it. **From an
+  agent tab it builds and stops there** (2026-09-04): `services::agent_fence`
+  gives an agent a tmpfs `$HOME`, so the install wrote 75 MB into a directory
+  that died with the tab and the notification had no session bus to reach —
+  every commit reporting success while the desktop icon stayed two days behind.
+  The build is real (`target/` is inside the bound project), so
+  `start-eldrun-dev-build.sh` adopts `target/release/eldrun` at launch instead,
+  in the user's own session, guarded by `scripts/assert-embedded-frontend.sh`.
+  It declines in CI and from a linked worktree (freezing an agent's tree over
+  the user's binary is exactly the surprise to avoid). Off with `git config
   eldrun.autoDevBuild false`, or `ELDRUN_NO_AUTO_DEV_BUILD=1` for one commit;
   `scripts/package-dev-auto.sh --status` says what it is doing and
   `~/.local/share/eldrun/package-dev-auto.log` holds the last build's output.

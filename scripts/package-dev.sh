@@ -68,6 +68,32 @@ fi
 # and launch fine and then show only WebKit's connection-refused page.
 "$ROOT/scripts/assert-embedded-frontend.sh" "$RAW_BIN"
 
+# Installing into a tmpfs is not installing.
+#
+# Run from inside an agent tab, `services::agent_fence` has replaced $HOME with
+# a tmpfs holding only the project and a couple of bound state paths. The BUILD
+# above is real -- target/ is inside the bound project -- but the install below
+# would write 75 MB into a directory that dies with the tab, and then print
+# "Installed frozen binary". Since the post-commit hook started freezing on
+# every commit, and commits are made from agent tabs, that is every freeze: the
+# desktop icon opened a two-day-old window while a dozen commits each reported
+# success (2026-09-04).
+#
+# So stop at the artifact and say so. start-eldrun-dev-build.sh adopts it at
+# launch, in the user's own session, where no fence can swallow it.
+if [ "$(stat -f -c %T "$APP_DIR" 2>/dev/null || echo unknown)" = "tmpfs" ] ||
+   [ "${ELDRUN_AGENT_FENCE:-}" = "1" ]; then
+  cat <<MSG
+package-dev: built $RAW_BIN, and stopped there.
+  $APP_DIR is a tmpfs, so this is running inside an agent fence and anything
+  installed there evaporates with the tab. The build is real; the install
+  would not be.
+  The "Eldrun (dev)" launcher adopts that binary on its next start, so
+  relaunching Eldrun (dev) picks this snapshot up. Nothing else to do.
+MSG
+  exit 0
+fi
+
 # The running frozen instance keeps its old inode; `install` replaces the path
 # atomically enough that a relaunch picks the new snapshot up.
 install -Dm755 "$RAW_BIN" "$BINARY_DEST"
