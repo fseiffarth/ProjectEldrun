@@ -3178,3 +3178,41 @@
   outline: none;
 }
 .agent-prompts-rename-btn { flex: none; line-height: 1; }
+
+/* ── Markdown prompt field (common/MarkdownPromptField) ────────────────────
+   A prompt is Markdown wherever it lands, so the fields that hold one in the
+   Agents view carry the file viewer's own formatting toolbar and Edit/Preview
+   pair rather than a second look for the same job — the classes below are only
+   the layout the side panel needs around those borrowed controls. The rules sit
+   after `.agent-prompts-row-main .agent-prompts-edit`, whose `font: inherit`
+   they have to outrank for the monospace ground that makes list indentation and
+   fences line up. */
+.md-prompt { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.md-prompt-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+}
+.md-prompt .md-prompt-input {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  font-family: var(--font-mono, ui-monospace, Menlo, Consolas, monospace);
+  font-size: 12px;
+  line-height: 1.45;
+  tab-size: 2;
+}
+/* The preview stands where the field stood: same box, same ground, reading as
+   the rendered prompt rather than as a panel of its own. */
+.md-prompt .md-prompt-preview {
+  max-height: 320px;
+  overflow: auto;
+  padding: 4px 8px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--bg-main, transparent);
+  font-size: 12px;
+}
+.md-prompt .md-prompt-preview.file-tree-empty { padding: 8px; }

@@ -51,6 +51,7 @@ import { persistScheduleBinding, scheduleCacheKey, useAgentSchedulesStore } from
 import { useSettingsStore } from "../../stores/settings";
 import { isResumableAgentTab, useTabsStore, type TabEntry } from "../../stores/tabs";
 import { Dropdown } from "../common/Dropdown";
+import { MarkdownPromptField } from "../common/MarkdownPromptField";
 import { UntestedTag } from "../common/UntestedTag";
 import { AgentScheduleDialog } from "./AgentScheduleDialog";
 
@@ -200,12 +201,12 @@ function AgentTabComposer({
         </label>
       )}
 
-      <textarea
+      <MarkdownPromptField
         rows={3}
         value={draft}
         placeholder={t("agentPrompts.composerPlaceholder", { tab: tab.label })}
-        aria-label={t("agentPrompts.composerPlaceholder", { tab: tab.label })}
-        onChange={(event) => setDraft(event.target.value)}
+        ariaLabel={t("agentPrompts.composerPlaceholder", { tab: tab.label })}
+        onChange={setDraft}
         // Ctrl/⌘+Enter sends, because plain Enter has to stay a newline in a
         // prompt — the same split the schedule editor's textarea above uses.
         onKeyDown={(event) => {
@@ -690,18 +691,23 @@ export function AgentSchedulesView({ scope, active }: Props) {
           ))}
         <div className="agent-prompts-row-main">
           {editing === prompt.id ? (
-            <textarea
+            <MarkdownPromptField
               className="agent-prompts-edit"
               rows={4}
               value={editDraft}
               autoFocus
-              aria-label={t("agentPrompts.editAria")}
-              onChange={(event) => setEditDraft(event.target.value)}
+              ariaLabel={t("agentPrompts.editAria")}
+              onChange={setEditDraft}
               // Escape leaves it as it was; Ctrl/⌘+Enter writes it, because
               // plain Enter has to stay a newline in a prompt.
               onKeyDown={(event) => {
-                if (event.key === "Escape") cancelEdit();
-                else if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) void saveEdit(prompt.id);
+                if (event.key === "Escape") {
+                  event.preventDefault();
+                  cancelEdit();
+                } else if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+                  event.preventDefault();
+                  void saveEdit(prompt.id);
+                }
               }}
             />
           ) : (
@@ -1093,12 +1099,12 @@ export function AgentSchedulesView({ scope, active }: Props) {
         )}
         {visiblePrompts.map((prompt, index) => promptRow(prompt, index, "library"))}
         <div className="agent-prompts-form">
-          <textarea
+          <MarkdownPromptField
             rows={4}
             value={draft}
             placeholder={t("agentPrompts.placeholder")}
-            aria-label={t("agentSchedule.message")}
-            onChange={(event) => setDraft(event.target.value)}
+            ariaLabel={t("agentSchedule.message")}
+            onChange={setDraft}
           />
           <input
             className="agent-prompts-tags-input"
