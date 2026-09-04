@@ -10,7 +10,6 @@ import { StatusCluster } from "../header/StatusCluster";
 import { MailIndicator } from "../header/MailIndicator";
 import { CalendarIndicator } from "../header/CalendarIndicator";
 import { TodoIndicator } from "../header/TodoIndicator";
-import { AlertsToggle } from "../header/AlertsToggle";
 import { SettingsMenu } from "../header/SettingsMenu";
 import { WindowControls } from "../header/WindowControls";
 import { ProjectSwitcher } from "./ProjectSwitcher";
@@ -94,25 +93,19 @@ export function HeaderBar() {
         <ProjectSwitcher open />
       </div>
       {/* Right of the strip, in three groups separated by gap rather than by more
-          hairlines: machine state, then the global *apps* (kept as their own
-          buttons — mail, calendar and to-do each carry a live badge, which is
-          exactly what a launcher menu would hide), then the global *menus*.
-          Machine state leads rather than trails: it is a readout, not a control,
-          so it belongs next to the project strip it describes — and putting it
-          first also stops its widest members (the 280px machines list, the VPN
-          and Mobile panels) from opening hard against the window's right edge. */}
+          hairlines: the global *apps* (kept as their own buttons — mail, calendar
+          and to-do each carry a live badge, which is exactly what a launcher menu
+          would hide), then the global *menus*, then machine state.
+          Machine state trails rather than leads: at rest it is one lamp, so it
+          costs the bar nothing where it sits, and parking it past the gear keeps
+          the controls contiguous instead of splitting them around a readout. Its
+          widest members (the 280px machines list, the VPN and Mobile panels) can
+          live this close to the window edge because every menu in this cluster is
+          right-anchored and grows inward (see `.header-status-menu-anchor`). */}
       <div className="header-right no-drag">
-        <StatusCluster />
-        <span className="header-right-gap" aria-hidden="true" />
         <MailIndicator />
         <CalendarIndicator />
         <TodoIndicator />
-        {/* The Alerts group's on/off switch. It rides with the global apps rather
-            than with the menus to its right because that is what it is: one
-            machine-wide state, like mail, the calendar and the board beside it —
-            it moved here out of the per-project file toolbar, where a global
-            switch was rendered once per open file viewer. */}
-        <AlertsToggle />
         <span className="header-right-gap" aria-hidden="true" />
         <LocalModelMenu />
         <GlobalAppMenu />
@@ -121,6 +114,8 @@ export function HeaderBar() {
             strip, where it put the switcher's own controls on both sides of a
             scrolling row. */}
         <SettingsMenu />
+        <span className="header-right-gap" aria-hidden="true" />
+        <StatusCluster />
         <span className="project-switcher-separator" aria-hidden="true" />
         <WindowControls />
       </div>

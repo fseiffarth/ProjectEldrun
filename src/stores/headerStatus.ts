@@ -25,7 +25,8 @@ export type HeaderStatusKey =
   | "mobile"
   | "vpn"
   | "machines"
-  | "resources";
+  | "resources"
+  | "alerts";
 
 /**
  * How loudly a member is speaking.

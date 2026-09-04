@@ -67,6 +67,16 @@
   line-height: 1;
 }
 
+/* The bell is drawn, not typed (see `AlertsToggle`), so it takes a box rather
+   than a font size — the same 15px square `ConnTypeIcon` and `BatteryIndicator`
+   use, since it now stands in the same cluster as those two. */
+svg.alerts-toggle-icon {
+  width: 15px;
+  height: 15px;
+  color: currentColor;
+  flex-shrink: 0;
+}
+
 /* The count. Anchored to the button's corner rather than laid out in the row, so
    the button's width does not jump when the number appears — a header that
    reflows on an incoming message moves every control beside it under the user's

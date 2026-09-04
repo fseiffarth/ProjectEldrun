@@ -4,6 +4,7 @@ import { ConnLamp } from "../common/ConnLamp";
 import { ConnTypeIcon } from "./ConnTypeIcon";
 import { BatteryIndicator } from "./BatteryIndicator";
 import { MobileIndicator } from "./MobileIndicator";
+import { AlertsToggle } from "./AlertsToggle";
 import { VpnIndicator } from "./VpnIndicator";
 import { MachinesIndicator } from "./MachinesIndicator";
 import { AppResourceDisplay } from "./AppResourceDisplay";
@@ -135,6 +136,13 @@ export function StatusCluster() {
 
   return (
     <div className="header-status-cluster">
+      {/* Alerts leads the row: it is the one member that is a *control* rather
+          than a readout, so it takes the row's head — the slot nearest the
+          global-app buttons it used to live among — rather than being buried
+          between the VPN lamp and the CPU meters. */}
+      <span className="status-cluster-item" data-folded={folded("alerts")}>
+        <AlertsToggle />
+      </span>
       <span className="status-cluster-item" data-folded={folded("conn")}>
         {showConn && <ConnTypeIcon type={connKind ?? "wlan"} online={online} />}
       </span>
@@ -169,7 +177,7 @@ export function StatusCluster() {
         >
           {collapsed && <ConnLamp status={summaryLamp(all)} label={t("statusCluster.label")} />}
           {/* Points the way the cluster moves: ‹ opens it leftwards into the bar,
-              › folds it back towards the global-app buttons beside it. */}
+              › folds it back towards the window controls beside it. */}
           <span className="status-cluster-chevron" aria-hidden>
             {collapsed ? "‹" : "›"}
           </span>
