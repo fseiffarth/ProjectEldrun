@@ -5,9 +5,12 @@ import type { ProjectBox } from "../types";
 import { resolveProjectDirectory } from "../types";
 import { restoreProjectScope, useProjectsStore } from "./projects";
 import { cmdToKind, hydrateScopeFromDisk, useTabsStore } from "./tabs";
+import { BOX_SCOPE_PREFIX } from "../lib/ptyId";
 
-/** Scope-id prefix for box-rooted tabs, disjoint from project ids and "root". */
-export const BOX_SCOPE_PREFIX = "box:";
+// Re-exported, not redeclared: the PTY-id parser needs the same constant and
+// cannot import this module (it would be a cycle through stores/tabs), so the
+// literal lives in the leaf and everything else reads it from here as before.
+export { BOX_SCOPE_PREFIX } from "../lib/ptyId";
 
 export function boxScopeId(boxId: string): string {
   return `${BOX_SCOPE_PREFIX}${boxId}`;

@@ -3,6 +3,7 @@ import { emit, listen } from "@tauri-apps/api/event";
 import { create } from "zustand";
 import { looksLikeDecisionPromptStripped, stripAnsi } from "../lib/agentPrompt";
 import { METRIC, agentPromptLeaf } from "../lib/usageMetrics";
+import { splitPtyId } from "../lib/ptyId";
 import { allGroups, isPtyTabKind, useTabsStore } from "./tabs";
 import type { TabEntry } from "./tabs";
 import { bumpUsage } from "./usage";
@@ -198,13 +199,10 @@ export function notePtySpawn(ptyId: string) {
   decisionMemo.delete(ptyId);
 }
 
-/** Split a composed PTY id (`<scope>:<tabKey>`) into its parts, mirroring
- *  `isDetachedPtyId` in stores/tabs. Returns null for a bare (colon-less) id. */
-export function splitPtyId(ptyId: string): { scope: string; key: string } | null {
-  const idx = ptyId.indexOf(":");
-  if (idx < 0) return null;
-  return { scope: ptyId.slice(0, idx), key: ptyId.slice(idx + 1) };
-}
+// The parser lives in `lib/ptyId` — one cut for every consumer, and one that
+// knows a box scope carries a colon of its own. Re-exported so the call sites
+// that have always imported it from here keep working.
+export { splitPtyId };
 
 /** True when the tab is the one the user is currently looking at: it's the
  *  active (visible) tab of its group in the CURRENT scope. Background tabs and

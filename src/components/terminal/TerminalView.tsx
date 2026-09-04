@@ -1192,9 +1192,10 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       if (!attachOnly && !isDetachedPtyId(id) && !persistOnUnmount) {
         invoke("pty_kill", { id }).catch(() => {});
         // Drop the captured agent-task title so a closed tab's summary can't
-        // linger against a future tab that reuses the key.
-        const parts = id.split(":");
-        useAgentTaskStore.getState().clearTabTitle(parts.length > 1 ? parts.slice(1).join(":") : id);
+        // linger against a future tab that reuses the key. Through the shared
+        // parser: splitting on every colon left a box tab's key as
+        // `<boxId>:<tabKey>`, which matched no stored title and so cleared none.
+        useAgentTaskStore.getState().clearTabTitle(splitPtyId(id)?.key ?? id);
       }
       term.dispose();
       // Retire the lifecycle refs WITH the terminal they describe. Every guard in

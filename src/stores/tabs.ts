@@ -5,6 +5,7 @@ import { useShallow } from "zustand/react/shallow";
 import type { InternalViewer } from "../lib/viewers/fileUtils";
 import type { AutocompleteMode } from "../types";
 import { forgetPty } from "../lib/promptCount";
+import { BOX_SCOPE_PREFIX, splitPtyId } from "../lib/ptyId";
 import { METRIC, agentMetricLeaf, sub } from "../lib/usageMetrics";
 import { useLinkRoutingStore } from "./linkRouting";
 import { bumpUsage } from "./usage";
@@ -2155,10 +2156,8 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     // before leaving the box was never written. Boxes persist under their own id
     // in the state dir with no project.json export, hence localFile "".
     // Scope-addressed and fire-and-forget, like the root flush.
-    // (The literal prefix mirrors `stores/boxes.BOX_SCOPE_PREFIX`; importing it
-    // here would be a stores/tabs ⇄ stores/boxes cycle.)
     const prev = get().scope;
-    if (prev !== scope && prev.startsWith("box:")) {
+    if (prev !== scope && prev.startsWith(BOX_SCOPE_PREFIX)) {
       void get().persistScope(prev, "").catch(() => {});
     }
     set((s) => {
@@ -5057,12 +5056,14 @@ export { regenIds as _regenLayoutIds };
  * unmount commit, so this read sees the detached state at kill time.
  */
 export function isDetachedPtyId(id: string): boolean {
-  const idx = id.indexOf(":");
-  if (idx < 0) return false;
-  const scope = id.slice(0, idx);
-  const tabKey = id.slice(idx + 1);
-  const groups = useTabsStore.getState().detachedGroupsByScope[scope] ?? [];
-  return groups.some((g) => orderedTabKeys(g.subtree).includes(tabKey));
+  // Through `splitPtyId`, never a hand-rolled cut at the first colon: a box
+  // scope is `box:<id>`, so that cut read `box:abc:agent-3` as the scope
+  // `"box"`, found no detached groups under it, and let the main window kill a
+  // PTY it had just handed to a popout — a detached box tab came up dead.
+  const parts = splitPtyId(id);
+  if (!parts) return false;
+  const groups = useTabsStore.getState().detachedGroupsByScope[parts.scope] ?? [];
+  return groups.some((g) => orderedTabKeys(g.subtree).includes(parts.key));
 }
 
 // ── Fine-grained per-group selectors (Eff #3/#4/#7 + Struct #3) ───────────────
