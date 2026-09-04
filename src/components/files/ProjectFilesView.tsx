@@ -2546,9 +2546,12 @@ export function ProjectFilesView({
           appointments and cards are global, so a user who left the panel on Git
           (or Sessions, or Jobs) must still see the row that is due. It sits
           after every view's body — in the files view that is directly under the
-          tree and its frame footer, exactly where it always was. Only a box's
-          multi-root view is excluded, as its toolbar already excludes it. */}
-      {alertsHere && !activeBox && (
+          tree and its frame footer, exactly where it always was. A box's
+          multi-root view is no exception any more: the rows are machine-wide,
+          so standing in a box scope is not a reason for a due card to vanish,
+          and the header's 🔔 reading as on while the panel showed nothing was
+          the same wrong answer the per-view exclusion used to give. */}
+      {alertsHere && (
         <AlertsSection onClose={() => void updateSettings({ files_alerts: false })} />
       )}
       {showSettings && project && localFile && (

@@ -5,7 +5,9 @@
  * on while nothing was showing. Mail, appointments and cards are global, so the
  * strip now belongs to `ProjectFilesView` and follows every view's body.
  *
- * A box's multi-root view stays the one exception, as it always was.
+ * A box's multi-root view was the last exception and is one no longer — see
+ * `SidePanelBox.test.tsx`. Only the docked subwindow column (`compact`) still
+ * withholds the group, on space grounds.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, act } from "@testing-library/react";
