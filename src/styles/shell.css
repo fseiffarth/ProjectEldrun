@@ -347,93 +347,11 @@ select option {
 .dialog-close-btn::after { transform: rotate(-45deg); }
 
 /* ── App logo ────────────────────────────────────────────────────────── */
-/* The star inside the root-terminal pill (the pill itself is .root-pill, down
-   with the project pills it is the first of). */
-.root-pill-star {
-  height: 20px;
-  width: 20px;
-  object-fit: contain;
-  flex-shrink: 0;
-  /* Ring/branch strokes use currentColor so the logo stays legible on every
-     theme (the dark-green original vanished on the dark background). Pure
-     black on light themes, pure white on dark, via the per-theme token. */
-  color: var(--logo-color, var(--text-primary));
-  /* HeaderBar mounts exactly once per app launch, so this plays once as a
-     startup flourish and never again (no infinite/repeat). */
-  animation: eldrun-logo-intro 1.1s cubic-bezier(0.34, 1.56, 0.64, 1) both;
-  transform-origin: 50% 50%;
-}
-
-@keyframes eldrun-logo-intro {
-  0% {
-    opacity: 0;
-    transform: scale(0.2) rotate(-135deg);
-  }
-  60% {
-    opacity: 1;
-    transform: scale(1.15) rotate(10deg);
-  }
-  80% {
-    transform: scale(0.95) rotate(-4deg);
-  }
-  100% {
-    opacity: 1;
-    transform: scale(1) rotate(0deg);
-  }
-}
-
-/* The logo doubles as the root-terminal switch button. */
-/* The root terminal as the pill row's fixed first tab. Deliberately the
-   .project-pill box copied rather than a treatment of its own — same 40px
-   height, same reserved-transparent 3px top border, same accent line + side
-   shadow when it is the current scope — so the row reads as one strip of tabs
-   whose first one happens to wear the mark instead of a name. It sits outside
-   .project-pills-scroll, which is what keeps it put while the rest scroll. */
-.root-pill {
-  box-sizing: border-box;
-  /* Anchors the bottom status-bar strip (.pill-status-bars), exactly as
-     .project-pill does — the root terminal shows its working tabs like any
-     other scope. */
-  position: relative;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  height: 40px;
-  padding: 0 10px;
-  border: none;
-  border-top: 3px solid transparent;
-  border-radius: 0;
-  background: transparent;
-  color: var(--text-secondary);
-  cursor: var(--cur-pointer, pointer);
-  transition: color var(--transition), border-color var(--transition);
-}
-
-/* The switch inside the box (the .pill-main of the root pill): bare, so the box
-   above keeps owning the border, the height and the hover/active colour, and the
-   status strip can sit beside it rather than inside a button. */
-.root-pill-main {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  height: 100%;
-  padding: 0;
-  border: none;
-  background: transparent;
-  color: inherit;
-  cursor: var(--cur-pointer, pointer);
-}
-
-.root-pill:hover {
-  color: var(--text-primary);
-}
-
-.root-pill.active {
-  color: var(--text-primary);
-  border-top-color: var(--accent);
-  box-shadow: 3px 0 4.5px -2px rgba(0, 0, 0, 0.4), -3px 0 4.5px -2px rgba(0, 0, 0, 0.4);
-}
+/* The Eldrun spark. It used to live in a pill of its own at the head of the
+   project row (`.root-pill`, with a one-per-launch intro animation); root and
+   Trash now fold into the scope chip beside the projects, so the mark is drawn
+   by `.box-chip-star` there and by `.detached-titlebar-logo` in a popout's
+   title bar. Nothing sizes it here any more — each host does. */
 
 /* ── Version / debug / conn-type ─────────────────────────────────────── */
 .app-version-stack {

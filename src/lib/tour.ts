@@ -128,9 +128,10 @@ const FILE_PANEL_ANCHOR = '.side-panel.open, [data-hint-anchor="file-tree-edge"]
 export const TOUR_STEPS: TourStep[] = [
   {
     id: "root-terminal",
-    // The pill's own button, not an aria-label: the label is translated, so a
-    // text selector only matched in English.
-    anchor: ".root-pill-main",
+    // The scope chip's own button, not an aria-label: the label is translated,
+    // so a text selector only matched in English. (The root terminal had a pill
+    // of its own here until it folded into that chip's dropdown.)
+    anchor: ".box-chip-main",
     placement: "bottom",
     titleKey: "howToStart.step1Title",
     bodyKey: "tour.rootTerminalBody",

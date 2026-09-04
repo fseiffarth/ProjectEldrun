@@ -308,9 +308,12 @@
   align-items: center;
   flex-shrink: 0;
   height: 40px;
-  /* 10px, the leading run's shared inset (see `.header-left`): the chip is the
-     last item of ★ · 🗑 · ▣, and 8 here made its gap to the Trash pill the one
-     that came up short. */
+  /* Anchors the bottom status-bar strip (.pill-status-bars), exactly as
+     .project-pill and .root-pill do. */
+  position: relative;
+  /* 10px, the leading run's shared inset (see `.header-left`): the chip IS the
+     leading run now (root, Trash and the boxes all fold into it), so it keeps
+     the inset the run had. */
   padding: 0 10px;
   border: none;
   border-top: 3px solid transparent;
@@ -346,6 +349,28 @@
   color: var(--accent);
 }
 
+/* The marks the chip wears instead of ▣ when it names a built-in scope: the
+   app's own spark for the root terminal, the bin for Trash — the two glyphs
+   their pinned pills carried before both folded in here, at the same 18px the
+   Trash pill drew and without the pill's one-per-launch intro flourish (the
+   chip re-mounts its star on every trip back to root, and a logo that replays
+   its entrance on each visit is a tic, not a flourish). */
+.box-chip-star,
+.box-chip-trash-icon {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  color: inherit;
+}
+
+.box-chip-menu-star,
+.box-chip-menu-trash-icon {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  color: inherit;
+}
+
 .box-chip-caret {
   font-size: var(--text-xs);
   line-height: 1;
@@ -367,6 +392,23 @@
   color: var(--text-primary);
   border-top-color: var(--accent);
   box-shadow: 3px 0 4.5px -2px rgba(0, 0, 0, 0.4), -3px 0 4.5px -2px rgba(0, 0, 0, 0.4);
+}
+
+/* The chip is as narrow as the root pill when it names no box — narrower than
+   any named pill — while its strip may stand for SEVERAL boxes at once, so it
+   is the tightest six bars in the app: the root pill's 3px inset, plus a
+   smaller gap and a lower floor per bar, which is what keeps a full strip
+   inside the chip instead of spilling over the hairline beside it. The bars
+   stay hittable at 4px because their target is the transparent ::after that
+   reaches past them on every side, not the paint. */
+.box-chip .pill-status-bars {
+  left: 3px;
+  right: 3px;
+  gap: 2px;
+}
+
+.box-chip .pill-status-bar {
+  min-width: 4px;
 }
 
 /* A project pill is being dragged over the chip: dropping adds it to this box. */
@@ -450,6 +492,29 @@
 .box-chip-menu-count {
   font-size: 10px;
   color: var(--text-secondary);
+}
+
+/* The same strip inside a dropdown ROW, where it is a piece of the row's
+   layout rather than a band across the bottom of a pill: laid out in the flow,
+   between the box's name and its member count. Inert here — the row is a
+   button, so the bars are spans and clicking anywhere in it picks the box. */
+.pill-status-bars.inline {
+  position: static;
+  flex: 0 0 auto;
+  /* Sized by its bars (a one-bar row is one bar wide), never past the width
+     the row can spare between the box's name and its member count. */
+  max-width: 34px;
+}
+
+.pill-status-bar.static {
+  pointer-events: none;
+  cursor: var(--cur-default, default);
+  flex: 0 1 8px;
+}
+
+/* No enlarged hit area on a bar that isn't a target. */
+.pill-status-bar.static::after {
+  content: none;
 }
 
 .box-chip-menu-sep {
@@ -1214,13 +1279,6 @@
   pointer-events: none;
 }
 
-/* The root pill is only as wide as the star it holds — far narrower than a
-   named project's — so its strip runs closer to the edges, which is what lets a
-   full six bars fit at their minimum width instead of spilling out of it. */
-.root-pill .pill-status-bars {
-  left: 3px;
-  right: 3px;
-}
 
 .pill-status-bar {
   /* Shrinks (never grows) so a full strip still fits a narrow pill. */

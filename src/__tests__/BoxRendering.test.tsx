@@ -20,9 +20,11 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn().mockResolvedValue(nu
 
 import { ProjectSwitcher } from "../components/layout/ProjectSwitcher";
 import { useProjectsStore } from "../stores/projects";
-import { useBoxesStore } from "../stores/boxes";
+import { BOX_SCOPE_PREFIX, useBoxesStore } from "../stores/boxes";
 import { usePillDragStore } from "../stores/pillDrag";
 import { useTabsStore } from "../stores/tabs";
+import { TRASH_PROJECT_ID } from "../lib/trashProject";
+import { useActivityStore } from "../stores/activity";
 
 function proj(id: string, position: number): ProjectEntry {
   return {
@@ -36,6 +38,18 @@ function proj(id: string, position: number): ProjectEntry {
 
 function box(id: string, members: string[], position = 5): ProjectBox {
   return { id, name: id, member_ids: members, position };
+}
+
+/** The built-in Trash workspace, as the store holds it. */
+function trashProj(): ProjectEntry {
+  return { ...proj(TRASH_PROJECT_ID, 0), name: "Trash" };
+}
+
+/** What the real `openBox` does that these tests depend on: it moves the tab
+ *  scope into the box. The chip names the scope it is in, so a mock that only
+ *  resolved left it naming root. */
+async function openBoxScope(boxId: string) {
+  useTabsStore.setState({ scope: `${BOX_SCOPE_PREFIX}${boxId}` });
 }
 
 /** Give an element a fixed layout rect, since jsdom's is always zero-sized. */
@@ -140,10 +154,37 @@ describe("box chip rendering (slice model)", () => {
     expect(findPill(container, "p2").querySelector(".project-pill-boxdot")).toBeNull();
   });
 
-  it("costs the header nothing when no box exists", async () => {
+  it("is the row's whole leading segment: no root or Trash pill beside it", async () => {
+    // The chip used to render nothing at all until a box existed, when root and
+    // Trash each had a pinned pill of their own. Both fold into it now, so it is
+    // always there — and it is the ONLY thing between the header's edge and the
+    // scrolling projects.
     useProjectsStore.setState({ projects: [proj("p1", 10)], activeId: null, loaded: true });
     const container = await renderSwitcher();
-    expect(chip(container)).toBeNull();
+    expect(chip(container)).toBeTruthy();
+    expect(container.querySelector(".root-pill")).toBeNull();
+    expect(container.querySelector(".trash-project-pill")).toBeNull();
+    // Naming the scope it is in: root, with the app's own mark.
+    expect(chip(container)!.querySelector(".box-chip-star")).toBeTruthy();
+    expect(chip(container)!.textContent).toContain("Root");
+  });
+
+  it("lists root and Trash in the dropdown, ahead of the boxes", async () => {
+    useBoxesStore.setState({ boxes: [box("boxA", ["p1"])] });
+    useProjectsStore.setState({
+      projects: [proj("p1", 10), trashProj()],
+      activeId: null,
+      loaded: true,
+    });
+
+    const container = await renderSwitcher();
+    const menu = await openChipMenu(container);
+    const rows = [...menu.querySelectorAll("button")].map((b) => b.textContent ?? "");
+    expect(rows[0]).toContain("Root terminal");
+    expect(rows[1]).toContain("Trash");
+    expect(rows.findIndex((r) => r.includes("boxA"))).toBeGreaterThan(1);
+    // Neither is a box, so neither is a drop target for a pill drag.
+    expect(menu.querySelectorAll("[data-box-id]").length).toBe(1);
   });
 
   it("the chip lists every box, empty ones included, with member counts", async () => {
@@ -161,7 +202,7 @@ describe("box chip rendering (slice model)", () => {
   });
 
   it("picking a box opens it AND slices the strip to its members", async () => {
-    const openBox = vi.fn().mockResolvedValue(undefined);
+    const openBox = vi.fn(openBoxScope);
     useBoxesStore.setState({ boxes: [box("boxA", ["p1"])], openBox });
     useProjectsStore.setState({
       projects: [proj("p1", 10), proj("p2", 20)],
@@ -183,7 +224,7 @@ describe("box chip rendering (slice model)", () => {
   it("“All projects” puts the whole strip back", async () => {
     useBoxesStore.setState({
       boxes: [box("boxA", ["p1"])],
-      openBox: vi.fn().mockResolvedValue(undefined),
+      openBox: vi.fn(openBoxScope),
     });
     useProjectsStore.setState({
       projects: [proj("p1", 10), proj("p2", 20)],
@@ -210,7 +251,7 @@ describe("box chip rendering (slice model)", () => {
     // lost you — so the scoped project rides along with the slice.
     useBoxesStore.setState({
       boxes: [box("boxA", ["p1"])],
-      openBox: vi.fn().mockResolvedValue(undefined),
+      openBox: vi.fn(openBoxScope),
     });
     useProjectsStore.setState({
       projects: [proj("p1", 10), proj("p2", 20)],
@@ -252,7 +293,7 @@ describe("box chip rendering (slice model)", () => {
   it("a dissolved box takes its slice with it", async () => {
     useBoxesStore.setState({
       boxes: [box("boxA", ["p1"])],
-      openBox: vi.fn().mockResolvedValue(undefined),
+      openBox: vi.fn(openBoxScope),
     });
     useProjectsStore.setState({
       projects: [proj("p1", 10), proj("p2", 20)],
@@ -271,7 +312,10 @@ describe("box chip rendering (slice model)", () => {
       useBoxesStore.setState({ boxes: [] });
     });
     expect(pillNames(container).sort()).toEqual(["p1", "p2"]);
-    expect(chip(container)).toBeNull();
+    // The chip itself stays — it is root's and Trash's home too — it just names
+    // no box any more.
+    expect(chip(container)).toBeTruthy();
+    expect(chip(container)!.textContent).not.toContain("boxA");
   });
 
   it("a pill drag springs the box list open and each row is a drop target", async () => {
@@ -403,5 +447,110 @@ describe("box chip rendering (slice model)", () => {
 
     // p1 lands between p2 and p3 — i.e. immediately AFTER p2 — not after p3.
     expect(reorderProjects).toHaveBeenCalledWith("p1", "p2");
+  });
+});
+
+/**
+ * The chip's status strip: a `box:<id>` scope holds ordinary tabs running the
+ * same agents a project's do, so the one control standing for every box wears
+ * the pill row's working / waiting / finished bars (PillStatusBars'
+ * `ScopeSetStatusBars`) rather than reading as "nothing runs in a box".
+ */
+describe("box chip status bars", () => {
+  /** A box scope with one agent tab, in the state the strip should draw. */
+  function seedBoxTab(boxId: string, key: string, state: "working" | "needs-decision" | "finished") {
+    useTabsStore.setState((s) => ({
+      tabsByScope: {
+        ...s.tabsByScope,
+        [`box:${boxId}`]: [{ key, label: key, cmd: "claude", cwd: "/b", kind: "agent" }],
+      },
+    }));
+    useActivityStore.setState((s) => ({
+      statusTabsByScope: { ...s.statusTabsByScope, [`box:${boxId}`]: [{ key, state }] },
+    }));
+  }
+
+  function bars(container: HTMLElement): HTMLElement[] {
+    return [...container.querySelectorAll(".box-chip .pill-status-bar")] as HTMLElement[];
+  }
+
+  beforeEach(() => {
+    useTabsStore.setState({ tabsByScope: {}, layoutByScope: {} });
+    useActivityStore.setState({ statusTabsByScope: {}, statusCountsByScope: {} });
+  });
+
+  it("draws every box's non-idle tabs while the chip names none", async () => {
+    // Collapsed, the chip is the only thing on screen that can say a box wants
+    // something — its members' pills say nothing about the box's OWN tabs.
+    useBoxesStore.setState({ boxes: [box("boxA", ["p1"]), box("boxB", [])] });
+    useProjectsStore.setState({ projects: [proj("p1", 10)], activeId: null, loaded: true });
+    seedBoxTab("boxA", "agent-1", "needs-decision");
+    seedBoxTab("boxB", "agent-2", "working");
+
+    const container = await renderSwitcher();
+    const drawn = bars(container);
+    expect(drawn.map((b) => b.className)).toEqual([
+      "pill-status-bar working",
+      "pill-status-bar needs-decision",
+    ]);
+    // Each bar says which box it came from — otherwise a strip spanning boxes
+    // is a row of unattributed tab names.
+    expect(drawn[0].getAttribute("aria-label")).toContain("boxB · agent-2");
+    expect(drawn[1].getAttribute("aria-label")).toContain("boxA · agent-1");
+  });
+
+  it("a bar opens its own box's tab", async () => {
+    const openBox = vi.fn(openBoxScope);
+    useBoxesStore.setState({ boxes: [box("boxA", ["p1"])], openBox });
+    useProjectsStore.setState({ projects: [proj("p1", 10)], activeId: null, loaded: true });
+    seedBoxTab("boxA", "agent-1", "needs-decision");
+
+    const container = await renderSwitcher();
+    await act(async () => {
+      fireEvent.click(bars(container)[0]);
+    });
+    expect(openBox).toHaveBeenCalledWith("boxA");
+  });
+
+  it("narrows to the selected box's own scope", async () => {
+    useBoxesStore.setState({
+      boxes: [box("boxA", ["p1"]), box("boxB", [])],
+      openBox: vi.fn(openBoxScope),
+    });
+    useProjectsStore.setState({ projects: [proj("p1", 10)], activeId: null, loaded: true });
+    seedBoxTab("boxA", "agent-1", "needs-decision");
+    seedBoxTab("boxB", "agent-2", "working");
+
+    const container = await renderSwitcher();
+    const menu = await openChipMenu(container);
+    await act(async () => {
+      fireEvent.click(menuRow(menu, "boxA"));
+    });
+
+    // The chip names boxA, so it tallies boxA — and drops the box-name prefix
+    // it no longer needs.
+    const drawn = bars(container);
+    expect(drawn.map((b) => b.className)).toEqual(["pill-status-bar needs-decision"]);
+    expect(drawn[0].getAttribute("aria-label")).toContain("agent-1");
+    expect(drawn[0].getAttribute("aria-label")).not.toContain("boxA ·");
+  });
+
+  it("gives each dropdown row its own inert strip", async () => {
+    useBoxesStore.setState({ boxes: [box("boxA", ["p1"]), box("boxB", [])] });
+    useProjectsStore.setState({ projects: [proj("p1", 10)], activeId: null, loaded: true });
+    seedBoxTab("boxA", "agent-1", "finished");
+
+    const container = await renderSwitcher();
+    const menu = await openChipMenu(container);
+    const rowA = menuRow(menu, "boxA");
+    const rowB = menuRow(menu, "boxB");
+    const rowBars = [...rowA.querySelectorAll(".pill-status-bar")];
+    expect(rowBars).toHaveLength(1);
+    // Spans, not buttons: the row IS a button, and a button inside one is
+    // invalid markup.
+    expect(rowBars[0].tagName).toBe("SPAN");
+    expect(rowBars[0].className).toContain("finished");
+    // A box with nothing running draws no strip at all.
+    expect(rowB.querySelector(".pill-status-bars")).toBeNull();
   });
 });

@@ -173,4 +173,35 @@
     > boundary and QA matrix. A member's container/VM remains a separate,
     > stronger axis and does not become a box-level container/VM.
 
+    > **Phase 9 — the chip became the scope chip (2026-09-04, 🤖 covered,
+    > untested live).** Root and Trash lost their pinned pills at the head of the
+    > row and moved into the chip's dropdown, above "All projects" and the boxes:
+    > two permanent pills' worth of header for destinations reached by name
+    > rather than by pointing, so the leading segment is now a single control
+    > that names where you are (Root · Trash · a box · nothing = an ordinary
+    > project) and the strip got the width back. Picking Root or Trash lifts the
+    > box slice — neither is inside a box, and a strip left filtered by a box
+    > nobody is in reads as a strip that dropped projects. The chip's status
+    > strip now spans root + Trash + every box, narrowing to one scope only while
+    > a box slice is selected (naming root is where you stand, not a filter, and
+    > that is exactly when a box waiting on a decision must still be able to say
+    > so). The dropdown is hover-opened through the shared header hover-menu id,
+    > like the `+` menu beside it, so opening another header menu closes it in
+    > the same frame; click still reveals, and a pill drag still springs it open
+    > with every box row a drop target. The tour's root-terminal step re-anchors
+    > to `.box-chip-main`, and the steering station digit for root/Trash rides
+    > the chip and its rows.
+    - [x] 🤖 Automated test — vitest `BoxRendering` (chip is the row's whole
+      leading segment with no root/Trash pill; dropdown lists Root and Trash
+      ahead of the boxes and neither is a drop target; dissolving the last box
+      keeps the chip; multi-scope vs. narrowed status strip) and
+      `ProjectPillsRender` (Trash has a chip row, not a pill, and stays out of
+      the scrolling strip).
+    - [ ] 🖐️ Manual test — hover the chip, switch to Root and to Trash from its
+      list, confirm the strip un-slices, the accent line follows the scope, the
+      bars still open a waiting box tab from inside root, and that dragging a
+      pill still springs the list open onto a box row.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
 ---

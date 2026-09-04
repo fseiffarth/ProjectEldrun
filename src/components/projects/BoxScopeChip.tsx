@@ -1,9 +1,18 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { ProjectBox } from "../../types";
+import { BOX_SCOPE_PREFIX } from "../../stores/boxes";
+import { ROOT_SCOPE } from "../../stores/tabs";
 import { useBoxEditorStore } from "../../stores/boxEditor";
 import { usePillDragStore } from "../../stores/pillDrag";
+import { useHeaderHoverMenuStore } from "../../stores/headerHoverMenu";
 import { useT } from "../../lib/i18n";
+import { StarIcon } from "../layout/StarIcon";
+import { TrashProjectIcon } from "./TrashProjectIcon";
+import { ScopeSetStatusBars } from "./PillStatusBars";
+
+/** This chip's entry in the shared header hover-menu id (stores/headerHoverMenu). */
+const SCOPE_MENU_ID = "box-scope-chip";
 
 interface Props {
   boxes: ProjectBox[];
@@ -20,30 +29,45 @@ interface Props {
    *  `startPillDrag`, which hit-tests `data-box-id` across the whole pills
    *  region — the chip sits outside the scrolling strip). */
   forcedDragOver?: boolean;
+  /** The built-in Trash workspace, when it exists (it always should). */
+  trash?: { id: string; name: string } | null;
+  /** The root terminal's scope is the current one. */
+  rootActive?: boolean;
+  /** The Trash workspace's scope is the current one. */
+  trashActive?: boolean;
+  onSelectRoot: () => void;
+  onSelectTrash: () => void;
+  /** Keyboard-steering station digits, while steering mode is active. */
+  rootStation?: number;
+  trashStation?: number;
 }
 
 /**
- * The boxes control: ONE chip pinned beside the root-terminal pill, left of the
- * scrolling project strip, replacing the per-box pills that used to sit *among*
- * the projects (#13/#41).
+ * The scope chip: ONE control at the head of the pill row standing for every
+ * scope that is *not* a project pill — the root terminal, the Trash workspace,
+ * and the boxes — left of the scrolling project strip.
  *
- * Boxes and projects were two different kinds of thing wearing one shape in one
- * row — a `.project-pill` click activated a project, an identical-looking one
- * switched to a `box:<id>` scope — and, under the overlay model, a box's members
- * were on screen twice at once: as their own pills and again inside the box
- * pill's hover dropdown. The chip ends both. It names the box you are looking
- * at, its dropdown is the only place boxes are listed, and picking one **slices
- * the strip** to that box's members, so the row below always holds exactly one
- * kind of thing and N boxes cost no strip width at all.
+ * It started as the boxes control (#13/#41), replacing the per-box pills that
+ * used to sit *among* the projects: boxes and projects were two different kinds
+ * of thing wearing one shape in one row, and under the overlay model a box's
+ * members were on screen twice at once. The chip ended that — it names the box
+ * you are looking at, its dropdown is the only place boxes are listed, and
+ * picking one **slices the strip** to that box's members.
+ *
+ * Root and Trash then joined it, for the same reason and by the same argument:
+ * they are built-in scopes, not projects, and each was spending a permanent
+ * pill's worth of header on a destination visited by name rather than by
+ * pointing. Folding them in leaves the leading segment as a single control that
+ * answers "where am I" — Root · Trash · a box · or nothing, meaning an ordinary
+ * project — and gives the whole row back to the projects.
  *
  * The slice is a *view*, not the scope: clicking a member switches to that
  * project (dropping the chip's `active` accent) while the strip stays put, so
  * hopping between a box's projects never reshuffles the row under the pointer.
  * "All projects" is always in the menu, so a slice can never trap anyone away
- * from a project it doesn't list.
- *
- * Renders nothing at all when no box exists — the feature costs the header
- * nothing until it is used.
+ * from a project it doesn't list — and picking Root or Trash lifts the slice
+ * outright, since neither is inside any box and a strip left filtered by a box
+ * nobody is in reads as a strip that has lost projects.
  */
 export function BoxScopeChip({
   boxes,
@@ -53,9 +77,24 @@ export function BoxScopeChip({
   onDelete,
   active,
   forcedDragOver,
+  trash,
+  rootActive,
+  trashActive,
+  onSelectRoot,
+  onSelectTrash,
+  rootStation,
+  trashStation,
 }: Props) {
   const t = useT();
-  const [menuOpen, setMenuOpen] = useState(false);
+  // Hover-opened through the SHARED header menu id, like the + menu and the
+  // cluster menus beside it: one id means opening another header menu closes
+  // this one in the same frame instead of both riding out their own 250 ms
+  // closing grace. Click still reveals (a click also fires mouseenter, so a
+  // toggle here would open on enter and shut again on the click).
+  const menuOpen = useHeaderHoverMenuStore((s) => s.openId === SCOPE_MENU_ID);
+  const openMenu = useHeaderHoverMenuStore((s) => s.open);
+  const closeMenu = useHeaderHoverMenuStore((s) => s.close);
+  const closeTimer = useRef<number | undefined>(undefined);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
   const [renaming, setRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState("");
@@ -63,27 +102,86 @@ export function BoxScopeChip({
   const chipRef = useRef<HTMLDivElement>(null);
   const sprung = useRef(false);
 
+  const reveal = () => {
+    window.clearTimeout(closeTimer.current);
+    openMenu(SCOPE_MENU_ID);
+  };
+  const scheduleClose = () => {
+    window.clearTimeout(closeTimer.current);
+    closeTimer.current = window.setTimeout(() => closeMenu(SCOPE_MENU_ID), 250);
+  };
+  const dismiss = () => {
+    window.clearTimeout(closeTimer.current);
+    closeMenu(SCOPE_MENU_ID);
+  };
+  useEffect(() => () => window.clearTimeout(closeTimer.current), []);
+
   const selected = selectedId ? (boxes.find((b) => b.id === selectedId) ?? null) : null;
+
+  // What the chip NAMES right now. The built-in scopes win over the slice
+  // because picking either clears the slice — so the chip always names the one
+  // thing the leading segment currently stands for.
+  const naming: "root" | "trash" | "box" | null = rootActive
+    ? "root"
+    : trashActive && trash
+      ? "trash"
+      : selected
+        ? "box"
+        : null;
+
+  // The chip wears the pill row's working / waiting / finished strip, for the
+  // reason the root pill did before it folded in here: these scopes hold
+  // ordinary tabs running the same agents, and the one control standing for all
+  // of them could otherwise only be read as "nothing is running in any of
+  // them". It spans everything it can reach — root, Trash, every box — and
+  // narrows to ONE scope only while a box slice is selected, because a slice is
+  // a filter the user chose and the chip is then that box's control. Naming root
+  // or Trash narrows nothing: that is where you are standing, not a filter, and
+  // sitting in the root terminal is precisely when a box quietly waiting on a
+  // decision must still be able to say so. Each bar opens its own tab
+  // (`jumpToTab` enters a box scope on its own). Only boxes opened this session
+  // have tabs at all; an unopened one runs nothing, so it has nothing to report
+  // rather than a state that is being withheld.
+  const barScopes = useMemo(() => {
+    if (naming === "box" && selected) return [`${BOX_SCOPE_PREFIX}${selected.id}`];
+    return [
+      ROOT_SCOPE,
+      ...(trash ? [trash.id] : []),
+      ...boxes.map((b) => `${BOX_SCOPE_PREFIX}${b.id}`),
+    ];
+  }, [boxes, naming, selected, trash]);
+  // Names only while the strip spans several scopes; narrowed to the box the
+  // chip already names, prefixing every bar with it says nothing twice.
+  const allScopeNames = useMemo(
+    () => ({
+      [ROOT_SCOPE]: t("boxChip.rootLabel"),
+      ...(trash ? { [trash.id]: trash.name } : {}),
+      ...Object.fromEntries(boxes.map((b) => [`${BOX_SCOPE_PREFIX}${b.id}`, b.name])),
+    }),
+    [boxes, trash, t],
+  );
+  const barNames = naming === "box" ? undefined : allScopeNames;
 
   // Spring-loaded during a pill drag (the PDF page rail's bargain): the strip
   // may be sliced, so the project being dragged is usually not one of the
   // box's own — and with the list folded away the only reachable target would
   // be the box already on screen. A drag in flight therefore opens the list and
-  // every row becomes its own drop target; it folds back unless the user had
-  // opened it themselves.
+  // every box row becomes its own drop target; it folds back unless the user
+  // had opened it themselves.
   const pillDrag = usePillDragStore((s) => s.drag);
   const dragging = !!pillDrag;
   useEffect(() => {
     if (dragging) {
-      setMenuOpen((open) => {
-        if (!open) sprung.current = true;
-        return true;
-      });
+      if (!menuOpen) sprung.current = true;
+      reveal();
       return;
     }
     if (!sprung.current) return;
     sprung.current = false;
-    setMenuOpen(false);
+    dismiss();
+    // `menuOpen` is read only to remember whether the drag is what opened the
+    // list; re-running on it would fold the list back mid-drag.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dragging]);
 
   // Keep the dropdown anchored under the chip while it is open (the header can
@@ -108,20 +206,20 @@ export function BoxScopeChip({
     };
   }, [menuOpen]);
 
-  // Click-opened, not hover-opened like the ⚙/+ menus beside it: the chip is a
-  // drop target for a pill drag, and a list unfolding under the cursor mid-drag
-  // is exactly what must not happen.
+  // A press outside the chip and its portaled list, or Escape, closes both it
+  // and the box context menu — the hover grace alone can't catch a pointer that
+  // jumps straight out of the header.
   useEffect(() => {
     if (!menuOpen && !contextMenu) return;
     const onPointer = (e: PointerEvent) => {
       if (chipRef.current?.contains(e.target as Node)) return;
       if ((e.target as HTMLElement).closest?.(".box-chip-menu")) return;
-      setMenuOpen(false);
+      dismiss();
       setContextMenu(null);
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
-        setMenuOpen(false);
+        dismiss();
         setContextMenu(null);
       }
     };
@@ -131,12 +229,11 @@ export function BoxScopeChip({
       document.removeEventListener("pointerdown", onPointer);
       document.removeEventListener("keydown", onKey);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [menuOpen, contextMenu]);
 
-  if (boxes.length === 0) return null;
-
   const pick = (boxId: string | null) => {
-    setMenuOpen(false);
+    dismiss();
     onSelect(boxId);
   };
 
@@ -145,6 +242,22 @@ export function BoxScopeChip({
     if (selected && next && next !== selected.name) onRename(selected.id, next);
     setRenaming(false);
   };
+
+  const chipTitle = () => {
+    if (naming === "root") return t("header.rootProject");
+    if (naming === "trash") return t("pill.trashProjectTitle");
+    if (selected) return t("boxChip.selectedTitle", { name: selected.name });
+    return t("boxChip.pickerTitle");
+  };
+
+  const chipLabel = () => {
+    if (naming === "root") return t("boxChip.rootLabel");
+    if (naming === "trash") return trash?.name ?? "";
+    if (selected) return selected.name;
+    return null;
+  };
+
+  const station = naming === "root" ? rootStation : naming === "trash" ? trashStation : undefined;
 
   return (
     <>
@@ -155,14 +268,16 @@ export function BoxScopeChip({
         // at"; every other box is one right-click away on the pill itself
         // (its menu carries a checkbox row per box).
         data-box-id={selected?.id}
-        className={`box-chip${active ? " active" : ""}${selected ? " filtering" : ""}${
-          forcedDragOver ? " drag-over" : ""
-        }`}
+        className={`box-chip${active || rootActive || trashActive ? " active" : ""}${
+          naming ? " filtering" : ""
+        }${forcedDragOver ? " drag-over" : ""}`}
+        onMouseEnter={reveal}
+        onMouseLeave={scheduleClose}
         onContextMenu={(e) => {
-          if (!selected) return;
+          if (naming !== "box" || !selected) return;
           e.preventDefault();
           e.stopPropagation();
-          setMenuOpen(false);
+          dismiss();
           const bottom = chipRef.current?.getBoundingClientRect().bottom ?? e.clientY;
           setContextMenu({ x: e.clientX, y: bottom });
         }}
@@ -183,21 +298,24 @@ export function BoxScopeChip({
           <button
             type="button"
             className="box-chip-main"
-            title={
-              selected
-                ? t("boxChip.selectedTitle", { name: selected.name })
-                : t("boxChip.title")
-            }
+            title={chipTitle()}
             onClick={(e) => {
               e.stopPropagation();
-              setMenuOpen((v) => !v);
+              reveal();
             }}
+            onFocus={reveal}
           >
-            <span className="box-chip-icon" aria-hidden>
-              ▣
-            </span>
-            {selected && <span className="box-chip-label">{selected.name}</span>}
-            {selected && (
+            {naming === "root" ? (
+              <StarIcon className="box-chip-star" />
+            ) : naming === "trash" ? (
+              <TrashProjectIcon className="box-chip-trash-icon" />
+            ) : (
+              <span className="box-chip-icon" aria-hidden>
+                ▣
+              </span>
+            )}
+            {chipLabel() && <span className="box-chip-label">{chipLabel()}</span>}
+            {naming === "box" && selected && (
               <span
                 className="project-box-member-count"
                 title={t(
@@ -215,19 +333,80 @@ export function BoxScopeChip({
             </span>
           </button>
         )}
+        <ScopeSetStatusBars scopes={barScopes} nameByScope={barNames} />
+        {/* Steering-mode station number, for the built-in scope the chip is
+            naming — the root pill used to carry its own. */}
+        {station != null && (
+          <span className="steering-station-chip" aria-hidden>
+            {station}
+          </span>
+        )}
       </div>
 
       {menuOpen &&
         pos &&
         createPortal(
-          <div className="box-chip-menu" style={{ left: pos.x, top: pos.y }}>
+          <div
+            className="box-chip-menu"
+            style={{ left: pos.x, top: pos.y }}
+            // The list is portaled to <body>, so the pointer travelling down
+            // into it has LEFT the chip: without these the 250 ms grace would
+            // fold it away under the cursor. It opens flush under the chip, so
+            // there is no gap to cross.
+            onMouseEnter={reveal}
+            onMouseLeave={scheduleClose}
+          >
+            {/* The built-in scopes, ahead of the boxes and of "All projects":
+                they are destinations, not slices, and picking either lifts the
+                slice (neither is in any box). */}
+            <button
+              className={rootActive ? "is-current" : undefined}
+              title={t("header.rootProject")}
+              onClick={() => {
+                dismiss();
+                onSelectRoot();
+              }}
+            >
+              <StarIcon className="box-chip-menu-star" />
+              <span className="box-chip-menu-name">{t("boxChip.rootRow")}</span>
+              <ScopeSetStatusBars
+                scopes={[ROOT_SCOPE]}
+                interactive={false}
+                className="inline"
+              />
+              {rootStation != null && (
+                <span className="box-chip-menu-count">{rootStation}</span>
+              )}
+            </button>
+            {trash && (
+              <button
+                className={trashActive ? "is-current" : undefined}
+                title={t("pill.trashProjectTitle")}
+                onClick={() => {
+                  dismiss();
+                  onSelectTrash();
+                }}
+              >
+                <TrashProjectIcon className="box-chip-menu-trash-icon" />
+                <span className="box-chip-menu-name">{trash.name}</span>
+                <ScopeSetStatusBars
+                  scopes={[trash.id]}
+                  interactive={false}
+                  className="inline"
+                />
+                {trashStation != null && (
+                  <span className="box-chip-menu-count">{trashStation}</span>
+                )}
+              </button>
+            )}
+            <div className="box-chip-menu-sep" />
             <button
               className={selectedId === null ? "is-current" : undefined}
               onClick={() => pick(null)}
             >
               {t("boxChip.allProjects")}
             </button>
-            <div className="box-chip-menu-sep" />
+            {boxes.length > 0 && <div className="box-chip-menu-sep" />}
             {boxes.map((b) => (
               <button
                 key={b.id}
@@ -249,13 +428,23 @@ export function BoxScopeChip({
                   ▣
                 </span>
                 <span className="box-chip-menu-name">{b.name}</span>
+                {/* The list is the only place boxes are enumerated, so it is
+                    also the only place that can say WHICH box wants something
+                    once the chip has folded back to one. Inert bars: the row is
+                    already a button, and picking the box is the way in from
+                    here. */}
+                <ScopeSetStatusBars
+                  scopes={[`${BOX_SCOPE_PREFIX}${b.id}`]}
+                  interactive={false}
+                  className="inline"
+                />
                 <span className="box-chip-menu-count">{b.member_ids.length}</span>
               </button>
             ))}
             <div className="box-chip-menu-sep" />
             <button
               onClick={() => {
-                setMenuOpen(false);
+                dismiss();
                 useBoxEditorStore.getState().openCreate();
               }}
             >
@@ -263,7 +452,7 @@ export function BoxScopeChip({
             </button>
             <button
               onClick={() => {
-                setMenuOpen(false);
+                dismiss();
                 useBoxEditorStore.getState().openEditor(null);
               }}
             >

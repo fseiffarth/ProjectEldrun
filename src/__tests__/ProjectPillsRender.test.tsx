@@ -4,7 +4,7 @@
  * severe bug, since the switcher is the primary way to move between projects.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, act } from "@testing-library/react";
+import { render, act, fireEvent } from "@testing-library/react";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn().mockResolvedValue(null) }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn().mockResolvedValue(() => {}) }));
@@ -20,7 +20,6 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
 import { ProjectSwitcher } from "../components/layout/ProjectSwitcher";
 import { useProjectsStore } from "../stores/projects";
 import { useBoxesStore } from "../stores/boxes";
-import { usePillDragStore } from "../stores/pillDrag";
 import type { ProjectEntry } from "../types";
 
 function proj(id: string, position: number, extra: Partial<ProjectEntry> = {}): ProjectEntry {
@@ -101,7 +100,10 @@ describe("project switcher pill rendering", () => {
     expect(container!.querySelectorAll(".project-pill").length).toBe(2);
   });
 
-  it("renders the built-in Trash project as an icon-only pill", async () => {
+  it("gives the built-in Trash project a scope-chip row, not a pill", async () => {
+    // Trash was a pinned pill at the head of the row; it now lives in the scope
+    // chip's dropdown beside root and the boxes, so it costs the header no
+    // width at all.
     useProjectsStore.setState({
       projects: [proj("eldrun-trash", 0, { name: "Trash" })],
       activeId: "eldrun-trash",
@@ -113,21 +115,24 @@ describe("project switcher pill rendering", () => {
       ({ container } = render(<ProjectSwitcher open />));
     });
 
-    const pill = container!.querySelector(".trash-project-pill") as HTMLElement;
-    expect(pill).toBeTruthy();
-    expect(pill.querySelector(".trash-project-icon")).toBeTruthy();
-    expect(pill.querySelector(".project-pill-label")).toBeNull();
-    expect(pill.querySelector(".pill-close-btn")).toBeNull();
-    // The pill's own label is the descriptive tooltip, not the bare project
-    // name — the Trash pill shows no name and gets no hover card.
-    const main = pill.querySelector(".pill-main") as HTMLElement;
-    expect(main.getAttribute("aria-label")).toMatch(/^Trash project —/);
+    expect(container!.querySelector(".trash-project-pill")).toBeNull();
+    expect(container!.querySelector(".root-pill")).toBeNull();
+
+    const main = container!.querySelector(".box-chip-main") as HTMLElement;
+    await act(async () => {
+      fireEvent.click(main);
+    });
+    const menu = document.querySelector(".box-chip-menu") as HTMLElement;
+    const row = [...menu.querySelectorAll("button")].find((b) =>
+      b.textContent?.includes("Trash"),
+    ) as HTMLElement;
+    expect(row).toBeTruthy();
+    expect(row.querySelector(".box-chip-menu-trash-icon")).toBeTruthy();
+    // Not a box, so a pill drag can never drop into it.
+    expect(row.hasAttribute("data-box-id")).toBe(false);
   });
 
-  it("pins the Trash pill outside the scrolling strip", async () => {
-    // Trash is always present and cannot be closed, so it belongs in the row's
-    // FIXED leading segment (beside ★ and the box chip) rather than as the
-    // first pill of a strip that scrolls it out of reach.
+  it("keeps Trash out of the scrolling strip", async () => {
     useProjectsStore.setState({
       projects: [proj("eldrun-trash", 0, { name: "Trash" }), proj("a", 1), proj("b", 2)],
       activeId: "a",
@@ -139,42 +144,10 @@ describe("project switcher pill rendering", () => {
       ({ container } = render(<ProjectSwitcher open />));
     });
 
+    // The strip holds the two real projects, and Trash wears no pill anywhere.
     const strip = container!.querySelector(".project-pills-scroll") as HTMLElement;
-    expect(strip.querySelector(".trash-project-pill")).toBeNull();
-    // …and the strip holds the two real projects, not three.
     expect(strip.querySelectorAll(".project-pill").length).toBe(2);
-    // It is still in the pills region, right of the pinned root pill.
-    const region = container!.querySelector(".project-pills-region") as HTMLElement;
-    expect(region.querySelector(":scope > .trash-project-pill")).toBeTruthy();
-  });
-
-  it("does not let the pinned Trash pill start a drag", async () => {
-    // Nothing to drag it into: it lives outside the strip and the backend
-    // rewrites its position before every save.
-    useProjectsStore.setState({
-      projects: [proj("eldrun-trash", 0, { name: "Trash" }), proj("a", 1)],
-      activeId: "a",
-      loaded: true,
-    });
-
-    let container: HTMLElement;
-    await act(async () => {
-      ({ container } = render(<ProjectSwitcher open />));
-    });
-
-    const pill = container!.querySelector(".trash-project-pill") as HTMLElement;
-    for (const [type, target] of [
-      ["pointerdown", pill],
-      ["pointermove", window],
-      ["pointerup", window],
-    ] as const) {
-      const ev = new Event(type, { bubbles: true, cancelable: true });
-      Object.assign(ev, { clientX: type === "pointerdown" ? 10 : 400, clientY: 10, button: 0, pointerId: 1 });
-      act(() => {
-        (target as EventTarget).dispatchEvent(ev);
-      });
-    }
-    expect(usePillDragStore.getState().drag).toBeNull();
+    expect(container!.querySelector(".trash-project-pill")).toBeNull();
   });
 
   it("no longer carries the settings gear — it lives in the header cluster", async () => {

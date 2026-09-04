@@ -8,7 +8,6 @@ import { ProjectSearch } from "../projects/ProjectSearch";
 import { ProjectDialog } from "../projects/ProjectDialog";
 import { SettingsDialog, type SettingsPanelKind } from "./SettingsPanel";
 import { UntestedTag } from "../common/UntestedTag";
-import { StarIcon } from "./StarIcon";
 import { useHpcPipelineStore } from "../../stores/hpcPipeline";
 import { useBigFoldersStore } from "../../stores/bigFolders";
 import { useProjectsStore } from "../../stores/projects";
@@ -18,7 +17,6 @@ import { usePillSelectionStore } from "../../stores/pillSelection";
 import { useHeaderHoverMenuStore } from "../../stores/headerHoverMenu";
 import { TRASH_PROJECT_ID } from "../../lib/trashProject";
 import { ROOT_SCOPE, useTabsStore } from "../../stores/tabs";
-import { PillStatusBars } from "../projects/PillStatusBars";
 import { useGitDirtyStore } from "../../stores/gitDirty";
 import { projectStations, useKeyboardSteeringStore } from "../../stores/keyboardSteering";
 import { useQuiesce, saverInterval } from "../../stores/power";
@@ -257,6 +255,23 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
     if (boxId) void openBox(boxId);
   };
 
+  // The two built-in scopes, picked from the same chip as the boxes. Both lift
+  // the slice: neither the root terminal nor Trash is inside any box, so a
+  // strip left filtered by a box nobody is in would be a strip that had quietly
+  // dropped most of the projects. Each also clears the multi-selection, exactly
+  // as a plain pill activation does.
+  const selectRoot = () => {
+    usePillSelectionStore.getState().clear();
+    setBoxFilter(null);
+    void setActive(null);
+  };
+  const selectTrash = () => {
+    if (!trashProject) return;
+    usePillSelectionStore.getState().clear();
+    setBoxFilter(null);
+    void setActive(trashProject.id);
+  };
+
   // The pills the strip renders. A slice shows its box's members — plus the
   // project currently in scope even when it is not one, since a strip that
   // hides the project you are working in is a strip that has lost you.
@@ -472,66 +487,17 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
             pillOverflow.right ? " overflow-right" : ""
           }`}
         >
-          {/* The root terminal, as the row's first tab — a sibling of the
-              scroll strip rather than a child of it, which is what pins it:
-              the pills scroll past underneath and this one never leaves the
-              left edge. It reads its state off `scope`, like every pill beside
-              it (activeId would keep it lit while a box is open) — and it wears
-              the same working/waiting/finished strip, because the root terminal
-              runs the same agents in the same kind of tabs and a bare pill could
-              only be read as "nothing is running in there". */}
-          <div className={`root-pill${scope === "root" ? " active" : ""}`}>
-            {/* The switch itself is an inner button with the strip as its
-                SIBLING — the project pill's own shape (.project-pill wrapping
-                .pill-main), and here for a second reason: a status bar is a
-                button now, and a button inside a button is invalid markup. */}
-            <button
-              type="button"
-              className="root-pill-main"
-              title={t("header.rootProject")}
-              aria-label={t("header.rootProject")}
-              onClick={(e) => {
-                e.stopPropagation();
-                void setActive(null);
-              }}
-            >
-              <StarIcon className="root-pill-star" />
-            </button>
-            <PillStatusBars scope={ROOT_SCOPE} />
-            {/* Steering station 1 — the ring's root (`null`) head. */}
-            {steeringActive && (
-              <span className="steering-station-chip" aria-hidden>
-                1
-              </span>
-            )}
-          </div>
-          {/* The Trash workspace, pinned right of the root terminal: a fixed
-              leading segment of built-in scopes (★ root · 🗑 trash · ▣ box)
-              that the project pills scroll past underneath. It is an ordinary
-              ProjectPill — same shape, same status strip, same context menu —
-              it just never moves and never scrolls out of reach. */}
-          {trashProject && (
-            <ProjectPill
-              project={trashProject}
-              active={scope === trashProject.id}
-              onClick={() => {
-                usePillSelectionStore.getState().clear();
-                void setActive(trashProject.id);
-              }}
-              // Pinned: it cannot be closed (the backend re-creates it before
-              // every save), reordered, or put in a box, so the three callbacks
-              // that would do those things are inert here rather than absent —
-              // the pill's own guards already hide the × and the drag.
-              onClose={() => {}}
-              onReorder={() => {}}
-              station={stationById?.get(trashProject.id)}
-            />
-          )}
-          {/* Boxes: ONE chip beside the root pill rather than a pill per box
-              among the projects. It sits outside .project-pills-scroll for the
-              root pill's reason — the leading segment of the row answers
-              "where am I", so it must never scroll away — and it slices the
-              strip instead of adding to it (see BoxScopeChip). */}
+          {/* The row's leading segment: ONE chip for every scope that is not a
+              project pill — the root terminal, the Trash workspace and the
+              boxes. It sits outside .project-pills-scroll, which is what pins
+              it: the pills scroll past underneath and this never leaves the
+              left edge, because the head of the row is what answers "where am
+              I". Root and Trash used to be pinned pills of their own here; each
+              was spending permanent header width on a destination reached by
+              name rather than by pointing, so both moved into the chip's
+              dropdown (see BoxScopeChip) and the strip got the space back.
+              Everything reads its state off `scope`, like every pill beside it
+              — activeId would keep a pill lit while a box is open. */}
           <BoxScopeChip
             boxes={boxes}
             selectedId={boxFilter}
@@ -540,6 +506,15 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
             onDelete={(boxId) => void deleteBox(boxId)}
             active={!!boxFilter && scope === `${BOX_SCOPE_PREFIX}${boxFilter}`}
             forcedDragOver={!!boxFilter && pillDrag?.overBoxId === boxFilter}
+            trash={trashProject ? { id: trashProject.id, name: trashProject.name } : null}
+            rootActive={scope === ROOT_SCOPE}
+            trashActive={!!trashProject && scope === trashProject.id}
+            onSelectRoot={selectRoot}
+            onSelectTrash={selectTrash}
+            // Steering station 1 is the ring's root (`null`) head, which
+            // `stationById` cannot carry precisely because it has no id.
+            rootStation={steeringActive ? 1 : undefined}
+            trashStation={trashProject ? stationById?.get(trashProject.id) : undefined}
           />
           {/* Hairline between the fixed leading segment (★ · 🗑 · ▣) and the
               scrolling project strip, so the two zones read as two zones. */}

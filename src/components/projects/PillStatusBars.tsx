@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { useActivityStore, type StatusTab, type TabStatusCounts } from "../../stores/activity";
 import { useTabsStore } from "../../stores/tabs";
 import { jumpToTab } from "../../lib/tabJump";
@@ -37,6 +38,109 @@ const BAR_TITLE_KEY: Record<StatusTab["state"], TranslationKey> = {
   finished: "pill.statusTabFinished",
 };
 
+/** The order the bars are drawn in — the same one `computeStatusScopes` builds
+ *  a single scope's list in, so a strip spanning several scopes merges them
+ *  without inventing a second reading. */
+const STATE_ORDER: Record<StatusTab["state"], number> = {
+  working: 0,
+  "needs-decision": 1,
+  finished: 2,
+};
+
+/** One bar: which tab of which scope, in what state, under what name. */
+export interface StatusBarItem {
+  /** The tab's scope — a project id, `"root"`, or a `box:<id>`. Carried per
+   *  item rather than per strip, because a strip may span several scopes and a
+   *  click has to land in the right one. */
+  scope: string;
+  /** The tab's key within its scope (not the composed PTY id). */
+  key: string;
+  state: StatusTab["state"];
+  /** What the bar's tooltip calls the tab (a multi-scope strip puts the scope's
+   *  own name in front, or every bar would read as an unattributed tab name). */
+  label: string;
+}
+
+/** The tally the tooltip spells out. Derived from the untruncated items, so the
+ *  sentence stays true for a scope with more busy tabs than the strip draws. */
+function tallyItems(items: StatusBarItem[]): TabStatusCounts {
+  const tally: TabStatusCounts = { working: 0, decision: 0, done: 0 };
+  for (const item of items) {
+    if (item.state === "working") tally.working++;
+    else if (item.state === "needs-decision") tally.decision++;
+    else tally.done++;
+  }
+  return tally;
+}
+
+/**
+ * The bars themselves — the one place the strip is drawn, whatever built its
+ * items: a project pill's single scope, or the box chip's set of them.
+ *
+ * `interactive` is what a strip rendered INSIDE a button (the box chip's
+ * dropdown rows) needs: a button inside a button is invalid markup, so there
+ * the bars are inert spans and the row's own click is the way in.
+ */
+function StatusStrip({
+  items,
+  interactive = true,
+  className,
+}: {
+  items: StatusBarItem[];
+  interactive?: boolean;
+  className?: string;
+}) {
+  const t = useT();
+  if (items.length === 0) return null;
+  return (
+    <span
+      className={`pill-status-bars${className ? ` ${className}` : ""}`}
+      title={statusBarTitle(tallyItems(items), t)}
+    >
+      {items.slice(0, MAX_STATUS_BARS).map((item) => {
+        const label = t(BAR_TITLE_KEY[item.state], { tab: item.label });
+        const key = `${item.scope}:${item.key}`;
+        if (!interactive) {
+          return <span key={key} className={`pill-status-bar ${item.state} static`} aria-hidden />;
+        }
+        return (
+          <button
+            type="button"
+            key={key}
+            className={`pill-status-bar ${item.state}`}
+            title={`${label} · ${t("pill.statusTabJump")}`}
+            aria-label={label}
+            // The pill itself starts a reorder drag on pointerdown and switches
+            // project on click; a bar is its own control, so it keeps both to
+            // itself.
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation();
+              jumpToTab(item.scope, item.key);
+            }}
+          />
+        );
+      })}
+    </span>
+  );
+}
+
+/** A scope's non-idle tabs as strip items, named by the tab labels the scope
+ *  currently holds. `prefix` is the scope's own name, for a strip that stands
+ *  for more than one of them. */
+function itemsForScope(
+  scope: string,
+  statusTabs: StatusTab[] | undefined,
+  tabs: { key: string; label: string }[] | undefined,
+  prefix?: string,
+): StatusBarItem[] {
+  if (!statusTabs?.length) return [];
+  return statusTabs.map((st) => {
+    const label = tabs?.find((tab) => tab.key === st.key)?.label ?? "";
+    return { scope, key: st.key, state: st.state, label: prefix ? `${prefix} · ${label}` : label };
+  });
+}
+
 /**
  * One little bar per non-idle tab along the bottom edge of a pill, so a glance
  * at the switcher says how many tabs of each scope are working (green dots),
@@ -53,9 +157,10 @@ const BAR_TITLE_KEY: Record<StatusTab["state"], TranslationKey> = {
  * A *component* rather than a snippet each pill repeats, because the root
  * terminal is a scope like any other: its tabs run the same agents, and a pill
  * that showed nothing while an agent worked in it could only be read as "nothing
- * is running there". The root pill is the one place the strip was missing, and
- * one component is what keeps the two from drifting into two different answers
- * to the same question.
+ * is running there". One component is what keeps the surfaces from drifting into
+ * two different answers to the same question — the scope chip, which stands for
+ * root, Trash and every box at once, is the other one, via
+ * `ScopeSetStatusBars`.
  *
  * The SELECTED scope keeps its bars: the strip is a tally of what the scope is
  * doing, not a list of what still needs a glance, and the scope you are in is
@@ -63,36 +168,55 @@ const BAR_TITLE_KEY: Record<StatusTab["state"], TranslationKey> = {
  * inherently about unread output, and it can't arise for a tab on screen.
  *
  * Positioned absolutely, so the host must be a positioned box (`.project-pill`
- * and `.root-pill` both are).
+ * and `.box-chip` both are).
  */
 export function PillStatusBars({ scope }: { scope: string }) {
-  const t = useT();
-  const counts = useActivityStore((s) => s.statusCountsByScope[scope]);
+  // Per-scope subscriptions, not the whole maps: there is one of these per pill,
+  // and a tab going busy in one project must not re-render every other pill.
   const statusTabs = useActivityStore((s) => s.statusTabsByScope[scope]);
   const tabs = useTabsStore((s) => s.tabsByScope[scope]);
-  if (!counts || !statusTabs) return null;
-  return (
-    <span className="pill-status-bars" title={statusBarTitle(counts, t)}>
-      {statusTabs.slice(0, MAX_STATUS_BARS).map((st) => {
-        const label = tabs?.find((tab) => tab.key === st.key)?.label ?? "";
-        return (
-          <button
-            type="button"
-            key={st.key}
-            className={`pill-status-bar ${st.state}`}
-            title={`${t(BAR_TITLE_KEY[st.state], { tab: label })} · ${t("pill.statusTabJump")}`}
-            aria-label={t(BAR_TITLE_KEY[st.state], { tab: label })}
-            // The pill itself starts a reorder drag on pointerdown and switches
-            // project on click; a bar is its own control, so it keeps both to
-            // itself.
-            onPointerDown={(e) => e.stopPropagation()}
-            onClick={(e) => {
-              e.stopPropagation();
-              jumpToTab(scope, st.key);
-            }}
-          />
-        );
-      })}
-    </span>
+  const items = useMemo(() => itemsForScope(scope, statusTabs, tabs), [scope, statusTabs, tabs]);
+  return <StatusStrip items={items} />;
+}
+
+/**
+ * The same strip for a SET of scopes at once — what the boxes chip needs, since
+ * one chip stands for every box (and, when it names one, for that box's
+ * `box:<id>` scope, whose tabs run the same agents as any project's).
+ *
+ * Bars from different scopes are merged in the strip's own urgency order and
+ * each still opens its own tab: `jumpToTab` knows how to enter a box scope, so
+ * a bar on the collapsed chip is the whole way from "something in a box wants
+ * you" to the tab that does.
+ *
+ * Subscribes to the whole status maps rather than per scope — the set is not
+ * fixed, and there are only ever a handful of these on screen. Pass memoized
+ * `scopes`/`nameByScope`, or the strip recomputes its items every render.
+ */
+export function ScopeSetStatusBars({
+  scopes,
+  nameByScope,
+  interactive,
+  className,
+}: {
+  scopes: string[];
+  /** Scope → the name put in front of each of its tabs, so a strip standing for
+   *  several scopes says WHICH one wants something. Omit when the host already
+   *  names the single scope it is showing. */
+  nameByScope?: Record<string, string>;
+  interactive?: boolean;
+  className?: string;
+}) {
+  const statusTabsByScope = useActivityStore((s) => s.statusTabsByScope);
+  const tabsByScope = useTabsStore((s) => s.tabsByScope);
+  const items = useMemo(
+    () =>
+      scopes
+        .flatMap((scope) =>
+          itemsForScope(scope, statusTabsByScope[scope], tabsByScope[scope], nameByScope?.[scope]),
+        )
+        .sort((a, b) => STATE_ORDER[a.state] - STATE_ORDER[b.state]),
+    [scopes, nameByScope, statusTabsByScope, tabsByScope],
   );
+  return <StatusStrip items={items} interactive={interactive} className={className} />;
 }
