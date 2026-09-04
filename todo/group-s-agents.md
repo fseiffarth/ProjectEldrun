@@ -976,3 +976,44 @@ unchanged; the new agents are additive.
       shows on its sent row.
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work
+
+262. **Agents view: a prompt chart replaces the library, Scheduled and Sent
+    sections.** Three lists hold the same prompt at three moments of its life,
+    and every seam between them is a place #256 had to be written. Plan:
+    `docs/prompt_chart_plan.md`. One surface under the tabs section: cards on
+    a vertical timeline (past ordinal with day separators, a now line, a
+    proportional zoomable future band), one **strand** per agent tab plus a
+    timeless Drafts shelf, queued cards stacked under the now line in delivery
+    order. Cards carry stored tags and derived **auto tags** (agent, model,
+    preface commands, blame files, result, state, fence languages — never
+    stored), one search over every state that dims rather than hides. **+**
+    collects a new draft in place; a draft dragged onto a strand sends now (at
+    the now line) or schedules once (in the future band); a scheduled card
+    drags up/down to retime, across to move tabs, back to the shelf to
+    unschedule; every gesture has a keyboard route from the expanded card.
+    **Links** between cards — `related` (a line) and `after` (an arrow: the
+    target is queued when the source is delivered, on one tab or across tabs)
+    — stored additively as `links[project]` in `agent_prompts.json`, chained
+    from `AgentScheduleHost`'s retire step. A card gets a time only by landing
+    on a tab: no second scheduling shape, no `planned_at`, no new rule type.
+    Four phases (read-only chart → gestures → links → polish); the phone is
+    untouched.
+    - [ ] 🤖 Automated test — `AgentPromptChart` (state derivation, id and
+      text-key joins, band grouping, snapping, drop mapping, queue reorder),
+      `AgentPromptAutoTags`, `AgentPromptLinks` (pruning, chain resolution,
+      missed source fires nothing, closed target is not sent, recurring source
+      fires once), `PromptChart` (five states render, filter dims, `+`
+      collects, keyboard retime), `AgentScheduleRetire` (chain step), cargo
+      link core.
+    - [ ] 🖐️ Manual test — open the Agents view on a project with two agent
+      tabs, a few collected prompts and some history: the chart shows the
+      history above the now line in order, drafts on the shelf; `+` makes a
+      draft and it lands in the file; drag it onto a tab at the now line and
+      it is queued then delivered; drag another into the future band, confirm
+      the rule's time in ◷ Schedules matches the drop, drag it up 10 minutes
+      and confirm again; link two drafts with `after`, send the first, and
+      confirm the second is queued on delivery and not when the first is
+      missed. Check the side panel's compact single-column mode and the Files
+      tab's columns.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
