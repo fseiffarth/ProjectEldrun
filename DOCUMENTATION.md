@@ -362,12 +362,17 @@ Contents:
 - **The Trash pill** — the permanent disposable-agent workspace
   (`trash-project-pill`, `lib/trashProject.ts`). It renders without the ordinary
   pill affordances and cannot be closed or archived.
-- **Box pills** — `BoxPill.tsx` renders a project box as a single project-style
-  pill (`.project-pill.is-box`) with a member-count badge. Dropping a project
-  pill onto a box (same `PILL_DRAG_TYPE` as pill reorder) assigns it to the box;
-  hovering opens a dropdown listing member projects (click one to switch to it);
-  clicking the pill opens the box scope; right-click exposes Open / Rename /
-  Delete. See **Project Boxes** under Project Lifecycle.
+- **The scope chip and the box pill** — `BoxScopeChip.tsx` is the row's fixed
+  leading segment: one control standing for every scope that is not a project
+  pill. Its dropdown is the only list of boxes (with Root, the Trash workspace
+  and "All projects" above them); picking a box **slices** the strip to that
+  box's members. The selected box then stands beside the chip as a pill of its
+  own (`.box-scope-pill`) with a member-count badge: click it to enter the box
+  scope, drop a project pill on it (same pointer drag as pill reorder) to add a
+  member, right-click for Open / Rename / Edit box / Delete. Both wear the pill
+  row's working/waiting/finished bars — the pill for its own box, the chip for
+  every scope the pill is not reporting. See **Project Boxes** under Project
+  Lifecycle.
 - **Settings gear** — opens the settings dialog.
 - **+ button** — opens an add-project menu: "New project", "Import project",
   and the remote/VM variants.
@@ -691,7 +696,7 @@ The root terminal also gets context files in `~/eldrun/root/`:
 
 A *box* temporarily joins two or more projects for side-by-side work — the box
 folder plus every member root in one file view, cross-project copy-paste, PDF
-merges across members, and box-rooted agent tabs (`BoxPill.tsx`,
+merges across members, and box-rooted agent tabs (`BoxScopeChip.tsx`,
 `BoxEditorDialog.tsx`, `stores/boxes.ts`, `commands/boxes.rs`;
 `docs/context/project_boxes.md` holds the design rationale). Backend commands:
 `get_boxes`, `save_boxes`, `create_box`, `rename_box`, `delete_box`,
@@ -707,17 +712,21 @@ merges across members, and box-rooted agent tabs (`BoxPill.tsx`,
   disk by the next ordinary `save_projects`. `get_boxes` reconciles away member
   ids that no longer reference a known project.
 - **Switcher (overlay model).** Member pills always render individually (with a
-  small ▣ badge naming their boxes); each box is its own `BoxPill` placed by
-  the box's `position`. Empty and one-member boxes survive and render (dimmed
-  when empty) — the ONLY way a box disappears is the box editor's explicit,
-  confirmed **Dissolve** (the folder and agent docs stay on disk).
+  small ▣ badge naming their boxes); no box takes width in the scrolling strip.
+  Boxes are listed in the scope chip's dropdown, and the box picked there gets a
+  pill of its own in the fixed leading segment beside the chip. Empty and
+  one-member boxes survive and are still listed — the ONLY way a box disappears
+  is the box editor's explicit, confirmed **Dissolve** (the folder and agent
+  docs stay on disk).
 - **Box/unbox gestures.** Four ways in/out: the pill context menu's *Boxes*
   group (checkbox row per box, additive toggle), Ctrl/Cmd-click multi-select →
   "Box these (N)…", the box editor dialog (rename, full member list, dissolve;
-  opened from a BoxPill's menu, the pill menu, multi-select, or the switcher
-  "+"), and drag-and-drop (plain or Alt drop on a BoxPill = additive add;
-  Alt-drop one pill on another = new box of the two). The box pill's hover
-  dropdown lists members (click to switch, ✕ removes from that box only).
+  opened from the box pill's menu, the pill menu, multi-select, or the switcher
+  "+"), and drag-and-drop (plain or Alt drop on the box pill — or on a row of
+  the chip's list, which springs open under a drag — = additive add; Alt-drop
+  one pill on another = new box of the two). While a box slice is selected the
+  switcher's "+" lists non-members to add, and each member pill's ✕ removes only
+  that membership.
 - **Box folder, agent docs + member symlinks.** Opening a box (`openBox` →
   `ensure_box_folder`) lazily creates a folder under `~/eldrun/boxes/<name>/`
   (unique name resolved against other boxes and existing dirs) and

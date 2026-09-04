@@ -203,5 +203,35 @@
       pill still springs the list open onto a box row.
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work
+    > **Phase 10 — the selected box gets its own pill (2026-09-04, 🤖 covered,
+    > untested live).** The chip was doing two jobs: the menu you open to go
+    > somewhere, and the label saying where you are — so returning to the box you
+    > were already looking at meant opening a dropdown and clicking the row
+    > already marked current, while a project pill one hairline away is a single
+    > click. The box the dropdown selects now stands beside the chip as a pill of
+    > its own (`.box-scope-pill`, the same `.box-chip` box minus the caret): it
+    > names the box, counts its members, carries the box's own (unprefixed)
+    > status strip, hosts the rename input and the Open/Rename/Edit box/Delete
+    > context menu, holds the `data-box-id` a dragged project drops onto, and
+    > enters the box scope on one click. The chip keeps the dropdown untouched —
+    > still the only list of boxes, still spring-loaded under a drag, still the
+    > thing that slices the strip — and now names only Root or Trash, lighting up
+    > only for those; its strip drops the box the pill already reports, so no
+    > scope is tallied twice in one segment. Not the per-box pills coming back:
+    > only the ONE selected box is ever on the row, in the *fixed* leading
+    > segment, so N boxes still cost the scrolling strip nothing.
+    - [x] 🤖 Automated test — vitest `BoxRendering` (no pill before a box is
+      picked, then one pill naming the box with its member count; the chip stops
+      naming it and stops wearing the active accent; clicking the pill re-enters
+      the box scope from a member without opening a menu; the pill carries
+      `data-box-id` and the box context menu while the chip carries neither; the
+      chip's strip keeps the OTHER boxes while the pill carries its own).
+    - [ ] 🖐️ Manual test — pick a box in the chip list, click a member pill, then
+      click the box pill to land back in the box's tabs; right-click the pill for
+      Rename/Edit box/Delete; drag a project pill onto the pill to add a member;
+      confirm a box tab waiting on a decision draws its bar on the pill and not
+      also on the chip.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 ---

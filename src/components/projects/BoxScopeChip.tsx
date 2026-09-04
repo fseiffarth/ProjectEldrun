@@ -22,12 +22,13 @@ interface Props {
   onSelect: (boxId: string | null) => void;
   onRename: (boxId: string, name: string) => void;
   onDelete: (boxId: string) => void;
-  /** The selected box's scope is the current one — the pill row's `active`
-   *  treatment, driven off `scope` exactly as every pill beside it is. */
+  /** The selected box's scope is the current one — the `active` treatment on
+   *  the box's own pill, driven off `scope` exactly as every project pill
+   *  beside it is. */
   active?: boolean;
-  /** A project pill's pointer-drag is over the chip (see ProjectPill's
-   *  `startPillDrag`, which hit-tests `data-box-id` across the whole pills
-   *  region — the chip sits outside the scrolling strip). */
+  /** A project pill's pointer-drag is over the selected box's pill (see
+   *  ProjectPill's `startPillDrag`, which hit-tests `data-box-id` across the
+   *  whole pills region — the pill sits outside the scrolling strip). */
   forcedDragOver?: boolean;
   /** The built-in Trash workspace, when it exists (it always should). */
   trash?: { id: string; name: string } | null;
@@ -50,9 +51,20 @@ interface Props {
  * It started as the boxes control (#13/#41), replacing the per-box pills that
  * used to sit *among* the projects: boxes and projects were two different kinds
  * of thing wearing one shape in one row, and under the overlay model a box's
- * members were on screen twice at once. The chip ended that — it names the box
- * you are looking at, its dropdown is the only place boxes are listed, and
- * picking one **slices the strip** to that box's members.
+ * members were on screen twice at once. The chip ended that — its dropdown is
+ * the only place boxes are listed, and picking one **slices the strip** to that
+ * box's members.
+ *
+ * The selected box then gets a **pill of its own** immediately right of the
+ * chip, rather than being worn on the chip's own face (user, 2026-09-04). The
+ * two jobs had been folded into one control: the chip was both the list you
+ * open to go somewhere and the thing that says where you are, so re-entering
+ * the box you are already looking at meant opening a menu to pick the row
+ * already marked current. Splitting them gives the box a standing, clickable
+ * destination — a tab in the row, like the projects beside it — while the
+ * dropdown stays exactly what it was. This is not the old per-box pills coming
+ * back: only the ONE selected box is ever on the row, in the fixed leading
+ * segment, so boxes still cost the scrolling strip no width.
  *
  * Root and Trash then joined it, for the same reason and by the same argument:
  * they are built-in scopes, not projects, and each was spending a permanent
@@ -100,6 +112,7 @@ export function BoxScopeChip({
   const [renameValue, setRenameValue] = useState("");
   const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
   const chipRef = useRef<HTMLDivElement>(null);
+  const pillRef = useRef<HTMLDivElement>(null);
   const sprung = useRef(false);
 
   const reveal = () => {
@@ -118,16 +131,14 @@ export function BoxScopeChip({
 
   const selected = selectedId ? (boxes.find((b) => b.id === selectedId) ?? null) : null;
 
-  // What the chip NAMES right now. The built-in scopes win over the slice
-  // because picking either clears the slice — so the chip always names the one
-  // thing the leading segment currently stands for.
-  const naming: "root" | "trash" | "box" | null = rootActive
+  // What the chip NAMES right now — only the built-in scopes. A selected box
+  // no longer folds into the chip's face: it gets a pill of its own beside it
+  // (below), so the chip is the picker and the pill is the box.
+  const naming: "root" | "trash" | null = rootActive
     ? "root"
     : trashActive && trash
       ? "trash"
-      : selected
-        ? "box"
-        : null;
+      : null;
 
   // The chip wears the pill row's working / waiting / finished strip, for the
   // reason the root pill did before it folded in here: these scopes hold
@@ -142,17 +153,23 @@ export function BoxScopeChip({
   // (`jumpToTab` enters a box scope on its own). Only boxes opened this session
   // have tabs at all; an unopened one runs nothing, so it has nothing to report
   // rather than a state that is being withheld.
-  const barScopes = useMemo(() => {
-    if (naming === "box" && selected) return [`${BOX_SCOPE_PREFIX}${selected.id}`];
-    return [
+  const barScopes = useMemo(
+    () => [
       ROOT_SCOPE,
       ...(trash ? [trash.id] : []),
-      ...boxes.map((b) => `${BOX_SCOPE_PREFIX}${b.id}`),
-    ];
-  }, [boxes, naming, selected, trash]);
-  // Names only while the strip spans several scopes; narrowed to the box the
-  // chip already names, prefixing every bar with it says nothing twice.
-  const allScopeNames = useMemo(
+      // Everything the pill beside it is not already reporting: the selected
+      // box carries its own strip on its own pill, and one tab asking for a
+      // decision twice in one leading segment reads as two tabs.
+      ...boxes
+        .filter((b) => b.id !== selected?.id)
+        .map((b) => `${BOX_SCOPE_PREFIX}${b.id}`),
+    ],
+    [boxes, selected, trash],
+  );
+  // The chip's strip always spans several scopes now, so every bar is prefixed
+  // with the one it came from — an unattributed bar in a row of them says
+  // nothing. The pill's own strip needs no prefix: the pill names its box.
+  const barNames = useMemo(
     () => ({
       [ROOT_SCOPE]: t("boxChip.rootLabel"),
       ...(trash ? { [trash.id]: trash.name } : {}),
@@ -160,7 +177,6 @@ export function BoxScopeChip({
     }),
     [boxes, trash, t],
   );
-  const barNames = naming === "box" ? undefined : allScopeNames;
 
   // Spring-loaded during a pill drag (the PDF page rail's bargain): the strip
   // may be sliced, so the project being dragged is usually not one of the
@@ -213,6 +229,9 @@ export function BoxScopeChip({
     if (!menuOpen && !contextMenu) return;
     const onPointer = (e: PointerEvent) => {
       if (chipRef.current?.contains(e.target as Node)) return;
+      // The box pill hosts the rename input and the box context menu, so a
+      // press inside it must not fold either away under the pointer.
+      if (pillRef.current?.contains(e.target as Node)) return;
       if ((e.target as HTMLElement).closest?.(".box-chip-menu")) return;
       dismiss();
       setContextMenu(null);
@@ -246,14 +265,12 @@ export function BoxScopeChip({
   const chipTitle = () => {
     if (naming === "root") return t("header.rootProject");
     if (naming === "trash") return t("pill.trashProjectTitle");
-    if (selected) return t("boxChip.selectedTitle", { name: selected.name });
     return t("boxChip.pickerTitle");
   };
 
   const chipLabel = () => {
     if (naming === "root") return t("boxChip.rootLabel");
     if (naming === "trash") return trash?.name ?? "";
-    if (selected) return selected.name;
     return null;
   };
 
@@ -263,59 +280,99 @@ export function BoxScopeChip({
     <>
       <div
         ref={chipRef}
-        // The assign-to-box drop target. Only the SELECTED box is addressable
-        // by a drag — dropping onto a chip means "into the box I am looking
-        // at"; every other box is one right-click away on the pill itself
-        // (its menu carries a checkbox row per box).
-        data-box-id={selected?.id}
-        className={`box-chip${active || rootActive || trashActive ? " active" : ""}${
-          naming ? " filtering" : ""
-        }${forcedDragOver ? " drag-over" : ""}`}
+        className={`box-chip${rootActive || trashActive ? " active" : ""}${
+          naming || selected ? " filtering" : ""
+        }`}
         onMouseEnter={reveal}
         onMouseLeave={scheduleClose}
-        onContextMenu={(e) => {
-          if (naming !== "box" || !selected) return;
-          e.preventDefault();
-          e.stopPropagation();
-          dismiss();
-          const bottom = chipRef.current?.getBoundingClientRect().bottom ?? e.clientY;
-          setContextMenu({ x: e.clientX, y: bottom });
-        }}
       >
-        {renaming && selected ? (
-          <input
-            className="project-box-rename-input"
-            autoFocus
-            value={renameValue}
-            onChange={(e) => setRenameValue(e.target.value)}
-            onBlur={commitRename}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") commitRename();
-              if (e.key === "Escape") setRenaming(false);
-            }}
-          />
-        ) : (
-          <button
-            type="button"
-            className="box-chip-main"
-            title={chipTitle()}
-            onClick={(e) => {
-              e.stopPropagation();
-              reveal();
-            }}
-            onFocus={reveal}
-          >
-            {naming === "root" ? (
-              <StarIcon className="box-chip-star" />
-            ) : naming === "trash" ? (
-              <TrashProjectIcon className="box-chip-trash-icon" />
-            ) : (
+        <button
+          type="button"
+          className="box-chip-main"
+          title={chipTitle()}
+          onClick={(e) => {
+            e.stopPropagation();
+            reveal();
+          }}
+          onFocus={reveal}
+        >
+          {naming === "root" ? (
+            <StarIcon className="box-chip-star" />
+          ) : naming === "trash" ? (
+            <TrashProjectIcon className="box-chip-trash-icon" />
+          ) : (
+            <span className="box-chip-icon" aria-hidden>
+              ▣
+            </span>
+          )}
+          {chipLabel() && <span className="box-chip-label">{chipLabel()}</span>}
+          <span className="box-chip-caret" aria-hidden>
+            ▾
+          </span>
+        </button>
+        <ScopeSetStatusBars scopes={barScopes} nameByScope={barNames} />
+        {/* Steering-mode station number, for the built-in scope the chip is
+            naming — the root pill used to carry its own. */}
+        {station != null && (
+          <span className="steering-station-chip" aria-hidden>
+            {station}
+          </span>
+        )}
+      </div>
+
+      {/* The selected box's own pill, right of the chip. The chip picks a box;
+          the pill IS that box — it names it, counts its members, wears its own
+          status strip, takes the drop of a project dragged "into the box I am
+          looking at", and one click enters its scope without going back through
+          a menu. Deliberately the chip's own box (`.box-chip`, minus the caret)
+          rather than a shape of its own, so the leading segment stays one run.
+          It is NOT a second copy of the boxes list: only the selected box is
+          ever here, and every other box stays one hover of the chip away. */}
+      {selected && (
+        <div
+          ref={pillRef}
+          // The assign-to-box drop target. Only the SELECTED box is addressable
+          // by a drag — dropping onto the pill means "into the box I am looking
+          // at"; every other box is a row in the sprung-open chip list, or one
+          // right-click away on the pill itself.
+          data-box-id={selected.id}
+          className={`box-chip box-scope-pill filtering${active ? " active" : ""}${
+            forcedDragOver ? " drag-over" : ""
+          }`}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            dismiss();
+            const bottom = pillRef.current?.getBoundingClientRect().bottom ?? e.clientY;
+            setContextMenu({ x: e.clientX, y: bottom });
+          }}
+        >
+          {renaming ? (
+            <input
+              className="project-box-rename-input"
+              autoFocus
+              value={renameValue}
+              onChange={(e) => setRenameValue(e.target.value)}
+              onBlur={commitRename}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") commitRename();
+                if (e.key === "Escape") setRenaming(false);
+              }}
+            />
+          ) : (
+            <button
+              type="button"
+              className="box-chip-main"
+              title={t("boxScopePill.title", { name: selected.name })}
+              onClick={(e) => {
+                e.stopPropagation();
+                onSelect(selected.id);
+              }}
+            >
               <span className="box-chip-icon" aria-hidden>
                 ▣
               </span>
-            )}
-            {chipLabel() && <span className="box-chip-label">{chipLabel()}</span>}
-            {naming === "box" && selected && (
+              <span className="box-chip-label">{selected.name}</span>
               <span
                 className="project-box-member-count"
                 title={t(
@@ -327,21 +384,11 @@ export function BoxScopeChip({
               >
                 {selected.member_ids.length}
               </span>
-            )}
-            <span className="box-chip-caret" aria-hidden>
-              ▾
-            </span>
-          </button>
-        )}
-        <ScopeSetStatusBars scopes={barScopes} nameByScope={barNames} />
-        {/* Steering-mode station number, for the built-in scope the chip is
-            naming — the root pill used to carry its own. */}
-        {station != null && (
-          <span className="steering-station-chip" aria-hidden>
-            {station}
-          </span>
-        )}
-      </div>
+            </button>
+          )}
+          <ScopeSetStatusBars scopes={[`${BOX_SCOPE_PREFIX}${selected.id}`]} />
+        </div>
+      )}
 
       {menuOpen &&
         pos &&

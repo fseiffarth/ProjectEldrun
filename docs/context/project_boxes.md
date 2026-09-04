@@ -21,6 +21,27 @@ Two consequences drive the switcher's rendering:
   a stale persisted `box_id` is stripped in-memory on load and falls off disk
   with the next ordinary `save_projects`.
 
+## The chip picks, the pill is the box
+
+The leading segment carries **two** controls for boxes, not one (2026-09-04).
+The `BoxScopeChip` dropdown is the list — every box, plus root, Trash and "All
+projects" — and the box it selects then stands beside it as a **pill of its
+own**: named, member-counted, wearing its own status strip, the drop target for
+"into the box I am looking at", and one click into its scope.
+
+They were one control before, and the two jobs fought: the chip was both the
+menu you open to go somewhere and the label saying where you are, so returning
+to the box you were already looking at meant opening a menu to click the row
+already marked current — while a project's pill, one hairline to the right, is
+always a single click. The split gives a box the same standing destination its
+members have.
+
+This is not the per-box pills coming back. Only the **one selected box** is
+ever on the row, and it lives in the *fixed* leading segment, so N boxes still
+cost the scrolling strip nothing — which is the whole reason the pills went
+away in the first place. The chip's status strip drops the box the pill is
+already reporting, so nothing on the segment is said twice.
+
 ## Why silent dissolve died
 
 `assignToBox` used to dissolve any box left with exactly one member — "a box

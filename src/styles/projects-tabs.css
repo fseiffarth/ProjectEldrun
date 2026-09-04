@@ -418,6 +418,24 @@
   box-shadow: inset 0 0 0 1px var(--accent);
 }
 
+/* ── The selected box's own pill ────────────────────────────────────── */
+/* The box the chip's dropdown selected stands beside it as a control of its
+   own (BoxScopeChip.tsx): the chip picks, the pill IS the box — click it to
+   enter the box scope, drop a project on it to add a member, right-click it to
+   rename/edit/delete. Deliberately the SAME `.box-chip` box as its neighbour,
+   so the leading segment (★/🗑/▣ chip · box · hairline · projects) still reads
+   as one run; it only drops the caret it has no menu for and tightens the
+   inset, since the chip beside it already carries the run's 10px lead. */
+.box-scope-pill {
+  padding-left: 4px;
+}
+
+/* Long box names get a little more room than the chip's own label: the pill
+   has nothing else to fit but the name and its member count. */
+.box-scope-pill .box-chip-main {
+  max-width: 180px;
+}
+
 /* The hairline after the leading segment (★ · 🗑 · ▣ chip), before the scrolling
    project pills — the visible edge between the fixed zone and the strip that
    moves under it. It was literally white, which is a divider that only exists on
