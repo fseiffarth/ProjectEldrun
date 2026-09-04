@@ -30,6 +30,7 @@ import {
   type PaneRect,
   type TitlebarPress,
 } from "../../stores/detached";
+import { clearStrayFullscreen, windowFillsScreen } from "../../lib/strayFullscreen";
 import { FileDropContext, type FileDropController } from "../files/fileDropContext";
 import { fileDropPayloads } from "../tabs/commitFileDrop";
 import { TabPane } from "../tabs/TabPane";
@@ -1243,7 +1244,28 @@ export function DetachedCenterPanel({
   // terminals fast enough); other engines don't need it.
   const beginNativeWindowMove = () => {
     if (PLATFORM === "windows") beginWindowMove();
-    void getCurrentWindow().startDragging().catch(() => {});
+    const win = getCurrentWindow();
+    // A window the WM holds in fullscreen has no `_NET_WM_ACTION_MOVE`, so it
+    // refuses `_NET_WM_MOVERESIZE` and this drag is a silent no-op — the popout
+    // that "stopped moving when you drag the top frame" (observed live under
+    // Muffin: `_NET_WM_STATE_FULLSCREEN` set, MOVE and RESIZE both gone from
+    // `_NET_WM_ALLOWED_ACTIONS`). `DetachedApp`'s guard clears that state on
+    // resize and focus-regain, but a window already stuck AND already focused
+    // produces neither event, so the press that runs into the problem is also
+    // the one that has to get it out.
+    //
+    // Fired and NOT awaited, which is the whole shape of it. Waiting would put a
+    // round trip in front of every drag of a window that merely fills its screen
+    // — a maximized popout, the ordinary result of F11, which Muffin moves
+    // perfectly well — to buy nothing in the case that is not stuck. Unawaited,
+    // the ordinary drag is exactly as immediate as it was, the two requests reach
+    // the WM in the order they were sent, and the worst case left is a stuck
+    // window that takes a second press: by then the fullscreen is gone for good.
+    // `windowFillsScreen()` is free and synchronous, so a normally-sized popout
+    // does not even pay the IPC (see `lib/strayFullscreen` for why the state
+    // cannot simply be read back and tested instead).
+    if (windowFillsScreen()) void clearStrayFullscreen();
+    void win.startDragging().catch(() => {});
   };
 
   // #240: double-click the title bar → fit this popout onto the screen it is on

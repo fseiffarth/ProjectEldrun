@@ -697,6 +697,49 @@ writes are now forwarded rather than dropped.
        #230, #231, #232, #234 and #238 all have cases in it.
      - [ ] 🖐️ Manual test — n/a.
 
+261. **[Bug] A popout stopped moving when you dragged its top frame.** Found
+     live: the popout carried `_NET_WM_STATE_FULLSCREEN`, sized to exactly the
+     external monitor (`2048,0 3840x2160`), and its `_NET_WM_ALLOWED_ACTIONS`
+     held neither `_NET_WM_ACTION_MOVE` nor `_NET_WM_ACTION_RESIZE` — so Muffin
+     refused the `_NET_WM_MOVERESIZE` that `startDragging` sends and the title
+     bar, the tab-bar grip and every resize edge silently did nothing. Exactly
+     the trap #240's F11-maximizes rule and `DetachedApp`'s no-fullscreen guard
+     exist to prevent, with the guard mounted and running the whole time.
+     **Root cause:** the guard asked before clearing, and the question has no
+     honest answer. `isFullscreen()` never reaches the window manager — tao
+     returns the value its own `set_fullscreen` last wrote
+     (`fullscreen: RefCell<Option<Fullscreen>>`), so a fullscreen from anywhere
+     else (the WM's own shortcut, a page's `requestFullscreen()` — WebKitGTK
+     fullscreens the toplevel for it — whose element was then destroyed, a
+     presenter torn down without its cleanup) reads back `false` for ever and
+     the guard's `if (fs)` never fired. **Fixed** by clearing without asking:
+     `setFullscreen(false)` maps onto `gtk_window_unfullscreen()`
+     unconditionally and is a no-op otherwise — which is how the backend has
+     always cleared the main window's (`restore_main_window`: `let _ =
+     win.set_fullscreen(false)`, no read, no branch). What must not be cleared
+     is now the pure `mayClearStrayFullscreen` (`lib/strayFullscreen`): the
+     page's own DOM fullscreen and a talk in progress hold it, macOS is
+     excluded. And the title-bar press self-heals, because the guard fires on
+     resize and focus-regain and a window already stuck *and* already focused
+     produces neither — so `beginNativeWindowMove` fires the clear
+     alongside the drag — unawaited, and gated on `windowFillsScreen()`, so a
+     maximized popout (which Muffin moves fine) pays nothing and the worst case
+     left is a stuck window that takes a second press. **Not fixed:** what put the window there. The
+     rect matches `snap_detached_geometry` exactly (it clamps to the monitor
+     size at the monitor origin), so a WM promoting an undecorated
+     monitor-sized window to fullscreen is the leading suspect and unproven;
+     the rescue is deliberately mechanism-independent.
+     - [x] 🤖 Automated test — `StrayFullscreen.test.ts` covers both pure
+       halves: who may clear (DOM fullscreen and a running talk hold it, macOS
+       excluded, an orphaned DOM fullscreen is rescued) and the viewport test.
+     - [ ] 🖐️ Manual test — with a popout stuck filling a screen, drag its
+       title bar: it leaves fullscreen and follows the cursor. Then check the
+       ordinary case is untouched — a normal-sized popout still moves the
+       instant you grab the strip — and that a video/browser tab inside a
+       popout can still go fullscreen and stay there.
+       - [ ] ✅ Works
+       - [ ] ❌ Doesn't work
+
 ---
 
 **Verified sound by the same audit** (so nobody re-audits it): seed handshake

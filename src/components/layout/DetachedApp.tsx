@@ -58,7 +58,7 @@ import { withdrawnTabKinds } from "../../lib/experimental";
 import { PLATFORM } from "../../lib/platform";
 import { useTabLandStore } from "../../stores/tabLand";
 import { startFocusTracking, useQuiesce } from "../../stores/power";
-import { usePresentationStore } from "../../stores/presentation";
+import { clearStrayFullscreen } from "../../lib/strayFullscreen";
 import { applyFastModeAttribute, useFastMode } from "../../lib/fastMode";
 import { useRemoteStatusStore } from "../../stores/remoteStatus";
 import { useProjectsStore } from "../../stores/projects";
@@ -207,9 +207,20 @@ export function DetachedApp({ param }: Props) {
   // A resize is the signal because every fullscreen transition is one; focus
   // regain is the backstop for a WM that reports the state change without one.
   // Debounced, so an interactive resize drag costs a single check once it settles
-  // rather than one IPC round trip per frame. A talk in progress is skipped via
-  // `presenting` — that window is fullscreen because the user asked it to be, and
-  // the presenter's own cleanup is what takes it back out.
+  // rather than one IPC round trip per frame.
+  //
+  // It CLEARS rather than checks-then-clears, and that is the second load-bearing
+  // part: `isFullscreen()` does not ask the window manager. tao caches whatever
+  // its own `set_fullscreen` last wrote and hands that cache back, so a fullscreen
+  // that came from anywhere else — the WM's shortcut, a page's `requestFullscreen`
+  // (WebKitGTK fullscreens the toplevel for it), a presenter whose cleanup never
+  // ran — reads back `false` for ever and the guard gated on that read did
+  // nothing, which is exactly how a popout was found sitting fullscreen and
+  // immovable with this effect mounted and running. `setFullscreen(false)` maps
+  // onto `gtk_window_unfullscreen()` unconditionally and is a no-op otherwise,
+  // which is why the backend clears the main window's the same read-free way.
+  // What is deliberately NOT cleared — a talk in progress, the page's own DOM
+  // fullscreen — is the pure `mayClearStrayFullscreen`; see `lib/strayFullscreen`.
   useEffect(() => {
     if (PLATFORM === "macos") return;
     const win = getCurrentWindow();
@@ -224,15 +235,7 @@ export function DetachedApp({ param }: Props) {
     const check = () => {
       try {
         if (disposed) return;
-        if (usePresentationStore.getState().presenting > 0) return;
-        win
-          .isFullscreen()
-          .then((fs) => {
-            if (fs && !disposed && usePresentationStore.getState().presenting === 0) {
-              return win.setFullscreen(false);
-            }
-          })
-          .catch(() => {});
+        void clearStrayFullscreen();
       } catch {
         /* never take the window down over a fullscreen check */
       }
