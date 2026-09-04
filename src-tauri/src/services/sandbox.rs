@@ -125,7 +125,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::paths;
 use crate::schema::project::{DetectedSpecKind, DetectedSpecSource, SandboxScope, SandboxSpec};
@@ -1046,6 +1046,7 @@ pub fn down_all() {
 pub fn harvest_and_clear_stage() {
     let stage_root = storage::state_dir().join("sandbox-stage");
     harvest_all_transcripts();
+    harvest_all_claude_trust();
     let _ = std::fs::remove_dir_all(&stage_root);
 }
 
@@ -2104,6 +2105,10 @@ fn staged_claude_json_copy(
         .trim_start_matches(['/', '\\'])
         .replace(['/', '\\', ':'], "_");
     let dst = stage.join(&leaf);
+    // The refresh below overwrites whatever the last tab left here, so take the
+    // trust answers out of it first — see [`agent_trust_path`] for why they
+    // cannot simply stay in the stage.
+    harvest_claude_trust_file(&dst);
     let mut value: serde_json::Value = std::fs::read(src_path)
         .ok()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
@@ -2115,9 +2120,194 @@ fn staged_claude_json_copy(
                 .any(|root| Path::new(cwd).starts_with(root))
         });
     }
+    apply_recorded_trust(&mut value, roots);
     let body = serde_json::to_vec(&value).ok()?;
     std::fs::write(&dst, body).ok()?;
     Some((dst.to_string_lossy().into_owned(), src))
+}
+
+// ── Trust the user granted from inside the fence ──────────────────────────
+
+/// `<state_dir>/agent_trust.json` — the folders the user answered Claude's
+/// "Is this a project you created or one you trust?" dialog for while inside a
+/// fenced or contained tab.
+///
+/// Claude records that answer in `~/.claude.json`, which such a tab only ever
+/// sees as the stage copy above — and that copy is rewritten from the host file
+/// at **every** spawn, so the answer was gone before the next tab started and
+/// the dialog came back every single time. Worse, the tab could not even be
+/// used to answer it: Eldrun types an agent's `/rename` line and then a bare
+/// Enter, which confirmed the dialog's default row, `No, exit`. The tab died
+/// on launch and nothing could ever trust the folder.
+///
+/// So Eldrun remembers the answer in its OWN state and re-applies it to each
+/// staged copy. The host `~/.claude.json` is never written — that is the rule
+/// this whole shadow exists to keep (`AGENTS.md`: Eldrun must never manipulate
+/// another application's config).
+fn agent_trust_path() -> PathBuf {
+    storage::state_dir().join("agent_trust.json")
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct AgentTrust {
+    /// Absolute working directories accepted for Claude, in the order seen.
+    #[serde(default)]
+    claude: Vec<String>,
+}
+
+fn read_agent_trust() -> AgentTrust {
+    storage::read_json(&agent_trust_path()).unwrap_or_default()
+}
+
+/// Record `paths` as Claude-trusted. Recording is deliberately *not* bounded to
+/// any root — a fenced agent writes its stage copy freely, so a bound here
+/// would be a bound on attacker-controlled input rather than on effect. The
+/// bound that matters is applied at injection time
+/// ([`apply_recorded_trust`]), where only paths inside the spawning tab's own
+/// roots are ever re-applied.
+fn record_claude_trust(paths: &[String]) {
+    if paths.is_empty() {
+        return;
+    }
+    let _ = storage::patch_json(&agent_trust_path(), AgentTrust::default(), |trust| {
+        for path in paths {
+            if !trust.claude.iter().any(|known| known == path) {
+                trust.claude.push(path.clone());
+            }
+        }
+        Ok(())
+    });
+}
+
+/// The `projects` keys of a `.claude.json`-shaped value whose trust dialog has
+/// been accepted. Absolute paths only, so a relative or empty key recorded by
+/// anything cannot become a prefix-free entry in Eldrun's store.
+fn accepted_trust_paths(value: &serde_json::Value) -> Vec<String> {
+    let Some(projects) = value.get("projects").and_then(|v| v.as_object()) else {
+        return Vec::new();
+    };
+    projects
+        .iter()
+        .filter(|(cwd, entry)| {
+            Path::new(cwd).is_absolute()
+                && entry
+                    .get("hasTrustDialogAccepted")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false)
+        })
+        .map(|(cwd, _)| cwd.clone())
+        .collect()
+}
+
+/// Take the trust answers out of one staged `.claude.json` copy before it is
+/// overwritten or deleted. No-op for a missing or unparsable file.
+fn harvest_claude_trust_file(staged: &Path) {
+    let Ok(bytes) = std::fs::read(staged) else {
+        return;
+    };
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        return;
+    };
+    record_claude_trust(&accepted_trust_paths(&value));
+}
+
+/// Startup counterpart to [`harvest_claude_trust_file`]: every stage dir's
+/// staged `.claude.json` copies, harvested before the stage root is cleared.
+/// A clean quit leaves the last tab's answer in the stage, so without this it
+/// would be wiped by the very next launch.
+fn harvest_all_claude_trust() {
+    let Ok(stages) = std::fs::read_dir(storage::state_dir().join("sandbox-stage")) else {
+        return;
+    };
+    for stage in stages.flatten() {
+        let Ok(files) = std::fs::read_dir(stage.path()) else {
+            continue;
+        };
+        for file in files.flatten() {
+            // `settings.json` / `config.toml` shadows share this directory; only
+            // the `.claude.json` copies (`<escaped host path>` + that suffix)
+            // carry a `projects` map.
+            if file.file_name().to_string_lossy().ends_with(".claude.json") {
+                harvest_claude_trust_file(&file.path());
+            }
+        }
+    }
+}
+
+/// Re-apply the recorded trust for paths inside `roots` to a staged copy, so a
+/// folder the user has already accepted is not asked about again in every new
+/// tab. Only the flag is set: history and `allowedTools` stay filtered out, and
+/// an entry the host file does not have is created holding nothing else.
+fn apply_recorded_trust(value: &mut serde_json::Value, roots: &[String]) {
+    apply_trust_paths(value, &read_agent_trust().claude, roots);
+}
+
+/// Pure core of [`apply_recorded_trust`], so the root bound is unit-testable
+/// without a state directory (`ELDRUN_STATE_DIR` is process-wide and this suite
+/// runs in parallel).
+fn apply_trust_paths(value: &mut serde_json::Value, trusted: &[String], roots: &[String]) {
+    let recorded: Vec<&String> = trusted
+        .iter()
+        .filter(|cwd| roots.iter().any(|root| Path::new(cwd).starts_with(root)))
+        .collect();
+    if recorded.is_empty() {
+        return;
+    }
+    let Some(root_obj) = value.as_object_mut() else {
+        return;
+    };
+    let projects = root_obj
+        .entry("projects")
+        .or_insert_with(|| serde_json::json!({}));
+    if !projects.is_object() {
+        *projects = serde_json::json!({});
+    }
+    let Some(projects) = projects.as_object_mut() else {
+        return;
+    };
+    for cwd in recorded {
+        let entry = projects
+            .entry(cwd.clone())
+            .or_insert_with(|| serde_json::json!({}));
+        if let Some(obj) = entry.as_object_mut() {
+            obj.insert(
+                "hasTrustDialogAccepted".to_string(),
+                serde_json::Value::Bool(true),
+            );
+        }
+    }
+}
+
+/// Whether Claude will skip its trust dialog in `cwd`: the host `~/.claude.json`
+/// already records the answer, or Eldrun recorded one the user gave inside a
+/// fenced/contained tab. Read-only.
+///
+/// The caller is the frontend's auto-`/rename`, which must not type a blind
+/// Enter into a launch that is about to ask a question — the default answer is
+/// `No, exit`.
+pub fn claude_folder_trusted(cwd: &str) -> bool {
+    let home = paths::home_dir();
+    for candidate in [
+        home.join(".claude.json"),
+        home.join(".claude").join(".claude.json"),
+    ] {
+        let Ok(bytes) = std::fs::read(&candidate) else {
+            continue;
+        };
+        let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+            continue;
+        };
+        if value
+            .get("projects")
+            .and_then(|projects| projects.get(cwd))
+            .and_then(|entry| entry.get("hasTrustDialogAccepted"))
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
+        {
+            return true;
+        }
+    }
+    read_agent_trust().claude.iter().any(|path| path == cwd)
 }
 
 /// Placeholder content for a shadowed agent-config file the host does not have
@@ -2693,6 +2883,56 @@ mod tests {
         assert!(!host.exists(), "staging must never create the host original");
 
         std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn accepted_trust_paths_takes_only_absolute_accepted_entries() {
+        let value = serde_json::json!({
+            "projects": {
+                "/home/u/work/p": {"hasTrustDialogAccepted": true},
+                "/home/u/work/q": {"hasTrustDialogAccepted": false},
+                "/home/u/work/r": {"history": ["no answer yet"]},
+                "relative/path": {"hasTrustDialogAccepted": true},
+            },
+        });
+        let mut got = accepted_trust_paths(&value);
+        got.sort();
+        assert_eq!(got, vec!["/home/u/work/p".to_string()]);
+        // A file with no `projects` map at all yields nothing rather than panicking.
+        assert!(accepted_trust_paths(&serde_json::json!({})).is_empty());
+    }
+
+    #[test]
+    fn recorded_trust_is_reinjected_only_inside_the_tabs_own_roots() {
+        let roots = vec!["/home/u/work/p".to_string(), "/home/u/boxes/b".to_string()];
+        let trusted = vec![
+            "/home/u/boxes/b".to_string(),      // a root itself
+            "/home/u/work/p/sub".to_string(),   // inside a root
+            "/home/u/other".to_string(),        // outside every root — must not appear
+        ];
+        let mut value = serde_json::json!({
+            "oauthAccount": {"emailAddress": "u@example.org"},
+            "projects": {"/home/u/work/p": {"allowedTools": ["Bash"]}},
+        });
+        apply_trust_paths(&mut value, &trusted, &roots);
+        let projects = value["projects"].as_object().unwrap();
+        assert_eq!(projects.len(), 3, "got: {projects:?}");
+        assert_eq!(projects["/home/u/boxes/b"]["hasTrustDialogAccepted"], true);
+        assert_eq!(projects["/home/u/work/p/sub"]["hasTrustDialogAccepted"], true);
+        assert!(!projects.contains_key("/home/u/other"));
+        // An entry the host file already had keeps everything else it carried,
+        // and login state is untouched.
+        assert_eq!(projects["/home/u/work/p"]["allowedTools"][0], "Bash");
+        assert_eq!(value["oauthAccount"]["emailAddress"], "u@example.org");
+        // Nothing recorded inside the roots leaves the value byte-identical, so
+        // a staged `{}` stays `{}` (the "never create the host original" test).
+        let mut empty = serde_json::json!({});
+        apply_trust_paths(&mut empty, &["/home/u/other".to_string()], &roots);
+        assert_eq!(empty, serde_json::json!({}));
+        // A non-object staged file is left alone rather than indexed into.
+        let mut weird = serde_json::json!([1, 2]);
+        apply_trust_paths(&mut weird, &trusted, &roots);
+        assert_eq!(weird, serde_json::json!([1, 2]));
     }
 
     #[test]

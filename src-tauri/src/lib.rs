@@ -1426,6 +1426,7 @@ pub fn run() {
             commands::agents::install_agent_remote_command,
             commands::agents::uninstall_agent,
             commands::agents::agent_warmup,
+            commands::agents::claude_folder_trusted,
             commands::agents::agent_usage,
             commands::ollama::ollama_is_running,
             commands::ollama::ollama_status,

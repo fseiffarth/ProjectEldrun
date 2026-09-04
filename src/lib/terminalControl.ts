@@ -180,3 +180,14 @@ export function isCodexCommand(cmd: string | null | undefined): boolean {
   const leaf = cmd.trim().split(/[\\/]/).pop() ?? "";
   return leaf.replace(/\.(exe|cmd|bat)$/i, "").toLowerCase() === "codex";
 }
+
+/** Whether `cmd` launches Claude Code — same leaf-name match as
+ *  {@link isCodexCommand}. Used to decide whether a tab's auto-typed initial
+ *  input may be submitted at all: Claude opens a trust dialog in a folder it
+ *  has not seen before, and the blind Enter that submits the input confirms
+ *  that dialog's default row, `No, exit`. */
+export function isClaudeCommand(cmd: string | null | undefined): boolean {
+  if (!cmd) return false;
+  const leaf = cmd.trim().split(/[\\/]/).pop() ?? "";
+  return leaf.replace(/\.(exe|cmd|bat)$/i, "").toLowerCase() === "claude";
+}

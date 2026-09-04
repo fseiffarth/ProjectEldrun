@@ -24,7 +24,7 @@ import {
 } from "../../lib/terminalBus";
 import { hpcGuardRefusal } from "../../lib/hpcGuard";
 import { useHpcGuardStore } from "../../stores/hpcGuardPrompt";
-import { CSI_U_SHIFT_TAB, claimInitialInput, decodeOsc52Clipboard, initialInputForPty, isCodexCommand, isTerminalIdentityResponse, isTerminalReport, stripTerminalQueries } from "../../lib/terminalControl";
+import { CSI_U_SHIFT_TAB, claimInitialInput, decodeOsc52Clipboard, initialInputForPty, isClaudeCommand, isCodexCommand, isTerminalIdentityResponse, isTerminalReport, stripTerminalQueries } from "../../lib/terminalControl";
 import { clearPtyInput, writePtyInput } from "../../lib/terminalInput";
 import { registerScheduledAgentInput } from "../../lib/scheduledAgentInput";
 import "@xterm/xterm/css/xterm.css";
@@ -940,7 +940,34 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
             writePtyInput(id, new Uint8Array([0x0d])).catch(console.error);
           }, 200);
         };
-        typeWhenReady();
+
+        // …but only into a launch that is ready to be typed at. Claude opens
+        // its "Is this a project you created or one you trust?" dialog in a
+        // folder it has not been trusted in, and that dialog's highlighted row
+        // is `No, exit` — so the bare Enter above answered it and the tab died
+        // on launch with nothing but `[process exited]`. Every box folder is
+        // new, which is where this surfaced, but a freshly created project hits
+        // it just as hard. The trust decision is the user's alone: when the
+        // question is coming, leave the tab entirely alone and skip the rename
+        // (the next tab in that folder gets it, once they have answered).
+        const submittableTab = async (): Promise<boolean> => {
+          if (!isClaudeCommand(cmd)) return true;
+          try {
+            return await invoke<boolean>("claude_folder_trusted", { cwd });
+          } catch {
+            // An older backend does not expose the probe — preserve the
+            // previous behavior rather than silently dropping the rename.
+            return true;
+          }
+        };
+        void submittableTab().then((submittable) => {
+          if (cancelled) return;
+          if (!submittable) {
+            initialInputPending.current = false;
+            return;
+          }
+          typeWhenReady();
+        });
       }
     });
 

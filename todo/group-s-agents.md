@@ -448,6 +448,22 @@ unchanged; the new agents are additive.
       - [ ] Fenced Claude starts at all (fixed 2026-08-31: the fence now binds
         the binary's symlink-chain dirs, e.g. `~/.local/share/claude/versions`,
         instead of dying with `bwrap: execvp claude: No such file or directory`).
+      - [ ] A Claude tab in a folder Claude has never been trusted in starts and
+        waits for the user's answer (fixed 2026-09-04, found in a box: every tab
+        carries an auto-typed `/rename <project>` submitted with a bare Enter,
+        and in an untrusted folder Claude draws its trust dialog first — whose
+        highlighted row is `No, exit`. The tab answered itself and died on
+        launch with only `[process exited]`. Compounding it, the fence stages
+        `~/.claude.json` as a copy rewritten from the host file at **every**
+        spawn, so an acceptance made inside a tab was gone before the next one
+        started and the dialog came back forever. Now: `claude_folder_trusted`
+        is asked before the auto-type and the rename is skipped while the
+        question is pending, and the answer is remembered in Eldrun's own
+        `<state_dir>/agent_trust.json` and re-applied to each staged copy for
+        paths inside that tab's roots — the host file is still never written.)
+      - [ ] The same folder asked about only ONCE: answer `Yes, I trust`, then
+        open a second Claude tab there and confirm it goes straight in, and that
+        a quit/relaunch in between does not bring the question back.
       - [ ] Fenced Claude starts **logged in**, no per-tab login/onboarding
         (fixed 2026-08-31: `~/.claude.json` staged as a filtered per-project
         copy — login/onboarding kept, foreign projects' history/allowedTools

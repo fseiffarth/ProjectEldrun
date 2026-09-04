@@ -148,8 +148,9 @@ whose per-group files live in `todo/`.
   `~/eldrun/root/`.
 - Global state in `~/.local/share/eldrun/`: `projects.json`, `settings.json`,
   `boxes.json`, `default_apps.json`, `calendar.json`, `global_machines.json`,
-  `time_log.json`, and `usage_stats.json`, alongside per-subsystem directories
-  (`mail/`, `browser/`, `sessions/`, `vm/`, `remote-projects/`, …).
+  `time_log.json`, `agent_trust.json`, and `usage_stats.json`, alongside
+  per-subsystem directories (`mail/`, `browser/`, `sessions/`, `vm/`,
+  `remote-projects/`, …).
 - **Session state lives outside the project tree**: tab layout and `open_apps`
   are stored per project id in `<state_dir>/sessions/<id>/terminals.json`. The
   copy inside a project folder is legacy/export-only and is adopted only on an

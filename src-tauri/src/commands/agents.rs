@@ -1251,6 +1251,26 @@ pub async fn agent_usage(agent: String, refresh: Option<bool>) -> AgentUsageRepo
     }
 }
 
+/// Whether Claude already trusts `cwd`, i.e. it will NOT open its "Is this a
+/// project you created or one you trust?" dialog there.
+///
+/// The caller is the tab's auto-typed `/rename <project>` line, which is
+/// submitted with a bare Enter. On that dialog, Enter confirms the highlighted
+/// default — `No, exit` — so an agent tab opened in an untrusted folder killed
+/// itself on launch. Answering the question is the user's alone; Eldrun only
+/// asks whether the question is coming, and stays quiet when it is.
+/// Off the main thread: the host `~/.claude.json` carries every project's
+/// prompt history and grows into the megabytes, and this is asked once per new
+/// Claude tab — parsing it inline would jank the window at launch.
+#[tauri::command]
+pub async fn claude_folder_trusted(cwd: String) -> bool {
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::services::sandbox::claude_folder_trusted(&cwd)
+    })
+    .await
+    .unwrap_or(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
