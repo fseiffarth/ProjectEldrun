@@ -179,6 +179,74 @@ elif [ -z "$served_entry" ] && [ -n "$mobile_dist" ] && [ "$started" != "0" ] &&
 $probe_note"
 fi
 
+# --- the desktop frontend seam ---------------------------------------------
+# Only the hot-reload session gets `src/` for free: vite serves it and HMR pushes
+# every edit into the window. Every other shape — the frozen "Eldrun (dev)"
+# build, the packaged one, the AppImage — has the frontend COMPILED IN, so it
+# goes stale exactly like the backend does, and nothing said so. The symptom is
+# not an error: the window simply renders an older UI than the hot-reload one
+# and looks like a bug in the feature you are staring at (2026-09-04).
+#
+# Ground truth first, same as the sidecar probe above: vite renames the entry
+# bundle on every rebuild, so the key baked into the running executable either
+# is the one dist/index.html names or the window is on an older build. Read from
+# /proc/<pid>/exe, which resolves an AppImage's payload inside its own mount too.
+desktop_msg=""
+if [ "$mobile_only" = "0" ] && [ -n "$app_pid" ] && [ "$app_kind" != "hot-reload dev session" ]; then
+  desktop_built="$(grep -o '/assets/[A-Za-z0-9_.-]*\.js' "$ROOT/dist/index.html" 2>/dev/null | head -n 1)"
+  exe="$(readlink -f "/proc/$app_pid/exe" 2>/dev/null || true)"
+  if [ -n "$desktop_built" ] && [ -n "$exe" ] && [ -r "$exe" ] \
+     && ! grep -qaF -- "$desktop_built" "$exe"; then
+    stale=1
+    # The binary also carries the phone's bundle; naming that as the desktop
+    # frontend would send the reader after the wrong seam. The one to drop is
+    # the bundle this very binary's sidecar is SERVING — its own mobile entry,
+    # not the one currently built in mobile-dist/, which is a different key
+    # precisely because the binary is stale.
+    embedded="$(grep -aoE '/assets/index-[A-Za-z0-9_-]+\.js' "$exe" 2>/dev/null \
+      | sort -u \
+      | grep -vxF -- "${served_entry:-/dev/null}" \
+      | grep -vxF -- "${built_entry:-/dev/null}" | tr '\n' ' ')"
+    desktop_msg="EMBEDDED FRONTEND IS STALE — the running $app_kind was built against an older
+  dist/ than the one on disk, so the window is showing an older UI than the
+  hot-reload one would.
+  running : ${embedded:-(no bundle key found)}
+  built   : $desktop_built"
+  elif [ "$started" != "0" ]; then
+    src_ts="$(newest_ts "$ROOT/src" "$ROOT/index.html" "$ROOT/vite.config.ts")"
+    if [ -n "$src_ts" ] && [ "$src_ts" -gt "$started" ]; then
+      stale=1
+      desktop_msg="FRONTEND MAY BE STALE — src/ has changes ($(date -d "@$src_ts" '+%F %T')) newer than the
+  running $app_kind, which compiled its frontend in. Nothing hot-reloads here."
+    fi
+  fi
+elif [ "$mobile_only" = "0" ] && [ -n "$served_entry" ] && [ -n "$built_entry" ] \
+     && [ "$served_entry" != "$built_entry" ]; then
+  # No pid — pgrep saw nothing, which also happens when this runs from inside an
+  # agent tab, where the sandbox hides the host's processes. The sidecar still
+  # answered over loopback, and it answered with an OLDER bundle than the one
+  # just built: whatever window is open was launched from an older binary, and
+  # its desktop UI is that old too, not just the phone's.
+  stale=1
+  desktop_msg="THE OPEN WINDOW PREDATES THE CURRENT BUILD — the sidecar is serving a bundle
+  built before the one in mobile-dist/, so the window's compiled-in frontend is
+  behind your tree as well. It is not only the phone that is on the old code."
+  # `package:dev` installs but never relaunches (AGENTS.md "Running"), and a
+  # running frozen instance keeps its old inode — so the usual shape of this is
+  # a fresh snapshot sitting on disk that simply nobody has relaunched into.
+  desktop_built="${desktop_built:-$(grep -o '/assets/[A-Za-z0-9_.-]*\.js' "$ROOT/dist/index.html" 2>/dev/null | head -n 1)}"
+  for snapshot in "$APP_DIR/eldrun-dev" "$APP_DIR/eldrun" "$APP_DIR/eldrun.AppImage"; do
+    [ -r "$snapshot" ] || continue
+    [ -n "$desktop_built" ] || continue
+    if grep -qaF -- "$desktop_built" "$snapshot"; then
+      desktop_msg="$desktop_msg
+  A CURRENT snapshot is already installed at $snapshot — quit the open
+  window and relaunch it; that alone picks the new build up."
+      break
+    fi
+  done
+fi
+
 if [ "$stale" = "0" ]; then
   if [ "$mobile_only" = "1" ]; then
     exit 0
@@ -186,6 +254,9 @@ if [ "$stale" = "0" ]; then
   if [ -n "$app_pid" ]; then
     echo "Backend is current: running pid $app_pid ($app_kind) started after the newest"
     echo "src-tauri change, and its embedded mobile PWA matches mobile-dist/."
+    if [ "$app_kind" != "hot-reload dev session" ]; then
+      echo "Its compiled-in frontend matches dist/ too."
+    fi
   else
     echo "No Eldrun process was identified, but the sidecar on 127.0.0.1:$port is serving"
     echo "$served_entry — the bundle built in mobile-dist/. The Rust side could not be checked."
@@ -193,12 +264,27 @@ if [ "$stale" = "0" ]; then
   exit 0
 fi
 
-[ -n "$backend_msg" ] && echo "$backend_msg"
-[ -n "$backend_msg" ] && [ -n "$mobile_msg" ] && echo
-[ -n "$mobile_msg" ] && echo "$mobile_msg"
+first=1
+for msg in "$backend_msg" "$mobile_msg" "$desktop_msg"; do
+  [ -n "$msg" ] || continue
+  [ "$first" = "1" ] || echo
+  echo "$msg"
+  first=0
+done
 echo
-echo "Frontend (src/) changes are already live via vite HMR; only src-tauri/ (and the"
-echo "embedded mobile bundle) need this. Pick them up yourself when it suits you:"
+case "$app_kind" in
+  "hot-reload dev session")
+    echo "Frontend (src/) changes are already live via vite HMR; only src-tauri/ (and the"
+    echo "embedded mobile bundle) need this. Pick them up yourself when it suits you:"
+    ;;
+  "")
+    echo "Pick the changes up yourself when it suits you:"
+    ;;
+  *)
+    echo "Nothing hot-reloads in this shape — src/, src-tauri/ and both bundles are all"
+    echo "compiled in. Pick the changes up yourself when it suits you:"
+    ;;
+esac
 case "$app_kind" in
   "hot-reload dev session")
     echo "  pkill -f '$ROOT/node_modules/.bin/tauri'; pkill -f '$ROOT/target/debug/eldrun'"
