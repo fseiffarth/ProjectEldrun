@@ -84,6 +84,14 @@ small { color:#9498aa; }
 .mobile-alerts { display:grid; gap:10px; margin-top:28px; }
 .mobile-alerts h2 { margin:0; font-size:1.2rem; }
 .mobile-alert-list { display:grid; gap:8px; }
+/* The ✓ rides beside the row, never inside it: a button in a button is invalid
+   markup and would fold finishing the thing into the tap that opens it. */
+.mobile-alert-row-wrap { display:flex; align-items:stretch; gap:8px; }
+.mobile-alert-row-wrap .mobile-alert-row { flex:1 1 auto; min-width:0; }
+/* The board card's own check, same size and same square, so a tick means one
+   thing across the phone (`.todo-check`). */
+.mobile-alert-done { width:38px; flex:0 0 auto; padding:0; border-radius:11px; border-color:#776db4; background:#24203b; color:#fff; font-size:1rem; font-weight:800; }
+.mobile-alert-done:disabled { opacity:.55; }
 .mobile-alert-row { display:grid; width:100%; grid-template-columns:auto auto minmax(0,1fr) auto; align-items:center; gap:10px; padding:12px; border:1px solid #383c4d; border-radius:11px; background:rgba(28,31,43,.92); text-align:left; }
 button.mobile-alert-row { cursor:pointer; }
 .mobile-alert-dot { width:8px; height:8px; border-radius:50%; background:#8290b0; }

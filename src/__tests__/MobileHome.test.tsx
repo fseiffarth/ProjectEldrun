@@ -44,6 +44,17 @@ describe("Mobile home — project list states", () => {
     expect(screen.queryByText(/Loading projects/)).toBeNull();
   });
 
+  it("says which rows are boxes, where a project row says its status", async () => {
+    answer([
+      { id: "p1", label: "Alpha", status: "active", live_sessions: 1 },
+      { id: "b1", label: "Paper", status: "active", kind: "box", live_sessions: 0 },
+    ]);
+    render(<Home open={noop} openTab={noop} todo={noop} mail={noop} />);
+    await screen.findByText("Paper");
+    expect(screen.getByText("Alpha").parentElement?.textContent).toContain("active");
+    expect(screen.getByText("Paper").parentElement?.textContent).toContain("box");
+  });
+
   it("explains an empty active list and points at search", async () => {
     answer([]);
     render(<Home open={noop} openTab={noop} todo={noop} mail={noop} />);

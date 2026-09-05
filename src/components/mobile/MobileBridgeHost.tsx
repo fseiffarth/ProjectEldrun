@@ -61,7 +61,7 @@ const MOBILE_DESKTOP_EVENT = "eldrun-mobile-desktop-request";
 
 interface AgentInfo { bin: string; installed: boolean }
 interface CatalogAgent { id: string; label: string; modes: string[] }
-interface AgentTabStatus { tmux_session: string; status: "working" | "question" | "done" }
+interface AgentTabStatus { tmux_session: string; status: "working" | "question" | "done"; model?: string; working_at?: number; done_at?: number }
 interface AgentTabSchedules { tmux_session: string; total: number; enabled: number; next?: string }
 interface CreateRequest {
   project_id: string;

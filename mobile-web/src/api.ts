@@ -43,7 +43,7 @@ export interface ScheduledPromptList { schedules: ScheduledPrompt[]; time_zone: 
 export interface ProjectPrompt { id: string; message: string; created_at: string; updated_at: string }
 export interface ProjectPromptList { prompts: ProjectPrompt[] }
 export interface ProjectDetail { project: ProjectRow; tabs: TabRow[]; desktop_available: boolean; agents: AgentRow[] }
-export interface TodoColumn { id: string; name: string; position: number; done: boolean; archived: boolean; intake: boolean; color?: string }
+export interface TodoColumn { id: string; name: string; position: number; done: boolean; archived: boolean; intake: boolean; overdue: boolean; due_today: boolean; color?: string }
 export interface TodoSubtask { id: string; title: string; done: boolean }
 export interface TodoTaskInput {
   title: string;

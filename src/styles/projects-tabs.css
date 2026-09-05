@@ -2848,6 +2848,25 @@
 .agent-prompts-row-main { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 4px; }
 .agent-prompts-tab-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 
+/* The heading and, once there is more than one tab to order, the sort pick on
+   the same line: a one-tab list has nothing to sort and no control for it. */
+.agent-prompts-tabs-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.agent-prompts-tabs-head .settings-section-title { margin: 0; }
+.agent-prompts-sort { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-muted); }
+
+/* The model tag: the transcript's own model name, in the same pill the state
+   uses so the two read as one row of facts about the tab. */
+.agent-prompts-model {
+  padding: 1px 7px;
+  border: 1px solid var(--border-color);
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
 /* The tab's name is the link to the tab. A bare text button, so the row still
    reads as a name and not as a toolbar — the same restraint (and the same
    accent-on-hover) `.agent-prompts-file` uses for the other clickable label in
@@ -2948,6 +2967,109 @@
 .agent-prompts-view .settings-section-title { margin-top: 0; }
 .agent-prompts-view .settings-section-title > .settings-btn { margin-left: auto; }
 .agent-prompts-section:first-child .settings-section-title { padding-top: 0; border-top: none; }
+
+/* Prompt chart: the card treatment follows `.todo-card` (solid surface plus a
+   static shadow whose opacity changes), while this file keeps the Agents
+   vocabulary and narrow-panel breakpoint together. */
+.agent-prompt-chart-section { min-height: 0; }
+.agent-prompt-chart-toolbar,
+.agent-prompt-chart-facets,
+.agent-prompt-link-mode { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
+.agent-prompt-chart-toolbar > input { flex: 1 1 180px; min-width: 100px; }
+.agent-prompt-chart-toolbar .dropdown,
+.agent-prompt-chart-facets .dropdown { min-width: 92px; }
+.agent-prompt-new { display: grid; gap: 6px; padding: 8px; border: 1px solid var(--accent); background: var(--accent-soft); border-radius: var(--radius-md); }
+.agent-prompt-new textarea,
+.agent-prompt-new input { width: 100%; box-sizing: border-box; }
+.agent-prompt-chart-scroll { min-height: 360px; overflow-x: auto; overflow-y: visible; padding-bottom: 6px; }
+.agent-prompt-chart { position: relative; display: flex; align-items: flex-start; gap: 8px; min-width: max-content; }
+.agent-prompt-shelf,
+.agent-prompt-strand { position: relative; width: 210px; min-height: 330px; padding: 6px; border: 1px solid var(--border-color); border-radius: var(--radius-md); background: color-mix(in srgb, var(--bg-panel) 92%, transparent); box-sizing: border-box; }
+.agent-prompt-chart > div:nth-of-type(2) { --prompt-strand: var(--accent); }
+.agent-prompt-chart > div:nth-of-type(3) { --prompt-strand: var(--status-working); }
+.agent-prompt-chart > div:nth-of-type(4) { --prompt-strand: var(--status-decision); }
+.agent-prompt-chart > div:nth-of-type(5) { --prompt-strand: var(--success); }
+.agent-prompt-chart > div:nth-of-type(6) { --prompt-strand: var(--warning); }
+.agent-prompt-shelf > header,
+.agent-prompt-strand > header { position: sticky; top: 0; z-index: 3; display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; min-height: 24px; padding: 2px 3px 6px; background: var(--bg-panel); border-bottom: 2px solid var(--prompt-strand, var(--accent)); }
+.agent-prompt-strand > header span,
+.agent-prompt-strand > header small,
+.agent-prompt-shelf > header span { color: var(--text-muted); font-size: 10px; }
+.agent-prompt-past,
+.agent-prompt-queue,
+.agent-prompt-later { display: flex; flex-direction: column; gap: 5px; }
+.agent-prompt-past-group { display: flex; flex-direction: column; gap: 4px; }
+.agent-prompt-past-group > time,
+.agent-prompt-later > small { display: block; margin: 5px 0 1px; color: var(--text-muted); font-size: 9px; text-transform: uppercase; letter-spacing: .04em; }
+.agent-prompt-now { position: relative; height: 24px; margin: 4px -6px; border-top: 1px solid var(--danger); color: var(--danger); }
+.agent-prompt-now > span { position: absolute; top: -7px; right: 4px; padding: 0 3px; background: var(--bg-panel); font-size: 9px; text-transform: uppercase; }
+.agent-prompt-future { position: relative; height: 220px; margin-top: 4px; border-left: 1px solid var(--border-color); }
+.agent-prompt-tick { position: absolute; left: 2px; right: 0; border-top: 1px dotted var(--border-color); color: var(--text-muted); font-size: 8px; line-height: 1; pointer-events: none; }
+.agent-prompt-future-card { position: absolute; left: 30px; right: 3px; transform: translateY(-4px); z-index: 2; }
+.agent-prompt-card {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding: 7px 8px 7px 10px;
+  border: 1px solid var(--border-color);
+  border-left: 3px solid var(--prompt-strand, var(--accent));
+  border-radius: var(--radius-md);
+  background: var(--control-bg);
+  color: var(--text-primary);
+  cursor: var(--cur-pointer, pointer);
+  transition: opacity var(--transition), border-color var(--transition), transform var(--transition);
+}
+.agent-prompt-card::after { content: ""; position: absolute; inset: 0; z-index: -1; border-radius: inherit; box-shadow: 0 3px 10px rgb(0 0 0 / .18); opacity: 0; transition: opacity var(--transition); pointer-events: none; }
+.agent-prompt-card:hover::after,
+.agent-prompt-card.is-selected::after { opacity: 1; }
+.agent-prompt-card.is-selected { border-color: var(--accent); }
+.agent-prompt-card.is-dimmed { opacity: .28; }
+.agent-prompt-card.is-dragging { opacity: .75; transform: scale(1.02); z-index: 9; touch-action: none; }
+.agent-prompt-card.is-chained { border-style: dashed; }
+.agent-prompt-card.is-link-target { outline: 1px dashed var(--accent); outline-offset: 2px; }
+.agent-prompt-card-head { display: grid; grid-template-columns: 7px minmax(0, 1fr) 7px; align-items: start; gap: 5px; }
+.agent-prompt-card-port { width: 7px; height: 7px; margin-top: 4px; padding: 0; border: 1px solid var(--accent); border-radius: 50%; background: var(--bg-panel); }
+.agent-prompt-lamp { width: 7px; height: 7px; margin-top: 4px; border-radius: 50%; background: var(--text-muted); }
+.agent-prompt-lamp.is-delivered { background: var(--success); }
+.agent-prompt-lamp.is-failed,
+.agent-prompt-lamp.is-missed { background: var(--danger); }
+.agent-prompt-lamp.is-scheduled { background: var(--accent); }
+.agent-prompt-lamp.is-queued { background: var(--warning); }
+.agent-prompt-card-message { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 3; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px; font-weight: 600; }
+.agent-prompt-card-tags { display: flex; flex-wrap: wrap; gap: 3px; }
+.agent-prompt-tag { padding: 0 4px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-size: 8px; }
+.agent-prompt-tag.is-auto,
+.agent-prompts-tag.is-auto { border: 1px solid currentColor; background: transparent; }
+.agent-prompt-card-fact { color: var(--text-muted); font-size: 9px; }
+.agent-prompt-card-expanded { display: flex; flex-direction: column; gap: 6px; padding-top: 5px; border-top: 1px solid var(--border-color); cursor: var(--cur-default, default); }
+.agent-prompt-card-expanded textarea,
+.agent-prompt-card-expanded input,
+.agent-prompt-card-expanded select { width: 100%; box-sizing: border-box; }
+.agent-prompt-card-full { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px; }
+.agent-prompt-card-actions { display: flex; flex-wrap: wrap; gap: 4px; }
+.agent-prompt-session,
+.agent-prompt-link-row { padding: 0; border: 0; background: none; color: var(--text-secondary); text-align: left; font-size: 10px; cursor: var(--cur-pointer, pointer); overflow-wrap: anywhere; }
+.agent-prompt-files { margin: 0; padding-left: 16px; color: var(--text-muted); font-size: 9px; }
+.agent-prompt-move { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 5px; color: var(--text-muted); font-size: 10px; }
+.agent-prompt-links { position: absolute; inset: 0; z-index: 1; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
+.agent-prompt-links path { fill: none; stroke: var(--text-muted); stroke-width: 1; opacity: .45; }
+.agent-prompt-links path.is-selected { stroke: var(--accent); stroke-width: 2; opacity: 1; }
+.agent-prompt-links marker path { fill: var(--text-muted); stroke: none; }
+.agent-prompt-closed { display: flex; flex-direction: column; gap: 4px; }
+.agent-prompt-closed-wrap > button { width: 100%; padding: 4px 6px; border: 1px solid var(--border-color); background: var(--control-bg); color: var(--text-secondary); text-align: left; }
+.agent-prompt-strand.is-closed { width: 100%; min-height: 0; margin-top: 4px; }
+
+@media (max-width: 640px) {
+  .agent-prompt-chart { display: flex; flex-direction: column; min-width: 0; width: 100%; }
+  .agent-prompt-shelf,
+  .agent-prompt-strand { width: 100%; min-height: 0; }
+  .agent-prompt-future { height: 260px; }
+  .agent-prompt-chart-scroll { overflow-x: hidden; }
+  .agent-prompt-links { display: none; }
+}
 
 .agent-prompts-tab { flex-direction: row; }
 .agent-prompts-tab-actions { display: flex; flex-direction: column; gap: 4px; align-items: stretch; }

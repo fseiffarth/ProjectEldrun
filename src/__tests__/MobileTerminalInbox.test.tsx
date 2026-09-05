@@ -68,6 +68,14 @@ function jsonResponse(status: number, body: unknown) {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 }
 
+/** The outbox poll the screen runs on mount answers empty here and stays out
+ * of the counted calls — these tests are about the inbox. */
+function routeOutbox(inner: (url: string, init?: RequestInit) => Promise<Response>) {
+  return (url: string, init?: RequestInit) => url.endsWith("/outbox")
+    ? Promise.resolve(jsonResponse(200, { images: [] }))
+    : inner(url, init);
+}
+
 const fileInput = () => screen.getByTestId("inbox-file-input") as HTMLInputElement;
 const composer = () => screen.getByLabelText("Message agent") as HTMLTextAreaElement;
 
@@ -117,7 +125,7 @@ describe("Eldrun Mobile composer + and the frozen reading view", () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse(201, {
       attachment: { name: "20260831-120000-IMG_0042.jpg", reference: ".eldrun/inbox/20260831-120000-IMG_0042.jpg", size: 3 },
     }));
-    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("fetch", routeOutbox(fetchMock));
     render(<Terminal tab={TAB} back={() => {}} />);
     await act(async () => {});
     fireEvent.change(composer(), { target: { value: "look at this" } });
@@ -143,7 +151,7 @@ describe("Eldrun Mobile composer + and the frozen reading view", () => {
 
   it("reports a refused or oversized file and keeps the draft untouched", async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse(507, { error: "inbox_full" }));
-    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("fetch", routeOutbox(fetchMock));
     render(<Terminal tab={TAB} back={() => {}} />);
     await act(async () => {});
 
@@ -174,7 +182,7 @@ describe("Eldrun Mobile composer + and the frozen reading view", () => {
       .mockResolvedValueOnce(jsonResponse(201, {
         attachment: { name: "20260903-100000-Screenshot_2026-09-03.png", reference: ".eldrun/inbox/20260903-100000-Screenshot_2026-09-03.png", size: 1_300_000 },
       }));
-    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("fetch", routeOutbox(fetchMock));
     render(<Terminal tab={TAB} back={() => {}} />);
     await act(async () => {});
     fireEvent.change(composer(), { target: { value: "fix this" } });
@@ -211,7 +219,7 @@ describe("Eldrun Mobile composer + and the frozen reading view", () => {
       .mockResolvedValueOnce(jsonResponse(200, { images: [] }))
       .mockResolvedValueOnce(jsonResponse(200, { images: [{ id: "clipboard", name: "Clipboard image", source: "Clipboard" }] }))
       .mockResolvedValueOnce(jsonResponse(409, { error: "no_clipboard_image" }));
-    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("fetch", routeOutbox(fetchMock));
     render(<Terminal tab={TAB} back={() => {}} />);
     await act(async () => {});
 
