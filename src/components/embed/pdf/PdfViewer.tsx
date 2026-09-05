@@ -3266,9 +3266,9 @@ function PdfCanvas({
     [settings, browserEnabled, mailEnabled, t],
   );
 
-  // Ctrl/Cmd+F opens the find bar, Ctrl/Cmd+G opens go-to-page; Esc closes
-  // whichever is open. Bound on the host so it fires wherever focus sits within
-  // the PDF pane (the scroll area is focusable).
+  // Ctrl/Cmd+F opens the find bar, Ctrl/Cmd+G opens go-to-page, Ctrl/Cmd+P opens
+  // the print preview; Esc closes whichever is open. Bound on the host so it
+  // fires wherever focus sits within the PDF pane (the scroll area is focusable).
   const onHostKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLDivElement>) => {
       const mod = e.ctrlKey || e.metaKey;
@@ -3282,6 +3282,14 @@ function PdfCanvas({
       } else if (mod && key === "s") {
         e.preventDefault();
         void handleSave();
+      } else if (mod && key === "p" && !e.altKey && !e.shiftKey) {
+        // Print what is in front of the reader. `preventDefault` unconditionally,
+        // even while a print is already being prepared: the chord otherwise reaches
+        // the webview, whose own Ctrl+P prints the WHOLE Eldrun window — the app's
+        // chrome, tabs and all — which is never what was meant here. (The palette's
+        // global Ctrl+P yields to a focused PDF; see QuickOpen.)
+        e.preventDefault();
+        void handlePrint();
       } else if (mod && key === "z" && !e.shiftKey) {
         e.preventDefault();
         undo();
@@ -3336,6 +3344,7 @@ function PdfCanvas({
       copySelecting,
       linkGoBack,
       stepPage,
+      handlePrint,
     ],
   );
   const onFindKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -4217,7 +4226,7 @@ function PdfCanvas({
           className={`file-viewer-print file-viewer-pdf-print${printing ? " is-busy" : ""}`}
           onClick={() => void handlePrint()}
           disabled={!doc || printing}
-          title={printing ? t("pdfViewer.preparing") : t("pdfViewer.printLabel")}
+          title={printing ? t("pdfViewer.preparing") : t("pdfViewer.printTitle")}
           aria-label={t("pdfViewer.printLabel")}
         >
           {printing ? (

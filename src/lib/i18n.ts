@@ -4903,6 +4903,7 @@ export const en = {
   "pdfViewer.saveButton": "Save",
   "pdfViewer.preparing": "Preparing…",
   "pdfViewer.printLabel": "Print",
+  "pdfViewer.printTitle": "Print (Ctrl+P)",
   "pdfViewer.fullscreenPresentTitle": "Show this PDF fullscreen in a window of its own — ← → turn the sheet, Esc closes it",
   "pdfViewer.fullscreenPresentDirtyTitle": "Show this PDF fullscreen in a window of its own — it shows the file as saved, without the unsaved page changes here",
   "pdfViewer.fullscreenPresentLabel": "Present fullscreen",

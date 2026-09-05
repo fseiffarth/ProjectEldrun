@@ -4724,6 +4724,7 @@ export const dict: Dict = {
   "pdfViewer.saveButton": "Salva",
   "pdfViewer.preparing": "Preparazione…",
   "pdfViewer.printLabel": "Stampa",
+  "pdfViewer.printTitle": "Stampa (Ctrl+P)",
   "pdfViewer.fullscreenPresentTitle": "Mostra questo PDF a schermo intero in una finestra tutta sua — ← → girano il foglio, Esc la chiude",
   "pdfViewer.fullscreenPresentDirtyTitle": "Mostra questo PDF a schermo intero in una finestra tutta sua — mostra il file salvato, senza le modifiche alle pagine non salvate qui",
   "pdfViewer.fullscreenPresentLabel": "Presenta a schermo intero",

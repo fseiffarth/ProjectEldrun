@@ -4729,6 +4729,7 @@ export const dict: Dict = {
   "pdfViewer.saveButton": "Speichern",
   "pdfViewer.preparing": "Wird vorbereitet…",
   "pdfViewer.printLabel": "Drucken",
+  "pdfViewer.printTitle": "Drucken (Strg+P)",
   "pdfViewer.fullscreenPresentTitle": "Dieses PDF im Vollbild in einem eigenen Fenster zeigen — ← → blättern, Esc schließt es",
   "pdfViewer.fullscreenPresentDirtyTitle": "Dieses PDF im Vollbild in einem eigenen Fenster zeigen — es zeigt die gespeicherte Datei, ohne die ungespeicherten Seitenänderungen hier",
   "pdfViewer.fullscreenPresentLabel": "Im Vollbild präsentieren",

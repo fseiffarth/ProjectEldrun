@@ -105,6 +105,13 @@ export function QuickOpen() {
       if (mod && !e.altKey && !e.shiftKey && (e.key === "p" || e.key === "P")) {
         const dir = activeProjectDir();
         if (!dir) return; // no active project → leave the event alone
+        // A focused PDF prints with this chord, which is what Ctrl+P means while
+        // you are looking at a document. This listener is on `window` in the
+        // CAPTURE phase and stops propagation, so the pane's own handler would
+        // never run unless the palette stands aside first. Focus is the whole
+        // test: with the palette's chord free again the moment focus leaves the
+        // page stack, opening files by name costs one click elsewhere.
+        if ((e.target as Element | null)?.closest?.(".file-viewer-pdf-host")) return;
         e.preventDefault();
         e.stopPropagation();
         setQuery("");
