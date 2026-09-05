@@ -812,6 +812,57 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     read centered in a narrow terminal.
   - [ ] ✅ Works
   - [ ] ❌ Doesn't work
+- [~] **31ab — Close a tab from the phone** (2026-09-05; ✅ code-complete and
+  automated tests passing, ⚠️ phone QA pending — and a rebuild + restart first:
+  the sidecar route, the desktop bridge and the embedded PWA all changed). The
+  phone could open tabs and never put one away, so a week of sofa sessions
+  piled up as rows that only the laptop could clear. Every tab row on the
+  project screen now carries a ✕ beside 31t's ✎ — **shell rows too**, which is
+  where this parts from its neighbours: rename, schedules and the status chip
+  are agent surfaces, and a shell tab is exactly as closeable as an agent one,
+  so `host::tab_target` grew an `agent_only` flag and the agent-only routes
+  pass `true` where `DELETE /api/v1/tabs/{id}` passes `false`.
+  - **Closing is the desktop's ×, and nothing stronger.** The tab leaves the
+    layout and its viewer dies; the tmux session behind it keeps running and
+    stays reattachable from the desktop's Sessions view — `lib/closeRemoteTab`'s
+    rule, applied rather than restated. A tap on a phone must not be able to
+    end a running agent, which is also why the sheet says so in place of a
+    yes/no confirm, and why the plan's deferred "tab termination" is still
+    deferred: this is a *layout* action.
+  - **The write is aimed at a named scope.** `removeTab` writes to whatever the
+    desktop window is showing, and the phone is regularly looking at another
+    project — so `useTabsStore.removeTabInScope` closes in the scope the request
+    names, handles a tab living in a popout the way `closeDetachedGroup` does
+    (its pane is mounted in that window, so nothing else would kill its PTY),
+    and falls through to `removeTab` for the ordinary same-scope case.
+  - **And it reaches disk.** CenterPanel's debounce persists the *active* scope
+    only, so a close in a project the desktop is not showing would never be
+    written and the phone's own catalog — which is read out of
+    `sessions/<id>/terminals.json` — would list the closed tab for ever. The
+    bridge writes the scope itself (`persistScopeLayout`, `stores/agentSchedules`'
+    `persistScheduleBinding` renamed to what it always did, since a rename from
+    the phone needed the same write and never made it). A project the desktop
+    has not restored this session is restored first through
+    `restoreProjectScope`, which reads that same file **without** activating the
+    project: the user's window stays where they left it, and an inactive
+    project's panes are not rendered, so nothing spawns a terminal on the way.
+  - An open phone terminal on a closed tab is torn down within five seconds by
+    `pty_bridge`'s existing authorization tick, which stops finding the tab in
+    the catalog. Locked by `MobileTabClose.test.tsx` (store, bridge and screen)
+    and the `host.rs` close-route test, which closes a *shell* tab and checks
+    the agent-only routes still refuse one.
+  - [ ] 🖐️ Manual phone QA — on the project screen press ✕ on a shell tab: the
+    sheet names the tab and says the session keeps running; Cancel closes
+    nothing; Close tab drops the row and the tab disappears from the desktop
+    window; the same for an agent tab, in a project the desktop is *not*
+    currently showing, and the desktop's tab strip loses it there too; relaunch
+    Eldrun and the closed tab does not come back; with a phone terminal open on
+    a tab, close that tab from the desktop and watch the phone say the session
+    is gone rather than hanging; with desktop Eldrun closed the sheet says to
+    open it rather than failing silently.
+  - [ ] ✅ Works
+  - [ ] ❌ Doesn't work
+
 - [~] **31u — Mobile status chip: the session's state and the agent's own usage**
   (2026-09-02; ✅ code-complete and automated tests passing, ⚠️ phone QA
   pending — and a rebuild + restart first, since the phone serves the bundle

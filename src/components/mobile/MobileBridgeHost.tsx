@@ -182,6 +182,7 @@ type DesktopRequest =
   | { type: "schedules"; request_id: string; project_id: string; tmux_session: string }
   | { type: "schedule_mutate"; request_id: string; project_id: string; tmux_session: string; action: ScheduleMutation }
   | { type: "rename_tab"; request_id: string; project_id: string; tmux_session: string; label: string }
+  | { type: "close_tab"; request_id: string; project_id: string; tmux_session: string }
   | { type: "prompts"; request_id: string; project_id: string }
   | { type: "prompt_mutate"; request_id: string; project_id: string; action: PromptMutation }
   | { type: "agent_status"; request_id: string; project_id: string; tmux_session: string; refresh: boolean }
@@ -200,6 +201,7 @@ type DesktopResponse =
   | { status: "mail"; mail: MobileMailView }
   | { status: "schedules"; schedules: ScheduledAgentPrompt[]; time_zone: string; next_runs: Record<string, string> }
   | { status: "renamed"; label: string }
+  | { status: "closed" }
   | { status: "prompts"; prompts: ProjectAgentPrompt[] }
   | { status: "agent_status"; report: MobileAgentStatus }
   | { status: "seen" }
@@ -1386,6 +1388,7 @@ async function handleRequest(
     case "mail_mark": return mailMark(request.folder_id, request.message_id, request.offset, request.action);
     case "mail_reply": return mailReply(request.folder_id, request.message_id, request.offset, request.body, t);
     case "rename_tab": return renameAgentTab(request.project_id, request.tmux_session, request.label);
+    case "close_tab": return closeMobileTab(request.project_id, request.tmux_session);
     case "schedules": return schedulesFor(request.project_id, request.tmux_session);
     case "schedule_mutate": return mutateSchedule(request.project_id, request.tmux_session, request.action);
     case "prompts": return promptsFor(request.project_id);
@@ -1435,7 +1438,7 @@ export function MobileBridgeHost() {
           }).catch(() => {});
         }
       };
-      if (request.type === "create" || request.type === "activate" || request.type === "rename_tab" || request.type === "todo_mutate" || request.type === "calendar_mutate" || request.type === "schedule_mutate" || request.type === "prompt_mutate" || request.type === "mail_mark" || request.type === "mail_reply") {
+      if (request.type === "create" || request.type === "activate" || request.type === "rename_tab" || request.type === "close_tab" || request.type === "todo_mutate" || request.type === "alert_resolve" || request.type === "calendar_mutate" || request.type === "schedule_mutate" || request.type === "prompt_mutate" || request.type === "mail_mark" || request.type === "mail_reply") {
         mutationQueue = mutationQueue.then(run, run);
       } else {
         void run();

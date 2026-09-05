@@ -581,6 +581,16 @@ pub enum DesktopRequest {
         tmux_session: String,
         label: String,
     },
+    /// Close one tab — agent or shell — exactly as the desktop's own × does:
+    /// non-destructively. The tab leaves the desktop's layout and its viewer
+    /// dies; the tmux session behind it keeps running and stays reattachable
+    /// from the desktop's Sessions view. Named by the same `project_id` +
+    /// `tmux_session` pair the rename request uses, so no key or path crosses.
+    CloseTab {
+        request_id: String,
+        project_id: String,
+        tmux_session: String,
+    },
     Prompts {
         request_id: String,
         project_id: String,
@@ -664,6 +674,7 @@ impl DesktopRequest {
             | Self::Schedules { request_id, .. }
             | Self::ScheduleMutate { request_id, .. }
             | Self::RenameTab { request_id, .. }
+            | Self::CloseTab { request_id, .. }
             | Self::Prompts { request_id, .. }
             | Self::PromptMutate { request_id, .. }
             | Self::TabSeen { request_id, .. }
@@ -872,6 +883,10 @@ pub enum DesktopResponse {
     Renamed {
         label: String,
     },
+    /// Acknowledges a [`DesktopRequest::CloseTab`]. Carries nothing: the tab is
+    /// simply gone from the desktop's layout, and the phone drops the row it
+    /// just closed rather than waiting for the catalog to agree.
+    Closed,
     Prompts {
         prompts: Vec<ProjectAgentPrompt>,
     },

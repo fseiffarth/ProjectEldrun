@@ -687,6 +687,8 @@ GET    /api/v1/projects/:project_id
 POST   /api/v1/projects/:project_id/activate
 POST   /api/v1/projects/:project_id/tabs
 GET    /api/v1/tabs/:tab_id
+PUT    /api/v1/tabs/:tab_id                                        {label}
+DELETE /api/v1/tabs/:tab_id
 GET    /api/v1/tabs/:tab_id/terminal   (WebSocket upgrade)
 ```
 
@@ -805,8 +807,13 @@ specs push notifications, dead-session relaunch, code-splitting, read-only
 file browsing, mail actions, and display-only worker-tab awareness. The items
 below remain the authoritative deferral list for everything it does not cover
 (remote/container/VM *attach*, structured agent-supplied attention state, tab
-termination/rename/move, native wrappers, multi-user hosts, non-Tailscale
-publication, desktop-absent creation).
+move, native wrappers, multi-user hosts, non-Tailscale publication,
+desktop-absent creation). Two items have since left it: a tab is renamed
+(`PUT /api/v1/tabs/{id}`) and closed (`DELETE /api/v1/tabs/{id}`) from the
+phone, both as desktop-bridge calls addressed by the opaque tab id. Closing is
+the desktop's own × and nothing stronger — the tab leaves the layout, the tmux
+session behind it keeps running — so it is a *layout* action rather than the
+tab termination this list deferred, which would end the session.
 
 - creation while the desktop is absent, which requires a daemon-owned or
   transactional shared tab-state model;
@@ -814,6 +821,8 @@ publication, desktop-absent creation).
   and connectivity rules;
 - structured attention/approval state supplied by agents rather than terminal
   scraping;
-- tab termination/rename/move or mode changes after creation;
+- tab termination (ending the session behind a tab), move, or mode changes
+  after creation — a phone renames and closes a tab, but never kills what runs
+  in one;
 - native wrappers, push notifications, multi-user hosts, or non-Tailscale
   publication.

@@ -1174,6 +1174,56 @@ async fn rename_tab(
     }
 }
 
+/// `DELETE /api/v1/tabs/{id}` — close one tab from the phone, agent or shell.
+/// The desktop owns the tab layout, so this is a bridge call, and it closes the
+/// way the desktop's own × does: the tab leaves the Eldrun window while the
+/// tmux session behind it keeps running, reattachable from the desktop's
+/// Sessions view. Only the opaque tab id crosses; the raw project id and the
+/// tmux name stay on the desktop/sidecar link.
+async fn close_tab(
+    State(state): State<HostState>,
+    headers: HeaderMap,
+    Path(tab_id): Path<String>,
+) -> impl IntoResponse {
+    if let Err(error) = authenticate(&headers, &state) {
+        return error;
+    }
+    if !exact_origin(&headers, &state) {
+        return api_error(StatusCode::FORBIDDEN, "invalid_origin");
+    }
+    let (project_id, tmux_session) = match tab_target(&state, &tab_id, false) {
+        Ok(target) => target,
+        Err(error) => return error,
+    };
+    let desktop_socket = state.config.control_dir.join("desktop-control.sock");
+    let request_id = Base64UrlUnpadded::encode_string(&random_16());
+    match admin::desktop_call(
+        &desktop_socket,
+        &DesktopRequest::CloseTab {
+            request_id,
+            project_id,
+            tmux_session,
+        },
+    )
+    .await
+    {
+        // The desktop persists its layout asynchronously, so the catalog may
+        // still be carrying the closed tab for a moment. Nothing is read back
+        // here for that reason: the phone drops the row it closed, and the next
+        // poll agrees once the session file has been rewritten.
+        Ok(DesktopResponse::Closed) => (StatusCode::OK, Json(json!({ "closed": true }))),
+        Ok(DesktopResponse::Error { code, .. }) => api_error(
+            match code.as_str() {
+                "desktop_unavailable" => StatusCode::SERVICE_UNAVAILABLE,
+                "tab_not_found" => StatusCode::NOT_FOUND,
+                _ => StatusCode::BAD_REQUEST,
+            },
+            &code,
+        ),
+        _ => api_error(StatusCode::SERVICE_UNAVAILABLE, "desktop_unavailable"),
+    }
+}
+
 fn schedule_desktop_error(
     response: Result<DesktopResponse, String>,
 ) -> (StatusCode, Json<serde_json::Value>) {
@@ -1203,20 +1253,30 @@ fn schedule_desktop_error(
 }
 
 /// Resolve an opaque tab id to the (raw project id, tmux name) pair the
-/// desktop bridge addresses an agent tab by. Shared by the schedule routes and
-/// the rename route; neither value is ever serialized back to the phone.
-fn agent_tab_target(
+/// desktop bridge addresses a tab by. `agent_only` is what the schedule,
+/// prompt-send and rename routes need — those surfaces exist for agent tabs
+/// alone — while the close route serves every tab the phone lists, shell
+/// included. Neither value is ever serialized back to the phone.
+fn tab_target(
     state: &HostState,
     tab_id: &str,
+    agent_only: bool,
 ) -> Result<(String, String), (StatusCode, Json<serde_json::Value>)> {
     let catalog = catalog(state)?;
     let Some((project, tab)) = catalog.tab(tab_id) else {
         return Err(api_error(StatusCode::NOT_FOUND, "tab_not_found"));
     };
-    if tab.public.kind != "agent" {
+    if agent_only && tab.public.kind != "agent" {
         return Err(api_error(StatusCode::BAD_REQUEST, "agent_tab_required"));
     }
     Ok((project.raw_id.clone(), tab.tmux_name.clone()))
+}
+
+fn agent_tab_target(
+    state: &HostState,
+    tab_id: &str,
+) -> Result<(String, String), (StatusCode, Json<serde_json::Value>)> {
+    tab_target(state, tab_id, true)
 }
 
 async fn schedules(
@@ -1991,7 +2051,10 @@ fn router(state: HostState) -> Router {
             "/api/v1/projects/{project_id}/prompts/{prompt_id}/send",
             post(prompt_send),
         )
-        .route("/api/v1/tabs/{tab_id}", get(tab).put(rename_tab))
+        .route(
+            "/api/v1/tabs/{tab_id}",
+            get(tab).put(rename_tab).delete(close_tab),
+        )
         .route(
             "/api/v1/tabs/{tab_id}/schedules",
             get(schedules).post(schedule_create),
@@ -2537,6 +2600,75 @@ mod tests {
         assert_eq!(json(&body)["error"], "desktop_unavailable");
         assert!(!body.contains(RAW_PROJECT));
         assert!(!body.contains("eldrun-"));
+    }
+
+    #[tokio::test]
+    async fn closing_a_tab_serves_every_kind_and_needs_the_desktop_bridge() {
+        // A box holding shell tabs: closing is the one tab route that is not
+        // agent-only, so the fixture is deliberately a kind the schedule and
+        // rename routes refuse.
+        let host = Fixture::with_box();
+        let cookie = host.pair_device(&signing_key(21)).await.0;
+        let (_, _, projects_body) = host.send(get_as("/api/v1/projects", &cookie)).await;
+        let project_id = json(&projects_body)["projects"][0]["id"]
+            .as_str()
+            .expect("opaque box id")
+            .to_string();
+        let (_, _, project_body) = host
+            .send(get_as(&format!("/api/v1/projects/{project_id}"), &cookie))
+            .await;
+        let tab = json(&project_body)["tabs"][0].clone();
+        assert_eq!(tab["kind"], "shell");
+        let tab_id = tab["id"].as_str().expect("opaque tab id").to_string();
+
+        let close = |origin: &'static str, cookie: Option<&str>| {
+            let mut request = Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/v1/tabs/{tab_id}"))
+                .header(header::ORIGIN, origin);
+            if let Some(cookie) = cookie {
+                request = request.header(header::COOKIE, cookie_pair(cookie));
+            }
+            request.body(Body::empty()).expect("request")
+        };
+
+        // Authentication, then origin, before anything is resolved or called.
+        let (status, _, body) = host.send(close(ORIGIN, None)).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "answered: {body}");
+        let (status, _, body) = host.send(close("https://evil.example", Some(&cookie))).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "answered: {body}");
+
+        // A well-formed close with no desktop window is unavailable, not a
+        // refusal of the tab — and it leaks neither the raw ids nor the tmux
+        // name the desktop is addressed by.
+        let (status, _, body) = host.send(close(ORIGIN, Some(&cookie))).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "answered: {body}");
+        assert_eq!(json(&body)["error"], "desktop_unavailable");
+        assert!(!body.contains(RAW_BOX));
+        assert!(!body.contains(RAW_PROJECT));
+        assert!(!body.contains("eldrun-"));
+
+        // The agent-only routes are unchanged by that: the same shell tab is
+        // still refused a schedule.
+        let (status, _, body) = host
+            .send(get_as(&format!("/api/v1/tabs/{tab_id}/schedules"), &cookie))
+            .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "answered: {body}");
+        assert_eq!(json(&body)["error"], "agent_tab_required");
+
+        // An unknown tab is a 404 rather than a desktop call.
+        let (status, _, body) = host
+            .send(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/api/v1/tabs/not-a-tab")
+                    .header(header::ORIGIN, ORIGIN)
+                    .header(header::COOKIE, cookie_pair(&cookie))
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "answered: {body}");
     }
 
     #[tokio::test]

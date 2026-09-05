@@ -258,6 +258,14 @@ export function renameTab(tabId: string, label: string): Promise<{ tab?: TabRow;
   return api(`/api/v1/tabs/${encodeURIComponent(tabId)}`, { method: "PUT", body: JSON.stringify({ label }) });
 }
 
+/** `DELETE /api/v1/tabs/{id}` — close one tab, agent or shell. Closing is the
+ * desktop's own ×: the tab leaves the Eldrun window, and the session behind it
+ * keeps running and stays reattachable from the desktop's Sessions view. Like
+ * the rename above it is a bridge call, so it needs desktop Eldrun open. */
+export function closeTab(tabId: string): Promise<{ closed: boolean }> {
+  return api(`/api/v1/tabs/${encodeURIComponent(tabId)}`, { method: "DELETE" });
+}
+
 const schedulePath = (tabId: string) => `/api/v1/tabs/${encodeURIComponent(tabId)}/schedules`;
 
 export function getSchedules(tabId: string): Promise<ScheduledPromptList> {

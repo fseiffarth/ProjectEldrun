@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, type AgentRow, type ProjectDetail, type TabRow, type TabSchedules } from "../api";
+import { CloseSheet } from "./CloseSheet";
 import { PromptsSheet } from "./PromptsSheet";
 import { RenameSheet } from "./RenameSheet";
 import { ScheduleSheet } from "./ScheduleSheet";
@@ -32,6 +33,10 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
   /** The agent tab being renamed. The desktop owns the tab layout, so the sheet
    * writes through the bridge and the next poll brings the new label back. */
   const [renameTab, setRenameTab] = useState<TabRow | null>(null);
+  /** The tab whose ✕ was pressed. The sheet asks before anything is closed: the
+   *  button sits a thumb-width from the one that opens the terminal, and the
+   *  answer is worth reading — closing leaves the session running. */
+  const [closeTab, setCloseTab] = useState<TabRow | null>(null);
   const pendingKeys = useRef(new Map<string, string>());
   const inFlight = useRef(false);
   const load = useCallback(() => {
@@ -72,6 +77,13 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
       terminal(body.tab);
     } catch (reason) { setError(String(reason)); void load(); } finally { setCreating(false); }
   };
+  /** Drop the row here rather than reloading: the desktop persists its tab
+   *  layout asynchronously, so the next catalog read can still be carrying the
+   *  tab that was just closed, and the row would flicker back. */
+  const dropTab = (id: string) => {
+    setCloseTab(null);
+    setDetail((prev) => prev ? { ...prev, tabs: prev.tabs.filter((row) => row.id !== id) } : prev);
+  };
   const activate = async () => {
     setActivating(true); setError("");
     try {
@@ -91,13 +103,22 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
       {/* Scheduling lives out here beside the tab, not inside the session:
           reaching a schedule must not mean attaching a terminal, and this is
           the same place — and the same summary line — the desktop puts it. */}
-      {tab.kind === "agent" && <div className="tab-card-foot">
-        <small className="tab-card-when" title={tab.schedules?.next ? `Next run ${tab.schedules.next.replace("T", " ")} (desktop time)` : undefined}>◷ {scheduleLine(tab.schedules)}</small>
+      {/* Closing is offered on every tab the phone lists, shell included; the
+          schedule line and its two sheets stay agent-only, so a shell card's
+          foot is the actions alone (the empty spacer keeps them right-aligned
+          under both kinds of card). */}
+      <div className="tab-card-foot">
+        {tab.kind === "agent"
+          ? <small className="tab-card-when" title={tab.schedules?.next ? `Next run ${tab.schedules.next.replace("T", " ")} (desktop time)` : undefined}>◷ {scheduleLine(tab.schedules)}</small>
+          : <small className="tab-card-when" aria-hidden="true" />}
         <div className="tab-card-actions">
-          <button className="card-action" onClick={() => setRenameTab(tab)} aria-haspopup="dialog" aria-expanded={renameTab?.id === tab.id} aria-label={`Rename ${tab.label}`}>✎ Rename</button>
-          <button className="card-action accent" onClick={() => setScheduleTab({ tab })} aria-haspopup="dialog" aria-expanded={scheduleTab?.tab.id === tab.id} aria-label={`Scheduled prompts for ${tab.label}`}>◷ Schedules</button>
+          {tab.kind === "agent" && <>
+            <button className="card-action" onClick={() => setRenameTab(tab)} aria-haspopup="dialog" aria-expanded={renameTab?.id === tab.id} aria-label={`Rename ${tab.label}`}>✎ Rename</button>
+            <button className="card-action accent" onClick={() => setScheduleTab({ tab })} aria-haspopup="dialog" aria-expanded={scheduleTab?.tab.id === tab.id} aria-label={`Scheduled prompts for ${tab.label}`}>◷ Schedules</button>
+          </>}
+          <button className="card-action danger" onClick={() => setCloseTab(tab)} aria-haspopup="dialog" aria-expanded={closeTab?.id === tab.id} aria-label={`Close ${tab.label}`}>✕ Close</button>
         </div>
-      </div>}
+      </div>
     </div>)}</section>
     {detail?.project.status === "inactive" && <section className="create"><button className="primary" disabled={activating || !detail.desktop_available} onClick={() => void activate()}>Activate project</button></section>}
     <section className="create"><button disabled={!detail} onClick={() => setPromptsOpen(true)} aria-haspopup="dialog" aria-expanded={promptsOpen}>◷ Collected prompts</button></section>
@@ -105,6 +126,7 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
       {detail?.agents.map((agent) => <div className="agent-create" key={agent.id}><button disabled={creating || !detail.desktop_available} onClick={() => void create("agent", agent)}>{agent.label}</button>{agent.modes.map((mode) => <button className="mode" disabled={creating || !detail.desktop_available} key={mode} onClick={() => void create("agent", agent, mode)}>{mode}</button>)}</div>)}
     </section>
     {promptsOpen && detail && <PromptsSheet projectId={id} tabs={detail.tabs} onClose={() => setPromptsOpen(false)} onSchedule={(tab, initialMessage) => { setPromptsOpen(false); setScheduleTab({ tab, initialMessage }); }} />}
+    {closeTab && <CloseSheet tab={closeTab} onClose={() => setCloseTab(null)} onClosed={() => dropTab(closeTab.id)} />}
     {renameTab && <RenameSheet tab={renameTab} onClose={() => setRenameTab(null)} onRenamed={() => { setRenameTab(null); void load(); }} />}
     {scheduleTab && <ScheduleSheet tabId={scheduleTab.tab.id} label={scheduleTab.tab.label} initialMessage={scheduleTab.initialMessage} onClose={() => setScheduleTab(null)} />}
   </main>;

@@ -1081,6 +1081,17 @@ interface TabsStore {
   detachScopeFromRemote: (scope: string, oldDir: string, newDir: string) => void;
   retargetTabs: (oldAbs: string, newAbs: string) => void;
   removeTab: (key: string) => void; // drop; collapse empty groups/splits
+  // The same close, aimed at a named scope instead of the active one. The
+  // Mobile bridge closes a tab in whichever project the PHONE is looking at,
+  // which need not be the one the desktop is showing — and `removeTab` writes
+  // to the active scope, so without the scope said out loud a close from the
+  // phone would drop a tab out of the project on the user's screen. Closing
+  // stays what it is on the desktop (`lib/closeRemoteTab`): the pane unmounts
+  // and its PTY dies, while a tmux session behind the tab keeps running. A tab
+  // living in a popout is closed through that window's own teardown, since its
+  // pane is mounted there and nothing here would otherwise kill its PTY.
+  // Non-current scopes are dropped in memory only; persist at the call site.
+  removeTabInScope: (scope: string, key: string) => void;
   closeGroup: (groupId: string) => void; // close a whole subwindow; siblings resize
   // Close EVERY tab/subwindow in a scope (defaults to the current scope),
   // leaving it empty (null layout → the +-placeholder). Each pane unmounts, so
@@ -2510,6 +2521,64 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       // collapse() in writeScope drops the emptied group + lone splits.
       return writeScope(s, s.scope, nextTabs, next, focusedGroupId);
     });
+  },
+
+  removeTabInScope: (scope, key) => {
+    // A tab that lives in a popout is not in this scope's in-window layout at
+    // all, and its pane is mounted in the detached window — so it is closed the
+    // way `closeDetachedGroup` closes one, PTY kill included, whether or not
+    // the scope is the active one.
+    const detached = (get().detachedGroupsByScope[scope] ?? []).find((entry) =>
+      orderedTabKeys(entry.subtree).includes(key),
+    );
+    if (!detached && scope === get().scope) {
+      get().removeTab(key);
+      return;
+    }
+    if (!(get().tabsByScope[scope] ?? []).some((t) => t.key === key)) return;
+    if (detached) {
+      const tab = (get().tabsByScope[scope] ?? []).find((t) => t.key === key);
+      if (tab && isPtyTabKind(tab.kind)) {
+        invoke("pty_kill", { id: `${scope}:${key}` }).catch(() => {});
+      }
+    }
+    useLinkRoutingStore.getState().purgeForTab(key);
+    bumpUsage(scope, METRIC.TAB_CLOSED);
+    forgetPty(`${scope}:${key}`);
+    const emptiesPopout =
+      !!detached && orderedTabKeys(detached.subtree).length === 1;
+    set((s) => {
+      const tabs = s.tabsByScope[scope] ?? [];
+      const nextTabs = tabs.filter((t) => t.key !== key);
+      const layout = s.layoutByScope[scope] ?? null;
+      const base = writeScope(
+        s,
+        scope,
+        nextTabs,
+        layout ? removeKeyFromTree(layout, key) : null,
+        s.focusedGroupByScope[scope] ?? null,
+      );
+      if (!detached) return base;
+      // The popout keeps its window while tabs remain in it; emptied, its
+      // record goes and the OS window is closed below.
+      const remaining = removeKeyFromTree(detached.subtree, key);
+      const entries = (s.detachedGroupsByScope[scope] ?? []).flatMap((entry) =>
+        entry.id !== detached.id
+          ? [entry]
+          : remaining
+            ? [{ ...entry, subtree: remaining }]
+            : [],
+      );
+      return {
+        ...base,
+        detachedGroupsByScope: { ...s.detachedGroupsByScope, [scope]: entries },
+      };
+    });
+    // After the record is gone, like `closeDetachedGroup`: a standing record at
+    // the moment the backend reports the death reads as a crash to dock back.
+    if (emptiesPopout && detached) {
+      invoke("attach_subwindow", { registryId: detached.label }).catch(() => {});
+    }
   },
 
   closeGroup: (groupId) => {
