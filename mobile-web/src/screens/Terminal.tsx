@@ -403,6 +403,30 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     return () => viewport.removeEventListener("resize", syncHeight);
   }, []);
 
+  // The one full-bleed screen has to be the one screen the *document* cannot
+  // scroll. `body` keeps a 100dvh floor for the scrolling sections while this
+  // screen is sized to the visual viewport, so the document is taller than what
+  // is on glass — and everything a phone does about that is a scroll that takes
+  // the header with it. Three ways in practice: arriving from the bottom of a
+  // long project screen, where "New shell" sits, or from far down the agents
+  // list, keeps that scroll offset; focusing the composer makes the browser
+  // scroll the header away to seat the keyboard; and an agent tab has its own
+  // way in, because `addContext` and the two attach paths focus the composer
+  // *for* the reader, so the scroll arrives unasked after a tap on the ＋ sheet.
+  // The header carries the back chevron, and the body below it eats
+  // vertical drags (`touch-action:none` plus the drag handler in
+  // terminal/touchScroll.ts), so once it is off screen there is no way back to
+  // the project at all. Take the overflow away for as long as the terminal is
+  // mounted — and pull the page back up first, since hiding the overflow under a
+  // scrolled document leaves it scrolled, which is the same trap with no scroll
+  // bar left to escape it.
+  useLayoutEffect(() => {
+    if (window.scrollY !== 0) window.scrollTo(0, 0);
+    document.body.classList.add("terminal-open");
+    return () => document.body.classList.remove("terminal-open");
+  }, []);
+
+
   useEffect(() => {
     if (!host.current) return;
     const term = new XTerm({

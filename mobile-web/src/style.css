@@ -275,11 +275,13 @@ body.terminal-open { min-height:0; overflow:hidden; }
 .terminal-view-switch button { padding:6px 9px; border:0; border-radius:7px; background:transparent; font-size:.76rem; }
 .terminal-body { position:relative; min-height:0; overflow:hidden; }
 /* tmux sizes a window to its widest client, so the phone's emulator is a
-   desktop-width screen (see terminal/wideOutput.ts). Terminal view pans
-   across it — `touch-action:pan-x` hands horizontal drags to this scroller
-   and leaves vertical ones to the history drag in terminal/touchScroll.ts.
-   Without the scroller the right of every long line was simply cut off. */
-.terminal { position:absolute; inset:0; min-height:0; padding:5px; overflow-x:auto; overflow-y:hidden; overscroll-behavior:contain; touch-action:pan-x; -webkit-overflow-scrolling:touch; scrollbar-color:#454b62 #0b0d13; scrollbar-width:thin; }
+   desktop-width screen (see terminal/wideOutput.ts). Terminal view pans across
+   it, and across the rows below the fold, on both axes — `touch-action:none`
+   because terminal/touchScroll.ts drives both itself. Sharing the gesture with
+   the browser (`pan-x`) did not work: it arbitrates over the same first pixels
+   the drag handler was already scrolling. Without the scroller the right of
+   every long line was simply cut off. */
+.terminal { position:absolute; inset:0; min-height:0; padding:5px; overflow-x:auto; overflow-y:hidden; overscroll-behavior:contain; touch-action:none; -webkit-overflow-scrolling:touch; scrollbar-color:#454b62 #0b0d13; scrollbar-width:thin; }
 .terminal::-webkit-scrollbar { height:7px; }
 .terminal::-webkit-scrollbar-track { background:#0b0d13; }
 .terminal::-webkit-scrollbar-thumb { border-radius:0; background:#454b62; }

@@ -64,9 +64,13 @@ describe("Eldrun Mobile terminal touch scrolling", () => {
     expect(scrollLines).toHaveBeenCalledWith(-4);
   });
 
-  it("leaves a sideways drag to the browser's horizontal pan", () => {
+  it("pans the wide session sideways instead of scrolling history", () => {
     vi.stubGlobal("PointerEvent", class PointerEvent {});
+    // tmux sized the window to a desktop client: 600px of the screen sit off
+    // the phone's right edge.
     const host = document.createElement("div");
+    Object.defineProperty(host, "clientWidth", { get: () => 380 });
+    Object.defineProperty(host, "scrollWidth", { get: () => 980 });
     const scrollLines = vi.fn();
     installTerminalTouchScroll(host, { scrollLines });
 
@@ -77,20 +81,27 @@ describe("Eldrun Mobile terminal touch scrolling", () => {
     Object.assign(move, { pointerId: 3, pointerType: "touch", clientX: 210, clientY: 186 });
     host.dispatchEvent(move);
 
-    // The wide session pans instead: no history scroll, and the gesture is left
-    // for the scroll container rather than swallowed.
+    // The whole drag from the touch-down lands on the box, so the text stays
+    // under the finger — and the buffer does not move with it.
+    expect(host.scrollLeft).toBe(90);
     expect(scrollLines).not.toHaveBeenCalled();
-    expect(move.defaultPrevented).toBe(false);
 
-    // The rest of that drag stays the browser's, even where it turns vertical.
+    // The rest of that drag stays sideways, even where it turns vertical.
     const further = new Event("pointermove", { bubbles: true, cancelable: true }) as PointerEvent;
     Object.assign(further, { pointerId: 3, pointerType: "touch", clientX: 208, clientY: 60 });
     host.dispatchEvent(further);
+    expect(host.scrollLeft).toBe(92);
     expect(scrollLines).not.toHaveBeenCalled();
+
+    // Dragging back stops at the first column rather than running negative.
+    const back = new Event("pointermove", { bubbles: true, cancelable: true }) as PointerEvent;
+    Object.assign(back, { pointerId: 3, pointerType: "touch", clientX: 999, clientY: 60 });
+    host.dispatchEvent(back);
+    expect(host.scrollLeft).toBe(0);
 
     // A new drag decides afresh.
     const again = new Event("pointerup", { bubbles: true }) as PointerEvent;
-    Object.assign(again, { pointerId: 3, pointerType: "touch", clientX: 208, clientY: 60 });
+    Object.assign(again, { pointerId: 3, pointerType: "touch", clientX: 999, clientY: 60 });
     host.dispatchEvent(again);
     const nextDown = new Event("pointerdown", { bubbles: true }) as PointerEvent;
     Object.assign(nextDown, { pointerId: 4, pointerType: "touch", clientX: 208, clientY: 300 });
@@ -99,6 +110,40 @@ describe("Eldrun Mobile terminal touch scrolling", () => {
     Object.assign(nextMove, { pointerId: 4, pointerType: "touch", clientX: 204, clientY: 244 });
     host.dispatchEvent(nextMove);
     expect(scrollLines).toHaveBeenCalledWith(4);
+  });
+
+  it("moves nothing until the drag has left the axis slack", () => {
+    // The pixels before a gesture has an axis belong to neither: scrolling
+    // them was what claimed a sideways drag as a stunted vertical one, so the
+    // horizontal pan never started.
+    vi.stubGlobal("PointerEvent", class PointerEvent {});
+    const host = document.createElement("div");
+    Object.defineProperty(host, "clientWidth", { get: () => 380 });
+    Object.defineProperty(host, "scrollWidth", { get: () => 980 });
+    Object.defineProperty(host, "clientHeight", { get: () => 340 });
+    Object.defineProperty(host, "scrollHeight", { get: () => 640 });
+    host.scrollTop = 100;
+    const scrollLines = vi.fn();
+    installTerminalTouchScroll(host, { scrollLines });
+
+    const down = new Event("pointerdown", { bubbles: true }) as PointerEvent;
+    Object.assign(down, { pointerId: 5, pointerType: "touch", clientX: 200, clientY: 200 });
+    host.dispatchEvent(down);
+    const jitter = new Event("pointermove", { bubbles: true, cancelable: true }) as PointerEvent;
+    Object.assign(jitter, { pointerId: 5, pointerType: "touch", clientX: 205, clientY: 196 });
+    host.dispatchEvent(jitter);
+    expect(host.scrollLeft).toBe(0);
+    expect(host.scrollTop).toBe(100);
+    expect(scrollLines).not.toHaveBeenCalled();
+    // The drag is still this handler's, so xterm never sees the wobble.
+    expect(jitter.defaultPrevented).toBe(true);
+
+    // Past the slack it commits, and the pan starts from the touch-down.
+    const settled = new Event("pointermove", { bubbles: true, cancelable: true }) as PointerEvent;
+    Object.assign(settled, { pointerId: 5, pointerType: "touch", clientX: 190, clientY: 260 });
+    host.dispatchEvent(settled);
+    expect(host.scrollTop).toBe(40);
+    expect(host.scrollLeft).toBe(0);
   });
 
   it("keeps the same drag's touch events away from xterm's own touch scrolling", () => {

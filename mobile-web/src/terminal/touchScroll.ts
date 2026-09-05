@@ -1,10 +1,22 @@
 /**
  * Scroll a phone drag through the session.  The emulator carries the desktop
- * tmux window's geometry, so its screen is usually taller than the phone's
- * box as well as wider: the drag therefore pans the box over the rows it hides
- * before it moves the buffer, which is one continuous gesture over
- * `[scrollback] + [the rows below the fold]`.  A session that fits has no
- * overflow to consume and scrolls history from the first pixel, as before.
+ * tmux window's geometry, so its screen is usually taller *and* wider than the
+ * phone's box: a vertical drag pans the box over the rows it hides before it
+ * moves the buffer — one continuous gesture over `[scrollback] + [the rows
+ * below the fold]` — and a horizontal one pans it over the columns off the
+ * right edge.  A session that fits has no overflow to consume and scrolls
+ * history from the first pixel, as before.
+ *
+ * Both axes are driven from here, and `.terminal` is `touch-action:none` to
+ * say so.  Handing the horizontal one to the browser's own pan (`pan-x`) read
+ * well but did not work: the browser arbitrates a touch-action gesture over
+ * the first few pixels, and this handler had already claimed those pixels —
+ * it scrolled on the first `pointermove`, before any axis was known, and took
+ * pointer capture with it.  A sideways drag was consumed as a stunted vertical
+ * scroll and the pan never started; when the browser did win the arbitration
+ * it cancelled the pointer mid-drag, which is the vertical scroll that jumps
+ * and then stops dead.  Nothing moves now until the drag has committed to an
+ * axis, and the axis it commits to is one this file scrolls itself.
  *
  * Pointer Events are the reliable touch stream in current Android/iOS
  * browsers; some older embedded webviews only expose Touch Events, so keep
@@ -15,15 +27,20 @@ export interface TerminalScroller {
 }
 
 const PIXELS_PER_LINE = 14;
-/** How far a drag must lean sideways before it counts as a pan, not a scroll. */
+/** How far a drag must travel before it commits to an axis. Below it nothing
+ * moves at all, so the wobble in a tap stays a tap. */
 const AXIS_SLACK = 8;
+
+/** The axis a drag committed to, or "" while it is still under the slack. */
+type Axis = "" | "x" | "y";
 
 export function installTerminalTouchScroll(host: HTMLElement, terminal: TerminalScroller) {
   let activeId: number | undefined;
-  let lastY: number | undefined;
-  let startX: number | undefined;
-  let startY: number | undefined;
-  let panning = false;
+  let axis: Axis = "";
+  let startX = 0;
+  let startY = 0;
+  let lastX = 0;
+  let lastY = 0;
   let remainder = 0;
 
   /**
@@ -39,29 +56,49 @@ export function installTerminalTouchScroll(host: HTMLElement, terminal: Terminal
     host.scrollTop = Math.min(room, Math.max(0, before + delta));
     return delta - (host.scrollTop - before);
   };
+  /**
+   * Pans the box across the desktop-width screen. There is nothing past the
+   * last column to continue into, so unlike `panRows` this consumes the drag
+   * and stops at the edge. A browser clamps the assignment itself; clamping
+   * here keeps the arithmetic the same wherever it runs.
+   */
+  const panColumns = (delta: number) => {
+    const room = host.scrollWidth - host.clientWidth;
+    if (room <= 0) return;
+    host.scrollLeft = Math.min(room, Math.max(0, host.scrollLeft + delta));
+  };
   const begin = (id: number, clientX: number, clientY: number) => {
     if (activeId !== undefined) return false;
     activeId = id;
-    lastY = clientY;
     startX = clientX;
     startY = clientY;
-    panning = false;
+    lastX = clientX;
+    lastY = clientY;
+    axis = "";
     remainder = 0;
     return true;
   };
+  /** Whether the drag is this handler's; a `true` is swallowed and prevented. */
   const move = (id: number, clientX: number, clientY: number) => {
-    if (id !== activeId || lastY === undefined || panning) return false;
-    // The session is usually wider than the phone, so a sideways drag pans it
-    // across the screen — and that scroller is the browser's own (`.terminal`
-    // in style.css). Swallowing the gesture here, as the Touch Events path
-    // must to scroll history at all, would leave the right of every long line
-    // unreachable. Decided once per gesture, before the first line moves.
-    const sideways = Math.abs(clientX - (startX ?? clientX));
-    if (sideways > AXIS_SLACK && sideways > Math.abs(clientY - (startY ?? clientY))) {
-      panning = true;
-      return false;
+    if (id !== activeId) return false;
+    if (!axis) {
+      // Decided once per gesture, and only once the finger has left the slack
+      // — the pixels before that belong to no axis and move nothing. The whole
+      // delta from the touch-down is applied when it does commit, so the view
+      // stays under the finger rather than lagging it by the slack.
+      const sideways = Math.abs(clientX - startX);
+      const upright = Math.abs(clientY - startY);
+      if (sideways <= AXIS_SLACK && upright <= AXIS_SLACK) return true;
+      axis = sideways > upright ? "x" : "y";
+    }
+    if (axis === "x") {
+      panColumns(lastX - clientX);
+      lastX = clientX;
+      lastY = clientY;
+      return true;
     }
     remainder += lastY - clientY;
+    lastX = clientX;
     lastY = clientY;
     remainder = panRows(remainder);
     const lines = remainder < 0
@@ -76,10 +113,7 @@ export function installTerminalTouchScroll(host: HTMLElement, terminal: Terminal
   const end = (id: number) => {
     if (id !== activeId) return false;
     activeId = undefined;
-    lastY = undefined;
-    startX = undefined;
-    startY = undefined;
-    panning = false;
+    axis = "";
     remainder = 0;
     return true;
   };
@@ -88,8 +122,8 @@ export function installTerminalTouchScroll(host: HTMLElement, terminal: Terminal
     if (event.pointerType && event.pointerType !== "touch") return;
     if (!begin(event.pointerId, event.clientX, event.clientY)) return;
     // Do not let xterm turn this drag into a terminal mouse gesture. Capture
-    // waits for the first move: taking the pointer here would risk the gesture
-    // never reaching the browser's own horizontal pan of the wide session.
+    // waits for the first move: taking the pointer on the down event would
+    // claim every tap, including the ones xterm answers itself.
     event.stopPropagation();
   };
   const pointerMove = (event: PointerEvent) => {
@@ -136,8 +170,6 @@ export function installTerminalTouchScroll(host: HTMLElement, terminal: Terminal
     // `touchstart`/`touchmove` on its own element and scrolls its viewport by
     // the raw finger delta — so a drag that this handler already turned into
     // `scrollLines` was scrolled a second time by xterm, at a different rate.
-    // Only the propagation is stopped: `touch-action` on the host decides what
-    // the browser itself does with the gesture, and a sideways pan stays its.
     const swallowTouch = (event: TouchEvent) => event.stopPropagation();
     const touchOptions: AddEventListenerOptions = { capture: true, passive: true };
     host.addEventListener("pointerdown", pointerStart, options);
