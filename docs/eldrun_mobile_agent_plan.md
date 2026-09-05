@@ -73,9 +73,13 @@ create, edit, and delete ordinary events and calendars through opaque IDs. The
 desktop retains CalDAV credentials and metadata, alarms, and per-occurrence
 recurrence changes. Alerts mirrors the
 desktop's bounded, time-ordered urgent-mail/upcoming-event/due-task feed through
-the desktop bridge; it exposes no source ids, event detail, calendar, mute,
-complete, or link-opening controls. A mail or task row can only hand off to the
-existing Mail or To-do surface. While Eldrun is connected, the board has the
+the desktop bridge; it exposes no source ids, event detail, calendar, mute, or
+link-opening controls. A mail or task row can only hand off to the existing Mail
+or To-do surface. The one write is the desktop strip's own **Done** ✓, pressed
+by an opaque per-row handle: the desktop resolves the row the way its kind
+supports — a card completed into the board's Done column, a mail's local
+priority mark cleared, a meeting muted in the strip — and none of the three can
+delete a message, an appointment or a card. While Eldrun is connected, the board has the
 same card and column operations as the desktop board: create, edit (including
 notes, date/time, progress, tags, project/calendar assignment, and checklists),
 complete, move, delete, and manage columns via the desktop bridge. Mail lists
@@ -190,7 +194,8 @@ Global companion views
 └─ Calendar               month snapshot + desktop-mediated event/calendar edits
 
 Home also renders the desktop Alerts snapshot below the project section when
-the desktop Alerts feed is enabled. It is a compact read-only timeline.
+the desktop Alerts feed is enabled. It is a compact timeline whose only control
+is the desktop strip's Done ✓.
 ```
 
 ### 4.1 Home and project screens
@@ -675,6 +680,7 @@ GET    /api/v1/status
 GET    /api/v1/todo
 POST   /api/v1/todo
 GET    /api/v1/alerts
+POST   /api/v1/alerts                                              {alert_id}
 GET    /api/v1/calendar?month=YYYY-MM
 POST   /api/v1/calendar?month=YYYY-MM
 GET    /api/v1/mail

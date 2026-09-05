@@ -46,6 +46,7 @@ import {
 } from "../tabs/newTabItems";
 import { useI18nStore, useT } from "../../lib/i18n";
 import { resolveUse24h } from "../../lib/timeFormat";
+import { finishAlert } from "../../lib/alertDone";
 import { useAlertsFeed, type AlertsFeed } from "../files/useAlertsFeed";
 import {
   desktopTimeZone,
@@ -97,6 +98,7 @@ interface MobileAlertItem {
   minutes_away?: number;
   days_away?: number;
   task_id?: string;
+  alert_id?: string;
 }
 interface MobileAlerts { enabled: boolean; items: MobileAlertItem[] }
 interface MobileCalendarEvent {
@@ -171,6 +173,7 @@ type DesktopRequest =
   | { type: "create"; request_id: string; request: CreateRequest }
   | { type: "todo"; request_id: string }
   | { type: "alerts"; request_id: string }
+  | { type: "alert_resolve"; request_id: string; alert_id: string }
   | { type: "calendar"; request_id: string; month: string }
   | { type: "calendar_mutate"; request_id: string; month: string; action: CalendarAction }
   | { type: "todo_mutate"; request_id: string; action: TodoAction }
@@ -955,8 +958,38 @@ async function alertsSnapshot(feed: AlertsFeed): Promise<MobileAlerts> {
  *
  * The row is named by the opaque handle `alertsSnapshot` published, resolved
  * here by re-deriving the same handles over the live feed — the mail routes'
+ * rule (an opaque id is resolved by re-reading what issued it), so nothing but
+ * a row of the feed the phone was actually shown can be reached. The three
+ * resolutions themselves are `lib/alertDone`'s, the very ones the desktop
+ * strip's button runs.
+ *
+ * The answer is the same snapshot **minus the row just resolved**, rather than a
+ * re-read: this handler runs outside React, so the feed's own recompute (a
+ * cleared mark, a completed card, a new mute) has not reached `alertsRef` yet
+ * and re-reading here would hand the phone back the row it just ticked. The
+ * dropped row is what every one of the three resolutions produces on the next
+ * poll anyway, which is the authority.
+ */
 async function resolveAlertRow(feed: AlertsFeed, alertId: string): Promise<DesktopResponse> {
   const pairs = await Promise.all(
+    feed.items.map(async (item) => [await opaqueId("alert", item.id), item] as const),
+  );
+  const match = pairs.find(([id]) => id === alertId)?.[1];
+  if (!match) {
+    return { status: "error", code: "alert_gone", message: "That alert is no longer listed" };
+  }
+  try {
+    await finishAlert(match, feed.mute);
+  } catch (error) {
+    return { status: "error", code: "alert_resolve_failed", message: String(error) };
+  }
+  const snapshot = await alertsSnapshot(feed);
+  return {
+    status: "alerts",
+    alerts: { ...snapshot, items: snapshot.items.filter((row) => row.alert_id !== alertId) },
+  };
+}
+
 const MOBILE_CALENDAR_EVENTS = 80;
 
 /** The mobile view is materialized by the desktop, so it uses exactly the same
@@ -1379,6 +1412,7 @@ async function handleRequest(
     case "create": return create(request.request, t);
     case "todo": return { status: "todo", board: await todoSnapshot() };
     case "alerts": return { status: "alerts", alerts: await alertsSnapshot(alerts) };
+    case "alert_resolve": return resolveAlertRow(alerts, request.alert_id);
     case "calendar": return { status: "calendar", calendar: await calendarSnapshot(request.month) };
     case "calendar_mutate": return calendarMutate(request.month, request.action);
     case "todo_mutate": return todoMutate(request.action);

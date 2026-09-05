@@ -93,6 +93,7 @@ button.mobile-alert-row { cursor:pointer; }
 .mobile-alert-copy { display:grid; min-width:0; gap:3px; }
 .mobile-alert-copy strong,.mobile-alert-copy small { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; unicode-bidi:plaintext; }
 .mobile-alert-row time { color:#b7bac8; font-size:.78rem; white-space:nowrap; }
+.mobile-alerts-error { margin:0; padding:10px 12px; border:1px solid #6d3b46; border-radius:11px; background:rgba(60,30,38,.6); color:#f3c3ca; font-size:.85rem; }
 .mobile-alerts-empty,.projects-empty { margin:0; padding:16px; border:1px solid #383c4d; border-radius:11px; color:#9498aa; text-align:center; }
 .todo-create { display:grid; grid-template-columns:1fr 120px auto; gap:8px; margin:14px 0; }
 /* Adding a column is a rare, structural act, and it now sits at the foot of the
@@ -263,6 +264,9 @@ button.mobile-alert-row { cursor:pointer; }
 .mobile-calendar-agenda article.cancelled strong { text-decoration:line-through; }
 @media (max-width:480px) { .mobile-build small { font-size:.72rem; } .mail-mobile-row > div { display:grid; gap:3px; } .mail-mobile-pager button { padding-inline:9px; } }
 @media (max-width:360px) { .projects-row { margin-top:14px; } .mobile-calendar-day { min-height:48px; } .mobile-tab { font-size:.68rem; } }
+/* While the full-bleed terminal is up: no document scroll to lose the header
+   down (see the `terminal-open` effect in screens/Terminal.tsx). */
+body.terminal-open { min-height:0; overflow:hidden; }
 .terminal-screen { height:100dvh; display:grid; grid-template-rows:auto 1fr auto; position:relative; background:#0b0d13; padding-top:env(safe-area-inset-top); padding-bottom:env(safe-area-inset-bottom); }
 .terminal-screen header { padding:0 12px; gap:8px; }
 .terminal-title { display:grid; min-width:0; flex:1; gap:1px; }

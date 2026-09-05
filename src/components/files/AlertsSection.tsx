@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 
 import type { AlertItem, AlertKind, AlertSeverity } from "../../lib/alerts";
 import { alertCounts, readsInHours } from "../../lib/alerts";
+import { finishAlert } from "../../lib/alertDone";
 import { useAlertsFeed } from "./useAlertsFeed";
 import { useResizableSection } from "./useResizableSection";
 import { useCalendarStore } from "../../stores/calendar";
@@ -10,12 +11,7 @@ import { useSettingsStore } from "../../stores/settings";
 import { useTodoStore } from "../../stores/todo";
 import { useExperimental } from "../../lib/experimental";
 import { joinConference } from "../../lib/linkTarget";
-import {
-  awayDelta,
-  boardColumns,
-  toggleTaskDone,
-  type DueDelta,
-} from "../../lib/todoBoard";
+import { awayDelta, type DueDelta } from "../../lib/todoBoard";
 import { useT, type TranslationKey } from "../../lib/i18n";
 
 /**
@@ -227,30 +223,18 @@ export function AlertsSection({ onClose }: AlertsSectionProps) {
   /**
    * Resolve the item in the way its source supports.
    *
-   * The board helper is important here: completion also files the card in the
-   * configured Done column. Mail's priority cache belongs to `useTodoStore`, so
-   * it is re-read after clearing the mark. Calendar events have no completion
-   * state, so Done uses the strip's persisted mute rather than deleting the
-   * appointment from the calendar.
+   * The three resolutions live in `lib/alertDone` rather than here, because
+   * Eldrun Mobile's Alerts rows press the same ✓ through the desktop bridge and
+   * a second copy of "what Done means for a meeting" is exactly how the two
+   * surfaces would start disagreeing. What stays local is the busy row and the
+   * failure line — this component's chrome, not the act.
    */
   const finishItem = async (item: AlertItem) => {
     if (finishingId) return;
     setFinishingId(item.id);
     setFinishError(null);
     try {
-      if (item.kind === "mail") {
-        if (!item.source.mailId) throw new Error("Missing mail id");
-        await useMailStore.getState().setPriority(item.source.mailId, null);
-        await useTodoStore.getState().loadUrgentMail();
-      } else if (item.kind === "event") {
-        mute(item.id);
-      } else {
-        if (!item.source.taskId) throw new Error("Missing task id");
-        const calendar = useCalendarStore.getState();
-        const task = calendar.tasks.find((row) => row.id === item.source.taskId);
-        if (!task) throw new Error("Missing task");
-        await calendar.updateTask(toggleTaskDone(task, boardColumns(calendar.taskColumns)));
-      }
+      await finishAlert(item, mute);
     } catch {
       setFinishError(t("filesAlerts.doneFailed"));
     } finally {

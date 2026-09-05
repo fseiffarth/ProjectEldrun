@@ -105,6 +105,15 @@ struct MailReplyBody {
     offset: u32,
 }
 
+/// Body of an alert row's ✓. The opaque row handle and nothing else: what the
+/// row *is* — mail, meeting or card — and what resolving it does are the
+/// desktop's, not the sidecar's, so there is no action to name here.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AlertResolveBody {
+    alert_id: String,
+}
+
 #[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 struct CalendarQuery {
@@ -654,6 +663,55 @@ async fn alerts(State(state): State<HostState>, headers: HeaderMap) -> impl Into
     let desktop_socket = state.config.control_dir.join("desktop-control.sock");
     let request_id = Base64UrlUnpadded::encode_string(&random_16());
     match admin::desktop_call(&desktop_socket, &DesktopRequest::Alerts { request_id }).await {
+        Ok(DesktopResponse::Alerts { alerts }) => {
+            (StatusCode::OK, Json(json!({ "alerts": alerts })))
+        }
+        Ok(DesktopResponse::Error { code, .. }) => api_error(
+            if code == "desktop_unavailable" {
+                StatusCode::SERVICE_UNAVAILABLE
+            } else {
+                StatusCode::BAD_REQUEST
+            },
+            &code,
+        ),
+        _ => api_error(StatusCode::SERVICE_UNAVAILABLE, "desktop_unavailable"),
+    }
+}
+
+/// Press one alert row's ✓ — the same three resolutions the desktop strip's own
+/// button performs (`lib/alertDone`), reached by the opaque row handle the
+/// snapshot published. Origin-checked like every other write; the sidecar
+/// validates only the handle's shape, because what it *means* is the desktop's
+/// alone. The answer is a fresh alerts snapshot, the way a board write answers
+/// with the board.
+async fn alerts_resolve(
+    State(state): State<HostState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> impl IntoResponse {
+    if let Err(error) = authenticate(&headers, &state) {
+        return error;
+    }
+    if !exact_origin(&headers, &state) {
+        return api_error(StatusCode::FORBIDDEN, "invalid_origin");
+    }
+    let Ok(request) = serde_json::from_slice::<AlertResolveBody>(&body) else {
+        return api_error(StatusCode::BAD_REQUEST, "invalid_request");
+    };
+    if request.alert_id.is_empty() || request.alert_id.len() > 128 {
+        return api_error(StatusCode::BAD_REQUEST, "invalid_request");
+    }
+    let desktop_socket = state.config.control_dir.join("desktop-control.sock");
+    let request_id = Base64UrlUnpadded::encode_string(&random_16());
+    match admin::desktop_call(
+        &desktop_socket,
+        &DesktopRequest::AlertResolve {
+            request_id,
+            alert_id: request.alert_id,
+        },
+    )
+    .await
+    {
         Ok(DesktopResponse::Alerts { alerts }) => {
             (StatusCode::OK, Json(json!({ "alerts": alerts })))
         }
@@ -2015,7 +2073,7 @@ fn router(state: HostState) -> Router {
         .route("/api/v1/auth/session", post(login).delete(logout))
         .route("/api/v1/status", get(status))
         .route("/api/v1/todo", get(todo).post(todo_mutate))
-        .route("/api/v1/alerts", get(alerts))
+        .route("/api/v1/alerts", get(alerts).post(alerts_resolve))
         .route("/api/v1/calendar", get(calendar).post(calendar_mutate))
         .route("/api/v1/mail", get(mail_overview))
         .route("/api/v1/mail/folders/{folder_id}", get(mail_folder))
@@ -2468,6 +2526,7 @@ mod tests {
             "/api/v1/projects/anything/tabs",
             "/api/v1/projects/anything/activate",
             "/api/v1/todo",
+            "/api/v1/alerts",
             "/api/v1/calendar",
             "/api/v1/tabs/anything/schedules",
             "/api/v1/tabs/anything/inbox",
@@ -2552,6 +2611,44 @@ mod tests {
         assert_eq!(clean_tab_label("Claude\nrm -rf"), None);
         // The cap counts characters, not bytes: an emoji name is not 4x longer.
         assert!(clean_tab_label(&"\u{1f680}".repeat(MAX_TAB_LABEL)).is_some());
+    }
+
+    #[tokio::test]
+    async fn finishing_an_alert_needs_a_same_origin_and_a_usable_row_handle() {
+        let host = Fixture::with_project();
+        let cookie = host.pair_device(&signing_key(28)).await.0;
+        let press = |origin: &'static str, body: Value| {
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/alerts")
+                .header(header::ORIGIN, origin)
+                .header(header::COOKIE, cookie_pair(&cookie))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(serde_json::to_vec(&body).expect("body")))
+                .expect("request")
+        };
+
+        // Origin is checked before the handle and before any desktop call.
+        let (status, _, body) = host
+            .send(press("https://evil.example", json!({ "alert_id": "row" })))
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "answered: {body}");
+
+        // The sidecar validates the handle's shape and nothing else: an empty
+        // one, and a body that tries to name the act instead of the row.
+        let (status, _, body) = host.send(press(ORIGIN, json!({ "alert_id": "" }))).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "answered: {body}");
+        assert_eq!(json(&body)["error"], "invalid_request");
+        let (status, _, body) = host
+            .send(press(ORIGIN, json!({ "alert_id": "row", "action": "delete" })))
+            .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "answered: {body}");
+
+        // A well-formed press with no desktop window is unavailable, not a
+        // refusal the phone should read as "that alert is gone".
+        let (status, _, body) = host.send(press(ORIGIN, json!({ "alert_id": "row" }))).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "answered: {body}");
+        assert_eq!(json(&body)["error"], "desktop_unavailable");
     }
 
     #[tokio::test]

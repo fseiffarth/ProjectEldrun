@@ -227,10 +227,19 @@ pub struct MobileAlertItem {
     /// to save. Absent for every other kind.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_id: Option<String>,
+    /// The row's **opaque** handle, minted by the desktop for this snapshot and
+    /// resolvable only by it. It is what a phone hands back to press the strip's
+    /// ✓ (`AlertResolve`) and it is not a widening of the boundary: it names a
+    /// *row of this feed*, never the mail, event or card behind it, and the
+    /// desktop resolves it by re-deriving the same handles over its own live
+    /// feed — the pattern the mail routes already use with their page offset.
+    /// Absent for a row the desktop could not mint one for, and such a row
+    /// simply has no ✓ on the phone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alert_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct MobileAlertsSnapshot {
     /// Mirrors the desktop Alerts switch. A disabled desktop feed is distinct
     /// from an enabled feed that simply has no current rows.
@@ -511,6 +520,16 @@ pub enum DesktopRequest {
     Alerts {
         request_id: String,
     },
+    /// Press one alert row's ✓. The phone carries no source ids, so the row is
+    /// named by the opaque `alert_id` the snapshot published; the desktop
+    /// resolves it against its own live feed and resolves the row the way that
+    /// kind supports — a card is completed, a mail's local priority mark is
+    /// cleared, a meeting is muted in the strip. Nothing here can delete a
+    /// message, an appointment or a card (`lib/alertDone`).
+    AlertResolve {
+        request_id: String,
+        alert_id: String,
+    },
     Calendar {
         request_id: String,
         /// A validated `YYYY-MM` civil month. The desktop expands recurrence
@@ -663,6 +682,7 @@ impl DesktopRequest {
             | Self::Create { request_id, .. }
             | Self::Todo { request_id }
             | Self::Alerts { request_id }
+            | Self::AlertResolve { request_id, .. }
             | Self::Calendar { request_id, .. }
             | Self::CalendarMutate { request_id, .. }
             | Self::TodoMutate { request_id, .. }
@@ -1200,6 +1220,7 @@ mod tests {
                     minutes_away: Some(30),
                     days_away: Some(0),
                     task_id: Some("opaque-task".into()),
+                    alert_id: Some("opaque-row".into()),
                 }],
             },
         };
@@ -1211,6 +1232,24 @@ mod tests {
         // board's own opaque id, so it stays the only task identity this device
         // ever holds.
         assert_eq!(json["alerts"]["items"][0]["task_id"], "opaque-task");
+        // The row handle is the same kind of thing: derived, resolvable only by
+        // the desktop, and the whole of what a phone sends back to press ✓.
+        assert_eq!(json["alerts"]["items"][0]["alert_id"], "opaque-row");
+    }
+
+    #[test]
+    fn an_alert_is_resolved_by_its_row_handle_and_nothing_else() {
+        let request = DesktopRequest::AlertResolve {
+            request_id: "request-3b".into(),
+            alert_id: "opaque-row".into(),
+        };
+        let json = serde_json::to_value(request).expect("serialize alert resolve request");
+        assert_eq!(json["type"], "alert_resolve");
+        assert_eq!(json["alert_id"], "opaque-row");
+        // No kind, no action, no source: what the ✓ does to a mail, a meeting or
+        // a card is decided by the desktop from the row it resolves.
+        assert!(json.get("kind").is_none());
+        assert!(json.get("action").is_none());
     }
 
     #[test]

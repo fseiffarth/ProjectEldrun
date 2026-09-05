@@ -113,8 +113,23 @@ export interface MobileAlertItem {
   /** `kind === "task"` only: the board's own opaque card id, so tapping the row
    * can open that card rather than dropping the reader at the whole board. */
   task_id?: string;
+  /** The row's opaque handle, the one thing `resolveAlert` needs to press its ✓.
+   * It names a row of this feed and nothing behind it — a row the desktop could
+   * not mint a handle for simply carries no ✓. */
+  alert_id?: string;
 }
 export interface MobileAlerts { enabled: boolean; items: MobileAlertItem[] }
+
+/** `POST /api/v1/alerts` — the desktop strip's ✓, pressed from the phone.
+ *
+ * What Done means is the desktop's and stays there: a card is completed into
+ * the board's Done column, a mail's local priority mark is cleared, a meeting is
+ * muted in the strip. None of the three deletes anything, and the phone names
+ * only the row. The answer is the feed as it stands afterwards, so the list the
+ * ✓ came from is replaced rather than patched by guesswork. */
+export function resolveAlert(alertId: string): Promise<{ alerts: MobileAlerts }> {
+  return api("/api/v1/alerts", { method: "POST", body: JSON.stringify({ alert_id: alertId }) });
+}
 /** A bounded, read-only occurrence expanded by the connected desktop. It never
  * carries a calendar/event id, notes, conferencing links, or write capability. */
 export interface MobileCalendarEvent {

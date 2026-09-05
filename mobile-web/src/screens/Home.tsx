@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, type ActivityTab, type MobileAlertItem, type MobileAlerts, type ProjectRow } from "../api";
+import { api, resolveAlert, type ActivityTab, type MobileAlertItem, type MobileAlerts, type ProjectRow } from "../api";
 import { classifyUnavailable, describeUnavailable, type UnavailableReason } from "../connection";
 import { readFlag, writeFlag } from "../prefs";
 import { Activity } from "./Activity";
@@ -31,10 +31,46 @@ function relativeAlertTime(item: MobileAlertItem): string {
   return minutes < 0 ? `${amount} overdue` : `In ${amount}`;
 }
 
-function AlertRows({ alerts, todo, mail }: { alerts: MobileAlerts; todo: (card?: string) => void; mail: () => void }) {
+/** What the ✓ does to *this* row, said in the row's own terms — the desktop's
+ * three labels verbatim, because it is the same act reaching the same stores.
+ * None of the three deletes anything. */
+const DONE_LABEL: Record<MobileAlertItem["kind"], string> = {
+  mail: "Return this mail to normal",
+  event: "Remove this appointment from alerts",
+  task: "Mark this to-do done",
+};
+
+function AlertRows({ alerts, onAlerts, todo, mail }: {
+  alerts: MobileAlerts;
+  onAlerts: (alerts: MobileAlerts) => void;
+  todo: (card?: string) => void;
+  mail: () => void;
+}) {
+  // The row being resolved, so its own ✓ can say it is working and the rest go
+  // quiet: the three resolutions are desktop store writes, and two of them
+  // landing at once is how a phone on bad signal ends up ticking the wrong card.
+  const [finishing, setFinishing] = useState<string | null>(null);
+  const [error, setError] = useState("");
+  const finish = async (alertId: string) => {
+    if (finishing) return;
+    setFinishing(alertId);
+    setError("");
+    try {
+      // The desktop answers with the feed as it stands afterwards, so the list
+      // is replaced rather than patched here: what a ✓ removes is the desktop's
+      // to decide, and a card that reappears because it was only 90% done is a
+      // truth the phone should show rather than hide.
+      onAlerts((await resolveAlert(alertId)).alerts);
+    } catch {
+      setError("That alert could not be completed. Eldrun on the desktop owns it.");
+    } finally {
+      setFinishing(null);
+    }
+  };
   if (!alerts.enabled) return null;
   return <section className="mobile-alerts" aria-labelledby="mobile-alerts-heading">
     <h2 id="mobile-alerts-heading">Alerts</h2>
+    {error && <p className="mobile-alerts-error" role="alert">{error}</p>}
     {alerts.items.length === 0
       ? <p className="mobile-alerts-empty">Nothing needs attention.</p>
       : <div className="mobile-alert-list">{alerts.items.map((item, index) => {
@@ -47,15 +83,30 @@ function AlertRows({ alerts, todo, mail }: { alerts: MobileAlerts; todo: (card?:
           : item.kind === "task"
             ? () => todo(item.task_id)
             : undefined;
+        const key = item.alert_id ?? `${item.kind}-${item.at ?? ""}-${item.title}-${index}`;
         const contents = <>
           <span className={`mobile-alert-dot ${item.severity}`} aria-hidden="true" />
           <span className="mobile-alert-icon" aria-hidden="true">{ALERT_ICON[item.kind]}</span>
           <span className="mobile-alert-copy"><strong>{item.title}</strong>{item.detail && <small>{item.detail}</small>}</span>
           <time>{relativeAlertTime(item)}</time>
         </>;
-        return open
-          ? <button className="mobile-alert-row" key={`${item.kind}-${item.at ?? ""}-${item.title}-${index}`} onClick={open}>{contents}</button>
-          : <div className="mobile-alert-row" key={`${item.kind}-${item.at ?? ""}-${item.title}-${index}`}>{contents}</div>;
+        // The ✓ sits **beside** the row rather than inside it, for the desktop
+        // strip's reason: a button nested in a button is invalid markup, and it
+        // would also make finishing the thing part of the tap that opens it.
+        // A row the desktop minted no handle for keeps its opener and loses only
+        // the ✓ — there is nothing honest to send back for it.
+        return <div className="mobile-alert-row-wrap" key={key}>
+          {item.alert_id && <button
+            className="mobile-alert-done"
+            disabled={finishing !== null}
+            onClick={() => void finish(item.alert_id as string)}
+            title={DONE_LABEL[item.kind]}
+            aria-label={DONE_LABEL[item.kind]}
+          >{finishing === item.alert_id ? "…" : "✓"}</button>}
+          {open
+            ? <button className="mobile-alert-row" onClick={open}>{contents}</button>
+            : <div className="mobile-alert-row">{contents}</div>}
+        </div>;
       })}</div>}
   </section>;
 }
@@ -159,8 +210,11 @@ export function Home({ open, openTab, todo, mail }: {
       {loaded && rows.length === 0 && <p className="projects-empty">{view === "search"
         ? query.trim() ? "No project by that name has Eldrun Mobile access." : "Type a project's name to find it."
         : "No project is active right now. Search finds any project with Eldrun Mobile access."}</p>}
-      <section className="cards">{rows.map((project) => <button className="card" key={project.id} onClick={() => open(project.id)}><span><strong>{project.label}</strong><small>{project.status}</small></span><span className="count">{project.live_sessions}</span></button>)}</section>
-      {alerts && <AlertRows alerts={alerts} todo={todo} mail={mail} />}
+      {/* A box row says it is one where a project row says its status: a box
+          has no status of its own (listing it is what its switch means), and
+          a "Paper" box beside a "Paper" project must be tellable apart. */}
+      <section className="cards">{rows.map((project) => <button className="card" key={project.id} onClick={() => open(project.id)}><span><strong>{project.label}</strong><small>{project.kind === "box" ? "▣ box" : project.status}</small></span><span className="count">{project.live_sessions}</span></button>)}</section>
+      {alerts && <AlertRows alerts={alerts} onAlerts={setAlerts} todo={todo} mail={mail} />}
     </>}
   </main>;
 }

@@ -438,6 +438,41 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
   - [ ] ✅ Works
   - [ ] ❌ Doesn't work
 
+- [~] **31y — The phone's Alerts rows carry the desktop's Done ✓** (2026-09-04;
+  ✅ code-complete and automated tests passing, ⚠️ phone QA pending — and a
+  rebuild + restart first: the phone serves the bundle baked into the binary,
+  and the desktop bridge gained a request). Alerts was the one companion
+  surface that could only *hand off*: a card that was already done, a meeting
+  already over, a mail already dealt with stayed on the phone's strip until
+  somebody reached a laptop, which is the opposite of what an alert feed is
+  for. Each row now carries the same ✓ the desktop strip has, and it means the
+  same three things because it *is* the same code — the resolutions moved to
+  `src/lib/alertDone.ts` and both surfaces call it: a card is completed into
+  the board's configured Done column, a mail's local priority mark is cleared
+  (never a server flag, never a delete), a meeting is muted in the strip and
+  stays in the calendar. The boundary is unchanged in kind: the snapshot gains
+  one opaque per-row handle (`alert_id`, domain-separated like every other
+  mobile id), the phone sends back that handle and nothing else, and
+  `POST /api/v1/alerts` is origin-checked and validates only its shape — what
+  the ✓ *does* is decided desktop-side from the row it resolves. The answer is
+  the feed as it stands afterwards, so the phone never guesses what a ✓ removed.
+  **Until that restart the phone shows no Alerts section at all**, and that is
+  this seam rather than a bug: `src/` hot-reloads, so the running window's
+  bridge already sends the new `alert_id`, while the sidecar baked into the
+  binary is a `deny_unknown_fields` build that does not know the field and
+  rejects the whole snapshot. The phone reads that as a feed it cannot load and
+  draws nothing.
+  - [ ] 🖐️ Manual phone QA — with the desktop open: a due card, an urgent mail
+    and an upcoming meeting on Home's Alerts strip. Tap the ✓ on the card →
+    the row goes and the desktop board shows it in Done. Tap the ✓ on the mail
+    → the row goes and the desktop's Urgent list no longer holds it (the
+    message itself untouched, unread state unchanged). Tap the ✓ on the meeting
+    → the row goes and the appointment is still in the desktop calendar,
+    listed under the strip's 🔕 count. Then close Eldrun on the desktop and tap
+    a ✓ → "could not be completed", the row still there.
+    - [ ] ✅ Works
+    - [ ] ❌ Doesn't work
+
 - [~] **31g — Eldrun Mobile sidecar on macOS & Windows** (2026-08-26; ✅
   Code-complete, ⚠️ needs live QA on real macOS/Windows machines).
   The separate `eldrun-mobile-host` cargo bin is gone — the sidecar is a copy
