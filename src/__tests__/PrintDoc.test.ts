@@ -17,12 +17,16 @@ import {
   printSequence,
   thumbSizePx,
   contentBoxCm,
+  printableCssCm,
+  rasterScaleFor,
   loadPrintOptions,
   savePrintOptions,
   sanitizePrintOptions,
   DEFAULT_PRINT_OPTIONS,
+  PAGED_PRINT_OPTIONS,
   TEXT_PRINT_CSS,
   MARKDOWN_PRINT_CSS,
+  IMAGE_PRINT_CSS,
   type PrintOptions,
 } from "../lib/viewers/print";
 import {
@@ -163,12 +167,21 @@ describe("sheet geometry", () => {
   it("fits a quarter-turned page by swapping its box, not by overflowing", () => {
     // transform does not change the layout box, so a turned page is centred out
     // of flow and pre-constrained to the swapped printable box.
-    const css = buildOptionsCss(withOpts({ paper: "A4", margin: "none" }));
-    expect(css).toContain(".print-page.eldrun-rot-90,.print-page.eldrun-rot-270");
+    const css = buildOptionsCss(withOpts({ paper: "A4", margin: "none" }), true);
+    expect(css).toContain(".print-page.eldrun-rot-90>img,.print-page.eldrun-rot-270>img");
     expect(css).toContain("max-width:29.7cm;max-height:21cm");
     expect(css).toContain("rotate(90deg)");
     expect(css).toContain("rotate(270deg)");
-    expect(css).toContain(".print-page.eldrun-rot-180 img{transform:rotate(180deg)}");
+    expect(css).toContain(".print-page.eldrun-rot-180>img{transform:rotate(180deg)}");
+  });
+
+  it("states the printable box in the zoomed document's own centimetres", () => {
+    // Scale is `zoom` on the body, so a rule under it lands on paper multiplied
+    // by the zoom: the sheet is divided by it first, the margins are not.
+    expect(printableCssCm(withOpts({ margin: "none" }))).toEqual([21, 29.7]);
+    expect(printableCssCm(withOpts({ margin: "none", scale: 50 }))).toEqual([42, 59.4]);
+    // 21/0.5 − 2×2.54 = 36.92; on paper that is 21 − 2×2.54×0.5 = 18.46cm.
+    expect(printableCssCm(withOpts({ margin: "normal", scale: 50 }))).toEqual([36.92, 54.32]);
   });
 });
 
@@ -224,6 +237,76 @@ describe("buildOptionsCss", () => {
   });
 });
 
+describe("a document made of sheets", () => {
+  // The regression: a PDF page printed inside a text document's 2.54cm margins,
+  // at whatever size its raster happened to be — roughly three quarters of the
+  // sheet, sitting at the top of it — instead of filling the paper.
+  const paged = (patch: Partial<PrintOptions> = {}) =>
+    buildOptionsCss({ ...PAGED_PRINT_OPTIONS, ...patch }, true);
+
+  it("gives every sheet the whole page box to fill", () => {
+    const css = paged();
+    // Just under A4 tall (a rounding spill would print a blank sheet between
+    // every page), and the image capped on BOTH axes so it fits the box.
+    expect(css).toContain("height:29.65cm");
+    expect(css).toContain(".print-page>img{width:auto;height:auto;max-width:100%;max-height:100%}");
+    expect(css).toContain("align-items:center");
+    // Sized on neither axis: an A1 page fitted onto A4 keeps its aspect.
+    expect(css).not.toContain(".print-page>img{width:100%");
+  });
+
+  it("prints edge to edge by default — the sheet carries its own margins", () => {
+    expect(PAGED_PRINT_OPTIONS.margin).toBe("none");
+    expect(paged()).toContain("padding:0cm");
+  });
+
+  it("puts the margins on the sheet, not on the body", () => {
+    // Block-direction padding of a fragmented box applies to its first and last
+    // fragment only: body padding would indent sheet 1 and leave the rest flush
+    // to the paper edge.
+    const css = paged({ margin: "normal" });
+    expect(css).toContain("body{margin:0;padding:0cm");
+    expect(css).toContain("padding:2.54cm;display:flex");
+  });
+
+  it("keeps body padding for a flowing document", () => {
+    const css = buildOptionsCss(withOpts({ margin: "normal" }), false);
+    expect(css).toContain("body{margin:0;padding:2.54cm");
+    expect(css).not.toContain(".print-page>img");
+  });
+
+  it("keeps the page number inside the margin band, out of the page", () => {
+    const css = paged({ margin: "narrow", pageNumbers: true });
+    expect(css).toContain("padding-bottom:calc(1.27cm + 16px)");
+    expect(css).toContain("bottom:1.27cm");
+  });
+
+  it("fits, never stretches, in the stylesheet the sheets ship with", () => {
+    expect(IMAGE_PRINT_CSS).toContain("max-width:100%;max-height:100%");
+    expect(IMAGE_PRINT_CSS).not.toContain("100vh");
+  });
+});
+
+describe("rasterScaleFor", () => {
+  it("leaves an ordinary page alone", () => {
+    // A4 in big points at 2× is 1191×1684 — nowhere near the canvas limits.
+    expect(rasterScaleFor(595, 842, 2)).toBe(2);
+  });
+
+  it("shrinks an outsized page to something the canvas can hold", () => {
+    // A1 at 2× would be 32 Mpx; past the engine's limit a canvas comes back
+    // blank, which prints as a blank sheet.
+    const s = rasterScaleFor(1684, 2384, 2);
+    expect(s).toBeLessThan(2);
+    expect(1684 * s * 2384 * s).toBeLessThanOrEqual(12_000_000 + 1);
+    expect(Math.max(1684, 2384) * s).toBeLessThanOrEqual(8192);
+  });
+
+  it("survives a page with no measurable size", () => {
+    expect(rasterScaleFor(0, 0, 2)).toBe(2);
+  });
+});
+
 describe("loadPrintOptions", () => {
   it("carries the printer settings over but never the page selection", () => {
     savePrintOptions(
@@ -235,6 +318,23 @@ describe("loadPrintOptions", () => {
     // A range typed for one document must not silently drop pages of the next.
     expect(loaded.pages).toBe("all");
     expect(loaded.range).toBe("");
+  });
+
+  it("remembers sheets and flowing text apart", () => {
+    savePrintOptions(withOpts({ margin: "wide" }), "flow");
+    // A margin chosen for a memo must not follow the next PDF onto paper.
+    expect(loadPrintOptions("page").margin).toBe("none");
+    savePrintOptions({ ...PAGED_PRINT_OPTIONS, margin: "narrow" }, "page");
+    expect(loadPrintOptions("page").margin).toBe("narrow");
+    expect(loadPrintOptions("flow").margin).toBe("wide");
+  });
+
+  it("falls back to the kind's own defaults on junk", () => {
+    localStorage.setItem("eldrun.print.options.page", "{not json");
+    expect(loadPrintOptions("page").margin).toBe("none");
+    localStorage.setItem("eldrun.print.options.page", JSON.stringify({ margin: "huge" }));
+    expect(loadPrintOptions("page").margin).toBe("none");
+    expect(sanitizePrintOptions({}, PAGED_PRINT_OPTIONS).margin).toBe("none");
   });
 });
 

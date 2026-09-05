@@ -96,6 +96,26 @@ export function contentBoxCm(opts: PrintOptions): [number, number] {
 }
 
 /**
+ * The printable box in **CSS centimetres inside the print document**, which is
+ * what a rule living in the zoomed body has to be written in.
+ *
+ * Scale is `zoom` on the body, so every length below it lands on paper
+ * multiplied by the zoom factor: the sheet is therefore divided by it first
+ * (exactly as the on-screen sheet is), while the margins are not — a printer's
+ * scale shrinks the content and leaves the paper's margins where they are. At
+ * 100% this is `contentBoxCm`.
+ */
+export function printableCssCm(opts: PrintOptions): [number, number] {
+  const [w, h] = pageBoxCm(opts);
+  const m = MARGIN_CM[opts.margin] ?? MARGIN_CM.normal;
+  const zoom = clampScale(opts.scale) / 100;
+  return [
+    round2(Math.max(1, w / zoom - 2 * m)),
+    round2(Math.max(1, h / zoom - 2 * m)),
+  ];
+}
+
+/**
  * Thumbnail box in px for the strip, in the sheet's own proportions — so a
  * landscape sheet gets a landscape card rather than an upright one. Height is
  * fixed so the strip keeps a single row height; the width follows the aspect.
@@ -170,17 +190,24 @@ export function printSequence(pages: PageList, opts: PrintOptions): PageList {
  * edge-to-edge). On screen the sheet must stay true size while the content
  * scales inside it (that is what a printer's scale does), so the sheet box is
  * divided by the zoom factor, which then multiplies it back.
+ *
+ * `paged` says the document is built out of `.print-page` sheets (the PDF and
+ * image viewers) rather than flowing text, which changes where the margins live
+ * and gives each sheet a real page box to fill — see the block below.
  */
-export function buildOptionsCss(opts: PrintOptions): string {
+export function buildOptionsCss(opts: PrintOptions, paged = false): string {
   const [w, h] = pageBoxCm(opts);
   const pad = MARGIN_CM[opts.margin] ?? MARGIN_CM.normal;
   const zoom = clampScale(opts.scale) / 100;
   const sheetW = round2(w / zoom);
   const sheetH = round2(h / zoom);
+  const [pw, ph] = printableCssCm(opts);
 
   const css = [
     `@page{size:${w}cm ${h}cm;margin:0}`,
-    `body{margin:0;padding:${pad}cm;zoom:${zoom};background:#fff}`,
+    // A flowing document takes its margins from the body; a paged one cannot
+    // (see the paged block) and carries them on the sheets instead.
+    `body{margin:0;padding:${paged ? 0 : pad}cm;zoom:${zoom};background:#fff}`,
     `.eldrun-print-hidden{display:none!important}`,
     // Screen-only: show the actual sheet on a backdrop, so the preview is WYSIWYG.
     `@media screen{html{background:#3f4245;padding:18px 0}` +
@@ -200,30 +227,64 @@ export function buildOptionsCss(opts: PrintOptions): string {
     );
   }
 
-  // Per-page rotation (classes stamped on the page elements by printDocument).
-  // A quarter turn is the awkward one: `transform` does not change the layout
-  // box, so a rotated page would reserve its *unrotated* size and overflow the
-  // sheet. The page therefore becomes a fixed printable-height box and the image
-  // is centred out of flow inside it, pre-constrained to the *swapped* printable
-  // box — after the turn its bounding box is exactly the printable area.
-  const [cw, ch] = contentBoxCm(opts);
-  css.push(
-    `.print-page.eldrun-rot-90,.print-page.eldrun-rot-270{position:relative;height:${ch}cm}` +
-      `.print-page.eldrun-rot-90 img,.print-page.eldrun-rot-270 img{position:absolute;` +
-      `left:50%;top:50%;width:auto;height:auto;max-width:${ch}cm;max-height:${cw}cm}` +
-      `.print-page.eldrun-rot-90 img{transform:translate(-50%,-50%) rotate(90deg)}` +
-      `.print-page.eldrun-rot-270 img{transform:translate(-50%,-50%) rotate(270deg)}` +
-      `.print-page.eldrun-rot-180 img{transform:rotate(180deg)}`,
-  );
+  if (paged) {
+    // A sheet IS a page: give `.print-page` the whole page box and let the image
+    // fill whatever the margins leave. Without the box the image printed at
+    // whatever size its raster happened to be — a page rasterised at 2× is ~2000
+    // CSS px, which `max-width:100%` then shrank to the *width* of the margin box
+    // and left standing at the top of the sheet, so an A4 page came out around
+    // three quarters of A4 with a band of white under it.
+    //
+    // The margins cannot be body padding here the way they are for a flowing
+    // document: in paged media the block-direction padding of a fragmented box is
+    // applied to its first and last fragment only, so body padding indents the
+    // top of sheet 1 and the bottom of sheet n and leaves every sheet between them
+    // printing flush to the paper edge. Padding on the sheet element repeats on
+    // every sheet, each one being a box of its own.
+    //
+    // The sheet is a hair shorter than the paper so that a rounding error in the
+    // cm→device conversion cannot spill each sheet into a blank following page.
+    const sheetBoxH = round2(Math.max(1, sheetH - 0.05));
+    css.push(
+      `.print-page{position:relative;box-sizing:border-box;height:${sheetBoxH}cm;` +
+        `padding:${pad}cm;display:flex;align-items:center;justify-content:center;` +
+        `overflow:hidden}` +
+        // Capped on BOTH axes, sized on neither: the binding axis decides, so the
+        // page prints as large as its margins allow whatever its aspect is.
+        `.print-page>img{width:auto;height:auto;max-width:100%;max-height:100%}` +
+        // Screen-only: now that a sheet is exactly one page, the preview is one
+        // unbroken white column and nothing shows where the paper ends — which is
+        // the one thing this preview exists to answer. Drawn as a pseudo-element
+        // (::after is the page number) so it costs no layout height.
+        `@media screen{.print-page+.print-page::before{content:"";position:absolute;` +
+        `left:0;right:0;top:0;border-top:1px dashed rgba(0,0,0,.2)}}`,
+    );
+
+    // Per-page rotation (classes stamped on the page elements by printDocument;
+    // only ever on `.print-page`, hence only ever here). A quarter turn is the
+    // awkward one: `transform` does not change the layout box, so a rotated image
+    // would reserve its *unrotated* size and overflow the sheet. It is therefore
+    // centred out of flow inside the sheet and pre-constrained to the *swapped*
+    // printable box — after the turn its bounding box is exactly the printable area.
+    css.push(
+      `.print-page.eldrun-rot-90>img,.print-page.eldrun-rot-270>img{position:absolute;` +
+        `left:50%;top:50%;width:auto;height:auto;max-width:${ph}cm;max-height:${pw}cm}` +
+        `.print-page.eldrun-rot-90>img{transform:translate(-50%,-50%) rotate(90deg)}` +
+        `.print-page.eldrun-rot-270>img{transform:translate(-50%,-50%) rotate(270deg)}` +
+        `.print-page.eldrun-rot-180>img{transform:rotate(180deg)}`,
+    );
+  }
 
   if (opts.pageNumbers) {
     // A real running footer would need @page margin boxes, which WebKitGTK does
     // not have — hence numbers are stamped onto the page elements themselves
     // (`data-page`, set by printDocument) and exist only for paged documents.
+    // The number sits in the bottom margin band, and the sheet gives up 16px of
+    // its printable height to it rather than having the page print over it.
     css.push(
-      `.print-page{position:relative;padding-bottom:16px}` +
+      `.print-page{position:relative;padding-bottom:calc(${pad}cm + 16px)}` +
         `.print-page::after{content:attr(data-page);position:absolute;` +
-        `left:0;right:0;bottom:0;text-align:center;color:#555;` +
+        `left:0;right:0;bottom:${pad}cm;text-align:center;color:#555;` +
         `font:10px/1 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}`,
     );
   }
@@ -234,44 +295,79 @@ export function buildOptionsCss(opts: PrintOptions): string {
 const STORAGE_KEY = "eldrun.print.options";
 
 /**
- * Last used options, or the defaults. Never throws (private mode, junk JSON).
+ * The two kinds of print job, which want different *defaults* and remember their
+ * settings apart:
+ *  - `flow`: markdown, text, code, HTML — content Eldrun paginates, which needs
+ *    real margins or it prints edge-to-edge.
+ *  - `page`: a document that already comes as sheets (the PDF and image viewers).
+ *    Its natural margin is **none** — a PDF page carries the margins its author
+ *    chose, and printing it inside a second set of margins is what shrank it into
+ *    the middle of the paper.
+ *
+ * They are stored separately so choosing "wide" for a memo does not follow the
+ * next PDF onto paper, and vice versa.
+ */
+export type PrintKind = "flow" | "page";
+
+/** Defaults for a sheet-based document: the sheet IS the page. */
+export const PAGED_PRINT_OPTIONS: PrintOptions = {
+  ...DEFAULT_PRINT_OPTIONS,
+  margin: "none",
+};
+
+/** The defaults a print job of this kind starts from. */
+export function printDefaults(kind: PrintKind): PrintOptions {
+  return kind === "page" ? PAGED_PRINT_OPTIONS : DEFAULT_PRINT_OPTIONS;
+}
+
+function storageKey(kind: PrintKind): string {
+  return kind === "page" ? `${STORAGE_KEY}.page` : STORAGE_KEY;
+}
+
+/**
+ * Last used options for this kind of document, or its defaults. Never throws
+ * (private mode, junk JSON).
  *
  * The page *selection* is deliberately not restored: a range like "2-3" belongs
  * to the document it was typed for, and silently re-applying it to the next file
  * would drop pages the user never chose to drop. Printer settings (paper,
  * margins, scale…) do carry over, which is what a printer dialog does.
  */
-export function loadPrintOptions(): PrintOptions {
+export function loadPrintOptions(kind: PrintKind = "flow"): PrintOptions {
+  const defaults = printDefaults(kind);
   const stored = (() => {
     try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      return raw ? sanitizePrintOptions(JSON.parse(raw)) : { ...DEFAULT_PRINT_OPTIONS };
+      const raw = localStorage.getItem(storageKey(kind));
+      return raw ? sanitizePrintOptions(JSON.parse(raw), defaults) : { ...defaults };
     } catch {
-      return { ...DEFAULT_PRINT_OPTIONS };
+      return { ...defaults };
     }
   })();
-  return { ...stored, pages: DEFAULT_PRINT_OPTIONS.pages, range: DEFAULT_PRINT_OPTIONS.range };
+  return { ...stored, pages: defaults.pages, range: defaults.range };
 }
 
-export function savePrintOptions(opts: PrintOptions): void {
+export function savePrintOptions(opts: PrintOptions, kind: PrintKind = "flow"): void {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(opts));
+    localStorage.setItem(storageKey(kind), JSON.stringify(opts));
   } catch {
     /* storage unavailable: options simply don't persist */
   }
 }
 
 /** Coerce arbitrary stored JSON back into a valid `PrintOptions`. */
-export function sanitizePrintOptions(v: unknown): PrintOptions {
+export function sanitizePrintOptions(
+  v: unknown,
+  defaults: PrintOptions = DEFAULT_PRINT_OPTIONS,
+): PrintOptions {
   const o = (v && typeof v === "object" ? v : {}) as Partial<PrintOptions>;
   const pick = <T extends string>(val: unknown, allowed: readonly T[], fallback: T): T =>
     allowed.includes(val as T) ? (val as T) : fallback;
   return {
-    paper: pick(o.paper, Object.keys(PAPER_CM) as PaperSize[], DEFAULT_PRINT_OPTIONS.paper),
-    orientation: pick(o.orientation, ["portrait", "landscape"], DEFAULT_PRINT_OPTIONS.orientation),
-    margin: pick(o.margin, ["none", "narrow", "normal", "wide"], DEFAULT_PRINT_OPTIONS.margin),
-    scale: clampScale(typeof o.scale === "number" ? o.scale : DEFAULT_PRINT_OPTIONS.scale),
-    pages: pick(o.pages, ["all", "odd", "even", "custom"], DEFAULT_PRINT_OPTIONS.pages),
+    paper: pick(o.paper, Object.keys(PAPER_CM) as PaperSize[], defaults.paper),
+    orientation: pick(o.orientation, ["portrait", "landscape"], defaults.orientation),
+    margin: pick(o.margin, ["none", "narrow", "normal", "wide"], defaults.margin),
+    scale: clampScale(typeof o.scale === "number" ? o.scale : defaults.scale),
+    pages: pick(o.pages, ["all", "odd", "even", "custom"], defaults.pages),
     range: typeof o.range === "string" ? o.range : "",
     grayscale: o.grayscale === true,
     background: o.background !== false,
@@ -399,7 +495,11 @@ export function printDocument(fullHtml: string): Promise<void> {
     iframe.setAttribute("sandbox", "allow-same-origin allow-modals");
 
     // ── Options row ─────────────────────────────────────────────────────────
-    let opts = loadPrintOptions();
+    // The kind is not known until the document has loaded and its `.print-page`
+    // sheets (if any) have been counted, so the dialog opens on the flowing
+    // settings and adopts the paged ones in `iframe.onload`.
+    let kind: PrintKind = "flow";
+    let opts = loadPrintOptions(kind);
     const optionsRow = document.createElement("div");
     optionsRow.className = "print-preview-options";
 
@@ -525,7 +625,7 @@ export function printDocument(fullHtml: string): Promise<void> {
 
     /** Push the arrangement + options into the previewed document and the UI. */
     const apply = () => {
-      savePrintOptions(opts);
+      savePrintOptions(opts, kind);
       const paged = pageEls.length > 0;
       pages.select.disabled = !paged;
       pageNumbers.input.disabled = !paged;
@@ -536,7 +636,7 @@ export function printDocument(fullHtml: string): Promise<void> {
       strip.hidden = !paged;
       resetBtn.disabled = isPristine(arrangement, pageEls.length) && opts.pages === "all";
 
-      if (styleEl) styleEl.textContent = buildOptionsCss(opts);
+      if (styleEl) styleEl.textContent = buildOptionsCss(opts, paged);
 
       // Cards take the sheet's proportions, so a landscape sheet gets a landscape
       // card instead of an upright one. Set on the host, inherited by the cards.
@@ -583,10 +683,29 @@ export function printDocument(fullHtml: string): Promise<void> {
           : tr("print.print");
     };
 
+    /** Whether the user has touched the options row — after which nothing this
+     *  module derives (see the orientation below) may overrule them. */
+    let touched = false;
+
     /** Merge an option change and re-apply. */
     const set = (patch: Partial<PrintOptions>) => {
+      touched = true;
       opts = { ...opts, ...patch };
       apply();
+    };
+
+    /** Push `opts` back into the controls — for the changes this module makes
+     *  itself (adopting the paged settings, taking the sheet's orientation). */
+    const syncControls = () => {
+      paper.select.value = opts.paper;
+      orientation.select.value = opts.orientation;
+      margin.select.value = opts.margin;
+      scale.select.value = String(opts.scale);
+      pages.select.value = opts.pages;
+      rangeInput.value = opts.range;
+      background.input.checked = opts.background;
+      grayscale.input.checked = opts.grayscale;
+      pageNumbers.input.checked = opts.pageNumbers;
     };
 
     /**
@@ -677,6 +796,15 @@ export function printDocument(fullHtml: string): Promise<void> {
 
       pageEls = Array.from(doc.querySelectorAll<HTMLElement>(".print-page"));
       arrangement = initialPages(pageEls.length);
+      // A document made of sheets keeps its own printer settings (see `PrintKind`):
+      // its margins default to none, because the sheet already carries the ones its
+      // author chose. Adopting them here rather than at the call site means any
+      // viewer that emits `.print-page` gets it, without having to declare it.
+      if (pageEls.length > 0) {
+        kind = "page";
+        opts = loadPrintOptions(kind);
+        syncControls();
+      }
       apply(); // style the preview immediately; the button stays "Preparing…"
 
       Promise.all(
@@ -687,6 +815,22 @@ export function printDocument(fullHtml: string): Promise<void> {
         ),
       ).then(() => {
         if (done) return;
+        // Now the sheets have measurable dimensions, put the paper the right way
+        // up: a wide page (a poster, a slide deck, an A1 drawing) on an upright
+        // sheet fits to the width and leaves half the paper empty, which is the
+        // same "why is it so small" as printing inside margins it does not need.
+        // Like the page selection, this is derived per job rather than restored —
+        // it belongs to the document, not to the user's printer preferences — and
+        // the orientation control still overrides it for this job.
+        const first = pageEls[0]?.querySelector("img");
+        if (!touched && kind === "page" && first?.naturalWidth && first.naturalHeight) {
+          const wanted: Orientation =
+            first.naturalWidth > first.naturalHeight ? "landscape" : "portrait";
+          if (wanted !== opts.orientation) {
+            opts = { ...opts, orientation: wanted };
+            syncControls();
+          }
+        }
         ready = true;
         apply();
       });
@@ -754,6 +898,32 @@ export function printHtmlBody(bodyHtml: string, css: string, title?: string): Pr
  * prints what you see, without first having to save it. `scale` trades size for print
  * sharpness (~2× ≈ good on paper).
  */
+/**
+ * The ceiling on one rasterised sheet, in pixels. A canvas past the engine's
+ * limit does not fail loudly — it comes back blank, and a blank sheet prints as
+ * a blank sheet. An A4 page at 2× is 2.2 Mpx and nowhere near this; an A0/A1
+ * drawing or a plotter page is (A1 at 2× is 32 Mpx), so those rasterise at
+ * whatever scale fits instead. They are being fitted onto a much smaller sheet
+ * anyway, so the resolution lost is resolution that would not have printed.
+ */
+const MAX_RASTER_PX = 12_000_000;
+const MAX_RASTER_SIDE = 8192;
+
+/** `scale` reduced until the page's raster fits inside the canvas limits. */
+export function rasterScaleFor(
+  pageW: number,
+  pageH: number,
+  scale: number,
+): number {
+  if (!(pageW > 0) || !(pageH > 0)) return scale;
+  const fit = Math.min(
+    1,
+    MAX_RASTER_SIDE / Math.max(pageW * scale, pageH * scale),
+    Math.sqrt(MAX_RASTER_PX / (pageW * scale * pageH * scale)),
+  );
+  return fit >= 1 ? scale : Math.max(0.1, scale * fit);
+}
+
 export async function renderPdfPagesToImages(
   refs: readonly {
     src: string;
@@ -775,9 +945,11 @@ export async function renderPdfPagesToImages(
     const page = await doc.getPage(ref.page);
     // The viewer's turn rides ON TOP of whatever the page already carried, and
     // pdf.js' `rotation` is the total — so the two are added, not substituted.
+    const rotation = (((page.rotate + ref.rot) % 360) + 360) % 360;
+    const base = page.getViewport({ scale: 1, rotation });
     const viewport = page.getViewport({
-      scale,
-      rotation: (((page.rotate + ref.rot) % 360) + 360) % 360,
+      scale: rasterScaleFor(base.width, base.height, scale),
+      rotation,
     });
     const canvas = document.createElement("canvas");
     canvas.width = Math.ceil(viewport.width);
@@ -786,8 +958,11 @@ export async function renderPdfPagesToImages(
     if (!ctx) continue;
     await page.render({ canvas, canvasContext: ctx, viewport }).promise;
     if (ref.marks?.length) {
+      // In big points, so they follow the viewport that was actually used — which
+      // is not `scale` when an outsized page had to be rasterised smaller.
+      const k = viewport.scale;
       ctx.fillStyle = "#000000";
-      for (const m of ref.marks) ctx.fillRect(m.x * scale, m.y * scale, m.w * scale, m.h * scale);
+      for (const m of ref.marks) ctx.fillRect(m.x * k, m.y * k, m.w * k, m.h * k);
     }
     urls.push(canvas.toDataURL("image/png"));
     // Give the backing store back before rasterising the next sheet. An A4 page at
@@ -862,10 +1037,15 @@ pre.print-pre{
   white-space:pre-wrap;word-break:break-word}
 `;
 
-/** Print styling for a single image / one image per PDF page. */
+/** Print styling for a single image / one image per PDF page.
+ *
+ *  The page box itself comes from `buildOptionsCss`, which knows the paper and
+ *  the margins; this is the shape that has to hold without it — centred, capped
+ *  on both axes so neither one can overflow the sheet, and never *stretched*
+ *  (`width/height:auto`), so a page keeps its aspect whatever the sheet is. */
 export const IMAGE_PRINT_CSS = `
-.print-page{text-align:center}
-.print-page img{max-width:100%;max-height:100vh;height:auto}
+.print-page{display:flex;align-items:center;justify-content:center;text-align:center}
+.print-page img{width:auto;height:auto;max-width:100%;max-height:100%}
 .print-page + .print-page{page-break-before:always}
 `;
 
