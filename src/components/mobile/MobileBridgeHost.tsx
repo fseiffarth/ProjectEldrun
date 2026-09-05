@@ -10,7 +10,7 @@ import {
 } from "../../stores/tabs";
 import { useSettingsStore } from "../../stores/settings";
 import { calendarColor, useCalendarStore, visibleCalendarIds } from "../../stores/calendar";
-import { lastTabReadAt, useActivityStore } from "../../stores/activity";
+import { lastTabReadAt, noteUserInput, useActivityStore } from "../../stores/activity";
 import { useAgentModelsStore } from "../../stores/agentModels";
 import { persistScopeLayout } from "../../stores/agentSchedules";
 import { sendCollectedPrompt, useAgentPromptsStore, type ProjectAgentPrompt } from "../../stores/agentPrompts";
@@ -186,6 +186,7 @@ type DesktopRequest =
   | { type: "prompt_mutate"; request_id: string; project_id: string; action: PromptMutation }
   | { type: "agent_status"; request_id: string; project_id: string; tmux_session: string; refresh: boolean }
   | { type: "tab_seen"; request_id: string; project_id: string; tmux_session: string }
+  | { type: "tab_input"; request_id: string; project_id: string; tmux_session: string }
   | { type: "desktop_images"; request_id: string; project_id: string }
   | { type: "attach_desktop_image"; request_id: string; project_id: string; image_id: string };
 type DesktopResponse =
@@ -1301,12 +1302,30 @@ async function mailReply(
  * the tab is gone; a phone reading a session the desktop no longer lists has
  * nothing to mark. */
 function markTabSeen(projectId: string, tmuxSession: string): DesktopResponse {
-  const project = mobileProject(projectId);
-  if (!project) {
+  const scope = mobileScope(projectId);
+  if (!scope) {
     return { status: "error", code: "project_ineligible", message: "Project is not enabled for Mobile access" };
   }
-  const tab = scheduleTargetTab(project.id, tmuxSession);
-  if (tab) useActivityStore.getState().clearAttention(`${project.id}:${tab.key}`);
+  const tab = scheduleTargetTab(scope.id, tmuxSession);
+  if (tab) useActivityStore.getState().clearAttention(`${scope.id}:${tab.key}`);
+  return { status: "seen" };
+}
+
+/** The phone typed into this agent tab. It types into a tmux client of its own,
+ * so not one byte of it passes through this window — and the classifier only
+ * ever calls output "working" or "done" when the session was COMMANDED this
+ * session (`noteUserInput`, the guard that stops a restored tab's resume banner
+ * from reading as a finished turn). Without this report a tab driven entirely
+ * from the phone produced status for nobody: the pills stayed blank on the very
+ * surface that asked for the work. Throttled sidecar-side to the leading edge of
+ * each burst of typing, so a held key is one report, not forty. */
+function markTabInput(projectId: string, tmuxSession: string): DesktopResponse {
+  const scope = mobileScope(projectId);
+  if (!scope) {
+    return { status: "error", code: "project_ineligible", message: "Project is not enabled for Mobile access" };
+  }
+  const tab = scheduleTargetTab(scope.id, tmuxSession);
+  if (tab) noteUserInput(`${scope.id}:${tab.key}`);
   return { status: "seen" };
 }
 
@@ -1373,6 +1392,7 @@ async function handleRequest(
     case "prompt_mutate": return mutatePrompt(request.project_id, request.action);
     case "agent_status": return agentStatusFor(request.project_id, request.tmux_session, request.refresh);
     case "tab_seen": return markTabSeen(request.project_id, request.tmux_session);
+    case "tab_input": return markTabInput(request.project_id, request.tmux_session);
     case "desktop_images": return desktopImagesFor(request.project_id);
     case "attach_desktop_image": return attachDesktopImage(request.project_id, request.image_id);
   }

@@ -238,6 +238,20 @@ const WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 /// and the write deadline above, so a longer window costs nothing.
 const IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
 
+/// How often, at most, the desktop is told this viewer typed something
+/// (`on_input`). The report says only that the session was commanded, so one per
+/// burst is the whole signal: reporting per keystroke would spawn a control call
+/// per character of a pasted prompt. Leading-edge, so the first byte of a burst
+/// is reported at once — the desktop must have the stamp before the agent's
+/// output arrives, or that output is classified as nobody's.
+const INPUT_REPORT_INTERVAL: std::time::Duration = std::time::Duration::from_millis(750);
+
+/// Whether this input frame opens a new burst, i.e. whether the desktop should
+/// be told about it. `None` is the first frame of the attach, which always is.
+fn input_report_due(last: Option<std::time::Instant>, now: std::time::Instant) -> bool {
+    last.is_none_or(|at| now.duration_since(at) >= INPUT_REPORT_INTERVAL)
+}
+
 /// `true` once the frame went out; `false` when the socket is closed or the
 /// peer stopped taking frames.
 async fn deliver<S>(sink: &mut S, message: Message) -> bool
@@ -281,6 +295,10 @@ pub async fn attach(
     state_dir: PathBuf,
     tab_id: String,
     catalog: Arc<Mutex<CatalogCache>>,
+    // Called on the leading edge of each burst of typing from this viewer (see
+    // `INPUT_REPORT_INTERVAL`). A callback rather than a desktop call of its
+    // own, so this module keeps knowing nothing about the desktop socket.
+    on_input: impl Fn(),
 ) -> Result<(), String> {
     let guard = registry.acquire(&tmux_name).await?;
     // Do this before the live attach starts redrawing. The browser receives it
@@ -380,6 +398,8 @@ pub async fn attach(
     let mut authorization_tick = tokio::time::interval(std::time::Duration::from_secs(1));
     let mut tick = 0u32;
     let mut last_client_message = std::time::Instant::now();
+    // When this viewer's typing was last reported to the desktop.
+    let mut last_input_report: Option<std::time::Instant> = None;
     let result: Result<(), String> = loop {
         tokio::select! {
             _ = authorization_tick.tick() => {
@@ -425,6 +445,12 @@ pub async fn attach(
                     last_client_message = std::time::Instant::now();
                     if bytes.len() > MAX_INPUT_FRAME { break Err("input_frame_too_large".into()); }
                     if writer.write_all(&bytes).is_err() || writer.flush().is_err() { break Ok(()); }
+                    // After the write, so a frame that never reached the PTY is
+                    // never reported as having commanded it.
+                    if input_report_due(last_input_report, last_client_message) {
+                        last_input_report = Some(last_client_message);
+                        on_input();
+                    }
                 }
                 Some(Ok(Message::Text(text))) => {
                     last_client_message = std::time::Instant::now();
@@ -476,7 +502,7 @@ mod tests {
         normalize_scrollback, parse_window_size, tmux_attach_command, tmux_capture_command,
         tmux_window_size_command, MOBILE_SCROLLBACK_LINES,
     };
-    use super::{deliver, IDLE_TIMEOUT, WRITE_TIMEOUT};
+    use super::{deliver, input_report_due, INPUT_REPORT_INTERVAL, IDLE_TIMEOUT, WRITE_TIMEOUT};
     use crate::services::mobile_control::protocol::TerminalEvent;
     use axum::extract::ws::Message;
     use std::{
@@ -484,6 +510,21 @@ mod tests {
         pin::Pin,
         task::{Context, Poll},
     };
+
+    #[test]
+    fn the_desktop_hears_the_first_keystroke_of_a_burst_and_not_the_rest() {
+        let start = std::time::Instant::now();
+        // Nothing reported yet: the attach's first input always counts.
+        assert!(input_report_due(None, start));
+        // The rest of the burst is the same fact, already known.
+        assert!(!input_report_due(
+            Some(start),
+            start + INPUT_REPORT_INTERVAL / 2
+        ));
+        // Typing again after the window is a new burst — and the desktop may
+        // have forgotten the tab in between (a respawn clears the stamp).
+        assert!(input_report_due(Some(start), start + INPUT_REPORT_INTERVAL));
+    }
 
     #[tokio::test]
     async fn a_reconnecting_viewer_evicts_the_previous_one() {

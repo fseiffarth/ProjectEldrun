@@ -1625,6 +1625,29 @@ fn mark_tab_seen(socket: &std::path::Path, project_id: Option<String>, tmux_sess
     });
 }
 
+/// Tell the desktop a phone typed into this agent tab, so its activity store
+/// counts the session as commanded and classifies what follows (see
+/// `noteUserInput`). Fire-and-forget for the same reason `mark_tab_seen` is:
+/// nothing in the terminal path may wait on the desktop.
+fn mark_tab_input(socket: &std::path::Path, project_id: Option<String>, tmux_session: String) {
+    let Some(project_id) = project_id else {
+        return;
+    };
+    let socket = socket.to_path_buf();
+    tokio::spawn(async move {
+        let request_id = Base64UrlUnpadded::encode_string(&random_16());
+        let _ = admin::desktop_call(
+            &socket,
+            &DesktopRequest::TabInput {
+                request_id,
+                project_id,
+                tmux_session,
+            },
+        )
+        .await;
+    });
+}
+
 async fn terminal(
     State(state): State<HostState>,
     headers: HeaderMap,
@@ -1669,6 +1692,9 @@ async fn terminal(
     let catalog = state.catalog.clone();
     let desktop_socket = state.config.control_dir.join("desktop-control.sock");
     let seen_tmux = tmux.clone();
+    let input_socket = desktop_socket.clone();
+    let input_project = seen_project.clone();
+    let input_tmux = tmux.clone();
     // `DefaultBodyLimit` does not reach WebSocket frames, and tungstenite's
     // default is 64 MiB — so `MAX_INPUT_FRAME` was only checked *after* the
     // server had already buffered a thousandfold more than it allows.
@@ -1683,7 +1709,17 @@ async fn terminal(
             // does not come back as an unread `done` the moment it detaches.
             mark_tab_seen(&desktop_socket, seen_project.clone(), seen_tmux.clone());
             let _ = pty_bridge::attach(
-                socket, tmux, registry, auth, token, state_dir, tab_id, catalog,
+                socket,
+                tmux,
+                registry,
+                auth,
+                token,
+                state_dir,
+                tab_id,
+                catalog,
+                move || {
+                    mark_tab_input(&input_socket, input_project.clone(), input_tmux.clone());
+                },
             )
             .await;
             mark_tab_seen(&desktop_socket, seen_project, seen_tmux);

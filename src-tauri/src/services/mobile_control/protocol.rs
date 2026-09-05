@@ -600,6 +600,18 @@ pub enum DesktopRequest {
         project_id: String,
         tmux_session: String,
     },
+    /// The phone typed into this agent tab. Nothing is read back: it stamps the
+    /// desktop's "this session was commanded" mark, which is what licenses the
+    /// tab's later output to be classified as working or finished at all. The
+    /// phone's keystrokes reach tmux through a client of the sidecar's own, so
+    /// the desktop window never sees them and cannot stamp it itself. Carries no
+    /// input — only that there *was* some — and is sent on the leading edge of a
+    /// burst of typing rather than per keystroke.
+    TabInput {
+        request_id: String,
+        project_id: String,
+        tmux_session: String,
+    },
     /// What one agent tab is doing, and what its CLI says about its own quota.
     /// Addressed by the same `project_id` + `tmux_session` pair the schedule and
     /// rename requests use, so no key, path or command crosses the boundary.
@@ -655,6 +667,7 @@ impl DesktopRequest {
             | Self::Prompts { request_id, .. }
             | Self::PromptMutate { request_id, .. }
             | Self::TabSeen { request_id, .. }
+            | Self::TabInput { request_id, .. }
             | Self::AgentStatus { request_id, .. }
             | Self::DesktopImages { request_id, .. }
             | Self::AttachDesktopImage { request_id, .. } => request_id,
@@ -865,8 +878,9 @@ pub enum DesktopResponse {
     AgentStatus {
         report: MobileAgentStatus,
     },
-    /// Acknowledges a [`DesktopRequest::TabSeen`]. Carries nothing: the phone
-    /// never waits on it, and the sidecar only needs to know the desktop took it.
+    /// Acknowledges a [`DesktopRequest::TabSeen`] or [`DesktopRequest::TabInput`].
+    /// Carries nothing: the phone never waits on either, and the sidecar only
+    /// needs to know the desktop took the report.
     Seen,
     DesktopImages {
         images: Vec<crate::services::desktop_images::DesktopImage>,
