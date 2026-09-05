@@ -160,7 +160,8 @@ started in a plain terminal — cannot be reached at all. Eldrun Mobile reaches
 every agent tab in every project from the phone over your own tailnet, because
 it attaches to the tab's session on your desktop rather than to a vendor
 service: one phone app for all agents, independent of whether one exists for
-that agent.
+that agent. A picture the agent wants you to see — a screenshot it took, a
+plot it rendered — it drops into the project's outbox, and the phone shows it.
 
 Eldrun occupies the gap none of them fill: project ownership of *windows and
 desktop context*, project ownership of *the machines the work runs on*, and one

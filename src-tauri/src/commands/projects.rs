@@ -2361,6 +2361,12 @@ _Build, run and test commands._
 
 _Layout, style, and anything an agent must not do._
 
+## Showing the user a picture
+
+To put an image in front of the user on their phone (Eldrun Mobile), copy it
+into `.eldrun/outbox/` in this project — the phone lists that folder. Images
+only (PNG, JPEG, GIF, WebP); it is git-ignored and never synced.
+
 ## Agent files
 
 - [AGENTS.md](./AGENTS.md) — this file: the single source of truth

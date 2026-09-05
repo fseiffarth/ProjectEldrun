@@ -126,6 +126,9 @@ A native iOS/Android wrapper may follow, but it must reuse this API and protocol
   the tab's project under `.eldrun/inbox/` (git-ignored, hidden from the
   tree, skipped by sync) and the phone gets back only the project-relative
   `.eldrun/inbox/<file>` reference to put after an `@` — never a host path;
+  and the one thing the phone may *see* is the mirror of that box, the
+  images an agent copies into `.eldrun/outbox/` (§4.3) — listed and served
+  by leaf name, image bytes only, nothing else in the tree;
 - muting calendar events, configuring CalDAV credentials, or editing a single
   occurrence of a recurring event;
 - viewer/embed/browser/external-app tab types;
@@ -316,6 +319,27 @@ native-wrapper option, not a web API. Current Chrome on Android exposes Web Spee
 recognition but not Chromium's downloadable on-device language-pack APIs, so it
 uses that compatibility path; the local branch is feature-detected and becomes
 active only on a browser/platform that actually exposes it.
+
+**Pictures from the agent.** A terminal carries no images, and Focus
+classifies nothing, so a path the session prints is never guessed at. What a
+vendor's remote app does when its agent reads a screenshot — show it — is
+done here by a folder: an agent that wants the phone to see an image copies
+it into the project's `.eldrun/outbox/`, the mirror of the inbox (git-ignored,
+hidden from the tree, skipped by sync, and inside the roots the agent fence
+lets it write). The sidecar lists that folder itself (`GET
+/api/v1/tabs/{id}/outbox`, no desktop round trip, so it answers with the
+desktop closed too) and serves one image by leaf name; Focus polls it while
+the page is visible and shows a thumbnail strip above the composer, one tap
+to full screen, ✕ to hide until something newer lands. The read is as
+defensive as the inbox write (`outbox.rs`): the folder must canonicalize
+below the project root, symlinks inside it are never followed, a file is
+served only when its **bytes** are PNG/JPEG/GIF/WebP (an SVG can carry
+script and is not an image here), the name that crosses is a leaf from the
+inbox's safe alphabet, and anything else answers `image_not_found` so the
+tree cannot be probed by error code. Nothing is copied into the folder on
+the agent's behalf: a hook mirroring every image the agent reads would file
+pictures from anywhere on the host into a project tree, which is exactly
+what the inbox's consent design guards against.
 
 Resize is debounced. Network loss or closing the browser detaches only the
 mobile tmux client and never calls `kill-session`. One mobile viewer may attach

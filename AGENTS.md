@@ -299,6 +299,9 @@ loopback port, and from there is an ordinary `RemoteSpec` with `vm: true`.
   what the user set in-session and must not grow into a mode Eldrun chooses.
 - Terminal `kill`/`kill_all` must reap the child process subtree, not just the
   shell leader.
+- To show the user a picture on their phone (Eldrun Mobile), copy it into the
+  project's `.eldrun/outbox/`; the phone's Focus view lists that folder.
+  Images only — nothing is copied there on an agent's behalf.
 
 ## Frontend notes
 

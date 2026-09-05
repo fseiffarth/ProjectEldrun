@@ -724,6 +724,41 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     - [ ] ✅ Works
     - [ ] ❌ Doesn't work
 
+- [~] **31x — Mobile Focus: the agent's pictures reach the phone** (2026-09-05;
+  ✅ code-complete, automated tests passing — `outbox.rs` unit tests, the
+  sidecar route test, `MobileTerminalOutbox.test.tsx`; ⚠️ needs live QA on a
+  phone, and a rebuild + restart first: the sidecar gained two routes and the
+  phone serves the bundle baked into the binary). What the Claude Code remote
+  app does when its agent reads a screenshot — shows it — done without a
+  transcript: a terminal carries no images, so the agent copies the picture
+  into the project's `.eldrun/outbox/` (the inbox's mirror; git-ignored,
+  hidden from the tree, skipped by sync, writable under the agent fence) and
+  the phone lists that folder.
+  - **Sidecar** (`services::mobile_control::outbox`): `GET
+    /api/v1/tabs/{id}/outbox` lists leaf name / kind / size / mtime, newest
+    first, 40 at most, read from disk by the sidecar itself — no desktop
+    round trip; `GET …/outbox/{name}` serves the bytes typed by their own
+    header. Folder must canonicalize below the project root; symlinks inside
+    it are never followed; PNG/JPEG/GIF/WebP by magic bytes only (no SVG —
+    script); 24 MiB cap; safe-alphabet leaf names only; every refusal is one
+    `image_not_found`.
+  - **Phone**: Focus polls the listing every 8 s while the page is visible
+    (and at once when it comes back) and shows a **From the agent** strip
+    above the composer — thumbnails loaded from the tab's own route on the
+    session cookie, age under each — one tap to a full-screen view, ✕ hides
+    the current set until a newer picture lands. No image is ever copied on
+    the agent's behalf (a Read-tool hook would file pictures from anywhere
+    on the host into a project tree — the thing the inbox's consent design
+    guards against); the scaffold's `AGENTS.md` tells agents about the folder.
+  - [ ] 🖐️ Manual test — in an agent tab: "take a screenshot of the window
+    and copy it to .eldrun/outbox/" (or `cp` any PNG there) → within ~8 s the
+    phone's Focus view shows a **From the agent** strip with the thumbnail;
+    tap → full screen, Close returns; ✕ → strip gone; copy a second image →
+    strip returns with only the new one. Put a `.txt` renamed to `.png` there
+    → not listed. With Eldrun closed → the strip still lists what is there.
+    - [ ] ✅ Works
+    - [ ] ❌ Doesn't work
+
 - [~] **31w — Reconnect survives the binary being replaced under a live
   window** (2026-09-03; ✅ code-complete and automated tests passing, ⚠️ not
   live-verified — the fix reaches the running window only after a deliberate

@@ -7,9 +7,12 @@ import {
   api,
   attachDesktopImage,
   listDesktopImages,
+  listOutbox,
   MAX_INBOX_FILE,
+  outboxImageUrl,
   uploadToInbox,
   type DesktopImage,
+  type OutboxImage,
   type TabRow,
 } from "../api";
 import { TERMINAL_PROTOCOL, TERMINAL_SIZE } from "../terminal/protocol";
@@ -146,6 +149,17 @@ function sizeLabel(size: number) {
   if (size < 1024) return `${size} B`;
   if (size < 1024 * 1024) return `${Math.round(size / 1024)} KB`;
   return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/** How often the project's outbox is re-read while this screen is on — a
+ * directory listing on the sidecar, no desktop round trip, and skipped while
+ * the page is hidden. */
+const OUTBOX_POLL = 8_000;
+
+/** Whether two outbox listings would paint the same strip, so a poll that
+ * found nothing new does not re-render every thumbnail. */
+function sameOutbox(a: OutboxImage[], b: OutboxImage[]) {
+  return a.length === b.length && a.every((image, i) => image.name === b[i].name && image.modified === b[i].modified && image.size === b[i].size);
 }
 
 /** "Screenshots · 3 min ago · 1.2 MB", or "Clipboard · 1920×1080". */
@@ -291,6 +305,16 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
   const [desktopImages, setDesktopImages] = useState<DesktopImage[] | null>(null);
   const [desktopFailure, setDesktopFailure] = useState("");
   const [uploads, setUploads] = useState<InboxUpload[]>([]);
+  /** The pictures the agent left in the project's `.eldrun/outbox/` for this
+   * phone (the desktop's `outbox.rs`), newest first — the strip above the
+   * composer, and the one way an image reaches the phone from a session: a
+   * terminal carries none, and Focus classifies nothing, so a path printed
+   * by the agent is never guessed at. */
+  const [outbox, setOutbox] = useState<OutboxImage[]>([]);
+  /** Names the strip's ✕ hid; a picture that arrives afterwards still shows. */
+  const [outboxHidden, setOutboxHidden] = useState<Set<string>>(() => new Set());
+  /** The picture open full-screen. */
+  const [outboxOpen, setOutboxOpen] = useState<OutboxImage | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   /** Bumped when the tab changes so a late upload result lands nowhere. */
   const uploadRun = useRef(0);
@@ -733,6 +757,46 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     };
   }, [tab.id]);
   useEffect(() => { if (view === "focus") refreshReadable.current(); }, [view]);
+  /** Reads the outbox now and every `OUTBOX_POLL` while the page is visible;
+   * coming back to the page reads it at once. A listing that could not be
+   * fetched keeps what was shown — the next poll retries. */
+  useEffect(() => {
+    setOutbox([]);
+    setOutboxHidden(new Set());
+    setOutboxOpen(null);
+    let stopped = false;
+    let inflight: AbortController | undefined;
+    const poll = () => {
+      if (stopped || document.visibilityState === "hidden") return;
+      inflight?.abort();
+      const controller = new AbortController();
+      inflight = controller;
+      void listOutbox(tab.id, controller.signal).then(
+        (images) => {
+          if (stopped || controller.signal.aborted || !Array.isArray(images)) return;
+          setOutbox((current) => sameOutbox(current, images) ? current : images);
+        },
+        () => {},
+      );
+    };
+    poll();
+    const timer = window.setInterval(poll, OUTBOX_POLL);
+    document.addEventListener("visibilitychange", poll);
+    return () => {
+      stopped = true;
+      inflight?.abort();
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", poll);
+    };
+  }, [tab.id]);
+  useEffect(() => {
+    if (!outboxOpen) return;
+    const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") setOutboxOpen(null); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [outboxOpen]);
+  const outboxShown = useMemo(() => outbox.filter((image) => !outboxHidden.has(image.name)), [outbox, outboxHidden]);
+  const hideOutbox = () => setOutboxHidden(new Set(outbox.map((image) => image.name)));
   /** Chunks above the revealed window stay in memory but out of the DOM — the
    * lazy half of the earlier-output log. */
   const hiddenChunks = Math.max(0, earlier.chunks.length - revealed);
@@ -930,7 +994,7 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     setSwitching("");
     setSwitchFailed(value);
   };
-  const sheetUp = modelSheet || modeSheet || statusSheet || desktopSheet;
+  const sheetUp = modelSheet || modeSheet || statusSheet || desktopSheet || outboxOpen !== null;
   useLayoutEffect(() => {
     setFrozenLines(sheetUp ? linesRef.current : null);
   }, [sheetUp]);
@@ -1199,6 +1263,15 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
       {tab.kind === "agent" && (voiceFailure || voicePreview || voiceStatus) && <div className={voiceFailure ? "voice-feedback error" : "voice-feedback"} role={voiceFailure ? "alert" : "status"} aria-live="polite">{voiceFailure || (voicePreview ? `Heard: ${voicePreview}` : voiceStatus)}</div>}
       {stoppedReason && <div className="voice-feedback error" role="alert">{stoppedReason}</div>}
       {sendFailed && !stoppedReason && <div className="voice-feedback error" role="alert">That did not reach the desktop — the connection dropped. It will retry on its own.</div>}
+      {outboxShown.length > 0 && <div className="outbox-strip" role="region" aria-label="Images from the agent">
+        <div className="outbox-strip-head"><strong>From the agent <small>Untested</small></strong><span>{outboxShown.length === 1 ? "1 image" : `${outboxShown.length} images`} in the project's outbox</span><button onClick={hideOutbox} aria-label="Hide these images">✕</button></div>
+        <div className="outbox-thumbs">
+          {outboxShown.map((image) => <button key={image.name} className="outbox-thumb" onClick={() => setOutboxOpen(image)} aria-label={`Open ${image.name}`} title={image.name}>
+            <img src={outboxImageUrl(tab.id, image.name)} alt="" loading="lazy" decoding="async" />
+            <span>{ageLabel(Math.max(0, Math.floor(Date.now() / 1000) - image.modified))}</span>
+          </button>)}
+        </div>
+      </div>}
       {lastSent && <div className="last-sent"><span>Sent</span><p>{lastSent}</p></div>}
       {uploads.map((upload) => upload.failure
         ? <div key={upload.id} className="inbox-upload error" role="alert"><strong>{upload.name}</strong><span>{upload.failure}</span><button onClick={() => dismissUpload(upload.id)} aria-label={`Dismiss ${upload.name}`}>✕</button></div>
@@ -1278,5 +1351,13 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
       onClose={() => { if (!switching) setModeSheet(false); }}
     />}
     {statusSheet && <StatusSheet tab={tab} live={status} onClose={() => setStatusSheet(false)} />}
+    {outboxOpen && <div className="outbox-viewer" role="dialog" aria-modal="true" aria-label={outboxOpen.name} onClick={() => setOutboxOpen(null)}>
+      <div className="outbox-viewer-head" onClick={(event) => event.stopPropagation()}>
+        <button className="sheet-close" onClick={() => setOutboxOpen(null)} aria-label="Close">✕</button>
+        <h2>{outboxOpen.name}</h2>
+        <small>{ageLabel(Math.max(0, Math.floor(Date.now() / 1000) - outboxOpen.modified))} · {sizeLabel(outboxOpen.size)}</small>
+      </div>
+      <img src={outboxImageUrl(tab.id, outboxOpen.name)} alt={outboxOpen.name} onClick={(event) => event.stopPropagation()} />
+    </div>}
   </main>;
 }

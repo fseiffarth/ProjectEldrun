@@ -27,6 +27,7 @@ use super::{
     config::{verify_tailscale_serve, HostConfig},
     discovery::{Catalog, CatalogCache, PublicTab, TabSchedules},
     inbox,
+    outbox,
     limits,
     protocol::{
         CalendarAction, CreateTabRequest, DesktopRequest, DesktopResponse, MailMarkAction,
@@ -2021,6 +2022,96 @@ async fn attach_desktop_image(
     }
 }
 
+/// The project root an outbox request reads from, by its tab — the tab names
+/// the project and nothing else, exactly as `inbox_upload` reads it: a
+/// session that has ended still shows what it left for the phone.
+fn outbox_root(
+    state: &HostState,
+    tab_id: &str,
+) -> Result<PathBuf, (StatusCode, Json<serde_json::Value>)> {
+    let catalog = catalog(state)?;
+    let Some((project, _)) = catalog.tab(tab_id) else {
+        return Err(api_error(StatusCode::NOT_FOUND, "tab_not_found"));
+    };
+    Ok(project.root.clone())
+}
+
+fn outbox_error(error: outbox::OutboxError) -> (StatusCode, Json<serde_json::Value>) {
+    api_error(
+        match error {
+            outbox::OutboxError::Unavailable => StatusCode::CONFLICT,
+            outbox::OutboxError::NotFound => StatusCode::NOT_FOUND,
+            outbox::OutboxError::Io(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        },
+        error.code(),
+    )
+}
+
+/// `GET /api/v1/tabs/{tab_id}/outbox` — the pictures the agent left in the
+/// project's `.eldrun/outbox/` for the phone to see (`outbox.rs`): leaf name,
+/// kind, size and mtime, newest first. Read from disk by the sidecar itself,
+/// like the inbox write — no desktop round trip, and no path in the answer.
+async fn outbox_list(
+    State(state): State<HostState>,
+    headers: HeaderMap,
+    Path(tab_id): Path<String>,
+) -> impl IntoResponse {
+    if let Err(error) = authenticate(&headers, &state) {
+        return error;
+    }
+    let root = match outbox_root(&state, &tab_id) {
+        Ok(root) => root,
+        Err(error) => return error,
+    };
+    // A directory walk that opens every candidate: off the connection executor.
+    let listed = tokio::task::spawn_blocking(move || outbox::list(&root))
+        .await
+        .unwrap_or_else(|error| Err(outbox::OutboxError::Io(error.to_string())));
+    match listed {
+        Ok(images) => (StatusCode::OK, Json(json!({ "images": images }))),
+        Err(error) => outbox_error(error),
+    }
+}
+
+/// `GET /api/v1/tabs/{tab_id}/outbox/{name}` — one listed image's bytes,
+/// typed by what its header says it is, never by its name. Loaded by an
+/// `<img>` on the PWA's own origin, so the session cookie is the credential
+/// and the CSP's `img-src 'self'` is what lets it render; the middleware's
+/// `nosniff` and `no-store` apply as to every `/api/` answer. Anything the
+/// listing would not offer — a symlink, a non-image, a name with a
+/// separator — is `image_not_found`, not a different error.
+async fn outbox_image(
+    State(state): State<HostState>,
+    headers: HeaderMap,
+    Path((tab_id, name)): Path<(String, String)>,
+) -> Response<Body> {
+    if let Err(error) = authenticate(&headers, &state) {
+        return error.into_response();
+    }
+    if !outbox::valid_name(&name) {
+        return api_error(StatusCode::NOT_FOUND, "image_not_found").into_response();
+    }
+    let root = match outbox_root(&state, &tab_id) {
+        Ok(root) => root,
+        Err(error) => return error.into_response(),
+    };
+    let read = tokio::task::spawn_blocking(move || outbox::read(&root, &name))
+        .await
+        .unwrap_or_else(|error| Err(outbox::OutboxError::Io(error.to_string())));
+    match read {
+        Ok((bytes, kind)) => Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, kind)
+            .header(header::CONTENT_LENGTH, bytes.len())
+            .header(header::CONTENT_DISPOSITION, "inline")
+            .body(Body::from(bytes))
+            .unwrap_or_else(|_| {
+                api_error(StatusCode::INTERNAL_SERVER_ERROR, "read_failed").into_response()
+            }),
+        Err(error) => outbox_error(error).into_response(),
+    }
+}
+
 async fn static_asset(Path(path): Path<String>) -> Response<Body> {
     asset_response(&format!("/{path}"))
 }
@@ -2135,6 +2226,8 @@ fn router(state: HostState) -> Router {
             "/api/v1/tabs/{tab_id}/desktop-images",
             get(desktop_images).post(attach_desktop_image),
         )
+        .route("/api/v1/tabs/{tab_id}/outbox", get(outbox_list))
+        .route("/api/v1/tabs/{tab_id}/outbox/{name}", get(outbox_image))
         .route("/", get(index))
         .route("/{*path}", get(static_asset))
         .layer(DefaultBodyLimit::max(MAX_CONTROL_MESSAGE))
@@ -3393,6 +3486,72 @@ mod tests {
         assert_eq!(status, StatusCode::NOT_FOUND, "answered: {body}");
         // Nothing reached the inbox without a desktop to copy from.
         assert!(!host.root.join(inbox::INBOX_DIR).exists());
+    }
+
+    #[tokio::test]
+    async fn the_outbox_lists_and_serves_the_agents_images_by_leaf_only() {
+        let host = Fixture::with_project();
+        let cookie = host.pair_device(&signing_key(33)).await.0;
+        let tab_id = fixture_tab_id(&host, &cookie).await;
+        let list = format!("/api/v1/tabs/{tab_id}/outbox");
+
+        // No outbox yet: an empty strip, not an error.
+        let (status, _, body) = host.send(get_as(&list, &cookie)).await;
+        assert_eq!(status, StatusCode::OK, "answered: {body}");
+        assert_eq!(json(&body)["images"], serde_json::json!([]));
+
+        let png = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR-body".to_vec();
+        let dir = host.root.join(outbox::OUTBOX_DIR);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("plot.png"), &png).unwrap();
+        std::fs::write(dir.join("notes.png"), b"not a picture at all").unwrap();
+
+        let (status, _, body) = host.send(get_as(&list, &cookie)).await;
+        assert_eq!(status, StatusCode::OK, "answered: {body}");
+        let images = json(&body)["images"].clone();
+        assert_eq!(images.as_array().map(Vec::len), Some(1), "{body}");
+        assert_eq!(images[0]["name"], "plot.png");
+        assert_eq!(images[0]["kind"], "image/png");
+        assert_eq!(images[0]["size"], png.len());
+        assert!(images[0]["modified"].as_u64().unwrap() > 0);
+        assert!(!body.contains(RAW_PROJECT));
+        assert!(!body.contains(host.root.to_str().unwrap()));
+
+        // The bytes come back typed by their header, on the session cookie
+        // alone — this is what an `<img>` on the PWA's origin sends.
+        let (status, headers, body) = host
+            .send(get_as(&format!("{list}/plot.png"), &cookie))
+            .await;
+        assert_eq!(status, StatusCode::OK, "answered: {body}");
+        assert_eq!(headers.get(header::CONTENT_TYPE).unwrap(), "image/png");
+        assert_eq!(headers.get("x-content-type-options").unwrap(), "nosniff");
+        // The fixture reads bodies as lossy UTF-8, which mangles the PNG's
+        // 0x89; the declared length and the tail prove the bytes came through.
+        assert_eq!(headers.get(header::CONTENT_LENGTH).unwrap(), png.len().to_string().as_str());
+        assert!(body.ends_with("IHDR-body"), "{body:?}");
+
+        // Not an image by its bytes, a traversal, an unlisted name: all one
+        // answer, so the phone cannot probe the tree by its error codes.
+        for refused in ["notes.png", "..%2F..%2Fproject.json", "gone.png", ".hidden.png"] {
+            let (status, _, body) = host
+                .send(get_as(&format!("{list}/{refused}"), &cookie))
+                .await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{refused} answered: {body}");
+            assert_eq!(json(&body)["error"], "image_not_found");
+        }
+
+        let (status, _, body) = host
+            .send(get_as("/api/v1/tabs/not-a-tab/outbox", &cookie))
+            .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "answered: {body}");
+        let (status, _, _) = host
+            .send(get_as("/api/v1/tabs/not-a-tab/outbox/plot.png", &cookie))
+            .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let (status, _, _) = host
+            .send(get_as(&format!("{list}/plot.png"), "not-a-session"))
+            .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]

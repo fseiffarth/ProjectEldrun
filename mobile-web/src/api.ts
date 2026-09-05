@@ -414,6 +414,26 @@ export async function attachDesktopImage(tabId: string, imageId: string): Promis
   return attachment;
 }
 
+/** One picture the agent left for the phone in the project's `.eldrun/outbox/`
+ * (`outbox.rs`) — the mirror of the inbox. `name` is the leaf the desktop
+ * validated and the only thing the phone hands back; `kind` is what the
+ * bytes say, not the extension; `modified` is unix seconds. */
+export interface OutboxImage { name: string; kind: string; size: number; modified: number }
+
+/** `GET /api/v1/tabs/{id}/outbox` — the images the agent put out for the
+ * phone, newest first. Read from disk by the sidecar, so it answers with the
+ * desktop closed too. */
+export async function listOutbox(tabId: string, signal?: AbortSignal): Promise<OutboxImage[]> {
+  const { images } = await api<{ images: OutboxImage[] }>(`/api/v1/tabs/${encodeURIComponent(tabId)}/outbox`, { signal });
+  return images;
+}
+
+/** The URL an `<img>` loads one outbox image from — same origin, so the
+ * session cookie rides along and the CSP's `img-src 'self'` lets it render. */
+export function outboxImageUrl(tabId: string, name: string): string {
+  return `/api/v1/tabs/${encodeURIComponent(tabId)}/outbox/${encodeURIComponent(name)}`;
+}
+
 export async function uploadToInbox(tabId: string, file: Blob, name: string): Promise<InboxAttachment> {
   let response: Response;
   try {

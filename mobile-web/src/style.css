@@ -494,3 +494,20 @@ body.terminal-open { min-height:0; overflow:hidden; }
 .inbox-upload strong { flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:650; }
 .inbox-upload span { flex:1 1 auto; min-width:0; overflow-wrap:anywhere; }
 .inbox-upload button { flex:0 0 auto; padding:4px 9px; border:0; border-radius:7px; background:rgba(255,255,255,.09); color:inherit; font-size:.8rem; }
+/* The pictures the agent left in the project's outbox: a thumbnail strip
+   above the composer, one tap to a full-screen view. */
+.outbox-strip { margin:6px 7px 0; padding:8px 10px 9px; border-radius:9px; background:#1b2333; color:#d8e2f5; font-size:.78rem; }
+.outbox-strip-head { display:flex; align-items:center; gap:8px; min-width:0; }
+.outbox-strip-head strong { flex:0 0 auto; font-weight:650; }
+.outbox-strip-head strong small { margin-left:6px; color:#8fb8ff; font-size:.62rem; text-transform:uppercase; }
+.outbox-strip-head span { flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#95a6c8; }
+.outbox-strip-head button { flex:0 0 auto; padding:4px 9px; border:0; border-radius:7px; background:rgba(255,255,255,.09); color:inherit; font-size:.8rem; }
+.outbox-thumbs { display:flex; gap:8px; margin-top:8px; overflow-x:auto; overscroll-behavior-x:contain; -webkit-overflow-scrolling:touch; scroll-snap-type:x proximity; }
+.outbox-thumb { flex:0 0 auto; display:grid; gap:3px; width:96px; padding:0; border:0; background:transparent; color:#95a6c8; font-size:.68rem; text-align:left; scroll-snap-align:start; }
+.outbox-thumb img { display:block; width:96px; height:72px; object-fit:cover; border:1px solid #34384a; border-radius:7px; background:#0f131c; }
+.outbox-thumb span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.outbox-viewer { position:fixed; inset:0; z-index:13; display:grid; grid-template-rows:auto minmax(0,1fr); background:rgba(4,5,9,.94); color:#e6e9f2; }
+.outbox-viewer-head { display:flex; align-items:center; gap:8px; min-height:0; padding:calc(8px + env(safe-area-inset-top)) 10px 8px; }
+.outbox-viewer-head h2 { flex:1; margin:0; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:.95rem; }
+.outbox-viewer-head small { flex:0 0 auto; color:#95a6c8; font-size:.72rem; }
+.outbox-viewer img { justify-self:center; align-self:center; max-width:100%; max-height:100%; object-fit:contain; }
