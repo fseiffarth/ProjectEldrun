@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { readSelectPrompt, selectKeys } from "../../mobile-web/src/terminal/selectPrompt";
+import { readSelectPrompt, selectKeys, selectSignature } from "../../mobile-web/src/terminal/selectPrompt";
 import { currentMode, modeChoices } from "../../mobile-web/src/terminal/agentModes";
 import { inputFrameStart, sessionStatus } from "../../mobile-web/src/terminal/statusLine";
 
@@ -20,6 +20,9 @@ describe("Eldrun Mobile select dialog", () => {
       "Esc to cancel",
     ));
     expect(prompt).toEqual({
+      // The heading is read too: a dialog can be several steps, and it is the
+      // only thing on screen that says which one.
+      title: "Select Model",
       current: 1,
       options: [
         { index: 0, number: 1, label: "Default (recommended)", description: "Opus for up to 50% of usage, then Sonnet" },
@@ -67,6 +70,56 @@ describe("Eldrun Mobile select dialog", () => {
       "❯ 3. Haiku",
     ));
     expect(prompt?.current).toBe(2);
+  });
+
+  it("reads the heading a step drew, and the next step's over it", () => {
+    // codex-cli 0.153.4: `/model` is two questions, and only the heading says
+    // which one is on screen. Both are drawn in the same place.
+    const models = readSelectPrompt(lines(
+      "Select Model and Effort",
+      "Access legacy models by running codex -m <model_name> or in your config.toml",
+      "",
+      "  1. gpt-6-astra (default)  Our most capable model for complex, demanding work.",
+      "\u203a 2. gpt-5.6-sol (current)  Reliable agentic workhorse for everyday tasks.",
+      "",
+      "Press enter to confirm or esc to go back",
+    ));
+    expect(models?.title).toBe("Select Model and Effort");
+    const levels = readSelectPrompt(lines(
+      "Select Reasoning Level for gpt-5.6-sol",
+      "",
+      "  1. Low (default)   Fast responses with lighter reasoning",
+      "\u203a 2. High (current)  Greater reasoning depth for complex problems",
+      "",
+      "Press enter to confirm or esc to go back",
+    ));
+    expect(levels?.title).toBe("Select Reasoning Level for gpt-5.6-sol");
+    // Which is what tells a sheet that answered the first one that the second
+    // is a new question and not the answered list, still painted.
+    expect(selectSignature(models!)).not.toBe(selectSignature(levels!));
+    // The highlight is not part of it: walking a list is not changing it.
+    const walked = readSelectPrompt(lines(
+      "Select Reasoning Level for gpt-5.6-sol",
+      "",
+      "\u203a 1. Low (default)   Fast responses with lighter reasoning",
+      "  2. High (current)  Greater reasoning depth for complex problems",
+      "",
+    ));
+    expect(selectSignature(walked!)).toBe(selectSignature(levels!));
+  });
+
+  it("leaves a dialog untitled rather than titling it with the output above it", () => {
+    const prompt = readSelectPrompt(lines(
+      "I read the three files and they agree on the shape of the fix,",
+      "which is to move the guard up into the caller so the two paths",
+      "cannot disagree about it, and then delete the second check.",
+      "Which one should I write first?",
+      "",
+      "\u276f 1. The caller",
+      "  2. The callee",
+    ));
+    expect(prompt?.options).toHaveLength(2);
+    expect(prompt?.title).toBeUndefined();
   });
 
   it("moves the highlight the way the arrow row does", () => {

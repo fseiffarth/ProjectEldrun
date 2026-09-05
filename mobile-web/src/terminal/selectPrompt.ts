@@ -11,6 +11,11 @@
  * highlight marker — becomes a list. Anything else returns `null`, the dialog
  * stays on screen as the session drew it, and the arrow keys still answer it.
  *
+ * A dialog can also be several steps — Codex answers `/model` with a list of
+ * models and then, for the model picked, a list of reasoning levels — so what
+ * is recognized is one *step*: its rows, its highlight and its heading.
+ * `selectSignature` is how a caller tells one step from the next.
+ *
  * Nothing here sends keystrokes: what a tapped row does is the caller's.
  */
 
@@ -30,6 +35,11 @@ export interface SelectPrompt {
   options: SelectOption[];
   /** Index of the row the dialog is highlighting — where the cursor starts. */
   current: number;
+  /** The heading the dialog drew above its rows, when it drew one in a shape
+   * this recognizes. A dialog can be several steps — Codex answers `/model`
+   * with a model list and then a reasoning-level list for the model picked —
+   * and the heading is what says which step is on screen. */
+  title?: string;
 }
 
 interface SelectLineLike { text: string }
@@ -50,8 +60,33 @@ const OPTION = /^\s*([❯▸▶›>→])?\s*(\d{1,2})[.)]\s+(\S.*)$/u;
 const COLUMN_SPLIT = /\s{2,}/u;
 const MAX_LABEL = 80;
 const MAX_DESCRIPTION = 200;
+/** Non-blank rows a heading may occupy above the list: the heading itself and
+ * the blurb both CLIs print under it. A longer block above the rows is
+ * ordinary output, and the dialog then goes untitled rather than titled with
+ * somebody's sentence. */
+const HEADING_BLOCK = 3;
+const MAX_TITLE = 60;
 
 interface ReadRow { marked: boolean; option: Omit<SelectOption, "index"> }
+
+/** The dialog's heading, read upwards from its first row: past the blank the
+ * TUI leaves under the heading, then the contiguous block above it, of which
+ * the first line is the heading and the rest its blurb. */
+function readTitle(lines: readonly SelectLineLike[], start: number): string | undefined {
+  let index = start - 1;
+  while (index >= 0 && !lines[index].text.trim()) index -= 1;
+  const block: string[] = [];
+  while (index >= 0 && lines[index].text.trim()) {
+    block.unshift(lines[index].text.trim());
+    if (block.length > HEADING_BLOCK) return undefined;
+    index -= 1;
+  }
+  const title = block[0];
+  if (!title || title.length > MAX_TITLE) return undefined;
+  // A numbered row above the run belongs to some other list, not to a heading.
+  if (OPTION.test(title)) return undefined;
+  return /\p{L}/u.test(title) ? title : undefined;
+}
 
 function readRow(text: string): ReadRow | null {
   const match = OPTION.exec(text);
@@ -77,8 +112,8 @@ function readRow(text: string): ReadRow | null {
  */
 export function readSelectPrompt(lines: readonly SelectLineLike[]): SelectPrompt | null {
   const first = Math.max(0, lines.length - SEARCH_WINDOW);
-  const runs: { options: SelectOption[]; marked: number[] }[] = [];
-  let run: { options: SelectOption[]; marked: number[] } | undefined;
+  const runs: { start: number; options: SelectOption[]; marked: number[] }[] = [];
+  let run: { start: number; options: SelectOption[]; marked: number[] } | undefined;
 
   for (let index = first; index < lines.length; index += 1) {
     const text = lines[index].text;
@@ -99,7 +134,7 @@ export function readSelectPrompt(lines: readonly SelectLineLike[]): SelectPrompt
     if (!continues) {
       run = undefined;
       if (row.option.number !== 1) continue;
-      run = { options: [], marked: [] };
+      run = { start: index, options: [], marked: [] };
       runs.push(run);
     }
     if (!run) continue;
@@ -112,10 +147,22 @@ export function readSelectPrompt(lines: readonly SelectLineLike[]): SelectPrompt
   for (let index = runs.length - 1; index >= 0; index -= 1) {
     const candidate = runs[index];
     if (candidate.options.length >= MIN_OPTIONS && candidate.marked.length === 1) {
-      return { options: candidate.options, current: candidate.marked[0] };
+      return {
+        options: candidate.options,
+        current: candidate.marked[0],
+        title: readTitle(lines, candidate.start),
+      };
     }
   }
   return null;
+}
+
+/** What the list on screen *is*, as opposed to where its highlight sits: the
+ * heading and the rows. A caller that answered a dialog compares this to tell
+ * the list it answered — still painted while the TUI catches up — from the
+ * next step of a multi-step one, drawn in the same place. */
+export function selectSignature(prompt: SelectPrompt): string {
+  return [prompt.title ?? "", ...prompt.options.map((option) => `${option.number}. ${option.label}`)].join("\n");
 }
 
 /** The keystrokes that move a dialog's highlight from `current` to `target` and

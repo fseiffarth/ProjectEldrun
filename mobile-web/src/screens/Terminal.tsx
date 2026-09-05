@@ -28,7 +28,7 @@ import { type TerminalEvent } from "../terminal/protocol";
 import { installTerminalTouchScroll } from "../terminal/touchScroll";
 import { installWideOutputHint, type WideOutputHint } from "../terminal/wideOutput";
 import { inputFrameStart, sessionStatus, shortenPath, type SessionStatus } from "../terminal/statusLine";
-import { readSelectPrompt, selectKeys } from "../terminal/selectPrompt";
+import { readSelectPrompt, selectKeys, selectSignature } from "../terminal/selectPrompt";
 import { currentMode, modeChoices, shiftTabKey } from "../terminal/agentModes";
 import { agentInputWrites } from "../terminal/composer";
 import { chatTurns } from "../terminal/chatTurns";
@@ -83,6 +83,11 @@ const REVEAL_CHUNKS = 2;
  * opens. Past it the sheet steps aside: the dialog — or the reason there is
  * none — is in the session output, and the arrow keys still answer it. */
 const MODEL_PICKER_WAIT = 6_000;
+/** How long the sheet waits, after a tap, for the step *after* the one it
+ * answered: Codex follows the model list with a reasoning-level list, and that
+ * one is drawn only once the session has read the Enter. Past it the dialog is
+ * done and the sheet steps aside. */
+const SELECT_NEXT_WAIT = 700;
 /** Time given to a Shift+Tab before the redrawn status line is read back. One
  * reading-view rebuild (READABLE_INTERVAL) plus the TUI's own repaint. */
 const MODE_SETTLE = 340;
@@ -304,6 +309,11 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
   /** Whether the model sheet is up. It opens on the tap that sends `/model`,
    * before the session has drawn the picker it lists. */
   const [modelSheet, setModelSheet] = useState(false);
+  /** The step a tap answered (`selectSignature`), while the session is still
+   * painting it. A multi-step dialog draws its next list in the same place, so
+   * the sheet holds until what is on screen is a *different* list — or until
+   * nothing is, which is where the dialog ends. */
+  const [answered, setAnswered] = useState("");
   const [modeSheet, setModeSheet] = useState(false);
   /** The status chip's sheet: the session's state and the CLI's own usage
    * panel. Opening it asks the desktop, which may run the CLI once. */
@@ -373,6 +383,7 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     uploadRun.current += 1;
     setSwitching("");
     setSwitchFailed("");
+    setAnswered("");
     sawPicker.current = false;
     return () => {
       window.clearTimeout(copiedTimer.current);
@@ -906,42 +917,71 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
   /** The picker `/model` opened, read off the screen while the sheet is up — a
    * list of the session's own rows, not a list of models Eldrun believes in. */
   const picker = useMemo(() => (modelSheet ? readSelectPrompt(lines) : null), [modelSheet, lines]);
+  /** The step the sheet is showing: the picker on screen, unless it is the one
+   * a tap just answered and the session has not redrawn yet. */
+  const pickerStep = picker && selectSignature(picker) === answered ? null : picker;
   useEffect(() => {
     if (!modelSheet) return;
-    if (picker) {
+    if (pickerStep) {
       sawPicker.current = true;
+      // A step is up, so nothing is left to hold for: a dialog that comes back
+      // to a list already answered (Codex's "More reasoning…" has an esc back)
+      // is a step again, not the stale paint of the answer.
+      if (answered) setAnswered("");
       return;
     }
-    // Gone after it was listed: answered here, on the desktop, or dismissed.
+    // The answered list, still on screen: the session has not read the Enter
+    // yet. Hold — the next step, if there is one, replaces it in place. If the
+    // session never moves off it, the answer did not land: give the list back
+    // rather than hold a sheet the tap can no longer leave.
+    if (answered && picker) {
+      const stuck = window.setTimeout(() => setAnswered(""), MODEL_PICKER_WAIT);
+      return () => window.clearTimeout(stuck);
+    }
     if (sawPicker.current) {
-      setModelSheet(false);
-      return;
+      // Gone after it was listed: answered here, on the desktop, or dismissed.
+      // After a tap the gap is given to the step that may still follow.
+      if (!answered) {
+        setModelSheet(false);
+        return;
+      }
+      const next = window.setTimeout(() => {
+        setModelSheet(false);
+        setAnswered("");
+      }, SELECT_NEXT_WAIT);
+      return () => window.clearTimeout(next);
     }
     // Never drawn: the session may have no `/model` picker at all. Step out of
     // the way rather than hold an empty sheet over its output.
     const timer = window.setTimeout(() => setModelSheet(false), MODEL_PICKER_WAIT);
     return () => window.clearTimeout(timer);
-  }, [modelSheet, picker]);
+  }, [modelSheet, picker, pickerStep, answered]);
   /** `/model` opens the agent's own picker in the session; the sheet lists the
    * rows it drew, and a tap answers it with the same keys the arrow row sends —
    * so nothing here decides what the models are. */
   const selectModel = () => {
     if (modelSheet) return;
     sawPicker.current = false;
+    setAnswered("");
     if (!sendAgentText("/model")) return;
     setModelSheet(true);
   };
+  /** Answers the step on screen. The sheet does not close on the tap: `/model`
+   * is one step in Claude Code and two in Codex, which asks for a reasoning
+   * level next, and which it is, is the session's answer to give — the sheet
+   * lists whatever it draws next, and closes when it draws nothing. */
   const chooseModel = (key: string) => {
-    if (!picker) return;
+    if (!pickerStep) return;
     clearPending();
-    deliver(selectKeys(picker.current, Number(key)));
-    setModelSheet(false);
+    if (!deliver(selectKeys(pickerStep.current, Number(key)))) return;
+    setAnswered(selectSignature(pickerStep));
   };
   const closeModelSheet = () => {
     // The dialog is the session's own and still open: close it there too,
     // rather than leaving a modal behind that the reader can no longer see.
     if (picker) type("\u001b");
     setModelSheet(false);
+    setAnswered("");
   };
   /** The modes this session has, decided by the mode it is showing with the
    * tab's agent label as the tie-break (and, for a family whose default mode
@@ -1220,11 +1260,15 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     }
   }, [tab.id]);
   const dictateLabel = listening ? "Stop dictation" : preparingVoice ? "Preparing dictation" : "Dictate";
-  const pickerOptions: SheetOption[] = (picker?.options ?? []).map((option) => ({
+  /** What the sheet paints: the live step, or — between the tap and the
+   * session's redraw — the answered one, listed but not tappable, so the sheet
+   * does not blink empty on the way to the next step. */
+  const shownStep = pickerStep ?? (answered ? picker : null);
+  const pickerOptions: SheetOption[] = (shownStep?.options ?? []).map((option) => ({
     key: String(option.index),
     label: option.label,
     description: option.description,
-    current: option.index === picker?.current,
+    current: option.index === shownStep?.current,
   }));
   const modeOptions: SheetOption[] = modes.map((choice) => ({
     key: choice.value,
@@ -1326,10 +1370,12 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
       </div>
     </div>
     {modelSheet && <OptionSheet
-      title="Select model"
+      title={shownStep?.title ?? "Select model"}
       options={pickerOptions}
-      waiting={connected ? "Waiting for the session's model picker…" : "Waiting for the connection…"}
-      busy={false}
+      waiting={!connected
+        ? "Waiting for the connection…"
+        : answered ? "Waiting for the session…" : "Waiting for the session's model picker…"}
+      busy={shownStep != null && pickerStep == null}
       onPick={chooseModel}
       onClose={closeModelSheet}
     />}

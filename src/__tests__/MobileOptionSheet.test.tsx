@@ -123,7 +123,15 @@ describe("Eldrun Mobile composer sheets", () => {
     // One step down from the highlight, then Enter — the keys the arrow row
     // sends, never a guessed slash command.
     expect(FakeWebSocket.keys).toEqual([`${ESC}[B`, "\r"]);
-    expect(screen.queryByText("Select Model")).toBeTruthy();
+    // The tap does not close the sheet — `/model` is two questions in Codex,
+    // which asks for a reasoning level next — so it holds the answered list,
+    // untappable, until the session says what comes after it.
+    expect(screen.queryByRole("dialog")).toBeTruthy();
+    expect(rows[2].hasAttribute("disabled")).toBe(true);
+
+    // Here it was the only question: the dialog is gone and so is the sheet.
+    await paint("❯ \n\n  ~/projects/eldrun · Sonnet 4");
+    await settle(1_000);
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 

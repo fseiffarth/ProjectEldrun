@@ -183,6 +183,14 @@ aliases.
     options away from yes/no/allow/cancel wording is what would break it.
 - Mobile: modes `working (silent) | plan | read only | auto | full access`;
   Shift+Tab is sent as CSI-u. Verified against codex-cli 0.151.0.
+- Mobile's model sheet reads `/model` off the screen, and Codex answers it in
+  **two steps** — `Select Model and Effort`, then `Select Reasoning Level for
+  <model>` (whose row 5, "More reasoning…", opens a third). Each step is a
+  heading, a blank line, then rows `N. Label  Description` numbered from 1 with
+  the highlight marked `›`; the sheet holds until a *different* list is drawn
+  and closes when none is. Renumbering, dropping the heading, or drawing the
+  next step without clearing the previous one is what would break it. Verified
+  against codex-cli 0.153.4.
 
 **Verify**
 
@@ -193,6 +201,7 @@ head -c 300 "$(ls -t ~/.codex/sessions/*/*/*/rollout-*.jsonl | head -1)"
 grep -n 'hooks' ~/.codex/config.toml
 cargo test --manifest-path src-tauri/Cargo.toml codex
 npx vitest run src/__tests__/agentPrompt.test.ts
+npx vitest run src/__tests__/MobileSelectPrompt.test.ts src/__tests__/MobileModelSheetSteps.test.tsx
 ```
 
 ### 1.3 Gemini CLI
