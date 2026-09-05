@@ -93,7 +93,6 @@ pub enum PromptMutation {
 /// Calendar/task ids remain host-generated opaque values; the phone never sees
 /// ids from `calendar.json`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct TodoCard {
     pub id: String,
     pub title: String,
@@ -120,7 +119,6 @@ pub struct TodoCard {
 /// opaque exactly like the containing card's; the desktop resolves it against
 /// the current task before writing calendar.json.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct TodoSubtask {
     pub id: String,
     pub title: String,
@@ -150,21 +148,18 @@ pub struct TodoTaskInput {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct TodoCalendar {
     pub id: String,
     pub name: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct TodoProject {
     pub id: String,
     pub name: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct TodoColumn {
     pub id: String,
     pub name: String,
@@ -213,11 +208,12 @@ pub struct TodoBoardSnapshot {
     pub projects: Vec<TodoProject>,
 }
 
-/// A display-only alert row for Mobile. The desktop keeps the source ids and
-/// action capabilities: a paired phone only needs the same bounded timeline of
-/// urgent mail, upcoming events, and due tasks that the desktop renders.
+/// One alert row for Mobile: the same bounded timeline of urgent mail, upcoming
+/// events and due tasks the desktop renders. Source ids stay desktop-side — the
+/// only handles here are opaque and derived, and the one write they enable is
+/// the strip's own ✓ (`AlertResolve`), which resolves a row and can delete
+/// nothing.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct MobileAlertItem {
     pub kind: String,
     pub severity: String,
@@ -260,7 +256,6 @@ pub struct MobileAlertsSnapshot {
 /// One already-expanded calendar occurrence.  IDs are opaque, scoped to the
 /// paired-device protocol, and are resolved only by the running desktop.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct MobileCalendarEvent {
     pub id: String,
     pub calendar_id: String,
@@ -287,7 +282,6 @@ pub struct MobileCalendarEvent {
 /// desktop process; the mobile client can manage the same ordinary calendar
 /// properties as the desktop sidebar.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct MobileCalendarInfo {
     pub id: String,
     pub name: String,
@@ -352,7 +346,6 @@ pub enum CalendarAction {
 /// A bounded month snapshot. `truncated` is explicit so a very busy month never
 /// silently looks complete after the desktop-control message cap.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct MobileCalendarSnapshot {
     /// `YYYY-MM`, echoed from the validated request.
     pub month: String,
@@ -367,7 +360,6 @@ pub struct MobileCalendarSnapshot {
 /// may browse the local index and read one message, but it receives no server
 /// paths, link targets, attachment bytes, or mutation controls.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct MobileMailFolder {
     pub id: String,
     pub name: String,
@@ -377,7 +369,6 @@ pub struct MobileMailFolder {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct MobileMailAccount {
     pub id: String,
     pub label: String,
@@ -386,14 +377,12 @@ pub struct MobileMailAccount {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct MobileMailSender {
     pub name: Option<String>,
     pub address: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct MobileMailHeader {
     pub id: String,
     pub subject: String,
@@ -411,7 +400,6 @@ pub struct MobileMailHeader {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct MobileMailAttachment {
     pub filename: String,
     pub mime: String,
@@ -419,7 +407,7 @@ pub struct MobileMailAttachment {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "view", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(tag = "view", rename_all = "snake_case")]
 pub enum MobileMailView {
     Overview {
         accounts: Vec<MobileMailAccount>,
@@ -754,7 +742,6 @@ impl DesktopRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct AgentCatalogEntry {
     pub id: String,
     pub label: String,
@@ -765,7 +752,6 @@ pub struct AgentCatalogEntry {
 /// internal desktop-control response, not the phone-facing API: the sidecar
 /// maps `tmux_session` to an opaque tab id before serializing it to a client.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct AgentTabStatus {
     pub tmux_session: String,
     /// `working`, `question`, or `done`.
@@ -788,7 +774,6 @@ pub struct AgentTabStatus {
 /// internal desktop-control row keyed by tmux name; the sidecar folds it onto
 /// the opaque public tab before anything reaches the phone.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct AgentTabSchedules {
     pub tmux_session: String,
     pub total: u32,
@@ -806,7 +791,6 @@ pub struct AgentTabSchedules {
 /// block a person can still read rather than to an empty card. The phone's
 /// "Terminal" half of the sheet shows exactly this text.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct MobileAgentUsage {
     /// Display label of the CLI the panel came from ("Claude Code").
     pub label: String,
@@ -832,7 +816,6 @@ pub struct MobileAgentUsage {
 /// in it. Passed on as they are recorded and labelled that way on the phone,
 /// rather than being silently attributed to the one agent the sheet is about.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct MobileAgentTally {
     /// Prompts sent to *this agent* in this project today.
     pub prompts: u64,
@@ -847,7 +830,6 @@ pub struct MobileAgentTally {
 /// The agent-tab status sheet's whole payload: what the desktop knows about the
 /// session, plus what its CLI says about the account behind it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct MobileAgentStatus {
     /// `working`, `question`, `done` or `idle` — the same classification the
     /// catalog publishes, derived desktop-side from the tab's own output.
@@ -867,15 +849,34 @@ pub struct MobileAgentStatus {
 /// the stored name, the project-relative reference it puts after an `@`, and
 /// the size. Mirrors `inbox::Stored` on the wire.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
 pub struct MobileInboxAttachment {
     pub name: String,
     pub reference: String,
     pub size: u64,
 }
 
+/// What the desktop answers a [`DesktopRequest`] with.
+///
+/// **This enum and everything it carries are deliberately NOT
+/// `deny_unknown_fields`.** Strictness here guards nothing — the peer is Eldrun
+/// itself over a private socket in the state dir, not the paired browser, whose
+/// every input type above stays strict — and it made the two halves of one app
+/// version-fragile in exactly the direction this repo's dev workflow produces
+/// daily: `src/` hot-reloads into a running window while the sidecar stays the
+/// one compiled into the binary (`tauri dev` runs `--no-watch`; see AGENTS.md
+/// and `npm run backend:stale`). A frontend that had learned to send one more
+/// optional status field therefore handed the older sidecar a response it
+/// refused *whole*, and the refusal is indistinguishable from a closed desktop:
+/// the phone lost every agent tab from its Activity list and every "new agent
+/// tab" button from a project — silently, and only for the projects whose tabs
+/// happened to carry the new field.
+///
+/// The `#[serde(default)]`s below already buy the other direction (an older
+/// desktop that does not send a field yet). Accepting fields we do not know is
+/// the same bargain read forwards, and it costs nothing: an unknown field is
+/// dropped, and the phone simply does without the column it names.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(tag = "status", rename_all = "snake_case")]
 pub enum DesktopResponse {
     Catalog {
         agents: Vec<AgentCatalogEntry>,
@@ -1063,6 +1064,57 @@ mod tests {
         assert!(response_json["statuses"][0].get("done_at").is_none());
         assert_eq!(response_json["schedules"][0]["enabled"], 2);
         assert_eq!(response_json["schedules"][0]["next"], "2026-09-03T09:00");
+    }
+
+    /// A desktop one build ahead of this sidecar must cost the phone the field
+    /// it does not know and nothing else. This used to cost it everything: the
+    /// response was `deny_unknown_fields`, so one unrecognized status key made
+    /// the whole frame unparseable, `desktop_call` returned an error the caller
+    /// could not tell from a closed desktop, and a project's agent tabs and its
+    /// "new agent tab" buttons both vanished from the phone with nothing said.
+    #[test]
+    fn a_newer_desktop_costs_the_phone_only_the_field_this_build_lacks() {
+        let from_a_newer_desktop = serde_json::json!({
+            "status": "catalog",
+            "agents": [{ "id": "agent-0", "label": "Claude", "modes": [] }],
+            "statuses": [{
+                "tmux_session": "eldrun-project-0--agent-123456789",
+                "status": "working",
+                "working_at": 1_700_000_000_000u64,
+                "a_field_this_build_has_never_heard_of": "…",
+            }],
+            "schedules": [],
+            "one_more_unknown_key": true,
+        });
+        let response: DesktopResponse =
+            serde_json::from_value(from_a_newer_desktop).expect("decode a newer desktop's catalog");
+        let DesktopResponse::Catalog {
+            agents, statuses, ..
+        } = response
+        else {
+            panic!("a catalog response must still decode as one");
+        };
+        assert_eq!(agents.len(), 1, "the agent menu survives the unknown field");
+        assert_eq!(statuses[0].status, "working");
+        assert_eq!(statuses[0].working_at, Some(1_700_000_000_000));
+    }
+
+    /// The other half of the bargain: what the *phone* sends stays strict, so
+    /// relaxing the desktop's side widened nothing at the browser boundary.
+    #[test]
+    fn what_the_phone_sends_is_still_refused_when_it_carries_unknown_fields() {
+        let mut from_a_phone = serde_json::json!({
+            "message": "hello",
+            "rule": { "type": "once", "at": "2026-09-05T09:00" },
+            "enabled": true,
+        });
+        serde_json::from_value::<MobileScheduleInput>(from_a_phone.clone())
+            .expect("the body without the extra key is otherwise valid");
+        from_a_phone["cwd"] = serde_json::json!("/home/someone");
+        assert!(
+            serde_json::from_value::<MobileScheduleInput>(from_a_phone).is_err(),
+            "an unknown key from the paired browser must still be refused"
+        );
     }
 
     #[test]
