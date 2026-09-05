@@ -8,8 +8,8 @@ use std::sync::{Mutex, OnceLock};
 
 use crate::{
     schema::agent_prompts::{
-        AgentPromptsFile, ProjectAgentPrompt, ProjectAgentPromptInput, RecordedAgentPromptInput,
-        SentAgentPrompt, SentAgentPromptInput,
+        AgentPromptsFile, ProjectAgentPrompt, ProjectAgentPromptInput, PromptLink, PromptLinkInput,
+        RecordedAgentPromptInput, SentAgentPrompt, SentAgentPromptInput,
     },
     services::{
         agent_tasks::{
@@ -39,6 +39,8 @@ const MAX_BLAME_PATH_BYTES: usize = 1024;
 /// `ScheduleResult`. Anything else is refused rather than stored as a word the
 /// UI has no pill for.
 const RESULTS: [&str; 3] = ["delivered", "missed", "failed"];
+const LINK_KINDS: [&str; 2] = ["related", "after"];
+const MAX_LINKS_PER_PROJECT: usize = 256;
 
 static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
@@ -92,7 +94,9 @@ pub fn validate_tags(tags: &[String]) -> Result<Vec<String>, String> {
         out.push(tag);
     }
     if out.len() > MAX_TAGS_PER_PROMPT {
-        return Err(format!("a prompt may carry at most {MAX_TAGS_PER_PROMPT} tags"));
+        return Err(format!(
+            "a prompt may carry at most {MAX_TAGS_PER_PROMPT} tags"
+        ));
     }
     Ok(out)
 }
@@ -164,7 +168,10 @@ fn validate_sent(input: SentAgentPromptInput) -> Result<SentAgentPromptInput, St
         validate_id("session id", session_id)?;
     }
     let agent = input.agent.as_ref().map(|agent| {
-        sanitize_message(agent).replace('\n', " ").trim().to_string()
+        sanitize_message(agent)
+            .replace('\n', " ")
+            .trim()
+            .to_string()
     });
     let agent = match agent {
         Some(agent) if agent.is_empty() || agent.len() > MAX_AGENT_BYTES => {
@@ -240,7 +247,12 @@ fn apply_archive(
         .get(project_id)
         .and_then(|prompts| prompts.iter().find(|item| item.id == prompt_id))
         .cloned()?;
-    apply_delete(file, project_id, prompt_id);
+    // This is a move, not a deletion: keep links alive while the endpoint
+    // crosses from `projects` to `history`, then prune against the final file.
+    if let Some(prompts) = file.projects.get_mut(project_id) {
+        prompts.retain(|item| item.id != prompt_id);
+    }
+    file.projects.retain(|_, prompts| !prompts.is_empty());
     let sent = SentAgentPrompt {
         id: prompt.id,
         message: prompt.message,
@@ -259,6 +271,7 @@ fn apply_archive(
         files_at: None,
     };
     push_history(file, project_id, sent.clone());
+    prune_links(file, project_id);
     Some(sent)
 }
 
@@ -310,10 +323,16 @@ fn apply_record(
         agent: input.agent.clone(),
         result: input.result.clone(),
         scheduled_for: input.scheduled_for.clone(),
-        tags: existing.as_ref().map(|item| item.tags.clone()).unwrap_or_default(),
+        tags: existing
+            .as_ref()
+            .map(|item| item.tags.clone())
+            .unwrap_or_default(),
         commit,
         branch,
-        files: existing.as_ref().map(|item| item.files.clone()).unwrap_or_default(),
+        files: existing
+            .as_ref()
+            .map(|item| item.files.clone())
+            .unwrap_or_default(),
         files_at: existing.and_then(|item| item.files_at),
     };
     push_history(file, project_id, sent.clone());
@@ -350,7 +369,11 @@ fn apply_blame(
 /// name keep their relative order at the END: the caller reordered the list it
 /// had, and a prompt collected (or arriving from another window) between that
 /// read and this write must not be dropped just because the drag never saw it.
-fn apply_reorder(file: &mut AgentPromptsFile, project_id: &str, ids: &[String]) -> Vec<ProjectAgentPrompt> {
+fn apply_reorder(
+    file: &mut AgentPromptsFile,
+    project_id: &str,
+    ids: &[String],
+) -> Vec<ProjectAgentPrompt> {
     let Some(prompts) = file.projects.get_mut(project_id) else {
         return Vec::new();
     };
@@ -372,17 +395,103 @@ fn apply_reorder(file: &mut AgentPromptsFile, project_id: &str, ids: &[String]) 
     prompts.clone()
 }
 
+fn endpoint_ids(file: &AgentPromptsFile, project_id: &str) -> std::collections::HashSet<String> {
+    file.projects
+        .get(project_id)
+        .into_iter()
+        .flatten()
+        .map(|item| item.id.clone())
+        .chain(
+            file.history
+                .get(project_id)
+                .into_iter()
+                .flatten()
+                .map(|item| item.id.clone()),
+        )
+        .collect()
+}
+
+fn prune_links(file: &mut AgentPromptsFile, project_id: &str) {
+    let endpoints = endpoint_ids(file, project_id);
+    if let Some(links) = file.links.get_mut(project_id) {
+        links.retain(|link| endpoints.contains(&link.from) && endpoints.contains(&link.to));
+    }
+    file.links.retain(|_, links| !links.is_empty());
+}
+
 fn apply_delete(file: &mut AgentPromptsFile, project_id: &str, prompt_id: &str) {
     if let Some(prompts) = file.projects.get_mut(project_id) {
         prompts.retain(|item| item.id != prompt_id);
     }
     file.projects.retain(|_, prompts| !prompts.is_empty());
+    prune_links(file, project_id);
+}
+
+fn validate_link(input: PromptLinkInput) -> Result<PromptLink, String> {
+    validate_id("link id", &input.id)?;
+    validate_id("link source", &input.from)?;
+    validate_id("link target", &input.to)?;
+    if input.from == input.to {
+        return Err("a prompt link cannot point to itself".into());
+    }
+    if !LINK_KINDS.contains(&input.kind.as_str()) {
+        return Err(format!("invalid prompt link kind: {}", input.kind));
+    }
+    if let Some(target) = &input.target {
+        validate_id("schedule target", target)?;
+    }
+    Ok(PromptLink {
+        id: input.id,
+        from: input.from,
+        to: input.to,
+        kind: input.kind,
+        target: input.target,
+    })
+}
+
+fn apply_link_upsert(
+    file: &mut AgentPromptsFile,
+    project_id: &str,
+    link: PromptLink,
+) -> Result<Vec<PromptLink>, String> {
+    let endpoints = endpoint_ids(file, project_id);
+    if !endpoints.contains(&link.from) || !endpoints.contains(&link.to) {
+        return Err("prompt link endpoint not found".into());
+    }
+    let links = file.links.entry(project_id.to_string()).or_default();
+    if let Some(index) = links.iter().position(|item| item.id == link.id) {
+        links[index] = link;
+    } else {
+        if links.len() >= MAX_LINKS_PER_PROJECT {
+            return Err(format!(
+                "a project may carry at most {MAX_LINKS_PER_PROJECT} prompt links"
+            ));
+        }
+        links.push(link);
+    }
+    Ok(links.clone())
+}
+
+fn apply_link_delete(
+    file: &mut AgentPromptsFile,
+    project_id: &str,
+    link_id: &str,
+) -> Vec<PromptLink> {
+    if let Some(links) = file.links.get_mut(project_id) {
+        links.retain(|link| link.id != link_id);
+    }
+    file.links.retain(|_, links| !links.is_empty());
+    file.links.get(project_id).cloned().unwrap_or_default()
 }
 
 pub fn list(project_id: &str) -> Result<Vec<ProjectAgentPrompt>, String> {
     validate_id("project id", project_id)?;
     let _guard = lock();
-    Ok(read()?.projects.get(project_id).cloned().unwrap_or_default())
+    Ok(read()?
+        .projects
+        .get(project_id)
+        .cloned()
+        .unwrap_or_default())
 }
 
 pub fn upsert(
@@ -406,6 +515,35 @@ pub fn delete(project_id: &str, prompt_id: &str) -> Result<Vec<ProjectAgentPromp
     apply_delete(&mut file, project_id, prompt_id);
     write(&file)?;
     Ok(file.projects.get(project_id).cloned().unwrap_or_default())
+}
+
+pub fn links(project_id: &str) -> Result<Vec<PromptLink>, String> {
+    validate_id("project id", project_id)?;
+    let _guard = lock();
+    let mut file = read()?;
+    prune_links(&mut file, project_id);
+    Ok(file.links.get(project_id).cloned().unwrap_or_default())
+}
+
+pub fn link_upsert(project_id: &str, input: PromptLinkInput) -> Result<Vec<PromptLink>, String> {
+    validate_id("project id", project_id)?;
+    let link = validate_link(input)?;
+    let _guard = lock();
+    let mut file = read()?;
+    prune_links(&mut file, project_id);
+    let result = apply_link_upsert(&mut file, project_id, link)?;
+    write(&file)?;
+    Ok(result)
+}
+
+pub fn link_delete(project_id: &str, link_id: &str) -> Result<Vec<PromptLink>, String> {
+    validate_id("project id", project_id)?;
+    validate_id("link id", link_id)?;
+    let _guard = lock();
+    let mut file = read()?;
+    let result = apply_link_delete(&mut file, project_id, link_id);
+    write(&file)?;
+    Ok(result)
 }
 
 /// Persist a new order for a project's collected prompts. Every id is
@@ -444,7 +582,14 @@ pub fn archive(
     let head = prompt_blame::head(project_id);
     let _guard = lock();
     let mut file = read()?;
-    apply_archive(&mut file, project_id, prompt_id, &input, head.as_ref(), &storage::iso_now());
+    apply_archive(
+        &mut file,
+        project_id,
+        prompt_id,
+        &input,
+        head.as_ref(),
+        &storage::iso_now(),
+    );
     write(&file)?;
     Ok(file.projects.get(project_id).cloned().unwrap_or_default())
 }
@@ -465,14 +610,18 @@ pub fn record(
         return Err(format!("prompt exceeds {MAX_MESSAGE_BYTES} bytes"));
     }
     let input = validate_sent(entry.sent.clone())?;
-    let entry = RecordedAgentPromptInput {
-        message,
-        ..entry
-    };
+    let entry = RecordedAgentPromptInput { message, ..entry };
     let head = prompt_blame::head(project_id);
     let _guard = lock();
     let mut file = read()?;
-    apply_record(&mut file, project_id, &entry, &input, head.as_ref(), &storage::iso_now());
+    apply_record(
+        &mut file,
+        project_id,
+        &entry,
+        &input,
+        head.as_ref(),
+        &storage::iso_now(),
+    );
     write(&file)?;
     Ok(file.history.get(project_id).cloned().unwrap_or_default())
 }
@@ -539,6 +688,7 @@ pub fn clear_history(
         }
     }
     file.history.retain(|_, history| !history.is_empty());
+    prune_links(&mut file, project_id);
     write(&file)?;
     Ok(file.history.get(project_id).cloned().unwrap_or_default())
 }
@@ -562,6 +712,16 @@ mod tests {
         }
     }
 
+    fn link(id: &str, from: &str, to: &str, kind: &str) -> PromptLinkInput {
+        PromptLinkInput {
+            id: id.into(),
+            from: from.into(),
+            to: to.into(),
+            kind: kind.into(),
+            target: Some("target-1".into()),
+        }
+    }
+
     fn head(commit: &str, branch: Option<&str>) -> RepoHead {
         RepoHead {
             commit: commit.into(),
@@ -581,7 +741,9 @@ mod tests {
         .unwrap();
         assert_eq!(tags, vec!["refactor", "unit-tests"]);
         assert!(validate_tags(&["x".repeat(MAX_TAG_BYTES + 1)]).is_err());
-        let many: Vec<String> = (0..MAX_TAGS_PER_PROMPT + 1).map(|i| format!("t{i}")).collect();
+        let many: Vec<String> = (0..MAX_TAGS_PER_PROMPT + 1)
+            .map(|i| format!("t{i}"))
+            .collect();
         assert!(validate_tags(&many).is_err());
         assert!(validate_tags(&many[..MAX_TAGS_PER_PROMPT]).is_ok());
     }
@@ -599,6 +761,40 @@ mod tests {
         // A new prompt without tags starts untagged.
         let prompts = apply_upsert(&mut file, "p", input("b", "x"), "t4").unwrap();
         assert!(prompts[1].tags.is_empty());
+    }
+
+    #[test]
+    fn prompt_links_validate_upsert_and_prune_with_endpoints() {
+        let mut file = AgentPromptsFile::default();
+        apply_upsert(&mut file, "p", input("a", "one"), "t1").unwrap();
+        apply_upsert(&mut file, "p", input("b", "two"), "t1").unwrap();
+        let stored = apply_link_upsert(
+            &mut file,
+            "p",
+            validate_link(link("l", "a", "b", "after")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].target.as_deref(), Some("target-1"));
+        assert!(validate_link(link("x", "a", "a", "related")).is_err());
+        assert!(validate_link(link("x", "a", "b", "unknown")).is_err());
+        apply_delete(&mut file, "p", "b");
+        assert!(!file.links.contains_key("p"));
+    }
+
+    #[test]
+    fn archive_keeps_a_link_when_the_endpoint_moves_to_history() {
+        let mut file = AgentPromptsFile::default();
+        apply_upsert(&mut file, "p", input("a", "one"), "t1").unwrap();
+        apply_upsert(&mut file, "p", input("b", "two"), "t1").unwrap();
+        apply_link_upsert(
+            &mut file,
+            "p",
+            validate_link(link("l", "a", "b", "after")).unwrap(),
+        )
+        .unwrap();
+        apply_archive(&mut file, "p", "a", &sent("Claude"), None, "t2").unwrap();
+        assert_eq!(file.links["p"].len(), 1);
     }
 
     #[test]
@@ -628,11 +824,25 @@ mod tests {
     fn a_delivery_keeps_the_send_row_tags_and_takes_the_fresher_head() {
         let mut file = AgentPromptsFile::default();
         apply_upsert(&mut file, "p", tagged("a", "one", &["paper"]), "t1").unwrap();
-        apply_archive(&mut file, "p", "a", &sent("Claude"), Some(&head("1111111", Some("main"))), "t2")
-            .unwrap();
+        apply_archive(
+            &mut file,
+            "p",
+            "a",
+            &sent("Claude"),
+            Some(&head("1111111", Some("main"))),
+            "t2",
+        )
+        .unwrap();
         let entry = recorded("a", "one", "delivered");
         // Delivered from a later commit: that is the one the agent started from.
-        let row = apply_record(&mut file, "p", &entry, &entry.sent, Some(&head("2222222", None)), "t3");
+        let row = apply_record(
+            &mut file,
+            "p",
+            &entry,
+            &entry.sent,
+            Some(&head("2222222", None)),
+            "t3",
+        );
         assert_eq!(row.tags, vec!["paper"]);
         assert_eq!(row.commit.as_deref(), Some("2222222"));
         assert!(row.branch.is_none());
@@ -742,7 +952,10 @@ mod tests {
         let history = &file.history["p"];
         assert_eq!(history.len(), MAX_HISTORY_PER_PROJECT);
         assert_eq!(history[0].id, "id-3");
-        assert_eq!(history[history.len() - 1].id, format!("id-{}", MAX_HISTORY_PER_PROJECT + 2));
+        assert_eq!(
+            history[history.len() - 1].id,
+            format!("id-{}", MAX_HISTORY_PER_PROJECT + 2)
+        );
     }
 
     fn recorded(id: &str, message: &str, result: &str) -> RecordedAgentPromptInput {

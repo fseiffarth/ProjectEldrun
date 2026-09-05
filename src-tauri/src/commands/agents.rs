@@ -1139,6 +1139,29 @@ impl AgentUsageReport {
     }
 }
 
+/// Which model the tab launched as `agent` with launch id `session_id` last
+/// answered with, read from the CLI's own transcript
+/// (`services::agent_session::agent_session_model`). `None` when the agent
+/// keeps no transcript Eldrun reads, or it holds no answer yet — the Agents
+/// view then shows no tag rather than a guessed one.
+#[tauri::command]
+pub async fn agent_tab_model(
+    agent: String,
+    project_id: Option<String>,
+    session_id: String,
+) -> Option<String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::services::agent_session::agent_session_model(
+            &agent,
+            project_id.as_deref(),
+            &session_id,
+        )
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
 /// Read `agent`'s own usage panel by running its CLI's print mode once.
 ///
 /// Free in every sense that matters: the run is client-side (Claude's envelope

@@ -5,14 +5,20 @@ import { useProjectsStore } from "./projects";
 import { ROOT_SCOPE, useTabsStore } from "./tabs";
 
 /**
- * A schedule is only as durable as the tab binding it hangs off. The target id
- * is minted in memory when a layout written before schedules existed is
- * restored, and the layout otherwise reaches disk only when a tab is added,
- * closed or moved — so a schedule saved against a freshly minted id, followed
- * by a quit with no tab change, came back orphaned and was swept at the next
- * launch. Writing the scope after every schedule write pins the binding.
+ * Write one scope's tab layout to disk now, resolving the project.json it
+ * exports to (none for the root scope or a box, whose layouts live in the state
+ * dir only). CenterPanel's debounce saves the ACTIVE scope alone, so every
+ * caller that edits a scope the desktop may not be showing needs this.
+ *
+ * Its first caller is the one this file is named for: a schedule is only as
+ * durable as the tab binding it hangs off. The target id is minted in memory
+ * when a layout written before schedules existed is restored, and the layout
+ * otherwise reaches disk only when a tab is added, closed or moved — so a
+ * schedule saved against a freshly minted id, followed by a quit with no tab
+ * change, came back orphaned and was swept at the next launch. Writing the
+ * scope after every schedule write pins the binding.
  */
-export function persistScheduleBinding(projectId: string): Promise<void> {
+export function persistScopeLayout(projectId: string): Promise<void> {
   const localFile = projectId === ROOT_SCOPE
     ? ""
     : useProjectsStore.getState().projects.find((project) => project.id === projectId)?.local_file ?? "";
@@ -63,7 +69,7 @@ export const useAgentSchedulesStore = create<AgentSchedulesStore>((set, get) => 
     });
     const key = scheduleCacheKey(projectId, scheduleTargetId);
     set((state) => ({ byTarget: { ...state.byTarget, [key]: schedules } }));
-    void persistScheduleBinding(projectId);
+    void persistScopeLayout(projectId);
     return schedules;
   },
 

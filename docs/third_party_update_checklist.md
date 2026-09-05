@@ -107,6 +107,9 @@ Claude's `/fast` — different thing.
   Verified against Claude Code 2.1.251 — a `/clear` fires no Stop event.
 - Session logs: `~/.claude/projects/<encoded-cwd>/<uuid>.jsonl`; `--resume` is
   emitted only when that file exists.
+- The model tag in the Agents views (`agent_session_model`) reads the tail of
+  that log for the last `{"type":"assistant","message":{"model":…}}` record,
+  skipping `<synthetic>`. A renamed key or type means no tag, never a wrong one.
 - `/usage` in print mode returns a JSON envelope with `result` (panel text),
   `is_error`, `num_turns: 0`. The panel text itself is parsed on the phone
   (five-hour / weekly windows, per-model lines) — a re-layout may cost figures.
@@ -151,6 +154,8 @@ aliases.
   whose **first line** is `{"type":"session_meta","payload":{"session_id","cwd",…}}`.
   This is the hook-free binding path; a new layout or header breaks every
   restored Codex tab.
+- The model tag reads the same rollout's tail for the last
+  `{"type":"turn_context","payload":{"model":…}}` record.
 - User hooks in `~/.codex/config.toml` as `[[hooks.SessionStart]]` with
   `matcher = "startup|resume|clear|compact"` and `[[hooks.SessionStart.hooks]]`
   `type="command"`. Trust state is read from `[hooks.state."…"]` tables

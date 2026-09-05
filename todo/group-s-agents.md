@@ -998,7 +998,7 @@ unchanged; the new agents are additive.
     on a tab: no second scheduling shape, no `planned_at`, no new rule type.
     Four phases (read-only chart → gestures → links → polish); the phone is
     untouched.
-    - [ ] 🤖 Automated test — `AgentPromptChart` (state derivation, id and
+    - [x] 🤖 Automated test — `AgentPromptChart` (state derivation, id and
       text-key joins, band grouping, snapping, drop mapping, queue reorder),
       `AgentPromptAutoTags`, `AgentPromptLinks` (pruning, chain resolution,
       missed source fires nothing, closed target is not sent, recurring source

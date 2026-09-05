@@ -53,6 +53,14 @@ export interface SentAgentPrompt {
   files_at?: string;
 }
 
+export interface PromptLink {
+  id: string;
+  from: string;
+  to: string;
+  kind: "related" | "after";
+  target?: string;
+}
+
 /** Send-time facts a history entry records. */
 export interface SentPromptFacts {
   tabLabel: string;
@@ -77,9 +85,11 @@ function sentPayload(sent: SentPromptFacts) {
 interface AgentPromptsStore {
   byProject: Record<string, ProjectAgentPrompt[]>;
   historyByProject: Record<string, SentAgentPrompt[]>;
+  linksByProject: Record<string, PromptLink[]>;
   loading: Record<string, boolean>;
   load: (projectId: string) => Promise<ProjectAgentPrompt[]>;
   loadHistory: (projectId: string) => Promise<SentAgentPrompt[]>;
+  loadLinks: (projectId: string) => Promise<PromptLink[]>;
   /** `tags` undefined leaves an existing prompt's tags alone (the phone edits
    *  text only); an array replaces them, empty included. */
   upsert: (
@@ -98,6 +108,8 @@ interface AgentPromptsStore {
     entry: { id: string; message: string; sent: SentPromptFacts },
   ) => Promise<SentAgentPrompt[]>;
   clearHistory: (projectId: string, entryId?: string) => Promise<SentAgentPrompt[]>;
+  link: (projectId: string, link: PromptLink) => Promise<PromptLink[]>;
+  unlink: (projectId: string, linkId: string) => Promise<PromptLink[]>;
   /** Record the files a delivered prompt touched (see `agent_prompt_blame`). */
   blame: (projectId: string, entryId: string, since?: string) => Promise<SentAgentPrompt[]>;
   refreshLoaded: () => Promise<void>;
@@ -106,6 +118,7 @@ interface AgentPromptsStore {
 export const useAgentPromptsStore = create<AgentPromptsStore>((set, get) => ({
   byProject: {},
   historyByProject: {},
+  linksByProject: {},
   loading: {},
 
   load: async (projectId) => {
@@ -123,6 +136,12 @@ export const useAgentPromptsStore = create<AgentPromptsStore>((set, get) => ({
     const history = await invoke<SentAgentPrompt[]>("agent_prompt_history_list", { projectId });
     set((state) => ({ historyByProject: { ...state.historyByProject, [projectId]: history } }));
     return history;
+  },
+
+  loadLinks: async (projectId) => {
+    const links = await invoke<PromptLink[]>("agent_prompt_links_list", { projectId });
+    set((state) => ({ linksByProject: { ...state.linksByProject, [projectId]: links } }));
+    return links;
   },
 
   upsert: async (projectId, prompt) => {
@@ -192,6 +211,18 @@ export const useAgentPromptsStore = create<AgentPromptsStore>((set, get) => ({
     return history;
   },
 
+  link: async (projectId, link) => {
+    const links = await invoke<PromptLink[]>("agent_prompt_link_upsert", { projectId, link });
+    set((state) => ({ linksByProject: { ...state.linksByProject, [projectId]: links } }));
+    return links;
+  },
+
+  unlink: async (projectId, linkId) => {
+    const links = await invoke<PromptLink[]>("agent_prompt_link_delete", { projectId, linkId });
+    set((state) => ({ linksByProject: { ...state.linksByProject, [projectId]: links } }));
+    return links;
+  },
+
   blame: async (projectId, entryId, since) => {
     const history = await invoke<SentAgentPrompt[]>("agent_prompt_blame", {
       projectId,
@@ -206,6 +237,9 @@ export const useAgentPromptsStore = create<AgentPromptsStore>((set, get) => ({
     await Promise.all(Object.keys(get().byProject).map((projectId) => get().load(projectId).catch(() => [])));
     await Promise.all(
       Object.keys(get().historyByProject).map((projectId) => get().loadHistory(projectId).catch(() => [])),
+    );
+    await Promise.all(
+      Object.keys(get().linksByProject).map((projectId) => get().loadLinks(projectId).catch(() => [])),
     );
   },
 }));

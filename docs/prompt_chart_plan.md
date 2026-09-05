@@ -1,6 +1,6 @@
 # Prompt chart — one timeline for collected, scheduled and sent prompts
 
-Status: **planned, not implemented.** Tracked as TODO #262 in
+Status: **implemented, awaiting live verification.** Tracked as TODO #262 in
 `todo/group-s-agents.md`.
 
 Written against the repository on **2026-09-04**.

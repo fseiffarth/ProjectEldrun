@@ -136,6 +136,30 @@ pub struct ProjectAgentPromptInput {
     pub tags: Option<Vec<String>>,
 }
 
+/// A visual/behavioural edge between two prompt cards. Endpoints name prompt
+/// or history ids; `target` is the schedule target used when an `after` edge
+/// queues its draft.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PromptLink {
+    pub id: String,
+    pub from: String,
+    pub to: String,
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PromptLinkInput {
+    pub id: String,
+    pub from: String,
+    pub to: String,
+    pub kind: String,
+    #[serde(default)]
+    pub target: Option<String>,
+}
+
 fn agent_prompts_version() -> u8 {
     1
 }
@@ -150,6 +174,10 @@ pub struct AgentPromptsFile {
     /// before the history existed still loads.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub history: BTreeMap<String, Vec<SentAgentPrompt>>,
+    /// Prompt-card links per project. Additive and version-neutral so an older
+    /// file remains readable.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub links: BTreeMap<String, Vec<PromptLink>>,
 }
 
 impl Default for AgentPromptsFile {
@@ -158,6 +186,7 @@ impl Default for AgentPromptsFile {
             version: agent_prompts_version(),
             projects: BTreeMap::new(),
             history: BTreeMap::new(),
+            links: BTreeMap::new(),
         }
     }
 }

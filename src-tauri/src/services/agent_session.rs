@@ -86,26 +86,28 @@ where
 /// `~/.codex/sessions/<YYYY>/<MM>/<DD>/rollout-<ts>-<uuid>.jsonl`, so we walk the
 /// date buckets (bounded depth) for a `.jsonl` whose name contains the uuid.
 pub(crate) fn codex_session_exists(root: &std::path::Path, uuid: &str) -> bool {
-    fn walk(dir: &std::path::Path, uuid: &str, depth: u8) -> bool {
+    codex_session_log(root, uuid).is_some()
+}
+
+/// The rollout log behind [`codex_session_exists`], when there is one.
+fn codex_session_log(root: &std::path::Path, uuid: &str) -> Option<PathBuf> {
+    fn walk(dir: &std::path::Path, uuid: &str, depth: u8) -> Option<PathBuf> {
         if depth > 5 {
-            return false;
+            return None;
         }
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            return false;
-        };
-        for entry in entries.flatten() {
+        for entry in std::fs::read_dir(dir).ok()?.flatten() {
             let path = entry.path();
             if path.is_dir() {
-                if walk(&path, uuid, depth + 1) {
-                    return true;
+                if let Some(found) = walk(&path, uuid, depth + 1) {
+                    return Some(found);
                 }
             } else if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
                 if name.ends_with(".jsonl") && name.contains(uuid) {
-                    return true;
+                    return Some(path);
                 }
             }
         }
-        false
+        None
     }
     walk(root, uuid, 0)
 }
@@ -256,12 +258,142 @@ where
 /// scan the project dirs for `<uuid>.jsonl` rather than re-deriving the cwd
 /// encoding.
 fn claude_session_exists(projects: &std::path::Path, uuid: &str) -> bool {
+    claude_session_log(projects, uuid).is_some()
+}
+
+/// The session log behind [`claude_session_exists`], when there is one.
+fn claude_session_log(projects: &std::path::Path, uuid: &str) -> Option<PathBuf> {
     let file = format!("{uuid}.jsonl");
-    let Ok(dirs) = std::fs::read_dir(projects) else {
-        return false;
+    std::fs::read_dir(projects)
+        .ok()?
+        .flatten()
+        .map(|entry| entry.path().join(&file))
+        .find(|path| path.is_file())
+}
+
+// ── Which model a tab is answering with ──────────────────────────────────────
+//
+// Neither CLI tells its hooks which model it runs (the hook payload carries a
+// session id and a permission mode, nothing more), and asking the agent would
+// spend a turn. What both keep is a transcript in which every answer names the
+// model that produced it, so the tag Eldrun shows beside a tab is *the model
+// this session last answered with* — read from the tail of that file, never
+// inferred from a flag Eldrun did not pass. A tab whose agent keeps no readable
+// transcript (Gemini, a custom command) gets no tag rather than a guessed one.
+
+/// How much of a transcript's tail is read for the model. A Claude turn with a
+/// large tool result can run past 100 KB on one line, so this is generous; the
+/// read is a seek and one buffer, so it is still free.
+const MODEL_TAIL_BYTES: u64 = 512 * 1024;
+
+/// Longest model name accepted from a transcript. The value becomes UI text on
+/// the desktop and on the phone, and the file is written by the agent.
+const MAX_MODEL_NAME: usize = 64;
+
+/// Which transcript dialect [`last_model_in_transcript`] reads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TranscriptKind {
+    /// `~/.claude/projects/<cwd>/<sid>.jsonl`: an `assistant` record's
+    /// `message.model`.
+    Claude,
+    /// `~/.codex/sessions/…/rollout-…-<sid>.jsonl`: a `turn_context` record's
+    /// `payload.model`.
+    Codex,
+}
+
+/// The model the tab launched as `cmd` with launch id `launch_id` last answered
+/// with, or `None` when there is no transcript, no answer in it yet, or the
+/// agent is one whose transcript Eldrun does not read.
+pub fn agent_session_model(cmd: &str, project_id: Option<&str>, launch_id: &str) -> Option<String> {
+    if !is_uuid_shaped(launch_id) {
+        return None;
+    }
+    let live = read_live_session_for(project_id, launch_id);
+    match cmd {
+        "claude" => {
+            let mut roots: Vec<PathBuf> = vec![paths::home_dir().join(".claude").join("projects")];
+            if let Some(pid) = project_id {
+                roots.push(crate::services::sandbox::claude_projects_stage(pid));
+            }
+            // The live id (after a `/clear`) first, the launch id as the fallback
+            // — the same preference the resume path has.
+            let ids = [live, Some(launch_id.to_string())];
+            ids.iter().flatten().find_map(|id| {
+                roots
+                    .iter()
+                    .find_map(|root| claude_session_log(root, id))
+                    .and_then(|path| last_model_in_transcript(&path, TranscriptKind::Claude))
+            })
+        }
+        "codex" => {
+            let root = paths::home_dir().join(".codex").join("sessions");
+            let path = codex_session_log(&root, &live?)?;
+            last_model_in_transcript(&path, TranscriptKind::Codex)
+        }
+        _ => None,
+    }
+}
+
+/// The model named by the last answer in the transcript at `path`, reading only
+/// its tail. A line cut by the tail boundary is skipped rather than parsed, and
+/// a record that names no real model (Claude writes `<synthetic>` for its own
+/// system turns) is skipped too, so the answer is the last *real* one.
+pub fn last_model_in_transcript(path: &std::path::Path, kind: TranscriptKind) -> Option<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = std::fs::File::open(path).ok()?;
+    let len = file.metadata().ok()?.len();
+    let start = len.saturating_sub(MODEL_TAIL_BYTES);
+    file.seek(SeekFrom::Start(start)).ok()?;
+    let mut buf = Vec::with_capacity((len - start) as usize);
+    file.read_to_end(&mut buf).ok()?;
+    let text = String::from_utf8_lossy(&buf);
+    let mut lines: Vec<&str> = text.lines().collect();
+    if start > 0 {
+        // Whatever came before the seek point is missing from the first line.
+        lines.remove(0);
+    }
+    lines
+        .iter()
+        .rev()
+        .filter_map(|line| model_in_record(line, kind))
+        .next()
+}
+
+fn model_in_record(line: &str, kind: TranscriptKind) -> Option<String> {
+    let line = line.trim();
+    if line.is_empty() {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_str(line).ok()?;
+    let model = match kind {
+        TranscriptKind::Claude => {
+            if value.get("type").and_then(|t| t.as_str()) != Some("assistant") {
+                return None;
+            }
+            value.get("message")?.get("model")?.as_str()?
+        }
+        TranscriptKind::Codex => {
+            if value.get("type").and_then(|t| t.as_str()) != Some("turn_context") {
+                return None;
+            }
+            value.get("payload")?.get("model")?.as_str()?
+        }
     };
-    dirs.flatten()
-        .any(|entry| entry.path().join(&file).is_file())
+    clean_model_name(model)
+}
+
+/// A model name fit to show: trimmed, one line of printable text, bounded, and
+/// not one of the placeholders a transcript uses for turns no model produced.
+fn clean_model_name(raw: &str) -> Option<String> {
+    let name = raw.trim();
+    if name.is_empty()
+        || name.starts_with('<')
+        || name.chars().count() > MAX_MODEL_NAME
+        || name.chars().any(|c| c.is_control() || c.is_whitespace())
+    {
+        return None;
+    }
+    Some(name.to_string())
 }
 
 /// `~/.local/share/eldrun/live_sessions/` — one file per tab (named by the
@@ -1686,5 +1818,66 @@ mod tests {
         // "manual" is a CLI-only alias — hooks report it as "default".
         assert!(!is_permission_mode("manual") && !is_permission_mode(""));
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn the_model_tag_is_the_last_real_answer_in_the_transcript_tail() {
+        let dir = tempfile::tempdir().unwrap();
+        let claude = dir.path().join("s.jsonl");
+        std::fs::write(
+            &claude,
+            concat!(
+                "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"hi\"}}\n",
+                "{\"type\":\"assistant\",\"message\":{\"model\":\"claude-opus-4-1-20250805\",\"role\":\"assistant\"}}\n",
+                "{\"type\":\"assistant\",\"message\":{\"model\":\"claude-sonnet-4-5-20250929\",\"role\":\"assistant\"}}\n",
+                "{\"type\":\"assistant\",\"message\":{\"model\":\"<synthetic>\",\"role\":\"assistant\"}}\n",
+                "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"more\"}}\n",
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            last_model_in_transcript(&claude, TranscriptKind::Claude).as_deref(),
+            Some("claude-sonnet-4-5-20250929")
+        );
+        // A Codex rollout names the model in its turn context, not its answers.
+        let codex = dir.path().join("rollout.jsonl");
+        std::fs::write(
+            &codex,
+            concat!(
+                "{\"type\":\"session_meta\",\"payload\":{\"session_id\":\"x\"}}\n",
+                "{\"type\":\"turn_context\",\"payload\":{\"model\":\"gpt-5-codex\"}}\n",
+                "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\"}}\n",
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            last_model_in_transcript(&codex, TranscriptKind::Codex).as_deref(),
+            Some("gpt-5-codex")
+        );
+        // No answer yet, or a dialect mismatch, is no tag — never a guess.
+        assert_eq!(last_model_in_transcript(&codex, TranscriptKind::Claude), None);
+        std::fs::write(&claude, "{\"type\":\"user\"}\n").unwrap();
+        assert_eq!(last_model_in_transcript(&claude, TranscriptKind::Claude), None);
+        assert_eq!(last_model_in_transcript(&dir.path().join("missing.jsonl"), TranscriptKind::Claude), None);
+    }
+
+    #[test]
+    fn the_model_tag_skips_the_line_the_tail_cut_and_refuses_unprintable_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("big.jsonl");
+        // One answer far past the tail window, then a line the window cuts in
+        // half, then an ordinary user turn: the cut line would parse as garbage
+        // and must not be mistaken for a record.
+        let filler = "x".repeat(MODEL_TAIL_BYTES as usize + 100);
+        let body = format!(
+            "{{\"type\":\"assistant\",\"message\":{{\"model\":\"claude-opus-4-1-20250805\"}}}}\n{{\"type\":\"user\",\"message\":{{\"content\":\"{filler}\"}}}}\n{{\"type\":\"user\"}}\n"
+        );
+        std::fs::write(&path, body).unwrap();
+        assert_eq!(last_model_in_transcript(&path, TranscriptKind::Claude), None);
+        assert_eq!(clean_model_name("  claude-opus-4-1  ").as_deref(), Some("claude-opus-4-1"));
+        assert_eq!(clean_model_name("<synthetic>"), None);
+        assert_eq!(clean_model_name("evil\u{1b}]0;x\u{7}"), None);
+        assert_eq!(clean_model_name("two words"), None);
+        assert_eq!(clean_model_name(&"m".repeat(MAX_MODEL_NAME + 1)), None);
     }
 }

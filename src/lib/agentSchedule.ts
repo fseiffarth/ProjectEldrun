@@ -198,8 +198,12 @@ export function scheduleVerdict(schedule: ScheduledAgentPrompt, now: Date): Sche
 
 export function sortSchedules(schedules: ScheduledAgentPrompt[], now: Date): ScheduledAgentPrompt[] {
   return [...schedules].sort((a, b) => {
-    const left = nextScheduleOccurrence(a, now)?.at.getTime() ?? Number.MAX_SAFE_INTEGER;
-    const right = nextScheduleOccurrence(b, now)?.at.getTime() ?? Number.MAX_SAFE_INTEGER;
+    const left = nextScheduleOccurrence(a, now)?.at.getTime()
+      ?? latestScheduleOccurrence(a, now)?.at.getTime()
+      ?? Number.MAX_SAFE_INTEGER;
+    const right = nextScheduleOccurrence(b, now)?.at.getTime()
+      ?? latestScheduleOccurrence(b, now)?.at.getTime()
+      ?? Number.MAX_SAFE_INTEGER;
     return left - right || a.id.localeCompare(b.id);
   });
 }

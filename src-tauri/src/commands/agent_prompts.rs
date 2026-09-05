@@ -2,8 +2,8 @@ use tauri::{AppHandle, Emitter};
 
 use crate::{
     schema::agent_prompts::{
-        ProjectAgentPrompt, ProjectAgentPromptInput, RecordedAgentPromptInput, SentAgentPrompt,
-        SentAgentPromptInput,
+        ProjectAgentPrompt, ProjectAgentPromptInput, PromptLink, PromptLinkInput,
+        RecordedAgentPromptInput, SentAgentPrompt, SentAgentPromptInput,
     },
     services::agent_prompts,
 };
@@ -19,6 +19,33 @@ fn changed(app: &AppHandle) {
 #[tauri::command]
 pub fn agent_prompts_list(project_id: String) -> Result<Vec<ProjectAgentPrompt>, String> {
     agent_prompts::list(&project_id)
+}
+
+#[tauri::command]
+pub fn agent_prompt_links_list(project_id: String) -> Result<Vec<PromptLink>, String> {
+    agent_prompts::links(&project_id)
+}
+
+#[tauri::command]
+pub fn agent_prompt_link_upsert(
+    app: AppHandle,
+    project_id: String,
+    link: PromptLinkInput,
+) -> Result<Vec<PromptLink>, String> {
+    let result = agent_prompts::link_upsert(&project_id, link)?;
+    changed(&app);
+    Ok(result)
+}
+
+#[tauri::command]
+pub fn agent_prompt_link_delete(
+    app: AppHandle,
+    project_id: String,
+    link_id: String,
+) -> Result<Vec<PromptLink>, String> {
+    let result = agent_prompts::link_delete(&project_id, &link_id)?;
+    changed(&app);
+    Ok(result)
 }
 
 #[tauri::command]
@@ -107,7 +134,8 @@ pub async fn agent_prompt_blame(
     since: Option<String>,
 ) -> Result<Vec<SentAgentPrompt>, String> {
     let result =
-        run_off_thread(move || agent_prompts::blame(&project_id, &entry_id, since.as_deref())).await?;
+        run_off_thread(move || agent_prompts::blame(&project_id, &entry_id, since.as_deref()))
+            .await?;
     changed(&app);
     Ok(result)
 }

@@ -12,7 +12,7 @@ import { invoke } from "@tauri-apps/api/core";
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(() => Promise.resolve()) }));
 
 import { toSavedTabEntry, useTabsStore, type SavedTabEntry } from "../stores/tabs";
-import { persistScheduleBinding, useAgentSchedulesStore } from "../stores/agentSchedules";
+import { persistScopeLayout, useAgentSchedulesStore } from "../stores/agentSchedules";
 import { useProjectsStore } from "../stores/projects";
 
 const invokeMock = vi.mocked(invoke);
@@ -65,7 +65,7 @@ describe("persisting the binding", () => {
       loaded: true,
     });
     useTabsStore.getState().loadFromLayout([agent("a")], "/tmp/p", "p");
-    await persistScheduleBinding("p");
+    await persistScopeLayout("p");
     const save = invokeMock.mock.calls.find(([command]) => command === "save_tab_layout");
     expect(save).toBeDefined();
     const args = save?.[1] as { projectId: string; localFile: string; tabs: SavedTabEntry[] };

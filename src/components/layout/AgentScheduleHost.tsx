@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { deliveryRecordId, isFinishedOneTime } from "../../lib/agentPromptSend";
 import { promptScheduleKey } from "../../lib/agentPromptScheduled";
+import { nextAfter } from "../../lib/agentPromptLinks";
 import {
   scheduleVerdict,
   sortSchedules,
@@ -14,7 +15,7 @@ import {
   submitScheduledAgentMessage,
 } from "../../lib/scheduledAgentInput";
 import { lastPtyOutputAt, useActivityStore } from "../../stores/activity";
-import { recordScheduledDelivery, useAgentPromptsStore } from "../../stores/agentPrompts";
+import { recordScheduledDelivery, sendCollectedPrompt, useAgentPromptsStore } from "../../stores/agentPrompts";
 import { useAgentSchedulesStore } from "../../stores/agentSchedules";
 import { useTabsStore, type TabEntry } from "../../stores/tabs";
 
@@ -149,12 +150,55 @@ async function retire(
       scheduledFor: last.occurrence || undefined,
     },
   );
+  if (last.result === "delivered") {
+    await continueAfterDelivery(
+      binding,
+      deliveryRecordId(schedule, last.occurrence),
+    ).catch(() => {});
+  }
   if (schedule.rule.type !== "once") return;
   await useAgentSchedulesStore
     .getState()
     .remove(binding.projectId, binding.scheduleTargetId, schedule.id)
     .catch(() => {});
   await retireCollected(binding.projectId, schedule.message);
+}
+
+/** Queue one hop of every `after` chain. This runs only after the durable
+ * delivered record exists; failed and missed runs never reach it. */
+async function continueAfterDelivery(binding: Binding, recordId: string): Promise<void> {
+  const store = useAgentPromptsStore.getState();
+  const [drafts, links] = await Promise.all([
+    store.load(binding.projectId),
+    store.loadLinks(binding.projectId),
+  ]);
+  const live = bindings()
+    .filter((item) => item.projectId === binding.projectId)
+    .map((item) => ({
+      scheduleTargetId: item.scheduleTargetId,
+      label: item.tab.label,
+      sessionId: item.tab.sessionId,
+      agent: item.tab.cmd,
+    }));
+  const schedule = useAgentSchedulesStore.getState().byTarget[bindingKey(binding)]
+    ?.find((item) => deliveryRecordId(item, item.last?.occurrence ?? "") === recordId);
+  const sourceIds = [recordId];
+  if (schedule) {
+    const key = promptScheduleKey(schedule.message);
+    sourceIds.push(...drafts.filter((prompt) => promptScheduleKey(prompt.message) === key).map((prompt) => prompt.id));
+  }
+  const nextRows = sourceIds.flatMap((sourceId) => nextAfter(sourceId, links, drafts, live, binding.scheduleTargetId));
+  const seen = new Set<string>();
+  for (const next of nextRows) {
+    if (seen.has(next.prompt.id)) continue;
+    seen.add(next.prompt.id);
+    if (!next.strand) continue;
+    await sendCollectedPrompt(
+      binding.projectId,
+      next.strand,
+      next.prompt,
+    ).catch(() => {});
+  }
 }
 
 /**

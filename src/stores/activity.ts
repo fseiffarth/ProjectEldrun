@@ -59,6 +59,17 @@ const tailByPty: Record<string, string> = {};
 const seenAtByPty: Record<string, number> = {};
 const bellByPty: Record<string, number> = {};
 const inputByPty: Record<string, number> = {};
+/// When the tab was last DELIBERATELY opened — switched to in a tab bar, or put
+/// on a phone's screen (`clearAttention`). Deliberately not the same as
+/// `seenAtByPty`, which `attentionFor` re-stamps on every tick for as long as a
+/// tab is the visible one: an agent tab left on screen on an unattended desktop
+/// is "being looked at" forever, and that is what kept a finished turn from ever
+/// being reported to the phone. This one only moves when somebody arrives.
+const readAtByPty: Record<string, number> = {};
+/// Whether the tab has been busy since its last turn-end mark (see
+/// `lastDoneByTab`): a turn "finishes" only after it was seen working, so a
+/// stray blip followed by silence never books a finished turn.
+const busySinceMarkByPty: Record<string, boolean> = {};
 
 /// Memo for the decision-prompt test, keyed by PTY id and validated against the
 /// tail it was computed from. `attentionFor` asks the question of every agent tab
@@ -88,6 +99,8 @@ const PTY_MAPS: Record<string, unknown>[] = [
   seenAtByPty,
   bellByPty,
   inputByPty,
+  readAtByPty,
+  busySinceMarkByPty,
 ];
 
 /** Record that a PTY produced output just now, keeping the tail of the current
@@ -133,8 +146,20 @@ export function lastPtyOutputAt(ptyId: string): number | undefined {
   return lastOutputByPty[ptyId];
 }
 
+/** When the tab was last deliberately opened by a person (ms epoch), on either
+ *  surface, or undefined if nobody has this session. Read-only view of
+ *  `readAtByPty` for the surfaces that must decide "has anyone seen this turn?"
+ *  for themselves — the phone's, which cannot infer it from the desktop's
+ *  `done` flag (that one is suppressed while the tab is the visible one here). */
+export function lastTabReadAt(ptyId: string): number | undefined {
+  return readAtByPty[ptyId];
+}
+
 /** Record that input was sent to a PTY on the user's behalf — a keystroke, a
- *  paste, or a user-triggered flow typing its command (`initialInput`). This is
+ *  paste, a user-triggered flow typing its command (`initialInput`), or a
+ *  keystroke a phone sent over the Mobile bridge (`MobileBridgeHost`, which is
+ *  told about it because the phone types into a tmux client of its own that this
+ *  window never sees). This is
  *  what makes output COUNT: "working" and "done" only ever arise from output
  *  produced after input this session, so a restored tab bursting its resume
  *  banner or replaying a prior transcript — real bytes, but nothing anybody
@@ -246,6 +271,8 @@ export function _clearPtyActivityForTest() {
     attentionByScope: {},
     statusCountsByScope: {},
     statusTabsByScope: {},
+    lastWorkingByTab: {},
+    lastDoneByTab: {},
   });
 }
 
@@ -474,6 +501,17 @@ interface ActivityStore {
    *  drawn from one walk of the tabs, and a second walk in the component could
    *  order the bars differently from the tally they came from. */
   statusTabsByScope: Record<string, StatusTab[]>;
+  /** Composed PTY id → when (ms epoch) the tab last produced output while
+   *  counted as working. Published on the busy→idle edge only — while a tab IS
+   *  busy, `busyByTab` already says "now" — so the Agents views can sort by
+   *  "last working" without re-rendering on every output batch. Session-only. */
+  lastWorkingByTab: Record<string, number>;
+  /** Composed PTY id → when (ms epoch) an agent tab last finished a turn: the
+   *  time of its last output before it went quiet for `DONE_QUIET_MS`, marked
+   *  whether or not anybody was looking (unlike the `done` attention flag, which
+   *  is about UNREAD output and never rises on a watched tab). A decision prompt
+   *  counts too — the agent stopped. Session-only. */
+  lastDoneByTab: Record<string, number>;
   /** Record a terminal bell from a PTY (`ptyId` is the composed `<scope>:<key>`).
    *  Only a hint that the agent wants attention now — WHAT it wants is worked out
    *  from its output on the next `recompute`, which doesn't race the paint the way
@@ -507,6 +545,8 @@ export const useActivityStore = create<ActivityStore>((set, get) => ({
   attentionByScope: {},
   statusCountsByScope: {},
   statusTabsByScope: {},
+  lastWorkingByTab: {},
+  lastDoneByTab: {},
   runningScripts: new Set(),
   runningRunFiles: new Set(),
 
@@ -529,6 +569,7 @@ export const useActivityStore = create<ActivityStore>((set, get) => ({
       return;
     }
     seenAtByPty[ptyId] = Date.now();
+    readAtByPty[ptyId] = seenAtByPty[ptyId];
     const kind = get().attentionByTab[ptyId];
     if (!kind) return;
     // Looking at a tab marks its output read — but it does not ANSWER a prompt,
@@ -589,6 +630,10 @@ export const useActivityStore = create<ActivityStore>((set, get) => ({
     const nextRunFiles = new Set<string>();
     const live = new Set<string>();
     let changed = false;
+    // Copied lazily: both maps move rarely (an edge per turn), and an untouched
+    // tick must hand the same object back so subscribers do not re-render.
+    let nextWorking = get().lastWorkingByTab;
+    let nextDone = get().lastDoneByTab;
 
     for (const [scope, tabs] of Object.entries(tabsByScope)) {
       let scopeBusy = false;
@@ -621,6 +666,28 @@ export const useActivityStore = create<ActivityStore>((set, get) => ({
           if (t.runFile) nextRunFiles.add(t.runFile);
         }
         if ((prevTab[ptyId] ?? false) !== tabBusy) changed = true;
+        if (tabBusy) {
+          busySinceMarkByPty[ptyId] = true;
+        } else if (ts !== undefined && inputByPty[ptyId] !== undefined) {
+          // Was the burst that just ended work? Either a tick saw it busy, or
+          // — a tick can miss a burst that ended between two of them — the
+          // burst itself lasted past the onset debounce. A lone blip is neither.
+          const worked =
+            busySinceMarkByPty[ptyId] || (onset !== undefined && ts - onset >= WORK_ONSET_MS);
+          if (worked && nextWorking[ptyId] !== ts) {
+            // The last output of the burst is when this tab was last seen working.
+            if (nextWorking === get().lastWorkingByTab) nextWorking = { ...nextWorking };
+            nextWorking[ptyId] = ts;
+          }
+          if (worked && now - ts >= DONE_QUIET_MS && agentPromptLeaf(t) && nextDone[ptyId] !== ts) {
+            // Quiet long enough after work to call the turn finished — the same
+            // silence `attentionFor` waits out, but marked for every tab, watched
+            // or not.
+            busySinceMarkByPty[ptyId] = false;
+            if (nextDone === get().lastDoneByTab) nextDone = { ...nextDone };
+            nextDone[ptyId] = ts;
+          }
+        }
 
         const attn = attentionFor(scope, t, ptyId, now);
         if (attn) nextAttn[ptyId] = attn;
@@ -666,6 +733,18 @@ export const useActivityStore = create<ActivityStore>((set, get) => ({
     for (const ptyId of decisionMemo.keys()) {
       if (!live.has(ptyId)) decisionMemo.delete(ptyId);
     }
+    for (const ptyId of Object.keys(nextWorking)) {
+      if (live.has(ptyId)) continue;
+      if (nextWorking === get().lastWorkingByTab) nextWorking = { ...nextWorking };
+      delete nextWorking[ptyId];
+    }
+    for (const ptyId of Object.keys(nextDone)) {
+      if (live.has(ptyId)) continue;
+      if (nextDone === get().lastDoneByTab) nextDone = { ...nextDone };
+      delete nextDone[ptyId];
+    }
+    const workingChanged = nextWorking !== get().lastWorkingByTab;
+    const doneChanged = nextDone !== get().lastDoneByTab;
 
     const attnChanged = !sameAttention(prevAttn, nextAttn);
     const prevCounts = get().statusCountsByScope;
@@ -684,7 +763,15 @@ export const useActivityStore = create<ActivityStore>((set, get) => ({
     // via `live` even if some other tab keeps the same busy tally — so gate it
     // on its own comparison, same as the other maps.
     const runFilesChanged = !sameStringSet(get().runningRunFiles, nextRunFiles);
-    if (!changed && !attnChanged && !countsChanged && !statusTabsChanged && !runFilesChanged)
+    if (
+      !changed &&
+      !attnChanged &&
+      !countsChanged &&
+      !statusTabsChanged &&
+      !runFilesChanged &&
+      !workingChanged &&
+      !doneChanged
+    )
       return;
     // Only re-publish the maps that actually moved: every tab bar subscribes to
     // the whole `busyByTab` object, so handing it a fresh-but-equal one on each
@@ -697,6 +784,8 @@ export const useActivityStore = create<ActivityStore>((set, get) => ({
       ...(countsChanged ? { statusCountsByScope: nextCounts } : {}),
       ...(statusTabsChanged ? { statusTabsByScope: status.tabs } : {}),
       ...(runFilesChanged ? { runningRunFiles: nextRunFiles } : {}),
+      ...(workingChanged ? { lastWorkingByTab: nextWorking } : {}),
+      ...(doneChanged ? { lastDoneByTab: nextDone } : {}),
     });
   },
 }));

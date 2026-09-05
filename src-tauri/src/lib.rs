@@ -1133,6 +1133,9 @@ pub fn run() {
             // Project-scoped prompt collection (agent_prompts.json): text with no
             // tab binding until the user aims it at an agent tab.
             commands::agent_prompts::agent_prompts_list,
+            commands::agent_prompts::agent_prompt_links_list,
+            commands::agent_prompts::agent_prompt_link_upsert,
+            commands::agent_prompts::agent_prompt_link_delete,
             commands::agent_prompts::agent_prompt_upsert,
             commands::agent_prompts::agent_prompt_delete,
             commands::agent_prompts::agent_prompt_reorder,
@@ -1715,6 +1718,7 @@ pub fn run() {
             commands::agents::agent_warmup,
             commands::agents::claude_folder_trusted,
             commands::agents::agent_usage,
+            commands::agents::agent_tab_model,
             commands::ollama::ollama_is_running,
             commands::ollama::ollama_status,
             commands::ollama::ollama_gpu_status,
