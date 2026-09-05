@@ -438,6 +438,34 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
   - [ ] ✅ Works
   - [ ] ❌ Doesn't work
 
+- [~] **31z — The phone's ✓ ticks a card instead of moving it** (2026-09-05;
+  ✅ code-complete and automated tests passing, ⚠️ phone QA pending — and a
+  rebuild + restart first: the bridge gained a to-do action and the sidecar's
+  `TodoColumn` gained two flags). Every tick and untick from the phone came
+  back as `column_follows_date`, and the raw wire code is what the board
+  showed. The checkbox was sending a **move** into the Done column (and back
+  into the intake one), and a move is a placement: the desktop board refuses
+  one its own rules would immediately undo, and a card at 100% is *shown* in
+  Done whatever its column says — so the phone's checkbox spoke the one dialect
+  the board could not accept. It is now its own action (`TodoAction::Toggle`)
+  running the desktop's `toggleTaskDone`, so completion, the completed stamp
+  and the filing are one edit and there is one rule for what a tick means on
+  both surfaces. Two smaller halves of the same seam: the per-card **Move**
+  picker greys out the columns a card's deadline governs (`TodoColumn` now
+  carries `overdue`/`due_today`, and `mobile-web/src/todoDates.ts` mirrors
+  `dateColumn`'s three refusals) instead of offering a move that errors; and a
+  refusal that does arrive is read as prose — *"Overdue, Today and the backlog
+  follow the card's own deadline"* — rather than as its code. Tested in
+  `src/__tests__/MobileTodoDateColumns.test.tsx`.
+  - [ ] 🖐️ Manual phone QA — with the desktop open: tick a card on the phone's
+    board → it goes to Done there and on the desktop, and the desktop's card
+    shows a completion date; untick it → it comes back to the backlog. Open a
+    card's Move picker: for a late card only Overdue (plus Doing/custom/archive
+    columns) is selectable, for a card due today only Today, and Overdue is
+    greyed for anything not late. Moving a card into Doing and back still works.
+    - [ ] ✅ Works
+    - [ ] ❌ Doesn't work
+
 - [~] **31y — The phone's Alerts rows carry the desktop's Done ✓** (2026-09-04;
   ✅ code-complete and automated tests passing, ⚠️ phone QA pending — and a
   rebuild + restart first: the phone serves the bundle baked into the binary,

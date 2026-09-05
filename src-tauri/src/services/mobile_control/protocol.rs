@@ -188,12 +188,22 @@ pub struct TodoColumn {
     /// for the reason `archived` documents above.
     #[serde(default)]
     pub intake: bool,
+    /// The two columns a card's *deadline* decides
+    /// (`schema::calendar::TaskColumn::{overdue,due_today}`). The phone needs
+    /// them for the reason the desktop board does: between these two and the
+    /// intake column a card's place is what its `due` says, so a move into one
+    /// of them is refused rather than written and undone by the next snapshot.
+    /// Without the flags the phone can only offer the move and then report the
+    /// refusal as an error. `default` for the reason `archived` documents above.
+    #[serde(default)]
+    pub overdue: bool,
+    #[serde(default)]
+    pub due_today: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct TodoBoardSnapshot {
     pub columns: Vec<TodoColumn>,
     pub tasks: Vec<TodoCard>,
@@ -467,6 +477,14 @@ pub enum TodoAction {
     Update {
         task_id: String,
         task: TodoTaskInput,
+    },
+    /// Tick or untick one card — completion *and* placement in a single edit,
+    /// the desktop's `toggleTaskDone`. It is its own action rather than a `Move`
+    /// into the Done column because a move is a placement and completion is not:
+    /// the board refuses a placement its rules would immediately undo, so the
+    /// phone's checkbox spoke the one dialect the board could not accept.
+    Toggle {
+        task_id: String,
     },
     Delete {
         task_id: String,

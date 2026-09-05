@@ -21,7 +21,7 @@ import { dayKey } from "../../lib/usageRollup";
 import { resolveProjectDirectory } from "../../types";
 import type { CalendarEvent, CalendarTask, ProjectEntry, Subtask, TaskColumn } from "../../types";
 import type { MailFolder, MailHeader } from "../../types/mail";
-import { addSubtask, boardColumns, columnOf, dropAccepted, fallbackColumnId, provisionalRank } from "../../lib/todoBoard";
+import { addSubtask, boardColumns, columnOf, dropAccepted, fallbackColumnId, provisionalRank, toggleTaskDone } from "../../lib/todoBoard";
 import { addDays, monthGrid, toStamp } from "../../lib/calendarTime";
 import { eventColor } from "../../lib/calendarCategories";
 import { expandEvents } from "../../lib/recurrence";
@@ -70,7 +70,7 @@ interface CreateRequest {
   mode?: string;
   idempotency_key: string;
 }
-interface TodoColumn { id: string; name: string; position: number; done: boolean; archived: boolean; color?: string }
+interface TodoColumn { id: string; name: string; position: number; done: boolean; archived: boolean; overdue?: boolean; due_today?: boolean; color?: string }
 interface TodoSubtask { id: string; title: string; done: boolean }
 interface TodoTaskInput {
   title: string;
@@ -139,6 +139,7 @@ type MobileMailView =
 type TodoAction =
   | { type: "create"; task: TodoTaskInput }
 | { type: "move"; task_id: string; column: string; index?: number }
+  | { type: "toggle"; task_id: string }
   | { type: "update"; task_id: string; task: TodoTaskInput }
   | { type: "delete"; task_id: string }
   | { type: "column_create"; name: string }
@@ -770,6 +771,10 @@ async function todoSnapshot(): Promise<TodoBoard> {
       // Likewise the intake column, which the phone composes new cards into: it
       // is flagged rather than positional, and the board no longer leads with it.
       intake: column.id === fallbackColumnId(columns),
+      // The two date-governed columns, so the phone can grey out a move its own
+      // board would refuse instead of offering it and reporting the refusal.
+      overdue: column.overdue ?? false,
+      due_today: column.due_today ?? false,
       color: column.color || undefined,
     })),
     tasks: await Promise.all(calendar.tasks.map(async (task) => ({
@@ -911,6 +916,14 @@ async function todoMutate(action: TodoAction): Promise<DesktopResponse> {
         index,
         completed_stamp: target.done ? toStamp(new Date()) : null,
       }]);
+    } else if (action.type === "toggle") {
+      // The phone's checkbox, resolved by the desktop's own helper: completion,
+      // the completed stamp and the Done/intake filing are one edit, and an
+      // archived card stays in its archive. Deliberately not a `move` — a card
+      // at 100% is *shown* in Done whatever its column says, so a move there
+      // was a placement the board's own rules refuse (`dropAccepted`), and
+      // ticking a card from the phone could only ever fail.
+      await calendar.updateTask(toggleTaskDone(task, columns));
     } else if (action.type === "delete") {
       await calendar.deleteTask(task.id);
     } else {

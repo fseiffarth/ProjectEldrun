@@ -1,12 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, normalizeTodoBoard, type TodoBoard, type TodoCard, type TodoColumn, type TodoTaskInput } from "../api";
+import { ApiError, api, normalizeTodoBoard, type TodoBoard, type TodoCard, type TodoColumn, type TodoTaskInput } from "../api";
 import { readFlag, writeFlag } from "../prefs";
+import { COLUMN_FOLLOWS_DATE, intakeColumn, localDate, moveAccepted } from "../todoDates";
 
 type Editing = TodoCard | "new" | null;
 
-function localDate(): string {
-  const date = new Date();
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+/** A refusal the phone can explain, or the raw code when it cannot. */
+function boardError(reason: unknown): string {
+  const code = reason instanceof ApiError ? reason.code : String(reason);
+  if (code === "column_follows_date") return COLUMN_FOLLOWS_DATE;
+  if (code === "desktop_unavailable") return "Eldrun is not running on the desktop.";
+  if (code === "task_not_found") return "That card is no longer on the board.";
+  if (code === "invalid_column") return "That column is no longer on the board.";
+  return code;
 }
 
 function dayNumber(date: string): number {
@@ -57,23 +63,6 @@ function inputOf(task: TodoCard): TodoTaskInput {
   return input;
 }
 
-/**
- * The column a card with no home belongs in — the desktop's `fallbackColumnId`,
- * over the wire.
- *
- * Not "the first open column" any more: the board leads with Overdue and Today,
- * whose contents are decided by a card's deadline rather than by anyone putting
- * something there, and the intake column sits behind Doing. The positional rule
- * is kept only as the fallback for an older desktop that sends no flag, where it
- * was the right answer.
- */
-function intakeColumn(columns: TodoColumn[]): string {
-  const column = columns.find((entry) => entry.intake)
-    ?? columns.find((entry) => !entry.done && !entry.archived)
-    ?? columns[0];
-  return column?.id ?? "";
-}
-
 function blankTask(board: TodoBoard): TodoTaskInput {
   return {
     title: "", notes: "", due: localDate(), priority: 0, percent: 0,
@@ -103,7 +92,7 @@ export function Todo({ card }: { card?: string }) {
   const load = useCallback(() => {
     void api<{ board: TodoBoard }>("/api/v1/todo")
       .then(({ board }) => { setBoard(normalizeTodoBoard(board)); setError(""); })
-      .catch((reason) => setError(`Desktop board unavailable: ${String(reason)}`));
+      .catch((reason) => setError(`Desktop board unavailable: ${boardError(reason)}`));
   }, []);
   useEffect(load, [load]);
   // An alert that named a card opens that card, and does it exactly once: the
@@ -125,17 +114,18 @@ export function Todo({ card }: { card?: string }) {
       const next = await api<{ board: TodoBoard }>("/api/v1/todo", { method: "POST", body: JSON.stringify(body) });
       setBoard(normalizeTodoBoard(next.board));
       return true;
-    } catch (reason) { setError(String(reason)); return false; } finally { setBusy(false); }
+    } catch (reason) { setError(boardError(reason)); return false; } finally { setBusy(false); }
   };
   const columns = [...(board?.columns ?? [])].sort((a, b) => a.position - b.position || a.id.localeCompare(b.id));
   const move = (task: TodoCard, column: string, index?: number) => void mutate({ type: "move", task_id: task.id, column, index });
-  const toggle = (task: TodoCard) => {
-    const target = task.done
-      ? intakeColumn(columns)
-      : columns.find((column) => column.done)?.id;
-    if (target) move(task, target);
-    else void mutate({ type: "update", task_id: task.id, task: { ...inputOf(task), percent: task.done ? 0 : 100 } });
-  };
+  // The ✓ is completion, not placement. It used to be sent as a *move* into the
+  // Done column (and back into the intake one), which the desktop board refuses
+  // on principle: a card at 100% is shown in Done whatever its column says, so
+  // the move would have been written and undone by the next snapshot. Every tick
+  // from the phone came back as `column_follows_date`. The desktop's own
+  // `toggleTaskDone` — completion, the stamp, and the filing in one edit — now
+  // runs behind a single action, so there is one rule for what a tick means.
+  const toggle = (task: TodoCard) => void mutate({ type: "toggle", task_id: task.id });
   const columnAction = (body: unknown) => void mutate(body);
   const tags = [...new Set((board?.tasks ?? []).flatMap((task) => task.tags))].sort((a, b) => a.localeCompare(b));
   // Keep the column badge based on the matching cards even when "Hide done"
@@ -233,7 +223,7 @@ function TodoColumnView({ column, index, columns, tasks, cardCount, busy, move, 
         <span className="todo-progress-track"><span className="todo-progress-fill" style={{ width: `${task.percent}%`, backgroundColor: accent }} /></span>
         <small>{task.percent}%</small>
       </div>}
-      <div className="todo-mobile-actions"><button type="button" onClick={() => edit(task)} disabled={busy}>✎ Edit</button><button type="button" disabled={busy || index === 0} onClick={() => move(task, column.id, index - 1)} aria-label={`Move ${task.title} up`}>↑</button><button type="button" disabled={busy || index === tasks.length - 1} onClick={() => move(task, column.id, index + 1)} aria-label={`Move ${task.title} down`}>↓</button><select aria-label={`Move ${task.title}`} disabled={busy} value={task.column} onChange={(event) => move(task, event.target.value)}>{columns.map((next) => <option key={next.id} value={next.id}>{next.name}</option>)}</select></div>
+      <div className="todo-mobile-actions"><button type="button" onClick={() => edit(task)} disabled={busy}>✎ Edit</button><button type="button" disabled={busy || index === 0} onClick={() => move(task, column.id, index - 1)} aria-label={`Move ${task.title} up`}>↑</button><button type="button" disabled={busy || index === tasks.length - 1} onClick={() => move(task, column.id, index + 1)} aria-label={`Move ${task.title} down`}>↓</button><select aria-label={`Move ${task.title}`} disabled={busy} value={task.column} onChange={(event) => move(task, event.target.value)}>{columns.map((next) => <option key={next.id} value={next.id} disabled={!moveAccepted(task, next.id, columns)}>{next.name}</option>)}</select></div>
     </article>)}
   </section>;
 }

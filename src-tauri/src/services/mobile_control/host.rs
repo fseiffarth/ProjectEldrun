@@ -883,7 +883,9 @@ async fn todo_mutate(
         TodoAction::Update { task_id, task } => {
             !task_id.is_empty() && task_id.len() <= 128 && valid_todo_task(task)
         }
-        TodoAction::Delete { task_id } => !task_id.is_empty() && task_id.len() <= 128,
+        TodoAction::Toggle { task_id } | TodoAction::Delete { task_id } => {
+            !task_id.is_empty() && task_id.len() <= 128
+        }
         TodoAction::ColumnCreate { name } => !name.trim().is_empty() && name.len() <= 160,
         TodoAction::ColumnRename { column_id, name } => {
             !column_id.is_empty()

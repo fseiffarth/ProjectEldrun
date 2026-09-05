@@ -86,6 +86,11 @@ export function normalizeTodoBoard(board: TodoBoard): TodoBoard {
       // board laid out so that the leftmost open column *was* the intake — which
       // is what the callers fall back to when no column carries the flag.
       intake: column.intake ?? false,
+      // The date-governed pair. False from an older desktop is the honest
+      // reading again: a board that flags neither has no column a deadline
+      // decides, so no move into one needs refusing.
+      overdue: column.overdue ?? false,
+      due_today: column.due_today ?? false,
     })),
     tasks: (board.tasks ?? []).map((task) => ({
       ...task,
@@ -99,8 +104,10 @@ export function normalizeTodoBoard(board: TodoBoard): TodoBoard {
 }
 export type MobileAlertKind = "mail" | "event" | "task";
 export type MobileAlertSeverity = "overdue" | "now" | "soon" | "upcoming";
-/** A bounded display snapshot of the desktop Alerts feed. Source ids and
- * mutation capabilities deliberately never cross the mobile boundary. */
+/** A bounded snapshot of the desktop Alerts feed. Source ids never cross the
+ * mobile boundary: the only two handles a row carries are opaque and named by
+ * the desktop — the board card behind a task row, and the row itself, which is
+ * what `resolveAlert` presses the ✓ on. What that ✓ *does* stays desktop-side. */
 export interface MobileAlertItem {
   kind: MobileAlertKind;
   severity: MobileAlertSeverity;
