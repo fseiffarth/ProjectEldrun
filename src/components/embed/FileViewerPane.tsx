@@ -197,6 +197,7 @@ import {
   synctexViewBest,
   pickSyncRect,
   sourceColumnFraction,
+  isTexDocumentRoot,
   resolveTexRoot,
   lineStartOffset,
   offsetToLineCol,
@@ -537,6 +538,33 @@ export function FileViewerPane({ viewer, path, projectId, tabKey, visible = true
       if (tabKey) useFileSourcesStore.getState().clearControls(tabKey);
     };
   }, [tabKey, project?.remote, rel, effectiveSource, remoteMissing]);
+
+  // A `.tex` tab that is really a WORKSPACE, healing itself (#tex-structure).
+  // `viewer` is persisted, so a `.tex` opened as a bare editor before the
+  // one-workspace-per-document policy — or by any path that still makes a plain
+  // editor tab — comes back as a bare editor for ever: no structure sidebar, and
+  // Ctrl+click on an `\input` scatters a new tab instead of switching the center.
+  // Two conditions together say "this tab is a whole document, shown as a
+  // fragment": nothing includes it (`resolveTexRoot` answers with itself) AND it
+  // declares a `\documentclass`. The second is what keeps a DELIBERATE child
+  // editor tab (a drop, a followed link) a plain editor when its parent has never
+  // been compiled and so is in no root map — a fragment has no class line. The
+  // store lookup confines the write to a real tab of this exact file, so a pane
+  // rendering some other path never rewrites the tab it sits in.
+  useEffect(() => {
+    if (viewer !== "tex" || !tabKey) return;
+    const tab = useTabsStore.getState().tabs.find((t) => t.key === tabKey);
+    if (!tab || tab.kind !== "embed" || tab.viewer !== "tex" || tab.embedPath !== path) return;
+    let cancelled = false;
+    void (async () => {
+      const root = await resolveTexRoot(path);
+      if (cancelled || root !== path) return;
+      const text = await readFileText(path, projectId).catch(() => null);
+      if (cancelled || text == null || !isTexDocumentRoot(text)) return;
+      useTabsStore.getState().setTabViewer(tabKey, "texworkspace");
+    })();
+    return () => { cancelled = true; };
+  }, [viewer, tabKey, path, projectId]);
 
   if (remoteDisconnected && effectiveSource !== "local" && effectiveSource !== "none") {
     return (

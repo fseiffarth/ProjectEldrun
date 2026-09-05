@@ -178,6 +178,54 @@ describe("openTexWorkspace — one tab per document", () => {
     expect(tabs[0].viewerState?.texActivePath).toBe(CHILD);
   });
 
+  it("adopts a legacy bare `tex` tab on the root instead of opening a second tab", async () => {
+    const { openTexWorkspace } = await import("../components/embed/openTexWorkspace");
+    const { useTabsStore } = await import("../stores/tabs");
+    useTabsStore.getState().setScope("p");
+
+    // The shape a `.tex` tab saved before the one-workspace-per-document policy
+    // comes back in: `viewer` is persisted, so it restores as a plain editor —
+    // no structure sidebar — and used to sit there while a re-open minted a
+    // second tab beside it.
+    const legacy = useTabsStore.getState().addTab({
+      label: "main.tex",
+      cmd: "",
+      cwd: "/p",
+      kind: "embed",
+      embedPath: MAIN,
+      viewer: "tex",
+      viewerState: { scrollTop: 2382 },
+    });
+
+    await openTexWorkspace(MAIN);
+    const tabs = useTabsStore.getState().tabs;
+    expect(tabs).toHaveLength(1);
+    expect(tabs[0].key).toBe(legacy.key); // same tab, healed in place
+    expect(tabs[0].viewer).toBe("texworkspace");
+    expect(tabs[0].viewerState?.scrollTop).toBe(2382); // position kept
+  });
+
+  it("leaves a CHILD editor tab a plain editor (it is not the root)", async () => {
+    const { openTexWorkspace } = await import("../components/embed/openTexWorkspace");
+    const { useTabsStore } = await import("../stores/tabs");
+    useTabsStore.getState().setScope("p");
+
+    const child = useTabsStore.getState().addTab({
+      label: "child.tex",
+      cmd: "",
+      cwd: "/p",
+      kind: "embed",
+      embedPath: CHILD,
+      viewer: "tex",
+    });
+
+    await openTexWorkspace(MAIN);
+    const tabs = useTabsStore.getState().tabs;
+    expect(tabs).toHaveLength(2);
+    expect(tabs.find((t) => t.key === child.key)?.viewer).toBe("tex");
+    expect(tabs.find((t) => t.key !== child.key)?.viewer).toBe("texworkspace");
+  });
+
   it("centers on the root (not undefined) when the main itself is re-opened", async () => {
     const { openTexWorkspace } = await import("../components/embed/openTexWorkspace");
     const { useTabsStore } = await import("../stores/tabs");

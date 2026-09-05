@@ -64,10 +64,22 @@ export async function openTexWorkspace(
   // main is an ordinary merge write with nothing to clear.
   const activePath = clickedPath === root ? root : clickedPath;
 
+  // The tab that already holds this document, if any. A bare `tex` tab ON THE
+  // ROOT counts as one: `viewer` is persisted, so a `.tex` opened as a plain
+  // editor before this one-workspace-per-document policy came back as a plain
+  // editor for ever — no structure sidebar, no in-place child navigation — and a
+  // dedupe looking only for `texworkspace` answered re-opening the file by
+  // adding a SECOND tab beside it instead of fixing the first. Matching it here
+  // and promoting it in place is the heal for the tab the user actually has open.
+  // A CHILD editor tab (a drop, a followed link) never matches: its `embedPath`
+  // is not the root the click resolved to.
+  const isLegacyEditor = (t: TabEntry) =>
+    t.kind === "embed" && t.viewer === "tex" && t.embedPath === root;
   const existing = store.tabs.find(
-    (t) => t.kind === "embed" && t.viewer === "texworkspace" && t.embedPath === root,
+    (t) => (t.kind === "embed" && t.viewer === "texworkspace" && t.embedPath === root) || isLegacyEditor(t),
   );
   if (existing) {
+    if (isLegacyEditor(existing)) store.setTabViewer(existing.key, "texworkspace");
     if (drop && clickedPath !== root) {
       // A child dropped somewhere specific while its document is open: a plain
       // editor tab for THAT file, there. The workspace is left untouched.

@@ -1101,6 +1101,13 @@ interface TabsStore {
   // remote project). No-op when unchanged. The CenterPanel's localOnly/cwd
   // computation reads the result so the next mount spawns on the chosen side.
   setTabLocation: (key: string, location: TabLocation) => void;
+  // Swap the built-in viewer an embed tab renders its file with, in place — same
+  // tab, same key, same position in the layout. `viewer` is persisted, so a tab
+  // saved under a viewer choice the app has since revised comes back under the
+  // old one for ever; this is how such a tab is HEALED rather than left beside a
+  // freshly opened duplicate (the `tex` → `texworkspace` upgrade in
+  // FileViewerPane / openTexWorkspace). No-op when unchanged.
+  setTabViewer: (key: string, viewer: InternalViewer) => void;
   // Merge a patch into an embed tab's persisted viewer position (scroll/zoom/
   // pan). The viewer panes call this as the reader scrolls/zooms; the debounced
   // saveLayout effect then flushes it to project.json (see ViewerState).
@@ -2675,6 +2682,22 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       });
       // No-op (stable array) when the value is unchanged, so an idle re-toggle
       // doesn't churn the tabs array / wake the saveLayout debounce.
+      if (!changed) return {};
+      return writeScope(s, s.scope, nextTabs, layout, focusedGroupId);
+    });
+  },
+
+  setTabViewer: (key, viewer) => {
+    set((s) => {
+      const { tabs, layout, focusedGroupId } = currentScopeState(s);
+      let changed = false;
+      const nextTabs = tabs.map((t) => {
+        if (t.key !== key || t.kind !== "embed" || t.viewer === viewer) return t;
+        changed = true;
+        return { ...t, viewer };
+      });
+      // Stable array when nothing moved, so a repeated heal attempt does not
+      // churn the tabs array / wake the saveLayout debounce.
       if (!changed) return {};
       return writeScope(s, s.scope, nextTabs, layout, focusedGroupId);
     });

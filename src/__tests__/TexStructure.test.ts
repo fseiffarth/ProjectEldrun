@@ -10,7 +10,12 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const { mockInvoke } = vi.hoisted(() => ({ mockInvoke: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: mockInvoke }));
 
-import { gatherTexStructure, texStructureParent, type TexFileNode } from "../lib/viewers/tex";
+import {
+  gatherTexStructure,
+  isTexDocumentRoot,
+  texStructureParent,
+  type TexFileNode,
+} from "../lib/viewers/tex";
 
 /** Drive `read_file_text` off a fixed file map; `list_dir` is unused here since
  *  every graphic below carries an explicit extension (resolved synchronously). */
@@ -198,5 +203,32 @@ describe("gatherTexStructure", () => {
 
     const { root } = await gatherTexStructure("/p/main.tex", "proj");
     expect(root.children.length).toBeLessThanOrEqual(60);
+  });
+});
+
+/**
+ * The "is this file a document, or a piece of one?" test behind the workspace
+ * self-heal: a `.tex` tab's `viewer` is persisted, so a file opened as a bare
+ * editor stays one — and telling a whole document apart from a deliberately
+ * opened fragment is what decides whether such a tab is upgraded.
+ */
+describe("isTexDocumentRoot", () => {
+  it("says yes to a file that declares a class, with or without options", () => {
+    expect(isTexDocumentRoot("\\documentclass{article}\n\\begin{document}\n")).toBe(true);
+    expect(isTexDocumentRoot("\\documentclass[a0,portrait]{a0poster}\n")).toBe(true);
+    // A subfile is its own compilable root too.
+    expect(isTexDocumentRoot("\\documentclass[../main.tex]{subfiles}\n")).toBe(true);
+  });
+
+  it("says no to an \\input-ed fragment", () => {
+    expect(isTexDocumentRoot("\\section{Method}\nSome prose.\n")).toBe(false);
+  });
+
+  it("does not count a commented-out \\documentclass", () => {
+    expect(isTexDocumentRoot("%% \\documentclass{article} -- see main.tex\n\\section{X}\n")).toBe(
+      false,
+    );
+    // …but an escaped percent does not blank the rest of the line.
+    expect(isTexDocumentRoot("100\\% done\n\\documentclass{article}\n")).toBe(true);
   });
 });

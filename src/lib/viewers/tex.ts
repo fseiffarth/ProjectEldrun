@@ -550,6 +550,25 @@ export function resolveTexRoot(path: string): Promise<string> {
 }
 
 /**
+ * Does `text` read as a document of its own — i.e. does it carry a
+ * `\documentclass`? The complement of a fragment: a chapter reached by
+ * `\input` never declares one, so this separates "a main document that happens
+ * not to be recorded as anybody's child yet" from "a piece of one, opened on its
+ * own". Comments are blanked first, so a commented-out `\documentclass` in a
+ * fragment's header does not promote it. Pure — the caller supplies the text.
+ *
+ * Used by the workspace self-heal (`FileViewerPane`): a `.tex` tab's `viewer` is
+ * PERSISTED, so a file opened as a bare editor before the one-workspace-per-
+ * document policy came back as a bare editor for ever. `resolveTexRoot` alone
+ * cannot tell that shape from a deliberate child-editor tab (a drop, a followed
+ * link) whose parent has never been compiled and so is in no root map — this
+ * does.
+ */
+export function isTexDocumentRoot(text: string): boolean {
+  return /\\documentclass\s*(?:\[[^\]]*\])?\s*\{/.test(blankTexComments(text));
+}
+
+/**
  * Map a click on a pdf.js page canvas to SyncTeX big points (72 dpi from the
  * page's top-left). At pdf.js `scale = 1` the viewport unit already equals one
  * big point, so dividing the CSS-pixel offset within the page rect by `scale`
