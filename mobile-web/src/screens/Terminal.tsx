@@ -31,6 +31,7 @@ import { inputFrameStart, sessionStatus, shortenPath, type SessionStatus } from 
 import { readSelectPrompt, selectKeys } from "../terminal/selectPrompt";
 import { currentMode, modeChoices, shiftTabKey } from "../terminal/agentModes";
 import { agentInputWrites } from "../terminal/composer";
+import { chatTurns } from "../terminal/chatTurns";
 import { StatusSheet } from "./StatusSheet";
 import {
   prepareOnDeviceSpeech,
@@ -183,11 +184,21 @@ function ReadableRow({ line }: { line: ReadableLine }) {
   ))}</div>;
 }
 
-/** A revealed block of earlier output. Memoized on the frozen chunk's stable
- * `lines` reference, so the per-frame rebuild of the live tail costs nothing
- * for however much history is on screen. */
-const HistoryLines = memo(function HistoryLines({ lines }: { lines: readonly ReadableLine[] }) {
-  return <>{lines.map((line) => <ReadableRow key={line.key} line={line} />)}</>;
+/** A block of session lines. On an agent tab they read as a chat: the
+ * agent's turns on the left as printed, each prompt the user submitted as a
+ * bubble on the right — the TUI's own echo of it, see `chatTurns`. A shell has
+ * no turns and paints flat. Memoized on the `lines` reference: a frozen
+ * history chunk and the open chunk keep theirs, so the per-frame rebuild of
+ * the live tail costs nothing for however much history is on screen. */
+const ReadableTurns = memo(function ReadableTurns({ lines, chat }: { lines: readonly ReadableLine[]; chat: boolean }) {
+  if (!chat) return <>{lines.map((line) => <ReadableRow key={line.key} line={line} />)}</>;
+  return <>{chatTurns(lines).map((turn) => turn.role === "user"
+    ? <div key={turn.key} className="readable-turn user" role="group" aria-label="Your prompt">
+        {(turn.prompt ?? turn.lines).map((line) => <ReadableRow key={line.key} line={line} />)}
+      </div>
+    : <div key={turn.key} className="readable-turn agent">
+        {turn.lines.map((line) => <ReadableRow key={line.key} line={line} />)}
+      </div>)}</>;
 });
 
 interface SheetOption {
@@ -1100,6 +1111,9 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     () => (tab.kind === "agent" ? shown.slice(0, inputFrameStart(shown)) : shown),
     [tab.kind, shown],
   );
+  /** Agent tabs read as a chat (`ReadableTurns`); a shell's output has no
+   * turns to lay out. */
+  const chat = tab.kind === "agent";
   const copyReadable = async () => {
     try {
       // Copy exactly what the reading view is showing: the revealed history,
@@ -1244,16 +1258,17 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
           }}>
           {painted.length === 0 && visibleChunks.length === 0 && earlier.open.length === 0
             ? <div className="readable-empty"><strong>Waiting for output</strong><span>The exact terminal is running behind this view.</span></div>
-            : <div className="readable-lines">
+            : <div className={chat ? "readable-lines chat" : "readable-lines"}>
                 {clipped && <div className="readable-notice">{TRUNCATION_NOTICE}</div>}
                 {hiddenLines > 0 && <button className="readable-earlier" onClick={showEarlier}>Show earlier output ({hiddenLines.toLocaleString()} lines)</button>}
                 {hiddenLines === 0 && earlier.dropped && <div className="readable-notice">{TRUNCATION_NOTICE}</div>}
-                {visibleChunks.map((chunk) => <HistoryLines key={chunk.id} lines={chunk.lines} />)}
-                {earlier.open.map((line) => <ReadableRow key={line.key} line={line} />)}
-                {painted.map((line) => <ReadableRow key={line.key} line={line} />)}
+                {visibleChunks.map((chunk) => <ReadableTurns key={chunk.id} lines={chunk.lines} chat={chat} />)}
+                <ReadableTurns lines={earlier.open} chat={chat} />
+                <ReadableTurns lines={painted} chat={chat} />
               </div>}
         </section>
         {lines.length > 0 && <div className="readable-tools">
+          {chat && <small>Chat layout · Untested</small>}
           <button onClick={() => void copyReadable()} aria-label="Copy the session text">{copied ? "Copied" : "Copy"}</button>
         </div>}
         {!atBottom && <button className="readable-jump" onClick={jumpToLatest}>Jump to latest ↓</button>}

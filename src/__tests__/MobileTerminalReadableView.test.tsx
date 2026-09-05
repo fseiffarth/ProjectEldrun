@@ -94,6 +94,45 @@ describe("Eldrun Mobile readable terminal view", () => {
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith("Read src/App.tsx\nI found the layout.\n1. Keep it\n2. Change it");
   });
 
+  it("lays an agent tab out as a chat: the echoed prompt on the right, the answer on the left", async () => {
+    render(<Terminal tab={{ id: "tab", label: "Claude", kind: "agent", available: true, viewer_busy: false }} back={() => {}} />);
+    await act(async () => {});
+
+    const bytes = new TextEncoder().encode("> fix the failing test\n\n⏺ Reading the test first.\n  It fails on the second assertion.\n\n> ");
+    const payload = new ArrayBuffer(bytes.byteLength);
+    new Uint8Array(payload).set(bytes);
+    act(() => FakeWebSocket.instances[0].onmessage?.({ data: payload } as MessageEvent));
+    await act(async () => { await new Promise((resolve) => window.setTimeout(resolve, 200)); });
+
+    // The prompt is its own bubble, marker stripped; the answer is an agent
+    // turn; the live input box at the bottom is not a turn at all.
+    const prompt = screen.getByRole("group", { name: "Your prompt" });
+    expect(prompt.className).toBe("readable-turn user");
+    expect(prompt.textContent).toBe("fix the failing test");
+    expect(screen.getByText("⏺ Reading the test first.").closest(".readable-turn")?.className).toBe("readable-turn agent");
+    expect(screen.getAllByRole("group", { name: "Your prompt" })).toHaveLength(1);
+    expect(document.querySelector(".readable-lines")?.className).toBe("readable-lines chat");
+
+    // Copy still copies the transcript as the session printed it.
+    fireEvent.click(screen.getByRole("button", { name: "Copy the session text" }));
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith("> fix the failing test\n\n⏺ Reading the test first.\n  It fails on the second assertion.");
+  });
+
+  it("paints a shell tab flat, with no turns", async () => {
+    render(<Terminal tab={{ id: "tab", label: "Shell", kind: "shell", available: true, viewer_busy: false }} back={() => {}} />);
+    await act(async () => {});
+
+    const bytes = new TextEncoder().encode("$ cat notes\n> not a prompt, a shell's here-doc continuation");
+    const payload = new ArrayBuffer(bytes.byteLength);
+    new Uint8Array(payload).set(bytes);
+    act(() => FakeWebSocket.instances[0].onmessage?.({ data: payload } as MessageEvent));
+    await act(async () => { await new Promise((resolve) => window.setTimeout(resolve, 200)); });
+
+    expect(screen.queryByRole("group", { name: "Your prompt" })).toBeNull();
+    expect(document.querySelector(".readable-turn")).toBeNull();
+    expect(document.querySelector(".readable-lines")?.className).toBe("readable-lines");
+  });
+
   it("keeps xterm output-only and disables its hidden text entry", async () => {
     render(<Terminal tab={{ id: "tab", label: "Codex", kind: "agent", available: true, viewer_busy: false }} back={() => {}} />);
     await act(async () => {});

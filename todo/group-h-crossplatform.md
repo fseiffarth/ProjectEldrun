@@ -407,6 +407,38 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
         left out deliberately rather than forgotten — it is the one part that
         reaches the network unasked.
 
+- [~] **31ab — Mobile Focus reads as a chat** (2026-09-05; ✅ code-complete and
+  automated tests passing, ⚠️ phone QA pending — and a rebuild + restart first,
+  since the phone serves the bundle baked into the binary). Focus painted an
+  agent session as one flat column, so the user's own prompts sat in the flow
+  in the TUI's dim grey and a reader had to find `>` lines to tell a turn from
+  an answer. Now an agent tab lays out like a chat: the agent's turns on the
+  left, exactly as printed, and every prompt the user submitted as a violet
+  bubble on the right (the composer's own "Sent" tint, so it reads as *mine*
+  without a label). The one shape this reads is the echo every agent TUI
+  writes back into its transcript on submit — the input marker at the left
+  edge, a space, the text (`> …` in Claude Code, Gemini CLI and Qwen Code once
+  the box frame is stripped, `› …` in Codex), with a multi-line prompt's
+  further lines indented under it. A select dialog's `❯ 1. Yes` row is excluded
+  by its number, an indented quote inside an answer by its indent, and the live
+  input box at the bottom never reaches it (`inputFrameStart` cuts first).
+  `mobile-web/src/terminal/chatTurns.ts` does the grouping; `ReadableTurns` in
+  `Terminal.tsx` renders it per history chunk, open chunk and live tail, still
+  memoized on the chunk reference. Copy still copies the transcript as printed,
+  marker included; a shell tab is untouched. Tested in
+  `src/__tests__/MobileChatTurns.test.ts` (7 cases) and
+  `MobileTerminalReadableView.test.tsx` (2 cases); `/terminal-preview.html`
+  shows two exchanges.
+  - [ ] 🖐️ Manual phone QA — open a Claude agent tab in Focus and send a prompt
+    from the composer: it appears as a bubble on the right, in the same violet
+    as the "Sent" strip, without the `>`; the answer sits on the left as
+    before, colours intact; a multi-line prompt stays one bubble; a permission
+    question's numbered rows stay on the left and answerable; the live input
+    box is still not painted; Copy still includes `> `; a Codex tab shows the
+    same for `›`; a shell tab shows no bubbles.
+    - [ ] ✅ Works
+    - [ ] ❌ Doesn't work
+
 - [~] **31aa — Project boxes reach the phone** (2026-09-05; ✅ code-complete
   and automated tests passing, ⚠️ phone QA pending — and a rebuild + restart
   first: the sidecar's catalog, a backend command and the embedded PWA all

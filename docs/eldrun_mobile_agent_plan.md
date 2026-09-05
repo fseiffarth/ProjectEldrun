@@ -286,6 +286,19 @@ prose about failure as a red verdict, and discarded the colour the program had
 already sent. A real select prompt is answered the way it is on a desktop — the
 key row's arrows and Enter, which need no inference to be right.
 
+The one shape it does read is the **turn**. An agent tab lays out as a chat:
+the agent's output on the left exactly as printed, and every prompt the user
+submitted as a bubble on the right. That needs no classifier because every
+agent TUI echoes a submitted prompt back into its transcript the same way —
+its own input marker at the left edge, a space, the text (`> …` in Claude
+Code, Gemini CLI and Qwen Code once the box frame is stripped, `› …` in
+Codex), with the further lines of a multi-line prompt indented under it
+(`chatTurns.ts`). A dialog's numbered `❯ 1. Yes` row and an indented quote
+inside an answer are not that shape, and the live input box never reaches the
+grouping: the reading view already cuts at `inputFrameStart`. The grouping is
+layout only — the lines keep their keys and colours, Copy copies the transcript
+as printed, and a shell tab has no turns and paints flat.
+
 For repeatable visual QA without a live Eldrun or tmux session, run the Mobile
 Vite target and open `/terminal-preview.html?kind=agent` or `?kind=shell`. The
 development-only fixture renders the production `Terminal` component, xterm,

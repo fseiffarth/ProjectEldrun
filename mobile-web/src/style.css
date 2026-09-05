@@ -326,6 +326,19 @@ body.terminal-open { min-height:0; overflow:hidden; }
 .readable-line .s { text-decoration:line-through; }
 .readable-line .d { opacity:.62; }
 .readable-blank { height:.7em; }
+/* An agent tab reads as a chat (`chatTurns`): the agent's turns sit on the
+   left exactly as printed, and every prompt the user submitted — the TUI's
+   own echo of it — is a bubble on the right, in the composer's violet so it
+   reads as "mine" without a label. The bubble is the phone's, so it paints
+   the prompt in its own colour: the dim grey the TUI echoes with would sink
+   into the tint. */
+.readable-lines.chat { gap:10px; }
+.readable-turn { display:grid; min-width:0; }
+.readable-turn.agent { justify-self:start; width:100%; }
+.readable-turn.user { justify-self:end; max-width:88%; padding:8px 12px; border-radius:16px 16px 4px 16px; background:#2b2650; color:#e9e4ff; font:400 .9rem/1.45 Inter,ui-sans-serif,system-ui,sans-serif; }
+.readable-turn.user .readable-line { padding-left:0; text-indent:0; }
+.readable-turn.user .readable-line span { color:inherit !important; background:none !important; opacity:1; }
+.readable-turn.user .readable-blank { height:.45em; }
 .readable-notice { margin-bottom:10px; padding:8px 10px; border-left:3px solid #747b90; border-radius:8px; background:#14161e; color:#9298aa; font:400 .78rem/1.45 Inter,ui-sans-serif,system-ui,sans-serif; }
 .readable-earlier { display:block; width:100%; margin-bottom:10px; padding:9px 10px; border:1px solid #34384a; border-radius:9px; background:#151823; color:#9da3b6; font:500 .78rem/1.4 Inter,ui-sans-serif,system-ui,sans-serif; text-align:center; }
 .readable-earlier:active { background:#1c2030; color:#c8cdda; }
@@ -335,6 +348,7 @@ body.terminal-open { min-height:0; overflow:hidden; }
    looking at, and the stream reserves room below it so nothing is covered. */
 .readable-tools { position:absolute; right:10px; bottom:12px; display:flex; gap:6px; }
 .readable-tools button { padding:5px 10px; border:1px solid #34384a; border-radius:9px; background:rgba(16,19,27,.86); color:#9da3b6; font-size:.72rem; backdrop-filter:blur(6px); }
+.readable-tools small { align-self:center; padding:3px 8px; border-radius:999px; background:rgba(16,19,27,.86); color:#8fb8ff; font-size:.6rem; text-transform:uppercase; letter-spacing:.05em; backdrop-filter:blur(6px); }
 .readable-jump { position:absolute; left:50%; bottom:12px; transform:translateX(-50%); padding:8px 14px; border:1px solid #4c5165; border-radius:999px; background:rgba(23,26,36,.94); color:#e7e9f2; font-size:.78rem; box-shadow:0 6px 18px rgba(0,0,0,.35); }
 .terminal-controls { min-height:0; overflow:auto; }
 .last-sent { display:grid; grid-template-columns:auto minmax(0,1fr); gap:8px; align-items:start; margin:6px 7px 0; padding:8px 10px; border-radius:9px; background:#211d35; color:#dcd6ff; font-size:.78rem; }
