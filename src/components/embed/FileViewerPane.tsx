@@ -2532,6 +2532,25 @@ interface CaretMirrorOffsets {
   height: number;
 }
 
+/**
+ * The textarea's content-box width — the width its lines wrap at — as the
+ * fractional number layout actually uses, NOT `clientWidth`. `clientWidth` is
+ * rounded to a whole pixel, and the editor's box is routinely fractional (it
+ * is whatever flex leaves beside the gutter). Measured on WebKitGTK 2.52 with
+ * the bundled JetBrains Mono at 12px (7.20006px advance): at a 527.5px box the
+ * textarea wraps a 70-column comment onto two rows (70 × 7.20006 = 504.004 >
+ * 503.5) while a mirror sized to `clientWidth` = 528 fits it on one — so every
+ * gutter cell, caret mark and search mark below that line sat a row off, and the
+ * coloured glyphs wrapped at a column the caret never reached. Sized to this
+ * width instead, the mirror matched the textarea on every line of that document
+ * at every width tried. The scrollbar is subtracted as `offsetWidth -
+ * clientWidth`: both are rounded, but the difference is the scrollbar's whole-
+ * pixel width, so it survives the rounding that the width itself does not.
+ */
+function textareaWrapWidth(ta: HTMLTextAreaElement): number {
+  return ta.getBoundingClientRect().width - (ta.offsetWidth - ta.clientWidth);
+}
+
 /** Map mirror offsets to viewport coordinates. Cheap — one `getBoundingClientRect`
  *  and the live scroll offsets — so the completion dropdown can re-anchor on
  *  every keystroke while the expensive mirror layout below runs once per token. */
@@ -3011,22 +3030,23 @@ function CodeEditor({
   const [lineHeights, setLineHeights] = useState<number[]>([]);
   const [measureNonce, bumpMeasure] = useReducer((n: number) => n + 1, 0);
 
-  // Soft-wrap content width (wrap mode only): the textarea's clientWidth, which
-  // excludes its vertical scrollbar. The overlay <pre> layers live in a
+  // Soft-wrap content width (wrap mode only): the textarea's box width less its
+  // vertical scrollbar (`textareaWrapWidth`, fractional — a rounded `clientWidth`
+  // wraps one row off at fractional box widths). The overlay <pre> layers live in a
   // scrollbar-free, overflow:hidden parent, so left at min-width:100% they wrap
   // at the full box width — wider than the textarea once a vertical scrollbar
   // appears — and the caret drifts from the coloured glyphs over wrapped lines.
   // Constraining the overlays to this width makes every layer wrap identically.
   const [wrapWidth, setWrapWidth] = useState<number | null>(null);
-  // Last `clientWidth` the textarea was re-broken at. A vertical scrollbar
+  // Last wrap width the textarea was re-broken at. A vertical scrollbar
   // appearing/disappearing as the document grows past the editor height changes
-  // clientWidth WITHOUT changing the border box, so the ResizeObserver below
+  // the wrap width WITHOUT changing the border box, so the ResizeObserver below
   // never fires and the textarea keeps its stale wrapping (WebKitGTK won't
   // re-break on its own — see the nudge there). The overlay <pre>s, sized to the
-  // fresh clientWidth each keystroke, then wrap at a different width, so the
+  // fresh width each keystroke, then wrap at a different width, so the
   // coloured glyphs and the last-change tint drift down a row. Tracking the
   // width here lets the wrap layout effect nudge a re-break when it shifts.
-  const prevClientWidth = useRef<number | null>(null);
+  const prevWrapWidth = useRef<number | null>(null);
 
   // Syntax-highlighted HTML rendered in a <pre> layer behind a transparent
   // textarea, so the file colours by type while staying fully editable. `null`
@@ -4032,26 +4052,26 @@ function CodeEditor({
 
   // Measure each logical line's wrapped height (wrap mode only) so the gutter
   // cells line up with the editor. Runs before paint to avoid a flash of
-  // misaligned numbers. The mirror is sized to the textarea's content width
-  // (clientWidth excludes the vertical scrollbar) so it wraps line-for-line.
+  // misaligned numbers. The mirror is sized to the textarea's exact wrap width
+  // (its fractional box less the vertical scrollbar) so it wraps line-for-line.
   useLayoutEffect(() => {
     if (!wrap || !loaded) {
       setWrapWidth(null);
-      prevClientWidth.current = null;
+      prevWrapWidth.current = null;
       return;
     }
     const measure = measureRef.current;
     const ta = textareaRef.current;
     if (!measure || !ta) return;
-    const cw = ta.clientWidth;
+    const cw = textareaWrapWidth(ta);
     // If the content width changed since the last measure — most often a vertical
     // scrollbar toggling as the doc crosses the editor height, which the
     // ResizeObserver can't see — force the textarea to re-break to the new width
     // with the same whiteSpace nudge used on resize (synchronous, pre-paint, so
     // no flicker and the value/caret are untouched). Keeps its wrapping in lockstep
     // with the overlay layers pinned to `cw`, so the last-change tint stays put.
-    if (prevClientWidth.current !== cw) {
-      prevClientWidth.current = cw;
+    if (prevWrapWidth.current !== cw) {
+      prevWrapWidth.current = cw;
       ta.style.whiteSpace = "pre";
       void ta.offsetWidth;
       ta.style.whiteSpace = "";
