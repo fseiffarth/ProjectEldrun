@@ -220,13 +220,28 @@
   min-height: 4px;
 }
 
+/* The shared viewer header — every viewer's controls ride in it as children.
+   It wraps rather than squeezing them: a flex item's default `flex-shrink: 1`
+   let a narrow pane compress a worded button ("Fit width", "▶ Present") past
+   its own label, at which point the text ran outside the border. The TeX bars
+   below have always wrapped; this is that treatment applied to the rest.
+   `justify-content: flex-end` keeps a second line under the first, since the
+   spacer pushes the controls to the trailing edge on the first one. */
 .file-viewer-header {
   display: flex;
   align-items: center;
-  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px 8px;
   padding: 4px 8px;
   border-bottom: 1px solid var(--border-color);
   font-size: 11px;
+  flex-shrink: 0;
+}
+
+/* `flex-shrink` alone, never the `flex` shorthand — the spacer below is a
+   header child too, and resetting its basis would collapse it. */
+.file-viewer-header > * {
   flex-shrink: 0;
 }
 
@@ -798,16 +813,23 @@
   gap: 2px;
 }
 
+/* A toolbar button holds its label: it never shrinks below its own content and
+   never wraps inside a fixed-height box. Both are needed because these sit in
+   flex rows where the default `flex-shrink: 1` plus the `min-width` below let a
+   narrow pane squeeze a worded button ("Fit width", "▶ Present") down to 20px,
+   at which point its text simply ran outside the border. */
 .file-viewer-zoom-btn {
   background: transparent;
   color: var(--text-muted);
   border: 1px solid var(--border-color);
   border-radius: var(--radius-sm);
+  flex-shrink: 0;
   min-width: 20px;
   height: 18px;
   padding: 0 5px;
   font-size: 12px;
   line-height: 1;
+  white-space: nowrap;
   cursor: var(--cur-pointer, pointer);
 }
 
@@ -826,6 +848,7 @@
 }
 
 .file-viewer-zoom-level {
+  flex-shrink: 0;
   min-width: 38px;
   text-align: center;
   font-size: 10px;
@@ -3003,14 +3026,21 @@
   background: var(--bg-panel);
   color: var(--text-primary);
 }
+/* Wraps for the viewer header's reason — the labelled buttons at its trailing
+   edge ("Apply", the revision picker) would otherwise be squeezed past their
+   own text in a narrow pane. */
 .file-viewer-compare-bar {
   display: flex;
   align-items: center;
-  gap: 8px;
+  flex-wrap: wrap;
+  gap: 4px 8px;
   flex: 0 0 auto;
   padding: 4px 8px;
   border-bottom: 1px solid var(--border-color);
   font-size: 11px;
+}
+.file-viewer-compare-bar > * {
+  flex-shrink: 0;
 }
 .file-viewer-compare-label {
   color: var(--text-muted);
@@ -4169,13 +4199,28 @@
   min-height: 0;
 }
 
+/* The toolbar wraps rather than squeezing its controls. It is `flex-shrink: 0`
+   in the host column, so a second line costs the page area a few pixels and puts
+   nothing out of reach — where a single clipped row would hide whichever
+   buttons happened to sit at the end (Present, the external ↗). */
 .file-viewer-pdf-toolbar {
   display: flex;
   align-items: center;
-  gap: 6px;
+  flex-wrap: wrap;
+  gap: 4px 6px;
   padding: 3px 8px;
   border-bottom: 1px solid var(--border-color);
   background: var(--bg-panel);
+  flex-shrink: 0;
+}
+
+/* Nothing in the strip shrinks below its own content — a readout ("12 / 340"),
+   a pill, or the Save/print buttons, none of which set a min-width of their own
+   and so would otherwise be squeezed to nothing before the row wrapped.
+   `flex-shrink` alone, never the `flex` shorthand: the deck reuses this strip
+   with a `.file-viewer-header-spacer` in it, and resetting the basis would
+   collapse the gap that right-aligns everything after it. */
+.file-viewer-pdf-toolbar > * {
   flex-shrink: 0;
 }
 
@@ -5822,6 +5867,7 @@
   flex: 0 0 auto;
 }
 .md-graph-refresh {
+  flex-shrink: 0; /* the hint beside it wraps; the button must keep its glyph */
   background: none;
   border: 1px solid var(--border-color);
   border-radius: var(--radius-sm);

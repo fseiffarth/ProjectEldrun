@@ -37,7 +37,11 @@
   border-bottom: 1px solid var(--border-subtle);
 }
 
+/* The address field is the toolbar's one elastic element (`flex: 1; min-width:
+   0` below); the buttons keep their glyph and their label whatever the pane's
+   width, rather than being squeezed past their own text. */
 .browser-icon-btn {
+  flex-shrink: 0;
   border: 1px solid var(--border-color);
   background: var(--bg-input);
   color: var(--text-primary);
@@ -59,8 +63,10 @@
 .browser-btn {
   display: inline-flex;
   align-items: center;
+  flex-shrink: 0;
   gap: 6px;
   padding: 4px 10px;
+  white-space: nowrap;
   border-radius: var(--radius);
   border: 1px solid var(--border-color);
   background: var(--bg-input);
@@ -505,7 +511,10 @@
   white-space: nowrap;
 }
 
+/* The note beside these truncates (above); the buttons keep their label. */
 .print-btn {
+  flex-shrink: 0;
+  white-space: nowrap;
   padding: 4px 10px;
   border-radius: var(--radius);
   border: 1px solid var(--border-color);
