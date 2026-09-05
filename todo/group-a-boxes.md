@@ -233,5 +233,29 @@
       also on the chip.
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work
+    > **Phase 11 — the slice hands the scope back (2026-09-05, 🤖 covered,
+    > untested live).** Entering a box already took the scope with it
+    > (`openBox`); leaving by "All projects" did not give it back, so the strip
+    > showed every project while the tabs below were still the box's and no pill
+    > on the row was lit. The chip's "All projects" row now re-activates the
+    > project the *unsliced* strip was last on — remembered only while no slice
+    > is selected, since a member opened from inside the slice was current in
+    > the box's view, not in this one — via `setActive` with the id it already
+    > holds, which is the established way back out of a box scope (CenterPanel
+    > re-runs its `setScope` off `switchGeneration`). It fires only from inside a
+    > box scope (after a hop to a member, strip and tabs already agree), and
+    > falls back to the root terminal when the remembered project has since been
+    > closed.
+    - [x] 🤖 Automated test — vitest `BoxRendering` ("All projects" re-activates
+      the project the strip was on and moves the scope out of the box; a member
+      opened from inside the slice triggers no second switch; a closed
+      remembered project falls back to root).
+    - [ ] 🖐️ Manual test — with project P current, pick a box in the chip: its
+      tabs come up and the box pill lights. Pick "All projects": P is current
+      again with its tabs and its pill lit. Repeat after clicking a member
+      inside the slice, and after closing P while the box is open (lands at the
+      root terminal).
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
 
 ---

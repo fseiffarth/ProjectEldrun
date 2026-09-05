@@ -249,10 +249,38 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
     setBoxCandidateFilter("");
   }, [currentBox?.id]);
 
+  // Where the UNSLICED strip last stood. A slice is a detour the scope takes
+  // with it (`openBox` enters the box), so leaving it by "All projects" has to
+  // hand the scope back — otherwise the strip says "every project" while the
+  // tabs below are still the box's and not one pill on the row is lit. Only
+  // scopes seen while no slice was selected count: a member opened from inside
+  // the slice was current in the BOX's view, not in this one. Root is a
+  // legitimate value — it is where a session starts, and where a remembered
+  // project that has since been closed lands.
+  const lastUnslicedScope = useRef<string>(ROOT_SCOPE);
+  useEffect(() => {
+    if (boxFilter || scope.startsWith(BOX_SCOPE_PREFIX)) return;
+    lastUnslicedScope.current = scope;
+  }, [boxFilter, scope]);
+
   /** Pick a box's slice (and open its scope) or go back to every project. */
   const selectBox = (boxId: string | null) => {
     setBoxFilter(boxId);
-    if (boxId) void openBox(boxId);
+    // Picking a box makes the BOX the current scope: its tabs, its pill lit.
+    if (boxId) {
+      void openBox(boxId);
+      return;
+    }
+    // Back to every project — and to the project that view was last on (user,
+    // 2026-09-05). Only from inside a box scope: once the user has hopped to a
+    // member, strip and tabs already agree, and re-activating would be a
+    // pointless project-runtime switch. `setActive` with the id it already
+    // holds is the established way back out of a box (CenterPanel keys its
+    // `setScope` off `switchGeneration` for exactly this).
+    if (!scope.startsWith(BOX_SCOPE_PREFIX)) return;
+    const back = lastUnslicedScope.current;
+    const alive = projects.some((p) => p.id === back && p.status !== "inactive");
+    void setActive(alive ? back : null);
   };
 
   // The two built-in scopes, picked from the same chip as the boxes. Both lift
