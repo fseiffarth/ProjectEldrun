@@ -633,6 +633,63 @@ screen is not.*
 
 ---
 
+822. **A native fault must kill the process, not spin its thread.** ✅ Fixed
+    2026-09-05, code-complete and **live-unverified** (needs a backend restart).
+    Reported as "Eldrun (dev) crashed after tex compilation (not reacting)":
+    the frozen build had compiled an A0 `poster_catchy.tex` (lualatex, one
+    page, 2.9 MB PDF), then the window stopped responding while `crash.log`
+    grew by ~6 MB/s — 538 MB of the single line `=== CRASH: SIGSEGV ===`, over
+    26 million repeats, and the process still alive (state_gc's startup cap
+    later trimmed it to its 4 MB tail). The signal handler in `lib.rs` relied on
+    `SA_RESETHAND`: the kernel resets the disposition on entry, so returning
+    re-executes the fault and the default action terminates. But on Linux the
+    kernel never dispatched to it — WebKit's WTF signal layer
+    (`Signals.cpp`, present in the linked libjavascriptcoregtk 2.52.6)
+    installs its own SIGSEGV/SIGBUS handler later, saves ours as `oldAction`,
+    and when its wasm/JIT handlers do not claim a fault it **calls
+    `oldAction.sa_sigaction()` directly as a function** and returns with its
+    own handler still installed. Ours logged a line and returned, the
+    instruction re-faulted, and the faulting thread looped forever: a hung
+    window instead of a dead process, and nothing anywhere said which. Fix:
+    the handler restores `SIG_DFL` itself and re-raises (also correct for a
+    `raise`d SIGABRT/SIGFPE, where returning would resume the raiser), runs on
+    the alternate stack (`SA_ONSTACK`) so a stack overflow is logged rather
+    than double-faulting, and the line now carries `si_code` and the faulting
+    address (`=== CRASH: SIGSEGV code=0x1 addr=0x… ===`) — `addr=0x0` reads
+    as a null dereference, a guard-page address as an overflow.
+    - [ ] **The fault itself is not found.** Nothing in the compile path faults
+      in Rust (the include scanner is depth- and visited-bounded; the compile
+      is a child process), so the SIGSEGV was most likely in the UI process's
+      GTK/WebKit side after the compile — the poster is an A0 page pdf.js
+      rasterises large. Not the renderer watchdog: its `renderer-watchdog`
+      entry would sit in crash.log before the loop and none did, no kernel OOM
+      kill was logged, and 70 GB were free. **The next occurrence names
+      itself** (same day, second pass): the handler now writes, after the
+      header, a context line (`at <UTC> pc=0x… tid=… thread=… exe=… v…`) and a
+      glibc backtrace as `module(+offset)` lines, ending in `=== CRASH END ===`
+      — `SIG_DFL` restored before any of it and `alarm(5)` around the unwinder,
+      so a fault or hang *inside* the handler still ends the process with the
+      partial entry on disk. `scripts/crash-symbolize.sh` resolves the newest
+      entry to `function at file:line` against the executable the entry names
+      (the frozen binary keeps its symbol table; offsets are only valid for
+      that exact file, so run it before the next `package:dev`). Verified
+      outside Eldrun with a standalone repro that installs a WTF-style
+      chaining handler over it: plain, chained, and chained-from-a-worker-
+      thread faults each die with exit 139 and exactly one entry whose trace
+      names the faulting function. The thread name says which side it was:
+      the process name is the GTK/WebKit UI thread, `tokio-runtime-w` a
+      backend worker. When a trace stops at a WebKit frame, install
+      `libwebkit2gtk-4.1-0-dbgsym` (or point `DEBUGINFOD_URLS` at Ubuntu's
+      server) so addr2line can go further.
+    - [ ] 🖐️ Manual test — after a backend restart, `kill -SEGV <eldrun pid>`
+      from a shell: the process must die at once (exit by signal 11), and
+      `~/.local/share/eldrun/crash.log` must gain exactly ONE
+      `=== CRASH: SIGSEGV code=… addr=0x0 ===` line, not a stream.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+---
+
 821. **The project name is a per-theme colour, not one apricot everywhere.**
     ✅ Done 2026-08-31, code-complete and **live-unverified**. Reported as the
     pill label reading "reddish everywhere". `--helix-orange` was a Helix
