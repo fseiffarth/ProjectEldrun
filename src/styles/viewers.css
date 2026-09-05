@@ -4944,9 +4944,15 @@
   min-width: min-content;
 }
 
+/* Deliberately NO max-width. The canvas carries BOTH of its dimensions as inline
+   pixel sizes (PdfPageCanvas sets them from the page's own box × the zoom), so a
+   `max-width:100%` shrinks the width and leaves the height where it was — the page
+   stops growing at the pane's width and just gets taller, which is a stretched
+   page, not a zoomed one. Zooming past the pane is what the horizontal scroll of
+   `.file-viewer-pdf-scroll` is for; `.file-viewer-pdf-pages{min-width:min-content}`
+   is what widens the stack to meet it. */
 .file-viewer-pdf-page {
   display: block;
-  max-width: 100%;
   background: #fff;
   box-shadow: var(--shadow-2);
 }
@@ -5037,7 +5043,9 @@
 .file-viewer-pdf-page-wrap {
   position: relative;
   line-height: 0;
-  max-width: 100%;
+  /* No max-width either: the overlays (text layer, links, search hits, remarks)
+     are positioned against this box, so a wrap narrower than its canvas would put
+     every one of them in the wrong place on top of the squashed page. */
 }
 
 .file-viewer-pdf-page.is-syncable {
