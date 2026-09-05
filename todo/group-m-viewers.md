@@ -1971,3 +1971,35 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       should read bold in the number colour.
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work
+
+254. **TeX editor: double-click a command, see its other uses.** Implemented
+    2026-09-05, not yet verified live. Double-clicking a control sequence in a
+    `.tex` source selects the whole `\command` — the browser's word rules stop
+    at the backslash and hand back the letters alone — and marks every *other*
+    use of it in the same file with a soft blue fill, so "where else do I call
+    this macro" is a gesture rather than a search.
+    - Whole-token matching only: `\ref` does not mark inside `\reflectbox`, an
+      escaped `\\emph` (a line break followed by a word) is not a use, and a
+      trailing `*` is left out of the range so `\section` also marks a
+      `\section*`. `@` counts as a name character, so a `.sty`'s `\my@thing`
+      reads as one command. Commented-out calls ARE marked — a use the reader
+      is hunting for. Only named commands qualify: a bare `\`, `\\`, `\%`, `\{`
+      mark nothing.
+    - The marks answer one gesture and outlive it by nothing: the next
+      keystroke (bare modifiers excepted, so Ctrl+C on the fresh selection
+      keeps them) or the next mouse-down clears them. They are recomputed from
+      the live draft on every edit rather than stored as offsets, so an edit
+      elsewhere can never leave a mark painted over moved text.
+    - A new transparent overlay layer (`.file-viewer-occurrence-layer`), the
+      same scroll-synced, metric-matched stack as the search/link/bracket
+      layers. Pure half in `src/lib/viewers/tex.ts` (`texCommandAt`,
+      `texCommandOccurrences`); tests in `TexDelimiterMatch.test.ts` and
+      `TexCommandOccurrences.test.tsx`. Frontend only, hot-reloads.
+    - [ ] 🖐️ Manual test — open a `.tex` with a macro used several times.
+      Double-click one occurrence: the whole `\command` (backslash included)
+      should be selected and every other use of it marked; a longer command
+      starting with the same letters must stay unmarked. Type anything, or
+      click elsewhere: the marks go. Double-click a plain word: nothing is
+      marked. Scroll — the marks must stay glued to their text.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work

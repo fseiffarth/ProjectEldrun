@@ -87,6 +87,7 @@ const OVERLAY_SELECTORS = [
   ".file-viewer-grammar-layer",
   ".file-viewer-bracket-layer",
   ".file-viewer-unclosed-layer",
+  ".file-viewer-occurrence-layer",
   ".file-viewer-ghost",
 ];
 

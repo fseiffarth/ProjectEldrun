@@ -206,6 +206,8 @@ import {
   findTexEnvNameMatch,
   syncTexEnvRename,
   texEnvNameRangeAt,
+  texCommandAt,
+  texCommandOccurrences,
   gatherTexStructure,
   texStructureParent,
   hasMatchingTexEnd,
@@ -2066,6 +2068,34 @@ export function decorateSearchRanges(
   return out;
 }
 
+/**
+ * Build the occurrence-highlight overlay (#tex-command-occurrences): the ranges
+ * are wrapped in `<span class="file-viewer-occurrence-match">`, the rest emitted
+ * plain, so only the other uses of the double-clicked control sequence paint.
+ * A quieter fill than the search layer's on purpose — this mark is a passing
+ * answer to a gesture, not a search the reader is stepping through. SECURITY:
+ * every run of source text is HTML-escaped before output — mirrors
+ * {@link decorateSearchRanges}.
+ */
+export function decorateOccurrenceRanges(
+  source: string,
+  ranges: { start: number; end: number }[],
+): string {
+  if (ranges.length === 0) return escapeHtmlText(source);
+  let out = "";
+  let pos = 0;
+  for (const r of ranges) {
+    if (r.start < pos || r.start >= r.end) continue; // skip overlaps / empties
+    out += escapeHtmlText(source.slice(pos, r.start));
+    out += `<span class="file-viewer-occurrence-match">${escapeHtmlText(
+      source.slice(r.start, r.end),
+    )}</span>`;
+    pos = r.end;
+  }
+  out += escapeHtmlText(source.slice(pos));
+  return out;
+}
+
 /** The three bracket pairs matched by {@link findMatchingBracket}: `(`/`)`,
  *  `[`/`]`, `{`/`}` — the pairs shared by every language the editor highlights
  *  (LaTeX group braces and optional-arg brackets included). Keyed both ways so
@@ -2785,6 +2815,7 @@ function CodeEditor({
   const bracketLayerRef = useRef<HTMLPreElement>(null);
   const unclosedLayerRef = useRef<HTMLPreElement>(null);
   const snippetLayerRef = useRef<HTMLPreElement>(null);
+  const occurrenceLayerRef = useRef<HTMLPreElement>(null);
   const ghostRef = useRef<HTMLPreElement>(null);
   const measureRef = useRef<HTMLPreElement>(null);
   const findInputRef = useRef<HTMLInputElement>(null);
@@ -3025,6 +3056,23 @@ function CodeEditor({
     [draft, snippetRanges],
   );
 
+  // #tex-command-occurrences: double-clicking a control sequence in a LaTeX file
+  // marks every OTHER use of it in the same file, so "where else do I call this
+  // macro" is a gesture rather than a search. State is the command's NAME (plus
+  // the offset of the one under the pointer, the one left unmarked because the
+  // selection already shows it), not a list of ranges: the ranges are recomputed
+  // from the live draft, so an edit elsewhere in the file cannot leave stale
+  // marks painted over moved text. Cleared by the next keystroke or mouse-down.
+  const [cmdMark, setCmdMark] = useState<{ name: string; at: number } | null>(null);
+  const occurrenceRanges = useMemo(() => {
+    if (!cmdMark || lang !== "tex") return [];
+    return texCommandOccurrences(draft, cmdMark.name).filter((r) => r.start !== cmdMark.at);
+  }, [cmdMark, draft, lang]);
+  const occurrenceHtml = useMemo(
+    () => (occurrenceRanges.length ? decorateOccurrenceRanges(draft, occurrenceRanges) : null),
+    [draft, occurrenceRanges],
+  );
+
   // Keep the gutter and the overlay (highlight/link) layers aligned with the
   // textarea scroll. Reads the live textarea so it can be re-run on events that
   // move the scroll WITHOUT firing a scroll event — notably a resize.
@@ -3063,6 +3111,7 @@ function CodeEditor({
       bracketLayerRef,
       unclosedLayerRef,
       snippetLayerRef,
+      occurrenceLayerRef,
     ]) {
       if (ref.current) ref.current.style.transform = transform;
     }
@@ -4463,6 +4512,11 @@ function CodeEditor({
       updateLinkHover(lastMouse.current.x, lastMouse.current.y, true);
     }
 
+    // The occurrence marks answer one gesture and outlive it by nothing: the
+    // next real keystroke drops them. Bare modifiers don't count — holding Ctrl
+    // to copy the selection the double-click just made must not wipe them.
+    if (cmdMark && !MODIFIER_KEYS.has(e.key)) setCmdMark(null);
+
     // Smart space after accepting a \ref/\cite: the first real keystroke decides
     // the auto space's fate. Closing punctuation right after it replaces it
     // (\cite{x}. not \cite{x} .); any other character commits it. Bare modifier
@@ -4669,6 +4723,24 @@ function CodeEditor({
     if (!range || range.end === range.start) return; // `\begin{}` — nothing to select
     el.setSelectionRange(range.start, range.end);
     emitCaret();
+  };
+
+  // #tex-command-occurrences: a double-click on a control sequence extends the
+  // selection over the whole `\command` — the browser's word rules stop at the
+  // backslash and hand back the letters alone — and marks every other use of it
+  // in the file. A double-click on anything else (prose, a brace, `\\`) just
+  // clears whatever was marked and keeps the native word selection.
+  const onDoubleClick = (e: React.MouseEvent<HTMLTextAreaElement>) => {
+    if (lang !== "tex") return;
+    const el = e.currentTarget;
+    const cmd = texCommandAt(el.value, el.selectionStart);
+    if (!cmd) {
+      setCmdMark(null);
+      return;
+    }
+    el.setSelectionRange(cmd.start, cmd.end);
+    emitCaret();
+    setCmdMark({ name: cmd.name, at: cmd.start });
   };
 
   const onClick = (e: React.MouseEvent<HTMLTextAreaElement>) => {
@@ -4933,6 +5005,15 @@ function CodeEditor({
             dangerouslySetInnerHTML={{ __html: snippetHtml + "\n" }}
           />
         )}
+        {occurrenceHtml != null && (
+          <pre
+            ref={occurrenceLayerRef}
+            className="file-viewer-occurrence-layer"
+            aria-hidden="true"
+            style={overlayWidthStyle}
+            dangerouslySetInnerHTML={{ __html: occurrenceHtml + "\n" }}
+          />
+        )}
         {linkHtml != null && (
           <pre
             ref={linkLayerRef}
@@ -4963,6 +5044,10 @@ function CodeEditor({
           onChange={onTextChange}
           onKeyDown={onKeyDown}
           onKeyUp={(e) => { if (!(e.ctrlKey || e.metaKey)) setLinkHover(false); emitCaret(); }}
+          // Fires before the double-click that re-arms them, so a plain click
+          // is what clears the occurrence marks.
+          onMouseDown={() => { if (cmdMark) setCmdMark(null); }}
+          onDoubleClick={onDoubleClick}
           onBlur={() => { setLinkHover(false); setLinkTip(null); setUnclosedTip(null); dismissSuggestion(); setCompl(null); closePreview(); }}
           onMouseMove={onMouseMove}
           onMouseLeave={() => { setLinkHover(false); setLinkTip(null); setUnclosedTip(null); scheduleGrammarTipClose(); closePreview(); }}

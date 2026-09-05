@@ -1730,6 +1730,72 @@ export function texEnvNameRangeAt(text: string, caret: number): TexDelimiterSide
   return null;
 }
 
+/** A control sequence found at a position: its `[start, end)` range — the
+ *  backslash included — and the token itself (`\emph`), which is the key the
+ *  occurrence scan below matches on. */
+export interface TexCommandToken extends TexDelimiterSide {
+  name: string;
+}
+
+/** The letters a control sequence's name is made of. `@` rides along because a
+ *  package/class file's internal macros (`\my@thing`) are written with it, and
+ *  a name that stopped at the `@` would call `\my` an occurrence of a macro that
+ *  is nowhere in the file. */
+const TEX_CMD_CHAR = /[a-zA-Z@]/;
+
+/**
+ * The whole control sequence covering `pos` (`\emph` for a `pos` anywhere in
+ * `\e|mph`, on the backslash, or just past the last letter) — what a
+ * double-click in the editor lands on, since the word rules split `\emph` at the
+ * backslash and hand back only the letters.
+ *
+ * `null` for anything that is not a *named* command: prose, a bare `\`, and the
+ * one-character sequences (`\\`, `\%`, `\{`) whose "other occurrences" would be
+ * every line break in the document. An escaped backslash never starts one, so
+ * the `emph` in `\\emph` is text, not a macro. Pure / unit-tested.
+ */
+export function texCommandAt(text: string, pos: number): TexCommandToken | null {
+  if (pos < 0 || pos > text.length) return null;
+  let slash = -1;
+  if (text[pos] === "\\" && !isBackslashEscaped(text, pos)) {
+    slash = pos;
+  } else {
+    let i = pos;
+    while (i > 0 && TEX_CMD_CHAR.test(text[i - 1])) i--;
+    if (i > 0 && text[i - 1] === "\\" && !isBackslashEscaped(text, i - 1)) slash = i - 1;
+  }
+  if (slash < 0) return null;
+  let end = slash + 1;
+  while (end < text.length && TEX_CMD_CHAR.test(text[end])) end++;
+  if (end === slash + 1) return null; // `\` alone, or `\%`/`\{`/`\\`
+  if (pos > end) return null; // the caret sits past the token, not in it
+  return { start: slash, end, name: text.slice(slash, end) };
+}
+
+/**
+ * Every occurrence of the control sequence `name` (backslash included) in
+ * `text`, in source order — the "mark the other uses of this macro" overlay
+ * behind a double-click in the LaTeX editor.
+ *
+ * Whole-token only: `\ref` does not match inside `\reflectbox`, and an escaped
+ * backslash (`\\ref` — a line break followed by the word) is not a use. A
+ * trailing `*` is left out of the range, so `\section` marks the `\section` of a
+ * `\section*` too — the same command, and the reader is looking for both.
+ * Comments are NOT skipped: a commented-out call is exactly what someone
+ * hunting a macro's uses wants to see. Pure / unit-tested.
+ */
+export function texCommandOccurrences(text: string, name: string): TexDelimiterSide[] {
+  const out: TexDelimiterSide[] = [];
+  if (!name.startsWith("\\") || name.length < 2) return out;
+  for (let i = text.indexOf(name); i !== -1; i = text.indexOf(name, i + name.length)) {
+    const end = i + name.length;
+    if (isBackslashEscaped(text, i)) continue;
+    if (end < text.length && TEX_CMD_CHAR.test(text[end])) continue;
+    out.push({ start: i, end });
+  }
+  return out;
+}
+
 /**
  * The two environment NAMES of a `\begin{…}…\end{…}` pair, as a delimiter match,
  * when `caret` sits inside either of them — so the bracket-match overlay marks

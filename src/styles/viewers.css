@@ -2696,6 +2696,7 @@
 .file-viewer-bracket-layer,
 .file-viewer-unclosed-layer,
 .file-viewer-tex-snippet-layer,
+.file-viewer-occurrence-layer,
 .file-viewer-ghost {
   position: absolute;
   inset: 0;
@@ -2727,7 +2728,8 @@
 .file-viewer-grammar-layer,
 .file-viewer-bracket-layer,
 .file-viewer-unclosed-layer,
-.file-viewer-tex-snippet-layer {
+.file-viewer-tex-snippet-layer,
+.file-viewer-occurrence-layer {
   inset: auto;
   top: 0;
   left: 0;
@@ -3391,6 +3393,15 @@
   background: rgba(255, 145, 0, 0.6);
 }
 
+/* #tex-command-occurrences: the other uses of the double-clicked control
+   sequence. A dimmer fill than the search match above — it answers a gesture in
+   passing and must not read as "you are in a find". Fixed rgba so it reads on
+   both light and dark themes. */
+.file-viewer-occurrence-layer .file-viewer-occurrence-match {
+  border-radius: 2px;
+  background: rgba(88, 166, 255, 0.24);
+}
+
 /* Bracket-match highlight: when the caret sits right before/after a bracket,
    it and its partner both paint this outline — a lighter touch than the search
    match's fill so it doesn't compete with it when a search is also active.
@@ -3701,6 +3712,7 @@
 .file-viewer-code-area.is-wrapped .file-viewer-bracket-layer,
 .file-viewer-code-area.is-wrapped .file-viewer-unclosed-layer,
 .file-viewer-code-area.is-wrapped .file-viewer-tex-snippet-layer,
+.file-viewer-code-area.is-wrapped .file-viewer-occurrence-layer,
 .file-viewer-code-area.is-wrapped .file-viewer-ghost {
   white-space: pre-wrap;
   overflow-wrap: normal;
@@ -3719,6 +3731,7 @@
 .file-viewer-code-area.is-wrapped .file-viewer-bracket-layer,
 .file-viewer-code-area.is-wrapped .file-viewer-unclosed-layer,
 .file-viewer-code-area.is-wrapped .file-viewer-tex-snippet-layer,
+.file-viewer-code-area.is-wrapped .file-viewer-occurrence-layer,
 .file-viewer-code-area.is-wrapped .file-viewer-ghost {
   min-width: 0;
   right: auto;

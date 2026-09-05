@@ -13,6 +13,8 @@ import {
   findUnclosedTexBrackets,
   syncTexEnvRename,
   texEnvNameRangeAt,
+  texCommandAt,
+  texCommandOccurrences,
 } from "../lib/viewers/tex";
 
 function at(i: number, len = 1) {
@@ -443,5 +445,66 @@ describe("findTexEnvNameMatch", () => {
     expect(findTexEnvNameMatch(text, 0)).toBeNull(); // on the \\begin keyword
     expect(findTexEnvNameMatch(text, text.indexOf("x"))).toBeNull(); // body
     expect(findTexEnvNameMatch("\\begin{a}unclosed", 7)).toBeNull();
+  });
+});
+
+describe("texCommandAt (#tex-command-occurrences)", () => {
+  const text = "\\emph{a} and \\emphasis{b}";
+
+  it("reads the whole control sequence from anywhere inside it", () => {
+    const slash = text.indexOf("\\emph");
+    for (const pos of [slash, slash + 1, slash + 3, slash + 5]) {
+      expect(texCommandAt(text, pos)).toEqual({ start: slash, end: slash + 5, name: "\\emph" });
+    }
+  });
+
+  it("takes the whole name, not the prefix the pointer sat on", () => {
+    const at = text.indexOf("\\emphasis");
+    expect(texCommandAt(text, at + 3)?.name).toBe("\\emphasis");
+  });
+
+  it("keeps `@` in an internal macro's name", () => {
+    const src = "\\my@thing{x}";
+    expect(texCommandAt(src, src.indexOf("thing"))?.name).toBe("\\my@thing");
+  });
+
+  it("answers nothing for prose, a bare backslash, or a one-character sequence", () => {
+    expect(texCommandAt("plain words", 3)).toBeNull();
+    expect(texCommandAt("a \\ b", 2)).toBeNull();
+    expect(texCommandAt("100\\% done", 4)).toBeNull();
+    expect(texCommandAt("line\\\\break", 6)).toBeNull(); // the `\\` is a break, not `\break`
+    expect(texCommandAt("\\emph{}", 6)).toBeNull(); // the brace, past the token
+  });
+});
+
+describe("texCommandOccurrences (#tex-command-occurrences)", () => {
+  it("finds every whole-token use, and no longer command that starts with it", () => {
+    const text = "\\ref{a} \\reflectbox{x} \\ref{b}\n";
+    expect(texCommandOccurrences(text, "\\ref")).toEqual([
+      { start: 0, end: 4 },
+      { start: text.lastIndexOf("\\ref"), end: text.lastIndexOf("\\ref") + 4 },
+    ]);
+  });
+
+  it("marks a starred call too — the star is not part of the name", () => {
+    const text = "\\section{A}\n\\section*{B}\n";
+    expect(texCommandOccurrences(text, "\\section")).toHaveLength(2);
+  });
+
+  it("skips an escaped backslash: `\\\\emph` is a line break plus a word", () => {
+    const text = "x \\\\emph y \\emph{z}";
+    expect(texCommandOccurrences(text, "\\emph")).toEqual([
+      { start: text.lastIndexOf("\\emph"), end: text.lastIndexOf("\\emph") + 5 },
+    ]);
+  });
+
+  it("includes a commented-out call — that is a use the reader is hunting for", () => {
+    const text = "% \\todo{later}\n\\todo{now}\n";
+    expect(texCommandOccurrences(text, "\\todo")).toHaveLength(2);
+  });
+
+  it("answers nothing for a name that is not a control sequence", () => {
+    expect(texCommandOccurrences("\\emph{}", "emph")).toEqual([]);
+    expect(texCommandOccurrences("\\emph{}", "\\")).toEqual([]);
   });
 });
