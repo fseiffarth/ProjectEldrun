@@ -708,6 +708,17 @@ pub struct AgentTabStatus {
     pub tmux_session: String,
     /// `working`, `question`, or `done`.
     pub status: String,
+    /// The model this tab last answered with, already shortened for display
+    /// by the desktop (`lib/agentModel`), when its transcript names one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// Desktop wall clock (ms since the epoch) of the tab's last output while
+    /// working, and of the last turn it finished. Both are session-only on the
+    /// desktop and absent until the tab has done the thing they name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub working_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub done_at: Option<u64>,
 }
 
 /// One agent tab's scheduled-prompt summary, already computed by the desktop
@@ -967,6 +978,9 @@ mod tests {
             statuses: vec![AgentTabStatus {
                 tmux_session: "eldrun-project-0--agent-123456789".into(),
                 status: "question".into(),
+                model: Some("opus-4-1".into()),
+                working_at: Some(1_700_000_000_000),
+                done_at: None,
             }],
             schedules: vec![AgentTabSchedules {
                 tmux_session: "eldrun-project-0--agent-123456789".into(),
@@ -977,6 +991,9 @@ mod tests {
         };
         let response_json = serde_json::to_value(response).expect("serialize catalog response");
         assert_eq!(response_json["statuses"][0]["status"], "question");
+        assert_eq!(response_json["statuses"][0]["model"], "opus-4-1");
+        assert_eq!(response_json["statuses"][0]["working_at"], 1_700_000_000_000u64);
+        assert!(response_json["statuses"][0].get("done_at").is_none());
         assert_eq!(response_json["schedules"][0]["enabled"], 2);
         assert_eq!(response_json["schedules"][0]["next"], "2026-09-03T09:00");
     }

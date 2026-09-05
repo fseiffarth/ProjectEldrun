@@ -125,9 +125,18 @@ function menuRow(menu: HTMLElement, text: string): HTMLElement {
   ) as HTMLElement;
 }
 
+/** The store's own `setActive`, so a test that swaps in a spy cannot leak it
+ *  into the next one. */
+const realSetActive = useProjectsStore.getState().setActive;
+
 beforeEach(() => {
   usePillDragStore.getState().end();
-  useProjectsStore.setState({ projects: [], activeId: null, loaded: true });
+  useProjectsStore.setState({
+    projects: [],
+    activeId: null,
+    loaded: true,
+    setActive: realSetActive,
+  });
   useBoxesStore.setState({ boxes: [], loaded: true });
   useTabsStore.setState({ scope: "root" });
 });
@@ -253,6 +262,114 @@ describe("box chip rendering (slice model)", () => {
       fireEvent.click(menuRow(menu, "All projects"));
     });
     expect(pillNames(container).sort()).toEqual(["p1", "p2"]);
+  });
+
+  it("“All projects” hands the scope back to the project the strip was on", async () => {
+    // Entering a box takes the scope with it; leaving must give it back, or the
+    // strip shows every project while the tabs below are still the box's.
+    const setActive = vi.fn(async (id: string | null) => {
+      useTabsStore.setState({ scope: id ?? "root" });
+    });
+    useBoxesStore.setState({
+      boxes: [box("boxA", ["p1"])],
+      openBox: vi.fn(openBoxScope),
+    });
+    useProjectsStore.setState({
+      projects: [proj("p1", 10), proj("p2", 20)],
+      activeId: "p2",
+      loaded: true,
+      setActive,
+    });
+    useTabsStore.setState({ scope: "p2" });
+
+    const container = await renderSwitcher();
+    let menu = await openChipMenu(container);
+    await act(async () => {
+      fireEvent.click(menuRow(menu, "boxA"));
+    });
+    expect(useTabsStore.getState().scope).toBe("box:boxA");
+
+    menu = await openChipMenu(container);
+    await act(async () => {
+      fireEvent.click(menuRow(menu, "All projects"));
+    });
+    // Re-activated even though `activeId` never changed — that is what moves
+    // CenterPanel's scope back out of the box.
+    expect(setActive).toHaveBeenCalledWith("p2");
+    expect(useTabsStore.getState().scope).toBe("p2");
+    expect(pillNames(container).sort()).toEqual(["p1", "p2"]);
+  });
+
+  it("a member opened from inside the slice is not what “All projects” returns to", async () => {
+    // p2 was current in the whole-strip view; p1 was current in the BOX's view.
+    const setActive = vi.fn(async (id: string | null) => {
+      useTabsStore.setState({ scope: id ?? "root" });
+    });
+    useBoxesStore.setState({
+      boxes: [box("boxA", ["p1"])],
+      openBox: vi.fn(openBoxScope),
+    });
+    useProjectsStore.setState({
+      projects: [proj("p1", 10), proj("p2", 20)],
+      activeId: "p2",
+      loaded: true,
+      setActive,
+    });
+    useTabsStore.setState({ scope: "p2" });
+
+    const container = await renderSwitcher();
+    let menu = await openChipMenu(container);
+    await act(async () => {
+      fireEvent.click(menuRow(menu, "boxA"));
+    });
+    // Hop to a member, as clicking its pill does.
+    await act(async () => {
+      fireEvent.click(findPill(container, "p1").querySelector(".pill-main") as HTMLElement);
+    });
+    setActive.mockClear();
+
+    menu = await openChipMenu(container);
+    await act(async () => {
+      fireEvent.click(menuRow(menu, "All projects"));
+    });
+    // Strip and tabs already agree on p1 — no second runtime switch.
+    expect(setActive).not.toHaveBeenCalled();
+    expect(useTabsStore.getState().scope).toBe("p1");
+  });
+
+  it("“All projects” falls back to root when the remembered project is closed", async () => {
+    const setActive = vi.fn(async (id: string | null) => {
+      useTabsStore.setState({ scope: id ?? "root" });
+    });
+    useBoxesStore.setState({
+      boxes: [box("boxA", ["p1"])],
+      openBox: vi.fn(openBoxScope),
+    });
+    useProjectsStore.setState({
+      projects: [proj("p1", 10), proj("p2", 20)],
+      activeId: "p2",
+      loaded: true,
+      setActive,
+    });
+    useTabsStore.setState({ scope: "p2" });
+
+    const container = await renderSwitcher();
+    let menu = await openChipMenu(container);
+    await act(async () => {
+      fireEvent.click(menuRow(menu, "boxA"));
+    });
+    await act(async () => {
+      useProjectsStore.setState({
+        projects: [proj("p1", 10), { ...proj("p2", 20), status: "inactive" }],
+      });
+    });
+
+    menu = await openChipMenu(container);
+    await act(async () => {
+      fireEvent.click(menuRow(menu, "All projects"));
+    });
+    expect(setActive).toHaveBeenCalledWith(null);
+    expect(useTabsStore.getState().scope).toBe("root");
   });
 
   it("gives the selected box a pill of its own, and none before one is picked", async () => {

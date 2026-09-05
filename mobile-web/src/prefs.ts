@@ -43,3 +43,26 @@ export function writeFlag(name: MobileFlag, value: boolean, storage?: FlagStorag
     // See readFlag.
   }
 }
+
+/** A choice among named options, kept the way the flags are. `agentsSort` is
+ * the Agents list's order (`shared/agentSort.ts`); the desktop remembers its
+ * own copy of the same choice, since a phone and a laptop are not necessarily
+ * looking at the list for the same reason. */
+export type MobileChoice = "agentsSort";
+
+export function readChoice<T extends string>(name: MobileChoice, accept: (value: unknown) => value is T, fallback: T, storage?: FlagStorage): T {
+  try {
+    const stored = (storage ?? localStorage).getItem(`${PREFIX}${name}`);
+    return accept(stored) ? stored : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+export function writeChoice(name: MobileChoice, value: string, storage?: FlagStorage): void {
+  try {
+    (storage ?? localStorage).setItem(`${PREFIX}${name}`, value);
+  } catch {
+    // See readFlag.
+  }
+}

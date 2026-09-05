@@ -1122,6 +1122,9 @@ export interface ProjectBox {
   folder?: string;
   /** Directed inter-project relations (#41 Phase 2 stored, Phase 4 surfaced). */
   relations?: BoxRelation[];
+  /** Eldrun Mobile reach (#31aa): the box's `box:<id>` scope is listed on a
+   *  paired phone. Off/absent by default, like a project's switch. */
+  eldrun_mobile_access?: boolean;
 }
 
 /**

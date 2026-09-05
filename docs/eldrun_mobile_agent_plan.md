@@ -134,8 +134,9 @@ A native iOS/Android wrapper may follow, but it must reuse this API and protocol
   tab through the trusted desktop-control socket. The phone never receives
   terminal output or prompt text, and no status is retained when the desktop is
   unavailable;
-- root and box scopes, foreign tmux sessions, `local_agent` tabs, and project
-  settings management;
+- the root scope, foreign tmux sessions, `local_agent` tabs, and project
+  settings management (a **box** scope is reachable since #31aa, through the
+  box's own `eldrun_mobile_access` switch — see "Box scopes" below);
 - remote/primary/worker-host projects, containers, VMs, and Windows hosting;
 - public Internet exposure, Tailscale Funnel, hosted relays, team accounts, push
   notifications, and native app stores.
@@ -148,7 +149,23 @@ used as an executable path or argv fragment.
 
 Project access defaults off. Disabling `eldrun_mobile_access` immediately removes
 the project and detaches its mobile WebSockets, but does not stop its tmux
-sessions. Deactivating a project in Eldrun remains different: today's desktop
+sessions.
+
+**Box scopes** (#31aa). A project box is a scope of its own on the desktop —
+`box:<id>`, with its own session file under `sessions/box_<id>/`, its own
+`eldrun-box_<id>--…` tmux names, and tabs that run locally whatever its
+members are — so it reaches the phone as a scope of its own, behind a switch
+of its own: `eldrun_mobile_access` on the box record in `boxes.json`, set from
+Mobile settings' access list. The sidecar lists an enabled box as a row of
+`kind: "box"` (always "active"; a box has no status), under an opaque id
+derived from the scope id, and takes those of its tabs whose cwd is the box
+folder or a **local** member's root — a container, VM or remote member
+contributes no root. The box's switch is the only consent consulted: a member's
+own switch stays about the member's own tabs, and enabling a box does not list
+its members. Enabling also resolves the box folder (a box never opened has
+none), and on the desktop the box's switch plays the project's part in the
+agent-tab tmux wrap, so a resumable agent opened in the box becomes attachable
+the way a project's does. Deactivating a project in Eldrun remains different: today's desktop
 deactivation flow intentionally stops that project's persistent sessions.
 
 The existing Claude `agent_remote_control` / per-project `remote_control` setting
@@ -425,7 +442,8 @@ An attachable tab must:
 4. have a canonical launch cwd equal to or below the canonical project root; and
 5. join to an exact live local tmux discovery record.
 
-Foreign, renamed, legacy-unclassified, root, and box sessions are excluded.
+Foreign, renamed, legacy-unclassified, and root sessions are excluded; a box's
+own sessions are listed under the box once its switch is on (#31aa).
 Every attach and mutation resolves its opaque id through a fresh snapshot. No
 client-supplied tmux target, cwd, path, command, or argv reaches a process API.
 
@@ -465,7 +483,8 @@ surprise tab for the next launch.
 Extend local persistence only for opted-in, eligible, restart-resumable
 `kind: "agent"` tabs. The existing stable `TabEntry.tmuxSession` value is reused.
 Ordinary shells keep today's local persistence behavior. `local_agent`,
-ephemeral, root/box, container, VM, and non-resumable agent tabs are not widened.
+ephemeral, root, container, VM, and non-resumable agent tabs are not widened;
+a box scope's agent tabs are widened by the box's own switch (#31aa).
 
 Enabling mobile access does not respawn a live non-tmux agent. Settings must say
 that it becomes mobile-attachable after its next ordinary reopen/restart.

@@ -33,6 +33,22 @@ struct ProjectRecord {
     eldrun_trash: bool,
 }
 
+/// The slice of `boxes.json` the catalog reads (#31aa). A box is listed as a
+/// scope of its own — its `box:<id>` scope has its own session file and tmux
+/// names, and its tabs run locally whatever its members are — so it needs the
+/// same three things a project does: a switch, a label and a root.
+#[derive(Debug, Clone, Deserialize)]
+struct BoxRecord {
+    id: String,
+    name: String,
+    #[serde(default)]
+    member_ids: Vec<String>,
+    #[serde(default)]
+    folder: Option<String>,
+    #[serde(default)]
+    eldrun_mobile_access: bool,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SessionFile {
@@ -65,11 +81,22 @@ struct LiveTmux {
     cwd: PathBuf,
 }
 
+/// What a scope row is. A box is not a project — it has no status of its own
+/// and its tabs may live in several roots — and the phone says so on the row,
+/// so a "Paper" box and a "Paper" project can be told apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ScopeKind {
+    Project,
+    Box,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct PublicProject {
     pub id: String,
     pub label: String,
     pub status: String,
+    pub kind: ScopeKind,
     pub live_sessions: usize,
     pub last_activity: Option<u64>,
 }
@@ -97,6 +124,17 @@ pub struct PublicTab {
     /// This intentionally never stores or infers terminal text in the sidecar.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_status: Option<String>,
+    /// The model an agent tab last answered with, as the desktop shortened it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_model: Option<String>,
+    /// Desktop wall clock (ms) of the tab's last working output and of its last
+    /// finished turn — the two keys the phone's Agents list can sort by. The
+    /// desktop's numbers travel untouched: they are compared with each other,
+    /// never with the phone's clock.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub working_at: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub done_at: Option<u64>,
     /// How many prompts this agent tab has scheduled, and when the first fires.
     /// Absent for a shell tab and while the desktop is closed.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -115,9 +153,28 @@ pub struct ResolvedTab {
 #[derive(Debug, Clone)]
 pub struct ResolvedProject {
     pub public: PublicProject,
+    /// The desktop's own id for the scope: a project id, or a `box:<id>` scope
+    /// id, which the desktop bridge resolves the same way.
     pub raw_id: String,
+    /// The scope's home: the project folder, or the box folder. The inbox
+    /// lives here.
     pub root: PathBuf,
+    /// Every canonical directory a tab of this scope may run in — `root`
+    /// first, then (for a box) each local member's root, because a box's
+    /// per-member agent tab deliberately starts in that member's tree.
+    pub roots: Vec<PathBuf>,
     pub tabs: Vec<ResolvedTab>,
+}
+
+/// One scope to resolve, before its session file and tmux rows are read.
+struct ScopeSource {
+    raw_id: String,
+    label: String,
+    status: String,
+    kind: ScopeKind,
+    /// Uncanonicalized; the first entry is the home and must exist, the rest
+    /// are best-effort.
+    roots: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -254,10 +311,19 @@ fn resumable(tab: &SavedTab) -> bool {
             || tab.resume_args.as_ref().is_some_and(|v| !v.is_empty()))
 }
 
-fn canonical_below(path: &Path, root: &Path) -> bool {
+fn canonical_below_any(path: &Path, roots: &[PathBuf]) -> bool {
     path.canonicalize()
         .ok()
-        .is_some_and(|p| p.starts_with(root))
+        .is_some_and(|p| roots.iter().any(|root| p.starts_with(root)))
+}
+
+/// The trust-tier gate every mobile scope passes: a local project that is
+/// neither a container (Trash excepted, as on the desktop) nor a VM. A box
+/// applies it to each member before that member's root may host a box tab.
+fn mobile_local(project: &ProjectRecord) -> bool {
+    project.remote.is_none()
+        && !(enabled(&project.sandbox) && !project.eldrun_trash)
+        && !enabled(&project.vm)
 }
 
 fn live_tmux() -> HashMap<String, LiveTmux> {
@@ -286,91 +352,70 @@ impl Catalog {
             fs::read(state_dir.join("projects.json")).map_err(|e| format!("read projects: {e}"))?;
         let projects: Vec<ProjectRecord> =
             serde_json::from_slice(&bytes).map_err(|e| format!("parse projects: {e}"))?;
+        // Boxes are optional: no file, or one this build cannot read, costs the
+        // boxes and never the projects — a corrupt `boxes.json` must not take
+        // the whole catalog with it (see the session-file rule below).
+        let boxes: Vec<BoxRecord> = fs::read(state_dir.join("boxes.json"))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default();
         let live = live_tmux();
-        let mut resolved = Vec::new();
-        for project in projects {
-            if !project.eldrun_mobile_access
-                || project.remote.is_some()
-                || (enabled(&project.sandbox) && !project.eldrun_trash)
-                || enabled(&project.vm)
-            {
+        let mut sources = Vec::new();
+        for project in &projects {
+            if !project.eldrun_mobile_access || !mobile_local(project) {
                 continue;
             }
             let Some(root_raw) = project.directory.as_deref() else {
                 continue;
             };
-            let Ok(root) = Path::new(root_raw).canonicalize() else {
-                continue;
-            };
-            let session_path = state_dir
-                .join("sessions")
-                .join(project_key(&project.id))
-                .join("terminals.json");
-            // One project's session file is that project's problem, not the
-            // catalog's. The desktop writes it atomically, so a file that does
-            // not parse is real corruption or a shape this build does not read
-            // — and it used to fail the whole load, which the cache then
-            // answered from its last valid snapshot on every request, forever:
-            // one bad file froze every project the phone could see, with
-            // nothing anywhere to say why. Such a project simply has no
-            // attachable tabs until the desktop rewrites the file.
-            let session = match fs::read(&session_path) {
-                Ok(bytes) => serde_json::from_slice::<SessionFile>(&bytes)
-                    .unwrap_or_else(|_| SessionFile { tab_layout: vec![] }),
-                Err(_) => SessionFile { tab_layout: vec![] },
-            };
-            let mut tabs = Vec::new();
-            // project-tree-read: ok — this is the state-dir terminal-session snapshot.
-            for tab in session.tab_layout {
-                let eligible_kind = tab.kind == "shell" || (tab.kind == "agent" && resumable(&tab));
-                if !eligible_kind
-                    || tab.ephemeral
-                    || tab.tmux_attach.is_some()
-                    || !canonical_below(Path::new(&tab.cwd), &root)
-                {
-                    continue;
-                }
-                let Some(tmux) = tab.tmux_session.as_deref() else {
-                    continue;
-                };
-                if !expected_tmux(&project.id, &tab.kind, tmux) {
-                    continue;
-                }
-                let live_row = live
-                    .get(tmux)
-                    .filter(|row| canonical_below(&row.cwd, &root));
-                let public = PublicTab {
-                    id: key_id(host_key, "tab", &[&project.id, tmux]),
-                    label: tab.label.chars().take(120).collect(),
-                    kind: tab.kind.clone(),
-                    agent_label: (tab.kind == "agent")
-                        .then(|| tab.label.chars().take(120).collect()),
-                    agent_status: None,
-                    schedules: None,
-                    available: live_row.is_some(),
-                    viewer_busy: false,
-                    last_activity: live_row.map(|r| r.activity),
-                };
-                tabs.push(ResolvedTab {
-                    public,
-                    tmux_name: tmux.to_string(),
-                });
-            }
-            let last_activity = tabs.iter().filter_map(|t| t.public.last_activity).max();
-            let public = PublicProject {
-                id: key_id(host_key, "project", &[&project.id]),
-                label: project.name.chars().take(120).collect(),
-                status: project.status,
-                live_sessions: tabs.iter().filter(|t| t.public.available).count(),
-                last_activity,
-            };
-            resolved.push(ResolvedProject {
-                public,
-                raw_id: project.id,
-                root,
-                tabs,
+            sources.push(ScopeSource {
+                raw_id: project.id.clone(),
+                label: project.name.clone(),
+                status: project.status.clone(),
+                kind: ScopeKind::Project,
+                roots: vec![PathBuf::from(root_raw)],
             });
         }
+        for b in &boxes {
+            // A box never opened on the desktop has no folder and so no tabs;
+            // the desktop's switch resolves the folder on enable, so this only
+            // skips a bit hand-edited onto a folder-less record.
+            if !b.eldrun_mobile_access {
+                continue;
+            }
+            let Some(folder) = b.folder.as_deref() else {
+                continue;
+            };
+            let mut roots = vec![PathBuf::from(folder)];
+            for id in &b.member_ids {
+                let Some(member) = projects.iter().find(|p| &p.id == id) else {
+                    continue;
+                };
+                // A member's own Mobile switch is not consulted: the box's
+                // switch is the consent, and what it covers is the box's tabs
+                // — which run locally, in the folder or a local member's root.
+                // A remote/VM/container member contributes no root at all.
+                if !mobile_local(member) {
+                    continue;
+                }
+                if let Some(dir) = member.directory.as_deref() {
+                    roots.push(PathBuf::from(dir));
+                }
+            }
+            sources.push(ScopeSource {
+                raw_id: format!("box:{}", b.id),
+                label: b.name.clone(),
+                // A box has no status of its own; listing it is what the
+                // switch means, so it is always in the phone's active list.
+                status: "active".into(),
+                kind: ScopeKind::Box,
+                roots,
+            });
+        }
+        let resolved = sources
+            .into_iter()
+            .filter_map(|source| resolve_scope(state_dir, host_key, &live, source))
+            .collect();
         Ok(Self { projects: resolved })
     }
 
@@ -382,6 +427,99 @@ impl Catalog {
             .iter()
             .find_map(|p| p.tabs.iter().find(|t| t.public.id == id).map(|t| (p, t)))
     }
+}
+
+/// Read one scope's saved tabs and join them to the live tmux rows. `None`
+/// when the scope's home directory does not resolve — a scope with no home has
+/// nowhere for an inbox and nothing a tab could be checked against.
+fn resolve_scope(
+    state_dir: &Path,
+    host_key: &[u8],
+    live: &HashMap<String, LiveTmux>,
+    source: ScopeSource,
+) -> Option<ResolvedProject> {
+    let mut roots: Vec<PathBuf> = Vec::new();
+    for (index, raw) in source.roots.iter().enumerate() {
+        match raw.canonicalize() {
+            Ok(root) => roots.push(root),
+            // The home must exist; a member root that does not simply hosts
+            // no box tab, exactly as the fence's root list treats it.
+            Err(_) if index == 0 => return None,
+            Err(_) => {}
+        }
+    }
+    let root = roots.first()?.clone();
+    let session_path = state_dir
+        .join("sessions")
+        .join(project_key(&source.raw_id))
+        .join("terminals.json");
+    // One scope's session file is that scope's problem, not the catalog's.
+    // The desktop writes it atomically, so a file that does not parse is real
+    // corruption or a shape this build does not read — and it used to fail
+    // the whole load, which the cache then answered from its last valid
+    // snapshot on every request, forever: one bad file froze every project
+    // the phone could see, with nothing anywhere to say why. Such a scope
+    // simply has no attachable tabs until the desktop rewrites the file.
+    let session = match fs::read(&session_path) {
+        Ok(bytes) => serde_json::from_slice::<SessionFile>(&bytes)
+            .unwrap_or_else(|_| SessionFile { tab_layout: vec![] }),
+        Err(_) => SessionFile { tab_layout: vec![] },
+    };
+    let mut tabs = Vec::new();
+    // project-tree-read: ok — this is the state-dir terminal-session snapshot.
+    for tab in session.tab_layout {
+        let eligible_kind = tab.kind == "shell" || (tab.kind == "agent" && resumable(&tab));
+        if !eligible_kind
+            || tab.ephemeral
+            || tab.tmux_attach.is_some()
+            || !canonical_below_any(Path::new(&tab.cwd), &roots)
+        {
+            continue;
+        }
+        let Some(tmux) = tab.tmux_session.as_deref() else {
+            continue;
+        };
+        if !expected_tmux(&source.raw_id, &tab.kind, tmux) {
+            continue;
+        }
+        let live_row = live
+            .get(tmux)
+            .filter(|row| canonical_below_any(&row.cwd, &roots));
+        let public = PublicTab {
+            id: key_id(host_key, "tab", &[&source.raw_id, tmux]),
+            label: tab.label.chars().take(120).collect(),
+            kind: tab.kind.clone(),
+            agent_label: (tab.kind == "agent").then(|| tab.label.chars().take(120).collect()),
+            agent_status: None,
+            agent_model: None,
+            working_at: None,
+            done_at: None,
+            schedules: None,
+            available: live_row.is_some(),
+            viewer_busy: false,
+            last_activity: live_row.map(|r| r.activity),
+        };
+        tabs.push(ResolvedTab {
+            public,
+            tmux_name: tmux.to_string(),
+        });
+    }
+    let last_activity = tabs.iter().filter_map(|t| t.public.last_activity).max();
+    let public = PublicProject {
+        id: key_id(host_key, "project", &[&source.raw_id]),
+        label: source.label.chars().take(120).collect(),
+        status: source.status,
+        kind: source.kind,
+        live_sessions: tabs.iter().filter(|t| t.public.available).count(),
+        last_activity,
+    };
+    Some(ResolvedProject {
+        public,
+        raw_id: source.raw_id,
+        root,
+        roots,
+        tabs,
+    })
 }
 
 #[cfg(test)]
@@ -468,6 +606,80 @@ mod tests {
         let b = catalog.projects.iter().find(|p| p.raw_id == "p-b").expect("B");
         assert_eq!(a.tabs.len(), 1, "the healthy project keeps its tabs");
         assert!(b.tabs.is_empty(), "the corrupt one has none, and is still listed");
+    }
+
+    /// A mobile-enabled box is a scope of its own (#31aa): listed as `kind:
+    /// box` under its own opaque id, with tabs from `sessions/box_<id>/` whose
+    /// cwd is the box folder OR a local member's root. Its switch is the only
+    /// consent consulted — a member's own Mobile bit is not — while a member
+    /// outside the trust tiers contributes no root, and a box with the bit
+    /// off or no folder is not listed at all.
+    #[test]
+    fn a_mobile_enabled_box_is_a_scope_with_the_folder_and_local_member_roots() {
+        let dir = tempfile::tempdir().expect("state dir");
+        let state = dir.path();
+        let folder = state.join("boxes").join("paper");
+        let member = state.join("lib");
+        let remote_mirror = state.join("mirror");
+        for d in [&folder, &member, &remote_mirror] {
+            fs::create_dir_all(d).expect("dir");
+        }
+        fs::write(
+            state.join("projects.json"),
+            serde_json::to_vec(&serde_json::json!([
+                // The member has Mobile OFF itself: the box's switch covers it.
+                { "id": "p-lib", "name": "Lib", "status": "inactive",
+                  "directory": member.to_string_lossy() },
+                { "id": "p-remote", "name": "Remote", "status": "active",
+                  "directory": remote_mirror.to_string_lossy(),
+                  "remote": { "host": "h" } },
+            ]))
+            .expect("projects"),
+        )
+        .expect("write projects");
+        fs::write(
+            state.join("boxes.json"),
+            serde_json::to_vec(&serde_json::json!([
+                { "id": "b1", "name": "Paper", "member_ids": ["p-lib", "p-remote", "p-gone"],
+                  "folder": folder.to_string_lossy(), "eldrun_mobile_access": true },
+                { "id": "b2", "name": "Off", "folder": folder.to_string_lossy() },
+                { "id": "b3", "name": "Unopened", "eldrun_mobile_access": true },
+            ]))
+            .expect("boxes"),
+        )
+        .expect("write boxes");
+        let sessions = state.join("sessions").join("box_b1");
+        fs::create_dir_all(&sessions).expect("session dir");
+        let tab = |label: &str, cwd: &Path, tmux: &str| {
+            serde_json::json!({
+                "label": label, "cmd": "bash", "kind": "shell",
+                "cwd": cwd.to_string_lossy(), "tmuxSession": tmux,
+            })
+        };
+        fs::write(
+            sessions.join("terminals.json"),
+            serde_json::to_vec(&serde_json::json!({ "tabLayout": [
+                tab("Box shell", &folder, "eldrun-box_b1--shell-123456789"),
+                tab("Lib shell", &member, "eldrun-box_b1--shell-223456789"),
+                tab("Remote shell", &remote_mirror, "eldrun-box_b1--shell-323456789"),
+                tab("Foreign", &folder, "eldrun-p-lib--shell-423456789"),
+            ]}))
+            .expect("session"),
+        )
+        .expect("write session");
+
+        let catalog = Catalog::load(state, &[7; 32]).expect("catalog");
+        assert_eq!(catalog.projects.len(), 1, "only the enabled, opened box is listed");
+        let b = &catalog.projects[0];
+        assert_eq!(b.raw_id, "box:b1");
+        assert_eq!(b.public.kind, ScopeKind::Box);
+        assert_eq!(b.public.label, "Paper");
+        assert_eq!(b.public.status, "active");
+        assert_eq!(b.root, folder.canonicalize().unwrap());
+        assert_eq!(b.roots.len(), 2, "the folder and the one local member: {:?}", b.roots);
+        let labels: Vec<&str> = b.tabs.iter().map(|t| t.public.label.as_str()).collect();
+        assert_eq!(labels, vec!["Box shell", "Lib shell"]);
+        assert!(!b.public.id.contains("b1"), "the opaque id must not carry the box id");
     }
 
     #[test]

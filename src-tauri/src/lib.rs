@@ -1255,6 +1255,7 @@ pub fn run() {
             commands::boxes::ensure_box_folder,
             commands::boxes::refresh_box_agent_docs,
             commands::boxes::set_box_relations,
+            commands::boxes::set_box_mobile_access,
             // Native calendar (local event store)
             commands::calendar::calendar_load,
             commands::calendar::calendar_save,

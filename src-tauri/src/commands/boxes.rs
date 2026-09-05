@@ -490,6 +490,7 @@ pub fn create_box(name: String) -> Result<ProjectBox, String> {
         position,
         folder: None,
         relations: vec![],
+        eldrun_mobile_access: false,
         extra: Default::default(),
     };
     boxes.push(new_box.clone());
@@ -535,6 +536,38 @@ pub fn set_box_members(box_id: String, member_ids: Vec<String>) -> Result<Projec
         .find(|b| b.id == box_id)
         .ok_or_else(|| format!("box '{box_id}' not found"))?;
     target.member_ids = member_ids;
+    let updated = target.clone();
+    write_boxes(&boxes)?;
+    Ok(updated)
+}
+
+/// Switch a box's Eldrun Mobile reach (#31aa) — the box-scope twin of
+/// `set_project_mobile_access`. The machine-wide preconditions are the same
+/// (persistent local sessions, tmux), because a box tab reaches the phone the
+/// way a project tab does: through the tmux session the tab already runs in.
+/// The trust tiers need no check here — a `box:<id>` scope's tabs always run
+/// locally, and the sidecar takes only those whose cwd is the box folder or a
+/// local member root. Enabling also resolves the box folder: the sidecar lists
+/// a box by that folder, and a box never opened on the desktop has none yet.
+#[tauri::command]
+pub fn set_box_mobile_access(box_id: String, enabled: bool) -> Result<ProjectBox, String> {
+    if enabled {
+        let settings: crate::schema::Settings =
+            storage::read_json(&storage::state_dir().join("settings.json")).unwrap_or_default();
+        if !settings.persist_local_sessions() {
+            return Err("Enable persistent local terminal sessions before Mobile access".into());
+        }
+        if !crate::services::tmux_local::tmux_available() {
+            return Err("Mobile access requires tmux on this machine".into());
+        }
+        ensure_box_folder(box_id.clone())?;
+    }
+    let mut boxes = read_boxes()?;
+    let target = boxes
+        .iter_mut()
+        .find(|b| b.id == box_id)
+        .ok_or_else(|| format!("box '{box_id}' not found"))?;
+    target.eldrun_mobile_access = enabled;
     let updated = target.clone();
     write_boxes(&boxes)?;
     Ok(updated)
@@ -747,6 +780,10 @@ mod tests {
         assert!(
             !back.contains("relations"),
             "relations should be skipped: {back}"
+        );
+        assert!(
+            !back.contains("eldrun_mobile_access"),
+            "an off Mobile bit should be skipped: {back}"
         );
 
         // Full round-trip equality.

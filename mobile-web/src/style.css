@@ -27,6 +27,10 @@ nav { display:flex; gap:8px; margin:20px 0; }
 nav button,.keys button { flex:1; }
 .selected { background:#3b326e !important; border-color:#7c6cff !important; }
 .search { margin-bottom:16px; }
+/* The Agents list's order, above the cards: a label and the pick on one line,
+   the select taking the width the label leaves. */
+.activity-sort { display:flex; align-items:center; gap:10px; margin:-8px 0 12px; color:#9aa0b4; font-size:.9rem; }
+.activity-sort select { flex:1; width:auto; padding:8px 30px 8px 10px; background-position:right 10px center; }
 .cards { display:grid; gap:10px; }
 .card { width:100%; text-align:left; justify-content:space-between; padding:16px; background:rgba(28,31,43,.92); }
 .card span:first-child { display:grid; gap:4px; }

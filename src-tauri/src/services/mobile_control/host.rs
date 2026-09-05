@@ -385,7 +385,7 @@ async fn activity(State(state): State<HostState>, headers: HeaderMap) -> impl In
     // every project's tabs.
     let statuses = statuses
         .into_iter()
-        .map(|status| (status.tmux_session, status.status))
+        .map(|status| (status.tmux_session.clone(), status))
         .collect::<HashMap<_, _>>();
     let mut rows = Vec::new();
     for project in &catalog_snapshot.projects {
@@ -397,7 +397,10 @@ async fn activity(State(state): State<HostState>, headers: HeaderMap) -> impl In
                 continue;
             };
             let mut tab = resolved.public.clone();
-            tab.agent_status = Some(status.clone());
+            tab.agent_status = Some(status.status.clone());
+            tab.agent_model = status.model.clone();
+            tab.working_at = status.working_at;
+            tab.done_at = status.done_at;
             tab.viewer_busy = state.terminal_registry.is_busy(&resolved.tmux_name);
             rows.push(ActivityRow {
                 tab,
@@ -468,7 +471,7 @@ async fn project(
     };
     let statuses = statuses
         .into_iter()
-        .map(|status| (status.tmux_session, status.status))
+        .map(|status| (status.tmux_session.clone(), status))
         .collect::<HashMap<_, _>>();
     let mut schedules = schedules
         .into_iter()
@@ -485,7 +488,12 @@ async fn project(
         .collect::<HashMap<_, _>>();
     for (tab, resolved) in tabs.iter_mut().zip(&project.tabs) {
         if tab.kind == "agent" {
-            tab.agent_status = statuses.get(&resolved.tmux_name).cloned();
+            if let Some(status) = statuses.get(&resolved.tmux_name) {
+                tab.agent_status = Some(status.status.clone());
+                tab.agent_model = status.model.clone();
+                tab.working_at = status.working_at;
+                tab.done_at = status.done_at;
+            }
             tab.schedules = schedules.remove(&resolved.tmux_name);
         }
     }
@@ -2055,6 +2063,7 @@ mod tests {
     const ORIGIN: &str = "https://desk.example.ts.net";
     /// A raw project id and a filesystem path the phone must never be able to
     /// read back out of any response.
+    const RAW_BOX: &str = "b-mobile";
     const RAW_PROJECT: &str = "raw-project-id-7f3";
 
     struct Fixture {
@@ -2120,6 +2129,61 @@ mod tests {
                         "kind": "agent",
                         "sessionId": "9d0f-session",
                         "tmuxSession": format!("eldrun-{RAW_PROJECT}--agent-abcdef123"),
+                    }]
+                }))
+                .expect("session fixture"),
+            )
+            .expect("write session");
+            fixture
+        }
+
+        /// A host with one opted-in project (Mobile OFF on the project itself)
+        /// that is the member of one opted-in box holding one shell tab in the
+        /// member's tree and one in the box folder, plus one box with Mobile off.
+        fn with_box() -> Self {
+            let fixture = Self::bare();
+            let state_dir = &fixture.state.config.state_dir;
+            let folder = state_dir.join("boxes").join("paper");
+            std::fs::create_dir_all(&folder).expect("box folder");
+            std::fs::write(
+                state_dir.join("projects.json"),
+                serde_json::to_vec(&serde_json::json!([{
+                    "id": RAW_PROJECT,
+                    "name": "Aurora",
+                    "status": "inactive",
+                    "directory": fixture.root.to_string_lossy(),
+                }]))
+                .expect("projects fixture"),
+            )
+            .expect("write projects");
+            std::fs::write(
+                state_dir.join("boxes.json"),
+                serde_json::to_vec(&serde_json::json!([
+                    { "id": RAW_BOX, "name": "Paper", "member_ids": [RAW_PROJECT],
+                      "folder": folder.to_string_lossy(), "eldrun_mobile_access": true },
+                    { "id": "b-off", "name": "Private", "member_ids": [RAW_PROJECT],
+                      "folder": folder.to_string_lossy() },
+                ]))
+                .expect("boxes fixture"),
+            )
+            .expect("write boxes");
+            let sessions = state_dir.join("sessions").join(format!("box_{RAW_BOX}"));
+            std::fs::create_dir_all(&sessions).expect("session dir");
+            std::fs::write(
+                sessions.join("terminals.json"),
+                serde_json::to_vec(&serde_json::json!({
+                    "tabLayout": [{
+                        "label": "Box shell",
+                        "cmd": "bash",
+                        "cwd": folder.to_string_lossy(),
+                        "kind": "shell",
+                        "tmuxSession": format!("eldrun-box_{RAW_BOX}--shell-abcdef123"),
+                    }, {
+                        "label": "Aurora shell",
+                        "cmd": "bash",
+                        "cwd": fixture.root.to_string_lossy(),
+                        "kind": "shell",
+                        "tmuxSession": format!("eldrun-box_{RAW_BOX}--shell-bcdef1234"),
                     }]
                 }))
                 .expect("session fixture"),
@@ -2880,6 +2944,49 @@ mod tests {
             .send(get_as(&format!("/api/v1/projects/{RAW_PROJECT}"), &cookie))
             .await;
         assert_eq!(status, StatusCode::NOT_FOUND, "a raw id resolved: {body}");
+    }
+
+    /// #31aa: a box with Mobile on is a row of the phone's list — kind `box`,
+    /// always active, opaque id, no path, no raw id — and its own tabs come
+    /// back under it, including the one running in a member's tree. The
+    /// member's own Mobile switch is off, so the member is *not* a row; the
+    /// box's switch reaches the box's tabs and nothing of the member's own.
+    #[tokio::test]
+    async fn a_mobile_enabled_box_is_listed_as_a_box_scope_with_its_own_tabs() {
+        let host = Fixture::with_box();
+        let cookie = host.pair_device(&signing_key(33)).await.0;
+
+        let (status, _, body) = host.send(get_as("/api/v1/projects?view=active", &cookie)).await;
+        assert_eq!(status, StatusCode::OK, "answered: {body}");
+        let rows = json(&body)["projects"].as_array().cloned().unwrap_or_default();
+        assert_eq!(rows.len(), 1, "one box, no member of its own: {body}");
+        assert_eq!(rows[0]["label"], "Paper");
+        assert_eq!(rows[0]["kind"], "box");
+        assert_eq!(rows[0]["status"], "active");
+        assert!(!body.contains(RAW_BOX), "a raw box id leaked: {body}");
+        assert!(!body.contains(RAW_PROJECT), "a raw project id leaked: {body}");
+        assert!(!body.contains("Private"), "a box with Mobile off is listed: {body}");
+        assert!(
+            !body.contains(&host.root.to_string_lossy().to_string()),
+            "a filesystem path leaked: {body}"
+        );
+
+        let opaque = rows[0]["id"].as_str().expect("opaque box id").to_string();
+        let (status, _, body) = host
+            .send(get_as(&format!("/api/v1/projects/{opaque}"), &cookie))
+            .await;
+        assert_eq!(status, StatusCode::OK, "answered: {body}");
+        let detail = json(&body);
+        assert_eq!(detail["project"]["kind"], "box");
+        let labels: Vec<String> = detail["tabs"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .iter()
+            .map(|tab| tab["label"].as_str().unwrap_or_default().to_string())
+            .collect();
+        assert_eq!(labels, vec!["Box shell", "Aurora shell"], "{body}");
+        assert!(!body.contains("box_"), "a session-dir or tmux name leaked: {body}");
     }
 
     #[tokio::test]

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useSettingsStore } from "../../stores/settings";
 import { useProjectsStore } from "../../stores/projects";
+import { useBoxesStore } from "../../stores/boxes";
 import { ROOT_SCOPE, useTabsStore } from "../../stores/tabs";
 import { SettingsCard, SettingsList, ToggleRow } from "../layout/settingsUi";
 import { UntestedTag } from "../common/UntestedTag";
@@ -125,6 +126,8 @@ export function MobileSettings() {
   const settings = useSettingsStore((state) => state.settings);
   const updateSettings = useSettingsStore((state) => state.updateSettings);
   const projects = useProjectsStore((state) => state.projects);
+  const boxes = useBoxesStore((state) => state.boxes);
+  const setBoxMobileAccess = useBoxesStore((state) => state.setBoxMobileAccess);
   const rootDir = useProjectsStore((state) => state.rootDir);
   const setProjectMobileAccess = useProjectsStore((state) => state.setProjectMobileAccess);
   const stored = settings?.eldrun_mobile_host;
@@ -426,6 +429,11 @@ export function MobileSettings() {
   const matchingEligible = normalizedProjectSearch
     ? eligible.filter((project) => project.name.toLocaleLowerCase().includes(normalizedProjectSearch))
     : eligible;
+  // Boxes ride under the same search box: every box is eligible (a box's tabs
+  // run locally whatever its members are), so the list is the box list.
+  const matchingBoxes = normalizedProjectSearch
+    ? boxes.filter((box) => box.name.toLocaleLowerCase().includes(normalizedProjectSearch))
+    : boxes;
   const securityHealth = !stored?.enabled
     ? { tone: "off", title: t("mobile.healthOffTitle"), detail: t("mobile.healthOffDetail") }
     : !status?.running
@@ -615,6 +623,25 @@ export function MobileSettings() {
         {eligible.length === 0 && <p className="settings-help">{t("mobile.noEligibleProjects")}</p>}
         {eligible.length > 0 && matchingEligible.length === 0 && <p className="settings-help">{t("mobile.noProjectsMatch", { query: projectSearch.trim() })}</p>}
       </div>
+
+      {boxes.length > 0 && <>
+        <div className="settings-subheader">{t("mobile.boxAccess")} <UntestedTag /></div>
+        <p className="settings-help">{t("mobile.boxAccessHelp")}</p>
+        <div className="mobile-project-access-list">
+          {matchingBoxes.map((box) => (
+            <ToggleRow
+              key={box.id}
+              label={box.name}
+              checked={box.eldrun_mobile_access ?? false}
+              onChange={(event) => {
+                setError(null);
+                void setBoxMobileAccess(box.id, event.target.checked).catch((reason) => setError(String(reason)));
+              }}
+            />
+          ))}
+          {matchingBoxes.length === 0 && <p className="settings-help">{t("mobile.noBoxesMatch", { query: projectSearch.trim() })}</p>}
+        </div>
+      </>}
 
       {devices.length > 0 && <div className="settings-subheader">{t("mobile.pairedDevices")}</div>}
       {devices.length > 0 && (

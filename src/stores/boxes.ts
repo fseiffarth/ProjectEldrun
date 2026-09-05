@@ -80,6 +80,10 @@ interface BoxesStore {
   removeFromBox: (projectId: string, boxId: string) => Promise<void>;
   /** Set a box's full member list (the box editor's Save). */
   setBoxMembers: (boxId: string, memberIds: string[]) => Promise<void>;
+  /** Switch the box's Eldrun Mobile reach (#31aa) — the box twin of
+   *  `projects.setProjectMobileAccess`. Enabling resolves the box folder on
+   *  the backend, so the returned record carries `folder` too. */
+  setBoxMobileAccess: (boxId: string, enabled: boolean) => Promise<void>;
   /** Multi-select commit: put `ids` into a new box (`name`) or append to `boxId`. */
   boxProjects: (
     ids: string[],
@@ -220,6 +224,13 @@ export const useBoxesStore = create<BoxesStore>((set, get) => ({
       boxes: state.boxes.map((b) => (b.id === boxId ? updated : b)),
     }));
     await refreshDocsFor(get().boxes, [boxId]);
+  },
+
+  setBoxMobileAccess: async (boxId, enabled) => {
+    const updated = await invoke<ProjectBox>("set_box_mobile_access", { boxId, enabled });
+    set((state) => ({
+      boxes: state.boxes.map((b) => (b.id === boxId ? updated : b)),
+    }));
   },
 
   boxProjects: async (ids, target) => {

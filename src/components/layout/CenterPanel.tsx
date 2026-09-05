@@ -157,6 +157,7 @@ export function CenterPanel() {
   // opened while a box is active default here, not to the previously active
   // project's directory — the box folder is the scope's own root.
   const activeBoxFolder = useBoxesStore((s) => boxFolderOfScope(scope, s.boxes));
+  const boxes = useBoxesStore((s) => s.boxes);
   const newTabCwd = activeBoxFolder || projectCwd;
 
   // Mount-free remote: a remote project starts DISCONNECTED but its LOCAL tabs
@@ -1062,6 +1063,12 @@ export function CenterPanel() {
           // for the pool. Keyed by THIS pane's scope (not the active project) so
           // a disconnected remote project switched away from never un-holds.
           const paneProject = projects.find((p) => p.id === scopeKey);
+          // A box scope's Mobile switch (#31aa) plays the project's part below:
+          // an agent tab of the box gets tmux underneath it — the one thing
+          // that makes it attachable from the phone — by the box's own switch.
+          const paneBox = scopeKey.startsWith(BOX_SCOPE_PREFIX)
+            ? boxes.find((b) => `${BOX_SCOPE_PREFIX}${b.id}` === scopeKey)
+            : undefined;
           const paneRemoteProj = !!paneProject?.remote;
           const paneDisconnected =
             paneRemoteProj && remoteSshByProject[scopeKey]?.ssh !== "connected";
@@ -1163,7 +1170,7 @@ export function CenterPanel() {
           if (!mobileAgentTmuxReady.current.has(mobileReadyKey)) {
             mobileAgentTmuxReady.current.set(
               mobileReadyKey,
-              !!paneProject?.eldrun_mobile_access,
+              !!paneProject?.eldrun_mobile_access || !!paneBox?.eldrun_mobile_access,
             );
           }
           const tmuxSession =

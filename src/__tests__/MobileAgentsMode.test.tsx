@@ -12,7 +12,7 @@ import type { ActivityTab } from "../../mobile-web/src/api";
 
 const fetchMock = vi.fn();
 
-function activityTab(id: string, label: string, project: string, status: ActivityTab["agent_status"]): ActivityTab {
+function activityTab(id: string, label: string, project: string, status: ActivityTab["agent_status"], extra: Partial<ActivityTab> = {}): ActivityTab {
   return {
     id,
     label,
@@ -22,8 +22,11 @@ function activityTab(id: string, label: string, project: string, status: Activit
     viewer_busy: false,
     project_id: `${project}-id`,
     project_label: project,
+    ...extra,
   };
 }
+
+const rowLabels = () => screen.getAllByRole("button").filter((node) => node.classList.contains("card")).map((node) => node.querySelector("strong")?.textContent);
 
 function answerActivity(body: unknown, desktopAvailable = true) {
   fetchMock.mockImplementation(async (input: string | URL | Request) => {
@@ -68,7 +71,8 @@ describe("Mobile home — agents mode", () => {
     await enterAgentsMode();
     expect(await screen.findByText("Claude")).toBeTruthy();
     expect(screen.getByText("Aurora")).toBeTruthy();
-    expect(screen.getByText("Borealis")).toBeTruthy();
+    // A working row says so beside its project.
+    expect(screen.getByText(/Borealis/).textContent).toBe("Borealis · working now");
     expect(screen.getByText("question")).toBeTruthy();
     expect(screen.getByText("working")).toBeTruthy();
     // The heading follows the mode, and the project list is gone rather than
@@ -110,6 +114,33 @@ describe("Mobile home — agents mode", () => {
     render(<Home open={noop} openTab={noop} todo={noop} mail={noop} />);
     await enterAgentsMode();
     expect(await screen.findByText(/Nothing is working, waiting or done/)).toBeTruthy();
+  });
+
+  it("orders by last working by default — a working tab first — and tags each row with its model", async () => {
+    const now = Date.now();
+    answerActivity({
+      tabs: [
+        activityTab("t1", "Finished", "Aurora", "done", { working_at: now - 10 * 60_000, done_at: now - 9 * 60_000, agent_model: "opus-4-1" }),
+        activityTab("t2", "Recent", "Aurora", "done", { working_at: now - 2 * 60_000, done_at: now - 60 * 60_000 }),
+        activityTab("t3", "Busy", "Borealis", "working", { working_at: now, done_at: now - 3 * 60_000, agent_model: "gpt-5-codex" }),
+      ],
+      desktop_available: true,
+    });
+    render(<Home open={noop} openTab={noop} todo={noop} mail={noop} />);
+    await enterAgentsMode();
+    await screen.findByText("Busy");
+    expect(rowLabels()).toEqual(["Busy", "Recent", "Finished"]);
+    expect(screen.getByText(/opus-4-1/).textContent).toContain("Aurora · opus-4-1 · worked 10m ago");
+    expect(screen.getByText(/gpt-5-codex/).textContent).toContain("working now");
+
+    fireEvent.change(screen.getByLabelText("Sort agent tabs"), { target: { value: "lastDone" } });
+    expect(rowLabels()).toEqual(["Busy", "Finished", "Recent"]);
+    expect(screen.getByText(/gpt-5-codex/).textContent).toContain("finished 3m ago");
+    expect(localStorage.getItem("eldrun.mobile.agentsSort")).toBe("lastDone");
+
+    // The sidecar's own order (waiting first, finished last) is still on offer.
+    fireEvent.change(screen.getByLabelText("Sort agent tabs"), { target: { value: "native" } });
+    expect(rowLabels()).toEqual(["Finished", "Recent", "Busy"]);
   });
 
   it("comes back in the mode it was left in, and forgets it when the reader leaves", async () => {

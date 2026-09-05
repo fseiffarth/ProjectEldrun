@@ -1,10 +1,17 @@
-export interface ProjectRow { id: string; label: string; status: string; live_sessions: number; last_activity?: number }
+/** One row of the phone's list. `kind` says whether it is a project or a box
+ * (#31aa) — a box is a scope of its own on the desktop, always "active" here,
+ * and a host older than the field sends none, which reads as a project. */
+export interface ProjectRow { id: string; label: string; status: string; kind?: "project" | "box"; live_sessions: number; last_activity?: number }
 export type AgentStatus = "working" | "question" | "done";
 /** The desktop's own one-line summary of a tab's scheduled prompts: what the
  * Agents view prints under an agent tab, so the project overview says the same
  * thing without opening the sheet. `next` is desktop-local wall clock. */
 export interface TabSchedules { total: number; enabled: number; next?: string }
-export interface TabRow { id: string; label: string; kind: "shell" | "agent"; agent_label?: string; agent_status?: AgentStatus; schedules?: TabSchedules; available: boolean; viewer_busy: boolean; last_activity?: number }
+/** `agent_model` is the model the tab last answered with, shortened by the
+ * desktop; `working_at`/`done_at` are desktop wall-clock ms of the tab's last
+ * working output and last finished turn. All three are the desktop's own
+ * readings and absent while it is closed or before the tab has done either. */
+export interface TabRow { id: string; label: string; kind: "shell" | "agent"; agent_label?: string; agent_status?: AgentStatus; agent_model?: string; working_at?: number; done_at?: number; schedules?: TabSchedules; available: boolean; viewer_busy: boolean; last_activity?: number }
 export interface AgentRow { id: string; label: string; modes: ("plan" | "auto")[] }
 /** One agent tab in the cross-project activity list: an ordinary tab row plus
  * the project it lives in, because that list is flat and a tab label on its own

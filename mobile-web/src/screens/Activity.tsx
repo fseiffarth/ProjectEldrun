@@ -1,6 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { AGENT_SORTS, DEFAULT_AGENT_SORT, isAgentSort, sortAgentTabs, type AgentSort } from "../../../shared/agentSort";
 import { getActivity, type ActivityTab } from "../api";
 import { classifyUnavailable, describeUnavailable, type UnavailableReason } from "../connection";
+import { readChoice, writeChoice } from "../prefs";
 
 /**
  * Every agent tab that is working, waiting on a decision, or done — across
@@ -21,8 +23,34 @@ import { classifyUnavailable, describeUnavailable, type UnavailableReason } from
  * overview's, and stopped while the phone is showing something else. */
 const POLL_MS = 5_000;
 
-/** Ordered by the sidecar (waiting first, finished last); the phone only
- * renders. Each pill is the same one the project overview puts on a tab. */
+const SORT_LABEL: Record<AgentSort, string> = {
+  lastWorking: "Last working",
+  lastDone: "Last done",
+  native: "Status",
+};
+
+/** "3m ago" from a desktop timestamp — a rough age, since the two clocks are
+ * not the same clock and the reading is a minute old at worst. */
+function ago(at: number, now: number): string {
+  const minutes = Math.max(0, Math.round((now - at) / 60_000));
+  if (minutes < 1) return "just now";
+  if (minutes < 90) return `${minutes}m ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 36) return `${hours}h ago`;
+  return `${Math.round(hours / 24)}d ago`;
+}
+
+/** The reading the current sort is ordering by, said on the row so the order
+ * explains itself: what a tab is doing now, or when it last did it. */
+function timing(tab: ActivityTab, sort: AgentSort, now: number): string {
+  if (sort === "lastDone") return tab.done_at === undefined ? "" : `finished ${ago(tab.done_at, now)}`;
+  if (tab.agent_status === "working") return "working now";
+  return tab.working_at === undefined ? "" : `worked ${ago(tab.working_at, now)}`;
+}
+
+/** Sorted here, by the reader's choice — by last working (the default), by
+ * last finished turn, or as the sidecar ranks status (waiting first, finished
+ * last). Each pill is the same one the project overview puts on a tab. */
 export function Activity({ open, onConnection }: {
   open: (projectId: string, tab: ActivityTab) => void;
   /** The header's one lamp belongs to whichever list is live, and in this mode
@@ -34,6 +62,16 @@ export function Activity({ open, onConnection }: {
   const [loaded, setLoaded] = useState(false);
   const [desktop, setDesktop] = useState(true);
   const [offline, setOffline] = useState<UnavailableReason | null>(null);
+  const [sort, setSort] = useState<AgentSort>(() => readChoice("agentsSort", isAgentSort, DEFAULT_AGENT_SORT));
+  const chooseSort = (next: AgentSort) => { setSort(next); writeChoice("agentsSort", next); };
+  /** Taken at each poll rather than at render, so the ages on the rows move
+   * with the list and not with every re-render in between. */
+  const [now, setNow] = useState(() => Date.now());
+  const sorted = useMemo(() => sortAgentTabs(tabs, sort, (tab) => ({
+    working: tab.agent_status === "working",
+    workingAt: tab.working_at,
+    doneAt: tab.done_at,
+  })), [sort, tabs]);
   useEffect(() => {
     let disposed = false;
     const controller = new AbortController();
@@ -43,6 +81,7 @@ export function Activity({ open, onConnection }: {
         .then((body) => {
           if (disposed) return;
           setTabs(body.tabs);
+          setNow(Date.now());
           setDesktop(body.desktop_available);
           setOffline(null);
           onConnection(null);
@@ -76,14 +115,23 @@ export function Activity({ open, onConnection }: {
     {!loaded && !offline && <p className="projects-empty" role="status">Loading agent tabs…</p>}
     {loaded && !desktop && <p className="notice">Desktop unavailable — Eldrun on the desktop is what tells a working session from one waiting on you.</p>}
     {loaded && desktop && tabs.length === 0 && <p className="projects-empty">Nothing is working, waiting or done. Quiet tabs are not listed here — open a project to reach one.</p>}
-    <section className="cards">{tabs.map((tab) => <button
-      className="card"
-      key={tab.id}
-      disabled={!tab.available}
-      onClick={() => open(tab.project_id, tab)}
-    >
-      <span><strong>{tab.label}</strong><small>{tab.project_label}{tab.viewer_busy ? " · open elsewhere" : tab.available ? "" : " · gone"}</small></span>
-      <span className="card-trailing">{tab.agent_status && <small className={`agent-status ${tab.agent_status}`}>{tab.agent_status}</small>}<span>›</span></span>
-    </button>)}</section>
+    {tabs.length > 1 && <label className="activity-sort">
+      <span>Sort</span>
+      <select aria-label="Sort agent tabs" value={sort} onChange={(event) => { if (isAgentSort(event.target.value)) chooseSort(event.target.value); }}>
+        {AGENT_SORTS.map((value) => <option key={value} value={value}>{SORT_LABEL[value]}</option>)}
+      </select>
+    </label>}
+    <section className="cards">{sorted.map((tab) => {
+      const when = timing(tab, sort, now);
+      return <button
+        className="card"
+        key={tab.id}
+        disabled={!tab.available}
+        onClick={() => open(tab.project_id, tab)}
+      >
+        <span><strong>{tab.label}</strong><small>{tab.project_label}{tab.agent_model ? ` · ${tab.agent_model}` : ""}{when ? ` · ${when}` : ""}{tab.viewer_busy ? " · open elsewhere" : tab.available ? "" : " · gone"}</small></span>
+        <span className="card-trailing">{tab.agent_status && <small className={`agent-status ${tab.agent_status}`}>{tab.agent_status}</small>}<span>›</span></span>
+      </button>;
+    })}</section>
   </>;
 }

@@ -407,6 +407,37 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
         left out deliberately rather than forgotten — it is the one part that
         reaches the network unasked.
 
+- [~] **31aa — Project boxes reach the phone** (2026-09-05; ✅ code-complete
+  and automated tests passing, ⚠️ phone QA pending — and a rebuild + restart
+  first: the sidecar's catalog, a backend command and the embedded PWA all
+  changed). A box was the one scope with its own tabs the phone could not
+  see: the sidecar walked `projects.json` only, and the plan listed box scopes
+  under "excluded". A box is a scope of its own on the desktop — `box:<id>`,
+  its own `sessions/box_<id>/` file, its own `eldrun-box_<id>--…` tmux names,
+  tabs that run locally whatever its members are — so it now reaches the
+  phone as one, behind a switch of its own: `eldrun_mobile_access` on the box
+  record in `boxes.json`, a **Box access** list under Project access in Mobile
+  settings (`set_box_mobile_access`, which also resolves the box folder). The
+  sidecar lists an enabled box as a `kind: "box"` row (always "active"; the
+  phone prints "▣ box" where a project row prints its status) and takes the
+  tabs whose cwd is the box folder or a *local* member's root; a container, VM
+  or remote member contributes no root, and a member's own switch is not
+  consulted — nor does the box's switch list its members. The bridge resolves
+  a `box:<id>` id through `mobileScope` beside project ids (catalog, activity,
+  create, activate → `openBox`, rename, status, seen, inbox), and CenterPanel
+  lets the box's switch stand in for the project's in the agent-tab tmux wrap,
+  so a resumable agent opened in a box becomes attachable like a project's.
+  Locked by `MobileBoxAccess.test.tsx`, the `MobileHome` badge case, and the
+  `discovery.rs` / `host.rs` box tests.
+  - [ ] 🖐️ Manual phone QA — Settings → Eldrun Mobile → Box access: switch a
+    box on (a never-opened box gets its folder); the phone's Projects list
+    shows it with "▣ box"; open it: the box's shell tabs and a Claude tab
+    opened in the box after the switch are listed and attach; a member with
+    its own switch off is *not* in the list; switch the box off: it vanishes
+    from the phone within a poll.
+  - [ ] ✅ Works
+  - [ ] ❌ Doesn't work
+
 - [~] **31g — Eldrun Mobile sidecar on macOS & Windows** (2026-08-26; ✅
   Code-complete, ⚠️ needs live QA on real macOS/Windows machines).
   The separate `eldrun-mobile-host` cargo bin is gone — the sidecar is a copy

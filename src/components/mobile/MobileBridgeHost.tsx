@@ -1,7 +1,8 @@
 import { useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { useProjectsStore } from "../../stores/projects";
+import { restoreProjectScope, useProjectsStore } from "../../stores/projects";
+import { BOX_SCOPE_PREFIX, boxScopeId, useBoxesStore } from "../../stores/boxes";
 import {
   RESUMABLE_AGENTS,
   useTabsStore,
@@ -9,15 +10,16 @@ import {
 } from "../../stores/tabs";
 import { useSettingsStore } from "../../stores/settings";
 import { calendarColor, useCalendarStore, visibleCalendarIds } from "../../stores/calendar";
-import { useActivityStore } from "../../stores/activity";
-import { persistScheduleBinding } from "../../stores/agentSchedules";
+import { lastTabReadAt, useActivityStore } from "../../stores/activity";
+import { useAgentModelsStore } from "../../stores/agentModels";
+import { persistScopeLayout } from "../../stores/agentSchedules";
 import { sendCollectedPrompt, useAgentPromptsStore, type ProjectAgentPrompt } from "../../stores/agentPrompts";
 import { isTrashProject } from "../../lib/trashProject";
 import type { AgentUsageReport } from "../../lib/agentUsage";
 import { METRIC, agentLabel, agentPromptLeaf, sub } from "../../lib/usageMetrics";
 import { dayKey } from "../../lib/usageRollup";
 import { resolveProjectDirectory } from "../../types";
-import type { CalendarEvent, CalendarTask, Subtask, TaskColumn } from "../../types";
+import type { CalendarEvent, CalendarTask, ProjectEntry, Subtask, TaskColumn } from "../../types";
 import type { MailFolder, MailHeader } from "../../types/mail";
 import { addSubtask, boardColumns, columnOf, dropAccepted, fallbackColumnId, provisionalRank } from "../../lib/todoBoard";
 import { addDays, monthGrid, toStamp } from "../../lib/calendarTime";
@@ -270,39 +272,111 @@ function mobileProject(projectId: string | undefined) {
   return project;
 }
 
+/** A scope the phone may reach, in the four facts a handler needs of it. A
+ * project with its Mobile switch on, or — #31aa — a box with its own: the
+ * sidecar hands the desktop a `box:<id>` scope id as the "project id", and
+ * that is the tab store's key for the box's tabs exactly as a project id is
+ * for a project's, so the same handlers serve both once the identity, the
+ * home directory and the export target come from here rather than from a
+ * `ProjectEntry`. The box's switch is the one consent consulted: its tabs run
+ * locally whatever its members are, and a member's own switch stays about the
+ * member's own tabs. */
+interface MobileScope {
+  /** The tab store's scope key: the project id, or `box:<id>`. */
+  id: string;
+  name: string;
+  /** Where a new tab starts and the inbox lives: the project or box folder. */
+  cwd: string;
+  /** The project.json a persist exports to; "" for a box, whose layout lives
+   *  in the state dir only (the tab store's own rule for box scopes). */
+  localFile: string;
+  /** The project behind a project scope, for the rules only Trash has. */
+  project?: ProjectEntry;
+}
+
+function mobileScope(id: string | undefined): MobileScope | undefined {
+  if (!id) return undefined;
+  if (id.startsWith(BOX_SCOPE_PREFIX)) {
+    const box = useBoxesStore.getState().boxes.find((entry) => boxScopeId(entry.id) === id);
+    // A box never opened has no folder yet; the switch resolves one on enable,
+    // so this only refuses a bit hand-edited onto a folder-less record.
+    if (!box?.eldrun_mobile_access || !box.folder) return undefined;
+    return { id, name: box.name, cwd: box.folder, localFile: "" };
+  }
+  const project = mobileProject(id);
+  if (!project) return undefined;
+  return { id: project.id, name: project.name, cwd: resolveProjectDirectory(project), localFile: project.local_file, project };
+}
+
+/** Every scope the phone may reach right now: the opted-in projects, then the
+ * opted-in boxes. Walked from the two lists rather than the tab store's scope
+ * keys so that each switch and the trust tiers gate its entry: a scope key is
+ * not a permission, and the store also holds the root scope, which is neither. */
+function allMobileScopes(): MobileScope[] {
+  const projects = useProjectsStore.getState().projects.flatMap((entry) => mobileScope(entry.id) ?? []);
+  const boxes = useBoxesStore.getState().boxes.flatMap((entry) => mobileScope(boxScopeId(entry.id)) ?? []);
+  return [...projects, ...boxes];
+}
+
 /** The phone receives these already-derived activity facts only. The desktop
  * owns terminal output and prompt classification, while the sidecar maps the
  * tmux names back to opaque phone-visible tab ids. */
 function agentStatuses(projectId?: string): AgentTabStatus[] {
-  const project = mobileProject(projectId);
-  return project ? projectAgentStatuses(project.id) : [];
+  const scope = mobileScope(projectId);
+  return scope ? projectAgentStatuses(scope.id) : [];
+}
+
+/**
+ * What the phone is told one agent tab is doing.
+ *
+ * The first three answers are the desktop's own lamps, unchanged. The fourth is
+ * the one this window cannot read off `attentionByTab`: that flag means UNREAD
+ * output and is deliberately never raised for the tab under the user's eyes —
+ * but "under the user's eyes" here is only "it is the visible tab of its group",
+ * which an unattended desktop satisfies all night. A phone asking "did anything
+ * finish?" would then be told no, forever, about precisely the tab its owner
+ * left open. So a finished turn nobody has *arrived at* since (`lastTabReadAt`,
+ * moved by a tab switch here or by the phone opening the tab) is reported as
+ * done on its own evidence.
+ */
+function mobileAgentState(ptyId: string): "working" | "question" | "done" | "idle" {
+  const activity = useActivityStore.getState();
+  if (activity.busyByTab[ptyId]) return "working";
+  if (activity.attentionByTab[ptyId] === "decision") return "question";
+  if (activity.attentionByTab[ptyId] === "done") return "done";
+  const doneAt = activity.lastDoneByTab[ptyId];
+  if (doneAt !== undefined && doneAt > (lastTabReadAt(ptyId) ?? 0)) return "done";
+  return "idle";
 }
 
 function projectAgentStatuses(projectId: string): AgentTabStatus[] {
   const activity = useActivityStore.getState();
+  const models = useAgentModelsStore.getState();
   return (useTabsStore.getState().tabsByScope[projectId] ?? []).flatMap((tab) => {
     if (tab.kind !== "agent" || !tab.tmuxSession) return [];
     const ptyId = `${projectId}:${tab.key}`;
-    const status: AgentTabStatus["status"] | null = activity.busyByTab[ptyId]
-      ? "working"
-      : activity.attentionByTab[ptyId] === "decision"
-        ? "question"
-        : activity.attentionByTab[ptyId] === "done"
-          ? "done"
-          : null;
-    return status ? [{ tmux_session: tab.tmuxSession, status }] : [];
+    const state = mobileAgentState(ptyId);
+    if (state === "idle") return [];
+    const status: AgentTabStatus["status"] = state;
+    // The phone sorts by these and tags the row with the model; the answer is
+    // whatever the desktop knows at this poll (the model store throttles its
+    // own re-read), so the phone can be one poll behind, never wrong.
+    void models.refresh(projectId, tab);
+    const row: AgentTabStatus = { tmux_session: tab.tmuxSession, status };
+    const model = models.byTab[ptyId];
+    if (model) row.model = model;
+    const workingAt = status === "working" ? Date.now() : activity.lastWorkingByTab[ptyId];
+    if (workingAt !== undefined) row.working_at = workingAt;
+    const doneAt = activity.lastDoneByTab[ptyId];
+    if (doneAt !== undefined) row.done_at = doneAt;
+    return [row];
   });
 }
 
-/** The same facts for *every* project the phone may reach, for its flat
- * activity list. It walks the project list rather than the tab store's scopes
- * so that the Mobile switch and the trust tiers gate each one: a scope key is
- * not a permission, and the store also holds root and box scopes that are no
- * project at all. */
+/** The same facts for *every* scope the phone may reach — projects and boxes
+ * alike — for its flat activity list. */
 function allAgentStatuses(): AgentTabStatus[] {
-  return useProjectsStore.getState().projects.flatMap((entry) =>
-    mobileProject(entry.id) ? projectAgentStatuses(entry.id) : [],
-  );
+  return allMobileScopes().flatMap((scope) => projectAgentStatuses(scope.id));
 }
 
 /** Each agent tab's scheduled-prompt summary, computed here against the desktop
@@ -310,9 +384,9 @@ function allAgentStatuses(): AgentTabStatus[] {
  * catalog because the phone's project overview shows one line per tab: asking
  * per tab would be a desktop round trip per agent on every 5s poll. */
 async function agentScheduleSummaries(projectId?: string): Promise<AgentTabSchedules[]> {
-  const project = mobileProject(projectId);
-  if (!project) return [];
-  const targets = (useTabsStore.getState().tabsByScope[project.id] ?? []).flatMap((tab) =>
+  const scope = mobileScope(projectId);
+  if (!scope) return [];
+  const targets = (useTabsStore.getState().tabsByScope[scope.id] ?? []).flatMap((tab) =>
     tab.kind === "agent" && tab.tmuxSession && tab.scheduleTargetId
       ? [{ tmux: tab.tmuxSession, target: tab.scheduleTargetId }]
       : [],
@@ -320,7 +394,7 @@ async function agentScheduleSummaries(projectId?: string): Promise<AgentTabSched
   const now = new Date();
   return Promise.all(targets.map(async ({ tmux, target }) => {
     const schedules = await invoke<ScheduledAgentPrompt[]>("agent_schedules_list", {
-      projectId: project.id,
+      projectId: scope.id,
       scheduleTargetId: target,
     }).catch(() => [] as ScheduledAgentPrompt[]);
     const summary = scheduleSummary(schedules, now);
@@ -334,14 +408,16 @@ async function agentScheduleSummaries(projectId?: string): Promise<AgentTabSched
 }
 
 async function create(request: CreateRequest, t: ReturnType<typeof useT>): Promise<DesktopResponse> {
-  const projects = useProjectsStore.getState();
-  const project = mobileProject(request.project_id);
-  if (!project) {
+  const scope = mobileScope(request.project_id);
+  if (!scope) {
     return { status: "error", code: "project_ineligible", message: "Project is not enabled for Mobile access" };
   }
-  const cwd = resolveProjectDirectory(project);
+  const cwd = scope.cwd;
   if (!cwd) return { status: "error", code: "project_ineligible", message: "Project folder is unavailable" };
-  await projects.activateProject(project.id);
+  // The new tab must be in the *shown* scope to get a terminal at all, so the
+  // desktop goes there first — the project's activation, or the box's open.
+  await enterScope(scope);
+  const project = scope.project;
   const requestHash = await invoke<string>("mobile_opaque_id", {
     domain: "request",
     value: request.idempotency_key,
@@ -349,31 +425,31 @@ async function create(request: CreateRequest, t: ReturnType<typeof useT>): Promi
 
   let spec: Omit<TabEntry, "key">;
   if (request.kind === "shell") {
-    if (isTrashProject(project)) {
+    if (project && isTrashProject(project)) {
       return { status: "error", code: "invalid_request", message: "Trash accepts agent tabs only" };
     }
     if (request.agent_id || request.mode) {
       return { status: "error", code: "invalid_request", message: "Shell requests cannot name an agent or mode" };
     }
-    spec = buildStaticTabSpec(SHELL_ITEMS[0], cwd, project.name, t);
+    spec = buildStaticTabSpec(SHELL_ITEMS[0], cwd, scope.name, t);
   } else {
     const choices = await agentChoices();
     const choice = choices.find((entry) => entry.public.id === request.agent_id);
     if (!choice) return { status: "error", code: "unknown_agent", message: "Agent is unavailable" };
-    if (isTrashProject(project) && !AGENT_ITEMS.some((item) => item.cmd === choice.item.cmd)) {
+    if (project && isTrashProject(project) && !AGENT_ITEMS.some((item) => item.cmd === choice.item.cmd)) {
       return { status: "error", code: "unknown_agent", message: "Trash accepts built-in agent CLIs only" };
     }
     if (request.mode && !choice.public.modes.includes(request.mode)) {
       return { status: "error", code: "unsupported_mode", message: "Agent mode is unavailable" };
     }
-    spec = buildStaticTabSpec(choice.item, cwd, project.name, t);
+    spec = buildStaticTabSpec(choice.item, cwd, scope.name, t);
   }
   let created: TabEntry;
   try {
     created = await useTabsStore.getState().hydrateThenCreateInScope({
-      scope: project.id,
+      scope: scope.id,
       cwd,
-      localFile: project.local_file,
+      localFile: scope.localFile,
       requestHash,
       spec,
     });
@@ -386,12 +462,20 @@ async function create(request: CreateRequest, t: ReturnType<typeof useT>): Promi
   return { status: "created", tmux_session: created.tmuxSession };
 }
 
+/** Make `scope` the one the desktop shows: a project is activated, a box is
+ * opened (which restores its members' tabs box-locally and enters its scope,
+ * exactly as the switcher's box pill does). */
+async function enterScope(scope: MobileScope): Promise<void> {
+  if (scope.project) await useProjectsStore.getState().activateProject(scope.project.id);
+  else await useBoxesStore.getState().openBox(scope.id.slice(BOX_SCOPE_PREFIX.length));
+}
+
 async function activate(projectId: string): Promise<DesktopResponse> {
-  const project = mobileProject(projectId);
-  if (!project) {
+  const scope = mobileScope(projectId);
+  if (!scope) {
     return { status: "error", code: "project_ineligible", message: "Project is not enabled for Mobile access" };
   }
-  await useProjectsStore.getState().activateProject(project.id);
+  await enterScope(scope);
   return { status: "activated" };
 }
 
@@ -409,18 +493,57 @@ function scheduleTargetTab(projectId: string, tmuxSession: string) {
 const MAX_TAB_LABEL = 120;
 
 function renameAgentTab(projectId: string, tmuxSession: string, label: string): DesktopResponse {
-  const project = mobileProject(projectId);
-  if (!project) {
+  const scope = mobileScope(projectId);
+  if (!scope) {
     return { status: "error", code: "project_ineligible", message: "Project is not enabled for Mobile access" };
   }
   const next = label.trim();
   if (!next || [...next].length > MAX_TAB_LABEL || [...next].some((char) => char < " " || char === "\u007f")) {
     return { status: "error", code: "invalid_label", message: "Tab label is not usable" };
   }
-  const tab = scheduleTargetTab(project.id, tmuxSession);
+  const tab = scheduleTargetTab(scope.id, tmuxSession);
   if (!tab) return { status: "error", code: "tab_not_found", message: "Agent tab is unavailable" };
-  useTabsStore.getState().renameTabInScope(project.id, tab.key, next);
+  useTabsStore.getState().renameTabInScope(scope.id, tab.key, next);
   return { status: "renamed", label: next };
+}
+
+/** The tab one mobile request names, of any kind the phone lists — the close
+ * route serves shell tabs as well as agent ones, so the agent-only lookup above
+ * would refuse half the rows. The tmux name is the identity either way: it is
+ * what the catalog published this tab from. */
+function mobileTargetTab(scope: string, tmuxSession: string) {
+  return (useTabsStore.getState().tabsByScope[scope] ?? []).find((entry) =>
+    entry.tmuxSession === tmuxSession || entry.tmuxAttach === tmuxSession,
+  );
+}
+
+/** Close one tab from the phone. Closing means here what it means on the
+ * desktop (`lib/closeRemoteTab`): the tab leaves the layout and its viewer
+ * dies, while the tmux session behind it keeps running and stays reattachable
+ * from the Sessions view — a tap on a phone must not be able to end a running
+ * agent.
+ *
+ * The scope is restored first when the desktop has not opened that project this
+ * session: the phone lists tabs from the saved session file, which outlives the
+ * store's knowledge of them, so a row it can plainly see would otherwise answer
+ * "tab_not_found". Restoring reads that same file WITHOUT activating the
+ * project — the user's window stays where they left it, and an inactive
+ * project's panes are not rendered, so nothing spawns a terminal on the way. */
+async function closeMobileTab(projectId: string, tmuxSession: string): Promise<DesktopResponse> {
+  const scope = mobileScope(projectId);
+  if (!scope) {
+    return { status: "error", code: "project_ineligible", message: "Project is not enabled for Mobile access" };
+  }
+  if (scope.project) await restoreProjectScope(scope.project).catch(() => {});
+  const tab = mobileTargetTab(scope.id, tmuxSession);
+  if (!tab) return { status: "error", code: "tab_not_found", message: "Tab is unavailable" };
+  useTabsStore.getState().removeTabInScope(scope.id, tab.key);
+  // CenterPanel's debounce persists the ACTIVE scope only, and the phone closes
+  // a tab in whichever project it is looking at. Without this write the catalog
+  // — which reads that same session file — keeps listing the closed tab, and a
+  // relaunch brings it back.
+  await persistScopeLayout(scope.id);
+  return { status: "closed" };
 }
 
 function scheduleTarget(projectId: string, tmuxSession: string): string | null {
@@ -464,7 +587,7 @@ async function mutateSchedule(
         ...action.schedule,
       },
     });
-    void persistScheduleBinding(projectId);
+    void persistScopeLayout(projectId);
   }
   return schedulesFor(projectId, tmuxSession);
 }
@@ -504,7 +627,7 @@ async function mutatePrompt(projectId: string, action: PromptMutation): Promise<
       },
       prompt,
     );
-    void persistScheduleBinding(projectId);
+    void persistScopeLayout(projectId);
   } else {
     await store.upsert(projectId, {
       id: action.type === "create" ? crypto.randomUUID() : action.prompt_id,
@@ -547,21 +670,13 @@ async function agentStatusFor(
   tmuxSession: string,
   refresh: boolean,
 ): Promise<DesktopResponse> {
-  const project = mobileProject(projectId);
-  if (!project) {
+  const scope = mobileScope(projectId);
+  if (!scope) {
     return { status: "error", code: "project_ineligible", message: "Project is not enabled for Mobile access" };
   }
-  const tab = scheduleTargetTab(project.id, tmuxSession);
+  const tab = scheduleTargetTab(scope.id, tmuxSession);
   if (!tab) return { status: "error", code: "tab_not_found", message: "Agent tab is unavailable" };
-  const activity = useActivityStore.getState();
-  const ptyId = `${project.id}:${tab.key}`;
-  const state: MobileAgentStatus["state"] = activity.busyByTab[ptyId]
-    ? "working"
-    : activity.attentionByTab[ptyId] === "decision"
-      ? "question"
-      : activity.attentionByTab[ptyId] === "done"
-        ? "done"
-        : "idle";
+  const state: MobileAgentStatus["state"] = mobileAgentState(`${scope.id}:${tab.key}`);
   const leaf = agentPromptLeaf(tab) ?? tab.cmd;
   // Neither read may take the sheet down with it: a usage run that fails still
   // leaves a status worth showing, and a stats file that will not load must not
@@ -575,7 +690,7 @@ async function agentStatusFor(
       cached: false,
     })),
     invoke<{ days: Record<string, Record<string, number>> }>("usage_summary", {
-      projectId: project.id,
+      projectId: scope.id,
     }).catch(() => null),
   ]);
   return {
@@ -584,7 +699,7 @@ async function agentStatusFor(
       state,
       label: tab.label,
       agent: agentLabel(leaf),
-      project: project.name,
+      project: scope.name,
       today: todayTally(summary, leaf),
       usage: {
         label: usage.label,
@@ -823,10 +938,22 @@ async function alertsSnapshot(feed: AlertsFeed): Promise<MobileAlerts> {
       task_id: item.kind === "task" && item.source.taskId
         ? await opaqueId("task", item.source.taskId)
         : undefined,
+      // The row's own handle, so the phone can press the strip's ✓ without ever
+      // being told what is behind the row. `AlertItem.id` is `"{kind}:{sourceId}"`
+      // and stable across refreshes, which is exactly what makes the derived
+      // handle resolvable again on the way back.
+      alert_id: await opaqueId("alert", item.id),
     }))),
   };
 }
 
+/**
+ * The phone pressed one alert row's ✓.
+ *
+ * The row is named by the opaque handle `alertsSnapshot` published, resolved
+ * here by re-deriving the same handles over the live feed — the mail routes'
+async function resolveAlertRow(feed: AlertsFeed, alertId: string): Promise<DesktopResponse> {
+  const pairs = await Promise.all(
 const MOBILE_CALENDAR_EVENTS = 80;
 
 /** The mobile view is materialized by the desktop, so it uses exactly the same
@@ -1191,20 +1318,20 @@ function markTabSeen(projectId: string, tmuxSession: string): DesktopResponse {
 // the phone maps to a sentence.
 
 async function desktopImagesFor(projectId: string): Promise<DesktopResponse> {
-  if (!mobileProject(projectId)) {
+  if (!mobileScope(projectId)) {
     return { status: "error", code: "project_ineligible", message: "Project is not enabled for Mobile access" };
   }
   return { status: "desktop_images", images: await invoke<DesktopImage[]>("mobile_desktop_images") };
 }
 
 async function attachDesktopImage(projectId: string, imageId: string): Promise<DesktopResponse> {
-  const project = mobileProject(projectId);
-  if (!project) {
+  const scope = mobileScope(projectId);
+  if (!scope) {
     return { status: "error", code: "project_ineligible", message: "Project is not enabled for Mobile access" };
   }
   try {
     const attachment = await invoke<InboxAttachment>("mobile_attach_desktop_image", {
-      projectDir: resolveProjectDirectory(project),
+      projectDir: scope.cwd,
       imageId,
     });
     return { status: "attached", attachment };
