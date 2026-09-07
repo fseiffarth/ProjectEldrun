@@ -24,7 +24,7 @@ import {
 } from "../../lib/terminalBus";
 import { hpcGuardRefusal } from "../../lib/hpcGuard";
 import { useHpcGuardStore } from "../../stores/hpcGuardPrompt";
-import { CSI_U_SHIFT_TAB, claimInitialInput, decodeOsc52Clipboard, initialInputForPty, isClaudeCommand, isCodexCommand, isTerminalIdentityResponse, isTerminalReport, stripTerminalQueries } from "../../lib/terminalControl";
+import { CSI_U_SHIFT_TAB, FORCE_SELECTION_MODIFIER, agentMouseDownAction, claimInitialInput, decodeOsc52Clipboard, initialInputForPty, isClaudeCommand, isCodexCommand, isTerminalIdentityResponse, isTerminalReport, stripTerminalQueries } from "../../lib/terminalControl";
 import { clearPtyInput, writePtyInput } from "../../lib/terminalInput";
 import { registerScheduledAgentInput } from "../../lib/scheduledAgentInput";
 import "@xterm/xterm/css/xterm.css";
@@ -413,6 +413,11 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
     const term = new Terminal({
       scrollback: 5000,
       allowProposedApi: false,
+      // macOS reads Option+click, and only Option+click, as "select even though
+      // the program has grabbed the mouse" (see FORCE_SELECTION_MODIFIER) — and
+      // only while this option is on. Off, an agent pane on a Mac would have no
+      // way at all to select the agent's output back out of a mouse-driven TUI.
+      macOptionClickForcesSelection: true,
       cursorBlink: true,
       fontSize: zoomable ? readAgentFontSize() : DEFAULT_FONT_SIZE,
       // 'JetBrains Mono Variable' is bundled (fontsource, imported in main.tsx)
@@ -775,15 +780,49 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
     // crosses doesn't issue a clipboard write per event — only once ~60ms after
     // the selection settles. Ctrl+Shift+C below stays as the explicit fallback
     // (e.g. a selection made without the mouse never fires this).
+    //
+    // The text is captured when the selection changes, not read back when the
+    // timer fires: an agent pane repaints under its own selection constantly, and
+    // a repaint that clears the highlight inside those 60ms would otherwise leave
+    // the drag having copied nothing at all. Releasing the button flushes the
+    // pending copy immediately (see `onDocMouseUp`), so a select-then-paste-
+    // elsewhere never races the debounce.
     let selectionCopyTimer: ReturnType<typeof setTimeout> | null = null;
+    let pendingSelection = "";
+    const flushSelectionCopy = () => {
+      if (selectionCopyTimer) {
+        clearTimeout(selectionCopyTimer);
+        selectionCopyTimer = null;
+      }
+      if (!pendingSelection) return;
+      const text = pendingSelection;
+      pendingSelection = "";
+      navigator.clipboard?.writeText(text).catch(() => {});
+    };
     term.onSelectionChange(() => {
       const sel = term.getSelection();
       if (!sel) return;
+      pendingSelection = sel;
       if (selectionCopyTimer) clearTimeout(selectionCopyTimer);
-      selectionCopyTimer = setTimeout(() => {
-        navigator.clipboard?.writeText(sel).catch(() => {});
-      }, 60);
+      selectionCopyTimer = setTimeout(flushSelectionCopy, 60);
     });
+
+    // Paste the OS clipboard into the running program. `term.paste` rather than a
+    // raw `writePtyInput`: it normalizes newlines to CR and — when the program
+    // asked for bracketed paste, as every agent TUI does — wraps the text in the
+    // `ESC[200~ … ESC[201~` markers that tell it "this is pasted, not typed". A
+    // multi-line paste then lands in the composer as one block instead of a burst
+    // of Enters that submits the first line and types the rest into what it
+    // opened. The text leaves through xterm's own `onData` handler above, so it
+    // counts as user input exactly like a keystroke does.
+    const pasteClipboard = () => {
+      navigator.clipboard
+        ?.readText()
+        .then((text) => {
+          if (text) term.paste(text);
+        })
+        .catch(() => {});
+    };
 
     // Agent CLIs set the terminal title (OSC 0/2) to a short summary of what
     // they're doing — the same signal a native terminal shows in its tab. Capture
@@ -854,15 +893,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
         return false;
       }
       if (e.code === "KeyV") {
-        navigator.clipboard
-          ?.readText()
-          .then((text) => {
-            if (text) {
-              noteUserInput(id);
-              writePtyInput(id, PTY_ENCODER.encode(text)).catch(console.error);
-            }
-          })
-          .catch(() => {});
+        pasteClipboard();
         return false;
       }
       return true;
@@ -1191,10 +1222,39 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       const size = (e as CustomEvent<number>).detail;
       if (typeof size === "number") applyFontSize(size, false);
     };
+
+    // The two agent-pane mouse gestures (see `agentMouseDownAction`): a
+    // double-click pastes, and a plain drag selects even while the TUI holds the
+    // mouse. Bound on the CONTAINER in the capture phase, which is the only place
+    // that runs before xterm's own listeners — they sit on the terminal element
+    // it creates *inside* this container — so a "paste" press can be taken away
+    // from the selection service entirely and a "select" press can be handed to it
+    // wearing the modifier it looks for.
+    const onMouseDownCapture = (e: MouseEvent) => {
+      const action = agentMouseDownAction(e, term.modes.mouseTrackingMode !== "none");
+      if (action === "paste") {
+        e.preventDefault();
+        e.stopPropagation();
+        term.focus();
+        pasteClipboard();
+      } else if (action === "select") {
+        // The event object is what xterm reads the modifier off, so re-defining
+        // the property on it is enough; nothing else in this window sees the
+        // event afterwards.
+        Object.defineProperty(e, FORCE_SELECTION_MODIFIER, { get: () => true });
+      }
+    };
+    // On the document, not the container: a drag that ends outside the pane (the
+    // usual way to grab the last line) releases there, and its copy should not
+    // wait out the debounce either.
+    const onDocMouseUp = () => flushSelectionCopy();
+
     if (zoomable) {
       containerRef.current?.addEventListener("wheel", onWheel, { passive: false });
+      containerRef.current?.addEventListener("mousedown", onMouseDownCapture, true);
       window.addEventListener(AGENT_ZOOM_EVENT, onZoomEvent);
     }
+    document.addEventListener("mouseup", onDocMouseUp);
 
     return () => {
       cancelled = true;
@@ -1208,8 +1268,10 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       window.removeEventListener("resize", doFit);
       if (zoomable) {
         containerRef.current?.removeEventListener("wheel", onWheel);
+        containerRef.current?.removeEventListener("mousedown", onMouseDownCapture, true);
         window.removeEventListener(AGENT_ZOOM_EVENT, onZoomEvent);
       }
+      document.removeEventListener("mouseup", onDocMouseUp);
       ro.disconnect();
       doFitRef.current = null;
       applyRendererRef.current = null;

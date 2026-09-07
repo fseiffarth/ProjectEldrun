@@ -1017,3 +1017,38 @@ unchanged; the new agents are additive.
       tab's columns.
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work
+
+263. **Agent panes: double-click pastes, and a drag still selects while the TUI
+    holds the mouse.** Two gestures the terminal owed an agent tab. A
+    **double-click** at the agent's prompt inserts the clipboard — the press is
+    taken away from xterm entirely rather than layered on top of its word-select,
+    because copy-on-select would otherwise overwrite the very text being pasted.
+    Both paste routes (the gesture and Ctrl+Shift+V) now go through `term.paste`
+    instead of a raw PTY write, so a multi-line clipboard arrives inside the
+    bracketed-paste markers every agent TUI asks for — one pasted block, not a
+    burst of Enters that submits the first line and types the rest into whatever
+    it opened. **Copy** stops depending on a chord nobody knows: a full-screen
+    agent turns on mouse tracking, after which every press is reported to the
+    program and a drag selects nothing, which is what "can't copy out of an agent
+    tab" is. In an agent pane a plain drag now selects anyway (the press is handed
+    to xterm wearing the force-selection modifier — Shift, Option on macOS), with
+    Ctrl left as the escape hatch that still reaches a mouse-driven TUI; the copy
+    also flushes on mouse-up instead of waiting out its 60 ms debounce, and holds
+    the text it captured, so a repaint under the selection can no longer eat it.
+    Agent panes only — a shell tab keeps xterm's word-select and its clicks.
+    Frontend only: `lib/terminalControl.ts`, `components/terminal/TerminalView.tsx`.
+    Built 2026-09-07, **not live-tested**.
+    - [x] 🤖 Automated test — `TerminalControl` (the gesture decision: paste on a
+      double-click, force-select only while the program holds the mouse, never on
+      a modified or non-primary press), `AgentPaneMouse` (a double-click pastes
+      the clipboard and never reaches the selection service; a plain press is
+      forced only under mouse tracking; a shell tab keeps its word-select).
+    - [ ] 🖐️ Manual test — in a Claude tab, copy a path elsewhere and double-click
+      the pane: the clipboard lands at the prompt and nothing is submitted. Copy a
+      multi-line block and double-click again — it arrives as one paste, not as
+      several submitted lines. Then drag across some of the agent's output and
+      paste it into an editor: it should be there. Repeat both in a Codex tab
+      (whose TUI grabs the mouse) and confirm the drag still selects, and that
+      Ctrl+wheel zoom, Shift+Tab and the TUI's own scrolling are unchanged.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work

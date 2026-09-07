@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   OSC52_MAX_CHARS,
+  agentMouseDownAction,
   claimInitialInput,
   clearClaimedInitialInputsForTest,
   decodeOsc52Clipboard,
@@ -110,5 +111,45 @@ describe("OSC 52 clipboard writes are bounded, not trusted", () => {
     expect(decodeOsc52Clipboard("c;!!!not-base64!!!")).toBeNull();
     // Nothing left after stripping → nothing to set.
     expect(decodeOsc52Clipboard(osc52(""))).toBeNull();
+  });
+});
+
+
+describe("agent pane mousedown", () => {
+  const press = (over: Partial<Parameters<typeof agentMouseDownAction>[0]> = {}) => ({
+    button: 0,
+    detail: 1,
+    shiftKey: false,
+    ctrlKey: false,
+    altKey: false,
+    metaKey: false,
+    ...over,
+  });
+
+  it("pastes on a double-click, whether or not the program holds the mouse", () => {
+    expect(agentMouseDownAction(press({ detail: 2 }), false)).toBe("paste");
+    expect(agentMouseDownAction(press({ detail: 2 }), true)).toBe("paste");
+  });
+
+  it("forces a selection only while the program holds the mouse", () => {
+    // Mouse tracking on: a plain drag would otherwise be reported to the TUI and
+    // select nothing — this is "can't copy out of an agent tab".
+    expect(agentMouseDownAction(press(), true)).toBe("select");
+    // Tracking off: xterm already selects. Forcing here would put it in its
+    // shift-EXTENDS-the-selection branch, so each new drag would grow the last
+    // selection instead of starting a fresh one.
+    expect(agentMouseDownAction(press(), false)).toBe("pass");
+    // A triple-click still selects its line through the same override.
+    expect(agentMouseDownAction(press({ detail: 3 }), true)).toBe("select");
+  });
+
+  it("never touches a modified or non-primary press", () => {
+    for (const mod of ["shiftKey", "ctrlKey", "altKey", "metaKey"] as const) {
+      expect(agentMouseDownAction(press({ [mod]: true, detail: 2 }), true)).toBe("pass");
+      expect(agentMouseDownAction(press({ [mod]: true }), true)).toBe("pass");
+    }
+    // Right/middle button: the context menu and paste-on-middle-click are xterm's.
+    expect(agentMouseDownAction(press({ button: 2, detail: 2 }), true)).toBe("pass");
+    expect(agentMouseDownAction(press({ button: 1 }), true)).toBe("pass");
   });
 });

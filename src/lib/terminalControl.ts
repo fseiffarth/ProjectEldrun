@@ -1,4 +1,5 @@
 import type { TabKind } from "../stores/tabs";
+import { IS_MAC } from "./platform";
 
 const CSI = "\x1b[";
 const claimedInitialInputs = new Set<string>();
@@ -191,3 +192,57 @@ export function isClaudeCommand(cmd: string | null | undefined): boolean {
   const leaf = cmd.trim().split(/[\\/]/).pop() ?? "";
   return leaf.replace(/\.(exe|cmd|bat)$/i, "").toLowerCase() === "claude";
 }
+
+/**
+ * What a primary-button `mousedown` inside an AGENT pane means.
+ *
+ * Two gestures agent panes need and a plain xterm does not give them:
+ *
+ *  - **`"paste"`** — a double-click inserts the clipboard at the agent's prompt
+ *    (the ask). xterm would select the word under the cursor instead, which
+ *    copy-on-select would then push to the clipboard — overwriting the very text
+ *    the double-click was meant to paste. So the double-click is taken away from
+ *    xterm entirely rather than layered on top of it.
+ *  - **`"select"`** — the running program has grabbed the mouse (`mouseGrabbed`:
+ *    the TUI turned on mouse tracking, as Codex and other full-screen agents do),
+ *    so every press is reported to it and a drag selects nothing. Terminals let
+ *    you override that with a modifier; nobody knows the chord, which is what
+ *    "can't copy out of an agent tab" actually is. In an agent pane a plain drag
+ *    selects, because the mouse there is worth more as a way to copy the agent's
+ *    output than as a way to click inside its TUI.
+ *
+ * Any modifier means the user is asking for something specific — Shift extends /
+ * forces a selection, Alt column-selects, and Ctrl is left as the escape hatch
+ * that still reaches a mouse-driven TUI — so a modified press is always passed
+ * through untouched.
+ */
+export type AgentMouseDown = "paste" | "select" | "pass";
+
+export function agentMouseDownAction(
+  ev: { button: number; detail: number; shiftKey: boolean; ctrlKey: boolean; altKey: boolean; metaKey: boolean },
+  mouseGrabbed: boolean,
+): AgentMouseDown {
+  if (ev.button !== 0) return "pass";
+  if (ev.shiftKey || ev.ctrlKey || ev.altKey || ev.metaKey) return "pass";
+  // `detail` counts the clicks of the current sequence: 2 is the second press of
+  // a double-click (the first arrived as a plain 1 and did nothing but place an
+  // empty selection), 3 the triple-click that selects a whole line.
+  if (ev.detail === 2) return "paste";
+  return mouseGrabbed ? "select" : "pass";
+}
+
+/**
+ * The event property xterm reads as "select anyway, even though the program has
+ * the mouse" — `SelectionService.shouldForceSelection`, which is `shiftKey`
+ * everywhere except macOS, where it is `altKey` and honoured only while the
+ * `macOptionClickForcesSelection` option is on (TerminalView sets it).
+ *
+ * Forcing selection by re-defining this one property on the event is deliberate:
+ * xterm exposes no API for it, and the alternative — hand-rolling selection from
+ * pixel coordinates — would duplicate its buffer geometry. Note that xterm's
+ * *incremental* (shift-extends-the-selection) branch is guarded by the selection
+ * service being enabled, and it is enabled only while the program has NOT
+ * grabbed the mouse — the one case where we never force. So a forced press
+ * always starts a fresh selection.
+ */
+export const FORCE_SELECTION_MODIFIER: "altKey" | "shiftKey" = IS_MAC ? "altKey" : "shiftKey";
