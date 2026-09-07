@@ -16,7 +16,7 @@
  * real one.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, act, waitFor, cleanup, fireEvent } from "@testing-library/react";
+import { render, renderHook, screen, act, waitFor, cleanup, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 const { mockInvoke } = vi.hoisted(() => ({
@@ -261,6 +261,28 @@ describe("TeX workspace — center switching + SyncTeX", () => {
     });
     return { tabKey: tab.key, useTabsStore };
   }
+
+  it("pauses hidden children and catches up on show without discarding drafts", async () => {
+    setupInvoke();
+    const { tabKey, useTabsStore } = await renderWorkspace();
+    const main = await screen.findByRole("textbox") as HTMLTextAreaElement;
+    await waitFor(() => expect(main.value).toBe(MAIN_SRC));
+    fireEvent.change(main, { target: { value: MAIN_SRC + "% retained" } });
+    const childRow = await screen.findByRole("button", { name: /chap\.tex/i });
+    vi.useFakeTimers();
+    try {
+      await act(async () => { fireEvent.click(childRow); });
+      mockInvoke.mockClear();
+      await act(async () => { await vi.advanceTimersByTimeAsync(6000); });
+      const polled = mockInvoke.mock.calls.filter(([cmd]) => cmd === "file_mtime").map(([, args]) => args.path);
+      expect(polled).toContain(CHILD);
+      expect(polled).not.toContain(MAIN);
+      mockInvoke.mockClear();
+      await act(async () => { useTabsStore.getState().setViewerState(tabKey, { texActivePath: MAIN }); });
+      expect(mockInvoke.mock.calls.some(([cmd, args]) => cmd === "file_mtime" && args.path === MAIN)).toBe(true);
+      expect(screen.getByDisplayValue(/% retained/)).toBeTruthy();
+    } finally { vi.useRealTimers(); }
+  });
 
   it("(b) clicking a sidebar entry switches the center via setViewerState, no new tab", async () => {
     setupInvoke();
@@ -859,4 +881,108 @@ describe("TeX workspace — center switching + SyncTeX", () => {
     );
     expect(jumpSpy).toHaveBeenCalledWith(CHILD, 2, 1);
   });
+});
+
+
+describe("spreadsheet request ownership", () => {
+  it("loads once without reading text, then once per explicit sheet switch", async () => {
+    cleanup();
+    mockInvoke.mockReset();
+    mockInvoke.mockImplementation((cmd, args) => Promise.resolve(cmd === "read_spreadsheet" ? {
+      sheet_names: ["First", "Second"], active_sheet: args.sheet ?? "First", rows: [["value"]],
+    } : null));
+    const { TableView } = await import("../components/embed/TableView");
+    const view = render(<TableView path="/p/book.xlsx" onOpenExternally={() => {}} />);
+    await waitFor(() => expect(mockInvoke.mock.calls.filter(([cmd]) => cmd === "read_spreadsheet")).toHaveLength(1));
+    expect(mockInvoke.mock.calls.some(([cmd]) => cmd === "read_file_text")).toBe(false);
+    fireEvent.click(await screen.findByRole("button", { name: /First/ }));
+    fireEvent.click(await screen.findByRole("option", { name: "Second" }));
+    await waitFor(() => expect(mockInvoke.mock.calls.filter(([cmd]) => cmd === "read_spreadsheet")).toHaveLength(2));
+    view.unmount();
+  });
+});
+
+it("does not repaint an offscreen PDF thumbnail after reload", async () => {
+  cleanup();
+  const { PdfThumb } = await import("../components/embed/pdf/PdfViewer");
+  let intersect!: (entries: { isIntersecting: boolean }[]) => void;
+  vi.stubGlobal("IntersectionObserver", class {
+    constructor(callback: typeof intersect) { intersect = callback; }
+    observe() {}
+    disconnect() {}
+  });
+  const page = {
+    rotate: 0,
+    getViewport: () => ({ height: 100, width: 100, scale: 1 }),
+  };
+  const first = { getPage: vi.fn().mockResolvedValue(page) };
+  const second = { getPage: vi.fn().mockResolvedValue(page) };
+  type Doc = import("pdfjs-dist").PDFDocumentProxy;
+  try {
+    const view = render(<PdfThumb doc={first as unknown as Doc} page={1} rot={0} />);
+    await act(async () => intersect([{ isIntersecting: true }]));
+    expect(first.getPage).toHaveBeenCalledTimes(1);
+    await act(async () => intersect([{ isIntersecting: false }]));
+    view.rerender(<PdfThumb doc={second as unknown as Doc} page={1} rot={0} />);
+    expect(second.getPage).not.toHaveBeenCalled();
+    await act(async () => intersect([{ isIntersecting: true }]));
+    expect(second.getPage).toHaveBeenCalledTimes(1);
+    view.unmount();
+  } finally { vi.unstubAllGlobals(); }
+});
+
+it("skips Markdown parsing and image reads while hidden or editing", async () => {
+  cleanup();
+  const markdown = await import("../lib/viewers/markdown");
+  const parse = vi.spyOn(markdown, "renderMarkdown");
+  mockInvoke.mockReset();
+  mockInvoke.mockImplementation((cmd) => Promise.resolve(
+    cmd === "read_file_text" ? "![one](image.png)\n![two](image.png)" : cmd === "read_file_bytes" ? new ArrayBuffer(1) : 1,
+  ));
+  const { FileViewerPane } = await import("../components/embed/FileViewerPane");
+  const view = render(<FileViewerPane viewer="markdown" path="/p/readme.md" projectId="p" visible={false} />);
+  await act(async () => {});
+  expect(parse).not.toHaveBeenCalled();
+  expect(mockInvoke.mock.calls.some(([cmd]) => cmd === "read_file_bytes")).toBe(false);
+  view.rerender(<FileViewerPane viewer="markdown" path="/p/readme.md" projectId="p" visible />);
+  await waitFor(() => expect(parse).toHaveBeenCalled());
+  await waitFor(() => expect(mockInvoke.mock.calls.filter(([cmd]) => cmd === "read_file_bytes")).toHaveLength(1));
+  fireEvent.click(await screen.findByRole("button", { name: /^edit$/i }));
+  parse.mockClear();
+  mockInvoke.mockClear();
+  fireEvent.change(await screen.findByRole("textbox"), { target: { value: "![changed](new.png)" } });
+  expect(parse).not.toHaveBeenCalled();
+  expect(mockInvoke.mock.calls.some(([cmd]) => cmd === "read_file_bytes")).toBe(false);
+  view.unmount();
+  parse.mockRestore();
+});
+
+it("flushes a replaced viewer to its original scoped path and ignores late completion", async () => {
+  cleanup();
+  const { useEditableFile } = await import("../components/embed/FileViewerPane");
+  const { FileScopeContext } = await import("../components/embed/fileAccess");
+  const { useSettingsStore } = await import("../stores/settings");
+  const settings = useSettingsStore.getState().settings!;
+  settings.autosave = true;
+  let finish!: () => void;
+  mockInvoke.mockReset();
+  mockInvoke.mockImplementation((cmd, args) => {
+    if (cmd === "read_file_text") return Promise.resolve(args.path === "/a" ? "old" : "replacement");
+    if (cmd === "write_file_text") return new Promise<void>((r) => { finish = r; });
+    return Promise.resolve(1);
+  });
+  const wrapper = ({ children }: { children: import("react").ReactNode }) => <FileScopeContext.Provider value="remote-project">{children}</FileScopeContext.Provider>;
+  try {
+    const view = renderHook(({ path }) => useEditableFile(path), { initialProps: { path: "/a" }, wrapper });
+    await waitFor(() => expect(view.result.current.draft).toBe("old"));
+    act(() => view.result.current.setDraft("unsaved original"));
+    view.rerender({ path: "/b" });
+    expect(mockInvoke).toHaveBeenCalledWith("write_file_text", expect.objectContaining({ path: "/a", projectId: "remote-project", content: "unsaved original" }));
+    await waitFor(() => expect(view.result.current.draft).toBe("replacement"));
+    await act(async () => finish());
+    expect(view.result.current.draft).toBe("replacement");
+    expect(view.result.current.isDirty).toBe(false);
+    expect(mockInvoke.mock.calls.filter(([cmd]) => cmd === "write_file_text")).toHaveLength(1);
+    view.unmount();
+  } finally { settings.autosave = false; }
 });

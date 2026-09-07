@@ -777,3 +777,11 @@ screen is not.*
       to System and confirm the desktop's own cursors return everywhere.
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work
+
+- [ ] Native viewer follow-up: measure wrapped-editor layout before redesigning it;
+  evaluate document virtualization, media streaming, and broader document caching
+  separately from the focused visibility/autosave/image-loading fixes.
+- [ ] Manually verify native viewer efficiency: edit a remote file continuously,
+  switch files with autosave pending, and confirm its final bytes; edit multiple
+  TeX children and compile from another child; recompile a PDF while scrolled and
+  zoomed, then check restored position, thumbnails, and search results.

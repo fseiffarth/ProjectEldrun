@@ -152,9 +152,8 @@ export function TableView({
   const isSheet = useMemo(() => SHEET_RE.test(path), [path]);
 
   // The text draft behind a CSV/TSV. For a spreadsheet we don't edit the file at
-  // all; the hook still runs (hooks can't be conditional) but its content is
-  // ignored in favour of the backend's parsed rows.
-  const file = useEditableFile(path);
+  // all; disable text I/O while the workbook loader owns the rows.
+  const file = useEditableFile(path, !isSheet);
   const {
     content,
     draft,
@@ -178,7 +177,8 @@ export function TableView({
   const [sheetData, setSheetData] = useState<SheetData | null>(null);
   const [sheetError, setSheetError] = useState<string | null>(null);
   const [sheetLoaded, setSheetLoaded] = useState(false);
-  const [selectedSheet, setSelectedSheet] = useState<string | null>(null);
+  const [selection, setSelection] = useState<{ path: string; sheet: string } | null>(null);
+  const selectedSheet = selection?.path === path ? selection.sheet : null;
 
   useEffect(() => {
     if (!isSheet) return;
@@ -189,8 +189,8 @@ export function TableView({
       .then((data) => {
         if (cancelled) return;
         setSheetData(data);
-        // Adopt the sheet the backend actually returned (covers the default-pick).
-        setSelectedSheet((cur) => cur ?? data.active_sheet);
+        // The control displays active_sheet until the user explicitly selects one.
+
         setSheetLoaded(true);
       })
       .catch((e) => {
@@ -661,7 +661,7 @@ export function TableView({
         {isSheet && sheetData && sheetData.sheet_names.length > 1 && (
           <Dropdown
             value={selectedSheet ?? sheetData.active_sheet}
-            onChange={setSelectedSheet}
+            onChange={(sheet) => setSelection({ path, sheet })}
             title={t("tableView.selectSheetTitle")}
             options={sheetData.sheet_names.map((name) => ({ value: name, label: name }))}
           />

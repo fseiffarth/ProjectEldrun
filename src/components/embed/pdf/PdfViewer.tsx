@@ -1,3 +1,4 @@
+import { useSearchText } from "./useSearchText";
 /**
  * The in-app PDF viewer: a pdf.js canvas stack with a zoom/fit toolbar, Ctrl+F
  * find (#71), print, and bidirectional SyncTeX (#66).
@@ -187,8 +188,6 @@ const NOTE_AUTOSAVE_MS = 1200;
  * the worker is never the bottleneck.
  */
 const PAGE_SCAN_CONCURRENCY = 8;
-/** The find bar's text extraction reads far more per page, so it goes narrower. */
-const TEXT_SCAN_CONCURRENCY = 4;
 
 const PDF_MIN_SCALE = 0.1;
 const PDF_MAX_SCALE = 8;
@@ -307,7 +306,7 @@ const nextStripId = () => ++stripSeq;
  * it is near the visible part of the rail, and the card reserves its box beforehand
  * so the rail's scroll height is right from the start.
  */
-function PdfThumb({
+export function PdfThumb({
   doc,
   page,
   rot,
@@ -320,6 +319,7 @@ function PdfThumb({
    *  the rail shows the same page the reader does. */
   marks?: readonly RedactRect[];
 }) {
+  const visible = usePaneVisible();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [near, setNear] = useState(false);
 
@@ -331,7 +331,7 @@ function PdfThumb({
     }
     const io = new IntersectionObserver(
       (entries) => {
-        if (entries.some((e) => e.isIntersecting)) setNear(true);
+        setNear(entries.some((e) => e.isIntersecting));
       },
       { root: null, rootMargin: "200px" },
     );
@@ -340,7 +340,7 @@ function PdfThumb({
   }, []);
 
   useEffect(() => {
-    if (!near || !doc) return;
+    if (!visible || !near || !doc) return;
     let cancelled = false;
     let task: { cancel: () => void; promise: Promise<void> } | null = null;
     void (async () => {
@@ -403,7 +403,7 @@ function PdfThumb({
       cancelled = true;
       task?.cancel();
     };
-  }, [near, doc, page, rot, marks]);
+  }, [near, doc, page, rot, marks, visible]);
 
   // pdf.js has ALREADY painted this canvas at the sheet's rotation, so the card must
   // not turn it again in CSS — that is why the strip's rotate transform is scoped to
@@ -2909,55 +2909,7 @@ function PdfCanvas({
       }),
     [],
   );
-  // Per-SHEET text runs, extracted lazily the first time the find bar is used and
-  // cached until the arrangement changes. Indexed by position in the arrangement —
-  // not by page number in the file — so a search hit points at the sheet you are
-  // actually looking at once pages have been moved, deleted or merged in. Each
-  // sheet is read from its own source document, at its own rotation.
-  const [pageText, setPageText] = useState<TextItemBox[][] | null>(null);
-  // Invalidated by what the text actually depends on — which sheet, from which
-  // document, at which turn — and NOT by the arrangement object itself. Marking an
-  // area produces a new `pages` array, and dropping the cache on that would re-read
-  // every page's text content once per box drawn, exactly while the tool that needs
-  // it most is in use.
-  const textKey = useMemo(() => pages.map((r) => `${r.src}:${r.page}:${r.rot}`).join("|"), [pages]);
-  useEffect(() => { setPageText(null); }, [textKey]);
-  // Read while the find bar is open OR the blackout tool is armed: snapping a drawn
-  // box out to whole words needs exactly the boxes the search already measures, so
-  // arming the tool warms the same cache rather than a second one.
-  useEffect(() => {
-    if ((!findOpen && !redacting) || pageText || pages.length === 0) return;
-    let cancelled = false;
-    void (async () => {
-      try {
-        // A FEW AT A TIME, not all at once. `Promise.all` over the arrangement asks
-        // the pdf.js worker for every sheet's text content simultaneously, so on a
-        // 200-page document opening the find bar queued 200 page parses before the
-        // first character was typed — the worker is single-threaded, so they do not
-        // finish any sooner, and every page's parsed content is held at once while
-        // they queue. A small window keeps the worker busy, lets a cancelled search
-        // stop after the pages in flight rather than after all of them, and holds
-        // only what has actually been read.
-        const texts: TextItemBox[][] = new Array(pages.length);
-        for (let i = 0; i < pages.length && !cancelled; i += TEXT_SCAN_CONCURRENCY) {
-          const slice = pages.slice(i, i + TEXT_SCAN_CONCURRENCY);
-          const done = await Promise.all(
-            slice.map((ref) => {
-              const d = sources.get(ref.src)?.doc;
-              return d ? pageTextItemBoxes(d, ref.page, ref.rot) : Promise.resolve([]);
-            }),
-          );
-          done.forEach((boxes, j) => {
-            texts[i + j] = boxes;
-          });
-        }
-        if (!cancelled) setPageText(texts);
-      } catch {
-        if (!cancelled) setPageText([]); // give up gracefully — search finds nothing
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [pages, sources, findOpen, redacting, pageText]);
+  const pageText = useSearchText(pages, sources, paneVisible && (findOpen || redacting));
 
   // Flat list of matches across all pages, in document order; each carries its
   // 1-based page and the big-point boxes covering it.

@@ -1,3 +1,6 @@
+import { PreviewImages } from "./previewImages";
+import { DraftSaver } from "./draftSaver";
+import { lineStarts, indexedLine } from "./lineIndex";
 import { Suspense, createContext, lazy, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
@@ -1291,16 +1294,18 @@ const RELOAD_POLL_MS = 1500;
  * Adds (Group M):
  *  - #46 undo/redo: the draft is backed by `useEditHistory`; `undo`/`redo` are
  *    surfaced for keybindings + toolbar buttons.
- *  - #47 autosave: when `settings.autosave` is on, a dirty buffer is saved on
- *    every change (each keystroke).
+ *  - #47 autosave: when `settings.autosave` is on, a dirty buffer is saved after
+ *    400 ms idle, with a 2-second maximum scheduling delay and serialized writes.
  *  - #43 diff-aware reload: polls `file_mtime`; when the file changes on disk it
  *    silently re-reads into a clean buffer, or surfaces a non-destructive banner
  *    when the buffer is dirty (Reload / Keep mine) — never clobbering edits.
  */
-export function useEditableFile(path: string) {
+export function useEditableFile(path: string, enabled = true) {
   const scope = useFileScope();
   const t = useT();
   const paneVisible = usePaneVisible();
+  const loadedIdentity = useRef<string | null>(null);
+  const identity = JSON.stringify([path, scope]);
   const [content, setContent] = useState<string | null>(null);
   // The failure is held as a translation KEY, not a sentence: the read effects
   // must not depend on `t` (a language flip would re-run them and discard an
@@ -1319,10 +1324,6 @@ export function useEditableFile(path: string) {
   // mtime we last saw on disk, to detect external writes (#43). Our own saves
   // bump it so they don't trip the watcher.
   const lastMtime = useRef<number | null>(null);
-  const draftRef = useRef(draft);
-  draftRef.current = draft;
-  const baselineRef = useRef<string | null>(baseline);
-  baselineRef.current = baseline;
 
   // Autosave is ON by default; only an explicit `autosave: false` disables it.
   const autosave = useSettingsStore((s) => s.settings?.autosave !== false);
@@ -1343,14 +1344,19 @@ export function useEditableFile(path: string) {
   // Initial load + mtime baseline.
   useEffect(() => {
     let cancelled = false;
+    loadedIdentity.current = null;
+    setSaving(false);
+    setSaveError(null);
     setContent(null);
     setErrorKey(null);
     setBaseline(null);
     setExternalChange(false);
     lastMtime.current = null;
+    if (!enabled) return;
     readFileText(path, scope)
       .then((text) => {
         if (cancelled) return;
+        loadedIdentity.current = identity;
         seedFromDisk(text);
       })
       .catch((e) => { if (!cancelled) setErrorKey(describeFileErrorKey(e)); });
@@ -1358,46 +1364,42 @@ export function useEditableFile(path: string) {
       .then((m) => { if (!cancelled) lastMtime.current = m; })
       .catch(() => {});
     return () => { cancelled = true; };
-  }, [path, scope, seedFromDisk]);
+  }, [path, scope, seedFromDisk, enabled, identity]);
 
-  const loaded = content != null;
+  const loaded = content != null && loadedIdentity.current === identity;
   const isDirty = loaded && baseline != null && draft !== baseline;
   const isDirtyRef = useRef(isDirty);
   isDirtyRef.current = isDirty;
 
-  const save = useCallback(async () => {
-    if (!isDirtyRef.current || saving) return;
-    setSaving(true);
-    setSaveError(null);
-    try {
-      const toSave = draftRef.current;
-      await writeFileText(path, toSave, scope);
-      setBaseline(toSave);
-      setExternalChange(false);
-      // Our own write advances mtime; refresh so the poller doesn't see it as an
-      // external change.
-      try {
-        lastMtime.current = await fileMtime(path, scope);
-      } catch {
-        /* mtime refresh is best-effort */
-      }
-      if (scope && basename(path).toLowerCase() === "remarks.md") {
-        const project = useProjectsStore.getState().projects.find((p) => p.id === scope);
-        if (project) await useProjectRemarksStore.getState().load(scope, resolveProjectDirectory(project));
-      }
-    } catch (e) {
-      setSaveError(String(e));
-    } finally {
-      setSaving(false);
+  const saver = useMemo(() => new DraftSaver(async (text) => {
+    await writeFileText(path, text, scope);
+    if (scope && basename(path).toLowerCase() === "remarks.md") {
+      const project = useProjectsStore.getState().projects.find((p) => p.id === scope);
+      if (project) await useProjectRemarksStore.getState().load(scope, resolveProjectDirectory(project));
     }
-  }, [saving, path, scope]);
-
-  // #47 autosave: when the setting is on, write the buffer to disk on every
-  // change — each keystroke as well as the moment autosave is toggled on with
-  // unsaved edits. `save()` no-ops when the buffer is clean or already saving.
+  }), [path, scope]);
   useEffect(() => {
-    if (autosave && isDirty) void save();
-  }, [autosave, isDirty, draft, save]);
+    let active = true;
+    saver.onSaved = (text) => {
+      if (!active) return;
+      setBaseline(text);
+      setExternalChange(false);
+      void fileMtime(path, scope).then((m) => {
+        if (active) lastMtime.current = m;
+      }).catch(() => {});
+    };
+    saver.onStatus = (busy, error) => {
+      if (active) { setSaving(busy); setSaveError(error); }
+    };
+    return () => {
+      active = false;
+      saver.dispose();
+    };
+  }, [saver, path, scope]);
+  useEffect(() => {
+    saver.update(draft, baseline, loaded && enabled, autosave);
+  }, [saver, draft, baseline, loaded, enabled, autosave]);
+  const save = useCallback(() => saver.flush(), [saver]);
 
   // #43 diff-aware reload: poll mtime; on an external advance, re-read into a
   // clean buffer silently, or flag a banner if the buffer is dirty. Only while
@@ -1421,7 +1423,7 @@ export function useEditableFile(path: string) {
           }
           // Clean buffer → silently re-read + reseed baseline/draft.
           readFileText(path, scope)
-            .then((text) => { if (!cancelled) seedFromDisk(text); })
+            .then((text) => { if (!cancelled && !isDirtyRef.current) seedFromDisk(text); })
             .catch(() => {});
         })
         .catch(() => {});
@@ -1435,9 +1437,9 @@ export function useEditableFile(path: string) {
   // adopt current mtime so the next external change re-triggers).
   const reloadFromDisk = useCallback(() => {
     readFileText(path, scope)
-      .then((text) => seedFromDisk(text))
-      .catch((e) => setSaveError(String(e)));
-  }, [path, scope, seedFromDisk]);
+      .then((text) => { if (loadedIdentity.current === identity) seedFromDisk(text); })
+      .catch((e) => { if (loadedIdentity.current === identity) setSaveError(String(e)); });
+  }, [path, scope, seedFromDisk, identity]);
   const keepMine = useCallback(() => setExternalChange(false), []);
 
   return {
@@ -3241,15 +3243,16 @@ function CodeEditor({
   // 1-based line numbers that hold a match (and the current match's line), so the
   // gutter can mark where the hits are (#67). A line number is 1 + the count of
   // newlines before the match's start offset.
+  const starts = useMemo(() => lineStarts(draft), [draft]);
   const matchLineSet = useMemo(() => {
     const set = new Set<number>();
-    for (const m of matches) set.add(offsetToLineCol(draft, m.start).line);
+    for (const m of matches) set.add(indexedLine(starts, m.start));
     return set;
-  }, [matches, draft]);
+  }, [matches, starts]);
   const currentMatchLine = useMemo(() => {
     const m = matches[current];
-    return m ? offsetToLineCol(draft, m.start).line : 0;
-  }, [matches, current, draft]);
+    return m ? indexedLine(starts, m.start) : 0;
+  }, [matches, current, starts]);
 
   // Indent guides: one hairline at the start of every indentation level the file
   // actually uses. The unit is read out of the text (`detectIndentUnit`) rather
@@ -3293,10 +3296,10 @@ function CodeEditor({
   const unclosedLineSet = useMemo(() => {
     const set = new Set<number>();
     for (const range of unclosedBrackets) {
-      set.add(offsetToLineCol(draft, range.start).line);
+      set.add(indexedLine(starts, range.start));
     }
     return set;
-  }, [draft, unclosedBrackets]);
+  }, [starts, unclosedBrackets]);
   const [unclosedTip, setUnclosedTip] = useState<{
     left: number;
     top: number;
@@ -3420,7 +3423,7 @@ function CodeEditor({
       if (!el || !m) return;
       el.selectionStart = m.start;
       el.selectionEnd = m.end;
-      const line = draft.slice(0, m.start).split("\n").length; // 1-based
+      const line = indexedLine(starts, m.start); // 1-based
       // Wrap-aware vertical offset, mirroring the SyncTeX `gotoLine` math: under
       // soft-wrap (the TeX viewer) a logical line's top is the SUM of the measured
       // wrapped-row heights, not `(line-1)·lineHeight`. The naive form undershoots
@@ -3430,7 +3433,7 @@ function CodeEditor({
       el.scrollTop = Math.max(0, target);
       syncScroll();
     },
-    [matches, draft, syncScroll, lineTop, effectiveLineHeight],
+    [matches, starts, syncScroll, lineTop, effectiveLineHeight],
   );
 
   const goToMatch = useCallback(
@@ -7635,6 +7638,7 @@ function MarkdownView({
     undo, redo, canUndo, canRedo, externalChange, reloadFromDisk, keepMine,
   } = useEditableFile(path);
   const scope = useFileScope();
+  const visible = usePaneVisible();
   // The relationship-graph mode is opt-in (`md_graph` experimental flag): the
   // Graph button only renders while the flag is live, and a mode the flag
   // withdrew falls back to the preview rather than stranding a blank pane.
@@ -7668,8 +7672,13 @@ function MarkdownView({
     (scrollTop: number) => viewPos.persist({ scrollTop }),
     [viewPos],
   );
-  // Preview always reflects the live draft, so toggling shows unsaved edits.
-  const html = useMemo(() => (loaded ? renderMarkdown(draft) : ""), [loaded, draft]);
+  // Keep the hidden DOM stable; regenerate from the latest draft on show.
+  const lastPreview = useRef("");
+  const html = useMemo(() => {
+    if (!loaded) lastPreview.current = "";
+    else if (visible && mode === "preview") lastPreview.current = renderMarkdown(draft);
+    return lastPreview.current;
+  }, [loaded, draft, visible, mode]);
   // Register the preview scroller only while in preview mode, so it never fights
   // CodeEditor for the same group id (edit mode links via the textarea instead).
   const reportPreviewSync = useScrollSync(mode === "preview" ? groupId : null, bodyScrollRef);
@@ -7685,7 +7694,7 @@ function MarkdownView({
   // source until the chunk lands (milliseconds), then enrich in place.
   const previewRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
-    if (mode !== "preview") return;
+    if (!visible || mode !== "preview") return;
     if (!previewRef.current) return;
     let cancelled = false;
     void import("../../lib/viewers/markdownEnrich").then((m) => {
@@ -7697,7 +7706,7 @@ function MarkdownView({
     return () => {
       cancelled = true;
     };
-  }, [html, mode]);
+  }, [html, mode, visible]);
 
   // #49/#50: local-file links in the rendered preview open in-app. Unlike the
   // source editor, Preview has no caret interaction to preserve, so a normal
@@ -7719,41 +7728,46 @@ function MarkdownView({
     [],
   );
 
-  // #50: inline local images in the preview. The renderer tags relative/absolute
-  // image paths as <img.md-img-local data-md-src="…"> (no `src`, since the webview
-  // can't load them from the app origin); resolve each against the markdown file's
-  // directory, read the bytes, and swap in a Blob URL. URLs are revoked when the
-  // rendered html changes or on unmount. Shares `previewRef` with the enrichment
-  // pass above — both target the same rendered-preview container.
+  const images = useMemo(() => new PreviewImages(
+    (target) => readFileBytes(target, scope), imageMimeForPath,
+  ), [scope]);
+  useEffect(() => () => images.dispose(), [images]);
   useEffect(() => {
-    if (mode !== "preview") return;
+    images.pause(!visible || mode !== "preview");
+    return () => images.pause(true);
+  }, [images, visible, mode]);
+  useEffect(() => {
+    if (!visible || mode !== "preview") return;
     const root = previewRef.current;
     if (!root) return;
-    const imgs = Array.from(
-      root.querySelectorAll<HTMLImageElement>("img.md-img-local[data-md-src]"),
-    );
-    if (!imgs.length) return;
     let cancelled = false;
-    const urls: string[] = [];
-    for (const img of imgs) {
+    const targets = new Map<HTMLImageElement, string>();
+    for (const img of root.querySelectorAll<HTMLImageElement>("img.md-img-local[data-md-src]")) {
       const target = resolveLocalHref(path, img.getAttribute("data-md-src") ?? "");
-      if (!target) continue;
-      readFileBytes(target, scope)
-        .then((bytes) => {
-          if (cancelled) return;
-          const objectUrl = URL.createObjectURL(
-            new Blob([new Uint8Array(bytes)], { type: imageMimeForPath(target) }),
-          );
-          urls.push(objectUrl);
-          img.src = objectUrl;
-        })
-        .catch(() => { /* missing/unreadable file: leave the alt text showing */ });
+      if (target) targets.set(img, target);
     }
-    return () => {
-      cancelled = true;
-      for (const u of urls) URL.revokeObjectURL(u);
+    images.retain(new Set(targets.values()));
+    const load = (img: HTMLImageElement) => {
+      const target = targets.get(img);
+      if (!target) return;
+      void images.load(target).then((url) => {
+        if (!cancelled && url) img.src = url;
+      });
     };
-  }, [html, mode, path, scope]);
+    const observer = typeof IntersectionObserver === "undefined" ? null : new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) if (entry.isIntersecting) {
+          load(entry.target as HTMLImageElement);
+          observer?.unobserve(entry.target);
+        }
+      }, { root: bodyScrollRef.current, rootMargin: "300px" },
+    );
+    for (const img of targets.keys()) {
+      if (observer) observer.observe(img);
+      else load(img);
+    }
+    return () => { cancelled = true; observer?.disconnect(); };
+  }, [html, mode, visible, path, images]);
 
   // Cross-file `#fragment` navigation (stores/mdAnchor): when a followed link
   // into this document carried a fragment, scroll the rendered preview to that
@@ -8231,6 +8245,7 @@ function TexWorkspaceView({
   onOpenExternally: () => void;
 }) {
   const t = useT();
+  const workspaceVisible = usePaneVisible();
 
   // The parsed document structure (children + graphics). Re-gathered on mount, on
   // a root/side change, and after each successful compile (structureVersion bump).
@@ -8686,7 +8701,9 @@ function TexWorkspaceView({
           >
             {/* PdfView is lazy (§5.1) and this center renders outside the
                 pane-level Suspense above. */}
-            <Suspense fallback={null}>{centerFor(p)}</Suspense>
+            <PaneVisibleContext.Provider value={workspaceVisible && p === activePath}>
+              <Suspense fallback={null}>{centerFor(p)}</Suspense>
+            </PaneVisibleContext.Provider>
           </div>
         ))}
       </div>
