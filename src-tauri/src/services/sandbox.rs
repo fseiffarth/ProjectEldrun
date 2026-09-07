@@ -1620,10 +1620,17 @@ const CLAUDE_UNMOUNTED: &[&str] = &[
 const AGENT_READ_ONLY: &[&str] = &["*.sh", "*.md"];
 
 /// Entries of `~/.codex` that are not mounted. Much shorter than
-/// [`CLAUDE_UNMOUNTED`] on purpose: `sessions/` **must** stay mounted, because a
-/// containerized Codex writes its rollout logs there and the host-side
-/// `agent_session::codex_session_exists` reads them back to decide whether a tab
-/// can resume — unmounting it would silently kill Codex resume in every container.
+/// [`CLAUDE_UNMOUNTED`] on purpose: both places Codex keeps a conversation
+/// **must** stay mounted, because `agent_session::codex_session_exists` reads
+/// them back to decide whether a tab can resume — unmounting either silently
+/// kills Codex resume in every container:
+///
+/// - `sessions/`, the rollout logs releases up to 0.153.4 wrote;
+/// - `state_<n>.sqlite` (and its `-wal`/`-shm` siblings), the thread store
+///   0.153.4 writes instead. Nothing names these explicitly — they are simply
+///   entries that no rule excludes, which is the point of keeping this list
+///   short.
+///
 /// `config.toml` is the staged-shadow destination (see [`staged_config_mounts`]).
 const CODEX_UNMOUNTED: &[&str] = &["history.jsonl", "config.toml"];
 
@@ -2005,6 +2012,13 @@ pub(crate) fn staged_config_mounts(home: &str, stage: &Path) -> Vec<(String, Str
             .trim_start_matches(['/', '\\'])
             .replace(['/', '\\', ':'], "_");
         let dst = stage.join(&leaf);
+        // The outgoing shadow, read before it is overwritten: the folder-trust
+        // answers below are carried across from it.
+        let previous = if rel == ".codex/config.toml" {
+            std::fs::read_to_string(&dst).ok()
+        } else {
+            None
+        };
         let staged = if src_path.is_file() {
             std::fs::copy(&src_path, &dst).is_ok()
         } else {
@@ -2016,10 +2030,91 @@ pub(crate) fn staged_config_mounts(home: &str, stage: &Path) -> Vec<(String, Str
         if staged {
             #[cfg(windows)]
             rewrite_hook_for_container(&dst);
+            // `previous` is `Some` only for the Codex config (above).
+            if let Some(prev) = &previous {
+                carry_codex_project_trust(&dst, prev);
+            }
             mounts.push((dst.to_string_lossy().into_owned(), src));
         }
     }
     mounts
+}
+
+/// Carry the `[projects."…"]` tables of the outgoing Codex config shadow into
+/// the freshly staged one.
+///
+/// Codex asks whether it may work in a folder and records the answer as
+/// `[projects."<path>"] trust_level = "trusted"` in `~/.codex/config.toml`. In a
+/// fenced tab that file is a throwaway copy of the host original (the whole
+/// point — an agent must not be able to repoint the host's SessionStart hook),
+/// and re-copying it at every spawn threw the answer away with it: the user was
+/// asked about the same project root on every single Eldrun restart.
+///
+/// So the shadow keeps the answers the *user* gave inside it, and nothing else:
+/// the rest of the file is still the host original, so an edit the user makes
+/// to their real config (model, MCP servers, approval policy) reaches the next
+/// fenced tab as before, and nothing here is ever written back to the host. A
+/// table the host original already declares wins — that is the user's own
+/// answer, on the file they can actually see.
+///
+/// The blast radius of an agent forging a trust entry is one Eldrun project's
+/// fenced tabs, whose writable roots the fence pins independently.
+fn carry_codex_project_trust(staged: &Path, previous: &str) {
+    let Ok(fresh) = std::fs::read_to_string(staged) else {
+        return;
+    };
+    fn header_of(block: &str) -> &str {
+        block.lines().next().unwrap_or_default().trim()
+    }
+    let have: Vec<&str> = toml_tables(&fresh, "[projects.")
+        .into_iter()
+        .map(header_of)
+        .collect();
+    let carried: Vec<&str> = toml_tables(previous, "[projects.")
+        .into_iter()
+        .filter(|block| !have.contains(&header_of(block)))
+        .collect();
+    if carried.is_empty() {
+        return;
+    }
+    let mut out = fresh;
+    if !out.is_empty() && !out.ends_with('\n') {
+        out.push('\n');
+    }
+    for block in carried {
+        out.push('\n');
+        out.push_str(block.trim_end());
+        out.push('\n');
+    }
+    let _ = std::fs::write(staged, out);
+}
+
+/// The top-level TOML tables of `text` whose header line starts with `prefix`,
+/// each returned with its body down to the next table header.
+///
+/// A line scanner rather than a parser: these files are written by Codex itself
+/// and by us, the answer only has to be exact for machine-written tables, and a
+/// dependency-free scan cannot reformat a config we hand back to an agent.
+fn toml_tables<'a>(text: &'a str, prefix: &str) -> Vec<&'a str> {
+    let mut blocks = Vec::new();
+    let mut start: Option<usize> = None;
+    let mut offset = 0usize;
+    for line in text.split_inclusive('\n') {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with('[') {
+            if let Some(from) = start.take() {
+                blocks.push(&text[from..offset]);
+            }
+            if trimmed.starts_with(prefix) {
+                start = Some(offset);
+            }
+        }
+        offset += line.len();
+    }
+    if let Some(from) = start {
+        blocks.push(&text[from..]);
+    }
+    blocks
 }
 
 /// Windows: point a staged config copy's SessionStart hook at the POSIX twin.
@@ -2752,6 +2847,83 @@ mod tests {
     }
 
     // ── stage dir ─────────────────────────────────────────────────────────
+
+    /// The user answers Codex's "may I work in this folder?" inside a fenced
+    /// tab; the next spawn re-copies the host original over the shadow. Without
+    /// the carry-over that answer is gone and the question comes back on every
+    /// Eldrun restart.
+    #[test]
+    fn staged_codex_config_keeps_the_folder_trust_answered_in_the_fence() {
+        let base = std::env::temp_dir().join(format!("eldrun-sbx-trust-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let home = base.join("home");
+        let stage = base.join("stage");
+        std::fs::create_dir_all(home.join(".codex")).unwrap();
+        std::fs::create_dir_all(&stage).unwrap();
+        let host = home.join(".codex").join("config.toml");
+        std::fs::write(&host, "[projects.\"/home/u\"]\ntrust_level = \"trusted\"\n").unwrap();
+        let home_str = home.to_string_lossy().into_owned();
+
+        let shadow = PathBuf::from(
+            staged_config_mounts(&home_str, &stage)
+                .into_iter()
+                .find(|(_, original)| original.ends_with("config.toml"))
+                .unwrap()
+                .0,
+        );
+        // Codex records the answer in the shadow, and the user edits the *host*
+        // config meanwhile — both have to survive the next spawn.
+        std::fs::write(
+            &shadow,
+            std::fs::read_to_string(&shadow).unwrap()
+                + "\n[projects.\"/home/u/work/p\"]\ntrust_level = \"trusted\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &host,
+            "model = \"gpt-5-codex\"\n\n[projects.\"/home/u\"]\ntrust_level = \"trusted\"\n",
+        )
+        .unwrap();
+
+        staged_config_mounts(&home_str, &stage);
+        let after = std::fs::read_to_string(&shadow).unwrap();
+        assert!(
+            after.contains("[projects.\"/home/u/work/p\"]"),
+            "the answer given in the fence must survive a restage: {after}"
+        );
+        assert!(
+            after.contains("model = \"gpt-5-codex\""),
+            "the host original must still reach the fence: {after}"
+        );
+        assert_eq!(
+            after.matches("[projects.\"/home/u\"]").count(),
+            1,
+            "a table the host already declares must not be duplicated: {after}"
+        );
+        // Nothing is ever written back to the host.
+        assert!(!std::fs::read_to_string(&host)
+            .unwrap()
+            .contains("/home/u/work/p"));
+
+        // A third pass is a no-op, not a growing pile of repeated tables.
+        staged_config_mounts(&home_str, &stage);
+        let third = std::fs::read_to_string(&shadow).unwrap();
+        assert_eq!(third, after, "restaging must be idempotent");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn toml_tables_reads_whole_tables_and_stops_at_the_next_header() {
+        let text = "model = \"m\"\n\n[projects.\"/a\"]\ntrust_level = \"trusted\"\n\n\
+                    [[hooks.SessionStart]]\nmatcher = \"startup\"\n\n[projects.\"/b\"]\nx = 1\n";
+        let blocks = toml_tables(text, "[projects.");
+        assert_eq!(blocks.len(), 2, "{blocks:?}");
+        assert!(blocks[0].contains("trust_level"));
+        assert!(!blocks[0].contains("hooks.SessionStart"));
+        assert!(blocks[1].trim_end().ends_with("x = 1"));
+        assert!(toml_tables("", "[projects.").is_empty());
+        assert!(toml_tables("[tui]\nx = 1\n", "[projects.").is_empty());
+    }
 
     #[test]
     fn staged_config_mounts_copies_and_shadows_host_originals() {

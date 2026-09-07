@@ -48,13 +48,15 @@ pub fn resolve_agent_session(opts: PtyOptions) -> PtyOptions {
 /// id (no launch-time `--session-id`), so the only stable per-tab key is the
 /// `ELDRUN_TAB_UID` env var Eldrun sets from the tab's id. The global Codex
 /// `SessionStart` hook records the live session id under that key (see
-/// `install_session_start_hook`); here we read it and, when a matching rollout
-/// log exists, launch `codex resume <live-id>`. With no record yet (first launch,
-/// or the hook not trusted), we leave the args untouched → a fresh Codex session.
+/// `install_session_start_hook`); here we read it and, when Codex still has that
+/// conversation, launch `codex resume <live-id>`. With no record yet (first
+/// launch, or the hook not trusted), we leave the args untouched → a fresh Codex
+/// session.
 fn resolve_codex_session(opts: PtyOptions) -> PtyOptions {
     let sessions = paths::home_dir().join(".codex").join("sessions");
+    let store = crate::services::codex_store::state_db();
     let project_id = opts.project_id.clone();
-    resolve_codex_session_impl(opts, &sessions, |uid| {
+    resolve_codex_session_impl(opts, &sessions, store.as_deref(), |uid| {
         read_live_session_for(project_id.as_deref(), uid)
     })
 }
@@ -63,6 +65,7 @@ fn resolve_codex_session(opts: PtyOptions) -> PtyOptions {
 fn resolve_codex_session_impl<F>(
     mut opts: PtyOptions,
     sessions_root: &std::path::Path,
+    store: Option<&std::path::Path>,
     live_lookup: F,
 ) -> PtyOptions
 where
@@ -76,17 +79,42 @@ where
     let Some(uid) = opts.env.get("ELDRUN_TAB_UID").cloned() else {
         return opts;
     };
-    if let Some(id) = live_lookup(&uid).filter(|id| codex_session_exists(sessions_root, id)) {
+    if let Some(id) = live_lookup(&uid).filter(|id| codex_session_exists(sessions_root, store, id))
+    {
         opts.args = vec!["resume".to_string(), id];
     }
     opts
 }
 
-/// Whether Codex has a persisted rollout log for `uuid`. Codex stores sessions at
-/// `~/.codex/sessions/<YYYY>/<MM>/<DD>/rollout-<ts>-<uuid>.jsonl`, so we walk the
-/// date buckets (bounded depth) for a `.jsonl` whose name contains the uuid.
-pub(crate) fn codex_session_exists(root: &std::path::Path, uuid: &str) -> bool {
+/// Whether Codex still has the conversation `uuid`, and can therefore resume it.
+///
+/// Two stores, because Codex moved house mid-flight and both shapes are in the
+/// field:
+///
+/// - the **rollout log** at
+///   `~/.codex/sessions/<YYYY>/<MM>/<DD>/rollout-<ts>-<uuid>.jsonl`, which is
+///   what every release up to 0.153.4 wrote (and what a *containerized* Codex
+///   still writes into the mounted `sessions/`);
+/// - the **thread store** `~/.codex/state_<n>.sqlite`, which is where 0.153.4
+///   puts it instead. Its rows still *name* a `rollout_path`, but no such file
+///   is created any more.
+///
+/// Asking only the first one is how Codex resume died silently: the hook kept
+/// recording live thread ids, the walk kept finding no file for them, and every
+/// Codex tab relaunched as a brand-new session in an untrusted folder — which
+/// is the folder-trust prompt the user saw on each restart.
+///
+/// `store` is the thread store, resolved by
+/// [`crate::services::codex_store::state_db`] — passed in rather than looked up
+/// here because locating it costs a `read_dir` and the binder asks this once per
+/// tab per tick.
+pub(crate) fn codex_session_exists(
+    root: &std::path::Path,
+    store: Option<&std::path::Path>,
+    uuid: &str,
+) -> bool {
     codex_session_log(root, uuid).is_some()
+        || store.is_some_and(|db| crate::services::codex_store::thread_exists(db, uuid))
 }
 
 /// The rollout log behind [`codex_session_exists`], when there is one.
@@ -280,6 +308,11 @@ fn claude_session_log(projects: &std::path::Path, uuid: &str) -> Option<PathBuf>
 // this session last answered with* — read from the tail of that file, never
 // inferred from a flag Eldrun did not pass. A tab whose agent keeps no readable
 // transcript (Gemini, a custom command) gets no tag rather than a guessed one.
+//
+// Codex 0.153.4 stopped writing that transcript as a file and keeps its threads
+// in SQLite instead, so its answer now comes from
+// [`crate::services::codex_store`] — the store's own `model` column, the same
+// fact by the only route left. Older releases still get the tail read.
 
 /// How much of a transcript's tail is read for the model. A Claude turn with a
 /// large tool result can run past 100 KB on one line, so this is generous; the
@@ -297,7 +330,9 @@ pub enum TranscriptKind {
     /// `message.model`.
     Claude,
     /// `~/.codex/sessions/…/rollout-…-<sid>.jsonl`: a `turn_context` record's
-    /// `payload.model`.
+    /// `payload.model`. Codex 0.153.4 stopped writing these files —
+    /// [`crate::services::codex_store`] reads the model from its database
+    /// instead, and this stays for the releases that still do.
     Codex,
 }
 
@@ -305,6 +340,32 @@ pub enum TranscriptKind {
 /// with, or `None` when there is no transcript, no answer in it yet, or the
 /// agent is one whose transcript Eldrun does not read.
 pub fn agent_session_model(cmd: &str, project_id: Option<&str>, launch_id: &str) -> Option<String> {
+    read_agent_transcript(
+        cmd,
+        project_id,
+        launch_id,
+        last_model_in_transcript,
+        crate::services::codex_store::thread_model,
+    )
+}
+
+/// Resolve the transcript behind a tab and read one fact out of it. The
+/// resolution is the same whichever fact is wanted, so it lives once:
+///
+/// - Claude: `~/.claude/projects/…/<id>.jsonl` (plus the containerized stage),
+///   the live id (after a `/clear`) first and the launch id as the fallback —
+///   the same preference the resume path has. `read_file` is tried on each in
+///   turn, so a live transcript that holds no answer yet still falls back.
+/// - Codex: the rollout transcript when this release still writes one, else
+///   its SQLite thread store through `read_store` — the same fact by the only
+///   route left since 0.153.4, for the facts that store holds.
+fn read_agent_transcript<T>(
+    cmd: &str,
+    project_id: Option<&str>,
+    launch_id: &str,
+    read_file: impl Fn(&std::path::Path, TranscriptKind) -> Option<T>,
+    read_store: impl Fn(&std::path::Path, &str) -> Option<T>,
+) -> Option<T> {
     if !is_uuid_shaped(launch_id) {
         return None;
     }
@@ -315,20 +376,23 @@ pub fn agent_session_model(cmd: &str, project_id: Option<&str>, launch_id: &str)
             if let Some(pid) = project_id {
                 roots.push(crate::services::sandbox::claude_projects_stage(pid));
             }
-            // The live id (after a `/clear`) first, the launch id as the fallback
-            // — the same preference the resume path has.
             let ids = [live, Some(launch_id.to_string())];
             ids.iter().flatten().find_map(|id| {
                 roots
                     .iter()
                     .find_map(|root| claude_session_log(root, id))
-                    .and_then(|path| last_model_in_transcript(&path, TranscriptKind::Claude))
+                    .and_then(|path| read_file(&path, TranscriptKind::Claude))
             })
         }
         "codex" => {
+            let live = live?;
             let root = paths::home_dir().join(".codex").join("sessions");
-            let path = codex_session_log(&root, &live?)?;
-            last_model_in_transcript(&path, TranscriptKind::Codex)
+            codex_session_log(&root, &live)
+                .and_then(|path| read_file(&path, TranscriptKind::Codex))
+                .or_else(|| {
+                    let db = crate::services::codex_store::state_db()?;
+                    read_store(&db, &live)
+                })
         }
         _ => None,
     }
@@ -384,7 +448,9 @@ fn model_in_record(line: &str, kind: TranscriptKind) -> Option<String> {
 
 /// A model name fit to show: trimmed, one line of printable text, bounded, and
 /// not one of the placeholders a transcript uses for turns no model produced.
-fn clean_model_name(raw: &str) -> Option<String> {
+/// One definition, whether the name came from a transcript or from Codex's own
+/// store ([`crate::services::codex_store`]).
+pub(crate) fn clean_model_name(raw: &str) -> Option<String> {
     let name = raw.trim();
     if name.is_empty()
         || name.starts_with('<')
@@ -1241,7 +1307,7 @@ mod tests {
         let mut opts = codex_opts();
         opts.env
             .insert("ELDRUN_TAB_UID".to_string(), "tab-key-123".to_string());
-        let out = resolve_codex_session_impl(opts, &root, |uid| {
+        let out = resolve_codex_session_impl(opts, &root, None, |uid| {
             (uid == "tab-key-123").then(|| live.to_string())
         });
         assert_eq!(out.args, vec!["resume".to_string(), live.to_string()]);
@@ -1255,10 +1321,10 @@ mod tests {
         let mut opts = codex_opts();
         opts.env
             .insert("ELDRUN_TAB_UID".to_string(), "tab-key".to_string());
-        let out = resolve_codex_session_impl(opts, &root, |_| None);
+        let out = resolve_codex_session_impl(opts, &root, None, |_| None);
         assert!(out.args.is_empty());
         // No ELDRUN_TAB_UID at all → cannot track → fresh launch.
-        let out2 = resolve_codex_session_impl(codex_opts(), &root, |_| Some("x".to_string()));
+        let out2 = resolve_codex_session_impl(codex_opts(), &root, None, |_| Some("x".to_string()));
         assert!(out2.args.is_empty());
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -1270,11 +1336,57 @@ mod tests {
         opts.env
             .insert("ELDRUN_TAB_UID".to_string(), "tab-key".to_string());
         // Recorded id has no rollout log → don't pass a bad `resume` arg.
-        let out = resolve_codex_session_impl(opts, &root, |_| {
+        let out = resolve_codex_session_impl(opts, &root, None, |_| {
             Some("ffffffff-1111-2222-3333-444444444444".to_string())
         });
         assert!(out.args.is_empty());
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The 0.153.4 regression: Codex records the thread in `state_<n>.sqlite`
+    /// and writes no rollout file at all, so a sessions-only check finds
+    /// nothing and the tab relaunches fresh.
+    #[test]
+    fn codex_resumes_a_thread_that_exists_only_in_the_sqlite_store() {
+        let live = "01a07c18-3a25-7fa1-9ac4-74fa84d4e12a";
+        // A `sessions/` dir that is not merely empty but absent, as it is on a
+        // machine where Codex never wrote one.
+        let root = std::env::temp_dir().join(format!(
+            "eldrun-codex-nosessions-{}-{live}",
+            std::process::id()
+        ));
+        let dir = std::env::temp_dir().join(format!("eldrun-codex-db-{}", std::process::id()));
+        // A store left behind by an earlier run would fail the CREATE below.
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("state_5.sqlite");
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute(
+            "CREATE TABLE threads (id TEXT PRIMARY KEY, archived INTEGER NOT NULL DEFAULT 0)",
+            [],
+        )
+        .unwrap();
+        conn.execute("INSERT INTO threads (id) VALUES (?1)", [live])
+            .unwrap();
+        drop(conn);
+
+        let mut opts = codex_opts();
+        opts.env
+            .insert("ELDRUN_TAB_UID".to_string(), "tab-key".to_string());
+        let out =
+            resolve_codex_session_impl(opts, &root, Some(db.as_path()), |_| Some(live.to_string()));
+        assert_eq!(out.args, vec!["resume".to_string(), live.to_string()]);
+
+        // An id neither store has heard of still starts fresh.
+        let mut other = codex_opts();
+        other
+            .env
+            .insert("ELDRUN_TAB_UID".to_string(), "tab-key".to_string());
+        let out = resolve_codex_session_impl(other, &root, Some(db.as_path()), |_| {
+            Some("ffffffff-1111-2222-3333-444444444444".to_string())
+        });
+        assert!(out.args.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // ── hook installer ──────────────────────────────────────────────────────
@@ -1522,7 +1634,7 @@ mod tests {
         opts.cmd = "codex".to_string();
         opts.env
             .insert("ELDRUN_TAB_UID".to_string(), "11111111-1111-4111-8111-111111111111".to_string());
-        let out = resolve_codex_session_impl(opts, &projects, |_| None);
+        let out = resolve_codex_session_impl(opts, &projects, None, |_| None);
         assert_eq!(out.env.get(TAB_AGENT_ENV).map(String::as_str), Some("codex"));
     }
 
@@ -1724,7 +1836,7 @@ mod tests {
         let mut opts = codex_opts();
         opts.env
             .insert("ELDRUN_TAB_UID".to_string(), uid.to_string());
-        let out = resolve_codex_session_impl(opts, &root, |u| read_live_session_in(&live_dir, u));
+        let out = resolve_codex_session_impl(opts, &root, None, |u| read_live_session_in(&live_dir, u));
         assert_eq!(out.args, vec!["resume".to_string(), live.to_string()]);
 
         let _ = std::fs::remove_dir_all(&root);

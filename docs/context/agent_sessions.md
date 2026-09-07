@@ -38,6 +38,38 @@ one-time trust (`/hooks` in Codex) before they run; until then
 record. Gemini and the other "continue last" agents restore on their CLI's
 continue flag, not a captured id.
 
+### Where Codex keeps a session, and why resume died
+
+The resume arg is emitted only when Codex still *has* the recorded
+conversation, and that question has two answers in the field:
+
+- the **rollout log** at
+  `~/.codex/sessions/<YYYY>/<MM>/<DD>/rollout-<ts>-<uuid>.jsonl`, which is what
+  every release up to 0.153.4 wrote;
+- the **thread store** `~/.codex/state_<n>.sqlite`, which is where 0.153.4 puts
+  it instead. Rows there still *name* a `rollout_path`, but no such file is
+  created any more — `~/.codex/sessions/` does not exist on a fresh install.
+
+Asking only the first is how Codex resume failed silently: the hook kept
+recording live thread ids, the walk kept finding no file for any of them, and
+every Codex tab relaunched as a **brand-new session** — which is also why the
+folder-trust question came back on every Eldrun restart, since a fresh Codex
+start in an untrusted cwd is exactly what asks it. `codex_session_exists` now
+takes either answer, and `services::codex_store` reads the store (read-only,
+best-effort: a renamed file, table or column yields "no", never an error). The
+store's files are ordinary `~/.codex` entries, so the fence and the container
+mount them by the same per-entry rule the rollout dir got — see
+`CODEX_UNMOUNTED`.
+
+The *other* half of the repeated question is the fence's config shadow.
+`~/.codex/config.toml` is staged as a per-project throwaway copy so an agent
+cannot repoint the host's SessionStart hook, and re-copying the host original at
+every spawn threw away the `[projects."<path>"] trust_level` Codex had just
+recorded there. `staged_config_mounts` now carries those tables — and only
+those — across a restage, so the answer the user gave inside the fence sticks
+while the rest of the file stays the host's, and nothing is ever written back to
+the host.
+
 ## Only the tab's own session may move the record
 
 Every process under the tab inherits `ELDRUN_TAB_UID`, so a nested CLI fires

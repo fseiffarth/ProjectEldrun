@@ -24,6 +24,10 @@ pub mod caldav;
 // pictures by opaque id, copied into the project inbox on request.
 pub mod desktop_images;
 pub mod codex_bind;
+// Codex's own SQLite thread store (`~/.codex/state_<n>.sqlite`), read
+// read-only for the model a Codex tab is running now that its releases
+// no longer write the JSONL rollout the model tag used to come from.
+pub mod codex_store;
 pub mod git_credentials;
 // The default branch (`main`) for repositories Eldrun creates, and the
 // unpublished-`master` rename that runs just before a publish.
