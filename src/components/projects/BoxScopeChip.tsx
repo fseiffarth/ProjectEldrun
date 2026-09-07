@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { ProjectBox } from "../../types";
 import { BOX_SCOPE_PREFIX } from "../../stores/boxes";
@@ -140,43 +140,12 @@ export function BoxScopeChip({
       ? "trash"
       : null;
 
-  // The chip wears the pill row's working / waiting / finished strip, for the
-  // reason the root pill did before it folded in here: these scopes hold
-  // ordinary tabs running the same agents, and the one control standing for all
-  // of them could otherwise only be read as "nothing is running in any of
-  // them". It spans everything it can reach — root, Trash, every box — and
-  // narrows to ONE scope only while a box slice is selected, because a slice is
-  // a filter the user chose and the chip is then that box's control. Naming root
-  // or Trash narrows nothing: that is where you are standing, not a filter, and
-  // sitting in the root terminal is precisely when a box quietly waiting on a
-  // decision must still be able to say so. Each bar opens its own tab
-  // (`jumpToTab` enters a box scope on its own). Only boxes opened this session
-  // have tabs at all; an unopened one runs nothing, so it has nothing to report
-  // rather than a state that is being withheld.
-  const barScopes = useMemo(
-    () => [
-      ROOT_SCOPE,
-      ...(trash ? [trash.id] : []),
-      // Everything the pill beside it is not already reporting: the selected
-      // box carries its own strip on its own pill, and one tab asking for a
-      // decision twice in one leading segment reads as two tabs.
-      ...boxes
-        .filter((b) => b.id !== selected?.id)
-        .map((b) => `${BOX_SCOPE_PREFIX}${b.id}`),
-    ],
-    [boxes, selected, trash],
-  );
-  // The chip's strip always spans several scopes now, so every bar is prefixed
-  // with the one it came from — an unattributed bar in a row of them says
-  // nothing. The pill's own strip needs no prefix: the pill names its box.
-  const barNames = useMemo(
-    () => ({
-      [ROOT_SCOPE]: t("boxChip.rootLabel"),
-      ...(trash ? { [trash.id]: trash.name } : {}),
-      ...Object.fromEntries(boxes.map((b) => [`${BOX_SCOPE_PREFIX}${b.id}`, b.name])),
-    }),
-    [boxes, trash, t],
-  );
+  // The chip itself carries NO status strip (user, 2026-09-07): it is the
+  // shortest control on the row — an icon, a word and a caret — and a band of
+  // bars across its bottom edge was more than it had room for. What it used to
+  // tally is still on screen in the two places that do have the room: the
+  // selected box's own pill beside it, and the dropdown rows, which are the
+  // only enumeration of the boxes and say WHICH one wants something.
 
   // Spring-loaded during a pill drag (the PDF page rail's bargain): the strip
   // may be sliced, so the project being dragged is usually not one of the
@@ -310,7 +279,6 @@ export function BoxScopeChip({
             ▾
           </span>
         </button>
-        <ScopeSetStatusBars scopes={barScopes} nameByScope={barNames} />
         {/* Steering-mode station number, for the built-in scope the chip is
             naming — the root pill used to carry its own. */}
         {station != null && (

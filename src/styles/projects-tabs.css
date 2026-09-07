@@ -394,13 +394,13 @@
   box-shadow: 3px 0 4.5px -2px rgba(0, 0, 0, 0.4), -3px 0 4.5px -2px rgba(0, 0, 0, 0.4);
 }
 
-/* The chip is as narrow as the root pill when it names no box — narrower than
-   any named pill — while its strip may stand for SEVERAL boxes at once, so it
-   is the tightest six bars in the app: the root pill's 3px inset, plus a
-   smaller gap and a lower floor per bar, which is what keeps a full strip
-   inside the chip instead of spilling over the hairline beside it. The bars
-   stay hittable at 4px because their target is the transparent ::after that
-   reaches past them on every side, not the paint. */
+/* Only the selected box's pill wears a strip here — the picker chip itself
+   carries none (it is too short for one, user 2026-09-07) — and the pill is
+   still narrower than a project pill, so these are the tightest six bars in the
+   app: the root pill's 3px inset, plus a smaller gap and a lower floor per bar,
+   which is what keeps a full strip inside the pill instead of spilling over the
+   hairline beside it. The bars stay hittable at 4px because their target is the
+   transparent ::after that reaches past them on every side, not the paint. */
 .box-chip .pill-status-bars {
   left: 3px;
   right: 3px;

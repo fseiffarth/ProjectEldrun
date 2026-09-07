@@ -665,10 +665,12 @@ describe("box chip rendering (slice model)", () => {
 });
 
 /**
- * The chip's status strip: a `box:<id>` scope holds ordinary tabs running the
- * same agents a project's do, so the one control standing for every box wears
- * the pill row's working / waiting / finished bars (PillStatusBars'
- * `ScopeSetStatusBars`) rather than reading as "nothing runs in a box".
+ * Where a box's working / waiting / finished bars are drawn. A `box:<id>` scope
+ * holds ordinary tabs running the same agents a project's do, so a box must be
+ * able to say it wants something — but NOT from the picker chip (user,
+ * 2026-09-07): that control is too short for a strip. The two surfaces with the
+ * room carry it instead — the selected box's own pill, and the dropdown rows,
+ * which are the only enumeration of the boxes.
  */
 describe("box chip status bars", () => {
   /** A box scope with one agent tab, in the state the strip should draw. */
@@ -699,40 +701,50 @@ describe("box chip status bars", () => {
     useActivityStore.setState({ statusTabsByScope: {}, statusCountsByScope: {} });
   });
 
-  it("draws every box's non-idle tabs while the chip names none", async () => {
-    // Collapsed, the chip is the only thing on screen that can say a box wants
-    // something — its members' pills say nothing about the box's OWN tabs.
+  it("keeps the picker chip itself bare", async () => {
+    // The chip is an icon, a word and a caret — no room for a band of bars
+    // across its bottom edge, however many boxes it could speak for.
     useBoxesStore.setState({ boxes: [box("boxA", ["p1"]), box("boxB", [])] });
     useProjectsStore.setState({ projects: [proj("p1", 10)], activeId: null, loaded: true });
     seedBoxTab("boxA", "agent-1", "needs-decision");
     seedBoxTab("boxB", "agent-2", "working");
 
     const container = await renderSwitcher();
-    const drawn = bars(container);
-    expect(drawn.map((b) => b.className)).toEqual([
-      "pill-status-bar working",
-      "pill-status-bar needs-decision",
+    expect(bars(container)).toHaveLength(0);
+    // Not lost, only moved: the list is one hover away and names both boxes.
+    const menu = await openChipMenu(container);
+    expect([...menu.querySelectorAll(".pill-status-bar")].map((b) => b.className)).toEqual([
+      "pill-status-bar needs-decision static",
+      "pill-status-bar working static",
     ]);
-    // Each bar says which box it came from — otherwise a strip spanning boxes
-    // is a row of unattributed tab names.
-    expect(drawn[0].getAttribute("aria-label")).toContain("boxB · agent-2");
-    expect(drawn[1].getAttribute("aria-label")).toContain("boxA · agent-1");
   });
 
-  it("a bar opens its own box's tab", async () => {
+  it("a bar on the box pill opens its own box's tab", async () => {
     const openBox = vi.fn(openBoxScope);
     useBoxesStore.setState({ boxes: [box("boxA", ["p1"])], openBox });
     useProjectsStore.setState({ projects: [proj("p1", 10)], activeId: null, loaded: true });
     seedBoxTab("boxA", "agent-1", "needs-decision");
 
     const container = await renderSwitcher();
+    const menu = await openChipMenu(container);
     await act(async () => {
-      fireEvent.click(bars(container)[0]);
+      fireEvent.click(menuRow(menu, "boxA"));
+    });
+    // The slice is a view, not the scope: the pill keeps naming boxA while the
+    // user works in one of its projects, which is exactly when a bar has
+    // somewhere to take them.
+    await act(async () => {
+      useTabsStore.setState({ scope: "p1" });
+    });
+    openBox.mockClear();
+
+    await act(async () => {
+      fireEvent.click(pillBars(container)[0]);
     });
     expect(openBox).toHaveBeenCalledWith("boxA");
   });
 
-  it("narrows to the selected box's own scope", async () => {
+  it("the selected box reports on its own pill, and nowhere twice", async () => {
     useBoxesStore.setState({
       boxes: [box("boxA", ["p1"]), box("boxB", [])],
       openBox: vi.fn(openBoxScope),
@@ -747,17 +759,13 @@ describe("box chip status bars", () => {
       fireEvent.click(menuRow(menu, "boxA"));
     });
 
-    // boxA has a pill of its own now, so its strip moves there — unprefixed,
-    // because the pill names the box — and the chip keeps everything the pill
-    // is not reporting (here: boxB), so nothing is on screen twice.
+    // boxA has a pill of its own, so its strip is there — unprefixed, because
+    // the pill names the box — while the chip beside it stays bare.
     const drawn = pillBars(container);
     expect(drawn.map((b) => b.className)).toEqual(["pill-status-bar needs-decision"]);
     expect(drawn[0].getAttribute("aria-label")).toContain("agent-1");
     expect(drawn[0].getAttribute("aria-label")).not.toContain("boxA ·");
-
-    const chipDrawn = bars(container);
-    expect(chipDrawn.map((b) => b.className)).toEqual(["pill-status-bar working"]);
-    expect(chipDrawn[0].getAttribute("aria-label")).toContain("boxB · agent-2");
+    expect(bars(container)).toHaveLength(0);
   });
 
   it("gives each dropdown row its own inert strip", async () => {
