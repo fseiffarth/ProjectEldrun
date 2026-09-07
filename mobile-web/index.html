@@ -4,9 +4,14 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="theme-color" content="#11131a" />
+    <!-- iOS reads none of the manifest's icons and draws its own status bar:
+         without a PNG here the home-screen tile is a page screenshot, and
+         without the translucent style it is a white band over a dark app. -->
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Eldrun" />
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" href="/icons/icon.svg" />
-    <link rel="apple-touch-icon" href="/icons/icon.svg" />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
     <title>Eldrun Mobile</title>
   </head>
   <body><div id="root"></div><script type="module" src="/src/main.tsx"></script></body>

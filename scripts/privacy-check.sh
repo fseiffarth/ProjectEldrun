@@ -137,6 +137,13 @@ scrub_args=(
   # `::`/`.` path ending in `(`, so `password = "hunter2"` and a bare
   # `password=hunter2` are both still reported.
   -e 's/(password|secret|api[_-]?key)[[:space:]]*=[[:space:]]*&?[A-Za-z_][A-Za-z0-9_]*([:.]{1,2}[A-Za-z_][A-Za-z0-9_]*)*\(//gI'
+  # ...or by a BRANCH: `let password = if supplied.is_some() {` picks between two
+  # runtime sources (a supplied value or the keychain), exactly as the call case
+  # above does — a keyword `if`/`match`/`else` opens an expression, so what
+  # follows the `=` on this line cannot be the credential itself. `=` only, for
+  # the call case's reason, and the keyword must be the whole token, so
+  # `password = ifconfig_out` is untouched and still reported.
+  -e 's/(password|secret|api[_-]?key)[[:space:]]*=[[:space:]]*(if|match|else)\b//gI'
   # ...or by NOTHING AT ALL: a prompt string the SSH and OpenVPN matchers compare
   # against (`"…'s password: "`), not an assignment. Cleared only when the
   # separator is followed by a quote that ENDS the line, bar trailing

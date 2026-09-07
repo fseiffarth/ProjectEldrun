@@ -151,7 +151,7 @@ export function SqliteView({
                       textAlign: "left",
                       padding: "0.4em 0.75em",
                       border: "none",
-                      cursor: "pointer",
+                      cursor: "var(--cur-pointer, pointer)",
                       fontFamily: "var(--font-mono, ui-monospace, Menlo, Consolas, monospace)",
                       fontSize: "12px",
                       whiteSpace: "nowrap",

@@ -160,6 +160,44 @@ pub fn detect_backend() -> Box<dyn WorkspaceBackend> {
     }
 }
 
+// ── Super key ownership ───────────────────────────────────────────────────
+
+/// Whether the desktop shell claims the lone Super/Meta key for itself.
+///
+/// Eldrun binds the bare Super key to the panel toggle, which only works on a
+/// desktop that leaves that key to the focused window. Cinnamon does — it is
+/// the desktop the binding was written on. GNOME does not: Super opens the
+/// Activities overview, and every `Super+<key>` shell shortcut (the apps grid,
+/// the dock's Super+1..9, tiling, workspace switching) delivers a lone `Meta`
+/// keydown to the focused window on the way past. On such a desktop the bare
+/// binding fires on presses meant for the shell and the panels vanish with no
+/// visible cause. That is the same reason Windows already uses F9 instead —
+/// see the comment on the binding in `src/hooks/useKeyboard.ts`.
+///
+/// KDE/Plasma claims Meta for its launcher and Unity for the dash, so both are
+/// treated the same way. Pure and string-in so it can be unit-tested on any
+/// host; `desktop_owns_super_key` reads the environment and delegates here.
+pub fn desktop_claims_super(desktop: &str) -> bool {
+    let d = desktop.to_lowercase();
+    d.contains("gnome") || d.contains("kde") || d.contains("plasma") || d.contains("unity")
+}
+
+/// The running desktop's answer to [`desktop_claims_super`].
+///
+/// Non-Linux hosts report `true` (the OS owns the key) — Windows opens the
+/// Start menu on release and macOS uses Meta as the chord modifier, and the
+/// frontend already routes both to F9 without asking.
+pub fn desktop_owns_super_key() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        desktop_claims_super(&std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default())
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        true
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -188,6 +226,26 @@ mod tests {
         // 0 is an invalid window ID — backend must handle it gracefully.
         let _ = b.show_window(0);
         let _ = b.hide_window(0);
+    }
+
+    #[test]
+    fn gnome_kde_and_unity_claim_the_super_key() {
+        for desktop in ["ubuntu:GNOME", "GNOME", "KDE", "plasma", "Unity"] {
+            assert!(
+                desktop_claims_super(desktop),
+                "{desktop} must be treated as owning the Super key"
+            );
+        }
+    }
+
+    #[test]
+    fn cinnamon_and_unknown_desktops_leave_the_super_key_alone() {
+        for desktop in ["X-Cinnamon", "cinnamon", "XFCE", "sway", ""] {
+            assert!(
+                !desktop_claims_super(desktop),
+                "{desktop} must leave the Super key to the focused window"
+            );
+        }
     }
 
     #[test]

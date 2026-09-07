@@ -13,6 +13,7 @@ import {
   type IconDef,
   ICON_CATEGORIES,
   ICON_VIEWBOX,
+  iconLabel,
   searchIcons,
 } from "../../../lib/viewers/deck/icons";
 import { useT } from "../../../lib/i18n";
@@ -30,8 +31,8 @@ export function IconPicker({ onPick, onClose }: IconPickerProps) {
   // A query searches the WHOLE library: filtering by a category you happen to
   // have open, while typing a name, reads as "the icon isn't there".
   const results = useMemo(
-    () => searchIcons(query, query.trim() ? undefined : (category ?? undefined)),
-    [query, category],
+    () => searchIcons(query, t, query.trim() ? undefined : (category ?? undefined)),
+    [query, category, t],
   );
 
   return (
@@ -70,7 +71,7 @@ export function IconPicker({ onPick, onClose }: IconPickerProps) {
               className={`deck-icon-cat${category === c.id ? " active" : ""}`}
               onClick={() => setCategory(c.id)}
             >
-              {c.label}
+              {t(c.labelKey)}
             </button>
           ))}
         </div>
@@ -80,7 +81,7 @@ export function IconPicker({ onPick, onClose }: IconPickerProps) {
             <button
               key={def.key}
               className="deck-icon-cell"
-              title={def.label}
+              title={iconLabel(def, t)}
               onClick={() => onPick(def)}
             >
               <svg viewBox={`0 0 ${ICON_VIEWBOX} ${ICON_VIEWBOX}`} width={26} height={26}>
@@ -104,7 +105,7 @@ export function IconPicker({ onPick, onClose }: IconPickerProps) {
                   ))}
                 </g>
               </svg>
-              <span className="deck-icon-label">{def.label}</span>
+              <span className="deck-icon-label">{iconLabel(def, t)}</span>
             </button>
           ))}
           {results.length === 0 && <div className="deck-icon-empty">{t("deckIconPicker.noMatches")}</div>}

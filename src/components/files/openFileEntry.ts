@@ -9,7 +9,7 @@ import { openTexWorkspace } from "../embed/openTexWorkspace";
 
 /**
  * The single open-a-file policy shared by every file listing (the FileTree in
- * the right panel / subwindow sidebar / Files tab, and the FileBrowser). It is
+ * the side panel / subwindow sidebar / Files tab, and the FileBrowser). It is
  * the seam that makes a double-click mean the same thing everywhere:
  *
  *  - A file with a **native in-app viewer** (`internalViewerFor`) opens as an
@@ -29,7 +29,7 @@ export function openFileEntry(opts: {
   projectDir: string;
   /** Owning project id, forwarded to `open_file` for window tracking. */
   projectId: string | null;
-  /** Telemetry origin passed to `open_file` (e.g. "right_file_tree"). */
+  /** Telemetry origin passed to `open_file` (e.g. "side_file_tree"). */
   origin: string;
   /** Force the OS-default-app path regardless of any native viewer (Shift). */
   external: boolean;

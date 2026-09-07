@@ -250,7 +250,7 @@ export function MailPane({ visible }: MailPaneProps) {
           ))}
           <button
             type="button"
-            className="mail-btn mail-btn-small"
+            className="settings-btn sm"
             onClick={() => setAccountDialog({ account: null })}
           >
             {t("mail.addAccount")}
@@ -258,7 +258,7 @@ export function MailPane({ visible }: MailPaneProps) {
           {selectedAccountId && (
             <button
               type="button"
-              className="mail-btn mail-btn-small"
+              className="settings-btn sm"
               onClick={() =>
                 setAccountDialog({
                   account: accounts.find((a) => a.id === selectedAccountId) ?? null,
@@ -346,7 +346,7 @@ export function MailPane({ visible }: MailPaneProps) {
               and the two beside it open a list. */}
           <button
             type="button"
-            className="mail-btn mail-btn-small"
+            className="settings-btn sm"
             title={t("mail.filters.title")}
             onClick={() => setFiltersDialog(true)}
           >
@@ -359,7 +359,7 @@ export function MailPane({ visible }: MailPaneProps) {
         <span className="mail-toolbar-title">{t("tabKind.mail")}</span>
         <button
           type="button"
-          className="mail-btn mail-btn-primary"
+          className="settings-btn primary"
           disabled={!selectedAccountId || syncing}
           onClick={() =>
             selectedAccountId &&
@@ -371,7 +371,7 @@ export function MailPane({ visible }: MailPaneProps) {
         {syncing && selectedAccountId && (
           <button
             type="button"
-            className="mail-btn"
+            className="settings-btn"
             onClick={() => void useMailStore.getState().cancelCheck(selectedAccountId)}
           >
             {t("mail.stopCheck")}
@@ -379,7 +379,7 @@ export function MailPane({ visible }: MailPaneProps) {
         )}
         <button
           type="button"
-          className="mail-btn"
+          className="settings-btn"
           disabled={!selectedAccountId}
           onClick={() => setCompose({ mode: "new" })}
         >
@@ -395,7 +395,7 @@ export function MailPane({ visible }: MailPaneProps) {
         {folderUnread > 0 && selectedFolderId && (
           <button
             type="button"
-            className="mail-btn"
+            className="settings-btn"
             onClick={() =>
               void useMailStore.getState().markFolderRead(selectedFolderId)
             }
@@ -413,7 +413,7 @@ export function MailPane({ visible }: MailPaneProps) {
           <>
             <button
               type="button"
-              className="mail-btn"
+              className="settings-btn"
               title={t("mail.clearPriorityTitle")}
               onClick={clearPriorityList}
             >
@@ -431,7 +431,7 @@ export function MailPane({ visible }: MailPaneProps) {
         <span className="mail-toolbar-sep" aria-hidden="true" />
         <button
           type="button"
-          className="mail-btn"
+          className="settings-btn"
           title={t("mail.encryption.title")}
           onClick={() => setEncryptionDialog(true)}
         >
@@ -440,7 +440,7 @@ export function MailPane({ visible }: MailPaneProps) {
         {pgpReady && (
           <button
             type="button"
-            className="mail-btn"
+            className="settings-btn"
             title={t("mail.keys.title")}
             onClick={() => setKeysDialog(true)}
           >
@@ -464,7 +464,7 @@ export function MailPane({ visible }: MailPaneProps) {
               <MailAiQuickTags account={selectedAccount} />
               <button
                 type="button"
-                className="mail-btn"
+                className="settings-btn"
                 title={t("mailAi.settingsTitle")}
                 onClick={() => setAiAccountId(selectedAccount.id)}
               >
@@ -495,7 +495,7 @@ export function MailPane({ visible }: MailPaneProps) {
           <span>{error}</span>
           <button
             type="button"
-            className="mail-btn"
+            className="settings-btn"
             onClick={() => useMailStore.getState().setError(null)}
           >
             {t("mail.dismissError")}
@@ -516,7 +516,7 @@ export function MailPane({ visible }: MailPaneProps) {
               ? t("mail.encryption.bannerLocked")
               : t("mail.encryption.bannerEphemeral")}
           </span>
-          <button type="button" className="mail-btn" onClick={() => setEncryptionDialog(true)}>
+          <button type="button" className="settings-btn" onClick={() => setEncryptionDialog(true)}>
             {encryption.needs_passphrase
               ? t("mail.encryption.unlock")
               : t("mail.encryption.details")}
@@ -564,7 +564,7 @@ export function MailPane({ visible }: MailPaneProps) {
             <p>{t("mail.noAccountsHint")}</p>
             <button
               type="button"
-              className="mail-btn mail-btn-primary"
+              className="settings-btn primary"
               onClick={() => setAccountDialog({ account: null })}
             >
               {t("mail.addAccount")}

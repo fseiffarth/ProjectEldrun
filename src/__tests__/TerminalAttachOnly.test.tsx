@@ -21,7 +21,9 @@ class ResizeObserverStub {
   ResizeObserverStub;
 
 const { invoke } = vi.hoisted(() => ({
-  invoke: vi.fn((..._a: unknown[]) => Promise.resolve(undefined)),
+  // `unknown` rather than `undefined`: `pty_scrollback` answers with a string
+  // (Group B #235), so the default must not narrow the mock's return type.
+  invoke: vi.fn((..._a: unknown[]): Promise<unknown> => Promise.resolve(undefined)),
 }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: (...a: unknown[]) => invoke(...a) }));
 vi.mock("@tauri-apps/api/event", () => ({
@@ -64,9 +66,15 @@ vi.mock("../stores/settings", () => ({
   useSettingsStore: vi.fn((sel: (s: object) => unknown) =>
     sel({ settings: { color_scheme: "dark" } }),
   ),
+  // Pass-through: only "system" resolves differently, and these tests pin a
+  // concrete scheme.
+  resolveTheme: (s: string) => s,
 }));
 
-import { TerminalView } from "../components/terminal/TerminalView";
+import {
+  TerminalView,
+  outputAfterScrollback,
+} from "../components/terminal/TerminalView";
 
 function names(): string[] {
   return invoke.mock.calls.map((c) => c[0] as unknown as string);
@@ -74,6 +82,36 @@ function names(): string[] {
 
 describe("TerminalView — attach-only (#42)", () => {
   beforeEach(() => invoke.mockClear());
+
+  it("attachOnly asks for the terminal's history so it doesn't open blank", async () => {
+    // Group B #235: an attach-only view opens a fresh xterm on a PTY that has
+    // been running without it — a tab just popped out into its own window. It
+    // used to render empty until the program next drew (a TUI recovers via the
+    // fit's SIGWINCH; a plain shell's history existed only in the main window's
+    // hidden xterm), and every seed-driven remount blanked it again.
+    invoke.mockImplementation((cmd: unknown) =>
+      Promise.resolve(cmd === "pty_scrollback" ? "$ ls -la\r\ntotal 0\r\n" : undefined),
+    );
+    await act(async () => {
+      render(<TerminalView id="p:hist" cmd="bash" cwd="/p" visible focused attachOnly />);
+    });
+
+    expect(names()).toContain("pty_scrollback");
+    // …and it is still the PTY's own history it asks for, never a spawn.
+    expect(names()).not.toContain("pty_spawn");
+    invoke.mockImplementation(() => Promise.resolve(undefined));
+  });
+
+  it("a normal terminal spawns instead of asking for history", async () => {
+    // The main window's pane is the one that STARTS the program, so there is no
+    // history to catch up on — asking would be a round trip per tab at launch.
+    await act(async () => {
+      render(<TerminalView id="p:fresh" cmd="bash" cwd="/p" visible focused />);
+    });
+
+    expect(names()).toContain("pty_spawn");
+    expect(names()).not.toContain("pty_scrollback");
+  });
 
   it("attachOnly never spawns the PTY and never kills it on unmount", async () => {
     let unmount = () => {};
@@ -128,5 +166,42 @@ describe("TerminalView — attach-only (#42)", () => {
     });
 
     expect(names().filter((name) => name === "pty_spawn")).toHaveLength(1);
+  });
+
+  it("declares agent kinds in the restriction-only spawn field", async () => {
+    await act(async () => {
+      render(
+        <TerminalView
+          id="p:custom-agent"
+          cmd="team-wrapper"
+          cwd="/p"
+          kind="local_agent"
+          visible
+          focused
+        />,
+      );
+    });
+    const call = invoke.mock.calls.find((entry) => entry[0] === "pty_spawn");
+    expect((call?.[1] as { opts: { agent: boolean } }).opts.agent).toBe(true);
+  });
+});
+
+describe("attach-only scrollback boundary", () => {
+  it("drops a live event already included in the snapshot", () => {
+    expect(
+      outputAfterScrollback("duplicate", { startOffset: 10, endOffset: 19 }, 19),
+    ).toBe("");
+  });
+
+  it("keeps output emitted after the snapshot", () => {
+    expect(
+      outputAfterScrollback("new", { startOffset: 19, endOffset: 22 }, 19),
+    ).toBe("new");
+  });
+
+  it("cuts an overlapping replay at a UTF-8 byte boundary", () => {
+    expect(
+      outputAfterScrollback("aéz", { startOffset: 10, endOffset: 14 }, 13),
+    ).toBe("z");
   });
 });

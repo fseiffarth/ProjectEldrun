@@ -1,20 +1,27 @@
 import { formatRemoteTarget, type ProjectEntry } from "../../types";
+import type { TranslationKey } from "../../lib/i18n";
 
-/** Display name for a hosting provider. */
+/** The `useT()` translator, passed in rather than read from the store: these are
+ *  pure functions called during render, and taking `t` as an argument is what
+ *  makes the caller re-render when the language changes. */
+type Translate = (key: TranslationKey, vars?: Record<string, string | number>) => string;
+
+/** Display name for a hosting provider. Never translated — it is the product's
+ *  own name. */
 export function providerName(provider: unknown): string {
   return provider === "gitlab" ? "GitLab" : "GitHub";
 }
 
-export function gitTypeLabel(gitType: unknown, provider?: unknown): string {
+export function gitTypeLabel(gitType: unknown, provider: unknown, t: Translate): string {
   switch (gitType) {
     case "remote-public":
-      return `${providerName(provider)} · public`;
+      return t("projectType.gitTypePublic", { provider: providerName(provider) });
     case "remote-private":
-      return `${providerName(provider)} · private`;
+      return t("projectType.gitTypePrivate", { provider: providerName(provider) });
     case "none":
-      return "No git (no repo)";
+      return t("projectType.gitTypeNone");
     default:
-      return "Local repo (not pushed)";
+      return t("projectType.gitTypeLocal");
   }
 }
 
@@ -32,11 +39,20 @@ export interface ProjectTypeTag {
 /** Derive the colored type tags for a project. The git axis contributes a base
  *  git tag plus a provider/visibility tag when known; the SSH-remote and
  *  missing-scaffold axes each contribute an independent tag on top. */
-export function projectTypeTags(project: ProjectEntry, scaffoldMissing: boolean): ProjectTypeTag[] {
+export function projectTypeTags(
+  project: ProjectEntry,
+  scaffoldMissing: boolean,
+  t: Translate,
+): ProjectTypeTag[] {
   const tags: ProjectTypeTag[] = [];
   const gitType = typeof project.git_type === "string" ? project.git_type : "local";
   if (gitType === "none") {
-    tags.push({ key: "git", label: "no git", color: "#8b949e", title: "No git repository" });
+    tags.push({
+      key: "git",
+      label: t("projectType.tagNoGit"),
+      color: "#8b949e",
+      title: t("projectType.titleNoGit"),
+    });
   } else {
     // The provider badge normally rides on an Eldrun-published `remote-*`
     // git_type, but a repo pushed to a host *outside* Eldrun carries only a
@@ -49,13 +65,13 @@ export function projectTypeTags(project: ProjectEntry, scaffoldMissing: boolean)
     // provider rides alongside it as a parallel tag (git + GitHub / git + GitLab).
     tags.push({
       key: "git",
-      label: "git",
+      label: t("projectType.tagGit"),
       color: "#3fb950",
       title: published
-        ? gitTypeLabel(gitType, project.git_provider)
+        ? gitTypeLabel(gitType, project.git_provider, t)
         : provider
-          ? `Local git repo · origin on ${providerName(provider)}`
-          : "Local git repo (not pushed to a remote)",
+          ? t("projectType.titleLocalOriginOn", { provider: providerName(provider) })
+          : t("projectType.titleLocalNotPushed"),
     });
     if (published || provider) {
       const providerLabel = provider === "gitlab" ? "GitLab" : "GitHub";
@@ -63,30 +79,31 @@ export function projectTypeTags(project: ProjectEntry, scaffoldMissing: boolean)
       // an origin URL alone cannot reveal whether its repository is private.
       const label = published
         ? gitType === "remote-private"
-          ? `${providerLabel} · private 🔒`
-          : `${providerLabel} · public`
+          ? t("projectType.providerPrivate", { provider: providerLabel })
+          : t("projectType.providerPublic", { provider: providerLabel })
         : providerLabel;
       const color = provider === "gitlab" ? "#fc6d26" : "#a371f7";
       const title = published
-        ? gitTypeLabel(gitType, provider)
-        : `origin on ${providerName(provider)} (detected — not published via Eldrun)`;
+        ? gitTypeLabel(gitType, provider, t)
+        : t("projectType.titleOriginDetected", { provider: providerName(provider) });
       tags.push({ key: "provider", label, color, title });
     }
   }
   if (project.remote) {
     tags.push({
       key: "ssh",
+      // The protocol's own name — the same in every language.
       label: "SSH",
       color: "#58a6ff",
-      title: `Remote host · ${formatRemoteTarget(project.remote)}`,
+      title: t("projectType.titleRemoteHost", { target: formatRemoteTarget(project.remote) }),
     });
   }
   if (scaffoldMissing) {
     tags.push({
       key: "scaffold",
-      label: "no scaffold",
+      label: t("projectType.tagNoScaffold"),
       color: "#d29922",
-      title: "Missing scaffold files — run “Repair scaffold files”",
+      title: t("projectType.titleMissingScaffold"),
     });
   }
   return tags;

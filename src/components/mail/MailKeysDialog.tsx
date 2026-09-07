@@ -112,7 +112,7 @@ export function MailKeysDialog({ account, onClose }: MailKeysDialogProps) {
               <div className="mail-dialog-actions">
                 <button
                   type="button"
-                  className="mail-btn mail-btn-primary"
+                  className="settings-btn primary"
                   disabled={busy}
                   onClick={() =>
                     void run(() =>
@@ -198,7 +198,7 @@ export function MailKeysDialog({ account, onClose }: MailKeysDialogProps) {
           <div className="mail-dialog-actions">
             <button
               type="button"
-              className="mail-btn"
+              className="settings-btn"
               disabled={busy}
               onClick={() => void run(() => mailPgpImportPick())}
             >
@@ -206,7 +206,7 @@ export function MailKeysDialog({ account, onClose }: MailKeysDialogProps) {
             </button>
             <button
               type="button"
-              className="mail-btn mail-btn-primary"
+              className="settings-btn primary"
               disabled={busy || !pasted.trim()}
               onClick={() =>
                 void run(async () => {
@@ -241,7 +241,7 @@ export function MailKeysDialog({ account, onClose }: MailKeysDialogProps) {
           {error && <div className="project-dialog-error">{error}</div>}
 
           <div className="mail-dialog-actions">
-            <button type="button" className="mail-btn mail-btn-primary" onClick={onClose}>
+            <button type="button" className="settings-btn primary" onClick={onClose}>
               {t("common.close")}
             </button>
           </div>
@@ -298,16 +298,16 @@ function KeyRow({
       )}
       <div className="mail-key-actions">
         {onBind && (
-          <button type="button" className="mail-btn" disabled={busy} onClick={onBind}>
+          <button type="button" className="settings-btn" disabled={busy} onClick={onBind}>
             {t("mail.keys.useForAccount")}
           </button>
         )}
-        <button type="button" className="mail-btn" disabled={busy} onClick={onExport}>
+        <button type="button" className="settings-btn" disabled={busy} onClick={onExport}>
           {t("mail.keys.export")}
         </button>
         <button
           type="button"
-          className="mail-btn mail-btn-danger"
+          className="settings-btn danger"
           disabled={busy}
           onClick={onDelete}
         >

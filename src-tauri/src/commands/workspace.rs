@@ -59,6 +59,18 @@ pub fn workspace_switch(
     Ok(())
 }
 
+/// Does the desktop shell own the lone Super/Meta key?
+///
+/// The frontend binds the bare Super key to the panel toggle, and must not do
+/// so where the shell answers that key itself (GNOME's overview, KDE's
+/// launcher) — see `platform::desktop_claims_super`. Read once at startup and
+/// cached in `src/lib/superKey.ts`; the environment cannot change under a
+/// running session.
+#[tauri::command]
+pub fn desktop_owns_super_key() -> bool {
+    crate::platform::desktop_owns_super_key()
+}
+
 #[tauri::command]
 pub fn show_window(state: State<'_, WorkspaceStateArc>, window_id: u64) -> Result<(), String> {
     state.lock().unwrap().backend.show_window(window_id)
@@ -74,7 +86,10 @@ pub fn get_opened_windows(
     windows: State<'_, WindowRegistryState>,
     project_id: Option<String>,
 ) -> Vec<TrackedWindow> {
-    let windows = windows.lock().unwrap();
+    let mut windows = windows.lock().unwrap();
+    // Backstop for the exit watcher: a read is the moment a stale dead row
+    // would become visible, so sweep the requested scope first.
+    crate::commands::apps::prune_dead_windows(&mut windows, project_id.as_deref());
     opened_windows_for_project(windows.windows.values(), project_id.as_deref())
 }
 
@@ -122,8 +137,21 @@ pub fn workspace_name(state: State<'_, WorkspaceStateArc>) -> String {
 }
 
 /// Returns "wlan", "lan", or "disconnected".
+///
+/// Async + `spawn_blocking`: the header polls this every 10 s, and on
+/// Windows/macOS the probe spawns `netsh` / `route` + `networksetup`
+/// (100–500 ms each, worse when the network stack is wedged) — run
+/// synchronously that work landed on the main thread every tick. The spawns
+/// are additionally time-capped ([`probe_output_capped`]) so a hung tool
+/// yields "disconnected" instead of a stuck poll.
 #[tauri::command]
-pub fn network_conn_type() -> String {
+pub async fn network_conn_type() -> String {
+    tokio::task::spawn_blocking(network_conn_type_blocking)
+        .await
+        .unwrap_or_else(|_| "disconnected".into())
+}
+
+pub(crate) fn network_conn_type_blocking() -> String {
     if cfg!(target_os = "linux") {
         detect_conn_type_linux(Path::new("/sys/class/net"))
     } else if cfg!(target_os = "windows") {
@@ -133,6 +161,222 @@ pub fn network_conn_type() -> String {
     } else {
         "disconnected".into()
     }
+}
+
+/// Hard cap on one connectivity-probe spawn. Well under the header's 10 s poll
+/// interval so a slow tool cannot make ticks pile up.
+const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Run `bin args…` and return its stdout, or `None` on spawn failure or when it
+/// exceeds [`PROBE_TIMEOUT`] (the child is killed). The slimmed-down twin of
+/// `printing.rs`'s `run_capped`: `netsh`/`networksetup` talk to OS services
+/// that can hang, and `.output()` alone would wait with them. stderr is
+/// discarded (these probes only pattern-match stdout), so a single reader
+/// thread suffices and cannot deadlock on a full pipe.
+fn probe_output_capped(bin: &str, args: &[&str]) -> Option<String> {
+    use std::process::Stdio;
+    let mut child = crate::paths::command_no_window(bin)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let mut out_pipe = child.stdout.take();
+    let reader = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(p) = out_pipe.as_mut() {
+            let _ = std::io::Read::read_to_end(p, &mut buf);
+        }
+        buf
+    });
+    let deadline = std::time::Instant::now() + PROBE_TIMEOUT;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if std::time::Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(40)),
+            Err(_) => return None,
+        }
+    }
+    Some(String::from_utf8_lossy(&reader.join().unwrap_or_default()).into_owned())
+}
+
+/// The name (SSID) of the wireless network in use, or an empty string when
+/// there is none or nothing on the box can name it.
+///
+/// Separate from [`network_conn_type`] rather than folded into it because the
+/// answer costs a process spawn on every platform, and only a Wi-Fi link has
+/// one — the header asks for it only after the type probe says `wlan`, so an
+/// Ethernet machine never pays for it. Same `spawn_blocking` + time cap as the
+/// type probe, for the same reason.
+#[tauri::command]
+pub async fn network_wifi_ssid() -> String {
+    tokio::task::spawn_blocking(wifi_ssid_blocking)
+        .await
+        .unwrap_or_default()
+}
+
+pub(crate) fn wifi_ssid_blocking() -> String {
+    if cfg!(target_os = "linux") {
+        wifi_ssid_linux(Path::new("/sys/class/net"))
+    } else if cfg!(target_os = "windows") {
+        wifi_ssid_windows()
+    } else if cfg!(target_os = "macos") {
+        wifi_ssid_macos()
+    } else {
+        String::new()
+    }
+}
+
+/// The first up wireless interface, by the same walk (and the same ordering)
+/// [`detect_conn_type_linux`] uses to answer "wlan" — so the SSID always
+/// belongs to the link the icon is drawing.
+pub(crate) fn active_wireless_iface(net_dir: &Path) -> Option<String> {
+    let entries = std::fs::read_dir(net_dir).ok()?;
+    let mut names: Vec<_> = entries.flatten().map(|e| e.path()).collect();
+    names.sort();
+    for iface in names {
+        let name = iface.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if name == "lo" {
+            continue;
+        }
+        let state = std::fs::read_to_string(iface.join("operstate")).unwrap_or_default();
+        if state.trim() != "up" {
+            continue;
+        }
+        if iface.join("wireless").is_dir() {
+            return Some(name.to_string());
+        }
+    }
+    None
+}
+
+fn wifi_ssid_linux(net_dir: &Path) -> String {
+    let Some(iface) = active_wireless_iface(net_dir) else {
+        return String::new();
+    };
+    // Three tools because no single one is everywhere: `iwgetid` is the cheapest
+    // and needs no daemon but ships in wireless-tools, which modern desktops
+    // drop; `nmcli` is on every NetworkManager box but on none without it; `iw`
+    // is what a bare kernel userland always has.
+    if let Some(out) = probe_output_capped("iwgetid", &[iface.as_str(), "-r"]) {
+        let ssid = out.trim();
+        if !ssid.is_empty() {
+            return ssid.to_string();
+        }
+    }
+    if let Some(out) = probe_output_capped("nmcli", &["-t", "-f", "active,ssid", "dev", "wifi"]) {
+        if let Some(ssid) = parse_nmcli_ssid(&out) {
+            return ssid;
+        }
+    }
+    if let Some(out) = probe_output_capped("iw", &["dev", iface.as_str(), "link"]) {
+        if let Some(ssid) = parse_iw_ssid(&out) {
+            return ssid;
+        }
+    }
+    String::new()
+}
+
+/// `nmcli -t` output is one `active:ssid` row per visible network; the joined
+/// one is the row whose first field is `yes`. `-t` escapes a colon inside a
+/// field as `\:`, so the split is on the *first* separator and the rest is
+/// unescaped rather than split further.
+pub(crate) fn parse_nmcli_ssid(text: &str) -> Option<String> {
+    for line in text.lines() {
+        let mut active = String::new();
+        let mut rest = String::new();
+        let mut escaped = false;
+        let mut in_ssid = false;
+        for ch in line.chars() {
+            let target = if in_ssid { &mut rest } else { &mut active };
+            if escaped {
+                target.push(ch);
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == ':' && !in_ssid {
+                in_ssid = true;
+            } else {
+                target.push(ch);
+            }
+        }
+        if in_ssid && active.trim() == "yes" && !rest.trim().is_empty() {
+            return Some(rest.trim().to_string());
+        }
+    }
+    None
+}
+
+/// `iw dev <iface> link` prints an indented `SSID: <name>` line while
+/// associated, and "Not connected." otherwise.
+pub(crate) fn parse_iw_ssid(text: &str) -> Option<String> {
+    for line in text.lines() {
+        if let Some(rest) = line.trim().strip_prefix("SSID:") {
+            let ssid = rest.trim();
+            if !ssid.is_empty() {
+                return Some(ssid.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn wifi_ssid_windows() -> String {
+    probe_output_capped("netsh", &["wlan", "show", "interfaces"])
+        .and_then(|text| parse_netsh_ssid(&text))
+        .unwrap_or_default()
+}
+
+/// `netsh wlan show interfaces` lists both `SSID` and `BSSID` (the access
+/// point's MAC); only the first is a network name, so the prefix match is on
+/// the whole key, not a substring.
+pub(crate) fn parse_netsh_ssid(text: &str) -> Option<String> {
+    for line in text.lines() {
+        let line = line.trim();
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
+        if key.trim().eq_ignore_ascii_case("SSID") {
+            let ssid = value.trim();
+            if !ssid.is_empty() {
+                return Some(ssid.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn wifi_ssid_macos() -> String {
+    let Some(route) = probe_output_capped("route", &["-n", "get", "default"]) else {
+        return String::new();
+    };
+    for line in route.lines() {
+        if let Some(iface) = line.trim().strip_prefix("interface:") {
+            return probe_output_capped("networksetup", &["-getairportnetwork", iface.trim()])
+                .and_then(|text| parse_airport_ssid(&text))
+                .unwrap_or_default();
+        }
+    }
+    String::new()
+}
+
+/// `networksetup -getairportnetwork <iface>` answers
+/// `Current Wi-Fi Network: <name>`, or a "not associated" sentence with no
+/// colon-separated value on a link that is down.
+pub(crate) fn parse_airport_ssid(text: &str) -> Option<String> {
+    let line = text.lines().next()?.trim();
+    let (key, value) = line.split_once(':')?;
+    if !key.to_lowercase().contains("network") {
+        return None;
+    }
+    let ssid = value.trim();
+    (!ssid.is_empty()).then(|| ssid.to_string())
 }
 
 pub(crate) fn detect_conn_type_linux(net_dir: &Path) -> String {
@@ -160,24 +404,18 @@ pub(crate) fn detect_conn_type_linux(net_dir: &Path) -> String {
 
 fn detect_conn_type_windows() -> String {
     // Check for an active Wi-Fi connection via `netsh wlan show interfaces`.
-    // `command_no_window` keeps these probes from flashing a console window on
-    // every poll (Eldrun is a windowed app with no console).
-    if let Ok(out) = crate::paths::command_no_window("netsh")
-        .args(["wlan", "show", "interfaces"])
-        .output()
-    {
-        let text = String::from_utf8_lossy(&out.stdout).to_lowercase();
+    // `command_no_window` (inside `probe_output_capped`) keeps these probes
+    // from flashing a console window on every poll (Eldrun is a windowed app
+    // with no console).
+    if let Some(text) = probe_output_capped("netsh", &["wlan", "show", "interfaces"]) {
+        let text = text.to_lowercase();
         if text.contains("state") && text.contains("connected") {
             return "wlan".into();
         }
     }
     // Check for any active Ethernet via `netsh interface show interface`.
-    if let Ok(out) = crate::paths::command_no_window("netsh")
-        .args(["interface", "show", "interface"])
-        .output()
-    {
-        let text = String::from_utf8_lossy(&out.stdout).to_lowercase();
-        if text.contains("connected") {
+    if let Some(text) = probe_output_capped("netsh", &["interface", "show", "interface"]) {
+        if text.to_lowercase().contains("connected") {
             return "lan".into();
         }
     }
@@ -186,20 +424,14 @@ fn detect_conn_type_windows() -> String {
 
 pub(crate) fn detect_conn_type_macos() -> String {
     // Check the default route's interface, then probe its type via networksetup.
-    let out = std::process::Command::new("route")
-        .args(["-n", "get", "default"])
-        .output();
-    let Ok(out) = out else {
+    let Some(text) = probe_output_capped("route", &["-n", "get", "default"]) else {
         return "disconnected".into();
     };
-    let text = String::from_utf8_lossy(&out.stdout);
     for line in text.lines() {
         if let Some(iface) = line.trim().strip_prefix("interface:") {
             let iface = iface.trim();
-            let hw = std::process::Command::new("networksetup")
-                .args(["-getinfo", iface])
-                .output()
-                .map(|o| String::from_utf8_lossy(&o.stdout).to_lowercase())
+            let hw = probe_output_capped("networksetup", &["-getinfo", iface])
+                .map(|o| o.to_lowercase())
                 .unwrap_or_default();
             if hw.contains("wi-fi") || hw.contains("airport") {
                 return "wlan".into();
@@ -289,10 +521,77 @@ mod tests {
 
     #[test]
     fn network_conn_type_returns_known_value() {
-        let val = network_conn_type();
+        let val = network_conn_type_blocking();
         assert!(
             ["wlan", "lan", "disconnected"].contains(&val.as_str()),
             "unexpected network type: {val}"
+        );
+    }
+
+    #[test]
+    fn wireless_iface_is_the_one_the_type_probe_picked() {
+        let tmp = tempfile::tempdir().unwrap();
+        mk(tmp.path(), "lo", true, false);
+        mk(tmp.path(), "wlan0", true, true);
+        assert_eq!(
+            active_wireless_iface(tmp.path()).as_deref(),
+            Some("wlan0")
+        );
+    }
+
+    #[test]
+    fn no_wireless_iface_when_only_ethernet_is_up() {
+        let tmp = tempfile::tempdir().unwrap();
+        mk(tmp.path(), "eth0", true, false);
+        mk(tmp.path(), "wlan0", false, true);
+        assert_eq!(active_wireless_iface(tmp.path()), None);
+    }
+
+    #[test]
+    fn nmcli_ssid_takes_the_active_row() {
+        let out = "no:Cafe Guest\nyes:Home Network\nno:Neighbour\n";
+        assert_eq!(parse_nmcli_ssid(out).as_deref(), Some("Home Network"));
+    }
+
+    #[test]
+    fn nmcli_ssid_keeps_an_escaped_colon() {
+        assert_eq!(
+            parse_nmcli_ssid("yes:Floor 2\\: Lab\n").as_deref(),
+            Some("Floor 2: Lab")
+        );
+    }
+
+    #[test]
+    fn nmcli_ssid_is_none_when_nothing_is_joined() {
+        assert_eq!(parse_nmcli_ssid("no:Cafe Guest\nno:Neighbour\n"), None);
+    }
+
+    #[test]
+    fn iw_ssid_is_read_from_the_indented_line() {
+        let out = "Connected to 00:11:22:33:44:55 (on wlan0)\n\tSSID: Home Network\n\tfreq: 5220\n";
+        assert_eq!(parse_iw_ssid(out).as_deref(), Some("Home Network"));
+    }
+
+    #[test]
+    fn iw_ssid_is_none_when_not_associated() {
+        assert_eq!(parse_iw_ssid("Not connected.\n"), None);
+    }
+
+    #[test]
+    fn netsh_ssid_is_not_the_bssid() {
+        let out = "    Name                   : Wi-Fi\n    State                  : connected\n    SSID                   : Home Network\n    BSSID                  : 00:11:22:33:44:55\n";
+        assert_eq!(parse_netsh_ssid(out).as_deref(), Some("Home Network"));
+    }
+
+    #[test]
+    fn airport_ssid_is_none_when_not_associated() {
+        assert_eq!(
+            parse_airport_ssid("Current Wi-Fi Network: Home Network\n").as_deref(),
+            Some("Home Network")
+        );
+        assert_eq!(
+            parse_airport_ssid("You are not associated with an AirPort network.\n"),
+            None
         );
     }
 }

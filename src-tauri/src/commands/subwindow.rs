@@ -2,12 +2,19 @@
 //!
 //! A tiling subwindow (a tab group) is "popped out" into its own borderless
 //! Tauri `WebviewWindow` rendering the same React bundle under a
-//! `?detached=<project>:<group>` query. The detached window is registered as a
-//! project-owned `TrackedWindow` (origin `detached_subwindow`) and its resolved
-//! native id (X11 window on Linux, HWND on Windows) is opted into the workspace
+//! `?detached=<scope>&group=<group>` query. The detached window is registered as
+//! a scope-owned `TrackedWindow` (origin `detached_subwindow`) and its resolved
+//! native id (X11 window on Linux, HWND on Windows, CGWindowID on macOS) is
+//! opted into the workspace
 //! backend's parkable override, so the existing `project_runtime::switch`
 //! hide/show path parks it when its project goes inactive and re-shows it on
 //! switch-back — no parallel parking path.
+//!
+//! A popout belongs to a tab SCOPE (a project id, `"root"`, or `box:<id>`), and
+//! the scope changes in ways no project switch describes — entering a box is one,
+//! and the root is a scope a switch's `project_id` cannot name. So the Tauri-level
+//! park is expressed once, over scopes ([`sync_detached_visibility`]), and both
+//! the switch and the frontend's `setScope` drive it.
 //!
 //! Persistence is session-only: a detached group re-docks into the main layout
 //! on restart (no OS-window respawn). The MAIN window owns project.json writes;
@@ -42,8 +49,42 @@ pub fn detached_title(seq: u32) -> String {
 }
 
 /// The query string the DetachedApp renderer reads to mount a single group.
+///
+/// Two SEPARATE keys, percent-encoded, rather than the single `scope:group`
+/// value this used to write (Group B #224). A scope is not colon-free: a box
+/// scope is `box:<id>`, so the renderer's parser — which split on the first
+/// colon — read `box:abc:g-3` as scope `"box"`, group `"abc:g-3"`. The host had
+/// no record under that scope, never answered the seed, and after 8 s the popout
+/// destroyed itself: the group's tabs were gone from the layout with no window
+/// to get them back from, their PTYs running hidden, and the record persisted
+/// `detached: true` so the failure repeated at every launch. Box-scope detach
+/// could therefore never work at all.
 pub fn detached_query(scope: &str, group_id: &str) -> String {
-    format!("index.html?detached={scope}:{group_id}")
+    format!(
+        "index.html?detached={}&group={}",
+        urlencode(scope),
+        urlencode(group_id)
+    )
+}
+
+/// Percent-encode the characters that would end or re-split a query value.
+/// Deliberately tiny and local: a scope is an id or a `box:<id>`, a group id is
+/// `g-<n>`/`s-<n>`, so this is a guard against the shapes we mint rather than a
+/// general URL encoder.
+fn urlencode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' | '.' | '~' => out.push(ch),
+            _ => {
+                let mut buf = [0u8; 4];
+                for b in ch.encode_utf8(&mut buf).as_bytes() {
+                    out.push_str(&format!("%{b:02X}"));
+                }
+            }
+        }
+    }
+    out
 }
 
 pub fn detached_decorations(os: crate::paths::OsKind) -> bool {
@@ -196,16 +237,27 @@ pub async fn detach_subwindow(
     // default size and let the WM place the window. Size before position so a
     // resize can't shift the placement. Best-effort: a failed setter still leaves
     // a usable (default-placed) window rather than aborting the detach.
-    if let Some(size) = detached_size(width, height) {
+    //
+    // Group B #236: the saved rect is VALIDATED against the monitors connected
+    // right now, exactly as the project-switch-back path already does
+    // (`project_runtime::switch` step 8b). Only that path ran the resolver, so a
+    // popout whose display had been unplugged (or the arrangement rearranged)
+    // between sessions respawned at coordinates on a screen that no longer
+    // exists — a borderless window, off-screen, with nothing to grab. When the
+    // rect no longer meaningfully overlaps any monitor the resolver answers
+    // `None` and we leave the WM's own placement, which is on a real screen.
+    let fitted = fit_detached_bounds(&win, x, y, width, height);
+    if let Some(size) = fitted.1 {
         let _ = win.set_size(size);
     }
-    if let Some(pos) = detached_position(x, y) {
+    if let Some(pos) = fitted.0 {
         let _ = win.set_position(pos);
     }
 
     // Resolve the native window id so the switch path can park this popout. On
     // X11 we match the unique title (bypasses the protected filter); on Windows
-    // we read the HWND straight off the Tauri window by its label.
+    // and macOS we read the HWND / NSWindow number straight off the Tauri
+    // window by its label.
     let window_id = resolve_detached_window_id(&app, &label, &title);
 
     if let Some(wid) = window_id {
@@ -292,6 +344,358 @@ pub async fn detach_subwindow(
     Ok(label)
 }
 
+/// The position/size to actually apply to a respawning popout: the caller's
+/// saved rect, fitted to the monitors this window can currently see (#236).
+///
+/// A rect with no complete position+size pair is passed through unchanged (the
+/// WM places it, at the default size); a complete one that no longer overlaps
+/// any monitor yields `(None, None)`, i.e. the WM's placement rather than a
+/// window flung off-screen. Live monitors are read from the freshly-built
+/// window, so this can only run after `build()`.
+fn fit_detached_bounds(
+    win: &tauri::WebviewWindow,
+    x: Option<f64>,
+    y: Option<f64>,
+    width: Option<f64>,
+    height: Option<f64>,
+) -> (Option<Position>, Option<Size>) {
+    let (pos, size) = (detached_position(x, y), detached_size(width, height));
+    let (Some(_), Some(_)) = (&pos, &size) else {
+        // A partial rect was never a restore — nothing to validate.
+        return (pos, size);
+    };
+    let saved = crate::schema::settings::WindowState {
+        x: x.unwrap_or_default() as i32,
+        y: y.unwrap_or_default() as i32,
+        w: width.unwrap_or_default() as u32,
+        h: height.unwrap_or_default() as u32,
+        maximized: false,
+    };
+    let monitors = crate::services::window_service::monitor_rects(win);
+    match crate::services::window_state::resolve_detached_geometry(saved, &monitors) {
+        Some(g) => (
+            Some(Position::Physical(PhysicalPosition::new(g.x, g.y))),
+            Some(Size::Physical(PhysicalSize::new(g.w, g.h))),
+        ),
+        None => (None, None),
+    }
+}
+
+/// Whether a window's on-screen position can be read back and set at all.
+///
+/// Wayland deliberately gives a client neither: `set_position` is dropped by
+/// the compositor and `outer_position()` reads back `(0,0)` for every window
+/// (GTK3 has no toplevel coordinates to report). Sizes are still real. Every
+/// geometry-by-position path below — the #240 snap, the switch-back
+/// re-placement — therefore has to know it is working on `(0,0)` filler rather
+/// than a location, or it "corrects" windows that were fine (user, 2026-09-07,
+/// first session on GNOME/Wayland). X11, Windows and macOS all report real
+/// positions.
+fn window_positions_readable() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        !crate::platform::x11::session_is_wayland()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        true
+    }
+}
+
+/// Fit ONE live popout entirely onto the screen it is currently on (#240):
+/// never larger than that monitor, never hanging off an edge. Returns whether
+/// anything moved (a popout that already fits is left alone).
+///
+/// Reads the window's real geometry rather than any remembered rect — the whole
+/// point is to correct a window the *WM* just re-placed (a display was
+/// unplugged) or that the user dragged onto a smaller screen. Geometry is
+/// PHYSICAL px throughout, the canonical cross-window space.
+///
+/// A popout parked by a project switch is skipped: it is hidden, its on-screen
+/// geometry is whatever the WM left it while invisible, and the switch-back path
+/// (`project_runtime::switch` step 8b) is what re-places it — snapping a hidden
+/// window would only persist that garbage rect.
+///
+/// A maximized popout is unmaximized first, so the gesture always leaves a
+/// normal, draggable, edge-snappable window rather than a maximized one whose
+/// `set_size` the WM may ignore.
+pub fn snap_detached_to_screen(app: &AppHandle, label: &str) -> bool {
+    // Under Wayland there is no real geometry to read (see
+    // `window_positions_readable`): every popout reports (0,0), i.e. the origin
+    // of the primary monitor, and fitting it "onto the screen it is on" would
+    // shrink a popout that actually sits on a larger secondary display to the
+    // primary's size. The compositor constrains its own windows when a display
+    // goes away, so there is nothing for this rescue to do there.
+    if !window_positions_readable() {
+        return false;
+    }
+    let Some(win) = app.get_webview_window(label) else {
+        return false;
+    };
+    if !win.is_visible().unwrap_or(false) {
+        return false;
+    }
+    let (Ok(pos), Ok(inner), Ok(outer)) = (win.outer_position(), win.inner_size(), win.outer_size())
+    else {
+        return false;
+    };
+    // Fit the OUTER rect — what the screen actually has to hold — while setting
+    // the INNER one, which is all `set_size` can set. The two differ only where a
+    // popout is decorated (macOS; `detached_decorations`), and there by exactly
+    // the title bar we'd otherwise push off the bottom of the screen.
+    let chrome_w = outer.width.saturating_sub(inner.width);
+    let chrome_h = outer.height.saturating_sub(inner.height);
+    let current = crate::schema::settings::WindowState {
+        x: pos.x,
+        y: pos.y,
+        w: outer.width,
+        h: outer.height,
+        maximized: false,
+    };
+    let monitors = crate::services::window_service::monitor_rects(&win);
+    let Some(g) = crate::services::window_state::snap_detached_geometry(current, &monitors) else {
+        return false;
+    };
+    if win.is_maximized().unwrap_or(false) {
+        let _ = win.unmaximize();
+    }
+    // Size before position so a resize can't shift the placement (same order the
+    // respawn and switch-back paths use).
+    let _ = win.set_size(PhysicalSize::new(
+        g.w.saturating_sub(chrome_w).max(1),
+        g.h.saturating_sub(chrome_h).max(1),
+    ));
+    let _ = win.set_position(PhysicalPosition::new(g.x, g.y));
+    true
+}
+
+/// The scope string the ROOT terminal's tabs — and its popouts — live under.
+/// The frontend's `ROOT_SCOPE`; a switch's `project_id` of `None` means exactly
+/// this scope, which is why the popout paths must translate rather than pass the
+/// `Option` through (a root popout registers under `"root"`, never `None`).
+pub const ROOT_SCOPE: &str = "root";
+
+/// Park the given popouts: remember where each one is, then hide it (#42).
+///
+/// Backend-independent. On X11 it complements the desktop-park in
+/// `project_runtime::switch`; on Wayland/KDE/null (where desktop-parking is a
+/// no-op) it is the ONLY mechanism keeping an inactive scope's popout from
+/// floating over every other scope.
+///
+/// The geometry is captured in PHYSICAL px (scale-invariant, so it re-applies
+/// onto the SAME monitor) BEFORE hiding, because `hide()`/`show()` lets the WM
+/// re-place the window — typically onto the primary monitor — so the un-park
+/// must put it back explicitly ([`show_detached_windows`]) or a multi-monitor
+/// popout lands on the wrong screen. An ALREADY-hidden popout is skipped for the
+/// capture: its on-screen geometry while invisible is whatever the WM left it,
+/// and recording that would overwrite the good rect taken when it was parked.
+pub fn hide_detached_windows(
+    app: &AppHandle,
+    win_registry: &WindowRegistryState,
+    labels: &[String],
+) {
+    for label in labels {
+        let Some(win) = app.get_webview_window(label) else {
+            continue;
+        };
+        if win.is_visible().unwrap_or(false) {
+            if let (Ok(pos), Ok(size)) = (win.outer_position(), win.inner_size()) {
+                win_registry.lock().unwrap().detached_bounds.insert(
+                    label.clone(),
+                    crate::commands::apps::DetachedBounds {
+                        x: pos.x,
+                        y: pos.y,
+                        w: size.width,
+                        h: size.height,
+                    },
+                );
+            }
+        }
+        let _ = win.hide();
+    }
+}
+
+/// Un-park the given popouts, back onto the screen they were parked from (#42).
+///
+/// Mirrors [`hide_detached_windows`]. `unminimize()` first in case a backend
+/// minimized rather than hid them; the remembered rect is then validated against
+/// the currently-connected monitors, so an unplugged display can't strand a
+/// popout off-screen.
+pub fn show_detached_windows(
+    app: &AppHandle,
+    win_registry: &WindowRegistryState,
+    labels: &[String],
+) {
+    for label in labels {
+        let Some(win) = app.get_webview_window(label) else {
+            continue;
+        };
+        let _ = win.unminimize();
+        let _ = win.show();
+        // Under Wayland the rect captured at hide time is (0,0,w,h) — the
+        // position half is unreadable (`window_positions_readable`) and the
+        // compositor keeps a hidden toplevel's placement itself, so re-applying
+        // it could only do harm: a (0,0) rect that does not fit the PRIMARY
+        // monitor gets "fitted" to it, shrinking a popout that lives on a bigger
+        // secondary display. Leave the compositor's own restore alone.
+        if !window_positions_readable() {
+            continue;
+        }
+        // Put the popout back where it was before it was parked: the show()
+        // above lets the WM move it (often onto the wrong monitor), so re-apply
+        // the geometry captured at hide time. Size before position so a resize
+        // can't shift the placement. PHYSICAL px → correct monitor regardless of
+        // per-monitor scaling (#42).
+        let saved = win_registry
+            .lock()
+            .unwrap()
+            .detached_bounds
+            .get(label)
+            .copied();
+        let Some(b) = saved else { continue };
+        let monitors = crate::services::window_service::monitor_rects(&win);
+        match crate::services::window_state::resolve_detached_geometry(
+            crate::schema::settings::WindowState {
+                x: b.x,
+                y: b.y,
+                w: b.w,
+                h: b.h,
+                maximized: false,
+            },
+            &monitors,
+        ) {
+            Some(g) => {
+                let _ = win.set_size(PhysicalSize::new(g.w, g.h));
+                let _ = win.set_position(PhysicalPosition::new(g.x, g.y));
+            }
+            // The display this popout was parked on is gone. Leaving the WM's
+            // placement puts it on a real screen but at the size it had on the
+            // old one — on a laptop panel that is a borderless window hanging off
+            // two edges, with no resize border left to grab. Fit it to the screen
+            // it actually landed on instead (#240).
+            None => {
+                snap_detached_to_screen(app, label);
+            }
+        }
+    }
+}
+
+/// Bring every live popout in line with the scope the main window is showing:
+/// this scope's are un-parked, every other scope's is parked.
+///
+/// The ONE place popout visibility is decided, for every way the scope can
+/// change — a project switch, the root, and entering a box (which performs no
+/// project switch at all, and so used to leave the outgoing project's popout
+/// floating over the box's tabs).
+pub fn sync_detached_visibility(app: &AppHandle, win_registry: &WindowRegistryState, scope: &str) {
+    let (mine, others) = {
+        let wins = win_registry.lock().unwrap();
+        crate::services::window_service::detached_labels_by_scope(&wins.windows, scope)
+    };
+    hide_detached_windows(app, win_registry, &others);
+    show_detached_windows(app, win_registry, &mine);
+}
+
+/// Frontend hook for the above: the tabs store calls this whenever the active
+/// scope changes. A project switch also runs the same sync from
+/// `project_runtime::switch` (which owns the desktop-level park of the project's
+/// other windows); both aim at the same scope, and both are idempotent.
+#[tauri::command]
+pub fn sync_detached_scope(
+    app: AppHandle,
+    win_registry: State<'_, WindowRegistryState>,
+    scope: String,
+) {
+    sync_detached_visibility(&app, &win_registry, &scope);
+}
+
+/// Double-clicking a popout's title bar snaps it onto the screen it is on
+/// (#240). The rescue gesture for the window the user can no longer resize:
+/// a borderless popout sized on an external monitor keeps that size when the
+/// display goes away, and its resize edges go with it off the panel.
+#[tauri::command]
+pub fn snap_detached_window(app: AppHandle, label: String) -> bool {
+    snap_detached_to_screen(&app, &label)
+}
+
+/// How often the monitor-arrangement watcher re-reads the connected displays.
+/// One cheap runtime query; the cost of noticing an unplug late is a popout the
+/// user cannot reach, so this stays in the "within a breath" range rather than
+/// being tuned down to nothing.
+const MONITOR_POLL: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// How long to let the WM finish its own re-placement of every window before
+/// correcting the popouts. Unplugging a display moves windows in several steps
+/// on X11; snapping mid-flight would fight it and leave the popout wherever the
+/// last step put it.
+const MONITOR_SETTLE: std::time::Duration = std::time::Duration::from_millis(1200);
+
+/// Watch for the display arrangement changing and re-fit every live popout onto
+/// a real screen (#240).
+///
+/// Polled, not event-driven: neither Tauri nor tao surfaces a monitor
+/// hot-plug event, and the renderer sees nothing either (WebKitGTK stays silent
+/// for a monitor change that doesn't resize the window). One
+/// `available_monitors()` read every few seconds is far cheaper than the failure
+/// it prevents — undocking from an external display leaves a borderless popout
+/// larger than the laptop panel, with its title bar and every resize edge past
+/// the screen, i.e. a window with no way back.
+///
+/// The main window's own geometry is deliberately NOT touched: it is decorated,
+/// WM-managed, and the user can always grab it.
+pub fn spawn_monitor_watcher(app: AppHandle) {
+    std::thread::spawn(move || {
+        let mut seen: Option<Vec<crate::services::window_state::MonitorRect>> = None;
+        loop {
+            std::thread::sleep(MONITOR_POLL);
+            // Nothing to rescue → don't even read the monitors. The read is a
+            // round trip through the main-thread event loop, and the overwhelmingly
+            // common case is a session with no popout at all; waking the UI thread
+            // every few seconds for it would be a pure battery cost. Forgetting the
+            // baseline here is deliberate: the first poll after a popout appears
+            // re-establishes it, so a popout is never snapped for having been born
+            // between two reads.
+            let has_popouts = {
+                let reg = app.state::<WindowRegistryState>();
+                let reg = reg.lock().unwrap();
+                !crate::services::window_service::all_detached_labels(&reg.windows).is_empty()
+            };
+            if !has_popouts {
+                seen = None;
+                continue;
+            }
+            let Some(main) = app.get_webview_window(
+                crate::services::window_service::MAIN_WINDOW_LABEL,
+            ) else {
+                // No main window: shutting down, or not built yet.
+                continue;
+            };
+            let now = crate::services::window_service::monitor_rects(&main);
+            // An empty read is a compositor that hasn't settled, not "every
+            // display was unplugged" — treating it as a change would snap every
+            // popout against no monitors at all.
+            if now.is_empty() || seen.as_ref() == Some(&now) {
+                continue;
+            }
+            let first = seen.is_none();
+            seen = Some(now);
+            // The first read is the baseline, not a change.
+            if first {
+                continue;
+            }
+            std::thread::sleep(MONITOR_SETTLE);
+            let labels = {
+                let reg = app.state::<WindowRegistryState>();
+                let reg = reg.lock().unwrap();
+                crate::services::window_service::all_detached_labels(&reg.windows)
+            };
+            for label in labels {
+                snap_detached_to_screen(&app, &label);
+            }
+        }
+    });
+}
+
 /// Close a detached subwindow and remove it from the registry + parkable
 /// override. Idempotent: a missing window/registry entry is not an error (the
 /// group still docks back in the frontend store).
@@ -354,9 +758,9 @@ pub fn detached_window_frontmost(
                     .map(|top| top == wid)
                     .unwrap_or(false)
             }
-            // macOS: future-proofing — `resolve_detached_window_id` stays None
-            // on macOS v1, so this arm is only reached once popouts learn their
-            // CGWindowID.
+            // macOS: the popout's CGWindowID comes from its NSWindow number
+            // (`resolve_detached_window_id`), the same id space CGWindowList
+            // enumerates, so the occlusion walk compares like with like.
             #[cfg(target_os = "macos")]
             {
                 crate::platform::macos::frontmost_window_under_pointer()
@@ -387,7 +791,31 @@ fn resolve_detached_window_id(app: &AppHandle, label: &str, _title: &str) -> Opt
     Some(hwnd.0 as usize as u64)
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+/// macOS: the popout's `CGWindowID` is its `NSWindow.windowNumber`, read off
+/// the Tauri window by its label — the same binding `lib.rs` does for the MAIN
+/// window at setup. AppKit wants NSWindow access on the main thread, and this
+/// runs from an async command on a worker, so the read is marshalled through
+/// `run_on_main_thread` and awaited with a bound (a wedged main loop must not
+/// hang the detach; the popout then simply is not parkable this session).
+#[cfg(target_os = "macos")]
+fn resolve_detached_window_id(app: &AppHandle, label: &str, _title: &str) -> Option<u64> {
+    let win = app.get_webview_window(label)?;
+    let (tx, rx) = std::sync::mpsc::channel::<Option<u64>>();
+    let on_main = win.clone();
+    win.run_on_main_thread(move || {
+        let id = on_main
+            .ns_window()
+            .ok()
+            .and_then(|ns| crate::platform::macos::ns_window_id(ns as *mut std::ffi::c_void));
+        let _ = tx.send(id);
+    })
+    .ok()?;
+    rx.recv_timeout(std::time::Duration::from_secs(2))
+        .ok()
+        .flatten()
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
 fn resolve_detached_window_id(_app: &AppHandle, _label: &str, _title: &str) -> Option<u64> {
     None
 }
@@ -411,12 +839,33 @@ mod tests {
     }
 
     #[test]
-    fn query_carries_the_detached_param() {
-        assert_eq!(detached_query("p1", "g-3"), "index.html?detached=p1:g-3");
+    fn query_carries_scope_and_group_as_separate_keys() {
+        assert_eq!(
+            detached_query("p1", "g-3"),
+            "index.html?detached=p1&group=g-3"
+        );
         assert_eq!(
             detached_query("root", "g-1"),
-            "index.html?detached=root:g-1"
+            "index.html?detached=root&group=g-1"
         );
+    }
+
+    #[test]
+    fn a_box_scopes_colon_survives_the_query() {
+        // The #224 bug: one `scope:group` value split on the first colon read
+        // `box:abc:g-3` as scope "box", so a box popout could never be seeded.
+        // Two keys make the scope opaque — encoded, so it cannot end the value.
+        let q = detached_query("box:abc", "g-3");
+        assert_eq!(q, "index.html?detached=box%3Aabc&group=g-3");
+        assert!(!q.trim_start_matches("index.html?detached=box%3Aabc").contains(':'));
+    }
+
+    #[test]
+    fn urlencode_escapes_separators_and_keeps_id_characters() {
+        assert_eq!(urlencode("g-3"), "g-3");
+        assert_eq!(urlencode("box:abc"), "box%3Aabc");
+        assert_eq!(urlencode("a&b=c"), "a%26b%3Dc");
+        assert_eq!(urlencode("a b"), "a%20b");
     }
 
     #[test]

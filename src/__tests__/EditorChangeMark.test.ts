@@ -11,8 +11,6 @@ import {
   editSpan,
   remapChangeRange,
   decorateChangeRanges,
-  decorateDeleteRanges,
-  deletionGhostText,
 } from "../components/embed/FileViewerPane";
 
 describe("diffRange", () => {
@@ -130,68 +128,6 @@ describe("decorateChangeRanges", () => {
   });
 });
 
-describe("decorateDeleteRanges", () => {
-  it("injects the deleted text at its anchor with a zero fade offset", () => {
-    // "hello world" had "world" removed → draft is "hello ", ghost anchored at 6.
-    expect(
-      decorateDeleteRanges("hello ", [{ id: 1, pos: 6, text: "world", born: 1000 }], 1000),
-    ).toBe(
-      'hello <span class="file-viewer-delete-mark" style="animation-delay:-0ms">world</span>',
-    );
-  });
-
-  it("offsets the fade by the elapsed time since the ghost was born", () => {
-    expect(
-      decorateDeleteRanges("ab", [{ id: 1, pos: 2, text: "c", born: 500 }], 1700),
-    ).toBe(
-      'ab<span class="file-viewer-delete-mark" style="animation-delay:-1200ms">c</span>',
-    );
-  });
-
-  it("escapes HTML in both the surrounding source and the deleted text", () => {
-    expect(
-      decorateDeleteRanges("x&y", [{ id: 1, pos: 1, text: "<b>", born: 0 }], 0),
-    ).toBe(
-      'x<span class="file-viewer-delete-mark" style="animation-delay:-0ms">&lt;b&gt;</span>&amp;y',
-    );
-  });
-
-  it("orders several ghosts by anchor and clamps an out-of-range anchor", () => {
-    expect(
-      decorateDeleteRanges(
-        "abc",
-        [
-          { id: 2, pos: 99, text: "Z", born: 0 },
-          { id: 1, pos: 1, text: "Y", born: 0 },
-        ],
-        0,
-      ),
-    ).toBe(
-      'a<span class="file-viewer-delete-mark" style="animation-delay:-0ms">Y</span>bc' +
-        '<span class="file-viewer-delete-mark" style="animation-delay:-0ms">Z</span>',
-    );
-  });
-});
-
-describe("deletionGhostText", () => {
-  it("trims a trailing space off the removed run", () => {
-    expect(deletionGhostText("big ")).toBe("big");
-  });
-
-  it("trims a leading space off the removed run", () => {
-    expect(deletionGhostText(" world")).toBe("world");
-  });
-
-  it("leaves a run with no surrounding whitespace unchanged", () => {
-    expect(deletionGhostText("world")).toBe("world");
-  });
-
-  it("returns null for a whitespace-only removal so no ghost is spawned", () => {
-    expect(deletionGhostText(" ")).toBeNull();
-    expect(deletionGhostText("\n")).toBeNull();
-  });
-});
-
 /**
  * A coupled `\begin{env}`/`\end{env}` rename changes the document in two places
  * at once. `editSpan` can only report ONE run, so read directly it returns
@@ -208,20 +144,20 @@ describe("a two-place edit through editSpan", () => {
 
   it("read in one step, swallows the whole environment body", () => {
     const span = editSpan(prev, next)!;
-    // The run reaches from inside the \begin name to inside the \end name, so the
-    // tint would paint the body and the ghost would report it as deleted text.
+    // The run reaches from inside the \begin name to inside the \end name, so a
+    // trail booked from it would tint the body as freshly typed.
     expect(prev.slice(span.start, span.endPrev)).toContain("body");
-    expect(deletionGhostText(prev.slice(span.start, span.endPrev))).not.toBeNull();
+    expect(next.slice(span.start, span.endNext)).toContain("body");
   });
 
-  it("read as its two stages, is two small runs and no bogus deletion", () => {
+  it("read as its two stages, is two small runs", () => {
     const typedSpan = editSpan(prev, typed)!;
     expect(next.slice(typedSpan.start, typedSpan.endNext)).toBe("ize");
-    // Nothing was removed by either stage, so neither raises a deletion ghost.
-    expect(deletionGhostText(prev.slice(typedSpan.start, typedSpan.endPrev))).toBeNull();
+    // Neither stage removes anything — both are pure inserts.
+    expect(prev.slice(typedSpan.start, typedSpan.endPrev)).toBe("");
     const mirrorSpan = editSpan(typed, next)!;
     expect(next.slice(mirrorSpan.start, mirrorSpan.endNext)).toBe("ize");
-    expect(deletionGhostText(typed.slice(mirrorSpan.start, mirrorSpan.endPrev))).toBeNull();
+    expect(typed.slice(mirrorSpan.start, mirrorSpan.endPrev)).toBe("");
     // The typed run, remapped through the mirrored one, still points at the
     // \begin name — the mirrored insertion lands after it.
     const remapped = remapChangeRange(

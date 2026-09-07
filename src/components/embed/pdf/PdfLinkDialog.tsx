@@ -64,12 +64,12 @@ export function PdfLinkConfirmDialog({
           </div>
           <div className="mail-note">{t("pdfLinks.fromDocument")}</div>
           <div className="mail-dialog-actions">
-            <button type="button" className="mail-btn" autoFocus onClick={onClose}>
+            <button type="button" className="settings-btn" autoFocus onClick={onClose}>
               {t("common.cancel")}
             </button>
             <button
               type="button"
-              className="mail-btn"
+              className="settings-btn"
               onClick={() => {
                 navigator.clipboard?.writeText(url).catch(() => {});
                 setCopied(true);
@@ -79,7 +79,7 @@ export function PdfLinkConfirmDialog({
             </button>
             <button
               type="button"
-              className="mail-btn mail-btn-primary"
+              className="settings-btn primary"
               onClick={() => {
                 onOpen();
                 onClose();

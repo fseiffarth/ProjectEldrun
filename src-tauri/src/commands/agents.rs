@@ -357,6 +357,10 @@ pub struct AgentInfo {
     pub uninstall_cmd_sudo: String,
     pub docs: String,
     pub installed: bool,
+    /// Whether the scheduled warm-up can drive this CLI: it has a known
+    /// one-shot print/exec mode (`WARMUPS`). False greys the schedule toggle
+    /// on the agent's card.
+    pub warmup: bool,
 }
 
 fn find_spec(id: &str) -> Option<&'static AgentSpec> {
@@ -612,6 +616,7 @@ pub async fn list_agents() -> Vec<AgentInfo> {
                 uninstall_cmd,
                 docs: spec.docs.to_string(),
                 installed: spec_is_installed(spec),
+                warmup: warmup_args(spec).is_some(),
             }
         })
         .collect()
@@ -930,9 +935,573 @@ pub async fn uninstall_agent(id: String) -> Result<String, String> {
     Ok(format!("{} removed ({}).", spec.label, path.display()))
 }
 
+// ---------------------------------------------------------------------------
+// Scheduled warm-up (Manage CLIs → Scheduled warm-up)
+// ---------------------------------------------------------------------------
+
+/// Per-agent argv prefix that runs the CLI **once, non-interactively**, on a
+/// message passed as the final argument — Claude's `-p`, Codex's `exec`, and so
+/// on. This is what the scheduled warm-up (`agent_warmup`) runs: the point of a
+/// warm-up is to open the CLI's usage window, and its print/exec mode does that
+/// as surely as a keystroke in a tab would while needing no PTY, no tab, no
+/// project, and no window — it starts, answers once, and exits.
+///
+/// Only agents whose one-shot mode is documented are listed; one that is not
+/// here cannot be scheduled (`AgentInfo::warmup` says so and the panel greys
+/// the toggle). Guessing a flag would either open an interactive TUI on a
+/// null stdin that then sits there forever, or run nothing at all while the
+/// schedule looks armed — so an unknown recipe is a refusal, never a fallback.
+///
+/// The message goes **last** on purpose: a prefix ending in a value flag
+/// (`goose run -t`) reads it as that flag's value, and one ending in a mode
+/// (`opencode run`) reads it as the positional prompt. Keyed by the registry
+/// `id`, so `find_spec` is the only lookup.
+const WARMUPS: &[(&str, &[&str])] = &[
+    ("claude", &["-p"]),
+    ("codex", &["exec", "--skip-git-repo-check"]),
+    ("gemini", &["-p"]),
+    ("qwen", &["-p"]),
+    ("copilot", &["-p"]),
+    ("cursor-agent", &["-p"]),
+    ("grok", &["-p"]),
+    ("kimi", &["-p"]),
+    ("vibe", &["-p"]),
+    ("pi", &["-p"]),
+    ("amp", &["-x"]),
+    ("opencode", &["run"]),
+    ("goose", &["run", "-t"]),
+    ("crush", &["run"]),
+];
+
+/// How long a warm-up process may live before it is killed. A print-mode run
+/// answering "Test" takes seconds; the ceiling only exists so a CLI that hangs
+/// on a first-run prompt (a trust dialog, a login) does not leave a process
+/// behind per scheduled slot for as long as Eldrun runs.
+const WARMUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+/// Longest message a warm-up may send. The frontend sends a fixed four-letter
+/// word; the bound is here so this command can never be turned into "run an
+/// agent on arbitrary text" by anything holding the IPC.
+const WARMUP_MESSAGE_MAX: usize = 200;
+
+/// The one-shot argv prefix for `spec`, or `None` when its print mode is not
+/// known (see `WARMUPS`).
+fn warmup_args(spec: &AgentSpec) -> Option<&'static [&'static str]> {
+    WARMUPS
+        .iter()
+        .find(|(id, _)| *id == spec.id)
+        .map(|(_, args)| *args)
+}
+
+/// The full argv (without the binary) of one warm-up run: the recipe, then the
+/// message as its own final argument — never interpolated into a shell line.
+fn warmup_argv(spec: &AgentSpec, message: &str) -> Option<Vec<String>> {
+    let mut argv: Vec<String> = warmup_args(spec)?.iter().map(|s| s.to_string()).collect();
+    argv.push(message.to_string());
+    Some(argv)
+}
+
+/// Resolve an agent by registry `id` *or* binary name. The schedule is keyed by
+/// whatever the settings panel handed it (the id), while the + menu's tab
+/// specs speak in binaries (`agy`, `gpte`); accepting both means a schedule
+/// written by either surface finds its agent.
+fn find_spec_by_id_or_bin(agent: &str) -> Option<&'static AgentSpec> {
+    find_spec(agent).or_else(|| AGENTS.iter().find(|a| a.bin == agent))
+}
+
+/// The folder every warm-up runs in. A print-mode agent records its session
+/// under its working directory (Claude keys `~/.claude/projects/` by cwd), so
+/// the run gets a directory of its own under Eldrun's state dir rather than a
+/// project's: it must not show up in any project's resume list, and it must
+/// not be able to read anything a project holds. Nothing else lives here.
+fn warmup_dir() -> Result<std::path::PathBuf, String> {
+    let dir = crate::storage::state_dir().join("agent-cron");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+    Ok(dir)
+}
+
+/// What `agent_warmup` started, for the scheduler's log line.
+#[derive(serde::Serialize)]
+pub struct AgentWarmupLaunch {
+    pub pid: u32,
+    /// The command line as run, for display only (args are passed as argv).
+    pub command: String,
+    pub cwd: String,
+}
+
+/// Send one warm-up message to `agent` by running its CLI's print mode as a
+/// detached background process — no terminal, no tab, no window.
+///
+/// Refuses (rather than improvises) when the agent is unknown, has no known
+/// one-shot mode, or is not installed, so the scheduler can say which. The
+/// process is reaped by a thread of its own: `std::process::Child` left
+/// unwaited is a zombie on Unix, and the same thread enforces
+/// `WARMUP_TIMEOUT`.
+#[tauri::command]
+pub async fn agent_warmup(agent: String, message: String) -> Result<AgentWarmupLaunch, String> {
+    let message = message.trim().to_string();
+    if message.is_empty() || message.len() > WARMUP_MESSAGE_MAX || message.contains(['\n', '\r']) {
+        return Err("warm-up message must be one short line".into());
+    }
+    let spec = find_spec_by_id_or_bin(&agent).ok_or_else(|| format!("unknown agent: {agent}"))?;
+    let argv = warmup_argv(spec, &message)
+        .ok_or_else(|| format!("{} has no known non-interactive mode", spec.label))?;
+    let path = resolve_spec_path(spec).ok_or_else(|| format!("{} is not installed", spec.label))?;
+    let cwd = warmup_dir()?;
+
+    let mut cmd = crate::paths::command_no_window(&path);
+    cmd.args(&argv)
+        .current_dir(&cwd)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    #[cfg(unix)]
+    {
+        // Its own process group: a signal aimed at Eldrun's terminal group (a
+        // Ctrl+C in the launcher shell) must not take a half-sent warm-up with
+        // it, and a warm-up must never be what a Ctrl+C reaches first.
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("cannot start {}: {e}", path.display()))?;
+    let pid = child.id();
+    let label = spec.label;
+    std::thread::spawn(move || {
+        let started = std::time::Instant::now();
+        loop {
+            match child.try_wait() {
+                Ok(Some(_)) | Err(_) => break,
+                Ok(None) if started.elapsed() > WARMUP_TIMEOUT => {
+                    eprintln!("agent warm-up: {label} (pid {pid}) still running after {WARMUP_TIMEOUT:?}, killing");
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    break;
+                }
+                Ok(None) => std::thread::sleep(std::time::Duration::from_secs(1)),
+            }
+        }
+    });
+
+    Ok(AgentWarmupLaunch {
+        pid,
+        command: std::iter::once(path.display().to_string())
+            .chain(argv)
+            .collect::<Vec<_>>()
+            .join(" "),
+        cwd: cwd.display().to_string(),
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Usage panel (the phone's agent status sheet)
+// ---------------------------------------------------------------------------
+
+/// What one agent CLI says about its own usage, plus enough identity for a
+/// caller to render the answer *and* the refusals.
+///
+/// Not a `Result`: every branch here — unknown agent, no usage recipe, not
+/// installed, CLI complained — is a thing the reader should see named, next to
+/// the label of the agent it is about. Collapsing them into an error string
+/// would leave the sheet with nothing to title itself with.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentUsageReport {
+    /// Registry id the report is about (`claude`), as resolved from whatever
+    /// the caller named the agent.
+    pub agent: String,
+    /// Display label (`Claude Code`), or the caller's own string for an agent
+    /// the registry does not know.
+    pub label: String,
+    /// False when this CLI has no readable usage panel at all — the sheet says
+    /// so rather than showing an empty one.
+    pub supported: bool,
+    /// The panel exactly as the CLI printed it. Parsed by the reader.
+    pub raw: Option<String>,
+    /// Why there is no panel, in the CLI's own words where it had any.
+    pub error: Option<String>,
+    /// True when this answer came from the short-lived cache rather than from a
+    /// fresh run, so a reader can tell a stale figure from a live one.
+    pub cached: bool,
+}
+
+impl AgentUsageReport {
+    fn refused(agent: &str, label: &str, supported: bool, error: String) -> Self {
+        Self {
+            agent: agent.to_string(),
+            label: label.to_string(),
+            supported,
+            raw: None,
+            error: Some(error),
+            cached: false,
+        }
+    }
+}
+
+/// Which model the tab launched as `agent` with launch id `session_id` last
+/// answered with, read from the CLI's own transcript
+/// (`services::agent_session::agent_session_model`). `None` when the agent
+/// keeps no transcript Eldrun reads, or it holds no answer yet — the Agents
+/// view then shows no tag rather than a guessed one.
+#[tauri::command]
+pub async fn agent_tab_model(
+    agent: String,
+    project_id: Option<String>,
+    session_id: String,
+) -> Option<String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::services::agent_session::agent_session_model(
+            &agent,
+            project_id.as_deref(),
+            &session_id,
+        )
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
+/// The last prompt the tab launched as `agent` with launch id `session_id`
+/// was given, however it was submitted — typed in the terminal included —
+/// read from the CLI's own transcript
+/// (`services::agent_session::agent_session_last_prompt`). `None` when the
+/// agent keeps no transcript Eldrun reads, or it holds no prompt yet.
+#[tauri::command]
+pub async fn agent_tab_last_prompt(
+    agent: String,
+    project_id: Option<String>,
+    session_id: String,
+) -> Option<String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::services::agent_session::agent_session_last_prompt(
+            &agent,
+            project_id.as_deref(),
+            &session_id,
+        )
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
+/// Read `agent`'s own usage panel by running its CLI's print mode once.
+///
+/// Free in every sense that matters: the run is client-side (Claude's envelope
+/// comes back with `num_turns: 0` and zero tokens), it needs no tab, no PTY and
+/// no project, and a successful read is cached for `CACHE_TTL` so reopening the
+/// sheet does not spawn anything. `refresh` skips the cache — that is what the
+/// sheet's own refresh means.
+#[tauri::command]
+pub async fn agent_usage(agent: String, refresh: Option<bool>) -> AgentUsageReport {
+    use crate::services::agent_usage as usage;
+
+    let Some(spec) = find_spec_by_id_or_bin(&agent) else {
+        return AgentUsageReport::refused(&agent, &agent, false, format!("unknown agent: {agent}"));
+    };
+    let Some(argv) = usage::usage_argv(spec.id) else {
+        return AgentUsageReport::refused(
+            spec.id,
+            spec.label,
+            false,
+            format!("{} has no usage readout that can be read without a tab", spec.label),
+        );
+    };
+    // A refresh still consults the cache, at a much shorter window: it means
+    // "ask the CLI again", not "spawn one process per tap".
+    let window = if refresh.unwrap_or(false) {
+        usage::REFRESH_FLOOR
+    } else {
+        usage::CACHE_TTL
+    };
+    if let Some(raw) = usage::cached_within(spec.id, window) {
+        return AgentUsageReport {
+            agent: spec.id.to_string(),
+            label: spec.label.to_string(),
+            supported: true,
+            raw: Some(raw),
+            error: None,
+            cached: true,
+        };
+    }
+    usage::forget(spec.id);
+    let Some(path) = resolve_spec_path(spec) else {
+        return AgentUsageReport::refused(
+            spec.id,
+            spec.label,
+            true,
+            format!("{} is not installed", spec.label),
+        );
+    };
+    // The state dir, not a project: a usage window is per account, and running
+    // in a project folder would put a CLI's first-run trust prompt in the way of
+    // a question that has nothing to do with that folder.
+    let cwd = match warmup_dir() {
+        Ok(dir) => dir,
+        Err(error) => return AgentUsageReport::refused(spec.id, spec.label, true, error),
+    };
+
+    let mut cmd = tokio::process::Command::from(crate::paths::command_no_window(&path));
+    cmd.args(&argv)
+        .current_dir(&cwd)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    #[cfg(unix)]
+    {
+        // Its own process group, for the reason the warm-up spawn gives: a
+        // Ctrl+C in Eldrun's launcher shell must not be what reaches this first.
+        cmd.process_group(0);
+    }
+    let output = match tokio::time::timeout(usage::USAGE_TIMEOUT, async {
+        cmd.spawn()
+            .map_err(|e| format!("cannot start {}: {e}", path.display()))?
+            .wait_with_output()
+            .await
+            .map_err(|e| format!("{} did not run: {e}", spec.label))
+    })
+    .await
+    {
+        Ok(Ok(output)) => output,
+        Ok(Err(error)) => return AgentUsageReport::refused(spec.id, spec.label, true, error),
+        // `kill_on_drop` reaps the child as the future is dropped here.
+        Err(_) => {
+            return AgentUsageReport::refused(
+                spec.id,
+                spec.label,
+                true,
+                format!(
+                    "{} did not answer within {}s",
+                    spec.label,
+                    usage::USAGE_TIMEOUT.as_secs()
+                ),
+            )
+        }
+    };
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    match usage::report_text(&stdout, &stderr, output.status.code()) {
+        Ok(raw) => {
+            usage::remember(spec.id, &raw);
+            AgentUsageReport {
+                agent: spec.id.to_string(),
+                label: spec.label.to_string(),
+                supported: true,
+                raw: Some(raw),
+                error: None,
+                cached: false,
+            }
+        }
+        Err(error) => AgentUsageReport::refused(spec.id, spec.label, true, error),
+    }
+}
+
+/// Ask one agent CLI what version it is, once.
+///
+/// Same spawn shape as the usage read above and for the same reasons: argv
+/// (never a shell line), stdin closed so a CLI that ignores `--version` and
+/// opens its TUI has nothing to read, its own process group, `kill_on_drop` so
+/// the timeout actually reaps, and the state dir as cwd so no project folder's
+/// first-run trust prompt gets in the way of a question that has nothing to do
+/// with that folder.
+async fn probe_agent_version(spec: &'static AgentSpec) -> Result<String, String> {
+    use crate::services::agent_versions as versions;
+
+    let argv = versions::version_argv(spec.id)
+        .ok_or_else(|| format!("{} has no known version flag", spec.label))?;
+    let path =
+        resolve_spec_path(spec).ok_or_else(|| format!("{} is not installed", spec.label))?;
+    let cwd = warmup_dir()?;
+
+    let mut cmd = tokio::process::Command::from(crate::paths::command_no_window(&path));
+    cmd.args(&argv)
+        .current_dir(&cwd)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    #[cfg(unix)]
+    {
+        cmd.process_group(0);
+    }
+    let output = match tokio::time::timeout(versions::VERSION_TIMEOUT, async {
+        cmd.spawn()
+            .map_err(|e| format!("cannot start {}: {e}", path.display()))?
+            .wait_with_output()
+            .await
+            .map_err(|e| format!("{} did not run: {e}", spec.label))
+    })
+    .await
+    {
+        Ok(Ok(output)) => output,
+        Ok(Err(error)) => return Err(error),
+        Err(_) => {
+            return Err(format!(
+                "{} did not answer within {}s",
+                spec.label,
+                versions::VERSION_TIMEOUT.as_secs()
+            ))
+        }
+    };
+    versions::version_text(
+        &String::from_utf8_lossy(&output.stdout),
+        &String::from_utf8_lossy(&output.stderr),
+        output.status.code(),
+    )
+}
+
+/// What version of each *installed* agent CLI is on this machine, against the
+/// releases Eldrun's flags and parsers were verified with.
+///
+/// Reported, never enforced: nothing here updates a CLI or refuses to launch
+/// one. It exists so "somebody else's CLI moved under us" is a line in Manage
+/// Agents (and in `cargo run --example agent_versions`) instead of a mystery
+/// the next time a TUI parses wrong.
+///
+/// Only installed agents are probed, at most once a day per agent
+/// (`PROBE_TTL`), all of them concurrently — an agent CLI's version changes
+/// when a person runs an installer, so opening the panel again the same
+/// afternoon spawns nothing. `refresh` skips the cache; that is what the
+/// panel's own re-check means.
+#[tauri::command]
+pub async fn agent_versions(
+    refresh: Option<bool>,
+) -> Vec<crate::services::agent_versions::VersionReport> {
+    use crate::services::agent_versions as versions;
+
+    let refresh = refresh.unwrap_or(false);
+    let store = versions::load();
+    let mut ready: std::collections::HashMap<&str, versions::VersionReport> =
+        std::collections::HashMap::new();
+    let mut probes = Vec::new();
+
+    for spec in AGENTS {
+        if !spec_is_installed(spec) {
+            continue;
+        }
+        // Installed, but nobody has checked what it answers: say so rather than
+        // guessing a flag at a binary that may open a TUI instead.
+        if !versions::is_supported(spec.id) {
+            ready.insert(
+                spec.id,
+                versions::VersionReport::unread(spec.id, spec.label, true, None),
+            );
+            continue;
+        }
+        if !refresh {
+            if let Some(seen) = store
+                .get(spec.id)
+                .filter(|seen| versions::fresh(seen, versions::PROBE_TTL))
+            {
+                ready.insert(
+                    spec.id,
+                    versions::VersionReport::from_seen(spec.id, spec.label, seen, true),
+                );
+                continue;
+            }
+        }
+        // `AGENTS` is a const slice in static memory, so the borrow outlives
+        // the spawned task — spelled out because that is what makes it
+        // spawnable rather than a lifetime that happens to work.
+        let spec: &'static AgentSpec = spec;
+        probes.push(tokio::spawn(async move {
+            (spec, probe_agent_version(spec).await)
+        }));
+    }
+
+    for probe in probes {
+        let Ok((spec, result)) = probe.await else {
+            continue;
+        };
+        let seen = versions::remember(spec.id, result);
+        ready.insert(
+            spec.id,
+            versions::VersionReport::from_seen(spec.id, spec.label, &seen, false),
+        );
+    }
+
+    // Registry order, so the rows line up with the Manage Agents list.
+    AGENTS
+        .iter()
+        .filter_map(|spec| ready.remove(spec.id))
+        .collect()
+}
+
+/// Stop reminding the user that `agent`'s installed version has moved past what
+/// Eldrun was verified against.
+///
+/// Keyed by the version, not by a flag: the notice comes back on the *next*
+/// release, which is the only time it has something new to say.
+#[tauri::command]
+pub async fn dismiss_agent_version(agent: String, version: String) -> Result<(), String> {
+    let spec = find_spec_by_id_or_bin(&agent).ok_or_else(|| format!("unknown agent: {agent}"))?;
+    if version.trim().is_empty() {
+        return Err("no version to dismiss".into());
+    }
+    crate::services::agent_versions::dismiss(spec.id, version.trim());
+    Ok(())
+}
+
+/// Whether Claude already trusts `cwd`, i.e. it will NOT open its "Is this a
+/// project you created or one you trust?" dialog there.
+///
+/// The caller is the tab's auto-typed `/rename <project>` line, which is
+/// submitted with a bare Enter. On that dialog, Enter confirms the highlighted
+/// default — `No, exit` — so an agent tab opened in an untrusted folder killed
+/// itself on launch. Answering the question is the user's alone; Eldrun only
+/// asks whether the question is coming, and stays quiet when it is.
+/// Off the main thread: the host `~/.claude.json` carries every project's
+/// prompt history and grows into the megabytes, and this is asked once per new
+/// Claude tab — parsing it inline would jank the window at launch.
+#[tauri::command]
+pub async fn claude_folder_trusted(cwd: String) -> bool {
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::services::sandbox::claude_folder_trusted(&cwd)
+    })
+    .await
+    .unwrap_or(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_warmup_recipe_names_a_registry_agent_and_puts_the_message_last() {
+        for (id, args) in WARMUPS {
+            let spec = find_spec(id).unwrap_or_else(|| panic!("warm-up recipe for unknown agent {id}"));
+            let argv = warmup_argv(spec, "Test").expect("recipe resolves");
+            assert_eq!(argv.len(), args.len() + 1, "{id}");
+            assert_eq!(argv.last().map(String::as_str), Some("Test"), "{id}");
+            assert_eq!(&argv[..args.len()], *args, "{id}");
+            assert!(args.iter().all(|a| !a.is_empty()), "{id}: empty arg");
+        }
+    }
+
+    #[test]
+    fn warmup_is_refused_for_agents_without_a_known_print_mode() {
+        let aider = find_spec("aider").expect("aider in registry");
+        assert!(warmup_args(aider).is_none());
+        assert!(warmup_argv(aider, "Test").is_none());
+        let claude = find_spec("claude").expect("claude in registry");
+        assert_eq!(
+            warmup_argv(claude, "Test").unwrap(),
+            vec!["-p".to_string(), "Test".to_string()]
+        );
+        assert_eq!(
+            warmup_argv(find_spec("codex").unwrap(), "Test").unwrap(),
+            vec!["exec", "--skip-git-repo-check", "Test"]
+        );
+    }
+
+    #[test]
+    fn warmup_resolves_an_agent_by_id_or_by_binary() {
+        assert_eq!(find_spec_by_id_or_bin("antigravity").map(|s| s.id), Some("antigravity"));
+        assert_eq!(find_spec_by_id_or_bin("agy").map(|s| s.id), Some("antigravity"));
+        assert_eq!(find_spec_by_id_or_bin("claude").map(|s| s.id), Some("claude"));
+        assert!(find_spec_by_id_or_bin("not-an-agent").is_none());
+    }
 
     #[test]
     fn windows_shell_flags_powershell_only_commands() {

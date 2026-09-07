@@ -26,10 +26,15 @@ else
   # AppImage bundling unavailable (no FUSE); use the raw release binary.
   RAW_BIN="$ROOT/target/release/eldrun"
   if [[ ! -f "$RAW_BIN" ]]; then
-    # Bundle failed before linking — do a plain cargo build.
+    # Bundle failed before linking — do a plain cargo build. `--features
+    # custom-protocol` is what the tauri CLI would have supplied: without it the
+    # app compiles in dev mode, embeds no frontend, and opens devUrl — i.e. an
+    # installed Eldrun showing "Could not connect to localhost" (2026-09-02).
     export PATH="$HOME/.cargo/bin:$PATH"
-    cargo build --release --manifest-path "$ROOT/src-tauri/Cargo.toml"
+    cargo build --release --features custom-protocol \
+      --manifest-path "$ROOT/src-tauri/Cargo.toml"
   fi
+  "$ROOT/scripts/assert-embedded-frontend.sh" "$RAW_BIN"
   install -Dm755 "$RAW_BIN" "$BINARY_DEST"
   echo "AppImage bundling unavailable (no FUSE); installed raw binary to: $BINARY_DEST"
 fi

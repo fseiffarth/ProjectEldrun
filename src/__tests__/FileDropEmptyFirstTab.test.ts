@@ -1,10 +1,10 @@
 /**
  * When a scope has NO tabs yet, the only drop target is the full-panel empty
  * placeholder subwindow (CenterPanel renders it with groupId EMPTY_GROUP_ID).
- * A file dragged from the right panel and dropped anywhere over the main window
+ * A file dragged from the side panel and dropped anywhere over the main window
  * — resolving to EMPTY_GROUP_ID as either the tab-bar reorder target or the body
  * overGroup — must become the FIRST tab (addTab builds the root group). A drop
- * released over the right panel resolves to no target and must do nothing (no
+ * released over the side panel resolves to no target and must do nothing (no
  * tab, no external open).
  */
 import { describe, it, expect, beforeEach, vi } from "vitest";
@@ -83,7 +83,7 @@ describe("commitFileDrop — empty state creates the first tab", () => {
     expect(state.tabs[0].kind).toBe("embed");
   });
 
-  it("dropping with no resolved target (e.g. over the right panel) does nothing", () => {
+  it("dropping with no resolved target (e.g. over the side panel) does nothing", () => {
     commitFileDrop(baseDrag(), "p", "/p");
     const state = useTabsStore.getState();
     expect(state.layout).toBeNull();

@@ -317,7 +317,7 @@ pub(crate) fn shell_quote(s: &str) -> String {
 /// containing shell metacharacters (e.g. `A; rm -rf ~ #`) would break out of the
 /// assignment and run as a separate statement. Every key Eldrun sets today is a
 /// valid identifier; this enforces that property rather than trusting it.
-fn is_valid_env_key(k: &str) -> bool {
+pub(crate) fn is_valid_env_key(k: &str) -> bool {
     let mut chars = k.chars();
     match chars.next() {
         Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
@@ -343,29 +343,51 @@ pub enum TmuxWrap {
     Attach(String),
 }
 
+/// tmux scrollback depth for Eldrun-created sessions — and therefore the depth
+/// the phone replay (`mobile_control::pty_bridge`) and the phone's own xterm
+/// buffer are sized to: the three are one number by design, so what tmux
+/// retains is what a reattach can show. tmux's own default is 2000 lines, which
+/// silently bounded "the whole session" long before any client cap did.
+///
+/// A pane copies `history-limit` at creation, so it must be set *before*
+/// `new-session` — which forces `-g` (there is no session to scope it to yet).
+/// The wraps already set global options (`status off`, `mouse on`), so this
+/// widens no footprint kind, only the retention number; like them it is
+/// runtime server state that dies with the tmux server, never configuration
+/// on disk.
+pub const TMUX_HISTORY_LINES: u32 = 10_000;
+
 /// Wrap a resolved `exec …` line in a tmux launch (see [`TmuxWrap`]). Emitted as
 /// a POSIX-sh `if command -v tmux …` so a host **without** tmux degrades to the
 /// plain exec (today's behavior) plus a one-line notice, instead of failing —
 /// tmux is usually preinstalled on a compute/HPC host but cannot be assumed. The
-/// session gets `status off` (Eldrun already draws tabs/layout, so tmux's status
-/// bar is redundant chrome) and `mouse on` (wheel scrolls tmux history, so
-/// scrollback still feels native), chained as extra tmux commands after a literal
-/// `;` argv separator.
-fn tmux_wrap_exec(exec_line: &str, wrap: &TmuxWrap) -> String {
-    // `status off`/`mouse on` are passed as separate tmux commands: a standalone
+/// session gets [`TMUX_HISTORY_LINES`] of scrollback (set before `new-session`,
+/// since a pane copies the limit at creation), `status off` (Eldrun already
+/// draws tabs/layout, so tmux's status bar is redundant chrome) and `mouse on`
+/// (wheel scrolls tmux history, so scrollback still feels native), chained as
+/// extra tmux commands around a literal `;` argv separator.
+///
+/// `env_prefix` is the tab's `export …; ` statements, repeated *inside* the
+/// session's target because a pane does not inherit them from the client (see
+/// [`remote_command`]). A [`TmuxWrap::Attach`] takes none: it runs no target of
+/// its own, and the session it attaches belongs to whoever created it.
+fn tmux_wrap_exec(exec_line: &str, wrap: &TmuxWrap, env_prefix: &str) -> String {
+    // The extra options are passed as separate tmux commands: a standalone
     // `;` token (quoted so the remote shell hands it to tmux literally, not as a
     // shell separator) splits tmux's argv into successive commands.
+    let history = format!("set -g history-limit {TMUX_HISTORY_LINES} ';'");
     let opts = "';' set -g status off ';' set -g mouse on";
     match wrap {
         TmuxWrap::Session(name) => {
             let q = shell_quote(name);
             // tmux runs its command argument via `sh -c`, so the (quoted) exec
             // line — `exec "${SHELL:-/bin/bash}" -l…` — is executed exactly as it
-            // would be directly, only now inside the persistent session.
-            let target = shell_quote(exec_line);
+            // would be directly, only now inside the persistent session, with the
+            // tab's exports ahead of it so the pane has the same environment.
+            let target = shell_quote(&format!("{env_prefix}{exec_line}"));
             format!(
                 "if command -v tmux >/dev/null 2>&1; then \
-                 exec tmux new-session -A -D -s {q} {target} {opts}; \
+                 exec tmux {history} new-session -A -D -s {q} {target} {opts}; \
                  else printf 'eldrun: tmux not found on the remote host; session persistence is OFF (install tmux to enable it)\\n' >&2; {exec_line}; fi"
             )
         }
@@ -373,7 +395,7 @@ fn tmux_wrap_exec(exec_line: &str, wrap: &TmuxWrap) -> String {
             let q = shell_quote(name);
             format!(
                 "if command -v tmux >/dev/null 2>&1; then \
-                 exec tmux new-session -A -D -s {q} {opts}; \
+                 exec tmux {history} new-session -A -D -s {q} {opts}; \
                  else printf 'eldrun: tmux not found on the remote host; cannot attach session %s\\n' {q} >&2; exec \"${{SHELL:-/bin/bash}}\" -l; fi"
             )
         }
@@ -397,8 +419,10 @@ fn tmux_wrap_exec(exec_line: &str, wrap: &TmuxWrap) -> String {
 ///
 /// `tmux`, when `Some`, wraps the final `exec …` in a persistent tmux session
 /// (TODO #85). Everything before it — the `cd`, the sorted env exports, the
-/// agent bootstrap prelude — is preserved verbatim and nested *inside* the
-/// session, so the wrap changes only where the target runs, not what it is. A
+/// agent bootstrap prelude — is preserved verbatim, and the exports are repeated
+/// *inside* the session's target, since a tmux pane takes its environment from
+/// the server rather than from the client that creates the session. So the wrap
+/// changes only where the target runs, not what it is or what it sees. A
 /// [`TmuxWrap::Attach`] ignores `local_cmd`/`local_args` (it attaches an existing
 /// session, running no fresh target).
 pub fn remote_command(
@@ -423,10 +447,11 @@ pub fn remote_command(
         })
         .collect();
     keys.sort();
-    for k in keys {
-        let v = &env[k];
-        parts.push(format!("export {}={}", k, shell_quote(v)));
-    }
+    let exports: Vec<String> = keys
+        .into_iter()
+        .map(|k| format!("export {}={}", k, shell_quote(&env[k])))
+        .collect();
+    parts.extend(exports.iter().cloned());
 
     let exec = if local_cmd.is_empty() {
         // Login shell — let the remote pick its own $SHELL.
@@ -437,11 +462,16 @@ pub fn remote_command(
         // userspace-installed CLI resolves. Build the inner command line with
         // each token single-quoted, then quote the whole line again as the lone
         // argument to `$SHELL -lc`.
-        let mut exec_cli = format!("exec {}", shell_quote(local_cmd));
-        for a in local_args {
-            exec_cli.push(' ');
-            exec_cli.push_str(&shell_quote(a));
-        }
+        let exec_cli = match host_side_resume(local_cmd, local_args) {
+            // A Claude tab decides on the host whether this is a resume.
+            Some((id, resume_args)) => format!(
+                "if ls \"$HOME\"/.claude/projects/*/{} >/dev/null 2>&1; then {}; else {}; fi",
+                shell_quote(&format!("{id}.jsonl")),
+                exec_line(local_cmd, &resume_args),
+                exec_line(local_cmd, local_args),
+            ),
+            None => exec_line(local_cmd, local_args),
+        };
         // For a recognised agent, prepend a detect-and-install prelude so the
         // CLI is present on the remote before we exec it (see remote_agents).
         let inner = match remote_agents::recipe_for(local_cmd) {
@@ -452,13 +482,66 @@ pub fn remote_command(
     };
 
     // The tmux wrap replaces only the final `exec …`; the `cd`/exports prefix is
-    // untouched, so the session opens in the project dir with the same env.
+    // untouched, so the non-tmux fallback branch inside the wrap still runs with
+    // both. The exports are ALSO repeated inside the session's target: they run in
+    // the shell that launches the tmux *client*, and tmux builds a new session's
+    // environment from the server's global one rather than from that client, so
+    // without this the pane gets the environment of whichever tab happened to
+    // start the server (the local half of this is `tmux_local::local_tmux_args`).
+    // The `cd` needs no such repeat — a new session does take its start directory
+    // from the client.
+    let env_prefix = if exports.is_empty() {
+        String::new()
+    } else {
+        format!("{}; ", exports.join("; "))
+    };
     let exec = match tmux {
-        Some(wrap) => tmux_wrap_exec(&exec, wrap),
+        Some(wrap) => tmux_wrap_exec(&exec, wrap, &env_prefix),
         None => exec,
     };
 
     format!("{} && {}", parts.join(" && "), exec)
+}
+
+/// `exec 'cmd' 'arg' …` with every token single-quoted.
+fn exec_line(cmd: &str, args: &[String]) -> String {
+    let mut line = format!("exec {}", shell_quote(cmd));
+    for a in args {
+        line.push(' ');
+        line.push_str(&shell_quote(a));
+    }
+    line
+}
+
+/// The host-side half of Claude session resume for a **remote** tab.
+///
+/// `services::agent_session` decides `--resume` vs `--session-id` by probing the
+/// *local* `~/.claude/projects` — which, for a tab whose Claude runs on the
+/// far host, never holds the log. So a restored remote tab always arrived here
+/// as `--session-id <launch>`, and once the host had a transcript for that id
+/// Claude refused it outright ("Session ID … is already in use"): the restored
+/// tab died the moment its tmux session was gone (host reboot, an exited
+/// agent). The remote command therefore asks the host itself — a transcript
+/// named after the id under any project dir means resume — and only for a
+/// uuid-shaped id, which is what lands in a shell glob. No hook runs on the
+/// host, so a `/clear` there is not followed; the launch id is what comes back.
+///
+/// Returns the id and the args rewritten to `--resume`, or `None` when this is
+/// not a Claude launch carrying a session id.
+fn host_side_resume(local_cmd: &str, local_args: &[String]) -> Option<(String, Vec<String>)> {
+    if local_cmd != "claude" {
+        return None;
+    }
+    let i = local_args
+        .iter()
+        .position(|a| a == "--session-id" || a == "--resume")?;
+    let id = local_args.get(i + 1)?.clone();
+    if !crate::services::agent_session::is_uuid_shaped(&id) {
+        return None;
+    }
+    let mut resume_args = local_args.to_vec();
+    resume_args[i] = "--resume".to_string();
+    Some((id, resume_args))
 }
 
 /// The tmux **kill-session** one-shot script fired on an *explicit* tab close of
@@ -967,7 +1050,8 @@ pub fn remote_git_init(spec: &RemoteSpec) -> Result<(), String> {
     let mut args = ssh_base_args(&spec.user, &spec.host, spec.port)?;
     let path = shell_quote(&spec.remote_path);
     args.push(format!(
-        "cd {path} && git rev-parse --is-inside-work-tree >/dev/null 2>&1 || git init"
+        "cd {path} && git rev-parse --is-inside-work-tree >/dev/null 2>&1 || {init}",
+        init = crate::services::git_init::INIT_SHELL
     ));
     let out = crate::paths::command_no_window("ssh")
         .args(&args)
@@ -1402,13 +1486,65 @@ mod tests {
         // …and the exec is a new-session -A -D on the derived name, with the login
         // shell exec nested as tmux's (quoted) command argument.
         assert!(cmd.contains("command -v tmux >/dev/null 2>&1"));
-        assert!(cmd.contains("exec tmux new-session -A -D -s 'eldrun-p1_shell-1' "));
+        // history-limit precedes new-session — a pane copies it at creation, so
+        // chaining it after (like status/mouse) would leave the default 2000.
+        assert!(cmd.contains(
+            "exec tmux set -g history-limit 10000 ';' new-session -A -D -s 'eldrun-p1_shell-1' "
+        ));
         assert!(cmd.contains("'exec \"${SHELL:-/bin/bash}\" -l'"));
         // status/mouse options are chained as separate tmux commands.
         assert!(cmd.contains("';' set -g status off ';' set -g mouse on"));
         // Fallback: a host without tmux still runs the plain exec.
         assert!(cmd.contains("session persistence is OFF"));
         assert!(cmd.contains("; exec \"${SHELL:-/bin/bash}\" -l; fi"));
+    }
+
+    #[test]
+    fn remote_command_lets_the_host_decide_a_claude_resume() {
+        // The local probe cannot see the host's transcripts, so a restored remote
+        // Claude tab arrives as `--session-id <launch>`; the host checks for a
+        // log named after the id and resumes it, else starts fresh under it.
+        let id = "0a0a0a0a-0a0a-4a0a-8a0a-0a0a0a0a0a0a";
+        let args = vec!["--session-id".to_string(), id.to_string()];
+        let cmd = remote_command("claude", &args, &HashMap::new(), "/srv/p", None);
+        // Inside the `$SHELL -lc '…'` argument every single quote is `'\''`.
+        let q = |tok: &str| format!("'\\''{tok}'\\''");
+        let expected = format!(
+            "if ls \"$HOME\"/.claude/projects/*/{} >/dev/null 2>&1; then exec {} {} {}; else exec {} {} {}; fi",
+            q(&format!("{id}.jsonl")),
+            q("claude"),
+            q("--resume"),
+            q(id),
+            q("claude"),
+            q("--session-id"),
+            q(id),
+        );
+        assert!(cmd.contains(&expected), "cmd: {cmd}\nexpected: {expected}");
+
+        // Not uuid-shaped → no glob is built from it; plain exec as before.
+        let args = vec!["--session-id".to_string(), "not-a-uuid".to_string()];
+        let cmd = remote_command("claude", &args, &HashMap::new(), "/srv/p", None);
+        assert!(!cmd.contains("if ls"));
+        assert!(cmd.contains("exec '\\''claude'\\'' '\\''--session-id'\\'' '\\''not-a-uuid'\\''"));
+        // Other agents are untouched.
+        let args = vec!["resume".to_string(), id.to_string()];
+        let cmd = remote_command("codex", &args, &HashMap::new(), "/srv/p", None);
+        assert!(!cmd.contains("if ls"));
+    }
+
+    #[test]
+    fn remote_command_tmux_repeats_env_inside_the_session() {
+        // The outer exports run in the shell that launches the tmux CLIENT, and a
+        // new session takes its environment from the tmux SERVER — so without the
+        // repeat inside the target, the pane would get whichever tab started the
+        // server (which is what stopped agents recording their session id).
+        let mut env = HashMap::new();
+        env.insert("ELDRUN_TAB_UID".to_string(), "tab-1".to_string());
+        let wrap = TmuxWrap::Session("eldrun-p1_a1".to_string());
+        let cmd = remote_command("claude", &[], &env, "/srv/p", Some(&wrap));
+        assert!(cmd.starts_with("cd '/srv/p' && export ELDRUN_TAB_UID='tab-1' && "));
+        // Inside tmux's (quoted) command argument, the same export leads the line.
+        assert!(cmd.contains("'export ELDRUN_TAB_UID='\\''tab-1'\\''; exec "));
     }
 
     #[test]
@@ -1420,7 +1556,7 @@ mod tests {
         assert!(cmd.contains("curl -fsSL https://claude.ai/install.sh | bash"));
         // …and the whole `$SHELL -lc '<prelude; exec claude>'` line is tmux's
         // (quoted) command argument on the persistent session.
-        assert!(cmd.contains("exec tmux new-session -A -D -s 'eldrun-p1_a1' "));
+        assert!(cmd.contains("';' new-session -A -D -s 'eldrun-p1_a1' "));
     }
 
     #[test]
@@ -1447,7 +1583,7 @@ mod tests {
         assert!(cmd.contains("--resume"));
         assert!(cmd.contains("sess-abc"));
         // …and the whole thing is tmux's command argument on the persistent session.
-        assert!(cmd.contains("exec tmux new-session -A -D -s 'eldrun-p1--agent-uuid' "));
+        assert!(cmd.contains("';' new-session -A -D -s 'eldrun-p1--agent-uuid' "));
         // tmux-absent still runs the plain exec fallback.
         assert!(cmd.contains("session persistence is OFF"));
     }
@@ -1464,7 +1600,7 @@ mod tests {
             "/srv/p",
             Some(&wrap),
         );
-        assert!(cmd.contains("exec tmux new-session -A -D -s 'train' "));
+        assert!(cmd.contains("exec tmux set -g history-limit 10000 ';' new-session -A -D -s 'train' "));
         // No fresh target is exec'd inside the attach (the session already runs).
         assert!(!cmd.contains("run.py"));
     }
@@ -1747,6 +1883,7 @@ mod tests {
             rows: 24,
             local_only: false,
             sandbox: false,
+            agent: false,
             project_id: project_id.map(str::to_string),
             remote_host_id: None,
             tmux_session: None,

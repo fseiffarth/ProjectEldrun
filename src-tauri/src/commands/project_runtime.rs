@@ -70,14 +70,14 @@ pub fn switch_project_runtime(
     Ok(())
 }
 
-/// Load the saved right-panel subfolder for a project (restored at startup).
+/// Load the saved side-panel subfolder for a project (restored at startup).
 #[tauri::command]
-pub fn load_right_panel_folder(local_file: String) -> Option<String> {
-    crate::services::project_runtime::load_right_panel_folder(&local_file)
+pub fn load_side_panel_folder(local_file: String) -> Option<String> {
+    crate::services::project_runtime::load_side_panel_folder(&local_file)
 }
 
-/// Persist the right-panel subfolder for a project as the user navigates it.
+/// Persist the side-panel subfolder for a project as the user navigates it.
 #[tauri::command]
-pub fn save_right_panel_folder(local_file: String, folder: Option<String>) -> Result<(), String> {
-    crate::services::project_runtime::save_right_panel_folder(&local_file, folder)
+pub fn save_side_panel_folder(local_file: String, folder: Option<String>) -> Result<(), String> {
+    crate::services::project_runtime::save_side_panel_folder(&local_file, folder)
 }

@@ -103,15 +103,3 @@ export function resourceUid(rows: (CalendarEvent | CalendarTask)[]): string {
     rows.find((r) => !("recurrence_id" in r && (r.recurrence_id ?? "").trim())) ?? rows[0];
   return master ? icsUid(master) : "";
 }
-
-/**
- * Whether a row is one a push should even consider.
- *
- * A row on a CalDAV-backed calendar that carries **no** href is new and gets
- * created; one that carries an href is updated. What is *not* pushable is a row
- * whose calendar is not CalDAV-backed at all — the caller resolves that, and this
- * only states the rule in one place so the store and the tests agree on it.
- */
-export function isPushable(row: PushableRow, caldavCalendarIds: Set<string>): boolean {
-  return caldavCalendarIds.has(row.calendar_id);
-}

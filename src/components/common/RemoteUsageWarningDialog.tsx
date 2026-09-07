@@ -445,8 +445,8 @@ export function RemoteUsageWarningDialog() {
    *  reads as a broken probe when it is in fact a machine waiting to be asked. */
   const rowNote = (row: UsageRow): string => {
     if (reading[row.target.key] || (rechecking && row.autoRead)) return t("usage.checkingEllipsis");
-    if (row.hpc) return "Not read — tagged HPC, so nothing reads it unasked.";
-    if (!row.connected) return "Not read — no session open on this machine.";
+    if (row.hpc) return t("usage.notReadHpc");
+    if (!row.connected) return t("usage.notReadNoSession");
     return t("usage.noReading");
   };
 
@@ -460,11 +460,7 @@ export function RemoteUsageWarningDialog() {
           className="inline-link-btn"
           onClick={() => void readNow(row)}
           disabled={!!reading[row.target.key]}
-          title={
-            row.hpc
-              ? "Read this machine once, now. It is tagged HPC, so nothing reads it on its own."
-              : "Read this machine once, now."
-          }
+          title={t(row.hpc ? "usage.readNowHpcTitle" : "usage.readNowTitle")}
         >
           {reading[row.target.key] ? t("usage.checkingEllipsis") : t("usage.recheck")}
         </button>

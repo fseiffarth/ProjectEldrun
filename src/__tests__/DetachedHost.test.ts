@@ -115,6 +115,34 @@ describe("detached host (#42)", () => {
     expect(handlers.has(DETACHED_HIDE)).toBe(true);
   });
 
+  it("does not answer a seed until every protocol listener is registered", async () => {
+    const { groupId, label } = detachSecond();
+    let releaseEdit!: (unlisten: () => boolean) => void;
+    listen
+      .mockImplementationOnce((event: string, handler: Handler) => {
+        handlers.set(event, handler);
+        return Promise.resolve(() => handlers.delete(event));
+      })
+      .mockImplementationOnce((event: string, handler: Handler) => {
+        handlers.set(event, handler);
+        return new Promise<() => boolean>((resolve) => {
+          releaseEdit = resolve;
+        });
+      });
+
+    const hosting = listenDetachedHost();
+    await vi.waitFor(() => expect(handlers.has(DETACHED_REQUEST_SEED)).toBe(true));
+    handlers.get(DETACHED_REQUEST_SEED)!({
+      payload: { label, scope: "p", groupId },
+    });
+    expect(emitted.some((entry) => entry.event === detachedSeedEvent(label))).toBe(false);
+
+    releaseEdit(() => handlers.delete(DETACHED_EDIT));
+    const unlisten = await hosting;
+    expect(emitted.some((entry) => entry.event === detachedSeedEvent(label))).toBe(true);
+    unlisten();
+  });
+
   it("a seed request emits the group's tabs + subtree to the requesting label", async () => {
     const { groupId, label, bKey } = detachSecond();
     await listenDetachedHost();
@@ -337,16 +365,25 @@ describe("detached host (#42)", () => {
     expect(invokeMock).not.toHaveBeenCalledWith("attach_subwindow", expect.anything());
   });
 
-  it("app-quit teardown closes a popout whose scope has no project.json (can't persist)", async () => {
-    // No matching project → no local_file, so nothing is persisted, but the OS
-    // window must still be destroyed rather than left stranded on screen.
+  it("app-quit teardown persists a scope with no project.json too (root/box), and closes it", async () => {
+    // Group B #229. A scope with no matching project entry — the root scope,
+    // and any `box:<id>` scope — has no `local_file`, and the teardown used to
+    // read that as "can't persist" and skip it entirely. But those scopes DO
+    // persist: they live under their own session directory in the state dir and
+    // simply have no project-tree export copy, which the backend expresses as an
+    // empty `localFile`. Skipping them meant a root popout's detached flag and
+    // bounds never reached disk, so it came back wrong (or came back at all)
+    // after a relaunch. Persist for every scope; only the export path differs.
     const { label } = detachSecond();
     useProjectsStore.setState({ projects: [] });
     invokeMock.mockClear();
 
     await shutdownDetachedWindows();
 
-    expect(invokeMock).not.toHaveBeenCalledWith("save_tab_layout", expect.anything());
+    expect(invokeMock).toHaveBeenCalledWith(
+      "save_tab_layout",
+      expect.objectContaining({ projectId: "p", localFile: "" }),
+    );
     expect(destroyed).toContain(label);
   });
 

@@ -184,7 +184,7 @@ export function MailAiSettings({
       <div className="mail-ai-preview">
         <button
           type="button"
-          className="mail-btn"
+          className="settings-btn"
           disabled={disabled || running}
           onClick={() => void runPreview()}
         >

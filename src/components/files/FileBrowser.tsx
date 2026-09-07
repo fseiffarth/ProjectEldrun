@@ -25,6 +25,8 @@ import { openFileEntry } from "./openFileEntry";
 import { useExperimental } from "../../lib/experimental";
 import { createDeckFile } from "../../lib/viewers/deck/create";
 import { UntestedTag } from "../common/UntestedTag";
+import { RenameDialog, containingFolderLabel } from "./RenameDialog";
+import { useDialogs } from "../common/PromptDialogs";
 import { useT, type TranslationKey } from "../../lib/i18n";
 
 type ProjectJson = Record<string, unknown>;
@@ -79,6 +81,13 @@ export function FileBrowser({ projectDir, projectId, active }: Props) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
+  /** The entry whose rename dialog is open; `RenameDialog` owns the typed name. */
+  const [renameTarget, setRenameTarget] = useState<FileEntry | null>(null);
+  // The browser's other questions, in the same chrome as the rename above —
+  // the tree next to it asks them exactly this way (`FileTree`), and a prompt
+  // that differs by which pane opened it is the drift the shared-viewer rule
+  // exists to stop.
+  const { promptText, confirmAction, showMessage, dialogs } = useDialogs();
   const deckEnabled = useExperimental("deck_presenter");
 
   const localFile = projects.find((p) => p.id === projectId)?.local_file ?? null;
@@ -214,22 +223,28 @@ export function FileBrowser({ projectDir, projectId, active }: Props) {
   }
 
   async function createEntry(kind: "file" | "folder") {
-    const label = t(kind === "file" ? "fileBrowser.fileNameLabel" : "fileBrowser.folderNameLabel");
-    const name = window.prompt(
-      t(kind === "file" ? "fileBrowser.newFilePrompt" : "fileBrowser.newFolderPrompt"),
-      "",
+    await promptText(
+      {
+        title: t(kind === "file" ? "fileBrowser.newFile" : "fileBrowser.newFolder"),
+        body: (
+          <>
+            {t("fileTree.newEntryIn")}{" "}
+            <strong>{basename(relPath) || t("fileTree.projectRootFolder")}</strong>
+          </>
+        ),
+        label: t(kind === "file" ? "fileBrowser.newFilePrompt" : "fileBrowser.newFolderPrompt"),
+        confirmLabel: t("common.create"),
+      },
+      // Thrown, not swallowed into the status line: the dialog stays open with
+      // the reason next to the name that caused it.
+      async (name) => {
+        await invoke(kind === "file" ? "create_file" : "create_dir", {
+          projectDir,
+          relPath: joinRel(relPath, name),
+        });
+        await load(relPath, { replace: true });
+      },
     );
-    if (!name?.trim()) return;
-    const rel = joinRel(relPath, name.trim());
-    try {
-      await invoke(kind === "file" ? "create_file" : "create_dir", {
-        projectDir,
-        relPath: rel,
-      });
-      await load(relPath, { replace: true });
-    } catch (e) {
-      setError(`${label}: ${String(e)}`);
-    }
   }
 
   /**
@@ -240,67 +255,84 @@ export function FileBrowser({ projectDir, projectId, active }: Props) {
    * would leave the file empty, which `parseDeck` rejects.
    */
   async function createDeck() {
-    const name = window.prompt(t("fileTree.newPresentationPrompt"), "talk");
-    if (!name?.trim()) return;
-    try {
-      const { fileName, abs } = await createDeckFile({
-        projectDir,
-        projectId,
-        relDir: relPath,
-        name: name.trim(),
-      });
-      await load(relPath, { replace: true });
-      openFileEntry({
-        entry: {
-          name: fileName,
-          path: abs,
-          is_dir: false,
-          size: 0,
-          extension: "json",
-          mime: "application/json",
-        },
-        projectDir,
-        projectId,
-        origin: "middle_file_browser",
-        external: false,
-        disabled: disabledViewerSet,
-      });
-    } catch (e) {
-      setError(String(e));
-    }
+    await promptText(
+      {
+        title: t("fileTree.newPresentation"),
+        body: (
+          <>
+            {t("fileTree.newEntryIn")}{" "}
+            <strong>{basename(relPath) || t("fileTree.projectRootFolder")}</strong>
+          </>
+        ),
+        label: t("fileTree.newPresentationPrompt"),
+        initial: "talk",
+        confirmLabel: t("common.create"),
+      },
+      async (name) => {
+        const { fileName, abs } = await createDeckFile({
+          projectDir,
+          projectId,
+          relDir: relPath,
+          name,
+        });
+        await load(relPath, { replace: true });
+        openFileEntry({
+          entry: {
+            name: fileName,
+            path: abs,
+            is_dir: false,
+            size: 0,
+            extension: "json",
+            mime: "application/json",
+          },
+          projectDir,
+          projectId,
+          origin: "middle_file_browser",
+          external: false,
+          disabled: disabledViewerSet,
+        });
+      },
+    );
   }
 
-  async function renameSelected() {
+  function renameSelected() {
     const target = selectedEntries()[0];
     if (!target) return;
-    const nextName = window.prompt(t("fileBrowser.renameToPrompt"), target.name);
-    if (!nextName?.trim() || nextName.trim() === target.name) return;
-    try {
-      await invoke("rename_path", {
-        projectDir,
-        oldRel: relFromAbs(projectDir, target.path),
-        newName: nextName.trim(),
-      });
-      // Retarget any open viewer tab of this file (main + detached) to the new
-      // path — swap the basename on the entry's own absolute path (== embedPath).
-      const oldAbs = target.path;
-      const newAbs = `${oldAbs.slice(0, oldAbs.lastIndexOf("/") + 1)}${nextName.trim()}`;
-      retargetTabsForRenamedPath(oldAbs, newAbs);
-      await load(relPath, { replace: true });
-    } catch (e) {
-      setError(String(e));
-    }
+    // Same dialog the tree uses (`RenameDialog`) — a rename must not look or
+    // behave differently depending on which pane it was started from.
+    setRenameTarget(target);
+  }
+
+  /** The dialog's action. Throws on failure so the dialog keeps the typed name
+   *  and shows the reason next to the field. */
+  async function confirmRename(target: FileEntry, nextName: string) {
+    setError(null);
+    await invoke("rename_path", {
+      projectDir,
+      oldRel: relFromAbs(projectDir, target.path),
+      newName: nextName,
+    });
+    // Retarget any open viewer tab of this file (main + detached) to the new
+    // path — swap the basename on the entry's own absolute path (== embedPath).
+    const oldAbs = target.path;
+    const newAbs = `${oldAbs.slice(0, oldAbs.lastIndexOf("/") + 1)}${nextName}`;
+    retargetTabsForRenamedPath(oldAbs, newAbs);
+    setRenameTarget(null);
+    await load(relPath, { replace: true });
   }
 
   async function deleteSelected() {
     const targets = selectedEntries();
     if (targets.length === 0) return;
-    const confirmed = window.confirm(
-      t(
+    const confirmed = await confirmAction({
+      title: t("common.delete"),
+      body: t(
         targets.length === 1 ? "fileBrowser.confirmDeleteOne" : "fileBrowser.confirmDeleteMany",
         { count: targets.length },
       ),
-    );
+      confirmLabel: t("common.delete"),
+      danger: true,
+    });
     if (!confirmed) return;
     try {
       for (const target of targets) {
@@ -336,14 +368,17 @@ export function FileBrowser({ projectDir, projectId, active }: Props) {
     const target = firstSelectedEntry();
     if (!target) return;
     const type = target.is_dir ? t("fileBrowser.folder") : target.mime || target.extension || t("fileBrowser.file");
-    window.alert([
-      target.name,
-      "",
-      `${t("fileBrowser.pathLabel")} ${target.path}`,
-      `${t("fileBrowser.typeLabel")} ${type}`,
-      target.is_dir ? "" : `${t("fileBrowser.sizeLabel")} ${fmtSize(target.size)}`,
-      `${t("fileBrowser.modifiedLabel")} ${fmtModified(target.modified_secs) || t("fileBrowser.unknown")}`,
-    ].filter(Boolean).join("\n"));
+    // The file's name titles the dialog, so the block below is the facts alone —
+    // the native box had to repeat the name as its first line to have one.
+    void showMessage({
+      title: target.name,
+      body: [
+        `${t("fileBrowser.pathLabel")} ${target.path}`,
+        `${t("fileBrowser.typeLabel")} ${type}`,
+        target.is_dir ? "" : `${t("fileBrowser.sizeLabel")} ${fmtSize(target.size)}`,
+        `${t("fileBrowser.modifiedLabel")} ${fmtModified(target.modified_secs) || t("fileBrowser.unknown")}`,
+      ].filter(Boolean).join("\n"),
+    });
   }
 
   function showEntryContextMenu(event: React.MouseEvent, entry: FileEntry) {
@@ -567,6 +602,17 @@ export function FileBrowser({ projectDir, projectId, active }: Props) {
           )}
         </div>
       </div>
+
+      {dialogs}
+      {renameTarget && (
+        <RenameDialog
+          entryName={renameTarget.name}
+          isDir={renameTarget.is_dir}
+          folder={containingFolderLabel(renameTarget.path, t("fileTree.projectRootFolder"))}
+          onCancel={() => setRenameTarget(null)}
+          onRename={(next) => confirmRename(renameTarget, next)}
+        />
+      )}
 
       <footer className="file-browser-status">
         {t(

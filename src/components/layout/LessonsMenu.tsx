@@ -1,5 +1,6 @@
 import { Fragment, useEffect } from "react";
 import { LESSONS, categoryLabel } from "../../lib/lessons";
+import { UntestedTag } from "../common/UntestedTag";
 import { useTourStore } from "../../stores/tour";
 import { useT } from "../../lib/i18n";
 
@@ -44,7 +45,12 @@ export function LessonsMenu({ onClose }: { onClose: () => void }) {
             way to reach it — the harder categories were unreachable. Same
             structure as ProjectFilesSettings/EventDialog. */}
         <div className="dialog-scroll">
-        <p className="settings-help">{t("lessons.intro")}</p>
+        {/* The hands-on half (task steps, hints, the `:)` reward) has never been
+            run in a live window — the tag comes off per the usual rule, when
+            the user says it's tested. */}
+        <p className="settings-help">
+          {t("lessons.intro")} <UntestedTag />
+        </p>
 
         <div className="lessons-list">
           {LESSONS.map((lesson, i) => {

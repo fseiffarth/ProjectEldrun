@@ -15,6 +15,8 @@ import { listen } from "@tauri-apps/api/event";
 interface TerminalOutput {
   id: string;
   data: string;
+  startOffset?: number;
+  endOffset?: number;
 }
 
 interface TerminalExit {
@@ -22,7 +24,12 @@ interface TerminalExit {
   code: number | null;
 }
 
-type OutputHandler = (data: string) => void;
+export interface TerminalOutputRange {
+  startOffset: number;
+  endOffset: number;
+}
+
+type OutputHandler = (data: string, range?: TerminalOutputRange) => void;
 type ReadyHandler = () => void;
 type ExitHandler = (code: number | null) => void;
 
@@ -40,7 +47,11 @@ function ensureStarted() {
   listen<TerminalOutput>("terminal-output", (ev) => {
     const set = outputHandlers.get(ev.payload.id);
     if (!set) return;
-    for (const h of set) h(ev.payload.data);
+    const range =
+      typeof ev.payload.startOffset === "number" && typeof ev.payload.endOffset === "number"
+        ? { startOffset: ev.payload.startOffset, endOffset: ev.payload.endOffset }
+        : undefined;
+    for (const h of set) h(ev.payload.data, range);
   }).catch(() => {});
 
   // The backend's replay of output it buffered while the pane was hidden
@@ -50,7 +61,11 @@ function ensureStarted() {
   listen<TerminalOutput>("terminal-replay", (ev) => {
     const set = replayHandlers.get(ev.payload.id);
     if (!set) return;
-    for (const h of set) h(ev.payload.data);
+    const range =
+      typeof ev.payload.startOffset === "number" && typeof ev.payload.endOffset === "number"
+        ? { startOffset: ev.payload.startOffset, endOffset: ev.payload.endOffset }
+        : undefined;
+    for (const h of set) h(ev.payload.data, range);
   }).catch(() => {});
 
   listen<{ id: string }>("terminal-ready", (ev) => {
@@ -64,6 +79,7 @@ function ensureStarted() {
     if (!set) return;
     for (const h of set) h(ev.payload.code);
   }).catch(() => {});
+
 }
 
 function subscribe<H>(registry: Map<string, Set<H>>, id: string, handler: H): () => void {

@@ -5,6 +5,7 @@ import { resolveRemoteStartDir } from "../../lib/remoteConnect";
 import type { RemoteEntry } from "../../types";
 import { withHostKeyConfirm } from "../../lib/hostKey";
 import type { SshConnectOutcome } from "./useSavedCredential";
+import { useT } from "../../lib/i18n";
 
 /**
  * The shared "log in to a host and browse its filesystem over SFTP" state
@@ -21,6 +22,7 @@ import type { SshConnectOutcome } from "./useSavedCredential";
  * connection) changes, always reusing the credential the connection was made with.
  */
 export function useRemoteBrowse() {
+  const t = useT();
   // The connected host, frozen at connect time (null = no live session).
   const [conn, setConn] = useState<ParsedSshAddress | null>(null);
   // The credential the session authenticated with, frozen so every listing/mkdir
@@ -148,7 +150,7 @@ export function useRemoteBrowse() {
     if (!name || !conn) return;
     // A single child of the current dir, not an arbitrary deep path.
     if (name.includes("/")) {
-      setError("Folder name can't contain '/'.");
+      setError(t("remoteBrowse.nameSlash"));
       return;
     }
     const target = joinRemotePath(path || "/", name);

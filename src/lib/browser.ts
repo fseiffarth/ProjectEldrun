@@ -403,12 +403,6 @@ export function formatAddressParts(url: string): AddressParts {
   };
 }
 
-/** True when the URL carries userinfo — `https://example.com@evil.example/` is
- *  a link pretending to be another one, and the bar must say so. */
-export function hasUserinfo(url: string): boolean {
-  return formatAddressParts(url).userinfo.length > 0;
-}
-
 // ── Security chip (pure, renders what it is given) ───────────────────────────
 
 /** The chip's tone. Derived from {@link SecurityState} alone, and an

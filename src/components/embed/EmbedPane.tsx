@@ -32,7 +32,7 @@ export function EmbedPane({ path, exec, projectId, visible }: Props) {
     openedRef.current = true;
     useWindowsStore
       .getState()
-      .openFile(path, exec, projectId, "right_file_tree")
+      .openFile(path, exec, projectId, "side_file_tree")
       .catch((e) => console.error(e));
   }, [path, exec, projectId]);
 

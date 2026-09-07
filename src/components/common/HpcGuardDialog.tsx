@@ -1,4 +1,6 @@
+import { useEffect } from "react";
 import { useHpcGuardStore, type HpcGuardKind } from "../../stores/hpcGuardPrompt";
+import { useT, type TranslationKey } from "../../lib/i18n";
 import { UntestedTag } from "./UntestedTag";
 
 /**
@@ -12,38 +14,41 @@ import { UntestedTag } from "./UntestedTag";
  * answer.
  */
 
-/** What each refusal is about, in the terms the site's rules put it. */
-const COPY: Record<HpcGuardKind, { title: string; body: string; go: string }> = {
+/** What each refusal is about, in the terms the site's rules put it. The copy
+ *  itself lives in `lib/i18n` like every other user-facing string; this table is
+ *  only the kind → key mapping. */
+const COPY: Record<HpcGuardKind, { title: TranslationKey; body: TranslationKey; go: TranslationKey }> = {
   "du-scan": {
-    title: "Scan the whole tree on a cluster?",
-    body:
-      "This walks every file under the project root to add up sizes. On a cluster that root normally lives on the parallel filesystem, where a recursive walk means one metadata request per file against a server the whole site shares — the read filesystem guides ask you not to do casually. It is one scan, not a loop, so it is yours to run if you want it.",
-    go: "Scan anyway",
+    title: "hpcGuard.duScan.title",
+    body: "hpcGuard.duScan.body",
+    go: "hpcGuard.duScan.go",
   },
   census: {
-    title: "Measure the host's folders on a cluster?",
-    body:
-      "The giant-folder census runs `du` over the whole host tree to find what is too big to sync. Same metadata cost as a full scan, and this one normally runs by itself on connect — which is why it stays off here unless you ask.",
-    go: "Measure anyway",
+    title: "hpcGuard.census.title",
+    body: "hpcGuard.census.body",
+    go: "hpcGuard.census.go",
   },
   connect: {
-    title: "Log in to this cluster?",
-    body:
-      "Opening this tab would dial the machine and leave a shared SSH master standing on it (and, for a persistent tab, a tmux server with it) — the unattended presence the tag exists to prevent. That is right for a tab restored at relaunch, which nobody asked for; it is only in the way when you meant to open one. Going ahead connects the project first, then opens the tab.",
-    go: "Connect and open",
+    title: "hpcGuard.connect.title",
+    body: "hpcGuard.connect.body",
+    go: "hpcGuard.connect.go",
   },
   "login-node-run": {
-    title: "Run this on the login node?",
-    body:
-      "This would run on the cluster's login node, which is shared with everyone logged in right now. Sites ask you to keep CPU-intensive work off it and reserve the right to kill processes that load it for long. The compliant route for the same work is an interactive job — the Jobs view's srun shell — or a batch script with sbatch.",
-    go: "Run here anyway",
+    title: "hpcGuard.loginNodeRun.title",
+    body: "hpcGuard.loginNodeRun.body",
+    go: "hpcGuard.loginNodeRun.go",
   },
 };
 
 export function HpcGuardDialog() {
+  const t = useT();
   const pending = useHpcGuardStore((s) => s.pending);
   const proceed = useHpcGuardStore((s) => s.proceed);
   const cancel = useHpcGuardStore((s) => s.cancel);
+  const registerHost = useHpcGuardStore((s) => s.registerHost);
+  // Tell the store a dialog is here to answer with — mounted once per window
+  // (AppShell and DetachedApp), so a request made in a popout has a host too.
+  useEffect(() => registerHost(), [registerHost]);
 
   if (!pending) return null;
   const copy = COPY[pending.kind] ?? COPY["login-node-run"];
@@ -55,23 +60,20 @@ export function HpcGuardDialog() {
     <div className="modal-backdrop" onClick={cancel}>
       <div className="project-dialog hpc-guard-dialog" onClick={(e) => e.stopPropagation()}>
         <h2 className="hpc-guard-title">
-          {copy.title} <UntestedTag />
+          {t(copy.title)} <UntestedTag />
         </h2>
         <div className="hpc-guard-target">
           <span className="hpc-guard-badge">HPC</span>
           <code>{pending.target}</code>
         </div>
-        <p className="hpc-guard-body">{copy.body}</p>
-        <p className="hpc-guard-note">
-          You tagged this machine as a cluster login node. Untag it in the Machines menu if that
-          was wrong — nothing here is remembered, so this asks again next time.
-        </p>
+        <p className="hpc-guard-body">{t(copy.body)}</p>
+        <p className="hpc-guard-note">{t("hpcGuard.note")}</p>
         <div className="project-dialog-actions">
           <button type="button" onClick={cancel}>
-            Cancel
+            {t("common.cancel")}
           </button>
           <button type="button" onClick={proceed}>
-            {copy.go}
+            {t(copy.go)}
           </button>
         </div>
       </div>

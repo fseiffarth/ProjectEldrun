@@ -13,6 +13,25 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, act, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
+/**
+ * Answer the app's own confirm dialog. These gestures used `window.confirm`,
+ * which WebKitGTK draws as an origin-titled browser alert; they now open
+ * `ConfirmDialog` (portaled, `role="dialog"`), so a test answers it by clicking
+ * its button rather than by stubbing a global.
+ */
+async function answerDialog(
+  user: ReturnType<typeof userEvent.setup>,
+  button: string | RegExp,
+) {
+  const box = await screen.findByRole("dialog");
+  await user.click(within(box).getByRole("button", { name: button }));
+}
+
+/** The confirm dialog's message, for the assertions that check what it names. */
+function dialogText(): string {
+  return screen.getByRole("dialog").textContent ?? "";
+}
+
 const { mockInvoke } = vi.hoisted(() => ({ mockInvoke: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: mockInvoke }));
 
@@ -164,13 +183,12 @@ describe("#23 git worktrees", () => {
     // B2: one unconfirmed click used to delete a whole directory — including the
     // ignored files (node_modules, .venv, .env) git does NOT protect.
     const user = userEvent.setup();
-    const confirm = vi.fn((_message?: string) => true);
-    vi.stubGlobal("confirm", confirm);
     await renderHistory();
     const pill = await pillFor("worktrees/feature");
     await user.click(within(pill).getByRole("button", { name: /Remove worktree/ }));
-    expect(confirm).toHaveBeenCalledTimes(1);
-    expect(String(confirm.mock.calls[0][0])).toContain("/p/.eldrun/worktrees/feature");
+    // The confirm must name the directory it is about to delete.
+    expect(dialogText()).toContain("/p/.eldrun/worktrees/feature");
+    await answerDialog(user, "Remove");
     expect(mockInvoke).toHaveBeenCalledWith("git_worktree_remove", {
       projectDir: "/p",
       path: "/p/.eldrun/worktrees/feature",
@@ -181,10 +199,10 @@ describe("#23 git worktrees", () => {
 
   it("a declined confirmation removes nothing", async () => {
     const user = userEvent.setup();
-    vi.stubGlobal("confirm", vi.fn(() => false));
     await renderHistory();
     const pill = await pillFor("worktrees/feature");
     await user.click(within(pill).getByRole("button", { name: /Remove worktree/ }));
+    await answerDialog(user, "Cancel");
     expect(mockInvoke).not.toHaveBeenCalledWith("git_worktree_remove", expect.anything());
   });
 
@@ -193,7 +211,6 @@ describe("#23 git worktrees", () => {
     // worktree with one modified file yielded a raw "use --force" string and no
     // control anywhere in the app could supply it.
     const user = userEvent.setup();
-    vi.stubGlobal("confirm", vi.fn(() => true));
     const calls: number[] = [];
     setupInvoke({
       git_worktree_remove: () => {
@@ -206,6 +223,9 @@ describe("#23 git worktrees", () => {
     await renderHistory();
     const pill = await pillFor("worktrees/feature");
     await user.click(within(pill).getByRole("button", { name: /Remove worktree/ }));
+    await answerDialog(user, "Remove");
+    // git's own refusal is re-offered as the next force level, in a second dialog.
+    await answerDialog(user, "Remove anyway");
     const forces = mockInvoke.mock.calls
       .filter((c) => c[0] === "git_worktree_remove")
       .map((c) => (c[1] as { force: number }).force);
@@ -217,7 +237,6 @@ describe("#23 git worktrees", () => {
     // unlock first" and exits 128 for a single --force. Eldrun could pass at most
     // one, so a locked worktree was permanently unremovable from the app.
     const user = userEvent.setup();
-    vi.stubGlobal("confirm", vi.fn(() => true));
     worktrees = [
       WORKTREES[0],
       wt({ path: "/p/.eldrun/worktrees/wip", branch: "wip", is_locked: true, lock_reason: "on a removable drive" }),
@@ -236,6 +255,8 @@ describe("#23 git worktrees", () => {
     await renderHistory();
     const pill = await pillFor("worktrees/wip");
     await user.click(within(pill).getByRole("button", { name: /Remove worktree/ }));
+    await answerDialog(user, "Remove");
+    await answerDialog(user, "Remove anyway");
     const forces = mockInvoke.mock.calls
       .filter((c) => c[0] === "git_worktree_remove")
       .map((c) => (c[1] as { force: number }).force);

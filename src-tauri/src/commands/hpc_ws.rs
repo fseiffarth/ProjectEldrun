@@ -870,39 +870,22 @@ pub fn set_project_hpc(
     project_id: String,
     hpc: Option<crate::schema::project::HpcInfo>,
 ) -> Result<(), String> {
-    use crate::schema::projects::ProjectsList;
-    use crate::storage;
-
-    let list_path = storage::state_dir().join("projects.json");
-    let mut list: ProjectsList = if list_path.exists() {
-        storage::read_json(&list_path).map_err(|e| e.to_string())?
-    } else {
-        Vec::new()
-    };
-    let entry = list
-        .iter_mut()
-        .find(|p| p.id == project_id)
-        .ok_or_else(|| format!("project '{project_id}' not found"))?;
-    match &hpc {
-        Some(info) => {
-            let value = serde_json::to_value(info).map_err(|e| e.to_string())?;
-            entry.extra.insert("hpc".into(), value);
-        }
-        None => {
-            entry.extra.remove("hpc");
-        }
-    }
-    let local_file = entry.local_file.clone();
-    storage::write_json(&list_path, &list).map_err(|e| e.to_string())?;
-
-    let proj_path = std::path::PathBuf::from(&local_file);
-    if proj_path.exists() {
-        if let Ok(mut project) = storage::read_json::<crate::schema::project::Project>(&proj_path) {
-            project.hpc = hpc.clone();
-            storage::write_json(&proj_path, &project).map_err(|e| e.to_string())?;
-        }
-    }
-    Ok(())
+    crate::commands::projects::patch_project_entry_mirrored(
+        &project_id,
+        |entry| {
+            match &hpc {
+                Some(info) => {
+                    let value = serde_json::to_value(info).map_err(|e| e.to_string())?;
+                    entry.extra.insert("hpc".into(), value);
+                }
+                None => {
+                    entry.extra.remove("hpc");
+                }
+            }
+            Ok(())
+        },
+        |project, ()| project.hpc = hpc.clone(),
+    )
 }
 
 /// Copy the anchor's `logs/` into the local mirror's `logs/` — the provenance
@@ -966,9 +949,6 @@ pub async fn hpc_ws_move_root(
     new_root: String,
 ) -> Result<crate::schema::projects::ProjectEntry, String> {
     run_off_thread(move || {
-        use crate::schema::projects::ProjectsList;
-        use crate::storage;
-
         let root = validate_abs_path("project root", &new_root)?;
         let target = crate::services::remote::remote_target_for(&project_id)
             .ok_or_else(|| "not a remote project".to_string())?;
@@ -991,34 +971,27 @@ pub async fn hpc_ws_move_root(
         })
         .map_err(|e| format!("could not create '{root}' on the host: {e}"))?;
 
-        let list_path = storage::state_dir().join("projects.json");
-        let mut list: ProjectsList = if list_path.exists() {
-            storage::read_json(&list_path).map_err(|e| e.to_string())?
-        } else {
-            return Err("project not found".to_string());
-        };
-        let entry = list
-            .iter_mut()
-            .find(|p| p.id == project_id)
-            .ok_or_else(|| format!("project '{project_id}' not found"))?;
-
-        let mut spec = target.spec.clone();
-        spec.remote_path = root.clone();
-        let value = serde_json::to_value(&spec).map_err(|e| e.to_string())?;
-        entry.extra.insert("remote".to_string(), value);
-        let local_file = entry.local_file.clone();
-        let updated = entry.clone();
-        storage::write_json(&list_path, &list).map_err(|e| e.to_string())?;
-
-        let proj_path = std::path::PathBuf::from(&local_file);
-        if proj_path.exists() {
-            if let Ok(mut project) =
-                storage::read_json::<crate::schema::project::Project>(&proj_path)
-            {
-                project.remote = Some(spec.clone());
-                storage::write_json(&proj_path, &project).map_err(|e| e.to_string())?;
-            }
-        }
+        let (_spec, updated) = crate::commands::projects::patch_project_entry_mirrored(
+            &project_id,
+            |entry| {
+                // Re-read the current spec under the registry transaction so a
+                // simultaneous key-auth/endpoint update is preserved while we
+                // change only the workspace root.
+                let mut spec: crate::schema::project::RemoteSpec = entry
+                    .extra
+                    .get("remote")
+                    .cloned()
+                    .map(serde_json::from_value)
+                    .transpose()
+                    .map_err(|e| e.to_string())?
+                    .ok_or_else(|| "not a remote project".to_string())?;
+                spec.remote_path = root.clone();
+                let value = serde_json::to_value(&spec).map_err(|e| e.to_string())?;
+                entry.extra.insert("remote".to_string(), value);
+                Ok((spec, entry.clone()))
+            },
+            |project, (spec, _)| project.remote = Some(spec.clone()),
+        )?;
 
         // Lockstep: keep the opt-in, drop every cached head/signature so the next
         // pass pairs the empty new root instead of trusting the old one's refs.

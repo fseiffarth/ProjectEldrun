@@ -1,7 +1,7 @@
 /**
  * Tests for the persistent script-run state (#34, Group R). The running-scripts
  * set and the `script-finished` clearing live in the activity store (not in
- * FileTree) so the run animation survives the right panel unmounting on hide.
+ * FileTree) so the run animation survives the side panel unmounting on hide.
  */
 import { describe, it, expect, beforeEach, vi } from "vitest";
 

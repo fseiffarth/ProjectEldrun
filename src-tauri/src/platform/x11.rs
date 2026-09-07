@@ -564,11 +564,37 @@ pub fn title_matches(net_wm_name: Option<&str>, target: &str) -> bool {
     !target.is_empty() && net_wm_name == Some(target)
 }
 
+/// Whether this process is running inside a Wayland session, from the
+/// `WAYLAND_DISPLAY` the compositor exports (the same test `detect_backend`
+/// makes). Pure and value-in so it can be unit-tested on any host.
+pub fn is_wayland_session(wayland_display: Option<&std::ffi::OsStr>) -> bool {
+    wayland_display.is_some_and(|d| !d.is_empty())
+}
+
+/// Whether an X connection from this process can see the session's windows at
+/// all — i.e. whether any of the `_NET_CLIENT_LIST` scans below are worth
+/// running.
+///
+/// Under Wayland, `DISPLAY` is still set (XWayland), so `xcb` connects fine and
+/// the scans *run* — but the client list holds only XWayland clients. Eldrun's
+/// own windows are native Wayland toplevels, and so is nearly every app it
+/// launches, so every scan runs to its retry cap and answers `None`: 3 s at
+/// startup, **2 s of unpainted black popout inside every `detach_subwindow`**,
+/// and up to 4 s before the Apps view learns about a launched app (user,
+/// 2026-09-07, first session on GNOME/Wayland). And an id, had it been found,
+/// would have no consumer: the Wayland backends (KDE, and `null` for GNOME)
+/// neither park nor position by window id. So the scans skip themselves here,
+/// leaving `window_id` `None` — the same outcome, minus the wait.
+pub fn session_is_wayland() -> bool {
+    is_wayland_session(std::env::var_os("WAYLAND_DISPLAY").as_deref())
+}
+
 /// Resolve an Eldrun-owned window's X11 id by its exact `_NET_WM_NAME` title,
 /// ignoring the protected-class filter (see `title_matches`). Mirrors
 /// `find_window_for_pid`'s retry loop. Returns the first matching window id.
+/// Answers `None` at once under Wayland — see [`session_is_wayland`].
 pub fn find_window_for_title(target: &str, attempts: usize) -> Option<u64> {
-    if target.is_empty() {
+    if target.is_empty() || session_is_wayland() {
         return None;
     }
     let (conn, screen_num) = xcb::Connection::connect(None).ok()?;
@@ -825,6 +851,14 @@ fn cinnamon_workspace_names_value(original: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wayland_session_is_a_non_empty_wayland_display() {
+        use std::ffi::OsStr;
+        assert!(is_wayland_session(Some(OsStr::new("wayland-0"))));
+        assert!(!is_wayland_session(Some(OsStr::new(""))));
+        assert!(!is_wayland_session(None));
+    }
 
     // ── is_protected_class ─────────────────────────────────────────────────
 

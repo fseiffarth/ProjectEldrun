@@ -536,6 +536,11 @@ pub struct Project {
     /// project tree (and a container's own rw mount).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub remote_control: Option<bool>,
+    /// Per-project override of the global default-on agent filesystem fence.
+    /// Mirrored into the trusted projects.json entry's `extra["agent_fence"]`;
+    /// this project-tree copy is display/export only at spawn time.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_fence: Option<bool>,
     /// Which machine shells launched from this project run on — the choice made in
     /// the `RunHostPicker`, persisted so it survives a relaunch (a Run/Debug or a
     /// new shell tab lands on it instead of the primary). A `TabLocation` string:

@@ -22,6 +22,7 @@ import { keyringState, unlockKeyring, type KeyringState } from "../../lib/keyrin
 import type { StoredVpnConfig } from "../../types";
 import { useT } from "../../lib/i18n";
 import { useHeaderHoverMenuStore } from "../../stores/headerHoverMenu";
+import { useHeaderStatusReport } from "../../stores/headerStatus";
 
 const MENU_ID = "vpn";
 
@@ -511,6 +512,20 @@ export function VpnIndicator() {
     : connecting
       ? "connecting"
       : "connected";
+  // Mid-connect is the one VPN state worth interrupting a collapsed header for:
+  // it is transient, it is what a user is waiting on, and it is where a failure
+  // shows up. A tunnel that is simply *up* stays folded — the cluster's summary
+  // lamp already goes green for it, and its own line rides the tooltip.
+  useHeaderStatusReport(
+    "vpn",
+    !enabled
+      ? null
+      : {
+          tone: lamp === "connecting" ? "attention" : lamp === "connected" ? "ok" : "off",
+          label: `OpenVPN: ${lamp}`,
+        },
+  );
+
   const nameOf = (id: string) => projects.find((p) => p.id === id)?.name ?? id;
   // Configs that are up are listed as tunnels above; don't offer them again below.
   const idle = configs.filter((c) => !(c.path in byConfig));

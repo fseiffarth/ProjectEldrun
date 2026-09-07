@@ -1,5 +1,11 @@
 # Project Boxes / Meta-Project Grouping — Implementation Plan (TODO Group A: #13 + #41)
 
+> **Superseded in part (2026-08-26):** the boxes upgrade shipped — N:M
+> membership (no `box_id`, no silent dissolve), the switcher's overlay model,
+> persisted `box:<id>` tab scopes, the member symlink farm, and the four
+> box/unbox gestures. Current design rationale:
+> `docs/context/project_boxes.md`; status: `todo/group-a-boxes.md`.
+
 Status: planning artifact for the 4-stage dev team. This document is the contract
 for the CODE agent. Read the **Cut Line** section first — it states exactly what to
 build this pass and what is an explicit follow-on.

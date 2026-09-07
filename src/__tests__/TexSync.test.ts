@@ -16,9 +16,17 @@ import {
   pickSyncRect,
   pdfPageMatches,
   sourceColumnFraction,
+  syncNoticeKind,
   type SyncRect,
+  type SyncTexStatus,
   type TextItemBox,
 } from "../lib/viewers/tex";
+import {
+  compileTexWorkspace,
+  hasTexCompiler,
+  registerTexCompile,
+  unregisterTexCompile,
+} from "../stores/texCenter";
 import {
   useEditorJumpStore,
   hasMountedEditor,
@@ -605,5 +613,81 @@ describe("pdfSync store", () => {
       rect,
       afterReload: true,
     });
+  });
+
+  it("requestReload bumps a per-PDF counter, separate from reveals", () => {
+    usePdfSyncStore.setState({ reloadByPath: {} });
+    usePdfSyncStore.getState().requestReload("/p/a.pdf");
+    expect(usePdfSyncStore.getState().reloadByPath["/p/a.pdf"]).toBe(1);
+    // Every request advances it — the counter is the signal, never cleared.
+    usePdfSyncStore.getState().requestReload("/p/a.pdf");
+    expect(usePdfSyncStore.getState().reloadByPath["/p/a.pdf"]).toBe(2);
+    expect(usePdfSyncStore.getState().reloadByPath["/p/b.pdf"]).toBeUndefined();
+    // A reload is not a reveal: nothing to scroll to or highlight.
+    expect(usePdfSyncStore.getState().byPath["/p/a.pdf"]).toBeUndefined();
+  });
+});
+
+describe("syncNoticeKind (what a reverse-search click is told)", () => {
+  const current: SyncTexStatus = { has_map: true, pdf_newer_than_map: false, newer_sources: [] };
+
+  it("says nothing on a clean hit against a current map", () => {
+    expect(syncNoticeKind(current, true)).toBeNull();
+  });
+
+  it("reports an honest miss on a current map", () => {
+    expect(syncNoticeKind(current, false)).toBe("miss");
+  });
+
+  it("asks for a compile when there is no map at all, hit or not", () => {
+    const none = { ...current, has_map: false };
+    expect(syncNoticeKind(none, false)).toBe("noMap");
+    expect(syncNoticeKind(none, true)).toBe("noMap");
+  });
+
+  it("warns even on a hit when the source moved past the build", () => {
+    // The jump still happens (a nearby line beats nothing) — the notice says
+    // why it may be off, and which files were saved after the build.
+    const stale = { ...current, newer_sources: ["/p/slides/idea.tex"] };
+    expect(syncNoticeKind(stale, true)).toBe("stale");
+    expect(syncNoticeKind(stale, false)).toBe("stale");
+  });
+
+  it("ranks a PDF rebuilt without SyncTeX above an edited source", () => {
+    const both = { has_map: true, pdf_newer_than_map: true, newer_sources: ["/p/a.tex"] };
+    expect(syncNoticeKind(both, true)).toBe("pdfNewer");
+  });
+
+  it("words nothing from a status the backend could not report", () => {
+    // An older backend has no `synctex_status`: a hit stays silent, a miss is
+    // still a miss.
+    expect(syncNoticeKind(null, true)).toBeNull();
+    expect(syncNoticeKind(null, false)).toBe("miss");
+  });
+});
+
+describe("mounted-compiler registry (the PDF tab's Recompile button)", () => {
+  it("runs the compile registered for a path and reports an unknown one", () => {
+    const runs: string[] = [];
+    const run = () => runs.push("main");
+    registerTexCompile("/p/main.tex", run);
+    expect(hasTexCompiler("/p/main.tex")).toBe(true);
+    expect(compileTexWorkspace("/p/main.tex")).toBe(true);
+    expect(runs).toEqual(["main"]);
+    expect(compileTexWorkspace("/p/other.tex")).toBe(false);
+    expect(hasTexCompiler("/p/other.tex")).toBe(false);
+    unregisterTexCompile("/p/main.tex", run);
+    expect(compileTexWorkspace("/p/main.tex")).toBe(false);
+  });
+
+  it("does not let a stale unregister clear a fresh registration", () => {
+    const first = () => {};
+    const second = () => {};
+    registerTexCompile("/p/main.tex", first);
+    registerTexCompile("/p/main.tex", second);
+    unregisterTexCompile("/p/main.tex", first); // StrictMode's late cleanup
+    expect(hasTexCompiler("/p/main.tex")).toBe(true);
+    unregisterTexCompile("/p/main.tex", second);
+    expect(hasTexCompiler("/p/main.tex")).toBe(false);
   });
 });

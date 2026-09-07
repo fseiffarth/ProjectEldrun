@@ -10,6 +10,8 @@ pub mod auth;
 pub mod config;
 pub mod discovery;
 pub mod host;
+pub mod inbox;
+pub mod outbox;
 pub mod limits;
 pub mod protocol;
 pub mod pty_bridge;

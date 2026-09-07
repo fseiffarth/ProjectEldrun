@@ -7,12 +7,14 @@ This is the follow-up review that
 before any of its deferred phases begin. It specs six directions surfaced by
 the 2026-08-26 code review of the mobile surface, ordered by value against the
 product thesis: the phone exists to *steer agent turns*, not to mirror the
-desktop. Every feature here keeps the base plan's boundaries — the sidecar
-reads trusted state only, raw project ids/paths/commands/tmux targets never
-cross the browser API, the desktop stays the sole writer of its own stores,
-and everything is opt-in.
+desktop. A seventh (G), a security hardening from the 2026-08-28 mobile
+re-review, is appended **outside** that value ordering — it raises the
+guarantee of the phone-side app lock rather than adding a feature. Every
+feature here keeps the base plan's boundaries — the sidecar reads trusted state
+only, raw project ids/paths/commands/tmux targets never cross the browser API,
+the desktop stays the sole writer of its own stores, and everything is opt-in.
 
-Last evaluated against the repository: **2026-08-26**.
+Last evaluated against the repository: **2026-08-26** (G added **2026-08-28**).
 
 Priority order and rationale:
 
@@ -22,11 +24,13 @@ Priority order and rationale:
 | B | Dead-session relaunch | Completes the session-gone notice added 2026-08-26; one tap from "ended" back to a resumed agent. |
 | C | PWA code-splitting | Small, standalone, pays for itself on every cold cellular load. |
 | D | Read-only file browsing | "What did the agent just write" without opening a shell. |
-| E | Mobile mail actions | Mark-read/flag through the desktop bridge. |
+| E | Mobile mail actions | Mark-read/flag through the desktop bridge. **Landed 2026-09-03**, plus a recipient-derived reply — see E.3. |
 | F | Multi-host awareness | Honest display of worker-host tabs; attach stays out of scope. |
+| G | Hardened local unlock (WebAuthn PRF) | Ranked apart from A–F: raises the app lock from a UI gate to encryption-at-rest of the device key, where the platform authenticator supports it. |
 
 Each feature ships behind its own gate and none depends on another, except B
-which assumes the session-gone probe already in `Terminal.tsx`.
+which assumes the session-gone probe already in `Terminal.tsx`. G is
+independent of all of them and touches only the PWA's own lock.
 
 ---
 
@@ -37,7 +41,7 @@ which assumes the session-gone probe already in `Terminal.tsx`.
 When an agent tab transitions to `question` (and optionally `done`), the
 paired phone shows a system notification while the PWA is closed or
 backgrounded. Tapping it opens the app, which unlocks and lands on that tab
-via the existing `lastTab` restore path.
+via the existing `lastPlace` restore path.
 
 ### A.2 What exists
 
@@ -114,9 +118,10 @@ live WebSocket is suppressed (the user is already looking at it — the
 
 **Client.** `sw.js` gains `push` and `notificationclick` handlers. On click:
 `clients.openWindow("/")`; the app resumes through the normal lock →
-challenge login → `restoreLastTab` flow, with the pushed tab id written into
-the same `localStorage` slot `rememberLastTab` uses (the id is opaque and
-server-revalidated, so this is safe by the same argument as `lastTab.ts`).
+challenge login → `restoreLastPlace` flow, with the pushed tab id written into
+the same `localStorage` slot `rememberLastPlace` uses, as a place under
+Projects (the id is opaque and server-revalidated, so this is safe by the same
+argument as `lastPlace.ts`).
 
 ### A.5 Delivery and gates
 
@@ -176,8 +181,8 @@ so a retried tap cannot spawn two resumes.
 **Client.** The notice renders Relaunch only when `tab.kind`'s relaunch is
 plausible and `desktop_available` was true at last load; on success it
 replaces the current screen's `tab` (same `Terminal` component, new tab id —
-the `tab.id` keyed effects tear down and reattach naturally) and updates
-`rememberLastTab`.
+the `tab.id` keyed effects tear down and reattach naturally); the app's own
+place effect records the new id.
 
 ### B.3 Boundaries kept
 
@@ -329,6 +334,32 @@ Acceptance: mark-read on the phone shows read in the desktop client after its
 next sync tick; gate off → no buttons and a refused request; the flag write
 failing server-side surfaces the error string, never a silently stale list.
 
+### E.3 What landed (2026-09-03, code-complete, phone QA pending — 31t)
+
+The design above, with three deliberate deviations and one addition:
+
+- the gate lives on the host settings object as
+  `eldrun_mobile_host.mail_actions` rather than as a top-level key, so it
+  travels with the rest of Mobile's configuration and is read only by the
+  desktop bridge (`MobileBridgeHost`), never by the sidecar;
+- the bridge request carries the folder page `offset`, because the desktop
+  resolves an opaque message id by re-reading exactly the page that issued
+  it — the same rule the read requests follow;
+- the desktop applies the flag through the existing per-message `mail_flag`
+  command (local index first, then the server, a refusal reported), not
+  `set_flags_bulk`: one message per tap is the whole workload.
+- **Reply-only, added under a second, separate default-off gate
+  (`eldrun_mobile_host.mail_reply`).** The phone submits plain text and
+  nothing else (`POST …/reply {body, offset}`, ≤ 16 KiB). The desktop derives
+  the recipient from the original's `From`, the subject behind the reply
+  prefix, quotes the original below the text, sets `In-Reply-To` from the RFC
+  `Message-ID`, and sends through its own draft path with sign and encrypt
+  off; a failed send leaves the draft in Drafts and reports the reason. The
+  bound is the point: a paired phone can answer people who already wrote to
+  the user and nobody else. Fresh compose, attachments, CC/BCC, forward, and
+  OpenPGP stay on the desktop. The phone asks a second, explicit confirmation
+  naming the recipient before anything leaves it.
+
 ---
 
 ## F. Multi-host awareness
@@ -376,6 +407,120 @@ existing local-tab behavior is byte-identical (host tests unchanged).
 
 ---
 
+## G. Hardened local unlock (WebAuthn PRF key-wrapping)
+
+### G.1 Goal
+
+Make the phone-side app lock a *cryptographic* gate on the device signing key,
+not only a UI gate. Today an unlocked, running phone in the hands of someone
+who can execute script in the Serve origin (remote debugging, or simply setting
+the `sessionStorage` unlock flag) can use the key or skip the lock; the lock is
+enforced entirely in the app's own React flow. G closes that gap **where the
+platform authenticator supports it** and changes nothing where it does not.
+
+### G.2 What exists
+
+- The device identity is a **non-exportable** ECDSA P-256 `CryptoKey` in
+  IndexedDB (`auth.ts`, `eldrun-mobile-auth` → `keys` → `device`), generated
+  with `extractable: false`. It is usable — but not exportable — by any script
+  running in the `https://<serve-host>` origin.
+- The local lock (`localLock.ts`) is a **PBKDF2 verifier** (210 000 iterations,
+  SHA-256, 16-byte salt) stored in the *same* IndexedDB store, plus an optional
+  WebAuthn platform credential (`residentKey: required`,
+  `userVerification: required`) used purely as an unlock *assertion* — its
+  success gates the flow but derives no key material.
+- The app-flow gate is `sessionStorage["eldrun-mobile-local-unlocked"]` plus a
+  180 s idle re-lock (`App.tsx`); `resumeAuth`'s signed-challenge login runs
+  only after a verified unlock, so a cold open always shows the lock screen.
+- The UI already states the honest posture: *"This local lock protects against
+  casual access to an unlocked phone."*
+
+So the design is *correct for its stated goal*; G raises the goal.
+
+### G.3 What PRF changes
+
+WebAuthn's **PRF extension** (`hmac-secret` underneath) lets a platform
+authenticator return a stable per-credential secret during an assertion
+(`navigator.credentials.get`), gated by the same user verification (fingerprint
+/ Face ID / device PIN) as today's unlock. Feed that secret through HKDF to a
+wrapping key, and two things change:
+
+1. **The device signing key is stored wrapped, not raw.** The ECDSA key is
+   generated `extractable: true`, immediately wrapped (AES-GCM) under the
+   PRF-derived key, and only the **ciphertext** is persisted. At rest there is
+   no usable key — unwrapping requires a successful authenticator assertion.
+   This is the real change: the non-exportable-but-present key of today becomes
+   an encrypted-at-rest key that script alone cannot produce.
+2. **The PIN verifier stops being the security boundary** and becomes a genuine
+   fallback. The primary unlock is the authenticator; the PIN path is offered
+   only where PRF is unavailable, and where PIN is the *sole* factor the key
+   stays in today's soft-gated form — G must never make the PIN-only case
+   worse.
+
+Tradeoff, stated plainly: to wrap the key it must be created
+`extractable: true`, so after an unlock the cleartext private key exists in the
+page's memory for the session — as it effectively does today. **The gain is
+entirely at rest.** A stolen phone image, or script in the origin without a
+fresh assertion, yields ciphertext, not a usable key. This tradeoff needs the
+user's explicit sign-off before implementation.
+
+### G.4 Design
+
+- **Enrollment.** `configureLocalUnlock` (and `maybeEnrollBiometric`) create
+  the platform credential **with the `prf` extension requested**. Because PRF
+  output is not reliably available during `create()`, enrollment is followed by
+  one `get()` to obtain the secret, derive the wrapping key, wrap the device
+  key, and store the wrapped blob. `LocalUnlockRecord` gains `wrappedKey`,
+  `wrapIv`, and a `prf: true` marker; the raw `CryptoKey` record in `auth.ts`
+  is deleted once the wrapped copy is written.
+- **Unlock.** `unlockLocalBiometric` runs the assertion with the `prf`
+  extension and the credential's salt, derives the wrapping key, unwraps the
+  device key into a non-persisted in-memory `CryptoKey`, and hands it to the
+  existing `login()` challenge-signing path. `resumeAuth` takes the unwrapped
+  key from memory rather than reading it from IndexedDB.
+- **Migration, never forced.** A credential enrolled before G (or on a platform
+  without PRF) carries no `prf` marker and keeps today's exact behavior —
+  non-exportable key plus verifier gate. The setup screen offers a one-tap
+  "Strengthen this device's lock" that re-enrolls with PRF and re-wraps, gated
+  behind a current unlock. A phone whose authenticator lacks PRF is **never**
+  locked out.
+- **Capability probe.** A small `prfSupported()` (advertise `prf` on a probe
+  request and read the extension results) decides at setup whether to offer the
+  hardened path; the lock-screen copy tells the truth about which mode is
+  active.
+
+### G.5 Residual (kept honest)
+
+PRF does not solve the **unlocked-and-running** case: once the user has
+unlocked this session, the key is in memory and script in the origin can use it
+until the idle lock fires. That is inherent to a browser PWA — there is no way
+to keep the key in the authenticator and still sign challenges without an
+assertion per signature, which the 5 s reconnect cadence and the WebSocket
+lifetime make impractical. G's claim is exactly and only: *no usable key at
+rest, and no unlock without an authenticator assertion where the platform
+supports one.* The phone's own device lock and Eldrun's paired-device
+revocation remain the outer boundary, as the UI already says.
+
+### G.6 Delivery and gates
+
+1. `localLock.ts`: `prf` enrollment, wrap/unwrap, record fields, capability
+   probe; every PIN path kept intact as fallback.
+2. `auth.ts`: accept an in-memory unwrapped key for `login`/`resumeAuth`; stop
+   persisting a raw device key on PRF-enrolled devices.
+3. Setup/lock screens: the "strengthen" re-enroll action and mode-accurate
+   copy (PWA English-only, per the cross-cutting rules below).
+4. Caution pill / note until real-phone QA on **both** a PRF-capable
+   authenticator (recent Android/Chrome, iOS/Safari) and a PRF-incapable one,
+   per the repo's Done ≠ Tested rule.
+
+Acceptance: on a PRF-capable phone, IndexedDB after setup contains **no** usable
+device key, only ciphertext; unlocking requires the authenticator; an
+assertion-less script in the origin cannot mint a session; a PRF-incapable phone
+behaves exactly as today with no lockout; re-enroll migrates a legacy record
+without re-pairing.
+
+---
+
 ## Cross-cutting rules
 
 Every feature above inherits, without exception:
@@ -397,4 +542,6 @@ Every feature above inherits, without exception:
 C (small, standalone) → B (completes an existing UX edge) → A (highest value,
 largest review surface — the push-service trade needs the user's explicit
 sign-off before implementation) → D → E → F. Each phase is independently
-shippable and independently refusable.
+shippable and independently refusable. G sits outside this order entirely: it
+touches only the PWA's own lock, depends on nothing else here, and can land at
+any time — after the user signs off on the extractable-key tradeoff in G.3.

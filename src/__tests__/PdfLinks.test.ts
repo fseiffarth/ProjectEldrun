@@ -15,16 +15,19 @@ import type { PDFDocumentProxy } from "pdfjs-dist";
 import {
   rectFromAnnotation,
   linkFromAnnotation,
+  coversText,
   destRole,
   type RawAnnotation,
   type RectViewport,
 } from "../components/embed/pdf/links";
+import { isFlat } from "../components/embed/pdf/pageInk";
+import type { SyncRect, TextItemBox } from "../lib/viewers/tex";
 import { destTop, resolveDest } from "../components/embed/pdf/outline";
 
 /** A scale-1, unrotated viewport over a 792bp-tall page: PDF user space is
  *  bottom-left origin, the viewport top-left, so y flips. */
 const viewport: RectViewport = {
-  convertToViewportRectangle: ([x1, y1, x2, y2]) => [x1, 792 - y1, x2, 792 - y2],
+  convertToViewportPoint: (x, y) => [x, 792 - y],
 };
 
 /** A minimal fake document: named destinations plus `{num}` page refs. */
@@ -105,6 +108,18 @@ describe("destRole", () => {
     expect(destRole("cite:key")).toBe("cite");
   });
 
+  it("reads beamer's chrome off its navigation anchor", () => {
+    // The running title, the navigation-symbol bar, the section strip: furniture
+    // the theme hyperlinks on every sheet, and the one role that is not painted.
+    expect(destRole("Navigation1")).toBe("nav");
+    expect(destRole("Navigation57")).toBe("nav");
+    // The anchor and nothing looser: a `\label{navigation}` in someone's text is a
+    // cross-reference, and so is a section actually called that.
+    expect(destRole("navigation")).toBe("ref");
+    expect(destRole("section.Navigation1")).toBe("ref");
+    expect(destRole("cite.Navigation1")).toBe("cite");
+  });
+
   it("answers 'cross-reference' for everything it cannot tell apart", () => {
     expect(destRole("section.2")).toBe("ref");
     expect(destRole("equation.1.4")).toBe("ref");
@@ -115,6 +130,71 @@ describe("destRole", () => {
     // link with no destination to classify.
     expect(destRole([{ num: 3 }, { name: "Fit" }])).toBe("ref");
     expect(destRole(null)).toBe("ref");
+  });
+});
+
+describe("coversText", () => {
+  // The numbers are the real ones off a beamer deck's frame: `\cite{…}` inside an
+  // overlay, so `hyperref` writes the same annotation onto every page of the frame
+  // while the mark itself is only printed from overlay 3 on. Big points, top-left
+  // origin, off a 255bp-tall slide.
+  const citeLink: SyncRect = { page: 2, x: 231.714, y: 201.642, w: 11.955, h: 8.967 };
+  /** The citation mark, on the overlay that actually prints it. */
+  const citeMark: TextItemBox = { str: "[16,", x: 229.83, y: 197.9, w: 15.61, h: 14.58 };
+  /** Words elsewhere on the slide — a caption and the running footer. */
+  const elsewhere: TextItemBox[] = [
+    { str: "triangle attached", x: 92.79, y: 101.24, w: 108, h: 13 },
+    { str: "On the Edit Path to GNN Decisions", x: 153.76, y: 245.29, w: 79.76, h: 7.31 },
+  ];
+
+  it("keeps a link that sits on its glyphs", () => {
+    expect(coversText(citeLink, [...elsewhere, citeMark])).toBe(true);
+  });
+
+  it("drops the same link on the overlay that does not print the mark", () => {
+    // This is the artifact: nothing is drawn where the annotation is, so the box
+    // would be painted in citation green over blank paper.
+    expect(coversText(citeLink, elsewhere)).toBe(false);
+  });
+
+  it("cannot vouch for a link on a page with no text at all", () => {
+    // A scan, or a figure-only sheet. This is not a verdict — it is what sends the
+    // link on to the ink probe, which is the only thing allowed to drop one.
+    expect(coversText(citeLink, [])).toBe(false);
+  });
+
+  it("keeps a box a line off its text but not one merely adjacent to it", () => {
+    // A producer whose rect sits slightly high still marks up a real link…
+    const high: SyncRect = { ...citeLink, y: citeLink.y - 6 };
+    expect(coversText(high, [citeMark])).toBe(true);
+    // …while a graze of well under a glyph is not text underneath the box.
+    const grazing: SyncRect = { ...citeLink, x: citeMark.x + citeMark.w - 0.4, w: 20 };
+    expect(coversText(grazing, [citeMark])).toBe(false);
+  });
+});
+
+describe("isFlat", () => {
+  /** One RGBA run of `n` pixels of `c`. */
+  const px = (n: number, c: [number, number, number, number]) =>
+    Array.from({ length: n }, (_, i) => c[i % 4]);
+
+  it("calls blank paper blank", () => {
+    expect(isFlat(px(64, [255, 255, 255, 255]))).toBe(true);
+    // A tinted block behind the box is just as empty as white paper is.
+    expect(isFlat(px(64, [0, 158, 224, 255]))).toBe(true);
+  });
+
+  it("sees a mark the reader would see", () => {
+    const region = px(64, [255, 255, 255, 255]);
+    region[40] = 20; // one dark pixel is a mark
+    expect(isFlat(region)).toBe(false);
+  });
+
+  it("tolerates a renderer's antialiasing and a scan's noise", () => {
+    const region = px(64, [255, 255, 255, 255]);
+    region[40] = 251;
+    region[41] = 252;
+    expect(isFlat(region)).toBe(true);
   });
 });
 

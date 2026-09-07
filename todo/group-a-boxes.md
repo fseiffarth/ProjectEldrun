@@ -79,19 +79,182 @@
     > `refresh_box_agent_docs`, registered `lib.rs:711`, called from
     > `src/stores/boxes.ts:165` — the managed CLAUDE/GEMINI/AGENTS link block is
     > regenerated on member change.
+    > **Phase 5 — boxes upgrade DONE (2026-08-26, 🤖 covered, untested live):**
+    > the "session-only" note above is superseded — `box:<id>` is a first-class
+    > persisted scope now (`sessions/box_<id>/terminals.json`, lazy restore +
+    > shell seed via `restoreBoxScope`; the spawn gate and `compute_allowed_roots`
+    > accept box folder ∪ member roots ∪ remote mirrors, fail-closed on unknown
+    > boxes; box tabs pinned `sandbox: false` — v1 trust statement). Membership
+    > went **N:M** (per-project `box_id` retired; `addToBox`/`removeFromBox`/
+    > `boxProjects`; NO silent one-member dissolve — the box editor's confirmed
+    > Dissolve is the only way out). Switcher moved to the **overlay model**
+    > (member pills always render, ▣ badge; boxes placed by their own
+    > `position`; empty boxes render dimmed). All four box/unbox gestures:
+    > pill-menu Boxes group, Ctrl-click multi-select → "Box these…",
+    > `BoxEditorDialog` (rename/members/dissolve/trust notice), Alt-drag kept
+    > additive. Box folder gains a **member symlink farm** (Unix,
+    > `.eldrun-box-links.json` ownership manifest, never clobbers user paths;
+    > Eldrun confinement doesn't follow the links). Box "+" menu offers
+    > per-member Files/Shell/Claude rows (member-cwd, resume-safe); PDF merge
+    > picker is multi-root in a box scope; disconnected remote members gate
+    > behind a connect prompt; local box shells get tmux persistence. See
+    > `docs/context/project_boxes.md`.
     > **Still deferred:** relation-graph *surfacing* (`set_box_relations` is
     > registered at `lib.rs:712` but has **no frontend caller**; `relations`
     > appears only in `src/types/index.ts:735`), dirty-source→dependent git
-    > markers, auto-detection.
+    > markers, auto-detection, remote-member mirror fallback in the box file
+    > view, box-level sandbox/VM.
     - [x] 🤖 Automated test — `commands/boxes.rs` cargo tests (reconcile drops
       unknown member_ids / recomputes box_id inverse / drop-on-delete, gap-spaced
       position, defaults round-trip, folder-collision suffixing); `paths.rs`
       `boxes_root`; vitest `BoxAssignment` (assign/unassign/move/delete sweep,
       create/rename, derive-on-load no-write), `BoxRendering` (grouped vs inline,
       orphan box_id inline, chip drop ≠ reorder, ungrouped drop), `BoxSearch`
-      (is-box row → openBox, members independently searchable). Covers Phase 1 +
-      Phase 2 groundwork; Phase 3/4 deferred.
+      (is-box row → openBox, members independently searchable). Phase 5 adds:
+      cargo `commands::boxes` (box scope ids, allowed-roots table incl. unknown
+      box fail-closed, link planner + Unix link-farm suite), `commands::fs`
+      (box-scope allowed roots), `services::sandbox` (box never sandboxed);
+      vitest `BoxScopePersistence`, rewritten `BoxAssignment`/`BoxRendering`
+      (N:M + overlay), `BoxUx` (gestures + editor), `BoxScopeMenus` ("+" menu
+      cwds, cross-root paste invoke shape, multi-root merge picker),
+      `RightPanelBox` remote gate, `TmuxSessions` box flip.
     - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+    > **Phase 6 — box file-view fixes + per-member line (2026-08-28, 🤖
+    > covered, untested live).** Two live-found bugs fixed: (1) cross-project
+    > drag-and-drop in the multi-root view moved files *within the source
+    > project* to the other project's rel path ("strangely moved" folders) —
+    > every `[data-move-rel]` target now carries its tree's identity
+    > (`data-move-root`/`data-move-remote`), `lib/fileMove.ts`'s
+    > `resolveMoveTarget` routes the drop (cross-root local↔local only; remote
+    > either side refuses the target up front), and `move_path` is called with
+    > the TARGET root — this also fixes a right-panel drag into another
+    > project's Files tab. (2) A remote member had no Remote/Local switch (the
+    > "remote-member mirror fallback" deferred above): `BoxRootSection` now
+    > shares the project-wide side (`useFileSource`), lists the mirror on
+    > Local (browsable while disconnected), and gates only the SFTP side
+    > behind the connect prompt. Plus each member root gained its own
+    > **Files/Git/Search + ⧉/⚙ + source-switch line** (member-scoped
+    > `GitHistory`/`SearchPanel`, per-member `ProjectFilesSettingsDialog`, and
+    > the member's own hidden-endings/paths filters now apply in the box view).
+    - [x] 🤖 Automated test — vitest `FileMove` (resolveMoveTarget table,
+      dest-rel/abs builders, `remoteMemberTreeDir`, source tripwires: every
+      `data-move-rel` stamps identity attrs, move commit routes to
+      `target.root`, member tree keyed on `treeDir` + `syncSource`); updated
+      `SidePanelBox` (Remote side gated + switch stays up while disconnected,
+      Local mirror browsable offline); cargo `commands::fs`
+      `move_path_moves_a_folder_between_roots`.
+    - [ ] 🖐️ Manual test (drag member→member file + folder both directions;
+      drag onto a member's breadcrumb; remote member: flip Local/Remote while
+      disconnected; per-member Git/Search/⚙ line)
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+    > **Phase 7 — slice membership controls (2026-08-28, 🤖 covered,
+    > untested live).** While a Box slice is selected, the switcher's `+`
+    > becomes a filterable list of active non-members and each member pill's
+    > `×` removes only that membership. Opening a member keeps the slice in
+    > membership mode; an open project removed from the Box stays visible as
+    > the existing non-member exception, without a Box badge or `×`. Project
+    > creation/import and global deactivation remain unchanged in All projects.
+    - [x] 🤖 Automated test — vitest `BoxMembershipControls` (candidate
+      eligibility/filter/empty state, repeated in-place adds, member removal,
+      open non-member exception, and All-project behavior), plus the existing
+      `BoxRendering`/`BoxUx` switcher regressions.
+    - [ ] 🖐️ Manual test (select a Box, add several projects without reopening
+      `+`, remove both an ordinary and a currently open member, then return to All
+      projects and confirm the ordinary create/import/deactivate controls)
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+    > **Phase 8 — agent-fence integration (2026-08-31, implemented; live QA
+    > pending):** box-scoped and member-scoped local agents receive the box's
+    > read-write root union under the default-on bubblewrap fence, plus native
+    > Claude/Codex/Gemini working-root flags. See Group S #204 for the complete
+    > boundary and QA matrix. A member's container/VM remains a separate,
+    > stronger axis and does not become a box-level container/VM.
+
+    > **Phase 9 — the chip became the scope chip (2026-09-04, 🤖 covered,
+    > untested live).** Root and Trash lost their pinned pills at the head of the
+    > row and moved into the chip's dropdown, above "All projects" and the boxes:
+    > two permanent pills' worth of header for destinations reached by name
+    > rather than by pointing, so the leading segment is now a single control
+    > that names where you are (Root · Trash · a box · nothing = an ordinary
+    > project) and the strip got the width back. Picking Root or Trash lifts the
+    > box slice — neither is inside a box, and a strip left filtered by a box
+    > nobody is in reads as a strip that dropped projects. The chip's status
+    > strip now spans root + Trash + every box, narrowing to one scope only while
+    > a box slice is selected (naming root is where you stand, not a filter, and
+    > that is exactly when a box waiting on a decision must still be able to say
+    > so). The dropdown is hover-opened through the shared header hover-menu id,
+    > like the `+` menu beside it, so opening another header menu closes it in
+    > the same frame; click still reveals, and a pill drag still springs it open
+    > with every box row a drop target. The tour's root-terminal step re-anchors
+    > to `.box-chip-main`, and the steering station digit for root/Trash rides
+    > the chip and its rows.
+    - [x] 🤖 Automated test — vitest `BoxRendering` (chip is the row's whole
+      leading segment with no root/Trash pill; dropdown lists Root and Trash
+      ahead of the boxes and neither is a drop target; dissolving the last box
+      keeps the chip; multi-scope vs. narrowed status strip) and
+      `ProjectPillsRender` (Trash has a chip row, not a pill, and stays out of
+      the scrolling strip).
+    - [ ] 🖐️ Manual test — hover the chip, switch to Root and to Trash from its
+      list, confirm the strip un-slices, the accent line follows the scope, the
+      bars still open a waiting box tab from inside root, and that dragging a
+      pill still springs the list open onto a box row.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+    > **Phase 10 — the selected box gets its own pill (2026-09-04, 🤖 covered,
+    > untested live).** The chip was doing two jobs: the menu you open to go
+    > somewhere, and the label saying where you are — so returning to the box you
+    > were already looking at meant opening a dropdown and clicking the row
+    > already marked current, while a project pill one hairline away is a single
+    > click. The box the dropdown selects now stands beside the chip as a pill of
+    > its own (`.box-scope-pill`, the same `.box-chip` box minus the caret): it
+    > names the box, counts its members, carries the box's own (unprefixed)
+    > status strip, hosts the rename input and the Open/Rename/Edit box/Delete
+    > context menu, holds the `data-box-id` a dragged project drops onto, and
+    > enters the box scope on one click. The chip keeps the dropdown untouched —
+    > still the only list of boxes, still spring-loaded under a drag, still the
+    > thing that slices the strip — and now names only Root or Trash, lighting up
+    > only for those; its strip drops the box the pill already reports, so no
+    > scope is tallied twice in one segment. Not the per-box pills coming back:
+    > only the ONE selected box is ever on the row, in the *fixed* leading
+    > segment, so N boxes still cost the scrolling strip nothing.
+    - [x] 🤖 Automated test — vitest `BoxRendering` (no pill before a box is
+      picked, then one pill naming the box with its member count; the chip stops
+      naming it and stops wearing the active accent; clicking the pill re-enters
+      the box scope from a member without opening a menu; the pill carries
+      `data-box-id` and the box context menu while the chip carries neither; the
+      chip's strip keeps the OTHER boxes while the pill carries its own).
+    - [ ] 🖐️ Manual test — pick a box in the chip list, click a member pill, then
+      click the box pill to land back in the box's tabs; right-click the pill for
+      Rename/Edit box/Delete; drag a project pill onto the pill to add a member;
+      confirm a box tab waiting on a decision draws its bar on the pill and not
+      also on the chip.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+    > **Phase 11 — the slice hands the scope back (2026-09-05, 🤖 covered,
+    > untested live).** Entering a box already took the scope with it
+    > (`openBox`); leaving by "All projects" did not give it back, so the strip
+    > showed every project while the tabs below were still the box's and no pill
+    > on the row was lit. The chip's "All projects" row now re-activates the
+    > project the *unsliced* strip was last on — remembered only while no slice
+    > is selected, since a member opened from inside the slice was current in
+    > the box's view, not in this one — via `setActive` with the id it already
+    > holds, which is the established way back out of a box scope (CenterPanel
+    > re-runs its `setScope` off `switchGeneration`). It fires only from inside a
+    > box scope (after a hop to a member, strip and tabs already agree), and
+    > falls back to the root terminal when the remembered project has since been
+    > closed.
+    - [x] 🤖 Automated test — vitest `BoxRendering` ("All projects" re-activates
+      the project the strip was on and moves the scope out of the box; a member
+      opened from inside the slice triggers no second switch; a closed
+      remembered project falls back to root).
+    - [ ] 🖐️ Manual test — with project P current, pick a box in the chip: its
+      tabs come up and the box pill lights. Pick "All projects": P is current
+      again with its tabs and its pill lit. Repeat after clicking a member
+      inside the slice, and after closing P while the box is open (lands at the
+      root terminal).
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work
 

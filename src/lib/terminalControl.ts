@@ -1,4 +1,5 @@
 import type { TabKind } from "../stores/tabs";
+import { IS_MAC } from "./platform";
 
 const CSI = "\x1b[";
 const claimedInitialInputs = new Set<string>();
@@ -143,3 +144,105 @@ export function decodeOsc52Clipboard(data: string): string | null {
   const flattened = text.replace(/[\r\n]+/g, " ").slice(0, OSC52_MAX_CHARS);
   return flattened.length > 0 ? flattened : null;
 }
+
+/** Shift+Tab, the way xterm.js encodes it: the legacy backtab `ESC [ Z`. */
+export const LEGACY_SHIFT_TAB = `${CSI}Z`;
+
+/** Shift+Tab in the kitty keyboard protocol's CSI-u form: Tab (9) with the
+ *  Shift modifier (2). */
+export const CSI_U_SHIFT_TAB = `${CSI}9;2u`;
+
+/** Which byte sequence a Shift+Tab must arrive as for `cmd`'s TUI to see it.
+ *
+ *  Every agent CLI binds its permission-mode cycle to Shift+Tab, and all of
+ *  them but one read the legacy backtab `ESC [ Z` that xterm.js sends — xterm.js
+ *  implements neither the kitty keyboard protocol nor `modifyOtherKeys`, so the
+ *  backtab is all a pane can produce on its own.
+ *
+ *  Codex is the exception. It binds `chat.next_permission_mode` to Tab-with-
+ *  Shift and only recognizes the CSI-u encoding of it; a backtab matches
+ *  nothing, so the mode never cycles even though its composer footer advertises
+ *  "shift+tab to cycle". Verified against codex-cli 0.151.0 in a legacy-key
+ *  terminal: `ESC [ Z` changed nothing, `ESC [ 9 ; 2 u` stepped the mode. Codex
+ *  parses CSI-u whether or not the terminal ever answered its keyboard-
+ *  enhancement probe, so sending that form needs no negotiation.
+ *
+ *  Codex-only on purpose: Claude Code and Qwen Code cycle on the backtab, and
+ *  re-encoding Shift+Tab terminal-wide would break every ordinary curses
+ *  program that reads backtab as "focus previous field". */
+export function shiftTabForAgent(cmd: string | null | undefined): string {
+  return isCodexCommand(cmd) ? CSI_U_SHIFT_TAB : LEGACY_SHIFT_TAB;
+}
+
+/** Whether `cmd` launches Codex — matched on the binary's leaf name, so an
+ *  absolute path or a versioned wrapper still counts. */
+export function isCodexCommand(cmd: string | null | undefined): boolean {
+  if (!cmd) return false;
+  const leaf = cmd.trim().split(/[\\/]/).pop() ?? "";
+  return leaf.replace(/\.(exe|cmd|bat)$/i, "").toLowerCase() === "codex";
+}
+
+/** Whether `cmd` launches Claude Code — same leaf-name match as
+ *  {@link isCodexCommand}. Used to decide whether a tab's auto-typed initial
+ *  input may be submitted at all: Claude opens a trust dialog in a folder it
+ *  has not seen before, and the blind Enter that submits the input confirms
+ *  that dialog's default row, `No, exit`. */
+export function isClaudeCommand(cmd: string | null | undefined): boolean {
+  if (!cmd) return false;
+  const leaf = cmd.trim().split(/[\\/]/).pop() ?? "";
+  return leaf.replace(/\.(exe|cmd|bat)$/i, "").toLowerCase() === "claude";
+}
+
+/**
+ * What a primary-button `mousedown` inside an AGENT pane means.
+ *
+ * Two gestures agent panes need and a plain xterm does not give them:
+ *
+ *  - **`"paste"`** — a double-click inserts the clipboard at the agent's prompt
+ *    (the ask). xterm would select the word under the cursor instead, which
+ *    copy-on-select would then push to the clipboard — overwriting the very text
+ *    the double-click was meant to paste. So the double-click is taken away from
+ *    xterm entirely rather than layered on top of it.
+ *  - **`"select"`** — the running program has grabbed the mouse (`mouseGrabbed`:
+ *    the TUI turned on mouse tracking, as Codex and other full-screen agents do),
+ *    so every press is reported to it and a drag selects nothing. Terminals let
+ *    you override that with a modifier; nobody knows the chord, which is what
+ *    "can't copy out of an agent tab" actually is. In an agent pane a plain drag
+ *    selects, because the mouse there is worth more as a way to copy the agent's
+ *    output than as a way to click inside its TUI.
+ *
+ * Any modifier means the user is asking for something specific — Shift extends /
+ * forces a selection, Alt column-selects, and Ctrl is left as the escape hatch
+ * that still reaches a mouse-driven TUI — so a modified press is always passed
+ * through untouched.
+ */
+export type AgentMouseDown = "paste" | "select" | "pass";
+
+export function agentMouseDownAction(
+  ev: { button: number; detail: number; shiftKey: boolean; ctrlKey: boolean; altKey: boolean; metaKey: boolean },
+  mouseGrabbed: boolean,
+): AgentMouseDown {
+  if (ev.button !== 0) return "pass";
+  if (ev.shiftKey || ev.ctrlKey || ev.altKey || ev.metaKey) return "pass";
+  // `detail` counts the clicks of the current sequence: 2 is the second press of
+  // a double-click (the first arrived as a plain 1 and did nothing but place an
+  // empty selection), 3 the triple-click that selects a whole line.
+  if (ev.detail === 2) return "paste";
+  return mouseGrabbed ? "select" : "pass";
+}
+
+/**
+ * The event property xterm reads as "select anyway, even though the program has
+ * the mouse" — `SelectionService.shouldForceSelection`, which is `shiftKey`
+ * everywhere except macOS, where it is `altKey` and honoured only while the
+ * `macOptionClickForcesSelection` option is on (TerminalView sets it).
+ *
+ * Forcing selection by re-defining this one property on the event is deliberate:
+ * xterm exposes no API for it, and the alternative — hand-rolling selection from
+ * pixel coordinates — would duplicate its buffer geometry. Note that xterm's
+ * *incremental* (shift-extends-the-selection) branch is guarded by the selection
+ * service being enabled, and it is enabled only while the program has NOT
+ * grabbed the mouse — the one case where we never force. So a forced press
+ * always starts a fresh selection.
+ */
+export const FORCE_SELECTION_MODIFIER: "altKey" | "shiftKey" = IS_MAC ? "altKey" : "shiftKey";

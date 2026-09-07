@@ -1,5 +1,4 @@
 import { useState } from "react";
-import { createPortal } from "react-dom";
 import {
   effectiveTabLocation,
   remoteHostIdOf,
@@ -13,6 +12,7 @@ import {
 import { useFileSourcesStore } from "../../stores/fileSources";
 import { useRunHostPrefStore } from "../../stores/runHostPref";
 import { UntestedTag } from "../common/UntestedTag";
+import { ContextMenuPortal } from "../common/ContextMenuPortal";
 import { useT } from "../../lib/i18n";
 
 /**
@@ -82,6 +82,60 @@ export function TabSourceBadge({ tabKey }: { tabKey: string }) {
     >
       {src === "remote" ? "☁" : "⌂"}
     </span>
+  );
+}
+
+/**
+ * The TeX ⇄ PDF coupling mark: on a compiled-PDF tab it points back at the open
+ * `.tex` that produces it, and on that source tab it points at the PDF — one
+ * component for both halves, so the pair can never be marked asymmetrically.
+ *
+ * Deliberately the SAME 16px badge box as the locality/source badges rather than
+ * a new visual language: the tab strip already reads left-to-right as
+ * label → badges → close, and a coupled pair is one more fact about the tab, not
+ * a new kind of chrome. The glyph is the mark and the button is the jump — a
+ * click activates the partner tab (in whatever subwindow it lives), which is the
+ * only thing anyone wants to do once they have noticed the pair.
+ *
+ * Renders nothing when the partner is not open, so an ordinary PDF tab and a
+ * `.tex` with no build are untouched. `partner` is computed by the host from the
+ * tab list it owns (`lib/texPdfLink`'s `texPdfPartner`), keeping this leaf pure
+ * and usable from both the main-window bar and a popout's strip.
+ */
+export function TabTexLinkBadge({
+  partner,
+  onFocus,
+}: {
+  /** The coupled tab, or null when this tab has no open counterpart. */
+  partner: TabEntry | null;
+  /** Activate the partner tab (main window: the store's `setActive`; a popout:
+   *  its streamed activate). */
+  onFocus: (key: string) => void;
+}) {
+  const t = useT();
+  if (!partner) return null;
+  const toPdf = partner.viewer === "pdf";
+  return (
+    <button
+      className={`tab-texlink ${toPdf ? "pdf" : "tex"}`}
+      title={
+        toPdf
+          ? t("tabLocality.texLinkToPdfTitle", { name: partner.label })
+          : t("tabLocality.texLinkToTexTitle", { name: partner.label })
+      }
+      aria-label={
+        toPdf
+          ? t("tabLocality.texLinkToPdfTitle", { name: partner.label })
+          : t("tabLocality.texLinkToTexTitle", { name: partner.label })
+      }
+      onPointerDown={(e) => e.stopPropagation()}
+      onClick={(e) => {
+        e.stopPropagation();
+        onFocus(partner.key);
+      }}
+    >
+      ⇄
+    </button>
   );
 }
 
@@ -172,16 +226,13 @@ export function LocalityMenu({
       {opts?.note && <span className="tab-menu-hint">{opts.note}</span>}
     </button>
   );
-  return createPortal(
-    <>
-      <div
-        style={{ position: "fixed", inset: 0, zIndex: 40 }}
-        onPointerDown={onClose}
-      />
-      <div
-        className="tab-new-menu"
-        style={{ position: "fixed", left: menu.x, top: menu.y, zIndex: 41 }}
-      >
+  return (
+    <ContextMenuPortal
+      x={menu.x}
+      y={menu.y}
+      onClose={onClose}
+      className="tab-new-menu"
+    >
         {menu.view === "root" ? (
           <>
             {machineItem("local", "⌂", t("tabLocality.localMirrorItem"))}
@@ -227,9 +278,7 @@ export function LocalityMenu({
             )}
           </>
         )}
-      </div>
-    </>,
-    document.body,
+    </ContextMenuPortal>
   );
 }
 
@@ -265,7 +314,7 @@ export function RunHostPicker({
     <>
       <button
         type="button"
-        className="right-panel-run-host"
+        className="side-panel-run-host"
         // The label ellipsizes in a narrow (docked subwindow) row, so the full
         // machine name has to survive somewhere — the tooltip names it.
         title={`${t("tabLocality.runHostTitle", { label })}\n${t("tabLocality.runHostSubtitle")}`}

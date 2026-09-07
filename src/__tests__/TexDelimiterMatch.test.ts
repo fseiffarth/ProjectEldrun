@@ -10,13 +10,123 @@ import {
   findTexEnvDelimiterMatch,
   findTexDelimiterMatch,
   findTexEnvNameMatch,
+  findUnclosedTexBrackets,
   syncTexEnvRename,
   texEnvNameRangeAt,
+  texCommandAt,
+  texCommandOccurrences,
 } from "../lib/viewers/tex";
 
 function at(i: number, len = 1) {
   return { start: i, end: i + len };
 }
+
+/** An opening delimiter the document-wide diagnostic left unclosed. */
+function unclosedAt(i: number, len = 1) {
+  return { start: i, end: i + len, problem: "unclosed" as const };
+}
+
+/** An unmatched `\begin{env}` — the whole token, tagged with its name. */
+function unclosedEnv(text: string, env: string, from = 0) {
+  const start = text.indexOf(`\\begin{${env}}`, from);
+  return { start, end: start + `\\begin{${env}}`.length, problem: "unclosed" as const, env };
+}
+
+/** An `\end{env}` closing nothing that is open. */
+function unmatchedEnd(text: string, env: string, from = 0) {
+  const start = text.indexOf(`\\end{${env}}`, from);
+  return { start, end: start + `\\end{${env}}`.length, problem: "unmatchedEnd" as const, env };
+}
+
+describe("findUnclosedTexBrackets", () => {
+  it("returns only opening ordinary brackets still missing their end", () => {
+    const text = "\\section{closed}\nouter{inner{ok}\nvalue[done]\ncall(";
+    expect(findUnclosedTexBrackets(text)).toEqual([
+      unclosedAt(text.indexOf("outer{") + "outer".length),
+      unclosedAt(text.lastIndexOf("(")),
+    ]);
+  });
+
+  it("ignores commented and escaped literal brackets", () => {
+    const text = "\\{printed\\} % { commented\n\\command{closed}";
+    expect(findUnclosedTexBrackets(text)).toEqual([]);
+  });
+
+  it("includes unmatched math and environment opening delimiters", () => {
+    const text = "\\[display\n\\begin{itemize}\n$inline";
+    expect(findUnclosedTexBrackets(text)).toEqual([
+      unclosedAt(text.indexOf("\\["), 2),
+      unclosedEnv(text, "itemize"),
+      unclosedAt(text.indexOf("$")),
+    ]);
+  });
+
+  it("ignores extra closing brackets, whose group is ambiguous", () => {
+    expect(findUnclosedTexBrackets(")]}\\)\\]")).toEqual([]);
+  });
+
+  // Environments pair BY NAME, unlike the caret-local matcher's depth count —
+  // which is exactly what a depth count gets wrong, since a begin and an end of
+  // different names cancel each other out and the file reads as balanced.
+  it("flags both halves when \\begin and \\end name different environments", () => {
+    const text = "\\begin{itemize}\n\\item a\n\\end{enumerate}\n";
+    expect(findUnclosedTexBrackets(text)).toEqual([
+      unclosedEnv(text, "itemize"),
+      unmatchedEnd(text, "enumerate"),
+    ]);
+  });
+
+  it("flags an \\end with no \\begin of that environment at all", () => {
+    const text = "text\n\\end{itemize}\n";
+    expect(findUnclosedTexBrackets(text)).toEqual([unmatchedEnd(text, "itemize")]);
+  });
+
+  it("blames the inner \\begin when an outer environment closes over it", () => {
+    // Depth counting paired `\\end{document}` with `\\begin{itemize}` and reported
+    // `\\begin{document}` — the one token that is not the mistake.
+    const text = "\\begin{document}\n\\begin{itemize}\n\\item a\n\\end{document}\n";
+    expect(findUnclosedTexBrackets(text)).toEqual([unclosedEnv(text, "itemize")]);
+  });
+
+  it("reports crossed environments from both ends", () => {
+    const text = "\\begin{a}\\begin{b}\\end{a}\\end{b}";
+    expect(findUnclosedTexBrackets(text)).toEqual([
+      unclosedEnv(text, "b"),
+      unmatchedEnd(text, "b"),
+    ]);
+  });
+
+  it("pairs repeated and nested environments of the same name", () => {
+    const text =
+      "\\begin{itemize}\\begin{itemize}\\end{itemize}\\end{itemize}\n" +
+      "\\begin{itemize}\\end{itemize}";
+    expect(findUnclosedTexBrackets(text)).toEqual([]);
+  });
+
+  it("ignores a commented-out \\end", () => {
+    const text = "\\begin{itemize}\n% \\end{itemize}\n\\end{itemize}";
+    expect(findUnclosedTexBrackets(text)).toEqual([]);
+  });
+
+  it("tolerates spacing inside the environment braces", () => {
+    expect(findUnclosedTexBrackets("\\begin{ itemize }x\\end{itemize}")).toEqual([]);
+  });
+
+  it("reads a line break's optional spacing as a bracket, never as \\[ display math", () => {
+    // `\\[2mm]` is a row break plus an ordinary optional argument. Reading its
+    // second backslash as the start of `\[` made every spaced table row an
+    // unclosed display-math opener.
+    const text = "\\begin{tabular}{ll}\na & b \\\\[2mm]\nc & d \\\\\n\\end{tabular}";
+    expect(findUnclosedTexBrackets(text)).toEqual([]);
+  });
+
+  it("still diagnoses a real \\[ that follows an escaped backslash", () => {
+    // `\\\[` is a line break followed by a genuine display-math opener — the
+    // parity rule, so consuming the escaped character must not swallow it.
+    const text = "row \\\\\\[x";
+    expect(findUnclosedTexBrackets(text)).toEqual([unclosedAt(text.indexOf("\\[", 4), 2)]);
+  });
+});
 
 describe("findTexMathDelimiterMatch", () => {
   it("matches inline math $…$ from either $ and from inside the math", () => {
@@ -335,5 +445,66 @@ describe("findTexEnvNameMatch", () => {
     expect(findTexEnvNameMatch(text, 0)).toBeNull(); // on the \\begin keyword
     expect(findTexEnvNameMatch(text, text.indexOf("x"))).toBeNull(); // body
     expect(findTexEnvNameMatch("\\begin{a}unclosed", 7)).toBeNull();
+  });
+});
+
+describe("texCommandAt (#tex-command-occurrences)", () => {
+  const text = "\\emph{a} and \\emphasis{b}";
+
+  it("reads the whole control sequence from anywhere inside it", () => {
+    const slash = text.indexOf("\\emph");
+    for (const pos of [slash, slash + 1, slash + 3, slash + 5]) {
+      expect(texCommandAt(text, pos)).toEqual({ start: slash, end: slash + 5, name: "\\emph" });
+    }
+  });
+
+  it("takes the whole name, not the prefix the pointer sat on", () => {
+    const at = text.indexOf("\\emphasis");
+    expect(texCommandAt(text, at + 3)?.name).toBe("\\emphasis");
+  });
+
+  it("keeps `@` in an internal macro's name", () => {
+    const src = "\\my@thing{x}";
+    expect(texCommandAt(src, src.indexOf("thing"))?.name).toBe("\\my@thing");
+  });
+
+  it("answers nothing for prose, a bare backslash, or a one-character sequence", () => {
+    expect(texCommandAt("plain words", 3)).toBeNull();
+    expect(texCommandAt("a \\ b", 2)).toBeNull();
+    expect(texCommandAt("100\\% done", 4)).toBeNull();
+    expect(texCommandAt("line\\\\break", 6)).toBeNull(); // the `\\` is a break, not `\break`
+    expect(texCommandAt("\\emph{}", 6)).toBeNull(); // the brace, past the token
+  });
+});
+
+describe("texCommandOccurrences (#tex-command-occurrences)", () => {
+  it("finds every whole-token use, and no longer command that starts with it", () => {
+    const text = "\\ref{a} \\reflectbox{x} \\ref{b}\n";
+    expect(texCommandOccurrences(text, "\\ref")).toEqual([
+      { start: 0, end: 4 },
+      { start: text.lastIndexOf("\\ref"), end: text.lastIndexOf("\\ref") + 4 },
+    ]);
+  });
+
+  it("marks a starred call too — the star is not part of the name", () => {
+    const text = "\\section{A}\n\\section*{B}\n";
+    expect(texCommandOccurrences(text, "\\section")).toHaveLength(2);
+  });
+
+  it("skips an escaped backslash: `\\\\emph` is a line break plus a word", () => {
+    const text = "x \\\\emph y \\emph{z}";
+    expect(texCommandOccurrences(text, "\\emph")).toEqual([
+      { start: text.lastIndexOf("\\emph"), end: text.lastIndexOf("\\emph") + 5 },
+    ]);
+  });
+
+  it("includes a commented-out call — that is a use the reader is hunting for", () => {
+    const text = "% \\todo{later}\n\\todo{now}\n";
+    expect(texCommandOccurrences(text, "\\todo")).toHaveLength(2);
+  });
+
+  it("answers nothing for a name that is not a control sequence", () => {
+    expect(texCommandOccurrences("\\emph{}", "emph")).toEqual([]);
+    expect(texCommandOccurrences("\\emph{}", "\\")).toEqual([]);
   });
 });

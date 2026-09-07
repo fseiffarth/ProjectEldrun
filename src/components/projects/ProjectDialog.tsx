@@ -105,7 +105,22 @@ export function ProjectDialog({
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [descriptionFillMode, setDescriptionFillMode] = useState("manual");
-  const [gitType, setGitType] = useState("local");
+  // Same default the import-source dropdown applies when the source is switched
+  // by hand (`changeImportSource`) — a dialog opened *directly* on the clone
+  // source (the New-tab menu's "Import from GitHub…") starts on the same answer
+  // instead of on "Local repo only", which no cloned repository is.
+  const [gitType, setGitType] = useState(
+    kind === "import" && initialImportSource !== "folder" ? "remote-private" : "local",
+  );
+  // Whether the user has answered the Git hosting field themselves. The clone
+  // URL fills that field on their behalf (provider + visibility, below), and an
+  // explicit pick must survive every later URL keystroke.
+  const [gitTypeTouched, setGitTypeTouched] = useState(false);
+  // What the repository being cloned says about itself: `"public"`/`"private"`
+  // from the anonymous `git_remote_visibility` probe, `"unknown"` when the host
+  // wouldn't say (offline, self-hosted, a URL that isn't a repo). `null` while
+  // no probe has answered for the URL currently in the field.
+  const [cloneVisibility, setCloneVisibility] = useState<string | null>(null);
   const [mode, setMode] = useState("keep");
   const [skipScaffold, setSkipScaffold] = useState(false);
   // Trust tier at creation time (`docs/vm_projects_plan.md`): where the
@@ -117,6 +132,10 @@ export function ProjectDialog({
   // `vm_doctor`'s verdict — probed once per dialog open; `null` while pending
   // (the VM option simply isn't offered until it answers).
   const [vmDoctor, setVmDoctor] = useState<VmDoctorReport | null>(null);
+  // Whether the doctor's install button has been clicked: the report is probed
+  // once per open, so without a re-probe the tier would stay unavailable in the
+  // dialog the install was started from.
+  const [vmInstalling, setVmInstalling] = useState(false);
   // A VM boot in flight after create — first boot runs cloud-init and can take
   // a minute, so the dialog says what it is waiting on.
   const [bootingVm, setBootingVm] = useState(false);
@@ -213,6 +232,18 @@ export function ProjectDialog({
     | "github"
     | "gitlab"
     | "";
+  // The hosting provider of the repository this import comes from, as the URL's
+  // own host names it ("" for a self-hosted host that names neither). A fork's
+  // explicit "Host type" pick wins, since that row exists exactly for the hosts
+  // the URL can't classify. This is what the created project records as
+  // `git_provider`, so a cloned project carries its host from the first second
+  // instead of waiting for the `origin` sniff to badge it — and it is what fills
+  // the Git hosting field below.
+  const cloneProvider: GitProvider | "" = isCloneImport
+    ? isForkImport
+      ? forkProviderResolved
+      : providerFromCloneUrl(repoUrl)
+    : "";
   const forkCli = forkProviderResolved ? PROVIDER_CLI_INSTALL[forkProviderResolved] : null;
   // Same shape as the git-install banner: only claim the CLI is missing once the
   // probe has actually answered.
@@ -242,9 +273,9 @@ export function ProjectDialog({
   // this is the one moment it is cheap: flipping it later restarts every tab of
   // the project (and costs a non-resumable agent its conversation). Same
   // availability gate as the menu item — a remote project's tabs already run on
-  // its host, and the backend refuses on Windows (host paths mean nothing inside
-  // a Linux container).
-  const containerAvailable = !isRemoteProject && !IS_WINDOWS;
+  // its host. Every desktop otherwise: on Windows the backend spells the mounts
+  // for Docker Desktop (`sandbox::container_path`).
+  const containerAvailable = !isRemoteProject;
   // The VM tier is offered for a NEW project or a plain clone import — the two
   // creation shapes whose bytes can land inside the guest directly (a clone
   // runs *inside* the VM; a new project starts empty there). A folder/fork
@@ -333,6 +364,9 @@ export function ProjectDialog({
   const changeImportSource = (next: ImportSource) => {
     setImportSource(next);
     setGitType(next === "folder" ? "local" : "remote-private");
+    // The new source gets to fill the field again: a clone's own repository
+    // answers for it (provider + visibility), a folder has nothing to say.
+    setGitTypeTouched(false);
   };
 
   const setRepoUrlAndName = (url: string) => {
@@ -368,6 +402,48 @@ export function ProjectDialog({
       .then(setVmDoctor)
       .catch(() => setVmDoctor(null));
   }, []);
+
+  // …and again while the install button's terminal is working, so the tier
+  // appears in the dropdown the moment QEMU lands instead of after a reopen.
+  // Only runs after that click, and stops as soon as the doctor is happy.
+  useEffect(() => {
+    if (!vmInstalling || vmDoctor?.ok) return;
+    const timer = window.setInterval(() => {
+      invoke<VmDoctorReport>("vm_doctor").then(setVmDoctor).catch(() => {});
+    }, 6000);
+    return () => window.clearInterval(timer);
+  }, [vmInstalling, vmDoctor?.ok]);
+
+  // A clone import knows where its repository is hosted — so the Git hosting
+  // field is filled from the repository itself rather than from a guess: the
+  // provider comes off the URL's host, and public/private from one anonymous
+  // `ls-remote` (a repo that reads without credentials is public; one that
+  // refuses is private). Debounced, because the URL arrives keystroke by
+  // keystroke, and dropped entirely once the user answers the field themselves.
+  //
+  // An unreachable or self-hosted host answers "unknown" and the field keeps
+  // whatever the source's default put there — private, the safe way to be wrong.
+  useEffect(() => {
+    const url = repoUrl.trim();
+    setCloneVisibility(null);
+    if (!isCloneImport || gitTypeTouched || !url || !isCloneUrl(url)) return;
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      invoke<string>("git_remote_visibility", { url })
+        .then((visibility) => {
+          if (cancelled) return;
+          setCloneVisibility(visibility);
+          if (visibility === "public" || visibility === "private") {
+            setGitType(`remote-${visibility}`);
+          }
+        })
+        .catch(() => {});
+    }, 700);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [repoUrl, isCloneImport, gitTypeTouched]);
 
   // Probe the fork provider's CLI whenever the resolved provider changes (it
   // moves as the URL is typed). Reset to `null` first so the banner never shows
@@ -623,6 +699,7 @@ export function ProjectDialog({
         directory: "",
         description,
         gitType,
+        gitProvider: cloneProvider || undefined,
         skipScaffold,
         vm: { enabled: true },
       },
@@ -646,7 +723,7 @@ export function ProjectDialog({
       const tabsStore = useTabsStore.getState();
       tabsStore.setScope(project.id);
       tabsStore.addTab({
-        label: "Clone into VM",
+        label: t("projectDialog.cloneIntoVmTab"),
         cmd: "git",
         args: ["clone", "--progress", repoUrl.trim(), "."],
         env: {},
@@ -766,6 +843,9 @@ export function ProjectDialog({
                 name,
                 description,
                 gitType,
+                // The clone URL's own host, so the project is badged by where it
+                // actually came from rather than by an `origin` sniff later.
+                gitProvider: cloneProvider || undefined,
                 mode: isRemoteProject || isCloneImport ? "keep" : mode,
                 scaffoldFillModes,
                 manualValidationConfirmed,
@@ -792,7 +872,7 @@ export function ProjectDialog({
             // never adopted silently, since `docker build` runs it as root.
             const { source } = outcome;
             const adopt = await confirm(describeDetectedSpecSource(source), {
-              title: "Use this repo's own container?",
+              title: t("scaffold.adoptTitle"),
               kind: "warning",
             });
             outcome = await invoke<SandboxToggleOutcome>("set_project_sandbox", {
@@ -906,10 +986,19 @@ export function ProjectDialog({
     });
   };
 
+  // Resolved here rather than in `scaffold.ts` so the dropdown re-renders when
+  // the language changes.
+  const fillOptions = SCAFFOLD_FILL_OPTIONS.map((o) => ({ value: o.value, label: t(o.labelKey) }));
+
   const scaffoldStatusText = (item: ScaffoldPreviewItem) => {
-    if (item.path === ".git") return item.exists ? "Already there" : "Missing";
-    const base = item.exists ? "Already there, will be kept" : "Missing, will be added";
-    return AGENT_POINTER_DOCS.has(item.path) ? `${base} · points at AGENTS.md` : base;
+    if (item.path === ".git")
+      return t(item.exists ? "projectDialog.scaffoldAlreadyThere" : "projectDialog.scaffoldMissing");
+    const base = t(
+      item.exists ? "projectDialog.scaffoldKept" : "projectDialog.scaffoldWillBeAdded",
+    );
+    return AGENT_POINTER_DOCS.has(item.path)
+      ? t("projectDialog.scaffoldPointsAtAgents", { base })
+      : base;
   };
 
   // The shared project name + description fields. They live in the always-visible
@@ -1154,7 +1243,10 @@ export function ProjectDialog({
           <Dropdown
             className="dropdown-block"
             value={gitType}
-            onChange={setGitType}
+            onChange={(v) => {
+              setGitTypeTouched(true);
+              setGitType(v);
+            }}
             options={[
               { value: "none", label: t("projectDialog.gitNoneOpt") },
               { value: "local", label: t("projectDialog.gitLocalOpt") },
@@ -1168,6 +1260,25 @@ export function ProjectDialog({
               ? ` ${t("projectDialog.gitHostingHintRemoteSuffix")}`
               : "."}
           </span>
+          {/* Say where the filled-in answer came from — a field that changes
+              under the user is only helpful if it names its source. */}
+          {isCloneImport && cloneProvider && !gitTypeTouched && (
+            <span className="ssh-optional-hint">
+              {cloneVisibility === "public" || cloneVisibility === "private"
+                ? t("projectDialog.gitHostingFromClone", {
+                    provider: cloneProvider === "gitlab" ? "GitLab" : "GitHub",
+                    visibility: t(
+                      cloneVisibility === "public"
+                        ? "projectDialog.visibilityPublic"
+                        : "projectDialog.visibilityPrivate",
+                    ),
+                  })
+                : t("projectDialog.gitHostingFromCloneProviderOnly", {
+                    provider: cloneProvider === "gitlab" ? "GitLab" : "GitHub",
+                  })}{" "}
+              <UntestedTag />
+            </span>
+          )}
         </label>
 
         {/* Which host the repository is created on, and the promise that it is
@@ -1335,7 +1446,7 @@ export function ProjectDialog({
               <button
                 type="button"
                 onClick={() =>
-                  runInstallInTab("VM base image", vmDoctor.fetch_command!, "bash")
+                  runInstallInTab("VM base image", vmDoctor.fetch_command!, IS_WINDOWS ? "default" : "bash")
                 }
               >
                 {t("projectDialog.vmFetchBaseBtn")}
@@ -1344,10 +1455,32 @@ export function ProjectDialog({
           </div>
         )}
         {/* The tier is supported here but something is missing — name it, with
-            the doctor's own actionable sentences. */}
+            the doctor's own actionable sentences, and (house rule: an install is
+            one click, never a command to retype) offer to run the install for
+            the pieces a package manager can actually supply. What it cannot —
+            /dev/kvm access, disk space — stays a sentence, and the doctor omits
+            the command entirely then. */}
         {vmSelectable && vmDoctor && vmDoctor.supported && !vmDoctor.ok && (
           <div className="project-dialog-path">
             {t("projectDialog.vmUnavailable")} {vmDoctor.reasons.join(" ")}
+            {vmDoctor.install_command && (
+              <>
+                {" "}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setVmInstalling(true);
+                    runInstallInTab(
+                      t("projectDialog.vmInstallLabel"),
+                      vmDoctor.install_command!,
+                      IS_WINDOWS ? "default" : "bash",
+                    );
+                  }}
+                >
+                  {t("projectDialog.vmInstallBtn")}
+                </button>
+              </>
+            )}
           </div>
         )}
         {bootingVm && (
@@ -1394,7 +1527,7 @@ export function ProjectDialog({
                 onChange={(v) => {
                   if (v) applyScaffoldFillAll(v);
                 }}
-                options={SCAFFOLD_FILL_OPTIONS}
+                options={fillOptions}
               />
             </label>
 
@@ -1412,7 +1545,7 @@ export function ProjectDialog({
                       onChange={(v) =>
                         setScaffoldFillModes((current) => ({ ...current, [item.path]: v }))
                       }
-                      options={SCAFFOLD_FILL_OPTIONS}
+                      options={fillOptions}
                     />
                   ) : (
                     <span className="scaffold-row-status">{t("projectDialog.statusOnly")}</span>

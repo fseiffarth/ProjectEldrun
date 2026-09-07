@@ -406,7 +406,7 @@ export function runCwd(projectDir: string | null | undefined, file: string): str
 
 /**
  * The placer for the "Run opens in the focused subwindow" policy — where every
- * viewer (the right-panel tree, the Files (Project) tab, and a code editor tab)
+ * viewer (the side-panel tree, the Files (Project) tab, and a code editor tab)
  * sends its run/debug terminal.
  *
  * Inside a detached popout (`fileDrop` non-null) the main tab store isn't ours, so

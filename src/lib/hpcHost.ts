@@ -92,16 +92,3 @@ export function projectIsOnHpc(
   if (!r?.host) return false;
   return isHpcHost(settings, { user: r.user || undefined, host: r.host, port: r.port ?? undefined });
 }
-
-/** Whether *any* host of this project — primary or a `compute_hosts` worker — is
- *  tagged. Used where the question is "may this project run background work
- *  against a cluster at all", rather than "is this particular host one". */
-export function projectTouchesHpc(
-  settings: Settings | null | undefined,
-  project: ProjectEntry | null | undefined,
-): boolean {
-  if (projectIsOnHpc(settings, project)) return true;
-  return (project?.compute_hosts ?? []).some((h) =>
-    isHpcHost(settings, { user: h.user || undefined, host: h.host, port: h.port ?? undefined }),
-  );
-}

@@ -18,6 +18,17 @@
     Everything is code-complete and covered by tests but **not live-verified**.
 
     Deferred, with the plan's own phases: worktree-aware tab groups (Phase 3) and
-    "open worktree as project" / agent-per-branch (Phase 4).
+    "open worktree as project" (Phase 4).
+
+    **Agent-per-branch (Phase 4, 2026-09-02) — [DONE, UNTESTED].** "+ agent"
+    on a project with a linked worktree asks which worktree the agent starts in
+    (`ChoiceDialog`; main first; no dialog when there is nothing to choose), and
+    the chosen worktree is the tab's cwd with the branch on the label and on
+    Claude's `/rename`. Restart-resume in a worktree is fixed alongside:
+    `loadFromLayout` reset every agent cwd to the project root, so a worktree
+    Claude's `--resume` ran from the root and found no session — a cwd under
+    this root's `.eldrun/worktrees/` is now kept (`lib/agentWorktrees.ts`).
+    Local projects and the mirror side only; the host side of a remote project
+    (and the mobile "+ agent") still land at the root.
 
 ---

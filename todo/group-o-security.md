@@ -55,35 +55,34 @@ auth) and the local/remote git push axis (#21).*
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work
 
-87. **Per-tab Plan/Auto agent mode. (DONE ✅ · 🧪 Untested)** *(This is group-O's
-    #87; group-M has a different #87.)* A third authority axis
-    beside the Docker sandbox (OS containment) and tab locality (where it runs):
-    how much authority the *agent* has. An agent tab carries an optional
-    `agentMode` — **Plan** (`--permission-mode plan`: reads and proposes, never
-    edits) or **Auto** (`acceptEdits`: edits apply, shell/network still ask) —
-    surfaced as a clickable badge in the tab strip, so one tab plans while another
-    does the work and each comes back in its mode after a restart. Absent = the
-    agent's own ask-each-time default, which is every pre-existing tab.
-    - Behind the experimental global setting `agent_mode_toggle` (default **off**).
-    - **Claude *and Gemini*** — this bullet used to say "Claude only, by
-      construction… a toggle on Gemini would silently destroy the chat", which
-      the code has since overtaken. `components/tabs/agentModes.ts:46-56` ships
-      Gemini via `--approval-mode` (deliberately `auto_edit`, **not** `yolo`),
-      with the continue-last ambiguity accepted and documented in code.
-      The mode is a launch flag, so switching one respawns the agent
-      (`resolve_claude_session_impl` rewrites `--session-id` → `--resume`).
-      **Codex remains the deliberate absence**: it resumes but has no plan mode,
-      only a read-only sandbox that approximates one. That capability table is
-      still the single gate for adding more.
-    - Known cost: the respawn loses xterm scrollback (the conversation is resumed,
-      the terminal's raw history is not). A busy tab confirms before restarting.
-    - Follow-ups: an `agent_default_mode` setting so new tabs *start* in Plan or
-      Auto (would make the badge purely two-state); Codex once `--sandbox
-      read-only`/`--full-auto` are verified to be accepted on `codex resume`.
-    - [x] 🤖 Automated test (`src/__tests__/AgentMode.test.ts`)
-    - [ ] 🖐️ Manual test
-      - [ ] ✅ Works
-      - [ ] ❌ Doesn't work
+87. **Per-tab Plan/Auto agent mode. (REMOVED — the mode is the agent's own.)**
+    *(This is group-O's #87; group-M has a different #87.)* Built, then taken
+    back out: an agent tab carried an optional `agentMode` (**Plan** =
+    `--permission-mode plan`, **Auto** = `acceptEdits`; Gemini via
+    `--approval-mode plan`/`auto_edit`) behind the experimental
+    `agent_mode_toggle`, surfaced as a clickable badge in the tab strip. Gone
+    with it: `components/tabs/agentModes.ts`, `TabEntry.agentMode`, the setting
+    on both sides, the badge, and `src/__tests__/AgentMode{,Badge}.test.ts{,x}`.
+
+    Everything now goes through the agent's own CLI. Two things drove that, and
+    both are properties of the design rather than bugs in it:
+    - **The mode was a launch flag, so a flip respawned the PTY** — the
+      conversation resumed, the scrollback and any turn in flight did not. The
+      agent's own in-TUI switch restarts nothing.
+    - **It made the tab layout a second authority record.** A mode set inside
+      the CLI and a persisted `agentMode` are two answers to one question, and
+      the layout's was the one re-applied on restart.
+
+    What is kept: `services::agent_session` still re-applies the mode Claude's
+    Stop hook recorded onto the `--resume` respawn, so a mode set *in-session*
+    survives a relaunch. That is the CLI's answer being preserved, not Eldrun
+    choosing one. Eldrun Mobile's mode sheet is untouched — it presses Shift+Tab
+    and verifies against the TUI's own status line
+    (`mobile-web/src/terminal/agentModes.ts`), never a launch flag; only the
+    desktop bridge's launch-`modes` list went (now always empty).
+
+    Not reopening this without a mechanism that does not restart the session.
+    See `docs/context/agent_authority.md`.
 
 60. **Never manipulate the browser download path. (DONE — removed.)** Eldrun must
     not touch any browser's download directory. The `commands/downloads.rs` module
@@ -93,8 +92,15 @@ auth) and the local/remote git push axis (#21).*
     the "reset to `~/Downloads`" path still wrote into browser config — so we leave
     browser download settings fully alone.
 
-86. **Docker sandbox on Windows (currently refused).** *(This is group-O's #86;
-    group-G has a different #86.)* **Two premises below are now stale:**
+86. **Docker sandbox on Windows (BUILT 2026-09-03 · 🧪 Untested).** *(This is
+    group-O's #86; group-G has a different #86.)* Done as described in the
+    remaining-work line: `sandbox::container_path` spells every host path for
+    Docker Desktop (`C:\x` → `/c/x`) at the argv layer only, `--user` is
+    omitted on Windows, the staged Claude/Codex configs point at a POSIX twin
+    of the SessionStart hook (`eldrun_session_start.sh`, written beside the
+    PowerShell one) so in-container resume records still land, and the
+    frontend gates are lifted. Still needs the real Docker Desktop box below.
+    **Two premises below are now stale:**
     `services::sandbox` is **no longer** `#[cfg(unix)]` — it compiles everywhere
     (`services/mod.rs:30-36`), and the refusal lives at the call site
     (`commands/terminal.rs:149-150`). Its `staged_config_mounts_copies_and_shadows_host_originals`
@@ -482,6 +488,150 @@ intent. What is left is listed here.
       hand-typing the path.
     - [x] 🤖 Automated test
     - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+---
+
+153. **Harden Eldrun Mobile's local unlock into a cryptographic gate (PROPOSED
+     — needs sign-off).** From the 2026-08-28 mobile security re-review. Today
+     the phone's app lock (`mobile-web/src/localLock.ts`) is a UI gate: the
+     device signing key is a non-exportable `CryptoKey` in IndexedDB usable by
+     any script in the Serve origin, and the PIN is a PBKDF2 verifier that
+     wraps nothing — so an unlocked, running phone plus origin script (remote
+     debugging, or setting the `sessionStorage` unlock flag) bypasses the lock.
+     Not a bug: the UI states this posture honestly ("protects against casual
+     access to an unlocked phone"). The proposed enhancement uses the WebAuthn
+     **PRF extension** to derive a wrapping key from a platform-authenticator
+     assertion and store the device key **encrypted at rest**, so no usable key
+     exists without a biometric/device-lock assertion where PRF is supported;
+     PIN-only and PRF-incapable phones keep today's behavior (no lockout).
+     Full spec — enrollment/unlock/migration, the extractable-key tradeoff, and
+     the residual it does *not* close (unlocked-and-running) — in
+     [`docs/eldrun_mobile_future_plan.md`](../docs/eldrun_mobile_future_plan.md)
+     §G. Needs the user's sign-off on the extractable-key tradeoff before any
+     implementation.
+    - [ ] 🤖 Automated test
+    - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+154. **Screenshots ask before they land in a project — and never auto-file.**
+     ✅ Implemented · needs live QA. A capture used to be written straight into
+     the active project's `screenshots/` folder, which for a project with a
+     public git remote is a private-data leak one `git add -A` away: a screen
+     grab holds whatever was on screen (another project's window, mail, a token
+     in a terminal), not just the thing being documented. Now the OS region
+     tool is directed at a **staging area** outside every project tree
+     (`<state_dir>/screenshots-pending/`, so no file watch, git status or sync
+     loop sees it), the backend reports the PNG as a `screenshot-captured`
+     event, and `layout/ScreenshotSaveOverlay` asks for project / folder / name
+     before anything is written (`save_pending_screenshot` moves it,
+     `discard_pending_screenshot` deletes it, a 24h sweep collects shots whose
+     overlay never got an answer). The clipboard copy is unchanged and
+     unconditional — that is what makes Discard cheap. The PDF viewer's in-app
+     region crop goes through the same overlay instead of writing itself.
+     `screenshots/` is now in `GITIGNORE_DEFAULT`, so scaffold repair adds it to
+     existing projects too. Also **Shift+click on the Screenshot button waits
+     5 s** before the tool starts (`SCREENSHOT_DELAY_MS`): a region overlay
+     grabs the pointer *and* the keyboard, so Alt+Tab is impossible once it is
+     up — the delay is the only window in which the target window can be
+     brought forward. Countdown rides the existing switch toast.
+     - Audit at the time (2026-08-31): no auto-named `Screenshot-*.png` was ever
+       committed in any Eldrun project; the only screenshots in this public
+       repo's history are the deliberate README assets.
+    - [x] 🤖 Automated test — `src/__tests__/ScreenshotDelay.test.ts` (countdown,
+      throttled-timer firing, restart, cancel), `commands::screenshot` staging
+      confinement + TTL sweep, `scaffold_project_gitignores_screenshots`.
+    - [ ] 🖐️ Manual test — needs a backend restart. Press Screenshot: the
+      overlay should open on the crop with a preview, Save should land it where
+      named, Discard should leave the clipboard paste working. Shift+click
+      should count down and let an Alt+Tab land first.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+155. **A bind-mounted config file cannot be rewritten (DONE ✅ · 🖐️ Untested).**
+    The fence shadowed `~/.codex/config.toml`, `~/.claude/settings.json`,
+    `~/.claude/settings.local.json` and `~/.claude.json` by bind-mounting a
+    per-project copy over each one. `rename(2)` onto a mount point is `EBUSY`,
+    and all of these agents persist config by writing a sibling temp file and
+    renaming it over the original — so Codex died on the very first write a new
+    project provokes: `Failed to set trust for <project>: … failed to persist
+    config at /home/…/.codex/config.toml (code -32603)`. Verified directly:
+    `mv` onto a bind-mounted file returns `Device or resource busy`. Fixed by
+    binding the scope's whole staging dir once at
+    `agent_fence::STAGE_MOUNT` (`/run/eldrun-agent-config`) and making each
+    shadowed path a `--symlink` into it: an in-place rewrite still lands in the
+    throwaway copy, a rename replaces the *link* with a plain file in the home
+    tmpfs, and neither reaches the host original.
+    **Still open — the same bug in the two places the symlink trick does not
+    reach:** (a) project containers still `-v` the copies file-by-file, and
+    `~/.codex` there is created root-owned by docker, so a link cannot simply be
+    made from inside; (b) the genuinely host-writable per-entry file mounts
+    (`~/.codex/auth.json`, `~/.claude/.credentials.json`) hit the same `EBUSY`
+    when the agent rotates a token, and they cannot be shadowed — a fix means
+    mounting their parent, which is exactly the narrowing
+    `CLAUDE_UNMOUNTED`/`CODEX_UNMOUNTED` exist to keep.
+    - [x] 🤖 Automated test — `agent_fence::tests::bwrap_argv_orders_home_mounts_roots_and_command`
+      (the config path is a `--symlink`, never a mount destination, and the stage
+      mount precedes it), `staged_shadow_becomes_a_link_into_the_stage_mount`.
+    - [ ] 🖐️ Manual test — needs a backend restart. Open a Codex tab in a
+      brand-new project and let it ask to trust the folder: it must record the
+      trust without the `failed to persist config` error, and
+      `~/.codex/config.toml` on the host must stay unchanged.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+156. **A long-lived agent tab logs itself out (DONE ✅ · 🧪 Untested).** The
+    "(b)" of #155, met for real: agent tabs open for a few hours showed
+    `● Login expired · Please run /login` while a freshly opened tab and a
+    terminal-run `claude` were fine. `~/.claude/.credentials.json` was one of
+    the per-entry **file** bind mounts, and a file bind mount pins an *inode*.
+    Claude Code rotates the file by atomic rename — temp file + `rename(2)`,
+    a new inode at the same path — so the host and every later tab followed
+    the path to the fresh token while every tab already running stayed bound
+    to the orphaned old inode: stale access token, refresh with a refresh
+    token the server had already rotated away, cleared record, "Login
+    expired". Measured 2026-09-07: host inode 122169946 with real tokens;
+    the same path through `/proc/<pid>/root` of nineteen live fenced tabs,
+    inode 122170138, 280 bytes, both tokens empty. And the tab could not
+    repair itself: a rename onto a bind-mount point is `EBUSY` (#155).
+    Not the symlink trick from #155 — Claude 2.1.263 opens the store with
+    `O_NOFOLLOW` and answers `refused-symlink`/`ELOOP` — and not the whole
+    `~/.claude` directory, which would fail *open* for every deny-listed
+    entry created after spawn. Fixed by `services::agent_creds`: an
+    Eldrun-owned mirror at `<state_dir>/agent-creds/claude/.credentials.json`
+    (0600) whose inode never changes is what the fence and the project
+    container mount at the real path (`.credentials.json` joined
+    `CLAUDE_UNMOUNTED`; `sandbox::claude_credential_mounts` owns the
+    destination, like the staged shadows own `settings.json`). A keeper
+    thread (`notify` on both parent directories — a watch on the file dies
+    with the rename — plus a 60 s poll) rewrites the mirror **in place** when
+    the host changes and carries a refresh a tab persisted back to the host
+    the same way; identical bytes are a no-op both ways, and a cleared record
+    is never pushed host-wards. The later `expiresAt` wins, then mtime, host
+    on a tie. The plan seeds the mirror at spawn, so a new tab starts current.
+    macOS unchanged (Seatbelt cannot substitute; the real file stays
+    writable). Codex left alone on purpose: `~/.codex/auth.json` is written in
+    place (a live fenced Codex tab and the host share one inode), so its pin
+    is harmless.
+    - [x] 🤖 Automated test — `agent_creds::tests`: the mirror keeps its inode
+      across a host rename-rotation and a shorter rewrite, stays 0600 in a 0700
+      dir; a cleared record is refused host-wards and the pass restores the
+      tab's copy instead; identical content is a no-op both ways; a missing
+      host file creates nothing in either direction; a fenced refresh reaches
+      the host in place; later expiry wins, host wins ties, a host logout
+      sticks unless the tab wrote later. `sandbox::tests`: the per-entry
+      planner no longer mounts `.credentials.json`; the credential pair is the
+      mirror at the real path, seeded at plan time, and absent when logged out.
+    - [ ] 🖐️ Manual test — needs a backend restart. Open an agent tab, note
+      `stat -c %i ~/.claude/.credentials.json`, wait past the token's
+      `expiresAt` (or run `claude` in a plain terminal until it refreshes) and
+      confirm the inode changed on the host while the tab keeps working; then
+      `stat -c %i <state_dir>/agent-creds/claude/.credentials.json` must not
+      have changed and `/proc/<tab pid>/root/$HOME/.claude/.credentials.json`
+      must hold the new token. Tabs opened *before* the restart stay bound to
+      the old inode and must be reopened once.
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work
 

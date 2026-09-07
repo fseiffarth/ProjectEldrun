@@ -9,10 +9,21 @@
 //!
 //! Modeled on `services::sandbox`'s shape (preflight → ensure-running →
 //! teardown → startup sweep), with the container's Docker daemon replaced by a
-//! direct `qemu-system-x86_64 -enable-kvm` invocation: no libvirt, no root, no
-//! bridge networking. Networking is user-mode slirp with a
+//! direct `qemu-system-<arch>` invocation on the host's own hypervisor — KVM on
+//! Linux, Hypervisor.framework on macOS, the Windows Hypervisor Platform on
+//! Windows ([`machine_args_for`]) — no libvirt, no root, no bridge networking.
+//! The guest follows the host architecture (an x86-64 image on x86-64, an arm64
+//! image on Apple silicon / arm64 Linux), because acceleration only ever runs
+//! a same-architecture guest. Networking is user-mode slirp with a
 //! `hostfwd=tcp:127.0.0.1:<port>-:22` forward; the egress story
 //! (`services::vm_proxy`) hangs off the same netdev.
+//!
+//! Two host differences are absorbed here rather than surfaced: Windows QEMU
+//! cannot `-daemonize`, so the process is spawned detached and its pidfile
+//! polled, and it has no Unix sockets, so QMP rides a loopback TCP port
+//! recorded in `vm.json`. The cloud-init seed is written by
+//! `services::iso9660` when no `genisoimage`-class tool is installed, which on
+//! macOS and Windows is always.
 //!
 //! State layout (`<state_dir>/vm/`):
 //! ```text
@@ -43,7 +54,7 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
-use crate::schema::project::{Project, RemoteSpec, VmEgress, VmSpec};
+use crate::schema::project::{RemoteSpec, VmEgress, VmSpec};
 use crate::schema::projects::ProjectsList;
 use crate::storage;
 
@@ -57,12 +68,156 @@ pub const VM_PROJECT_DIR: &str = "/home/eldrun/project";
 /// base is rebuilt on demand (never automatically).
 pub const BASE_VERSION: u32 = 1;
 
-/// The stock Ubuntu LTS cloud image the tier bootstraps from (fetch once,
-/// checksum-verified against the release's own SHA256SUMS).
-const STOCK_IMAGE_NAME: &str = "ubuntu-24.04-server-cloudimg-amd64.img";
-const STOCK_IMAGE_URL: &str =
-    "https://cloud-images.ubuntu.com/releases/noble/release/ubuntu-24.04-server-cloudimg-amd64.img";
+/// The stock Ubuntu LTS release the tier bootstraps from (fetch once,
+/// checksum-verified against the release's own SHA256SUMS). The image file is
+/// per guest architecture ([`GuestArch::stock_image_name`]).
+const STOCK_RELEASE_URL: &str = "https://cloud-images.ubuntu.com/releases/noble/release";
 const STOCK_SUMS_URL: &str = "https://cloud-images.ubuntu.com/releases/noble/release/SHA256SUMS";
+
+// ── Guest architecture + host hypervisor ───────────────────────────────────
+
+/// The guest CPU architecture, which follows the host's: hardware acceleration
+/// (KVM / HVF / WHPX) only ever runs a guest of the host's own architecture, and
+/// an emulated guest is too slow to hold a working tree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GuestArch {
+    X86_64,
+    Aarch64,
+}
+
+impl GuestArch {
+    pub fn host() -> Self {
+        if cfg!(target_arch = "aarch64") {
+            GuestArch::Aarch64
+        } else {
+            GuestArch::X86_64
+        }
+    }
+
+    pub fn qemu_binary(self) -> &'static str {
+        match self {
+            GuestArch::X86_64 => "qemu-system-x86_64",
+            GuestArch::Aarch64 => "qemu-system-aarch64",
+        }
+    }
+
+    fn stock_image_name(self) -> &'static str {
+        match self {
+            GuestArch::X86_64 => "ubuntu-24.04-server-cloudimg-amd64.img",
+            GuestArch::Aarch64 => "ubuntu-24.04-server-cloudimg-arm64.img",
+        }
+    }
+
+    /// The baked image keeps its historical name on x86-64 (existing state
+    /// dirs), and carries the arch elsewhere.
+    fn baked_image_name(self) -> String {
+        match self {
+            GuestArch::X86_64 => format!("eldrun-base-{BASE_VERSION}.qcow2"),
+            GuestArch::Aarch64 => format!("eldrun-base-{BASE_VERSION}-arm64.qcow2"),
+        }
+    }
+
+    /// The `virt` machine on arm64 boots through UEFI firmware, which QEMU
+    /// ships as `edk2-aarch64-code.fd` (distros also package it under a few
+    /// other names). x86-64's `q35` has SeaBIOS built in and needs none.
+    fn needs_firmware(self) -> bool {
+        matches!(self, GuestArch::Aarch64)
+    }
+}
+
+/// The host OS the argv is being built for. Pure input so the builders are
+/// testable for every OS from any OS.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostOs {
+    Linux,
+    Macos,
+    Windows,
+}
+
+impl HostOs {
+    pub fn current() -> Self {
+        if cfg!(target_os = "macos") {
+            HostOs::Macos
+        } else if cfg!(target_os = "windows") {
+            HostOs::Windows
+        } else {
+            HostOs::Linux
+        }
+    }
+}
+
+/// Where a distro or QEMU install keeps the arm64 UEFI code image.
+fn find_aarch64_firmware() -> Option<PathBuf> {
+    let candidates = [
+        "/opt/homebrew/share/qemu/edk2-aarch64-code.fd",
+        "/usr/local/share/qemu/edk2-aarch64-code.fd",
+        "/usr/share/qemu/edk2-aarch64-code.fd",
+        "/usr/share/edk2/aarch64/QEMU_EFI.fd",
+        "/usr/share/qemu-efi-aarch64/QEMU_EFI.fd",
+        "/usr/share/AAVMF/AAVMF_CODE.fd",
+    ];
+    candidates
+        .iter()
+        .map(PathBuf::from)
+        .find(|p| p.is_file())
+}
+
+/// The accelerator, machine and CPU argv for `(os, arch)`. Pure.
+///
+/// - Linux: `-enable-kvm`; macOS: `-accel hvf`; Windows: `-accel whpx`.
+/// - x86-64 guests use `q35` with `-cpu host`, except under WHPX, which does
+///   not expose the host CPU model and takes `max` (the fullest model the
+///   accelerator supports) instead.
+/// - arm64 guests use the `virt` machine with `-cpu host` and the UEFI code
+///   image in `firmware`. `highmem=on` is the default and stated for clarity.
+///
+/// `None` for a pairing no hypervisor serves (arm64 Windows: WHPX is x86-only).
+pub(crate) fn machine_args_for(os: HostOs, arch: GuestArch, firmware: Option<&Path>) -> Option<Vec<String>> {
+    let accel: Vec<String> = match os {
+        HostOs::Linux => vec!["-enable-kvm".into()],
+        HostOs::Macos => vec!["-accel".into(), "hvf".into()],
+        HostOs::Windows => {
+            if arch == GuestArch::Aarch64 {
+                return None;
+            }
+            vec!["-accel".into(), "whpx".into()]
+        }
+    };
+    let mut args = accel;
+    match arch {
+        GuestArch::X86_64 => {
+            args.extend(["-machine".into(), "q35".into(), "-cpu".into()]);
+            args.push(if os == HostOs::Windows { "max".into() } else { "host".into() });
+        }
+        GuestArch::Aarch64 => {
+            args.extend([
+                "-machine".into(),
+                "virt,highmem=on".into(),
+                "-cpu".into(),
+                "host".into(),
+            ]);
+            if let Some(fw) = firmware {
+                args.extend(["-bios".into(), fw.display().to_string()]);
+            }
+        }
+    }
+    Some(args)
+}
+
+/// This host's machine argv, or the reason there is none.
+fn machine_args() -> Result<Vec<String>, String> {
+    let arch = GuestArch::host();
+    let firmware = if arch.needs_firmware() {
+        Some(find_aarch64_firmware().ok_or_else(|| {
+            "No arm64 UEFI firmware (edk2-aarch64-code.fd) found; install QEMU's firmware package."
+                .to_string()
+        })?)
+    } else {
+        None
+    };
+    machine_args_for(HostOs::current(), arch, firmware.as_deref())
+        .ok_or_else(|| "No hardware virtualization is available for this host/guest pairing.".to_string())
+}
 
 // ── Paths ──────────────────────────────────────────────────────────────────
 
@@ -91,11 +246,11 @@ pub fn vm_dir(project_id: &str) -> PathBuf {
 }
 
 fn stock_image_path() -> PathBuf {
-    images_dir().join(STOCK_IMAGE_NAME)
+    images_dir().join(GuestArch::host().stock_image_name())
 }
 
 fn baked_image_path() -> PathBuf {
-    images_dir().join(format!("eldrun-base-{BASE_VERSION}.qcow2"))
+    images_dir().join(GuestArch::host().baked_image_name())
 }
 
 /// The base image a new overlay should back onto: the baked toolchain image
@@ -121,6 +276,10 @@ pub struct VmRuntime {
     pub ssh_port: u16,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub proxy_port: Option<u16>,
+    /// Windows: the loopback port QMP listens on (no Unix sockets there).
+    /// Absent on Unix, where QMP is `qmp.sock` in the VM dir.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub qmp_port: Option<u16>,
     pub egress: VmEgress,
     /// The base image the overlay was created against (display only).
     pub base_image: String,
@@ -165,7 +324,22 @@ pub fn vm_ssh_opts(host: &str, port: Option<u16>) -> Vec<String> {
         return Vec::new();
     }
     let reg = registry().lock().unwrap();
-    let Some(vm) = reg.values().find(|vm| vm.runtime.ssh_port == port) else {
+    // A **live** claim on the port wins over a stale one. A QEMU killed from
+    // outside (or crashed) leaves its registry entry behind and releases its
+    // port back to the ephemeral pool, so the next VM can be handed exactly it —
+    // and an arbitrary `values()` order would then lend the new VM the dead
+    // one's identity and known_hosts: an ssh authenticating with the wrong key
+    // against a host key recorded for a machine that no longer exists, i.e. a
+    // refusal wearing the wording of a MITM. Liveness only *ranks* the match; a
+    // sole claimant still answers, because coming back empty would send the
+    // connection to the user's real `~/.ssh/known_hosts`, which is the one thing
+    // this injection exists to prevent.
+    let by_port = |vm: &&RunningVm| vm.runtime.ssh_port == port;
+    let Some(vm) = reg
+        .values()
+        .find(|vm| by_port(vm) && pid_is_live_qemu(vm.runtime.pid))
+        .or_else(|| reg.values().find(by_port))
+    else {
         return Vec::new();
     };
     vec![
@@ -204,7 +378,7 @@ pub fn vm_spec_for(project_id: &str) -> Option<VmSpec> {
 pub fn is_running(project_id: &str) -> bool {
     let reg = registry().lock().unwrap();
     reg.get(project_id)
-        .map(|vm| pid_alive(vm.runtime.pid))
+        .map(|vm| pid_is_live_qemu(vm.runtime.pid))
         .unwrap_or(false)
 }
 
@@ -212,7 +386,7 @@ pub fn is_running(project_id: &str) -> bool {
 pub fn running_state(project_id: &str) -> Option<VmRuntime> {
     let reg = registry().lock().unwrap();
     reg.get(project_id)
-        .filter(|vm| pid_alive(vm.runtime.pid))
+        .filter(|vm| pid_is_live_qemu(vm.runtime.pid))
         .map(|vm| vm.runtime.clone())
 }
 
@@ -222,8 +396,8 @@ pub fn running_state(project_id: &str) -> Option<VmRuntime> {
 /// preflight): can this machine boot project VMs, and what's missing if not.
 #[derive(Debug, Clone, Serialize)]
 pub struct VmDoctorReport {
-    /// Linux-only initially — elsewhere the tier is hidden, like the container
-    /// toggle on Windows.
+    /// Whether a hypervisor exists for this host and guest architecture at all
+    /// (every desktop except arm64 Windows). When false the tier is hidden.
     pub supported: bool,
     /// Everything needed to boot is present (base image handled separately —
     /// missing base is a one-click fetch, not an unavailable tier).
@@ -247,11 +421,18 @@ pub struct VmDoctorReport {
     pub fetch_command: Option<String>,
     /// The build-tab command that bakes the toolchain base image (Phase 3).
     pub bake_command: Option<String>,
+    /// For missing *host packages* (QEMU, qemu-img, arm64 firmware, a seed
+    /// tool): the one command that installs them, so the dialog can offer a
+    /// button that runs it instead of a sentence to retype (house rule: any
+    /// install-via-command flow is one click). `None` when nothing is missing
+    /// that a package manager fixes — `/dev/kvm` access and disk space are
+    /// reasons to read, not to install.
+    pub install_command: Option<String>,
 }
 
 /// The raw probe results [`doctor_verdict`] reasons from — split so the
 /// verdict is testable without qemu on the test machine.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct VmDoctorProbes {
     pub supported: bool,
     pub qemu: bool,
@@ -262,6 +443,92 @@ pub struct VmDoctorProbes {
     pub disk_free_gb: Option<u64>,
     pub base_image_ready: bool,
     pub baked_image_ready: bool,
+    /// The arm64 UEFI image was found (always true where none is needed).
+    pub firmware_ok: bool,
+}
+
+impl Default for VmDoctorProbes {
+    fn default() -> Self {
+        VmDoctorProbes {
+            supported: false,
+            qemu: false,
+            kvm: false,
+            kvm_reason: None,
+            qemu_img: false,
+            iso_tool: None,
+            disk_free_gb: None,
+            base_image_ready: false,
+            baked_image_ready: false,
+            firmware_ok: true,
+        }
+    }
+}
+
+/// How to get QEMU on this host, for the doctor's sentence.
+fn qemu_install_hint() -> &'static str {
+    match HostOs::current() {
+        HostOs::Linux => "Install QEMU (e.g. `sudo apt install qemu-system-x86 qemu-utils`).",
+        HostOs::Macos => "Install QEMU (`brew install qemu`).",
+        HostOs::Windows => {
+            "Install QEMU for Windows (qemu.org → Download → Windows) into C:\\Program Files\\qemu."
+        }
+    }
+}
+
+/// The package-manager command that installs whatever host packages the probes
+/// found missing, for `host`/`arch`. Pure (no path lookups), so the button's
+/// command is testable for every OS from any OS. `None` when nothing missing is
+/// installable — a kvm permission problem or a full disk is not.
+///
+/// Only the *packages* appear here. The Linux line follows the same apt
+/// convention as the rest of Eldrun's install buttons; a non-apt distro's user
+/// still has the doctor's sentences above the button.
+fn install_command_for(host: HostOs, arch: GuestArch, p: &VmDoctorProbes) -> Option<String> {
+    if !p.supported {
+        return None;
+    }
+    let needs_qemu = !p.qemu || !p.qemu_img || (arch.needs_firmware() && !p.firmware_ok);
+    let needs_iso = p.iso_tool.is_none();
+    if !needs_qemu && !needs_iso {
+        return None;
+    }
+    match host {
+        HostOs::Linux => {
+            let mut pkgs: Vec<&str> = Vec::new();
+            if !p.qemu {
+                pkgs.push(match arch {
+                    GuestArch::X86_64 => "qemu-system-x86",
+                    GuestArch::Aarch64 => "qemu-system-arm",
+                });
+            }
+            if !p.qemu_img {
+                pkgs.push("qemu-utils");
+            }
+            if arch.needs_firmware() && !p.firmware_ok {
+                pkgs.push("qemu-efi-aarch64");
+            }
+            if needs_iso {
+                pkgs.push("genisoimage");
+            }
+            Some(format!("sudo apt-get install -y {}", pkgs.join(" ")))
+        }
+        // One formula covers every piece: Homebrew's qemu carries qemu-img and
+        // the UEFI firmware, and xorriso is the seed tool it can install.
+        HostOs::Macos => {
+            let mut pkgs: Vec<&str> = Vec::new();
+            if needs_qemu {
+                pkgs.push("qemu");
+            }
+            if needs_iso {
+                pkgs.push("xorriso");
+            }
+            Some(format!("brew install {}", pkgs.join(" ")))
+        }
+        // winget's QEMU ships qemu-img and the firmware images too; no seed tool
+        // is packaged there (the built-in ISO writer covers it).
+        HostOs::Windows => needs_qemu
+            .then(|| "winget install --id SoftwareFreedomConservancy.QEMU -e --source winget".to_string()),
+    }
 }
 
 /// Pure: fold probe results into the report (minus the command fields, which
@@ -269,13 +536,17 @@ pub struct VmDoctorProbes {
 pub fn doctor_verdict(p: &VmDoctorProbes) -> VmDoctorReport {
     let mut reasons = Vec::new();
     if !p.supported {
-        reasons.push("Project VMs are Linux-only for now.".to_string());
+        reasons.push(
+            "Project VMs need hardware virtualization for this host's architecture; there is none here (arm64 Windows has no hypervisor QEMU can use)."
+                .to_string(),
+        );
     } else {
         if !p.qemu {
-            reasons.push(
-                "'qemu-system-x86_64' not found. Install QEMU (e.g. `sudo apt install qemu-system-x86`)."
-                    .to_string(),
-            );
+            reasons.push(format!(
+                "'{}' not found. {}",
+                GuestArch::host().qemu_binary(),
+                qemu_install_hint()
+            ));
         }
         if !p.kvm {
             reasons.push(p.kvm_reason.clone().unwrap_or_else(|| {
@@ -284,7 +555,13 @@ pub fn doctor_verdict(p: &VmDoctorProbes) -> VmDoctorReport {
             }));
         }
         if !p.qemu_img {
-            reasons.push("'qemu-img' not found (part of qemu-utils).".to_string());
+            reasons.push("'qemu-img' not found (it ships with QEMU).".to_string());
+        }
+        if !p.firmware_ok {
+            reasons.push(
+                "No arm64 UEFI firmware (edk2-aarch64-code.fd) found; it ships with QEMU's firmware package."
+                    .to_string(),
+            );
         }
         if p.iso_tool.is_none() {
             reasons.push(
@@ -300,7 +577,7 @@ pub fn doctor_verdict(p: &VmDoctorProbes) -> VmDoctorReport {
             }
         }
     }
-    let ok = p.supported && p.qemu && p.kvm && p.qemu_img && p.iso_tool.is_some();
+    let ok = p.supported && p.qemu && p.kvm && p.qemu_img && p.iso_tool.is_some() && p.firmware_ok;
     VmDoctorReport {
         supported: p.supported,
         ok,
@@ -314,14 +591,8 @@ pub fn doctor_verdict(p: &VmDoctorProbes) -> VmDoctorReport {
         reasons,
         fetch_command: None,
         bake_command: None,
+        install_command: install_command_for(HostOs::current(), GuestArch::host(), p),
     }
-}
-
-/// Parse `df -Pk <dir>` output → available KiB (the 4th column of the data
-/// line). POSIX `-P` format, so the layout is stable.
-pub fn parse_df_avail_kib(output: &str) -> Option<u64> {
-    let line = output.lines().nth(1)?;
-    line.split_whitespace().nth(3)?.parse().ok()
 }
 
 fn binary_ok(bin: &str, arg: &str) -> bool {
@@ -332,12 +603,49 @@ fn binary_ok(bin: &str, arg: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Which ISO tool builds the seed, in preference order. The style decides the
-/// argv shape ([`seed_iso_args`]).
+/// Which external ISO tool builds the seed, in preference order. The style
+/// decides the argv shape ([`seed_iso_args`]). `None` means the built-in
+/// writer ([`BUILTIN_ISO_TOOL`]) is used — always the case on macOS and
+/// Windows, where none of these ship.
 pub fn pick_iso_tool() -> Option<&'static str> {
     ["genisoimage", "mkisofs", "xorriso", "cloud-localds"]
         .into_iter()
         .find(|tool| crate::paths::resolve_executable(tool).is_some())
+}
+
+/// The doctor's name for the in-process ISO 9660 writer.
+pub const BUILTIN_ISO_TOOL: &str = "built-in";
+
+/// The seed tool actually used: an installed external one, else the built-in.
+fn seed_tool() -> &'static str {
+    pick_iso_tool().unwrap_or(BUILTIN_ISO_TOOL)
+}
+
+/// Author `seed.iso` in `seed_dir` from its `user-data` + `meta-data`, with
+/// `tool` — an external mkisofs-style binary run in that directory, or the
+/// built-in writer.
+fn write_seed_iso(seed_dir: &Path, tool: &str) -> Result<(), String> {
+    if tool == BUILTIN_ISO_TOOL {
+        let user_data = std::fs::read(seed_dir.join("user-data")).map_err(|e| e.to_string())?;
+        let meta_data = std::fs::read(seed_dir.join("meta-data")).map_err(|e| e.to_string())?;
+        let image = crate::services::iso9660::write_iso(
+            "cidata",
+            &[("user-data", &user_data), ("meta-data", &meta_data)],
+        )?;
+        return std::fs::write(seed_dir.join("seed.iso"), image).map_err(|e| e.to_string());
+    }
+    let out = crate::paths::command_no_window(tool)
+        .args(seed_iso_args(tool))
+        .current_dir(seed_dir)
+        .output()
+        .map_err(|e| format!("{tool}: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "{tool} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        ));
+    }
+    Ok(())
 }
 
 /// The argv (after the binary) that authors `seed.iso` from `user-data` +
@@ -367,6 +675,62 @@ pub fn seed_iso_args(tool: &str) -> Vec<String> {
     }
 }
 
+/// Is the host hypervisor usable? Linux: `/dev/kvm` opens read-write. macOS:
+/// `kern.hv_support` (Hypervisor.framework) is on. Windows: this QEMU was
+/// built with WHPX (whether the *Windows Hypervisor Platform* feature is
+/// enabled only shows at boot, and QEMU's own error is then surfaced).
+fn probe_accel() -> (bool, Option<String>) {
+    #[cfg(target_os = "macos")]
+    {
+        let mut value: i32 = 0;
+        let mut size = std::mem::size_of::<i32>();
+        // SAFETY: `sysctlbyname` writes at most `size` bytes into `value`.
+        let rc = unsafe {
+            libc::sysctlbyname(
+                c"kern.hv_support".as_ptr(),
+                &mut value as *mut i32 as *mut libc::c_void,
+                &mut size,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        if rc == 0 && value == 1 {
+            return (true, None);
+        }
+        return (
+            false,
+            Some(
+                "Hypervisor.framework is not available on this Mac (kern.hv_support is 0); project VMs need it."
+                    .to_string(),
+            ),
+        );
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let bin = GuestArch::host().qemu_binary();
+        let listed = crate::paths::command_no_window(bin)
+            .args(["-accel", "help"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).contains("whpx"))
+            .unwrap_or(false);
+        if listed {
+            return (true, None);
+        }
+        return (
+            false,
+            Some(
+                "QEMU reports no WHPX accelerator. Install the official QEMU for Windows and turn on 'Windows Hypervisor Platform' under Windows Features."
+                    .to_string(),
+            ),
+        );
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        probe_kvm()
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn probe_kvm() -> (bool, Option<String>) {
     #[cfg(target_os = "linux")]
     {
@@ -396,38 +760,29 @@ fn probe_kvm() -> (bool, Option<String>) {
     }
 }
 
+/// Free space of the filesystem holding `dir`, in GiB — the same
+/// `statvfs`/`GetDiskFreeSpaceEx` read the disk-usage pane uses.
 fn disk_free_gb(dir: &Path) -> Option<u64> {
-    let out = crate::paths::command_no_window("df")
-        .arg("-Pk")
-        .arg(dir)
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    parse_df_avail_kib(&String::from_utf8_lossy(&out.stdout)).map(|kib| kib / (1024 * 1024))
+    crate::duscan::capacity_of(dir).map(|(_, avail)| avail / (1024 * 1024 * 1024))
 }
 
 /// Run the full doctor probe. Slowish (a few process spawns) — call from
 /// `spawn_blocking`.
 pub fn doctor() -> VmDoctorReport {
-    let supported = cfg!(target_os = "linux");
+    let arch = GuestArch::host();
+    let supported = machine_args_for(HostOs::current(), arch, None).is_some();
     let (kvm, kvm_reason) = if supported {
-        probe_kvm()
+        probe_accel()
     } else {
         (false, None)
     };
     let probes = VmDoctorProbes {
         supported,
-        qemu: supported && binary_ok("qemu-system-x86_64", "--version"),
+        qemu: supported && binary_ok(arch.qemu_binary(), "--version"),
         kvm,
         kvm_reason,
         qemu_img: supported && binary_ok("qemu-img", "--version"),
-        iso_tool: if supported {
-            pick_iso_tool().map(str::to_string)
-        } else {
-            None
-        },
+        iso_tool: supported.then(|| seed_tool().to_string()),
         disk_free_gb: if supported {
             let root = vm_root();
             let _ = std::fs::create_dir_all(&root);
@@ -437,6 +792,7 @@ pub fn doctor() -> VmDoctorReport {
         },
         base_image_ready: base_image_path().is_some(),
         baked_image_ready: baked_image_path().is_file(),
+        firmware_ok: !arch.needs_firmware() || find_aarch64_firmware().is_some(),
     };
     let mut report = doctor_verdict(&probes);
     if report.ok && !report.base_image_ready {
@@ -456,6 +812,38 @@ pub fn doctor() -> VmDoctorReport {
 pub fn fetch_base_command() -> Result<String, String> {
     let images = images_dir();
     std::fs::create_dir_all(&images).map_err(|e| e.to_string())?;
+    let arch = GuestArch::host();
+    let name = arch.stock_image_name();
+    let url = format!("{STOCK_RELEASE_URL}/{name}");
+    if cfg!(windows) {
+        // PowerShell twin: BITS-free download, SHA-256 from the release's own
+        // SHA256SUMS, atomic rename — the same steps as the bash script.
+        let script = format!(
+            r#"$ErrorActionPreference = 'Stop'
+Set-Location -LiteralPath '{images}'
+Write-Output '── Fetching Ubuntu 24.04 cloud image (~600 MB) ──'
+Invoke-WebRequest -Uri '{url}' -OutFile '{name}.part'
+Write-Output '── Verifying checksum ──'
+Invoke-WebRequest -Uri '{sums}' -OutFile 'SHA256SUMS'
+$expected = Get-Content 'SHA256SUMS' | Where-Object {{ $_ -match '\s\*?{name}$' }} | ForEach-Object {{ ($_ -split '\s+')[0] }} | Select-Object -First 1
+if (-not $expected) {{ throw 'SHA256SUMS has no entry for {name}' }}
+$actual = (Get-FileHash -Algorithm SHA256 -LiteralPath '{name}.part').Hash.ToLower()
+if ($actual -ne $expected.ToLower()) {{ throw "checksum mismatch: $actual != $expected" }}
+Move-Item -Force -LiteralPath '{name}.part' -Destination '{name}'
+Write-Output '── Base image ready. New VM projects can boot now. ──'
+"#,
+            images = images.display(),
+            name = name,
+            url = url,
+            sums = STOCK_SUMS_URL,
+        );
+        let path = vm_root().join("fetch-base.ps1");
+        std::fs::write(&path, script).map_err(|e| e.to_string())?;
+        return Ok(format!(
+            "powershell -NoProfile -ExecutionPolicy Bypass -File '{}'",
+            path.display()
+        ));
+    }
     let script = format!(
         r#"#!/usr/bin/env bash
 set -euo pipefail
@@ -464,14 +852,20 @@ echo '── Fetching Ubuntu 24.04 cloud image (~600 MB) ──'
 curl -fL --progress-bar -o '{name}.part' '{url}'
 echo '── Verifying checksum ──'
 curl -fsSL -o SHA256SUMS '{sums}'
-awk -v f='{name}' '($2 == f || $2 == "*" f) {{ print $1 "  " f ".part" }}' SHA256SUMS | sha256sum -c -
+awk -v f='{name}' '($2 == f || $2 == "*" f) {{ print $1 "  " f ".part" }}' SHA256SUMS | {sha256} -c -
 mv '{name}.part' '{name}'
 echo '── Base image ready. New VM projects can boot now. ──'
 "#,
         images = images.display(),
-        name = STOCK_IMAGE_NAME,
-        url = STOCK_IMAGE_URL,
+        name = name,
+        url = url,
         sums = STOCK_SUMS_URL,
+        // macOS has no `sha256sum`; `shasum -a 256` reads the same `-c` format.
+        sha256 = if cfg!(target_os = "macos") {
+            "shasum -a 256"
+        } else {
+            "sha256sum"
+        },
     );
     let path = vm_root().join("fetch-base.sh");
     std::fs::write(&path, script).map_err(|e| e.to_string())?;
@@ -519,24 +913,68 @@ pub fn build_base_command() -> Result<String, String> {
         cloud_init_meta_data("eldrun-bake", "eldrun-bake"),
     )
     .map_err(|e| e.to_string())?;
-    let tool = pick_iso_tool().ok_or_else(|| {
-        "No cloud-init seed tool found (genisoimage/mkisofs/xorriso/cloud-localds)".to_string()
-    })?;
-    let iso_argv = seed_iso_args(tool)
-        .iter()
-        .map(|a| format!("'{a}'"))
-        .collect::<Vec<_>>()
-        .join(" ");
+    let tool = seed_tool();
+    // The built-in writer has no command line: the seed is authored here, now,
+    // and the script only boots it. An external tool runs inside the script
+    // so its output streams into the build tab like the rest.
+    let iso_line = if tool == BUILTIN_ISO_TOOL {
+        let _ = std::fs::remove_file(bake.join("seed.iso"));
+        write_seed_iso(&bake, tool)?;
+        "# seed.iso was written by Eldrun's built-in ISO 9660 writer".to_string()
+    } else {
+        let argv = seed_iso_args(tool)
+            .iter()
+            .map(|a| format!("'{a}'"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        format!("rm -f seed.iso; {tool} {argv}")
+    };
+    let arch = GuestArch::host();
+    let qemu = crate::paths::resolve_executable(arch.qemu_binary())
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| arch.qemu_binary().to_string());
+    let machine = machine_args()?.join(" ");
+    if cfg!(windows) {
+        let script = format!(
+            r#"$ErrorActionPreference = 'Stop'
+Set-Location -LiteralPath '{bake}'
+Write-Output '── Building the Eldrun VM base image (installs git, build tools, node, agent CLIs) ──'
+Remove-Item -Force -ErrorAction SilentlyContinue disk.qcow2
+{iso_line}
+& qemu-img create -f qcow2 -b '{stock}' -F qcow2 disk.qcow2 32G
+Write-Output '── Booting provisioning VM (5–10 min; console output follows) ──'
+& '{qemu}' {machine} -m 4096 -smp 2 -drive file=disk.qcow2,if=virtio,format=qcow2 -drive file=seed.iso,if=virtio,media=cdrom,format=raw,readonly=on -netdev user,id=net0 -device virtio-net-pci,netdev=net0 -display none -serial stdio
+Write-Output '── Converting to base image ──'
+& qemu-img convert -O qcow2 disk.qcow2 '{baked}.part'
+Move-Item -Force -LiteralPath '{baked}.part' -Destination '{baked}'
+Remove-Item -Force -ErrorAction SilentlyContinue disk.qcow2, seed.iso
+Write-Output '── Baked base image ready: {baked} ──'
+Write-Output '   New VM projects boot from it; existing VMs keep their current disk.'
+"#,
+            bake = bake.display(),
+            iso_line = iso_line,
+            qemu = qemu,
+            machine = machine,
+            stock = stock_image_path().display(),
+            baked = baked_image_path().display(),
+        );
+        let path = root.join("bake-base.ps1");
+        std::fs::write(&path, script).map_err(|e| e.to_string())?;
+        return Ok(format!(
+            "powershell -NoProfile -ExecutionPolicy Bypass -File '{}'",
+            path.display()
+        ));
+    }
     let script = format!(
         r#"#!/usr/bin/env bash
 set -euo pipefail
 cd '{bake}'
 echo '── Building the Eldrun VM base image (installs git, build tools, node, agent CLIs) ──'
-rm -f seed.iso disk.qcow2
-{tool} {iso_argv}
+rm -f disk.qcow2
+{iso_line}
 qemu-img create -f qcow2 -b '{stock}' -F qcow2 disk.qcow2 32G
 echo '── Booting provisioning VM (5–10 min; console output follows) ──'
-qemu-system-x86_64 -enable-kvm -machine q35 -cpu host -m 4096 -smp 2 \
+'{qemu}' {machine} -m 4096 -smp 2 \
   -drive file=disk.qcow2,if=virtio,format=qcow2 \
   -drive file=seed.iso,if=virtio,media=cdrom,format=raw,readonly=on \
   -netdev user,id=net0 -device virtio-net-pci,netdev=net0 \
@@ -549,8 +987,9 @@ echo '── Baked base image ready: {baked} ──'
 echo '   New VM projects boot from it; existing VMs keep their current disk.'
 "#,
         bake = bake.display(),
-        tool = tool,
-        iso_argv = iso_argv,
+        iso_line = iso_line,
+        qemu = qemu,
+        machine = machine,
         stock = stock_image_path().display(),
         baked = baked_image_path().display(),
     );
@@ -678,24 +1117,34 @@ pub fn netdev_arg(egress: VmEgress, ssh_port: u16, proxy_port: Option<u16>) -> S
     }
 }
 
-/// Full QEMU argv (after the binary) for a project VM boot. Pure.
+/// The `-qmp` endpoint: a Unix socket in the VM dir, or on Windows a loopback
+/// TCP port (no `AF_UNIX` in Windows QEMU).
+pub fn qmp_endpoint(qmp_sock: &Path, qmp_port: Option<u16>) -> String {
+    match qmp_port {
+        Some(port) => format!("tcp:127.0.0.1:{port},server=on,wait=off"),
+        None => format!("unix:{},server=on,wait=off", qmp_sock.display()),
+    }
+}
+
+/// Full QEMU argv (after the binary) for a project VM boot. Pure. `machine` is
+/// [`machine_args_for`]'s accelerator/machine/CPU triple; `daemonize` is false
+/// on Windows, whose QEMU refuses `-daemonize` (the caller spawns detached and
+/// polls the pidfile instead).
 #[allow(clippy::too_many_arguments)]
 pub fn qemu_args(
+    machine: &[String],
     memory_mb: u32,
     cpus: u32,
     disk: &Path,
     seed: &Path,
     netdev: &str,
     pidfile: &Path,
-    qmp_sock: &Path,
+    qmp: &str,
     serial_log: &Path,
+    daemonize: bool,
 ) -> Vec<String> {
-    vec![
-        "-enable-kvm".to_string(),
-        "-machine".to_string(),
-        "q35".to_string(),
-        "-cpu".to_string(),
-        "host".to_string(),
+    let mut args: Vec<String> = machine.to_vec();
+    args.extend([
         "-m".to_string(),
         memory_mb.to_string(),
         "-smp".to_string(),
@@ -716,14 +1165,19 @@ pub fn qemu_args(
         "virtio-net-pci,netdev=net0".to_string(),
         "-display".to_string(),
         "none".to_string(),
-        "-daemonize".to_string(),
+    ]);
+    if daemonize {
+        args.push("-daemonize".to_string());
+    }
+    args.extend([
         "-pidfile".to_string(),
         pidfile.display().to_string(),
         "-qmp".to_string(),
-        format!("unix:{},server=on,wait=off", qmp_sock.display()),
+        qmp.to_string(),
         "-serial".to_string(),
         format!("file:{}", serial_log.display()),
-    ]
+    ]);
+    args
 }
 
 // ── Boot ───────────────────────────────────────────────────────────────────
@@ -802,21 +1256,7 @@ fn ensure_seed(
     if stale || !iso.is_file() {
         std::fs::write(seed_dir.join("user-data"), &user_data).map_err(|e| e.to_string())?;
         std::fs::write(seed_dir.join("meta-data"), &meta_data).map_err(|e| e.to_string())?;
-        let tool = pick_iso_tool().ok_or_else(|| {
-            "No cloud-init seed tool (genisoimage/mkisofs/xorriso/cloud-localds) installed"
-                .to_string()
-        })?;
-        let out = crate::paths::command_no_window(tool)
-            .args(seed_iso_args(tool))
-            .current_dir(&seed_dir)
-            .output()
-            .map_err(|e| format!("{tool}: {e}"))?;
-        if !out.status.success() {
-            return Err(format!(
-                "{tool} failed: {}",
-                String::from_utf8_lossy(&out.stderr)
-            ));
-        }
+        write_seed_iso(&seed_dir, seed_tool())?;
         std::fs::rename(seed_dir.join("seed.iso"), &iso).map_err(|e| e.to_string())?;
     }
     Ok(iso)
@@ -827,33 +1267,26 @@ fn ensure_seed(
 /// the project's own `project.json` — before anything connects. Ports are
 /// per-boot; this is the one writer.
 fn record_vm_endpoint(project_id: &str, ssh_port: u16) -> Result<(), String> {
-    let list_path = storage::state_dir().join("projects.json");
-    let mut list: ProjectsList = storage::read_json(&list_path).map_err(|e| e.to_string())?;
-    let entry = list
-        .iter_mut()
-        .find(|e| e.id == project_id)
-        .ok_or_else(|| format!("project '{project_id}' not found"))?;
-    let mut spec: RemoteSpec = entry
-        .extra
-        .get("remote")
-        .and_then(|v| serde_json::from_value(v.clone()).ok())
-        .ok_or_else(|| format!("VM project '{project_id}' has no remote spec"))?;
-    spec.host = "127.0.0.1".to_string();
-    spec.port = Some(ssh_port);
-    spec.key_auth = Some(true);
-    spec.vm = Some(true);
-    entry.extra.insert(
-        "remote".to_string(),
-        serde_json::to_value(&spec).map_err(|e| e.to_string())?,
-    );
-    let local_file = entry.local_file.clone();
-    storage::write_json(&list_path, &list).map_err(|e| e.to_string())?;
-
-    let proj_path = PathBuf::from(local_file);
-    if let Ok(mut project) = storage::read_json::<Project>(&proj_path) {
-        project.remote = Some(spec);
-        let _ = storage::write_json(&proj_path, &project);
-    }
+    crate::commands::projects::patch_project_entry_mirrored(
+        project_id,
+        |entry| {
+            let mut spec: RemoteSpec = entry
+                .extra
+                .get("remote")
+                .and_then(|v| serde_json::from_value(v.clone()).ok())
+                .ok_or_else(|| format!("VM project '{project_id}' has no remote spec"))?;
+            spec.host = "127.0.0.1".to_string();
+            spec.port = Some(ssh_port);
+            spec.key_auth = Some(true);
+            spec.vm = Some(true);
+            entry.extra.insert(
+                "remote".to_string(),
+                serde_json::to_value(&spec).map_err(|e| e.to_string())?,
+            );
+            Ok(spec)
+        },
+        |project, spec| project.remote = Some(spec.clone()),
+    )?;
     Ok(())
 }
 
@@ -934,40 +1367,79 @@ pub fn ensure_booted(project_id: &str, project_name: &str) -> Result<VmRuntime, 
     let serial_log = dir.join("serial.log");
     let _ = std::fs::remove_file(&pidfile);
     let _ = std::fs::remove_file(&qmp_sock);
+    let qmp_port = if cfg!(windows) {
+        Some(alloc_loopback_port()?)
+    } else {
+        None
+    };
 
     let netdev = netdev_arg(spec.egress, ssh_port, proxy_port);
+    let machine = machine_args()?;
+    let daemonize = !cfg!(windows);
     let args = qemu_args(
+        &machine,
         spec.memory_mb,
         spec.cpus,
         &disk,
         &seed,
         &netdev,
         &pidfile,
-        &qmp_sock,
+        &qmp_endpoint(&qmp_sock, qmp_port),
         &serial_log,
+        daemonize,
     );
-    let out = crate::paths::command_no_window("qemu-system-x86_64")
-        .args(&args)
-        .output()
-        .map_err(|e| format!("qemu-system-x86_64: {e}"))?;
-    if !out.status.success() {
-        return Err(format!(
-            "QEMU failed to start: {}",
-            String::from_utf8_lossy(&out.stderr)
-        ));
-    }
-    // `-daemonize`: the parent exits once the daemon is up and the pidfile is
-    // written.
-    let pid: u32 = std::fs::read_to_string(&pidfile)
-        .map_err(|e| format!("read qemu pidfile: {e}"))?
-        .trim()
-        .parse()
-        .map_err(|_| "unparseable qemu pidfile".to_string())?;
+    let qemu = GuestArch::host().qemu_binary();
+    let pid = if daemonize {
+        let out = crate::paths::command_no_window(qemu)
+            .args(&args)
+            .output()
+            .map_err(|e| format!("{qemu}: {e}"))?;
+        if !out.status.success() {
+            return Err(format!(
+                "QEMU failed to start: {}",
+                String::from_utf8_lossy(&out.stderr)
+            ));
+        }
+        // `-daemonize`: the parent exits once the daemon is up and the pidfile
+        // is written.
+        read_pidfile(&pidfile)?
+    } else {
+        // Windows: no `-daemonize`. Spawn detached (the handle is dropped; a
+        // Windows child outlives its parent's handle) and wait for QEMU to
+        // write its own pidfile, which it does once the machine is created —
+        // a start-up failure shows as the process exiting without one.
+        let mut child = crate::paths::command_no_window(qemu)
+            .args(&args)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("{qemu}: {e}"))?;
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            if let Ok(pid) = read_pidfile(&pidfile) {
+                break pid;
+            }
+            if let Ok(Some(status)) = child.try_wait() {
+                let mut err = String::new();
+                if let Some(mut stderr) = child.stderr.take() {
+                    let _ = stderr.read_to_string(&mut err);
+                }
+                return Err(format!("QEMU failed to start ({status}): {}", err.trim()));
+            }
+            if Instant::now() > deadline {
+                let _ = child.kill();
+                return Err("QEMU did not write its pidfile within 20s".to_string());
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
+    };
 
     let runtime = VmRuntime {
         pid,
         ssh_port,
         proxy_port,
+        qmp_port,
         egress: spec.egress,
         base_image,
     };
@@ -995,6 +1467,14 @@ pub fn ensure_booted(project_id: &str, project_name: &str) -> Result<VmRuntime, 
 
 // ── Shutdown / sweep ───────────────────────────────────────────────────────
 
+fn read_pidfile(pidfile: &Path) -> Result<u32, String> {
+    std::fs::read_to_string(pidfile)
+        .map_err(|e| format!("read qemu pidfile: {e}"))?
+        .trim()
+        .parse()
+        .map_err(|_| "unparseable qemu pidfile".to_string())
+}
+
 fn pid_alive(pid: u32) -> bool {
     #[cfg(unix)]
     {
@@ -1002,9 +1482,19 @@ fn pid_alive(pid: u32) -> bool {
     }
     #[cfg(not(unix))]
     {
-        let _ = pid;
-        false
+        crate::commands::apps::pid_alive(pid)
     }
+}
+
+/// Whether `pid` is a live process that is (still) **our** QEMU.
+///
+/// The `comm` half is the rule `sweep_orphans` already states — a recycled pid
+/// must never be signalled — applied wherever a pid read from the registry or a
+/// pidfile is acted on. Both outlive the process they name: a QEMU killed from
+/// outside clears neither, so the record can point at whatever the kernel later
+/// gives that number.
+fn pid_is_live_qemu(pid: u32) -> bool {
+    pid_alive(pid) && process_is_qemu(pid)
 }
 
 #[cfg(unix)]
@@ -1014,9 +1504,43 @@ fn signal_pid(pid: u32, sig: i32) {
     }
 }
 
-/// Ask QEMU for an ACPI powerdown over its QMP socket. Best-effort: any
-/// failure falls through to the signal escalation.
-fn qmp_powerdown(sock: &Path) -> Result<(), String> {
+/// Windows has no signals: the escalation past a refused ACPI powerdown is a
+/// forced termination (`taskkill /F`), which is what SIGKILL is on Unix.
+#[cfg(windows)]
+fn terminate_pid(pid: u32) {
+    let _ = crate::paths::command_no_window("taskkill")
+        .args(["/PID", &pid.to_string(), "/F"])
+        .output();
+}
+
+/// Greeting → capabilities negotiation → `system_powerdown`, over any QMP
+/// stream. Replies are read loosely; only acceptance of the command matters.
+fn qmp_session<S: Read + Write>(conn: &mut S) -> Result<(), String> {
+    let mut buf = [0u8; 1024];
+    let _ = conn.read(&mut buf);
+    conn.write_all(b"{\"execute\":\"qmp_capabilities\"}\n")
+        .map_err(|e| e.to_string())?;
+    let _ = conn.read(&mut buf);
+    conn.write_all(b"{\"execute\":\"system_powerdown\"}\n")
+        .map_err(|e| e.to_string())?;
+    let _ = conn.read(&mut buf);
+    Ok(())
+}
+
+/// Ask QEMU for an ACPI powerdown over its QMP endpoint — the Unix socket in
+/// the VM dir, or the loopback port `vm.json` recorded on Windows. Best-effort:
+/// any failure falls through to the process escalation.
+fn qmp_powerdown(sock: &Path, qmp_port: Option<u16>) -> Result<(), String> {
+    if let Some(port) = qmp_port {
+        let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+        let mut conn = std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(3))
+            .map_err(|e| e.to_string())?;
+        conn.set_read_timeout(Some(Duration::from_secs(3)))
+            .map_err(|e| e.to_string())?;
+        conn.set_write_timeout(Some(Duration::from_secs(3)))
+            .map_err(|e| e.to_string())?;
+        return qmp_session(&mut conn);
+    }
     #[cfg(unix)]
     {
         use std::os::unix::net::UnixStream;
@@ -1025,22 +1549,12 @@ fn qmp_powerdown(sock: &Path) -> Result<(), String> {
             .map_err(|e| e.to_string())?;
         conn.set_write_timeout(Some(Duration::from_secs(3)))
             .map_err(|e| e.to_string())?;
-        // Greeting → capabilities negotiation → command. Replies are read
-        // loosely; we only need the socket to accept the command.
-        let mut buf = [0u8; 1024];
-        let _ = conn.read(&mut buf);
-        conn.write_all(b"{\"execute\":\"qmp_capabilities\"}\n")
-            .map_err(|e| e.to_string())?;
-        let _ = conn.read(&mut buf);
-        conn.write_all(b"{\"execute\":\"system_powerdown\"}\n")
-            .map_err(|e| e.to_string())?;
-        let _ = conn.read(&mut buf);
-        Ok(())
+        qmp_session(&mut conn)
     }
     #[cfg(not(unix))]
     {
         let _ = sock;
-        Err("unsupported".to_string())
+        Err("no QMP endpoint recorded".to_string())
     }
 }
 
@@ -1070,14 +1584,29 @@ pub fn shutdown(project_id: &str) {
         .as_ref()
         .map(|vm| vm.dir.clone())
         .unwrap_or_else(|| vm_dir(project_id));
+    // The QMP port (Windows) comes from the registry, else from the vm.json a
+    // crashed predecessor left behind.
+    let qmp_port = removed
+        .as_ref()
+        .and_then(|vm| vm.runtime.qmp_port)
+        .or_else(|| {
+            storage::read_json::<VmRuntime>(&dir.join("vm.json"))
+                .ok()
+                .and_then(|r| r.qmp_port)
+        });
     let pid = removed.map(|vm| vm.runtime.pid).or_else(|| {
         std::fs::read_to_string(dir.join("qemu.pid"))
             .ok()
             .and_then(|s| s.trim().parse().ok())
     });
 
-    if let Some(pid) = pid.filter(|&p| pid_alive(p)) {
-        let clean = qmp_powerdown(&dir.join("qmp.sock")).is_ok()
+    // `pid_is_live_qemu`, not `pid_alive`: this pid can come from a `qemu.pid`
+    // file (or a registry entry) that outlived its process — a QEMU killed from
+    // outside clears neither — and the number may since have been recycled onto
+    // something innocent. `sweep_orphans` has always checked; a deactivate,
+    // archive or project delete signalled whatever the file said.
+    if let Some(pid) = pid.filter(|&p| pid_is_live_qemu(p)) {
+        let clean = qmp_powerdown(&dir.join("qmp.sock"), qmp_port).is_ok()
             && wait_pid_gone(pid, Duration::from_secs(15));
         #[cfg(unix)]
         if !clean {
@@ -1087,7 +1616,12 @@ pub fn shutdown(project_id: &str) {
                 wait_pid_gone(pid, Duration::from_secs(2));
             }
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        if !clean {
+            terminate_pid(pid);
+            wait_pid_gone(pid, Duration::from_secs(5));
+        }
+        #[cfg(not(any(unix, windows)))]
         let _ = clean;
     }
     crate::services::vm_proxy::stop_proxy(project_id);
@@ -1133,11 +1667,16 @@ pub fn sweep_orphans() {
                     signal_pid(pid, libc::SIGKILL);
                 }
             }
+            #[cfg(windows)]
+            terminate_pid(pid);
         }
         teardown_runtime_files(&dir);
     }
 }
 
+/// Whether `pid` is a QEMU process: `/proc/<pid>/comm` on Linux; elsewhere the
+/// program name from the process's command line (`KERN_PROCARGS2` on macOS,
+/// the image path on Windows), whose basename starts with `qemu`.
 fn process_is_qemu(pid: u32) -> bool {
     #[cfg(target_os = "linux")]
     {
@@ -1147,8 +1686,13 @@ fn process_is_qemu(pid: u32) -> bool {
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = pid;
-        false
+        crate::sysstat::cmdline(pid)
+            .and_then(|cmd| cmd.split_whitespace().next().map(str::to_string))
+            .map(|program| {
+                let base = program.rsplit(['/', '\\']).next().unwrap_or(&program);
+                base.starts_with("qemu")
+            })
+            .unwrap_or(false)
     }
 }
 
@@ -1197,6 +1741,7 @@ mod tests {
             disk_free_gb: Some(100),
             base_image_ready: true,
             baked_image_ready: false,
+            firmware_ok: true,
         }
     }
 
@@ -1244,9 +1789,59 @@ mod tests {
         assert!(report
             .reasons
             .iter()
-            .any(|r| r.contains("qemu-system-x86_64")));
+            .any(|r| r.contains(GuestArch::host().qemu_binary())));
         assert!(report.reasons.iter().any(|r| r == "kvm group"));
         assert!(report.reasons.iter().any(|r| r.contains("genisoimage")));
+    }
+
+    #[test]
+    fn install_command_names_only_the_missing_packages() {
+        // apt line for a host missing qemu-img alone.
+        let probes = VmDoctorProbes {
+            qemu_img: false,
+            ..good_probes()
+        };
+        assert_eq!(
+            install_command_for(HostOs::Linux, GuestArch::X86_64, &probes).as_deref(),
+            Some("sudo apt-get install -y qemu-utils")
+        );
+        // …and every piece at once, arm64's firmware included.
+        let probes = VmDoctorProbes {
+            qemu: false,
+            qemu_img: false,
+            firmware_ok: false,
+            iso_tool: None,
+            ..good_probes()
+        };
+        assert_eq!(
+            install_command_for(HostOs::Linux, GuestArch::Aarch64, &probes).as_deref(),
+            Some("sudo apt-get install -y qemu-system-arm qemu-utils qemu-efi-aarch64 genisoimage")
+        );
+        assert_eq!(
+            install_command_for(HostOs::Macos, GuestArch::Aarch64, &probes).as_deref(),
+            Some("brew install qemu xorriso")
+        );
+        assert!(install_command_for(HostOs::Windows, GuestArch::X86_64, &probes)
+            .is_some_and(|c| c.contains("winget install")));
+    }
+
+    #[test]
+    fn install_command_absent_when_nothing_is_installable() {
+        // Everything present: no button.
+        assert!(install_command_for(HostOs::Linux, GuestArch::X86_64, &good_probes()).is_none());
+        // A kvm permission problem is a sentence to read, not a package.
+        let probes = VmDoctorProbes {
+            kvm: false,
+            kvm_reason: Some("not in the kvm group".to_string()),
+            ..good_probes()
+        };
+        assert!(install_command_for(HostOs::Linux, GuestArch::X86_64, &probes).is_none());
+        // An unsupported host has nothing to install either.
+        let probes = VmDoctorProbes {
+            supported: false,
+            ..Default::default()
+        };
+        assert!(install_command_for(HostOs::Linux, GuestArch::X86_64, &probes).is_none());
     }
 
     #[test]
@@ -1261,14 +1856,58 @@ mod tests {
         assert!(report.reasons.iter().any(|r| r.contains("disk space")));
     }
 
-    // ── parse_df_avail_kib ─────────────────────────────────────────────────
+    // ── host hypervisor argv ─────────────────────────────────────────────
 
     #[test]
-    fn parses_posix_df_output() {
-        let out = "Filesystem 1024-blocks Used Available Capacity Mounted on\n\
-                   /dev/sda2  959786032 424742868 486206732  47% /\n";
-        assert_eq!(parse_df_avail_kib(out), Some(486_206_732));
-        assert_eq!(parse_df_avail_kib("garbage"), None);
+    fn machine_args_follow_the_hosts_hypervisor() {
+        let linux = machine_args_for(HostOs::Linux, GuestArch::X86_64, None).unwrap();
+        assert_eq!(linux, ["-enable-kvm", "-machine", "q35", "-cpu", "host"]);
+        let mac = machine_args_for(HostOs::Macos, GuestArch::X86_64, None).unwrap();
+        assert_eq!(mac, ["-accel", "hvf", "-machine", "q35", "-cpu", "host"]);
+        let win = machine_args_for(HostOs::Windows, GuestArch::X86_64, None).unwrap();
+        assert_eq!(win, ["-accel", "whpx", "-machine", "q35", "-cpu", "max"]);
+        let fw = Path::new("/opt/homebrew/share/qemu/edk2-aarch64-code.fd");
+        let apple = machine_args_for(HostOs::Macos, GuestArch::Aarch64, Some(fw)).unwrap();
+        assert_eq!(
+            apple,
+            [
+                "-accel",
+                "hvf",
+                "-machine",
+                "virt,highmem=on",
+                "-cpu",
+                "host",
+                "-bios",
+                "/opt/homebrew/share/qemu/edk2-aarch64-code.fd"
+            ]
+        );
+        assert!(machine_args_for(HostOs::Windows, GuestArch::Aarch64, None).is_none());
+        assert_eq!(GuestArch::Aarch64.qemu_binary(), "qemu-system-aarch64");
+        assert!(GuestArch::Aarch64.stock_image_name().contains("arm64"));
+        assert_eq!(GuestArch::X86_64.baked_image_name(), format!("eldrun-base-{BASE_VERSION}.qcow2"));
+    }
+
+    #[test]
+    fn qmp_endpoint_is_a_socket_on_unix_and_a_port_on_windows() {
+        assert_eq!(
+            qmp_endpoint(Path::new("/state/vm/p1/qmp.sock"), None),
+            "unix:/state/vm/p1/qmp.sock,server=on,wait=off"
+        );
+        assert_eq!(
+            qmp_endpoint(Path::new("ignored"), Some(4444)),
+            "tcp:127.0.0.1:4444,server=on,wait=off"
+        );
+    }
+
+    #[test]
+    fn doctor_reports_missing_firmware_only_where_it_matters() {
+        let probes = VmDoctorProbes {
+            firmware_ok: false,
+            ..good_probes()
+        };
+        let report = doctor_verdict(&probes);
+        assert!(!report.ok);
+        assert!(report.reasons.iter().any(|r| r.contains("edk2-aarch64-code.fd")));
     }
 
     // ── netdev / qemu argv ─────────────────────────────────────────────────
@@ -1299,18 +1938,36 @@ mod tests {
 
     #[test]
     fn qemu_args_shape() {
+        let machine = machine_args_for(HostOs::Linux, GuestArch::X86_64, None).unwrap();
         let args = qemu_args(
+            &machine,
             4096,
             2,
             Path::new("/state/vm/p1/disk.qcow2"),
             Path::new("/state/vm/p1/seed.iso"),
             "user,id=net0",
             Path::new("/state/vm/p1/qemu.pid"),
-            Path::new("/state/vm/p1/qmp.sock"),
+            &qmp_endpoint(Path::new("/state/vm/p1/qmp.sock"), None),
             Path::new("/state/vm/p1/serial.log"),
+            true,
         );
         let joined = args.join(" ");
-        assert!(joined.contains("-enable-kvm"));
+        assert!(joined.starts_with("-enable-kvm -machine q35 -cpu host"));
+        // Windows: no -daemonize, QMP over loopback TCP.
+        let win = qemu_args(
+            &machine_args_for(HostOs::Windows, GuestArch::X86_64, None).unwrap(),
+            4096,
+            2,
+            Path::new(r"C:\\state\\vm\\p1\\disk.qcow2"),
+            Path::new(r"C:\\state\\vm\\p1\\seed.iso"),
+            "user,id=net0",
+            Path::new(r"C:\\state\\vm\\p1\\qemu.pid"),
+            &qmp_endpoint(Path::new("ignored"), Some(4444)),
+            Path::new(r"C:\\state\\vm\\p1\\serial.log"),
+            false,
+        );
+        assert!(!win.contains(&"-daemonize".to_string()));
+        assert!(win.join(" ").contains("-qmp tcp:127.0.0.1:4444,server=on,wait=off"));
         assert!(joined.contains("-m 4096"));
         assert!(joined.contains("-smp 2"));
         assert!(joined.contains("file=/state/vm/p1/disk.qcow2,if=virtio,format=qcow2"));
@@ -1384,6 +2041,7 @@ mod tests {
                     pid: u32::MAX, // never alive, but opts don't require liveness
                     ssh_port: 45998,
                     proxy_port: None,
+                    qmp_port: None,
                     egress: VmEgress::Proxy,
                     base_image: String::new(),
                 },

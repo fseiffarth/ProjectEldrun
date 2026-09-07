@@ -152,9 +152,8 @@ export function TableView({
   const isSheet = useMemo(() => SHEET_RE.test(path), [path]);
 
   // The text draft behind a CSV/TSV. For a spreadsheet we don't edit the file at
-  // all; the hook still runs (hooks can't be conditional) but its content is
-  // ignored in favour of the backend's parsed rows.
-  const file = useEditableFile(path);
+  // all; disable text I/O while the workbook loader owns the rows.
+  const file = useEditableFile(path, !isSheet);
   const {
     content,
     draft,
@@ -178,7 +177,8 @@ export function TableView({
   const [sheetData, setSheetData] = useState<SheetData | null>(null);
   const [sheetError, setSheetError] = useState<string | null>(null);
   const [sheetLoaded, setSheetLoaded] = useState(false);
-  const [selectedSheet, setSelectedSheet] = useState<string | null>(null);
+  const [selection, setSelection] = useState<{ path: string; sheet: string } | null>(null);
+  const selectedSheet = selection?.path === path ? selection.sheet : null;
 
   useEffect(() => {
     if (!isSheet) return;
@@ -189,8 +189,8 @@ export function TableView({
       .then((data) => {
         if (cancelled) return;
         setSheetData(data);
-        // Adopt the sheet the backend actually returned (covers the default-pick).
-        setSelectedSheet((cur) => cur ?? data.active_sheet);
+        // The control displays active_sheet until the user explicitly selects one.
+
         setSheetLoaded(true);
       })
       .catch((e) => {
@@ -661,7 +661,7 @@ export function TableView({
         {isSheet && sheetData && sheetData.sheet_names.length > 1 && (
           <Dropdown
             value={selectedSheet ?? sheetData.active_sheet}
-            onChange={setSelectedSheet}
+            onChange={(sheet) => setSelection({ path, sheet })}
             title={t("tableView.selectSheetTitle")}
             options={sheetData.sheet_names.map((name) => ({ value: name, label: name }))}
           />
@@ -693,7 +693,7 @@ export function TableView({
                   width: 28,
                   textAlign: "center",
                   padding: "2px 4px",
-                  background: "var(--bg-input, var(--bg-panel))",
+                  background: "var(--bg-input)",
                   color: "var(--text-primary)",
                   border: "1px solid var(--border-color)",
                   borderRadius: "var(--radius-sm)",
@@ -721,7 +721,7 @@ export function TableView({
             style={{
               width: 140,
               padding: "2px 6px",
-              background: "var(--bg-input, var(--bg-panel))",
+              background: "var(--bg-input)",
               color: "var(--text-primary)",
               border: "1px solid var(--border-color)",
               borderRadius: "var(--radius-sm)",
@@ -747,7 +747,7 @@ export function TableView({
             title={t("tableView.appendRowTitle")}
             style={{
               all: "unset",
-              cursor: "pointer",
+              cursor: "var(--cur-pointer, pointer)",
               padding: "2px 8px",
               borderRadius: "var(--radius-sm)",
               fontSize: 12,
@@ -838,7 +838,7 @@ export function TableView({
                       width: "100%",
                       boxSizing: "border-box",
                       padding: "5px 6px",
-                      cursor: "pointer",
+                      cursor: "var(--cur-pointer, pointer)",
                       userSelect: "none",
                       fontSize: 11,
                       fontWeight: gutterSorted ? 700 : 600,
@@ -896,7 +896,7 @@ export function TableView({
                             width: "100%",
                             boxSizing: "border-box",
                             padding: "5px 10px",
-                            cursor: "pointer",
+                            cursor: "var(--cur-pointer, pointer)",
                             userSelect: "none",
                             fontWeight: active ? 700 : 600,
                             color: active ? "var(--text-primary)" : "var(--text-secondary)",
@@ -939,7 +939,7 @@ export function TableView({
                           right: 0,
                           width: 7,
                           height: "100%",
-                          cursor: "col-resize",
+                          cursor: "var(--cur-col-resize, col-resize)",
                           zIndex: 3,
                           touchAction: "none",
                           userSelect: "none",
@@ -998,7 +998,7 @@ export function TableView({
                           aria-label={t("tableView.deleteRowTitle", { n: row.index })}
                           style={{
                             all: "unset",
-                            cursor: "pointer",
+                            cursor: "var(--cur-pointer, pointer)",
                             padding: "0 2px",
                             color: "var(--text-primary)",
                           }}
@@ -1213,9 +1213,9 @@ function CellInput({
         boxSizing: "border-box",
         padding: "4px 10px",
         border: "none",
-        outline: "2px solid var(--accent-color, #6ab)",
+        outline: "2px solid var(--accent)",
         outlineOffset: -2,
-        background: "var(--bg-input, var(--bg-panel))",
+        background: "var(--bg-input)",
         color: "var(--text-primary)",
         font: "inherit",
       }}

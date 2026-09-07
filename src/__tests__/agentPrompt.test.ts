@@ -22,6 +22,28 @@ describe("looksLikeDecisionPrompt", () => {
     expect(looksLikeDecisionPrompt(screen)).toBe(true);
   });
 
+  it("detects a Codex menu whose deny option is third", () => {
+    // Codex offers two flavours of yes before the no, so an index-locked
+    // "1. yes" + "2. no" pair never matched it.
+    const screen = [
+      "Would you like to run the following command?",
+      "  1. Yes, just this once",
+      "  2. Yes, and don't ask again for this command in this session",
+      "  3. No, and tell Codex what to do differently",
+    ].join("\n");
+    expect(looksLikeDecisionPrompt(screen)).toBe(true);
+  });
+
+  it("detects a Codex menu the TUI's diff renderer stripped the spaces out of", () => {
+    // Ratatui repaints by jumping the cursor over unchanged cells, so the gaps
+    // between words never reach the wire and rows glue to their predecessor.
+    const raw =
+      "\x1b[7;1H\x1b[38;5;6;49m› 1. Yes, just this once\x1b[8;3H\x1b[39;49m" +
+      "2.Yes,and\x1b[8;14Hdon't\x1b[8;20Hask\x1b[8;24Hagain\x1b[9;3H" +
+      "3.No,and\x1b[9;12Htell\x1b[9;17HCodex\r\n";
+    expect(looksLikeDecisionPrompt(raw)).toBe(true);
+  });
+
   it("treats a finished turn (no prompt) as not-a-decision", () => {
     const screen = [
       "Done. I updated the activity store and the tests pass.",

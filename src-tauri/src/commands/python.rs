@@ -507,38 +507,24 @@ pub fn set_project_python(
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
 
-    let list_path = storage::state_dir().join("projects.json");
-    let mut list: ProjectsList = if list_path.exists() {
-        storage::read_json(&list_path).map_err(|e| e.to_string())?
-    } else {
-        Vec::new()
-    };
-    let entry = list
-        .iter_mut()
-        .find(|p| p.id == project_id)
-        .ok_or_else(|| format!("project '{project_id}' not found"))?;
-
-    match &value {
-        Some(v) => {
-            entry.extra.insert(
-                "python_interpreter".into(),
-                serde_json::Value::String(v.clone()),
-            );
-        }
-        None => {
-            entry.extra.remove("python_interpreter");
-        }
-    }
-    let local_file = entry.local_file.clone();
-    storage::write_json(&list_path, &list).map_err(|e| e.to_string())?;
-
-    let proj_path = PathBuf::from(&local_file);
-    if proj_path.exists() {
-        if let Ok(mut project) = storage::read_json::<Project>(&proj_path) {
-            project.python_interpreter = value.clone();
-            storage::write_json(&proj_path, &project).map_err(|e| e.to_string())?;
-        }
-    }
+    crate::commands::projects::patch_project_entry_mirrored(
+        &project_id,
+        |entry| {
+            match &value {
+                Some(v) => {
+                    entry.extra.insert(
+                        "python_interpreter".into(),
+                        serde_json::Value::String(v.clone()),
+                    );
+                }
+                None => {
+                    entry.extra.remove("python_interpreter");
+                }
+            }
+            Ok(())
+        },
+        |project, ()| project.python_interpreter = value.clone(),
+    )?;
     Ok(value)
 }
 

@@ -4,7 +4,7 @@
  *
  * It used to be re-derived from the live SSH lamp in a plain mount effect, so
  * anything that remounted a file view — hiding and re-showing the panels (the
- * right panel is unmounted, not hidden), a scope switch, an activation that
+ * side panel is unmounted, not hidden), a scope switch, an activation that
  * briefly cleared the active project — silently rewrote the side. With a pool
  * that had come up in the meantime, a deliberate "Local" became "Remote" with
  * nothing touched: the reported jump. The docked subwindow column had the same
@@ -62,7 +62,7 @@ describe("the auto default", () => {
   });
 });
 
-describe("useFileSource (the right panel's tree)", () => {
+describe("useFileSource (the side panel's tree)", () => {
   it("latches the usable side once the lamp settles", () => {
     setSsh("connected");
     const { result } = renderHook(() => useFileSource(PID, true));

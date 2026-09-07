@@ -37,6 +37,11 @@ use serde_json::Value;
 /// version-independent and idempotent.
 pub const CALENDAR_VERSION: u32 = 3;
 
+/// Name of the one-time board upgrade that added the date columns (Overdue /
+/// Today) to a board created before them. Recorded in
+/// [`CalendarData::board_upgrades`] so it runs exactly once per file.
+pub const BOARD_UPGRADE_DATE_COLUMNS: &str = "date-columns";
+
 /// Id of the calendar that legacy events (and events with no calendar) land in.
 pub const DEFAULT_CALENDAR_ID: &str = "default";
 
@@ -257,6 +262,34 @@ pub struct TaskColumn {
     /// unplaced card is never filed here (it goes to the leftmost open column).
     #[serde(default)]
     pub archived: bool,
+    /// **The** overdue column: a card whose deadline is behind it is *shown*
+    /// here. Like `done` there is at most one (`normalize` enforces it) and zero
+    /// is legal — a board without one simply leaves late cards where they are.
+    ///
+    /// Unlike `done` this is **display only, and no card record names it** until
+    /// the user drags one in: the routing lives in the frontend's `columnOf`,
+    /// because it depends on today's date and `normalize` runs on every read (see
+    /// `normalize_tasks` step 5 for why a date-derived *write* is forbidden). All
+    /// this flag does here is say which column the frontend routes into, and keep
+    /// it out of `col_fallback`.
+    #[serde(default)]
+    pub overdue: bool,
+    /// **The** today column, the twin of `overdue`: a card due today is shown
+    /// here. Same rules — at most one, zero legal, display-only.
+    #[serde(default)]
+    pub due_today: bool,
+    /// **The** intake column: where a card with no home lands (`col_fallback`),
+    /// and where every conversion files one.
+    ///
+    /// Named rather than inferred, because the old rule — *the leftmost column
+    /// that is neither Done nor an archive* — stopped identifying it the moment
+    /// the board led with the date columns and put Backlog behind Doing. Under
+    /// that layout the leftmost open column is *Doing*, and an unplaced card
+    /// would have been filed as work in progress. At most one (`normalize`
+    /// enforces it); with none, the old positional rule still applies, so a
+    /// hand-written board without the flag behaves exactly as it used to.
+    #[serde(default)]
+    pub intake: bool,
     /// CSS color for the column header, like `Calendar::color`.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub color: String,
@@ -271,30 +304,49 @@ pub struct TaskColumn {
 
 impl TaskColumn {
     /// The board a user who has never touched one starts with.
+    ///
+    /// **Deadline first, then intent.** The three leftmost columns are the ones
+    /// a date decides — what is late, what is due today — and only then the ones
+    /// the user decides by dragging: what is being worked on, and what is merely
+    /// on the list. Reading left to right therefore reads in order of urgency,
+    /// which is the order a board is actually scanned in.
     pub fn default_set() -> Vec<TaskColumn> {
-        // (id, name, color, done, archived) — at most one `done`, and `archived`
-        // sits last so the leftmost open column (the unplaced-card fallback) is
-        // never the archive.
+        // (id, name, color, done, archived, overdue, due_today, intake) — at most
+        // one of each flag. Backlog carries `intake` rather than earning it by
+        // being leftmost: it now sits *behind* Doing, and the unplaced-card
+        // fallback has to keep pointing at it (see `TaskColumn::intake`).
         [
-            ("backlog", "Backlog", "#8a93a5", false, false),
-            ("today", "Today", "#4aa3df", false, false),
-            ("doing", "Doing", "#e8a33d", false, false),
-            ("done", "Done", "#5cb85c", true, false),
-            ("archived", "Archived", "#7d8590", false, true),
+            ("overdue", "Overdue", "#d9534f", false, false, true, false, false),
+            ("today", "Today", "#4aa3df", false, false, false, true, false),
+            ("doing", "Doing", "#e8a33d", false, false, false, false, false),
+            ("backlog", "Backlog", "#8a93a5", false, false, false, false, true),
+            ("done", "Done", "#5cb85c", true, false, false, false, false),
+            ("archived", "Archived", "#7d8590", false, true, false, false, false),
         ]
         .iter()
         .enumerate()
-        .map(|(i, (id, name, color, done, archived))| TaskColumn {
-            id: (*id).to_string(),
-            name: (*name).to_string(),
-            position: i as i64,
-            done: *done,
-            archived: *archived,
-            color: (*color).to_string(),
-            limit: 0,
-            extra: HashMap::new(),
-        })
+        .map(
+            |(i, (id, name, color, done, archived, overdue, due_today, intake))| TaskColumn {
+                id: (*id).to_string(),
+                name: (*name).to_string(),
+                position: i as i64,
+                done: *done,
+                archived: *archived,
+                overdue: *overdue,
+                due_today: *due_today,
+                intake: *intake,
+                color: (*color).to_string(),
+                limit: 0,
+                extra: HashMap::new(),
+            },
+        )
         .collect()
+    }
+
+    /// Whether this column's contents are decided by a card's deadline rather
+    /// than by where the user put it — the two the frontend routes into.
+    pub fn date_governed(&self) -> bool {
+        self.overdue || self.due_today
     }
 }
 
@@ -377,6 +429,18 @@ pub struct TaskEventLink {
     pub location: String,
 }
 
+/// A project file a card was converted from, with a frozen remark snapshot.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct TaskFileLink {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub project_id: String,
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<u32>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub text: String,
+}
+
 /// A to-do (VTODO). `due`/`start` use the same local encoding as events; a task
 /// with no `due` simply never appears in the calendar views, only in the task list.
 ///
@@ -446,6 +510,9 @@ pub struct CalendarTask {
     /// just record which object it came from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event: Option<TaskEventLink>,
+    /// The project file remark this card was converted from, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<TaskFileLink>,
     /// `ProjectEntry.id` this card belongs to, or empty.
     ///
     /// Deliberately **not** validated against `projects.json`: that would make
@@ -487,6 +554,18 @@ pub struct CalendarData {
     /// default set the moment anything needs one.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub task_columns: Vec<TaskColumn>,
+    /// One-time board upgrades already applied to this file, by name.
+    ///
+    /// A marker rather than a `version` check, because `version` explicitly may
+    /// not be branched on (see [`CALENDAR_VERSION`]: an older Eldrun stamps the
+    /// number *backwards*, so a version-gated migration runs, or fails to run,
+    /// non-deterministically). This list only ever grows, an unknown entry is
+    /// harmless, and an older Eldrun round-trips it in its `extra` flatten — so
+    /// it is the one thing here that can honestly say "already done, do not do it
+    /// again", which is what keeps an upgrade from resurrecting a column the user
+    /// deleted afterwards.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub board_upgrades: Vec<String>,
     #[serde(flatten)]
     pub extra: HashMap<String, Value>,
 }
@@ -502,6 +581,7 @@ impl Default for CalendarData {
             // that seeded too would make a fresh `default()` and a fresh *read*
             // disagree about a file neither has written yet.
             task_columns: Vec::new(),
+            board_upgrades: Vec::new(),
             extra: HashMap::new(),
         }
     }
@@ -559,7 +639,91 @@ impl CalendarData {
             self.tasks[i].calendar_id = fallback.clone();
         }
 
+        self.upgrade_board();
         self.normalize_tasks();
+    }
+
+    /// Bring an **existing** board up to the current default shape, once.
+    ///
+    /// The date columns (`overdue` / `due_today`) arrived after the board did, so
+    /// a board created before them has neither and would never route anything.
+    /// This is the one upgrade that runs on a *read* — legitimately, because it
+    /// is gated on a board already existing, so the file of someone who only uses
+    /// the calendar still never grows board state.
+    ///
+    /// It runs **once per file**, recorded in `board_upgrades`, and that is not a
+    /// nicety: without the marker, deleting the Overdue column would resurrect it
+    /// on the very next read, which is the same "a user who deleted it meant it"
+    /// rule `normalize_tasks` keeps for the done column. And a *Today* column is
+    /// only ever flagged, never invented, for exactly that reason — a board that
+    /// no longer has one is left with no today routing rather than being handed
+    /// back a column it dropped.
+    fn upgrade_board(&mut self) {
+        if self.task_columns.is_empty() {
+            return;
+        }
+        if self
+            .board_upgrades
+            .iter()
+            .any(|u| u == BOARD_UPGRADE_DATE_COLUMNS)
+        {
+            return;
+        }
+        self.board_upgrades
+            .push(BOARD_UPGRADE_DATE_COLUMNS.to_string());
+
+        let seeded = TaskColumn::default_set();
+        // First, and before anything moves: pin the column that *is* the fallback
+        // today, under the old leftmost-open rule. Once Overdue is inserted at the
+        // left and Backlog moves behind Doing, that rule would name a different
+        // column, and every unplaced card on the board would quietly change home.
+        if !self.task_columns.iter().any(|c| c.intake) {
+            let mut open: Vec<&TaskColumn> = self
+                .task_columns
+                .iter()
+                .filter(|c| !c.done && !c.archived)
+                .collect();
+            open.sort_by(|a, b| a.position.cmp(&b.position).then_with(|| a.id.cmp(&b.id)));
+            if let Some(id) = open.first().map(|c| c.id.clone()) {
+                if let Some(col) = self.task_columns.iter_mut().find(|c| c.id == id) {
+                    col.intake = true;
+                }
+            }
+        }
+        if !self.task_columns.iter().any(|c| c.due_today) {
+            if let Some(col) = self.task_columns.iter_mut().find(|c| c.id == "today") {
+                col.due_today = true;
+            }
+        }
+        if !self.task_columns.iter().any(|c| c.overdue) {
+            let leftmost = self
+                .task_columns
+                .iter()
+                .map(|c| c.position)
+                .min()
+                .unwrap_or(0);
+            if let Some(col) = seeded.iter().find(|c| c.overdue) {
+                self.task_columns.push(TaskColumn {
+                    position: leftmost - 1,
+                    ..col.clone()
+                });
+            }
+        }
+
+        // A board still holding exactly the stock columns gets the stock *order*
+        // too — deadline-first, with Backlog behind Doing. A board carrying
+        // anything else is one the user has arranged, and only gains the new
+        // column at its left edge; rearranging someone's own columns is not an
+        // upgrade, it is a board they did not ask for.
+        let stock: HashSet<&str> = seeded.iter().map(|c| c.id.as_str()).collect();
+        let ids: HashSet<&str> = self.task_columns.iter().map(|c| c.id.as_str()).collect();
+        if ids == stock && ids.len() == self.task_columns.len() {
+            for col in self.task_columns.iter_mut() {
+                if let Some(at) = seeded.iter().find(|c| c.id == col.id) {
+                    col.position = at.position;
+                }
+            }
+        }
     }
 
     /// Seed the default columns if this store has none.
@@ -629,24 +793,64 @@ impl CalendarData {
             }
         }
 
+        // 2b. The same cap on each date flag, for the same reason: the frontend
+        //     routes into *the* overdue column and *the* today column, and two
+        //     candidates would make which one a card lands in depend on array
+        //     order. Never invented either — see `upgrade_board`.
+        let mut seen_overdue = false;
+        let mut seen_today = false;
+        let mut seen_intake = false;
+        for col in self.task_columns.iter_mut() {
+            if col.overdue && seen_overdue {
+                col.overdue = false;
+            } else if col.overdue {
+                seen_overdue = true;
+            }
+            if col.due_today && seen_today {
+                col.due_today = false;
+            } else if col.due_today {
+                seen_today = true;
+            }
+            // The intake column is *the* one a homeless card lands in; two would
+            // make that depend on array order.
+            if col.intake && seen_intake {
+                col.intake = false;
+            } else if col.intake {
+                seen_intake = true;
+            }
+        }
+
         let done_col: Option<String> = self
             .task_columns
             .iter()
             .find(|c| c.done)
             .map(|c| c.id.clone());
-        // The destination for a card with no home: the leftmost column that is
-        // neither the done one nor an archive (falling back to the first column
-        // at all, for a board whose only columns are Done/Archived). An unplaced
-        // card must never land in the archive — archiving is a deliberate move.
+        // The destination for a card with no home: the column flagged `intake`,
+        // and failing that the old positional rule — the leftmost column that is
+        // neither the done one, nor an archive, nor date-governed (falling back to
+        // the first column at all, for a board whose only columns are those). An
+        // unplaced card must never land in the archive — archiving is a deliberate
+        // move — and never in Overdue/Today either, whose contents are a statement
+        // about a deadline that this function has no clock to check.
         let col_fallback: String = {
-            let mut open: Vec<&TaskColumn> = self
+            let flagged = self
                 .task_columns
                 .iter()
-                .filter(|c| !c.done && !c.archived)
-                .collect();
-            open.sort_by(|a, b| a.position.cmp(&b.position).then_with(|| a.id.cmp(&b.id)));
-            open.first()
-                .map(|c| c.id.clone())
+                .find(|c| c.intake)
+                .map(|c| c.id.clone());
+            let sorted = |mut open: Vec<&TaskColumn>| -> Option<String> {
+                open.sort_by(|a, b| a.position.cmp(&b.position).then_with(|| a.id.cmp(&b.id)));
+                open.first().map(|c| c.id.clone())
+            };
+            let open = |date_ok: bool| {
+                self.task_columns
+                    .iter()
+                    .filter(|c| !c.done && !c.archived && (date_ok || !c.date_governed()))
+                    .collect::<Vec<&TaskColumn>>()
+            };
+            flagged
+                .or_else(|| sorted(open(false)))
+                .or_else(|| sorted(open(true)))
                 .unwrap_or_else(|| self.task_columns[0].id.clone())
         };
         let known_cols: HashSet<&str> = self.task_columns.iter().map(|c| c.id.as_str()).collect();
@@ -699,10 +903,16 @@ impl CalendarData {
             // 5. Backfill an unplaced card — **from `percent` only, never from
             //    `due`**. Any date-derived rule is time-dependent, and this runs
             //    on every read: the same file would migrate differently depending
-            //    on the hour, and a board would silently reshuffle at midnight. It
-            //    would also dump every dated task into "Today" on first launch,
-            //    which makes the board useless on day one. Which column a card
-            //    belongs in is a statement of intent the user makes by dragging.
+            //    on the hour, and a board would silently reshuffle at midnight.
+            //
+            //    This is exactly why the Overdue/Today columns are a *display*
+            //    rule and not a placement one. The frontend's `columnOf` shows a
+            //    card in them by reading its `due` against today's date, and
+            //    nothing here or anywhere else writes that decision to the record:
+            //    a card is stored in the column the user dragged it to (or the
+            //    fallback), and its deadline decides where that is *shown* for as
+            //    long as the deadline says so. Which column a card belongs in
+            //    otherwise is a statement of intent the user makes by dragging.
             if task.column.is_empty() {
                 task.column = match (&done_col, task.percent >= 100) {
                     (Some(done_id), true) => done_id.clone(),
@@ -832,6 +1042,7 @@ pub fn migrate_legacy(events: Vec<LegacyEvent>) -> CalendarData {
         events,
         tasks: Vec::new(),
         task_columns: Vec::new(),
+        board_upgrades: Vec::new(),
         extra: HashMap::new(),
     }
 }
@@ -1035,6 +1246,7 @@ mod tests {
                 ..Default::default()
             }],
             task_columns: Vec::new(),
+            board_upgrades: Vec::new(),
             extra: HashMap::new(),
         };
         data.normalize();
@@ -1067,6 +1279,7 @@ mod tests {
             events: Vec::new(),
             tasks,
             task_columns: TaskColumn::default_set(),
+            board_upgrades: Vec::new(),
             extra: HashMap::new(),
         }
     }
@@ -1092,15 +1305,140 @@ mod tests {
     fn ensure_board_seeds_the_default_columns() {
         let mut data = CalendarData::default();
         data.ensure_board();
-        assert_eq!(data.task_columns.len(), 5);
+        assert_eq!(data.task_columns.len(), 6);
         assert_eq!(data.task_columns.iter().filter(|c| c.done).count(), 1);
         assert_eq!(data.task_columns.iter().filter(|c| c.archived).count(), 1);
+        assert_eq!(data.task_columns.iter().filter(|c| c.overdue).count(), 1);
+        assert_eq!(data.task_columns.iter().filter(|c| c.due_today).count(), 1);
+        assert_eq!(data.task_columns.iter().filter(|c| c.intake).count(), 1);
         assert_eq!(done_column_id(&data), "done");
+        // Deadline first, then intent — and the intake column is *not* the
+        // leftmost open one any more, which is why it is flagged.
+        assert_eq!(
+            data.task_columns.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
+            ["overdue", "today", "doing", "backlog", "done", "archived"],
+        );
+        assert_eq!(
+            data.task_columns.iter().find(|c| c.intake).map(|c| c.id.as_str()),
+            Some("backlog"),
+        );
 
         // Idempotent: a second call must not duplicate or re-seed.
         let once = data.clone();
         data.ensure_board();
         assert_eq!(data, once);
+    }
+
+    /// The board that existed before the date columns did.
+    fn legacy_board() -> Vec<TaskColumn> {
+        [
+            ("backlog", false, false),
+            ("today", false, false),
+            ("doing", false, false),
+            ("done", true, false),
+            ("archived", false, true),
+        ]
+        .iter()
+        .enumerate()
+        .map(|(i, (id, done, archived))| TaskColumn {
+            id: (*id).to_string(),
+            name: (*id).to_string(),
+            position: i as i64,
+            done: *done,
+            archived: *archived,
+            ..Default::default()
+        })
+        .collect()
+    }
+
+    #[test]
+    fn an_old_board_gains_the_date_columns_once() {
+        let mut data = board(vec![task("t")]);
+        data.task_columns = legacy_board();
+        data.normalize();
+
+        assert_eq!(
+            data.task_columns
+                .iter()
+                .map(|c| (c.id.as_str(), c.position))
+                .collect::<Vec<_>>(),
+            [
+                ("backlog", 3),
+                ("today", 1),
+                ("doing", 2),
+                ("done", 4),
+                ("archived", 5),
+                ("overdue", 0),
+            ],
+            "a stock board gets the stock order, wherever the new column was pushed"
+        );
+        assert!(data.task_columns.iter().find(|c| c.id == "today").unwrap().due_today);
+        assert!(data.task_columns.iter().find(|c| c.id == "backlog").unwrap().intake);
+        // The card's home must not have moved from under it.
+        assert_eq!(data.tasks[0].column, "backlog");
+
+        // Idempotent, and — the point of the marker — a column deleted *after*
+        // the upgrade stays deleted.
+        let once = data.clone();
+        data.normalize();
+        assert_eq!(data, once);
+        data.task_columns.retain(|c| c.id != "overdue");
+        data.normalize();
+        assert!(
+            !data.task_columns.iter().any(|c| c.overdue),
+            "an upgrade must not resurrect a column the user removed"
+        );
+    }
+
+    /// A board someone arranged themselves is not rearranged: it gains Overdue at
+    /// its left edge and keeps everything else exactly where it was — including
+    /// which column unplaced cards land in.
+    #[test]
+    fn upgrading_a_custom_board_only_adds_the_new_column() {
+        let mut data = board(vec![task("t")]);
+        data.task_columns = vec![
+            TaskColumn {
+                id: "inbox".into(),
+                name: "Inbox".into(),
+                position: 0,
+                ..Default::default()
+            },
+            TaskColumn {
+                id: "doing".into(),
+                name: "Doing".into(),
+                position: 1,
+                ..Default::default()
+            },
+        ];
+        data.normalize();
+
+        assert_eq!(data.task_columns.len(), 3);
+        let added = data.task_columns.iter().find(|c| c.overdue).unwrap();
+        assert_eq!(added.id, "overdue");
+        assert!(added.position < 0, "the new column sits at the left edge");
+        assert!(
+            !data.task_columns.iter().any(|c| c.due_today),
+            "a Today column is flagged, never invented"
+        );
+        assert_eq!(
+            data.task_columns.iter().find(|c| c.intake).map(|c| c.id.as_str()),
+            Some("inbox"),
+            "the board's existing fallback keeps taking unplaced cards"
+        );
+        assert_eq!(data.tasks[0].column, "inbox");
+    }
+
+    /// An unplaced card is filed into the intake column, never into a date one:
+    /// `normalize` has no clock, and "due today" is not a thing it can know.
+    #[test]
+    fn an_unplaced_card_is_never_filed_into_a_date_column() {
+        let mut data = board(vec![CalendarTask {
+            due: Some("2026-01-01".into()),
+            ..task("t")
+        }]);
+        data.task_columns = TaskColumn::default_set();
+        data.normalize();
+        assert_eq!(data.tasks[0].column, "backlog");
     }
 
     /// The rule that keeps a calendar-only user's file clean: reading (which is
@@ -1115,6 +1453,7 @@ mod tests {
             events: Vec::new(),
             tasks: vec![task("t")],
             task_columns: Vec::new(),
+            board_upgrades: Vec::new(),
             extra: HashMap::new(),
         };
         data.normalize();
@@ -1142,6 +1481,7 @@ mod tests {
                 ..task("t")
             }],
             task_columns: Vec::new(),
+            board_upgrades: Vec::new(),
             extra: HashMap::new(),
         };
         data.normalize();
@@ -1468,6 +1808,12 @@ mod tests {
                 occurrence_start: "2026-07-30T09:00".into(),
                 ..Default::default()
             }),
+            file: Some(TaskFileLink {
+                project_id: "proj".into(),
+                path: "src/lib.rs".into(),
+                line: Some(9),
+                text: "snapshot".into(),
+            }),
             project_id: "proj".into(),
             ..task("t")
         };
@@ -1483,6 +1829,7 @@ mod tests {
         assert_eq!(back.rank, Some(2048.0));
         assert_eq!(back.tags, vec!["v2"]);
         assert_eq!(back.project_id, "proj");
+        assert_eq!(back.file.as_ref().map(|f| f.path.as_str()), Some("src/lib.rs"));
         assert_eq!(back.mail.unwrap().message_id, "inbox-42");
         let event = back.event.unwrap();
         assert_eq!(event.event_id, "ev-7");

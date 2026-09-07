@@ -34,11 +34,9 @@ pub struct UsageReport {
 /// a Tauri sync command would do that on the UI thread.
 #[tauri::command]
 pub async fn usage_bump(project_id: String, metrics: Counters) -> Result<(), String> {
-    tokio::task::spawn_blocking(move || {
-        usage_stats::record(&project_id, &metrics);
-    })
-    .await
-    .map_err(|e| format!("usage_bump task failed: {e}"))
+    tokio::task::spawn_blocking(move || usage_stats::record(&project_id, &metrics))
+        .await
+        .map_err(|e| format!("usage_bump task failed: {e}"))?
 }
 
 /// Every recorded counter for `project_id`, or summed across all projects when it

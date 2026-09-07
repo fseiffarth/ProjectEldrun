@@ -10,7 +10,12 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const { mockInvoke } = vi.hoisted(() => ({ mockInvoke: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: mockInvoke }));
 
-import { gatherTexStructure, type TexFileNode } from "../lib/viewers/tex";
+import {
+  gatherTexStructure,
+  isTexDocumentRoot,
+  texStructureParent,
+  type TexFileNode,
+} from "../lib/viewers/tex";
 
 /** Drive `read_file_text` off a fixed file map; `list_dir` is unused here since
  *  every graphic below carries an explicit extension (resolved synchronously). */
@@ -56,6 +61,40 @@ describe("gatherTexStructure", () => {
     ]);
   });
 
+  it("records the line/column of each \\input and answers 'go up' with it (#tex-structure-up)", async () => {
+    mockFiles({
+      "/p/main.tex":
+        "\\documentclass{article}\n" +
+        "\\begin{document}\n" +
+        "\\section{One}\n" +
+        "  \\input{intro}\n" +
+        "\\includegraphics[width=1cm]{fig.png}\n" +
+        "\\input{outro} % \\input{intro} again — the first wins\n" +
+        "\\end{document}\n",
+      "/p/intro.tex": "\\input{deep}\n",
+      "/p/deep.tex": "hi",
+      "/p/outro.tex": "hi",
+    });
+
+    const structure = await gatherTexStructure("/p/main.tex", "proj");
+    const { root } = structure;
+    expect(root.line).toBeUndefined();
+    expect(root.children.map((c) => [c.path, c.line, c.column])).toEqual([
+      ["/p/intro.tex", 4, 3],
+      ["/p/outro.tex", 6, 1],
+    ]);
+    expect(root.graphics.map((g) => [g.path, g.line, g.column])).toEqual([["/p/fig.png", 5, 1]]);
+    // A nested child's position is in ITS parent, not the root.
+    expect(root.children[0].children[0]).toMatchObject({ path: "/p/deep.tex", line: 1, column: 1 });
+
+    expect(texStructureParent(structure, "/p/deep.tex")).toEqual({ path: "/p/intro.tex", line: 1, column: 1 });
+    expect(texStructureParent(structure, "/p/outro.tex")).toEqual({ path: "/p/main.tex", line: 6, column: 1 });
+    expect(texStructureParent(structure, "/p/fig.png")).toEqual({ path: "/p/main.tex", line: 5, column: 1 });
+    // The root has nothing above it; an unlisted file is not in the tree.
+    expect(texStructureParent(structure, "/p/main.tex")).toBeNull();
+    expect(texStructureParent(structure, "/p/elsewhere.tex")).toBeNull();
+  });
+
   it("gathers \\includegraphics graphics with the viewer they render in", async () => {
     mockFiles({
       "/p/main.tex":
@@ -64,8 +103,8 @@ describe("gatherTexStructure", () => {
 
     const { root } = await gatherTexStructure("/p/main.tex", "proj");
     expect(root.graphics).toEqual([
-      { path: "/p/fig/plot.png", label: "plot.png", viewer: "image", section: undefined },
-      { path: "/p/diagram.pdf", label: "diagram.pdf", viewer: "pdf", section: undefined },
+      { path: "/p/fig/plot.png", label: "plot.png", viewer: "image", section: undefined, line: 1, column: 1 },
+      { path: "/p/diagram.pdf", label: "diagram.pdf", viewer: "pdf", section: undefined, line: 2, column: 1 },
     ]);
   });
 
@@ -164,5 +203,32 @@ describe("gatherTexStructure", () => {
 
     const { root } = await gatherTexStructure("/p/main.tex", "proj");
     expect(root.children.length).toBeLessThanOrEqual(60);
+  });
+});
+
+/**
+ * The "is this file a document, or a piece of one?" test behind the workspace
+ * self-heal: a `.tex` tab's `viewer` is persisted, so a file opened as a bare
+ * editor stays one — and telling a whole document apart from a deliberately
+ * opened fragment is what decides whether such a tab is upgraded.
+ */
+describe("isTexDocumentRoot", () => {
+  it("says yes to a file that declares a class, with or without options", () => {
+    expect(isTexDocumentRoot("\\documentclass{article}\n\\begin{document}\n")).toBe(true);
+    expect(isTexDocumentRoot("\\documentclass[a0,portrait]{a0poster}\n")).toBe(true);
+    // A subfile is its own compilable root too.
+    expect(isTexDocumentRoot("\\documentclass[../main.tex]{subfiles}\n")).toBe(true);
+  });
+
+  it("says no to an \\input-ed fragment", () => {
+    expect(isTexDocumentRoot("\\section{Method}\nSome prose.\n")).toBe(false);
+  });
+
+  it("does not count a commented-out \\documentclass", () => {
+    expect(isTexDocumentRoot("%% \\documentclass{article} -- see main.tex\n\\section{X}\n")).toBe(
+      false,
+    );
+    // …but an escaped percent does not blank the rest of the line.
+    expect(isTexDocumentRoot("100\\% done\n\\documentclass{article}\n")).toBe(true);
   });
 });

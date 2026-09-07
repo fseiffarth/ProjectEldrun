@@ -16,7 +16,13 @@ Referenced from `AGENTS.md`.
   **Default ON** via `settings.persist_local_sessions`. `services::tmux_local`
   rewrites the local spawn's `{cmd,args}` into a `tmux` argv in
   `commands::terminal::pty_spawn`, *after* the ssh/docker branch so only a
-  genuinely local tab is wrapped.
+  genuinely local tab is wrapped. The tmux client sends that argv to its
+  server in one 16 KB message and exits with `command too long` past it — a
+  fenced agent's bubblewrap argv (one mount pair per `~/.claude`/`~/.codex`
+  entry and per transcript dir) gets there on a well-used machine. Over a
+  budget, the command line moves into `<state_dir>/tmux-launch/<session>.sh`
+  and tmux runs the script's path; the script `exec`s the same quoted line.
+  Removed with the session (explicit kill, clean quit); a respawn rewrites it.
 
 Scoped to **shell tabs** (Python runs open one; a command runs inside the
 session's login shell, which outlives it → the run reattaches, not re-runs) and,
@@ -80,8 +86,17 @@ still empties, or a killed session would never leave the list. This is the same
 rule `release` already kept the last reading for.
 **Kill vs. detach**: closing a tab **always detaches** —
 `lib/closeRemoteTab.ts`'s `closeTabWithConfirm` just `removeTab`s, killing only the
-ssh/PTY client, so the session lives on under its tmux daemon; an app-exit,
-crash, or respawn likewise **leave the session alive**. Disconnecting a remote
+ssh/PTY client, so the session lives on under its tmux daemon; a crash or a
+respawn likewise **leaves the session alive**, and so does an app exit for a
+**remote** session. A **clean quit ends every local `eldrun-*` session** —
+the window's × runs `local_tmux_kill_eldrun_sessions` before `destroy()`, and
+`RunEvent::Exit` runs the same `tmux_local::kill_eldrun_sessions` as the net for
+exits that never reach frontend code (the dev launcher's Ctrl+C: SIGTERM/SIGINT
+are routed into `app.exit()` on Unix). Only a crash leaves local sessions
+behind, and those are what the next launch reattaches. The Trash workspace's
+sessions used to be exempt so a phone could keep working after the desktop
+quit; the Mobile host now stops with the app too, so they go with the rest.
+Disconnecting a remote
 machine is deliberately different: `remote_disconnect` and
 `remote_disconnect_all_hosts` end *every* tmux session on each currently
 connected host before tearing down its pool. A session's **×** remains the way to

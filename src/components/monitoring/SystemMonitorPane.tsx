@@ -830,9 +830,6 @@ export function SystemMonitorPane({ projectId, visible, globalMachine }: Props) 
               its label on hover. */}
           {onHost && carefulTarget && (
             <>
-              <span className="sysmon-mode-tag">
-                <UntestedTag />
-              </span>
               <div
                 className="sysmon-mode"
                 role="radiogroup"
@@ -1349,7 +1346,7 @@ const SYSMON_CSS = `
   color: var(--text-secondary);
   padding: 3px 12px;
   font-size: 12px;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   max-width: 320px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1370,21 +1367,14 @@ const SYSMON_CSS = `
    track with the live half raised out of it — a switch, not a tab strip — and it
    carries no accent fill at all, so the accent in this row always means "the
    machine you are looking at". */
-/* The "untested" pill rides just outside the switch — inside the pill track it
-   would read as a third segment. The auto margin lives here so the tag and the
-   switch are pushed to the row's right edge together. */
-.sysmon-mode-tag {
-  margin-left: auto;
-  display: inline-flex;
-  align-items: center;
-}
 .sysmon-mode {
+  margin-left: auto;
   display: flex;
   align-items: center;
   gap: 2px;
   padding: 2px;
   border-radius: 999px;
-  background: var(--bg-subtle, rgba(127, 127, 127, 0.1));
+  background: var(--bg-subtle);
   border: 1px solid var(--control-border);
 }
 .sysmon-mode-btn {
@@ -1397,7 +1387,7 @@ const SYSMON_CSS = `
   padding: 2px 8px;
   font-size: 12px;
   line-height: 1.4;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   white-space: nowrap;
 }
 .sysmon-mode-btn:hover {
@@ -1466,7 +1456,7 @@ const SYSMON_CSS = `
   padding: 8px 10px;
   border-left: 3px solid var(--accent);
   border-radius: 4px;
-  background: var(--bg-subtle, rgba(127, 127, 127, 0.08));
+  background: var(--bg-subtle);
   color: var(--text-secondary, inherit);
   font-size: 11px;
   line-height: 1.5;
@@ -1665,7 +1655,7 @@ const SYSMON_CSS = `
   background: none;
   border: none;
   padding: 0;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   color: inherit;
 }
 .sysmon-proc-caret {
@@ -1724,7 +1714,7 @@ const SYSMON_CSS = `
   text-align: left;
   font-weight: 600;
   padding: 5px 10px;
-  cursor: pointer;
+  cursor: var(--cur-pointer, pointer);
   white-space: nowrap;
   border-bottom: 1px solid var(--border-color);
   user-select: none;

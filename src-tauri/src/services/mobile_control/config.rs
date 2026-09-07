@@ -8,7 +8,22 @@ use serde::{Deserialize, Serialize};
 /// The load error meaning "not misconfigured — turned off". The sidecar's
 /// entry point exits *cleanly* on it, so `Restart=on-failure` does not spin an
 /// enabled unit forever against a deliberately disabled configuration.
+///
+/// It is returned for **one** condition only: a settings file that was read and
+/// parsed and says `enabled: false`. Everything else about reading that file is
+/// a [`SETTINGS_UNREADABLE_ERROR`], because the two need opposite exit codes and
+/// used to share one — see [`HostConfig::load`].
 pub const DISABLED_ERROR: &str = "Eldrun Mobile is disabled";
+
+/// The load error meaning "the settings file could not be read or parsed".
+///
+/// This is deliberately **not** [`DISABLED_ERROR`]: the sidecar exits non-zero
+/// on it so `Restart=on-failure` keeps retrying, because every cause here can
+/// heal on its own (the desktop rewrites `settings.json` atomically on the next
+/// settings change, and a transient read error is over by the next attempt),
+/// whereas a clean exit would take Mobile down until somebody noticed and
+/// pressed Reconnect.
+pub const SETTINGS_UNREADABLE_ERROR: &str = "Eldrun Mobile settings could not be read";
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct MobileHostSettings {
@@ -235,11 +250,31 @@ pub fn verify_tailscale_serve(origin: &str, port: u16) -> Result<(), String> {
 }
 
 impl HostConfig {
+    /// Read the desktop's settings and decide whether the host should run.
+    ///
+    /// The one rule worth stating: **an unreadable settings file is not a
+    /// disabled one.** This used to be `read().ok().and_then(parse.ok())
+    /// .unwrap_or_default()`, and since `MobileHostSettings::default()` has
+    /// `enabled: false`, *any* read or parse failure came back as
+    /// [`DISABLED_ERROR`] — on which the entry point exits 0, which
+    /// `Restart=on-failure` does not restart. So a single unreadable read left
+    /// the sidecar permanently dead while `settings.json` still said
+    /// `enabled: true`, with nothing in the journal to say why and the desktop
+    /// showing only its probe's `Connection refused (os error 111)` against the
+    /// socket file the dead process left behind.
+    ///
+    /// A missing file is the exception that stays clean: Mobile cannot have
+    /// been enabled by a desktop that has never written its settings.
     pub fn load(state_dir: &Path) -> Result<Self, String> {
-        let settings: SettingsFile = fs::read(state_dir.join("settings.json"))
-            .ok()
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .unwrap_or_default();
+        let path = state_dir.join("settings.json");
+        let settings: SettingsFile = match fs::read(&path) {
+            Ok(bytes) => serde_json::from_slice(&bytes)
+                .map_err(|error| format!("{SETTINGS_UNREADABLE_ERROR}: {error}"))?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Err(DISABLED_ERROR.into())
+            }
+            Err(error) => return Err(format!("{SETTINGS_UNREADABLE_ERROR}: {error}")),
+        };
         let host = settings.eldrun_mobile_host.unwrap_or_default();
         if !host.enabled {
             return Err(DISABLED_ERROR.into());
@@ -265,6 +300,72 @@ impl HostConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn state_dir_with(settings: &str) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("state dir");
+        fs::write(dir.path().join("settings.json"), settings).expect("settings");
+        dir
+    }
+
+    const ENABLED: &str = r#"{"eldrun_mobile_host":{"enabled":true,"port":8742,
+        "serve_origin":"https://desk.example.ts.net"}}"#;
+
+    #[test]
+    fn only_an_explicit_off_is_the_clean_disabled_exit() {
+        let dir = state_dir_with(r#"{"eldrun_mobile_host":{"enabled":false}}"#);
+        assert_eq!(
+            HostConfig::load(dir.path()).unwrap_err(),
+            DISABLED_ERROR,
+            "an explicit off must stay the clean exit"
+        );
+
+        // No Mobile block at all, and no settings file at all, are the same
+        // statement: a desktop that never enabled it.
+        let dir = state_dir_with(r#"{"theme":"dark"}"#);
+        assert_eq!(HostConfig::load(dir.path()).unwrap_err(), DISABLED_ERROR);
+        let empty = tempfile::tempdir().expect("state dir");
+        assert_eq!(HostConfig::load(empty.path()).unwrap_err(), DISABLED_ERROR);
+    }
+
+    /// The regression this split exists for: an unparseable settings file used
+    /// to fall back to `MobileHostSettings::default()`, whose `enabled` is
+    /// false — so it reported DISABLED, the entry point exited 0, and
+    /// `Restart=on-failure` left Mobile down for good.
+    #[test]
+    fn an_unreadable_settings_file_is_never_reported_as_disabled() {
+        for broken in [
+            "{ this is not json",
+            "",
+            // Present, enabled, but one field serde cannot take: the whole
+            // parse fails, which is exactly the case that read as "off".
+            r#"{"eldrun_mobile_host":{"enabled":true,"port":"8742"}}"#,
+        ] {
+            let dir = state_dir_with(broken);
+            let error = HostConfig::load(dir.path()).unwrap_err();
+            assert_ne!(error, DISABLED_ERROR, "{broken:?} reported as disabled");
+            assert!(
+                error.starts_with(SETTINGS_UNREADABLE_ERROR),
+                "{broken:?} gave {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_enabled_configuration_loads_its_origin_and_port() {
+        let dir = state_dir_with(ENABLED);
+        let config = HostConfig::load(dir.path()).expect("config");
+        assert_eq!(config.origin, "https://desk.example.ts.net");
+        assert_eq!(config.host.port, 8742);
+        assert_eq!(config.control_dir, dir.path().join("mobile-control"));
+    }
+
+    #[test]
+    fn a_misconfigured_but_enabled_host_is_a_failure_not_a_disable() {
+        // An enabled host with no verified origin cannot serve, but it is also
+        // not "off" — reporting it as DISABLED would exit 0 and hide it.
+        let dir = state_dir_with(r#"{"eldrun_mobile_host":{"enabled":true}}"#);
+        assert_ne!(HostConfig::load(dir.path()).unwrap_err(), DISABLED_ERROR);
+    }
 
     #[test]
     fn accepts_only_exact_https_origin() {

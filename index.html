@@ -18,6 +18,50 @@
       } catch (_) {
         document.documentElement.setAttribute("data-theme", "fancy_dark");
       }
+      // Same bargain for the appearance overrides (custom accent color, the
+      // Theme Customizer's per-token colors, corner style —
+      // stores/settings.applyAccent/applyThemeVars/applyCorners): re-apply the
+      // cached values before first paint so launch doesn't flash the theme's
+      // own palette and then snap. Every value is re-validated — only a full
+      // hex reaches --accent or a catalog token, only the two known corner
+      // styles reach the radius tokens — so a stale or tampered cache falls
+      // back to the theme.
+      try {
+        var s = document.documentElement.style;
+        var accent = localStorage.getItem("eldrun-accent");
+        if (accent && /^#[0-9a-fA-F]{6}$/.test(accent)) {
+          s.setProperty("--accent", accent);
+          s.setProperty("--accent-hover", "color-mix(in srgb, var(--accent) 84%, var(--text-primary))");
+          s.setProperty("--accent-active", "color-mix(in srgb, var(--accent) 70%, var(--text-primary))");
+          s.setProperty("--pill-active-bg", "color-mix(in srgb, var(--accent) 16%, transparent)");
+          s.setProperty("--pill-active-border", "var(--accent)");
+          s.setProperty("--pill-hover-bg", "color-mix(in srgb, var(--accent) 12%, transparent)");
+        }
+        // Per-token overrides (Settings → Theme colors). Re-validated exactly
+        // like the map that wrote them: only `--name` keys with a hex value
+        // reach the root style, so a stale or tampered cache can only ever set
+        // colors on custom properties, never arbitrary CSS.
+        var raw = localStorage.getItem("eldrun-theme-vars");
+        if (raw) {
+          var vars = JSON.parse(raw);
+          for (var k in vars) {
+            if (!Object.prototype.hasOwnProperty.call(vars, k)) continue;
+            if (!/^--[a-z0-9-]+$/.test(k)) continue;
+            if (!/^#([0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(vars[k])) continue;
+            s.setProperty(k, vars[k]);
+          }
+        }
+        var corners = localStorage.getItem("eldrun-corners");
+        var radii = corners === "rounded" ? ["4px", "8px", "12px"]
+          : corners === "square" ? ["0px", "0px", "0px"] : null;
+        if (radii) {
+          s.setProperty("--radius-sm", radii[0]);
+          s.setProperty("--radius", radii[1]);
+          s.setProperty("--radius-lg", radii[2]);
+        }
+      } catch (_) {
+        // localStorage unavailable — worst case is a one-frame appearance flash.
+      }
     </script>
   </head>
   <body>

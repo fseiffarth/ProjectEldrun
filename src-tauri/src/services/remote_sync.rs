@@ -22,6 +22,7 @@
 //!   with the lock released.
 
 use std::collections::{HashMap, HashSet};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -577,10 +578,7 @@ pub async fn pull_file(
             bytes.len()
         ));
     }
-    if let Some(parent) = local.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-    std::fs::write(local, &bytes).map_err(|e| e.to_string())?;
+    replace_local_atomic(local, &bytes)?;
     let meta = std::fs::metadata(local).map_err(|e| e.to_string())?;
     let local_size = meta.len();
     let local_mtime = meta
@@ -589,6 +587,20 @@ pub async fn pull_file(
         .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
         .map(|d| d.as_secs());
     Ok((local_size, local_mtime))
+}
+
+/// Atomically replace one mirror file with fully-read host bytes.
+fn replace_local_atomic(local: &Path, bytes: &[u8]) -> Result<(), String> {
+    let parent = local.parent().unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    // Stage beside the destination and atomically replace it. A crash or process
+    // kill can now leave either the old complete file or the new complete file,
+    // never a mirror file truncated by `fs::write`.
+    let mut staged = tempfile::NamedTempFile::new_in(parent).map_err(|e| e.to_string())?;
+    staged.write_all(bytes).map_err(|e| e.to_string())?;
+    staged.flush().map_err(|e| e.to_string())?;
+    staged.persist(local).map_err(|e| e.error.to_string())?;
+    Ok(())
 }
 
 /// Re-stat a host path over SFTP, returning `(size, mtime)` or `(0, None)` when
@@ -669,17 +681,19 @@ pub fn rsync_ssh_transport(port: Option<u16>) -> String {
     parts.join(" ")
 }
 
-/// Build the full rsync argv for a host→local PULL: archive mode (`-a`), checksum
-/// basis (`-c`, the correctness/conflict basis where available), the
-/// ControlMaster-riding `-e` transport, then `[user@]host:host_src` → `local_dest`.
-/// The caller adds trailing slashes to copy a directory's CONTENTS. Pure,
-/// unit-tested (it never touches the network).
+/// Build the full rsync argv for a host→local PULL. The caller supplies a
+/// NUL-delimited `--files-from` list produced by [`walk_host_files`], so this
+/// optimisation cannot transfer a path that the preview/manifest walker skipped
+/// (nested repos and symlinks in particular). The excludes and `--no-links` are
+/// defence in depth against a host-side tree changing between the walk and rsync.
+/// Pure, unit-tested (it never touches the network).
 pub fn rsync_pull_args(
     user: &Option<String>,
     host: &str,
     port: Option<u16>,
     host_src: &str,
     local_dest: &str,
+    files_from: &Path,
 ) -> Vec<String> {
     let target = match user {
         Some(u) => format!("{u}@{host}:{host_src}"),
@@ -688,11 +702,47 @@ pub fn rsync_pull_args(
     vec![
         "-a".to_string(),
         "-c".to_string(),
+        "--no-links".to_string(),
+        "--exclude=/.git".to_string(),
+        "--exclude=.eldrun".to_string(),
+        "--exclude=.git".to_string(),
+        "--from0".to_string(),
+        format!("--files-from={}", files_from.to_string_lossy()),
+        // `--files-from` changes archive mode so it no longer implies recursion.
+        // Keep it explicit for the implied parent directories in the file list.
+        "--recursive".to_string(),
         "-e".to_string(),
         rsync_ssh_transport(port),
         target,
         local_dest.to_string(),
     ]
+}
+
+/// Convert the project-relative files returned by [`walk_host_files`] into paths
+/// relative to the requested rsync subtree. A mismatch means the caller must use
+/// the SFTP floor rather than risk widening the transfer.
+pub fn rsync_subtree_files(files: &[HostFile], rel: &str) -> Option<Vec<String>> {
+    let rel = rel.trim_matches('/');
+    if rel.is_empty() {
+        return Some(files.iter().map(|file| file.rel.clone()).collect());
+    }
+    let prefix = format!("{rel}/");
+    files
+        .iter()
+        .map(|file| file.rel.strip_prefix(&prefix).map(str::to_string))
+        .collect()
+}
+
+/// Write rsync's local allowlist with NUL separators so newlines and other valid
+/// filename bytes cannot turn one walker entry into multiple transfer entries.
+fn rsync_files_from(paths: &[String]) -> Result<tempfile::NamedTempFile, String> {
+    let mut file = tempfile::NamedTempFile::new().map_err(|e| e.to_string())?;
+    for path in paths {
+        file.write_all(path.as_bytes()).map_err(|e| e.to_string())?;
+        file.write_all(&[0]).map_err(|e| e.to_string())?;
+    }
+    file.flush().map_err(|e| e.to_string())?;
+    Ok(file)
 }
 
 /// Whether `rsync` is on the LOCAL `PATH`.
@@ -735,7 +785,11 @@ pub fn rsync_pull_dir(
     port: Option<u16>,
     host_src_dir: &str,
     local_dest_dir: &std::path::Path,
+    files: &[String],
 ) -> Result<(), String> {
+    if files.is_empty() {
+        return Ok(());
+    }
     std::fs::create_dir_all(local_dest_dir).map_err(|e| e.to_string())?;
     let src = format!("{}/", host_src_dir.trim_end_matches('/'));
     let dest = format!(
@@ -744,7 +798,8 @@ pub fn rsync_pull_dir(
             .to_string_lossy()
             .trim_end_matches(['/', '\\'])
     );
-    let args = rsync_pull_args(user, host, port, &src, &dest);
+    let files_from = rsync_files_from(files)?;
+    let args = rsync_pull_args(user, host, port, &src, &dest, files_from.path());
     let out = crate::paths::command_no_window("rsync")
         .args(&args)
         .output()
@@ -1148,25 +1203,86 @@ mod tests {
 
     #[test]
     fn rsync_pull_args_build_target_and_flags() {
+        let files_from = Path::new("/tmp/eldrun-rsync-files");
         let args = rsync_pull_args(
             &Some("alice".to_string()),
             "host.example",
             None,
             "/srv/p/",
             "/local/mirror/",
+            files_from,
         );
         assert_eq!(args[0], "-a");
         assert_eq!(args[1], "-c");
-        assert_eq!(args[2], "-e");
-        assert!(args[3].contains("ControlPath="));
-        assert_eq!(args[4], "alice@host.example:/srv/p/");
-        assert_eq!(args[5], "/local/mirror/");
+        assert!(args.iter().any(|arg| arg == "--no-links"));
+        assert!(args.iter().any(|arg| arg == "--exclude=/.git"));
+        assert!(args.iter().any(|arg| arg == "--exclude=.git"));
+        assert!(args.iter().any(|arg| arg == "--exclude=.eldrun"));
+        assert!(args.iter().any(|arg| arg == "--from0"));
+        assert!(args
+            .iter()
+            .any(|arg| arg == "--files-from=/tmp/eldrun-rsync-files"));
+        let transport = args.iter().position(|arg| arg == "-e").unwrap();
+        assert!(args[transport + 1].contains("ControlPath="));
+        assert_eq!(args[transport + 2], "alice@host.example:/srv/p/");
+        assert_eq!(args[transport + 3], "/local/mirror/");
     }
 
     #[test]
     fn rsync_pull_args_omit_user_when_absent() {
-        let args = rsync_pull_args(&None, "host.example", None, "/srv/p/", "/m/");
-        assert_eq!(args[4], "host.example:/srv/p/");
+        let args = rsync_pull_args(
+            &None,
+            "host.example",
+            None,
+            "/srv/p/",
+            "/m/",
+            Path::new("/tmp/list"),
+        );
+        assert!(args.iter().any(|arg| arg == "host.example:/srv/p/"));
+    }
+
+    #[test]
+    fn rsync_subtree_files_are_exactly_walker_paths_below_scope() {
+        let files = vec![
+            HostFile {
+                rel: "data/one.txt".into(),
+                size: 1,
+                mtime: None,
+            },
+            HostFile {
+                rel: "data/nested/two.txt".into(),
+                size: 2,
+                mtime: None,
+            },
+        ];
+        assert_eq!(
+            rsync_subtree_files(&files, "data"),
+            Some(vec!["one.txt".into(), "nested/two.txt".into()])
+        );
+        assert_eq!(
+            rsync_subtree_files(&files, ""),
+            Some(vec!["data/one.txt".into(), "data/nested/two.txt".into()])
+        );
+        assert_eq!(rsync_subtree_files(&files, "other"), None);
+    }
+
+    #[test]
+    fn rsync_file_list_is_nul_delimited() {
+        let list = rsync_files_from(&["plain.txt".into(), "line\nbreak.txt".into()]).unwrap();
+        assert_eq!(
+            std::fs::read(list.path()).unwrap(),
+            b"plain.txt\0line\nbreak.txt\0"
+        );
+    }
+
+    #[test]
+    fn local_pull_replacement_is_complete_and_atomic() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("nested/file.txt");
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(&target, b"old complete bytes").unwrap();
+        replace_local_atomic(&target, b"new complete bytes").unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"new complete bytes");
     }
 
     #[test]

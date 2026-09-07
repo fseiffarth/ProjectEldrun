@@ -3,12 +3,16 @@ import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import {
   DETACHED_PANES,
   DETACHED_PANES_REQUEST,
-  buildSeed,
   detachedDropPreviewEvent,
-  detachedSeedEvent,
+  reseedDetached,
   type DetachedPanes,
   type PaneRect,
 } from "../../stores/detached";
+
+// The one reseed path lives in the store module now (#230: the copy that used to
+// live here dropped the project context on every dock). Re-exported so the drop
+// paths keep importing it from beside the drop session.
+export { reseedDetached };
 import { pickEdge } from "./dragGeometry";
 import {
   snapshotFrame,
@@ -76,7 +80,14 @@ export function resolvePaneTarget(
  * unfinished resolve simply means no popout target yet (caller falls back to its
  * new-window detach).
  */
-export function startDetachedDropSession() {
+export function startDetachedDropSession(opts?: {
+  /** Whose popouts are drop targets. Defaults to the ACTIVE scope (a main-window
+   *  drag). A drag that starts in a popout passes that popout's scope (#238): a
+   *  root or box popout is never parked, so one can be dragged from while a
+   *  project is active — and its tab must only ever light up and land in a
+   *  sibling of its OWN scope, never in the active project's popouts. */
+  scope?: string;
+}) {
   let targets: DetachedTarget[] = [];
   let hovered: string | null = null;
   // Each popout's pane geometry (client px), reported once when the drag starts so
@@ -84,7 +95,11 @@ export function startDetachedDropSession() {
   const panesByLabel = new Map<string, PaneRect[]>();
   let disposed = false;
   let unlisten: (() => void) | undefined;
-  void listen<DetachedPanes>(DETACHED_PANES, (ev) => {
+  // Awaited by `resolve()` before it asks any popout for its panes (#238): the
+  // request used to go out while this `listen` was still registering, and a
+  // popout that answered promptly answered nobody — `targetAt` then resolved
+  // undefined and the dock silently landed in the first pane.
+  const listening = listen<DetachedPanes>(DETACHED_PANES, (ev) => {
     panesByLabel.set(ev.payload.label, ev.payload.panes);
   })
     .then((fn) => {
@@ -94,8 +109,10 @@ export function startDetachedDropSession() {
     .catch(() => {});
 
   const resolve = async () => {
+    await listening;
+    if (disposed) return;
     const st = useTabsStore.getState();
-    const scope = st.scope;
+    const scope = opts?.scope ?? st.scope;
     const entries = st.detachedGroupsByScope[scope] ?? [];
     const out: DetachedTarget[] = [];
     for (const entry of entries) {
@@ -173,25 +190,4 @@ export function startDetachedDropSession() {
   };
 
   return { resolve, at, hover, targetAt, dispose };
-}
-
-/**
- * Re-seed a popout after something is docked INTO it so it re-renders with the
- * new tab. `landedKey` tags the seed so the popout plays the same drop-in landing
- * for the freshly-docked tab as it does for an in-popout merge. Shared by the tab
- * and file drop paths.
- */
-export function reseedDetached(scope: string, groupId: string, landedKey?: string) {
-  const entry = useTabsStore
-    .getState()
-    .detachedGroupsByScope[scope]?.find((d) => d.id === groupId);
-  if (!entry) return;
-  const seed = buildSeed(
-    scope,
-    groupId,
-    useTabsStore.getState().tabsByScope[scope] ?? [],
-    entry.subtree,
-    entry.zoom,
-  );
-  void emit(detachedSeedEvent(entry.label), landedKey ? { ...seed, landedKey } : seed);
 }

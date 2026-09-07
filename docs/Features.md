@@ -55,6 +55,9 @@ only `src-tauri/` changes need a rebuild/restart.
 | Ollama local model management + autocomplete | | | | `commands/ollama.rs` |
 | Filesystem watch | | | | `commands/fs_watch.rs` |
 | X11 workspace switching | | | | `platform/x11.rs` |
+| Windows workspace backend (SW_HIDE parking) | | | | `platform/windows.rs` |
+| macOS workspace backend (app-granular hide/unhide) | | | | `platform/macos.rs` |
+| Windows/macOS parity: presenter inhibitor, spell dirs, popout ids, renderer memory, crash reporters, network tables, GPU readouts, box junctions, file defaults, macOS fence, containers on Windows, VMs on macOS/Windows, Mobile on Windows | | | | 2026-09-03 sweep; all **untested** on hardware |
 
 ## In-progress / partial
 
@@ -63,7 +66,6 @@ only `src-tauri/` changes need a rebuild/restart.
 | SSH hardening (#28c) | | | | two **Critical**: remote cmd injection in `ssh_list_dir`/`ssh_default_dir`; remote `--resume` ordering bug |
 | Agent resume generalization (#39d) | ✅ | | | Claude/Codex resume-by-id; Gemini (`--resume latest`) + Mistral/vibe (`--continue`) via continue-last |
 | KDE Wayland backend (#18) | | | | show/hide are explicit no-ops (KWin scripting pending) |
-| Windows backend | | | | stub (`platform/windows.rs`) |
 | Boxes phases 3–4 (#41) | | | | merged file tree + relation graph deferred |
 | Git worktrees (#23) | ✅ | | | list/add/remove/lock/prune, host-or-mirror side, worktrees confined to `<root>/.eldrun/worktrees/`; `docs/worktree_improvement_plan.md` phases 0–2. **Untested.** Worktree-aware tab groups + worktree-as-project (phases 3–4) deferred |
 

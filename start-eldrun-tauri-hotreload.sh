@@ -17,8 +17,37 @@ fi
 
 exec >>"$LOG_FILE" 2>&1
 
+# The rotation above only runs at launch, which caps the log across sessions and
+# not within one -- and a hot-reload session is measured in days. A single run
+# had put 255 MB into the live file and 613 MB into the generation before it
+# (2026-09-01), i.e. four times the cap in the one file the cap is about.
+#
+# So keep a watchdog on it. It TRUNCATES IN PLACE (tail into a temp, copy back
+# over the same inode) rather than rotating: every writer above holds this file
+# open in append mode, and a `mv` would leave `tauri dev`, vite and cargo all
+# writing to an unlinked inode for the rest of the session -- a log that looks
+# rotated and then never grows again. `O_APPEND` writers resume at the new end
+# of a shortened file, so shortening it under them is safe.
+#
+# The watchdog dies with the launcher: `$$` is checked each pass so an orphan
+# left by a `kill -9` stops on its own, and the EXIT trap kills it outright.
+LOG_KEEP_BYTES=$((16 * 1024 * 1024))
+(
+  while sleep 300; do
+    kill -0 "$$" 2>/dev/null || exit 0
+    size="$(stat -c %s "$LOG_FILE" 2>/dev/null || echo 0)"
+    [ "$size" -gt "$LOG_MAX_BYTES" ] || continue
+    tmp="$LOG_FILE.trim.$$"
+    if tail -c "$LOG_KEEP_BYTES" "$LOG_FILE" >"$tmp" 2>/dev/null; then
+      cat "$tmp" >"$LOG_FILE" 2>/dev/null || true
+    fi
+    rm -f "$tmp"
+  done
+) &
+LOG_TRIMMER=$!
+
 printf '\n=== HOTRELOAD START %s ===\n' "$(date -Is)"
-trap 'status=$?; printf "=== HOTRELOAD EXIT %s status=%s ===\n" "$(date -Is)" "$status"' EXIT
+trap 'status=$?; kill "$LOG_TRIMMER" 2>/dev/null || true; printf "=== HOTRELOAD EXIT %s status=%s ===\n" "$(date -Is)" "$status"' EXIT
 
 cd "$ROOT"
 
@@ -38,13 +67,38 @@ export GTK_OVERLAY_SCROLLING=0
 
 printf 'root=%s\n' "$ROOT"
 printf 'PATH=%s\n' "$PATH"
-command -v node
+# Preflight the build toolchain, and SAY SO on the desktop when it is missing.
+#
+# These four probes used to be bare `command -v` lines. Under `set -e` the
+# first missing tool killed the script right there -- before vite, before
+# cargo, before any window -- and the only trace was one line in this log,
+# which is not where anyone looks when an icon they clicked appears to do
+# nothing. That is exactly how a reinstalled host presented itself on
+# 2026-09-07: a fresh root that still had the WebKitGTK *runtime* (so the
+# frozen "Eldrun (dev)" build opened fine) but none of node, npm, cargo or
+# rustc, and a hot-reload entry that looked like it was being ignored.
+#
+# So collect every missing tool, name them all in one notification, and exit
+# deliberately. Nothing here can fix a missing toolchain; being told which
+# piece is gone is the whole job.
+missing=""
+for tool in node npm cargo rustc; do
+  if path="$(command -v "$tool" 2>/dev/null)"; then
+    printf '%s=%s\n' "$tool" "$path"
+  else
+    missing="${missing:+$missing }$tool"
+  fi
+done
+if [ -n "$missing" ]; then
+  printf 'REFUSING TO START: build toolchain incomplete (missing: %s)\n' "$missing" >&2
+  printf '  the hot-reload session builds from source and needs all of node, npm, cargo, rustc\n' >&2
+  notify-send -u critical -a Eldrun 'Eldrun hot-reload not started' \
+    "Missing build tools: $missing. Install them, or use the frozen Eldrun (dev) build." 2>/dev/null || true
+  exit 1
+fi
 node --version
-command -v npm
 npm --version
-command -v cargo
 cargo --version
-command -v rustc
 rustc --version
 
 exec npm run tauri:dev

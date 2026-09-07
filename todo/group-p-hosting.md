@@ -72,3 +72,37 @@ profile (URL + token).*
       next commit.
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work
+
+81. ✅ **An import from GitHub/GitLab fills the Git hosting field from the
+    repository it clones** (2026-09-07). A clone or fork import landed on "Push
+    to GitHub/GitLab · private" no matter what it was cloning — and a dialog
+    opened *directly* on the clone source (the New-tab menu) landed on "Local
+    repo only", which no cloned repository is. The created project also carried
+    no `git_provider` at all: the pill only learned where the repo lived once
+    `detect_git_providers` sniffed `origin`.
+    - The **provider** comes off the clone URL's host (`providerFromCloneUrl`,
+      the fork row's explicit pick winning where it exists) and is passed to
+      `import_project`/`create_project` as `gitProvider`, normalized backend-side
+      (`normalize_git_provider`) so it can only ride along with a surviving
+      `remote-*` label — never on a project pushed nowhere.
+    - **public/private** comes from `git_remote_visibility`
+      (`commands/git.rs`): one **anonymous** `ls-remote` against the URL's https
+      form, with the credential helper reset and the stored token deliberately
+      not offered (with it, every repo the user can see reads as public). An ssh
+      URL says nothing about visibility on its own, hence the rewrite. Debounced
+      on the URL field; an unreachable or self-hosted host answers "unknown" and
+      the field keeps its private default, with the hint saying so.
+    - An answer the user gives in the dropdown themselves is never overwritten,
+      and the hint names where a filled-in answer came from.
+    - [x] 🤖 Automated test — `src/__tests__/ProjectDialogCloneHosting.test.tsx`
+      (public → `remote-public` + `gitProvider: "github"` on the import call,
+      private, unknown → private + its hint, an explicit pick suppresses the
+      probe entirely, no probe for a folder import) and
+      `normalize_git_provider` / `https_probe_url` unit tests in Rust.
+    - [ ] 🖐️ Manual test — import a public repo by clone: the Git hosting field
+      reads "· public" with the hint naming GitHub/GitLab, and the created
+      project's pill shows the hosting badge immediately. Repeat with a private
+      repo (field stays private) and with a self-hosted URL (field untouched,
+      no provider hint).
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work

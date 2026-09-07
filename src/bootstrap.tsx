@@ -13,7 +13,7 @@ import { installCrashReporter } from "./crashReporter";
 import { installCustomScrollbars } from "./lib/customScrollbar";
 import "@fontsource-variable/inter";
 import "@fontsource-variable/jetbrains-mono";
-import "./styles/themes.css";
+import "./styles/index.css";
 
 installCrashReporter();
 /**

@@ -28,9 +28,35 @@ describe("detached — parseDetachedParam", () => {
     expect(parseDetachedParam("?foo=bar")).toBeNull();
   });
 
-  it("splits scope:groupId on the FIRST colon (group ids may contain hyphens)", () => {
+  it("reads the two-key form the backend writes", () => {
+    expect(parseDetachedParam("?detached=p&group=g-3")).toEqual({ scope: "p", groupId: "g-3" });
+    expect(parseDetachedParam("?detached=root&group=g-1")).toEqual({
+      scope: "root",
+      groupId: "g-1",
+    });
+  });
+
+  it("a BOX scope survives, colon and all (#224)", () => {
+    // The bug: one `scope:group` value split on the FIRST colon, so a box
+    // scope's own colon made `box:abc:g-3` parse as scope "box", group
+    // "abc:g-3". The host had no record under that scope, never answered the
+    // seed, and the popout destroyed itself after 8 s — with the group's tabs
+    // stranded in a `detached: true` record that repeated the failure at every
+    // launch. Box-scope detach could never work at all.
+    expect(parseDetachedParam("?detached=box%3Aabc&group=g-3")).toEqual({
+      scope: "box:abc",
+      groupId: "g-3",
+    });
+  });
+
+  it("still reads the legacy single-value form, splitting on the LAST colon", () => {
+    // A popout URL minted by an older backend. The last colon is the right one:
+    // a group id (`g-3`, `s-12`) never contains one, a scope may.
     expect(parseDetachedParam("?detached=p:g-3")).toEqual({ scope: "p", groupId: "g-3" });
-    expect(parseDetachedParam("?detached=root:g-1")).toEqual({ scope: "root", groupId: "g-1" });
+    expect(parseDetachedParam("?detached=box:abc:g-3")).toEqual({
+      scope: "box:abc",
+      groupId: "g-3",
+    });
   });
 
   it("rejects malformed values (missing colon / empty side)", () => {

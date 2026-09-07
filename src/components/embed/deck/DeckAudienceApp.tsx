@@ -254,14 +254,14 @@ export function DeckAudienceApp({ label }: DeckAudienceAppProps) {
         return;
       }
       if (cancelled) {
-        opened.destroy();
+        opened.loadingTask.destroy();
         return;
       }
       setDoc(opened);
     })();
     return () => {
       cancelled = true;
-      opened?.destroy();
+      opened?.loadingTask.destroy();
       setDoc(null);
     };
     // Re-anchoring is the presenter window's job; this one only needs the pages.

@@ -4,7 +4,7 @@ import { useT } from "../../lib/i18n";
 /**
  * A small floating coachmark anchored above/below a UI element, or a centered
  * top banner when `rect` is null. Portaled to `document.body` so it escapes the
- * right panel's `transform`/`overflow` stacking context (generalizes the
+ * side panel's `transform`/`overflow` stacking context (generalizes the
  * `LinkOpenHint` primitive in FileViewerPane, but interactive — it has buttons,
  * so no `pointer-events: none`). Positioning is computed by the caller (HintHost)
  * and passed in as `rect`; this component only paints.

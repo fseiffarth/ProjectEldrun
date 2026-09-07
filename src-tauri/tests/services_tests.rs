@@ -9,7 +9,7 @@ use std::sync::Mutex;
 
 use eldrun_lib::commands::apps::{
     TrackedWindow, ORIGIN_GLOBAL_APP, ORIGIN_MANUAL_LAUNCH, ORIGIN_MIDDLE_FILE_BROWSER,
-    ORIGIN_RESTORED, ORIGIN_RIGHT_FILE_TREE,
+    ORIGIN_RESTORED, ORIGIN_SIDE_FILE_TREE,
 };
 use eldrun_lib::platform::{WorkspaceBackend, WorkspaceInfo};
 use eldrun_lib::schema::project::{Project, TabEntry};
@@ -138,13 +138,13 @@ impl WorkspaceBackend for RecordingBackend {
 #[test]
 fn project_window_ids_returns_only_project_owned() {
     let windows: HashMap<String, TrackedWindow> = [
-        tracked("a", Some("p1"), ORIGIN_RIGHT_FILE_TREE, Some(10)),
+        tracked("a", Some("p1"), ORIGIN_SIDE_FILE_TREE, Some(10)),
         tracked("b", Some("p1"), ORIGIN_MIDDLE_FILE_BROWSER, Some(11)),
         tracked("c", Some("p1"), ORIGIN_RESTORED, Some(12)),
         tracked("d", Some("p1"), ORIGIN_GLOBAL_APP, Some(13)),
         tracked("e", Some("p1"), ORIGIN_MANUAL_LAUNCH, Some(14)),
-        tracked("f", Some("p2"), ORIGIN_RIGHT_FILE_TREE, Some(20)),
-        tracked("g", None, ORIGIN_RIGHT_FILE_TREE, Some(30)),
+        tracked("f", Some("p2"), ORIGIN_SIDE_FILE_TREE, Some(20)),
+        tracked("g", None, ORIGIN_SIDE_FILE_TREE, Some(30)),
     ]
     .into_iter()
     .map(|w| (w.id.clone(), w))
@@ -158,10 +158,10 @@ fn project_window_ids_returns_only_project_owned() {
 #[test]
 fn project_tracked_ids_returns_registry_keys() {
     let windows: HashMap<String, TrackedWindow> = [
-        tracked("a", Some("p1"), ORIGIN_RIGHT_FILE_TREE, Some(10)),
+        tracked("a", Some("p1"), ORIGIN_SIDE_FILE_TREE, Some(10)),
         tracked("b", Some("p1"), ORIGIN_RESTORED, Some(11)),
         tracked("c", Some("p1"), ORIGIN_MANUAL_LAUNCH, Some(12)),
-        tracked("d", Some("p2"), ORIGIN_RIGHT_FILE_TREE, Some(20)),
+        tracked("d", Some("p2"), ORIGIN_SIDE_FILE_TREE, Some(20)),
     ]
     .into_iter()
     .map(|w| (w.id.clone(), w))
@@ -175,8 +175,8 @@ fn project_tracked_ids_returns_registry_keys() {
 #[test]
 fn root_scope_windows_are_none_project_id() {
     let windows: HashMap<String, TrackedWindow> = [
-        tracked("root-w", None, ORIGIN_RIGHT_FILE_TREE, Some(99)),
-        tracked("p1-w", Some("p1"), ORIGIN_RIGHT_FILE_TREE, Some(10)),
+        tracked("root-w", None, ORIGIN_SIDE_FILE_TREE, Some(99)),
+        tracked("p1-w", Some("p1"), ORIGIN_SIDE_FILE_TREE, Some(10)),
     ]
     .into_iter()
     .map(|w| (w.id.clone(), w))
@@ -213,7 +213,7 @@ fn write_project_json(dir: &std::path::Path, project: &Project) -> PathBuf {
 }
 
 #[test]
-fn save_and_load_right_panel_folder_roundtrip() {
+fn save_and_load_side_panel_folder_roundtrip() {
     use eldrun_lib::services::project_runtime;
     let tmp = TempDir::new().unwrap();
     let project = Project {
@@ -227,21 +227,21 @@ fn save_and_load_right_panel_folder_roundtrip() {
 
     // No session file yet -> nothing saved.
     assert_eq!(
-        project_runtime::load_right_panel_folder(&local_file_str),
+        project_runtime::load_side_panel_folder(&local_file_str),
         None
     );
 
-    project_runtime::save_right_panel_folder(&local_file_str, Some("src/components".to_string()))
+    project_runtime::save_side_panel_folder(&local_file_str, Some("src/components".to_string()))
         .unwrap();
     assert_eq!(
-        project_runtime::load_right_panel_folder(&local_file_str),
+        project_runtime::load_side_panel_folder(&local_file_str),
         Some("src/components".to_string())
     );
 
     // Overwrite with a different folder (simulates navigating elsewhere).
-    project_runtime::save_right_panel_folder(&local_file_str, Some("docs".to_string())).unwrap();
+    project_runtime::save_side_panel_folder(&local_file_str, Some("docs".to_string())).unwrap();
     assert_eq!(
-        project_runtime::load_right_panel_folder(&local_file_str),
+        project_runtime::load_side_panel_folder(&local_file_str),
         Some("docs".to_string())
     );
 }
@@ -720,9 +720,9 @@ fn switch_hides_previous_project_windows_using_null_backend() {
     use eldrun_lib::platform::null::NullBackend;
 
     let windows: HashMap<String, TrackedWindow> = [
-        tracked("a", Some("prev"), ORIGIN_RIGHT_FILE_TREE, Some(10)),
+        tracked("a", Some("prev"), ORIGIN_SIDE_FILE_TREE, Some(10)),
         tracked("b", Some("prev"), ORIGIN_RESTORED, Some(11)),
-        tracked("c", Some("next"), ORIGIN_RIGHT_FILE_TREE, Some(20)),
+        tracked("c", Some("next"), ORIGIN_SIDE_FILE_TREE, Some(20)),
         tracked("d", None, ORIGIN_GLOBAL_APP, Some(99)),
     ]
     .into_iter()
@@ -745,7 +745,7 @@ fn switch_hides_previous_project_windows_using_null_backend() {
 #[test]
 fn switch_uses_hide_show_as_workspace_backend_boundary() {
     let windows: HashMap<String, TrackedWindow> = [
-        tracked("prev-file", Some("prev"), ORIGIN_RIGHT_FILE_TREE, Some(10)),
+        tracked("prev-file", Some("prev"), ORIGIN_SIDE_FILE_TREE, Some(10)),
         tracked("prev-restored", Some("prev"), ORIGIN_RESTORED, Some(11)),
         tracked("prev-global", Some("prev"), ORIGIN_GLOBAL_APP, Some(12)),
         tracked("prev-manual", Some("prev"), ORIGIN_MANUAL_LAUNCH, Some(13)),
@@ -756,7 +756,7 @@ fn switch_uses_hide_show_as_workspace_backend_boundary() {
             Some(20),
         ),
         tracked("next-restored", Some("next"), ORIGIN_RESTORED, Some(21)),
-        tracked("root-file", None, ORIGIN_RIGHT_FILE_TREE, Some(30)),
+        tracked("root-file", None, ORIGIN_SIDE_FILE_TREE, Some(30)),
     ]
     .into_iter()
     .map(|w| (w.id.clone(), w))
@@ -810,7 +810,7 @@ fn switch_ignores_global_app_and_manual_windows_when_hiding() {
     let windows: HashMap<String, TrackedWindow> = [
         tracked("g", Some("prev"), ORIGIN_GLOBAL_APP, Some(1)),
         tracked("m", Some("prev"), ORIGIN_MANUAL_LAUNCH, Some(2)),
-        tracked("p", Some("prev"), ORIGIN_RIGHT_FILE_TREE, Some(3)),
+        tracked("p", Some("prev"), ORIGIN_SIDE_FILE_TREE, Some(3)),
     ]
     .into_iter()
     .map(|w| (w.id.clone(), w))
@@ -848,8 +848,8 @@ fn switch_root_runtime_uses_none_project_id() {
     use eldrun_lib::platform::null::NullBackend;
 
     let windows: HashMap<String, TrackedWindow> = [
-        tracked("root-w", None, ORIGIN_RIGHT_FILE_TREE, Some(99)),
-        tracked("proj-w", Some("p1"), ORIGIN_RIGHT_FILE_TREE, Some(10)),
+        tracked("root-w", None, ORIGIN_SIDE_FILE_TREE, Some(99)),
+        tracked("proj-w", Some("p1"), ORIGIN_SIDE_FILE_TREE, Some(10)),
     ]
     .into_iter()
     .map(|w| (w.id.clone(), w))

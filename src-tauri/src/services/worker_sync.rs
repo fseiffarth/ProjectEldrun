@@ -403,19 +403,26 @@ pub async fn fan_out(
 
 /// One worker's fan-out with the in-flight lock + event emit. Skips silently if a
 /// sync to the same worker is already running.
-async fn sync_worker_guarded(
+pub async fn sync_worker_guarded(
     app: &AppHandle,
     pool: &RemotePoolState,
     state: &WorkerSyncState,
     project_id: &str,
     host_id: &str,
     force: bool,
-) {
-    let key = format!("{project_id}\u{1}{host_id}");
+) -> WorkerSyncReport {
+    let key = remote::conn_key(project_id, host_id);
     {
         let mut guard = state.lock().await;
         if !guard.in_flight.insert(key.clone()) {
-            return; // already syncing this worker
+            return WorkerSyncReport {
+                project_id: project_id.to_string(),
+                host_id: host_id.to_string(),
+                head: mirror_head(&mirror_dir(project_id)).map(|sha| short_sha(&sha)),
+                ok: true,
+                skipped: true,
+                error: None,
+            };
         }
     }
     let report = sync_worker(pool, project_id, host_id, force).await;
@@ -424,6 +431,7 @@ async fn sync_worker_guarded(
         guard.in_flight.remove(&key);
     }
     let _ = app.emit("worker-sync-report", &report);
+    report
 }
 
 // ── Output pull-back (§4.4) — the ONLY worker→local byte path, user-initiated ──
@@ -459,8 +467,8 @@ pub struct WorkerPullReport {
 /// (A path containing a newline would split; experiment outputs effectively never
 /// do, and the tradeoff buys a one-round-trip listing.)
 fn outputs_list_script() -> &'static str {
-    "git ls-files --others --exclude-standard | while IFS= read -r f; do \
-       sz=$(stat -c %s \"$f\" 2>/dev/null || echo 0); \
+    "git -c core.quotepath=false ls-files --others --exclude-standard | while IFS= read -r f; do \
+       sz=$(wc -c < \"$f\" 2>/dev/null || printf 0); \
        printf '%s\\t%s\\n' \"$sz\" \"$f\"; \
      done"
 }
@@ -651,6 +659,19 @@ mod tests {
         );
         assert_eq!(out[0].bytes, 1024);
         assert_eq!(out[2].bytes, 2048); // trailing \r stripped from the path
+    }
+
+    #[test]
+    fn output_listing_disables_git_path_quoting_and_uses_portable_size() {
+        let script = outputs_list_script();
+        assert!(script.contains("-c core.quotepath=false"));
+        assert!(script.contains("wc -c"));
+        assert!(!script.contains("stat -c"));
+
+        let out = parse_outputs_listing("7\tergebnisse-übersicht.csv\n");
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].rel, "ergebnisse-übersicht.csv");
+        assert_eq!(out[0].bytes, 7);
     }
 
     #[test]

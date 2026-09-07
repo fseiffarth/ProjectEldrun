@@ -47,17 +47,24 @@ function HighlightedPath({ text, query }: { text: string; query: string }) {
 
 export function ContextFilePicker({
   projectDir,
+  roots,
   attached,
   onPick,
   onClose,
 }: {
   /** Project root whose files are offered (empty → "No project"). */
   projectDir: string;
+  /** Multi-root mode (a BOX scope): the roots to offer — box folder + member
+   *  roots — with a selector row above the search. When set, the active root
+   *  replaces `projectDir` as the listing root and `onPick` receives its dir.
+   *  Single-project callers omit it and are unchanged. */
+  roots?: { label: string; dir: string }[];
   /** Relative paths already attached, shown ticked. */
   attached: string[];
-  /** Add the picked file (project-relative path). The picker stays open so
-   *  several files can be added in one session; Esc / backdrop closes it. */
-  onPick: (rel: string) => void;
+  /** Add the picked file (root-relative path). `dir` names the root the pick
+   *  came from (multi-root mode); single-root callers can ignore it. The picker
+   *  stays open so several files can be added; Esc / backdrop closes it. */
+  onPick: (rel: string, dir?: string) => void;
   onClose: () => void;
 }) {
   const t = useT();
@@ -65,6 +72,9 @@ export function ContextFilePicker({
   const [files, setFiles] = useState<string[]>([]);
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState(0);
+  const [rootIdx, setRootIdx] = useState(0);
+  const activeRoot = roots && roots.length > 0 ? roots[Math.min(rootIdx, roots.length - 1)] : null;
+  const listDir = activeRoot?.dir ?? projectDir;
 
   const inputRef = useRef<HTMLInputElement | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
@@ -73,12 +83,12 @@ export function ContextFilePicker({
   useEffect(() => {
     let alive = true;
     setLoading(true);
-    if (!projectDir) {
+    if (!listDir) {
       setFiles([]);
       setLoading(false);
       return;
     }
-    invoke<PathEntry[]>("list_project_paths", { projectDir })
+    invoke<PathEntry[]>("list_project_paths", { projectDir: listDir })
       .then((entries) => {
         if (!alive) return;
         setFiles(entries.filter((e) => !e.is_dir).map((e) => e.path));
@@ -88,7 +98,7 @@ export function ContextFilePicker({
     return () => {
       alive = false;
     };
-  }, [projectDir]);
+  }, [listDir]);
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -122,10 +132,10 @@ export function ContextFilePicker({
       } else if (e.key === "Enter") {
         e.preventDefault();
         const pick = results[selected];
-        if (pick) onPick(pick);
+        if (pick) onPick(pick, listDir);
       }
     },
-    [results, selected, onClose, onPick],
+    [results, selected, onClose, onPick, listDir],
   );
 
   // Portal out of the editor: the picker is mounted deep inside `.pane-layer`
@@ -147,6 +157,26 @@ export function ContextFilePicker({
     <div className="qo-backdrop qo-context-backdrop" onMouseDown={onClose}>
       <div className="qo-panel qo-context-panel" onMouseDown={(e) => e.stopPropagation()}>
         <div className="qo-context-header">{t("contextFilePicker.title")}</div>
+        {roots && roots.length > 1 && (
+          // BOX scope: pick which root the page source comes from — the box
+          // folder or any member project's tree.
+          <div className="qo-root-row">
+            {roots.map((r, idx) => (
+              <button
+                key={`${r.dir}|${idx}`}
+                type="button"
+                className={"qo-root-btn" + (idx === rootIdx ? " qo-root-sel" : "")}
+                onClick={() => {
+                  setRootIdx(idx);
+                  setSelected(0);
+                }}
+                title={r.dir}
+              >
+                {r.label}
+              </button>
+            ))}
+          </div>
+        )}
         <input
           ref={inputRef}
           className="qo-input"
@@ -166,7 +196,7 @@ export function ContextFilePicker({
             <div className="qo-empty">{t("common.loading")}</div>
           ) : results.length === 0 ? (
             <div className="qo-empty">
-              {!projectDir
+              {!listDir
                 ? t("contextFilePicker.noProject")
                 : files.length === 0
                   ? t("quickOpen.noFiles")
@@ -180,7 +210,7 @@ export function ContextFilePicker({
                 className={"qo-row" + (idx === selected ? " qo-row-sel" : "")}
                 onMouseDown={(e) => {
                   e.preventDefault();
-                  onPick(rel);
+                  onPick(rel, listDir);
                 }}
                 onMouseEnter={() => setSelected(idx)}
               >

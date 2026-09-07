@@ -30,10 +30,15 @@ const AGENT_OUTPUT = [
   "",
   `${GREEN}✓${OFF} Completed the readable output pass`,
   "",
+  `${MAGENTA}›${OFF} Now lay it out like a chat: my prompts on the right,`,
+  "  the agent on the left",
+  "",
+  "Done — each echoed prompt is a bubble on the right, the rest stays as printed.",
+  "",
   "╭────────────────────────────────────────────────────────────╮",
   "│ >                                                          │",
   "╰────────────────────────────────────────────────────────────╯",
-  `  ${DIM}? for shortcuts · 85% context left${OFF}`,
+  `  ${DIM}~/projects/eldrun (develop) · Opus 4.1 · plan mode on (shift+tab to cycle) · 85% context left${OFF}`,
 ].join("\r\n");
 
 const SHELL_OUTPUT = [

@@ -1,5 +1,7 @@
 use std::fs;
+use std::io::Write;
 use std::path::Path;
+use std::sync::Mutex;
 
 use crate::paths;
 
@@ -37,15 +39,62 @@ pub fn write_json_atomic<T>(path: &Path, value: &T) -> Result<(), Box<dyn std::e
 where
     T: serde::Serialize,
 {
+    let _guard = JSON_MUTATION_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    write_json_atomic_unlocked(path, value)
+}
+
+/// Serialize one JSON read-modify-write transaction with every atomic writer in
+/// this process. A missing file starts from `default`; an existing file must
+/// deserialize successfully or `patch` is never called and its bytes are left
+/// untouched.
+///
+/// Keep `patch` limited to the in-memory mutation. Calling
+/// [`write_json_atomic`] from it would try to acquire the same lock again.
+pub fn patch_json<T, R>(
+    path: &Path,
+    default: T,
+    patch: impl FnOnce(&mut T) -> Result<R, String>,
+) -> Result<R, String>
+where
+    T: serde::de::DeserializeOwned + serde::Serialize,
+{
+    let _guard = JSON_MUTATION_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut value = if path.exists() {
+        read_json(path).map_err(|e| e.to_string())?
+    } else {
+        default
+    };
+    let result = patch(&mut value)?;
+    write_json_atomic_unlocked(path, &value).map_err(|e| e.to_string())?;
+    Ok(result)
+}
+
+/// One lock covers atomic replacements and the read side of [`patch_json`].
+/// JSON state files are small; keeping the boundary process-wide avoids a lock
+/// registry whose entries can outlive arbitrary state paths.
+static JSON_MUTATION_LOCK: Mutex<()> = Mutex::new(());
+
+fn write_json_atomic_unlocked<T>(path: &Path, value: &T) -> Result<(), Box<dyn std::error::Error>>
+where
+    T: serde::Serialize,
+{
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let json = serde_json::to_string_pretty(value)?;
     // The temp file must sit on the same filesystem as the target for `rename`
     // to be atomic, so it goes in the target's own directory rather than /tmp.
-    let tmp = path.with_extension("json.tmp");
-    fs::write(&tmp, json)?;
-    fs::rename(&tmp, path)?;
+    // NamedTempFile also makes the sibling name unique: concurrent writers can
+    // never rename or truncate one another's staging file.
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let mut staged = tempfile::NamedTempFile::new_in(parent)?;
+    serde_json::to_writer_pretty(staged.as_file_mut(), value)?;
+    staged.as_file_mut().write_all(b"\n")?;
+    staged.as_file_mut().sync_all()?;
+    staged.persist(path)?;
     Ok(())
 }
 
@@ -56,11 +105,13 @@ where
 /// Windows: `%APPDATA%\eldrun\`
 /// macOS:   `~/Library/Application Support/eldrun/`
 pub fn state_dir() -> std::path::PathBuf {
-    // Test/dev override. The state dir is now written to by tests (the per-project
-    // session state moved here out of the project tree), and a test suite that
-    // writes into the developer's real `~/.local/share/eldrun/` is not a test
-    // suite. Not a supported runtime knob — nothing sets it but the test harness,
-    // and anything that could set it for the app already owns the process.
+    // Test/sandbox override. The state dir is written to by tests (the
+    // per-project session state moved here out of the project tree), and a test
+    // suite that writes into the developer's real `~/.local/share/eldrun/` is
+    // not a test suite. `start-eldrun-dev-sandbox.sh` sets it too, paired with
+    // `ELDRUN_HOME` (see `paths::eldrun_home`), so a dev window keeps its state
+    // away from the packaged daily-driver instance's. Still not a user-facing
+    // knob — whatever sets it for the app already owns the process.
     if let Ok(dir) = std::env::var("ELDRUN_STATE_DIR") {
         if !dir.is_empty() {
             return std::path::PathBuf::from(dir);
@@ -514,5 +565,46 @@ mod tests {
             .filter(|n| n.ends_with(".tmp"))
             .collect();
         assert!(strays.is_empty(), "temp files left behind: {strays:?}");
+    }
+
+    #[test]
+    fn patch_json_refuses_to_replace_corrupt_existing_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("data.json");
+        std::fs::write(&path, b"{broken").unwrap();
+
+        let result = patch_json(&path, Vec::<u32>::new(), |values| {
+            values.push(7);
+            Ok(())
+        });
+
+        assert!(result.is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"{broken");
+    }
+
+    #[test]
+    fn patch_json_serializes_concurrent_read_modify_write() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("counter.json");
+        write_json_atomic(&path, &0_u32).unwrap();
+        let path = std::sync::Arc::new(path);
+        let mut threads = Vec::new();
+        for _ in 0..8 {
+            let path = path.clone();
+            threads.push(std::thread::spawn(move || {
+                for _ in 0..25 {
+                    patch_json(path.as_ref(), 0_u32, |counter| {
+                        *counter += 1;
+                        Ok(())
+                    })
+                    .unwrap();
+                }
+            }));
+        }
+        for thread in threads {
+            thread.join().unwrap();
+        }
+
+        assert_eq!(read_json::<u32>(path.as_ref()).unwrap(), 200);
     }
 }

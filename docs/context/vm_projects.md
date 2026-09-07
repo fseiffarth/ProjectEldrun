@@ -53,9 +53,10 @@ default's limit is stated in the UI rather than hidden: the agent can still
 exfiltrate *to the allowed endpoints* (e.g. inside a model prompt). The proxy
 narrows the channel; it cannot close it. What it buys: everything else is
 blocked **and logged**, so an agent probing anywhere unexpected shows up as
-blocked CONNECTs — a tripwire, not a wall. The proxy is CONNECT-only by
-design (every allowlisted endpoint speaks TLS; plain-HTTP forwarding would
-make it a general web proxy), and GitHub is a per-project opt-in, not a
+blocked CONNECTs — a tripwire, not a wall. The proxy is CONNECT-only and admits
+port 443 only by design (every allowlisted endpoint speaks TLS; plain-HTTP
+forwarding or another port would turn an allowed hostname into a tunnel to
+unrelated services), and GitHub is a per-project opt-in, not a
 default — the initial clone goes through a *temporary* allow instead of a
 standing hole to a code-hosting site. `restrict=on` + `guestfwd` at a fixed
 guest address (10.0.2.100:3128) <!-- privacy-check: ok — QEMU slirp, not a real host -->means the guest-side proxy env never changes

@@ -49,6 +49,12 @@ pub struct ProjectBox {
     /// Phase 4: surfaced + auto-detected).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub relations: Vec<BoxRelation>,
+    /// Eldrun Mobile reach (#31aa): whether this box's `box:<id>` scope is
+    /// listed on a paired phone. Off by default and absent from disk while off,
+    /// exactly like a project's `eldrun_mobile_access` — the sidecar reads this
+    /// file directly, so the bit lives here and nowhere else.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub eldrun_mobile_access: bool,
     #[serde(flatten)]
     pub extra: HashMap<String, Value>,
 }

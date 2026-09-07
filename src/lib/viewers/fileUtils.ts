@@ -1,3 +1,4 @@
+import type { TranslationKey } from "../i18n";
 import { relativePathWithin } from "../paths";
 
 export interface FileEntry {
@@ -12,9 +13,11 @@ export interface FileEntry {
 }
 
 export const STANDARD_PROJECT_FILES = new Set([
+  "PROJECT.md",
   "README.md",
   "ROADMAP.md",
   "TODO.md",
+  "REMARKS.md",
   "AGENTS.md",
   "CLAUDE.md",
   "GEMINI.md",
@@ -289,8 +292,8 @@ export function isDeferredOfficeFile(entry: FileEntry): boolean {
 export interface ViewerTypeMeta {
   /** Stable key used in `settings.viewer_prefs` and as the React key. */
   id: InternalViewer;
-  /** Human label for the settings UI. */
-  label: string;
+  /** i18n key for the settings UI's label. */
+  labelKey: TranslationKey;
   /** Representative extensions, for the settings UI description. */
   extensions: string[];
   /** Whether opt-in local autocomplete applies (#45 — editable text types). */
@@ -300,31 +303,31 @@ export interface ViewerTypeMeta {
 export const VIEWER_PREF_TYPES: ViewerTypeMeta[] = [
   {
     id: "text",
-    label: "Text / code",
+    labelKey: "viewerType.text",
     extensions: [".txt", ".toml", ".py", ".rs", ".ts", ".ini", "…"],
     autocomplete: true,
   },
   {
     id: "tex",
-    label: "LaTeX",
+    labelKey: "viewerType.tex",
     extensions: [".tex"],
     autocomplete: true,
   },
   {
     id: "markdown",
-    label: "Markdown",
+    labelKey: "viewerType.markdown",
     extensions: [".md", ".markdown", ".mdx"],
     autocomplete: true,
   },
   {
     id: "yaml",
-    label: "YAML / JSON tree",
+    labelKey: "viewerType.yaml",
     extensions: [".yaml", ".yml", ".json"],
     autocomplete: true,
   },
   {
     id: "bib",
-    label: "BibTeX bibliography",
+    labelKey: "viewerType.bib",
     extensions: [".bib", ".bibtex"],
     // Autocomplete applies: the Source half of this viewer is the ordinary code
     // editor, and a `.bib` is exactly the kind of prose-in-fields a completion
@@ -333,62 +336,62 @@ export const VIEWER_PREF_TYPES: ViewerTypeMeta[] = [
   },
   {
     id: "image",
-    label: "Images",
+    labelKey: "viewerType.image",
     extensions: [".png", ".jpg", ".bmp", ".webp", "…"],
     autocomplete: false,
   },
   {
     id: "gif",
-    label: "Animated GIF",
+    labelKey: "viewerType.gif",
     extensions: [".gif"],
     autocomplete: false,
   },
-  { id: "pdf", label: "PDF", extensions: [".pdf"], autocomplete: false },
+  { id: "pdf", labelKey: "viewerType.pdf", extensions: [".pdf"], autocomplete: false },
   {
     id: "table",
-    label: "Table / spreadsheet",
+    labelKey: "viewerType.table",
     extensions: [".csv", ".tsv", ".xlsx", ".xls"],
     autocomplete: false,
   },
   {
     id: "notebook",
-    label: "Jupyter notebook",
+    labelKey: "viewerType.notebook",
     extensions: [".ipynb"],
     autocomplete: false,
   },
   {
     id: "diff",
-    label: "Diff / patch",
+    labelKey: "viewerType.diff",
     extensions: [".diff", ".patch"],
     autocomplete: false,
   },
   {
     id: "odt",
-    label: "OpenDocument Text",
+    labelKey: "viewerType.odt",
     extensions: [".odt"],
     autocomplete: false,
   },
   {
     id: "media",
-    label: "Audio / video",
+    labelKey: "viewerType.media",
     extensions: [".mp3", ".mp4", ".webm", ".wav", "…"],
     autocomplete: false,
   },
   {
     id: "html",
-    label: "HTML / SVG preview",
+    labelKey: "viewerType.html",
     extensions: [".html", ".htm", ".svg"],
     autocomplete: false,
   },
   {
     id: "sqlite",
-    label: "SQLite database",
+    labelKey: "viewerType.sqlite",
     extensions: [".db", ".sqlite", ".sqlite3"],
     autocomplete: false,
   },
   {
     id: "eldeck",
-    label: "Presentation (deck)",
+    labelKey: "viewerType.eldeck",
     extensions: [".eldeck.json"],
     autocomplete: false,
   },
@@ -618,12 +621,9 @@ export function stringMapsEqual(
   return true;
 }
 
-export function fmtSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-  return `${(bytes / 1024 / 1024 / 1024).toFixed(1)} GB`;
-}
+// The canonical implementation moved to `lib/formatBytes` (§9.1); the name
+// stays for this module's many importers.
+export { formatBytes as fmtSize } from "../formatBytes";
 
 export function fmtModified(seconds?: number | null): string {
   if (!seconds) return "";

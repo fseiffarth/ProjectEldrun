@@ -1,12 +1,18 @@
 import { useEffect } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { PLATFORM } from "../lib/dragPlatform";
+import { desktopOwnsSuperKey, probeSuperKeyOwnership } from "../lib/superKey";
 import { allGroups, findGroup, useTabsStore } from "../stores/tabs";
 import { useProjectsStore } from "../stores/projects";
 import { useSettingsStore, stepZoom } from "../stores/settings";
 import { useSubwindowNavStore } from "../stores/subwindowNav";
 import {
+  projectStations,
+  useKeyboardSteeringStore,
+} from "../stores/keyboardSteering";
+import {
   chordMatches,
+  isLoneModifier,
   resolveChord,
   type ShortcutAction,
   type ShortcutMap,
@@ -55,12 +61,193 @@ export function isEditableTarget(target: EventTarget | null): boolean {
  *   - Shift+Tab            → cycle tabs within the focused subwindow
  *   - Shift+Ctrl+W         → close the focused subwindow
  *   - Ctrl+W               → close the active tab
+ *   - Shift+Ctrl+←         → cycle to the previous active project
+ *   - F1                   → open the shortcut cheat sheet (window event)
+ *   - Ctrl+Shift+Space     → toggle keyboard steering mode (see below)
+ *
+ * Steering mode (`steeringMode` chord): a modal layer for the fixed keys in
+ * `STEERING_KEYS`, captured on `document` in the CAPTURE phase so xterm never
+ * sees them and the mode works FROM a focused terminal — the point is that the
+ * hands never leave the keyboard. While active every key is swallowed.
  */
+/** `KeyboardEvent.key` of the Super/Windows/Command key, as the engines name it. */
+function isSuperKey(key: string): boolean {
+  return key === "Meta" || key === "Super" || key === "OS";
+}
+
+/**
+ * How long a released lone Super waits before toggling the panels. A desktop
+ * that answers the key itself takes focus on that same release; its blur
+ * reaches us well inside this window and cancels the toggle. Long enough for
+ * that, short enough that the toggle still reads as immediate where the key is
+ * ours.
+ */
+export const SUPER_RELEASE_SETTLE_MS = 150;
+
 export function useKeyboard({ onTogglePanels }: KeyboardOptions) {
   useEffect(() => {
     const win = getCurrentWindow();
 
+    // Lone-Super press tracking (Linux only; see the binding in `onKeyDown`).
+    let superHeld = false;
+    let superChorded = false;
+    let superToggleTimer: number | null = null;
+    const cancelSuperToggle = () => {
+      if (superToggleTimer !== null) {
+        window.clearTimeout(superToggleTimer);
+        superToggleTimer = null;
+      }
+    };
+
+    // ── Keyboard steering mode ────────────────────────────────────────────
+    // A capture-phase listener on `document`, which threads two needles at
+    // once: it runs BEFORE xterm's textarea handlers (target phase), so a
+    // steered key is stopped before the PTY can see it — and BEFORE this
+    // hook's own editable-target guard by construction, so the toggle chord
+    // works from a focused terminal (the whole point). But it runs AFTER the
+    // settings panel's chord-capture listener (window, capture phase), so
+    // rebinding the steering chord itself still captures instead of toggling.
+    function onSteeringKeyDown(e: KeyboardEvent) {
+      const steering = useKeyboardSteeringStore.getState();
+      const overrides = useSettingsStore.getState().settings
+        ?.keyboard_shortcuts as ShortcutMap | undefined;
+
+      // The chord toggles: enter when inactive, exit when active.
+      if (chordMatches(resolveChord("steeringMode", overrides), e)) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (steering.active) steering.exit();
+        else steering.enter();
+        return;
+      }
+      if (!steering.active) return;
+
+      // Lone modifiers pass through unswallowed so Shift+Tab still composes.
+      if (isLoneModifier(e.key)) return;
+
+      // The mode owns the keyboard: every non-modifier key below — mapped or
+      // not — is swallowed here, so nothing ever leaks to the app underneath.
+      e.preventDefault();
+      e.stopPropagation();
+
+      const tabs = useTabsStore.getState();
+
+      if (e.key === "Escape" || e.key === "Enter") {
+        steering.exit();
+        return;
+      }
+
+      // 1–9 — jump to the Nth station of the SAME ring cycleProject walks:
+      // 1 = the root scope, 2 = the first project pill (display order) — the
+      // numbers the pill badges show. Jumping leaves the mode.
+      if (/^[1-9]$/.test(e.key)) {
+        const target = projectStations()[Number(e.key) - 1];
+        steering.exit();
+        if (target !== undefined) {
+          const ps = useProjectsStore.getState();
+          if (target !== ps.activeId) void ps.setActive(target);
+        }
+        return;
+      }
+
+      // Arrows — move the subwindow focus in document order (↓/→ forward,
+      // ↑/← back), committing immediately via focusGroup (no Shift-preview:
+      // the badges re-anchor each step). Stays in the mode.
+      if (e.key.startsWith("Arrow")) {
+        const ids = allGroups(tabs.layout).map((g) => g.id);
+        const n = ids.length;
+        if (n >= 2) {
+          const fwd = e.key === "ArrowDown" || e.key === "ArrowRight";
+          const from = tabs.focusedGroupId ? ids.indexOf(tabs.focusedGroupId) : -1;
+          const base = from >= 0 ? from : 0;
+          tabs.focusGroup(ids[(base + (fwd ? 1 : -1) + n) % n]);
+        }
+        return;
+      }
+
+      const focused = tabs.focusedGroupId;
+      const group = focused ? findGroup(tabs.layout, focused) : null;
+
+      // Tab / Shift+Tab — next / previous tab in the focused subwindow.
+      if (e.key === "Tab") {
+        if (group && group.tabKeys.length > 1) {
+          const len = group.tabKeys.length;
+          const cur = group.activeKey ? group.tabKeys.indexOf(group.activeKey) : 0;
+          const next = group.tabKeys[(cur + (e.shiftKey ? -1 : 1) + len) % len];
+          tabs.setGroupActive(group.id, next);
+        }
+        return;
+      }
+
+      // ? — the shortcut cheat sheet (its host listens for the event; part of
+      // the later steering work). Opening an overlay leaves the mode.
+      if (e.key === "?") {
+        steering.exit();
+        window.dispatchEvent(new Event("eldrun:open-shortcut-help"));
+        return;
+      }
+
+      switch (e.key.toLowerCase()) {
+        case "f": // toggle the focused subwindow's docked file viewer
+          if (focused && group) tabs.setGroupFiles(focused, !group.filesOpen);
+          return;
+        case "p": // toggle the side panels
+          onTogglePanels();
+          return;
+        case "w": // close the active tab
+          if (tabs.activeKey) tabs.removeTab(tabs.activeKey);
+          return;
+        case "s": // open settings — same door the header ⚙ menu fires
+          steering.exit();
+          window.dispatchEvent(
+            new CustomEvent("eldrun:open-settings", { detail: "main" }),
+          );
+          return;
+        // Anything else: swallowed above, mode stays on.
+      }
+    }
+
     async function onKeyDown(e: KeyboardEvent) {
+      // Super key — toggle the side panels, where that key is actually ours.
+      //
+      // On macOS Cmd reports as "Meta" and is the platform-primary shortcut
+      // modifier (see shortcuts.chordMatches), so a lone-key toggle would fire
+      // on every Cmd+key chord. On Windows the lone Win key belongs to the OS —
+      // the Start menu opens on key *release* at the shell level and
+      // preventDefault() cannot stop it, and every global Win+X shortcut
+      // pressed while Eldrun is focused fires a lone "Meta" keydown first,
+      // spuriously toggling the panels. Both therefore use F9 (below).
+      //
+      // `PLATFORM === "linux"` used to be the whole test, which quietly said
+      // "on Linux this key is free". True of Cinnamon, where the binding was
+      // written; false of GNOME, which opens the Activities overview on Super
+      // and forwards a lone "Meta" keydown ahead of every Super+<key> shell
+      // shortcut — reintroducing the exact Windows symptom on the branch
+      // assumed safe (user, 2026-09-07, after a move to GNOME/Wayland: panels
+      // gone, and with them the reveal handle, with nothing on screen saying
+      // why). Ownership of the bare key is a property of the DESKTOP, not the
+      // OS, so ask the backend which one is running.
+      //
+      // And the toggle fires on RELEASE, not here, and only for a LONE press —
+      // see `onKeyUp`. The keydown just arms it. That is what keeps the panels
+      // in place on a desktop the probe could not classify: a backend that
+      // predates the probe answers nothing, the key then counts as ours, and
+      // the shell's Super+Tab / Super+1 / Super+arrow and a bare Super for the
+      // overview all used to fire the toggle off this keydown. Now a chord
+      // disarms it and a lost focus cancels it (user, 2026-09-07: the memory
+      // watchdog had just reloaded the window, one Super press later the side
+      // panel was gone).
+      if (PLATFORM === "linux" && !desktopOwnsSuperKey() && isSuperKey(e.key)) {
+        e.preventDefault();
+        if (!e.repeat) {
+          superHeld = true;
+          superChorded = false;
+        }
+        return;
+      }
+      // Any other key while Super is down makes the press a chord, not a toggle.
+      if (superHeld) superChorded = true;
+
       // F11 — OS fullscreen toggle. On Windows, real fullscreen strips the
       // window styles that Aero Snap and native title-bar dragging rely on (see
       // AppShell's startup), so toggle MAXIMIZE there instead — same "fill the
@@ -74,20 +261,6 @@ export function useKeyboard({ onTogglePanels }: KeyboardOptions) {
           const isFs = await win.isFullscreen();
           win.setFullscreen(!isFs);
         }
-        return;
-      }
-
-      // Super key — toggle right panel. Linux only: on macOS Cmd reports as
-      // "Meta" and is the platform-primary shortcut modifier (see
-      // shortcuts.chordMatches), so a lone-key toggle would fire on every Cmd+key
-      // chord. On Windows the lone Win key belongs to the OS — the Start menu
-      // opens on key *release* at the shell level and preventDefault() cannot
-      // stop it, and every global Win+X shortcut pressed while Eldrun is focused
-      // fires a lone "Meta" keydown first, spuriously toggling the panels.
-      // Windows therefore uses F9 (below) instead.
-      if (PLATFORM === "linux" && (e.key === "Meta" || e.key === "Super")) {
-        e.preventDefault();
-        onTogglePanels();
         return;
       }
 
@@ -147,10 +320,23 @@ export function useKeyboard({ onTogglePanels }: KeyboardOptions) {
         return;
       }
 
-      // Cycle to the next active project.
+      // Cycle to the next / previous active project.
       if (is("cycleProject")) {
         e.preventDefault();
-        cycleProject();
+        cycleProject(1);
+        return;
+      }
+      if (is("cycleProjectBack")) {
+        e.preventDefault();
+        cycleProject(-1);
+        return;
+      }
+
+      // Open the shortcut cheat sheet. This hook only fires the door event
+      // (the header-menu pattern); the overlay host owns the dialog.
+      if (is("shortcutHelp")) {
+        e.preventDefault();
+        window.dispatchEvent(new Event("eldrun:open-shortcut-help"));
         return;
       }
 
@@ -167,7 +353,7 @@ export function useKeyboard({ onTogglePanels }: KeyboardOptions) {
         return;
       }
 
-      // Hide the focused subwindow (park it in the right-panel Hidden list,
+      // Hide the focused subwindow (park it in the side-panel Hidden list,
       // keeping its tabs/PTYs alive). Unlike closeSubwindow this is allowed even
       // for the last remaining subwindow — hiding it just shows the +-placeholder.
       if (is("hideSubwindow")) {
@@ -256,6 +442,23 @@ export function useKeyboard({ onTogglePanels }: KeyboardOptions) {
     // Commit the previewed subwindow focus when Shift is released; cancel (no
     // focus move) if the window loses focus mid-preview.
     function onKeyUp(e: KeyboardEvent) {
+      // The lone-Super toggle (armed in `onKeyDown`) lands here, after a short
+      // settle: the shell that owns this key takes focus on the same release
+      // (GNOME's overview, KDE's launcher), and the blur that follows cancels
+      // the pending toggle instead of racing it.
+      if (superHeld && isSuperKey(e.key)) {
+        const lone = !superChorded;
+        superHeld = false;
+        superChorded = false;
+        if (lone && PLATFORM === "linux" && !desktopOwnsSuperKey()) {
+          e.preventDefault();
+          cancelSuperToggle();
+          superToggleTimer = window.setTimeout(() => {
+            superToggleTimer = null;
+            onTogglePanels();
+          }, SUPER_RELEASE_SETTLE_MS);
+        }
+      }
       const nav = useSubwindowNavStore.getState();
       if (nav.active && (e.key === "Shift" || !e.shiftKey)) {
         if (nav.previewGroupId) useTabsStore.getState().focusGroup(nav.previewGroupId);
@@ -263,14 +466,31 @@ export function useKeyboard({ onTogglePanels }: KeyboardOptions) {
       }
     }
     function onBlur() {
+      // Focus left with Super down or just released: the desktop answered the
+      // key (overview, launcher, a window switch) — not a panel toggle.
+      superHeld = false;
+      superChorded = false;
+      cancelSuperToggle();
       const nav = useSubwindowNavStore.getState();
       if (nav.active) nav.end();
+      // Steering must not survive a window blur either — coming back to a
+      // window silently swallowing every key would read as a hung app.
+      const steering = useKeyboardSteeringStore.getState();
+      if (steering.active) steering.exit();
     }
 
+    // Which desktop is running decides whether the bare Super key is ours (see
+    // the binding above). One cached probe per session; fire-and-forget,
+    // because until it answers the handler keeps the pre-existing behavior.
+    if (PLATFORM === "linux") void probeSuperKeyOwnership();
+
+    document.addEventListener("keydown", onSteeringKeyDown, true);
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("keyup", onKeyUp);
     window.addEventListener("blur", onBlur);
     return () => {
+      cancelSuperToggle();
+      document.removeEventListener("keydown", onSteeringKeyDown, true);
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup", onKeyUp);
       window.removeEventListener("blur", onBlur);
@@ -289,20 +509,16 @@ export function useKeyboard({ onTogglePanels }: KeyboardOptions) {
  * one-way door out of the root terminal.
  *
  * `null` leads the ring for the same reason the pill is pinned to the left edge.
+ *
+ * The ring itself lives in `stores/keyboardSteering.projectStations` — the
+ * steering digits and pill badges number the same list, so the three surfaces
+ * can never disagree about which project is station N.
  */
-function cycleProject() {
+function cycleProject(delta: 1 | -1) {
   const ps = useProjectsStore.getState();
-  // Active = not inactive; ordered by `position` (the pill display order),
-  // behind the root scope.
-  const stations: (string | null)[] = [
-    null,
-    ...ps.projects
-      .filter((p) => p.status !== "inactive")
-      .sort((a, b) => a.position - b.position)
-      .map((p) => p.id),
-  ];
+  const stations = projectStations();
   if (stations.length < 2) return;
   const idx = stations.indexOf(ps.activeId);
-  const next = stations[(idx + 1) % stations.length];
+  const next = stations[(idx + delta + stations.length) % stations.length];
   if (next !== ps.activeId) void ps.setActive(next);
 }

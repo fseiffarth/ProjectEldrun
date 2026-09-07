@@ -1,8 +1,8 @@
 import { useState } from "react";
-import { createPortal } from "react-dom";
 import { securityGlyph, securityTone } from "../../lib/browser";
 import { useT } from "../../lib/i18n";
 import { UntestedTag } from "../common/UntestedTag";
+import { ContextMenuPortal } from "../common/ContextMenuPortal";
 import type { SecurityState } from "../../types/browser";
 
 /**
@@ -66,18 +66,13 @@ export function BrowserSecurityChip({
         )}
       </button>
 
-      {pos &&
-        createPortal(
-          <>
-            <div
-              style={{ position: "fixed", inset: 0, zIndex: 200 }}
-              onPointerDown={() => setPos(null)}
-            />
-            <div
-              className="context-menu browser-security-popover"
-              style={{ left: pos.x, top: pos.y, zIndex: 201 }}
-              onPointerDown={(e) => e.stopPropagation()}
-            >
+      {pos && (
+          <ContextMenuPortal
+            x={pos.x}
+            y={pos.y}
+            onClose={() => setPos(null)}
+            className="context-menu browser-security-popover"
+          >
               <div className="context-menu-group-label">
                 {t("browser.securityDetails")} <UntestedTag />
               </div>
@@ -107,9 +102,7 @@ export function BrowserSecurityChip({
                 </div>
               )}
               <div className="browser-security-note">{t("browser.securityNote")}</div>
-            </div>
-          </>,
-          document.body,
+          </ContextMenuPortal>
         )}
     </>
   );

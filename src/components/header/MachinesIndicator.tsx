@@ -19,6 +19,7 @@ import { isHpcHost, mayAutoTouch, setHpcPatch, targetOfSpec } from "../../lib/hp
 import { hpcGuardRefusal } from "../../lib/hpcGuard";
 import { useT, type TranslationKey } from "../../lib/i18n";
 import { useHeaderHoverMenuStore } from "../../stores/headerHoverMenu";
+import { useHeaderStatusReport } from "../../stores/headerStatus";
 import type { ConnState } from "../../stores/remoteStatus";
 import type { GlobalMachine, MachineImportEntry, ProjectEntry } from "../../types";
 
@@ -719,6 +720,26 @@ export function MachinesIndicator() {
           },
         ];
   })();
+
+  // A machine in the error bucket is the fleet's only non-nominal reading worth
+  // pulling out of a collapsed header. "Connecting" deliberately is not: the whole
+  // fleet is amber for the first seconds after launch and after every reconnect,
+  // which would make the bar reflow on its own every time Eldrun starts.
+  useHeaderStatusReport(
+    "machines",
+    !enabled
+      ? null
+      : {
+          tone: lampGroups.some((g) => g.lamp === "error")
+            ? "alert"
+            : lampGroups.some((g) => g.lamp === "connected")
+              ? "ok"
+              : "off",
+          label: `${t("machines.label")}: ${lampGroups
+            .map((g) => `${g.machines.length} ${g.lamp}`)
+            .join(", ")}`,
+        },
+  );
 
   const startRetry = (id: string) => {
     const m = machines.find((mm) => mm.id === id);

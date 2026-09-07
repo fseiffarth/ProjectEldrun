@@ -508,17 +508,20 @@ fn derive_passphrase_kek(passphrase: &str, salt: &[u8], kdf: KdfParams) -> Resul
 // ── Keychain-held KEK ───────────────────────────────────────────────────────
 
 fn read_keychain_kek() -> Option<Key> {
-    let raw = remote_credentials::get(&remote_credentials::mail_store_key_account())?;
-    let bytes = B64.decode(raw.trim()).ok()?;
+    // The base64 and its decoding are KEK material like the key itself, so they
+    // are zeroized rather than left in freed heap — the same discipline `Key`
+    // and `Zeroizing` apply everywhere else in this module.
+    let raw = Zeroizing::new(remote_credentials::get(
+        &remote_credentials::mail_store_key_account(),
+    )?);
+    let bytes = Zeroizing::new(B64.decode(raw.trim()).ok()?);
     let arr: [u8; 32] = bytes.as_slice().try_into().ok()?;
     Some(Key::from_bytes(arr))
 }
 
 fn write_keychain_kek(kek: &Key) -> Result<(), String> {
-    remote_credentials::set(
-        &remote_credentials::mail_store_key_account(),
-        Some(&B64.encode(kek.as_bytes())),
-    )
+    let encoded = Zeroizing::new(B64.encode(kek.as_bytes()));
+    remote_credentials::set(&remote_credentials::mail_store_key_account(), Some(&encoded))
 }
 
 // ── Unlocking ───────────────────────────────────────────────────────────────

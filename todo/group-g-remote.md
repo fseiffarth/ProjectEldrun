@@ -1216,6 +1216,44 @@ container) — as opposed to the git **push** axis (#21/#22).*
 
 ---
 
+    - [x] **28r — Sync + lockstep read-through** (2026-09-03; ✅ Code-complete ·
+      🧪 Live-host QA owed; guide written). A full read of `remote_sync`,
+      `sync_auto`, `git_peer`, `commands::sync`, `local_loss`, `worker_sync`
+      and the sync store, concentrating on the git + byte-sync seam. Six
+      defects fixed, all unit-tested where pure; the orchestration halves are
+      owed a `lockstep_drv` run:
+      - **Lockstep spun on its own `.git` writes while red.** Every pass writes
+        the bundle/incoming refs/objects inside the mirror's `.git`, which the
+        watcher observes; a non-green state never early-outs, so a diverged or
+        blocked project re-ran the full SSH pass every ~1 s. `poll_loop` skips a
+        burst that leaves the mirror's ref signature as the last pass left it
+        (`watcher_burst_is_own`); byte-sync's watcher ignores `.git`/`.eldrun`
+        (`event_touches_synced_bytes`).
+      - **A commit was a checkout.** `detect_and_sync` compared whole
+        `HeadRef`s (sha included), so every mirror commit replayed
+        `git checkout <branch>` on the host — a silent branch switch whenever
+        the host sat elsewhere. Now `head_target_moved` (branch / detached sha);
+        both sides moving reconciles refs only and reports "Out of step".
+      - **Linked-worktree false block**: a dest-ahead branch under a plain
+        reconcile writes nothing, yet was reported "left alone" → red
+        (`would_move_ref`).
+      - **Lockstep-owned rows were stat'd and painted orange** after every
+        commit (bases seeded at pairing go stale when the other side ff's);
+        `sync_status` now reports tracked files green, unchecked, and a
+        targeted pull whose candidates were all withheld errors with the reason
+        instead of `Ok(0)` (the push already did).
+      - **Auto-on over an excluded folder was a no-op** (`excluded` outranks
+        `auto_sync` in both marker walks); `sync_set_auto(true)` clears it, the
+        store patches the same.
+      - **A loop that ended on the HPC tag blocked its own restart** until
+        reconnect (`start` treated the finished task as running).
+      - Docs: `docs/remote_sync_guide.md` (how it works, step by step, symptom
+        → fix), `docs/context/git_sync.md` rationale bullets, case-matrix rows
+        14b/17b/21c + the timing note.
+      - Known, documented, not changed: a file present on **both** sides that
+        was never synced has no base, is skipped by every auto pass and shows
+        as "new local"; one manual pull/push adopts it.
+
 ### G.24 — Remote-connect hardening: deferred follow-ups
 
 The 2026-07-25 audit + fix pass (5 analysis agents, 5 implementation agents, one
@@ -1404,6 +1442,13 @@ untested tag until a VM has actually booted on this machine).
   (pair a local mirror later), **manual-pull-only** gating in `git_peer`
   scheduling, and the view-diff-before-pull viewer (also on `ssh_sync_plan`'s
   deferred list).
+- [x] Missing prerequisites are a **button**, not a sentence to retype
+  (2026-09-07): `vm_doctor` now carries an `install_command` for the host
+  packages it found missing (apt/brew/winget, arch-aware, arm64 firmware
+  included), and the creation dialog offers it as the ordinary one-click
+  install tab, re-probing the doctor while it runs so the tier appears without
+  reopening the dialog. What a package manager cannot fix — `/dev/kvm` access,
+  disk space — carries no button, only the doctor's sentence. Untested live.
 - [ ] Frontend follow-ups — an `ELDRUN_VM_DOWN` spawn error currently renders
   as terminal text; turn it into a "Boot VM" placeholder action (like
   `RemotePaneHold`). The locality *badges* (`TabLocalityBadges`) still label a
@@ -1423,3 +1468,34 @@ untested tag until a VM has actually booted on this machine).
   `/home/eldrun/project`), `git init` + commit inside, deactivate (VM powers
   down), reactivate, delete. Then a clone-into-VM import against a real repo,
   and a blocked-CONNECT check (curl example.com from inside → 403 + pill log).
+
+92. ✅ **A failed VPN connect is readable, and an expired certificate is named.**
+    Two separate holes met in one report: the headless handshake log was the only
+    record of *why* a connect failed, and it could not be copied — the app root sets
+    `user-select: none` (`styles/base.css`) and `.connection-log` never opted back
+    in, so the one piece of text worth handing to someone else was unselectable.
+    Fixed in `components/common/ConnectionLog.tsx` (shared by `VpnPasswordPrompt`
+    and `RemoteConnectDialog`, so both surfaces get it): the lines are selectable,
+    and a Copy chip sits *outside* the scroller — the log auto-scrolls to the newest
+    line, so a button inside it would scroll out of view exactly when a failure
+    makes it worth pressing. It copies every line, not the visible ones. The xterm
+    surfaces (root-terminal tunnel, the dialog's embedded login terminal) already
+    copied on select and are unchanged.
+    The second half is `explain_openvpn_error`: OpenVPN does not refuse to start on
+    an expired **client** certificate. It prints one warning, sends the cert anyway,
+    the server drops the handshake in silence, and 60 seconds later the log says
+    `TLS key negotiation failed to occur within 60 seconds (check your network
+    connectivity)` — pointing at the one thing that is fine — then restarts on
+    `SIGUSR1[soft,tls-error]` and does it again. Eldrun matched only that timeout,
+    so it repeated the wrong advice. The expired-cert check now runs *first*
+    (symptom must not outrank cause), and a peer-chain `VERIFY ERROR` is reported
+    separately, since an expired server cert needs a different person to fix it.
+    - [x] 🤖 Automated tests — `explain_openvpn_error_names_an_expired_client_certificate`
+      (asserts the timeout line does *not* win), `explain_openvpn_error_separates_a_bad_server_certificate`
+      (`services/openvpn.rs`).
+    - [ ] 🖐️ Manual test — with a config whose client certificate has expired,
+      connect from the header VPN menu: the log is selectable, the Copy chip yields
+      the whole handshake, and the error names the expired certificate instead of
+      network connectivity.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work

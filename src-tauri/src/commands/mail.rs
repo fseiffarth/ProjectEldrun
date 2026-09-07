@@ -384,9 +384,10 @@ fn read_settings() -> crate::schema::Settings {
 /// object from here would clobber anything changed since that cache was filled.
 fn set_encrypt_preference(value: Option<bool>) {
     let path = storage::state_dir().join("settings.json");
-    let mut settings: crate::schema::Settings = storage::read_json(&path).unwrap_or_default();
-    settings.mail_encrypt_store = value;
-    let _ = storage::write_json_atomic(&path, &settings);
+    let _ = storage::patch_json(&path, crate::schema::Settings::default(), |settings| {
+        settings.mail_encrypt_store = value;
+        Ok(())
+    });
 }
 
 // ── OpenPGP ─────────────────────────────────────────────────────────────────

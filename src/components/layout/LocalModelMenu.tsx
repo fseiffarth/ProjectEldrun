@@ -1042,9 +1042,41 @@ export function LocalModelMenu() {
               rail and the ::before wash live on this element, so it must not be
               the thing that scrolls — see `.menu-scroll-region`). This menu is
               the tallest one in the app: four sections, each row two or three
-              lines, so on a short window it ran off the bottom edge. */}
-          <div className="tab-new-menu-group-label">{t("localModel.agentsGroup")}</div>
+              lines, so on a short window it ran off the bottom edge.
+
+              What is pinned is the MENU's own title, never the first section's
+              label. It used to be the latter, which is wrong the moment anything
+              scrolls: "Agents & CLIs" stayed up there over the Local Models and
+              Machine rows, naming a section that had left the view — and the
+              agents section was then the only one with no header of its own. So
+              the shape is the global-machines menu's: a title, a note under it
+              saying what the menu is for, then the sections themselves. */}
+          <div className="tab-new-menu-group-label local-model-menu-title">
+            {t("localModel.menuTitle")}
+          </div>
           <div className="menu-scroll-region">
+          <div className="vpn-indicator-note">
+            <strong>{t("localModel.note.strong")}</strong> {t("localModel.note.rest")}
+          </div>
+          <div className="tab-new-menu-group-label">{t("localModel.agentsGroup")}</div>
+          {/* Each section's verbs lead it rather than trail it: the lists below
+              them are long (every installed CLI, every model, each row two or
+              three lines), so an action at the foot of a section was reached by
+              scrolling past everything it is not about. Directly under the
+              header they keep a fixed place — Manage CLIs + Skills library
+              here, Manage local models + Check for updates below. */}
+          <button className="tab-new-menu-item" onClick={openAgents}>
+            <span className="tab-new-menu-dot" style={{ color: "transparent" }}>
+              ●
+            </span>
+            {t("localModel.manageAgents")}
+          </button>
+          <button className="tab-new-menu-item" onClick={openSkills}>
+            <span className="tab-new-menu-dot" style={{ color: "transparent" }}>
+              ●
+            </span>
+            {t("localModel.skillsLibrary")} <UntestedTag />
+          </button>
           {agents.map((a) => {
             const isDefault = a.id === defaultAgentCmd;
             const isCompact = compactAgentIds.includes(a.id) || compactAgentIds.includes(a.bin);
@@ -1083,19 +1115,154 @@ export function LocalModelMenu() {
               </div>
             );
           })}
-          <button className="tab-new-menu-item" onClick={openAgents}>
-            <span className="tab-new-menu-dot" style={{ color: "transparent" }}>
-              ●
-            </span>
-            {t("localModel.manageAgents")}
-          </button>
-          <button className="tab-new-menu-item" onClick={openSkills}>
-            <span className="tab-new-menu-dot" style={{ color: "transparent" }}>
-              ●
-            </span>
-            {t("localModel.skillsLibrary")} <UntestedTag />
-          </button>
           <div className="tab-new-menu-group-label">{t("localModel.localModelsGroup")}</div>
+          <button className="tab-new-menu-item" onClick={openInstall}>
+            <span className="tab-new-menu-dot" style={{ color: "transparent" }}>
+              ●
+            </span>
+            {installed ? t("localModel.manageLocalModels") : t("localModel.installOllamaEllipsis")}
+          </button>
+          {/* The menu's one outbound request, and the reason it is a button
+              rather than part of the hover: Ollama has no "is there a newer
+              version" API, so a check is a manifest-digest comparison against
+              the registry — one HEAD per installed model. Cheap, but network,
+              so it happens when it is asked for and at no other time. Verdicts
+              land on the rows above; nothing appears against a model that is
+              already current, because "up to date" is a claim with a shelf
+              life and a stale tick is worse than no tick. */}
+          {installed && models.length > 0 && (
+            <div className="local-model-check-row">
+              <button
+                className="tab-new-menu-item"
+                disabled={checkingUpdates}
+                title={t("localModel.checkUpdatesTitle")}
+                onClick={checkUpdates}
+              >
+                <span className="tab-new-menu-dot" style={{ color: "transparent" }}>
+                  ●
+                </span>
+                {checkingUpdates ? t("localModel.checkingUpdates") : t("localModel.checkUpdates")}
+                {/* The click must always report back — but only where nothing
+                    else does. A *found* update now shows itself: the green
+                    version pair beside this label, and an Update chip on each
+                    model's own row, so an "N available" count here was the same
+                    news a third time and the one number that could disagree with
+                    the two things it was counting. What is left is the pair of
+                    results that have no other surface: a clean check (every row
+                    stays silent when it is current, so without this a good
+                    result was indistinguishable from a dead button) and a failed
+                    one, which speaks in the reason the check itself gave. */}
+                {!checkingUpdates && checkResult && !(checkResult.ok && checkResult.updates > 0) && (
+                  <span className="local-model-update-note">
+                    {checkResult.ok ? t("localModel.updatesNone") : checkResult.reason}
+                  </span>
+                )}
+              </button>
+              {/* The version pair, and the whole reason this row is a `div` with
+                  two children rather than one button: what the check found is
+                  `v0.14.3 → v0.15.2`, and the *new number is the upgrade*. A
+                  separate "Update" chip repeated the same fact in a second
+                  place, and a control nested inside the check button would be a
+                  button within a button — invalid markup, and one click landing
+                  on two actions. Sibling, so the arrow-and-number is a real
+                  button with a real hit area. It sits outside the check button
+                  on the current path too: the row's `margin-left: auto` puts it
+                  in the same place either way, and a version that is sometimes
+                  part of the button's label and sometimes not would move.
+
+                  The sentence the retired notice carried (a server a few minor
+                  versions back is missing whole *features* rather than weights —
+                  `ollama launch`, the only wiring that stands up an
+                  Anthropic-compatible endpoint for Claude Code, does not exist
+                  before v0.15) is the tooltip, together with what the click
+                  does. Gated on `update_available`, i.e. both versions parsed
+                  and `latest` genuinely newer — never on `latest` alone. */}
+              {version?.current &&
+                (version.update_available ? (
+                  <button
+                    type="button"
+                    className="local-model-version-note has-update"
+                    title={`${t("localModel.ollamaUpdateSentence", {
+                      latest: version.latest,
+                      current: version.current,
+                    })} — ${t("localModel.ollamaUpgradeTitle", { latest: version.latest })}`}
+                    onClick={upgradeOllama}
+                  >
+                    {t("localModel.ollamaVersion", { current: version.current })}
+                    <span className="local-model-version-arrow" aria-hidden="true">
+                      →
+                    </span>
+                    <span className="local-model-version-new">
+                      {t("localModel.ollamaVersionLatest", { latest: version.latest })}
+                    </span>
+                  </button>
+                ) : (
+                  <span className="local-model-version-note">
+                    {version.latest
+                      ? t("localModel.ollamaVersionCurrent", { current: version.current })
+                      : t("localModel.ollamaVersion", { current: version.current })}
+                  </span>
+                ))}
+            </div>
+          )}
+          {/* The upgrade's other half: what happened to the models it evicted.
+              Directly under the row that started it, and it reports every phase
+              rather than only the failures — a restart the user is waiting
+              through, a load they did not ask for and a load that did not
+              happen are three things they cannot see from anywhere else (the
+              server is machine-wide, the terminal tab shows the installer, not
+              Ollama's memory). Toned like the autoload notice it borrows its
+              chrome from: amber for the wait that ran out, red for a model that
+              would not come back. */}
+          {showRestoreNote && (
+            <div
+              className={`local-model-autostart-note${
+                restorePhase === "timeout" ? " saver" : restorePhase === "error" ? " failed" : ""
+              }`}
+            >
+              <button
+                type="button"
+                className="local-model-autostart-dismiss"
+                title={t("localModel.autostartDismiss")}
+                aria-label={t("localModel.autostartDismiss")}
+                onClick={restoreDismiss}
+              >
+                ✕
+              </button>
+              <div className="local-model-autostart-text">
+                <span className="local-model-autostart-sentence">{restoreSentence}</span>
+                <UntestedTag />
+              </div>
+              {/* Waiting is the one phase with something to *stop*; the two
+                  that ended without the models being back are the ones with
+                  something to retry. A finished restore offers neither — the
+                  models are in memory, and the note is only there to say so. */}
+              {restorePhase === "waiting" && (
+                <div className="local-model-autostart-actions">
+                  <button
+                    type="button"
+                    className="local-model-role-chip"
+                    title={t("localModel.upgradeRestoreCancelTitle")}
+                    onClick={restoreCancel}
+                  >
+                    {t("localModel.upgradeRestoreCancel")}
+                  </button>
+                </div>
+              )}
+              {(restorePhase === "timeout" || restorePhase === "error") && (
+                <div className="local-model-autostart-actions">
+                  <button
+                    type="button"
+                    className="local-model-role-chip"
+                    title={t("localModel.upgradeRestoreNowTitle")}
+                    onClick={() => void restoreNow()}
+                  >
+                    {t("localModel.upgradeRestoreNow")}
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
           {showAutoNote && (
             <div
               className={`local-model-autostart-note${
@@ -1206,7 +1373,11 @@ export function LocalModelMenu() {
             </div>
           ) : (
             <>
-              {/* Resident models — selectable as the active local model. */}
+              {/* Resident models — selectable as the active local model. The
+                  pair of subheaders (running / on disk) is what splits this one
+                  section in two: the same model list, divided by the only fact
+                  that differs between the halves — whether it is in memory. */}
+              <div className="tab-new-menu-group-label is-sub">{t("localModel.runningGroup")}</div>
               {running.length === 0 ? (
                 <div className="tab-new-menu-hint">{t("ollama.noModelLoaded")}</div>
               ) : (
@@ -1350,7 +1521,13 @@ export function LocalModelMenu() {
               {/* Installed-but-not-resident models — click to load into memory. */}
               {available.length > 0 && (
                 <>
-                  <div className="tab-new-menu-group-label">{t("localModel.loadIntoMemoryGroup")}</div>
+                  {/* A subheader, not a fourth section: these rows still
+                      belong to Local Models, and it names what the list IS
+                      (models sitting on disk, not resident) rather than what
+                      clicking does — every row already carries its own Load /
+                      GPU / CPU verb, so a header repeating the verb said the
+                      same thing one level up. */}
+                  <div className="tab-new-menu-group-label is-sub">{t("localModel.onDiskGroup")}</div>
                   {available.map((m) => {
                     const st = loads[m.name];
                     return (
@@ -1490,154 +1667,6 @@ export function LocalModelMenu() {
               )}
             </>
           )}
-          {/* The menu's one outbound request, and the reason it is a button
-              rather than part of the hover: Ollama has no "is there a newer
-              version" API, so a check is a manifest-digest comparison against
-              the registry — one HEAD per installed model. Cheap, but network,
-              so it happens when it is asked for and at no other time. Verdicts
-              land on the rows above; nothing appears against a model that is
-              already current, because "up to date" is a claim with a shelf
-              life and a stale tick is worse than no tick. */}
-          {installed && models.length > 0 && (
-            <div className="local-model-check-row">
-              <button
-                className="tab-new-menu-item"
-                disabled={checkingUpdates}
-                title={t("localModel.checkUpdatesTitle")}
-                onClick={checkUpdates}
-              >
-                <span className="tab-new-menu-dot" style={{ color: "transparent" }}>
-                  ●
-                </span>
-                {checkingUpdates ? t("localModel.checkingUpdates") : t("localModel.checkUpdates")}
-                {/* The click must always report back — but only where nothing
-                    else does. A *found* update now shows itself: the green
-                    version pair beside this label, and an Update chip on each
-                    model's own row, so an "N available" count here was the same
-                    news a third time and the one number that could disagree with
-                    the two things it was counting. What is left is the pair of
-                    results that have no other surface: a clean check (every row
-                    stays silent when it is current, so without this a good
-                    result was indistinguishable from a dead button) and a failed
-                    one, which speaks in the reason the check itself gave. */}
-                {!checkingUpdates && checkResult && !(checkResult.ok && checkResult.updates > 0) && (
-                  <span className="local-model-update-note">
-                    {checkResult.ok ? t("localModel.updatesNone") : checkResult.reason}
-                  </span>
-                )}
-                <UntestedTag />
-              </button>
-              {/* The version pair, and the whole reason this row is a `div` with
-                  two children rather than one button: what the check found is
-                  `v0.14.3 → v0.15.2`, and the *new number is the upgrade*. A
-                  separate "Update" chip repeated the same fact in a second
-                  place, and a control nested inside the check button would be a
-                  button within a button — invalid markup, and one click landing
-                  on two actions. Sibling, so the arrow-and-number is a real
-                  button with a real hit area. It sits outside the check button
-                  on the current path too: the row's `margin-left: auto` puts it
-                  in the same place either way, and a version that is sometimes
-                  part of the button's label and sometimes not would move.
-
-                  The sentence the retired notice carried (a server a few minor
-                  versions back is missing whole *features* rather than weights —
-                  `ollama launch`, the only wiring that stands up an
-                  Anthropic-compatible endpoint for Claude Code, does not exist
-                  before v0.15) is the tooltip, together with what the click
-                  does. Gated on `update_available`, i.e. both versions parsed
-                  and `latest` genuinely newer — never on `latest` alone. */}
-              {version?.current &&
-                (version.update_available ? (
-                  <button
-                    type="button"
-                    className="local-model-version-note has-update"
-                    title={`${t("localModel.ollamaUpdateSentence", {
-                      latest: version.latest,
-                      current: version.current,
-                    })} — ${t("localModel.ollamaUpgradeTitle", { latest: version.latest })}`}
-                    onClick={upgradeOllama}
-                  >
-                    {t("localModel.ollamaVersion", { current: version.current })}
-                    <span className="local-model-version-arrow" aria-hidden="true">
-                      →
-                    </span>
-                    <span className="local-model-version-new">
-                      {t("localModel.ollamaVersionLatest", { latest: version.latest })}
-                    </span>
-                  </button>
-                ) : (
-                  <span className="local-model-version-note">
-                    {version.latest
-                      ? t("localModel.ollamaVersionCurrent", { current: version.current })
-                      : t("localModel.ollamaVersion", { current: version.current })}
-                  </span>
-                ))}
-            </div>
-          )}
-          {/* The upgrade's other half: what happened to the models it evicted.
-              Directly under the row that started it, and it reports every phase
-              rather than only the failures — a restart the user is waiting
-              through, a load they did not ask for and a load that did not
-              happen are three things they cannot see from anywhere else (the
-              server is machine-wide, the terminal tab shows the installer, not
-              Ollama's memory). Toned like the autoload notice it borrows its
-              chrome from: amber for the wait that ran out, red for a model that
-              would not come back. */}
-          {showRestoreNote && (
-            <div
-              className={`local-model-autostart-note${
-                restorePhase === "timeout" ? " saver" : restorePhase === "error" ? " failed" : ""
-              }`}
-            >
-              <button
-                type="button"
-                className="local-model-autostart-dismiss"
-                title={t("localModel.autostartDismiss")}
-                aria-label={t("localModel.autostartDismiss")}
-                onClick={restoreDismiss}
-              >
-                ✕
-              </button>
-              <div className="local-model-autostart-text">
-                <span className="local-model-autostart-sentence">{restoreSentence}</span>
-                <UntestedTag />
-              </div>
-              {/* Waiting is the one phase with something to *stop*; the two
-                  that ended without the models being back are the ones with
-                  something to retry. A finished restore offers neither — the
-                  models are in memory, and the note is only there to say so. */}
-              {restorePhase === "waiting" && (
-                <div className="local-model-autostart-actions">
-                  <button
-                    type="button"
-                    className="local-model-role-chip"
-                    title={t("localModel.upgradeRestoreCancelTitle")}
-                    onClick={restoreCancel}
-                  >
-                    {t("localModel.upgradeRestoreCancel")}
-                  </button>
-                </div>
-              )}
-              {(restorePhase === "timeout" || restorePhase === "error") && (
-                <div className="local-model-autostart-actions">
-                  <button
-                    type="button"
-                    className="local-model-role-chip"
-                    title={t("localModel.upgradeRestoreNowTitle")}
-                    onClick={() => void restoreNow()}
-                  >
-                    {t("localModel.upgradeRestoreNow")}
-                  </button>
-                </div>
-              )}
-            </div>
-          )}
-          <button className="tab-new-menu-item" onClick={openInstall}>
-            <span className="tab-new-menu-dot" style={{ color: "transparent" }}>
-              ●
-            </span>
-            {installed ? t("localModel.manageLocalModels") : t("localModel.installOllamaEllipsis")}
-          </button>
           {/* Its own group, and the menu's last, because it is neither an agent
               nor a model: it is what the machine has left for whichever of them
               you pick above it. Each row is the *device's* figure, never a
@@ -1652,7 +1681,6 @@ export function LocalModelMenu() {
             <>
               <div className="tab-new-menu-group-label local-model-machine-label">
                 <span>{t("localModel.machineGroup")}</span>
-                <UntestedTag />
               </div>
               <div className="local-model-stats">
                 {showMachine && (

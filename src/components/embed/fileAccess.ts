@@ -1,5 +1,6 @@
 import { createContext, useContext } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import type { TranslationKey } from "../../lib/i18n";
 
 /**
  * The project scope that absolute-path file commands are confined to.
@@ -97,7 +98,47 @@ export async function readFileBytes(
   projectId: string | null,
 ): Promise<Uint8Array> {
   const out = await invoke<ArrayBuffer | number[]>("read_file_bytes", { path, projectId });
-  return out instanceof ArrayBuffer ? new Uint8Array(out) : Uint8Array.from(out);
+  if (out instanceof ArrayBuffer) return new Uint8Array(out);
+  noteIpcFallback(out.length);
+  return Uint8Array.from(out);
+}
+
+let ipcFallbackReported = false;
+
+/**
+ * A raw-body command answered as a JSON number array. Inside Tauri that has one
+ * meaning: this window's IPC has dropped to the `postMessage` fallback (Tauri
+ * switches a window over for good after one failed custom-protocol fetch, and
+ * says so only on the devtools console). On that path every binary read is
+ * handed back as a script — `runCallback(id, [37,80,68,…])` — that the engine
+ * has to parse: measured on WebKitGTK 2.52, one 80 MB PDF read this way takes
+ * the renderer from 0.2 GB to 2.8–6 GB and leaves it above 1.9 GB afterwards.
+ * That is the shape of "the popout grows on every recompile until it is
+ * restarted", so the first time it happens it goes into crash.log, where the
+ * watchdog's ceiling reports for the same window will sit beside it.
+ *
+ * Outside Tauri there is nothing to report: the tests' mocked `invoke` answers
+ * arrays by design, and their setup stubs `__TAURI_INTERNALS__` too — what only
+ * the real runtime's init script writes is `metadata` (the current window), so
+ * that is the field that means "a Tauri window".
+ */
+function noteIpcFallback(bytes: number): void {
+  if (ipcFallbackReported) return;
+  const internals =
+    typeof window === "undefined"
+      ? undefined
+      : (window as unknown as { __TAURI_INTERNALS__?: { metadata?: unknown } }).__TAURI_INTERNALS__;
+  if (typeof internals?.metadata !== "object" || internals.metadata === null) return;
+  ipcFallbackReported = true;
+  void Promise.resolve().then(() => invoke("report_frontend_error", {
+    kind: "ipc-fallback",
+    message:
+      `read_file_bytes arrived as a JSON number array (${bytes} bytes) instead of a raw body: ` +
+      "this window's IPC is on Tauri's postMessage fallback, so every binary read is evaluated " +
+      "as a script — the renderer's memory will climb by gigabytes per PDF reload until the " +
+      "window is recreated. Look for 'IPC custom protocol failed' in this window's devtools console.",
+    stack: null,
+  })).catch(() => {});
 }
 
 export function writeFileText(
@@ -152,12 +193,15 @@ export function detectMime(path: string, projectId: string | null): Promise<stri
  * project is opening a file that only exists in the local mirror while the viewer
  * is reading the host over SFTP (never synced): say that, and point at the fix.
  * Falls back to a plain "couldn't open" rather than dumping the raw string.
+ *
+ * Returns the i18n key, not the sentence: every caller already has a `t`, and the
+ * copy belongs in `lib/i18n` with the rest of it.
  */
-export function describeFileError(e: unknown): string {
+export function describeFileErrorKey(e: unknown): TranslationKey {
   const raw = String(e);
   const remote = /sftp/i.test(raw);
   if (/permission|denied|eacces/i.test(raw)) {
-    return "Permission denied — you don't have access to this file.";
+    return "fileError.permission";
   }
   // A remote stat/metadata failure means the host doesn't have this path — on a
   // remote project that's overwhelmingly a local-only file (never synced), which
@@ -166,12 +210,10 @@ export function describeFileError(e: unknown): string {
     /no such file|not found|does not exist|enoent/i.test(raw) ||
     (remote && /metadata|stat/i.test(raw))
   ) {
-    return remote
-      ? "This file isn't on the remote host — it may be local-only (never synced). Switch the viewer to Local to open it."
-      : "This file no longer exists.";
+    return remote ? "fileError.remoteMissing" : "fileError.missing";
   }
   if (remote) {
-    return "Couldn't read this file from the remote host. Check the connection and try again.";
+    return "fileError.remoteRead";
   }
-  return "Couldn't open this file.";
+  return "fileError.open";
 }

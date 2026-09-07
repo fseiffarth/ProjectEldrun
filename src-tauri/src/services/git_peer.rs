@@ -49,7 +49,7 @@ const RS: char = '\x1e';
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Output;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use notify::{RecursiveMode, Watcher};
@@ -491,6 +491,18 @@ pub fn peer_ref_op(action: RefAction, force: bool) -> PeerRefOp {
     match action {
         RefAction::Diverged if !force => PeerRefOp::Set,
         _ => PeerRefOp::Delete,
+    }
+}
+
+/// Whether applying `action` would write the dest's ref at all — the gate for the
+/// linked-worktree block (#23 D1). A create or fast-forward always writes; a divergence
+/// or a dest-ahead branch is only written under a forced resolution — otherwise the
+/// first is reported and the second is the *other* leg's fast-forward. Pure.
+pub fn would_move_ref(action: RefAction, force: bool) -> bool {
+    match action {
+        RefAction::InSync => false,
+        RefAction::CreateOnDest | RefAction::FastForwardDest => true,
+        RefAction::DestAhead | RefAction::Diverged => force,
     }
 }
 
@@ -1409,8 +1421,14 @@ async fn transfer_and_apply(
         // that quietly rewrites a checkout it cannot see is the failure mode, and
         // `--force` here would be the same write with a nicer name. The user's escape
         // is the one git gives — remove the worktree, or commit and move it there.
-        let blocked_by_worktree =
-            action != RefAction::InSync && linked_checkouts.contains(src_ref.name.as_str());
+        //
+        // Only a move that would actually *write* the ref counts. `DestAhead` under a
+        // plain reconcile touches nothing (the other leg fast-forwards the *source*),
+        // so blocking it reported a red "left alone" over a branch that was never
+        // going to be moved — a false Desynchronized for every linked worktree that
+        // was merely ahead of its peer.
+        let blocked_by_worktree = would_move_ref(action, force)
+            && linked_checkouts.contains(src_ref.name.as_str());
         if blocked_by_worktree {
             result.blocked = Some(format!(
                 "'{}' is checked out in a linked worktree on the {} side — its ref was left alone \
@@ -1624,7 +1642,7 @@ async fn transfer_and_apply(
 
     // 6. Cleanup: drop the incoming namespace + bundle files on both ends.
     cleanup_incoming(&dst_peer);
-    cleanup_bundles(pool, project_id, spec, &src_peer, &dst_peer, to_remote).await;
+    cleanup_bundles(pool, project_id, spec).await;
 
     // 7. Count the tracked files these applied moves carried into the "files
     //    synced" metric. Lockstep moves the whole tracked tree as one bundle, so
@@ -2005,14 +2023,7 @@ fn cleanup_incoming(peer: &Peer) {
     }
 }
 
-async fn cleanup_bundles(
-    pool: &RemotePoolState,
-    project_id: &str,
-    spec: &RemoteSpec,
-    _src_peer: &Peer,
-    _dst_peer: &Peer,
-    _to_remote: bool,
-) {
+async fn cleanup_bundles(pool: &RemotePoolState, project_id: &str, spec: &RemoteSpec) {
     let _ = std::fs::remove_file(local_bundle_path(project_id));
     if let Some(sftp) = crate::services::remote::pooled_sftp(pool, project_id).await {
         let _ = sftp::remove_file_on(&sftp, &remote_bundle_path(spec)).await;
@@ -2473,11 +2484,7 @@ async fn reconcile_with(
         // transient git/network failure must never license a wipe of a real repo. This
         // guard used to protect only the local side — while the remote one, reached
         // over a flaky link, is by far the likelier to misprobe (#28p D3.4).
-        let dest_probe_error = if source_is_local {
-            remote.probe_error
-        } else {
-            local.probe_error
-        };
+        let dest_probe_error = pairing_dest_probe_error(source_is_local, &local, &remote);
         if dest_probe_error {
             let side = if source_is_local {
                 "Remote host"
@@ -3196,7 +3203,6 @@ fn desync_state(project_id: &str, spec: &RemoteSpec, detail: &str) -> GitPeerSta
 pub struct GitPeerTask {
     cancel: Arc<Notify>,
     join: tokio::task::JoinHandle<()>,
-    _watcher: Option<notify::RecommendedWatcher>,
 }
 
 /// Tauri-managed registry of per-project lockstep tasks, keyed by project id.
@@ -3205,6 +3211,50 @@ pub type GitPeerRegistry = Arc<Mutex<HashMap<String, GitPeerTask>>>;
 /// Build a fresh, empty registry for `tauri::Builder::manage`.
 pub fn new_registry() -> GitPeerRegistry {
     Arc::new(Mutex::new(HashMap::new()))
+}
+
+/// One async reconcile lock per project. Manual commands and the background
+/// watcher/poll loop share the same fixed bundle paths and persisted state, so
+/// their complete operations—not merely individual file writes—must serialize.
+fn reconcile_locks() -> &'static std::sync::Mutex<HashMap<String, Arc<Mutex<()>>>> {
+    static LOCKS: OnceLock<std::sync::Mutex<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
+    LOCKS.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+}
+
+pub async fn reconcile_guard(project_id: &str) -> tokio::sync::OwnedMutexGuard<()> {
+    let lock = {
+        let mut locks = reconcile_locks().lock().unwrap_or_else(|e| e.into_inner());
+        Arc::clone(
+            locks
+                .entry(project_id.to_string())
+                .or_insert_with(|| Arc::new(Mutex::new(()))),
+        )
+    };
+    lock.lock_owned().await
+}
+
+/// Attach the mirror's `.git` watcher once the repository exists. Initial
+/// pairing may create `.git` after the task starts, so every interval tick
+/// retries this cheap one-time attachment.
+fn ensure_git_watcher(
+    slot: &mut Option<notify::RecommendedWatcher>,
+    gitdir: &Path,
+    tx: &mpsc::UnboundedSender<()>,
+) {
+    if slot.is_some() || !gitdir.exists() {
+        return;
+    }
+    let tx = tx.clone();
+    let Ok(mut watcher) = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+        if res.is_ok() {
+            let _ = tx.send(());
+        }
+    }) else {
+        return;
+    };
+    if watcher.watch(gitdir, RecursiveMode::Recursive).is_ok() {
+        *slot = Some(watcher);
+    }
 }
 
 /// The `git-peer-status` event payload (camelCase).
@@ -3254,29 +3304,21 @@ pub async fn start(
         return;
     }
     let mut guard = reg.lock().await;
+    // A task that ended on its own (the loop breaks when the host is tagged HPC
+    // mid-session) is a dead registry entry, not a running task: keeping it would
+    // refuse every restart until a disconnect/reconnect, so untagging the host —
+    // or toggling lockstep off and on — would silently leave the loop stopped.
+    if guard
+        .get(project_id)
+        .is_some_and(|t| t.join.is_finished())
+    {
+        guard.remove(project_id);
+    }
     if guard.contains_key(project_id) {
         return;
     }
 
     let (tx, rx) = mpsc::unbounded_channel::<()>();
-    // Watch only `.git` (HEAD/refs/packed-refs live here) so we don't double-fire
-    // with the mirror-wide auto-sync watcher on ordinary file edits.
-    let gitdir = mirror_dir(project_id).join(".git");
-    let watcher = if gitdir.exists() {
-        match notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
-            if res.is_ok() {
-                let _ = tx.send(());
-            }
-        }) {
-            Ok(mut w) => {
-                let _ = w.watch(&gitdir, RecursiveMode::Recursive);
-                Some(w)
-            }
-            Err(_) => None,
-        }
-    } else {
-        None
-    };
 
     let cancel = Arc::new(Notify::new());
     let join = tokio::spawn(poll_loop(
@@ -3287,17 +3329,11 @@ pub async fn start(
         worker_sync,
         target.spec,
         project_id.to_string(),
+        tx,
         rx,
         cancel.clone(),
     ));
-    guard.insert(
-        project_id.to_string(),
-        GitPeerTask {
-            cancel,
-            join,
-            _watcher: watcher,
-        },
-    );
+    guard.insert(project_id.to_string(), GitPeerTask { cancel, join });
 }
 
 /// Stop the project's lockstep task (no-op if none).
@@ -3327,12 +3363,19 @@ async fn poll_loop(
     worker_sync: crate::services::worker_sync::WorkerSyncState,
     spec: RemoteSpec,
     project_id: String,
+    tx: mpsc::UnboundedSender<()>,
     mut rx: mpsc::UnboundedReceiver<()>,
     cancel: Arc<Notify>,
 ) {
+    // Watch only `.git` (HEAD/refs/packed-refs live here) so ordinary file edits
+    // remain the byte-sync watcher's concern. The watcher lives with this future.
+    let gitdir = mirror_dir(&project_id).join(".git");
+    let mut watcher: Option<notify::RecommendedWatcher> = None;
+    ensure_git_watcher(&mut watcher, &gitdir, &tx);
     // Initial reconcile so both sides start in step. Forced: there is no prior pass in
     // this session to early-out against, and a stale green signature from the last run
     // must not skip it.
+    let reconcile = reconcile_guard(&project_id).await;
     let s = detect_and_sync(
         &pool,
         &manifest,
@@ -3345,11 +3388,27 @@ async fn poll_loop(
         },
     )
     .await;
+    drop(reconcile);
     emit_status(&app, &project_id, &s);
     // The primary now holds the current committed code; push it to any already-
     // connected workers (multi-host, `docs/multi_host_remote_plan.md` §2). Cheap
     // when they are already at HEAD (a mirror-head read, no network).
     crate::services::worker_sync::fan_out(&app, &pool, &worker_sync, &project_id, false).await;
+
+    // The mirror's signature as this task last left it — what tells a watcher burst
+    // caused by *our own* `.git` writes apart from one caused by the user. Every pass
+    // writes inside `.git` (the bundle file, `refs/eldrun/*`, the objects a fetch
+    // deposits, `index`/`ORIG_HEAD` from a merge), and each of those trips the very
+    // watcher that queues the next pass. While green the D5 early-out absorbed that;
+    // while red — diverged, blocked, a pairing refusal — nothing did, and the loop
+    // re-ran the full SSH pass every debounce window for as long as the state stayed
+    // red. The signature covers everything a pass *acts* on (heads, tags, HEAD, the
+    // tracked-dirty bit), so a burst that leaves it unchanged is either ours or a
+    // no-op write, and the 12 s poll still covers anything that slips through.
+    let mut own_sig = local_signature(&project_id);
+    // Events our pass just caused are already queued by the time it returns; drop
+    // them rather than debounce into a pass that would only re-derive the same state.
+    drain_events(&mut rx);
 
     let mut interval = tokio::time::interval(GIT_POLL_INTERVAL);
     interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -3363,11 +3422,16 @@ async fn poll_loop(
                 // the project is closed. Breaking ends the task — `stop()` then
                 // finds it already finished, which is what a cancel leaves too.
                 if crate::services::hpc_mode::is_hpc_spec(&spec) { break; }
+                ensure_git_watcher(&mut watcher, &gitdir, &tx);
+                let reconcile = reconcile_guard(&project_id).await;
                 let s = detect_and_sync(
                     &pool, &manifest, &auto, &project_id, &spec, ReconcileOpts::default(),
                 )
                 .await;
+                drop(reconcile);
                 emit_status(&app, &project_id, &s);
+                own_sig = local_signature(&project_id);
+                drain_events(&mut rx);
             }
             res = rx.recv() => {
                 if res.is_none() { break; }
@@ -3381,11 +3445,22 @@ async fn poll_loop(
                         res = rx.recv() => { if res.is_none() { return; } }
                     }
                 }
+                // Nothing a pass acts on changed since we last left the mirror: this
+                // burst is our own tail (or a stat-cache refresh). Skip the pass; the
+                // interval still re-checks the host on its own schedule.
+                let now_sig = local_signature(&project_id);
+                if watcher_burst_is_own(&own_sig, &now_sig) {
+                    continue;
+                }
+                let reconcile = reconcile_guard(&project_id).await;
                 let s = detect_and_sync(
                     &pool, &manifest, &auto, &project_id, &spec, ReconcileOpts::default(),
                 )
                 .await;
+                drop(reconcile);
                 emit_status(&app, &project_id, &s);
+                own_sig = local_signature(&project_id);
+                drain_events(&mut rx);
                 // A `.git` change on the mirror = a new commit/ref move; fan the
                 // committed code out to every connected worker (plan §2 trigger).
                 crate::services::worker_sync::fan_out(
@@ -3395,6 +3470,41 @@ async fn poll_loop(
             }
         }
     }
+}
+
+/// The mirror's current [`refs_signature`] — local git only, no network.
+fn local_signature(project_id: &str) -> String {
+    refs_signature(&probe(&Peer::Local(mirror_dir(project_id))))
+}
+
+/// Discard every watcher event already queued. Called right after a pass, whose own
+/// `.git` writes are exactly what is sitting in the channel by then.
+fn drain_events(rx: &mut mpsc::UnboundedReceiver<()>) {
+    while rx.try_recv().is_ok() {}
+}
+
+/// Whether a debounced `.git` watcher burst changed nothing a pass acts on: the
+/// mirror's signature (heads, tags, HEAD, tracked-dirty) still reads exactly as the
+/// previous pass left it. True for the tail of our own writes and for git's
+/// stat-cache refreshes; false for a commit, a checkout, a `git add`, a branch
+/// create — anything the loop exists to notice. Pure.
+pub fn watcher_burst_is_own(sig_after_last_pass: &str, sig_now: &str) -> bool {
+    sig_after_last_pass == sig_now
+}
+
+/// Whether a peer's checkout *target* changed between two observations — a different
+/// branch, a detach, a re-attach, or (while detached) a different commit. The one
+/// thing that is deliberately **not** a move: the same branch at a newer sha, which is
+/// what a commit looks like. `detect_and_sync` used to compare whole `HeadRef`s, so
+/// every commit on the mirror replayed as a `git checkout <branch>` on the host —
+/// harmless while both sides sat on that branch, and a silent branch switch on the
+/// host (under its running jobs) whenever they did not. `None` prior → nothing to
+/// compare against, never a move. Pure.
+pub fn head_target_moved(prior: &Option<HeadRef>, now: &Option<HeadRef>) -> bool {
+    if prior.is_none() {
+        return false;
+    }
+    target_of(prior) != target_of(now)
 }
 
 /// The target (branch name or detached sha) a HEAD points at, if any.
@@ -3427,10 +3537,22 @@ pub async fn detect_and_sync(
     let remote = probe(&Peer::Remote(spec.clone()));
 
     // A HEAD move is only actionable once we have a prior observation to compare to
-    // (the first pass just records heads via reconcile).
-    let local_moved = prior.local_head.is_some() && prior.local_head != local.head;
-    let remote_moved = prior.remote_head.is_some() && prior.remote_head != remote.head;
+    // (the first pass just records heads via reconcile). "Moved" means the checkout
+    // *target* changed — see [`head_target_moved`] — not merely the sha: a commit
+    // advances the sha of the same branch and is a fast-forward for `reconcile_with`,
+    // not a checkout to replay on the peer.
+    let local_moved = head_target_moved(&prior.local_head, &local.head);
+    let remote_moved = head_target_moved(&prior.remote_head, &remote.head);
 
+    if local_moved && remote_moved {
+        // Both sides changed what they have checked out since the last look (a long
+        // disconnect, two people, or two windows). There is no principled way to say
+        // which side follows the other, and picking the mirror — as the `if`/`else if`
+        // below used to — silently switched the host's branch under whatever was
+        // running there. Reconcile refs only; if the two targets differ,
+        // `head_mismatch` reports it and the Checkout action is one click away.
+        return reconcile_with(pool, manifest, project_id, spec, opts).await;
+    }
     if local_moved {
         if let Some(t) = target_of(&local.head) {
             if let Ok(s) =
@@ -3454,6 +3576,27 @@ pub async fn detect_and_sync(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn reconcile_guard_serializes_one_project_but_not_another() {
+        let first = reconcile_guard("guard-test-a").await;
+        // A different project is independent.
+        let other =
+            tokio::time::timeout(Duration::from_millis(100), reconcile_guard("guard-test-b"))
+                .await
+                .expect("another project must not share the lock");
+        drop(other);
+
+        let waiting = tokio::spawn(async { reconcile_guard("guard-test-a").await });
+        tokio::task::yield_now().await;
+        assert!(!waiting.is_finished(), "same-project reconcile overlapped");
+        drop(first);
+        let acquired = tokio::time::timeout(Duration::from_secs(1), waiting)
+            .await
+            .expect("waiter did not acquire after release")
+            .expect("waiter task failed");
+        drop(acquired);
+    }
 
     /// Returns true when `git` is on PATH; probe tests skip gracefully otherwise.
     fn git_available() -> bool {
@@ -3675,6 +3818,67 @@ mod tests {
             backup_ref_name("tags/v1", 1735689600),
             "refs/eldrun/backup/1735689600/tags/v1"
         );
+    }
+
+    #[test]
+    fn only_a_ref_write_is_blocked_by_a_linked_worktree() {
+        // A plain reconcile never writes a dest-ahead or diverged branch, so a linked
+        // worktree holding one is not "left alone" — there was nothing to do. It used
+        // to report a block (red pill) for every worktree that was merely ahead.
+        assert!(!would_move_ref(RefAction::InSync, false));
+        assert!(!would_move_ref(RefAction::DestAhead, false));
+        assert!(!would_move_ref(RefAction::Diverged, false));
+        // The writes: a create, a fast-forward, and anything a forced resolve resets.
+        assert!(would_move_ref(RefAction::CreateOnDest, false));
+        assert!(would_move_ref(RefAction::FastForwardDest, false));
+        assert!(would_move_ref(RefAction::DestAhead, true));
+        assert!(would_move_ref(RefAction::Diverged, true));
+        assert!(!would_move_ref(RefAction::InSync, true));
+    }
+
+    #[test]
+    fn a_commit_is_not_a_checkout() {
+        let on = |name: &str, sha: &str| {
+            Some(HeadRef::Branch {
+                name: name.into(),
+                sha: sha.into(),
+            })
+        };
+        let detached = |sha: &str| Some(HeadRef::Detached { sha: sha.into() });
+        // Same branch, newer sha: a commit. `detect_and_sync` must hand this to the
+        // fast-forward path, not replay `git checkout main` on the peer — which used
+        // to switch the host's branch whenever it sat on a different one.
+        assert!(!head_target_moved(&on("main", "a"), &on("main", "b")));
+        assert!(!head_target_moved(&on("main", "a"), &on("main", "a")));
+        // What IS a checkout: another branch, a detach, a re-attach, and — while
+        // detached — another commit (the sha is the target there).
+        assert!(head_target_moved(&on("main", "a"), &on("feat", "a")));
+        assert!(head_target_moved(&on("main", "a"), &detached("a")));
+        assert!(head_target_moved(&detached("a"), &on("main", "a")));
+        assert!(head_target_moved(&detached("a"), &detached("b")));
+        assert!(head_target_moved(&on("main", "a"), &Some(HeadRef::Unborn)));
+        // No prior observation → nothing to compare → never a move.
+        assert!(!head_target_moved(&None, &on("main", "a")));
+    }
+
+    #[test]
+    fn a_watcher_burst_that_moved_nothing_is_our_own() {
+        let quiet = on_branch("main", "a");
+        let sig = refs_signature(&quiet);
+        assert!(watcher_burst_is_own(&sig, &refs_signature(&quiet)));
+        // A commit, a checkout, a `git add` (dirty bit) and a new branch all change
+        // the signature and must wake the loop.
+        assert!(!watcher_burst_is_own(&sig, &refs_signature(&on_branch("main", "b"))));
+        assert!(!watcher_burst_is_own(&sig, &refs_signature(&on_branch("feat", "a"))));
+        let mut dirty = on_branch("main", "a");
+        dirty.dirty_tracked = true;
+        assert!(!watcher_burst_is_own(&sig, &refs_signature(&dirty)));
+        let mut branched = on_branch("main", "a");
+        branched.branches.push(RefEntry {
+            name: "feat".into(),
+            sha: "c".into(),
+        });
+        assert!(!watcher_burst_is_own(&sig, &refs_signature(&branched)));
     }
 
     #[test]

@@ -1,13 +1,38 @@
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
-import { ApiError, api, type TabRow } from "../api";
-import { TERMINAL_PROTOCOL } from "../terminal/protocol";
-import { readableScreen, readableText, TRUNCATION_NOTICE, type ReadableLine } from "../terminal/readableScreen";
+import {
+  ApiError,
+  api,
+  attachDesktopImage,
+  listDesktopImages,
+  listOutbox,
+  MAX_INBOX_FILE,
+  outboxImageUrl,
+  uploadToInbox,
+  type DesktopImage,
+  type OutboxImage,
+  type TabRow,
+} from "../api";
+import { TERMINAL_PROTOCOL, TERMINAL_SIZE } from "../terminal/protocol";
+import { readableRange, readableScreen, readableText, TRUNCATION_NOTICE, type ReadableLine } from "../terminal/readableScreen";
+import {
+  absorbHistory,
+  emptyHistory,
+  lastHistoryText,
+  shiftHistory,
+  type HistoryChunk,
+} from "../terminal/readableHistory";
 import { type TerminalEvent } from "../terminal/protocol";
 import { installTerminalTouchScroll } from "../terminal/touchScroll";
+import { installWideOutputHint, type WideOutputHint } from "../terminal/wideOutput";
+import { inputFrameStart, sessionStatus, shortenPath, type SessionStatus } from "../terminal/statusLine";
+import { readSelectPrompt, selectKeys, selectSignature } from "../terminal/selectPrompt";
+import { currentMode, modeChoices, shiftTabKey } from "../terminal/agentModes";
 import { agentInputWrites } from "../terminal/composer";
+import { chatTurns } from "../terminal/chatTurns";
+import { StatusSheet } from "./StatusSheet";
 import {
   prepareOnDeviceSpeech,
   sanitizeVoiceTranscript,
@@ -42,6 +67,35 @@ const PONG_GRACE = PING_INTERVAL * 2 + 5_000;
 const AGENT_KEY_GAP = 80;
 const AGENT_SUBMIT_GAP = 200;
 
+/** Session lines the phone keeps. Matches the desktop sidecar's replay depth
+ * (`pty_bridge::MOBILE_SCROLLBACK_LINES`) and the tmux `history-limit` Eldrun
+ * sets on its sessions — the three are one number by design, so what tmux
+ * retains is what the replay carries and what this buffer can hold. */
+const PHONE_SCROLLBACK = 10_000;
+/** Rows past the live screen the per-frame tail rebuild re-reads. The screen
+ * itself can still be repainted by the program; the margin is slack so the
+ * history absorbs nothing a repaint could reach. */
+const TAIL_MARGIN = 8;
+/** Frozen history chunks each "Show earlier output" tap reveals (×400 lines). */
+const REVEAL_CHUNKS = 2;
+
+/** How long the model sheet waits for the session to draw the picker `/model`
+ * opens. Past it the sheet steps aside: the dialog — or the reason there is
+ * none — is in the session output, and the arrow keys still answer it. */
+const MODEL_PICKER_WAIT = 6_000;
+/** How long the sheet waits, after a tap, for the step *after* the one it
+ * answered: Codex follows the model list with a reasoning-level list, and that
+ * one is drawn only once the session has read the Enter. Past it the dialog is
+ * done and the sheet steps aside. */
+const SELECT_NEXT_WAIT = 700;
+/** Time given to a Shift+Tab before the redrawn status line is read back. One
+ * reading-view rebuild (READABLE_INTERVAL) plus the TUI's own repaint. */
+const MODE_SETTLE = 340;
+/** Shift+Tab presses one mode switch may cost. Longer than either CLI's cycle,
+ * so a mode that is genuinely offered is always reached — and a mode that is
+ * not ends the walk where it started. */
+const MODE_CYCLE_LIMIT = 6;
+
 const CLOSE_REASONS: Record<string, string> = {
   access_revoked: "This device's access to the session was withdrawn.",
   idle_timeout: "The session was released after a period without contact.",
@@ -54,6 +108,76 @@ const CLOSE_REASONS: Record<string, string> = {
   session_gone: "This session has ended on the desktop.",
 };
 
+/** Why a phone file did not reach the project inbox, by the desktop's code. */
+const UPLOAD_FAILURES: Record<string, string> = {
+  file_too_large: "is larger than 24 MB.",
+  empty_file: "is empty.",
+  inbox_full: "did not fit — the project's inbox is full.",
+  project_unavailable: "could not be saved — the project folder is unavailable.",
+  tab_not_found: "could not be saved — this session's project is no longer shared.",
+  timeout: "took too long to send.",
+  offline: "did not reach the desktop — the connection dropped.",
+  // The desktop's own refusals when the file comes from its side.
+  image_not_found: "is no longer on the desktop.",
+  no_clipboard_image: "is gone — the desktop's clipboard no longer holds an image.",
+  project_ineligible: "could not be saved — this project is no longer shared.",
+  desktop_unavailable: "could not be copied — the desktop window is not answering.",
+};
+
+/** Why the desktop could not say what it has to attach. */
+const DESKTOP_LIST_FAILURES: Record<string, string> = {
+  desktop_unavailable: "The desktop window is not answering.",
+  tab_not_found: "This session's project is no longer shared.",
+  project_ineligible: "This project is no longer shared with the phone.",
+  timeout: "The desktop took too long to answer.",
+  offline: "The connection dropped.",
+};
+
+/** A file on its way into the project inbox — from the phone, or copied on
+ * the desktop's side — or one that did not make it. A delivered one leaves
+ * the list: its `@` reference is in the draft, which is the record. */
+interface InboxUpload {
+  id: number;
+  name: string;
+  /** Where the bytes come from; a desktop copy never leaves the desktop. */
+  source: "phone" | "desktop";
+  failure?: string;
+}
+
+function ageLabel(seconds: number) {
+  if (seconds < 60) return "just now";
+  if (seconds < 3_600) return `${Math.round(seconds / 60)} min ago`;
+  if (seconds < 86_400) return `${Math.round(seconds / 3_600)} h ago`;
+  return `${Math.round(seconds / 86_400)} d ago`;
+}
+
+function sizeLabel(size: number) {
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${Math.round(size / 1024)} KB`;
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/** How often the project's outbox is re-read while this screen is on — a
+ * directory listing on the sidecar, no desktop round trip, and skipped while
+ * the page is hidden. */
+const OUTBOX_POLL = 8_000;
+
+/** Whether two outbox listings would paint the same strip, so a poll that
+ * found nothing new does not re-render every thumbnail. */
+function sameOutbox(a: OutboxImage[], b: OutboxImage[]) {
+  return a.length === b.length && a.every((image, i) => image.name === b[i].name && image.modified === b[i].modified && image.size === b[i].size);
+}
+
+/** "Screenshots · 3 min ago · 1.2 MB", or "Clipboard · 1920×1080". */
+function desktopImageDescription(image: DesktopImage) {
+  return [
+    image.source,
+    image.age_secs != null ? ageLabel(image.age_secs) : "",
+    image.size != null ? sizeLabel(image.size) : "",
+    image.width != null && image.height != null ? `${image.width}×${image.height}` : "",
+  ].filter(Boolean).join(" · ");
+}
+
 /** One logical line of the session, with the colours the program actually
  * emitted. Style is never inferred from the text — see `readableScreen`. */
 function ReadableRow({ line }: { line: ReadableLine }) {
@@ -65,9 +189,78 @@ function ReadableRow({ line }: { line: ReadableLine }) {
   ))}</div>;
 }
 
+/** A block of session lines. On an agent tab they read as a chat: the
+ * agent's turns on the left as printed, each prompt the user submitted as a
+ * bubble on the right — the TUI's own echo of it, see `chatTurns`. A shell has
+ * no turns and paints flat. Memoized on the `lines` reference: a frozen
+ * history chunk and the open chunk keep theirs, so the per-frame rebuild of
+ * the live tail costs nothing for however much history is on screen. */
+const ReadableTurns = memo(function ReadableTurns({ lines, chat }: { lines: readonly ReadableLine[]; chat: boolean }) {
+  if (!chat) return <>{lines.map((line) => <ReadableRow key={line.key} line={line} />)}</>;
+  return <>{chatTurns(lines).map((turn) => turn.role === "user"
+    ? <div key={turn.key} className="readable-turn user" role="group" aria-label="Your prompt">
+        {(turn.prompt ?? turn.lines).map((line) => <ReadableRow key={line.key} line={line} />)}
+      </div>
+    : <div key={turn.key} className="readable-turn agent">
+        {turn.lines.map((line) => <ReadableRow key={line.key} line={line} />)}
+      </div>)}</>;
+});
+
+interface SheetOption {
+  key: string;
+  label: string;
+  description?: string;
+  /** The option the session is in right now. */
+  current: boolean;
+  /** The option a switch is being applied to. */
+  pending?: boolean;
+}
+
+/**
+ * A choice the session offers, as a phone list: the sheet the composer chips
+ * open instead of leaving the reader to walk a TUI dialog with the arrow keys.
+ * It renders what the caller resolved — the dialog's own rows, or the modes a
+ * session's status line says it has — and reports taps back. No parsing, no
+ * keystrokes.
+ */
+function OptionSheet({ title, note, options, waiting, busy, onPick, onClose }: {
+  title: string;
+  note?: { text: string; error?: boolean };
+  options: SheetOption[];
+  /** Shown while the list is still empty. */
+  waiting: string;
+  busy: boolean;
+  onPick: (key: string) => void;
+  onClose: () => void;
+}) {
+  return <div className="sheet-backdrop" role="presentation" onClick={onClose}>
+    <section className="option-sheet" role="dialog" aria-modal="true" aria-label={title} onClick={(event) => event.stopPropagation()}>
+      <span className="sheet-grip" aria-hidden="true" />
+      <header>
+        <button className="sheet-close" onClick={onClose} aria-label="Close">✕</button>
+        <h2>{title}</h2>
+        <span className="sheet-close" aria-hidden="true" />
+      </header>
+      {note && <p className={note.error ? "sheet-note error" : "sheet-note"} role={note.error ? "alert" : undefined}>{note.text}</p>}
+      {options.length === 0
+        ? <p className="sheet-note">{waiting}</p>
+        : <ul className="option-list">{options.map((option) => <li key={option.key}>
+            <button className={option.current ? "current" : ""} aria-current={option.current || undefined} disabled={busy} onClick={() => onPick(option.key)}>
+              <span><strong>{option.label}</strong>{option.description && <small>{option.description}</small>}</span>
+              {option.pending
+                ? <span className="sheet-pending" role="status">Switching…</span>
+                : option.current && <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 13 4.5 4.5L19 7" /></svg>}
+            </button>
+          </li>)}</ul>}
+    </section>
+  </div>;
+}
+
 export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
   const host = useRef<HTMLDivElement>(null);
+  const wideHint = useRef<HTMLDivElement>(null);
   const readableHost = useRef<HTMLElement>(null);
+  const composerInput = useRef<HTMLTextAreaElement>(null);
   /** Re-reads the emulated screen on demand — used when Focus is opened, so the
    * reading view is current instead of waiting for the next output byte. */
   const refreshReadable = useRef<() => void>(() => {});
@@ -93,6 +286,17 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
   const [draft, setDraft] = useState("");
   const [lines, setLines] = useState<ReadableLine[]>([]);
   const [clipped, setClipped] = useState(false);
+  /** The absorbed earlier output, republished for render whenever it grows.
+   * The log itself lives in a ref inside the terminal effect; this is only the
+   * render snapshot (chunk references are stable, so revealing is cheap). */
+  const [earlier, setEarlier] = useState<{ chunks: HistoryChunk[]; open: ReadableLine[]; dropped: boolean }>(
+    { chunks: [], open: [], dropped: false },
+  );
+  /** How many frozen chunks are revealed above the open chunk + tail. */
+  const [revealed, setRevealed] = useState(1);
+  /** Scroll position captured when revealing, so prepended lines do not shove
+   * the text the reader was looking at (WebKit has no overflow-anchor). */
+  const revealAnchor = useRef<{ height: number; top: number }>();
   const [atBottom, setAtBottom] = useState(true);
   const [lastSent, setLastSent] = useState("");
   const [copied, setCopied] = useState(false);
@@ -102,12 +306,67 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
   const [voicePreview, setVoicePreview] = useState("");
   const [voiceStatus, setVoiceStatus] = useState("");
   const [voiceFailure, setVoiceFailure] = useState(() => voiceAvailable ? "" : VOICE_UNAVAILABLE);
+  /** Whether the model sheet is up. It opens on the tap that sends `/model`,
+   * before the session has drawn the picker it lists. */
+  const [modelSheet, setModelSheet] = useState(false);
+  /** The step a tap answered (`selectSignature`), while the session is still
+   * painting it. A multi-step dialog draws its next list in the same place, so
+   * the sheet holds until what is on screen is a *different* list — or until
+   * nothing is, which is where the dialog ends. */
+  const [answered, setAnswered] = useState("");
+  const [modeSheet, setModeSheet] = useState(false);
+  /** The status chip's sheet: the session's state and the CLI's own usage
+   * panel. Opening it asks the desktop, which may run the CLI once. */
+  const [statusSheet, setStatusSheet] = useState(false);
+  /** The composer's **+**: a phone file into the project inbox, an image
+   * already on the desktop, or an `@`. */
+  const [addSheet, setAddSheet] = useState(false);
+  /** The "From the desktop" list: `null` while the desktop is being asked. */
+  const [desktopSheet, setDesktopSheet] = useState(false);
+  const [desktopImages, setDesktopImages] = useState<DesktopImage[] | null>(null);
+  const [desktopFailure, setDesktopFailure] = useState("");
+  const [uploads, setUploads] = useState<InboxUpload[]>([]);
+  /** The pictures the agent left in the project's `.eldrun/outbox/` for this
+   * phone (the desktop's `outbox.rs`), newest first — the strip above the
+   * composer, and the one way an image reaches the phone from a session: a
+   * terminal carries none, and Focus classifies nothing, so a path printed
+   * by the agent is never guessed at. */
+  const [outbox, setOutbox] = useState<OutboxImage[]>([]);
+  /** Names the strip's ✕ hid; a picture that arrives afterwards still shows. */
+  const [outboxHidden, setOutboxHidden] = useState<Set<string>>(() => new Set());
+  /** The picture open full-screen. */
+  const [outboxOpen, setOutboxOpen] = useState<OutboxImage | null>(null);
+  const fileInput = useRef<HTMLInputElement>(null);
+  /** Bumped when the tab changes so a late upload result lands nowhere. */
+  const uploadRun = useRef(0);
+  const uploadSeq = useRef(0);
+  /** The reading view as it stood when a composer sheet opened. While the
+   * sheet is up the session repaints under it — the `/model` picker, a status
+   * line per Shift+Tab — and that churn is the sheet's *input*, not something
+   * to read: the sheet lists the picker and confirms the walk from the live
+   * `lines`; what is painted behind it stays still. */
+  const [frozenLines, setFrozenLines] = useState<ReadableLine[] | null>(null);
+  const linesRef = useRef<ReadableLine[]>([]);
+  linesRef.current = lines;
+  /** The mode a Shift+Tab walk is currently trying to reach. */
+  const [switching, setSwitching] = useState("");
+  /** A mode the walk went a full cycle without reaching. */
+  const [switchFailed, setSwitchFailed] = useState("");
+  /** Whether the picker was ever on screen while the model sheet was open —
+   * only then does its disappearance mean the dialog is done. */
+  const sawPicker = useRef(false);
+  /** Cancels an in-flight mode walk when the tab changes or the user picks
+   * again; the walk reads the status line between presses. */
+  const modeWalk = useRef(0);
+  const statusRef = useRef<SessionStatus | null>(null);
 
   useEffect(() => {
     setView("focus");
     setDraft("");
     setLines([]);
     setClipped(false);
+    setEarlier({ chunks: [], open: [], dropped: false });
+    setRevealed(1);
     setAtBottom(true);
     setLastSent("");
     setCopied(false);
@@ -115,10 +374,23 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     setAltScreen(false);
     setCtrl(false);
     setSendFailed(false);
+    setModelSheet(false);
+    setModeSheet(false);
+    setStatusSheet(false);
+    setAddSheet(false);
+    setDesktopSheet(false);
+    setUploads([]);
+    uploadRun.current += 1;
+    setSwitching("");
+    setSwitchFailed("");
+    setAnswered("");
+    sawPicker.current = false;
     return () => {
       window.clearTimeout(copiedTimer.current);
       sendTimers.current.forEach(window.clearTimeout);
       sendTimers.current = [];
+      // Abandons a mode walk still waiting between two Shift+Tabs.
+      modeWalk.current += 1;
     };
   }, [tab.id]);
 
@@ -130,6 +402,30 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     viewport.addEventListener("resize", syncHeight);
     return () => viewport.removeEventListener("resize", syncHeight);
   }, []);
+
+  // The one full-bleed screen has to be the one screen the *document* cannot
+  // scroll. `body` keeps a 100dvh floor for the scrolling sections while this
+  // screen is sized to the visual viewport, so the document is taller than what
+  // is on glass — and everything a phone does about that is a scroll that takes
+  // the header with it. Three ways in practice: arriving from the bottom of a
+  // long project screen, where "New shell" sits, or from far down the agents
+  // list, keeps that scroll offset; focusing the composer makes the browser
+  // scroll the header away to seat the keyboard; and an agent tab has its own
+  // way in, because `addContext` and the two attach paths focus the composer
+  // *for* the reader, so the scroll arrives unasked after a tap on the ＋ sheet.
+  // The header carries the back chevron, and the body below it eats
+  // vertical drags (`touch-action:none` plus the drag handler in
+  // terminal/touchScroll.ts), so once it is off screen there is no way back to
+  // the project at all. Take the overflow away for as long as the terminal is
+  // mounted — and pull the page back up first, since hiding the overflow under a
+  // scrolled document leaves it scrolled, which is the same trap with no scroll
+  // bar left to escape it.
+  useLayoutEffect(() => {
+    if (window.scrollY !== 0) window.scrollTo(0, 0);
+    document.body.classList.add("terminal-open");
+    return () => document.body.classList.remove("terminal-open");
+  }, []);
+
 
   useEffect(() => {
     if (!host.current) return;
@@ -143,13 +439,46 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
       cursorInactiveStyle: "bar",
       cursorWidth: 2,
       fontSize: 14,
-      scrollback: 4000,
+      scrollback: PHONE_SCROLLBACK,
       // A shell/agent prompt remains part of PTY output, but it must not look
       // like an editable field on the phone.
       theme: { background: "#0b0d13", foreground: "#e7e9f2", cursor: "#0b0d13", cursorAccent: "#0b0d13" },
     });
     const fit = new FitAddon(); term.loadAddon(fit); term.open(host.current); fit.fit();
     bracketedPaste.current = () => term.modes.bracketedPasteMode === true;
+    // The history log needs to know when xterm trims scrollback (row indices
+    // shift), and xterm has no public event for it — so this rides the internal
+    // buffer list's own trim emitter, guarded: when a future xterm renames it,
+    // the view falls back to the bounded whole-screen rebuild instead of
+    // showing wrong lines.
+    const history = emptyHistory();
+    type TrimEvent = (listener: (amount: number) => void) => { dispose(): void };
+    const trimEventOf = () => (term as unknown as {
+      _core?: { _bufferService?: { buffers?: { normal?: { lines?: { onTrim?: TrimEvent } } } } };
+    })._core?._bufferService?.buffers?.normal?.lines?.onTrim;
+    let trimWatch: { dispose(): void } | undefined;
+    // `term.reset()` — the replay boundary below — builds a *new* normal
+    // buffer, and a listener on the old one's trim emitter then never fires
+    // again. Left as it was, the first reconnect silently detached the log from
+    // trims: once the 10k scrollback filled, `history.end` stopped following the
+    // buffer and the absorbed rows drifted onto the wrong lines. Re-armed after
+    // every reset instead.
+    const watchTrim = () => {
+      trimWatch?.dispose();
+      const trimEvent = trimEventOf();
+      trimWatch = typeof trimEvent === "function"
+        ? trimEvent((amount) => shiftHistory(history, amount))
+        : undefined;
+    };
+    watchTrim();
+    const resetHistory = () => {
+      history.chunks = [];
+      history.open = [];
+      history.end = 0;
+      history.droppedLines = 0;
+      history.lost = false;
+      setEarlier({ chunks: [], open: [], dropped: false });
+    };
     let readableFrame = 0;
     let readableScrollFrame = 0;
     let readableTimer = 0;
@@ -158,19 +487,47 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
       const buffer = term.buffer?.active;
       if (!buffer) return;
       const stream = readableHost.current;
-      // The reading view is unmounted in Terminal view, so re-reading the whole
-      // screen there was pure waste on a phone battery.
-      if (!stream) return;
+      // The reading view is unmounted in Terminal view. A shell tab has no
+      // other reader of these lines, so re-reading the screen there is pure
+      // waste on a phone battery — but an agent tab's composer chips still do:
+      // the mode walk confirms every Shift+Tab against the redrawn status line
+      // and the model sheet lists the picker, both from `lines`. Left stale in
+      // Terminal view, a walk pressed its full lap and reported a failure on a
+      // session that had switched on the second press. The lazy history keeps
+      // this to the live tail, so the rebuild is cheap; only the scroll follow
+      // needs the stream.
+      if (!stream && tab.kind !== "agent") return;
       lastReadable = Date.now();
-      const followOutput = stream.scrollHeight - stream.scrollTop - stream.clientHeight < 120;
+      const followOutput = stream != null && stream.scrollHeight - stream.scrollTop - stream.clientHeight < 120;
       // The alternate screen has no scrollback, so the reading view would show
       // only the visible frame, rebuild it on every redraw, and lose the lot
-      // when the program exits. Say so instead of showing a collapsing view.
-      setAltScreen(buffer.type === "alternate");
-      const screen = readableScreen(buffer);
-      setLines(screen.lines);
-      setClipped(screen.clipped);
-      if (followOutput) {
+      // when the program exits. Say so instead of showing a collapsing view —
+      // and never absorb its frames into the history: they are a full-screen
+      // program's repaints, not session output.
+      const alternate = buffer.type === "alternate";
+      setAltScreen(alternate);
+      if (alternate) return;
+      if (trimWatch) {
+        // Rows that left the tail window are converted once and kept; only the
+        // tail — the live screen plus a margin — is re-read per frame.
+        const grew = absorbHistory(buffer, history, term.rows + TAIL_MARGIN);
+        const tail = readableRange(buffer, history.end, buffer.length, lastHistoryText(history));
+        while (tail.length > 0 && tail[tail.length - 1].text === "") tail.pop();
+        setLines(tail);
+        if (grew) {
+          setEarlier({
+            chunks: [...history.chunks],
+            open: history.open,
+            dropped: history.droppedLines > 0 || history.lost,
+          });
+        }
+        setClipped(false);
+      } else {
+        const screen = readableScreen(buffer);
+        setLines(screen.lines);
+        setClipped(screen.clipped);
+      }
+      if (stream && followOutput) {
         cancelAnimationFrame(readableScrollFrame);
         readableScrollFrame = requestAnimationFrame(() => {
           stream.scrollTo({ top: stream.scrollHeight });
@@ -209,14 +566,41 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     // the phone from receiving a silently cropped, cursor-following slice; the
     // offscreen emulator's column count never had to match the physical screen.
     let windowSize: { cols: number; rows: number } | undefined;
+    let wide: WideOutputHint | undefined;
+    let anchorFrame = 0;
+    // The screen is as tall as the desktop window, so on a phone its last rows
+    // — the live prompt and the newest output — sit below the fold. Show that
+    // end of it; the rows above are one drag away (terminal/touchScroll.ts).
+    // Deferred a frame because xterm sizes the screen element on its own
+    // render, after this returns.
+    const anchorNewest = () => {
+      cancelAnimationFrame(anchorFrame);
+      anchorFrame = requestAnimationFrame(() => {
+        const box = host.current;
+        if (box) box.scrollTop = box.scrollHeight;
+        wide?.sync();
+      });
+    };
     const applySize = () => {
+      const rows = term.rows;
       if (windowSize) {
         if (term.cols !== windowSize.cols || term.rows !== windowSize.rows) {
           term.resize(windowSize.cols, windowSize.rows);
         }
       } else {
         fit.fit();
+        // Without a window frame the fitted size is what goes to the desktop,
+        // and a size outside the protocol's bounds is answered with a close
+        // that never retries. A landscape phone with its keyboard up fits fewer
+        // rows than the floor; clamp to what the desktop accepts.
+        const cols = Math.min(TERMINAL_SIZE.maxCols, Math.max(TERMINAL_SIZE.minCols, term.cols));
+        const rows = Math.min(TERMINAL_SIZE.maxRows, Math.max(TERMINAL_SIZE.minRows, term.rows));
+        if (cols !== term.cols || rows !== term.rows) term.resize(cols, rows);
       }
+      // Only a changed row count moves the view: a reader panned up into the
+      // screen keeps their place through an unrelated resize.
+      if (term.rows !== rows) anchorNewest();
+      wide?.sync();
       if (ws?.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
       }
@@ -233,6 +617,10 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
         lastPong = Date.now();
         setConnected(true);
         setSendFailed(false);
+        // A retryable close (`idle_timeout`) explained itself and then
+        // reconnected; the explanation must not outlive the outage, or it sat
+        // over the composer for the rest of the session.
+        setStoppedReason("");
         next.send(JSON.stringify({ type: "ready" }));
         applySize();
       };
@@ -309,7 +697,11 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
           // boundary the replay was appended to whatever was already on screen,
           // so each reconnect left another copy of the same agent turn — and a
           // reader could not tell one destructive command from three.
+          // The history log goes with it: the replay re-delivers the session,
+          // so keeping the absorbed copy would double every line.
           term.reset();
+          watchTrim();
+          resetHistory();
           setLines([]);
           return;
         }
@@ -338,12 +730,19 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     }
     const terminalHost = host.current;
     const removeTouchScroll = installTerminalTouchScroll(terminalHost, term);
+    // A fresh session starts at column one, whatever the previous tab was
+    // panned to.
+    terminalHost.scrollLeft = 0;
+    if (wideHint.current) wide = installWideOutputHint(terminalHost, wideHint.current);
+    anchorNewest();
     let resizeTimer = 0;
     let resizeFrame = 0;
+    // A pending reading-view frame is left alone: the keyboard opening fires a
+    // burst of viewport resizes, and cancelling the frame here dropped the
+    // rebuild of whatever output had just arrived — the next byte, if any,
+    // was the only thing that brought it back.
     const resize = () => {
       cancelAnimationFrame(resizeFrame);
-      cancelAnimationFrame(readableFrame);
-      cancelAnimationFrame(readableScrollFrame);
       resizeFrame = requestAnimationFrame(() => {
         clearTimeout(resizeTimer);
         resizeTimer = window.setTimeout(applySize, 100);
@@ -386,6 +785,7 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
       clearTimeout(reconnectTimer);
       if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "detached" }));
       ws?.close();
+      trimWatch?.dispose();
       term.dispose();
       clearInterval(ping);
       clearTimeout(resizeTimer);
@@ -393,14 +793,81 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
       cancelAnimationFrame(resizeFrame);
       cancelAnimationFrame(readableFrame);
       cancelAnimationFrame(readableScrollFrame);
+      cancelAnimationFrame(anchorFrame);
       window.removeEventListener("pagehide", release);
       window.removeEventListener("resize", resize);
       window.visualViewport?.removeEventListener("resize", resize);
       resizeObserver?.disconnect();
       removeTouchScroll();
+      wide?.dispose();
     };
   }, [tab.id]);
   useEffect(() => { if (view === "focus") refreshReadable.current(); }, [view]);
+  /** Reads the outbox now and every `OUTBOX_POLL` while the page is visible;
+   * coming back to the page reads it at once. A listing that could not be
+   * fetched keeps what was shown — the next poll retries. */
+  useEffect(() => {
+    setOutbox([]);
+    setOutboxHidden(new Set());
+    setOutboxOpen(null);
+    let stopped = false;
+    let inflight: AbortController | undefined;
+    const poll = () => {
+      if (stopped || document.visibilityState === "hidden") return;
+      inflight?.abort();
+      const controller = new AbortController();
+      inflight = controller;
+      void listOutbox(tab.id, controller.signal).then(
+        (images) => {
+          if (stopped || controller.signal.aborted || !Array.isArray(images)) return;
+          setOutbox((current) => sameOutbox(current, images) ? current : images);
+        },
+        () => {},
+      );
+    };
+    poll();
+    const timer = window.setInterval(poll, OUTBOX_POLL);
+    document.addEventListener("visibilitychange", poll);
+    return () => {
+      stopped = true;
+      inflight?.abort();
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", poll);
+    };
+  }, [tab.id]);
+  useEffect(() => {
+    if (!outboxOpen) return;
+    const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") setOutboxOpen(null); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [outboxOpen]);
+  const outboxShown = useMemo(() => outbox.filter((image) => !outboxHidden.has(image.name)), [outbox, outboxHidden]);
+  const hideOutbox = () => setOutboxHidden(new Set(outbox.map((image) => image.name)));
+  /** Chunks above the revealed window stay in memory but out of the DOM — the
+   * lazy half of the earlier-output log. */
+  const hiddenChunks = Math.max(0, earlier.chunks.length - revealed);
+  const visibleChunks = useMemo(
+    () => earlier.chunks.slice(hiddenChunks),
+    [earlier.chunks, hiddenChunks],
+  );
+  const hiddenLines = useMemo(
+    () => earlier.chunks.slice(0, hiddenChunks).reduce((sum, chunk) => sum + chunk.lines.length, 0),
+    [earlier.chunks, hiddenChunks],
+  );
+  const showEarlier = () => {
+    const stream = readableHost.current;
+    if (stream) revealAnchor.current = { height: stream.scrollHeight, top: stream.scrollTop };
+    setRevealed((count) => count + REVEAL_CHUNKS);
+  };
+  // Revealing prepends content, which would shove the line the reader tapped
+  // beside out of view; restore the reading position by the height delta.
+  useLayoutEffect(() => {
+    const anchor = revealAnchor.current;
+    const stream = readableHost.current;
+    if (!anchor || !stream) return;
+    revealAnchor.current = undefined;
+    stream.scrollTop = anchor.top + (stream.scrollHeight - anchor.height);
+  }, [revealed]);
   const type = (value: string) => {
     const delivered = write.current(value);
     setSendFailed(!delivered);
@@ -421,6 +888,36 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
   const later = (delay: number, send: () => void) => {
     sendTimers.current.push(window.setTimeout(send, delay));
   };
+  /** Drops writes still queued behind their gaps. */
+  const clearPending = () => {
+    sendTimers.current.forEach(window.clearTimeout);
+    sendTimers.current = [];
+  };
+  /** Delivers a run of writes one at a time, never as one chunk (see
+   * AGENT_KEY_GAP). Only the first can be confirmed synchronously; a later one
+   * that fails raises the dropped-connection notice through `type`. Shared by
+   * the composer's Send and by the sheet that answers a TUI dialog with the
+   * same arrow/Enter keys the on-screen key row sends. */
+  const deliver = (writes: string[]) => {
+    if (writes.length === 0) return true;
+    if (!type(writes[0])) return false;
+    const step = (index: number) => {
+      if (index >= writes.length) return;
+      // The submit gets the longer pause: it is the one write whose arrival in
+      // the same read as the text would be swallowed as part of a paste.
+      const gap = index === writes.length - 1 ? AGENT_SUBMIT_GAP : AGENT_KEY_GAP;
+      later(gap, () => { if (type(writes[index])) step(index + 1); });
+    };
+    step(1);
+    return true;
+  };
+  /** One message into the agent's line editor: reset its line, deliver the
+   * text, submit — inside bracketed paste markers where the pane has the mode
+   * on. Shared by the composer's Send and the composer chips' slash commands. */
+  const sendAgentText = (text: string) => {
+    clearPending();
+    return deliver(agentInputWrites(text, bracketedPaste.current()));
+  };
   const submitDraft = () => {
     if (!connected || !draft.trim()) return;
     // Only confirm what actually left the device. `readyState === OPEN` on a
@@ -432,29 +929,264 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
       setDraft("");
       return;
     }
-    // Agents own a line editor inside their TUI: reset its line, deliver the
-    // draft, submit — every piece its own write, never one chunk (see
-    // AGENT_KEY_GAP), and inside bracketed paste markers where the pane has the
-    // mode on. Only the first write can be confirmed synchronously; a later one
-    // that fails raises the dropped-connection notice through `type`.
-    sendTimers.current.forEach(window.clearTimeout);
-    sendTimers.current = [];
-    const writes = agentInputWrites(draft, bracketedPaste.current());
-    if (!type(writes[0])) return;
-    const step = (index: number) => {
-      if (index >= writes.length) return;
-      // The submit gets the longer pause: it is the one write whose arrival in
-      // the same read as the text would be swallowed as part of a paste.
-      const gap = index === writes.length - 1 ? AGENT_SUBMIT_GAP : AGENT_KEY_GAP;
-      later(gap, () => { if (type(writes[index])) step(index + 1); });
-    };
-    step(1);
+    if (!sendAgentText(draft)) return;
     setLastSent(draft);
     setDraft("");
   };
+  /** The facts the session prints below its own input box — the composer
+   * chips' labels. Absent fields leave the chip on its generic label. */
+  const status = useMemo(() => (tab.kind === "agent" ? sessionStatus(lines) : null), [tab.kind, lines]);
+  // The mode walk reads the status between two presses, outside React's render.
+  useEffect(() => { statusRef.current = status; }, [status]);
+  /** The picker `/model` opened, read off the screen while the sheet is up — a
+   * list of the session's own rows, not a list of models Eldrun believes in. */
+  const picker = useMemo(() => (modelSheet ? readSelectPrompt(lines) : null), [modelSheet, lines]);
+  /** The step the sheet is showing: the picker on screen, unless it is the one
+   * a tap just answered and the session has not redrawn yet. */
+  const pickerStep = picker && selectSignature(picker) === answered ? null : picker;
+  useEffect(() => {
+    if (!modelSheet) return;
+    if (pickerStep) {
+      sawPicker.current = true;
+      // A step is up, so nothing is left to hold for: a dialog that comes back
+      // to a list already answered (Codex's "More reasoning…" has an esc back)
+      // is a step again, not the stale paint of the answer.
+      if (answered) setAnswered("");
+      return;
+    }
+    // The answered list, still on screen: the session has not read the Enter
+    // yet. Hold — the next step, if there is one, replaces it in place. If the
+    // session never moves off it, the answer did not land: give the list back
+    // rather than hold a sheet the tap can no longer leave.
+    if (answered && picker) {
+      const stuck = window.setTimeout(() => setAnswered(""), MODEL_PICKER_WAIT);
+      return () => window.clearTimeout(stuck);
+    }
+    if (sawPicker.current) {
+      // Gone after it was listed: answered here, on the desktop, or dismissed.
+      // After a tap the gap is given to the step that may still follow.
+      if (!answered) {
+        setModelSheet(false);
+        return;
+      }
+      const next = window.setTimeout(() => {
+        setModelSheet(false);
+        setAnswered("");
+      }, SELECT_NEXT_WAIT);
+      return () => window.clearTimeout(next);
+    }
+    // Never drawn: the session may have no `/model` picker at all. Step out of
+    // the way rather than hold an empty sheet over its output.
+    const timer = window.setTimeout(() => setModelSheet(false), MODEL_PICKER_WAIT);
+    return () => window.clearTimeout(timer);
+  }, [modelSheet, picker, pickerStep, answered]);
+  /** `/model` opens the agent's own picker in the session; the sheet lists the
+   * rows it drew, and a tap answers it with the same keys the arrow row sends —
+   * so nothing here decides what the models are. */
+  const selectModel = () => {
+    if (modelSheet) return;
+    sawPicker.current = false;
+    setAnswered("");
+    if (!sendAgentText("/model")) return;
+    setModelSheet(true);
+  };
+  /** Answers the step on screen. The sheet does not close on the tap: `/model`
+   * is one step in Claude Code and two in Codex, which asks for a reasoning
+   * level next, and which it is, is the session's answer to give — the sheet
+   * lists whatever it draws next, and closes when it draws nothing. */
+  const chooseModel = (key: string) => {
+    if (!pickerStep) return;
+    clearPending();
+    if (!deliver(selectKeys(pickerStep.current, Number(key)))) return;
+    setAnswered(selectSignature(pickerStep));
+  };
+  const closeModelSheet = () => {
+    // The dialog is the session's own and still open: close it there too,
+    // rather than leaving a modal behind that the reader can no longer see.
+    if (picker) type("\u001b");
+    setModelSheet(false);
+    setAnswered("");
+  };
+  /** The modes this session has, decided by the mode it is showing with the
+   * tab's agent label as the tie-break (and, for a family whose default mode
+   * draws no text at all, as the way in). Empty for a session no family
+   * claims — the chip then keeps cycling, as before. */
+  const agentLabel = tab.agent_label ?? tab.label;
+  /** Shift+Tab — the mode cycle Claude Code, Codex and Qwen Code all bind,
+   * encoded the way this family's TUI reads it (`shiftTabKey`). The chip label
+   * follows the status line the TUI redraws, so the feedback is real. */
+  /** The chip's lamp comes from the row this screen was opened with, and that
+   * row is frozen for the whole session (it even survives a restart, via
+   * `lastPlace`). A `done` on it is by definition already read — the tab is on
+   * screen — so it is not shown here, the same way the desktop's tab bar hides
+   * the viewed tab's own glow. The desktop retires the flag for real when the
+   * attach reports the tab seen. */
+  const lamp = tab.agent_status === "done" ? "idle" : tab.agent_status ?? "idle";
+  const shiftTab = shiftTabKey(agentLabel);
+  const cycleMode = () => press(shiftTab);
+  const modes = useMemo(() => modeChoices(status?.mode, agentLabel), [status?.mode, agentLabel]);
+  const activeMode = currentMode(modes, status?.mode, status != null);
+  const openModeSheet = () => {
+    if (modes.length === 0) {
+      cycleMode();
+      return;
+    }
+    setSwitchFailed("");
+    setModeSheet(true);
+  };
+  /** Walks the Shift+Tab cycle to the tapped mode, reading the redrawn status
+   * line after every press. No cycle order is assumed: the walk stops when the
+   * session reports the mode that was asked for, or when a full lap has brought
+   * it back to where it started — which is also what leaves a mode the session
+   * does not offer with nothing changed. */
+  const applyMode = async (value: string) => {
+    if (switching || !connected) return;
+    const start = statusRef.current?.mode;
+    if (currentMode(modes, start, statusRef.current != null) === value) {
+      setModeSheet(false);
+      return;
+    }
+    const walk = modeWalk.current + 1;
+    modeWalk.current = walk;
+    setSwitchFailed("");
+    setSwitching(value);
+    for (let step = 0; step < MODE_CYCLE_LIMIT; step += 1) {
+      if (!type(shiftTab)) break;
+      await new Promise((resolve) => { window.setTimeout(resolve, MODE_SETTLE); });
+      if (modeWalk.current !== walk) return;
+      const now = statusRef.current?.mode;
+      if (currentMode(modes, now, statusRef.current != null) === value) {
+        setSwitching("");
+        setModeSheet(false);
+        return;
+      }
+      // Back where it started ends the walk — but only on a positively read
+      // mode: with a silent-mode family, `undefined` is also what a mid-redraw
+      // frame reports, and breaking on it would end a legitimate walk early.
+      if (step > 0 && now !== undefined && now === start) break;
+    }
+    if (modeWalk.current !== walk) return;
+    setSwitching("");
+    setSwitchFailed(value);
+  };
+  const sheetUp = modelSheet || modeSheet || statusSheet || desktopSheet || outboxOpen !== null;
+  useLayoutEffect(() => {
+    setFrozenLines(sheetUp ? linesRef.current : null);
+  }, [sheetUp]);
+  /** Adds an `@` for the agent's file mentions to the draft — context is
+   * resolved by the agent from the submitted message, not by the phone. */
+  const addContext = () => {
+    setDraft((current) => `${current}${current && !current.endsWith(" ") ? " " : ""}@`);
+    composerInput.current?.focus();
+  };
+  /** Appends one token to the draft with a space on each side as needed. */
+  const appendToDraft = (token: string) => {
+    setDraft((current) => `${current}${current && !current.endsWith(" ") ? " " : ""}${token} `);
+  };
+  /** Sends the picked files into the project inbox one by one and writes each
+   * one's `@` reference into the draft as it lands. The reference is the
+   * desktop's — the phone never composes a path. */
+  const attachFromPhone = (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    const run = uploadRun.current;
+    for (const file of Array.from(files)) {
+      const id = ++uploadSeq.current;
+      const name = file.name || "attachment";
+      if (file.size > MAX_INBOX_FILE) {
+        setUploads((current) => [...current, { id, name, source: "phone", failure: UPLOAD_FAILURES.file_too_large }]);
+        continue;
+      }
+      setUploads((current) => [...current, { id, name, source: "phone" }]);
+      void uploadToInbox(tab.id, file, name).then(
+        (attachment) => {
+          if (uploadRun.current !== run) return;
+          setUploads((current) => current.filter((upload) => upload.id !== id));
+          appendToDraft(`@${attachment.reference}`);
+        },
+        (error: unknown) => {
+          if (uploadRun.current !== run) return;
+          const code = error instanceof ApiError ? error.code : "";
+          const failure = UPLOAD_FAILURES[code] ?? "could not be sent to the desktop.";
+          setUploads((current) => current.map((upload) => upload.id === id ? { ...upload, failure } : upload));
+        },
+      );
+    }
+    composerInput.current?.focus();
+  };
+  const dismissUpload = (id: number) => setUploads((current) => current.filter((upload) => upload.id !== id));
+  /** Opens the desktop's list and asks for it. The list is read once per
+   * opening — the sheet shows what the desktop had when it was asked, and a
+   * screenshot taken meanwhile is one close-and-reopen away. */
+  const openDesktopSheet = () => {
+    const run = uploadRun.current;
+    setDesktopImages(null);
+    setDesktopFailure("");
+    setDesktopSheet(true);
+    void listDesktopImages(tab.id).then(
+      (images) => { if (uploadRun.current === run) setDesktopImages(images); },
+      (error: unknown) => {
+        if (uploadRun.current !== run) return;
+        const code = error instanceof ApiError ? error.code : "";
+        setDesktopFailure(DESKTOP_LIST_FAILURES[code] ?? "The desktop could not list its images.");
+        setDesktopImages([]);
+      },
+    );
+  };
+  /** Asks the desktop to copy one listed image into the project inbox and
+   * writes the reference into the draft as it lands — the same row and the
+   * same `@` a file sent from the phone gets. */
+  const attachFromDesktop = (imageId: string) => {
+    const image = desktopImages?.find((entry) => entry.id === imageId);
+    setDesktopSheet(false);
+    if (!image) return;
+    const run = uploadRun.current;
+    const id = ++uploadSeq.current;
+    setUploads((current) => [...current, { id, name: image.name, source: "desktop" }]);
+    void attachDesktopImage(tab.id, image.id).then(
+      (attachment) => {
+        if (uploadRun.current !== run) return;
+        setUploads((current) => current.filter((upload) => upload.id !== id));
+        appendToDraft(`@${attachment.reference}`);
+      },
+      (error: unknown) => {
+        if (uploadRun.current !== run) return;
+        const code = error instanceof ApiError ? error.code : "";
+        const failure = UPLOAD_FAILURES[code] ?? "could not be copied into the project inbox.";
+        setUploads((current) => current.map((upload) => upload.id === id ? { ...upload, failure } : upload));
+      },
+    );
+    composerInput.current?.focus();
+  };
+  const pickAdd = (key: string) => {
+    setAddSheet(false);
+    if (key === "phone") {
+      fileInput.current?.click();
+    } else if (key === "desktop") {
+      openDesktopSheet();
+    } else {
+      addContext();
+    }
+  };
+  /** What the reading view paints: the live screen, or the frame it held when
+   * a composer sheet opened — minus the session's own input frame, which the
+   * composer and its chips already are. */
+  const shown = frozenLines ?? lines;
+  const painted = useMemo(
+    () => (tab.kind === "agent" ? shown.slice(0, inputFrameStart(shown)) : shown),
+    [tab.kind, shown],
+  );
+  /** Agent tabs read as a chat (`ReadableTurns`); a shell's output has no
+   * turns to lay out. */
+  const chat = tab.kind === "agent";
   const copyReadable = async () => {
     try {
-      await navigator.clipboard.writeText(readableText(lines));
+      // Copy exactly what the reading view is showing: the revealed history,
+      // the open chunk, then the live tail.
+      await navigator.clipboard.writeText(readableText([
+        ...visibleChunks.flatMap((chunk) => chunk.lines),
+        ...earlier.open,
+        ...painted,
+      ]));
       setCopied(true);
       window.clearTimeout(copiedTimer.current);
       copiedTimer.current = window.setTimeout(() => setCopied(false), 1_500);
@@ -552,9 +1284,39 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     }
   }, [tab.id]);
   const dictateLabel = listening ? "Stop dictation" : preparingVoice ? "Preparing dictation" : "Dictate";
+  /** What the sheet paints: the live step, or — between the tap and the
+   * session's redraw — the answered one, listed but not tappable, so the sheet
+   * does not blink empty on the way to the next step. */
+  const shownStep = pickerStep ?? (answered ? picker : null);
+  const pickerOptions: SheetOption[] = (shownStep?.options ?? []).map((option) => ({
+    key: String(option.index),
+    label: option.label,
+    description: option.description,
+    current: option.index === shownStep?.current,
+  }));
+  const modeOptions: SheetOption[] = modes.map((choice) => ({
+    key: choice.value,
+    label: choice.label,
+    description: choice.description,
+    current: choice.value === activeMode,
+    pending: choice.value === switching,
+  }));
+  const failedMode = modes.find((choice) => choice.value === switchFailed);
+  const addOptions: SheetOption[] = [
+    { key: "phone", label: "From this phone", description: "A photo, screenshot or file — saved to the project's inbox and referenced in the message", current: false },
+    { key: "desktop", label: "From the desktop", description: "The desktop's clipboard image or a recent screenshot or picture — copied to the project's inbox and referenced in the message", current: false },
+    { key: "project", label: "A project file (@)", description: "Type a path after the @ for the agent to read", current: false },
+  ];
+  const desktopOptions: SheetOption[] = (desktopImages ?? []).map((image) => ({
+    key: image.id,
+    label: image.name,
+    description: desktopImageDescription(image),
+    current: false,
+  }));
   return <main className={`terminal-screen ${tab.kind}-tab`} style={viewportHeight ? { height: viewportHeight } : undefined}><header><button className="back" onClick={back}>‹</button><div className="terminal-title"><h1>{tab.label}</h1><small>{tab.kind === "agent" ? "Agent session" : "Shell session"}</small></div><div className="terminal-view-switch" aria-label="Output view"><button className={view === "focus" ? "selected" : ""} aria-pressed={view === "focus"} onClick={() => setView("focus")}>Focus</button><button className={view === "terminal" ? "selected" : ""} aria-pressed={view === "terminal"} onClick={() => setView("terminal")}>Terminal</button></div><span className={connected ? "lamp" : "lamp off"} /></header>
     <div className="terminal-body">
       <div ref={host} className={`terminal${view === "focus" ? " focus-source" : ""}`} />
+      <div ref={wideHint} className="terminal-wide-hint" aria-hidden="true" />
       {view === "focus" && altScreen && <div className="alt-screen-notice"><strong>Full-screen program</strong><span>This session is drawing its own screen, which has no scrollback to read. Switch to Terminal to see it.</span><button className="primary" onClick={() => setView("terminal")}>Open Terminal view</button></div>}
       {view === "focus" && !altScreen && <>
         <section ref={readableHost} className="readable-output" aria-label="Session output" aria-live="polite"
@@ -562,14 +1324,19 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
             const stream = event.currentTarget;
             setAtBottom(stream.scrollHeight - stream.scrollTop - stream.clientHeight < 120);
           }}>
-          {lines.length === 0
+          {painted.length === 0 && visibleChunks.length === 0 && earlier.open.length === 0
             ? <div className="readable-empty"><strong>Waiting for output</strong><span>The exact terminal is running behind this view.</span></div>
-            : <div className="readable-lines">
+            : <div className={chat ? "readable-lines chat" : "readable-lines"}>
                 {clipped && <div className="readable-notice">{TRUNCATION_NOTICE}</div>}
-                {lines.map((line) => <ReadableRow key={line.key} line={line} />)}
+                {hiddenLines > 0 && <button className="readable-earlier" onClick={showEarlier}>Show earlier output ({hiddenLines.toLocaleString()} lines)</button>}
+                {hiddenLines === 0 && earlier.dropped && <div className="readable-notice">{TRUNCATION_NOTICE}</div>}
+                {visibleChunks.map((chunk) => <ReadableTurns key={chunk.id} lines={chunk.lines} chat={chat} />)}
+                <ReadableTurns lines={earlier.open} chat={chat} />
+                <ReadableTurns lines={painted} chat={chat} />
               </div>}
         </section>
         {lines.length > 0 && <div className="readable-tools">
+          {chat && <small>Chat layout · Untested</small>}
           <button onClick={() => void copyReadable()} aria-label="Copy the session text">{copied ? "Copied" : "Copy"}</button>
         </div>}
         {!atBottom && <button className="readable-jump" onClick={jumpToLatest}>Jump to latest ↓</button>}
@@ -579,11 +1346,103 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
       {tab.kind === "agent" && (voiceFailure || voicePreview || voiceStatus) && <div className={voiceFailure ? "voice-feedback error" : "voice-feedback"} role={voiceFailure ? "alert" : "status"} aria-live="polite">{voiceFailure || (voicePreview ? `Heard: ${voicePreview}` : voiceStatus)}</div>}
       {stoppedReason && <div className="voice-feedback error" role="alert">{stoppedReason}</div>}
       {sendFailed && !stoppedReason && <div className="voice-feedback error" role="alert">That did not reach the desktop — the connection dropped. It will retry on its own.</div>}
+      {outboxShown.length > 0 && <div className="outbox-strip" role="region" aria-label="Images from the agent">
+        <div className="outbox-strip-head"><strong>From the agent <small>Untested</small></strong><span>{outboxShown.length === 1 ? "1 image" : `${outboxShown.length} images`} in the project's outbox</span><button onClick={hideOutbox} aria-label="Hide these images">✕</button></div>
+        <div className="outbox-thumbs">
+          {outboxShown.map((image) => <button key={image.name} className="outbox-thumb" onClick={() => setOutboxOpen(image)} aria-label={`Open ${image.name}`} title={image.name}>
+            <img src={outboxImageUrl(tab.id, image.name)} alt="" loading="lazy" decoding="async" />
+            <span>{ageLabel(Math.max(0, Math.floor(Date.now() / 1000) - image.modified))}</span>
+          </button>)}
+        </div>
+      </div>}
       {lastSent && <div className="last-sent"><span>Sent</span><p>{lastSent}</p></div>}
-      <div className="prompt-composer"><textarea value={draft} disabled={!connected} rows={1} aria-label={tab.kind === "agent" ? "Message agent" : "Shell command"} placeholder={connected ? (tab.kind === "agent" ? "Message the agent…" : "Type a command…") : "Reconnecting…"} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); submitDraft(); } }} /><div className="prompt-composer-actions">{tab.kind === "agent" && <button className={`composer-dictate${listening ? " listening" : ""}`} disabled={!connected || !voiceAvailable || preparingVoice} title={voiceAvailable ? "Dictate a message" : "Voice typing is unavailable in this browser; use the keyboard microphone."} aria-label={dictateLabel} aria-pressed={listening} onClick={listening ? stopVoice : () => void startVoice()}>{listening ? <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1" /></svg> : <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M6 11a6 6 0 0 0 12 0M12 17v4M8 21h8" /></svg>}</button>}<button className="send-icon" disabled={!connected || !draft.trim()} onClick={submitDraft} aria-label="Send" title="Send"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 4 16 8-16 8 3-8-3-8Z" /><path d="M7 12h13" /></svg></button></div></div>
+      {uploads.map((upload) => upload.failure
+        ? <div key={upload.id} className="inbox-upload error" role="alert"><strong>{upload.name}</strong><span>{upload.failure}</span><button onClick={() => dismissUpload(upload.id)} aria-label={`Dismiss ${upload.name}`}>✕</button></div>
+        : <div key={upload.id} className="inbox-upload" role="status"><strong>{upload.name}</strong><span>{upload.source === "desktop" ? "Copying from the desktop…" : "Sending to the project inbox…"}</span></div>)}
+      {status && (status.path || status.branch || status.context) && <div className="session-facts" title={status.path}>
+        {status.path && <span className="fact-path">{shortenPath(status.path)}</span>}
+        {status.branch && <span className="fact-branch">⎇ {status.branch}</span>}
+        {status.context && <span className="fact-context">{status.context} context</span>}
+      </div>}
+      <div className="prompt-composer">
+        <textarea ref={composerInput} value={draft} disabled={!connected} rows={1} aria-label={tab.kind === "agent" ? "Message agent" : "Shell command"} placeholder={connected ? (tab.kind === "agent" ? "Message the agent…" : "Type a command…") : "Reconnecting…"} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => {
+          if (event.key !== "Enter" || event.shiftKey) return;
+          // Enter confirms a candidate inside an IME composition (CJK keyboards,
+          // and 229 is what Android keyboards report mid-composition); that
+          // one belongs to the keyboard, not to the send.
+          if (event.nativeEvent.isComposing || event.keyCode === 229) return;
+          event.preventDefault();
+          submitDraft();
+        }} />
+        <div className="composer-bar">
+          {tab.kind === "agent" && <>
+            <input ref={fileInput} type="file" multiple hidden aria-hidden="true" tabIndex={-1} data-testid="inbox-file-input" onChange={(event) => { attachFromPhone(event.target.files); event.target.value = ""; }} />
+            <button className="composer-add" disabled={!connected} onClick={() => setAddSheet(true)} aria-label="Add to the message" aria-haspopup="dialog" aria-expanded={addSheet} title="Add a photo or file from this phone, an image from the desktop, or a project file (@)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg></button>
+            <div className="composer-chips">
+              <button className="composer-chip" disabled={!connected} onClick={selectModel} aria-haspopup="dialog" aria-expanded={modelSheet} title="Choose the model (/model)"><span className="composer-chip-label">{status?.model ?? "Model"}</span></button>
+              <button className="composer-chip" disabled={!connected} onClick={openModeSheet} aria-haspopup={modes.length > 0 ? "dialog" : undefined} aria-expanded={modes.length > 0 ? modeSheet : undefined} title={modes.length > 0 ? "Choose the permission mode" : "Switch mode (Shift+Tab)"}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2 4.5 13.5H11L10 22l8.5-11.5H12L13 2Z" /></svg><span className="composer-chip-label">{status?.mode ?? activeMode ?? "Mode"}</span></button>
+              <button className="composer-chip" onClick={() => setStatusSheet(true)} aria-haspopup="dialog" aria-expanded={statusSheet} title="Session status and the agent's own usage"><span className={`composer-chip-lamp ${lamp}`} aria-hidden="true" /><span className="composer-chip-label">Status</span></button>
+            </div>
+          </>}
+          {tab.kind !== "agent" && <span className="composer-spacer" />}
+          {tab.kind === "agent" && <button className={`composer-dictate${listening ? " listening" : ""}`} disabled={!connected || !voiceAvailable || preparingVoice} title={voiceAvailable ? "Dictate a message" : "Voice typing is unavailable in this browser; use the keyboard microphone."} aria-label={dictateLabel} aria-pressed={listening} onClick={listening ? stopVoice : () => void startVoice()}>{listening ? <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1" /></svg> : <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M6 11a6 6 0 0 0 12 0M12 17v4M8 21h8" /></svg>}</button>}
+          <button className="send-icon" disabled={!connected || !draft.trim()} onClick={submitDraft} aria-label="Send" title="Send"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 4 16 8-16 8 3-8-3-8Z" /><path d="M7 12h13" /></svg></button>
+        </div>
+      </div>
       <div className="keys">
       <button className={ctrl ? "selected" : ""} aria-pressed={ctrl} disabled={!connected} onClick={() => setCtrl((on) => !on)}>Ctrl</button><button disabled={!connected} onClick={() => press("\u001b")}>Esc</button><button disabled={!connected} onClick={() => press("\t")}>Tab</button><button disabled={!connected} onClick={() => press("\u001b[D")}>←</button><button disabled={!connected} onClick={() => press("\u001b[A")}>↑</button><button disabled={!connected} onClick={() => press("\u001b[B")}>↓</button><button disabled={!connected} onClick={() => press("\u001b[C")}>→</button><button disabled={!connected} onClick={() => press("\r")}>Enter</button><button disabled={!connected} onClick={() => press("\u007f")}>⌫</button><button className="danger" disabled={!connected} onClick={() => window.confirm("Send interrupt (Ctrl+C)?") && type("\u0003")}>Interrupt</button>
       </div>
     </div>
+    {modelSheet && <OptionSheet
+      title={shownStep?.title ?? "Select model"}
+      options={pickerOptions}
+      waiting={!connected
+        ? "Waiting for the connection…"
+        : answered ? "Waiting for the session…" : "Waiting for the session's model picker…"}
+      busy={shownStep != null && pickerStep == null}
+      onPick={chooseModel}
+      onClose={closeModelSheet}
+    />}
+    {addSheet && <OptionSheet
+      title="Add to the message"
+      options={addOptions}
+      waiting=""
+      busy={false}
+      onPick={pickAdd}
+      onClose={() => setAddSheet(false)}
+    />}
+    {desktopSheet && <OptionSheet
+      title="From the desktop"
+      note={desktopFailure
+        ? { text: desktopFailure, error: true }
+        : desktopImages?.length ? { text: "Pick one to copy it into the project's inbox and reference it in the message." } : undefined}
+      options={desktopOptions}
+      waiting={desktopImages === null
+        ? "Looking on the desktop…"
+        : desktopFailure ? "Close and try again." : "Nothing to attach — copy an image or take a screenshot on the desktop first."}
+      busy={false}
+      onPick={attachFromDesktop}
+      onClose={() => setDesktopSheet(false)}
+    />}
+    {modeSheet && <OptionSheet
+      title="Permission mode"
+      note={failedMode
+        ? { text: `This session did not switch to ${failedMode.label}; it is back in the mode it was in.`, error: true }
+        : undefined}
+      options={modeOptions}
+      waiting="This session reports no mode."
+      busy={switching !== ""}
+      onPick={(key) => void applyMode(key)}
+      onClose={() => { if (!switching) setModeSheet(false); }}
+    />}
+    {statusSheet && <StatusSheet tab={tab} live={status} onClose={() => setStatusSheet(false)} />}
+    {outboxOpen && <div className="outbox-viewer" role="dialog" aria-modal="true" aria-label={outboxOpen.name} onClick={() => setOutboxOpen(null)}>
+      <div className="outbox-viewer-head" onClick={(event) => event.stopPropagation()}>
+        <button className="sheet-close" onClick={() => setOutboxOpen(null)} aria-label="Close">✕</button>
+        <h2>{outboxOpen.name}</h2>
+        <small>{ageLabel(Math.max(0, Math.floor(Date.now() / 1000) - outboxOpen.modified))} · {sizeLabel(outboxOpen.size)}</small>
+      </div>
+      <img src={outboxImageUrl(tab.id, outboxOpen.name)} alt={outboxOpen.name} onClick={(event) => event.stopPropagation()} />
+    </div>}
   </main>;
 }

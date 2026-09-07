@@ -70,6 +70,42 @@ describe("setViewerState", () => {
     useTabsStore.getState().setViewerState(tab.key, { scale: 2, offsetX: 10, offsetY: 5 });
     expect(useTabsStore.getState().tabs).toBe(before);
   });
+
+  it("stores a patch touching only fields outside the old equality list", () => {
+    // Regression: the no-op guard used to be a hand-maintained field list, so a
+    // patch touching only an unlisted ViewerState field (yamlCollapsed,
+    // delimiter, bibSort, breakpoints, …) merged, compared equal on the listed
+    // fields, and was silently dropped. The guard is a generic shallow compare
+    // over the union of keys now — any field difference must get through.
+    const store = useTabsStore.getState();
+    store.setScope("p");
+    const tab = store.addTab({
+      label: "data.csv",
+      cmd: "",
+      cwd: "/p",
+      kind: "embed",
+      embedPath: "/p/data.csv",
+      viewer: "table",
+    });
+
+    useTabsStore.getState().setViewerState(tab.key, { delimiter: ";" });
+    useTabsStore.getState().setViewerState(tab.key, { bibSort: "year", bibSortDesc: true });
+    const collapsed = ["intro"];
+    useTabsStore.getState().setViewerState(tab.key, { yamlCollapsed: collapsed });
+
+    const stored = useTabsStore.getState().tabs.find((t) => t.key === tab.key);
+    expect(stored?.viewerState).toEqual({
+      delimiter: ";",
+      bibSort: "year",
+      bibSortDesc: true,
+      yamlCollapsed: collapsed,
+    });
+
+    // Same-reference array patch is still deduped (compare-by-ref).
+    const before = useTabsStore.getState().tabs;
+    useTabsStore.getState().setViewerState(tab.key, { yamlCollapsed: collapsed });
+    expect(useTabsStore.getState().tabs).toBe(before);
+  });
 });
 
 describe("viewerState round-trips through save/load", () => {

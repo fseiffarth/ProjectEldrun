@@ -32,6 +32,21 @@ use crate::services::ssh_common::{
 /// exists so a long-lived master that chatters for hours can't grow unbounded.
 const STDERR_KEEP: usize = 4096;
 
+/// How long the SFTP handshake may take before the attempt is abandoned.
+///
+/// `ConnectTimeout=10` bounds only the TCP connect: everything after it — the
+/// key exchange, authentication, the host's `sftp-server` starting up — has no
+/// bound of its own, so a host that accepts the connection and then stops
+/// answering (a wedged login node, a middlebox holding the socket open) left
+/// `Sftp::new` awaiting forever. The command that asked never returns, its ssh
+/// child and askpass shim stay alive, and every retry adds another pair.
+///
+/// Generous on purpose: a busy cluster login node can spend tens of seconds on
+/// PAM, a network home directory and the subsystem exec, and a timeout that
+/// fires there would be a new failure rather than a fixed one. Past a minute,
+/// nobody is still waiting for this connect.
+const HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
 /// Drain the child ssh's stderr to EOF on a background task, keeping the last
 /// [`STDERR_KEEP`] bytes, and hand back a handle that yields them.
 ///
@@ -330,7 +345,30 @@ async fn spawn_sftp(
         .ok_or_else(|| missing("ssh stdout unavailable"))?;
     let drain = child.stderr.take().map(drain_stderr);
 
-    match Sftp::new(stdin, stdout, SftpOptions::default()).await {
+    let handshake = tokio::time::timeout(
+        HANDSHAKE_TIMEOUT,
+        Sftp::new(stdin, stdout, SftpOptions::default()),
+    )
+    .await;
+    let handshake = match handshake {
+        Ok(result) => result,
+        Err(_) => {
+            // Nothing came back in time. Kill the child rather than leaving it
+            // (and its askpass shim) holding a connection nobody is waiting on
+            // any more — dropping the handshake future closes ssh's stdin, but
+            // an ssh stuck before that reads no EOF.
+            let _ = child.start_kill();
+            return Err((
+                format!(
+                    "{what}: the host accepted the connection but did not complete the \
+                     SFTP handshake within {}s",
+                    HANDSHAKE_TIMEOUT.as_secs()
+                ),
+                false,
+            ));
+        }
+    };
+    match handshake {
         Ok(sftp) => Ok((sftp, child)),
         Err(e) => {
             let (err, raw) = handshake_error(drain, format!("{what}: {e}")).await;
@@ -809,12 +847,21 @@ pub async fn remove_file_on(sftp: &Sftp, path: &str) -> Result<(), String> {
 /// Recursively remove a remote directory tree on an open session — the remote
 /// analogue of `std::fs::remove_dir_all` (SFTP RMDIR only removes an *empty*
 /// directory, so children are listed and removed depth-first first).
+///
+/// The listing is the **lstat-typed** one ([`list_dir_raw_on`]), never
+/// [`list_dir_on`], and that is the whole safety property: `list_dir_on`
+/// follow-stats a symlink so the picker can navigate a link-to-directory, so a
+/// `data -> /scratch/<user>/data` link inside the tree read back as `is_dir` and
+/// the recursion emptied the link's **target** — bytes outside the deleted tree,
+/// on a machine where such links are the normal way to reach the parallel
+/// filesystem. A link of either kind is unlinked (SFTP REMOVE does not follow),
+/// exactly as `std::fs::remove_dir_all` does locally.
 pub async fn remove_dir_on(sftp: &Sftp, path: &str) -> Result<(), String> {
     // List the directory (errors → empty/leaf, fall through to RMDIR).
-    let entries = list_dir_on(sftp, path).await.unwrap_or_default();
+    let entries = list_dir_raw_on(sftp, path).await.unwrap_or_default();
     for entry in &entries {
         let child = format!("{}/{}", path.trim_end_matches('/'), entry.name);
-        if entry.is_dir {
+        if entry.kind == SyncKind::Dir {
             Box::pin(remove_dir_on(sftp, &child)).await?;
         } else {
             remove_file_on(sftp, &child).await?;

@@ -1,6 +1,7 @@
 use crate::schema::settings::WindowState;
 use crate::schema::Settings;
 use crate::storage;
+use serde_json::{Map, Value};
 
 #[tauri::command]
 pub fn get_settings() -> Result<Settings, String> {
@@ -17,6 +18,11 @@ pub fn get_settings() -> Result<Settings, String> {
     // populated them, leaving the toolbar blank. Detection runs at read time and
     // is not persisted, so the bar appears immediately; the first edit in the
     // Global Apps settings panel writes the merged set back to disk.
+    seed_default_global_apps(&mut settings);
+    Ok(settings)
+}
+
+fn seed_default_global_apps(settings: &mut Settings) {
     if settings
         .global_apps
         .as_ref()
@@ -26,35 +32,54 @@ pub fn get_settings() -> Result<Settings, String> {
             settings.global_apps = Some(defaults);
         }
     }
-    Ok(settings)
 }
 
 #[tauri::command]
 pub fn save_settings(settings: Settings) -> Result<(), String> {
     let path = storage::state_dir().join("settings.json");
-    storage::write_json(&path, &settings).map_err(|e| e.to_string())
+    storage::write_json_atomic(&path, &settings).map_err(|e| e.to_string())
+}
+
+/// Atomically merge a frontend settings patch against the latest file.
+///
+/// Every webview has its own JS heap and therefore its own settings cache. A
+/// frontend read followed by `save_settings` is two independent transactions:
+/// another window can commit between them and have its unrelated change
+/// overwritten by the stale whole object. This command keeps read + shallow
+/// merge + write under `storage`'s process-wide JSON mutation lock and returns
+/// the exact object that won, so every sender can broadcast the same snapshot.
+#[tauri::command]
+pub fn patch_settings(patch: Map<String, Value>) -> Result<Settings, String> {
+    let path = storage::state_dir().join("settings.json");
+    storage::patch_json(&path, Settings::default(), |settings| {
+        seed_default_global_apps(settings);
+        merge_settings_patch(settings, patch)?;
+        Ok(settings.clone())
+    })
+}
+
+fn merge_settings_patch(settings: &mut Settings, patch: Map<String, Value>) -> Result<(), String> {
+    let mut value = serde_json::to_value(&*settings).map_err(|e| e.to_string())?;
+    let current = value
+        .as_object_mut()
+        .ok_or_else(|| "settings must serialize as an object".to_string())?;
+    current.extend(patch);
+    *settings = serde_json::from_value(value).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 /// Persist only the main window's geometry, leaving every other setting on disk
 /// untouched.
 ///
-/// Deliberately NOT routed through `save_settings`: the frontend's
-/// `updateSettings` writes the *whole* settings object back from its in-memory
-/// cache, and this is called on a debounce every time the user drags or resizes
-/// the window. Going through the full object would rewrite the entire
-/// user-facing settings file on every window nudge, and would clobber any setting
-/// changed elsewhere since the cache was filled. Read-modify-write of the single
-/// field here keeps a window drag from ever touching an unrelated setting.
+/// Kept as a dedicated patch because this fires on a debounce every time the
+/// user drags or resizes the main window; it must never replace unrelated keys.
 #[tauri::command]
 pub fn save_window_state(state: WindowState) -> Result<(), String> {
     let path = storage::state_dir().join("settings.json");
-    let mut settings: Settings = if path.exists() {
-        storage::read_json(&path).map_err(|e| e.to_string())?
-    } else {
-        Settings::default()
-    };
-    settings.window_state = Some(state);
-    storage::write_json(&path, &settings).map_err(|e| e.to_string())
+    storage::patch_json(&path, Settings::default(), |settings| {
+        settings.window_state = Some(state);
+        Ok(())
+    })
 }
 
 /// Detect installed apps for the global-app toolbar roles on the current
@@ -81,9 +106,9 @@ fn default_global_apps(
 /// roles. Unlike Windows/macOS, a Linux app has no fixed install path, so each
 /// candidate is a binary name resolved via `PATH` (`crate::paths::resolve_executable`,
 /// which already covers the GUI-launched-process PATH gap). Mail, calendar,
-/// file-manager and system-monitor roles are deliberately absent, for the same
-/// reason as the other two platforms: Eldrun has its own of each. There is no
-/// app guaranteed present on every distro, so — unlike Windows (Notepad) or
+/// file-manager, system-monitor, notes and media-player roles are deliberately
+/// absent, for the same reason as the other two platforms: Eldrun has its own
+/// of each. There is no app guaranteed present on every distro, so — unlike
 /// macOS (Safari) — the toolbar can still come back empty on a minimal
 /// install; a role can always be set by hand in the Global Apps settings panel.
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
@@ -93,7 +118,7 @@ fn detect_linux_global_apps(
     use std::collections::HashMap;
 
     // role -> ordered candidate binary names on PATH (first found wins).
-    let candidates: [(&str, &[&str]); 6] = [
+    let candidates: [(&str, &[&str]); 4] = [
         (
             "browser",
             &[
@@ -105,14 +130,6 @@ fn detect_linux_global_apps(
             ],
         ),
         ("password_manager", &["keepassxc", "bitwarden", "keepassx"]),
-        (
-            "media_player",
-            &["vlc", "mpv", "totem", "celluloid", "rhythmbox"],
-        ),
-        (
-            "notes",
-            &["gnome-text-editor", "kate", "gedit", "xed", "mousepad"],
-        ),
         (
             "screenshot",
             &[
@@ -179,11 +196,11 @@ fn env_join(var: &str, tail: &str) -> String {
 }
 
 /// Probe well-known install locations for the common global-app roles on
-/// Windows. Notepad is effectively guaranteed, so the toolbar is never empty;
-/// the browser and the rest are included only when found. Mail, calendar,
-/// file-manager and system-monitor roles are deliberately absent: Eldrun has
-/// its own of each (the Monitor tab for the last), so seeding an external app
-/// for them only offered a second, worse copy.
+/// Windows. Every role is included only when found, so the toolbar can come
+/// back empty. Mail, calendar, file-manager, system-monitor, notes and
+/// media-player roles are deliberately absent: Eldrun has its own of each (the
+/// Monitor tab, the editable file viewers, the in-tab media viewer), so seeding
+/// an external app for them only offered a second, worse copy.
 #[cfg(target_os = "windows")]
 fn detect_windows_global_apps(
 ) -> Option<std::collections::HashMap<String, crate::schema::settings::GlobalAppEntry>> {
@@ -191,7 +208,7 @@ fn detect_windows_global_apps(
     use std::collections::HashMap;
 
     // role -> ordered candidate executable paths (first existing wins).
-    let candidates: [(&str, Vec<String>); 5] = [
+    let candidates: [(&str, Vec<String>); 3] = [
         (
             "browser",
             vec![
@@ -209,17 +226,9 @@ fn detect_windows_global_apps(
                 env_join("ProgramFiles", "Microsoft\\Edge\\Application\\msedge.exe"),
             ],
         ),
-        ("notes", vec![env_join("WINDIR", "System32\\notepad.exe")]),
         (
             "screenshot",
             vec![env_join("WINDIR", "System32\\SnippingTool.exe")],
-        ),
-        (
-            "media_player",
-            vec![
-                env_join("ProgramFiles(x86)", "Windows Media Player\\wmplayer.exe"),
-                env_join("ProgramFiles", "Windows Media Player\\wmplayer.exe"),
-            ],
         ),
         (
             "password_manager",
@@ -258,9 +267,10 @@ fn detect_windows_global_apps(
 /// (not the `.app` path) so the existing `Command::new(exec)` launch path works.
 /// Roles whose app is absent (e.g. iTerm) are skipped; the toolbar is never empty
 /// on a stock install since Safari is always present. Mail, calendar,
-/// file-manager and system-monitor roles are deliberately absent — Eldrun has
-/// its own of each (the Monitor tab for the last), so seeding Mail/Finder/
-/// Activity Monitor here only offered a second, worse copy.
+/// file-manager, system-monitor, notes and media-player roles are deliberately
+/// absent — Eldrun has its own of each (the Monitor tab, the editable file
+/// viewers, the in-tab media viewer), so seeding Mail/Finder/Activity Monitor/
+/// Notes/QuickTime here only offered a second, worse copy.
 #[cfg(target_os = "macos")]
 fn detect_macos_global_apps(
 ) -> Option<std::collections::HashMap<String, crate::schema::settings::GlobalAppEntry>> {
@@ -268,25 +278,13 @@ fn detect_macos_global_apps(
     use std::collections::HashMap;
 
     // role -> ordered candidate executable paths (first existing wins).
-    let candidates: [(&str, Vec<String>); 4] = [
+    let candidates: [(&str, Vec<String>); 2] = [
         (
             "browser",
             vec![
                 "/Applications/Safari.app/Contents/MacOS/Safari".to_string(),
                 "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome".to_string(),
                 "/Applications/Firefox.app/Contents/MacOS/firefox".to_string(),
-            ],
-        ),
-        (
-            "notes",
-            vec!["/System/Applications/Notes.app/Contents/MacOS/Notes".to_string()],
-        ),
-        (
-            "media_player",
-            vec![
-                "/System/Applications/QuickTime Player.app/Contents/MacOS/QuickTime Player"
-                    .to_string(),
-                "/System/Applications/Music.app/Contents/MacOS/Music".to_string(),
             ],
         ),
         (
@@ -318,5 +316,30 @@ fn detect_macos_global_apps(
         None
     } else {
         Some(detected)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn settings_patch_is_shallow_and_preserves_unrelated_fields() {
+        let mut settings = Settings {
+            color_scheme: Some("fancy_dark".into()),
+            language: Some("de".into()),
+            ..Settings::default()
+        };
+        let patch = serde_json::from_value::<Map<String, Value>>(serde_json::json!({
+            "color_scheme": "soft_dark",
+            "files_alerts_muted": ["one"]
+        }))
+        .unwrap();
+
+        merge_settings_patch(&mut settings, patch).unwrap();
+
+        assert_eq!(settings.color_scheme.as_deref(), Some("soft_dark"));
+        assert_eq!(settings.language.as_deref(), Some("de"));
+        assert_eq!(settings.files_alerts_muted, Some(vec!["one".into()]));
     }
 }

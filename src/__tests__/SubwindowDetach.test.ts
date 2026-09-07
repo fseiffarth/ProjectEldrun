@@ -21,7 +21,6 @@ import {
   serializeTree,
   pruneSavedTree,
   withDetachedDocked,
-  detachedTabKeys,
   isDetachedPtyId,
   type GroupNode,
   type SplitNode,
@@ -186,9 +185,6 @@ describe("tabs store — detach / attach subwindow (#42)", () => {
     // group's tabs — so a restart restores the detached group as docked.
     const persistedKeys = collectSavedKeys(merged);
     expect(persistedKeys.sort()).toEqual([a.key, b.key].sort());
-
-    // The #55 owned-keys union counts detached tabs as owned.
-    expect(detachedTabKeys(detached)).toEqual([b.key]);
   });
 
   it("save-side pruning keeps a detached group's restorable tabs", () => {

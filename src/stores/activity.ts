@@ -1,11 +1,17 @@
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { emit, listen } from "@tauri-apps/api/event";
 import { create } from "zustand";
 import { looksLikeDecisionPromptStripped, stripAnsi } from "../lib/agentPrompt";
 import { METRIC, agentPromptLeaf } from "../lib/usageMetrics";
+import { splitPtyId } from "../lib/ptyId";
 import { allGroups, isPtyTabKind, useTabsStore } from "./tabs";
 import type { TabEntry } from "./tabs";
 import { bumpUsage } from "./usage";
+import { isDetachedWindow } from "./detachedContext";
+
+/** Mirrors `DETACHED_ACTIVITY` in stores/detached (spelled here so this module
+ *  stays free of that import: detached.ts imports this one). */
+const DETACHED_ACTIVITY_EVENT = "detached-activity";
 
 /// A scope (project) stays "running" until its PTYs have been quiet for this
 /// window. Short enough to clear quickly when a task ends, long enough to bridge
@@ -53,6 +59,17 @@ const tailByPty: Record<string, string> = {};
 const seenAtByPty: Record<string, number> = {};
 const bellByPty: Record<string, number> = {};
 const inputByPty: Record<string, number> = {};
+/// When the tab was last DELIBERATELY opened — switched to in a tab bar, or put
+/// on a phone's screen (`clearAttention`). Deliberately not the same as
+/// `seenAtByPty`, which `attentionFor` re-stamps on every tick for as long as a
+/// tab is the visible one: an agent tab left on screen on an unattended desktop
+/// is "being looked at" forever, and that is what kept a finished turn from ever
+/// being reported to the phone. This one only moves when somebody arrives.
+const readAtByPty: Record<string, number> = {};
+/// Whether the tab has been busy since its last turn-end mark (see
+/// `lastDoneByTab`): a turn "finishes" only after it was seen working, so a
+/// stray blip followed by silence never books a finished turn.
+const busySinceMarkByPty: Record<string, boolean> = {};
 
 /// Memo for the decision-prompt test, keyed by PTY id and validated against the
 /// tail it was computed from. `attentionFor` asks the question of every agent tab
@@ -82,6 +99,8 @@ const PTY_MAPS: Record<string, unknown>[] = [
   seenAtByPty,
   bellByPty,
   inputByPty,
+  readAtByPty,
+  busySinceMarkByPty,
 ];
 
 /** Record that a PTY produced output just now, keeping the tail of the current
@@ -89,6 +108,18 @@ const PTY_MAPS: Record<string, unknown>[] = [
  *  safe to call often. */
 export function notePtyOutput(ptyId: string, data = "") {
   const now = Date.now();
+  const text = data ? stripAnsi(data) : "";
+  // A frame that paints no text — a terminal-title update, a cursor move, a
+  // blanked cell — says nothing about what the agent is doing, and a BLOCKED
+  // Codex tab emits nothing else: its title alternates between
+  // "[ ! ] Action Required" and "[ . ] Action Required" on a ~100ms timer for as
+  // long as an approval sits unanswered (the same timer spins a braille frame
+  // into the title while it works). Counting those as activity is what kept such
+  // a tab stuck on "working": the quiet never reached DECISION_QUIET_MS, so its
+  // tail was never classified and the decision lamp never lit. Claude Code's
+  // prompts do not hit this — it goes properly silent — which is why the bug
+  // looked Codex-only.
+  if (data && !text.trim()) return;
   const prev = lastOutputByPty[ptyId];
   // Start of a fresh burst after quiet (or the very first output): reset the
   // onset. Output within the busy window keeps the existing onset, so a
@@ -102,8 +133,8 @@ export function notePtyOutput(ptyId: string, data = "") {
     tailByPty[ptyId] = "";
   }
   lastOutputByPty[ptyId] = now;
-  if (data) {
-    const tail = (tailByPty[ptyId] ?? "") + stripAnsi(data);
+  if (text) {
+    const tail = (tailByPty[ptyId] ?? "") + text;
     tailByPty[ptyId] = tail.length > TAIL_CAP ? tail.slice(-TAIL_CAP) : tail;
   }
 }
@@ -115,8 +146,20 @@ export function lastPtyOutputAt(ptyId: string): number | undefined {
   return lastOutputByPty[ptyId];
 }
 
+/** When the tab was last deliberately opened by a person (ms epoch), on either
+ *  surface, or undefined if nobody has this session. Read-only view of
+ *  `readAtByPty` for the surfaces that must decide "has anyone seen this turn?"
+ *  for themselves — the phone's, which cannot infer it from the desktop's
+ *  `done` flag (that one is suppressed while the tab is the visible one here). */
+export function lastTabReadAt(ptyId: string): number | undefined {
+  return readAtByPty[ptyId];
+}
+
 /** Record that input was sent to a PTY on the user's behalf — a keystroke, a
- *  paste, or a user-triggered flow typing its command (`initialInput`). This is
+ *  paste, a user-triggered flow typing its command (`initialInput`), or a
+ *  keystroke a phone sent over the Mobile bridge (`MobileBridgeHost`, which is
+ *  told about it because the phone types into a tmux client of its own that this
+ *  window never sees). This is
  *  what makes output COUNT: "working" and "done" only ever arise from output
  *  produced after input this session, so a restored tab bursting its resume
  *  banner or replaying a prior transcript — real bytes, but nothing anybody
@@ -131,8 +174,45 @@ export function lastPtyOutputAt(ptyId: string): number | undefined {
  *  reset in `notePtyOutput` misses: an answer so fast that the agent's next
  *  output lands inside the same burst, leaving the answered menu in the tail. */
 export function noteUserInput(ptyId: string) {
+  // Group B #234: a popout's terminal reports to the classifier that lives in
+  // the main window — the popout's own maps are never read by anything.
+  if (isDetachedWindow()) {
+    void emit(DETACHED_ACTIVITY_EVENT, { ptyId, kind: "input" });
+    return;
+  }
   inputByPty[ptyId] = Date.now();
   tailByPty[ptyId] = "";
+}
+
+/**
+ * Group B #234, the popout side: adopt the statuses the main window mirrored
+ * over (`detachedStatusEvent`) into THIS window's activity store, keyed the way
+ * `TabBar` reads them, so the popout's strip paints the same lamps. Replaces the
+ * whole verdict for `scope`'s keys in `status`; keys of other scopes are kept.
+ */
+export function applyDetachedStatus(
+  scope: string,
+  status: Record<string, "working" | "needs-decision" | "finished">,
+): void {
+  const prefix = `${scope}:`;
+  const busyByTab: Record<string, boolean> = {};
+  const attentionByTab: Record<string, AttentionKind> = {};
+  const cur = useActivityStore.getState();
+  for (const [id, v] of Object.entries(cur.busyByTab)) if (!id.startsWith(prefix)) busyByTab[id] = v;
+  for (const [id, v] of Object.entries(cur.attentionByTab)) {
+    if (!id.startsWith(prefix)) attentionByTab[id] = v;
+  }
+  for (const [key, state] of Object.entries(status)) {
+    const ptyId = `${prefix}${key}`;
+    if (state === "working") busyByTab[ptyId] = true;
+    else if (state === "needs-decision") attentionByTab[ptyId] = "decision";
+    else if (state === "finished") attentionByTab[ptyId] = "done";
+  }
+  useActivityStore.setState({
+    busyByTab,
+    attentionByTab,
+    attentionByScope: rollupAttentionScopes(attentionByTab),
+  });
 }
 
 /** Forget everything recorded about a PTY, called when it is (re)spawned. A
@@ -144,19 +224,26 @@ export function notePtySpawn(ptyId: string) {
   decisionMemo.delete(ptyId);
 }
 
-/** Split a composed PTY id (`<scope>:<tabKey>`) into its parts, mirroring
- *  `isDetachedPtyId` in stores/tabs. Returns null for a bare (colon-less) id. */
-export function splitPtyId(ptyId: string): { scope: string; key: string } | null {
-  const idx = ptyId.indexOf(":");
-  if (idx < 0) return null;
-  return { scope: ptyId.slice(0, idx), key: ptyId.slice(idx + 1) };
-}
+// The parser lives in `lib/ptyId` — one cut for every consumer, and one that
+// knows a box scope carries a colon of its own. Re-exported so the call sites
+// that have always imported it from here keep working.
+export { splitPtyId };
 
 /** True when the tab is the one the user is currently looking at: it's the
  *  active (visible) tab of its group in the CURRENT scope. Background tabs and
  *  background projects are never "looked at". */
 function isTabLookedAt(scope: string, key: string): boolean {
   const st = useTabsStore.getState();
+  // A tab in a popout is looked at when it is the active tab of its pane there
+  // (#234): the popout is its own window, on screen whichever scope the main
+  // window shows. Its window focus is not visible from here; the active tab of
+  // an unfocused popout is still the one on its screen, which is what "looked
+  // at" means for retiring a `done` flag.
+  for (const d of st.detachedGroupsByScope[scope] ?? []) {
+    for (const g of allGroups(d.subtree)) {
+      if (g.tabKeys.includes(key)) return g.activeKey === key;
+    }
+  }
   if (st.scope !== scope) return false;
   for (const g of allGroups(st.layoutByScope[scope] ?? null)) {
     if (g.tabKeys.includes(key)) return g.activeKey === key;
@@ -164,16 +251,12 @@ function isTabLookedAt(scope: string, key: string): boolean {
   return false;
 }
 
-/** True when the tab lives in a detached popout (#42). Such a tab has its own OS
- *  window and its own tab strip, and this window has no idea whether the user is
- *  looking at it — so it raises no attention here, which also stops a popped-out
- *  agent from leaving its project pill glowing with a flag nothing can clear. */
-function isTabDetached(scope: string, key: string): boolean {
-  const groups = useTabsStore.getState().detachedGroupsByScope[scope] ?? [];
-  return groups.some((d) =>
-    allGroups(d.subtree).some((g) => g.tabKeys.includes(key)),
-  );
-}
+// (A `isTabDetached` suppression used to sit here: a popped-out agent raised no
+// attention at all, because this window could not tell whether anyone was
+// looking at it and a flag it raised would have been unclearable. Group B #234
+// answers both — `isTabLookedAt` reads the popout's own active tab, and the
+// popout's strip clears the flag over DETACHED_ACTIVITY — so the suppression is
+// gone and a popped-out agent lights the project pill like a docked one.)
 
 /** Test-only: forget all recorded PTY activity so cases start isolated. */
 export function _clearPtyActivityForTest() {
@@ -188,6 +271,8 @@ export function _clearPtyActivityForTest() {
     attentionByScope: {},
     statusCountsByScope: {},
     statusTabsByScope: {},
+    lastWorkingByTab: {},
+    lastDoneByTab: {},
   });
 }
 
@@ -219,7 +304,9 @@ function attentionFor(
 ): AttentionKind | null {
   // Only AI agent tabs raise attention; a shell finishing a build doesn't.
   if (tab.kind !== "agent" && tab.kind !== "local_agent") return null;
-  if (isTabDetached(scope, tab.key)) return null;
+  // A popped-out agent is classified like any other (#234): its input reaches
+  // this window over DETACHED_ACTIVITY, `isTabLookedAt` reads its popout's
+  // active tab, and the verdict is mirrored back so the popout's strip shows it.
   const lookedAt = isTabLookedAt(scope, tab.key);
   // What's on screen has been read, so it can't be what raises a "done" later.
   if (lookedAt) seenAtByPty[ptyId] = now;
@@ -414,6 +501,17 @@ interface ActivityStore {
    *  drawn from one walk of the tabs, and a second walk in the component could
    *  order the bars differently from the tally they came from. */
   statusTabsByScope: Record<string, StatusTab[]>;
+  /** Composed PTY id → when (ms epoch) the tab last produced output while
+   *  counted as working. Published on the busy→idle edge only — while a tab IS
+   *  busy, `busyByTab` already says "now" — so the Agents views can sort by
+   *  "last working" without re-rendering on every output batch. Session-only. */
+  lastWorkingByTab: Record<string, number>;
+  /** Composed PTY id → when (ms epoch) an agent tab last finished a turn: the
+   *  time of its last output before it went quiet for `DONE_QUIET_MS`, marked
+   *  whether or not anybody was looking (unlike the `done` attention flag, which
+   *  is about UNREAD output and never rises on a watched tab). A decision prompt
+   *  counts too — the agent stopped. Session-only. */
+  lastDoneByTab: Record<string, number>;
   /** Record a terminal bell from a PTY (`ptyId` is the composed `<scope>:<key>`).
    *  Only a hint that the agent wants attention now — WHAT it wants is worked out
    *  from its output on the next `recompute`, which doesn't race the paint the way
@@ -447,17 +545,31 @@ export const useActivityStore = create<ActivityStore>((set, get) => ({
   attentionByScope: {},
   statusCountsByScope: {},
   statusTabsByScope: {},
+  lastWorkingByTab: {},
+  lastDoneByTab: {},
   runningScripts: new Set(),
   runningRunFiles: new Set(),
 
   noteBell: (ptyId) => {
     if (!splitPtyId(ptyId)) return;
+    if (isDetachedWindow()) {
+      void emit(DETACHED_ACTIVITY_EVENT, { ptyId, kind: "bell" });
+      return;
+    }
     bellByPty[ptyId] = Date.now();
     get().recompute();
   },
 
   clearAttention: (ptyId) => {
+    // A popout's strip clears a lamp the same way: by telling the main window
+    // the tab was looked at. Its own mirrored copy is refreshed by the next
+    // status broadcast, which follows the main store's update.
+    if (isDetachedWindow()) {
+      void emit(DETACHED_ACTIVITY_EVENT, { ptyId, kind: "seen" });
+      return;
+    }
     seenAtByPty[ptyId] = Date.now();
+    readAtByPty[ptyId] = seenAtByPty[ptyId];
     const kind = get().attentionByTab[ptyId];
     if (!kind) return;
     // Looking at a tab marks its output read — but it does not ANSWER a prompt,
@@ -493,6 +605,9 @@ export const useActivityStore = create<ActivityStore>((set, get) => ({
   },
 
   recompute: () => {
+    // A popout classifies nothing (its tabs store is empty — a recompute here
+    // would only wipe the statuses the main window mirrored over).
+    if (isDetachedWindow()) return;
     const now = Date.now();
     // Seconds of agent work this tick is worth, for the usage recap. Derived from
     // the gap since the last tick rather than assuming the interval, and clamped:
@@ -515,6 +630,10 @@ export const useActivityStore = create<ActivityStore>((set, get) => ({
     const nextRunFiles = new Set<string>();
     const live = new Set<string>();
     let changed = false;
+    // Copied lazily: both maps move rarely (an edge per turn), and an untouched
+    // tick must hand the same object back so subscribers do not re-render.
+    let nextWorking = get().lastWorkingByTab;
+    let nextDone = get().lastDoneByTab;
 
     for (const [scope, tabs] of Object.entries(tabsByScope)) {
       let scopeBusy = false;
@@ -547,6 +666,28 @@ export const useActivityStore = create<ActivityStore>((set, get) => ({
           if (t.runFile) nextRunFiles.add(t.runFile);
         }
         if ((prevTab[ptyId] ?? false) !== tabBusy) changed = true;
+        if (tabBusy) {
+          busySinceMarkByPty[ptyId] = true;
+        } else if (ts !== undefined && inputByPty[ptyId] !== undefined) {
+          // Was the burst that just ended work? Either a tick saw it busy, or
+          // — a tick can miss a burst that ended between two of them — the
+          // burst itself lasted past the onset debounce. A lone blip is neither.
+          const worked =
+            busySinceMarkByPty[ptyId] || (onset !== undefined && ts - onset >= WORK_ONSET_MS);
+          if (worked && nextWorking[ptyId] !== ts) {
+            // The last output of the burst is when this tab was last seen working.
+            if (nextWorking === get().lastWorkingByTab) nextWorking = { ...nextWorking };
+            nextWorking[ptyId] = ts;
+          }
+          if (worked && now - ts >= DONE_QUIET_MS && agentPromptLeaf(t) && nextDone[ptyId] !== ts) {
+            // Quiet long enough after work to call the turn finished — the same
+            // silence `attentionFor` waits out, but marked for every tab, watched
+            // or not.
+            busySinceMarkByPty[ptyId] = false;
+            if (nextDone === get().lastDoneByTab) nextDone = { ...nextDone };
+            nextDone[ptyId] = ts;
+          }
+        }
 
         const attn = attentionFor(scope, t, ptyId, now);
         if (attn) nextAttn[ptyId] = attn;
@@ -592,6 +733,18 @@ export const useActivityStore = create<ActivityStore>((set, get) => ({
     for (const ptyId of decisionMemo.keys()) {
       if (!live.has(ptyId)) decisionMemo.delete(ptyId);
     }
+    for (const ptyId of Object.keys(nextWorking)) {
+      if (live.has(ptyId)) continue;
+      if (nextWorking === get().lastWorkingByTab) nextWorking = { ...nextWorking };
+      delete nextWorking[ptyId];
+    }
+    for (const ptyId of Object.keys(nextDone)) {
+      if (live.has(ptyId)) continue;
+      if (nextDone === get().lastDoneByTab) nextDone = { ...nextDone };
+      delete nextDone[ptyId];
+    }
+    const workingChanged = nextWorking !== get().lastWorkingByTab;
+    const doneChanged = nextDone !== get().lastDoneByTab;
 
     const attnChanged = !sameAttention(prevAttn, nextAttn);
     const prevCounts = get().statusCountsByScope;
@@ -610,7 +763,15 @@ export const useActivityStore = create<ActivityStore>((set, get) => ({
     // via `live` even if some other tab keeps the same busy tally — so gate it
     // on its own comparison, same as the other maps.
     const runFilesChanged = !sameStringSet(get().runningRunFiles, nextRunFiles);
-    if (!changed && !attnChanged && !countsChanged && !statusTabsChanged && !runFilesChanged)
+    if (
+      !changed &&
+      !attnChanged &&
+      !countsChanged &&
+      !statusTabsChanged &&
+      !runFilesChanged &&
+      !workingChanged &&
+      !doneChanged
+    )
       return;
     // Only re-publish the maps that actually moved: every tab bar subscribes to
     // the whole `busyByTab` object, so handing it a fresh-but-equal one on each
@@ -623,19 +784,32 @@ export const useActivityStore = create<ActivityStore>((set, get) => ({
       ...(countsChanged ? { statusCountsByScope: nextCounts } : {}),
       ...(statusTabsChanged ? { statusTabsByScope: status.tabs } : {}),
       ...(runFilesChanged ? { runningRunFiles: nextRunFiles } : {}),
+      ...(workingChanged ? { lastWorkingByTab: nextWorking } : {}),
+      ...(doneChanged ? { lastDoneByTab: nextDone } : {}),
     });
   },
 }));
 
 // App-lifetime listener: clears the run animation when a detached script
 // finishes (run_id is the script's absolute path). Lives in the store rather
-// than in FileTree so the run state survives right-panel hide/show, which
+// than in FileTree so the run state survives side-panel hide/show, which
 // unmounts the tree — see TODO group R #34. Guarded so non-Tauri contexts
 // (e.g. unit tests, where the IPC bridge is absent) don't throw on import.
 if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
-  void listen<{ runId: string; success: boolean }>("script-finished", (e) => {
-    useActivityStore.setState((s) => ({
-      runningScripts: withoutScript(s.runningScripts, e.payload.runId),
-    }));
-  }).catch(() => {});
+  try {
+    // `Promise.resolve` rather than a bare `.catch`: this module is imported
+    // (transitively) by suites that stub the event module with a plain `vi.fn()`,
+    // whose `undefined` return would throw HERE, at import time, and take the
+    // whole suite down before a single test ran. A store's module scope must not
+    // be able to fail on the shape of somebody else's mock.
+    void Promise.resolve(
+      listen<{ runId: string; success: boolean }>("script-finished", (e) => {
+        useActivityStore.setState((s) => ({
+          runningScripts: withoutScript(s.runningScripts, e.payload.runId),
+        }));
+      }),
+    ).catch(() => {});
+  } catch {
+    /* no IPC bridge (tests) */
+  }
 }

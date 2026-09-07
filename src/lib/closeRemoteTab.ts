@@ -66,10 +66,12 @@ export function persistentSessionOf(
  * terminal**) with the `persist_local_sessions` setting on, and never on
  * Windows (no tmux). The root scope resolves no project here and needs none —
  * `localRunning` is what a project would have been consulted for, and a scope
- * with no project is never remote.
+ * with no project is never remote. Box scopes (`box:<id>`) qualify like root:
+ * their tabs restore first-class now and run local-only in v1, so a box shell's
+ * session is reattachable rather than orphaned.
  */
 export function localPersistentSessionOf(scope: string, tab: TabEntry): string | null {
-  if (IS_WINDOWS || scope.startsWith("box:")) return null;
+  if (IS_WINDOWS) return null;
   if (tab.kind !== "shell" || !tab.tmuxSession) return null;
   const project = useProjectsStore.getState().projects.find((p) => p.id === scope);
   const localRunning =

@@ -1,9 +1,49 @@
-export interface ProjectRow { id: string; label: string; status: string; live_sessions: number; last_activity?: number }
+/** One row of the phone's list. `kind` says whether it is a project or a box
+ * (#31aa) — a box is a scope of its own on the desktop, always "active" here,
+ * and a host older than the field sends none, which reads as a project. */
+export interface ProjectRow { id: string; label: string; status: string; kind?: "project" | "box"; live_sessions: number; last_activity?: number }
 export type AgentStatus = "working" | "question" | "done";
-export interface TabRow { id: string; label: string; kind: "shell" | "agent"; agent_label?: string; agent_status?: AgentStatus; available: boolean; viewer_busy: boolean; last_activity?: number }
+/** The desktop's own one-line summary of a tab's scheduled prompts: what the
+ * Agents view prints under an agent tab, so the project overview says the same
+ * thing without opening the sheet. `next` is desktop-local wall clock. */
+export interface TabSchedules { total: number; enabled: number; next?: string }
+/** `agent_model` is the model the tab last answered with, shortened by the
+ * desktop; `working_at`/`done_at` are desktop wall-clock ms of the tab's last
+ * working output and last finished turn. All three are the desktop's own
+ * readings and absent while it is closed or before the tab has done either. */
+export interface TabRow { id: string; label: string; kind: "shell" | "agent"; agent_label?: string; agent_status?: AgentStatus; agent_model?: string; working_at?: number; done_at?: number; schedules?: TabSchedules; available: boolean; viewer_busy: boolean; last_activity?: number }
 export interface AgentRow { id: string; label: string; modes: ("plan" | "auto")[] }
+/** One agent tab in the cross-project activity list: an ordinary tab row plus
+ * the project it lives in, because that list is flat and a tab label on its own
+ * does not say where the session is. */
+export interface ActivityTab extends TabRow { project_id: string; project_label: string }
+export interface ActivityList { tabs: ActivityTab[]; desktop_available: boolean }
+
+/** `GET /api/v1/activity` — every agent tab the desktop reports as working,
+ * waiting on a decision, or done, across every project this phone may reach.
+ * The desktop classifies; with none open the list is empty rather than wrong. */
+export function getActivity(signal?: AbortSignal): Promise<ActivityList> {
+  return api<ActivityList>("/api/v1/activity", { signal });
+}
+export type ScheduleRule =
+  | { type: "once"; at: string }
+  | { type: "daily"; time: string }
+  | { type: "weekdays"; weekdays: number[]; time: string };
+export interface ScheduledPrompt {
+  id: string;
+  enabled: boolean;
+  message: string;
+  rule: ScheduleRule;
+  last?: { occurrence: string; result: "delivered" | "missed" | "failed"; at: string };
+}
+export interface ScheduledPromptInput { enabled: boolean; message: string; rule: ScheduleRule }
+export interface ScheduledPromptList { schedules: ScheduledPrompt[]; time_zone: string; next_runs: Record<string, string> }
+/** A prompt collected for a project without a tab. Ids and timestamps are the
+ * desktop's; the phone only ever sends the text. */
+export interface ProjectPrompt { id: string; message: string; created_at: string; updated_at: string }
+export interface ProjectPromptList { prompts: ProjectPrompt[] }
 export interface ProjectDetail { project: ProjectRow; tabs: TabRow[]; desktop_available: boolean; agents: AgentRow[] }
-export interface TodoColumn { id: string; name: string; position: number; done: boolean; color?: string }
+export interface TodoColumn { id: string; name: string; position: number; done: boolean; archived: boolean; intake: boolean; overdue: boolean; due_today: boolean; color?: string }
 export interface TodoSubtask { id: string; title: string; done: boolean }
 export interface TodoTaskInput {
   title: string;
@@ -36,7 +76,22 @@ export interface TodoBoard {
 export function normalizeTodoBoard(board: TodoBoard): TodoBoard {
   return {
     ...board,
-    columns: board.columns ?? [],
+    // `archived` is the newest of these fields, so a desktop older than it sends
+    // a column without one; false is the honest reading — a board that has no
+    // archive column has nothing for "hide archived" to hide.
+    columns: (board.columns ?? []).map((column) => ({
+      ...column,
+      archived: column.archived ?? false,
+      // `intake` is newer still, and a desktop that does not send one had the
+      // board laid out so that the leftmost open column *was* the intake — which
+      // is what the callers fall back to when no column carries the flag.
+      intake: column.intake ?? false,
+      // The date-governed pair. False from an older desktop is the honest
+      // reading again: a board that flags neither has no column a deadline
+      // decides, so no move into one needs refusing.
+      overdue: column.overdue ?? false,
+      due_today: column.due_today ?? false,
+    })),
     tasks: (board.tasks ?? []).map((task) => ({
       ...task,
       notes: task.notes ?? "",
@@ -49,8 +104,10 @@ export function normalizeTodoBoard(board: TodoBoard): TodoBoard {
 }
 export type MobileAlertKind = "mail" | "event" | "task";
 export type MobileAlertSeverity = "overdue" | "now" | "soon" | "upcoming";
-/** A bounded display snapshot of the desktop Alerts feed. Source ids and
- * mutation capabilities deliberately never cross the mobile boundary. */
+/** A bounded snapshot of the desktop Alerts feed. Source ids never cross the
+ * mobile boundary: the only two handles a row carries are opaque and named by
+ * the desktop — the board card behind a task row, and the row itself, which is
+ * what `resolveAlert` presses the ✓ on. What that ✓ *does* stays desktop-side. */
 export interface MobileAlertItem {
   kind: MobileAlertKind;
   severity: MobileAlertSeverity;
@@ -60,8 +117,26 @@ export interface MobileAlertItem {
   all_day: boolean;
   minutes_away?: number;
   days_away?: number;
+  /** `kind === "task"` only: the board's own opaque card id, so tapping the row
+   * can open that card rather than dropping the reader at the whole board. */
+  task_id?: string;
+  /** The row's opaque handle, the one thing `resolveAlert` needs to press its ✓.
+   * It names a row of this feed and nothing behind it — a row the desktop could
+   * not mint a handle for simply carries no ✓. */
+  alert_id?: string;
 }
 export interface MobileAlerts { enabled: boolean; items: MobileAlertItem[] }
+
+/** `POST /api/v1/alerts` — the desktop strip's ✓, pressed from the phone.
+ *
+ * What Done means is the desktop's and stays there: a card is completed into
+ * the board's Done column, a mail's local priority mark is cleared, a meeting is
+ * muted in the strip. None of the three deletes anything, and the phone names
+ * only the row. The answer is the feed as it stands afterwards, so the list the
+ * ✓ came from is replaced rather than patched by guesswork. */
+export function resolveAlert(alertId: string): Promise<{ alerts: MobileAlerts }> {
+  return api("/api/v1/alerts", { method: "POST", body: JSON.stringify({ alert_id: alertId }) });
+}
 /** A bounded, read-only occurrence expanded by the connected desktop. It never
  * carries a calendar/event id, notes, conferencing links, or write capability. */
 export interface MobileCalendarEvent {
@@ -117,10 +192,16 @@ export interface MobileCalendar {
 }
 export interface MobileMailFolder { id: string; name: string; kind: string; unread: number; total: number }
 export interface MobileMailAccount { id: string; label: string; address: string; folders: MobileMailFolder[] }
-export interface MobileMailHeader { id: string; subject: string; sender: { name?: string; address: string }; date: string; seen: boolean; has_attachments: boolean; preview: string }
+export interface MobileMailHeader { id: string; subject: string; sender: { name?: string; address: string }; date: string; seen: boolean; flagged?: boolean; answered?: boolean; has_attachments: boolean; preview: string }
 export interface MobileMailAttachment { filename: string; mime: string; size: number }
+/** The only flag writes the phone may ask for. Delete and move do not exist here. */
+export type MailMarkAction = "seen" | "unseen" | "flag" | "unflag";
+/** What the connected desktop lets this phone *do* to mail, beyond reading.
+ * Both are desktop settings, default off; the phone hides the controls rather
+ * than discovering a refusal. Absent from an older desktop means off. */
+export interface MobileMailWrites { actions?: boolean; reply?: boolean }
 export type MobileMailView =
-  | { view: "overview"; accounts: MobileMailAccount[] }
+  | ({ view: "overview"; accounts: MobileMailAccount[] } & MobileMailWrites)
   | { view: "folder"; folder: MobileMailFolder; messages: MobileMailHeader[]; total: number; offset: number }
   | { view: "message"; message: MobileMailHeader; body: string; truncated: boolean; attachments: MobileMailAttachment[] };
 
@@ -141,8 +222,8 @@ export function setUnauthorizedHandler(handler: (() => void) | undefined): void 
  * splash in particular had no way back. */
 const REQUEST_TIMEOUT = 10_000;
 
-function withTimeout(signal?: AbortSignal | null): AbortSignal {
-  const timeout = AbortSignal.timeout(REQUEST_TIMEOUT);
+function withTimeout(signal: AbortSignal | null | undefined, ms: number): AbortSignal {
+  const timeout = AbortSignal.timeout(ms);
   if (!signal) return timeout;
   if (typeof AbortSignal.any === "function") return AbortSignal.any([signal, timeout]);
   // Pre-Baseline fallback: falling back to the caller's signal alone silently
@@ -155,14 +236,17 @@ function withTimeout(signal?: AbortSignal | null): AbortSignal {
   return both.signal;
 }
 
-export async function api<T>(path: string, init?: RequestInit): Promise<T> {
+/** `timeoutMs` overrides the default deadline for the one route that needs a
+ * longer one (see `getAgentStatus`); everything else keeps `REQUEST_TIMEOUT`,
+ * because a screen with no way back is worse than a failed request. */
+export async function api<T>(path: string, init?: RequestInit, timeoutMs = REQUEST_TIMEOUT): Promise<T> {
   let response: Response;
   try {
     response = await fetch(path, {
       ...init,
       credentials: "same-origin",
       cache: "no-store",
-      signal: withTimeout(init?.signal),
+      signal: withTimeout(init?.signal, timeoutMs),
       headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
     });
   } catch (error) {
@@ -183,4 +267,196 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   // which then read `undefined.map` and white-screened the whole app.
   if (body === undefined) throw new ApiError(response.status, "malformed_response");
   return body as T;
+}
+
+/** Mirrors the desktop's `protocol::MAX_TAB_LABEL`: the catalog truncates a
+ * label to this many characters when it publishes one, so a longer rename would
+ * come back as different text than was typed. */
+export const MAX_TAB_LABEL = 120;
+
+/** `PUT /api/v1/tabs/{id}` — rename one agent tab. The desktop owns the tab
+ * layout, so this is a bridge call and needs desktop Eldrun to be open. */
+export function renameTab(tabId: string, label: string): Promise<{ tab?: TabRow; label?: string }> {
+  return api(`/api/v1/tabs/${encodeURIComponent(tabId)}`, { method: "PUT", body: JSON.stringify({ label }) });
+}
+
+/** `DELETE /api/v1/tabs/{id}` — close one tab, agent or shell. Closing is the
+ * desktop's own ×: the tab leaves the Eldrun window, and the session behind it
+ * keeps running and stays reattachable from the desktop's Sessions view. Like
+ * the rename above it is a bridge call, so it needs desktop Eldrun open. */
+export function closeTab(tabId: string): Promise<{ closed: boolean }> {
+  return api(`/api/v1/tabs/${encodeURIComponent(tabId)}`, { method: "DELETE" });
+}
+
+const schedulePath = (tabId: string) => `/api/v1/tabs/${encodeURIComponent(tabId)}/schedules`;
+
+export function getSchedules(tabId: string): Promise<ScheduledPromptList> {
+  return api(schedulePath(tabId));
+}
+
+export function createSchedule(tabId: string, schedule: ScheduledPromptInput): Promise<ScheduledPromptList> {
+  return api(schedulePath(tabId), { method: "POST", body: JSON.stringify(schedule) });
+}
+
+export function updateSchedule(tabId: string, scheduleId: string, schedule: ScheduledPromptInput): Promise<ScheduledPromptList> {
+  return api(`${schedulePath(tabId)}/${encodeURIComponent(scheduleId)}`, {
+    method: "PUT",
+    body: JSON.stringify(schedule),
+  });
+}
+
+export function deleteSchedule(tabId: string, scheduleId: string): Promise<ScheduledPromptList> {
+  return api(`${schedulePath(tabId)}/${encodeURIComponent(scheduleId)}`, { method: "DELETE" });
+}
+
+/** What one agent CLI answered when asked about its own quota. `raw` is the
+ * panel as the CLI printed it — the sheet's Terminal half shows exactly that,
+ * and `shared/usageReport.ts` is the only thing that parses it. */
+export interface AgentUsagePanel { label: string; supported: boolean; raw?: string; error?: string; cached: boolean }
+/** Today's counters for the tab's project, at the grain the desktop records
+ * them: `prompts` is this agent's, the other three are the project's — every
+ * agent tab in it — which is what the sheet's wording says. */
+export interface AgentTally { prompts: number; worked_s: number; decisions: number; done: number }
+export interface AgentStatusReport {
+  state: "working" | "question" | "done" | "idle";
+  label: string;
+  agent?: string;
+  project: string;
+  today: AgentTally;
+  usage: AgentUsagePanel;
+}
+
+/** Reading the usage panel may run the agent's CLI once on the desktop, which
+ * is slower than any other control call — its own deadline, above the desktop's
+ * (20s) and the CLI's (15s), so a slow answer arrives rather than being cut. */
+const STATUS_TIMEOUT = 30_000;
+
+/** `GET /api/v1/tabs/{id}/status` — the composer's status chip. `refresh` asks
+ * the desktop to run the CLI again instead of answering from its short-lived
+ * cache; the desktop applies its own floor to that, so holding the button down
+ * cannot spawn a process per tap. */
+export async function getAgentStatus(tabId: string, refresh = false): Promise<AgentStatusReport> {
+  const query = refresh ? "?refresh=1" : "";
+  const { report } = await api<{ report: AgentStatusReport }>(
+    `/api/v1/tabs/${encodeURIComponent(tabId)}/status${query}`,
+    undefined,
+    STATUS_TIMEOUT,
+  );
+  return report;
+}
+
+/** A file the phone dropped into the tab's project inbox. `reference` is
+ * project-relative (`.eldrun/inbox/<file>`) — the one path shape that crosses
+ * this boundary, because it carries no host component and is exactly what the
+ * agent needs after an `@`. */
+export interface InboxAttachment { name: string; reference: string; size: number }
+/** Mirrors the desktop's `inbox::MAX_INBOX_FILE`; checked here first so an
+ * oversized pick fails before any bytes leave the phone. */
+export const MAX_INBOX_FILE = 24 * 1024 * 1024;
+/** A photo over a cellular link is not a 10-second request. */
+const UPLOAD_TIMEOUT = 120_000;
+
+/** `POST /api/v1/tabs/{id}/inbox` — the raw file as the body, its name in the
+ * query (a header cannot carry a non-Latin-1 photo-library name). */
+const promptsPath = (projectId: string) => `/api/v1/projects/${encodeURIComponent(projectId)}/prompts`;
+
+export function getPrompts(projectId: string): Promise<ProjectPromptList> {
+  return api(promptsPath(projectId));
+}
+
+export function createPrompt(projectId: string, message: string): Promise<ProjectPromptList> {
+  return api(promptsPath(projectId), { method: "POST", body: JSON.stringify({ message }) });
+}
+
+export function updatePrompt(projectId: string, promptId: string, message: string): Promise<ProjectPromptList> {
+  return api(`${promptsPath(projectId)}/${encodeURIComponent(promptId)}`, { method: "PUT", body: JSON.stringify({ message }) });
+}
+
+export function deletePrompt(projectId: string, promptId: string): Promise<ProjectPromptList> {
+  return api(`${promptsPath(projectId)}/${encodeURIComponent(promptId)}`, { method: "DELETE" });
+}
+
+/** Send-now: the desktop turns the prompt into a one-time schedule at its own
+ * current minute for `tabId`, delivered at that tab's next safe idle point. */
+export function sendPrompt(projectId: string, promptId: string, tabId: string): Promise<ProjectPromptList> {
+  return api(`${promptsPath(projectId)}/${encodeURIComponent(promptId)}/send`, { method: "POST", body: JSON.stringify({ tab_id: tabId }) });
+}
+
+/** One image the desktop offers the composer: the clipboard's image or a
+ * recent file of its screenshot/picture folders. `id` is opaque and `source`
+ * a folder *label* — the desktop keeps every path. */
+export interface DesktopImage {
+  id: string;
+  name: string;
+  source: string;
+  size?: number;
+  age_secs?: number;
+  width?: number;
+  height?: number;
+}
+
+/** `GET /api/v1/tabs/{id}/desktop-images` — what the desktop would copy into
+ * this tab's project inbox. The desktop may probe its clipboard for this,
+ * which is bounded on its side. */
+export async function listDesktopImages(tabId: string): Promise<DesktopImage[]> {
+  const { images } = await api<{ images: DesktopImage[] }>(`/api/v1/tabs/${encodeURIComponent(tabId)}/desktop-images`);
+  return images;
+}
+
+/** `POST /api/v1/tabs/{id}/desktop-images` — copy one listed image into the
+ * project inbox; answers like the phone's own upload, with the reference. */
+export async function attachDesktopImage(tabId: string, imageId: string): Promise<InboxAttachment> {
+  const { attachment } = await api<{ attachment: InboxAttachment }>(
+    `/api/v1/tabs/${encodeURIComponent(tabId)}/desktop-images`,
+    { method: "POST", body: JSON.stringify({ image_id: imageId }) },
+    30_000,
+  );
+  return attachment;
+}
+
+/** One picture the agent left for the phone in the project's `.eldrun/outbox/`
+ * (`outbox.rs`) — the mirror of the inbox. `name` is the leaf the desktop
+ * validated and the only thing the phone hands back; `kind` is what the
+ * bytes say, not the extension; `modified` is unix seconds. */
+export interface OutboxImage { name: string; kind: string; size: number; modified: number }
+
+/** `GET /api/v1/tabs/{id}/outbox` — the images the agent put out for the
+ * phone, newest first. Read from disk by the sidecar, so it answers with the
+ * desktop closed too. */
+export async function listOutbox(tabId: string, signal?: AbortSignal): Promise<OutboxImage[]> {
+  const { images } = await api<{ images: OutboxImage[] }>(`/api/v1/tabs/${encodeURIComponent(tabId)}/outbox`, { signal });
+  return images;
+}
+
+/** The URL an `<img>` loads one outbox image from — same origin, so the
+ * session cookie rides along and the CSP's `img-src 'self'` lets it render. */
+export function outboxImageUrl(tabId: string, name: string): string {
+  return `/api/v1/tabs/${encodeURIComponent(tabId)}/outbox/${encodeURIComponent(name)}`;
+}
+
+export async function uploadToInbox(tabId: string, file: Blob, name: string): Promise<InboxAttachment> {
+  let response: Response;
+  try {
+    response = await fetch(`/api/v1/tabs/${encodeURIComponent(tabId)}/inbox?name=${encodeURIComponent(name)}`, {
+      method: "POST",
+      body: file,
+      credentials: "same-origin",
+      cache: "no-store",
+      signal: AbortSignal.timeout(UPLOAD_TIMEOUT),
+      headers: { "Content-Type": file.type || "application/octet-stream" },
+    });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") throw new ApiError(0, "timeout");
+    throw new ApiError(0, "offline");
+  }
+  let body: { error?: string; attachment?: InboxAttachment } | undefined;
+  try {
+    body = await response.json() as typeof body;
+  } catch {
+    body = undefined;
+  }
+  if (response.status === 401) onUnauthorized?.();
+  if (!response.ok) throw new ApiError(response.status, body?.error ?? "request_failed");
+  if (!body?.attachment?.reference) throw new ApiError(response.status, "malformed_response");
+  return body.attachment;
 }

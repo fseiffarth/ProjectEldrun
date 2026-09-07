@@ -42,6 +42,15 @@ export interface PdfRevealEnvelope {
   from: string;
 }
 
+/** Tauri event carrying a plain re-read request across the window boundary. */
+export const PDF_RELOAD_EVENT = "pdf-sync-reload";
+
+/** Envelope for a cross-window reload: just the PDF and the origin label. */
+export interface PdfReloadEnvelope {
+  pdf: string;
+  from: string;
+}
+
 /** The current window's Tauri label, or "" outside a Tauri context (tests). */
 function currentLabel(): string {
   try {
@@ -73,6 +82,20 @@ interface PdfSyncStore {
   ) => void;
   /** Clear the pending reveal for `pdf` once the view has applied it. */
   consume: (pdf: string) => void;
+  /** Per-PDF counter bumped by `requestReload`; the view for that path re-reads
+   *  its bytes whenever it advances. Never cleared — the counter IS the signal. */
+  reloadByPath: Record<string, number>;
+  /** Ask the PDF view for `pdf` to re-read the file from disk, with nothing to
+   *  reveal. A compile that ends without a SyncTeX box (caret in the preamble, a
+   *  comment line) still replaced — or, on a latexmk no-op, deliberately left —
+   *  the bytes, and the tab's own mtime poll is no help in the second case: the
+   *  file did not change, so nothing tells a tab whose last load caught the PDF
+   *  mid-write that there is a complete one to read. Compile is therefore always
+   *  "show me the file as it is on disk". Local + broadcast, like a reveal. */
+  requestReload: (pdf: string) => void;
+  /** The local half of `requestReload` (also what the cross-window listener
+   *  calls for a reload broadcast from another window). */
+  applyReload: (pdf: string) => void;
 }
 
 // Monotonic reveal counter. The nonce must STRICTLY increase across reveals:
@@ -84,6 +107,21 @@ let revealSeq = 0;
 
 export const usePdfSyncStore = create<PdfSyncStore>((set, get) => ({
   byPath: {},
+  reloadByPath: {},
+  applyReload: (pdf) =>
+    set((s) => ({
+      reloadByPath: { ...s.reloadByPath, [pdf]: (s.reloadByPath[pdf] ?? 0) + 1 },
+    })),
+  requestReload: (pdf) => {
+    get().applyReload(pdf);
+    try {
+      emit(PDF_RELOAD_EVENT, { pdf, from: currentLabel() } satisfies PdfReloadEnvelope).catch(
+        () => {},
+      );
+    } catch {
+      /* no Tauri event bus available (synchronous failure) */
+    }
+  },
   applyReveal: (pdf, rect, phrase, afterReload) =>
     set((s) => ({
       byPath: {
@@ -126,11 +164,21 @@ export const usePdfSyncStore = create<PdfSyncStore>((set, get) => ({
 export async function listenPdfReveal(): Promise<() => void> {
   const self = currentLabel();
   try {
-    return await listen<PdfRevealEnvelope>(PDF_REVEAL_EVENT, (ev) => {
+    const unReveal = await listen<PdfRevealEnvelope>(PDF_REVEAL_EVENT, (ev) => {
       const { pdf, rect, phrase, afterReload, from } = ev.payload;
       if (from === self) return; // we already applied our own reveal locally
       usePdfSyncStore.getState().applyReveal(pdf, rect, phrase, afterReload);
     });
+    // The reload channel rides the same registration: one call per window.
+    const unReload = await listen<PdfReloadEnvelope>(PDF_RELOAD_EVENT, (ev) => {
+      const { pdf, from } = ev.payload;
+      if (from === self) return;
+      usePdfSyncStore.getState().applyReload(pdf);
+    });
+    return () => {
+      unReveal();
+      unReload();
+    };
   } catch {
     return () => {};
   }

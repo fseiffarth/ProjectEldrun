@@ -633,10 +633,7 @@ impl PgpKeyring {
                 };
                 decrypted = inner;
             }
-            return match decrypted.as_data_vec() {
-                Ok(data) => Ok(Zeroizing::new(data)),
-                Err(_) => Err(DecryptError::Failed),
-            };
+            return read_bounded(&mut decrypted);
         }
         Err(DecryptError::Failed)
     }
@@ -733,6 +730,31 @@ impl PgpKeyring {
             .to_armored_string(rand::rngs::OsRng, Default::default())
             .map_err(|e| format!("could not encrypt: {e}"))
     }
+}
+
+/// How much of a decrypted plaintext is ever read into memory: one byte past
+/// the largest message the engine will parse.
+///
+/// `Message::as_data_vec` reads its *streaming, decompressing* reader to the
+/// end, so a compression bomb inside an encrypted message — an attacker-chosen
+/// ratio over bytes that arrive as ordinary mail — expanded into memory without
+/// bound. Reading one byte past the cap rather than erroring keeps the existing
+/// contract intact: the caller still receives an over-cap plaintext and still
+/// refuses it in `parse_message`, with the size reported as a size rather than
+/// as a decryption failure. What changes is the allocation.
+const MAX_DECRYPTED_READ: u64 = crate::services::mail_engine::MAX_MESSAGE_BYTES as u64 + 1;
+
+/// `Message::as_data_vec` bounded by [`MAX_DECRYPTED_READ`].
+fn read_bounded(
+    message: &mut pgp::composed::Message<'_>,
+) -> Result<Zeroizing<Vec<u8>>, DecryptError> {
+    use std::io::Read as _;
+    let mut out = Zeroizing::new(Vec::new());
+    (&mut *message)
+        .take(MAX_DECRYPTED_READ)
+        .read_to_end(&mut out)
+        .map_err(|_| DecryptError::Failed)?;
+    Ok(out)
 }
 
 fn good_outcome(info: &PgpKeyInfo) -> VerifyOutcome {

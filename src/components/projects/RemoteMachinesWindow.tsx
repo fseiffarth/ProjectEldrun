@@ -11,6 +11,7 @@ import { rememberArg, useSavedCredential } from "./useSavedCredential";
 import { CredentialPasteBar, sshPasteEntries } from "./CredentialPasteBar";
 import { TerminalView } from "../terminal/TerminalView";
 import { forgetConnection, markConnectionOpened, resolveRemoteStartDir } from "../../lib/remoteConnect";
+import { formatBytes } from "../../lib/formatBytes";
 import { withHostKeyConfirm } from "../../lib/hostKey";
 import { sameTarget } from "../../lib/machineSync";
 import { useConnectDialogStore } from "../../stores/connectDialog";
@@ -1171,14 +1172,3 @@ export function RemoteMachinesWindow({
   );
 }
 
-function formatBytes(n: number): string {
-  if (n < 1024) return `${n} B`;
-  const units = ["KB", "MB", "GB", "TB"];
-  let v = n / 1024;
-  let i = 0;
-  while (v >= 1024 && i < units.length - 1) {
-    v /= 1024;
-    i++;
-  }
-  return `${v.toFixed(1)} ${units[i]}`;
-}

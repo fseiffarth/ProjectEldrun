@@ -61,9 +61,9 @@ impl TerminalRegistry {
     /// Claims the tab, displacing an existing viewer if there is one.
     ///
     /// A phone that is backgrounded before its `detached` frame flushes leaves
-    /// the slot held until the 60-second idle reaper fires, and the user was
-    /// locked out of their own agent for up to a minute after glancing at
-    /// another app. The newest viewer wins instead.
+    /// the slot held until the idle reaper (`IDLE_TIMEOUT`) fires, and the user
+    /// was locked out of their own agent for minutes after glancing at another
+    /// app. The newest viewer wins instead.
     async fn acquire(&self, name: &str) -> Result<BusyGuard, String> {
         let deadline = tokio::time::Instant::now() + EVICTION_WAIT;
         loop {
@@ -109,8 +109,11 @@ fn tmux_attach_command(tmux_name: &str) -> CommandBuilder {
 
 /// A tmux attach only redraws its current screen. Capture the pane first so a
 /// phone's xterm buffer actually contains the shell history it is asked to
-/// scroll. Keep this equal to the browser terminal's `scrollback` setting.
-const MOBILE_SCROLLBACK_LINES: usize = 4_000;
+/// scroll. One number with the tmux retention Eldrun sets on its sessions
+/// (`ssh_exec::TMUX_HISTORY_LINES`) and the browser terminal's `scrollback`
+/// (`PHONE_SCROLLBACK` in `mobile-web`): what tmux retains is what the replay
+/// carries and what the phone can hold.
+const MOBILE_SCROLLBACK_LINES: usize = crate::services::ssh_exec::TMUX_HISTORY_LINES as usize;
 
 fn tmux_capture_command(tmux_name: &str) -> Command {
     let mut command = Command::new("tmux");
@@ -209,6 +212,58 @@ fn normalize_scrollback(output: Vec<u8>) -> Vec<u8> {
     history
 }
 
+/// How long one WebSocket frame may wait for the phone to take it.
+///
+/// A peer that vanished without a FIN — a cellular drop, a phone that slept
+/// mid-transfer — leaves a socket that stays writable until the kernel's
+/// retransmission timer gives up, which is minutes, and `send().await` parked
+/// the whole select loop for that long: no authorization tick, no idle reaper,
+/// no eviction check, while the tmux client and the tab's viewer slot stayed
+/// held. A reconnecting phone then read `session_busy` against its own dead
+/// socket. The phone drains a frame in milliseconds and pings every 20 s, so
+/// one that has not gone out in this long has no reader behind it.
+const WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// How long a viewer may go without sending anything before it is closed
+/// (`idle_timeout`, retry allowed).
+///
+/// The phone pings every 20 s in the foreground — but Android Chrome and iOS
+/// throttle a backgrounded page's timers to about once a minute, so at the old
+/// 60 s the throttled ping landed just past the line and the next tick closed
+/// the socket; the phone reconnected, and the reconnect replays the whole
+/// capture-pane history, ten thousand lines, roughly once a minute for as long
+/// as the app sat in the background. Three minutes rides out that cadence with
+/// room to spare. The reaper's original job — freeing a slot a backgrounded
+/// phone still held — is done by viewer eviction (`TerminalRegistry::acquire`)
+/// and the write deadline above, so a longer window costs nothing.
+const IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(180);
+
+/// How often, at most, the desktop is told this viewer typed something
+/// (`on_input`). The report says only that the session was commanded, so one per
+/// burst is the whole signal: reporting per keystroke would spawn a control call
+/// per character of a pasted prompt. Leading-edge, so the first byte of a burst
+/// is reported at once — the desktop must have the stamp before the agent's
+/// output arrives, or that output is classified as nobody's.
+const INPUT_REPORT_INTERVAL: std::time::Duration = std::time::Duration::from_millis(750);
+
+/// Whether this input frame opens a new burst, i.e. whether the desktop should
+/// be told about it. `None` is the first frame of the attach, which always is.
+fn input_report_due(last: Option<std::time::Instant>, now: std::time::Instant) -> bool {
+    last.is_none_or(|at| now.duration_since(at) >= INPUT_REPORT_INTERVAL)
+}
+
+/// `true` once the frame went out; `false` when the socket is closed or the
+/// peer stopped taking frames.
+async fn deliver<S>(sink: &mut S, message: Message) -> bool
+where
+    S: futures_util::Sink<Message> + Unpin,
+{
+    matches!(
+        tokio::time::timeout(WRITE_TIMEOUT, sink.send(message)).await,
+        Ok(Ok(()))
+    )
+}
+
 /// Every exit from the loop below must kill the tmux client and unblock the
 /// reader thread. Two `?` operators used to return past that cleanup, leaking a
 /// process, a PTY pair and a blocking-pool thread per malformed control frame —
@@ -240,6 +295,10 @@ pub async fn attach(
     state_dir: PathBuf,
     tab_id: String,
     catalog: Arc<Mutex<CatalogCache>>,
+    // Called on the leading edge of each burst of typing from this viewer (see
+    // `INPUT_REPORT_INTERVAL`). A callback rather than a desktop call of its
+    // own, so this module keeps knowing nothing about the desktop socket.
+    on_input: impl Fn(),
 ) -> Result<(), String> {
     let guard = registry.acquire(&tmux_name).await?;
     // Do this before the live attach starts redrawing. The browser receives it
@@ -329,21 +388,23 @@ pub async fn attach(
         opening.push(TerminalEvent::Window { cols, rows }.to_frame());
     }
     for frame in opening {
-        if ws_tx.send(Message::Text(frame.into())).await.is_err() {
+        if !deliver(&mut ws_tx, Message::Text(frame.into())).await {
             return Ok(());
         }
     }
-    if !history.is_empty() && ws_tx.send(Message::Binary(history.into())).await.is_err() {
+    if !history.is_empty() && !deliver(&mut ws_tx, Message::Binary(history.into())).await {
         return Ok(());
     }
     let mut authorization_tick = tokio::time::interval(std::time::Duration::from_secs(1));
     let mut tick = 0u32;
     let mut last_client_message = std::time::Instant::now();
+    // When this viewer's typing was last reported to the desktop.
+    let mut last_input_report: Option<std::time::Instant> = None;
     let result: Result<(), String> = loop {
         tokio::select! {
             _ = authorization_tick.tick() => {
                 if guard.evicted() { break Err("replaced".into()); }
-                if last_client_message.elapsed() > std::time::Duration::from_secs(60) {
+                if last_client_message.elapsed() > IDLE_TIMEOUT {
                     break Err("idle_timeout".into());
                 }
                 // Eviction and idling stay on the 1-second tick above. The
@@ -365,13 +426,13 @@ pub async fn attach(
                 tick = tick.wrapping_add(1);
             }
             Some((cols, rows)) = window_rx.recv() => {
-                if ws_tx.send(Message::Text(TerminalEvent::Window { cols, rows }.to_frame().into())).await.is_err() { break Ok(()); }
+                if !deliver(&mut ws_tx, Message::Text(TerminalEvent::Window { cols, rows }.to_frame().into())).await { break Ok(()); }
             }
             output = output_rx.recv() => match output {
-                Some(bytes) => if ws_tx.send(Message::Binary(bytes.into())).await.is_err() { break Ok(()); },
+                Some(bytes) => if !deliver(&mut ws_tx, Message::Binary(bytes.into())).await { break Ok(()); },
                 None => {
                     if output_backpressure.load(Ordering::Acquire) {
-                        let _ = ws_tx.send(Message::Close(Some(CloseFrame {
+                        let _ = deliver(&mut ws_tx, Message::Close(Some(CloseFrame {
                             code: 1013,
                             reason: "output_backpressure".into(),
                         }))).await;
@@ -384,6 +445,12 @@ pub async fn attach(
                     last_client_message = std::time::Instant::now();
                     if bytes.len() > MAX_INPUT_FRAME { break Err("input_frame_too_large".into()); }
                     if writer.write_all(&bytes).is_err() || writer.flush().is_err() { break Ok(()); }
+                    // After the write, so a frame that never reached the PTY is
+                    // never reported as having commanded it.
+                    if input_report_due(last_input_report, last_client_message) {
+                        last_input_report = Some(last_client_message);
+                        on_input();
+                    }
                 }
                 Some(Ok(Message::Text(text))) => {
                     last_client_message = std::time::Instant::now();
@@ -399,7 +466,7 @@ pub async fn attach(
                                 break Err("resize_failed".into());
                             }
                         }
-                        TerminalControl::Ping => { if ws_tx.send(Message::Text(TerminalEvent::Pong.to_frame().into())).await.is_err() { break Ok(()); } }
+                        TerminalControl::Ping => { if !deliver(&mut ws_tx, Message::Text(TerminalEvent::Pong.to_frame().into())).await { break Ok(()); } }
                         TerminalControl::Detached => break Ok(()),
                         TerminalControl::Ready => {}
                     }
@@ -420,7 +487,7 @@ pub async fn attach(
             retry,
         }
         .to_frame();
-        let _ = ws_tx.send(Message::Text(frame.into())).await;
+        let _ = deliver(&mut ws_tx, Message::Text(frame.into())).await;
     }
     // Kill first, then release the remaining write ends so the reader unblocks.
     drop(session);
@@ -435,8 +502,29 @@ mod tests {
         normalize_scrollback, parse_window_size, tmux_attach_command, tmux_capture_command,
         tmux_window_size_command, MOBILE_SCROLLBACK_LINES,
     };
+    use super::{deliver, input_report_due, INPUT_REPORT_INTERVAL, IDLE_TIMEOUT, WRITE_TIMEOUT};
     use crate::services::mobile_control::protocol::TerminalEvent;
-    use std::ffi::OsStr;
+    use axum::extract::ws::Message;
+    use std::{
+        ffi::OsStr,
+        pin::Pin,
+        task::{Context, Poll},
+    };
+
+    #[test]
+    fn the_desktop_hears_the_first_keystroke_of_a_burst_and_not_the_rest() {
+        let start = std::time::Instant::now();
+        // Nothing reported yet: the attach's first input always counts.
+        assert!(input_report_due(None, start));
+        // The rest of the burst is the same fact, already known.
+        assert!(!input_report_due(
+            Some(start),
+            start + INPUT_REPORT_INTERVAL / 2
+        ));
+        // Typing again after the window is a new burst — and the desktop may
+        // have forgotten the tab in between (a respawn clears the stamp).
+        assert!(input_report_due(Some(start), start + INPUT_REPORT_INTERVAL));
+    }
 
     #[tokio::test]
     async fn a_reconnecting_viewer_evicts_the_previous_one() {
@@ -565,5 +653,49 @@ mod tests {
             normalize_scrollback(b"one\ntwo\r\nthree".to_vec()),
             b"one\r\ntwo\r\nthree\r\n"
         );
+    }
+
+    /// A sink nobody drains — the socket of a phone that dropped off the
+    /// network without a FIN.
+    struct StalledSink;
+    impl futures_util::Sink<Message> for StalledSink {
+        type Error = ();
+        fn poll_ready(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), ()>> {
+            Poll::Pending
+        }
+        fn start_send(self: Pin<&mut Self>, _: Message) -> Result<(), ()> {
+            Ok(())
+        }
+        fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), ()>> {
+            Poll::Pending
+        }
+        fn poll_close(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), ()>> {
+            Poll::Pending
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_frame_the_phone_never_takes_is_given_up_on_rather_than_waited_for() {
+        let started = tokio::time::Instant::now();
+        let mut sink = StalledSink;
+        assert!(!deliver(&mut sink, Message::Text("x".to_string().into())).await);
+        // The wait is the write deadline, not the kernel's retransmission timer.
+        assert!(started.elapsed() >= WRITE_TIMEOUT);
+        assert!(started.elapsed() < WRITE_TIMEOUT * 2);
+    }
+
+    /// A backgrounded PWA's ping arrives about once a minute; the reaper must
+    /// sit well clear of that, or every minute in the background costs a full
+    /// history replay.
+    #[test]
+    fn the_idle_reaper_outlasts_a_throttled_background_ping() {
+        const THROTTLED_PING: std::time::Duration = std::time::Duration::from_secs(60);
+        assert!(IDLE_TIMEOUT >= THROTTLED_PING * 2);
+    }
+
+    #[tokio::test]
+    async fn a_frame_the_phone_takes_is_reported_delivered() {
+        let mut sink = futures_util::sink::drain();
+        assert!(deliver(&mut sink, Message::Text("x".to_string().into())).await);
     }
 }

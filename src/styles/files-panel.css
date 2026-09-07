@@ -1,0 +1,1695 @@
+/* files-panel.css — split from the old monolithic themes.css (order-preserving).
+   Side panel overlay + git action bar / history / worktrees.
+   IMPORT ORDER IS LOAD-BEARING: these files are @imported in sequence from
+   styles/index.css; equal-specificity rules rely on source order exactly as
+   they did in the monolith, so never reorder the imports or move rules
+   between files without checking the cascade. */
+
+/* ── Side panel overlay ──────────────────────────────────────────────── */
+.side-panel {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 280px;
+  /* Its own token (themes.css), following --bg-panel until something sets it:
+     --bg-panel is the whole app's secondary-surface tone, so recoloring the
+     panel through that would repaint every other panel-toned surface with it. */
+  background-color: var(--bg-side-panel);
+  border-left: 1px solid var(--side-panel-border);
+  display: flex;
+  flex-direction: column;
+  transform: translateX(calc(100% + 2px));
+  transition: transform var(--transition-slow);
+  /* Above all subwindow/tab-bar chrome (active tab 11, sticky ×/hide/files
+     toggle/scroll chevrons 12, docked-sidebar resize grip 13) — which all
+     resolve in this same stacking context — so the slid-out overlay fully
+     covers them. Stays below fixed editor tooltips/completion (20/60), the
+     header (80), and dialogs. */
+  z-index: 15;
+}
+
+/* Panel-toned surfaces INSIDE the panel follow the panel's OWN token instead
+   of the app-wide one. --bg-side-panel starts out as var(--bg-panel), so this
+   changes nothing until the Theme Customizer pins the panel to its own color —
+   and that was exactly when the panel body moved while everything painted with
+   --bg-panel in here (the sticky file-tree head: search box, breadcrumb; the
+   git action footer; the commit box) stayed behind and struck a seam across
+   the panel. Remapping the variable for the subtree keeps them all on the
+   panel's color at once, instead of restating a background per surface and
+   missing the next one added.
+   It reaches no further than this panel: `.side-panel` is set on the one
+   container (layout/SidePanel.tsx) and portaled dialogs render outside it. Not
+   a cycle either — --bg-side-panel is not declared on this element, so the
+   value read here is the one inherited from :root. */
+.side-panel {
+  --bg-panel: var(--bg-side-panel);
+}
+
+.side-panel:not(.open) {
+  transform: translateX(calc(100% + 2px));
+  border-left-color: transparent;
+}
+
+.side-panel.open {
+  transform: translateX(0);
+}
+
+/* ── Left-docked variant ──────────────────────────────────────────────────
+   The same panel mirrored to the opposite edge: pinned to left:0, its border
+   and closed-slide direction flipped, and the resize grip moved to the right
+   (inner) edge. Two-class selectors beat the base `.side-panel` rules. */
+.side-panel.left {
+  right: auto;
+  left: 0;
+  border-left: none;
+  border-right: 1px solid var(--side-panel-border);
+  transform: translateX(calc(-100% - 2px));
+}
+
+.side-panel.left:not(.open) {
+  transform: translateX(calc(-100% - 2px));
+  border-right-color: transparent;
+}
+
+.side-panel.left.open {
+  transform: translateX(0);
+}
+
+.side-panel.left .side-panel-resize {
+  left: auto;
+  right: -3px;
+}
+
+/* Side-flip button in the header — shares the pin's box; the ⇄ is a plain glyph
+   (not a color emoji), so it's unaffected by the pin's filter caveat. */
+.side-panel-flip {
+  font-size: 14px;
+}
+
+/* While dragging the resize handle, kill the open/close transition so the panel
+   tracks the cursor 1:1 instead of easing toward each intermediate width. */
+.side-panel.resizing {
+  transition: none;
+}
+
+.app-body.resizing {
+  transition: none;
+}
+
+/* Left-border resize grip. Sits just outside the panel's left edge (straddling
+   the border) so it's easy to grab; widened beyond the visible border for a
+   comfortable hit target. Only tinted on hover / during the drag. */
+.side-panel-resize {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -3px;
+  width: 7px;
+  cursor: var(--cur-ew-resize, ew-resize);
+  z-index: 30;
+  touch-action: none;
+}
+
+.side-panel-resize:hover,
+.side-panel.resizing .side-panel-resize {
+  background: linear-gradient(
+    to right,
+    transparent,
+    color-mix(in srgb, var(--accent) 70%, transparent) 60%,
+    transparent
+  );
+}
+
+/* OS file drag hovering over the panel: pulsing accent glow + dashed inset
+   border, plus a "drop to copy" hint banner sliding down from the top.
+   The blurred glow is STATIC on the ::before and only opacity animates —
+   WebKitGTK software-renders animated blurred box-shadows (see the repo
+   rule); the dash-in's own opacity is overridden by the pulse, which starts
+   low anyway. */
+.side-panel.drop-active::before {
+  content: "";
+  position: absolute;
+  inset: 3px;
+  border: 2px dashed var(--accent);
+  border-radius: var(--radius);
+  pointer-events: none;
+  z-index: 20;
+  box-shadow: inset 0 0 22px 0 color-mix(in srgb, var(--accent) 32%, transparent);
+  animation:
+    side-panel-drop-dash 0.4s ease-out,
+    side-panel-drop-pulse 1.1s ease-in-out infinite;
+}
+
+.side-panel.drop-active::after {
+  content: "＋ Drop to copy into project";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  padding: 6px 8px;
+  text-align: center;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--bg-panel);
+  background: var(--accent);
+  pointer-events: none;
+  z-index: 21;
+  animation: side-panel-drop-banner 0.18s ease-out;
+}
+
+/* One-shot confirmation when the drop lands. */
+.side-panel.drop-flash {
+  animation: side-panel-drop-flash 0.5s ease-out;
+}
+
+@keyframes side-panel-drop-pulse {
+  0%,
+  100% {
+    opacity: 0.45;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@keyframes side-panel-drop-dash {
+  from {
+    opacity: 0;
+    transform: scale(1.04);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes side-panel-drop-banner {
+  from {
+    transform: translateY(-100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+@keyframes side-panel-drop-flash {
+  0% {
+    box-shadow: inset 0 0 0 9999px color-mix(in srgb, var(--accent) 38%, transparent);
+  }
+  100% {
+    box-shadow: inset 0 0 0 9999px color-mix(in srgb, var(--accent) 0%, transparent);
+  }
+}
+
+
+/* Custom-agent manage dialog (new-tab menu → Agents → "＋ Add agent…") */
+.custom-agent-dialog {
+  width: 480px;
+  max-width: 92vw;
+}
+.custom-agent-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 8px 0 12px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+.custom-agent-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border-radius: var(--radius);
+  background: var(--bg-elevated, rgba(127, 127, 127, 0.08));
+}
+.custom-agent-row-label {
+  font-weight: 600;
+  flex: 0 0 auto;
+}
+.custom-agent-row-cmd {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-muted);
+  font-size: 0.85em;
+}
+.custom-agent-row-tag {
+  flex: 0 0 auto;
+  font-size: 0.72em;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  padding: 0 5px;
+  opacity: 0.85;
+}
+.custom-agent-install {
+  flex: 0 0 auto;
+  border: 1px solid var(--accent);
+  background: transparent;
+  color: var(--accent);
+  cursor: var(--cur-pointer, pointer);
+  font-size: 0.78em;
+  line-height: 1;
+  padding: 3px 8px;
+  border-radius: var(--radius-sm);
+}
+.custom-agent-install:hover {
+  background: var(--accent);
+  color: var(--bg-panel);
+}
+.custom-agent-row-missing {
+  flex: 0 0 auto;
+  font-size: 0.75em;
+  color: var(--text-muted);
+  opacity: 0.8;
+}
+.custom-agent-remove {
+  flex: 0 0 auto;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: var(--cur-pointer, pointer);
+  font-size: 1.05em;
+  line-height: 1;
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+}
+.custom-agent-remove:hover:not(:disabled) {
+  color: var(--danger);
+  background: rgba(229, 83, 75, 0.12);
+}
+.custom-agent-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.custom-agent-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 0.85em;
+}
+.custom-agent-field > span {
+  color: var(--text-secondary, var(--text-muted));
+}
+.custom-agent-field > span em {
+  color: var(--text-muted);
+  font-style: normal;
+  opacity: 0.8;
+}
+.custom-agent-field input {
+  padding: 6px 8px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border, rgba(127, 127, 127, 0.3));
+  background: var(--bg-main);
+  color: var(--text-primary);
+  font-size: 1em;
+}
+.custom-agent-field input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* "Set default app" dialog (side-panel file context menu) */
+.set-default-app-dialog {
+  width: 460px;
+  max-width: 90vw;
+}
+.set-default-app-scope {
+  display: flex;
+  gap: 16px;
+  margin: 6px 0;
+  font-size: 12px;
+}
+.set-default-app-scope label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  cursor: var(--cur-pointer, pointer);
+}
+.set-default-app-scope label.disabled {
+  opacity: 0.5;
+  cursor: var(--cur-not-allowed, not-allowed);
+}
+.set-default-app-search,
+.set-default-app-manual input {
+  width: 100%;
+  box-sizing: border-box;
+  font-size: 12px;
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  padding: 4px 6px;
+}
+.set-default-app-list {
+  margin: 6px 0;
+  max-height: 220px;
+  overflow-y: auto;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+}
+.set-default-app-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  color: var(--text-primary);
+  padding: 4px 8px;
+  cursor: var(--cur-pointer, pointer);
+  font-size: 12px;
+}
+/* --bg-hover, not --bg-panel. A hover expressed as another surface's tone only
+   works while the two surfaces happen to differ; the achromatic `light`/`dark`
+   themes paint main, panel and elevated the same, so a panel-coloured hover on
+   a panel-coloured row is no hover at all. --bg-hover is the translucent grey
+   that exists for this and reads on every theme. Same fix below and in
+   viewers.css (`.file-viewer-tex-error-jump`). */
+.set-default-app-row:hover {
+  background: var(--bg-hover);
+}
+.set-default-app-row.selected {
+  background: var(--accent);
+  color: var(--accent-contrast);
+}
+.set-default-app-row.selected .set-default-app-exec {
+  color: rgba(255, 255, 255, 0.8);
+}
+.set-default-app-icon {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  object-fit: contain;
+  image-rendering: -webkit-optimize-contrast;
+}
+.set-default-app-icon-placeholder {
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--text-muted) 22%, transparent);
+}
+.set-default-app-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+}
+.set-default-app-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.set-default-app-exec {
+  color: var(--text-muted);
+  font-size: 11px;
+  flex-shrink: 0;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.set-default-app-manual {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
+}
+.set-default-app-manual button,
+.set-default-app-actions button {
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-sm);
+  padding: 5px 12px;
+  background: var(--control-bg);
+  color: var(--text-primary);
+  cursor: var(--cur-pointer, pointer);
+}
+.set-default-app-manual button {
+  flex-shrink: 0;
+}
+.set-default-app-manual button:hover,
+.set-default-app-actions button:not(:disabled):hover {
+  background: var(--control-hover-bg);
+  border-color: var(--accent);
+}
+.set-default-app-actions button:last-child {
+  background: var(--accent);
+  color: var(--bg-main);
+  border-color: var(--accent);
+}
+.set-default-app-actions button.danger {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: var(--bg-main);
+}
+.set-default-app-actions button:disabled {
+  opacity: 0.55;
+  cursor: var(--cur-default, default);
+}
+.set-default-app-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+/* In-app folder-browser popup (FolderPickerDialog) */
+.folder-picker-dialog {
+  width: 520px;
+  max-width: 90vw;
+  display: flex;
+  flex-direction: column;
+}
+.folder-picker-nav {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0;
+}
+.folder-picker-nav button {
+  flex-shrink: 0;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-sm);
+  padding: 4px 10px;
+  background: var(--control-bg);
+  color: var(--text-primary);
+  cursor: var(--cur-pointer, pointer);
+  font-size: 12px;
+}
+.folder-picker-nav button:not(:disabled):hover {
+  background: var(--control-hover-bg);
+  border-color: var(--accent);
+}
+.folder-picker-nav button:disabled {
+  opacity: 0.55;
+  cursor: var(--cur-default, default);
+}
+.folder-picker-cur {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.folder-picker-list {
+  min-height: 180px;
+  max-height: 320px;
+  overflow-y: auto;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+}
+.folder-picker-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  color: var(--text-primary);
+  padding: 5px 8px;
+  cursor: var(--cur-pointer, pointer);
+  font-size: 12px;
+}
+.folder-picker-item:hover {
+  background: var(--bg-hover);
+}
+.folder-picker-icon {
+  flex-shrink: 0;
+}
+.folder-picker-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.folder-picker-error {
+  color: var(--danger);
+}
+.folder-picker-name-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 10px;
+}
+.folder-picker-name-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-primary);
+}
+.folder-picker-name-label input {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-sm);
+  padding: 4px 8px;
+  background: var(--control-bg);
+  color: var(--text-primary);
+  font-size: 12px;
+}
+.folder-picker-name-label input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.folder-picker-name-preview {
+  margin: 0;
+  font-size: 11px;
+}
+/* .folder-picker-actions: layout comes from the shared dialog-footer rule. */
+.folder-picker-actions button {
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-sm);
+  padding: 5px 12px;
+  background: var(--control-bg);
+  color: var(--text-primary);
+  cursor: var(--cur-pointer, pointer);
+}
+.folder-picker-actions button:not(:disabled):hover {
+  background: var(--control-hover-bg);
+  border-color: var(--accent);
+}
+.folder-picker-actions button.primary {
+  background: var(--accent);
+  color: var(--bg-main);
+  border-color: var(--accent);
+}
+.folder-picker-actions button:disabled {
+  opacity: 0.55;
+  cursor: var(--cur-default, default);
+}
+
+/* Send-to-project dialog (file-tree right-click → copy into another project).
+   Reuses the folder-picker chrome; these are the few bits it adds. */
+.send-to-project-source {
+  margin: 4px 0 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.send-to-project-item:disabled {
+  opacity: 0.5;
+  cursor: var(--cur-default, default);
+}
+.send-to-project-tag {
+  flex-shrink: 0;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-color);
+  color: var(--text-muted);
+  font-size: 10px;
+  text-transform: lowercase;
+}
+.send-to-project-done {
+  padding: 14px 4px 6px;
+}
+.send-to-project-done-title {
+  margin: 0 0 4px;
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.side-panel-header {
+  display: flex;
+  align-items: center;
+  /* Wrap so the git action bar drops to its own row instead of overflowing the
+     panel's right edge when the project name + Add/Commit/Push don't fit on one
+     line (common at the default/narrow widths). */
+  flex-wrap: wrap;
+  row-gap: 6px;
+  padding: 8px 12px;
+  /* The shared secondary-chrome surface (themes.css), the same one a subwindow's
+     tab bar wears: the panel's header block has to read apart from the panel
+     body under it (--bg-panel) and from the window's top bar above it. The
+     toolbar row below takes the same fill so the two rows read as ONE header
+     block rather than as a header and a stray strip. */
+  background-color: var(--bg-subheader);
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* Buttons keep their size; the title span (min-width:0) truncates instead, so
+   the rightmost actions never get pushed off the panel's right edge. */
+.side-panel-header > button {
+  flex-shrink: 0;
+}
+
+/* Per-project Eldrun Mobile opt-in. Shown only while the local Mobile host is
+   live, so this control never suggests a project is reachable from a stopped
+   companion service. Kept visually apart from the `.pill-popup-tag` chips on
+   the same row: those are static labels (pill, uppercase, tinted by kind),
+   this is a switch, so it takes the square icon-button shape the header's
+   other actions use. Off draws a slash through the phone; on lights it green,
+   the same language as the header's Mobile host indicator. */
+.side-panel-mobile-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: auto;
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border-radius: var(--radius-sm, 4px);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-tertiary);
+  opacity: 0.7;
+  cursor: var(--cur-pointer, pointer);
+  transition: color var(--transition), background var(--transition), border-color var(--transition), opacity var(--transition);
+}
+
+.side-panel-mobile-btn:hover:not(:disabled) {
+  opacity: 1;
+  color: var(--accent);
+  border-color: var(--border-subtle);
+  background: var(--bg-hover);
+}
+
+.side-panel-mobile-btn:disabled {
+  opacity: 0.4;
+  cursor: var(--cur-default, default);
+}
+
+.side-panel-mobile-btn.on {
+  opacity: 1;
+  color: var(--success);
+  border-color: color-mix(in srgb, var(--success) 45%, transparent);
+  background: color-mix(in srgb, var(--success) 16%, transparent);
+}
+
+.side-panel-mobile-btn-icon {
+  width: 13px;
+  height: 13px;
+  display: block;
+}
+
+.side-panel-mobile-access-error {
+  flex-basis: 100%;
+  color: var(--danger);
+  font-size: 11px;
+  font-weight: 400;
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+/* Second header row: view switch (Files/Git/Search/Apps) + import/open/settings,
+   moved below the project-name row so git status can share the name's row. */
+.side-panel-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px;
+  /* Left padding is 6px, not the block's 12px, ON PURPOSE: every child here is
+     a `.toolbar-btn` carrying its own 6px inner padding, so 12px would push the
+     first LABEL to 18px while the project name one row up and the file names
+     below both start at 12px — the row read as indented against its own panel.
+     6px + the button's 6px puts the glyphs back on that 12px line; the button's
+     box (hover/active fill) then starts at 6px, between the header text and the
+     file rows' 4px hover fill. Right side keeps the full 12px — nothing there
+     has to line up with anything. */
+  padding: 4px 12px 4px 6px;
+  /* Second row of the same header block — shares `.side-panel-header`'s fill. */
+  background-color: var(--bg-subheader);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+/* The SIDE PANEL's header block specifically. The two rules above paint every
+   host of this markup — the panel, the Files (Project) tab, the docked column
+   — from the shared chrome-header token; inside the panel they take the
+   panel's own token instead, which follows --bg-subheader until something sets
+   it. That is what lets the Theme Customizer's "Side panel" section recolor
+   this panel alone without moving the subwindow tab bars, which read the same
+   shared token. */
+.side-panel .side-panel-header,
+.side-panel .side-panel-toolbar {
+  background-color: var(--bg-side-panel-header);
+}
+
+/* Selected-state for the generic small toolbar button (view-switcher rows like
+   Files/Git/Search/Apps, and every other `.toolbar-btn` toggle) — previously
+   unstyled, so `aria-pressed`/`.active` carried no visible marker at all. */
+.toolbar-btn.active {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+/* The Git button carries the colour of its next available action: red for Add,
+   amber for Commit, green for Push. This keeps pending work visible while the
+   actions themselves live in the Git view. */
+.toolbar-btn--flagged {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.toolbar-btn-flag {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+}
+
+/* Auto-pinned "Hidden subwindows" section: shown above the view toolbar only
+   when the current scope has ≥1 hidden subwindow, so a hidden pane is always one
+   click from coming back regardless of the active view. */
+.hidden-subwindows {
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-panel);
+}
+.hidden-sw-header {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 12px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary, var(--text-muted));
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  cursor: var(--cur-pointer, pointer);
+}
+.hidden-sw-header:hover {
+  color: var(--text-primary);
+}
+.hidden-sw-caret {
+  font-size: var(--text-xs);
+  width: 10px;
+  display: inline-block;
+}
+.hidden-sw-list {
+  display: flex;
+  flex-direction: column;
+  padding: 0 6px 4px;
+  gap: 2px;
+  max-height: 30vh;
+  overflow-y: auto;
+}
+.hidden-sw-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+}
+.hidden-sw-row:hover {
+  background: var(--pill-hover-bg);
+}
+.hidden-sw-icon {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+/* Same three states as `.tab.working` etc (`--status-*`), and nothing pulses
+   here either. This one glyph is the ONE place the working/finished distinction
+   cannot be drawn: it is a single character, so it has no stroke to break into
+   dashes and no fill to hollow out, and the two states share a colour by design.
+   It is a row-level ROLLUP — "something in this collapsed group wants you" — and
+   the chips beside it carry which state each tab is actually in, so the glyph
+   deliberately says the coarser thing rather than inventing a fourth encoding
+   nobody would learn. */
+.hidden-sw-icon.working {
+  color: var(--status-working);
+}
+.hidden-sw-icon.needs-decision {
+  color: var(--status-decision);
+}
+.hidden-sw-icon.finished {
+  color: var(--status-done);
+}
+.hidden-sw-status-dot {
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  margin-left: 2px;
+  text-transform: none;
+}
+/* A 6px dot has no room for dots of its own, so working/finished part as HOLLOW vs
+   FILLED — the same "not closed up yet" reading at the one size that can carry
+   it. `box-shadow` rather than `border`, which would shrink the 6px box. */
+.hidden-sw-status-dot.working {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--status-working);
+}
+.hidden-sw-status-dot.needs-decision {
+  background: var(--status-decision);
+}
+.hidden-sw-status-dot.finished {
+  background: var(--status-done);
+}
+.hidden-sw-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  flex: 1;
+  min-width: 0;
+}
+.hidden-sw-chip {
+  max-width: 100%;
+  padding: 0 6px;
+  height: 18px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+  background: var(--bg-main);
+  color: var(--text-primary);
+  font-size: 11px;
+  line-height: 16px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: var(--cur-pointer, pointer);
+}
+/* Same ring as `.tab.working`/`.needs-decision`/`.finished` — a hidden tab's PTY
+   is still mounted and running, so its chip keeps reporting status, and it has
+   to say which of the three states it is in the same way a visible tab does. A
+   chip already has a border of its own, so the state recolours that border (and
+   for working, breaks it into dots) rather than adding a second ring inside it.
+   Declared ABOVE `:hover`, which carries the same specificity: a pointer on a
+   chip has to be able to say "this one" over the top of whatever state it is
+   in. */
+.hidden-sw-chip.working {
+  border-style: dotted;
+  border-color: var(--status-working);
+  background: color-mix(in srgb, var(--status-working) 12%, var(--bg-main));
+}
+.hidden-sw-chip.needs-decision {
+  border-color: var(--status-decision);
+  background: color-mix(in srgb, var(--status-decision) 12%, var(--bg-main));
+}
+.hidden-sw-chip.finished {
+  border-color: var(--status-done);
+  background: color-mix(in srgb, var(--status-done) 12%, var(--bg-main));
+}
+.hidden-sw-chip:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.hidden-sw-btn {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: var(--cur-pointer, pointer);
+  font-size: 13px;
+}
+.hidden-sw-btn:hover {
+  background: var(--bg-hover);
+  color: var(--accent);
+}
+.hidden-sw-close:hover {
+  color: var(--danger);
+}
+
+.side-panel-pin {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  margin-right: 8px;
+  padding: 0;
+  font-size: 13px;
+  line-height: 1;
+  /* A BORDERLESS glyph button: no frame and no resting fill, so it sits on the
+     panel header as a bare 📌 / ⇄ rather than as a chip. It used to wear a
+     --border-subtle frame over a --bg-elevated fill, which was a chip drawn on
+     a surface it was already the same colour as — and in the achromatic themes,
+     where --bg-elevated IS the panel, the fill did nothing at all while the
+     frame was the only thing left, so the control read as an empty box. The
+     24px box is unchanged: `box-sizing: border-box` is global (base.css), so
+     dropping the border does not move the glyph or the buttons beside it. */
+  border: none;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: var(--cur-pointer, pointer);
+  /* Dim the unpinned pin with plain opacity, NOT a CSS filter. Applying `filter`
+     (grayscale/opacity) to the 📌 color-emoji glyph makes it render invisible in
+     WebView2 on Windows — the color glyph doesn't compose through the filter
+     shader path — while WebKitGTK on Linux shows it fine. That vanished the pin
+     entirely in the packaged Windows build. Opacity dims without breaking emoji. */
+  opacity: 0.55;
+  transition: opacity var(--transition), background var(--transition);
+}
+
+/* Hover is the only fill this button ever takes, and it is --bg-hover: a
+   translucent grey that darkens a light panel and lightens a dark one, so one
+   declaration is correct on every theme. An accent-coloured frame is not an
+   option here any more — there is no frame. */
+.side-panel-pin:hover {
+  opacity: 1;
+  background: var(--bg-hover);
+}
+
+/* Pinned is carried by OPACITY ALONE — the same mechanism the comment above
+   already established as this button's, and the one that works on a colour
+   emoji, whose glyph ignores `color` entirely. So there is no fill and no frame
+   to be theme-dependent, and nothing that can collide with a pure-black or
+   pure-white accent. `aria-pressed` on the button carries the state for anyone
+   the 0.55→1 step does not reach. */
+.side-panel-pin.pinned {
+  opacity: 1;
+}
+
+/* The Files (Project) tab: the side panel's file view hosted in a pane. The
+   rows inside it (source / scroll / tree) are the panel's own classes —
+   only the shell differs, since a tab has no fixed width, no pin and no slide-in
+   transform. */
+.project-files-tab {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--bg-panel);
+  color: var(--text-primary);
+}
+
+.project-files-tab-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px;
+  border-bottom: 1px solid var(--border-subtle);
+  flex-shrink: 0;
+}
+
+.project-files-tab-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.project-files-tab-spacer {
+  margin-left: auto;
+}
+
+.project-files-tab-header .toolbar-btn {
+  font-size: 10px;
+  padding: 1px 6px;
+  height: 20px;
+  flex-shrink: 0;
+}
+
+/* Same OS-file-drop affordance as the panel (pulsing glow, dashed inset border,
+   drop hint) — the animations are shared, and like the panel the blurred glow
+   is static on the ::before with only opacity pulsing. */
+.project-files-tab.drop-active::before {
+  content: "";
+  position: absolute;
+  inset: 3px;
+  border: 2px dashed var(--accent);
+  border-radius: var(--radius);
+  pointer-events: none;
+  z-index: 20;
+  box-shadow: inset 0 0 22px 0 color-mix(in srgb, var(--accent) 32%, transparent);
+  animation:
+    side-panel-drop-dash 0.4s ease-out,
+    side-panel-drop-pulse 1.1s ease-in-out infinite;
+}
+
+.project-files-tab.drop-active::after {
+  content: "＋ Drop to copy into project";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  padding: 6px 8px;
+  text-align: center;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--bg-panel);
+  background: var(--accent);
+  pointer-events: none;
+  z-index: 21;
+  animation: side-panel-drop-banner 0.18s ease-out;
+}
+
+.project-files-tab.drop-flash {
+  animation: side-panel-drop-flash 0.5s ease-out;
+}
+
+/* ── Git action buttons ──────────────────────────────────────────────── */
+/* The Add/Commit/Push footer: pinned under the scrolling history rather than
+   floating above it, so the actions stay put however far down the log the
+   view is scrolled. Hence border-TOP and `flex: 0 0 auto` — it is a sibling
+   of `.side-panel-scroll`, not a row inside it. `position: relative` is what
+   the change-tree popover anchors to. */
+.git-action-bar {
+  position: relative;
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  padding: 4px 6px;
+  background: var(--bg-panel);
+  border-top: 1px solid var(--border-color);
+}
+
+.git-action-error {
+  width: 100%;
+  color: var(--danger);
+  font-size: 10px;
+  overflow-wrap: anywhere;
+}
+
+/* The commit message box, above the buttons: the footer grows upward, so the
+   confirm stays the bottom-most control. Tall enough for a subject line, a
+   blank line and a real body — a three-line box is where multi-line commit
+   messages quietly stop being written — but capped at a third of the panel so
+   it can never crowd out the history it is describing. Still `resize:
+   vertical`, so the drag handle remains the way to go bigger or smaller. */
+.git-commit-input {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 96px;
+  max-height: 33vh;
+  font-family: inherit;
+  font-size: 11px;
+  padding: 3px 5px;
+  resize: vertical;
+  color: var(--text-primary);
+  background: var(--bg-panel);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+}
+
+.git-action-btn {
+  /* Per-action accent; each button overrides --git-btn-accent below so its
+     colour matches the status dot it carries (red=add, yellow=commit,
+     green=push). Defaults to the theme accent for the confirm/back buttons.
+     Geometry matches `.toolbar-btn` in the view switcher two rows up (10px
+     text, 1px 6px padding, 20px tall) so the panel has one button size. */
+  --git-btn-accent: var(--accent);
+  background: color-mix(in srgb, var(--git-btn-accent) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--git-btn-accent) 55%, transparent);
+  color: var(--git-btn-accent);
+  border-radius: var(--radius-sm);
+  cursor: var(--cur-pointer, pointer);
+  padding: 1px 6px;
+  height: 20px;
+  font-size: 10px;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-family: inherit;
+  transition: background var(--transition), color var(--transition), border-color var(--transition);
+  white-space: nowrap;
+  flex: 1;
+  justify-content: center;
+}
+
+.git-action-btn:hover {
+  background: color-mix(in srgb, var(--git-btn-accent) 26%, transparent);
+  border-color: var(--git-btn-accent);
+}
+
+.git-action-btn:disabled {
+  opacity: 0.4;
+  cursor: var(--cur-not-allowed, not-allowed);
+}
+
+/* Action-specific accents, matched to the inline status dots. Set on the
+   group wrapper too so the caret toggle inherits the same colour. */
+.git-action-btn--add,
+.git-action--add { --git-btn-accent: #f85149; }
+.git-action-btn--commit,
+.git-action--commit { --git-btn-accent: #e3b341; }
+.git-action-btn--push,
+.git-action--push { --git-btn-accent: #3fb950; }
+
+/* An action + its disclosure caret, joined into one pill so the two read as a
+   single control. The action button loses its right rounding, the caret its
+   left, and they share a divider. */
+.git-action {
+  display: inline-flex;
+  flex: 0 0 auto;
+}
+
+.git-action .git-action-btn {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.git-action-toggle {
+  --git-btn-accent: var(--accent);
+  background: color-mix(in srgb, var(--git-btn-accent) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--git-btn-accent) 55%, transparent);
+  border-left: none;
+  color: var(--git-btn-accent);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  cursor: var(--cur-pointer, pointer);
+  padding: 0 5px;
+  height: 20px;
+  font-size: var(--text-xs);
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  font-family: inherit;
+  transition: background var(--transition), border-color var(--transition);
+}
+
+.git-action-toggle:hover {
+  background: color-mix(in srgb, var(--git-btn-accent) 26%, transparent);
+  border-color: var(--git-btn-accent);
+}
+
+.git-action-toggle:disabled {
+  opacity: 0.4;
+  cursor: var(--cur-not-allowed, not-allowed);
+}
+
+/* The label is always shown now (not hover-only) so each action reads clearly
+   without pointing at it; the leading glyph stays as a quick visual marker.
+   Typography matches the app's other small colored tags/chips (type tags,
+   the Local/Remote switch): uppercase, bold, letter-spaced. */
+.git-btn-label {
+  display: inline;
+  font-size: var(--text-xs);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  line-height: 1;
+}
+
+/* The leading ⊕/✔/⬆ marker. Kept a shade larger than the button's 10px text
+   so shrinking the buttons to the toolbar's size didn't shrink the one part
+   of them that is read as an icon. */
+.git-btn-glyph {
+  font-size: 12px;
+  line-height: 1;
+}
+
+/* The colored state dot inside a git action button (add/commit/push). The
+   color comes from lib/gitColors' GIT_STATE_COLOR via inline style; only the
+   geometry lives here so the four buttons cannot drift. */
+.git-step-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  margin-right: 3px;
+  flex-shrink: 0;
+}
+
+/* Click-opened navigable change tree, grown UPWARD out of the Add/Commit/Push
+   actions — they sit at the foot of the panel now, so a downward popover would
+   open off the bottom edge. Anchored to the right and grown leftward: the panel
+   hugs the app's right frame, so anchoring left would push a wide tree off
+   screen. Sized to the longest path (min keeps it readable, max caps depth). */
+.git-change-tree {
+  position: absolute;
+  bottom: calc(100% + 4px);
+  top: auto;
+  right: 0;
+  left: auto;
+  min-width: 280px;
+  max-width: min(480px, calc(100vw - 16px));
+  width: max-content;
+  z-index: 200;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  max-height: 320px;
+  overflow-y: auto;
+  font-size: 11px;
+  box-shadow: var(--shadow-2);
+  padding: 4px 0;
+}
+
+.git-change-empty {
+  padding: 8px 12px;
+  color: var(--text-muted);
+}
+
+.git-change-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 10px 2px 0;
+  white-space: nowrap;
+  color: var(--text-primary);
+}
+
+.git-change-row.is-dir {
+  cursor: var(--cur-pointer, pointer);
+  color: var(--text-secondary);
+}
+
+.git-change-row.is-dir:hover {
+  background: var(--pill-hover-bg);
+}
+
+.git-change-caret {
+  display: inline-block;
+  width: 10px;
+  flex-shrink: 0;
+  text-align: center;
+  color: var(--text-muted);
+}
+
+.git-change-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.git-change-stat {
+  flex-shrink: 0;
+  display: inline-flex;
+  gap: 5px;
+  margin-left: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.git-change-add { color: #3fb950; }
+.git-change-del { color: #f85149; }
+.git-change-zero,
+.git-change-stat--bin { color: var(--text-muted); }
+
+/* ── Git history view ────────────────────────────────────────────────── */
+.git-history {
+  display: flex;
+  flex-direction: column;
+  font-size: 11px;
+}
+
+.git-history-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.git-history-branch {
+  flex: 1;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.git-history-mode {
+  font-size: 10px;
+  padding: 1px 6px;
+  white-space: nowrap;
+}
+
+.git-branch-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.git-branch-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: transparent;
+  border: 1px solid var(--border-color);
+  color: var(--text-primary);
+  border-radius: var(--radius-lg);
+  padding: 1px 8px;
+  font-size: 10px;
+  cursor: var(--cur-pointer, pointer);
+  font-family: inherit;
+  white-space: nowrap;
+}
+
+/* Lane-colored dot echoing the commit graph: the same color the branch's tip
+   wears in the graph and on its ref label. */
+.git-branch-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.git-branch-pill:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent-hover);
+}
+
+.git-branch-pill.current {
+  border-color: var(--accent);
+  background: var(--pill-active-bg);
+  color: var(--accent);
+  cursor: var(--cur-default, default);
+}
+
+.git-branch-pill.remote {
+  opacity: 0.7;
+  border-style: dashed;
+}
+
+/* ── Git worktrees (#23) ───────────────────────────────────────────────────
+   The section had NO rules at all: `themes.css` gives bare `button`/`input`
+   only `font: inherit`, so the path field rendered as a white UA text box in a
+   dark theme and the remove control as UA grey chrome nested inside a themed
+   pill — and neither the header nor the form was flex, so the controls stacked
+   in raw document flow. It sits next to `.git-branch-list` because it IS one:
+   the pills are the same primitive, so anything not listed here is inherited. */
+
+.git-worktree-section {
+  display: flex;
+  flex-direction: column;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.git-worktree-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+}
+
+.git-worktree-title {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+.git-worktree-spacer {
+  flex: 1;
+}
+
+/* Host / Mirror — only rendered for a remote project, where there really are two
+   repos (#23 I2). Compact: it is a qualifier on the section, not a main control. */
+.git-worktree-site .dropdown-trigger {
+  font-size: var(--text-xs);
+  padding: 1px 5px;
+}
+
+.git-worktree-list {
+  border-bottom: none;
+}
+
+.git-worktree-pill {
+  cursor: var(--cur-default, default);
+  gap: 3px;
+}
+
+.git-worktree-pill:hover {
+  /* Not a button — the pill itself does nothing, so it must not offer to. */
+  border-color: var(--border-color);
+  color: var(--text-primary);
+}
+
+/* A worktree whose checkout is gone. git says so in `worktree list --porcelain`
+   and the parser used to discard it, so a dead entry listed as healthy. */
+.git-worktree-pill.prunable {
+  border-style: dashed;
+  color: var(--text-muted);
+}
+
+.git-worktree-flag {
+  font-size: var(--text-xs);
+  line-height: 1;
+}
+
+.git-worktree-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  margin-left: 1px;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  font-family: inherit;
+  font-size: 10px;
+  line-height: 1;
+  cursor: var(--cur-pointer, pointer);
+}
+
+.git-worktree-btn:hover:not(:disabled) {
+  background: var(--pill-hover-bg);
+  color: var(--text-primary);
+}
+
+.git-worktree-btn:disabled {
+  opacity: 0.4;
+  cursor: var(--cur-default, default);
+}
+
+.git-worktree-remove:hover:not(:disabled) {
+  background: var(--pill-hover-bg);
+  color: var(--danger);
+}
+
+.git-worktree-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  padding: 0 6px 5px;
+}
+
+.git-worktree-input {
+  flex: 1 1 90px;
+  min-width: 0;
+  background: var(--bg-main);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: 10px;
+  padding: 2px 5px;
+}
+
+.git-worktree-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.git-worktree-newbranch {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  cursor: var(--cur-pointer, pointer);
+}
+
+/* The resolved path, shown rather than chosen: there is exactly one legal
+   location for a worktree (#23 I3), so a Browse button would have nothing to
+   offer — but the user still has to be able to see where the thing will land. */
+.git-worktree-path {
+  flex-basis: 100%;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  font-family: var(--font-mono, monospace);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+}
+
+.git-worktree-note {
+  flex-basis: 100%;
+  padding: 0 6px 4px;
+  font-size: var(--text-xs);
+  line-height: 1.35;
+  color: var(--text-muted);
+}
+
+.git-commit-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.git-commit-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 3px 6px;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--border-color);
+  color: var(--text-primary);
+  cursor: var(--cur-pointer, pointer);
+  font-family: inherit;
+  font-size: 11px;
+  text-align: left;
+  width: 100%;
+}
+
+.git-commit-row:hover {
+  background: var(--pill-active-bg);
+}
+
+.git-commit-row.head {
+  border-left: 2px solid var(--accent);
+}
+
+/* Graph mode: rows are a fixed height with no vertical padding so the lane
+   lines drawn per-row meet seamlessly across row boundaries. */
+.git-commit-list.graph .git-commit-row {
+  align-items: center;
+  padding-top: 0;
+  padding-bottom: 0;
+  padding-left: 0;
+  height: 22px;
+}
+
+.git-commit-list.graph .git-commit-row.head {
+  border-left: none;
+}
+
+.git-graph-cell {
+  display: block;
+  align-self: stretch;
+}
+
+.git-commit-hash {
+  font-family: monospace;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.git-commit-subject {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.git-commit-ref {
+  flex-shrink: 0;
+  font-size: var(--text-xs);
+  padding: 0 5px;
+  border-radius: var(--radius);
+  background: var(--accent);
+  color: var(--bg-main);
+  white-space: nowrap;
+}
+
+.git-commit-date {
+  flex-shrink: 0;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+/* Commit-message window */
+.commit-window {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  width: min(560px, 92vw);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  box-shadow: var(--shadow-3);
+}
+
+.commit-window-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.commit-window-message {
+  width: 100%;
+  font-family: monospace;
+  font-size: 12px;
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  padding: 6px 8px;
+  resize: vertical;
+  box-sizing: border-box;
+}
+
+.commit-window-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.commit-window-actions button {
+  background: transparent;
+  border: 1px solid var(--border-color);
+  color: var(--text-primary);
+  border-radius: var(--radius);
+  padding: 4px 10px;
+  font-size: 11px;
+  cursor: var(--cur-pointer, pointer);
+  font-family: inherit;
+}
+
+.commit-window-actions button:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent-hover);
+}
+
+/* Filled accent (canonical primary), not the old outlined look. */
+.commit-window-actions button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--bg-main);
+}
+
+.commit-window-actions button.primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+  color: var(--bg-main);
+}
+
+.commit-window-actions button:disabled {
+  opacity: 0.4;
+  cursor: var(--cur-not-allowed, not-allowed);
+}

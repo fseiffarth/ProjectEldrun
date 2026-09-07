@@ -66,7 +66,7 @@
 }
 
 .image-annotator__btn:hover:not(:disabled) {
-  background: var(--bg-hover, rgba(255, 255, 255, 0.08));
+  background: var(--bg-hover);
 }
 
 .image-annotator__btn:disabled {
@@ -75,15 +75,15 @@
 }
 
 .image-annotator__btn.is-active {
-  background: var(--accent, #0a84ff);
-  border-color: var(--accent, #0a84ff);
-  color: #fff;
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-contrast);
 }
 
 .image-annotator__btn--primary {
-  background: var(--accent, #0a84ff);
-  border-color: var(--accent, #0a84ff);
-  color: #fff;
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-contrast);
   font-weight: 600;
 }
 
@@ -124,8 +124,8 @@
 .image-annotator__error {
   padding: 6px 10px;
   font-size: 12px;
-  color: #fff;
-  background: var(--danger, #ff453a);
+  color: var(--accent-contrast);
+  background: var(--danger);
 }
 
 .image-annotator__stage {

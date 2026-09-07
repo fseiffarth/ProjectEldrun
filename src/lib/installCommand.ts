@@ -1,5 +1,6 @@
 import { useTabsStore } from "../stores/tabs";
 import { useProjectsStore } from "../stores/projects";
+import { useInstallOverlayStore } from "../stores/installOverlay";
 import { IS_WINDOWS, IS_MAC } from "./platform";
 
 /** A supported git-hosting provider, as chosen in the fork-import dropdown and
@@ -53,8 +54,12 @@ export function providerAuthLoginCmd(provider: GitHostProvider): string {
  *
  * The tab opens in the **root** scope (installs are machine-global, not project
  * scoped). The active project is deliberately left unchanged — switching scope
- * from a settings click would be jarring — so a brief toast points the user at
- * the root terminal where the install is running.
+ * from a settings click would be jarring. Instead the install is surfaced as a
+ * centered **overlay terminal** (`InstallOverlayHost`, driven by
+ * `stores/installOverlay`) attached to the same PTY, so the user watches the
+ * install — and answers its prompts — right where they clicked; closing the
+ * overlay leaves the install running in the root terminal, and the toast saying
+ * so is raised at that close, not here.
  */
 export type InstallShellKind = "bash" | "powershell" | "default";
 
@@ -72,14 +77,14 @@ export function runInstallInTab(
   shellKind: InstallShellKind,
 ): void {
   const rootDir = useProjectsStore.getState().rootDir ?? "";
-  useTabsStore.getState().addTabToScope("root", {
+  const tab = useTabsStore.getState().addTabToScope("root", {
     label,
     cmd: installShellCommand(shellKind),
     cwd: rootDir, // empty resolves to ~/eldrun/root on the backend
     kind: "shell",
     initialInput: command,
   });
-  useProjectsStore.setState({
-    switchToast: `Installing ${label} — running in the root terminal`,
-  });
+  // PTY ids are scope-qualified (see TabPane) — the overlay attaches to the
+  // root pane's PTY, it never spawns one of its own.
+  useInstallOverlayStore.getState().open(`root:${tab.key}`, label);
 }

@@ -343,11 +343,6 @@ export function overrideOccurrence(
   };
 }
 
-/** Whether an event actually repeats. */
-export function isRecurring(event: CalendarEvent): boolean {
-  return !!event.rrule;
-}
-
 /** A short human summary of a rule, for the event list and the editor. */
 export function describeRrule(
   rule: Rrule | null | undefined,

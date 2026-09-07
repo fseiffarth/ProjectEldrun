@@ -12,8 +12,22 @@
  * (D8).
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, act } from "@testing-library/react";
+import { render, screen, act, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+
+/**
+ * Answer the app's own confirm dialog. These destructive git gestures used
+ * `window.confirm` — themeless, origin-titled, and (for a warning that *lists
+ * paths*) collapsed to one line; they now open `ConfirmDialog`, so a test
+ * clicks its button instead of stubbing a global.
+ */
+async function answerDialog(
+  user: ReturnType<typeof userEvent.setup>,
+  button: string | RegExp,
+) {
+  const box = await screen.findByRole("dialog");
+  await user.click(within(box).getByRole("button", { name: button }));
+}
 
 const { mockInvoke } = vi.hoisted(() => ({ mockInvoke: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: mockInvoke }));
@@ -99,30 +113,27 @@ describe("#28n git lockstep UI", () => {
     const DESYNC = { ...ENABLED, status: "desynchronized", detail: "Diverged: main" };
     setup(DESYNC);
     const user = userEvent.setup();
-    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
     await renderRemote(DESYNC);
 
     // The desync detail + both authority buttons render.
     expect(await screen.findByText("Diverged: main")).toBeTruthy();
     await user.click(await screen.findByRole("button", { name: "Use remote" }));
-    expect(confirmSpy).toHaveBeenCalled();
+    await answerDialog(user, "Use remote host");
     expect(mockInvoke).toHaveBeenCalledWith("git_peer_resolve", {
       projectId: "proj1",
       authority: "remote",
     });
-    confirmSpy.mockRestore();
   });
 
   it("does not resolve when the confirm is dismissed", async () => {
     const DESYNC = { ...ENABLED, status: "desynchronized", detail: "Diverged: main" };
     setup(DESYNC);
     const user = userEvent.setup();
-    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
     await renderRemote(DESYNC);
 
     await user.click(await screen.findByRole("button", { name: "Use local" }));
+    await answerDialog(user, "Cancel");
     expect(mockInvoke).not.toHaveBeenCalledWith("git_peer_resolve", expect.anything());
-    confirmSpy.mockRestore();
   });
 
   it("does not render the lockstep bar for a local project", async () => {
@@ -164,7 +175,6 @@ describe("#28p git lockstep hardening UI", () => {
     };
     setup(CONFLICT);
     const user = userEvent.setup();
-    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
     await renderRemote(CONFLICT);
 
     // Use-local/Use-remote would be meaningless (nothing is paired yet) — the only
@@ -173,9 +183,9 @@ describe("#28p git lockstep hardening UI", () => {
     await user.click(await screen.findByRole("button", { name: /Overwrite 2 file/ }));
 
     // The confirm must actually list the files — that is the whole safety property.
-    expect(confirmSpy.mock.calls[0][0]).toContain("README.md");
+    expect((await screen.findByRole("dialog")).textContent).toContain("README.md");
+    await answerDialog(user, "Overwrite");
     expect(mockInvoke).toHaveBeenCalledWith("git_peer_pair_confirm", { projectId: "proj1" });
-    confirmSpy.mockRestore();
   });
 
   it("D3: dismissing the overwrite confirm pairs nothing", async () => {
@@ -187,12 +197,11 @@ describe("#28p git lockstep hardening UI", () => {
     };
     setup(CONFLICT);
     const user = userEvent.setup();
-    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
     await renderRemote(CONFLICT);
 
     await user.click(await screen.findByRole("button", { name: /Overwrite 1 file/ }));
+    await answerDialog(user, "Cancel");
     expect(mockInvoke).not.toHaveBeenCalledWith("git_peer_pair_confirm", expect.anything());
-    confirmSpy.mockRestore();
   });
 
   it("D6: Backups lists the safety refs and routes Restore to the backend", async () => {
@@ -217,19 +226,18 @@ describe("#28p git lockstep hardening UI", () => {
       return Promise.resolve(DESYNC);
     });
     const user = userEvent.setup();
-    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
     await renderRemote(DESYNC);
 
     await user.click(await screen.findByRole("button", { name: "Backups" }));
     expect(await screen.findByText("The tip a resolve overwrote")).toBeTruthy();
 
     await user.click(await screen.findByRole("button", { name: "Restore" }));
+    await answerDialog(user, "Restore");
     expect(mockInvoke).toHaveBeenCalledWith("git_peer_restore_backup", {
       projectId: "proj1",
       peer: "remote",
       refname: "refs/eldrun/backup/1735689600/main",
     });
-    confirmSpy.mockRestore();
   });
 
   it("D8: Resolve in terminal opens a local shell tab in the mirror", async () => {

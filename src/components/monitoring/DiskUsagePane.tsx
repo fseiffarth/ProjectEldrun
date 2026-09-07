@@ -425,14 +425,7 @@ export function DiskUsagePane({ projectId, projectCwd, tabKey, visible }: Props)
         createPortal(
           <div
             className="activity-tooltip du-tooltip"
-            style={{
-              position: "fixed",
-              left: hover.x,
-              top: hover.y - 8,
-              transform: "translate(-50%, -100%)",
-              pointerEvents: "none",
-              zIndex: 10000,
-            }}
+            style={{ left: hover.x, top: hover.y - 8 }}
           >
             <strong>{hover.node.name}</strong>
             <br />

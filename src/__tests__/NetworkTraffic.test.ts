@@ -44,10 +44,10 @@ describe("network traffic calculations", () => {
     ).toEqual({ rxRate: 0, txRate: 0, rxDelta: 0, txDelta: 0 });
   });
 
-  it("formats byte counts compactly", () => {
+  it("formats byte counts through the one canonical formatter", () => {
     expect(formatBytes(0)).toBe("0 B");
-    expect(formatBytes(1536)).toBe("1.5 KiB");
-    expect(formatBytes(2 * 1024 * 1024)).toBe("2.0 MiB");
+    expect(formatBytes(1536)).toBe("1.5 KB");
+    expect(formatBytes(2 * 1024 * 1024)).toBe("2.0 MB");
   });
 
   it("summarizes persisted usage into hour / today / week / month / overall (UTC)", () => {

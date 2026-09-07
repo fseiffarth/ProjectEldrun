@@ -21,6 +21,15 @@ interface GitStatus {
   is_repo: boolean;
 }
 
+/** The combined backend probe: status plus the unpushed count, which the
+ *  backend computes only when the tree is clean — the one case the dot ever
+ *  consults it (see `gitDirtyState`'s priority order). One git spawn and one
+ *  IPC round trip per project per poll tick instead of two each. */
+interface GitDirtyProbe {
+  status: GitStatus;
+  unpushed: number;
+}
+
 /** Reduce a `git_status` probe plus the unpushed-commit count to a single dot
  *  level. Priority mirrors the file-tree markers (red ▸ orange ▸ green):
  *    "dirty"    – untracked or unstaged working-tree changes (not added) — red
@@ -87,13 +96,21 @@ export const useGitDirtyStore = create<GitDirtyStore>((set) => ({
     if (!dir) return;
     let next: GitDirtyState = "clean";
     try {
-      const [status, unpushed] = await Promise.all([
-        invoke<GitStatus>("git_status", { projectDir: dir }),
-        invoke<string[]>("git_unpushed_commits", { projectDir: dir }).catch(
-          () => [] as string[],
-        ),
-      ]);
-      next = gitDirtyState(status, unpushed.length);
+      const { status, unpushed } = await invoke<GitDirtyProbe>("git_dirty_probe", {
+        projectDir: dir,
+      }).catch(async () => {
+        // A running window whose backend predates the combined command (backend
+        // edits don't reach a live window until a restart) still answers the
+        // old two-command spelling.
+        const [status, unpushedCommits] = await Promise.all([
+          invoke<GitStatus>("git_status", { projectDir: dir }),
+          invoke<string[]>("git_unpushed_commits", { projectDir: dir }).catch(
+            () => [] as string[],
+          ),
+        ]);
+        return { status, unpushed: unpushedCommits.length };
+      });
+      next = gitDirtyState(status, unpushed);
       // `.git` can be missing (deleted with `rm -rf .git` in a terminal tab, or an
       // empty `.git` left behind by a scaffold whose `git init` silently no-op'd).
       // A project still *tagged* as a repo (git_type local/remote-*) but reporting

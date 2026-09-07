@@ -1,5 +1,5 @@
 /**
- * Render tests for the right-panel file tree navigation:
+ * Render tests for the side-panel file tree navigation:
  * - #2 (Group D.1): a file's full name is readable on hover via the existing
  *   custom `.file-tooltip` popup (not a native `title` attribute — that used
  *   to render as an unthemed OS tooltip instead of the app's own hover UI).
@@ -15,12 +15,22 @@ const { mockInvoke } = vi.hoisted(() => ({ mockInvoke: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: mockInvoke }));
 vi.mock("../stores/projects", () => ({ useProjectsStore: vi.fn() }));
 vi.mock("../stores/windows", () => ({
-  useWindowsStore: () => ({ windows: [], refresh: vi.fn(), untrack: vi.fn() }),
+  useWindowsStore: () => ({ windows: [], refresh: vi.fn(), untrack: vi.fn(), closeApp: vi.fn() }),
 }));
-vi.mock("../stores/settings", () => ({ useSettingsStore: () => null }));
+vi.mock("../stores/settings", () => {
+  // Selector-aware, not a fixed `null`: the side panel reads its stored view off
+  // `settings` and writes it back through the `updateSettings` action when the
+  // view switcher moves, so a mock that ignored the selector handed the panel a
+  // null where an action belongs.
+  const state = { settings: null, updateSettings: async () => {} };
+  return {
+    useSettingsStore: (selector?: (s: typeof state) => unknown) =>
+      selector ? selector(state) : state,
+  };
+});
 
 import { useProjectsStore } from "../stores/projects";
-import { RightPanel } from "../components/layout/RightPanel";
+import { SidePanel } from "../components/layout/SidePanel";
 
 const mockUseProjectsStore = vi.mocked(useProjectsStore);
 
@@ -66,7 +76,7 @@ function setupInvoke() {
 
 async function renderPanel() {
   await act(async () => {
-    render(<RightPanel open={true} />);
+    render(<SidePanel open={true} />);
   });
 }
 
@@ -82,8 +92,8 @@ describe("file tree navigation", () => {
     const state = {
       projects: [ACTIVE_PROJECT],
       activeId: "proj-1",
-      rightPanelFolderByProject: {},
-      setRightPanelFolder: vi.fn(),
+      sidePanelFolderByProject: {},
+      setSidePanelFolder: vi.fn(),
     } as unknown as ReturnType<typeof useProjectsStore>;
     mockUseProjectsStore.mockImplementation(((selector?: (s: typeof state) => unknown) =>
       selector ? selector(state) : state) as typeof useProjectsStore);
@@ -105,23 +115,28 @@ describe("file tree navigation", () => {
     const user = userEvent.setup();
     await renderPanel();
 
-    // No breadcrumb at the project root.
-    expect(document.querySelector(".file-tree-breadcrumb")).toBeNull();
+    // At the project root the breadcrumb holds ⌂ and nothing to go up to.
+    expect(document.querySelector(".file-tree-breadcrumb")).toBeTruthy();
+    expect(document.querySelector(".file-tree-up[title='Go up']")).toBeNull();
+    expect(document.querySelector(".file-tree-crumb[title='Project root']")).toBeTruthy();
+    expect(document.querySelector(".file-tree-crumb.current")?.textContent).toBe("⌂");
 
     // Enter the subfolder.
     await user.click(await screen.findByText("sub"));
 
     const crumb = await screen.findByText("sub", { selector: ".file-tree-crumb" });
     expect(crumb).toBeTruthy();
-    expect(document.querySelector(".file-tree-up")).toBeTruthy();
+    expect(document.querySelector(".file-tree-up[title='Go up']")).toBeTruthy();
     expect(document.querySelector(".file-tree-crumb[title='Project root']")).toBeTruthy();
     // The subfolder's contents are now listed.
     expect(await screen.findByText("deep.txt")).toBeTruthy();
 
-    // Clicking the root crumb returns to the top (breadcrumb disappears).
+    // Clicking the root crumb returns to the top (the up button goes away and
+    // ⌂ becomes the current crumb again).
     await user.click(screen.getByTitle("Project root"));
     await screen.findByText(LONG_NAME);
-    expect(document.querySelector(".file-tree-breadcrumb")).toBeNull();
+    expect(document.querySelector(".file-tree-up[title='Go up']")).toBeNull();
+    expect(document.querySelector(".file-tree-crumb.current")?.textContent).toBe("⌂");
   });
 
   it("seeds relPath from the saved folder so a mount never flashes root", () => {
@@ -129,8 +144,8 @@ describe("file tree navigation", () => {
     const state = {
       projects: [ACTIVE_PROJECT],
       activeId: "proj-1",
-      rightPanelFolderByProject: { "proj-1": "sub" },
-      setRightPanelFolder: vi.fn(),
+      sidePanelFolderByProject: { "proj-1": "sub" },
+      setSidePanelFolder: vi.fn(),
     } as unknown as ReturnType<typeof useProjectsStore>;
     mockUseProjectsStore.mockImplementation(((selector?: (s: typeof state) => unknown) =>
       selector ? selector(state) : state) as typeof useProjectsStore);
@@ -141,14 +156,13 @@ describe("file tree navigation", () => {
     // `relPath`, not the entry listing) is on screen on the first commit. The old
     // `useState("")` would render root here and only reach `sub` after the load
     // resolved — the "flash root" this test guards against.
-    render(<RightPanel open={true} />);
+    render(<SidePanel open={true} />);
     expect(document.querySelector(".file-tree-breadcrumb")).not.toBeNull();
     expect(document.querySelector(".file-tree-crumb[title='Project root']")).toBeTruthy();
   });
 
-  it("#1 'New File' from the context menu prompts and calls create_file", async () => {
+  it("#1 'New File' from the context menu asks in Eldrun's dialog and calls create_file", async () => {
     const user = userEvent.setup();
-    const promptSpy = vi.spyOn(window, "prompt").mockReturnValue("created.ts");
     await renderPanel();
 
     // Right-click the file-tree background to open the root context menu (New
@@ -157,11 +171,15 @@ describe("file tree navigation", () => {
     fireEvent.contextMenu(document.querySelector(".file-tree")!);
     await user.click(await screen.findByText("New File"));
 
-    expect(promptSpy).toHaveBeenCalled();
+    // The name is asked for in the app's own dialog (`TextPromptDialog`), not in
+    // `window.prompt` — WebKitGTK draws that as an origin-titled browser alert.
+    const field = await screen.findByLabelText("New file name:");
+    await user.type(field, "created.ts");
+    await user.click(screen.getByRole("button", { name: "Create" }));
+
     expect(mockInvoke).toHaveBeenCalledWith("create_file", {
       projectDir: "/tmp/test-project",
       relPath: "created.ts",
     });
-    promptSpy.mockRestore();
   });
 });

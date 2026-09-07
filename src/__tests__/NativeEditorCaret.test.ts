@@ -30,6 +30,7 @@ import { describe, it, expect } from "vitest";
 import {
   snapToDevicePx,
   applyIndent,
+  advanceTexBraceTabStop,
 } from "../components/embed/FileViewerPane";
 import { lineStartOffset, offsetToLineCol } from "../lib/viewers/tex";
 
@@ -205,6 +206,19 @@ describe("applyIndent — Tab / Shift+Tab caret & selection", () => {
   it("outdent on a line with no leading whitespace is a no-op on the text", () => {
     const r = applyIndent(ta("abc\ndef", 0, 7), true);
     expect(r!.value).toBe("abc\ndef");
+  });
+});
+
+describe("advanceTexBraceTabStop", () => {
+  it("moves a collapsed caret past the closing argument brace", () => {
+    const value = "\\begin{align}";
+    const caret = "\\begin{align".length;
+    expect(advanceTexBraceTabStop(ta(value, caret))).toBe(caret + 1);
+  });
+
+  it("leaves non-brace positions and selections to normal Tab indentation", () => {
+    expect(advanceTexBraceTabStop(ta("\\begin{align}", 2))).toBeNull();
+    expect(advanceTexBraceTabStop(ta("\\begin{align}", 7, 12))).toBeNull();
   });
 });
 

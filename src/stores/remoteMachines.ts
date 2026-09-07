@@ -1,4 +1,10 @@
+import { emit } from "@tauri-apps/api/event";
 import { create } from "zustand";
+import { isDetachedWindow } from "./detachedContext";
+
+/** Mirrors `DETACHED_OPEN_DIALOG` in stores/detached (spelled here to keep this
+ *  module free of that import: detached.ts imports this one). */
+const DETACHED_OPEN_DIALOG_EVENT = "detached-open-dialog";
 
 /** A global machine handed to a project, awaiting only its shared path
  *  before `RemoteMachinesWindow` turns it into a `shared_fs` compute host.
@@ -47,7 +53,16 @@ export const useRemoteMachinesStore = create<RemoteMachinesDialogStore>((set) =>
   projectId: null,
   pendingDrop: null,
   extendTarget: null,
-  open: (projectId, pendingDrop = null) => set({ projectId, pendingDrop }),
+  open: (projectId, pendingDrop = null) => {
+    // Group B #233: the dialog host is mounted only in the main window. Opened
+    // from a popout (the docked file column's "Remote machines…"), the request
+    // goes there instead of flipping a store nobody in this window renders.
+    if (isDetachedWindow()) {
+      void emit(DETACHED_OPEN_DIALOG_EVENT, { kind: "remoteMachines", projectId });
+      return;
+    }
+    set({ projectId, pendingDrop });
+  },
   setPendingDrop: (pendingDrop) => set({ pendingDrop }),
   requestExtend: (projectId, machine) => set({ extendTarget: { projectId, machine } }),
   clearExtend: () => set({ extendTarget: null }),

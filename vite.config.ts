@@ -32,7 +32,24 @@ export default defineConfig(async () => ({
       // changed file it watches but has no module-graph entry for — and test
       // files are exactly that. Concurrent agent sessions editing tests were
       // reloading the app the user was working in.
-      ignored: ["**/src-tauri/**", "**/target/**", "**/.eldrun/**", "**/src/__tests__/**"],
+      //
+      // dist/ and mobile-dist/ are here for the same reason and a worse case:
+      // they are the BUILD's outputs, and `npm run build` is a mandated gate
+      // (AGENTS.md) that anyone — a person or an agent — is expected to run
+      // while a dev session is up. `mobile:build` writes mobile-dist/, the
+      // watcher sees files with no module-graph entry, and every open Eldrun
+      // webview full-reloads: the main window and each popout, several times
+      // per build. Observed in hotreload.log as three `page reload
+      // mobile-dist/index.html` lines per gate run. Running the tests must not
+      // reload the window; neither must running the build.
+      ignored: [
+        "**/src-tauri/**",
+        "**/target/**",
+        "**/.eldrun/**",
+        "**/src/__tests__/**",
+        "**/dist/**",
+        "**/mobile-dist/**",
+      ],
     },
   },
 }));

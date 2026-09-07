@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useSettingsStore } from "../../stores/settings";
 import { useQuiesce, saverInterval } from "../../stores/power";
 import { useFastMode } from "../../lib/fastMode";
+import { useHeaderStatusReport } from "../../stores/headerStatus";
 import {
   formatBytes,
   gpuBusy,
@@ -71,6 +72,26 @@ export function AppResourceDisplay() {
       window.clearInterval(id);
     };
   }, [anyShown, quiesce]);
+
+  // Never escalates. A build pegs the CPU for minutes at a time, so toning this
+  // `attention` would pop the readout in and out of a collapsed header for the
+  // whole of an ordinary compile — the one member whose "hot" is routine. It
+  // reports `off` purely to be *counted* as a member of the cluster (and to put
+  // its numbers in the collapsed tooltip, which is where they are still useful).
+  useHeaderStatusReport(
+    "resources",
+    !anyShown || !usage
+      ? null
+      : {
+          tone: "off",
+          label: [
+            showCpu ? `CPU ${usage.cpu_percent.toFixed(1)}%` : null,
+            showRam ? `RAM ${formatBytes(usage.rss_bytes)}` : null,
+          ]
+            .filter(Boolean)
+            .join(" · "),
+        },
+  );
 
   if (!anyShown || !usage) return null;
 

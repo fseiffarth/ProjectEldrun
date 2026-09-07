@@ -1,5 +1,5 @@
 /**
- * Tests for the right-panel Git history & commit UI:
+ * Tests for the side-panel Git history & commit UI:
  * - #7 (Group D.3): the history view shows the current branch, a commit list
  *   (HEAD marked), clickable branch pills that check the branch out.
  * - #8 (Group D.3): clicking HEAD opens an editable commit window with a

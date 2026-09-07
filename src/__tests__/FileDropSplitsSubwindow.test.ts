@@ -1,5 +1,5 @@
 /**
- * A file dragged from the right panel onto a subwindow BODY EDGE (not a tab bar)
+ * A file dragged from the side panel onto a subwindow BODY EDGE (not a tab bar)
  * carves out a NEW subwindow holding the file's embed tab — mirroring how a tab
  * drag edge-splits. A "center" drop instead adds the embed tab into the existing
  * target group. The original group's tabs are never disturbed.

@@ -1,11 +1,11 @@
 {
   "productName": "Eldrun",
-  "version": "0.1.53",
+  "version": "0.1.65",
   "identifier": "io.github.fseiffarth.eldrun",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",
-    "beforeDevCommand": "npm run dev",
+    "beforeDevCommand": "npm run mobile:bundle && npm run dev",
     "beforeBuildCommand": "npm run build"
   },
   "app": {

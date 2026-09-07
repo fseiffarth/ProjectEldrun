@@ -150,6 +150,21 @@ export function ProjectBlobPane({ visible = true }: { visible?: boolean } = {}) 
   const openBox = useBoxesStore((s) => s.openBox);
   const openFile = useWindowsStore((s) => s.openFile);
 
+  // A project can belong to several boxes. Keep this derived from the boxes'
+  // canonical member lists, so the cloud never needs a second membership field
+  // on its project nodes (and category tags remain independent of box tags).
+  const boxNamesByProject = useMemo(() => {
+    const names = new Map<string, string[]>();
+    for (const box of boxes) {
+      for (const projectId of box.member_ids) {
+        const projectBoxes = names.get(projectId);
+        if (projectBoxes) projectBoxes.push(box.name);
+        else names.set(projectId, [box.name]);
+      }
+    }
+    return names;
+  }, [boxes]);
+
   const [menu, setMenu] = useState<BlobMenu | null>(null);
   // The project whose category editor is open (null = closed).
   const [catProject, setCatProject] = useState<ProjectEntry | null>(null);
@@ -689,6 +704,10 @@ export function ProjectBlobPane({ visible = true }: { visible?: boolean } = {}) 
   useEffect(() => () => clearClickTimer(), [clearClickTimer]);
 
   const isPie = viewMode === "pie" && !focus;
+  const hoveredProject =
+    hover?.node.kind === "project" || hover?.node.kind === "center" ? hover.node.project : null;
+  const hoveredCategories = hoveredProject ? projectCategories(hoveredProject) : [];
+  const hoveredBoxNames = hoveredProject ? boxNamesByProject.get(hoveredProject.id) ?? [] : [];
 
   if (nodes.length === 0 && !focus) {
     return (
@@ -812,13 +831,17 @@ export function ProjectBlobPane({ visible = true }: { visible?: boolean } = {}) 
             let sub: number | null = null;
             let isActive = false;
             let catColor: string | null = null;
+            let categories: string[] = [];
+            let boxNames: string[] = [];
             if (node.kind === "project") {
               const status = node.project.status;
               cls += ` blob-node-project blob-status-${status}`;
               icon = status === "inactive" ? "○" : "●";
               label = node.project.name;
               isActive = node.project.id === activeId;
-              catColor = primaryCategoryColor(projectCategories(node.project));
+              categories = projectCategories(node.project);
+              catColor = primaryCategoryColor(categories);
+              boxNames = boxNamesByProject.get(node.project.id) ?? [];
               if (catColor) cls += " blob-node-categorized";
             } else if (node.kind === "box") {
               cls += " blob-node-box blob-status-box";
@@ -865,6 +888,27 @@ export function ProjectBlobPane({ visible = true }: { visible?: boolean } = {}) 
                   {icon}
                 </span>
                 <span className="blob-node-label">{label}</span>
+                {categories.length > 0 && (
+                  <span
+                    className="blob-node-category-dots"
+                    title={t("pill.categoriesLabel", { list: categories.join(", ") })}
+                    aria-label={t("pill.categoriesLabel", { list: categories.join(", ") })}
+                  >
+                    {categories.map((category) => (
+                      <span
+                        key={category.toLowerCase()}
+                        className="blob-node-category-dot"
+                        style={{ background: categoryColor(category) }}
+                      />
+                    ))}
+                  </span>
+                )}
+                {boxNames.map((boxName) => (
+                  <span key={boxName} className="blob-node-box-tag" title={t("pill.inBoxes", { list: boxName })}>
+                    <span aria-hidden>▣</span>
+                    <span className="blob-node-box-tag-label">{boxName}</span>
+                  </span>
+                ))}
                 {sub !== null && <span className="blob-node-sub">{sub}</span>}
               </div>
             );
@@ -951,9 +995,9 @@ export function ProjectBlobPane({ visible = true }: { visible?: boolean } = {}) 
                   {hover.node.project.description?.trim() || t("blob.noDescriptionYet")}
                 </div>
               )}
-              {hover.node.kind === "project" && projectCategories(hover.node.project).length > 0 && (
+              {(hoveredCategories.length > 0 || hoveredBoxNames.length > 0) && (
                 <div className="blob-hover-categories">
-                  {projectCategories(hover.node.project).map((cat) => (
+                  {hoveredCategories.map((cat) => (
                     <span
                       key={cat.toLowerCase()}
                       className="blob-hover-category"
@@ -961,6 +1005,12 @@ export function ProjectBlobPane({ visible = true }: { visible?: boolean } = {}) 
                     >
                       <span className="blob-hover-category-dot" />
                       {cat}
+                    </span>
+                  ))}
+                  {hoveredBoxNames.map((boxName) => (
+                    <span key={boxName} className="blob-hover-box-tag">
+                      <span aria-hidden>▣</span>
+                      {boxName}
                     </span>
                   ))}
                 </div>

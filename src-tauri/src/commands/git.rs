@@ -129,6 +129,20 @@ pub(crate) fn hardened_git_args<S: AsRef<str>>(args: &[S]) -> Vec<String> {
 pub(crate) fn hardened_git_command<S: AsRef<str>>(args: &[S]) -> std::process::Command {
     let mut cmd = crate::paths::command_no_window("git");
     cmd.args(hardened_git_args(args));
+    // Read-only commands must not write the repo. `git status` (and everything
+    // that runs it: the file tree's per-entry letters, the git bar, the pill's
+    // dirty poll) opportunistically REWRITES `.git/index` when stat data looks
+    // stale — an `index.lock` create + rename that bumps `.git`'s mtime, which the
+    // file tree's non-recursive watch on the project root sees as a change to the
+    // `.git` entry. That re-listed the folder, which ran `git status`, which
+    // rewrote the index, which… — a closed loop that kept the root folder
+    // re-listing about once a second for as long as it was on screen, and rows
+    // flickering between sections whenever one of the piled-up probes failed.
+    // `GIT_OPTIONAL_LOCKS=0` is git's own switch for exactly this ("don't take
+    // optional locks, don't do the optional index refresh"): the output of every
+    // read command is unchanged, and the mutating commands (add, commit, …) take
+    // their mandatory locks regardless.
+    cmd.env("GIT_OPTIONAL_LOCKS", "0");
     cmd
 }
 
@@ -479,9 +493,45 @@ fn git_status_blocking(project_dir: String) -> Result<GitStatus, String> {
     })
 }
 
+/// One probe behind the project switcher's per-pill git dot.
+#[derive(serde::Serialize)]
+pub struct GitDirtyProbe {
+    pub status: GitStatus,
+    /// Commits ahead of the upstream — computed **only when the working tree is
+    /// clean**, `0` otherwise (the dot never consults it while anything is
+    /// dirty or staged, so probing it unconditionally paid a second git spawn
+    /// per project per poll tick for an answer that was then discarded).
+    pub unpushed: usize,
+}
+
+/// `git_status` + the unpushed-commit count as ONE command, for the switcher's
+/// 12 s per-project dot poll: one git spawn and one IPC round trip in the
+/// common (dirty, non-repo, or no-upstream-relevant) case instead of two each.
+#[tauri::command]
+pub async fn git_dirty_probe(project_dir: String) -> Result<GitDirtyProbe, String> {
+    run_off_thread(move || {
+        let status = git_status_blocking(project_dir.clone())?;
+        let clean = status.is_repo
+            && status.staged == 0
+            && status.unstaged == 0
+            && status.untracked == 0;
+        let unpushed = if clean {
+            // Best-effort, like the frontend's old `.catch(() => [])`: a failed
+            // unpushed read must not blank a dot the status half already earned.
+            git_unpushed_commits_blocking(project_dir)
+                .map(|v| v.len())
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        Ok(GitDirtyProbe { status, unpushed })
+    })
+    .await
+}
+
 /// Resolve the git top-level enclosing `project_dir`/`rel_path` (the folder the
 /// user is currently browsing in the file tree). Returns the absolute repo root
-/// path, or `None` when the folder isn't inside any git repo. The right panel
+/// path, or `None` when the folder isn't inside any git repo. The side panel
 /// uses this to detect a **nested** repo — a subfolder that is its own git repo
 /// distinct from the project's repo — and re-root its git section at it.
 ///
@@ -1249,6 +1299,99 @@ pub(crate) fn git_clone_blocking(url: String, dest: String) -> Result<String, St
         return Err(clone_error(&raw, token.is_some(), https));
     }
     Ok(dest)
+}
+
+/// The https form of a clone URL, for an *anonymous* readability probe. An
+/// `ssh://`/scp-style URL says nothing about visibility on its own (a key opens
+/// public and private repos alike), so it is rewritten to the same repo's https
+/// address; `http(s)` URLs are returned as-is minus any userinfo, which would
+/// otherwise make the probe authenticated. Pure.
+pub(crate) fn https_probe_url(raw: &str) -> Option<String> {
+    let url = raw.trim();
+    if url.is_empty() {
+        return None;
+    }
+    let (authority, path) = match url.to_ascii_lowercase().find("://") {
+        Some(i) => {
+            let rest = &url[i + 3..];
+            let slash = rest.find('/')?;
+            (&rest[..slash], &rest[slash + 1..])
+        }
+        None => {
+            // scp-like `[user@]host:path`.
+            let colon = url.find(':')?;
+            (&url[..colon], &url[colon + 1..])
+        }
+    };
+    // Drop userinfo and any port: a probe must be anonymous, and the https
+    // service does not live on the ssh port.
+    let host = authority.rsplit('@').next().unwrap_or("");
+    let host = host.split(':').next().unwrap_or("");
+    let path = path.trim_start_matches('/');
+    if host.is_empty() || path.is_empty() {
+        return None;
+    }
+    Some(format!("https://{host}/{path}"))
+}
+
+/// Whether `url`'s repository can be read **without credentials** — the one
+/// honest signal for "is this repo public or private" that costs a single
+/// `ls-remote` and no provider login.
+///
+/// Returns `"public"`, `"private"`, or `"unknown"` (offline, an unreachable or
+/// non-provider host, anything that is not an auth refusal). Used by the import
+/// dialog to fill the Git hosting field from the repository being cloned rather
+/// than assuming private. Deliberately anonymous: the stored access token is
+/// *not* offered, since a token turns a private repo into a readable one and the
+/// probe would then answer "public" for every repo the user can see.
+///
+/// A host that hides private repos behind a 404 (GitHub does) is indistinguishable
+/// from a mistyped URL — both read as `"private"`, which is also the safe default
+/// for the field this fills, and the clone itself is the thing that reports a bad
+/// URL.
+#[tauri::command]
+pub async fn git_remote_visibility(url: String) -> Result<String, String> {
+    run_off_thread(move || git_remote_visibility_blocking(url)).await
+}
+
+fn git_remote_visibility_blocking(url: String) -> Result<String, String> {
+    validate_clone_url(&url)?;
+    let Some(probe) = https_probe_url(&url) else {
+        return Ok("unknown".to_string());
+    };
+    let mut cmd = crate::paths::command_no_window("git");
+    cmd.env("GIT_TERMINAL_PROMPT", "0");
+    // No credential helper, no stored token: the whole point is what an
+    // anonymous reader sees. `lowSpeed*` bounds a stalled connection so the
+    // dialog's probe cannot hang around forever.
+    cmd.args([
+        "-c",
+        "credential.helper=",
+        "-c",
+        "http.lowSpeedLimit=1000",
+        "-c",
+        "http.lowSpeedTime=8",
+        "ls-remote",
+        "--heads",
+        "--",
+        &probe,
+    ]);
+    let out = match cmd.output() {
+        Ok(out) => out,
+        Err(_) => return Ok("unknown".to_string()),
+    };
+    if out.status.success() {
+        return Ok("public".to_string());
+    }
+    let stderr = String::from_utf8_lossy(&out.stderr).to_ascii_lowercase();
+    let refused = stderr.contains("could not read username")
+        || stderr.contains("authentication failed")
+        || stderr.contains("terminal prompts disabled")
+        || stderr.contains("repository not found")
+        || stderr.contains("access denied")
+        || stderr.contains("403")
+        || stderr.contains("404");
+    Ok(if refused { "private" } else { "unknown" }.to_string())
 }
 
 // ── Git history & branches ──────────────────────────────────────────────────
@@ -2353,7 +2496,7 @@ pub struct DetectedOrigin {
 /// Returns `{ project_id -> { provider, url } }` only for projects whose origin
 /// resolves to a recognized provider. Published (`remote-*`) local projects are
 /// included too, so their git address shows in the hover even though their badge
-/// already rides on `git_type`. Used to decorate pill/right-panel hovers for
+/// already rides on `git_type`. Used to decorate pill/side-panel hovers for
 /// repos pushed to a host — including ones published outside Eldrun's own
 /// Publish flow (the sole writer of the `remote-*` `git_type`).
 #[tauri::command]
@@ -2440,6 +2583,36 @@ mod tests {
         run(&["init"]);
         run(&["config", "user.email", "test@example.com"]);
         run(&["config", "user.name", "Test User"]);
+    }
+
+    // ── Anonymous visibility probe ───────────────────────────────────────────
+
+    #[test]
+    fn https_probe_url_normalizes_every_clone_form() {
+        // scp-like and ssh:// both name the https address of the same repo.
+        assert_eq!(
+            https_probe_url("git@github.com:owner/repo.git").as_deref(),
+            Some("https://github.com/owner/repo.git")
+        );
+        assert_eq!(
+            https_probe_url("ssh://git@gitlab.example.org:2222/group/sub/repo.git").as_deref(),
+            Some("https://gitlab.example.org/group/sub/repo.git")
+        );
+        // Userinfo is dropped: the probe has to be anonymous to mean anything.
+        // A reserved example host, so the privacy scan does not read the
+        // `<name>@<host>` in a clone URL as somebody's address.
+        assert_eq!(
+            https_probe_url("https://user@git.example.org/owner/repo").as_deref(),
+            Some("https://git.example.org/owner/repo")
+        );
+        assert_eq!(
+            https_probe_url("https://github.com/owner/repo.git").as_deref(),
+            Some("https://github.com/owner/repo.git")
+        );
+        // Nothing repo-shaped to probe.
+        assert_eq!(https_probe_url(""), None);
+        assert_eq!(https_probe_url("https://github.com/"), None);
+        assert_eq!(https_probe_url("git@github.com:"), None);
     }
 
     // ── Repo config hardening (Group O #151) ─────────────────────────────────

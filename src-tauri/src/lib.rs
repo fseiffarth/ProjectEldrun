@@ -93,8 +93,35 @@ pub(crate) fn iso_now() -> String {
 }
 
 /// Register async-signal-safe handlers for fatal signals.
-/// Uses `SA_RESETHAND` so the default handler fires after ours, producing a
-/// core dump and proper exit code.
+///
+/// `SA_RESETHAND` asks the kernel to restore the default disposition before it
+/// enters our handler, so that returning re-executes the faulting instruction
+/// and the default action (terminate, core dump, proper exit status) fires. That
+/// promise only holds when the *kernel* dispatches to us — and on Linux it does
+/// not. WebKit's WTF signal layer (`Source/WTF/wtf/threads/Signals.cpp`)
+/// initialises after this, takes SIGSEGV/SIGBUS for its wasm/JIT fault handling,
+/// and saves whatever handler it found as `oldAction`. When none of its own
+/// handlers claims a fault it calls `oldAction.sa_sigaction(sig, info, ctx)`
+/// **directly as a function** and returns, its own handler still installed.
+/// Ours then runs as a plain callee: nothing is reset, the fault re-executes,
+/// and the faulting thread loops forever — one `=== CRASH: SIGSEGV ===` per
+/// pass at ~6 MB/s, a half-gigabyte crash.log, and a window that "stopped
+/// reacting" instead of a dead process (2026-09-05, frozen dev build, after a
+/// TeX compile). So the handler restores `SIG_DFL` itself and re-raises, which
+/// is correct whichever way it was reached; `SA_RESETHAND` stays as belt to
+/// those braces.
+///
+/// `SA_ONSTACK` runs it on an alternate stack, so a stack overflow — a SIGSEGV
+/// on the guard page — is logged instead of faulting again inside the handler.
+/// Rust's runtime gives every `std::thread` a minimal one (a few KB, sized for
+/// its own overflow message); the main thread, where GTK and WebKit's UI side
+/// run and the likeliest native crasher, gets a roomier one here so the
+/// unwinder below has stack to work in.
+///
+/// glibc's `backtrace()` is called once at install: the first call loads
+/// `libgcc_s` through the dynamic loader, which mallocs, and that is the one
+/// thing a crash handler must never do. Pre-loaded, `backtrace` and
+/// `backtrace_symbols_fd` allocate nothing (documented in `backtrace(3)`).
 #[cfg(unix)]
 unsafe fn install_signal_handlers(path: &std::path::Path) {
     use std::os::unix::io::IntoRawFd;
@@ -105,22 +132,69 @@ unsafe fn install_signal_handlers(path: &std::path::Path) {
     {
         CRASH_LOG_FD.store(file.into_raw_fd(), std::sync::atomic::Ordering::Relaxed);
     }
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    {
+        // Load libgcc_s now so the handler's backtrace does not dlopen it.
+        let mut warm = [std::ptr::null_mut::<libc::c_void>(); 4];
+        libc::backtrace(warm.as_mut_ptr(), warm.len() as libc::c_int);
+        // A 64 KB alternate stack for the main thread. Leaked on purpose: it
+        // must outlive every frame the process will ever run.
+        let alt: &'static mut [u8] = Box::leak(vec![0u8; 64 * 1024].into_boxed_slice());
+        let ss = libc::stack_t {
+            ss_sp: alt.as_mut_ptr() as *mut libc::c_void,
+            ss_flags: 0,
+            ss_size: alt.len(),
+        };
+        libc::sigaltstack(&ss, std::ptr::null_mut());
+    }
     for &sig in &[libc::SIGSEGV, libc::SIGABRT, libc::SIGBUS, libc::SIGFPE] {
         let mut sa: libc::sigaction = std::mem::zeroed();
         sa.sa_sigaction = signal_crash_handler as *const () as libc::sighandler_t;
-        sa.sa_flags = libc::SA_SIGINFO | libc::SA_RESETHAND;
+        sa.sa_flags = libc::SA_SIGINFO | libc::SA_RESETHAND | libc::SA_ONSTACK;
         libc::sigaction(sig, &sa, std::ptr::null_mut());
     }
 }
 
-/// Async-signal-safe crash handler: writes signal name to the pre-opened fd,
-/// then returns so `SA_RESETHAND` lets the default handler terminate the process.
+/// Async-signal-safe crash handler. Order matters:
+///
+///  1. **Restore `SIG_DFL` first.** From here on any fault inside the handler —
+///     an unwinder tripping over a corrupt frame, the alternate stack running
+///     out — kills the process outright instead of looping (see
+///     `install_signal_handlers`). Whatever was logged by then stays logged.
+///  2. Write the one-line header the tests pin down (`format_signal_line`):
+///     signal, `si_code`, faulting address.
+///  3. Write the context that turns a header into a lead: UTC time, program
+///     counter, thread id and name (the GTK/WebKit UI thread is the process
+///     name; tokio workers are `tokio-runtime-w`), the executable's path and
+///     version — the offsets below only resolve against *that* binary.
+///  4. Write a glibc backtrace as `module(+offset) [absolute]` lines, one per
+///     frame. `alarm(5)` stands guard: should the unwinder hang on a mangled
+///     stack, SIGALRM's default action ends the process with the partial trace
+///     on disk rather than reproducing the hang this handler exists to end.
+///  5. Re-raise, so the process dies of its own signal (and dumps core where
+///     the system allows), whether the kernel or a chaining handler got us here.
+///     The signal is blocked while its handler runs, so the raise is pended and
+///     delivered — to `SIG_DFL` — the moment every handler on the way back
+///     returns; that also covers `raise`d SIGABRT/SIGFPE, where returning would
+///     resume the code that raised them.
+///
+/// Only `sigaction`, `write`, `clock_gettime`, `syscall(gettid)`, `open`/`read`/
+/// `close`, `readlink`, `alarm`, `backtrace`, `backtrace_symbols_fd` and `raise`
+/// are called — every one async-signal-safe or made so at install — and every
+/// line is formatted into a stack buffer. `scripts/crash-symbolize.sh` turns
+/// the trace into file:line.
 #[cfg(unix)]
 extern "C" fn signal_crash_handler(
     sig: libc::c_int,
-    _info: *mut libc::siginfo_t,
-    _ctx: *mut libc::c_void,
+    info: *mut libc::siginfo_t,
+    ctx: *mut libc::c_void,
 ) {
+    // SAFETY: `sigaction` is async-signal-safe; the struct is fully initialised.
+    unsafe {
+        let mut dfl: libc::sigaction = std::mem::zeroed();
+        dfl.sa_sigaction = libc::SIG_DFL;
+        libc::sigaction(sig, &dfl, std::ptr::null_mut());
+    }
     let fd = CRASH_LOG_FD.load(std::sync::atomic::Ordering::Relaxed);
     if fd >= 0 {
         let name: &[u8] = match sig {
@@ -130,10 +204,178 @@ extern "C" fn signal_crash_handler(
             libc::SIGFPE => b"SIGFPE",
             _ => b"SIGNAL",
         };
-        sig_write(fd, b"=== CRASH: ");
-        sig_write(fd, name);
-        sig_write(fd, b" ===\n");
+        // SAFETY: the kernel — or a chaining handler forwarding the kernel's
+        // arguments — hands a valid `siginfo_t`; null-checked before the read.
+        let (code, addr) = unsafe {
+            if info.is_null() {
+                (0, 0)
+            } else {
+                ((*info).si_code, siginfo_addr(&*info))
+            }
+        };
+        let mut buf = [0u8; 512];
+        let len = format_signal_line(name, code, addr, &mut buf);
+        sig_write(fd, &buf[..len]);
+        let len = format_crash_context(fault_pc(ctx), &mut buf);
+        sig_write(fd, &buf[..len]);
+        write_crash_backtrace(fd);
+        sig_write(fd, b"=== CRASH END ===\n");
     }
+    // SAFETY: `raise` is async-signal-safe per POSIX.
+    unsafe {
+        libc::raise(sig);
+    }
+}
+
+/// The faulting address a fatal signal reports. Linux's `libc` exposes it as an
+/// accessor over the union; the BSD-shaped platforms as a plain field.
+#[cfg(all(unix, any(target_os = "linux", target_os = "android")))]
+fn siginfo_addr(info: &libc::siginfo_t) -> usize {
+    // SAFETY: only read for the fault signals installed above, whose siginfo
+    // carries `si_addr`; a `raise`d one reads as a meaningless but harmless value.
+    unsafe { info.si_addr() as usize }
+}
+
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "android"))))]
+fn siginfo_addr(info: &libc::siginfo_t) -> usize {
+    info.si_addr as usize
+}
+
+/// The program counter at the fault, read off the `ucontext_t` the kernel hands
+/// the handler — the one address that is right even when the unwinder cannot
+/// walk out of the signal frame. `0` where the register layout is not mapped.
+#[cfg(all(target_os = "linux", target_env = "gnu", target_arch = "x86_64"))]
+fn fault_pc(ctx: *mut libc::c_void) -> usize {
+    if ctx.is_null() {
+        return 0;
+    }
+    // SAFETY: the third handler argument is a `ucontext_t*` under `SA_SIGINFO`.
+    unsafe { (*(ctx as *const libc::ucontext_t)).uc_mcontext.gregs[libc::REG_RIP as usize] as usize }
+}
+
+#[cfg(all(target_os = "linux", target_env = "gnu", target_arch = "aarch64"))]
+fn fault_pc(ctx: *mut libc::c_void) -> usize {
+    if ctx.is_null() {
+        return 0;
+    }
+    // SAFETY: the third handler argument is a `ucontext_t*` under `SA_SIGINFO`.
+    unsafe { (*(ctx as *const libc::ucontext_t)).uc_mcontext.pc as usize }
+}
+
+#[cfg(all(
+    unix,
+    not(all(
+        target_os = "linux",
+        target_env = "gnu",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    ))
+))]
+fn fault_pc(_ctx: *mut libc::c_void) -> usize {
+    0
+}
+
+/// Format the context line under the crash header without allocating:
+/// `  at <UTC> pc=0x… tid=<n> thread=<comm> exe=<path> v<version>\n`.
+#[cfg(unix)]
+fn format_crash_context(pc: usize, buf: &mut [u8]) -> usize {
+    let mut pos = 0;
+    pos = crash_push(buf, pos, b"  at ");
+    // SAFETY: `clock_gettime` is async-signal-safe; `ts` is a plain out-param.
+    let secs = unsafe {
+        let mut ts: libc::timespec = std::mem::zeroed();
+        libc::clock_gettime(libc::CLOCK_REALTIME, &mut ts);
+        ts.tv_sec.max(0) as u64
+    };
+    let (y, mo, d, h, mi, s) = storage::epoch_to_utc(secs);
+    pos = crash_push_dec(buf, pos, y, 4);
+    pos = crash_push(buf, pos, b"-");
+    pos = crash_push_dec(buf, pos, mo, 2);
+    pos = crash_push(buf, pos, b"-");
+    pos = crash_push_dec(buf, pos, d, 2);
+    pos = crash_push(buf, pos, b"T");
+    pos = crash_push_dec(buf, pos, h, 2);
+    pos = crash_push(buf, pos, b":");
+    pos = crash_push_dec(buf, pos, mi, 2);
+    pos = crash_push(buf, pos, b":");
+    pos = crash_push_dec(buf, pos, s, 2);
+    pos = crash_push(buf, pos, b"Z pc=0x");
+    pos = crash_push_hex(buf, pos, pc as u64, 1);
+    #[cfg(target_os = "linux")]
+    {
+        pos = crash_push(buf, pos, b" tid=");
+        // SAFETY: raw `gettid` syscall, async-signal-safe, no arguments.
+        let tid = unsafe { libc::syscall(libc::SYS_gettid) };
+        pos = crash_push_dec(buf, pos, tid.max(0) as u64, 1);
+        pos = crash_push(buf, pos, b" thread=");
+        let mut comm = [0u8; 32];
+        let n = read_small_file(c"/proc/thread-self/comm", &mut comm);
+        let n = comm[..n].iter().position(|&c| c == b'\n').unwrap_or(n);
+        pos = crash_push(buf, pos, &comm[..n]);
+        pos = crash_push(buf, pos, b" exe=");
+        let mut exe = [0u8; 256];
+        // SAFETY: `readlink` is async-signal-safe; the path is NUL-terminated
+        // and the buffer length is passed alongside it.
+        let n = unsafe {
+            libc::readlink(
+                c"/proc/self/exe".as_ptr(),
+                exe.as_mut_ptr() as *mut libc::c_char,
+                exe.len(),
+            )
+        };
+        pos = crash_push(buf, pos, &exe[..n.max(0) as usize]);
+    }
+    pos = crash_push(buf, pos, b" v");
+    pos = crash_push(buf, pos, env!("CARGO_PKG_VERSION").as_bytes());
+    crash_push(buf, pos, b"\n")
+}
+
+/// Read up to `buf.len()` bytes of a small file with raw syscalls; returns the
+/// byte count (0 on any failure).
+#[cfg(target_os = "linux")]
+fn read_small_file(path: &std::ffi::CStr, buf: &mut [u8]) -> usize {
+    // SAFETY: `open`/`read`/`close` are async-signal-safe; the path is a
+    // NUL-terminated C string and the read is bounded by `buf.len()`.
+    unsafe {
+        let fd = libc::open(path.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC);
+        if fd < 0 {
+            return 0;
+        }
+        let n = libc::read(fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len());
+        libc::close(fd);
+        n.max(0) as usize
+    }
+}
+
+/// Write the faulting thread's stack, one `module(+offset) [abs]` line per
+/// frame, straight to `fd`. Guarded by `alarm(5)` — see `signal_crash_handler`.
+/// glibc-only: `backtrace(3)` is an execinfo extension, and the loop this
+/// diagnoses is a WebKitGTK one.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn write_crash_backtrace(fd: i32) {
+    sig_write(
+        fd,
+        b"  backtrace (module+offset; scripts/crash-symbolize.sh resolves it):\n",
+    );
+    // SAFETY: `alarm`, `sigaction`, `backtrace` (libgcc_s pre-loaded at
+    // install) and `backtrace_symbols_fd` are async-signal-safe here; the
+    // frame buffer lives on this stack and outlives both calls.
+    unsafe {
+        let mut dfl: libc::sigaction = std::mem::zeroed();
+        dfl.sa_sigaction = libc::SIG_DFL;
+        libc::sigaction(libc::SIGALRM, &dfl, std::ptr::null_mut());
+        libc::alarm(5);
+        let mut frames = [std::ptr::null_mut::<libc::c_void>(); 96];
+        let n = libc::backtrace(frames.as_mut_ptr(), frames.len() as libc::c_int);
+        if n > 0 {
+            libc::backtrace_symbols_fd(frames.as_ptr(), n, fd);
+        }
+        libc::alarm(0);
+    }
+}
+
+#[cfg(all(unix, not(all(target_os = "linux", target_env = "gnu"))))]
+fn write_crash_backtrace(fd: i32) {
+    sig_write(fd, b"  backtrace: not available on this platform\n");
 }
 
 #[cfg(unix)]
@@ -141,6 +383,74 @@ extern "C" fn signal_crash_handler(
 fn sig_write(fd: i32, buf: &[u8]) {
     // SAFETY: `write` is async-signal-safe per POSIX.
     unsafe { libc::write(fd, buf.as_ptr() as *const libc::c_void, buf.len()) };
+}
+
+/// Format `=== CRASH: <name> code=0x… addr=0x… ===\n` into `buf` without
+/// allocating and return the byte length — the Unix signal handler's line.
+/// `code` is `si_code` (for SIGSEGV: 1 = `SEGV_MAPERR`, 2 = `SEGV_ACCERR`),
+/// `addr` is `si_addr`, the address the fault was at — `0x0` reads as a null
+/// dereference, a guard-page address as a stack overflow. Compiled for tests on
+/// every OS; only the Unix handler consumes it at runtime.
+#[cfg(any(unix, test))]
+pub fn format_signal_line(name: &[u8], code: i32, addr: usize, buf: &mut [u8]) -> usize {
+    let mut pos = 0;
+    pos = crash_push(buf, pos, b"=== CRASH: ");
+    pos = crash_push(buf, pos, name);
+    pos = crash_push(buf, pos, b" code=0x");
+    pos = crash_push_hex(buf, pos, code as u32 as u64, 1);
+    pos = crash_push(buf, pos, b" addr=0x");
+    pos = crash_push_hex(buf, pos, addr as u64, 1);
+    pos = crash_push(buf, pos, b" ===\n");
+    pos
+}
+
+/// Append `bytes` to `buf` at `pos`, truncating silently; returns the new `pos`.
+fn crash_push(buf: &mut [u8], pos: usize, bytes: &[u8]) -> usize {
+    let n = bytes.len().min(buf.len().saturating_sub(pos));
+    buf[pos..pos + n].copy_from_slice(&bytes[..n]);
+    pos + n
+}
+
+/// Append `v` as upper-case hex with at least `min_digits` digits.
+fn crash_push_hex(buf: &mut [u8], pos: usize, mut v: u64, min_digits: usize) -> usize {
+    let mut digits = [0u8; 16];
+    let mut i = 0;
+    loop {
+        let d = (v & 0xF) as u8;
+        digits[i] = if d < 10 { b'0' + d } else { b'A' + (d - 10) };
+        i += 1;
+        v >>= 4;
+        if (v == 0 && i >= min_digits) || i == digits.len() {
+            break;
+        }
+    }
+    let mut pos = pos;
+    while i > 0 {
+        i -= 1;
+        pos = crash_push(buf, pos, &digits[i..i + 1]);
+    }
+    pos
+}
+
+/// Append `v` in decimal, zero-padded to at least `min_digits` digits.
+#[cfg(any(unix, test))]
+fn crash_push_dec(buf: &mut [u8], pos: usize, mut v: u64, min_digits: usize) -> usize {
+    let mut digits = [0u8; 20];
+    let mut i = 0;
+    loop {
+        digits[i] = b'0' + (v % 10) as u8;
+        i += 1;
+        v /= 10;
+        if (v == 0 && i >= min_digits) || i == digits.len() {
+            break;
+        }
+    }
+    let mut pos = pos;
+    while i > 0 {
+        i -= 1;
+        pos = crash_push(buf, pos, &digits[i..i + 1]);
+    }
+    pos
 }
 
 /// Register a Windows SEH unhandled-exception filter that appends a
@@ -214,36 +524,12 @@ unsafe extern "system" fn crash_filter(
 /// on every OS so its unit tests run on Linux; only the Windows crash filter
 /// consumes it at runtime.
 pub fn format_crash_line(code: u32, addr: usize, buf: &mut [u8]) -> usize {
-    fn push(buf: &mut [u8], pos: usize, bytes: &[u8]) -> usize {
-        let n = bytes.len().min(buf.len().saturating_sub(pos));
-        buf[pos..pos + n].copy_from_slice(&bytes[..n]);
-        pos + n
-    }
-    fn push_hex(buf: &mut [u8], pos: usize, mut v: u64, min_digits: usize) -> usize {
-        let mut digits = [0u8; 16];
-        let mut i = 0;
-        loop {
-            let d = (v & 0xF) as u8;
-            digits[i] = if d < 10 { b'0' + d } else { b'A' + (d - 10) };
-            i += 1;
-            v >>= 4;
-            if (v == 0 && i >= min_digits) || i == digits.len() {
-                break;
-            }
-        }
-        let mut pos = pos;
-        while i > 0 {
-            i -= 1;
-            pos = push(buf, pos, &digits[i..i + 1]);
-        }
-        pos
-    }
     let mut pos = 0;
-    pos = push(buf, pos, b"=== CRASH: code=0x");
-    pos = push_hex(buf, pos, code as u64, 8);
-    pos = push(buf, pos, b" addr=0x");
-    pos = push_hex(buf, pos, addr as u64, 1);
-    pos = push(buf, pos, b" ===\n");
+    pos = crash_push(buf, pos, b"=== CRASH: code=0x");
+    pos = crash_push_hex(buf, pos, code as u64, 8);
+    pos = crash_push(buf, pos, b" addr=0x");
+    pos = crash_push_hex(buf, pos, addr as u64, 1);
+    pos = crash_push(buf, pos, b" ===\n");
     pos
 }
 
@@ -252,7 +538,7 @@ pub fn format_crash_line(code: u32, addr: usize, buf: &mut [u8]) -> usize {
 /// showing its last frame — an apparent freeze. Hook WebKit's
 /// web-process-terminated signal to log the reason to crash.log and reload
 /// the page, which respawns the renderer.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 fn install_webview_crash_reporter(app: &tauri::App) {
     use tauri::Manager;
 
@@ -298,12 +584,114 @@ pub(crate) fn hook_webview_crash_reporter(window: &tauri::WebviewWindow) {
     });
 }
 
-/// Every other platform reports renderer crashes through its own channel (the
-/// SEH filter on Windows, the signal handlers elsewhere), so this is a no-op
-/// with the same signature rather than a `cfg` at every call site.
-#[cfg(not(target_os = "linux"))]
+/// Windows: hook WebView2's `ProcessFailed` event on the window's
+/// `ICoreWebView2` — the WebView2 spelling of WebKitGTK's
+/// `web-process-terminated`. A renderer that exits (crash, OOM kill) leaves the
+/// same last-frame "freeze" it does on Linux, so it is logged to crash.log and
+/// the page reloaded, under the same reload cap. A dead *browser* process is
+/// logged only: the whole WebView2 is gone with it and `Reload` has nothing to
+/// talk to (the user's remedy is a relaunch, which the log line now explains).
+/// An unresponsive renderer is logged and left alone — it may recover, and a
+/// reload would destroy whatever it was doing.
+#[cfg(target_os = "windows")]
+pub(crate) fn hook_webview_crash_reporter(window: &tauri::WebviewWindow) {
+    use webview2_com::Microsoft::Web::WebView2::Win32::{
+        COREWEBVIEW2_PROCESS_FAILED_KIND, COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED,
+        COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED,
+        COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_UNRESPONSIVE,
+    };
+    use webview2_com::ProcessFailedEventHandler;
+
+    static RELOADS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    const MAX_RELOADS: u32 = 5;
+
+    let label = window.label().to_string();
+    let _ = window.with_webview(move |webview| {
+        // SAFETY: COM calls on the live controller Tauri handed us, on the
+        // thread `with_webview` runs on (the webview's own); the handler is
+        // reference-counted by WebView2 for as long as it is registered.
+        unsafe {
+            let Ok(core) = webview.controller().CoreWebView2() else {
+                return;
+            };
+            let handler = ProcessFailedEventHandler::create(Box::new(move |sender, args| {
+                let mut kind = COREWEBVIEW2_PROCESS_FAILED_KIND::default();
+                if let Some(args) = args.as_ref() {
+                    let _ = args.ProcessFailedKind(&mut kind);
+                }
+                let what = match kind {
+                    COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED => "renderer exited",
+                    COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_UNRESPONSIVE => {
+                        "renderer unresponsive"
+                    }
+                    COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED => {
+                        "browser process exited (WebView2 is gone; relaunch Eldrun)"
+                    }
+                    _ => "helper process failed",
+                };
+                let msg = format!(
+                    "=== WEBVIEW '{label}' PROCESS FAILED {} kind={} ({what}) ===",
+                    iso_now(),
+                    kind.0
+                );
+                crash_log_append(&msg);
+                eprintln!("{msg}");
+                if kind == COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED
+                    && RELOADS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < MAX_RELOADS
+                {
+                    if let Some(view) = sender.as_ref() {
+                        let _ = view.Reload();
+                    }
+                }
+                Ok(())
+            }));
+            let mut token = 0i64;
+            let _ = core.add_ProcessFailed(&handler, &mut token);
+        }
+    });
+}
+
+/// macOS: `webViewWebContentProcessDidTerminate` is delivered through wry's
+/// navigation delegate, which Tauri exposes only as ONE app-wide hook on the
+/// builder (`on_web_content_process_terminate`), not per window — so the
+/// per-window call is a no-op here and [`with_webview_crash_reporter`] installs
+/// the hook once for every window, present and future. (Any other platform
+/// reports through its signal handlers.)
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
 pub(crate) fn hook_webview_crash_reporter(window: &tauri::WebviewWindow) {
     let _ = window;
+}
+
+/// macOS: install the app-wide content-process-terminated hook on the builder.
+/// WebKit does NOT reload on its own after its WebContent process dies — the
+/// window keeps its last frame, the same apparent freeze the Linux hook
+/// exists for — so the handler logs to crash.log and reloads, under the same
+/// reload cap. Applies to every window the app ever builds (popouts, the
+/// presenter, live browser pages), which is why it lives on the builder rather
+/// than beside the per-window Linux/Windows hooks.
+#[cfg(target_os = "macos")]
+fn with_webview_crash_reporter(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry> {
+    static RELOADS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    const MAX_RELOADS: u32 = 5;
+    builder.on_web_content_process_terminate(|webview| {
+        let msg = format!(
+            "=== WEBVIEW '{}' TERMINATED {} (WebContent process died) ===",
+            webview.label(),
+            iso_now()
+        );
+        crash_log_append(&msg);
+        eprintln!("{msg}");
+        if RELOADS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < MAX_RELOADS {
+            let _ = webview.reload();
+        }
+    })
+}
+
+/// Linux and Windows hook each window as it is built (see
+/// [`hook_webview_crash_reporter`]); nothing to add to the builder.
+#[cfg(not(target_os = "macos"))]
+fn with_webview_crash_reporter(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry> {
+    builder
 }
 
 /// WebKitGTK draws the scrollbars INSIDE the web content with the native GTK
@@ -454,7 +842,21 @@ pub fn run() {
         std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
     }
 
+    // Before the logger appends this run's `=== STARTED … ===` line, so the cap
+    // is enforced against what previous runs left rather than a moment later.
+    services::state_gc::cap_crash_log();
     install_crash_logger();
+
+    // The webview's data directory is `<data dir>/<identifier>` on Linux, and
+    // the identifier is the Tauri config's — asked for rather than hardcoded, so
+    // a rename cannot leave this sweeping a directory nothing writes to any
+    // more. Built here, at the top of `run`, because the cache has to be judged
+    // and dropped BEFORE wry constructs the WebContext that opens it; the
+    // context is handed to `build` unchanged at the bottom of the chain.
+    let context = tauri::generate_context!();
+    if let Some(root) = services::state_gc::webview_data_root(&context.config().identifier) {
+        services::state_gc::trim_webview_cache(&root);
+    }
 
     // More than one crate in the tree can supply a rustls `CryptoProvider`, and
     // rustls refuses to guess — it panics at the *first handshake* instead, i.e.
@@ -505,7 +907,7 @@ pub fn run() {
     let usage_watch = services::usage_stats::new_state();
     let mobile_desktop = commands::mobile_control::MobileDesktopState::default();
 
-    tauri::Builder::default()
+    with_webview_crash_reporter(tauri::Builder::default())
         .manage(pty_registry)
         .manage(win_registry)
         .manage(workspace)
@@ -528,7 +930,52 @@ pub fn run() {
                 _app.handle().clone(),
                 mobile_desktop.clone(),
             );
-            #[cfg(target_os = "linux")]
+            // The Mobile host's lifetime is the app's: `RunEvent::Exit` stops
+            // it, so an enabled configuration has to bring it back here rather
+            // than waiting for the next login. Off the main thread, bounded,
+            // and a no-op when Mobile is off or the host is already up.
+            commands::mobile_control::start_host_on_launch();
+            // A SIGTERM/SIGINT (the dev launcher's Ctrl+C, a `kill`, a session
+            // logout) used to end the process with none of the teardown the
+            // window's × runs: PTY subtrees, local tmux sessions, the Mobile
+            // host, containers, VMs and tunnels all outlived it. Route the
+            // signal into the ordinary exit instead, so `RunEvent::Exit` runs
+            // the same cleanup for every clean exit. `AppHandle::exit` from a
+            // runtime thread goes through the event-loop proxy, which is what
+            // makes the exit events deliverable at all. Unix only: Windows has
+            // no signals, and its console close is a hard kill either way.
+            #[cfg(unix)]
+            {
+                let handle = _app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    use tokio::signal::unix::{signal, SignalKind};
+                    let (Ok(mut term), Ok(mut int)) = (
+                        signal(SignalKind::terminate()),
+                        signal(SignalKind::interrupt()),
+                    ) else {
+                        return;
+                    };
+                    tokio::select! {
+                        _ = term.recv() => {}
+                        _ = int.recv() => {}
+                    }
+                    handle.exit(0);
+                });
+            }
+            // Announce window-registry mutations made outside a frontend command
+            // (a launched app exiting) so every window's Apps view refreshes.
+            {
+                use tauri::{Emitter, Manager};
+                let handle = _app.handle().clone();
+                _app.state::<WindowRegistryState>().lock().unwrap().notify =
+                    Some(Arc::new(move |project_id: Option<String>| {
+                        let _ = handle.emit(
+                            "app-windows-changed",
+                            serde_json::json!({ "project_id": project_id }),
+                        );
+                    }));
+            }
+            #[cfg(any(target_os = "linux", target_os = "windows"))]
             install_webview_crash_reporter(_app);
             // Recolor WebKitGTK's native in-content scrollbars (page CSS can't —
             // `scrollbar-color` is ignored on this build). Runs on the GTK main
@@ -582,6 +1029,11 @@ pub fn run() {
                     workspace.lock().unwrap().backend.set_main_window_id(id);
                 }
             }
+            // #240: watch for the display arrangement changing and re-fit every
+            // detached popout onto a screen that still exists. Undocking from an
+            // external monitor otherwise leaves a borderless popout larger than
+            // the laptop panel, with its title bar and resize edges off-screen.
+            commands::subwindow::spawn_monitor_watcher(_app.handle().clone());
             // Install the global Claude SessionStart hook so Eldrun can follow a
             // tab's live session id across `/clear` (see services::agent_session).
             if let Err(e) = services::agent_session::install_session_start_hook() {
@@ -606,9 +1058,24 @@ pub fn run() {
             // Cheap: one small file per project, and it no-ops after the first
             // run. See `services::terminal_service::migrate_project_sessions_once`.
             services::terminal_service::migrate_project_sessions_once();
+            // A crashed run's staged agent transcripts go home BEFORE the window
+            // can restore a tab: the resume probe reads the host dir, and the
+            // stage root is wiped here too, so no fenced spawn can race it.
+            services::sandbox::harvest_and_clear_stage();
+            // Keep the Claude credential mirror in step with the host file:
+            // every fenced/contained tab is bound to the mirror's one inode, and
+            // Claude rotates the host file by rename, so without this a tab
+            // older than the last rotation reads a stale token and reports
+            // "Login expired" (see services::agent_creds). One detached thread
+            // — a notify watch plus a poll — holding no lock and no child; it
+            // dies with the process. Only the Linux fence and container mount
+            // the mirror (Seatbelt keeps the real file in place, Windows fences
+            // nothing), so only Linux has one to keep.
+            #[cfg(target_os = "linux")]
+            services::agent_creds::start();
             // Remove project containers a previous run left behind (a crash
-            // skips the exit teardown) and the staged config copies. Off-thread:
-            // docker may be slow or absent, and neither may block startup.
+            // skips the exit teardown). Off-thread: docker may be slow or
+            // absent, and neither may block startup.
             std::thread::spawn(services::sandbox::sweep_orphans);
             // Reap project VMs a previous (crashed) run left behind, by
             // pidfile — a VM's lifetime is its app session, so anything alive
@@ -621,6 +1088,12 @@ pub fn run() {
             // that target, quietly turning every later channel into its own login.
             // Off-thread: one cheap local `ssh -O check` per file.
             std::thread::spawn(services::ssh_exec::sweep_stale_control_sockets);
+            // Remove askpass shims a previous run left behind. Same posture as
+            // the socket sweep above and for the same reason: the `Askpass`
+            // guard deletes its own file, so anything still there belongs to a
+            // process that died before it could. Off-thread — one `kill(pid, 0)`
+            // per file, and the directory can hold thousands.
+            std::thread::spawn(services::ssh_common::sweep_stale_askpass);
             // Re-adopt OpenVPN tunnels a previous run left running (a crash, an OOM
             // kill, a refused quit-time prompt): the daemon runs as root and outlives
             // the app, still rerouting the machine, but the live-tunnel registries are
@@ -657,7 +1130,31 @@ pub fn run() {
             // Settings
             commands::settings::get_settings,
             commands::settings::save_settings,
+            commands::settings::patch_settings,
             commands::settings::save_window_state,
+            // Per-tab scheduled agent prompts. Definitions and receipts live in
+            // local-only agent_tasks.json; the frontend owns wall-clock delivery.
+            commands::agent_tasks::agent_schedules_list,
+            commands::agent_tasks::agent_schedule_upsert,
+            commands::agent_tasks::agent_schedule_delete,
+            commands::agent_tasks::agent_schedules_delete_target,
+            commands::agent_tasks::agent_schedule_claim,
+            commands::agent_tasks::agent_schedule_complete,
+            commands::agent_tasks::agent_schedules_cleanup_orphans,
+            // Project-scoped prompt collection (agent_prompts.json): text with no
+            // tab binding until the user aims it at an agent tab.
+            commands::agent_prompts::agent_prompts_list,
+            commands::agent_prompts::agent_prompt_links_list,
+            commands::agent_prompts::agent_prompt_link_upsert,
+            commands::agent_prompts::agent_prompt_link_delete,
+            commands::agent_prompts::agent_prompt_upsert,
+            commands::agent_prompts::agent_prompt_delete,
+            commands::agent_prompts::agent_prompt_reorder,
+            commands::agent_prompts::agent_prompt_history_list,
+            commands::agent_prompts::agent_prompt_archive,
+            commands::agent_prompts::agent_prompt_record,
+            commands::agent_prompts::agent_prompt_blame,
+            commands::agent_prompts::agent_prompt_history_clear,
             // Updates (Settings → Updates): check the GitHub releases page,
             // download this platform's artifact, hand it to its installer.
             commands::app_update::check_app_update,
@@ -673,6 +1170,8 @@ pub fn run() {
             commands::mobile_control::mobile_host_apply,
             commands::mobile_control::mobile_verify_tailscale_serve,
             commands::mobile_control::mobile_tailscale_serve_status,
+            commands::mobile_control::mobile_desktop_images,
+            commands::mobile_control::mobile_attach_desktop_image,
             commands::default_apps::get_default_apps,
             commands::default_apps::save_default_apps,
             // Projects
@@ -696,6 +1195,7 @@ pub fn run() {
             commands::vm::remote_download_size,
             commands::vm::remote_download_to,
             commands::projects::set_project_remote_control,
+            commands::projects::set_project_agent_fence,
             commands::projects::set_project_mobile_access,
             commands::projects::sandbox_preflight,
             commands::python::python_interpreters,
@@ -743,6 +1243,8 @@ pub fn run() {
             commands::projects::project_scaffold_missing,
             commands::projects::repair_project_scaffold,
             commands::projects::repair_all_project_scaffolds,
+            commands::projects::project_migration_plan,
+            commands::projects::project_migration_apply,
             commands::projects::import_project,
             commands::projects::check_project_site,
             commands::projects::extend_project_to_remote,
@@ -764,6 +1266,7 @@ pub fn run() {
             commands::boxes::ensure_box_folder,
             commands::boxes::refresh_box_agent_docs,
             commands::boxes::set_box_relations,
+            commands::boxes::set_box_mobile_access,
             // Native calendar (local event store)
             commands::calendar::calendar_load,
             commands::calendar::calendar_save,
@@ -955,7 +1458,6 @@ pub fn run() {
             // SSH-sync (Phase 1): selective local↔remote mirror sync.
             commands::sync::sync_pull,
             commands::sync::sync_whole_project,
-            commands::sync::sync_now,
             commands::sync::sync_push,
             commands::sync::sync_mark_selected,
             commands::sync::sync_set_auto,
@@ -1031,7 +1533,10 @@ pub fn run() {
             commands::clipboard::clipboard_has_image,
             commands::clipboard::save_clipboard_image,
             commands::clipboard::copy_png_bytes_to_clipboard,
-            commands::screenshot::capture_project_screenshot,
+            commands::screenshot::capture_screenshot,
+            commands::screenshot::read_pending_screenshot,
+            commands::screenshot::save_pending_screenshot,
+            commands::screenshot::discard_pending_screenshot,
             commands::fs::delete_file,
             commands::fs::delete_dir,
             commands::fs::create_file,
@@ -1067,13 +1572,16 @@ pub fn run() {
             // LaTeX view / compile (gated on a TeX engine being on PATH)
             commands::tex::tex_capability,
             commands::tex::compile_tex,
+            commands::tex::tex_preview_snippet,
             commands::tex::synctex_edit,
+            commands::tex::synctex_status,
             commands::tex::synctex_view,
             commands::tex::synctex_page_lines,
             commands::tex::list_fonts,
             commands::tex::resolve_tex_root,
             // Terminal
             commands::terminal::pty_spawn,
+            commands::terminal::agent_fence_status,
             commands::terminal::register_host_bound_tab,
             commands::terminal::pty_write,
             commands::terminal::pty_resize,
@@ -1081,6 +1589,7 @@ pub fn run() {
             commands::terminal::pty_kill_scope,
             commands::terminal::pty_set_visible,
             commands::terminal::pty_remove_view,
+            commands::terminal::pty_scrollback,
             commands::terminal::pty_watch,
             commands::terminal::pty_unwatch,
             commands::terminal::local_tmux_list,
@@ -1094,6 +1603,7 @@ pub fn run() {
             commands::apps::open_file,
             commands::apps::list_tracked_windows,
             commands::apps::untrack_window,
+            commands::apps::close_tracked_window,
             commands::apps::check_pid_alive,
             commands::apps::restore_open_apps,
             commands::apps::run_script_detached,
@@ -1105,6 +1615,7 @@ pub fn run() {
             // Workspace / network
             commands::workspace::workspace_info,
             commands::workspace::workspace_switch,
+            commands::workspace::desktop_owns_super_key,
             commands::workspace::show_window,
             commands::workspace::hide_window,
             commands::workspace::get_opened_windows,
@@ -1113,6 +1624,8 @@ pub fn run() {
             commands::subwindow::detach_subwindow,
             commands::subwindow::attach_subwindow,
             commands::subwindow::detached_window_frontmost,
+            commands::subwindow::snap_detached_window,
+            commands::subwindow::sync_detached_scope,
             // The deck presenter's audience window (M#90)
             commands::presenter::open_presenter_window,
             commands::presenter::close_presenter_window,
@@ -1120,13 +1633,15 @@ pub fn run() {
             commands::presenter::presenter_release_sleep,
             commands::workspace::workspace_name,
             commands::workspace::network_conn_type,
+            commands::workspace::network_wifi_ssid,
             // Project-runtime switching (replaces switch_project_windows)
             commands::project_runtime::switch_project_runtime,
-            commands::project_runtime::load_right_panel_folder,
-            commands::project_runtime::save_right_panel_folder,
+            commands::project_runtime::load_side_panel_folder,
+            commands::project_runtime::save_side_panel_folder,
             // Git
             commands::git::git_available,
             commands::git::git_status,
+            commands::git::git_dirty_probe,
             commands::git::git_repo_root,
             commands::git::detect_git_providers,
             commands::git::git_add_all,
@@ -1134,6 +1649,7 @@ pub fn run() {
             commands::git::git_commit,
             commands::git::git_push,
             commands::git::git_clone,
+            commands::git::git_remote_visibility,
             commands::git::git_file_statuses,
             commands::git::git_unpushed_commits,
             commands::git::git_change_stats,
@@ -1188,6 +1704,10 @@ pub fn run() {
             // Debug diagnostics
             commands::debug::debug_app_resource_usage,
             commands::debug::webview_rss_kib,
+            commands::debug::webview_renderer_rss,
+            commands::debug::webview_renderer_claim,
+            commands::debug::webview_renderer_memory,
+            commands::debug::webview_renderer_restart,
             // Ollama local models
             commands::ollama::list_ollama_models,
             commands::ollama::ensure_vibe_ollama_model,
@@ -1211,6 +1731,13 @@ pub fn run() {
             commands::agents::install_agent_remote,
             commands::agents::install_agent_remote_command,
             commands::agents::uninstall_agent,
+            commands::agents::agent_warmup,
+            commands::agents::claude_folder_trusted,
+            commands::agents::agent_usage,
+            commands::agents::agent_versions,
+            commands::agents::dismiss_agent_version,
+            commands::agents::agent_tab_model,
+            commands::agents::agent_tab_last_prompt,
             commands::ollama::ollama_is_running,
             commands::ollama::ollama_status,
             commands::ollama::ollama_gpu_status,
@@ -1236,11 +1763,18 @@ pub fn run() {
             commands::ollama::complete_text,
             // Local grammar/spelling check (opt-in, local-only)
             commands::ollama::check_grammar,
+            // Dictionary spell check (Hunspell dictionaries, local-only)
+            commands::spell::spell_check,
+            commands::spell::spell_languages,
+            commands::spell::spell_add_word,
+            commands::spell::spell_dictionaries,
+            commands::spell::spell_install_language,
+            commands::spell::spell_remove_language,
         ])
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_drag::init())
         .plugin(tauri_plugin_notification::init())
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building tauri application")
         .run(|_app, event| {
             // A detached popout can die WITHOUT going through `attach_subwindow`
@@ -1256,8 +1790,42 @@ pub fn run() {
                 ..
             } = &event
             {
+                use tauri::{Emitter, Manager};
+                // The main window going away must take every other Eldrun window
+                // with it. Popouts, the deck presenter and live browser pages are
+                // siblings of `main` in this process, not children of it, so
+                // nothing closes them on their own: they would strand on screen
+                // and — since Tauri exits only on the LAST window — keep a
+                // windowless Eldrun running behind them. The shell's own
+                // `shutdownDetachedWindows` already tears popouts down (before
+                // `destroy()`, so their bounds are persisted first); this is the
+                // net under it, for the windows it does not cover and for the
+                // quits it never runs on (hung/crashed renderer, WM kill).
+                if label == services::window_service::MAIN_WINDOW_LABEL {
+                    let open: Vec<String> = _app.webview_windows().into_keys().collect();
+                    for other in services::window_service::windows_closed_with_main(
+                        open.iter().map(String::as_str),
+                    ) {
+                        if let Some(win) = _app.get_webview_window(&other) {
+                            if let Err(e) = win.destroy() {
+                                eprintln!("close with main: destroy {other}: {e}");
+                            }
+                        }
+                    }
+                }
+                // Group B #238: every teardown of a secondary window uses
+                // `destroy()`, which runs no renderer cleanup — so its panes
+                // never call `pty_remove_view` and the output router keeps a
+                // `visible: true` viewer under a dead window's uuid. The PTY
+                // then streams over IPC for the rest of the session, for every
+                // tab that ever lived in that window. Drop the whole window's
+                // registrations here, the one choke point every death passes.
+                // Not limited to popouts: the presenter and live browser
+                // windows are destroyed the same way.
+                if label != services::window_service::MAIN_WINDOW_LABEL {
+                    crate::terminal::route_drop_window_views(label);
+                }
                 if label.starts_with("detached-") {
-                    use tauri::Manager;
                     // Guard against a same-label window already re-created
                     // (rapid destroy → re-detach): only clean up when no live
                     // window holds the label, else we'd free the NEW window's
@@ -1272,11 +1840,31 @@ pub fn run() {
                             let ws = _app.state::<commands::workspace::WorkspaceStateArc>();
                             ws.lock().unwrap().backend.unset_parkable(wid);
                         }
+                        // Group B #224: tell the frontend a popout died. A
+                        // legitimate teardown drops the store record BEFORE the
+                        // window goes, so the host finds none and does nothing;
+                        // a record still standing means the window died behind
+                        // the store's back (xkill, a renderer crash, the
+                        // seed-timeout self-destroy) — and without this its tabs
+                        // were stranded in a `detached: true` record with no
+                        // window, no dock-back path, their PTYs running hidden,
+                        // and the failure repeated at every launch.
+                        let _ = _app.emit(
+                            "detached-window-destroyed",
+                            serde_json::json!({ "label": label }),
+                        );
                     }
                 }
             }
             if let tauri::RunEvent::Exit = event {
                 use tauri::Manager;
+                // Stop the Eldrun Mobile host first: its lifetime is the app's
+                // (started again at the next launch, see `setup`), and once the
+                // desktop is gone it can neither create tabs nor reach the
+                // sessions reaped below, so a host left running would only be a
+                // listener with nothing behind it. Bounded (admin-socket
+                // timeouts), best-effort, and a no-op when Mobile is off.
+                tauri::async_runtime::block_on(commands::mobile_control::stop_host_for_exit());
                 // Abort every terminal's process subtree so no inner process (a
                 // dev server, a build, a training run) outlives Eldrun. Runs
                 // before the container teardown below, since a containerized
@@ -1284,6 +1872,17 @@ pub fn run() {
                 // container. Dropping the registry alone would kill only the
                 // shell leaders and orphan everything they spawned.
                 _app.state::<RegistryState>().lock().unwrap().kill_all();
+                // The local tmux servers those PTYs were clients of survive the
+                // clients by design (that is what makes a crash resumable), so a
+                // clean quit ends Eldrun's own sessions explicitly. The window's
+                // close handler already does this before `destroy()`; repeating
+                // it here is what covers the exits that never run frontend code
+                // — the dev launcher's Ctrl+C (SIGINT/SIGTERM → `app.exit`),
+                // an `app.exit()` from the backend. Idempotent: a second pass
+                // finds no server and returns.
+                if let Err(e) = services::tmux_local::kill_eldrun_sessions() {
+                    eprintln!("tmux_local: quit reap: {e}");
+                }
                 // Stop the Ollama server *this run started* — the spawned
                 // `ollama serve` (with the runner child holding the weights) or
                 // the systemd unit that was inactive until Eldrun asked for it.
@@ -1352,6 +1951,41 @@ mod tests {
         let mut buf = vec![0u8; cap];
         let len = format_crash_line(code, addr, &mut buf);
         (String::from_utf8(buf[..len].to_vec()).unwrap(), len)
+    }
+
+    #[test]
+    fn crash_push_dec_pads_and_truncates() {
+        let mut buf = [0u8; 16];
+        let mut pos = crash_push_dec(&mut buf, 0, 7, 2);
+        pos = crash_push_dec(&mut buf, pos, 2026, 4);
+        pos = crash_push_dec(&mut buf, pos, 0, 1);
+        assert_eq!(std::str::from_utf8(&buf[..pos]).unwrap(), "0720260");
+        // The buffer bounds every write; u64::MAX has 20 digits.
+        let mut small = [0u8; 6];
+        assert_eq!(crash_push_dec(&mut small, 0, u64::MAX, 1), 6);
+        assert_eq!(&small, b"184467");
+    }
+
+    #[test]
+    fn format_signal_line_names_signal_code_and_address() {
+        let mut buf = [0u8; 96];
+        // SEGV_MAPERR at a null page: the shape of a plain null dereference.
+        let len = format_signal_line(b"SIGSEGV", 1, 0x10, &mut buf);
+        assert_eq!(
+            std::str::from_utf8(&buf[..len]).unwrap(),
+            "=== CRASH: SIGSEGV code=0x1 addr=0x10 ===\n"
+        );
+        // A `raise`d SIGABRT carries si_code SI_TKILL (-6): the cast keeps it a
+        // fixed-width value rather than a sign-extended 16-digit one.
+        let len = format_signal_line(b"SIGABRT", -6, 0, &mut buf);
+        assert_eq!(
+            std::str::from_utf8(&buf[..len]).unwrap(),
+            "=== CRASH: SIGABRT code=0xFFFFFFFA addr=0x0 ===\n"
+        );
+        // Never overruns a short buffer.
+        let mut small = [0u8; 8];
+        let len = format_signal_line(b"SIGBUS", 2, usize::MAX, &mut small);
+        assert_eq!(len, 8);
     }
 
     #[test]

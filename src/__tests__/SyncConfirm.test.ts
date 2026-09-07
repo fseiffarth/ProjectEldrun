@@ -21,6 +21,7 @@ const PREVIEW = {
   destructive: ["a.txt"],
   destructiveTotal: 1,
   conflicts: 0,
+  tracked: 0,
   exact: true,
 };
 

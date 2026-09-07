@@ -170,7 +170,12 @@ export function SyncConfirmDialog() {
           <>
             <p>
               {empty
-                ? t("syncConfirm.nothingToTransfer")
+                ? t(
+                    preview.tracked > 0
+                      ? "syncConfirm.onlyTracked"
+                      : "syncConfirm.nothingToTransfer",
+                    { count: preview.tracked.toLocaleString() },
+                  )
                 : t("syncConfirm.willTransfer", {
                     count: preview.files.toLocaleString(),
                     size: fmtSize(preview.bytes),
@@ -191,6 +196,13 @@ export function SyncConfirmDialog() {
               <p className="sync-confirm-note">
                 {t("syncConfirm.blockedConflicts", {
                   count: preview.conflicts.toLocaleString(),
+                })}
+              </p>
+            )}
+            {preview.tracked > 0 && !empty && (
+              <p className="sync-confirm-note">
+                {t("syncConfirm.trackedAsCommits", {
+                  count: preview.tracked.toLocaleString(),
                 })}
               </p>
             )}

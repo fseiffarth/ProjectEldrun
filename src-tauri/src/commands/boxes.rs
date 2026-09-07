@@ -2,10 +2,19 @@
 //!
 //! Boxes live in their own sibling file `~/.local/share/eldrun/boxes.json` so the
 //! existing `projects.json` stays byte-compatible for Python rollback. A box owns
-//! the authoritative ordered `member_ids`; the per-project `box_id` back-reference
-//! (carried in `ProjectEntry.extra`) is a denormalized inverse the frontend
-//! derives from `member_ids` on load — see `reconcile_member_ids`. This module
-//! never writes `projects.json`; the box store's actions persist both files.
+//! the authoritative ordered `member_ids` — membership is N:M (a project may sit
+//! in several boxes at once) and lives NOWHERE else; the old per-project `box_id`
+//! back-reference is retired (the frontend strips stale persisted keys on load).
+//! This module never writes `projects.json`.
+//!
+//! A box folder also carries one **link per member** (a symlink on Unix, a
+//! directory junction on Windows) beside the generated agent docs, so agent CLIs
+//! launched in the box folder can traverse straight into each member's tree. Eldrun's own file confinement
+//! deliberately does NOT follow these links — the multi-root Files view (and the
+//! explicit allowed-roots set in `compute_box_allowed_roots`) is Eldrun's file
+//! surface; the links exist purely for the agents' benefit. Ownership of the
+//! links is recorded in `<folder>/.eldrun-box-links.json` so regeneration only
+//! ever removes links Eldrun itself created (see `write_box_member_links`).
 
 use std::collections::HashSet;
 use std::fs;
@@ -112,6 +121,75 @@ fn project_directory(p: &crate::schema::projects::ProjectEntry) -> Option<PathBu
         .map(PathBuf::from)
 }
 
+// ── Box tab scope (`box:<id>`) ──────────────────────────────────────────────
+
+/// Scope-id prefix for box-rooted tabs, disjoint from project ids and "root".
+/// Mirrors `BOX_SCOPE_PREFIX` in `src/stores/boxes.ts`.
+pub(crate) const BOX_SCOPE_PREFIX: &str = "box:";
+
+/// The box id inside a `box:<id>` scope id, or `None` for any other id.
+pub(crate) fn box_id_of_scope(scope: &str) -> Option<&str> {
+    scope
+        .strip_prefix(BOX_SCOPE_PREFIX)
+        .filter(|id| !id.is_empty())
+}
+
+/// Pure core of [`box_allowed_roots`]: the directories a `box:<id>`-scoped tab
+/// or viewer may live in — the box folder (once resolved), every member
+/// project's root, and each member's explicit local-mirror override
+/// (`extra["mirror"]`, the browsable tree of a remote member). `None` for an
+/// unknown box id so callers fail closed, mirroring `compute_allowed_roots`.
+pub(crate) fn compute_box_allowed_roots(
+    boxes: &BoxesList,
+    projects: &crate::schema::projects::ProjectsList,
+    box_id: &str,
+) -> Option<Vec<PathBuf>> {
+    let b = boxes.iter().find(|b| b.id == box_id)?;
+    let mut roots: Vec<PathBuf> = Vec::new();
+    if let Some(folder) = &b.folder {
+        roots.push(PathBuf::from(folder));
+    }
+    for id in &b.member_ids {
+        let Some(p) = projects.iter().find(|p| &p.id == id) else {
+            continue;
+        };
+        if let Some(dir) = project_directory(p) {
+            roots.push(dir);
+        }
+        if let Some(Value::String(mirror)) = p.extra.get("mirror") {
+            if !mirror.trim().is_empty() {
+                roots.push(PathBuf::from(mirror.trim()));
+            }
+        }
+    }
+    Some(roots)
+}
+
+/// State-dir-backed wrapper around [`compute_box_allowed_roots`], adding each
+/// remote member's default local-mirror root (`remote_sync::mirror_dir`) — the
+/// tree a local tab of a remote member actually runs in. `None` = unknown box.
+pub(crate) fn box_allowed_roots(box_id: &str) -> Option<Vec<PathBuf>> {
+    let boxes = read_boxes().ok()?;
+    let path = storage::state_dir().join("projects.json");
+    let projects: crate::schema::projects::ProjectsList = if path.exists() {
+        storage::read_json(&path).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let mut roots = compute_box_allowed_roots(&boxes, &projects, box_id)?;
+    if let Some(b) = boxes.iter().find(|b| b.id == box_id) {
+        for id in &b.member_ids {
+            let is_remote = projects
+                .iter()
+                .any(|p| &p.id == id && p.extra.contains_key("remote"));
+            if is_remote {
+                roots.push(crate::services::remote_sync::mirror_dir(id));
+            }
+        }
+    }
+    Some(roots)
+}
+
 /// Build the Eldrun-managed link block for one box agent doc. Pure (no IO) so it
 /// is unit-testable. `agent_file` is the filename of THIS doc (e.g. "CLAUDE.md");
 /// each member is linked to its same-named md file plus its root path.
@@ -137,11 +215,205 @@ links to the project root and its `{agent_file}`:\n\n"
                 "- **{name}** — root: `{root}` · [`{agent_file}`]({doc})\n"
             ));
         }
+        out.push_str(
+            "\nEach member's root is also symlinked beside this file (`./<member>/`, Unix), \
+so it is reachable by relative path from this folder.\n",
+        );
     }
     out.push('\n');
     out.push_str(BOX_LINKS_END);
     out.push('\n');
     out
+}
+
+// ── Member symlink farm (Phase 4) ───────────────────────────────────────────
+
+/// Ownership manifest for the member symlinks in a box folder: link name →
+/// the target the link was created for. Only names recorded here (and still
+/// symlinks on disk) are ever removed on regeneration — a user file or folder
+/// that happens to share a member's name is never touched (the member's link
+/// gets a `-1`/`-2` suffixed name instead).
+const BOX_LINKS_MANIFEST: &str = ".eldrun-box-links.json";
+
+type BoxLinksManifest = std::collections::BTreeMap<String, String>;
+
+/// Pure planner: pick a link name per member — `sanitize_name` of the member
+/// name, suffixed `-1`/`-2`… past a collision with `taken` (names in the folder
+/// that are not ours to use) or with an earlier member in the same plan.
+/// Cross-platform (no IO), so it is unit-tested everywhere even though the
+/// writer below is Unix-only.
+fn plan_member_links(
+    members: &[(String, PathBuf)],
+    taken: &HashSet<String>,
+) -> Vec<(String, PathBuf)> {
+    let mut used: HashSet<String> = taken.clone();
+    let mut out = Vec::new();
+    for (name, dir) in members {
+        let base = {
+            let s = sanitize_name(name);
+            if s.is_empty() {
+                "project".to_string()
+            } else {
+                s
+            }
+        };
+        let mut candidate = base.clone();
+        let mut counter = 0u32;
+        while used.contains(&candidate) {
+            counter += 1;
+            candidate = format!("{base}-{counter}");
+        }
+        used.insert(candidate.clone());
+        out.push((candidate, dir.clone()));
+    }
+    out
+}
+
+/// Create/refresh the per-member links in `folder`. The rules:
+///
+/// - Only manifest-owned entries that are STILL links are ever removed, and
+///   only when their member vanished or its target changed — a non-link at
+///   an owned name (the user replaced it) is left alone forever.
+/// - A user path shadowing a member's natural name costs the member a suffixed
+///   link name, never the user their file.
+/// - A dangling target is still linked: a member whose folder does not exist
+///   yet (or is temporarily unmounted) keeps its place.
+///
+/// The link is a symlink on Unix and a **directory junction** on Windows (see
+/// [`make_member_link`]): a symlink there needs a privilege ordinary accounts
+/// do not hold, a junction does not, and both read back through the same
+/// `symlink_metadata` / `read_link` calls this planner relies on.
+fn write_box_member_links(folder: &Path, members: &[(String, PathBuf)]) -> std::io::Result<()> {
+    let manifest_path = folder.join(BOX_LINKS_MANIFEST);
+    let manifest: BoxLinksManifest = if manifest_path.exists() {
+        crate::storage::read_json(&manifest_path).unwrap_or_default()
+    } else {
+        BoxLinksManifest::new()
+    };
+
+    // Names in the folder that are NOT ours to (re)use: every entry that is not
+    // a manifest-owned symlink. The planner routes members around them.
+    let mut taken: HashSet<String> = HashSet::new();
+    if let Ok(entries) = fs::read_dir(folder) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            let owned_symlink = manifest.contains_key(&name)
+                && entry
+                    .path()
+                    .symlink_metadata()
+                    .map(|m| m.file_type().is_symlink())
+                    .unwrap_or(false);
+            if !owned_symlink {
+                taken.insert(name);
+            }
+        }
+    }
+
+    let plan = plan_member_links(members, &taken);
+    let desired: BoxLinksManifest = plan
+        .iter()
+        .map(|(name, dir)| (name.clone(), dir.to_string_lossy().to_string()))
+        .collect();
+
+    // Removal pass: an owned link whose (name, target) pair is no longer in the
+    // plan goes — but only while it is still a symlink.
+    for name in manifest.keys() {
+        if desired.get(name) == manifest.get(name) {
+            continue;
+        }
+        let path = folder.join(name);
+        let is_symlink = path
+            .symlink_metadata()
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false);
+        if is_symlink {
+            let _ = remove_member_link(&path);
+        }
+    }
+
+    // Create pass: make each planned link, replacing an owned link whose
+    // target moved (already removed above). An existing link already
+    // pointing at the right target is left as-is.
+    for (name, dir) in &plan {
+        let path = folder.join(name);
+        match path.symlink_metadata() {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                if link_points_at(&path, dir) {
+                    continue;
+                }
+                // An owned link to the old target was removed above; a
+                // FOREIGN link can't reach here (its name is in `taken`).
+                let _ = remove_member_link(&path);
+            }
+            Ok(_) => continue, // never replace a non-link user path
+            Err(_) => {}
+        }
+        let _ = make_member_link(dir, &path);
+    }
+
+    crate::storage::write_json(&manifest_path, &desired)
+        .map_err(|e| std::io::Error::other(e.to_string()))?;
+    Ok(())
+}
+
+/// Whether the link at `link` already resolves to `target`. Windows reads a
+/// junction's substitute name back with the kernel's `\\?\` prefix, which the
+/// planner never wrote, so the comparison strips it on both sides.
+fn link_points_at(link: &Path, target: &Path) -> bool {
+    fn plain(p: &Path) -> String {
+        let s = p.to_string_lossy();
+        s.strip_prefix(r"\\?\").unwrap_or(&s).to_string()
+    }
+    fs::read_link(link)
+        .map(|got| plain(&got) == plain(target))
+        .unwrap_or(false)
+}
+
+/// Unix: a plain symlink.
+#[cfg(unix)]
+fn make_member_link(target: &Path, link: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(target, link)
+}
+
+#[cfg(unix)]
+fn remove_member_link(link: &Path) -> std::io::Result<()> {
+    fs::remove_file(link)
+}
+
+/// Windows: a **directory junction** (`mklink /J`), not a symlink. Creating a
+/// symlink needs `SeCreateSymbolicLinkPrivilege` (or Developer Mode), which an
+/// ordinary account does not hold; a junction is a reparse point any user may
+/// create, and std treats it as a symlink for `is_symlink`, `read_link` and
+/// `remove_dir`. Agent CLIs launched in the box folder traverse it like any
+/// directory. The target is passed absolute and a missing one is accepted
+/// (a dangling junction, mirroring the Unix rule). Spawned through `cmd` because
+/// `mklink` is a shell builtin; the two paths are quoted verbatim and a Windows
+/// path can never contain `"`.
+#[cfg(windows)]
+fn make_member_link(target: &Path, link: &Path) -> std::io::Result<()> {
+    use std::os::windows::process::CommandExt;
+    let out = crate::paths::command_no_window("cmd")
+        .raw_arg(format!(
+            "/C mklink /J \"{}\" \"{}\"",
+            link.display(),
+            target.display()
+        ))
+        .output()?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other(
+            String::from_utf8_lossy(&out.stderr).trim().to_string(),
+        ))
+    }
+}
+
+/// Windows: a junction is removed as an (empty) directory — that unlinks the
+/// reparse point and never touches the member folder it pointed at. A file
+/// symlink (the user made one by hand) removes as a file.
+#[cfg(windows)]
+fn remove_member_link(link: &Path) -> std::io::Result<()> {
+    fs::remove_dir(link).or_else(|_| fs::remove_file(link))
 }
 
 /// Splice a freshly-built link block into existing file content, replacing any
@@ -218,6 +490,7 @@ pub fn create_box(name: String) -> Result<ProjectBox, String> {
         position,
         folder: None,
         relations: vec![],
+        eldrun_mobile_access: false,
         extra: Default::default(),
     };
     boxes.push(new_box.clone());
@@ -263,6 +536,38 @@ pub fn set_box_members(box_id: String, member_ids: Vec<String>) -> Result<Projec
         .find(|b| b.id == box_id)
         .ok_or_else(|| format!("box '{box_id}' not found"))?;
     target.member_ids = member_ids;
+    let updated = target.clone();
+    write_boxes(&boxes)?;
+    Ok(updated)
+}
+
+/// Switch a box's Eldrun Mobile reach (#31aa) — the box-scope twin of
+/// `set_project_mobile_access`. The machine-wide preconditions are the same
+/// (persistent local sessions, tmux), because a box tab reaches the phone the
+/// way a project tab does: through the tmux session the tab already runs in.
+/// The trust tiers need no check here — a `box:<id>` scope's tabs always run
+/// locally, and the sidecar takes only those whose cwd is the box folder or a
+/// local member root. Enabling also resolves the box folder: the sidecar lists
+/// a box by that folder, and a box never opened on the desktop has none yet.
+#[tauri::command]
+pub fn set_box_mobile_access(box_id: String, enabled: bool) -> Result<ProjectBox, String> {
+    if enabled {
+        let settings: crate::schema::Settings =
+            storage::read_json(&storage::state_dir().join("settings.json")).unwrap_or_default();
+        if !settings.persist_local_sessions() {
+            return Err("Enable persistent local terminal sessions before Mobile access".into());
+        }
+        if !crate::services::tmux_local::tmux_available() {
+            return Err("Mobile access requires tmux on this machine".into());
+        }
+        ensure_box_folder(box_id.clone())?;
+    }
+    let mut boxes = read_boxes()?;
+    let target = boxes
+        .iter_mut()
+        .find(|b| b.id == box_id)
+        .ok_or_else(|| format!("box '{box_id}' not found"))?;
+    target.eldrun_mobile_access = enabled;
     let updated = target.clone();
     write_boxes(&boxes)?;
     Ok(updated)
@@ -337,10 +642,11 @@ pub fn ensure_box_folder(box_id: String) -> Result<String, String> {
         folder
     };
 
-    // Refresh the box agent docs with links to the current member roots (best
-    // effort — a write failure here must not block opening the box).
+    // Refresh the box agent docs + member symlinks (best effort — a write
+    // failure here must not block opening the box).
     let members = member_projects(&member_ids);
     let _ = write_box_agent_docs(Path::new(&folder), &name, &members);
+    let _ = write_box_member_links(Path::new(&folder), &members);
     Ok(folder)
 }
 
@@ -361,6 +667,9 @@ pub fn refresh_box_agent_docs(box_id: String) -> Result<(), String> {
         return Ok(());
     }
     let members = member_projects(&b.member_ids);
+    // Symlinks first, best-effort (the docs-write pattern): a failed link farm
+    // must not block the doc refresh, and vice versa.
+    let _ = write_box_member_links(folder, &members);
     write_box_agent_docs(folder, &b.name, &members).map_err(|e| e.to_string())
 }
 
@@ -472,6 +781,10 @@ mod tests {
             !back.contains("relations"),
             "relations should be skipped: {back}"
         );
+        assert!(
+            !back.contains("eldrun_mobile_access"),
+            "an off Mobile bit should be skipped: {back}"
+        );
 
         // Full round-trip equality.
         let reparsed: ProjectBox = serde_json::from_str(&back).unwrap();
@@ -562,6 +875,266 @@ mod tests {
         // Exactly one managed block survives.
         assert_eq!(merged.matches(BOX_LINKS_START).count(), 1);
         assert_eq!(merged.matches(BOX_LINKS_END).count(), 1);
+    }
+
+    fn project_entry(id: &str, dir: &str) -> crate::schema::projects::ProjectEntry {
+        let mut extra = std::collections::HashMap::new();
+        extra.insert("directory".to_string(), Value::String(dir.to_string()));
+        crate::schema::projects::ProjectEntry {
+            id: id.to_string(),
+            name: id.to_string(),
+            status: "active".to_string(),
+            position: 0,
+            local_file: format!("{dir}/project.json"),
+            extra,
+        }
+    }
+
+    #[test]
+    fn box_id_of_scope_accepts_only_box_prefixed_ids() {
+        assert_eq!(box_id_of_scope("box:abc"), Some("abc"));
+        assert_eq!(box_id_of_scope("box:"), None);
+        assert_eq!(box_id_of_scope("abc"), None);
+        assert_eq!(box_id_of_scope("root"), None);
+    }
+
+    #[test]
+    fn box_allowed_roots_covers_folder_members_and_mirror() {
+        let mut b = mk_box("b1", &["p1", "p2"]);
+        b.folder = Some("/home/u/eldrun/boxes/b1".to_string());
+        let mut p2 = project_entry("p2", "/home/u/code/p2");
+        p2.extra.insert(
+            "mirror".to_string(),
+            Value::String("/home/u/eldrun/projects-ssh/p2".to_string()),
+        );
+        let projects = vec![project_entry("p1", "/home/u/code/p1"), p2];
+        let roots = compute_box_allowed_roots(&vec![b], &projects, "b1").unwrap();
+        assert!(roots.contains(&PathBuf::from("/home/u/eldrun/boxes/b1")));
+        assert!(roots.contains(&PathBuf::from("/home/u/code/p1")));
+        assert!(roots.contains(&PathBuf::from("/home/u/code/p2")));
+        assert!(roots.contains(&PathBuf::from("/home/u/eldrun/projects-ssh/p2")));
+    }
+
+    #[test]
+    fn box_allowed_roots_unknown_box_fails_closed() {
+        let boxes = vec![mk_box("b1", &["p1"])];
+        let projects = vec![project_entry("p1", "/home/u/code/p1")];
+        assert!(compute_box_allowed_roots(&boxes, &projects, "ghost").is_none());
+    }
+
+    #[test]
+    fn box_allowed_roots_without_folder_still_lists_member_roots() {
+        // A box that was never opened (no folder yet) still legalizes member
+        // roots — the pill's hover actions can spawn a member-rooted tab first.
+        let boxes = vec![mk_box("b1", &["p1"])];
+        let projects = vec![project_entry("p1", "/home/u/code/p1")];
+        let roots = compute_box_allowed_roots(&boxes, &projects, "b1").unwrap();
+        assert_eq!(roots, vec![PathBuf::from("/home/u/code/p1")]);
+    }
+
+    #[test]
+    fn box_allowed_roots_skips_vanished_members() {
+        let boxes = vec![mk_box("b1", &["p1", "ghost"])];
+        let projects = vec![project_entry("p1", "/home/u/code/p1")];
+        let roots = compute_box_allowed_roots(&boxes, &projects, "b1").unwrap();
+        assert_eq!(roots, vec![PathBuf::from("/home/u/code/p1")]);
+    }
+
+    #[test]
+    fn plan_member_links_sanitizes_and_suffixes_collisions() {
+        let members = vec![
+            ("My Paper".to_string(), PathBuf::from("/p/paper-a")),
+            ("My Paper".to_string(), PathBuf::from("/p/paper-b")),
+            ("data".to_string(), PathBuf::from("/p/data")),
+        ];
+        // "my-paper" is a user file in the folder → the first member is bumped
+        // straight to a suffix, the twin one further.
+        let taken: HashSet<String> = ["my-paper".to_string()].into_iter().collect();
+        let plan = plan_member_links(&members, &taken);
+        assert_eq!(
+            plan,
+            vec![
+                ("my-paper-1".to_string(), PathBuf::from("/p/paper-a")),
+                ("my-paper-2".to_string(), PathBuf::from("/p/paper-b")),
+                ("data".to_string(), PathBuf::from("/p/data")),
+            ]
+        );
+    }
+
+    #[test]
+    fn plan_member_links_empty_name_falls_back() {
+        let members = vec![("···".to_string(), PathBuf::from("/p/x"))];
+        let plan = plan_member_links(&members, &HashSet::new());
+        assert_eq!(plan[0].0, "project");
+    }
+
+    /// Windows: the same planner over junctions. Runs on the CI Windows job,
+    /// which is the one place a junction can actually be created and read back.
+    #[cfg(windows)]
+    mod link_farm_windows {
+        use super::*;
+
+        #[test]
+        fn creates_junctions_reads_them_back_and_removes_only_its_own() {
+            let tmp = tempfile::tempdir().unwrap();
+            let t1 = tmp.path().join("m1");
+            let t2 = tmp.path().join("m2");
+            fs::create_dir(&t1).unwrap();
+            fs::create_dir(&t2).unwrap();
+            let folder = tmp.path().join("box");
+            fs::create_dir(&folder).unwrap();
+
+            write_box_member_links(
+                &folder,
+                &[("One".to_string(), t1.clone()), ("Two".to_string(), t2)],
+            )
+            .unwrap();
+            let one = folder.join("one");
+            assert!(one.symlink_metadata().unwrap().file_type().is_symlink());
+            assert!(link_points_at(&one, &t1));
+            // A junction traverses like a directory.
+            fs::write(t1.join("inside.txt"), b"x").unwrap();
+            assert!(one.join("inside.txt").is_file());
+
+            // Idempotent, then member two vanishes: only its junction goes, and
+            // removing it leaves the member folder intact.
+            write_box_member_links(&folder, &[("One".to_string(), t1.clone())]).unwrap();
+            assert!(one.symlink_metadata().is_ok());
+            assert!(folder.join("two").symlink_metadata().is_err());
+            assert!(tmp.path().join("m2").is_dir(), "the member folder itself survives");
+        }
+    }
+
+    #[cfg(unix)]
+    mod link_farm {
+        use super::*;
+
+        fn read_manifest(folder: &Path) -> BoxLinksManifest {
+            crate::storage::read_json(&folder.join(BOX_LINKS_MANIFEST)).unwrap_or_default()
+        }
+
+        #[test]
+        fn creates_links_and_is_idempotent() {
+            let tmp = tempfile::tempdir().unwrap();
+            let target = tmp.path().join("member");
+            fs::create_dir(&target).unwrap();
+            let folder = tmp.path().join("box");
+            fs::create_dir(&folder).unwrap();
+            let members = vec![("Alpha".to_string(), target.clone())];
+
+            write_box_member_links(&folder, &members).unwrap();
+            let link = folder.join("alpha");
+            assert!(link.symlink_metadata().unwrap().file_type().is_symlink());
+            assert_eq!(fs::read_link(&link).unwrap(), target);
+            assert_eq!(
+                read_manifest(&folder).get("alpha").map(String::as_str),
+                Some(target.to_str().unwrap())
+            );
+
+            // Second run: same plan, nothing recreated, nothing lost.
+            write_box_member_links(&folder, &members).unwrap();
+            assert_eq!(fs::read_link(&link).unwrap(), target);
+        }
+
+        #[test]
+        fn removes_only_own_links_of_vanished_members() {
+            let tmp = tempfile::tempdir().unwrap();
+            let folder = tmp.path().join("box");
+            fs::create_dir(&folder).unwrap();
+            let t1 = tmp.path().join("m1");
+            let t2 = tmp.path().join("m2");
+            fs::create_dir(&t1).unwrap();
+            fs::create_dir(&t2).unwrap();
+
+            write_box_member_links(
+                &folder,
+                &[("one".to_string(), t1.clone()), ("two".to_string(), t2)],
+            )
+            .unwrap();
+            // A FOREIGN symlink Eldrun never made stays, member or not.
+            std::os::unix::fs::symlink(&t1, folder.join("foreign")).unwrap();
+
+            write_box_member_links(&folder, &[("one".to_string(), t1)]).unwrap();
+            assert!(folder.join("one").symlink_metadata().is_ok());
+            assert!(folder.join("two").symlink_metadata().is_err(), "own link removed");
+            assert!(folder.join("foreign").symlink_metadata().is_ok(), "foreign link kept");
+        }
+
+        #[test]
+        fn never_clobbers_a_user_file_shadowing_a_member_name() {
+            let tmp = tempfile::tempdir().unwrap();
+            let folder = tmp.path().join("box");
+            fs::create_dir(&folder).unwrap();
+            let target = tmp.path().join("member");
+            fs::create_dir(&target).unwrap();
+            // The user parked a real file at the member's natural link name.
+            fs::write(folder.join("alpha"), b"mine").unwrap();
+
+            write_box_member_links(&folder, &[("Alpha".to_string(), target.clone())]).unwrap();
+
+            // The user file is intact; the member got a suffixed link instead.
+            assert_eq!(fs::read(folder.join("alpha")).unwrap(), b"mine");
+            let link = folder.join("alpha-1");
+            assert!(link.symlink_metadata().unwrap().file_type().is_symlink());
+            assert_eq!(fs::read_link(&link).unwrap(), target);
+        }
+
+        #[test]
+        fn user_replacing_an_owned_link_is_respected() {
+            let tmp = tempfile::tempdir().unwrap();
+            let folder = tmp.path().join("box");
+            fs::create_dir(&folder).unwrap();
+            let target = tmp.path().join("member");
+            fs::create_dir(&target).unwrap();
+
+            write_box_member_links(&folder, &[("Alpha".to_string(), target.clone())]).unwrap();
+            // The user replaces the owned symlink with a real directory.
+            fs::remove_file(folder.join("alpha")).unwrap();
+            fs::create_dir(folder.join("alpha")).unwrap();
+
+            write_box_member_links(&folder, &[("Alpha".to_string(), target.clone())]).unwrap();
+            // The directory survives; the member re-links under a suffix.
+            assert!(folder.join("alpha").metadata().unwrap().is_dir());
+            assert_eq!(fs::read_link(folder.join("alpha-1")).unwrap(), target);
+        }
+
+        #[test]
+        fn rename_relinks_under_the_new_name() {
+            let tmp = tempfile::tempdir().unwrap();
+            let folder = tmp.path().join("box");
+            fs::create_dir(&folder).unwrap();
+            let target = tmp.path().join("member");
+            fs::create_dir(&target).unwrap();
+
+            write_box_member_links(&folder, &[("Alpha".to_string(), target.clone())]).unwrap();
+            write_box_member_links(&folder, &[("Beta".to_string(), target.clone())]).unwrap();
+
+            assert!(folder.join("alpha").symlink_metadata().is_err(), "old name removed");
+            assert_eq!(fs::read_link(folder.join("beta")).unwrap(), target);
+        }
+
+        #[test]
+        fn dangling_target_is_still_linked() {
+            let tmp = tempfile::tempdir().unwrap();
+            let folder = tmp.path().join("box");
+            fs::create_dir(&folder).unwrap();
+            let missing = tmp.path().join("not-there-yet");
+
+            write_box_member_links(&folder, &[("Ghost".to_string(), missing.clone())]).unwrap();
+            let link = folder.join("ghost");
+            assert!(link.symlink_metadata().unwrap().file_type().is_symlink());
+            assert_eq!(fs::read_link(&link).unwrap(), missing);
+        }
+    }
+
+    #[test]
+    fn box_links_block_notes_symlink_reachability() {
+        let members = vec![("Alpha".to_string(), PathBuf::from("/p/alpha"))];
+        let block = box_links_block("CLAUDE.md", "B", &members);
+        assert!(block.contains("symlinked beside this file"));
+        // No members → no symlink note either.
+        let empty = box_links_block("CLAUDE.md", "B", &[]);
+        assert!(!empty.contains("symlinked"));
     }
 
     #[test]

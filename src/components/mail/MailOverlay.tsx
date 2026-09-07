@@ -38,9 +38,10 @@ export function MailOverlayHost() {
         useMailStore.getState().closeOverlay();
       }
     };
-    // Capture: the pane hosts dialogs and a search field, and Escape reaching a
-    // window-level listener first would close the overlay out from under them.
-    // They stop propagation themselves, so this only ever sees an unhandled one.
+    // Bubble phase, deliberately NOT capture: the pane hosts dialogs and a
+    // search field, and a capturing window listener would run *before* them and
+    // close the overlay out from under them. They stop propagation themselves,
+    // so this only ever sees an unhandled Escape.
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [live]);

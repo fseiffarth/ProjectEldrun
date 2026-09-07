@@ -1,21 +1,16 @@
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { PLATFORM } from "../../lib/dragPlatform";
 import { IS_MAC } from "../../lib/platform";
 import { trackWindowMove } from "../../stores/windowMove";
-import { AppResourceDisplay } from "../header/AppResourceDisplay";
 import { Clock } from "../header/Clock";
-import { useQuiesce, saverInterval, usePowerStore } from "../../stores/power";
-import { ConnTypeIcon } from "../header/ConnTypeIcon";
-import { BatteryIndicator } from "../header/BatteryIndicator";
-import { MobileIndicator } from "../header/MobileIndicator";
-import { VpnIndicator } from "../header/VpnIndicator";
-import { MachinesIndicator } from "../header/MachinesIndicator";
+import { StatusCluster } from "../header/StatusCluster";
 import { MailIndicator } from "../header/MailIndicator";
 import { CalendarIndicator } from "../header/CalendarIndicator";
 import { TodoIndicator } from "../header/TodoIndicator";
+import { SettingsMenu } from "../header/SettingsMenu";
 import { WindowControls } from "../header/WindowControls";
 import { ProjectSwitcher } from "./ProjectSwitcher";
 import { GlobalAppMenu } from "./GlobalAppMenu";
@@ -60,41 +55,11 @@ function handleDrag(e: React.MouseEvent) {
 
 export function HeaderBar() {
   const t = useT();
-  const [online, setOnline] = useState(navigator.onLine);
-  const [connType, setConnType] = useState<string | null>(null);
-  const quiesce = useQuiesce();
-  const batterySupported = usePowerStore((s) => s.supported);
-  const batteryPercentage = usePowerStore((s) => s.percentage);
-  const onBattery = usePowerStore((s) => s.onBattery);
 
   useEffect(() => {
     invoke<WorkspaceInfo>("workspace_info").catch(() => {});
     listen<WorkspaceInfo>("workspace-changed", () => {}).then((fn) => fn());
   }, []);
-
-  useEffect(() => {
-    const onOnline = () => setOnline(true);
-    const onOffline = () => setOnline(false);
-    window.addEventListener("online", onOnline);
-    window.addEventListener("offline", onOffline);
-    return () => {
-      window.removeEventListener("online", onOnline);
-      window.removeEventListener("offline", onOffline);
-    };
-  }, []);
-
-  useEffect(() => {
-    const poll = () =>
-      invoke<string>("network_conn_type")
-        .then(setConnType)
-        .catch(() => {});
-    poll();
-    const id = setInterval(poll, saverInterval(10_000, quiesce));
-    return () => clearInterval(id);
-  }, [quiesce]);
-
-  const connKind =
-    connType === "lan" ? "lan" : connType === "wlan" ? "wlan" : null;
 
   return (
     <header
@@ -118,29 +83,39 @@ export function HeaderBar() {
         <span className="project-switcher-separator" aria-hidden="true" />
       </div>
 
+      {/* The center is the project strip and nothing else. It used to carry the
+          six global buttons as well, which made "center" mean both *where am I*
+          and *what else can I open* — and, worse, made the one elastic thing in
+          the whole bar (the pill strip) share its track with six fixed-width
+          controls. Everything global now sits on the right, so the strip's only
+          neighbours are separators. */}
       <div className="header-center no-drag">
-        <LocalModelMenu />
-        {/* Directly right of the brain button: these are global apps you reach
-            from anywhere, not per-project status readouts like the right
-            cluster. Each renders nothing until its own "in the header" setting
-            is on — see MailIndicator / CalendarIndicator. */}
+        <ProjectSwitcher open />
+      </div>
+      {/* Right of the strip, in three groups separated by gap rather than by more
+          hairlines: the global *apps* (kept as their own buttons — mail, calendar
+          and to-do each carry a live badge, which is exactly what a launcher menu
+          would hide), then the global *menus*, then machine state.
+          Machine state trails rather than leads: at rest it is one lamp, so it
+          costs the bar nothing where it sits, and parking it past the gear keeps
+          the controls contiguous instead of splitting them around a readout. Its
+          widest members (the 280px machines list, the VPN and Mobile panels) can
+          live this close to the window edge because every menu in this cluster is
+          right-anchored and grows inward (see `.header-status-menu-anchor`). */}
+      <div className="header-right no-drag">
         <MailIndicator />
         <CalendarIndicator />
         <TodoIndicator />
+        <span className="header-right-gap" aria-hidden="true" />
+        <LocalModelMenu />
         <GlobalAppMenu />
-        <ProjectSwitcher open />
-      </div>
-      <div className="header-right no-drag">
-        {(connKind || !online) && (
-          <ConnTypeIcon type={connKind ?? "wlan"} online={online} />
-        )}
-        {batterySupported && (
-          <BatteryIndicator percentage={batteryPercentage} plugged={!onBattery} />
-        )}
-        <MobileIndicator />
-        <VpnIndicator />
-        <MachinesIndicator />
-        <AppResourceDisplay />
+        {/* Settings belong to the machine, not to a project, so the gear stays
+            with the other global buttons rather than at the head of the project
+            strip, where it put the switcher's own controls on both sides of a
+            scrolling row. */}
+        <SettingsMenu />
+        <span className="header-right-gap" aria-hidden="true" />
+        <StatusCluster />
         <span className="project-switcher-separator" aria-hidden="true" />
         <WindowControls />
       </div>

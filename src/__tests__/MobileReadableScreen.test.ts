@@ -1,11 +1,20 @@
 import { describe, expect, it } from "vitest";
 import {
   MAX_LINES,
+  readableRange,
   readableScreen,
   readableText,
   type ReadableBufferLike,
   type ReadableCellLike,
 } from "../../mobile-web/src/terminal/readableScreen";
+import {
+  HISTORY_CHUNK,
+  HISTORY_MAX_LINES,
+  absorbHistory,
+  emptyHistory,
+  lastHistoryText,
+  shiftHistory,
+} from "../../mobile-web/src/terminal/readableHistory";
 
 /** Marks a row xterm wrapped from the row above it. An explicit glyph, not a
  * leading space: a wrap point regularly *is* a space, and the two must not be
@@ -170,5 +179,85 @@ describe("Eldrun Mobile readable terminal view", () => {
   it("copies out exactly what is on screen", () => {
     const screen = readableScreen(plainBuffer(["alpha", "", "beta"]));
     expect(readableText(screen.lines)).toBe("alpha\n\nbeta");
+  });
+});
+
+describe("Eldrun Mobile lazy terminal history", () => {
+  /** The combined reading — absorbed history plus the live tail, exactly as the
+   * Focus view composes them. */
+  const view = (buffer: ReadableBufferLike, history: ReturnType<typeof emptyHistory>) => {
+    const tail = readableRange(buffer, history.end, buffer.length, lastHistoryText(history));
+    while (tail.length > 0 && tail[tail.length - 1].text === "") tail.pop();
+    return readableText([
+      ...history.chunks.flatMap((chunk) => chunk.lines),
+      ...history.open,
+      ...tail,
+    ]);
+  };
+
+  it("absorbs everything above the tail window, once, and reads seamlessly", () => {
+    const rows = Array.from({ length: 30 }, (_, index) => `line ${index}`);
+    const history = emptyHistory();
+    expect(absorbHistory(plainBuffer(rows), history, 5)).toBe(true);
+    expect(history.end).toBe(25);
+    // A second pass with no new output absorbs nothing more.
+    expect(absorbHistory(plainBuffer(rows), history, 5)).toBe(false);
+    expect(view(plainBuffer(rows), history)).toBe(rows.join("\n"));
+  });
+
+  it("never splits a wrapped logical line at the absorb boundary", () => {
+    const rows = ["first", "a long line that", `${WRAP} tmux wrapped`, "prompt"];
+    const history = emptyHistory();
+    // The boundary lands on the continuation row; it backs off so the tail
+    // rebuild re-joins the line whole.
+    absorbHistory(plainBuffer(rows), history, 2);
+    expect(history.end).toBe(1);
+    expect(view(plainBuffer(rows), history)).toBe(
+      "first\na long line that tmux wrapped\nprompt",
+    );
+  });
+
+  it("keeps one paragraph break across the absorb seam and never doubles it", () => {
+    const rows = ["above", "", "below", "prompt"];
+    const history = emptyHistory();
+    absorbHistory(plainBuffer(rows), history, 3);
+    expect(history.end).toBe(1);
+    expect(view(plainBuffer(rows), history)).toBe("above\n\nbelow\nprompt");
+  });
+
+  it("follows a scrollback trim without losing or doubling lines", () => {
+    const rows = Array.from({ length: 40 }, (_, index) => `line ${index}`);
+    const history = emptyHistory();
+    absorbHistory(plainBuffer(rows), history, 10);
+    // The buffer trims its oldest 12 rows and 12 new ones arrive.
+    const grown = [...rows, ...Array.from({ length: 12 }, (_, index) => `line ${40 + index}`)];
+    const trimmed = grown.slice(12);
+    shiftHistory(history, 12);
+    absorbHistory(plainBuffer(trimmed), history, 10);
+    expect(history.lost).toBe(false);
+    expect(view(plainBuffer(trimmed), history)).toBe(grown.join("\n"));
+  });
+
+  it("says so when rows were trimmed before they could be absorbed", () => {
+    const history = emptyHistory();
+    shiftHistory(history, 3);
+    expect(history.end).toBe(0);
+    expect(history.lost).toBe(true);
+  });
+
+  it("freezes full chunks with stable ids and bounds the memory", () => {
+    const rows = Array.from({ length: HISTORY_MAX_LINES + 2 * HISTORY_CHUNK }, (_, index) => `line ${index}`);
+    const history = emptyHistory();
+    absorbHistory(plainBuffer(rows), history, 10);
+    expect(history.chunks.every((chunk) => chunk.lines.length === HISTORY_CHUNK)).toBe(true);
+    expect(history.open.length).toBeLessThan(HISTORY_CHUNK);
+    // The oldest chunks were dropped to stay under the cap — and counted.
+    const kept = history.chunks.reduce((sum, chunk) => sum + chunk.lines.length, 0);
+    expect(kept).toBeLessThanOrEqual(HISTORY_MAX_LINES);
+    expect(history.droppedLines).toBeGreaterThan(0);
+    expect(history.droppedLines % HISTORY_CHUNK).toBe(0);
+    // Keys are unique across chunks and the open tail (React keys).
+    const keys = [...history.chunks.flatMap((chunk) => chunk.lines), ...history.open].map((line) => line.key);
+    expect(new Set(keys).size).toBe(keys.length);
   });
 });

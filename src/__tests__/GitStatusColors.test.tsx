@@ -1,13 +1,16 @@
 /**
  * Tests for git status color bars:
- * - STATUS_COLOR mapping (untracked/modified=red, staged=orange, unpushed=green, ignored=gray)
- * - RightPanel git action buttons have correct color bars
+ * - STATUS_COLOR mapping (untracked/modified=danger, staged=warning,
+ *   unpushed=success, ignored=muted — theme TOKENS, never hardcoded hexes,
+ *   so the light themes' own palettes apply; see lib/gitColors)
+ * - SidePanel git action buttons have correct color bars
  * - Hovering a button shows the relevant staged/unpushed list
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { STATUS_COLOR } from "../components/files/FileTree";
+import { clearFileViewSnapshots } from "../lib/fileViewSnapshots";
 
 const { mockInvoke } = vi.hoisted(() => ({ mockInvoke: vi.fn() }));
 
@@ -16,14 +19,22 @@ vi.mock("../stores/projects", () => ({
   useProjectsStore: vi.fn(),
 }));
 vi.mock("../stores/windows", () => ({
-  useWindowsStore: () => ({ windows: [], refresh: vi.fn(), untrack: vi.fn() }),
+  useWindowsStore: () => ({ windows: [], refresh: vi.fn(), untrack: vi.fn(), closeApp: vi.fn() }),
 }));
-vi.mock("../stores/settings", () => ({
-  useSettingsStore: () => null,
-}));
+vi.mock("../stores/settings", () => {
+  // Selector-aware, not a fixed `null`: the side panel reads its stored view off
+  // `settings` and writes it back through the `updateSettings` action when the
+  // view switcher moves, so a mock that ignored the selector handed the panel a
+  // null where an action belongs.
+  const state = { settings: null, updateSettings: async () => {} };
+  return {
+    useSettingsStore: (selector?: (s: typeof state) => unknown) =>
+      selector ? selector(state) : state,
+  };
+});
 
 import { useProjectsStore } from "../stores/projects";
-import { RightPanel } from "../components/layout/RightPanel";
+import { SidePanel } from "../components/layout/SidePanel";
 
 const mockUseProjectsStore = vi.mocked(useProjectsStore);
 
@@ -59,60 +70,83 @@ function setupInvoke({
 }
 
 describe("STATUS_COLOR", () => {
-  it("untracked is red (#f85149)", () => {
-    expect(STATUS_COLOR.untracked).toBe("#f85149");
+  it("untracked is the danger token", () => {
+    expect(STATUS_COLOR.untracked).toBe("var(--danger)");
   });
 
-  it("modified is red (#f85149)", () => {
-    expect(STATUS_COLOR.modified).toBe("#f85149");
+  it("modified is the danger token", () => {
+    expect(STATUS_COLOR.modified).toBe("var(--danger)");
   });
 
-  it("staged is orange (#d29922)", () => {
-    expect(STATUS_COLOR.staged).toBe("#d29922");
+  it("staged is the warning token", () => {
+    expect(STATUS_COLOR.staged).toBe("var(--warning)");
   });
 
-  it("unpushed is green (#3fb950)", () => {
-    expect(STATUS_COLOR.unpushed).toBe("#3fb950");
+  it("unpushed is the success token", () => {
+    expect(STATUS_COLOR.unpushed).toBe("var(--success)");
   });
 
-  it("ignored is dim gray (#6e7681)", () => {
-    expect(STATUS_COLOR.ignored).toBe("#6e7681");
+  it("ignored is the muted-text token", () => {
+    expect(STATUS_COLOR.ignored).toBe("var(--text-muted)");
+  });
+
+  it("never hardcodes a hex — the light themes define their own palette", () => {
+    for (const color of Object.values(STATUS_COLOR)) {
+      expect(color).toMatch(/^var\(--[a-z-]+\)$/);
+    }
   });
 });
 
 describe("git action button bars", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // The panel seeds its git bar and tree from module-level snapshots so a
+    // reveal paints instantly (lib/fileViewSnapshots). Every case here renders
+    // the SAME project, so without a reset each one would start seeded from the
+    // previous case's counts.
+    clearFileViewSnapshots();
     mockUseProjectsStore.mockReturnValue({ projects: [ACTIVE_PROJECT], activeId: "proj-1" } as ReturnType<typeof useProjectsStore>);
   });
 
   async function renderOpenPanel() {
     let result: ReturnType<typeof render>;
     await act(async () => {
-      result = render(<RightPanel open={true} />);
+      result = render(<SidePanel open={true} />);
     });
+    await userEvent.setup().click(screen.getByRole("button", { name: "Git" }));
     return result!;
   }
 
-  it("Add button has red status bar", async () => {
+  it("Add button has the danger status dot", async () => {
     setupInvoke({ untracked: 1 });
     await renderOpenPanel();
     const bar = await screen.findByTestId("add-bar");
-    expect(bar.style.background).toBe("rgb(248, 81, 73)");
+    expect(bar.style.background).toBe("var(--danger)");
   });
 
-  it("Commit button has yellow status bar", async () => {
+  it("flags the Git button with the next pending action colour", async () => {
+    setupInvoke({ staged: 1 });
+    await renderOpenPanel();
+    await screen.findByTestId("commit-bar");
+    const flag = await screen.findByRole("button", { name: "Git" }).then((button) =>
+      button.querySelector(".toolbar-btn-flag"),
+    );
+    expect(flag).not.toBeNull();
+    expect((flag as HTMLElement).style.backgroundColor).toBe("var(--warning)");
+  });
+
+  it("Commit button has the warning status dot", async () => {
     setupInvoke({ staged: 1 });
     await renderOpenPanel();
     const bar = await screen.findByTestId("commit-bar");
-    expect(bar.style.background).toBe("rgb(227, 179, 65)");
+    expect(bar.style.background).toBe("var(--warning)");
   });
 
-  it("Push button has green status bar when remote present and commits ahead", async () => {
+  it("Push button has the success status dot when remote present and commits ahead", async () => {
     setupInvoke({ has_remote: true, unpushedCommits: ["abc123"] });
     await renderOpenPanel();
     const bar = await screen.findByTestId("push-bar");
-    expect(bar.style.background).toBe("rgb(63, 185, 80)");
+    expect(bar.style.background).toBe("var(--success)");
   });
 
   it("Push button is absent when no remote", async () => {
@@ -143,14 +177,20 @@ describe("git action button bars", () => {
 describe("git change tree", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // The panel seeds its git bar and tree from module-level snapshots so a
+    // reveal paints instantly (lib/fileViewSnapshots). Every case here renders
+    // the SAME project, so without a reset each one would start seeded from the
+    // previous case's counts.
+    clearFileViewSnapshots();
     mockUseProjectsStore.mockReturnValue({ projects: [ACTIVE_PROJECT], activeId: "proj-1" } as ReturnType<typeof useProjectsStore>);
   });
 
   async function renderOpenPanel() {
     let result: ReturnType<typeof render>;
     await act(async () => {
-      result = render(<RightPanel open={true} />);
+      result = render(<SidePanel open={true} />);
     });
+    await userEvent.setup().click(screen.getByRole("button", { name: "Git" }));
     return result!;
   }
 

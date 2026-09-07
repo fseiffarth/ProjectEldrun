@@ -9,9 +9,16 @@
  * A chord is a plain, serializable descriptor (`ChordDescriptor`) stored in
  * `settings.keyboard_shortcuts` keyed by action id. F11 (OS fullscreen) and
  * Escape (exit fullscreen) are deliberately *not* rebindable — they stay fixed
- * in `useKeyboard` — so only the eight navigation actions live here.
+ * in `useKeyboard` — so only the rebindable actions live here (`FIXED_KEYS`
+ * below is their display-only description table).
+ *
+ * `STEERING_KEYS` (bottom) is the sibling table for the FIXED keys inside
+ * keyboard steering mode: those aren't chords and aren't rebindable, but every
+ * surface that explains them (legend overlay, help, lessons) renders from it.
  */
-import { IS_MAC } from "./platform";
+import { IS_MAC, PLATFORM } from "./platform";
+import { desktopOwnsSuperKey } from "./superKey";
+import type { TranslationKey } from "./i18n";
 
 /** A serializable key chord. `key` is a `KeyboardEvent.key` value, normalized:
  *  single letters are lower-cased, named keys ("Tab", "Enter", "ArrowLeft")
@@ -37,14 +44,39 @@ export type ShortcutAction =
   | "toggleSubwindowFiles"
   | "closeSubwindow"
   | "closeTab"
-  | "closeAllTabs";
+  | "closeAllTabs"
+  | "steeringMode"
+  | "cycleProjectBack"
+  | "shortcutHelp"
+  | "texUp"
+  | "texBack";
+
+/** Section ids for the cheat-sheet/settings grouping (`SHORTCUT_GROUPS`). */
+export type ShortcutGroup = "navigation" | "tabs" | "steering" | "tex";
 
 export interface ShortcutDef {
   action: ShortcutAction;
-  label: string;
+  /** i18n key for the row's description, resolved by the cheat sheet and the
+   *  settings panel — the label itself lives in `lib/i18n` like every other
+   *  user-facing string. */
+  labelKey: TranslationKey;
+  /** Which `SHORTCUT_GROUPS` section the action is listed under. */
+  group: ShortcutGroup;
   /** The built-in default chord, used whenever the user hasn't rebound it. */
   default: ChordDescriptor;
+  /** Renders the shared `UntestedTag` pill beside the row in the settings
+   *  panel; removed per action once the user confirms it live. */
+  untested?: boolean;
 }
+
+/** The cheat sheet's section order + i18n titles — kept here beside the defs
+ *  so a new action must pick its section where the table lives. */
+export const SHORTCUT_GROUPS: { id: ShortcutGroup; labelKey: TranslationKey }[] = [
+  { id: "navigation", labelKey: "shortcutHelp.group.navigation" },
+  { id: "tabs", labelKey: "shortcutHelp.group.tabs" },
+  { id: "steering", labelKey: "shortcutHelp.group.steering" },
+  { id: "tex", labelKey: "shortcutHelp.group.tex" },
+];
 
 /**
  * The configurable action table, in display order. The defaults mirror the
@@ -54,63 +86,125 @@ export interface ShortcutDef {
 export const SHORTCUT_DEFS: ShortcutDef[] = [
   {
     action: "toggleFullscreen",
-    label: "Toggle subwindow fullscreen",
+    labelKey: "shortcut.toggleFullscreen",
+    group: "tabs",
     default: { key: "Enter", ctrl: true },
   },
   {
     action: "cycleProject",
-    label: "Cycle to next project",
+    labelKey: "shortcut.cycleProject",
+    group: "navigation",
     default: { key: "Tab", ctrl: true, shift: true },
   },
   {
     action: "prevTab",
-    label: "Previous tab in subwindow",
+    labelKey: "shortcut.prevTab",
+    group: "tabs",
     default: { key: "ArrowLeft", shift: true },
   },
   {
     action: "nextTab",
-    label: "Next tab in subwindow",
+    labelKey: "shortcut.nextTab",
+    group: "tabs",
     default: { key: "ArrowRight", shift: true },
   },
   {
     action: "subwindowUp",
-    label: "Cycle focused subwindow up",
+    labelKey: "shortcut.subwindowUp",
+    group: "navigation",
     default: { key: "ArrowUp", shift: true },
   },
   {
     action: "subwindowDown",
-    label: "Cycle focused subwindow down",
+    labelKey: "shortcut.subwindowDown",
+    group: "navigation",
     default: { key: "ArrowDown", shift: true },
   },
   {
     action: "cycleTabs",
-    label: "Cycle tabs in subwindow",
+    labelKey: "shortcut.cycleTabs",
+    group: "tabs",
     default: { key: "Tab", shift: true },
   },
   {
     action: "hideSubwindow",
-    label: "Hide focused subwindow",
+    labelKey: "shortcut.hideSubwindow",
+    group: "tabs",
     default: { key: "h", ctrl: true, shift: true },
   },
   {
     action: "toggleSubwindowFiles",
-    label: "Toggle subwindow file viewer",
+    labelKey: "shortcut.toggleSubwindowFiles",
+    group: "tabs",
     default: { key: "f", shift: true },
   },
   {
     action: "closeSubwindow",
-    label: "Close focused subwindow",
+    labelKey: "shortcut.closeSubwindow",
+    group: "tabs",
     default: { key: "w", ctrl: true, shift: true },
   },
   {
     action: "closeTab",
-    label: "Close active tab",
+    labelKey: "shortcut.closeTab",
+    group: "tabs",
     default: { key: "w", ctrl: true },
   },
   {
     action: "closeAllTabs",
-    label: "Close all tabs in project",
+    labelKey: "shortcut.closeAllTabs",
+    group: "tabs",
     default: { key: "w", ctrl: true, shift: true, alt: true },
+  },
+  // Keyboard steering mode (part 1 of the keyboard-only steering system). The
+  // chord toggles the mode; the keys INSIDE it are fixed (see STEERING_KEYS).
+  // Ctrl+Shift+Space collides with no default above and with no common
+  // terminal chord (Ctrl+Space is emacs set-mark; the Shift keeps clear of it).
+  {
+    action: "steeringMode",
+    labelKey: "shortcut.steeringMode",
+    group: "steering",
+    default: { key: " ", ctrl: true, shift: true },
+    untested: true,
+  },
+  // Backward twin of cycleProject. Ctrl distinguishes it from prevTab's
+  // Shift+← default.
+  {
+    action: "cycleProjectBack",
+    labelKey: "shortcut.cycleProjectBack",
+    group: "navigation",
+    default: { key: "ArrowLeft", ctrl: true, shift: true },
+    untested: true,
+  },
+  {
+    action: "shortcutHelp",
+    labelKey: "shortcut.shortcutHelp",
+    group: "steering",
+    default: { key: "F1" },
+    untested: true,
+  },
+  // The TeX workspace's two navigation steps (#tex-structure-up). Unlike every
+  // chord above these are NOT handled by `useKeyboard`: they only mean anything
+  // inside a workspace tab, so the workspace itself listens — on its own root
+  // element, which is what scopes them to "the TeX viewer has focus" and lets
+  // them work from the editor's textarea, where the global hook's editable-
+  // target guard would drop them. Ctrl+Shift+Arrow collides with no default
+  // here: the subwindow-cycling arrows are Shift-only, and the workspace
+  // consumes the chord (preventDefault) so the textarea's own paragraph-
+  // selection never runs.
+  {
+    action: "texUp",
+    labelKey: "shortcut.texUp",
+    group: "tex",
+    default: { key: "ArrowUp", ctrl: true, shift: true },
+    untested: true,
+  },
+  {
+    action: "texBack",
+    labelKey: "shortcut.texBack",
+    group: "tex",
+    default: { key: "ArrowDown", ctrl: true, shift: true },
+    untested: true,
   },
 ];
 
@@ -229,3 +323,139 @@ export function resolveChord(
   if (custom) return custom;
   return SHORTCUT_DEFS.find((d) => d.action === action)!.default;
 }
+
+/** True when two chords are the same effective keystroke: key normalized via
+ *  `normalizeKey`, modifier booleans coerced with `!!` so an absent flag
+ *  equals an explicit `false`. */
+export function chordsEqual(a: ChordDescriptor, b: ChordDescriptor): boolean {
+  return (
+    normalizeKey(a.key) === normalizeKey(b.key) &&
+    !!a.ctrl === !!b.ctrl &&
+    !!a.shift === !!b.shift &&
+    !!a.alt === !!b.alt &&
+    !!a.meta === !!b.meta
+  );
+}
+
+/**
+ * Which actions collide: every action whose *effective* chord (override or
+ * default, via `resolveChord`) equals another action's, mapped to the actions
+ * sharing its chord. Both sides of a collision get an entry so the settings
+ * panel can warn on each row; an action with a unique chord is absent. Pure so
+ * the panel stays thin and so a unit test can guard the pristine default table
+ * (no two defaults may ever collide).
+ */
+export function findConflicts(
+  overrides: ShortcutMap | undefined | null,
+): Map<ShortcutAction, ShortcutAction[]> {
+  const out = new Map<ShortcutAction, ShortcutAction[]>();
+  for (let i = 0; i < SHORTCUT_DEFS.length; i++) {
+    for (let j = i + 1; j < SHORTCUT_DEFS.length; j++) {
+      const a = SHORTCUT_DEFS[i].action;
+      const b = SHORTCUT_DEFS[j].action;
+      if (!chordsEqual(resolveChord(a, overrides), resolveChord(b, overrides))) continue;
+      out.set(a, [...(out.get(a) ?? []), b]);
+      out.set(b, [...(out.get(b) ?? []), a]);
+    }
+  }
+  return out;
+}
+
+/**
+ * True when a chord can never fire because `useKeyboard` consumes its key
+ * before the rebindable table is consulted: F11 (OS fullscreen), F9 (panel
+ * toggle) and Escape (exit fullscreen / dismiss) are all matched there on
+ * `e.key` alone, so no modifier rescues such a chord. Deliberately independent
+ * of `FIXED_KEYS`, which stores display strings. Not covered on purpose: a
+ * lone Super/Meta never reaches capture (`chordFromEvent` returns null), and
+ * the zoom chords match on `e.code` (keyboard-layout dependent), which a
+ * stored `key` cannot reproduce faithfully.
+ */
+export function isFixedChord(chord: ChordDescriptor): boolean {
+  const key = normalizeKey(chord.key);
+  return key === "F11" || key === "F9" || key === "Escape";
+}
+
+/** One fixed key (or key family) inside steering mode. `keys` is display text
+ *  (already glyphs, never translated); the two i18n keys carry the short
+ *  legend label and the longer help/lesson description. */
+export interface SteeringKeyDef {
+  keys: string;
+  labelKey: TranslationKey;
+  descKey: TranslationKey;
+}
+
+/** One fixed, non-rebindable key handled directly in `useKeyboard`. Same shape
+ *  as `SteeringKeyDef`: display keys plus i18n label/description keys. */
+export interface FixedKeyDef {
+  keys: string;
+  labelKey: TranslationKey;
+  descKey: TranslationKey;
+}
+
+/**
+ * The fixed (non-rebindable) keys `useKeyboard` handles outside the chord
+ * table, in display order — rendered by the cheat sheet and reusable by the
+ * settings panel and lessons. Platform-resolved at module load, except the
+ * panel toggle: it is the lone Super key only where that key is free — a
+ * Linux desktop that does not answer it itself (macOS uses Cmd as the chord
+ * modifier, Windows gives the Win key to the OS, GNOME and KDE take it for
+ * their overview/launcher) — and F9 everywhere else. That one is a getter
+ * because the desktop is a backend answer; see lib/superKey.ts. The zoom
+ * chords ride the primary modifier (⌘ on macOS).
+ */
+/** The key that toggles the panels on THIS desktop right now: the bare Super
+ *  key where the desktop leaves it to the focused window, F9 everywhere else
+ *  (see `useKeyboard`). Shared by the shortcut sheet and the "panels hidden"
+ *  toast so the two never name different keys. */
+export function livePanelToggleKey(): string {
+  return PLATFORM === "linux" && !desktopOwnsSuperKey() ? "Super" : "F9";
+}
+
+export const FIXED_KEYS: FixedKeyDef[] = [
+  {
+    keys: "F11",
+    labelKey: "fixedKeys.osFullscreen.label",
+    descKey: "fixedKeys.osFullscreen.desc",
+  },
+  {
+    // A getter, not a value: unlike the OS, the desktop is a backend answer
+    // that arrives just after module load (see lib/superKey.ts), and the sheet
+    // must not advertise a Super key the shell has already taken. Reading it
+    // here keeps every consumer of FIXED_KEYS unchanged.
+    get keys(): string {
+      return livePanelToggleKey();
+    },
+    labelKey: "fixedKeys.panels.label",
+    descKey: "fixedKeys.panels.desc",
+  },
+  {
+    keys: "Esc",
+    labelKey: "fixedKeys.exitFullscreen.label",
+    descKey: "fixedKeys.exitFullscreen.desc",
+  },
+  {
+    keys: IS_MAC ? "⌘ + / − / 0" : "Ctrl + / − / 0",
+    labelKey: "fixedKeys.zoom.label",
+    descKey: "fixedKeys.zoom.desc",
+  },
+];
+
+/**
+ * The FIXED in-steering-mode keys, in display order — the one source of truth
+ * for the legend overlay, the shortcut cheat sheet, and any lesson surface.
+ * `useKeyboard`'s steering handler is the acting counterpart; the two must
+ * stay in step. Digit mapping: 1 = root scope, 2 = the first project pill
+ * (display order) — the same ring `cycleProject` walks.
+ */
+export const STEERING_KEYS: SteeringKeyDef[] = [
+  { keys: "1–9", labelKey: "steering.jump.label", descKey: "steering.jump.desc" },
+  { keys: "↑ ↓ ← →", labelKey: "steering.focus.label", descKey: "steering.focus.desc" },
+  { keys: "Tab / Shift+Tab", labelKey: "steering.tabs.label", descKey: "steering.tabs.desc" },
+  { keys: "F", labelKey: "steering.files.label", descKey: "steering.files.desc" },
+  { keys: "P", labelKey: "steering.panels.label", descKey: "steering.panels.desc" },
+  { keys: "W", labelKey: "steering.closeTab.label", descKey: "steering.closeTab.desc" },
+  { keys: "S", labelKey: "steering.settings.label", descKey: "steering.settings.desc" },
+  { keys: "?", labelKey: "steering.help.label", descKey: "steering.help.desc" },
+  { keys: "Esc / Enter", labelKey: "steering.exit.label", descKey: "steering.exit.desc" },
+];

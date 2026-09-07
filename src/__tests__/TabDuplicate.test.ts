@@ -109,9 +109,29 @@ describe("tabs store — duplicateTab", () => {
     // grant (#150).
     expect(copy.hostBoundUid).toBeUndefined();
   });
+
+  it("mints an isolated schedule target for an agent duplicate", () => {
+    useTabsStore.getState().addTab({ label: "Claude", cmd: "claude", cwd: "/p", kind: "agent" });
+    const source = byLabel("Claude");
+    const copy = useTabsStore.getState().duplicateTab(source.key)!;
+    expect(source.scheduleTargetId).toBeTruthy();
+    expect(copy.scheduleTargetId).toBeTruthy();
+    expect(copy.scheduleTargetId).not.toBe(source.scheduleTargetId);
+  });
 });
 
 describe("duplicateSpec", () => {
+  it("drops the schedule target so the duplicate receives an isolated binding", () => {
+    const tab: TabEntry = {
+      key: "agent-scheduled",
+      label: "Claude",
+      kind: "agent",
+      cmd: "claude",
+      cwd: "/p",
+      scheduleTargetId: "target-original",
+    };
+    expect(duplicateSpec(tab).scheduleTargetId).toBeUndefined();
+  });
   const agent: TabEntry = {
     key: "agent-1",
     label: "Claude",

@@ -95,7 +95,10 @@ export function YamlGrid({
     return (
       <div className="yaml-tree-notice">
         <p>
-          {t("yamlGrid.cantRead", { msg: doc.error.message, line: doc.error.line })}
+          {t("yamlGrid.cantRead", {
+            msg: t(doc.error.messageKey, doc.error.messageVars),
+            line: doc.error.line,
+          })}
         </p>
         <p className="yaml-tree-notice-hint">
           {t("yamlGrid.switchToSourcePre")}<strong>{t("yamlGrid.sourceWord")}</strong>{t("yamlGrid.switchToSourcePost")}

@@ -1,6 +1,6 @@
 import { memo, useState } from "react";
-import { createPortal } from "react-dom";
 import { formatAddress, formatMailDate, formatSize, stripFormatControls } from "../../lib/mail";
+import { ContextMenuPortal } from "../common/ContextMenuPortal";
 import { useI18nStore, useT } from "../../lib/i18n";
 import { useUse24h } from "../../lib/timeFormat";
 import { UntestedTag } from "../common/UntestedTag";
@@ -319,7 +319,7 @@ function MailListImpl({
         <div className="mail-list-paging">
           <button
             type="button"
-            className="mail-btn"
+            className="settings-btn"
             disabled={offset <= 0}
             onClick={() => onPage(Math.max(0, offset - pageSize))}
           >
@@ -334,7 +334,7 @@ function MailListImpl({
           </span>
           <button
             type="button"
-            className="mail-btn"
+            className="settings-btn"
             disabled={offset + pageSize >= total}
             onClick={() => onPage(offset + pageSize)}
           >
@@ -343,25 +343,8 @@ function MailListImpl({
         </div>
       )}
 
-      {menu &&
-        createPortal(
-          <>
-            {/* The dismiss layer catches a right-click too, so a second
-                right-click somewhere else closes this menu rather than stacking
-                a native one on top of it. */}
-            <div
-              style={{ position: "fixed", inset: 0, zIndex: 200 }}
-              onPointerDown={() => setMenu(null)}
-              onContextMenu={(e) => {
-                e.preventDefault();
-                setMenu(null);
-              }}
-            />
-            <div
-              className="context-menu"
-              style={{ left: menu.x, top: menu.y, zIndex: 201 }}
-              onPointerDown={(e) => e.stopPropagation()}
-            >
+      {menu && (
+          <ContextMenuPortal x={menu.x} y={menu.y} onClose={() => setMenu(null)}>
               <div className="context-menu-group">
                 {/* The subject, so the menu names what it is about. Truncated by
                     CSS, stripped of format controls like every other place a
@@ -404,9 +387,7 @@ function MailListImpl({
                     moved. */}
                 <div className="context-menu-note">{t("mail.priorityIsLocal")}</div>
               </div>
-            </div>
-          </>,
-          document.body,
+          </ContextMenuPortal>
         )}
     </div>
   );

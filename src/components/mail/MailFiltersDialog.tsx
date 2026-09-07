@@ -214,7 +214,7 @@ export function MailFiltersDialog({ accounts, onClose }: MailFiltersDialogProps)
                   <span className="mail-filter-row-actions">
                     <button
                       type="button"
-                      className="mail-btn mail-btn-icon"
+                      className="settings-btn sm icon"
                       title={t("mail.filters.moveUp")}
                       disabled={i === 0}
                       onClick={(e) => {
@@ -226,7 +226,7 @@ export function MailFiltersDialog({ accounts, onClose }: MailFiltersDialogProps)
                     </button>
                     <button
                       type="button"
-                      className="mail-btn mail-btn-icon"
+                      className="settings-btn sm icon"
                       title={t("mail.filters.moveDown")}
                       disabled={i === rules.length - 1}
                       onClick={(e) => {
@@ -238,7 +238,7 @@ export function MailFiltersDialog({ accounts, onClose }: MailFiltersDialogProps)
                     </button>
                     <button
                       type="button"
-                      className="mail-btn mail-btn-icon"
+                      className="settings-btn sm icon"
                       title={t("common.delete")}
                       onClick={(e) => {
                         e.stopPropagation();
@@ -250,7 +250,7 @@ export function MailFiltersDialog({ accounts, onClose }: MailFiltersDialogProps)
                   </span>
                 </div>
               ))}
-              <button type="button" className="mail-btn mail-filters-add" onClick={addRule}>
+              <button type="button" className="settings-btn sm mail-filters-add" onClick={addRule}>
                 {t("mail.filters.addRule")}
               </button>
               {rules.length > 1 && (
@@ -306,7 +306,7 @@ export function MailFiltersDialog({ accounts, onClose }: MailFiltersDialogProps)
                          could have. */
                       onBlur={commitTerms}
                     />
-                    <button type="button" className="mail-btn" onClick={commitTerms}>
+                    <button type="button" className="settings-btn" onClick={commitTerms}>
                       {t("common.add")}
                     </button>
                   </div>
@@ -389,7 +389,7 @@ export function MailFiltersDialog({ accounts, onClose }: MailFiltersDialogProps)
                       the header. */}
                   <button
                     type="button"
-                    className="mail-btn"
+                    className="settings-btn"
                     disabled={busy || problems.length > 0}
                     onClick={() =>
                       void run(async () => {
@@ -412,7 +412,7 @@ export function MailFiltersDialog({ accounts, onClose }: MailFiltersDialogProps)
           <div className="mail-dialog-actions">
             <button
               type="button"
-              className="mail-btn"
+              className="settings-btn"
               disabled={busy || rules.length === 0}
               title={t("mail.filters.applyExistingHint")}
               onClick={() =>
@@ -434,12 +434,12 @@ export function MailFiltersDialog({ accounts, onClose }: MailFiltersDialogProps)
               {t("mail.filters.applyExisting")}
             </button>
             <div className="mail-toolbar-spacer" />
-            <button type="button" className="mail-btn" onClick={onClose}>
+            <button type="button" className="settings-btn" onClick={onClose}>
               {t("common.cancel")}
             </button>
             <button
               type="button"
-              className="mail-btn mail-btn-primary"
+              className="settings-btn primary"
               disabled={busy || !dirty}
               onClick={() => void run(async () => void (await save()))}
             >

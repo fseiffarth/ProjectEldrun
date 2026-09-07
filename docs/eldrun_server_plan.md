@@ -202,8 +202,8 @@ cross, and the first is a hard non-goal:
 ### 3.5 Raspberry-Pi resource budget
 
 **ARM64 build story: there isn't one, and that is the feature.** CI
-(`.github/workflows/ci-cd.yml`) has `ubuntu-22.04`/`windows-latest`/`macos-latest`
-and no ARM target; `package` (`:267`) is x86_64 only. Cross-compiling the current
+(`.github/workflows/ci-cd.yml`) has `ubuntu-24.04`/`windows-latest`/`macos-latest`
+and no ARM target; `package` (`:279`) is x86_64 only. Cross-compiling the current
 crate to `aarch64` would need an ARM sysroot with WebKitGTK 4.1 + GTK3 + libsoup.
 **Phases 0–4 need no ARM artifact at all** — `sshd`, `git` and `radicale` come
 from the distro.

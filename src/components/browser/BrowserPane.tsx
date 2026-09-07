@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { errorPhrase, liveControlAvailable, titleToTabLabel } from "../../lib/browser";
 import { useT } from "../../lib/i18n";
@@ -7,6 +6,7 @@ import { useBrowserStore, EMPTY_BROWSER_TAB } from "../../stores/browser";
 import { useSettingsStore } from "../../stores/settings";
 import { useTabsStore, type TabEntry } from "../../stores/tabs";
 import { UntestedTag } from "../common/UntestedTag";
+import { ContextMenuPortal } from "../common/ContextMenuPortal";
 import { BrowserAddressBar } from "./BrowserAddressBar";
 import { BrowserBlockedNotice } from "./BrowserBlockedNotice";
 import { BrowserReaderView } from "./BrowserReaderView";
@@ -38,22 +38,23 @@ import { useBrowserEvents } from "./useBrowserEvents";
  *     a platform check on this side — and where it is false the pane shows the
  *     backend's `platform_note` instead. A control that will lie is not
  *     rendered (the `GifView` / YAML `source only` rule).
- *  3. **A page may retitle its tab only until the user renames it.** `ownsTabs`
- *     gates the write entirely (a popout has no channel back to the tab store),
- *     and `autoLabelRef` is the `fileTabSync` guard: the label is refreshed only
+ *  3. **A page may retitle its tab only until the user renames it.**
+ *     `autoLabelRef` is the `fileTabSync` guard: the label is refreshed only
  *     while it still equals the last auto-derived one, so a user rename breaks
  *     the chain permanently for that tab. Titles are attacker-controlled text,
- *     rendered as plain text nodes, control-stripped and length-capped.
+ *     rendered as plain text nodes, control-stripped and length-capped. (An
+ *     `ownsTabs` prop used to gate the write entirely, because a popout had no
+ *     channel back to the tab store — so a popped-out browser tab kept the label
+ *     and address it was detached with, forever. Group B #239: the store seam
+ *     forwards both, so the write is unconditional again.)
  */
 export interface BrowserPaneProps {
   tab: TabEntry;
   scope: string;
   visible?: boolean;
-  /** The main window owns the tab store; only it may retitle or open tabs. */
-  ownsTabs?: boolean;
 }
 
-export function BrowserPane({ tab, visible, ownsTabs = false }: BrowserPaneProps) {
+export function BrowserPane({ tab, visible }: BrowserPaneProps) {
   const t = useT();
   const settings = useSettingsStore((s) => s.settings);
   const state = useBrowserStore((s) => s.byTab[tab.key]) ?? EMPTY_BROWSER_TAB;
@@ -117,22 +118,27 @@ export function BrowserPane({ tab, visible, ownsTabs = false }: BrowserPaneProps
   const page = state.page;
   const pageTitle = page?.title;
   useEffect(() => {
-    if (!ownsTabs || !pageTitle) return;
+    if (!pageTitle) return;
     const next = titleToTabLabel(pageTitle);
     if (!next) return;
+    // The payload lives in the main window's store; in a popout that lookup
+    // finds nothing, so the guard falls back to this pane's own last auto-label
+    // (seeded from the streamed tab and updated only by this effect — so a user
+    // rename, which arrives on the next seed as a label this ref never wrote,
+    // still breaks the chain).
     const current = useTabsStore.getState().tabs.find((x) => x.key === tab.key);
-    // A user rename breaks the chain permanently for this tab.
-    if (!current || current.label !== autoLabelRef.current) return;
+    const label = current?.label ?? tab.label;
+    if (label !== autoLabelRef.current) return;
     autoLabelRef.current = next;
     useTabsStore.getState().renameTab(tab.key, next);
-  }, [ownsTabs, pageTitle, tab.key]);
+  }, [pageTitle, tab.key, tab.label]);
 
   // Record the address that actually loaded, so the tab restores holding it.
   const committed = page?.final_url;
   useEffect(() => {
-    if (!ownsTabs || !committed) return;
+    if (!committed) return;
     useTabsStore.getState().setTabUrl(tab.key, committed);
-  }, [ownsTabs, committed, tab.key]);
+  }, [committed, tab.key]);
 
   const load = useCallback(
     (url: string) => {
@@ -326,18 +332,13 @@ export function BrowserPane({ tab, visible, ownsTabs = false }: BrowserPaneProps
           dialog would appear once per browser tab in the app. It is mounted once
           per window by `BrowserDownloadHost` instead. */}
 
-      {menuPos &&
-        createPortal(
-          <>
-            <div
-              style={{ position: "fixed", inset: 0, zIndex: 200 }}
-              onPointerDown={() => setMenuPos(null)}
-            />
-            <div
-              className="context-menu browser-menu"
-              style={{ left: menuPos.x, top: menuPos.y, zIndex: 201 }}
-              onPointerDown={(e) => e.stopPropagation()}
-            >
+      {menuPos && (
+          <ContextMenuPortal
+            x={menuPos.x}
+            y={menuPos.y}
+            onClose={() => setMenuPos(null)}
+            className="context-menu browser-menu"
+          >
               <div className="context-menu-group">
                 <button
                   disabled={!currentUrl}
@@ -368,9 +369,7 @@ export function BrowserPane({ tab, visible, ownsTabs = false }: BrowserPaneProps
                   <UntestedTag />
                 </button>
               </div>
-            </div>
-          </>,
-          document.body,
+          </ContextMenuPortal>
         )}
     </div>
   );

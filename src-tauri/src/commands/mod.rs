@@ -1,3 +1,5 @@
+pub mod agent_prompts;
+pub mod agent_tasks;
 pub mod agents;
 pub mod app_update;
 pub mod apps;
@@ -43,6 +45,8 @@ pub mod settings;
 pub mod sheets;
 pub mod skills;
 pub mod slurm;
+// Dictionary spell check for the native editors (services::spell).
+pub mod spell;
 pub mod sqlite;
 pub mod ssh;
 pub mod subwindow;

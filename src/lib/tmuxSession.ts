@@ -136,8 +136,9 @@ export function shouldPersistTab(
  * they already carry a minted `tmuxSession` name (`withTmuxSession` never
  * excluded root) — so the exclusion had stopped meaning anything except that a
  * long build started in the root terminal was the one shell an Eldrun crash
- * still killed. `scopeKey` stays a parameter: a **box** scope is genuinely
- * session-only, so it must keep failing this.
+ * still killed. **Box** scopes are included for the same reason since they
+ * persist + restore first-class (`sessions/box_<id>/`): a box shell's tmux
+ * session has a tab to come back to, so it persists like root's/a project's.
  */
 export function shouldPersistLocalTab(
   kind: string,
@@ -149,7 +150,6 @@ export function shouldPersistLocalTab(
 ): boolean {
   return (
     (kind === "shell" || (kind === "agent" && mobileAccess && resumableAgent)) &&
-    !scopeKey.startsWith("box:") &&
     (scopeKey !== "root" || kind === "shell") &&
     localRunning &&
     localEnabled

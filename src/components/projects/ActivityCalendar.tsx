@@ -237,14 +237,7 @@ export function ActivityCalendar({ data }: Props) {
         createPortal(
           <div
             className="activity-tooltip"
-            style={{
-              position: "fixed",
-              left: tooltip.x,
-              top: tooltip.y - 6,
-              transform: "translate(-50%, -100%)",
-              pointerEvents: "none",
-              zIndex: 10000,
-            }}
+            style={{ left: tooltip.x, top: tooltip.y - 6 }}
           >
             <strong>{tooltip.date}</strong>: {formatTime(tooltip.secs, t)}
           </div>,

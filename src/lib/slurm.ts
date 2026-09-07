@@ -27,6 +27,7 @@ import { useProjectsStore } from "../stores/projects";
 import { useSettingsStore } from "../stores/settings";
 import { isHpcHost, targetOfSpec } from "./hpcHost";
 import { basename } from "./paths";
+import { translate, useI18nStore } from "./i18n";
 
 // ── Backend types (mirror `commands::slurm`) ─────────────────────────────────
 
@@ -384,7 +385,7 @@ export function openInteractiveJob(opts: {
 }): void {
   openHostShellTab({
     scope: opts.scope,
-    label: "⚡ srun",
+    label: translate(useI18nStore.getState().lang, "slurm.srunTabLabel"),
     cwd: opts.cwd,
     location: locationForHost(opts.hostId, opts.isRemote),
     initialInput: buildInteractiveCommand(opts.res),

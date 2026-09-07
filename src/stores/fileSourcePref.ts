@@ -74,7 +74,7 @@ function persistChoice(projectId: string, source: FileSourceSide) {
  * Two maps, because two things are being remembered and only one of them is the
  * user's own statement:
  *
- *  - `byProject` — the project-wide side, read by the right panel's tree
+ *  - `byProject` — the project-wide side, read by the side panel's tree
  *    (`useFileSource`) and used as the starting point for every other viewer.
  *    A row written by {@link FileSourcePrefStore.set} is an explicit click and
  *    is **persisted**; a row written by {@link FileSourcePrefStore.latch} is the

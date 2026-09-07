@@ -64,6 +64,7 @@ import { UntestedTag } from "../../common/UntestedTag";
 import { formatPdfDate, HIGHLIGHT_ALPHA } from "./pdfDoc";
 import { HIGHLIGHT_COLORS, HIGHLIGHT_DEFAULT_COLOR, NOTE_ICON_PT } from "./notes";
 import { swatchCss } from "./PdfSelectionBar";
+import { scrollIntoPdfBox } from "./scrollBox";
 import { isHighlight } from "../../../lib/viewers/pdfNotes";
 import type { PdfNote } from "../../../lib/viewers/pageModel";
 
@@ -327,7 +328,9 @@ export function PdfNoteLayer({
   const focusRef = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     if (!focus) return;
-    focusRef.current?.scrollIntoView({ block: "center", inline: "nearest" });
+    // Scoped to the reader's scroller: `scrollIntoView` would also scroll the
+    // `overflow: hidden` pane hosts above it, displacing the whole pane.
+    if (focusRef.current) scrollIntoPdfBox(focusRef.current, "center");
     // Keyed off the request, not the object: the panel re-creates `focus` on every
     // render of the viewer, and scrolling the page under the reader once per render
     // is not what asking for a remark once means.

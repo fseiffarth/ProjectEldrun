@@ -14,8 +14,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use eldrun_lib::schema::{
-    ActiveSession, DefaultApps, FileTabSession, LayoutSession, Project, ProjectEntry, ProjectState,
-    Settings, TerminalSession, TimeLogEntry, WindowSession,
+    DefaultApps, FileTabSession, LayoutSession, Project, ProjectEntry, ProjectState, Settings,
+    TerminalSession, TimeLogEntry, WindowSession,
 };
 use serde_json::Value;
 
@@ -215,19 +215,6 @@ fn time_log_python_rollback_shape() {
     }
 }
 
-// ── active_session.json ───────────────────────────────────────────────────
-
-#[test]
-fn active_session_roundtrip() {
-    let path = fixture("active_session.json");
-    let raw = std::fs::read_to_string(&path).expect("read active_session.json");
-    let session: ActiveSession = roundtrip(&raw);
-
-    assert!(!session.project_id.is_empty());
-    assert!(!session.start_real.is_empty());
-    assert_unknown_preserved(&session.extra);
-}
-
 // ── project.json ──────────────────────────────────────────────────────────
 
 #[test]
@@ -338,17 +325,17 @@ fn eldrun_filetab_session_roundtrip() {
 
     assert_eq!(session.file_tabs.len(), 2);
     assert_eq!(
-        session.right_panel_folder.as_deref(),
+        session.side_panel_folder.as_deref(),
         Some("/home/user/project/src")
     );
     assert_unknown_preserved(&session.extra);
 }
 
 #[test]
-fn eldrun_filetab_session_optional_right_panel_folder() {
+fn eldrun_filetab_session_optional_side_panel_folder() {
     let json = r#"{"fileTabs": [], "_unknown_test": "preserved"}"#;
     let session: FileTabSession = roundtrip(json);
-    assert!(session.right_panel_folder.is_none());
+    assert!(session.side_panel_folder.is_none());
     assert_unknown_preserved(&session.extra);
 }
 

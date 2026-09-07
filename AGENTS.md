@@ -40,11 +40,51 @@ change was not run live.
   escape hatch.
 - The cost is a backend fix that compiles and is silently not in the window.
   **Run `npm run backend:stale` after backend edits and report the result**;
-  never restart the app to apply them.
+  never restart the app to apply them. It knows every shape Eldrun runs in
+  (hot-reload, frozen `package:dev`, packaged, AppImage), and it asks the
+  running Mobile sidecar over loopback which PWA bundle it is actually serving
+  — mtimes are a proxy, that answer is not.
+- The phone's PWA is embedded into the binary too (`build.rs` bakes
+  `mobile-dist/` in), so it goes stale on its own schedule and nothing in the
+  window says so. `beforeDevCommand` re-bundles it on every dev start, and a
+  `post-commit` hook reports the seam when it drifts anyway; `npm run
+  mobile:bundle` rebuilds it without the type-check, `mobile:build` with.
 - Double-starts are blocked by `scripts/guard-single-instance.sh` (wired into
   the launcher and the `pretauri:dev` hook). It also refuses when port 1420 is
   held by an orphaned vite — a second `tauri dev` would otherwise attach to the
   *first* session's dev server and silently render its stale module graph.
+- Dogfooding: `./start-eldrun-dev-sandbox.sh` runs the same dev server with
+  `ELDRUN_STATE_DIR`/`ELDRUN_HOME` redirected under
+  `~/.local/share/eldrun-dev/`, so a disposable dev window coexists with a
+  packaged daily-driver Eldrun (`npm run package`) without sharing any state —
+  sessions live in the packaged build, out of HMR's reach. Still one dev
+  session at a time (port 1420), and still launched by the user only.
+- `npm run package:dev` freezes the *current working tree* as a release binary
+  behind the "Eldrun (dev)" desktop entry (`start-eldrun-dev-build.sh`, binary
+  at `~/.local/share/eldrun/eldrun-dev`). No hot reload: the user works and
+  spots bugs in it, then checks fixes in the hot-reload window. Both use the
+  real state, so **only one runs at a time** — each launcher refuses with a
+  desktop notification while the other is up. Re-run it to move the frozen
+  window to a newer snapshot.
+- **Every commit re-freezes it by itself** (user, 2026-09-03): the `post-commit`
+  hook queues `scripts/package-dev-auto.sh`, which builds detached (the commit
+  never waits), nice'd/`SCHED_IDLE` so it does not fight the window it serves,
+  and coalescing — a commit landing mid-build queues one more pass instead of a
+  second build, so a rebase costs one or two and ends on the *last* tree. It
+  installs and notifies; it never launches or stops anything, and a running
+  frozen window keeps its old inode until the user relaunches it. **From an
+  agent tab it builds and stops there** (2026-09-04): `services::agent_fence`
+  gives an agent a tmpfs `$HOME`, so the install wrote 75 MB into a directory
+  that died with the tab and the notification had no session bus to reach —
+  every commit reporting success while the desktop icon stayed two days behind.
+  The build is real (`target/` is inside the bound project), so
+  `start-eldrun-dev-build.sh` adopts `target/release/eldrun` at launch instead,
+  in the user's own session, guarded by `scripts/assert-embedded-frontend.sh`.
+  It declines in CI and from a linked worktree (freezing an agent's tree over
+  the user's binary is exactly the surprise to avoid). Off with `git config
+  eldrun.autoDevBuild false`, or `ELDRUN_NO_AUTO_DEV_BUILD=1` for one commit;
+  `scripts/package-dev-auto.sh --status` says what it is doing and
+  `~/.local/share/eldrun/package-dev-auto.log` holds the last build's output.
 
 ## Docs
 
@@ -70,14 +110,22 @@ area you're touching; never read speculatively.
 | `tmux_sessions.md` | Shell/script tabs surviving SSH drops and crashes; Sessions view. |
 | `docker_containers.md` | Per-project session container: toggle semantics, lifecycle. |
 | `vm_projects.md` | The VM trust tier: no shared fs, inverse sync posture, egress knob. |
-| `agent_authority.md` | How sandbox / tab location / agentMode compose. |
+| `agent_authority.md` | How sandbox and tab location compose; why the permission mode is the agent's own. |
 | `hpc_careful_mode.md` | What probes stop collecting on a login node; host classification. |
 | `mail_encryption.md` | The sealed local store and the OpenPGP track: what each protects. |
 | `caldav.md` | Why a sync merges by resource URL instead of replacing. |
 
 Longer-lived plans and matrices live in `docs/` — e.g.
 `multi_host_remote_plan.md`, `git_lockstep_case_matrix.md`,
-`eldrun_mobile_agent_plan.md`. Project docs:
+`eldrun_mobile_agent_plan.md`. `docs/remote_sync_guide.md` is the step-by-step
+*how it works* for remote-project syncing (byte-sync + git lockstep: colours,
+menu items, pass order, symptom → fix); read it before touching either engine.
+`docs/competitive_landscape.md` holds the positioning-vs-positioning read on
+overlapping tools.
+`docs/third_party_update_checklist.md` lists every flag, path, and output
+format Eldrun assumes of the tools it wraps (agent CLIs, Ollama, Tailscale,
+tmux, Docker, QEMU, bwrap, OpenVPN, SSH, SLURM, TeX, mail/CalDAV servers,
+desktop shells) — walk the matching section when one of them updates. Project docs:
 `README.md`, `DOCUMENTATION.md`, `ROADMAP.md`, `STATUS.md`, and `TODO.md` —
 whose per-group files live in `todo/`.
 
@@ -107,8 +155,9 @@ whose per-group files live in `todo/`.
   `~/eldrun/root/`.
 - Global state in `~/.local/share/eldrun/`: `projects.json`, `settings.json`,
   `boxes.json`, `default_apps.json`, `calendar.json`, `global_machines.json`,
-  `time_log.json`, and `usage_stats.json`, alongside per-subsystem directories
-  (`mail/`, `browser/`, `sessions/`, `vm/`, `remote-projects/`, …).
+  `time_log.json`, `agent_trust.json`, and `usage_stats.json`, alongside
+  per-subsystem directories (`mail/`, `browser/`, `sessions/`, `vm/`,
+  `remote-projects/`, …).
 - **Session state lives outside the project tree**: tab layout and `open_apps`
   are stored per project id in `<state_dir>/sessions/<id>/terminals.json`. The
   copy inside a project folder is legacy/export-only and is adopted only on an
@@ -157,8 +206,9 @@ whose per-group files live in `todo/`.
    `scripts/privacy-check.sh <base> <head>` for a range. Never hardcode
    institution or lab hostnames. Commits must use the GitHub `noreply` author
    email, never the real address.
-5. Enable the hooks once per clone — this arms **both** the version bump and the
-   privacy scan: `git config core.hooksPath .githooks`. Pushes are auto-patch-
+5. Enable the hooks once per clone — this arms the version bump, the privacy
+   scan, and the post-commit stale-PWA notice:
+   `git config core.hooksPath .githooks`. Pushes are auto-patch-
    bumped and packaged by CI (`scripts/bump-version.sh` takes `minor|major`).
    Releases are manual: push a `v*` tag. `npm run package` builds the same
    artifact locally, installing the AppImage outside the checkout.
@@ -239,15 +289,19 @@ loopback port, and from there is an ordinary `RemoteSpec` with `vm: true`.
   limited unless the code says otherwise.
 - Eldrun installs Claude/Codex session hooks and also has hook-free Codex
   binding. Codex user hooks may need one-time trust via `/hooks`.
-- Agent authority has three axes: project container sandbox, tab location
-  (local/primary/worker), and optional Plan/Auto agent mode.
-- `components/tabs/agentModes.ts` is a capability table. Add an agent there only
-  if it has an absolute mode flag and a working resume path for the respawn that
-  mode switching causes.
-- Plan/Auto is a launch flag, persisted per tab and re-applied when args are
-  rebuilt from layout state. Do not persist raw args as the source of truth.
+- Agent authority has two axes Eldrun owns: project container sandbox and tab
+  location (local/primary/worker).
+- **An agent's permission mode is the agent's own, set through its own CLI.**
+  Eldrun launches the plain command and injects no mode flag — there is no
+  Plan/Auto toggle, and nothing persists a per-tab mode. The one thing that
+  carries a mode across a respawn is `services::agent_session`, which re-applies
+  the mode Claude's own hook recorded onto the `--resume` line; that preserves
+  what the user set in-session and must not grow into a mode Eldrun chooses.
 - Terminal `kill`/`kill_all` must reap the child process subtree, not just the
   shell leader.
+- To show the user a picture on their phone (Eldrun Mobile), copy it into the
+  project's `.eldrun/outbox/`; the phone's Focus view lists that folder.
+  Images only — nothing is copied there on an agent's behalf.
 
 ## Frontend notes
 
@@ -278,6 +332,12 @@ loopback port, and from there is an ordinary `RemoteSpec` with `vm: true`.
 
 ## Backend notes
 
+- `services::agent_fence` owns the default-on agent fence for local agents:
+  bubblewrap on Linux, a `sandbox-exec` Seatbelt profile on macOS (which can
+  deny but not shadow, so the hook-registration files are read-only there),
+  and honestly unfenced on Windows. Writable roots derive from
+  `box_allowed_roots`, and a missing/unusable
+  bubblewrap fails closed rather than silently launching on the host.
 - Remote GPU snapshots are parsed through the same local `gpustat` parsers so
   host readings match local ones field-for-field.
 - `services::openvpn` tracks both headless tunnels and interactive terminal
@@ -286,4 +346,6 @@ loopback port, and from there is an ordinary `RemoteSpec` with `vm: true`.
   raw project ids, paths, commands, and tmux targets never cross the browser
   API.
 
-Keys: `F11` fullscreen; `Super` toggles panels while Eldrun is focused.
+Keys: `F11` fullscreen; `F9` toggles panels while Eldrun is focused, as does
+a bare `Super` on a desktop that does not claim that key itself (GNOME, KDE
+and Windows do — see `platform::desktop_claims_super`).

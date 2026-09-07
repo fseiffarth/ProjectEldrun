@@ -10,6 +10,12 @@
 import { describe, it, expect } from "vitest";
 
 import { providerName, gitTypeLabel, projectTypeTags } from "../components/projects/projectTypeTags";
+import { translate, type TranslationKey } from "../lib/i18n";
+
+/** These labels live in `lib/i18n` now; the tests assert the English wording, so
+ *  they pass the English translator the app passes at render time. */
+const t = (key: TranslationKey, vars?: Record<string, string | number>) =>
+  translate("en", key, vars);
 import { formatRemoteTarget, type ProjectEntry, type RemoteSpec } from "../types";
 
 const SSH: RemoteSpec = { user: "ada", host: "box.example", remote_path: "/srv/app" };
@@ -55,12 +61,12 @@ const GIT_STATES: Array<{ name: string; extra: Record<string, unknown>; tags: ty
 describe("projectTypeTags — the 12 project combinations", () => {
   for (const state of GIT_STATES) {
     it(`${state.name} · local files`, () => {
-      const tags = projectTypeTags(entry(state.extra), false);
+      const tags = projectTypeTags(entry(state.extra), false, t);
       expect(facets(tags)).toEqual(state.tags);
     });
 
     it(`${state.name} · SSH host`, () => {
-      const tags = projectTypeTags(entry({ ...state.extra, remote: SSH }), false);
+      const tags = projectTypeTags(entry({ ...state.extra, remote: SSH }), false, t);
       expect(facets(tags)).toEqual([...state.tags, SSH_TAG]);
       // The SSH tag's title carries the resolved host target.
       const ssh = tags.find((t) => t.key === "ssh");
@@ -75,7 +81,7 @@ describe("projectTypeTags — the 12 project combinations", () => {
 
 describe("projectTypeTags — stacked / edge axes", () => {
   it("adds the amber 'no scaffold' tag when scaffold is missing", () => {
-    const tags = projectTypeTags(entry({ git_type: "local" }), true);
+    const tags = projectTypeTags(entry({ git_type: "local" }), true, t);
     expect(facets(tags)).toContainEqual({ key: "scaffold", label: "no scaffold", color: "#d29922" });
   });
 
@@ -83,6 +89,7 @@ describe("projectTypeTags — stacked / edge axes", () => {
     const tags = projectTypeTags(
       entry({ git_type: "remote-public", git_provider: "github", remote: SSH }),
       true,
+      t,
     );
     expect(facets(tags)).toEqual([
       GIT,
@@ -93,36 +100,36 @@ describe("projectTypeTags — stacked / edge axes", () => {
   });
 
   it("defaults a non-string git_type to a local repo", () => {
-    const tags = projectTypeTags(entry({ git_type: 42 }), false);
+    const tags = projectTypeTags(entry({ git_type: 42 }), false, t);
     expect(facets(tags)).toEqual([GIT]);
   });
 
   it("defaults missing git_type to a local repo", () => {
-    expect(facets(projectTypeTags(entry(), false))).toEqual([GIT]);
+    expect(facets(projectTypeTags(entry(), false, t))).toEqual([GIT]);
   });
 
   it("treats a published project with no recorded provider as GitHub", () => {
-    const tags = projectTypeTags(entry({ git_type: "remote-public" }), false);
+    const tags = projectTypeTags(entry({ git_type: "remote-public" }), false, t);
     expect(facets(tags)).toEqual([GIT, GITHUB_PUBLIC]);
   });
 });
 
 describe("gitTypeLabel", () => {
   it("labels remote states with provider · visibility", () => {
-    expect(gitTypeLabel("remote-public", "github")).toBe("GitHub · public");
-    expect(gitTypeLabel("remote-public", "gitlab")).toBe("GitLab · public");
-    expect(gitTypeLabel("remote-private", "github")).toBe("GitHub · private");
-    expect(gitTypeLabel("remote-private", "gitlab")).toBe("GitLab · private");
+    expect(gitTypeLabel("remote-public", "github", t)).toBe("GitHub · public");
+    expect(gitTypeLabel("remote-public", "gitlab", t)).toBe("GitLab · public");
+    expect(gitTypeLabel("remote-private", "github", t)).toBe("GitHub · private");
+    expect(gitTypeLabel("remote-private", "gitlab", t)).toBe("GitLab · private");
   });
 
   it("labels the no-git and local states", () => {
-    expect(gitTypeLabel("none")).toBe("No git (no repo)");
-    expect(gitTypeLabel("local")).toBe("Local repo (not pushed)");
+    expect(gitTypeLabel("none", undefined, t)).toBe("No git (no repo)");
+    expect(gitTypeLabel("local", undefined, t)).toBe("Local repo (not pushed)");
   });
 
   it("falls through unknown/undefined git_type to the local-repo label", () => {
-    expect(gitTypeLabel(undefined)).toBe("Local repo (not pushed)");
-    expect(gitTypeLabel("weird")).toBe("Local repo (not pushed)");
+    expect(gitTypeLabel(undefined, undefined, t)).toBe("Local repo (not pushed)");
+    expect(gitTypeLabel("weird", undefined, t)).toBe("Local repo (not pushed)");
   });
 });
 

@@ -44,6 +44,7 @@ a brand-new file is not tracked until `git add`.
 | 12 | Local commit, byte-pushed copy **differs** from the committed content | BS+LS | `stale_byte_sync_residue` proves the differing peer copy is byte-sync's own untouched prior push (manifest base still matches the peer's current stat) → cleared and the ff retried; a genuine independent edit still blocks | ✅ fixed |
 | 13 | Local commit | BS only | commit stays local; bytes cross, history doesn't | |
 | 14 | Host commit (host CLI, or the Git panel — runs git *on the host*) | LS | 12 s poll → mirror ff → same three sub-cases mirrored | |
+| 14b | A commit on either side while the two sides sit on **different** branches (an "Out of step" state) | LS | fast-forward of that branch only; the peer's HEAD is **not** moved. ✅ fixed (2026-09-03): `detect_and_sync` compared whole `HeadRef`s, so the new sha read as a checkout and replayed `git checkout <branch>` on the peer — a silent branch switch on the host | |
 | 15 | Both sides commit on `main` | LS | `Diverged` → never auto-applied → desync bar shows both heads as `sha · subject`, offers Use local / Use remote, parks peer tip at `refs/eldrun/peer/<branch>` for terminal resolution | ✅ fixed (live QA) — **reported green** until then: the thin-bundle excludes name the peer's tip, which in a divergence is a commit the source has never seen, so `bundle create` aborted and both transfer legs no-op'd |
 
 ## Checkouts
@@ -56,6 +57,8 @@ a brand-new file is not tracked until `git add`.
 | 19 | Peer has dirty **tracked** changes | LS | peer checkout fails → desync carries git's actual stderr (✅ fixed, D2 — was a canned lie) |
 | 20 | FF a branch not checked out on the peer | LS | plain `update-ref`, no worktree write |
 | 21 | Detached HEAD | LS | peer `checkout <sha>` → both detached |
+| 17b | Both sides checked out different branches between two passes (a long disconnect, two windows) | LS | refs reconciled, no checkout replayed, `head_mismatch` reports "Out of step" ✅ fixed (2026-09-03) — the mirror used to win silently and the host was switched to its branch |
+| 21c | A branch checked out in a **linked worktree** on one side is merely ahead of the other | LS | the other side fast-forwards; nothing is blocked. ✅ fixed (2026-09-03) — was reported as a block ("left alone") and computed to `Desynchronized` although no ref would have been written (`would_move_ref`) |
 | 21b | Refs all match but the two HEADs point somewhere different | LS | `Desynchronized: Out of step: the mirror is on 'x', the host is on 'y'` (`head_mismatch`). Reports rather than auto-checking-out — with no observed move there is no principled way to say which side follows. ✅ added (live QA): `reconcile_with` compares only **refs**, so a half-landed checkout (#19, then Retry) was green by construction |
 
 ## Initial pairing (exactly one side is a repo)
@@ -118,3 +121,11 @@ Still uncovered: the engines' **timing** (the `.git` watcher, the 12 s poll, the
 byte-sync interval — the driver invokes the passes those timers invoke, but does not
 prove the timers fire), **tags**, and the **UI layer** (desync bar, pairing-conflict
 dialog, the Use local / Use remote / Restore buttons).
+
+One timing defect was found by reading rather than by the driver (2026-09-03): every
+pass writes inside the mirror's `.git`, the lockstep watcher observes that directory,
+and a non-green state never early-outs — so a diverged or blocked project re-ran the
+full SSH pass every debounce window for as long as it stayed red. `poll_loop` now skips
+a watcher burst that leaves the mirror's ref signature as the previous pass left it
+(`watcher_burst_is_own`, unit-tested); the byte-sync watcher ignores `.git`/`.eldrun`
+altogether. Still not proven live — it is the timing gap above.

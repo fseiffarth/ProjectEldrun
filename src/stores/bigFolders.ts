@@ -1,4 +1,10 @@
+import { emit } from "@tauri-apps/api/event";
 import { create } from "zustand";
+import { isDetachedWindow } from "./detachedContext";
+
+/** Mirrors `DETACHED_OPEN_DIALOG` in stores/detached (spelled here to keep this
+ *  module free of that import: detached.ts imports this one). */
+const DETACHED_OPEN_DIALOG_EVENT = "detached-open-dialog";
 
 /**
  * Which project's giant-folder prompt is open, if any.
@@ -29,8 +35,15 @@ interface BigFolderDialogStore {
 export const useBigFoldersStore = create<BigFolderDialogStore>((set, get) => ({
   projectId: null,
   askedProjects: new Set(),
-  open: (projectId) =>
-    set((s) => ({ projectId, askedProjects: new Set(s.askedProjects).add(projectId) })),
+  open: (projectId) => {
+    // Group B #233: the host is main-window only; a popout's "Large folders…"
+    // asks the main window to open it rather than flipping a dead store.
+    if (isDetachedWindow()) {
+      void emit(DETACHED_OPEN_DIALOG_EVENT, { kind: "bigFolders", projectId });
+      return;
+    }
+    set((s) => ({ projectId, askedProjects: new Set(s.askedProjects).add(projectId) }));
+  },
   openOnce: (projectId) => {
     if (get().askedProjects.has(projectId)) return;
     get().open(projectId);

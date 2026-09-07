@@ -4,7 +4,11 @@ import type { CalendarTask } from "../../types";
 import type { MailHeader } from "../../types/mail";
 import { useCalendarStore } from "../../stores/calendar";
 import { useMailStore } from "../../stores/mail";
-import { useTodoStore } from "../../stores/todo";
+import {
+  releaseUrgentMailPoll,
+  retainUrgentMailPoll,
+  useTodoStore,
+} from "../../stores/todo";
 import { useExperimental } from "../../lib/experimental";
 import { selectUrgentMail, taskFromMail } from "../../lib/todoBoard";
 import { useT } from "../../lib/i18n";
@@ -12,18 +16,8 @@ import { useT } from "../../lib/i18n";
 interface Props {
   tasks: CalendarTask[];
   defaultCalendarId: string;
-  firstColumnId: string;
+  intakeColumnId: string;
 }
-
-/**
- * How often the rail re-reads the marked mail while the overlay is open.
- *
- * Polling is defensible **only** because `mail_priority_page` is a read of the
- * local SQLite index and opens no socket — the mail store's "nothing reaches a
- * server on its own" rule is about `checkMail`, which this never calls. If that
- * ever stops being true on the Rust side, this timer is the thing that has to go.
- */
-const TICK_MS = 60_000;
 
 /**
  * The urgent-mail rail.
@@ -38,11 +32,10 @@ const TICK_MS = 60_000;
  * todo board must not materialize a mail database for someone who has the mail
  * client switched off.
  */
-export function TodoMailRail({ tasks, defaultCalendarId, firstColumnId }: Props) {
+export function TodoMailRail({ tasks, defaultCalendarId, intakeColumnId }: Props) {
   const t = useT();
   const mailClient = useExperimental("mail_client");
   const accounts = useMailStore((s) => s.accounts);
-  const newCount = useMailStore((s) => s.newCount);
   const overlayOpen = useTodoStore((s) => s.overlayOpen);
   const urgent = useTodoStore((s) => s.urgentMail);
   const important = useTodoStore((s) => s.importantMail);
@@ -50,13 +43,12 @@ export function TodoMailRail({ tasks, defaultCalendarId, firstColumnId }: Props)
 
   useEffect(() => {
     if (!mailClient || !overlayOpen) return;
-    void useTodoStore.getState().loadUrgentMail();
-    const id = setInterval(() => void useTodoStore.getState().loadUrgentMail(), TICK_MS);
-    return () => clearInterval(id);
-    // `newCount` is the arrival signal — the `mail:new` listener itself belongs
-    // to `MailIndicator`, which is mounted once per window; a second listener
-    // here would double-count a delivery.
-  }, [mailClient, overlayOpen, newCount]);
+    // The 60 s re-read (and the re-read on a `mail:new` arrival) is the ONE
+    // shared refcounted poll in `stores/todo` — `useAlertsFeed` rides the same
+    // one, so the board beside an open side panel costs no second interval.
+    retainUrgentMailPoll();
+    return releaseUrgentMailPoll;
+  }, [mailClient, overlayOpen]);
 
   const rows = useMemo(
     () => selectUrgentMail(urgent, important, tasks),
@@ -94,7 +86,7 @@ export function TodoMailRail({ tasks, defaultCalendarId, firstColumnId }: Props)
       .createTask(
         taskFromMail(
           header,
-          { calendarId: defaultCalendarId, columnId: firstColumnId, now: new Date() },
+          { calendarId: defaultCalendarId, columnId: intakeColumnId, now: new Date() },
           t("mail.noSubject"),
         ),
       )

@@ -130,11 +130,15 @@ describe("shouldPersistLocalTab — local shell tabs on Unix", () => {
     expect(shouldPersistLocalTab("shell", "root", true, false)).toBe(false);
   });
 
-  it("still excludes a BOX scope, whose tabs are session-only", () => {
-    // A box scope is not persisted or restored at all (`stores/boxes`), so a
-    // surviving session there would be a daemon with nothing to reattach to —
-    // the exact failure the old root exclusion was expressing.
-    expect(shouldPersistLocalTab("shell", "box:b1", true, true)).toBe(false);
+  it("includes a BOX scope now that box tabs persist + restore first-class", () => {
+    // Box scopes persist under `sessions/box_<id>/` and restore on re-entry
+    // (see stores/boxes' restoreBoxScope), so a surviving session HAS a tab to
+    // reattach to — the old exclusion's reason is gone. Box tabs are
+    // local-only in v1, so this is exactly the root-scope shape.
+    expect(shouldPersistLocalTab("shell", "box:b1", true, true)).toBe(true);
+    // Every other rule still applies to it.
+    expect(shouldPersistLocalTab("agent", "box:b1", true, true)).toBe(false);
+    expect(shouldPersistLocalTab("shell", "box:b1", true, false)).toBe(false);
   });
 });
 

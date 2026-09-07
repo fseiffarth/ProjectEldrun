@@ -44,7 +44,7 @@ interface Props {
  * The per-subwindow right file viewer (a docked column on a subwindow's right
  * edge), toggled by the ◫ button in the subwindow's tab bar. The viewer itself
  * is the SAME `ProjectFilesTab` host the Files (Project) tab renders — and
- * therefore the same `ProjectFilesView` the right panel renders — so all three
+ * therefore the same `ProjectFilesView` the side panel renders — so all three
  * surfaces can never drift apart. This wrapper owns only what a docked column
  * adds: the fixed width, and the left-edge resize handle.
  *

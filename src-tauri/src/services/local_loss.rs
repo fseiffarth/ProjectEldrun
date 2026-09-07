@@ -30,6 +30,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
+/// Serializes the log's read-modify-write operations across background git
+/// reconciliation, manual sync commands, and acknowledgement from the UI.
+static LOG_WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Keep the log bounded: the newest N entries survive a `record`.
 const MAX_ENTRIES: usize = 50;
 /// Per entry, name at most this many paths (`total` still carries the real count, so a
@@ -100,19 +104,25 @@ pub fn log_path(project_id: &str) -> PathBuf {
 
 /// Every recorded loss for a project, newest first. Empty for a project that has never
 /// lost anything (the overwhelmingly common case, and the reason this never errors).
-pub fn load(project_id: &str) -> Vec<LocalLoss> {
+fn load_unlocked(project_id: &str) -> Vec<LocalLoss> {
     crate::storage::read_json(&log_path(project_id)).unwrap_or_default()
 }
 
+pub fn load(project_id: &str) -> Vec<LocalLoss> {
+    let _guard = LOG_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    load_unlocked(project_id)
+}
+
 fn save(project_id: &str, entries: &[LocalLoss]) {
-    let _ = crate::storage::write_json(&log_path(project_id), &entries);
+    let _ = crate::storage::write_json_atomic(&log_path(project_id), &entries);
 }
 
 /// Append a loss and persist. Best-effort throughout: this is the *warning* about a
 /// destructive write, and failing to file it must never turn into a second failure on
 /// top of the first — the callers are all `let _ =`-style recovery paths themselves.
 pub fn record(project_id: &str, loss: LocalLoss) {
-    let mut entries = load(project_id);
+    let _guard = LOG_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut entries = load_unlocked(project_id);
     entries.insert(0, loss);
     entries.truncate(MAX_ENTRIES);
     save(project_id, &entries);
@@ -155,7 +165,8 @@ pub fn record_paths(
 /// of the log is that it outlives the warning, so a user who dismissed a deletion at 3am
 /// can still read it to find out which files it took.
 pub fn ack_all(project_id: &str) {
-    let mut entries = load(project_id);
+    let _guard = LOG_WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut entries = load_unlocked(project_id);
     if entries.iter().all(|e| e.acked) {
         return;
     }

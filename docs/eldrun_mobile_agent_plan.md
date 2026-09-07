@@ -73,16 +73,25 @@ create, edit, and delete ordinary events and calendars through opaque IDs. The
 desktop retains CalDAV credentials and metadata, alarms, and per-occurrence
 recurrence changes. Alerts mirrors the
 desktop's bounded, time-ordered urgent-mail/upcoming-event/due-task feed through
-the desktop bridge; it exposes no source ids, event detail, calendar, mute,
-complete, or link-opening controls. A mail or task row can only hand off to the
-existing Mail or To-do surface. While Eldrun is connected, the board has the
+the desktop bridge; it exposes no source ids, event detail, calendar, mute, or
+link-opening controls. A mail or task row can only hand off to the existing Mail
+or To-do surface. The one write is the desktop strip's own **Done** ✓, pressed
+by an opaque per-row handle: the desktop resolves the row the way its kind
+supports — a card completed into the board's Done column, a mail's local
+priority mark cleared, a meeting muted in the strip — and none of the three can
+delete a message, an appointment or a card. While Eldrun is connected, the board has the
 same card and column operations as the desktop board: create, edit (including
 notes, date/time, progress, tags, project/calendar assignment, and checklists),
 complete, move, delete, and manage columns via the desktop bridge. Mail lists
 configured accounts, cached folders and
 paged cached headers, and opens a message as bounded plain text with attachment
-metadata. It has no sync, compose/reply, flag/read-state mutation, link-opening,
-attachment download, or remote-content controls. It does not
+metadata. Two writes exist, each behind its own default-off desktop setting
+(`eldrun_mobile_host.mail_actions` / `.mail_reply`, 2026-09-03): mark
+read/unread and star/unstar, and a plain-text **reply** whose recipient,
+subject and threading the desktop derives from the original — the phone
+supplies only the text, so it can answer people who already wrote and nobody
+else. It has no sync, fresh compose, delete, move, link-opening, attachment
+download, signing/encryption, or remote-content controls. It does not
 mirror the desktop layout or stream the desktop screen.
 
 The first client is a responsive installable PWA served privately by the host.
@@ -99,8 +108,9 @@ A native iOS/Android wrapper may follow, but it must reuse this API and protocol
 - project and eligible-tab discovery;
 - a to-do board mediated by the connected desktop, with the desktop board's
   card and column editing operations;
-- read-only mail account/folder browsing and bounded message reading, mediated
-  by the connected desktop and using opaque phone-visible ids;
+- mail account/folder browsing and bounded message reading, mediated by the
+  connected desktop and using opaque phone-visible ids, plus the two gated
+  writes above (flag marks and a recipient-derived plain-text reply);
 - a bounded month calendar mediated by the connected desktop, with
   desktop-expanded occurrences plus event and ordinary-calendar management;
 - creation of a permitted shell or resumable configured agent while Eldrun is
@@ -111,7 +121,14 @@ A native iOS/Android wrapper may follow, but it must reuse this API and protocol
 
 ### Explicitly out of scope
 
-- browsing, editing, uploading, downloading, or opening files;
+- browsing, editing, downloading, or opening files. The one file the phone
+  may *send* is the composer's **+ → From this phone** drop: bytes land in
+  the tab's project under `.eldrun/inbox/` (git-ignored, hidden from the
+  tree, skipped by sync) and the phone gets back only the project-relative
+  `.eldrun/inbox/<file>` reference to put after an `@` — never a host path;
+  and the one thing the phone may *see* is the mirror of that box, the
+  images an agent copies into `.eldrun/outbox/` (§4.3) — listed and served
+  by leaf name, image bytes only, nothing else in the tree;
 - muting calendar events, configuring CalDAV credentials, or editing a single
   occurrence of a recurring event;
 - viewer/embed/browser/external-app tab types;
@@ -124,8 +141,9 @@ A native iOS/Android wrapper may follow, but it must reuse this API and protocol
   tab through the trusted desktop-control socket. The phone never receives
   terminal output or prompt text, and no status is retained when the desktop is
   unavailable;
-- root and box scopes, foreign tmux sessions, `local_agent` tabs, and project
-  settings management;
+- the root scope, foreign tmux sessions, `local_agent` tabs, and project
+  settings management (a **box** scope is reachable since #31aa, through the
+  box's own `eldrun_mobile_access` switch — see "Box scopes" below);
 - remote/primary/worker-host projects, containers, VMs, and Windows hosting;
 - public Internet exposure, Tailscale Funnel, hosted relays, team accounts, push
   notifications, and native app stores.
@@ -138,7 +156,23 @@ used as an executable path or argv fragment.
 
 Project access defaults off. Disabling `eldrun_mobile_access` immediately removes
 the project and detaches its mobile WebSockets, but does not stop its tmux
-sessions. Deactivating a project in Eldrun remains different: today's desktop
+sessions.
+
+**Box scopes** (#31aa). A project box is a scope of its own on the desktop —
+`box:<id>`, with its own session file under `sessions/box_<id>/`, its own
+`eldrun-box_<id>--…` tmux names, and tabs that run locally whatever its
+members are — so it reaches the phone as a scope of its own, behind a switch
+of its own: `eldrun_mobile_access` on the box record in `boxes.json`, set from
+Mobile settings' access list. The sidecar lists an enabled box as a row of
+`kind: "box"` (always "active"; a box has no status), under an opaque id
+derived from the scope id, and takes those of its tabs whose cwd is the box
+folder or a **local** member's root — a container, VM or remote member
+contributes no root. The box's switch is the only consent consulted: a member's
+own switch stays about the member's own tabs, and enabling a box does not list
+its members. Enabling also resolves the box folder (a box never opened has
+none), and on the desktop the box's switch plays the project's part in the
+agent-tab tmux wrap, so a resumable agent opened in the box becomes attachable
+the way a project's does. Deactivating a project in Eldrun remains different: today's desktop
 deactivation flow intentionally stops that project's persistent sessions.
 
 The existing Claude `agent_remote_control` / per-project `remote_control` setting
@@ -163,7 +197,8 @@ Global companion views
 └─ Calendar               month snapshot + desktop-mediated event/calendar edits
 
 Home also renders the desktop Alerts snapshot below the project section when
-the desktop Alerts feed is enabled. It is a compact read-only timeline.
+the desktop Alerts feed is enabled. It is a compact timeline whose only control
+is the desktop strip's Done ✓.
 ```
 
 ### 4.1 Home and project screens
@@ -206,9 +241,15 @@ HTTP “run command” endpoint.
   custom agent with configured `resumeArgs`); and
 - launchable in a local, non-container, non-VM project.
 
-Plan/Auto choices come only from `components/tabs/agentModes.ts`, and only when
-the desktop's agent-mode feature exposes them. The phone sends an opaque catalog
-id plus an optional advertised mode; it never sends a command or flag. MVP does
+The advertised launch-`modes` list is **now always empty**: Eldrun no longer
+launches an agent into a permission mode at all (the desktop Plan/Auto toggle
+and `components/tabs/agentModes.ts` were removed — see
+`docs/context/agent_authority.md`), so there is no launch mode left to offer.
+The wire field stays, and a request naming a mode is refused with
+`unsupported_mode`. Changing a *running* session's mode is unaffected: that is
+the phone's own sheet (`mobile-web/src/terminal/agentModes.ts`), which presses
+Shift+Tab and verifies against the TUI's status line. The phone sends an opaque
+catalog id; it never sends a command or flag. MVP does
 not accept an initial prompt because agents have no uniform prompt argv and
 typing hidden input after spawn would require fragile readiness heuristics. The
 terminal opens and the user types the prompt normally.
@@ -245,6 +286,19 @@ prose about failure as a red verdict, and discarded the colour the program had
 already sent. A real select prompt is answered the way it is on a desktop — the
 key row's arrows and Enter, which need no inference to be right.
 
+The one shape it does read is the **turn**. An agent tab lays out as a chat:
+the agent's output on the left exactly as printed, and every prompt the user
+submitted as a bubble on the right. That needs no classifier because every
+agent TUI echoes a submitted prompt back into its transcript the same way —
+its own input marker at the left edge, a space, the text (`> …` in Claude
+Code, Gemini CLI and Qwen Code once the box frame is stripped, `› …` in
+Codex), with the further lines of a multi-line prompt indented under it
+(`chatTurns.ts`). A dialog's numbered `❯ 1. Yes` row and an indented quote
+inside an answer are not that shape, and the live input box never reaches the
+grouping: the reading view already cuts at `inputFrameStart`. The grouping is
+layout only — the lines keep their keys and colours, Copy copies the transcript
+as printed, and a shell tab has no turns and paints flat.
+
 For repeatable visual QA without a live Eldrun or tmux session, run the Mobile
 Vite target and open `/terminal-preview.html?kind=agent` or `?kind=shell`. The
 development-only fixture renders the production `Terminal` component, xterm,
@@ -278,6 +332,27 @@ native-wrapper option, not a web API. Current Chrome on Android exposes Web Spee
 recognition but not Chromium's downloadable on-device language-pack APIs, so it
 uses that compatibility path; the local branch is feature-detected and becomes
 active only on a browser/platform that actually exposes it.
+
+**Pictures from the agent.** A terminal carries no images, and Focus
+classifies nothing, so a path the session prints is never guessed at. What a
+vendor's remote app does when its agent reads a screenshot — show it — is
+done here by a folder: an agent that wants the phone to see an image copies
+it into the project's `.eldrun/outbox/`, the mirror of the inbox (git-ignored,
+hidden from the tree, skipped by sync, and inside the roots the agent fence
+lets it write). The sidecar lists that folder itself (`GET
+/api/v1/tabs/{id}/outbox`, no desktop round trip, so it answers with the
+desktop closed too) and serves one image by leaf name; Focus polls it while
+the page is visible and shows a thumbnail strip above the composer, one tap
+to full screen, ✕ to hide until something newer lands. The read is as
+defensive as the inbox write (`outbox.rs`): the folder must canonicalize
+below the project root, symlinks inside it are never followed, a file is
+served only when its **bytes** are PNG/JPEG/GIF/WebP (an SVG can carry
+script and is not an image here), the name that crosses is a leaf from the
+inbox's safe alphabet, and anything else answers `image_not_found` so the
+tree cannot be probed by error code. Nothing is copied into the folder on
+the agent's behalf: a hook mirroring every image the agent reads would file
+pictures from anywhere on the host into a project tree, which is exactly
+what the inbox's consent design guards against.
 
 Resize is debounced. Network loss or closing the browser detaches only the
 mobile tmux client and never calls `kill-session`. One mobile viewer may attach
@@ -409,7 +484,8 @@ An attachable tab must:
 4. have a canonical launch cwd equal to or below the canonical project root; and
 5. join to an exact live local tmux discovery record.
 
-Foreign, renamed, legacy-unclassified, root, and box sessions are excluded.
+Foreign, renamed, legacy-unclassified, and root sessions are excluded; a box's
+own sessions are listed under the box once its switch is on (#31aa).
 Every attach and mutation resolves its opaque id through a fresh snapshot. No
 client-supplied tmux target, cwd, path, command, or argv reaches a process API.
 
@@ -449,7 +525,8 @@ surprise tab for the next launch.
 Extend local persistence only for opted-in, eligible, restart-resumable
 `kind: "agent"` tabs. The existing stable `TabEntry.tmuxSession` value is reused.
 Ordinary shells keep today's local persistence behavior. `local_agent`,
-ephemeral, root/box, container, VM, and non-resumable agent tabs are not widened.
+ephemeral, root, container, VM, and non-resumable agent tabs are not widened;
+a box scope's agent tabs are widened by the box's own switch (#31aa).
 
 Enabling mobile access does not respawn a live non-tmux agent. Settings must say
 that it becomes mobile-attachable after its next ordinary reopen/restart.
@@ -640,16 +717,21 @@ GET    /api/v1/status
 GET    /api/v1/todo
 POST   /api/v1/todo
 GET    /api/v1/alerts
+POST   /api/v1/alerts                                              {alert_id}
 GET    /api/v1/calendar?month=YYYY-MM
 POST   /api/v1/calendar?month=YYYY-MM
 GET    /api/v1/mail
 GET    /api/v1/mail/folders/:folder_id?offset=...
 GET    /api/v1/mail/folders/:folder_id/messages/:message_id?offset=...
+POST   /api/v1/mail/folders/:folder_id/messages/:message_id/mark   {action, offset}
+POST   /api/v1/mail/folders/:folder_id/messages/:message_id/reply  {body, offset}
 GET    /api/v1/projects?view=active|search&q=...
 GET    /api/v1/projects/:project_id
 POST   /api/v1/projects/:project_id/activate
 POST   /api/v1/projects/:project_id/tabs
 GET    /api/v1/tabs/:tab_id
+PUT    /api/v1/tabs/:tab_id                                        {label}
+DELETE /api/v1/tabs/:tab_id
 GET    /api/v1/tabs/:tab_id/terminal   (WebSocket upgrade)
 ```
 
@@ -768,8 +850,13 @@ specs push notifications, dead-session relaunch, code-splitting, read-only
 file browsing, mail actions, and display-only worker-tab awareness. The items
 below remain the authoritative deferral list for everything it does not cover
 (remote/container/VM *attach*, structured agent-supplied attention state, tab
-termination/rename/move, native wrappers, multi-user hosts, non-Tailscale
-publication, desktop-absent creation).
+move, native wrappers, multi-user hosts, non-Tailscale publication,
+desktop-absent creation). Two items have since left it: a tab is renamed
+(`PUT /api/v1/tabs/{id}`) and closed (`DELETE /api/v1/tabs/{id}`) from the
+phone, both as desktop-bridge calls addressed by the opaque tab id. Closing is
+the desktop's own × and nothing stronger — the tab leaves the layout, the tmux
+session behind it keeps running — so it is a *layout* action rather than the
+tab termination this list deferred, which would end the session.
 
 - creation while the desktop is absent, which requires a daemon-owned or
   transactional shared tab-state model;
@@ -777,6 +864,8 @@ publication, desktop-absent creation).
   and connectivity rules;
 - structured attention/approval state supplied by agents rather than terminal
   scraping;
-- tab termination/rename/move or mode changes after creation;
+- tab termination (ending the session behind a tab), move, or mode changes
+  after creation — a phone renames and closes a tab, but never kills what runs
+  in one;
 - native wrappers, push notifications, multi-user hosts, or non-Tailscale
   publication.

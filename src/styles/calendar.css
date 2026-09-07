@@ -1,0 +1,1541 @@
+/* calendar.css — split from the old monolithic themes.css (order-preserving).
+   Native calendar tab (all views, event dialog, reminder popup).
+   IMPORT ORDER IS LOAD-BEARING: these files are @imported in sequence from
+   styles/index.css; equal-specificity rules rely on source order exactly as
+   they did in the monolith, so never reorder the imports or move rules
+   between files without checking the cascade. */
+
+/* ── Native calendar tab ──────────────────────────────────────────────────────
+   The pane is a toolbar + sidebar + one of six views (day / week / multiweek /
+   month / agenda / tasks). Events are colored by `currentColor`: each block sets
+   `color` to its category's (or its calendar's) color, and the border/background
+   below derive from it via color-mix, so one property tints a whole block.
+   ------------------------------------------------------------------------- */
+
+:root {
+  /* Category swatches. Deliberately theme-independent: a "Work" event should be
+     the same color in light and dark, the way a highlighter is. */
+  --cal-cat-work: #4aa3df;
+  --cal-cat-personal: #59b96a;
+  --cal-cat-meeting: #e8663d;
+  --cal-cat-travel: #4fc3c3;
+  --cal-cat-birthday: #c164d6;
+  --cal-cat-holiday: #e2b93b;
+  --cal-cat-important: #d9556b;
+
+  /* Geometry the month grid shares between its cells and its absolute bars. */
+  --cal-daynum-h: 20px;
+  --cal-bar-h: 18px;
+}
+
+.cal-pane {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  width: 100%;
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  overflow: hidden;
+  outline: none;
+}
+
+/* ── Toolbar ─────────────────────────────────────────────────────────────── */
+
+.cal-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-color);
+  flex: 0 0 auto;
+}
+
+.cal-toolbar-nav {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.cal-toolbar-title {
+  font-size: 14px;
+  font-weight: 650;
+  color: var(--accent);
+  min-width: 0;
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cal-toolbar-views,
+.cal-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.cal-search {
+  width: 180px;
+  flex: 0 0 auto;
+}
+
+/* ── Shared controls ─────────────────────────────────────────────────────── */
+
+.cal-btn,
+.cal-nav-btn {
+  height: 26px;
+  padding: 0 10px;
+  font-size: 12px;
+  background: var(--control-bg);
+  color: var(--text-primary);
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius);
+  cursor: var(--cur-pointer, pointer);
+}
+
+.cal-nav-btn {
+  width: 26px;
+  padding: 0;
+  font-size: 15px;
+  line-height: 1;
+}
+
+.cal-btn:hover:not(:disabled),
+.cal-nav-btn:hover {
+  background: var(--control-hover-bg);
+  border-color: var(--accent);
+}
+
+.cal-btn:disabled {
+  opacity: 0.5;
+  cursor: var(--cur-default, default);
+}
+
+.cal-btn-primary {
+  background: var(--accent);
+  color: var(--accent-contrast);
+  border-color: var(--accent);
+}
+
+.cal-btn-primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+
+/* The quiet third option, for a dialog whose two real answers are the other two
+   buttons: "decide later", "cancel". Muted rather than hidden — deferring has to
+   be *findable*, or the dialog becomes a thing to be escaped from. */
+.cal-btn-ghost {
+  background: transparent;
+  color: var(--text-muted);
+}
+.cal-btn-ghost:hover:not(:disabled) {
+  color: var(--text-primary);
+}
+
+.cal-btn-danger {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.cal-btn-danger:hover {
+  background: var(--danger);
+  color: var(--accent-contrast);
+}
+
+/* A pill toggle: view switcher, task filters, snooze offsets. */
+.cal-chip {
+  height: 24px;
+  padding: 0 9px;
+  font-size: 11px;
+  background: transparent;
+  color: var(--text-secondary);
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius);
+  cursor: var(--cur-pointer, pointer);
+}
+
+.cal-chip:hover {
+  border-color: var(--accent);
+  color: var(--text-primary);
+}
+
+.cal-chip-on {
+  background: var(--accent);
+  color: var(--accent-contrast);
+  border-color: var(--accent);
+}
+
+.cal-link-btn {
+  background: none;
+  border: none;
+  padding: 2px 4px;
+  font-size: 11px;
+  color: var(--accent);
+  cursor: var(--cur-pointer, pointer);
+}
+
+.cal-link-btn:hover {
+  color: var(--accent-hover);
+  text-decoration: underline;
+}
+
+.cal-link-danger {
+  color: var(--danger);
+}
+
+.cal-link-danger:hover {
+  color: var(--danger);
+}
+
+.cal-input {
+  height: 28px;
+  padding: 0 8px;
+  font-size: 12px;
+  font-family: inherit;
+  background: var(--control-bg);
+  color: var(--text-primary);
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius);
+}
+
+.cal-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.cal-input-num {
+  width: 64px;
+}
+
+/* The clock-entry field (`common/TimeField`), which replaced `<input
+   type="time">` because that widget's 12-vs-24-hour face comes from the
+   engine's locale and cannot be told otherwise. It wears the caller's own
+   `.cal-input`, so everything here is what turns that box into a row of
+   segments: the box keeps its border, background and height, and the segments
+   inside it are bare — no field-inside-a-field. */
+.time-field {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 6px;
+  cursor: var(--cur-text, text);
+  /* `.cal-input`'s height is a control's, and a flex box has to be told to fill
+     it or the segments sit on the baseline. */
+  box-sizing: border-box;
+}
+
+/* The focus ring belongs to the box, not to whichever segment has the caret —
+   from the outside this is one field. */
+.time-field:focus-within {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.time-field-seg {
+  width: 2ch;
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: center;
+  /* Never squeezed: the box may be stretched by its row (the event dialog's
+     `.cal-datetime` gives it `flex: 1`), the digits inside it may not. */
+  flex: 0 0 auto;
+}
+
+.time-field-seg:focus {
+  outline: none;
+  background: var(--accent);
+  color: var(--accent-contrast);
+  border-radius: 2px;
+}
+
+/* The caret would sit between the digits of a selected segment and read as a
+   second cursor; the segment highlight is what says where typing lands. */
+.time-field-seg::selection {
+  background: transparent;
+  color: inherit;
+}
+
+.time-field-sep {
+  padding: 0 1px;
+  opacity: 0.75;
+  /* The colon is scenery: a click on it falls through to the box, which puts
+     the caret in the hour. Two 2ch segments are a small target as it is. */
+  pointer-events: none;
+  user-select: none;
+}
+
+.time-field-seg::placeholder {
+  color: var(--text-muted);
+}
+
+.time-field-mer {
+  margin-left: 5px;
+  padding: 0 3px;
+  border: none;
+  border-radius: 2px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: var(--cur-pointer, pointer);
+}
+
+.time-field-mer:focus-visible,
+.time-field-mer:hover {
+  background: var(--accent);
+  color: var(--accent-contrast);
+  outline: none;
+}
+
+.time-field.is-disabled {
+  opacity: 0.45;
+  cursor: var(--cur-default, default);
+}
+
+.cal-textarea {
+  height: auto;
+  min-height: 60px;
+  padding: 6px 8px;
+  resize: vertical;
+}
+
+.cal-empty,
+.cal-hint {
+  padding: 16px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.cal-hint {
+  padding: 4px 0;
+}
+
+.cal-error {
+  padding: 6px 8px;
+  font-size: 12px;
+  color: var(--danger);
+  border: 1px solid var(--danger);
+}
+
+.cal-notice {
+  padding: 6px 12px;
+  font-size: 12px;
+  color: var(--text-primary);
+  background: var(--control-bg);
+  border-bottom: 1px solid var(--accent);
+  cursor: var(--cur-pointer, pointer);
+  flex: 0 0 auto;
+}
+
+/* ── Body: sidebar + view ────────────────────────────────────────────────── */
+
+.cal-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.cal-view {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* ── Sidebar ─────────────────────────────────────────────────────────────── */
+
+.cal-sidebar {
+  width: 190px;
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 10px;
+  border-right: 1px solid var(--border-subtle);
+  overflow-y: auto;
+}
+
+.cal-mini-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.cal-mini-title {
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--text-primary);
+}
+
+.cal-mini-weekdays,
+.cal-mini-week {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+}
+
+.cal-mini-weekday {
+  text-align: center;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  padding: 2px 0;
+}
+
+.cal-mini-day {
+  aspect-ratio: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  color: var(--text-secondary);
+  cursor: var(--cur-pointer, pointer);
+}
+
+.cal-mini-day:hover {
+  background: var(--control-hover-bg);
+}
+
+.cal-mini-day-out {
+  color: var(--text-muted);
+  opacity: 0.5;
+}
+
+.cal-mini-day-today {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.cal-mini-day-selected {
+  background: var(--accent);
+  color: var(--accent-contrast);
+  border-color: var(--accent);
+}
+
+.cal-list-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+  border-top: 1px solid var(--border-subtle);
+  padding-top: 8px;
+}
+
+.cal-list-title {
+  font-size: 11px;
+  font-weight: 650;
+  color: var(--accent-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.cal-list-add {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+
+.cal-list-add .cal-input {
+  flex: 1;
+  min-width: 0;
+}
+
+/* The subscribe form holds a name + a URL — two inputs side by side would be
+   squeezed to nothing in a 190px sidebar, so it stacks instead. */
+.cal-list-subscribe {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.cal-list-subscribe .cal-input {
+  flex: none;
+  width: 100%;
+}
+
+.cal-list-refresh {
+  font-size: 13px;
+  line-height: 1;
+}
+
+.cal-list-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 0;
+}
+
+.cal-list-row:hover .cal-list-del {
+  visibility: visible;
+}
+
+.cal-list-del {
+  visibility: hidden;
+  margin-left: auto;
+  font-size: 14px;
+  line-height: 1;
+}
+
+/* A native color input, shrunk to a swatch. */
+.cal-color-dot {
+  width: 12px;
+  height: 12px;
+  padding: 0;
+  border: 1px solid var(--control-border);
+  background: none;
+  cursor: var(--cur-pointer, pointer);
+  flex: 0 0 auto;
+}
+
+.cal-color-dot::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+.cal-color-dot::-webkit-color-swatch {
+  border: none;
+}
+
+.cal-list-name {
+  font-size: 11px;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: var(--cur-default, default);
+}
+
+.cal-list-name-off {
+  color: var(--text-muted);
+  text-decoration: line-through;
+}
+
+.cal-list-rename {
+  height: 20px;
+  font-size: 11px;
+  flex: 1;
+  min-width: 0;
+}
+
+/* ── Month / multiweek ───────────────────────────────────────────────────── */
+
+.cal-month {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.cal-month-weekdays {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  border-bottom: 1px solid var(--border-subtle);
+  flex: 0 0 auto;
+}
+
+.cal-month-weekday {
+  padding: 5px 0;
+  text-align: center;
+  font-size: 10px;
+  font-weight: 650;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.cal-month-weeks {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+/* Each week is a positioning context: the day cells tile it, and the event bars
+   sit on top so a multi-day bar can cross the cell borders. */
+.cal-month-week {
+  position: relative;
+  flex: 1;
+  min-height: 76px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.cal-month-day {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-right: 1px solid var(--border-subtle);
+  cursor: var(--cur-pointer, pointer);
+}
+
+.cal-month-day:hover {
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+}
+
+.cal-month-day-out {
+  background: color-mix(in srgb, var(--bg-main) 45%, transparent);
+}
+
+.cal-month-day-out .cal-month-daynum {
+  color: var(--text-muted);
+  opacity: 0.6;
+}
+
+.cal-month-day-selected {
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.cal-month-daynum {
+  display: block;
+  height: var(--cal-daynum-h);
+  padding: 2px 6px 0;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.cal-month-day-today .cal-month-daynum {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.cal-month-more {
+  position: absolute;
+  bottom: 2px;
+  left: 5px;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  cursor: var(--cur-pointer, pointer);
+}
+
+.cal-month-more:hover {
+  color: var(--accent);
+}
+
+/* One event in the month grid. A timed single-day event is a dot + text; an
+   all-day or multi-day one is a solid bar spanning its columns. */
+.cal-month-bar {
+  position: absolute;
+  height: calc(var(--cal-bar-h) - 2px);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 5px;
+  font-size: 10px;
+  line-height: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  border-radius: var(--radius);
+  cursor: var(--cur-pointer, pointer);
+  color: var(--accent);
+}
+
+.cal-month-bar:hover {
+  background: color-mix(in srgb, currentColor 18%, transparent);
+}
+
+.cal-month-bar-solid {
+  background: color-mix(in srgb, currentColor 78%, transparent);
+  color: var(--accent-contrast);
+  /* The bar's own tint is set inline via `color`; keep the text legible on it. */
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.28);
+}
+
+.cal-month-bar-solid:hover {
+  background: currentColor;
+}
+
+/* A span continuing off the row edge gets a flat, notched end. */
+.cal-month-bar-clip-start {
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  border-left: 2px dotted var(--accent-contrast);
+}
+
+.cal-month-bar-clip-end {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+  border-right: 2px dotted var(--accent-contrast);
+}
+
+.cal-month-bar-dot {
+  font-size: 7px;
+  flex: 0 0 auto;
+}
+
+.cal-month-bar-time {
+  color: var(--text-muted);
+  flex: 0 0 auto;
+}
+
+.cal-month-bar-solid .cal-month-bar-time {
+  color: inherit;
+  opacity: 0.85;
+}
+
+.cal-month-bar-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cal-month-bar:not(.cal-month-bar-solid) .cal-month-bar-title {
+  color: var(--text-primary);
+}
+
+/* ── Day / week: the all-day strip ───────────────────────────────────────── */
+
+.cal-timeview {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.cal-allday {
+  display: flex;
+  flex: 0 0 auto;
+  max-height: 120px;
+  border-bottom: 1px solid var(--border-color);
+  overflow-y: auto;
+}
+
+.cal-allday-gutter {
+  width: 52px;
+  flex: 0 0 auto;
+  padding: 4px;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  text-align: right;
+  align-self: flex-end;
+}
+
+.cal-allday-cols {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+}
+
+.cal-allday-col {
+  flex: 1;
+  min-width: 0;
+  padding: 3px;
+  border-left: 1px solid var(--border-subtle);
+  cursor: var(--cur-pointer, pointer);
+}
+
+.cal-allday-col-selected {
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+}
+
+.cal-allday-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 4px;
+  padding-bottom: 3px;
+}
+
+.cal-allday-dow {
+  font-size: 10px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+}
+
+.cal-allday-num {
+  font-size: 14px;
+  font-weight: 650;
+  color: var(--text-secondary);
+}
+
+.cal-allday-col-today .cal-allday-dow,
+.cal-allday-col-today .cal-allday-num {
+  color: var(--accent);
+}
+
+.cal-allday-chip {
+  margin-bottom: 2px;
+  padding: 2px 5px;
+  font-size: 10px;
+  background: color-mix(in srgb, var(--accent) 70%, transparent);
+  color: var(--accent-contrast);
+  border-radius: var(--radius);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: var(--cur-pointer, pointer);
+}
+
+/* ── Day / week: the hour grid ───────────────────────────────────────────── */
+
+.cal-timegrid {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  position: relative;
+}
+
+.cal-timegrid-inner {
+  display: flex;
+  position: relative;
+}
+
+.cal-timegrid-gutter {
+  width: 52px;
+  flex: 0 0 auto;
+  border-right: 1px solid var(--border-subtle);
+}
+
+.cal-timegrid-hour-label {
+  padding-right: 6px;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  text-align: right;
+  /* Nudge the label up so it sits ON its hour line, not below it. */
+  transform: translateY(-5px);
+}
+
+.cal-timegrid-body {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  /* A drag must not select the hour labels as it sweeps. */
+  user-select: none;
+}
+
+.cal-timegrid-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 0;
+  border-top: 1px solid var(--border-subtle);
+  pointer-events: none;
+}
+
+.cal-timegrid-col {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-left: 1px solid var(--border-subtle);
+  cursor: cell;
+}
+
+.cal-timegrid-col-today {
+  background: color-mix(in srgb, var(--accent) 4%, transparent);
+}
+
+.cal-now-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 0;
+  border-top: 2px solid var(--danger);
+  z-index: 3;
+  pointer-events: none;
+}
+
+.cal-now-line::before {
+  content: "";
+  position: absolute;
+  left: -1px;
+  top: -4px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--danger);
+}
+
+/* One timed event. `color` is set inline to the event's tint; the fill and the
+   left rule both derive from it. */
+.cal-block {
+  position: absolute;
+  overflow: hidden;
+  padding: 2px 5px;
+  font-size: 10px;
+  line-height: 1.25;
+  border-radius: var(--radius);
+  border-left: 3px solid currentColor;
+  background: color-mix(in srgb, currentColor 72%, transparent);
+  color: var(--accent);
+  cursor: var(--cur-grab, grab);
+  z-index: 2;
+}
+
+.cal-block:hover {
+  background: color-mix(in srgb, currentColor 88%, transparent);
+}
+
+.cal-block-dragging {
+  cursor: var(--cur-grabbing, grabbing);
+  opacity: 0.85;
+  z-index: 4;
+}
+
+.cal-block-title {
+  font-weight: 650;
+  color: var(--accent-contrast);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.3);
+}
+
+.cal-block-time {
+  color: var(--accent-contrast);
+  opacity: 0.85;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Too short to show a second line — the title alone, on one line. */
+.cal-block-compact {
+  padding: 0 5px;
+  display: flex;
+  align-items: center;
+}
+
+.cal-block-tentative {
+  background-image: repeating-linear-gradient(
+    45deg,
+    transparent,
+    transparent 3px,
+    rgba(255, 255, 255, 0.22) 3px,
+    rgba(255, 255, 255, 0.22) 6px
+  );
+}
+
+.cal-block-cancelled {
+  opacity: 0.55;
+}
+
+.cal-block-cancelled .cal-block-title,
+.cal-block-cancelled .cal-agenda-title,
+.cal-block-cancelled .cal-month-bar-title {
+  text-decoration: line-through;
+}
+
+/* The bottom edge — grab to resize. */
+.cal-block-resize {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 6px;
+  cursor: var(--cur-ns-resize, ns-resize);
+}
+
+/* The preview drawn while dragging out a new event. */
+.cal-block-ghost {
+  background: color-mix(in srgb, var(--accent) 40%, transparent);
+  border: 1px dashed var(--accent);
+  border-left-width: 3px;
+  color: var(--accent);
+  pointer-events: none;
+  z-index: 5;
+}
+
+/* ── Agenda ──────────────────────────────────────────────────────────────── */
+
+.cal-agenda {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 12px;
+}
+
+.cal-agenda-day {
+  margin-bottom: 14px;
+}
+
+.cal-agenda-date {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  margin-bottom: 3px;
+  font-size: 11px;
+  font-weight: 650;
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.cal-agenda-date-today {
+  color: var(--accent);
+}
+
+.cal-agenda-today-tag {
+  padding: 1px 6px;
+  font-size: var(--text-xs);
+  font-weight: 650;
+  background: var(--accent);
+  color: var(--accent-contrast);
+  border-radius: var(--radius);
+  text-transform: uppercase;
+}
+
+.cal-agenda-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 4px 6px;
+  font-size: 12px;
+  cursor: var(--cur-pointer, pointer);
+}
+
+.cal-agenda-row:hover {
+  background: var(--control-hover-bg);
+}
+
+.cal-agenda-swatch {
+  font-size: var(--text-xs);
+  flex: 0 0 auto;
+}
+
+.cal-agenda-time {
+  width: 78px;
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.cal-agenda-title {
+  color: var(--text-primary);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cal-agenda-location {
+  font-size: 11px;
+  color: var(--text-muted);
+  flex: 0 0 auto;
+}
+
+/* ── Tasks ───────────────────────────────────────────────────────────────── */
+
+.cal-tasks {
+  flex: 1;
+  overflow-y: auto;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.cal-tasks-add {
+  display: flex;
+  gap: 6px;
+}
+
+.cal-tasks-add-title {
+  flex: 1;
+  min-width: 0;
+}
+
+.cal-tasks-add-due {
+  width: 140px;
+  flex: 0 0 auto;
+}
+
+.cal-tasks-filters {
+  display: flex;
+  gap: 4px;
+}
+
+.cal-tasks-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.cal-task-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 6px;
+  font-size: 12px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.cal-task-row:hover {
+  background: var(--control-hover-bg);
+}
+
+.cal-task-check {
+  flex: 0 0 auto;
+  cursor: var(--cur-pointer, pointer);
+}
+
+.cal-task-swatch {
+  font-size: var(--text-xs);
+  flex: 0 0 auto;
+}
+
+.cal-task-title {
+  flex: 1;
+  min-width: 0;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cal-task-done .cal-task-title {
+  color: var(--text-muted);
+  text-decoration: line-through;
+}
+
+.cal-task-prio {
+  font-size: 10px;
+  font-weight: 650;
+  padding: 1px 5px;
+  border-radius: var(--radius);
+  flex: 0 0 auto;
+}
+
+.cal-task-prio-high {
+  color: var(--danger);
+  border: 1px solid var(--danger);
+}
+
+.cal-task-prio-normal {
+  color: var(--text-muted);
+  border: 1px solid var(--control-border);
+}
+
+.cal-task-prio-low {
+  color: var(--text-muted);
+  border: 1px solid var(--border-subtle);
+}
+
+/* A slim completion meter for a task that is underway but not done. */
+.cal-task-percent {
+  position: relative;
+  width: 44px;
+  height: 4px;
+  flex: 0 0 auto;
+  background: var(--control-border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.cal-task-percent-fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  background: var(--accent);
+}
+
+.cal-task-due {
+  font-size: 11px;
+  color: var(--text-muted);
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.cal-task-overdue .cal-task-due {
+  color: var(--danger);
+  font-weight: 650;
+}
+
+.cal-task-prio-select {
+  height: 22px;
+  font-size: 10px;
+  background: var(--control-bg);
+  color: var(--text-primary);
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius);
+  flex: 0 0 auto;
+}
+
+/* ── Event dialog ────────────────────────────────────────────────────────── */
+
+/* Rides the shared .settings-dialog chrome; only the width and the explicit text
+   color are its own. The color matters: the dialog is portaled to <body>, which
+   sets none, so without this it would inherit black. */
+.cal-event-dialog {
+  width: min(560px, calc(100vw - 32px));
+  color: var(--text-primary);
+}
+
+.cal-event-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  /* Scrolling is the dialog's `.dialog-scroll` frame now (one scroll region, and
+     the scrollbar clears the rounded corners); the form no longer scrolls itself. */
+}
+
+.cal-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  flex: 1;
+}
+
+.cal-field-label {
+  font-size: 10px;
+  font-weight: 650;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.cal-field-row {
+  display: flex;
+  gap: 10px;
+}
+
+.cal-datetime {
+  display: flex;
+  gap: 5px;
+}
+
+.cal-datetime .cal-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.cal-check-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-primary);
+  cursor: var(--cur-pointer, pointer);
+}
+
+.cal-section {
+  border-top: 1px solid var(--border-subtle);
+  padding-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.cal-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.cal-rule-summary {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.cal-repeat {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-left: 22px;
+}
+
+.cal-weekdays {
+  display: flex;
+  gap: 3px;
+}
+
+.cal-weekday-btn {
+  width: 26px;
+  height: 26px;
+  font-size: 11px;
+  background: var(--control-bg);
+  color: var(--text-secondary);
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius);
+  cursor: var(--cur-pointer, pointer);
+}
+
+.cal-weekday-btn:hover {
+  border-color: var(--accent);
+}
+
+.cal-weekday-on {
+  background: var(--accent);
+  color: var(--accent-contrast);
+  border-color: var(--accent);
+}
+
+.cal-alarm-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.cal-alarm-row .cal-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.cal-form-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-top: 4px;
+}
+
+.cal-scope-ask {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* ── Reminder popup ──────────────────────────────────────────────────────── */
+
+/* Bottom-right, above everything, and NOT a backdrop — a reminder must be
+   dismissible without blocking whatever the user was doing. */
+.cal-alarm-popup {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 120;
+  width: min(420px, calc(100vw - 36px));
+  max-height: min(60vh, 560px);
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-3);
+}
+
+.cal-alarm-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.cal-alarm-title {
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--accent);
+}
+
+.cal-alarm-list {
+  overflow-y: auto;
+}
+
+.cal-alarm-popup .cal-alarm-row {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.cal-alarm-popup .cal-alarm-row:last-child {
+  border-bottom: none;
+}
+
+.cal-alarm-event {
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--text-primary);
+}
+
+.cal-alarm-when {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.cal-alarm-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.cal-alarm-snooze-label {
+  font-size: 10px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-right: 2px;
+}
+
+.cal-alarm-actions .cal-btn-primary {
+  margin-left: auto;
+}
+
+/* The day-entry field (`common/DateField`) and the instant field that composes
+   it with the clock (`common/DateTimeField`). Like `.time-field`, the trigger
+   wears the *caller's* box class (`.cal-input` &c.), so border, height and focus
+   ring stay the app's; everything here is what turns that box into a date, and
+   what draws the calendar the native popover could not be made to dismiss. */
+.date-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font: inherit;
+  text-align: left;
+  cursor: var(--cur-pointer, pointer);
+  box-sizing: border-box;
+}
+
+.date-field:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.date-field.is-empty .date-field-label { color: var(--text-muted); }
+.date-field:disabled { opacity: 0.45; cursor: var(--cur-default, default); }
+
+.date-field-icon { opacity: 0.7; }
+
+.date-field-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The drawn calendar. `.context-menu-portal` owns position and layering; this is
+   only its chrome and grid. */
+.date-pop {
+  padding: 8px;
+  min-width: 244px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-2);
+}
+
+.date-pop-head {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-bottom: 6px;
+}
+
+.date-pop-title {
+  flex: 1;
+  text-align: center;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.date-pop-nav {
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: var(--radius);
+  background: none;
+  color: inherit;
+  font: inherit;
+  line-height: 1;
+  cursor: var(--cur-pointer, pointer);
+}
+
+.date-pop-nav:hover,
+.date-pop-nav:focus-visible {
+  background: var(--control-hover-bg);
+  outline: none;
+}
+
+.date-pop-weekdays,
+.date-pop-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 30px);
+  gap: 2px;
+}
+
+.date-pop-weekday {
+  text-align: center;
+  font-size: 10px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+}
+
+.date-pop-day {
+  height: 26px;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  cursor: var(--cur-pointer, pointer);
+}
+
+.date-pop-day:hover { background: var(--control-hover-bg); }
+.date-pop-day:focus-visible { outline: none; border-color: var(--accent); }
+.date-pop-day.is-outside { color: var(--text-muted); opacity: 0.6; }
+.date-pop-day.is-today { border-color: var(--accent); }
+
+.date-pop-day.is-selected {
+  background: var(--accent);
+  color: var(--accent-contrast);
+  border-color: var(--accent);
+}
+
+.date-pop-day.is-blocked {
+  opacity: 0.3;
+  cursor: var(--cur-default, default);
+}
+
+.date-pop-foot {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-color);
+}
+
+.datetime-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.datetime-field-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.datetime-field-echo {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.datetime-field-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* Shortcut chips: the reason this field exists is that the common instants
+   should need neither the calendar nor the clock. */
+.datetime-chip {
+  padding: 3px 9px;
+  font: inherit;
+  font-size: 11px;
+  color: var(--text-secondary);
+  background: var(--control-bg);
+  border: 1px solid var(--control-border);
+  border-radius: 999px;
+  cursor: var(--cur-pointer, pointer);
+}
+
+.datetime-chip:hover,
+.datetime-chip:focus-visible {
+  color: var(--text-primary);
+  border-color: var(--accent);
+  outline: none;
+}
+
+.datetime-chip:disabled { opacity: 0.45; cursor: var(--cur-default, default); }

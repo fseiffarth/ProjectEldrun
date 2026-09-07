@@ -16,7 +16,6 @@ import {
 import { formatTime, timePart } from "../../lib/calendarTime";
 import { useT } from "../../lib/i18n";
 import { useUse24h } from "../../lib/timeFormat";
-import { UntestedTag } from "../common/UntestedTag";
 import { useHeaderHoverMenuStore } from "../../stores/headerHoverMenu";
 
 const MENU_ID = "todo";
@@ -301,7 +300,7 @@ export function TodoIndicator() {
               rail and the wash live on this element, so it must not be the thing
               that scrolls). */}
           <div className="tab-new-menu-group-label">
-            {t("todo.menuUrgent")} <UntestedTag />
+            {t("todo.menuUrgent")}
           </div>
           <div className="menu-scroll-region">
             {/* Only when there is one: a standing "Overdue — nothing due" is the

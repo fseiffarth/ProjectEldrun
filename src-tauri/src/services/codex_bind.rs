@@ -342,6 +342,11 @@ fn poll_once(root: &Path) -> Duration {
     // Ids bound to *some* live tab — off-limits to every other tab.
     let claimed: HashSet<String> = tabs.iter().filter_map(|t| t.bound.clone()).collect();
 
+    // Resolved once per pass, not once per tab: since 0.153.4 the "does Codex
+    // still have this conversation" question is answered by the SQLite thread
+    // store, and locating it means a `read_dir` of `~/.codex`.
+    let store = crate::services::codex_store::state_db();
+
     // Parse each fresh rollout at most once per tick, and only when at least one
     // tab hasn't already written it off.
     let metas: Vec<RolloutMeta> = fresh
@@ -361,8 +366,14 @@ fn poll_once(root: &Path) -> Duration {
     } in tabs
     {
         // The trusted hook, if it is running, is strictly more precise than we
-        // are — so if it has recorded an id we didn't put there, it wins.
-        if let Some(hook_id) = agent_session::read_live_session_in(&live_dir, &uid) {
+        // are — so if it has recorded an id we didn't put there, it wins. Only
+        // an id Codex actually still has, though: the record can also be written
+        // by a *Claude* fired under this tab (its hook inherits the tab's key),
+        // and adopting that id would leave the tab with a session Codex cannot
+        // resume.
+        if let Some(hook_id) = agent_session::read_live_session_in(&live_dir, &uid)
+            .filter(|id| agent_session::codex_session_exists(root, store.as_deref(), id))
+        {
             if Some(&hook_id) != bound.as_ref() && !known.contains(&hook_id) {
                 adopt(&pty, hook_id);
                 continue;
