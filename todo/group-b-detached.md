@@ -518,6 +518,32 @@ writes are now forwarded rather than dropped.
 
 ### B.3 — The escape hatch, the protocol, and the long tail
 
+241. **An attach-only view resizes a PTY it does not own.** Spawn and kill are
+     both gated on `attachOnly` (`TerminalView.tsx:1028`, `:1295`) and the B
+     audit signed off "attach-only never spawns/kills" — but `pty_resize` is
+     not gated, at either call site: the post-`open()` fit
+     (`TerminalView.tsx:612`) and the ResizeObserver/window-resize `doFit`
+     (`:1173`). A PTY has one size, so every view sharing an id races to set
+     it, last fit wins. The backend does not arbitrate: `pty_resize`
+     (`commands/terminal.rs:693`) is a bare pass-through with no owner check —
+     pointedly unlike `pty_set_visible` right below it, which takes a
+     `viewer_id` and derives the window from the *calling* window precisely
+     because several views share one PTY. Four surfaces attach:
+     `DetachedCenterPanel.tsx:1694` (popout), `InstallOverlay.tsx:112` (an
+     overlay box over the root terminal), and `RemoteConnectDialog.tsx:631,854`
+     (adopted login terminals in a dialog). The last three are all *smaller*
+     than the pane behind them, so opening one shrinks the shared PTY and the
+     full-size terminal is left drawing into a sub-rectangle of its own grid,
+     the remainder unpainted — and a TUI takes a SIGWINCH it never asked for.
+     Not simply "attach-only never resizes": a popout whose owner pane is
+     hidden (no layout, so it never fits) would then be stuck at the size the
+     PTY had before the detach. Wants one designated size owner — the visible
+     view, or the smallest of the visible ones — arbitrated backend-side the
+     way visibility already is.
+     - [ ] 🤖 Automated test
+     - [ ] ✅ Works
+     - [ ] ❌ Doesn't work
+
 237. **Bring back a dock-back gesture.** Since the 2026-07-19 move-only
      rework there is no way to return a whole popout to the main window: the
      ⤓ button is gone, grip and titlebar drags are native OS moves, the WM ×

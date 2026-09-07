@@ -1442,6 +1442,13 @@ untested tag until a VM has actually booted on this machine).
   (pair a local mirror later), **manual-pull-only** gating in `git_peer`
   scheduling, and the view-diff-before-pull viewer (also on `ssh_sync_plan`'s
   deferred list).
+- [x] Missing prerequisites are a **button**, not a sentence to retype
+  (2026-09-07): `vm_doctor` now carries an `install_command` for the host
+  packages it found missing (apt/brew/winget, arch-aware, arm64 firmware
+  included), and the creation dialog offers it as the ordinary one-click
+  install tab, re-probing the doctor while it runs so the tier appears without
+  reopening the dialog. What a package manager cannot fix — `/dev/kvm` access,
+  disk space — carries no button, only the doctor's sentence. Untested live.
 - [ ] Frontend follow-ups — an `ELDRUN_VM_DOWN` spawn error currently renders
   as terminal text; turn it into a "Boot VM" placeholder action (like
   `RemotePaneHold`). The locality *badges* (`TabLocalityBadges`) still label a
