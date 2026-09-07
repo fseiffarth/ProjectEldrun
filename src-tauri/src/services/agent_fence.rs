@@ -494,6 +494,21 @@ fn agent_state_mounts(scope_id: &str, roots: &[PathBuf]) -> (Vec<BindMount>, Vec
     {
         symlinks.extend(staged_symlink(&src, &dst));
     }
+    // Claude's credential file: a stable-inode mirror mounted at the real
+    // path (on macOS the real path itself, kept writable). A mount, not a
+    // symlink into the stage — Claude opens it `O_NOFOLLOW`; and a mirror, not
+    // the host file — a file bind mount pins an inode and Claude rotates the
+    // file by rename, which is how long-lived tabs came to read a stale token.
+    // See `sandbox::claude_credential_mounts`.
+    mounts.extend(
+        crate::services::sandbox::claude_credential_mounts(&home)
+            .into_iter()
+            .map(|(src, dst)| BindMount {
+                src,
+                dst,
+                read_only: false,
+            }),
+    );
     let (tx_rw, tx_ro) = crate::services::sandbox::claude_transcript_mounts(
         &home,
         &roots_as_strings,

@@ -14,6 +14,11 @@ pub mod agent_versions;
 // decision and root computation stay AppHandle-free; terminal spawn only applies
 // the resulting bubblewrap argv.
 pub mod agent_fence;
+// The Claude credential mirror: one Eldrun-owned inode mounted into every
+// fenced/contained tab in place of `~/.claude/.credentials.json`, kept in step
+// with the host file by in-place writes — a file bind mount pins an inode, and
+// Claude rotates that file by rename.
+pub mod agent_creds;
 // "Check for a new Eldrun" against the GitHub releases page: version compare,
 // per-platform asset pick, staged download, per-platform install.
 pub mod app_update;

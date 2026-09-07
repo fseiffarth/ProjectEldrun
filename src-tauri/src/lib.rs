@@ -1062,6 +1062,17 @@ pub fn run() {
             // can restore a tab: the resume probe reads the host dir, and the
             // stage root is wiped here too, so no fenced spawn can race it.
             services::sandbox::harvest_and_clear_stage();
+            // Keep the Claude credential mirror in step with the host file:
+            // every fenced/contained tab is bound to the mirror's one inode, and
+            // Claude rotates the host file by rename, so without this a tab
+            // older than the last rotation reads a stale token and reports
+            // "Login expired" (see services::agent_creds). One detached thread
+            // — a notify watch plus a poll — holding no lock and no child; it
+            // dies with the process. Only the Linux fence and container mount
+            // the mirror (Seatbelt keeps the real file in place, Windows fences
+            // nothing), so only Linux has one to keep.
+            #[cfg(target_os = "linux")]
+            services::agent_creds::start();
             // Remove project containers a previous run left behind (a crash
             // skips the exit teardown). Off-thread: docker may be slow or
             // absent, and neither may block startup.

@@ -901,6 +901,14 @@ pub fn up(
                 .into_iter()
                 .map(|(src, dst)| format!("{src}:{dst}")),
         );
+        // The credential file is a mirror with a stable inode, not the host
+        // original a rename would orphan under the container — see
+        // `claude_credential_mounts`.
+        rw_mounts.extend(
+            claude_credential_mounts(&home)
+                .into_iter()
+                .map(|(src, dst)| format!("{src}:{dst}")),
+        );
         ro_mounts.extend(ro_mounts_for_hooks(&hooks_dir));
     }
     let harden = harden_opts(spec);
@@ -1604,6 +1612,13 @@ const CLAUDE_UNMOUNTED: &[&str] = &[
     "paste-cache",
     "uploads",
     CLAUDE_PROJECTS_ENTRY,
+    // Owned by [`claude_credential_mounts`], like `settings.json` is by the
+    // staged shadow: this destination gets an Eldrun-owned **mirror** file, not
+    // the host original. Mounted as a file here it was a pin on one inode, and
+    // Claude rotates the file by rename — every tab already running kept
+    // reading the orphaned old inode and reported "Login expired" while a new
+    // tab worked (`services::agent_creds` has the whole story).
+    ".credentials.json",
 ];
 
 /// Entries of `~/.claude`/`~/.codex` mounted **read-only** rather than left out:
@@ -1722,6 +1737,62 @@ pub(crate) fn agent_home_mounts(
         }
     }
     (rw, ro)
+}
+
+/// The Claude credential mount as `(src, dst)` pairs (the same pair shape as
+/// [`staged_config_mounts`], for the same colon-in-a-Windows-path reason):
+/// `<state_dir>/agent-creds/claude/.credentials.json` mounted at the real
+/// `~/.claude/.credentials.json`. Empty when the host holds no credential file
+/// — a logged-out host mounts nothing rather than an empty file the agent
+/// would write its login into and lose with the tab.
+///
+/// Why a **mirror** rather than the host file: a file bind mount pins an
+/// inode, and Claude Code rotates its credentials by writing a temp file and
+/// renaming it over the original, so every tab bound before a rotation kept
+/// reading the orphaned old record (stale token → failed refresh → "Login
+/// expired") while a freshly opened tab followed the path and worked. The
+/// mirror's inode never changes: `services::agent_creds` rewrites it *in
+/// place* whenever the host file changes and carries a refresh a tab persisted
+/// back the same way. Why not a symlink into the staging dir like the config
+/// shadows: Claude opens this file with `O_NOFOLLOW` and refuses a link.
+///
+/// The mirror is brought up to date **here**, at plan time, so a tab spawned a
+/// second after a rotation starts with the token the host has now rather than
+/// the one the keeper's last tick saw.
+///
+/// Linux only. Everywhere else the pair is the real path twice, which is
+/// exactly what it was: on macOS Seatbelt can deny but not substitute,
+/// `sandbox_exec_inputs` only reads the `dst` off this list to keep it
+/// writable, and the real file is what the agent opens there; Windows fences
+/// nothing and refuses the container. Neither creates a mirror — a second copy
+/// of a secret nobody mounts. If the mirror cannot be written on Linux (an
+/// unwritable state dir) the same identical-path mount is the fallback: a tab
+/// that logs in and later expires beats a tab that cannot log in at all, and
+/// the fallback is logged.
+pub(crate) fn claude_credential_mounts(home: &str) -> Vec<(String, String)> {
+    claude_credential_mounts_in(home, &crate::services::agent_creds::mirror_path())
+}
+
+/// [`claude_credential_mounts`] with the mirror location injected (tests).
+pub(crate) fn claude_credential_mounts_in(home: &str, mirror: &Path) -> Vec<(String, String)> {
+    let host = crate::services::agent_creds::host_path(Path::new(home));
+    if !host.is_file() {
+        return Vec::new();
+    }
+    let dst = host.to_string_lossy().into_owned();
+    if !cfg!(target_os = "linux") {
+        return vec![(dst.clone(), dst)];
+    }
+    match crate::services::agent_creds::ensure_mirror_current(&host, mirror) {
+        Some(mirror) => vec![(mirror.to_string_lossy().into_owned(), dst)],
+        None => {
+            eprintln!(
+                "agent_creds: mirror {} unavailable; mounting the host file itself",
+                mirror.display()
+            );
+            vec![(dst.clone(), dst)]
+        }
+    }
 }
 
 // ── Claude transcripts: read every project, write only our own ────────────
@@ -3156,10 +3227,46 @@ mod tests {
             assert!(mounted(&ro, name), "{name} must stay readable");
             assert!(!mounted(&rw, name), "{name} must not be writable");
         }
-        // Still mounted read-write: the auth file resume depends on, and any
-        // entry nobody named (the deliberate default).
-        assert!(mounted(&rw, ".credentials.json"));
+        // Still mounted read-write: any entry nobody named (the deliberate
+        // default).
         assert!(mounted(&rw, "todos"));
+        // The credential file is owned by `claude_credential_mounts` (a
+        // stable-inode mirror), never by the per-entry planner: mounted here it
+        // would pin the inode Claude's rename-rotation leaves behind.
+        assert!(!mounted(&rw, ".credentials.json"));
+        assert!(!mounted(&ro, ".credentials.json"));
+
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn credential_mount_is_the_mirror_at_the_real_path_and_absent_when_logged_out() {
+        let base = std::env::temp_dir().join(format!("eldrun-sbx-cred-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let home = base.join("home");
+        let claude = home.join(".claude");
+        std::fs::create_dir_all(&claude).unwrap();
+        let home_str = home.to_string_lossy().into_owned();
+        let mirror = crate::services::agent_creds::mirror_path_in(&base.join("state"));
+
+        // No host credential file: nothing to mount, and no mirror is created.
+        assert!(claude_credential_mounts_in(&home_str, &mirror).is_empty());
+        assert!(!mirror.exists());
+
+        let record = br#"{"claudeAiOauth":{"accessToken":"a","refreshToken":"r","expiresAt":5}}"#;
+        std::fs::write(claude.join(".credentials.json"), record).unwrap();
+        let pairs = claude_credential_mounts_in(&home_str, &mirror);
+        let dst = format!("{home_str}/.claude/.credentials.json");
+        if !cfg!(target_os = "linux") {
+            // Seatbelt cannot substitute, Windows fences nothing: the real
+            // file, in place, and no mirror.
+            assert_eq!(pairs, vec![(dst.clone(), dst)]);
+            assert!(!mirror.exists());
+        } else {
+            assert_eq!(pairs, vec![(mirror.to_string_lossy().into_owned(), dst)]);
+            // Seeded at plan time, so a fresh tab starts with the current token.
+            assert_eq!(std::fs::read(&mirror).unwrap(), record);
+        }
 
         std::fs::remove_dir_all(&base).ok();
     }
@@ -3536,8 +3643,12 @@ mod tests {
         // Transcripts are excluded *here* because `claude_transcript_mounts`
         // owns that destination — per entry, rw for ours and `:ro` for the rest.
         assert!(matches_entry("projects", CLAUDE_UNMOUNTED));
-        // What resume needs stays mounted.
-        assert!(!matches_entry(".credentials.json", CLAUDE_UNMOUNTED));
+        // The credential file is excluded here for the same reason: it is
+        // `claude_credential_mounts`'s destination — a stable-inode mirror,
+        // because a file mount of the host original pins the inode Claude's
+        // rename-rotation leaves behind. What resume needs still gets there.
+        assert!(matches_entry(".credentials.json", CLAUDE_UNMOUNTED));
+        assert!(!matches_entry("todos", CLAUDE_UNMOUNTED));
         // Codex keeps `sessions/` — a containerized Codex writes its rollouts there
         // and the host reads them back to decide whether a tab can resume.
         assert!(!matches_entry("sessions", CODEX_UNMOUNTED));
@@ -3555,6 +3666,7 @@ mod tests {
         std::fs::write(claude.join("daemon.log"), b"").unwrap();
         std::fs::write(claude.join(".credentials.json"), b"{}").unwrap();
         std::fs::write(claude.join("settings.json"), b"{}").unwrap();
+        std::fs::create_dir_all(claude.join("todos")).unwrap();
 
         let dir = claude.to_string_lossy().into_owned();
         let (mounts, _) = narrowed_agent_mounts(&dir, CLAUDE_UNMOUNTED);
@@ -3565,16 +3677,19 @@ mod tests {
         // and `rsplit('/')` would never match. Building the expectation with the
         // same `{p}:{p}` shape also asserts the identical-path property (the one
         // agent resume depends on) by construction.
-        let expected: Vec<String> = [".credentials.json"]
+        let expected: Vec<String> = ["todos"]
             .iter()
             .map(|n| format!("{dir}/{n}:{dir}/{n}"))
             .collect();
         assert_eq!(mounts, expected);
         // `settings.json` is deliberately absent here — `staged_config_mounts`
         // owns that destination with a writable per-project copy. So is
-        // `projects` — `claude_transcript_mounts` owns that one.
+        // `projects` — `claude_transcript_mounts` owns that one — and so is
+        // `.credentials.json`, owned by `claude_credential_mounts` (a mirror
+        // whose inode survives the host file's rename-rotation).
         assert!(!mounts.iter().any(|m| m.contains("settings.json")));
         assert!(!mounts.iter().any(|m| m.ends_with("/projects")));
+        assert!(!mounts.iter().any(|m| m.contains(".credentials.json")));
         // Stable across calls, so the spec fingerprint doesn't flap.
         assert_eq!(narrowed_agent_mounts(&dir, CLAUDE_UNMOUNTED).0, mounts);
         // A dir that isn't there mounts nothing (never auto-created).
