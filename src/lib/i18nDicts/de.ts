@@ -945,6 +945,8 @@ export const dict: Dict = {
   "agentPrompts.lastDone": "fertig {relative}",
   "agentPrompts.neverWorked": "in dieser Sitzung noch nicht bei der Arbeit gesehen",
   "agentPrompts.modelTagTitle": "Das Modell, mit dem dieser Agent zuletzt geantwortet hat, aus seinem eigenen Protokoll gelesen.",
+  "agentPrompts.lastPrompt": "letzter Prompt: {prompt}",
+  "agentPrompts.lastPromptTitle": "Der letzte Prompt, den dieser Agent bekommen hat \u2014 im Terminal getippt, eingefügt, von hier oder per Zeitplan gesendet \u2014 aus seinem eigenen Protokoll gelesen.",
   "agentContinue.toggle": "Weiter",
   "agentContinue.toggleTitle": "Diesen Agenten über seine eigenen Nutzungsgrenzen hinweg weiterlaufen lassen: auslesen, wann das nächste Fenster zurückgesetzt wird, eine Minute später ein \"continue\" senden und dann das nächste vormerken. Zustellung an einem sicheren Ruhepunkt, wie bei einem geplanten Prompt.",
   "agentContinue.reading": "Nutzungsübersicht dieses Agenten wird gelesen…",

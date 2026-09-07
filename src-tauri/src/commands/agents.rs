@@ -1162,6 +1162,29 @@ pub async fn agent_tab_model(
     .flatten()
 }
 
+/// The last prompt the tab launched as `agent` with launch id `session_id`
+/// was given, however it was submitted — typed in the terminal included —
+/// read from the CLI's own transcript
+/// (`services::agent_session::agent_session_last_prompt`). `None` when the
+/// agent keeps no transcript Eldrun reads, or it holds no prompt yet.
+#[tauri::command]
+pub async fn agent_tab_last_prompt(
+    agent: String,
+    project_id: Option<String>,
+    session_id: String,
+) -> Option<String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::services::agent_session::agent_session_last_prompt(
+            &agent,
+            project_id.as_deref(),
+            &session_id,
+        )
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
 /// Read `agent`'s own usage panel by running its CLI's print mode once.
 ///
 /// Free in every sense that matters: the run is client-side (Claude's envelope

@@ -349,6 +349,28 @@ pub fn agent_session_model(cmd: &str, project_id: Option<&str>, launch_id: &str)
     )
 }
 
+/// The last prompt the tab launched as `cmd` with launch id `launch_id` was
+/// given — however it got there: typed into the terminal, pasted, sent from
+/// the Agents view's composer, or delivered by a schedule. Read from the same
+/// transcript as the model tag, because the terminal is the one place Eldrun
+/// cannot see a prompt go by (keystrokes reach the PTY, the TUI's input box
+/// edits them, and only the agent knows what was finally submitted), while
+/// the agent writes every submitted prompt to its transcript before it starts
+/// answering. Cleaned to one line of bounded printable text
+/// ([`clean_prompt_text`]).
+///
+/// `None` when there is no transcript, no prompt in it, or the agent keeps
+/// none Eldrun reads. Codex 0.153.4's thread store records no messages at all
+/// (only the thread's first one), so a Codex tab on that release has no answer
+/// here — nothing is guessed from the tab's output instead.
+pub fn agent_session_last_prompt(
+    cmd: &str,
+    project_id: Option<&str>,
+    launch_id: &str,
+) -> Option<String> {
+    read_agent_transcript(cmd, project_id, launch_id, last_prompt_in_transcript, |_, _| None)
+}
+
 /// Resolve the transcript behind a tab and read one fact out of it. The
 /// resolution is the same whichever fact is wanted, so it lives once:
 ///
@@ -403,6 +425,22 @@ fn read_agent_transcript<T>(
 /// a record that names no real model (Claude writes `<synthetic>` for its own
 /// system turns) is skipped too, so the answer is the last *real* one.
 pub fn last_model_in_transcript(path: &std::path::Path, kind: TranscriptKind) -> Option<String> {
+    last_in_transcript_tail(path, |line| model_in_record(line, kind))
+}
+
+/// The last prompt the user submitted in the transcript at `path`, reading
+/// only its tail — see [`agent_session_last_prompt`] for what counts as one.
+pub fn last_prompt_in_transcript(path: &std::path::Path, kind: TranscriptKind) -> Option<String> {
+    last_in_transcript_tail(path, |line| prompt_in_record(line, kind))
+}
+
+/// Read the last `MODEL_TAIL_BYTES` of `path` and return `pick`'s answer for
+/// the *last* line it accepts. A line cut by the tail boundary is skipped
+/// rather than parsed — it would parse as garbage, or worse, as a record.
+fn last_in_transcript_tail<T>(
+    path: &std::path::Path,
+    pick: impl Fn(&str) -> Option<T>,
+) -> Option<T> {
     use std::io::{Read, Seek, SeekFrom};
     let mut file = std::fs::File::open(path).ok()?;
     let len = file.metadata().ok()?.len();
@@ -416,11 +454,7 @@ pub fn last_model_in_transcript(path: &std::path::Path, kind: TranscriptKind) ->
         // Whatever came before the seek point is missing from the first line.
         lines.remove(0);
     }
-    lines
-        .iter()
-        .rev()
-        .filter_map(|line| model_in_record(line, kind))
-        .next()
+    lines.iter().rev().find_map(|line| pick(line))
 }
 
 fn model_in_record(line: &str, kind: TranscriptKind) -> Option<String> {
@@ -460,6 +494,168 @@ pub(crate) fn clean_model_name(raw: &str) -> Option<String> {
         return None;
     }
     Some(name.to_string())
+}
+
+// ── The last prompt a tab was given ──────────────────────────────────────────
+//
+// Both transcripts record every submitted prompt as a record of its own, so
+// the last one is a tail read away — the same read the model tag makes. What
+// makes this more than "the last `user` record" is that both CLIs write
+// *other* things as user turns: Claude's tool results, its slash commands and
+// their captured output, the system reminders it attaches to a prompt and the
+// meta notes it leaves for itself; Codex's environment context and the
+// `AGENTS.md` it injects. Those are what `prompt_in_record` steps over, so the
+// answer is what the user said, not what the CLI told itself.
+
+/// Longest prompt shown. The value is one line of UI text beside a tab (the
+/// full prompt is always one click away in the tab itself), and the file is
+/// written by the agent.
+const MAX_PROMPT_CHARS: usize = 300;
+
+/// Claude user records whose string content opens with one of these are the
+/// CLI talking to itself, not a prompt. `<command-name>` and `<bash-input>`
+/// are handled before this list: they *are* the user's doing.
+const CLAUDE_NOT_A_PROMPT: &[&str] = &[
+    "<local-command-caveat>",
+    "<local-command-stdout>",
+    "<task-notification>",
+    "<bash-stdout>",
+    "<system-reminder>",
+    "<persisted-output>",
+    "<stdin>",
+    "[Request interrupted",
+];
+
+/// The prompt a transcript record holds, if it is a prompt at all.
+fn prompt_in_record(line: &str, kind: TranscriptKind) -> Option<String> {
+    let line = line.trim();
+    if line.is_empty() {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_str(line).ok()?;
+    let raw = match kind {
+        TranscriptKind::Claude => claude_prompt_in_record(&value)?,
+        TranscriptKind::Codex => codex_prompt_in_record(&value)?,
+    };
+    clean_prompt_text(&raw)
+}
+
+/// A Claude record: `{"type":"user","message":{"content":…}}` whose content is
+/// the prompt string, or a block list carrying the prompt as `text` blocks
+/// (an image paste puts the words beside the image). Records flagged `isMeta`
+/// or `isSidechain` are the CLI's own, tool results are the tools', and the
+/// system reminders attached to a prompt ride along as blocks of their own —
+/// all stepped over.
+fn claude_prompt_in_record(value: &serde_json::Value) -> Option<String> {
+    if value.get("type").and_then(|t| t.as_str()) != Some("user") {
+        return None;
+    }
+    let flagged = |key: &str| value.get(key).and_then(|v| v.as_bool()) == Some(true);
+    if flagged("isMeta") || flagged("isSidechain") {
+        return None;
+    }
+    let content = value.get("message")?.get("content")?;
+    let text = match content {
+        serde_json::Value::String(text) => text.clone(),
+        serde_json::Value::Array(blocks) => {
+            let block_type = |b: &serde_json::Value| b.get("type").and_then(|t| t.as_str());
+            if blocks.iter().any(|b| block_type(b) == Some("tool_result")) {
+                return None;
+            }
+            blocks
+                .iter()
+                .filter(|b| block_type(b) == Some("text"))
+                .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
+                .filter(|t| !CLAUDE_NOT_A_PROMPT.iter().any(|tag| t.trim_start().starts_with(*tag)))
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+        _ => return None,
+    };
+    claude_prompt_text(&text)
+}
+
+/// The user's words in a Claude user record's text. A slash command is
+/// recorded as `<command-name>/model</command-name>…<command-args>opus
+/// </command-args>` and shown as `/model opus`; a `!` shell line as
+/// `<bash-input>…</bash-input>`, shown with its `!`. Everything else the CLI
+/// wraps in a tag of its own is not a prompt.
+fn claude_prompt_text(text: &str) -> Option<String> {
+    let text = text.trim();
+    if let Some(name) = between(text, "<command-name>", "</command-name>") {
+        let args = between(text, "<command-args>", "</command-args>").unwrap_or("");
+        return Some(format!("{} {}", name.trim(), args.trim()).trim().to_string());
+    }
+    if let Some(cmd) = between(text, "<bash-input>", "</bash-input>") {
+        return Some(format!("! {}", cmd.trim()));
+    }
+    if CLAUDE_NOT_A_PROMPT.iter().any(|tag| text.starts_with(*tag)) {
+        return None;
+    }
+    Some(text.to_string())
+}
+
+/// A Codex rollout record: the `user_message` event is the prompt as typed;
+/// the `response_item` user message is the same words as the model saw them,
+/// which is also where Codex injects `<environment_context>`, `<user_instructions>`
+/// and the `AGENTS.md` text — those open with a tag or a heading, and are
+/// skipped. Both shapes are read, so either dialect of rollout answers.
+fn codex_prompt_in_record(value: &serde_json::Value) -> Option<String> {
+    let payload = value.get("payload")?;
+    let payload_type = payload.get("type").and_then(|t| t.as_str());
+    match value.get("type").and_then(|t| t.as_str())? {
+        "event_msg" if payload_type == Some("user_message") => {
+            payload.get("message")?.as_str().map(str::to_string)
+        }
+        "response_item"
+            if payload_type == Some("message")
+                && payload.get("role").and_then(|r| r.as_str()) == Some("user") =>
+        {
+            let text = payload
+                .get("content")?
+                .as_array()?
+                .iter()
+                .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("input_text"))
+                .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let text = text.trim();
+            if text.is_empty() || text.starts_with('<') || text.starts_with('#') {
+                return None;
+            }
+            Some(text.to_string())
+        }
+        _ => None,
+    }
+}
+
+/// The text between the first `open` and the `close` after it, if both exist.
+fn between<'a>(text: &'a str, open: &str, close: &str) -> Option<&'a str> {
+    let start = text.find(open)? + open.len();
+    let end = text[start..].find(close)? + start;
+    Some(&text[start..end])
+}
+
+/// A prompt fit to show beside a tab: whitespace runs (line breaks included)
+/// folded to one space, control characters dropped, and bounded — an ellipsis
+/// marks the cut. Empty after that is no prompt.
+pub(crate) fn clean_prompt_text(raw: &str) -> Option<String> {
+    let folded = raw
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .filter(|c| !c.is_control())
+        .collect::<String>();
+    if folded.is_empty() {
+        return None;
+    }
+    if folded.chars().count() <= MAX_PROMPT_CHARS {
+        return Some(folded);
+    }
+    let mut cut: String = folded.chars().take(MAX_PROMPT_CHARS).collect();
+    cut.push('…');
+    Some(cut)
 }
 
 /// `~/.local/share/eldrun/live_sessions/` — one file per tab (named by the
@@ -1971,6 +2167,100 @@ mod tests {
         std::fs::write(&claude, "{\"type\":\"user\"}\n").unwrap();
         assert_eq!(last_model_in_transcript(&claude, TranscriptKind::Claude), None);
         assert_eq!(last_model_in_transcript(&dir.path().join("missing.jsonl"), TranscriptKind::Claude), None);
+    }
+
+    #[test]
+    fn the_last_prompt_is_what_the_user_said_not_what_the_cli_told_itself() {
+        let dir = tempfile::tempdir().unwrap();
+        let claude = dir.path().join("s.jsonl");
+        // A prompt, then everything Claude writes as a "user" turn that is not
+        // one: a tool result, a meta caveat, a reminder, a captured stdout.
+        std::fs::write(
+            &claude,
+            concat!(
+                "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"fix the\\n  failing tests\"}}\n",
+                "{\"type\":\"assistant\",\"message\":{\"model\":\"claude-opus-4-1\",\"role\":\"assistant\"}}\n",
+                "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"tool_use_id\":\"t1\",\"type\":\"tool_result\",\"content\":\"ok\"}]}}\n",
+                "{\"type\":\"user\",\"isMeta\":true,\"message\":{\"role\":\"user\",\"content\":\"pretend this is a prompt\"}}\n",
+                "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"<system-reminder>\\nnot a prompt\\n</system-reminder>\"}}\n",
+                "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"<local-command-stdout>Set model</local-command-stdout>\"}}\n",
+                "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"[Request interrupted by user for tool use]\"}]}}\n",
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            last_prompt_in_transcript(&claude, TranscriptKind::Claude).as_deref(),
+            Some("fix the failing tests")
+        );
+        // A slash command and a `!` line are the user's doing, and read as such.
+        std::fs::write(
+            &claude,
+            concat!(
+                "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"<command-name>/model</command-name>\\n  <command-message>model</command-message>\\n  <command-args>opus</command-args>\"}}\n",
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            last_prompt_in_transcript(&claude, TranscriptKind::Claude).as_deref(),
+            Some("/model opus")
+        );
+        std::fs::write(
+            &claude,
+            "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"<bash-input> git status</bash-input>\"}}\n",
+        )
+        .unwrap();
+        assert_eq!(
+            last_prompt_in_transcript(&claude, TranscriptKind::Claude).as_deref(),
+            Some("! git status")
+        );
+        // An image paste carries its words as text blocks beside the image,
+        // and the reminder Claude attaches rides along as a block to skip.
+        std::fs::write(
+            &claude,
+            "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"image\",\"source\":{}},{\"type\":\"text\",\"text\":\"what is this?\"},{\"type\":\"text\",\"text\":\"<system-reminder>x</system-reminder>\"}]}}\n",
+        )
+        .unwrap();
+        assert_eq!(
+            last_prompt_in_transcript(&claude, TranscriptKind::Claude).as_deref(),
+            Some("what is this?")
+        );
+        // Codex: the typed message event, and the model-facing copy without
+        // the context Codex injects around it.
+        let codex = dir.path().join("rollout.jsonl");
+        std::fs::write(
+            &codex,
+            concat!(
+                "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"<environment_context>cwd</environment_context>\"}]}}\n",
+                "{\"type\":\"event_msg\",\"payload\":{\"type\":\"user_message\",\"message\":\"add a test\"}}\n",
+                "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"done\"}]}}\n",
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            last_prompt_in_transcript(&codex, TranscriptKind::Codex).as_deref(),
+            Some("add a test")
+        );
+        std::fs::write(
+            &codex,
+            concat!(
+                "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"# AGENTS.md instructions\"}]}}\n",
+                "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"rename it\"}]}}\n",
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            last_prompt_in_transcript(&codex, TranscriptKind::Codex).as_deref(),
+            Some("rename it")
+        );
+        // A dialect mismatch, or no prompt at all, is no answer — never a guess.
+        assert_eq!(last_prompt_in_transcript(&codex, TranscriptKind::Claude), None);
+        assert_eq!(last_prompt_in_transcript(&dir.path().join("missing.jsonl"), TranscriptKind::Codex), None);
+        // The shown text is one bounded printable line.
+        assert_eq!(clean_prompt_text("  a\n\n b\tc \u{1b}[0m "), Some("a b c [0m".to_string()));
+        assert_eq!(clean_prompt_text(" \n "), None);
+        let long = clean_prompt_text(&"p".repeat(MAX_PROMPT_CHARS + 50)).unwrap();
+        assert_eq!(long.chars().count(), MAX_PROMPT_CHARS + 1);
+        assert!(long.ends_with('…'));
     }
 
     #[test]

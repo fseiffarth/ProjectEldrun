@@ -1724,6 +1724,7 @@ pub fn run() {
             commands::agents::claude_folder_trusted,
             commands::agents::agent_usage,
             commands::agents::agent_tab_model,
+            commands::agents::agent_tab_last_prompt,
             commands::ollama::ollama_is_running,
             commands::ollama::ollama_status,
             commands::ollama::ollama_gpu_status,

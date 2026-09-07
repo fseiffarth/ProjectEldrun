@@ -2885,6 +2885,16 @@
 .agent-prompts-tab-when,
 .agent-prompts-row-main small { color: var(--text-muted); font-size: 11px; }
 .agent-prompts-tab-head .danger-text { color: var(--danger); }
+/* The last prompt the tab was given, from its transcript — one line, cut with
+   an ellipsis; the whole of it is in the title and in the tab itself. */
+.agent-prompts-last-prompt {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-style: italic;
+}
 
 /* The prompts a tab is holding: sent, claimed by no agent yet, waiting for this
    one to fall idle. Indented under the tab's own lines so the queue reads as

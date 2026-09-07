@@ -941,6 +941,8 @@ export const dict: Dict = {
   "agentPrompts.lastDone": "concluso {relative}",
   "agentPrompts.neverWorked": "non visto al lavoro in questa sessione",
   "agentPrompts.modelTagTitle": "Il modello con cui questo agente ha risposto l'ultima volta, letto dalla sua trascrizione.",
+  "agentPrompts.lastPrompt": "ultimo prompt: {prompt}",
+  "agentPrompts.lastPromptTitle": "L'ultimo prompt ricevuto da questo agente \u2014 digitato nel terminale, incollato, inviato da qui o da una pianificazione \u2014 letto dalla sua trascrizione.",
   "agentContinue.toggle": "Continua",
   "agentContinue.toggleTitle": "Mantieni attivo questo agente attraverso i suoi limiti d\u2019uso: legge quando si azzera la prossima finestra, invia un \"continue\" un minuto dopo e poi prepara la successiva. Consegnato in un punto di inattività sicuro, come un prompt pianificato.",
   "agentContinue.reading": "lettura del pannello d\u2019uso di questo agente…",

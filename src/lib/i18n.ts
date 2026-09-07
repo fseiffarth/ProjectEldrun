@@ -1035,6 +1035,8 @@ export const en = {
   "agentPrompts.lastDone": "finished {relative}",
   "agentPrompts.neverWorked": "not seen working this session",
   "agentPrompts.modelTagTitle": "The model this agent last answered with, read from its own transcript.",
+  "agentPrompts.lastPrompt": "last prompt: {prompt}",
+  "agentPrompts.lastPromptTitle": "The last prompt this agent was given \u2014 typed in the terminal, pasted, sent from here or by a schedule \u2014 read from its own transcript.",
   // Auto-continue: one switch per agent tab that keeps it going across the
   // CLI's own rate-limit windows (components/layout/AgentContinueHost).
   "agentContinue.toggle": "Continue",

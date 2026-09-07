@@ -1052,3 +1052,48 @@ unchanged; the new agents are additive.
       Ctrl+wheel zoom, Shift+Tab and the TUI's own scrolling are unchanged.
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work
+
+264. **Agents view: the last prompt beside each tab, typed in the terminal
+    included — and adopted into the prompt chart.** The row under a tab's times
+    now says `last prompt: …` whatever route the prompt took: the composer, a
+    schedule, or the user's own typing into the terminal, which Eldrun never
+    sees as a prompt (keystrokes reach the PTY, the TUI's input box edits them,
+    only the agent knows what was submitted). So it is read from the same
+    transcript tail the model tag comes from (`agent_tab_last_prompt` →
+    `agent_session_last_prompt`), stepping over everything both CLIs write as
+    a user turn that is not one — tool results, meta notes, attached reminders,
+    captured `/command` output, Codex's injected context — and reading a slash
+    command as `/model opus` and a `!` line with its `!`. Re-read when a tab
+    turns busy (a prompt was just submitted) and when it finishes. A prompt that
+    *changed* at a turn's start was typed, and `lib/agentPromptAdopt` records it
+    on the prompt history as delivered to that tab — the row the chart draws a
+    sent card from — unless the tab's newest history row already says it, so a
+    composer or scheduled send is never recorded twice; the first read of a tab
+    is a baseline, never a record. An agent whose transcript Eldrun cannot read
+    (Gemini, Qwen, Codex 0.153.4 whose thread store keeps no messages, a custom
+    command) gets the prompt echoed on the pane's own screen instead
+    (`lib/agentPromptEcho` over `lib/terminalRegistry`, parsed by the phone's
+    own `readableScreen`/`inputFrameStart`/`chatTurns`, so a draft still being
+    typed is never taken for a prompt). Built 2026-09-07, **not live-tested**; the Rust side is uncompiled on
+    the GNOME host (no toolchain) — CI compiles it.
+    - [x] 🤖 Automated test — `agent_session::the_last_prompt_is_what_the_user_said_not_what_the_cli_told_itself`
+      (Claude: plain, multi-line, tool result, meta, reminder, captured stdout,
+      interrupt, `/model opus`, `! git status`, image paste; Codex: typed event,
+      injected context, `AGENTS.md`; dialect mismatch; the one-line bound),
+      `AgentSchedulesView` (the row shows the prompt the backend read),
+      `AgentPromptAdopt` (dedupe against the newest row, cut prompts, label
+      fallback; the busy edge records a changed prompt, not the first read, not
+      one the composer sent), `AgentPromptEcho` (the last echo on a screen, not
+      the draft in the input box, not a select dialog; the store falls back to
+      it when the transcript has nothing).
+    - [ ] 🖐️ Manual test — open the Agents view beside a Claude tab and type a
+      prompt into the tab itself: within a moment the row reads `last prompt:
+      <what you typed>` (hover for the whole text), and the prompt chart (⧗)
+      shows a sent card for it under that tab. Send one from the composer: the
+      row updates, the chart shows exactly one card for it. Type `/model` in the
+      tab: the row reads `last prompt: /model`. Then a `!` line: `last prompt:
+      ! …`. In a Codex tab on 0.153.4 and in a Gemini tab, type a prompt: the
+      row shows it a moment after the agent starts answering (from the screen
+      echo); while you are still typing, the row must NOT change.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work

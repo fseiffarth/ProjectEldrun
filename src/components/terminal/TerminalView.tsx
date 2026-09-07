@@ -25,6 +25,7 @@ import {
 import { hpcGuardRefusal } from "../../lib/hpcGuard";
 import { useHpcGuardStore } from "../../stores/hpcGuardPrompt";
 import { CSI_U_SHIFT_TAB, FORCE_SELECTION_MODIFIER, agentMouseDownAction, claimInitialInput, decodeOsc52Clipboard, initialInputForPty, isClaudeCommand, isCodexCommand, isTerminalIdentityResponse, isTerminalReport, stripTerminalQueries } from "../../lib/terminalControl";
+import { registerTerminal, unregisterTerminal } from "../../lib/terminalRegistry";
 import { clearPtyInput, writePtyInput } from "../../lib/terminalInput";
 import { registerScheduledAgentInput } from "../../lib/scheduledAgentInput";
 import "@xterm/xterm/css/xterm.css";
@@ -436,6 +437,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
     term.loadAddon(links);
 
     termRef.current = term;
+    registerTerminal(id, term);
     fitRef.current = fit;
     openedRef.current = false;
     pendingOutput.current = "";
@@ -1331,6 +1333,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       // launch as restored tabs settled. Clearing here restores the invariant the
       // guards assume: these refs describe a LIVE terminal or nothing.
       termRef.current = null;
+      unregisterTerminal(id, term);
       fitRef.current = null;
       openedRef.current = false;
     };
