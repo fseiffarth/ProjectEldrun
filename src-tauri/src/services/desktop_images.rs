@@ -234,10 +234,13 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
+    // Opened for WRITING, not reading: `set_modified` is `SetFileTime` on
+    // Windows, which wants `FILE_WRITE_ATTRIBUTES` on the handle and answers a
+    // read-only one with `PermissionDenied`. Unix does not care either way.
     fn touch(dir: &Path, name: &str, bytes: &[u8], age: Duration) -> PathBuf {
         let path = dir.join(name);
         fs::write(&path, bytes).unwrap();
-        let file = fs::File::open(&path).unwrap();
+        let file = fs::OpenOptions::new().write(true).open(&path).unwrap();
         file.set_modified(SystemTime::now() - age).unwrap();
         path
     }

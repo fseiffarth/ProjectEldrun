@@ -3130,17 +3130,29 @@ mod tests {
 
     #[test]
     fn accepted_trust_paths_takes_only_absolute_accepted_entries() {
-        let value = serde_json::json!({
-            "projects": {
-                "/home/u/work/p": {"hasTrustDialogAccepted": true},
-                "/home/u/work/q": {"hasTrustDialogAccepted": false},
-                "/home/u/work/r": {"history": ["no answer yet"]},
-                "relative/path": {"hasTrustDialogAccepted": true},
-            },
-        });
+        // Absolute in the OS's own spelling: `Path::is_absolute` — which is what
+        // the filter asks — wants a drive prefix on Windows, where a leading `/`
+        // is merely rooted. The `.claude.json` this reads holds native paths.
+        let abs = |name: &str| {
+            if cfg!(windows) {
+                format!("C:\\u\\work\\{name}")
+            } else {
+                format!("/home/u/work/{name}")
+            }
+        };
+        let (p, q, r) = (abs("p"), abs("q"), abs("r"));
+        let mut projects = serde_json::Map::new();
+        projects.insert(p.clone(), serde_json::json!({"hasTrustDialogAccepted": true}));
+        projects.insert(q, serde_json::json!({"hasTrustDialogAccepted": false}));
+        projects.insert(r, serde_json::json!({"history": ["no answer yet"]}));
+        projects.insert(
+            "relative/path".to_string(),
+            serde_json::json!({"hasTrustDialogAccepted": true}),
+        );
+        let value = serde_json::json!({ "projects": projects });
         let mut got = accepted_trust_paths(&value);
         got.sort();
-        assert_eq!(got, vec!["/home/u/work/p".to_string()]);
+        assert_eq!(got, vec![p]);
         // A file with no `projects` map at all yields nothing rather than panicking.
         assert!(accepted_trust_paths(&serde_json::json!({})).is_empty());
     }
