@@ -596,6 +596,21 @@ pub(crate) fn normalize_entry(entry: &mut ProjectEntry) -> bool {
     changed
 }
 
+/// The hosting provider recorded alongside a `remote-*` `git_type`, from the
+/// dialog's clone/fork URL. Only the two providers Eldrun speaks to are kept,
+/// and only for a project that actually has a hosting target — a `local` or
+/// `none` project naming a provider would badge a repo that is pushed nowhere.
+pub(crate) fn normalize_git_provider(value: Option<&str>, git_type: &str) -> Option<String> {
+    if !git_type.starts_with("remote-") {
+        return None;
+    }
+    match value.unwrap_or("").trim().to_ascii_lowercase().as_str() {
+        "github" => Some("github".to_string()),
+        "gitlab" => Some("gitlab".to_string()),
+        _ => None,
+    }
+}
+
 /// Normalize a `git_type` value to the local/remote model used since Group D.
 /// Legacy values map private → remote-private, public → remote-public; the
 /// canonical values pass through; anything unrecognized falls back to "local".
@@ -3197,6 +3212,11 @@ pub struct CreateProjectRequest {
     pub directory: String,
     pub description: Option<String>,
     pub git_type: Option<String>,
+    /// Which hosting service a `remote-*` project is pushed to ("github" /
+    /// "gitlab"), when the creation already knows — a clone/fork import reads it
+    /// off the repository URL. Ignored for any other `git_type`.
+    #[serde(default)]
+    pub git_provider: Option<String>,
     /// Skip writing the Eldrun scaffold (and `git init`) — for new projects
     /// that should start empty. `project.json` is still created so the project
     /// registers normally.
@@ -3366,6 +3386,9 @@ pub fn create_project_blocking(mut req: CreateProjectRequest) -> Result<ProjectE
 
     let now = chrono_now();
     let description = clean_description(req.description);
+    // Resolved after the downgrade above, so a project whose `git init` failed
+    // never carries a hosting provider for a repo it doesn't have.
+    let git_provider = normalize_git_provider(req.git_provider.as_deref(), &git_type);
 
     let project = Project {
         id: id.clone(),
@@ -3373,6 +3396,7 @@ pub fn create_project_blocking(mut req: CreateProjectRequest) -> Result<ProjectE
         directory: directory.clone(),
         description: description.clone(),
         git_type: Some(git_type.clone()),
+        git_provider: git_provider.clone(),
         created_at: Some(now),
         remote: req.remote.clone(),
         mirror: mirror.clone(),
@@ -3387,6 +3411,7 @@ pub fn create_project_blocking(mut req: CreateProjectRequest) -> Result<ProjectE
     let mut extra = project_extra(
         directory.clone(),
         git_type,
+        git_provider,
         description,
         req.remote.as_ref(),
         mirror.as_deref(),
@@ -3464,6 +3489,11 @@ pub struct ImportProjectRequest {
     pub name: String,
     pub description: Option<String>,
     pub git_type: Option<String>,
+    /// Which hosting service a `remote-*` project is pushed to ("github" /
+    /// "gitlab") — the import dialog fills it from the clone/fork URL, so a
+    /// cloned repo carries its host without waiting for the origin sniff.
+    #[serde(default)]
+    pub git_provider: Option<String>,
     pub mode: String,
     pub scaffold_fill_modes: Option<HashMap<String, String>>,
     pub manual_validation_confirmed: Option<bool>,
@@ -3681,6 +3711,9 @@ fn finish_import(
 
     let now = chrono_now();
     let requested_description = clean_description(req.description);
+    // As in `create_project`: read after the honesty downgrades above, so the
+    // provider only rides along with a `remote-*` label that survived them.
+    let git_provider = normalize_git_provider(req.git_provider.as_deref(), &git_type);
 
     // Remote imports mirror into `<name>` under the chosen "Local location"
     // (`mirror_parent`), defaulting to the `eldrun/projects-ssh/` root; created up
@@ -3706,6 +3739,7 @@ fn finish_import(
             existing.description = requested_description.clone();
         }
         existing.git_type = Some(git_type.clone());
+        existing.git_provider = git_provider.clone();
         existing.remote = remote.clone();
         existing.mirror = mirror.clone();
         existing
@@ -3716,6 +3750,7 @@ fn finish_import(
             directory: directory.clone(),
             description: requested_description.clone(),
             git_type: Some(git_type.clone()),
+            git_provider: git_provider.clone(),
             created_at: Some(now),
             remote: remote.clone(),
             mirror: mirror.clone(),
@@ -3728,6 +3763,7 @@ fn finish_import(
     let extra = project_extra(
         directory.clone(),
         git_type,
+        git_provider,
         description,
         remote.as_ref(),
         mirror.as_deref(),
@@ -4083,6 +4119,7 @@ fn next_position(list: &ProjectsList) -> i64 {
 fn project_extra(
     directory: String,
     git_type: String,
+    git_provider: Option<String>,
     description: Option<String>,
     remote: Option<&RemoteSpec>,
     mirror: Option<&str>,
@@ -4091,6 +4128,11 @@ fn project_extra(
         ("directory".to_string(), Value::String(directory)),
         ("git_type".to_string(), Value::String(git_type)),
     ]);
+    // The hosting badge's own axis (`publish_project` writes the same key) — the
+    // pill reads it without sniffing `origin`.
+    if let Some(provider) = git_provider {
+        extra.insert("git_provider".to_string(), Value::String(provider));
+    }
     if let Some(description) = description {
         extra.insert("description".to_string(), Value::String(description));
     }
@@ -4645,6 +4687,25 @@ mod tests {
         assert_eq!(normalize_git_type(""), "local");
         assert_eq!(normalize_git_type("weird"), "local");
         assert_eq!(normalize_git_type("  public  "), "remote-public");
+    }
+
+    #[test]
+    fn git_provider_rides_only_on_a_hosted_project() {
+        // The clone/fork URL's own host, kept for the two providers Eldrun speaks.
+        assert_eq!(
+            normalize_git_provider(Some("GitHub"), "remote-private").as_deref(),
+            Some("github")
+        );
+        assert_eq!(
+            normalize_git_provider(Some(" gitlab "), "remote-public").as_deref(),
+            Some("gitlab")
+        );
+        // A project pushed nowhere must not carry a hosting badge…
+        assert_eq!(normalize_git_provider(Some("github"), "local"), None);
+        assert_eq!(normalize_git_provider(Some("github"), "none"), None);
+        // …and neither does an unrecognized (self-hosted) host.
+        assert_eq!(normalize_git_provider(Some("gitea"), "remote-private"), None);
+        assert_eq!(normalize_git_provider(None, "remote-private"), None);
     }
 
     // ── normalize_entry ────────────────────────────────────────────────────

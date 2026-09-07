@@ -105,7 +105,22 @@ export function ProjectDialog({
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [descriptionFillMode, setDescriptionFillMode] = useState("manual");
-  const [gitType, setGitType] = useState("local");
+  // Same default the import-source dropdown applies when the source is switched
+  // by hand (`changeImportSource`) — a dialog opened *directly* on the clone
+  // source (the New-tab menu's "Import from GitHub…") starts on the same answer
+  // instead of on "Local repo only", which no cloned repository is.
+  const [gitType, setGitType] = useState(
+    kind === "import" && initialImportSource !== "folder" ? "remote-private" : "local",
+  );
+  // Whether the user has answered the Git hosting field themselves. The clone
+  // URL fills that field on their behalf (provider + visibility, below), and an
+  // explicit pick must survive every later URL keystroke.
+  const [gitTypeTouched, setGitTypeTouched] = useState(false);
+  // What the repository being cloned says about itself: `"public"`/`"private"`
+  // from the anonymous `git_remote_visibility` probe, `"unknown"` when the host
+  // wouldn't say (offline, self-hosted, a URL that isn't a repo). `null` while
+  // no probe has answered for the URL currently in the field.
+  const [cloneVisibility, setCloneVisibility] = useState<string | null>(null);
   const [mode, setMode] = useState("keep");
   const [skipScaffold, setSkipScaffold] = useState(false);
   // Trust tier at creation time (`docs/vm_projects_plan.md`): where the
@@ -217,6 +232,18 @@ export function ProjectDialog({
     | "github"
     | "gitlab"
     | "";
+  // The hosting provider of the repository this import comes from, as the URL's
+  // own host names it ("" for a self-hosted host that names neither). A fork's
+  // explicit "Host type" pick wins, since that row exists exactly for the hosts
+  // the URL can't classify. This is what the created project records as
+  // `git_provider`, so a cloned project carries its host from the first second
+  // instead of waiting for the `origin` sniff to badge it — and it is what fills
+  // the Git hosting field below.
+  const cloneProvider: GitProvider | "" = isCloneImport
+    ? isForkImport
+      ? forkProviderResolved
+      : providerFromCloneUrl(repoUrl)
+    : "";
   const forkCli = forkProviderResolved ? PROVIDER_CLI_INSTALL[forkProviderResolved] : null;
   // Same shape as the git-install banner: only claim the CLI is missing once the
   // probe has actually answered.
@@ -337,6 +364,9 @@ export function ProjectDialog({
   const changeImportSource = (next: ImportSource) => {
     setImportSource(next);
     setGitType(next === "folder" ? "local" : "remote-private");
+    // The new source gets to fill the field again: a clone's own repository
+    // answers for it (provider + visibility), a folder has nothing to say.
+    setGitTypeTouched(false);
   };
 
   const setRepoUrlAndName = (url: string) => {
@@ -383,6 +413,37 @@ export function ProjectDialog({
     }, 6000);
     return () => window.clearInterval(timer);
   }, [vmInstalling, vmDoctor?.ok]);
+
+  // A clone import knows where its repository is hosted — so the Git hosting
+  // field is filled from the repository itself rather than from a guess: the
+  // provider comes off the URL's host, and public/private from one anonymous
+  // `ls-remote` (a repo that reads without credentials is public; one that
+  // refuses is private). Debounced, because the URL arrives keystroke by
+  // keystroke, and dropped entirely once the user answers the field themselves.
+  //
+  // An unreachable or self-hosted host answers "unknown" and the field keeps
+  // whatever the source's default put there — private, the safe way to be wrong.
+  useEffect(() => {
+    const url = repoUrl.trim();
+    setCloneVisibility(null);
+    if (!isCloneImport || gitTypeTouched || !url || !isCloneUrl(url)) return;
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      invoke<string>("git_remote_visibility", { url })
+        .then((visibility) => {
+          if (cancelled) return;
+          setCloneVisibility(visibility);
+          if (visibility === "public" || visibility === "private") {
+            setGitType(`remote-${visibility}`);
+          }
+        })
+        .catch(() => {});
+    }, 700);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [repoUrl, isCloneImport, gitTypeTouched]);
 
   // Probe the fork provider's CLI whenever the resolved provider changes (it
   // moves as the URL is typed). Reset to `null` first so the banner never shows
@@ -638,6 +699,7 @@ export function ProjectDialog({
         directory: "",
         description,
         gitType,
+        gitProvider: cloneProvider || undefined,
         skipScaffold,
         vm: { enabled: true },
       },
@@ -781,6 +843,9 @@ export function ProjectDialog({
                 name,
                 description,
                 gitType,
+                // The clone URL's own host, so the project is badged by where it
+                // actually came from rather than by an `origin` sniff later.
+                gitProvider: cloneProvider || undefined,
                 mode: isRemoteProject || isCloneImport ? "keep" : mode,
                 scaffoldFillModes,
                 manualValidationConfirmed,
@@ -1178,7 +1243,10 @@ export function ProjectDialog({
           <Dropdown
             className="dropdown-block"
             value={gitType}
-            onChange={setGitType}
+            onChange={(v) => {
+              setGitTypeTouched(true);
+              setGitType(v);
+            }}
             options={[
               { value: "none", label: t("projectDialog.gitNoneOpt") },
               { value: "local", label: t("projectDialog.gitLocalOpt") },
@@ -1192,6 +1260,25 @@ export function ProjectDialog({
               ? ` ${t("projectDialog.gitHostingHintRemoteSuffix")}`
               : "."}
           </span>
+          {/* Say where the filled-in answer came from — a field that changes
+              under the user is only helpful if it names its source. */}
+          {isCloneImport && cloneProvider && !gitTypeTouched && (
+            <span className="ssh-optional-hint">
+              {cloneVisibility === "public" || cloneVisibility === "private"
+                ? t("projectDialog.gitHostingFromClone", {
+                    provider: cloneProvider === "gitlab" ? "GitLab" : "GitHub",
+                    visibility: t(
+                      cloneVisibility === "public"
+                        ? "projectDialog.visibilityPublic"
+                        : "projectDialog.visibilityPrivate",
+                    ),
+                  })
+                : t("projectDialog.gitHostingFromCloneProviderOnly", {
+                    provider: cloneProvider === "gitlab" ? "GitLab" : "GitHub",
+                  })}{" "}
+              <UntestedTag />
+            </span>
+          )}
         </label>
 
         {/* Which host the repository is created on, and the promise that it is

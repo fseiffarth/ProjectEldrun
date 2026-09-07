@@ -1638,6 +1638,7 @@ pub fn run() {
             commands::git::git_commit,
             commands::git::git_push,
             commands::git::git_clone,
+            commands::git::git_remote_visibility,
             commands::git::git_file_statuses,
             commands::git::git_unpushed_commits,
             commands::git::git_change_stats,

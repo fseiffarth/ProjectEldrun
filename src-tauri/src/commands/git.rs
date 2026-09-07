@@ -1301,6 +1301,99 @@ pub(crate) fn git_clone_blocking(url: String, dest: String) -> Result<String, St
     Ok(dest)
 }
 
+/// The https form of a clone URL, for an *anonymous* readability probe. An
+/// `ssh://`/scp-style URL says nothing about visibility on its own (a key opens
+/// public and private repos alike), so it is rewritten to the same repo's https
+/// address; `http(s)` URLs are returned as-is minus any userinfo, which would
+/// otherwise make the probe authenticated. Pure.
+pub(crate) fn https_probe_url(raw: &str) -> Option<String> {
+    let url = raw.trim();
+    if url.is_empty() {
+        return None;
+    }
+    let (authority, path) = match url.to_ascii_lowercase().find("://") {
+        Some(i) => {
+            let rest = &url[i + 3..];
+            let slash = rest.find('/')?;
+            (&rest[..slash], &rest[slash + 1..])
+        }
+        None => {
+            // scp-like `[user@]host:path`.
+            let colon = url.find(':')?;
+            (&url[..colon], &url[colon + 1..])
+        }
+    };
+    // Drop userinfo and any port: a probe must be anonymous, and the https
+    // service does not live on the ssh port.
+    let host = authority.rsplit('@').next().unwrap_or("");
+    let host = host.split(':').next().unwrap_or("");
+    let path = path.trim_start_matches('/');
+    if host.is_empty() || path.is_empty() {
+        return None;
+    }
+    Some(format!("https://{host}/{path}"))
+}
+
+/// Whether `url`'s repository can be read **without credentials** — the one
+/// honest signal for "is this repo public or private" that costs a single
+/// `ls-remote` and no provider login.
+///
+/// Returns `"public"`, `"private"`, or `"unknown"` (offline, an unreachable or
+/// non-provider host, anything that is not an auth refusal). Used by the import
+/// dialog to fill the Git hosting field from the repository being cloned rather
+/// than assuming private. Deliberately anonymous: the stored access token is
+/// *not* offered, since a token turns a private repo into a readable one and the
+/// probe would then answer "public" for every repo the user can see.
+///
+/// A host that hides private repos behind a 404 (GitHub does) is indistinguishable
+/// from a mistyped URL — both read as `"private"`, which is also the safe default
+/// for the field this fills, and the clone itself is the thing that reports a bad
+/// URL.
+#[tauri::command]
+pub async fn git_remote_visibility(url: String) -> Result<String, String> {
+    run_off_thread(move || git_remote_visibility_blocking(url)).await
+}
+
+fn git_remote_visibility_blocking(url: String) -> Result<String, String> {
+    validate_clone_url(&url)?;
+    let Some(probe) = https_probe_url(&url) else {
+        return Ok("unknown".to_string());
+    };
+    let mut cmd = crate::paths::command_no_window("git");
+    cmd.env("GIT_TERMINAL_PROMPT", "0");
+    // No credential helper, no stored token: the whole point is what an
+    // anonymous reader sees. `lowSpeed*` bounds a stalled connection so the
+    // dialog's probe cannot hang around forever.
+    cmd.args([
+        "-c",
+        "credential.helper=",
+        "-c",
+        "http.lowSpeedLimit=1000",
+        "-c",
+        "http.lowSpeedTime=8",
+        "ls-remote",
+        "--heads",
+        "--",
+        &probe,
+    ]);
+    let out = match cmd.output() {
+        Ok(out) => out,
+        Err(_) => return Ok("unknown".to_string()),
+    };
+    if out.status.success() {
+        return Ok("public".to_string());
+    }
+    let stderr = String::from_utf8_lossy(&out.stderr).to_ascii_lowercase();
+    let refused = stderr.contains("could not read username")
+        || stderr.contains("authentication failed")
+        || stderr.contains("terminal prompts disabled")
+        || stderr.contains("repository not found")
+        || stderr.contains("access denied")
+        || stderr.contains("403")
+        || stderr.contains("404");
+    Ok(if refused { "private" } else { "unknown" }.to_string())
+}
+
 // ── Git history & branches ──────────────────────────────────────────────────
 
 #[derive(serde::Serialize)]
@@ -2490,6 +2583,34 @@ mod tests {
         run(&["init"]);
         run(&["config", "user.email", "test@example.com"]);
         run(&["config", "user.name", "Test User"]);
+    }
+
+    // ── Anonymous visibility probe ───────────────────────────────────────────
+
+    #[test]
+    fn https_probe_url_normalizes_every_clone_form() {
+        // scp-like and ssh:// both name the https address of the same repo.
+        assert_eq!(
+            https_probe_url("git@github.com:owner/repo.git").as_deref(),
+            Some("https://github.com/owner/repo.git")
+        );
+        assert_eq!(
+            https_probe_url("ssh://git@gitlab.example.org:2222/group/sub/repo.git").as_deref(),
+            Some("https://gitlab.example.org/group/sub/repo.git")
+        );
+        // Userinfo is dropped: the probe has to be anonymous to mean anything.
+        assert_eq!(
+            https_probe_url("https://user@github.com/owner/repo").as_deref(),
+            Some("https://github.com/owner/repo")
+        );
+        assert_eq!(
+            https_probe_url("https://github.com/owner/repo.git").as_deref(),
+            Some("https://github.com/owner/repo.git")
+        );
+        // Nothing repo-shaped to probe.
+        assert_eq!(https_probe_url(""), None);
+        assert_eq!(https_probe_url("https://github.com/"), None);
+        assert_eq!(https_probe_url("git@github.com:"), None);
     }
 
     // ── Repo config hardening (Group O #151) ─────────────────────────────────
