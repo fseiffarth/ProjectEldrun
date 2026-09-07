@@ -558,7 +558,11 @@ fn claude_prompt_in_record(value: &serde_json::Value) -> Option<String> {
     let text = match content {
         serde_json::Value::String(text) => text.clone(),
         serde_json::Value::Array(blocks) => {
-            let block_type = |b: &serde_json::Value| b.get("type").and_then(|t| t.as_str());
+            // A `fn`, not a closure: rustc 1.98 no longer infers the returned
+            // `&str` as borrowing from the argument in a closure.
+            fn block_type(b: &serde_json::Value) -> Option<&str> {
+                b.get("type").and_then(|t| t.as_str())
+            }
             if blocks.iter().any(|b| block_type(b) == Some("tool_result")) {
                 return None;
             }
@@ -2195,9 +2199,7 @@ mod tests {
         // A slash command and a `!` line are the user's doing, and read as such.
         std::fs::write(
             &claude,
-            concat!(
-                "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"<command-name>/model</command-name>\\n  <command-message>model</command-message>\\n  <command-args>opus</command-args>\"}}\n",
-            ),
+            "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"<command-name>/model</command-name>\\n  <command-message>model</command-message>\\n  <command-args>opus</command-args>\"}}\n",
         )
         .unwrap();
         assert_eq!(
