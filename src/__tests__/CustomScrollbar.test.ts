@@ -3,7 +3,7 @@ import { describe, it, expect } from "vitest";
 // does: a `?raw` import yields "" under the config's `css: false`, which would
 // make every assertion below pass vacuously. Vitest runs from the repo root.
 import { readAppStylesheet } from "./cssCorpus";
-import { thumbGeometry, scrollFromDrag, type TrackMetrics } from "../lib/customScrollbar";
+import { thumbGeometry, scrollFromDrag, clipBox, type Box, type TrackMetrics } from "../lib/customScrollbar";
 
 /**
  * The scrollbar's arithmetic, which is the whole of what can be wrong about it
@@ -104,6 +104,53 @@ describe("scrollFromDrag", () => {
     const m = track();
     const out = scrollFromDrag(0, 16, m);
     expect(scrollFromDrag(out, -16, { ...m, scrollPos: out })).toBe(0);
+  });
+});
+
+/**
+ * Thumbs live in one fixed layer that nothing in the DOM clips, so a container
+ * only half on screen — the bounded lists inside the Settings dialog's own
+ * scroll are the case that showed it — would paint its thumb straight out of
+ * the dialog and over the app behind it. Every thumb is intersected with what
+ * its ancestors leave visible; this is that intersection.
+ */
+describe("clipBox", () => {
+  // A dialog frame 400px tall at y=100, the shape the settings window has.
+  const frame: Box = { top: 100, left: 0, width: 500, height: 400 };
+
+  it("leaves a thumb wholly inside the frame untouched", () => {
+    const thumb: Box = { top: 200, left: 480, width: 8, height: 40 };
+    expect(clipBox(thumb, frame)).toEqual(thumb);
+  });
+
+  it("trims the part of a thumb that hangs below the frame", () => {
+    const thumb: Box = { top: 480, left: 480, width: 8, height: 40 };
+    expect(clipBox(thumb, frame)).toEqual({ top: 480, left: 480, width: 8, height: 20 });
+  });
+
+  it("trims the part of a thumb that starts above the frame", () => {
+    const thumb: Box = { top: 80, left: 480, width: 8, height: 40 };
+    expect(clipBox(thumb, frame)).toEqual({ top: 100, left: 480, width: 8, height: 20 });
+  });
+
+  it("clips a horizontal thumb on the cross axis too", () => {
+    // Half the container is off the frame's right edge; so is half the thumb.
+    const thumb: Box = { top: 300, left: 480, width: 60, height: 8 };
+    expect(clipBox(thumb, frame)).toEqual({ top: 300, left: 480, width: 20, height: 8 });
+  });
+
+  it("gives nothing back for a thumb scrolled clear of the frame", () => {
+    expect(clipBox({ top: 520, left: 480, width: 8, height: 40 }, frame)).toBeNull();
+  });
+
+  it("treats a touching edge as no overlap rather than a zero-height thumb", () => {
+    expect(clipBox({ top: 500, left: 480, width: 8, height: 40 }, frame)).toBeNull();
+  });
+
+  it("gives nothing back once the frame itself has collapsed", () => {
+    // What an ancestor chain resolves to when one link clips everything away.
+    const collapsed: Box = { top: 0, left: 0, width: 0, height: 0 };
+    expect(clipBox({ top: 0, left: 0, width: 8, height: 40 }, collapsed)).toBeNull();
   });
 });
 

@@ -117,6 +117,33 @@ export function scrollFromDrag(startScroll: number, deltaPx: number, m: TrackMet
   return clamp(startScroll + deltaPx * (overflow / maxOffset), 0, overflow);
 }
 
+/** A viewport-space rectangle: the shape both a container and a thumb have. */
+export interface Box {
+  top: number;
+  left: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * The part of `box` that survives `clip`, or null when nothing does.
+ *
+ * The thumbs live in one fixed layer, so nothing in the DOM clips them: a
+ * scroll container that is itself only half on screen — a bounded list inside
+ * the Settings dialog's own scroll, say — would otherwise have its thumb
+ * painted along its *whole* box, running out of the dialog and over the app
+ * behind it. Every thumb is therefore intersected with what its ancestors
+ * actually leave visible before it is painted.
+ */
+export function clipBox(box: Box, clip: Box): Box | null {
+  const top = Math.max(box.top, clip.top);
+  const left = Math.max(box.left, clip.left);
+  const bottom = Math.min(box.top + box.height, clip.top + clip.height);
+  const right = Math.min(box.left + box.width, clip.left + clip.width);
+  if (bottom <= top || right <= left) return null;
+  return { top, left, width: right - left, height: bottom - top };
+}
+
 /**
  * True when this element's own CSS asks for no scrollbar at all — no native bar
  * and no thumb of ours either. The tab strip, the project pill row and the
@@ -176,6 +203,11 @@ interface Entry {
   left: number;
   width: number;
   height: number;
+  /**
+   * What the container's clipping ancestors (and the viewport) leave visible of
+   * it, in viewport space. The thumb is painted inside this, never outside.
+   */
+  clip: Box;
   /** False while the container is off-screen or covered by something else. */
   visible: boolean;
   /**
@@ -246,6 +278,7 @@ export function installCustomScrollbars(): () => void {
       left: 0,
       width: 0,
       height: 0,
+      clip: { top: 0, left: 0, width: 0, height: 0 },
       visible: false,
       nested: false,
     });
@@ -321,15 +354,72 @@ export function installCustomScrollbars(): () => void {
       thumb.style.pointerEvents = "none";
       return;
     }
+    // Where the thumb would sit if nothing clipped it, then the part of that
+    // its container is actually showing: a list bounded inside a taller scroll
+    // (Settings' archived-projects and mobile-access lists are the ones the app
+    // has) scrolls half out of the dialog, and only the half still inside the
+    // frame may be painted. Both axes are sized explicitly because either can
+    // be the clipped one.
+    const full: Box =
+      axis === "vertical"
+        ? {
+            top: entry.top + geom.offset,
+            left: entry.left + entry.width - SIZE,
+            width: SIZE,
+            height: geom.size,
+          }
+        : {
+            top: entry.top + entry.height - SIZE,
+            left: entry.left + geom.offset,
+            width: geom.size,
+            height: SIZE,
+          };
+    const shown = clipBox(full, entry.clip);
+    if (!shown) {
+      thumb.style.opacity = "0";
+      thumb.style.pointerEvents = "none";
+      return;
+    }
     thumb.style.opacity = "1";
     thumb.style.pointerEvents = "auto";
-    if (axis === "vertical") {
-      thumb.style.height = `${geom.size}px`;
-      thumb.style.transform = `translate(${entry.left + entry.width - SIZE}px, ${entry.top + geom.offset}px)`;
-    } else {
-      thumb.style.width = `${geom.size}px`;
-      thumb.style.transform = `translate(${entry.left + geom.offset}px, ${entry.top + entry.height - SIZE}px)`;
+    thumb.style.width = `${shown.width}px`;
+    thumb.style.height = `${shown.height}px`;
+    thumb.style.transform = `translate(${shown.left}px, ${shown.top}px)`;
+  }
+
+  /**
+   * The clip every descendant of `el` inherits from it: its ancestors' clip,
+   * narrowed by its own box when its overflow is anything but `visible`.
+   *
+   * Memoized across one geometry pass because containers share ancestors — the
+   * chain above a dialog is walked once, not once per scrolling list inside it.
+   * A `position: fixed` element starts over from the viewport: scrolling
+   * ancestors do not clip it, so a portaled menu must not inherit the clip of
+   * whatever happens to be its DOM parent.
+   */
+  function clipOf(el: HTMLElement | null, cache: Map<Element, Box>): Box {
+    const viewport: Box = { top: 0, left: 0, width: window.innerWidth, height: window.innerHeight };
+    if (!el || el === document.documentElement || el === document.body) return viewport;
+    const cached = cache.get(el);
+    if (cached) return cached;
+    const style = getComputedStyle(el);
+    let box = style.position === "fixed" ? viewport : clipOf(el.parentElement, cache);
+    if (style.overflowX !== "visible" || style.overflowY !== "visible") {
+      const rect = el.getBoundingClientRect();
+      box =
+        clipBox({ top: rect.top, left: rect.left, width: rect.width, height: rect.height }, box) ??
+        { top: 0, left: 0, width: 0, height: 0 };
     }
+    cache.set(el, box);
+    return box;
+  }
+
+  /** The clip that applies to `el` itself — its ancestors', unless it is fixed. */
+  function ancestorClip(el: HTMLElement, cache: Map<Element, Box>): Box {
+    if (getComputedStyle(el).position === "fixed") {
+      return { top: 0, left: 0, width: window.innerWidth, height: window.innerHeight };
+    }
+    return clipOf(el.parentElement, cache);
   }
 
   /**
@@ -344,12 +434,18 @@ export function installCustomScrollbars(): () => void {
    * never be the answer to its own question.
    */
   function isReachable(entry: Entry): boolean {
-    const { top, left, width, height } = entry;
-    if (width <= 0 || height <= 0) return false;
-    if (top + height <= 0 || left + width <= 0) return false;
-    if (top >= window.innerHeight || left >= window.innerWidth) return false;
-    const x = clamp(left + width - SIZE - 2, 0, window.innerWidth - 1);
-    const y = clamp(top + Math.min(height / 2, height - 2), 0, window.innerHeight - 1);
+    // Probed inside the CLIPPED box, not the container's own: a list scrolled
+    // so that only its top strip is still inside the dialog has its midpoint
+    // outside it, and probing there would answer "covered" for a container the
+    // user can plainly see (and hide a thumb that belongs on screen).
+    const visible = clipBox(entry, entry.clip);
+    if (!visible) return false;
+    const x = clamp(visible.left + visible.width - SIZE - 2, 0, window.innerWidth - 1);
+    const y = clamp(
+      visible.top + Math.min(visible.height / 2, visible.height - 2),
+      0,
+      window.innerHeight - 1,
+    );
     const hit = document.elementFromPoint(x, y);
     return !!hit && (hit === entry.el || entry.el.contains(hit));
   }
@@ -359,12 +455,16 @@ export function installCustomScrollbars(): () => void {
       if (!el.isConnected) unregister(el);
     }
     const live = [...entries.values()];
+    // One cache for the whole pass: the ancestor chains overlap heavily, and a
+    // clip is only as fresh as the layout this pass already forced anyway.
+    const clipCache = new Map<Element, Box>();
     for (const entry of live) {
       const rect = entry.el.getBoundingClientRect();
       entry.top = rect.top;
       entry.left = rect.left;
       entry.width = rect.width;
       entry.height = rect.height;
+      entry.clip = ancestorClip(entry.el, clipCache);
       entry.visible = isReachable(entry);
       applyScroll(entry);
     }
