@@ -404,6 +404,14 @@ export interface FixedKeyDef {
  * because the desktop is a backend answer; see lib/superKey.ts. The zoom
  * chords ride the primary modifier (⌘ on macOS).
  */
+/** The key that toggles the panels on THIS desktop right now: the bare Super
+ *  key where the desktop leaves it to the focused window, F9 everywhere else
+ *  (see `useKeyboard`). Shared by the shortcut sheet and the "panels hidden"
+ *  toast so the two never name different keys. */
+export function livePanelToggleKey(): string {
+  return PLATFORM === "linux" && !desktopOwnsSuperKey() ? "Super" : "F9";
+}
+
 export const FIXED_KEYS: FixedKeyDef[] = [
   {
     keys: "F11",
@@ -416,7 +424,7 @@ export const FIXED_KEYS: FixedKeyDef[] = [
     // must not advertise a Super key the shell has already taken. Reading it
     // here keeps every consumer of FIXED_KEYS unchanged.
     get keys(): string {
-      return PLATFORM === "linux" && !desktopOwnsSuperKey() ? "Super" : "F9";
+      return livePanelToggleKey();
     },
     labelKey: "fixedKeys.panels.label",
     descKey: "fixedKeys.panels.desc",

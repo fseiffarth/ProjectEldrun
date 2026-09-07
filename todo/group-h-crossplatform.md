@@ -383,6 +383,29 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work
 
+    **Follow-up (2026-09-07, same day, ⚠️ untested live):** the probe only
+    helps a window whose backend can answer it, and the one on the desk could
+    not — the binary predated the command, so the key still read as ours and a
+    Super press right after a memory-watchdog reload took the side panel away
+    again. The binding is now survivable on its own: the toggle fires on the
+    lone key's RELEASE (`SUPER_RELEASE_SETTLE_MS` later), never on the keydown
+    a shell forwards ahead of its own shortcuts. Any other key while Super is
+    held makes it a chord and disarms it; a blur before the settle (the
+    overview or launcher taking focus) cancels it. And hiding the panels now
+    shows a 3 s toast naming the key that brings them back
+    (`appShell.panelsHiddenToast`, via `livePanelToggleKey`), since the empty
+    edge used to say nothing.
+    - [x] 🤖 Automated test — vitest `SuperKeyOwnership`: toggle on release
+      not keydown, chords don't toggle (auto-repeat still one press), a blur
+      during the press or the settle cancels, the next lone press still works.
+    - [ ] 🖐️ Manual test — on GNOME with the OLD backend (before relaunching):
+      Super+Tab, Super+1, Super+arrow tiling and a bare Super for the overview
+      all leave the side panel in place. Then F9 (or a lone Super on Cinnamon)
+      hides the panels and a toast names the key; the same key brings them
+      back with no toast.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
 209. **Getting the app onto a machine, and keeping it current.** The two ends
     of distribution that were never Eldrun's own: what the installer looks
     like, and how a user learns a newer build exists. Both landed 2026-08-26,

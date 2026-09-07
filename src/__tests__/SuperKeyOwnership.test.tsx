@@ -25,7 +25,7 @@ vi.mock("@tauri-apps/api/window", () => ({
   }),
 }));
 
-import { useKeyboard } from "../hooks/useKeyboard";
+import { SUPER_RELEASE_SETTLE_MS, useKeyboard } from "../hooks/useKeyboard";
 import { FIXED_KEYS } from "../lib/shortcuts";
 import {
   desktopOwnsSuperKey,
@@ -40,9 +40,30 @@ function Harness() {
   return null;
 }
 
-function key(k: string) {
+function down(k: string) {
   act(() => {
     window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: k }));
+  });
+}
+function up(k: string) {
+  act(() => {
+    window.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true, key: k }));
+  });
+}
+/** A lone press: down, up, and the release settle the toggle waits out. */
+function key(k: string) {
+  down(k);
+  up(k);
+  settle();
+}
+function settle() {
+  act(() => {
+    vi.advanceTimersByTime(SUPER_RELEASE_SETTLE_MS + 1);
+  });
+}
+function blur() {
+  act(() => {
+    window.dispatchEvent(new Event("blur"));
   });
 }
 
@@ -52,6 +73,7 @@ async function mountAndSettle() {
   await act(async () => {
     await probeSuperKeyOwnership();
   });
+  vi.useFakeTimers();
 }
 
 function panelKeys(): string {
@@ -60,6 +82,7 @@ function panelKeys(): string {
 
 describe("lone Super key ownership", () => {
   beforeEach(() => {
+    vi.useRealTimers();
     cleanup();
     resetSuperKeyOwnership();
     invoke.mockReset();
@@ -104,6 +127,68 @@ describe("lone Super key ownership", () => {
     key("Meta");
     expect(toggles).toBe(1);
     expect(panelKeys()).toBe("Super");
+  });
+
+  // The rest is what makes that fallback survivable on a desktop the probe
+  // could not classify: the toggle fires on a LONE release, never on the
+  // keydown a shell forwards ahead of its own shortcuts.
+
+  it("toggles on release, not on the keydown", async () => {
+    invoke.mockResolvedValue(false);
+    await mountAndSettle();
+
+    down("Meta");
+    expect(toggles).toBe(0);
+    up("Meta");
+    expect(toggles).toBe(0);
+    settle();
+    expect(toggles).toBe(1);
+  });
+
+  it("does not toggle for a chord (Super+Tab, Super+1, Super+arrow)", async () => {
+    invoke.mockRejectedValue(new Error("unknown command"));
+    await mountAndSettle();
+
+    down("Meta");
+    down("Tab");
+    up("Tab");
+    up("Meta");
+    settle();
+    expect(toggles).toBe(0);
+
+    // A held key auto-repeats its keydown; that is still one lone press.
+    down("Meta");
+    act(() => {
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", { bubbles: true, key: "Meta", repeat: true }),
+      );
+    });
+    up("Meta");
+    settle();
+    expect(toggles).toBe(1);
+  });
+
+  it("does not toggle when the desktop takes focus on the press (the overview)", async () => {
+    invoke.mockRejectedValue(new Error("unknown command"));
+    await mountAndSettle();
+
+    // Focus leaves while Super is still down …
+    down("Meta");
+    blur();
+    up("Meta");
+    settle();
+    expect(toggles).toBe(0);
+
+    // … or right after the release, inside the settle.
+    down("Meta");
+    up("Meta");
+    blur();
+    settle();
+    expect(toggles).toBe(0);
+
+    // The next lone press, with focus kept, still works.
+    key("Meta");
+    expect(toggles).toBe(1);
   });
 
   it("asks the backend once per session", async () => {

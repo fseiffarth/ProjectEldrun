@@ -70,9 +70,34 @@ export function isEditableTarget(target: EventTarget | null): boolean {
  * sees them and the mode works FROM a focused terminal — the point is that the
  * hands never leave the keyboard. While active every key is swallowed.
  */
+/** `KeyboardEvent.key` of the Super/Windows/Command key, as the engines name it. */
+function isSuperKey(key: string): boolean {
+  return key === "Meta" || key === "Super" || key === "OS";
+}
+
+/**
+ * How long a released lone Super waits before toggling the panels. A desktop
+ * that answers the key itself takes focus on that same release; its blur
+ * reaches us well inside this window and cancels the toggle. Long enough for
+ * that, short enough that the toggle still reads as immediate where the key is
+ * ours.
+ */
+export const SUPER_RELEASE_SETTLE_MS = 150;
+
 export function useKeyboard({ onTogglePanels }: KeyboardOptions) {
   useEffect(() => {
     const win = getCurrentWindow();
+
+    // Lone-Super press tracking (Linux only; see the binding in `onKeyDown`).
+    let superHeld = false;
+    let superChorded = false;
+    let superToggleTimer: number | null = null;
+    const cancelSuperToggle = () => {
+      if (superToggleTimer !== null) {
+        window.clearTimeout(superToggleTimer);
+        superToggleTimer = null;
+      }
+    };
 
     // ── Keyboard steering mode ────────────────────────────────────────────
     // A capture-phase listener on `document`, which threads two needles at
@@ -183,23 +208,7 @@ export function useKeyboard({ onTogglePanels }: KeyboardOptions) {
     }
 
     async function onKeyDown(e: KeyboardEvent) {
-      // F11 — OS fullscreen toggle. On Windows, real fullscreen strips the
-      // window styles that Aero Snap and native title-bar dragging rely on (see
-      // AppShell's startup), so toggle MAXIMIZE there instead — same "fill the
-      // screen" effect, but the window stays snappable/draggable like other apps.
-      if (e.key === "F11") {
-        e.preventDefault();
-        if (PLATFORM === "windows") {
-          if (await win.isMaximized()) win.unmaximize();
-          else win.maximize();
-        } else {
-          const isFs = await win.isFullscreen();
-          win.setFullscreen(!isFs);
-        }
-        return;
-      }
-
-      // Super key — toggle side panel, where that key is actually ours.
+      // Super key — toggle the side panels, where that key is actually ours.
       //
       // On macOS Cmd reports as "Meta" and is the platform-primary shortcut
       // modifier (see shortcuts.chordMatches), so a lone-key toggle would fire
@@ -218,13 +227,40 @@ export function useKeyboard({ onTogglePanels }: KeyboardOptions) {
       // gone, and with them the reveal handle, with nothing on screen saying
       // why). Ownership of the bare key is a property of the DESKTOP, not the
       // OS, so ask the backend which one is running.
-      if (
-        PLATFORM === "linux" &&
-        !desktopOwnsSuperKey() &&
-        (e.key === "Meta" || e.key === "Super")
-      ) {
+      //
+      // And the toggle fires on RELEASE, not here, and only for a LONE press —
+      // see `onKeyUp`. The keydown just arms it. That is what keeps the panels
+      // in place on a desktop the probe could not classify: a backend that
+      // predates the probe answers nothing, the key then counts as ours, and
+      // the shell's Super+Tab / Super+1 / Super+arrow and a bare Super for the
+      // overview all used to fire the toggle off this keydown. Now a chord
+      // disarms it and a lost focus cancels it (user, 2026-09-07: the memory
+      // watchdog had just reloaded the window, one Super press later the side
+      // panel was gone).
+      if (PLATFORM === "linux" && !desktopOwnsSuperKey() && isSuperKey(e.key)) {
         e.preventDefault();
-        onTogglePanels();
+        if (!e.repeat) {
+          superHeld = true;
+          superChorded = false;
+        }
+        return;
+      }
+      // Any other key while Super is down makes the press a chord, not a toggle.
+      if (superHeld) superChorded = true;
+
+      // F11 — OS fullscreen toggle. On Windows, real fullscreen strips the
+      // window styles that Aero Snap and native title-bar dragging rely on (see
+      // AppShell's startup), so toggle MAXIMIZE there instead — same "fill the
+      // screen" effect, but the window stays snappable/draggable like other apps.
+      if (e.key === "F11") {
+        e.preventDefault();
+        if (PLATFORM === "windows") {
+          if (await win.isMaximized()) win.unmaximize();
+          else win.maximize();
+        } else {
+          const isFs = await win.isFullscreen();
+          win.setFullscreen(!isFs);
+        }
         return;
       }
 
@@ -406,6 +442,23 @@ export function useKeyboard({ onTogglePanels }: KeyboardOptions) {
     // Commit the previewed subwindow focus when Shift is released; cancel (no
     // focus move) if the window loses focus mid-preview.
     function onKeyUp(e: KeyboardEvent) {
+      // The lone-Super toggle (armed in `onKeyDown`) lands here, after a short
+      // settle: the shell that owns this key takes focus on the same release
+      // (GNOME's overview, KDE's launcher), and the blur that follows cancels
+      // the pending toggle instead of racing it.
+      if (superHeld && isSuperKey(e.key)) {
+        const lone = !superChorded;
+        superHeld = false;
+        superChorded = false;
+        if (lone && PLATFORM === "linux" && !desktopOwnsSuperKey()) {
+          e.preventDefault();
+          cancelSuperToggle();
+          superToggleTimer = window.setTimeout(() => {
+            superToggleTimer = null;
+            onTogglePanels();
+          }, SUPER_RELEASE_SETTLE_MS);
+        }
+      }
       const nav = useSubwindowNavStore.getState();
       if (nav.active && (e.key === "Shift" || !e.shiftKey)) {
         if (nav.previewGroupId) useTabsStore.getState().focusGroup(nav.previewGroupId);
@@ -413,6 +466,11 @@ export function useKeyboard({ onTogglePanels }: KeyboardOptions) {
       }
     }
     function onBlur() {
+      // Focus left with Super down or just released: the desktop answered the
+      // key (overview, launcher, a window switch) — not a panel toggle.
+      superHeld = false;
+      superChorded = false;
+      cancelSuperToggle();
       const nav = useSubwindowNavStore.getState();
       if (nav.active) nav.end();
       // Steering must not survive a window blur either — coming back to a
@@ -431,6 +489,7 @@ export function useKeyboard({ onTogglePanels }: KeyboardOptions) {
     window.addEventListener("keyup", onKeyUp);
     window.addEventListener("blur", onBlur);
     return () => {
+      cancelSuperToggle();
       document.removeEventListener("keydown", onSteeringKeyDown, true);
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup", onKeyUp);

@@ -24,6 +24,7 @@ import {
 import { applyFastModeAttribute, useFastMode } from "../../lib/fastMode";
 import { useOllamaAutoloadOnLaunch } from "../../stores/ollamaAutoload";
 import { useRendererWatchdog } from "../../lib/rendererWatchdog";
+import { livePanelToggleKey } from "../../lib/shortcuts";
 import { CenterPanel } from "./CenterPanel";
 import { HeaderBar } from "./HeaderBar";
 import { SidePanel } from "./SidePanel";
@@ -881,10 +882,28 @@ export function AppShell() {
     }, delay);
   };
 
+  // Hiding the panels takes the reveal handle with them, so the key press that
+  // did it is the only thing that could ever explain the empty edge — say so,
+  // and name the key that brings them back (it is Super or F9 depending on the
+  // desktop, see `livePanelToggleKey`). Nothing is shown on the way back in.
+  const [panelsHiddenToast, setPanelsHiddenToast] = useState<string | null>(null);
+  useEffect(() => {
+    if (panelsHiddenToast === null) return;
+    const id = window.setTimeout(() => setPanelsHiddenToast(null), 3000);
+    return () => window.clearTimeout(id);
+  }, [panelsHiddenToast]);
+
+  const panelsHiddenRef = useRef(panelsHidden);
+  panelsHiddenRef.current = panelsHidden;
+
   useKeyboard({
     onTogglePanels: () => {
       useHintsStore.getState().markSeen("toggle-panels");
-      setPanelsHidden((v) => !v);
+      const hidden = !panelsHiddenRef.current;
+      setPanelsHidden(hidden);
+      setPanelsHiddenToast(
+        hidden ? t("appShell.panelsHiddenToast", { key: livePanelToggleKey() }) : null,
+      );
     },
   });
 
@@ -915,6 +934,9 @@ export function AppShell() {
       )}
       {connToast != null && (
         <div key={connToast} className="project-switch-toast conn-toast">{connToast}</div>
+      )}
+      {panelsHiddenToast != null && (
+        <div key={panelsHiddenToast} className="project-switch-toast">{panelsHiddenToast}</div>
       )}
       <div
         className={`app-body${revealPanel && panelPinned ? (panelSide === "left" ? " left-docked" : " right-docked") : ""}${resizingPanel ? " resizing" : ""}`}
