@@ -113,7 +113,7 @@ Exec=$LAUNCHER
 Icon=$ROOT/src-tauri/icons/128x128.png
 Terminal=false
 Categories=Utility;TerminalEmulator;Development;
-StartupWMClass=eldrun
+StartupWMClass=$(basename "$BINARY_DEST")
 DESKTOP
 chmod 755 "$DESKTOP_DEST"
 
