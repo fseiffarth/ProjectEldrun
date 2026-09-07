@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useEffect } from "react";
+import { isPtyTabKind, useTabsStore } from "../stores/tabs";
 
 /**
  * Renderer memory watchdog.
@@ -44,16 +45,45 @@ import { useEffect } from "react";
  * heavily at the same instant) it is retried at the next poll a few times, then
  * the window falls back to acting on the largest renderer, under the cooldown.
  *
+ * **A hold is not the end of it.** A held window asks the backend to replace
+ * its renderer *process* (`webview_renderer_restart`, Linux only), once per
+ * cooldown. That is the second step, for memory a reload provably did not
+ * free: on 2026-09-07 the main window, holding only agent terminals, climbed at
+ * ~150 MB/min, and a reload took it from 6.7 GB to 4.8 GB — the rest belonged
+ * to the WebKitWebProcess itself, not the page, and only a new process frees
+ * that. Tabs restore and PTYs reattach exactly as after a reload. Where the
+ * backend cannot (an older binary, another engine), the window holds as
+ * before and says so.
+ *
  * The ceiling is deliberately high: a healthy renderer sits around 1 GB, so
  * 4 GB only ever trips on a genuine runaway — well before system memory
- * pressure, far below the 44 GB catastrophe. Change `RENDERER_CEILING_MB` to
- * retune, or set it past any real value to disable.
+ * pressure, far below the 44 GB catastrophe. It scales with the machine
+ * (`RENDERER_CEILING_RAM_SHARE` of physical RAM when that is more), because a
+ * window's honest working set scales with the tabs: every tab in every active
+ * scope stays mounted, each terminal with full-size canvas layers, and thirty
+ * of them at 2× DPI pass 4 GB with nothing leaking. And a window whose fresh
+ * process comes back over the ceiling has proved its size is that working
+ * set; its ceiling is raised over it (`WORKING_SET_HEADROOM`) rather than
+ * blinking it every cooldown. Change `RENDERER_CEILING_MB` to retune the
+ * floor, or set it past any real value to disable.
  */
 const POLL_MS = 30_000;
 /** First attribution runs shortly after mount rather than at the first poll,
  *  so the debug readout can name the window early. */
 const ATTRIBUTE_AFTER_MS = 2_000;
+/** The ceiling's floor. The live ceiling is `max` of this, a share of the
+ *  machine's RAM, and — once a window has shown that a fresh process comes
+ *  back this big — its own working set with headroom; see `ceilingFor`. */
 export const RENDERER_CEILING_MB = 4096;
+/** Share of physical RAM a renderer may hold before the watchdog acts. A
+ *  fixed 4 GB was right on the machine it was written on and wrong on a
+ *  64 GB workstation with thirty terminals mounted at 2× DPI, where the
+ *  main window's honest working set passed it with nothing leaking (user,
+ *  2026-09-07: "maybe too many active projects? — the 4 GB is too strict"). */
+export const RENDERER_CEILING_RAM_SHARE = 0.25;
+/** Headroom over a working set the watchdog has confirmed by replacing the
+ *  process: below it the size is the tabs, above it something is growing. */
+export const WORKING_SET_HEADROOM = 1.5;
 /** How long a window that just reloaded refuses to reload again while still
  *  over the ceiling. Long enough that a reload loop is impossible; short enough
  *  that a *new* runaway after a legitimate reload is still caught. */
@@ -68,6 +98,8 @@ export const PROBE_MIN_DELTA_KIB = 96 * 1024;
 export const PROBE_MAX_OTHER_DELTA_KIB = 48 * 1024;
 const PROBE_ATTEMPTS = 3;
 const RELOAD_AT_KEY = "eldrun:renderer-watchdog-reload-at";
+const RESTART_AT_KEY = "eldrun:renderer-watchdog-restart-at";
+const WORKING_SET_KEY = "eldrun:renderer-watchdog-working-set-mb";
 const OWN_PID_KEY = "eldrun:renderer-watchdog-own-pid";
 
 /** One webview renderer as the backend reports it (`commands::debug::RendererRss`). */
@@ -220,6 +252,41 @@ export function decideWatchdog(
   return { action: "reload", mb };
 }
 
+/**
+ * The ceiling this window acts on, pure: the fixed floor, or the RAM share when
+ * the machine is big enough for that to be more, or the working set a process
+ * replacement failed to shrink plus headroom — whichever is highest. `null`
+ * for a reading the backend could not give.
+ */
+export function ceilingFor(
+  totalRamMb: number | null,
+  workingSetMb: number | null,
+  floorMb = RENDERER_CEILING_MB,
+  ramShare = RENDERER_CEILING_RAM_SHARE,
+  headroom = WORKING_SET_HEADROOM,
+): number {
+  let ceiling = floorMb;
+  if (totalRamMb !== null && totalRamMb > 0) {
+    ceiling = Math.max(ceiling, Math.round(totalRamMb * ramShare));
+  }
+  if (workingSetMb !== null && workingSetMb > 0) {
+    ceiling = Math.max(ceiling, Math.round(workingSetMb * headroom));
+  }
+  return ceiling;
+}
+
+/** The pure second-step decision, for a window already holding: replace the
+ *  renderer process unless this window already did so within the cooldown —
+ *  the same one-per-cooldown rule the reload follows, for the same reason (a
+ *  replacement that did not help is not improved by another). */
+export function shouldReplaceRenderer(
+  lastRestartAt: number | null,
+  now: number,
+  cooldownMs = RELOAD_COOLDOWN_MS,
+): boolean {
+  return lastRestartAt === null || now - lastRestartAt >= cooldownMs;
+}
+
 /** Short name for a renderer row: the claiming window's title minus the app
  *  name (`"Eldrun win-1"` → `"win-1"`), its label when there is no title, the
  *  pid while unclaimed, and a generic word for an unattributed reading. */
@@ -275,6 +342,32 @@ async function report(message: string): Promise<void> {
   } catch {
     // Reporting must never block the decision.
   }
+}
+
+// ── The machine's RAM, for the ceiling ──────────────────────────────────────
+
+let totalRamMb: number | null = null;
+let ramRead: Promise<void> | null = null;
+
+/** Read the machine's RAM once per window. `machine_load_snapshot` is the
+ *  monitor's own sampler (two reads 300 ms apart around an await, no shared
+ *  state); a backend without it, or one that reports no total, leaves the
+ *  fixed floor in force. */
+function ensureTotalRam(): Promise<void> {
+  ramRead ??= invoke<{ mem_total_bytes?: unknown } | null>("machine_load_snapshot")
+    .then((m) => {
+      const bytes = m && typeof m === "object" ? m.mem_total_bytes : undefined;
+      if (typeof bytes === "number" && Number.isFinite(bytes) && bytes > 0) {
+        totalRamMb = Math.round(bytes / (1024 * 1024));
+      }
+    })
+    .catch(() => {});
+  return ramRead;
+}
+
+/** The live ceiling for this window, in MB. */
+function currentCeilingMb(): number {
+  return ceilingFor(totalRamMb, readSessionNumber(WORKING_SET_KEY));
 }
 
 // ── Attribution: which renderer is this window's own ────────────────────────
@@ -355,6 +448,21 @@ export async function ensureOwnRendererPid(): Promise<number | null> {
   return attributing;
 }
 
+/** "37 tabs (29 terminals) across 6 scopes" — what a working-set report can
+ *  point at, since every one of them is mounted whether or not its scope is in
+ *  front. */
+function mountedTabsSummary(): string {
+  try {
+    const byScope = useTabsStore.getState().tabsByScope;
+    const scopes = Object.keys(byScope).length;
+    const all = Object.values(byScope).flat();
+    const ptys = all.filter((t) => isPtyTabKind(t.kind)).length;
+    return `${all.length} tabs (${ptys} terminals) mounted across ${scopes} scopes`;
+  } catch {
+    return "tab count unavailable";
+  }
+}
+
 export function useRendererWatchdog(): void {
   useEffect(() => {
     let stopped = false;
@@ -381,30 +489,64 @@ export function useRendererWatchdog(): void {
       for (const r of all) {
         if (r === own || r.pid === 0 || r.pid === pid) continue;
         const mb = r.rss_kib / 1024;
-        if (mb >= RENDERER_CEILING_MB && !foreignReported.has(r.pid)) {
+        if (mb >= currentCeilingMb() && !foreignReported.has(r.pid)) {
           foreignReported.add(r.pid);
           void report(
             `renderer '${rendererName(r)}' (pid ${r.pid}) is ${Math.round(mb)} MB ` +
-              `≥ ${RENDERER_CEILING_MB} MB — its own window's watchdog reloads it, not '${label}'`,
+              `≥ ${currentCeilingMb()} MB — its own window's watchdog reloads it, not '${label}'`,
           );
         }
       }
       if (!own) return;
 
       const mb = own.rss_kib / 1024;
-      const verdict = decideWatchdog(mb, readSessionNumber(RELOAD_AT_KEY), Date.now());
+      const ceiling = currentCeilingMb();
+      const verdict = decideWatchdog(mb, readSessionNumber(RELOAD_AT_KEY), Date.now(), ceiling);
       if (verdict.action === "none") return;
       if (verdict.action === "hold") {
-        if (!heldReported) {
-          heldReported = true;
-          // Memory a reload did not free is not the page's own garbage — say what
-          // it is made of, so the next look starts from the kind, not the total.
-          const what = await describeRendererMemory(own.pid);
+        if (heldReported) return;
+        heldReported = true;
+        // Memory a reload did not free is not the page's own garbage — say what
+        // it is made of, so the next look starts from the kind, not the total.
+        const what = await describeRendererMemory(own.pid);
+        if (stopped) return;
+        const held =
+          `renderer RSS ${Math.round(mb)} MB still ≥ ${ceiling} MB ceiling ` +
+          `${Math.round(verdict.sinceReloadMs / 1000)} s after a watchdog reload of '${label}' ` +
+          `— a reload does not free this memory`;
+        if (!shouldReplaceRenderer(readSessionNumber(RESTART_AT_KEY), Date.now())) {
+          // A fresh process came back this big: the size is what the restored
+          // tabs cost, not garbage. Every tab in every active scope stays
+          // mounted, each terminal with full-size canvas layers, and at 2× DPI
+          // that is real memory. Raise this window's ceiling over it so the
+          // watchdog stops blinking a healthy window, while a runaway beyond
+          // the headroom still trips. Per window, and it survives our own
+          // reloads with the other keys.
+          writeSessionNumber(WORKING_SET_KEY, Math.round(mb));
           await report(
-            `renderer RSS ${Math.round(mb)} MB still ≥ ${RENDERER_CEILING_MB} MB ceiling ` +
-              `${Math.round(verdict.sinceReloadMs / 1000)} s after a watchdog reload of '${label}' ` +
-              `— a reload does not free this memory; not reloading again for ` +
-              `${Math.round(RELOAD_COOLDOWN_MS / 60_000)} min${what}`,
+            `${held}, and neither did replacing its process — this is the window's working ` +
+              `set (${mountedTabsSummary()}); ceiling for '${label}' raised to ` +
+              `${currentCeilingMb()} MB${what}`,
+          );
+          return;
+        }
+        // Second step: the memory is the process's, so replace the process.
+        // The backend ends this renderer and reloads into a fresh one; this
+        // page does not outlive the call. Written first: the storage is per
+        // window and may survive the process, and then it is what stops a
+        // window watching the wrong pid from replacing itself every poll.
+        tripped = true;
+        writeSessionNumber(RESTART_AT_KEY, Date.now());
+        await report(`${held}; replacing the renderer process of '${label}'${what}`);
+        try {
+          await invoke("webview_renderer_restart");
+        } catch (err) {
+          // An older backend, or an engine with no way to end a content
+          // process: hold, as before, and say why nothing more happens.
+          tripped = false;
+          await report(
+            `renderer of '${label}' not replaced (${String(err)}); not reloading again for ` +
+              `${Math.round(RELOAD_COOLDOWN_MS / 60_000)} min`,
           );
         }
         return;
@@ -413,7 +555,7 @@ export function useRendererWatchdog(): void {
       tripped = true;
       const what = await describeRendererMemory(own.pid);
       await report(
-        `renderer RSS ${Math.round(mb)} MB ≥ ${RENDERER_CEILING_MB} MB ceiling ` +
+        `renderer RSS ${Math.round(mb)} MB ≥ ${ceiling} MB ceiling ` +
           `(pid ${own.pid || "?"}) — reloading window '${label}' to free its JS heap before it OOMs${what}`,
       );
       writeSessionNumber(RELOAD_AT_KEY, Date.now());
@@ -423,7 +565,9 @@ export function useRendererWatchdog(): void {
     // Attribute early (a fresh renderer is small, so nothing else runs yet);
     // the first check is one interval in, never at mount.
     const attributeId = window.setTimeout(() => {
-      if (!stopped) void ensureOwnRendererPid();
+      if (stopped) return;
+      void ensureOwnRendererPid();
+      void ensureTotalRam();
     }, ATTRIBUTE_AFTER_MS);
     const id = window.setInterval(() => void check(), POLL_MS);
     return () => {

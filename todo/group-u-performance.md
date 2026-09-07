@@ -631,6 +631,65 @@ screen is not.*
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work
 
+    **2026-09-07 — the second step (⚠️ untested live, backend not compiled
+    here: no toolchain in the agent fence).** The kind clause answered: the
+    MAIN window, with only agent tabs in the foreground project (no PDFs, no
+    popout), climbed 4.9 → 6.7 GB in the ten held minutes (~150 MB/min), all
+    anonymous (`[anon]` 4.3 GB + `[heap]` 2.2 GB, file 190 MB, shmem 10 MB), and
+    the reload at 6.7 GB left 4.8 GB behind — memory of the WebKitWebProcess
+    itself, which no page action reaches. So a held window now asks the
+    backend to replace its renderer *process*: `webview_renderer_restart`
+    (`terminate_web_process` + reload on the next main-loop turn; the crash
+    reporter sees `TerminatedByApi` and stays out of it), once per 10 min per
+    window on both sides (`sessionStorage` + a backend map, so a window
+    watching the wrong pid cannot loop even if the storage dies with the
+    process). Windows/macOS have no such API and hold as before.
+
+    Then the user's read, which fits the numbers better than a leak: "maybe
+    too many active projects? — the 4 GB is too strict". Every tab in every
+    active scope stays mounted (`CenterPanel`'s flat pane layer), each
+    terminal with xterm's four full-size canvas layers, and at 2× DPI thirty
+    of them are several GB of honest working set — which a reload rebuilds
+    (hence "frees nothing") and a process replacement would rebuild too. So
+    the ceiling now scales: `max(4 GB, 25 % of RAM)` (`machine_load_snapshot`
+    read once per window), and a window whose fresh process comes back over
+    the ceiling has proved its size is the working set — its ceiling is raised
+    to 1.5× that (`sessionStorage`, per window) with a crash.log line naming
+    the mounted tab/terminal/scope counts, instead of blinking a healthy
+    window every cooldown. A runaway past the headroom still trips.
+    Still open: whether the ~150 MB/min climb inside the held ten minutes was
+    tabs being opened or something growing per frame (canvas/compositor); a
+    hidden pane dropping its canvas renderer until shown would cut the
+    working set by (mounted − visible)/mounted either way.
+    - [x] 🤖 Automated test — vitest `RendererWatchdog` (`shouldReplaceRenderer`:
+      once per cooldown).
+    - [ ] 🖐️ Manual test (the process is replaced) — after a backend restart,
+      set `RENDERER_CEILING_MB` to 512 in `rendererWatchdog.ts` (hot-reloads):
+      the window reloads, and 30 s later, still over 512 MB, blinks once more
+      and comes back with the footer's `main` reading near 200 MB; crash.log
+      holds `renderer-watchdog … replacing the renderer process` followed by
+      `=== WEBVIEW 'main' RENDERER REPLACED …` and NO `TERMINATED … reason=`
+      reload from the crash reporter. Tabs and PTYs are back. Restore the
+      ceiling.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+    - [ ] 🖐️ Manual test (the ceiling fits the machine) — after a backend
+      restart, on the 64 GB box the first `renderer-watchdog` line of a session
+      (if any) says `≥ 16384 MB ceiling`, not 4096; with the old backend it
+      still says 4096 (no RAM reading → the floor).
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+    - [ ] 🖐️ Manual test (what leaks) — with only agent tabs open, note the
+      footer's `main` RSS, leave the agents idle 10 min, note it again; then
+      let one agent stream output for 10 min and note it again. Idle-flat but
+      streaming-climbs points at the paint path (canvas/compositor), climbing
+      either way at the page. Also worth one try on this GNOME/Wayland host:
+      `WEBKIT_DISABLE_DMABUF_RENDERER=0 ./start-eldrun-tauri-hotreload.sh` —
+      the 2026-08 verdict that kept DMABUF off was taken on Cinnamon/X11 with
+      an older Mesa, and the DMABUF-off path is what runs here.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
 ---
 
 822. **A native fault must kill the process, not spin its thread.** ✅ Fixed

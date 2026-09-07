@@ -217,6 +217,87 @@ pub fn webview_renderer_claim(window: tauri::WebviewWindow, pid: u32) -> Result<
     Ok(())
 }
 
+/// When each window last had its renderer replaced by [`webview_renderer_restart`].
+static RENDERER_RESTARTS: std::sync::Mutex<Vec<(String, std::time::Instant)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// A window that just had its renderer replaced is refused another one for this
+/// long. The frontend keeps the same cooldown in `sessionStorage`, but that
+/// storage may not outlive the very process this replaces — and a window whose
+/// renderer attribution is wrong (it is watching another window's pid) would
+/// otherwise replace its own healthy renderer every poll, for as long as the
+/// other one stays big. Held here, the loop is bounded by the process that
+/// cannot lose count.
+const RENDERER_RESTART_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+/// Replace the calling window's renderer process — the memory watchdog's second
+/// step, for memory a reload did not free.
+///
+/// A `location.reload()` drops the page's JS heap, and on 2026-09-07 that was
+/// not where the memory was: the main window, holding nothing but agent
+/// terminals, climbed at ~150 MB/min, and a reload took it from 6.7 GB to
+/// 4.8 GB — the rest was anonymous memory owned by the WebKitWebProcess itself
+/// (allocator retention, compositor and canvas buffers, whatever the engine
+/// keeps across documents), which no page-level action can reach. The one
+/// thing that frees a web process's memory for certain is a new web process:
+/// WebKit's `terminate_web_process` ends it the way a crash would, and the
+/// reload that follows spawns a fresh one and loads the page into it. Tabs
+/// restore and the backend-owned PTYs reattach exactly as after a reload; the
+/// cost is the same ~1 s blink plus a cold engine. The crash reporter's
+/// handler sees `TerminatedByApi` and stays out of it (that reload is ours,
+/// and it must not count against the crash-reload cap).
+///
+/// Linux only: WebView2 and WKWebView expose no way to end a content process.
+/// There the command fails and the window holds as before. Refused inside
+/// [`RENDERER_RESTART_COOLDOWN`] of the window's previous replacement.
+#[tauri::command]
+pub fn webview_renderer_restart(window: tauri::WebviewWindow) -> Result<(), String> {
+    let label = window.label().to_string();
+    {
+        let now = std::time::Instant::now();
+        let mut guard = RENDERER_RESTARTS.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((_, at)) = guard.iter().find(|(l, _)| *l == label) {
+            if now.duration_since(*at) < RENDERER_RESTART_COOLDOWN {
+                return Err(format!(
+                    "renderer of '{label}' was already replaced {} s ago; not again within {} min",
+                    now.duration_since(*at).as_secs(),
+                    RENDERER_RESTART_COOLDOWN.as_secs() / 60
+                ));
+            }
+        }
+        guard.retain(|(l, _)| *l != label);
+        guard.push((label.clone(), now));
+    }
+    restart_renderer(&window, &label)
+}
+
+#[cfg(target_os = "linux")]
+fn restart_renderer(window: &tauri::WebviewWindow, label: &str) -> Result<(), String> {
+    crate::crash_log_append(&format!(
+        "=== WEBVIEW '{label}' RENDERER REPLACED {} (memory watchdog: a reload did not free it) ===",
+        crate::iso_now()
+    ));
+    window
+        .with_webview(|webview| {
+            use webkit2gtk::WebViewExt;
+            let view = webview.inner();
+            view.terminate_web_process();
+            // The reload goes through the main loop once, so the termination
+            // (and its `web-process-terminated` signal) has fully settled before
+            // a new process is asked for.
+            let view = view.clone();
+            gtk::glib::idle_add_local_once(move || view.reload());
+        })
+        .map_err(|e| e.to_string())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn restart_renderer(_window: &tauri::WebviewWindow, label: &str) -> Result<(), String> {
+    Err(format!(
+        "cannot replace the renderer of '{label}': this engine exposes no way to end a content process"
+    ))
+}
+
 /// A webview *content* process, across the engines Eldrun ships on: WebKitGTK
 /// (Linux), WebKit (macOS: `com.apple.WebKit.WebContent`), WebView2 (Windows:
 /// `msedgewebview2`). Matched on the command line, not `comm` — Linux truncates

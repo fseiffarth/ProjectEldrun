@@ -9,6 +9,10 @@ import {
   ownRenderer,
   pickProbedPid,
   rendererName,
+  shouldReplaceRenderer,
+  ceilingFor,
+  RENDERER_CEILING_RAM_SHARE,
+  WORKING_SET_HEADROOM,
   type RendererRss,
 } from "../lib/rendererWatchdog";
 
@@ -97,6 +101,41 @@ describe("rendererWatchdog / decideWatchdog", () => {
       mb: 4728,
       sinceReloadMs: 92_000,
     });
+  });
+});
+
+describe("rendererWatchdog / ceilingFor", () => {
+  it("is the fixed floor on a small machine or with no reading", () => {
+    expect(ceilingFor(null, null)).toBe(RENDERER_CEILING_MB);
+    expect(ceilingFor(8 * 1024, null)).toBe(RENDERER_CEILING_MB);
+    expect(ceilingFor(0, null)).toBe(RENDERER_CEILING_MB);
+  });
+
+  it("scales with the machine's RAM once that share is more than the floor", () => {
+    const ram = 64 * 1024;
+    expect(ceilingFor(ram, null)).toBe(Math.round(ram * RENDERER_CEILING_RAM_SHARE));
+    expect(ceilingFor(ram, null)).toBeGreaterThan(RENDERER_CEILING_MB);
+  });
+
+  it("sits over a confirmed working set with headroom, whichever is highest", () => {
+    expect(ceilingFor(8 * 1024, 4800)).toBe(Math.round(4800 * WORKING_SET_HEADROOM));
+    // A working set below the machine share does not lower the ceiling.
+    expect(ceilingFor(64 * 1024, 4800)).toBe(Math.round(64 * 1024 * RENDERER_CEILING_RAM_SHARE));
+    expect(ceilingFor(null, 0)).toBe(RENDERER_CEILING_MB);
+  });
+});
+
+describe("rendererWatchdog / shouldReplaceRenderer", () => {
+  const now = 1_000_000;
+
+  it("replaces the process of a held window that never did so", () => {
+    expect(shouldReplaceRenderer(null, now)).toBe(true);
+  });
+
+  it("replaces it once per cooldown, like the reload", () => {
+    expect(shouldReplaceRenderer(now - 30_000, now)).toBe(false);
+    expect(shouldReplaceRenderer(now - RELOAD_COOLDOWN_MS + 1, now)).toBe(false);
+    expect(shouldReplaceRenderer(now - RELOAD_COOLDOWN_MS, now)).toBe(true);
   });
 });
 
