@@ -1622,6 +1622,7 @@ pub fn run() {
             commands::presenter::presenter_release_sleep,
             commands::workspace::workspace_name,
             commands::workspace::network_conn_type,
+            commands::workspace::network_wifi_ssid,
             // Project-runtime switching (replaces switch_project_windows)
             commands::project_runtime::switch_project_runtime,
             commands::project_runtime::load_side_panel_folder,

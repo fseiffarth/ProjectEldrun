@@ -2450,6 +2450,7 @@ export const dict: Dict = {
   "windowControls.minimize": "Riduci a icona",
   "windowControls.maximize": "Ingrandisci",
   "connTypeIcon.offlineSuffix": " (offline)",
+  "connTypeIcon.ssidSuffix": " · {ssid}",
   "batteryIndicator.unknown": "Stato della batteria sconosciuto",
   "batteryIndicator.pluggedSuffix": " (collegato)",
   "statusCluster.label": "Stato del sistema",

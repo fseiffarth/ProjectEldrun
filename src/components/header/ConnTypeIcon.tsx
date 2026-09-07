@@ -1,13 +1,32 @@
-import { useT } from "../../lib/i18n";
+import { useT, type TranslationKey } from "../../lib/i18n";
 
 interface Props {
   type: "lan" | "wlan";
   online: boolean;
+  /** The joined network's name, when the box could name it. Wi-Fi only. */
+  ssid?: string | null;
 }
 
-export function ConnTypeIcon({ type, online }: Props) {
+/** The one place the connection readout is worded, so the icon's hover text and
+ *  the status cluster's folded summary can never say different things about the
+ *  same link. */
+export function connLabel(
+  type: "lan" | "wlan",
+  online: boolean,
+  ssid: string | null | undefined,
+  t: (key: TranslationKey, vars?: Record<string, string | number>) => string,
+): string {
+  const kind = type === "wlan" ? "WiFi" : "Ethernet";
+  // The name only ever qualifies Wi-Fi: an Ethernet link has no equivalent the
+  // user would recognise, and an SSID left over from a previous poll would
+  // otherwise outlive the network it names.
+  const named = type === "wlan" && ssid ? `${kind}${t("connTypeIcon.ssidSuffix", { ssid })}` : kind;
+  return `${named}${online ? "" : t("connTypeIcon.offlineSuffix")}`;
+}
+
+export function ConnTypeIcon({ type, online, ssid }: Props) {
   const t = useT();
-  const label = `${type === "wlan" ? "WiFi" : "Ethernet"}${online ? "" : t("connTypeIcon.offlineSuffix")}`;
+  const label = connLabel(type, online, ssid, t);
   // When offline, draw a diagonal slash over the connection symbol.
   const slash = !online && (
     <>

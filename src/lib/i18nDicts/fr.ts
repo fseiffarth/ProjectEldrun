@@ -2452,6 +2452,7 @@ export const dict: Dict = {
   "windowControls.minimize": "Réduire",
   "windowControls.maximize": "Agrandir",
   "connTypeIcon.offlineSuffix": " (hors ligne)",
+  "connTypeIcon.ssidSuffix": " · {ssid}",
   "batteryIndicator.unknown": "État de la batterie inconnu",
   "batteryIndicator.pluggedSuffix": " (branché)",
   "statusCluster.label": "État du système",

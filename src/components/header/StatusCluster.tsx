@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { ConnLamp } from "../common/ConnLamp";
-import { ConnTypeIcon } from "./ConnTypeIcon";
+import { ConnTypeIcon, connLabel } from "./ConnTypeIcon";
 import { BatteryIndicator } from "./BatteryIndicator";
 import { MobileIndicator } from "./MobileIndicator";
 import { AlertsToggle } from "./AlertsToggle";
@@ -61,6 +61,7 @@ export function StatusCluster() {
   const quiesce = useQuiesce();
   const [online, setOnline] = useState(navigator.onLine);
   const [connType, setConnType] = useState<string | null>(null);
+  const [ssid, setSsid] = useState<string | null>(null);
   const batterySupported = usePowerStore((s) => s.supported);
   const batteryPercentage = usePowerStore((s) => s.percentage);
   const onBattery = usePowerStore((s) => s.onBattery);
@@ -80,9 +81,21 @@ export function StatusCluster() {
   }, []);
 
   useEffect(() => {
+    // The name is asked for only once the type probe has said "wlan": naming
+    // the network costs its own process spawn on every platform, and an
+    // Ethernet machine has no answer to give. Clearing it on any other type is
+    // what keeps a stale SSID from outliving the link it named.
     const poll = () =>
       invoke<string>("network_conn_type")
-        .then(setConnType)
+        .then(async (kind) => {
+          setConnType(kind);
+          if (kind !== "wlan") {
+            setSsid(null);
+            return;
+          }
+          const name = await invoke<string>("network_wifi_ssid").catch(() => "");
+          setSsid(name.trim() || null);
+        })
         .catch(() => {});
     poll();
     const id = setInterval(poll, saverInterval(10_000, quiesce));
@@ -103,9 +116,7 @@ export function StatusCluster() {
   if (showConn) {
     local.conn = {
       tone: online ? "ok" : "alert",
-      label: `${connKind === "lan" ? "Ethernet" : "WiFi"}${
-        online ? "" : t("connTypeIcon.offlineSuffix")
-      }`,
+      label: connLabel(connKind ?? "wlan", online, ssid, t),
     };
   }
   if (batterySupported) {
@@ -144,7 +155,7 @@ export function StatusCluster() {
         <AlertsToggle />
       </span>
       <span className="status-cluster-item" data-folded={folded("conn")}>
-        {showConn && <ConnTypeIcon type={connKind ?? "wlan"} online={online} />}
+        {showConn && <ConnTypeIcon type={connKind ?? "wlan"} online={online} ssid={ssid} />}
       </span>
       <span className="status-cluster-item" data-folded={folded("battery")}>
         {batterySupported && (

@@ -2572,6 +2572,7 @@ export const en = {
   "windowControls.minimize": "Minimize",
   "windowControls.maximize": "Maximize",
   "connTypeIcon.offlineSuffix": " (offline)",
+  "connTypeIcon.ssidSuffix": " · {ssid}",
   "batteryIndicator.unknown": "Battery status unknown",
   "batteryIndicator.pluggedSuffix": " (plugged in)",
   "statusCluster.label": "System status",
