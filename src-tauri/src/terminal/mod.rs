@@ -298,9 +298,23 @@ enum Routed {
     Quiet,
 }
 
-fn route_chunk_at(id: &str, bytes: &[u8], now: Instant) -> Routed {
+fn route_chunk_at(id: &str, bytes: &[u8], now: Instant, seq: u64) -> Routed {
     let mut map = routes().lock().unwrap();
-    let route = map.entry(id.to_string()).or_default();
+    // Generation guard, the same one the task-end cleanup uses (`route_close`).
+    // A superseded spawn keeps draining its PTY after the replacement opened the
+    // route: `insert()` flips the dead flag and reaps the child, but the reader
+    // thread is parked inside `read()` and still delivers whatever the dying
+    // program writes on its way out — for a TUI, a whole teardown frame. Those
+    // bytes belong to the tab that is gone, so routing them here would decode
+    // them through the new spawn's decoder, advance its byte offsets, and emit
+    // them under the shared id: the previous tab's final screen interleaved into
+    // the replacement's terminal. Drop them instead.
+    let Some(route) = map.get_mut(id) else {
+        return Routed::Quiet;
+    };
+    if route.seq != seq {
+        return Routed::Quiet;
+    }
     let text = route.decoder.push(bytes);
     if text.is_empty() {
         return Routed::Quiet;
@@ -328,18 +342,23 @@ fn route_chunk_at(id: &str, bytes: &[u8], now: Instant) -> Routed {
     }
 }
 
-fn route_chunk(id: &str, bytes: &[u8]) -> Routed {
-    route_chunk_at(id, bytes, Instant::now())
+fn route_chunk(id: &str, bytes: &[u8], seq: u64) -> Routed {
+    route_chunk_at(id, bytes, Instant::now(), seq)
 }
 
 /// Flush an incomplete UTF-8 suffix when the PTY reaches EOF. Complete streams
 /// produce no extra event; a genuinely truncated codepoint produces one
 /// replacement character and follows the current visible/hidden route.
-fn route_finish(id: &str) -> Routed {
+fn route_finish(id: &str, seq: u64) -> Routed {
     let mut map = routes().lock().unwrap();
     let Some(route) = map.get_mut(id) else {
         return Routed::Quiet;
     };
+    // Generation guard — see `route_chunk_at`. The trailing partial codepoint of
+    // a superseded spawn is that spawn's, not the replacement's.
+    if route.seq != seq {
+        return Routed::Quiet;
+    }
     let text = route.decoder.finish();
     if text.is_empty() {
         return Routed::Quiet;
@@ -1049,7 +1068,7 @@ pub fn spawn_pty(
     let route_seq = route_open(&opts.id);
     tokio::spawn(async move {
         let emitter = app.clone();
-        batch_output(rx, |bytes| match route_chunk(&id, bytes) {
+        batch_output(rx, |bytes| match route_chunk(&id, bytes, route_seq) {
             Routed::Data(slice) => {
                 let _ = emitter.emit(
                     "terminal-output",
@@ -1096,7 +1115,7 @@ pub fn spawn_pty(
             Routed::Quiet => {}
         })
         .await;
-        match route_finish(&id) {
+        match route_finish(&id, route_seq) {
             Routed::Data(slice) => {
                 let _ = emitter.emit(
                     "terminal-output",
@@ -1429,7 +1448,7 @@ mod route_tests {
         let seq = route_open(id);
         set_visible(id, true);
         assert!(matches!(
-            route_chunk_at(id, b"hello", Instant::now()),
+            route_chunk_at(id, b"hello", Instant::now(), seq),
             Routed::Data(t) if t.text == "hello"
         ));
         set_visible(id, false);
@@ -1445,16 +1464,16 @@ mod route_tests {
         let t0 = Instant::now();
         // First hidden chunk: leading-edge digest, no batching delay.
         assert!(matches!(
-            route_chunk_at(id, b"abc", t0),
+            route_chunk_at(id, b"abc", t0, seq),
             Routed::Activity(t) if t == "abc"
         ));
         // Inside the window: buffered, one trailing flush armed at the window end.
         assert!(matches!(
-            route_chunk_at(id, b"def", t0 + Duration::from_millis(10)),
+            route_chunk_at(id, b"def", t0 + Duration::from_millis(10), seq),
             Routed::ArmDigest(d) if d == t0 + ACTIVITY_INTERVAL
         ));
         assert!(matches!(
-            route_chunk_at(id, b"ghi", t0 + Duration::from_millis(20)),
+            route_chunk_at(id, b"ghi", t0 + Duration::from_millis(20), seq),
             Routed::Quiet
         ));
         // The trailing flush drains what the window accumulated — the decision
@@ -1474,14 +1493,14 @@ mod route_tests {
         let seq = route_open(id);
         set_visible(id, false);
         let t0 = Instant::now();
-        let _ = route_chunk_at(id, b"abc", t0);
-        let _ = route_chunk_at(id, b"def", t0 + Duration::from_millis(10));
+        let _ = route_chunk_at(id, b"abc", t0, seq);
+        let _ = route_chunk_at(id, b"def", t0 + Duration::from_millis(10), seq);
         // The replay carries ALL hidden bytes — including those a digest
         // already summarized (the digest fed the pills, not the pane).
         assert_eq!(set_visible(id, true).as_deref(), Some("abcdef"));
         // And streaming resumes.
         assert!(matches!(
-            route_chunk_at(id, b"live", Instant::now()),
+            route_chunk_at(id, b"live", Instant::now(), seq),
             Routed::Data(t) if t.text == "live"
         ));
         // No leftover digest fires after the drain.
@@ -1496,7 +1515,7 @@ mod route_tests {
         let seq = route_open(id);
         set_visible(id, false);
         let t0 = Instant::now();
-        let _ = route_chunk_at(id, b"early", t0);
+        let _ = route_chunk_at(id, b"early", t0, seq);
         // Rising edge drains pending (byte order across the watch) …
         {
             let mut map = routes().lock().unwrap();
@@ -1508,13 +1527,13 @@ mod route_tests {
         }
         // … then the hidden PTY streams like a visible one.
         assert!(matches!(
-            route_chunk_at(id, b"marker", Instant::now()),
+            route_chunk_at(id, b"marker", Instant::now(), seq),
             Routed::Data(t) if t.text == "marker"
         ));
         route_unwatch(id);
         // Released: back to buffering (leading-edge digest again).
         assert!(matches!(
-            route_chunk_at(id, b"after", t0 + ACTIVITY_INTERVAL * 2),
+            route_chunk_at(id, b"after", t0 + ACTIVITY_INTERVAL * 2, seq),
             Routed::Activity(t) if t == "after"
         ));
         route_remove_view(id, "test-view", 2);
@@ -1551,7 +1570,7 @@ mod route_tests {
                 .insert("detached".to_string(), viewer(true, "detached-p-g-1"));
         }
         assert!(matches!(
-            route_chunk_at(id, b"still-live", Instant::now()),
+            route_chunk_at(id, b"still-live", Instant::now(), seq),
             Routed::Data(t) if t.text == "still-live"
         ));
         {
@@ -1583,7 +1602,7 @@ mod route_tests {
         }
         // While the popout's view is registered the PTY streams…
         assert!(matches!(
-            route_chunk_at(id, b"live", Instant::now()),
+            route_chunk_at(id, b"live", Instant::now(), seq),
             Routed::Data(_)
         ));
 
@@ -1593,7 +1612,7 @@ mod route_tests {
         // would have if the pane had unmounted properly. The main window's own
         // (hidden) view is untouched.
         assert!(!matches!(
-            route_chunk_at(id, b"after", Instant::now()),
+            route_chunk_at(id, b"after", Instant::now(), seq),
             Routed::Data(_)
         ));
         {
@@ -1619,9 +1638,9 @@ mod route_tests {
         let id = "route-t-scrollback";
         let seq = route_open(id);
         // Nobody is watching: this is the case that used to leave a popout blank.
-        route_chunk_at(id, b"$ ls -la\r\ntotal 0\r\n", Instant::now());
+        route_chunk_at(id, b"$ ls -la\r\ntotal 0\r\n", Instant::now(), seq);
         set_visible(id, true);
-        route_chunk_at(id, b"$ echo hi\r\nhi\r\n", Instant::now());
+        route_chunk_at(id, b"$ echo hi\r\nhi\r\n", Instant::now(), seq);
 
         let tail = route_scrollback(id);
         assert!(tail.data.contains("total 0"), "output from before any viewer");
@@ -1646,12 +1665,12 @@ mod route_tests {
         let id = "route-t-scrollback-offset";
         let seq = route_open(id);
         set_visible(id, true);
-        let first = match route_chunk_at(id, "aé".as_bytes(), Instant::now()) {
+        let first = match route_chunk_at(id, "aé".as_bytes(), Instant::now(), seq) {
             Routed::Data(slice) => slice,
             other => panic!("expected live data, got {other:?}"),
         };
         let snapshot = route_scrollback(id);
-        let second = match route_chunk_at(id, b"z", Instant::now()) {
+        let second = match route_chunk_at(id, b"z", Instant::now(), seq) {
             Routed::Data(slice) => slice,
             other => panic!("expected live data, got {other:?}"),
         };
@@ -1674,7 +1693,7 @@ mod route_tests {
         let seq = route_open(id);
         let chunk = "x".repeat(100_000);
         for _ in 0..8 {
-            route_chunk_at(id, chunk.as_bytes(), Instant::now());
+            route_chunk_at(id, chunk.as_bytes(), Instant::now(), seq);
         }
         let tail = route_scrollback(id);
         assert!(
@@ -1734,6 +1753,45 @@ mod route_tests {
             "the current spawn closes its own route"
         );
         assert!(!routes().lock().unwrap().contains_key(id));
+    }
+
+    /// The emit half of the same guard. A superseded spawn drains its PTY for a
+    /// while after the replacement opened the route (the reader thread is parked
+    /// in `read()` while `insert()` reaps the child), and a TUI writes a whole
+    /// teardown frame on its way out. Routed under the shared id, that frame
+    /// decoded through the new spawn's decoder and reached its terminal — the
+    /// previous tab's screen drawn into the replacement's, each holding part of
+    /// the viewport. The old generation must be dropped outright.
+    #[test]
+    fn a_superseded_spawns_trailing_output_never_reaches_the_replacement() {
+        let id = "route-t-stale-output";
+        let old = route_open(id);
+        set_visible(id, true);
+        let new = route_open(id);
+
+        assert!(
+            matches!(route_chunk_at(id, b"dying frame", Instant::now(), old), Routed::Quiet),
+            "the superseded spawn's output must not be routed"
+        );
+        assert!(
+            matches!(route_finish(id, old), Routed::Quiet),
+            "nor its trailing partial codepoint"
+        );
+        // It must also leave no trace on the replacement's stream: the byte
+        // offsets the frontend reconciles scrollback against are per-spawn.
+        assert_eq!(route_scrollback(id).end_offset, 0);
+
+        assert!(
+            matches!(
+                route_chunk_at(id, b"live", Instant::now(), new),
+                Routed::Data(slice) if slice.text == "live" && slice.start_offset == 0
+            ),
+            "the current spawn still streams normally"
+        );
+
+        set_visible(id, false);
+        route_remove_view(id, "test-view", 2);
+        route_close(id, new);
     }
 }
 
