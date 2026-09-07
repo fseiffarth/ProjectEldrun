@@ -503,6 +503,35 @@ function tagParamsB(tag: string): number | null {
 
 /** Official, distro-agnostic install command — kept in sync with the backend. */
 /** One agent CLI + its install status (mirrors backend `AgentInfo`). */
+/** One recorded "verified against" check the installed release has moved away
+ *  from (backend `services::agent_versions::StaleNote`). */
+interface AgentVersionStale {
+  version: string;
+  surface: string;
+  direction: "newer" | "older" | "different";
+}
+
+/** What one installed CLI answers `--version`, against the releases Eldrun's
+ *  flags and parsers were checked with. Reported, never enforced — see
+ *  `services::agent_versions`. */
+interface AgentVersionReport {
+  agent: string;
+  label: string;
+  installed: boolean;
+  /** Whether anyone has checked what this CLI answers to a version flag. */
+  supported: boolean;
+  version: string | null;
+  /** The version line as the CLI printed it. */
+  raw: string | null;
+  state: "match" | "moved" | "unverified" | "unknown";
+  /** Stale checks, weakest (oldest verified release) first. */
+  stale: AgentVersionStale[];
+  error: string | null;
+  checkedAt: number;
+  cached: boolean;
+  dismissed: boolean;
+}
+
 interface AgentInfo {
   id: string;
   label: string;
@@ -1242,6 +1271,9 @@ export function AgentsPanel({ onBack, onClose }: SubPanelProps) {
   const [remoteInstalling, setRemoteInstalling] = useState<string | null>(null);
   const [remoteResults, setRemoteResults] = useState<Record<string, string>>({});
   const [remoteErrors, setRemoteErrors] = useState<Record<string, string>>({});
+  // Per-agent installed version + drift verdict, keyed by agent id.
+  const [versions, setVersions] = useState<Record<string, AgentVersionReport>>({});
+  const [checkingVersions, setCheckingVersions] = useState(false);
   // Filter over the *not installed* half only (see the two sections below).
   const [search, setSearch] = useState("");
   const logRef = useRef<HTMLPreElement>(null);
@@ -1250,6 +1282,20 @@ export function AgentsPanel({ onBack, onClose }: SubPanelProps) {
     invoke<AgentInfo[]>("list_agents").then(setAgents).catch(() => setAgents([]));
   };
   useEffect(refresh, []);
+  // Version drift is read separately from the agent list on purpose: listing
+  // agents is a PATH lookup, this spawns every installed CLI once. The backend
+  // caches for a day, so opening the panel again this afternoon costs nothing;
+  // `true` means "ask them again now".
+  const loadVersions = (recheck: boolean) => {
+    setCheckingVersions(true);
+    invoke<AgentVersionReport[]>("agent_versions", { refresh: recheck })
+      .then((rows) =>
+        setVersions(Object.fromEntries(rows.map((row) => [row.agent, row]))),
+      )
+      .catch(() => {})
+      .finally(() => setCheckingVersions(false));
+  };
+  useEffect(() => loadVersions(false), []);
   useEffect(() => {
     if (!remoteMachinesLoaded) void loadRemoteMachines();
   }, [loadRemoteMachines, remoteMachinesLoaded]);
@@ -1389,6 +1435,94 @@ export function AgentsPanel({ onBack, onClose }: SubPanelProps) {
     }
   };
 
+  const dismissVersion = async (id: string, version: string) => {
+    if (!version) return;
+    try {
+      await invoke("dismiss_agent_version", { agent: id, version });
+      setVersions((prev) => ({ ...prev, [id]: { ...prev[id], dismissed: true } }));
+    } catch {
+      // A dismissal that did not stick costs one more notice, nothing else.
+    }
+  };
+
+  // What this CLI reports as its version, and whether that release is still the
+  // one Eldrun's flags and parsers were verified against
+  // (docs/third_party_update_checklist.md, as data in `agent_versions`).
+  // Informational: drift is what explains an agent tab misreading an approval
+  // prompt or a mode line, and it blocks nothing.
+  const versionNotice = (a: AgentInfo) => {
+    const report = versions[a.id];
+    if (!report) return null;
+    const moved = report.state === "moved" && !report.dismissed;
+    const staleLabel = (note: AgentVersionStale) =>
+      t(
+        note.direction === "newer"
+          ? "agents.versionStaleNewer"
+          : note.direction === "older"
+            ? "agents.versionStaleOlder"
+            : "agents.versionStaleDifferent",
+        { version: note.version, surface: note.surface },
+      );
+    return (
+      <>
+        <div className="agent-version-row">
+          {report.version && (
+            <span
+              className="agent-version-chip"
+              title={t("agents.versionTitle", {
+                label: a.label,
+                raw: report.raw ?? report.version,
+              })}
+            >
+              {report.version}
+            </span>
+          )}
+          {!report.supported && (
+            <span className="settings-help">{t("agents.versionUnsupported")}</span>
+          )}
+          {report.state === "unverified" && (
+            <span className="settings-help">{t("agents.versionUnverified")}</span>
+          )}
+          {report.error && (
+            <span className="agent-cron-warn">{report.error}</span>
+          )}
+          {report.supported && (
+            <button
+              type="button"
+              className="ollama-action-btn"
+              disabled={checkingVersions}
+              onClick={() => loadVersions(true)}
+            >
+              {checkingVersions
+                ? t("agents.versionChecking")
+                : t("agents.versionRecheck")}
+            </button>
+          )}
+          <UntestedTag />
+        </div>
+        {moved && (
+          <div className="agent-version-drift">
+            <span className="agent-cron-warn">{t("agents.versionDrift")}</span>
+            <ul className="agent-version-stale">
+              {report.stale.map((note) => (
+                <li key={`${note.version}:${note.surface}`}>{staleLabel(note)}</li>
+              ))}
+            </ul>
+            <p className="settings-help">{t("agents.versionDriftHelp")}</p>
+            <button
+              type="button"
+              className="ollama-action-btn"
+              title={t("agents.versionDismissTitle")}
+              onClick={() => void dismissVersion(a.id, report.version ?? "")}
+            >
+              {t("agents.versionDismiss")}
+            </button>
+          </div>
+        )}
+      </>
+    );
+  };
+
   // The card for one CLI. One renderer for both sections below, so an
   // installed entry and one still to be installed cannot drift into two
   // designs — the only thing that differs is which list a card lands in.
@@ -1476,6 +1610,7 @@ export function AgentsPanel({ onBack, onClose }: SubPanelProps) {
       )}
       {a.installed && (
         <>
+          {versionNotice(a)}
           <div className="ollama-install-cmd-row">
             <button
               type="button"

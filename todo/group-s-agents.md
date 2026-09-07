@@ -1097,3 +1097,64 @@ unchanged; the new agents are additive.
       echo); while you are still typing, the row must NOT change.
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work
+
+265. **Agent CLI version drift: what is installed vs. what Eldrun was verified
+    against.** Eldrun reads other people's CLIs at a level of detail that only
+    holds for the release someone sat down and checked — a `--resume` flag, a
+    session-log key, the numbered rows of an approval menu, the two steps of a
+    `/model` sheet. Those checks were recorded in prose
+    (`docs/third_party_update_checklist.md`: "*verified against Claude Code
+    2.1.251*"), which is exactly the form nothing can compare against. On the
+    machine this was built on, `claude` was already at 2.1.263 — twelve patch
+    releases past the note, unnoticed — and `codex` had **three** different
+    baselines recorded across two files (0.151.0, 0.153.0, 0.153.4). Built
+    2026-09-07, **not live-tested**; the Rust side is uncompiled here (no
+    toolchain on the GNOME host) — CI compiles it.
+    - **The notes now exist as data.** `services::agent_versions::VERIFIED` holds
+      one row per *check*, not per agent: Codex's three surfaces keep their three
+      releases, because the oldest of them is the weakest assumption Eldrun
+      rests on and collapsing them to one number would throw away the only part
+      that says where to look. Re-verifying means bumping the row **and** the
+      prose note in one commit.
+    - **Only recipes run against a real binary are listed.** `VERSION_ARGV` has
+      three entries (`claude`, `codex`, `copilot`), each carrying what it
+      actually printed as its comment — the same refusal `WARMUPS` and
+      `agent_usage::RECIPES` make. An agent with no recipe reports *unknown*
+      rather than having `--version` guessed at it, because a wrong flag opens a
+      TUI on a null stdin. Adding one is: run it, paste the output, add the line.
+    - **Installed but unchecked is its own answer.** An agent with a recipe and
+      no `VERIFIED` row reports *unverified* — "nobody has checked this one",
+      which is true and useful, instead of a green tick that is neither.
+    - **Reported, never enforced.** Nothing updates a CLI, nothing refuses to
+      launch one. Drift is what explains an agent tab misreading an approval
+      prompt or a mode line; it is a chip and an amber line in Manage Agents, and
+      a dismissal is keyed by *version*, so the notice returns on the next
+      release rather than never.
+    - **Costs nothing to look at.** Only installed agents are probed, at most
+      once a day (`PROBE_TTL`), concurrently, 5s timeout, stdin null, own process
+      group, `kill_on_drop`; `<state_dir>/agent_versions.json` is a cache, and
+      deleting it costs one re-probe.
+    - **The headless half is the point.** `cargo run --example agent_versions
+      --manifest-path src-tauri/Cargo.toml` prints installed-vs-verified and
+      exits non-zero on drift, so the checklist's "did anything move?" is one
+      command without a window.
+    - [x] 🤖 Automated test — Rust: the three verified version-line shapes parse
+      (including `copilot`'s trailing commit hash, which must not), a bare number
+      and a changelog line are refused, `0.153.10 > 0.153.9` (the whole reason
+      not to compare strings), drift names every stale check oldest-first, an
+      *older* install is drift too, a note for an agent with no recipe is
+      rejected outright, stdout/stderr/exit-code handling, ANSI + bound, and a
+      dismissal that survives a re-probe but not a new version.
+      `AgentVersionDrift.test.tsx`: opening the panel never forces a probe
+      (re-check is the only caller allowed to), the notes render weakest-first,
+      dismissal sends the version the user saw, a matching release says nothing,
+      an unsupported CLI says so instead of offering a re-check.
+    - [ ] 🖐️ Manual desktop QA — open Settings → Manage Agents: each installed
+      CLI shows its version; Claude and Codex show the amber "not the one Eldrun
+      was verified against" line naming the stale sections, Copilot shows
+      "no note yet records which release", an agent with no recipe says nobody
+      has checked it. Click Dismiss on one and confirm the warning goes while the
+      version stays; reopen the panel and confirm it stays dismissed. Click
+      Re-check and confirm the version is re-read.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work

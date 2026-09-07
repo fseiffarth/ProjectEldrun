@@ -374,6 +374,35 @@
   color: var(--warning);
 }
 
+/* Installed-CLI version chip and the drift notice under it. Same 11px
+   secondary scale as the other per-agent rows, and the warning colour is
+   `.agent-cron-warn` reused rather than a second amber picked here. */
+.agent-version-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+.agent-version-chip {
+  padding: 1px 6px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  background: var(--bg-elevated);
+  font-family: var(--font-mono, ui-monospace, Menlo, Consolas, monospace);
+}
+.agent-version-drift {
+  margin-top: 6px;
+  font-size: 11px;
+}
+.agent-version-stale {
+  margin: 4px 0;
+  padding-left: 16px;
+  color: var(--text-secondary);
+}
+
 /* Codex's session-hook-trust notice, nested inside its own agent-list-entry
    card rather than floating as a separate top-of-panel section. */
 .agent-codex-hook {

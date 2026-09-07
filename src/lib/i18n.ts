@@ -867,6 +867,21 @@ export const en = {
   "agents.noWindowsInstallerPre": "No one-line Windows installer yet — see",
   "agents.installDocs": "the install docs",
   "agents.noWindowsInstallerPost": ", then click",
+  "agents.versionTitle": "{label} reports: {raw}",
+  "agents.versionRecheck": "Re-check version",
+  "agents.versionChecking": "Checking…",
+  "agents.versionUnsupported":
+    "Version unknown — nobody has checked what this CLI answers, so Eldrun does not guess at a flag.",
+  "agents.versionUnverified":
+    "Installed, but no note yet records which release Eldrun was checked against.",
+  "agents.versionDrift": "This release is not the one Eldrun was verified against:",
+  "agents.versionStaleNewer": "newer than {version} — {surface}",
+  "agents.versionStaleOlder": "older than {version} — {surface}",
+  "agents.versionStaleDifferent": "differs from {version} — {surface}",
+  "agents.versionDriftHelp":
+    "Nothing is blocked. If this agent's tab misreads an approval prompt, a mode line or a model picker, this is the first thing to check.",
+  "agents.versionDismiss": "Dismiss",
+  "agents.versionDismissTitle": "Stop showing this until the CLI changes version again",
   "agents.stillNotDetected": "Still not detected — try a fresh terminal so the install dir is on PATH.",
   "agents.codexHookLabel": "Session hook",
   "agents.codexHookDisabled": "disabled",

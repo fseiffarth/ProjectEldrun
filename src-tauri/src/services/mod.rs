@@ -6,6 +6,10 @@ pub mod agent_tasks;
 // that keeps a phone reopening the status sheet from spawning a CLI each
 // time.
 pub mod agent_usage;
+// Which release of each agent CLI is installed vs. the one Eldrun's parsers
+// were checked against: the version recipes, the "verified against" notes from
+// docs/third_party_update_checklist.md as data, and the day-long probe cache.
+pub mod agent_versions;
 // Default-on Linux filesystem boundary for local agent tabs.  The authority
 // decision and root computation stay AppHandle-free; terminal spawn only applies
 // the resulting bubblewrap argv.

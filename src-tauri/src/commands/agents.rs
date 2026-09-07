@@ -1297,6 +1297,152 @@ pub async fn agent_usage(agent: String, refresh: Option<bool>) -> AgentUsageRepo
     }
 }
 
+/// Ask one agent CLI what version it is, once.
+///
+/// Same spawn shape as the usage read above and for the same reasons: argv
+/// (never a shell line), stdin closed so a CLI that ignores `--version` and
+/// opens its TUI has nothing to read, its own process group, `kill_on_drop` so
+/// the timeout actually reaps, and the state dir as cwd so no project folder's
+/// first-run trust prompt gets in the way of a question that has nothing to do
+/// with that folder.
+async fn probe_agent_version(spec: &'static AgentSpec) -> Result<String, String> {
+    use crate::services::agent_versions as versions;
+
+    let argv = versions::version_argv(spec.id)
+        .ok_or_else(|| format!("{} has no known version flag", spec.label))?;
+    let path =
+        resolve_spec_path(spec).ok_or_else(|| format!("{} is not installed", spec.label))?;
+    let cwd = warmup_dir()?;
+
+    let mut cmd = tokio::process::Command::from(crate::paths::command_no_window(&path));
+    cmd.args(&argv)
+        .current_dir(&cwd)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    #[cfg(unix)]
+    {
+        cmd.process_group(0);
+    }
+    let output = match tokio::time::timeout(versions::VERSION_TIMEOUT, async {
+        cmd.spawn()
+            .map_err(|e| format!("cannot start {}: {e}", path.display()))?
+            .wait_with_output()
+            .await
+            .map_err(|e| format!("{} did not run: {e}", spec.label))
+    })
+    .await
+    {
+        Ok(Ok(output)) => output,
+        Ok(Err(error)) => return Err(error),
+        Err(_) => {
+            return Err(format!(
+                "{} did not answer within {}s",
+                spec.label,
+                versions::VERSION_TIMEOUT.as_secs()
+            ))
+        }
+    };
+    versions::version_text(
+        &String::from_utf8_lossy(&output.stdout),
+        &String::from_utf8_lossy(&output.stderr),
+        output.status.code(),
+    )
+}
+
+/// What version of each *installed* agent CLI is on this machine, against the
+/// releases Eldrun's flags and parsers were verified with.
+///
+/// Reported, never enforced: nothing here updates a CLI or refuses to launch
+/// one. It exists so "somebody else's CLI moved under us" is a line in Manage
+/// Agents (and in `cargo run --example agent_versions`) instead of a mystery
+/// the next time a TUI parses wrong.
+///
+/// Only installed agents are probed, at most once a day per agent
+/// (`PROBE_TTL`), all of them concurrently — an agent CLI's version changes
+/// when a person runs an installer, so opening the panel again the same
+/// afternoon spawns nothing. `refresh` skips the cache; that is what the
+/// panel's own re-check means.
+#[tauri::command]
+pub async fn agent_versions(
+    refresh: Option<bool>,
+) -> Vec<crate::services::agent_versions::VersionReport> {
+    use crate::services::agent_versions as versions;
+
+    let refresh = refresh.unwrap_or(false);
+    let store = versions::load();
+    let mut ready: std::collections::HashMap<&str, versions::VersionReport> =
+        std::collections::HashMap::new();
+    let mut probes = Vec::new();
+
+    for spec in AGENTS {
+        if !spec_is_installed(spec) {
+            continue;
+        }
+        // Installed, but nobody has checked what it answers: say so rather than
+        // guessing a flag at a binary that may open a TUI instead.
+        if !versions::is_supported(spec.id) {
+            ready.insert(
+                spec.id,
+                versions::VersionReport::unread(spec.id, spec.label, true, None),
+            );
+            continue;
+        }
+        if !refresh {
+            if let Some(seen) = store
+                .get(spec.id)
+                .filter(|seen| versions::fresh(seen, versions::PROBE_TTL))
+            {
+                ready.insert(
+                    spec.id,
+                    versions::VersionReport::from_seen(spec.id, spec.label, seen, true),
+                );
+                continue;
+            }
+        }
+        // `AGENTS` is a const slice in static memory, so the borrow outlives
+        // the spawned task — spelled out because that is what makes it
+        // spawnable rather than a lifetime that happens to work.
+        let spec: &'static AgentSpec = spec;
+        probes.push(tokio::spawn(async move {
+            (spec, probe_agent_version(spec).await)
+        }));
+    }
+
+    for probe in probes {
+        let Ok((spec, result)) = probe.await else {
+            continue;
+        };
+        let seen = versions::remember(spec.id, result);
+        ready.insert(
+            spec.id,
+            versions::VersionReport::from_seen(spec.id, spec.label, &seen, false),
+        );
+    }
+
+    // Registry order, so the rows line up with the Manage Agents list.
+    AGENTS
+        .iter()
+        .filter_map(|spec| ready.remove(spec.id))
+        .collect()
+}
+
+/// Stop reminding the user that `agent`'s installed version has moved past what
+/// Eldrun was verified against.
+///
+/// Keyed by the version, not by a flag: the notice comes back on the *next*
+/// release, which is the only time it has something new to say.
+#[tauri::command]
+pub async fn dismiss_agent_version(agent: String, version: String) -> Result<(), String> {
+    let spec = find_spec_by_id_or_bin(&agent).ok_or_else(|| format!("unknown agent: {agent}"))?;
+    if version.trim().is_empty() {
+        return Err("no version to dismiss".into());
+    }
+    crate::services::agent_versions::dismiss(spec.id, version.trim());
+    Ok(())
+}
+
 /// Whether Claude already trusts `cwd`, i.e. it will NOT open its "Is this a
 /// project you created or one you trust?" dialog there.
 ///

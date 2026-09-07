@@ -16,6 +16,16 @@ How to use it:
 2. Every "verified against" version noted here or in a code comment is the last
    release someone actually checked. Bump it when you re-verify, in the code
    comment first.
+   For the agent CLIs those notes also exist as data, in
+   `services::agent_versions::VERIFIED` (one row per *check*, not per agent —
+   Codex has three, because three surfaces were verified at three releases).
+   That is what makes "did anything move?" answerable:
+   `cargo run --example agent_versions --manifest-path src-tauri/Cargo.toml`
+   prints installed-vs-verified for every installed CLI and exits non-zero on
+   drift, and Manage Agents shows the same verdict per row. Re-verifying a
+   surface means bumping **both** its row and the prose note here, in one
+   commit; a version only Eldrun can read and a version only a human can read
+   drift apart exactly like the two install tables did.
 3. A breakage found this way is a normal fix: patch the one place named under
    **Where**, add a test alongside the existing ones, update the version note.
 
@@ -110,6 +120,14 @@ Claude's `/fast` — different thing.
 - The model tag in the Agents views (`agent_session_model`) reads the tail of
   that log for the last `{"type":"assistant","message":{"model":…}}` record,
   skipping `<synthetic>`. A renamed key or type means no tag, never a wrong one.
+- The last-prompt line (`agent_session_last_prompt`) reads the same tail for
+  the last `{"type":"user","message":{"content":…}}` record that is a prompt:
+  `isMeta`/`isSidechain` records, `tool_result` blocks, and string content
+  opening with `<local-command-caveat>`, `<local-command-stdout>`,
+  `<task-notification>`, `<bash-stdout>`, `<system-reminder>`,
+  `<persisted-output>`, `<stdin>` or `[Request interrupted` are skipped;
+  `<command-name>…<command-args>` reads as `/name args`, `<bash-input>` as
+  `! cmd`. A new wrapper tag shows up as a prompt until it is added here.
 - `/usage` in print mode returns a JSON envelope with `result` (panel text),
   `is_error`, `num_turns: 0`. The panel text itself is parsed on the phone
   (five-hour / weekly windows, per-model lines) — a re-layout may cost figures.
@@ -155,7 +173,13 @@ aliases.
   This is the hook-free binding path; a new layout or header breaks every
   restored Codex tab.
 - The model tag reads the same rollout's tail for the last
-  `{"type":"turn_context","payload":{"model":…}}` record.
+  `{"type":"turn_context","payload":{"model":…}}` record; the last-prompt
+  line reads it for the last `{"type":"event_msg","payload":{"type":
+  "user_message","message":…}}` or `response_item` user `message` whose
+  `input_text` does not open with `<` (environment context, user
+  instructions) or `#` (`AGENTS.md`). The 0.153.4 thread store holds no
+  messages, so on that release the line falls back to the `› …` echo on the
+  pane's screen (mobile `chatTurns`).
 - User hooks in `~/.codex/config.toml` as `[[hooks.SessionStart]]` with
   `matcher = "startup|resume|clear|compact"` and `[[hooks.SessionStart.hooks]]`
   `type="command"`. Trust state is read from `[hooks.state."…"]` tables
@@ -212,6 +236,10 @@ without the word "context" (mobile `statusLine.ts`); since ~0.5 the approval
 mode is conveyed only as prompt text, so the phone cannot read it.
 Install via `npm install -g @google/gemini-cli`.
 
+- No transcript is read: the Agents view's last-prompt line comes from the
+  prompt echo on the pane's screen (`> …`, parsed by the mobile `chatTurns`),
+  so a changed echo marker or an unindented multi-line echo loses the line.
+
 **Verify** `gemini --help | grep -E 'resume|prompt'`; open a tab, `/stats`.
 
 ### 1.4 Qwen Code
@@ -219,6 +247,7 @@ Install via `npm install -g @google/gemini-cli`.
 **Assumes** `qwen --continue`, `qwen -p`; mode phrases `ask permissions |
 plan | auto-accept | auto | yolo` on the Shift+Tab cycle, and `*` as the
 YOLO input-line marker (mobile `statusLine.ts`). `npm install -g @qwen-code/qwen-code`.
+The last-prompt line reads the screen echo, as for Gemini.
 
 ### 1.5 Everyone else
 
@@ -380,8 +409,16 @@ download URL + `SHA256SUMS` of the chosen distro release; a proxy at
 `http://10.0.2.100:3128` <!-- privacy-check: ok — QEMU slirp, not a real host -->for the egress knob. Never live-booted so far — a
 distro that rotates its cloud-image URL or checksum file name breaks silently.
 
+The doctor's install button additionally assumes **package names**: apt
+`qemu-system-x86` / `qemu-system-arm` + `qemu-utils` + `qemu-efi-aarch64` +
+`genisoimage`, Homebrew `qemu` + `xorriso`, and the winget id
+`SoftwareFreedomConservancy.QEMU`. A renamed package makes the button fail in
+its terminal tab (visibly, at least) rather than silently.
+
 **Verify** `qemu-system-x86_64 --version; qemu-img --version`; the image URL
-resolves; `cargo test --manifest-path src-tauri/Cargo.toml vm::`.
+resolves; the package names above still resolve (`apt-cache policy <pkg>`,
+`brew info qemu`, `winget show SoftwareFreedomConservancy.QEMU`);
+`cargo test --manifest-path src-tauri/Cargo.toml vm::`.
 
 ---
 
@@ -437,6 +474,13 @@ watch the progress stream; `cargo test --manifest-path src-tauri/Cargo.toml open
 - `git bundle create … --not …` and git's literal refusal text; `-c
   core.hooksPath=` suppresses hooks (verified against git 2.53.0);
   `GIT_OPTIONAL_LOCKS=0`.
+- The import dialog's visibility probe (`git_remote_visibility`) reads
+  `git ls-remote`'s **exit status plus its refusal wording** — "could not read
+  Username", "Authentication failed", "terminal prompts disabled", "Repository
+  not found", "access denied", 403/404 — to tell a private repo from an
+  unreachable host, with `-c credential.helper=` clearing the helper list and
+  `http.lowSpeedLimit`/`http.lowSpeedTime` bounding a stall. Reworded errors
+  degrade to "unknown", which leaves the field on its private default.
 - `keyring` crate → Secret Service / KWallet / keyutils / Windows Credential
   Manager / macOS Keychain; a locked keyring answers within 4 s or shows amber.
 
@@ -657,9 +701,14 @@ rustup update && cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets
 cargo test --manifest-path src-tauri/Cargo.toml
 npm run build && npm test && npm run lint
 cargo run --example ollama_probe --manifest-path src-tauri/Cargo.toml   # if Ollama moved
+cargo run --example agent_versions --manifest-path src-tauri/Cargo.toml -- --refresh
 tmux -V; bwrap --version; docker --version; tailscale version; ssh -V; git --version
 for a in claude codex gemini qwen vibe opencode copilot; do command -v $a >/dev/null && $a --version; done
 ```
+
+The `agent_versions` example answers only for the CLIs with a recipe in
+`VERSION_ARGV`; the loop below it is what covers the rest, and what a new
+recipe gets added from.
 
 Then, in a window the user launched: one agent tab per updated CLI (prompt →
 decision lamp → resume after relaunch), one Ollama-backed tab, the phone's

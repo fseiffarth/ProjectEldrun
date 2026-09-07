@@ -1723,6 +1723,8 @@ pub fn run() {
             commands::agents::agent_warmup,
             commands::agents::claude_folder_trusted,
             commands::agents::agent_usage,
+            commands::agents::agent_versions,
+            commands::agents::dismiss_agent_version,
             commands::agents::agent_tab_model,
             commands::agents::agent_tab_last_prompt,
             commands::ollama::ollama_is_running,
