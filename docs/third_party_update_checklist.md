@@ -136,6 +136,18 @@ Claude's `/fast` — different thing.
 - Home files: `~/.claude/`, `~/.claude.json` (+ `.bak`, `.backup.N`),
   `~/.claude/settings.json`, `settings.local.json`,
   `~/.local/share/claude/versions/`.
+- Credentials: the OAuth record is `~/.claude/.credentials.json`
+  (`{"claudeAiOauth":{accessToken, refreshToken, expiresAt, …}}`, 0600). The
+  CLI opens it with `O_NOFOLLOW` — a symlink is refused (`refused-symlink`,
+  `ELOOP`) — and **rotates it by atomic rename** (temp file + `rename(2)`),
+  so the path gets a new inode on every refresh. `services/agent_creds.rs`
+  relies on all three: the fence mounts an Eldrun-owned mirror *file* (not a
+  link, not the host inode) at that path and rewrites it in place; a
+  cleared record has empty token strings and `expiresAt: 0`, which the mirror
+  never copies back to the host. Verified against Claude Code 2.1.263. A moved
+  file, a new key layout, or a CLI that starts writing in place changes what
+  the keeper must watch — and a CLI that starts *following* symlinks would let
+  the file join the staged shadows instead.
 - Ollama-side: `ollama launch claude --model <m>` is the only way an
   Anthropic-compatible endpoint is stood up for Claude (Ollama ≥ 0.15).
 - Mobile: mode family `default | accept edits | plan | bypass permissions`,
@@ -148,6 +160,8 @@ claude --version
 claude --help | grep -E 'session-id|resume|permission-mode|remote-control|output-format'
 claude -p "/usage" --output-format json | head -c 600
 grep -A4 SessionStart ~/.claude/settings.json
+stat -c '%i %a' ~/.claude/.credentials.json   # note the inode, then after a refresh: a new one
+cargo test --manifest-path src-tauri/Cargo.toml agent_creds
 cargo test --manifest-path src-tauri/Cargo.toml agent_session
 cargo test --manifest-path src-tauri/Cargo.toml agent_usage
 ```
@@ -155,7 +169,7 @@ cargo test --manifest-path src-tauri/Cargo.toml agent_usage
 Check the release notes for: hook event renames or payload changes, new
 permission modes (add to `is_permission_mode` *and* `agentModes.ts`), session
 directory moves, `--remote-control` becoming default or removed, new model
-aliases.
+aliases, and anything about where or how credentials are stored.
 
 ### 1.2 Codex
 
@@ -431,7 +445,10 @@ resolves; the package names above still resolve (`apt-cache policy <pkg>`,
 --proc --tmpfs --symlink --unshare-pid --die-with-parent --new-session
 --chdir`; unprivileged user namespaces allowed (AppArmor on Ubuntu ≥ 23.10
 restricts them); missing/unusable bwrap **fails closed**. The per-agent home
-list in §1 is what the fence exposes.
+list in §1 is what the fence exposes. A `--bind` of a single *file* pins its
+inode and makes `rename(2)` onto it `EBUSY` — which is why the config shadows
+are symlinks into one mounted stage and the Claude credential file is an
+in-place-rewritten mirror (§1.1).
 
 **Verify** `bwrap --version; bwrap --ro-bind / / --unshare-pid true`;
 `cargo test --manifest-path src-tauri/Cargo.toml agent_fence`.

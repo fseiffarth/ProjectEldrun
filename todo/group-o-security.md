@@ -582,4 +582,57 @@ intent. What is left is listed here.
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work
 
+156. **A long-lived agent tab logs itself out (DONE ✅ · 🧪 Untested).** The
+    "(b)" of #155, met for real: agent tabs open for a few hours showed
+    `● Login expired · Please run /login` while a freshly opened tab and a
+    terminal-run `claude` were fine. `~/.claude/.credentials.json` was one of
+    the per-entry **file** bind mounts, and a file bind mount pins an *inode*.
+    Claude Code rotates the file by atomic rename — temp file + `rename(2)`,
+    a new inode at the same path — so the host and every later tab followed
+    the path to the fresh token while every tab already running stayed bound
+    to the orphaned old inode: stale access token, refresh with a refresh
+    token the server had already rotated away, cleared record, "Login
+    expired". Measured 2026-09-07: host inode 122169946 with real tokens;
+    the same path through `/proc/<pid>/root` of nineteen live fenced tabs,
+    inode 122170138, 280 bytes, both tokens empty. And the tab could not
+    repair itself: a rename onto a bind-mount point is `EBUSY` (#155).
+    Not the symlink trick from #155 — Claude 2.1.263 opens the store with
+    `O_NOFOLLOW` and answers `refused-symlink`/`ELOOP` — and not the whole
+    `~/.claude` directory, which would fail *open* for every deny-listed
+    entry created after spawn. Fixed by `services::agent_creds`: an
+    Eldrun-owned mirror at `<state_dir>/agent-creds/claude/.credentials.json`
+    (0600) whose inode never changes is what the fence and the project
+    container mount at the real path (`.credentials.json` joined
+    `CLAUDE_UNMOUNTED`; `sandbox::claude_credential_mounts` owns the
+    destination, like the staged shadows own `settings.json`). A keeper
+    thread (`notify` on both parent directories — a watch on the file dies
+    with the rename — plus a 60 s poll) rewrites the mirror **in place** when
+    the host changes and carries a refresh a tab persisted back to the host
+    the same way; identical bytes are a no-op both ways, and a cleared record
+    is never pushed host-wards. The later `expiresAt` wins, then mtime, host
+    on a tie. The plan seeds the mirror at spawn, so a new tab starts current.
+    macOS unchanged (Seatbelt cannot substitute; the real file stays
+    writable). Codex left alone on purpose: `~/.codex/auth.json` is written in
+    place (a live fenced Codex tab and the host share one inode), so its pin
+    is harmless.
+    - [x] 🤖 Automated test — `agent_creds::tests`: the mirror keeps its inode
+      across a host rename-rotation and a shorter rewrite, stays 0600 in a 0700
+      dir; a cleared record is refused host-wards and the pass restores the
+      tab's copy instead; identical content is a no-op both ways; a missing
+      host file creates nothing in either direction; a fenced refresh reaches
+      the host in place; later expiry wins, host wins ties, a host logout
+      sticks unless the tab wrote later. `sandbox::tests`: the per-entry
+      planner no longer mounts `.credentials.json`; the credential pair is the
+      mirror at the real path, seeded at plan time, and absent when logged out.
+    - [ ] 🖐️ Manual test — needs a backend restart. Open an agent tab, note
+      `stat -c %i ~/.claude/.credentials.json`, wait past the token's
+      `expiresAt` (or run `claude` in a plain terminal until it refreshes) and
+      confirm the inode changed on the host while the tab keeps working; then
+      `stat -c %i <state_dir>/agent-creds/claude/.credentials.json` must not
+      have changed and `/proc/<tab pid>/root/$HOME/.claude/.credentials.json`
+      must hold the new token. Tabs opened *before* the restart stay bound to
+      the old inode and must be reopened once.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
 ---
