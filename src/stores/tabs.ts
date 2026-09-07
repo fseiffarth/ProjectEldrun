@@ -1050,6 +1050,17 @@ interface TabsStore {
   // TabEntry.autoContinue). Scoped like the rename above, because the Agents
   // view is rendered for a scope that need not be the active one.
   setAutoContinueInScope: (scope: string, key: string, on: boolean) => void;
+  // Move one tab next to another inside `scope`, as the Agents view's drag
+  // reorder does. Permutes `tabsByScope[scope]` — the order the "native" sort
+  // reads — and, when both tabs sit in the same layout group, that group's
+  // `tabKeys` too, so the list and the tab bar keep telling the same story
+  // instead of drifting apart. Scoped for the same reason the two above are.
+  reorderTabInScope: (
+    scope: string,
+    key: string,
+    anchorKey: string,
+    place: "before" | "after",
+  ) => void;
   // Rewrite the embedPath (and label) of every in-app "embed" tab in the CURRENT
   // scope whose file was renamed/moved on disk — an exact match (`embedPath ===
   // oldAbs`) or, for a directory rename/move, any tab UNDER it (`embedPath`
@@ -2424,6 +2435,45 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
         s.layoutByScope[scope] ?? null,
         s.focusedGroupByScope[scope] ?? null,
       );
+    });
+  },
+
+  reorderTabInScope: (scope, key, anchorKey, place) => {
+    if (key === anchorKey) return;
+    set((s) => {
+      const tabs = s.tabsByScope[scope];
+      if (!tabs?.some((t) => t.key === key) || !tabs.some((t) => t.key === anchorKey)) return {};
+      // The same splice on both orders: pull the tab out, then drop it beside
+      // the anchor as it sits in the shortened list. Doing it that way (rather
+      // than computing an index up front) means the two lists — the flat tabs
+      // array and the group's tabKeys, which hold different tabs — land the tab
+      // on the same side of the anchor without sharing an index space.
+      const place1 = <T>(items: T[], keyOf: (item: T) => string): T[] => {
+        const from = items.findIndex((item) => keyOf(item) === key);
+        if (from < 0) return items;
+        const next = [...items];
+        const [moved] = next.splice(from, 1);
+        const at = next.findIndex((item) => keyOf(item) === anchorKey);
+        if (at < 0) return items;
+        next.splice(place === "before" ? at : at + 1, 0, moved);
+        return next;
+      };
+      const nextTabs = place1(tabs, (t) => t.key);
+      if (nextTabs === tabs) return {};
+      // The tab bar only follows when both tabs are in one group: a cross-group
+      // drop has no slot to express, so the list reorders and the layout is left
+      // exactly as the user arranged it.
+      const layout = s.layoutByScope[scope] ?? null;
+      const from = findGroupOfTab(layout, key);
+      const to = findGroupOfTab(layout, anchorKey);
+      const nextLayout =
+        layout && from && to && from.group.id === to.group.id
+          ? mapGroup(layout, from.group.id, (g) => ({
+              ...g,
+              tabKeys: place1(g.tabKeys, (k) => k),
+            }))
+          : layout;
+      return writeScope(s, scope, nextTabs, nextLayout, s.focusedGroupByScope[scope] ?? null);
     });
   },
 

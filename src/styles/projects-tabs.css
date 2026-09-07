@@ -2685,35 +2685,32 @@
 
 .agent-schedule-pill.is-delivered { color: var(--text-secondary); }
 
-/* ── Agent-tab state pills ───────────────────────────────────────────────
-   These four say what an AGENT TAB is doing, not what a schedule did, so they
-   are painted in the tab ring's own palette (`--status-*`, see themes.css) and
-   in its stroke style: the pill in the Agents view and the border around the
-   tab it names are the same statement, and a pill that said "needs a decision"
-   in the error red while the tab wore amber read as a third state. Working is
-   dotted for the same reason it is on the ring — unfinished — and done is the
-   same green closed up. Idle draws nothing but its neutral text: a tab with
-   nothing to say is what the tab bar shows as no ring at all. */
-.agent-schedule-pill.is-agent-working {
-  color: var(--status-working);
+/* ── Agent-tab state, painted on the row ─────────────────────────────────
+   What an AGENT TAB is doing, in the tab ring's own palette (`--status-*`, see
+   themes.css) and its stroke style: the row in the Agents view and the border
+   around the tab it names are the same statement, and a row that said "needs a
+   decision" in the error red while the tab wore amber read as a third state.
+   This used to be a pill beside the tab's name; the whole row carries it now,
+   so a list of agents is readable as a block of colour from across the desk
+   instead of word by word. Working is dotted for the same reason it is on the
+   ring — unfinished — and done is the same green closed up. Idle keeps the
+   plain row: a tab with nothing to say is what the tab bar shows as no ring at
+   all. The tint stays low so the row's own text keeps its contrast. */
+.agent-prompts-tab.is-agent-working {
   border-color: var(--status-working);
   border-style: dotted;
-  background: color-mix(in srgb, var(--status-working) 12%, transparent);
+  background: color-mix(in srgb, var(--status-working) 12%, var(--control-bg));
 }
 
-.agent-schedule-pill.is-agent-decision {
-  color: var(--status-decision);
+.agent-prompts-tab.is-agent-decision {
   border-color: var(--status-decision);
-  background: color-mix(in srgb, var(--status-decision) 12%, transparent);
+  background: color-mix(in srgb, var(--status-decision) 12%, var(--control-bg));
 }
 
-.agent-schedule-pill.is-agent-done {
-  color: var(--status-done);
+.agent-prompts-tab.is-agent-done {
   border-color: var(--status-done);
-  background: color-mix(in srgb, var(--status-done) 12%, transparent);
+  background: color-mix(in srgb, var(--status-done) 12%, var(--control-bg));
 }
-
-.agent-schedule-pill.is-agent-idle { color: var(--text-secondary); }
 
 /* A sent prompt that has not reached its agent yet: aimed, waiting for a safe
    idle point. Neutral like delivered — nothing is wrong with it — but named,
@@ -2846,6 +2843,31 @@
 }
 .agent-prompts-tab-main,
 .agent-prompts-row-main { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 4px; }
+
+/* The row itself is the jump: a press that never moves shows that tab. Under
+   the "native" sort the same press is also the drag handle that reorders the
+   list (the computed sorts would just undo a drop), so the cursor says grab
+   there and pointer everywhere else. `dragging` fades the row being carried and
+   `drop-before`/`drop-after` draw the landing slot as an accent rule on the
+   neighbour's edge — a static border, never an animated shadow. */
+.agent-prompts-tab { position: relative; cursor: var(--cur-pointer, pointer); }
+.agent-prompts-tab.reorderable { cursor: var(--cur-grab, grab); }
+.agent-prompts-tab.dragging { opacity: 0.5; cursor: var(--cur-grabbing, grabbing); }
+.agent-prompts-tab.drop-before::before,
+.agent-prompts-tab.drop-after::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--accent);
+  border-radius: 2px;
+  pointer-events: none;
+}
+.agent-prompts-tab.drop-before::before { top: -5px; }
+.agent-prompts-tab.drop-after::before { bottom: -5px; }
+/* Dragging must not paint a text selection across the rows it passes over. */
+.agent-prompts-view:has(.agent-prompts-tab.dragging) { user-select: none; }
 .agent-prompts-tab-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 
 /* The heading and, once there is more than one tab to order, the sort pick on

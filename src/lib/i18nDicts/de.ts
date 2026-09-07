@@ -936,7 +936,7 @@ export const dict: Dict = {
   "agentPrompts.nextRun": "nächster {relative}",
   "agentPrompts.nonResumable": "nicht fortsetzbar",
   "agentPrompts.sort.label": "Sortierung",
-  "agentPrompts.sort.title": "Agent-Tabs danach ordnen, wann sie zuletzt gearbeitet haben, wann sie zuletzt einen Zug beendet haben, oder wie die Tab-Leiste sie hält.",
+  "agentPrompts.sort.title": "Agent-Tabs danach ordnen, was als Nächstes dran ist \u2014 wartet auf dich, dann arbeitend, dann der zuletzt beendete Zug \u2014, danach wann sie zuletzt einen Zug beendet haben, oder wie die Tab-Leiste sie hält.",
   "agentPrompts.sort.lastWorking": "Zuletzt gearbeitet",
   "agentPrompts.sort.lastDone": "Zuletzt fertig",
   "agentPrompts.sort.native": "Tab-Reihenfolge",

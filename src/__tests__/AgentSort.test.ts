@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import { isAgentSort, sortAgentTabs } from "../../shared/agentSort";
 import { shortModelName } from "../lib/agentModel";
 
-interface Row { id: string; working?: boolean; workingAt?: number; doneAt?: number }
-const keys = (row: Row) => ({ working: !!row.working, workingAt: row.workingAt, doneAt: row.doneAt });
+interface Row { id: string; decision?: boolean; working?: boolean; workingAt?: number; doneAt?: number }
+const keys = (row: Row) => ({ decision: row.decision, working: !!row.working, workingAt: row.workingAt, doneAt: row.doneAt });
 const ids = (rows: Row[]) => rows.map((row) => row.id);
 
 describe("agent tab sorting (shared by the desktop and the phone)", () => {
@@ -15,11 +15,30 @@ describe("agent tab sorting (shared by the desktop and the phone)", () => {
     { id: "quiet-2" },
   ];
 
-  it("puts a working tab first, then the most recently working, and the unseen last in their own order", () => {
-    expect(ids(sortAgentTabs(rows, "lastWorking", keys))).toEqual(["busy", "recent", "old", "quiet", "quiet-2"]);
+  it("asks first, then works, then the newest finished turn, and the unseen last in their own order", () => {
+    const asking: Row[] = [
+      ...rows,
+      // A question outranks a working tab even while it is producing output,
+      // and even with a fresher finished turn behind the tabs below it.
+      { id: "asking", decision: true, working: true, workingAt: 10, doneAt: 5 },
+      { id: "asking-2", decision: true, doneAt: 20 },
+    ];
+    expect(ids(sortAgentTabs(asking, "lastWorking", keys)))
+      .toEqual(["asking", "asking-2", "busy", "old", "recent", "quiet", "quiet-2"]);
   });
 
-  it("orders by the last finished turn, ignoring what is working now", () => {
+  it("keeps the questions and the working tabs in tab order, having no reading of what they are doing now", () => {
+    const asking: Row[] = [
+      { id: "busy-2", working: true, doneAt: 900 },
+      { id: "asking-2", decision: true, doneAt: 100 },
+      { id: "busy-1", working: true, doneAt: 10 },
+      { id: "asking-1", decision: true, doneAt: 800 },
+    ];
+    expect(ids(sortAgentTabs(asking, "lastWorking", keys)))
+      .toEqual(["asking-2", "asking-1", "busy-2", "busy-1"]);
+  });
+
+  it("orders by the last finished turn, ignoring what is working now or asking", () => {
     expect(ids(sortAgentTabs(rows, "lastDone", keys))).toEqual(["old", "recent", "busy", "quiet", "quiet-2"]);
   });
 

@@ -45,6 +45,13 @@ function ago(at: number, now: number): string {
 function timing(tab: ActivityTab, sort: AgentSort, now: number): string {
   if (sort === "lastDone") return tab.done_at === undefined ? "" : `finished ${ago(tab.done_at, now)}`;
   if (tab.agent_status === "working") return "working now";
+  // Under `lastWorking` a tab that is neither asking nor working sits in the
+  // tier ordered by its last finished turn, so that is the reading its row
+  // shows. A question is ordered by nothing timed, and its last output is when
+  // it stopped to ask — which is the reading worth having on it.
+  if (sort === "lastWorking" && tab.agent_status !== "question" && tab.done_at !== undefined) {
+    return `finished ${ago(tab.done_at, now)}`;
+  }
   return tab.working_at === undefined ? "" : `worked ${ago(tab.working_at, now)}`;
 }
 
@@ -68,6 +75,7 @@ export function Activity({ open, onConnection }: {
    * with the list and not with every re-render in between. */
   const [now, setNow] = useState(() => Date.now());
   const sorted = useMemo(() => sortAgentTabs(tabs, sort, (tab) => ({
+    decision: tab.agent_status === "question",
     working: tab.agent_status === "working",
     workingAt: tab.working_at,
     doneAt: tab.done_at,

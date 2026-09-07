@@ -116,31 +116,34 @@ describe("Mobile home — agents mode", () => {
     expect(await screen.findByText(/Nothing is working, waiting or done/)).toBeTruthy();
   });
 
-  it("orders by last working by default — a working tab first — and tags each row with its model", async () => {
+  it("orders by last working by default — asking first, then working, then the newest finished — and tags each row with its model", async () => {
     const now = Date.now();
     answerActivity({
       tabs: [
         activityTab("t1", "Finished", "Aurora", "done", { working_at: now - 10 * 60_000, done_at: now - 9 * 60_000, agent_model: "opus-4-1" }),
         activityTab("t2", "Recent", "Aurora", "done", { working_at: now - 2 * 60_000, done_at: now - 60 * 60_000 }),
         activityTab("t3", "Busy", "Borealis", "working", { working_at: now, done_at: now - 3 * 60_000, agent_model: "gpt-5-codex" }),
+        activityTab("t4", "Asking", "Borealis", "question", { working_at: now - 30 * 60_000, done_at: now - 90 * 60_000 }),
       ],
       desktop_available: true,
     });
     render(<Home open={noop} openTab={noop} todo={noop} mail={noop} />);
     await enterAgentsMode();
     await screen.findByText("Busy");
-    expect(rowLabels()).toEqual(["Busy", "Recent", "Finished"]);
-    expect(screen.getByText(/opus-4-1/).textContent).toContain("Aurora · opus-4-1 · worked 10m ago");
+    // The oldest tab of the four leads the list: it is the only one that cannot
+    // go on without the reader.
+    expect(rowLabels()).toEqual(["Asking", "Busy", "Finished", "Recent"]);
+    expect(screen.getByText(/opus-4-1/).textContent).toContain("Aurora · opus-4-1 · finished 9m ago");
     expect(screen.getByText(/gpt-5-codex/).textContent).toContain("working now");
 
     fireEvent.change(screen.getByLabelText("Sort agent tabs"), { target: { value: "lastDone" } });
-    expect(rowLabels()).toEqual(["Busy", "Finished", "Recent"]);
+    expect(rowLabels()).toEqual(["Busy", "Finished", "Recent", "Asking"]);
     expect(screen.getByText(/gpt-5-codex/).textContent).toContain("finished 3m ago");
     expect(localStorage.getItem("eldrun.mobile.agentsSort")).toBe("lastDone");
 
     // The sidecar's own order (waiting first, finished last) is still on offer.
     fireEvent.change(screen.getByLabelText("Sort agent tabs"), { target: { value: "native" } });
-    expect(rowLabels()).toEqual(["Finished", "Recent", "Busy"]);
+    expect(rowLabels()).toEqual(["Finished", "Recent", "Busy", "Asking"]);
   });
 
   it("comes back in the mode it was left in, and forgets it when the reader leaves", async () => {
