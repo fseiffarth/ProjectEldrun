@@ -59,6 +59,18 @@ pub fn workspace_switch(
     Ok(())
 }
 
+/// Does the desktop shell own the lone Super/Meta key?
+///
+/// The frontend binds the bare Super key to the panel toggle, and must not do
+/// so where the shell answers that key itself (GNOME's overview, KDE's
+/// launcher) — see `platform::desktop_claims_super`. Read once at startup and
+/// cached in `src/lib/superKey.ts`; the environment cannot change under a
+/// running session.
+#[tauri::command]
+pub fn desktop_owns_super_key() -> bool {
+    crate::platform::desktop_owns_super_key()
+}
+
 #[tauri::command]
 pub fn show_window(state: State<'_, WorkspaceStateArc>, window_id: u64) -> Result<(), String> {
     state.lock().unwrap().backend.show_window(window_id)

@@ -17,6 +17,7 @@
  * surface that explains them (legend overlay, help, lessons) renders from it.
  */
 import { IS_MAC, PLATFORM } from "./platform";
+import { desktopOwnsSuperKey } from "./superKey";
 import type { TranslationKey } from "./i18n";
 
 /** A serializable key chord. `key` is a `KeyboardEvent.key` value, normalized:
@@ -395,9 +396,12 @@ export interface FixedKeyDef {
 /**
  * The fixed (non-rebindable) keys `useKeyboard` handles outside the chord
  * table, in display order — rendered by the cheat sheet and reusable by the
- * settings panel and lessons. Platform-resolved at module load: the panel
- * toggle is the lone Super key only on Linux (on macOS Cmd is the chord
- * modifier, on Windows the Win key belongs to the OS), F9 elsewhere; the zoom
+ * settings panel and lessons. Platform-resolved at module load, except the
+ * panel toggle: it is the lone Super key only where that key is free — a
+ * Linux desktop that does not answer it itself (macOS uses Cmd as the chord
+ * modifier, Windows gives the Win key to the OS, GNOME and KDE take it for
+ * their overview/launcher) — and F9 everywhere else. That one is a getter
+ * because the desktop is a backend answer; see lib/superKey.ts. The zoom
  * chords ride the primary modifier (⌘ on macOS).
  */
 export const FIXED_KEYS: FixedKeyDef[] = [
@@ -407,7 +411,13 @@ export const FIXED_KEYS: FixedKeyDef[] = [
     descKey: "fixedKeys.osFullscreen.desc",
   },
   {
-    keys: PLATFORM === "linux" ? "Super" : "F9",
+    // A getter, not a value: unlike the OS, the desktop is a backend answer
+    // that arrives just after module load (see lib/superKey.ts), and the sheet
+    // must not advertise a Super key the shell has already taken. Reading it
+    // here keeps every consumer of FIXED_KEYS unchanged.
+    get keys(): string {
+      return PLATFORM === "linux" && !desktopOwnsSuperKey() ? "Super" : "F9";
+    },
     labelKey: "fixedKeys.panels.label",
     descKey: "fixedKeys.panels.desc",
   },

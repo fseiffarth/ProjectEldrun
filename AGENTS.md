@@ -346,4 +346,6 @@ loopback port, and from there is an ordinary `RemoteSpec` with `vm: true`.
   raw project ids, paths, commands, and tmux targets never cross the browser
   API.
 
-Keys: `F11` fullscreen; `Super` toggles panels while Eldrun is focused.
+Keys: `F11` fullscreen; `F9` toggles panels while Eldrun is focused, as does
+a bare `Super` on a desktop that does not claim that key itself (GNOME, KDE
+and Windows do — see `platform::desktop_claims_super`).

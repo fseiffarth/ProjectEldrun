@@ -1604,6 +1604,7 @@ pub fn run() {
             // Workspace / network
             commands::workspace::workspace_info,
             commands::workspace::workspace_switch,
+            commands::workspace::desktop_owns_super_key,
             commands::workspace::show_window,
             commands::workspace::hide_window,
             commands::workspace::get_opened_windows,

@@ -351,6 +351,38 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
       `bytes_out` columns) into the existing `SshLinkSnapshot`. Needs a mac to
       verify nettop's CSV shape/permissions before writing the parser.
 
+254. **The bare Super key belongs to the desktop, not to the OS.** ✅ Fixed
+    2026-09-07, ⚠️ untested live. `useKeyboard` gated its lone Meta/Super panel
+    toggle on `PLATFORM === "linux"`, which quietly asserts "on Linux this key
+    is free". True of Cinnamon, where the binding was written; false of GNOME,
+    which opens the Activities overview on Super and forwards a lone `Meta`
+    keydown ahead of every `Super+<key>` shell shortcut. Moving a machine from
+    Cinnamon to GNOME/Wayland therefore reintroduced the exact symptom Windows
+    was carved out for in the first place — every Overview press toggled the
+    panels off, and since `panelsHidden` also unmounts the reveal handle and the
+    tour marker, the side panel left *nothing* at the edge to say where it went
+    or how to get it back.
+
+    Ownership of the key is now a backend answer about the running desktop
+    (`platform::desktop_claims_super`, matched against `XDG_CURRENT_DESKTOP`:
+    GNOME, KDE/Plasma and Unity claim it; Cinnamon, XFCE, sway and unknown
+    desktops do not), read once per session through
+    `commands::workspace::desktop_owns_super_key` and cached in
+    `src/lib/superKey.ts`. F9 stays the toggle everywhere, and `FIXED_KEYS`
+    advertises whichever key is actually live. A probe that cannot be answered
+    keeps the binding: `src/` hot-reloads while `src-tauri/` does not, so a
+    window running ahead of its backend must not lose the key on the desktops
+    where it works.
+    - [x] 🤖 Automated test — vitest `SuperKeyOwnership` (the binding follows
+      the probe both ways, an unanswered probe keeps today's behavior, the
+      sheet's advertised key follows, one probe per session) and cargo tests on
+      `desktop_claims_super`.
+    - [ ] 🖐️ Manual test — on GNOME: press Super for the overview and come back
+      to Eldrun with the side panel still there; F9 still toggles it; the F1
+      sheet lists F9, not Super. On Cinnamon: Super still toggles.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
 209. **Getting the app onto a machine, and keeping it current.** The two ends
     of distribution that were never Eldrun's own: what the installer looks
     like, and how a user learns a newer build exists. Both landed 2026-08-26,

@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { PLATFORM } from "../lib/dragPlatform";
+import { desktopOwnsSuperKey, probeSuperKeyOwnership } from "../lib/superKey";
 import { allGroups, findGroup, useTabsStore } from "../stores/tabs";
 import { useProjectsStore } from "../stores/projects";
 import { useSettingsStore, stepZoom } from "../stores/settings";
@@ -198,15 +199,30 @@ export function useKeyboard({ onTogglePanels }: KeyboardOptions) {
         return;
       }
 
-      // Super key — toggle side panel. Linux only: on macOS Cmd reports as
-      // "Meta" and is the platform-primary shortcut modifier (see
-      // shortcuts.chordMatches), so a lone-key toggle would fire on every Cmd+key
-      // chord. On Windows the lone Win key belongs to the OS — the Start menu
-      // opens on key *release* at the shell level and preventDefault() cannot
-      // stop it, and every global Win+X shortcut pressed while Eldrun is focused
-      // fires a lone "Meta" keydown first, spuriously toggling the panels.
-      // Windows therefore uses F9 (below) instead.
-      if (PLATFORM === "linux" && (e.key === "Meta" || e.key === "Super")) {
+      // Super key — toggle side panel, where that key is actually ours.
+      //
+      // On macOS Cmd reports as "Meta" and is the platform-primary shortcut
+      // modifier (see shortcuts.chordMatches), so a lone-key toggle would fire
+      // on every Cmd+key chord. On Windows the lone Win key belongs to the OS —
+      // the Start menu opens on key *release* at the shell level and
+      // preventDefault() cannot stop it, and every global Win+X shortcut
+      // pressed while Eldrun is focused fires a lone "Meta" keydown first,
+      // spuriously toggling the panels. Both therefore use F9 (below).
+      //
+      // `PLATFORM === "linux"` used to be the whole test, which quietly said
+      // "on Linux this key is free". True of Cinnamon, where the binding was
+      // written; false of GNOME, which opens the Activities overview on Super
+      // and forwards a lone "Meta" keydown ahead of every Super+<key> shell
+      // shortcut — reintroducing the exact Windows symptom on the branch
+      // assumed safe (user, 2026-09-07, after a move to GNOME/Wayland: panels
+      // gone, and with them the reveal handle, with nothing on screen saying
+      // why). Ownership of the bare key is a property of the DESKTOP, not the
+      // OS, so ask the backend which one is running.
+      if (
+        PLATFORM === "linux" &&
+        !desktopOwnsSuperKey() &&
+        (e.key === "Meta" || e.key === "Super")
+      ) {
         e.preventDefault();
         onTogglePanels();
         return;
@@ -404,6 +420,11 @@ export function useKeyboard({ onTogglePanels }: KeyboardOptions) {
       const steering = useKeyboardSteeringStore.getState();
       if (steering.active) steering.exit();
     }
+
+    // Which desktop is running decides whether the bare Super key is ours (see
+    // the binding above). One cached probe per session; fire-and-forget,
+    // because until it answers the handler keeps the pre-existing behavior.
+    if (PLATFORM === "linux") void probeSuperKeyOwnership();
 
     document.addEventListener("keydown", onSteeringKeyDown, true);
     window.addEventListener("keydown", onKeyDown);
