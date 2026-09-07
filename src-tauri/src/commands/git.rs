@@ -2599,9 +2599,11 @@ mod tests {
             Some("https://gitlab.example.org/group/sub/repo.git")
         );
         // Userinfo is dropped: the probe has to be anonymous to mean anything.
+        // A reserved example host, so the privacy scan does not read the
+        // `<name>@<host>` in a clone URL as somebody's address.
         assert_eq!(
-            https_probe_url("https://user@github.com/owner/repo").as_deref(),
-            Some("https://github.com/owner/repo")
+            https_probe_url("https://user@git.example.org/owner/repo").as_deref(),
+            Some("https://git.example.org/owner/repo")
         );
         assert_eq!(
             https_probe_url("https://github.com/owner/repo.git").as_deref(),
