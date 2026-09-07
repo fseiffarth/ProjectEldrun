@@ -13,7 +13,7 @@
  * and assert the size still renders.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, act } from "@testing-library/react";
+import { render, screen, act, waitFor } from "@testing-library/react";
 
 const { mockInvoke } = vi.hoisted(() => ({ mockInvoke: vi.fn() }));
 
@@ -154,8 +154,12 @@ describe("file tree folder sizes", () => {
           (cmd === "dir_size" || cmd === "dir_size_breakdown") &&
           (args as { relPath?: string } | undefined)?.relPath === relPath,
       );
+    // The row rendering is not the walk: the size effect dispatches in a later
+    // microtask, so wait for the call that MUST happen before asserting the one
+    // that must not. Once `src` has been walked, that effect pass is done, and
+    // an absent `venv` call is an absence rather than a not-yet.
+    await waitFor(() => expect(walked("src")).toBe(true));
     expect(walked("venv")).toBe(false);
-    expect(walked("src")).toBe(true);
 
     // The row still lists — the exclusion has to stay reversible from the row it
     // applies to — but says so instead of showing a stale or absent size.
