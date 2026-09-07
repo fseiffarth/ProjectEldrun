@@ -67,13 +67,38 @@ export GTK_OVERLAY_SCROLLING=0
 
 printf 'root=%s\n' "$ROOT"
 printf 'PATH=%s\n' "$PATH"
-command -v node
+# Preflight the build toolchain, and SAY SO on the desktop when it is missing.
+#
+# These four probes used to be bare `command -v` lines. Under `set -e` the
+# first missing tool killed the script right there -- before vite, before
+# cargo, before any window -- and the only trace was one line in this log,
+# which is not where anyone looks when an icon they clicked appears to do
+# nothing. That is exactly how a reinstalled host presented itself on
+# 2026-09-07: a fresh root that still had the WebKitGTK *runtime* (so the
+# frozen "Eldrun (dev)" build opened fine) but none of node, npm, cargo or
+# rustc, and a hot-reload entry that looked like it was being ignored.
+#
+# So collect every missing tool, name them all in one notification, and exit
+# deliberately. Nothing here can fix a missing toolchain; being told which
+# piece is gone is the whole job.
+missing=""
+for tool in node npm cargo rustc; do
+  if path="$(command -v "$tool" 2>/dev/null)"; then
+    printf '%s=%s\n' "$tool" "$path"
+  else
+    missing="${missing:+$missing }$tool"
+  fi
+done
+if [ -n "$missing" ]; then
+  printf 'REFUSING TO START: build toolchain incomplete (missing: %s)\n' "$missing" >&2
+  printf '  the hot-reload session builds from source and needs all of node, npm, cargo, rustc\n' >&2
+  notify-send -u critical -a Eldrun 'Eldrun hot-reload not started' \
+    "Missing build tools: $missing. Install them, or use the frozen Eldrun (dev) build." 2>/dev/null || true
+  exit 1
+fi
 node --version
-command -v npm
 npm --version
-command -v cargo
 cargo --version
-command -v rustc
 rustc --version
 
 exec npm run tauri:dev
