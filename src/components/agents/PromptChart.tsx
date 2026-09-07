@@ -27,7 +27,6 @@ import { scheduleCacheKey, useAgentSchedulesStore } from "../../stores/agentSche
 import type { TabEntry } from "../../stores/tabs";
 import { Dropdown } from "../common/Dropdown";
 import { MarkdownPromptField } from "../common/MarkdownPromptField";
-import { UntestedTag } from "../common/UntestedTag";
 import { AgentScheduleDialog } from "./AgentScheduleDialog";
 import { PromptCard } from "./PromptCard";
 import { PromptChartLinks } from "./PromptChartLinks";
@@ -351,7 +350,7 @@ export function PromptChart({ scope, active, tabs, stateOf }: Props) {
 
   return (
     <section className="agent-prompts-section agent-prompt-chart-section" onPointerUp={pointerUp}>
-      <h3 className="settings-section-title">{t("promptChart.heading")} <UntestedTag /></h3>
+      <h3 className="settings-section-title">{t("promptChart.heading")}</h3>
       <div className="agent-prompt-chart-toolbar">
         <button className="settings-btn sm primary" type="button" aria-label={t("promptChart.newDraft")} onClick={() => setNewOpen((value) => !value)}>＋</button>
         <input type="search" value={filter.text} placeholder={t("promptChart.search")} aria-label={t("promptChart.search")} onChange={(event) => setFilter((value) => ({ ...value, text: event.target.value }))} />

@@ -894,6 +894,8 @@ export const dict: Dict = {
   "agentSchedule.status.failed": "Échec",
   "agentSchedule.status.expired": "Passé",
   "promptChart.heading": "Chronologie des prompts",
+  "promptChart.openTab": "Ouvrir la chronologie des prompts",
+  "promptChart.openTabTitle": "Ouvrir la chronologie des prompts de ce projet dans son propre onglet : chaque brouillon et chaque prompt en attente, planifié ou envoyé sur une seule ligne du temps, une colonne par onglet d'agent.",
   "promptChart.newDraft": "Nouveau brouillon",
   "promptChart.search": "Rechercher les prompts ou #tags…",
   "promptChart.zoom": "Zoom futur",

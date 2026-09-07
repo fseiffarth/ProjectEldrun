@@ -121,7 +121,8 @@ export type TabKind =
   | "calendar"
   | "browser"
   | "printing"
-  | "skillslibrary";
+  | "skillslibrary"
+  | "promptchart";
 
 /**
  * SSH-sync Phase 0 — a PTY tab's locality on a REMOTE (SSH) project: does it run
@@ -342,6 +343,22 @@ export const PRINTING_TAB_CMD = "__eldrun_printing__";
  *    source is cloned/pulled without an explicit Refresh click.
  */
 export const SKILLSLIBRARY_TAB_CMD = "__eldrun_skillslibrary__";
+
+/**
+ * Sentinel `cmd` for the Prompt chart tab: the one timeline of a scope's
+ * draft, queued, scheduled and sent agent prompts (`agents/PromptChart`). It
+ * lived at the bottom of the Agents view of the file viewer, where a chart
+ * whose columns are agent tabs was squeezed into a side panel; it is a tab now.
+ *
+ *  - **It carries no PTY**, like the calendar/printing/skills panes, hence the
+ *    sentinel `cmd` so `cmdToKind` recovers its kind on restore.
+ *  - **It is a singleton per scope.** The chart is the scope's, not a tab's —
+ *    a second one would draw the same columns — hence `ensureTab`.
+ *  - **A restored one re-reads, it does not act.** Coming back costs the same
+ *    three list reads the pane makes on show; nothing is sent, scheduled or
+ *    linked without a click.
+ */
+export const PROMPTCHART_TAB_CMD = "__eldrun_promptchart__";
 
 /**
  * Synthetic group id for the empty-state placeholder subwindow (rendered by
@@ -4845,6 +4862,7 @@ export function cmdToKind(cmd: string): TabKind {
   if (cmd === BROWSER_TAB_CMD) return "browser";
   if (cmd === PRINTING_TAB_CMD) return "printing";
   if (cmd === SKILLSLIBRARY_TAB_CMD) return "skillslibrary";
+  if (cmd === PROMPTCHART_TAB_CMD) return "promptchart";
   if (AGENT_CMDS.has(cmd)) return "agent";
   return "shell";
 }
@@ -4886,7 +4904,10 @@ export function isRestorableKind(kind: TabKind): boolean {
     // Skills Library holds no session either — it re-reads the installed list
     // (and whatever catalog is already cached) when it comes back; no source
     // is cloned/pulled without an explicit Refresh click.
-    kind === "skillslibrary"
+    kind === "skillslibrary" ||
+    // The prompt chart is a view over the scope's prompt files and the tabs
+    // that are open; it re-reads on show and sends nothing by itself.
+    kind === "promptchart"
   );
 }
 

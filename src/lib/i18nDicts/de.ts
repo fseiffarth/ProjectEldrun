@@ -896,6 +896,8 @@ export const dict: Dict = {
   "agentSchedule.status.failed": "Fehlgeschlagen",
   "agentSchedule.status.expired": "Vergangen",
   "promptChart.heading": "Prompt-Zeitstrahl",
+  "promptChart.openTab": "Prompt-Zeitstrahl öffnen",
+  "promptChart.openTabTitle": "Den Prompt-Zeitstrahl dieses Projekts in einem eigenen Tab öffnen: jeder Entwurf, jeder wartende, geplante und gesendete Prompt auf einer Zeitachse, eine Spalte pro Agent-Tab.",
   "promptChart.newDraft": "Neuer Entwurf",
   "promptChart.search": "Alle Prompts oder #Tags durchsuchen…",
   "promptChart.zoom": "Zukunftszoom",

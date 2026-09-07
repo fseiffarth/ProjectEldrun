@@ -892,6 +892,8 @@ export const dict: Dict = {
   "agentSchedule.status.failed": "Non riuscito",
   "agentSchedule.status.expired": "Passato",
   "promptChart.heading": "Cronologia dei prompt",
+  "promptChart.openTab": "Apri cronologia dei prompt",
+  "promptChart.openTabTitle": "Apri la cronologia dei prompt di questo progetto in una scheda dedicata: ogni bozza e ogni prompt in coda, pianificato o inviato su un'unica linea temporale, una colonna per scheda agente.",
   "promptChart.newDraft": "Nuova bozza",
   "promptChart.search": "Cerca prompt o #tag…",
   "promptChart.zoom": "Zoom futuro",

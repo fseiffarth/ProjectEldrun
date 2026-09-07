@@ -12,6 +12,7 @@ import { CalendarPane } from "../calendar/CalendarPane";
 import { BrowserPane } from "../browser/BrowserPane";
 import { PrintManagerPane } from "../printing/PrintManagerPane";
 import { SkillsLibraryTab } from "../skills/SkillsLibraryTab";
+import { PromptChartTab } from "../agents/PromptChartTab";
 import { RemotePaneHold } from "../projects/RemotePaneHold";
 import { effectiveTabLocation, remoteHostIdOf, type TabEntry } from "../../stores/tabs";
 
@@ -133,6 +134,10 @@ function TabPaneImpl({
       // `scope` rather than taking a prop, since a popout has no `filesProjectDir`
       // to hand it either.
       return <SkillsLibraryTab scope={scope} cwd={tab.cwd} visible={visible} />;
+    case "promptchart":
+      // Reads the scope's own agent tabs from the store, so it needs nothing a
+      // popout could not hand it either. `visible` gates the clock tick.
+      return <PromptChartTab scope={scope} visible={visible} />;
     case "files":
       return <FileBrowser projectDir={filesProjectDir} projectId={projectId} active={visible} />;
     case "projectfiles":

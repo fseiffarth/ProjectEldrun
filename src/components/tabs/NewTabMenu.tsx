@@ -7,6 +7,7 @@ import {
   DISKUSAGE_TAB_CMD,
   NETWORK_TAB_CMD,
   SKILLSLIBRARY_TAB_CMD,
+  PROMPTCHART_TAB_CMD,
   type TabEntry,
 } from "../../stores/tabs";
 import { useSettingsStore } from "../../stores/settings";
@@ -396,6 +397,26 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
                   cmd: SKILLSLIBRARY_TAB_CMD,
                   cwd: projectCwd,
                   kind: "skillslibrary",
+                }),
+            }],
+          },
+          // The scope's prompt chart — every draft, queued, scheduled and sent
+          // agent prompt on one timeline, one column per agent tab. It was a
+          // section of the side panel's Agents view; the columns want a tab.
+          {
+            label: t("promptChart.heading"),
+            entries: [{
+              key: "promptchart",
+              label: t("promptChart.heading"),
+              dot: "⧗",
+              color: TAB_ACCENT.promptchart,
+              untested: true,
+              onPick: () =>
+                pickFixed({
+                  label: t("promptChart.heading"),
+                  cmd: PROMPTCHART_TAB_CMD,
+                  cwd: projectCwd,
+                  kind: "promptchart",
                 }),
             }],
           },

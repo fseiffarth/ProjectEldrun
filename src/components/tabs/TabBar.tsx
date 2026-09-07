@@ -10,6 +10,7 @@ import {
   NETWORK_TAB_CMD,
   MONITOR_TAB_CMD,
   SKILLSLIBRARY_TAB_CMD,
+  PROMPTCHART_TAB_CMD,
   EMPTY_GROUP_ID,
   isPtyTabKind,
   useTabsStore,
@@ -108,6 +109,7 @@ const SINGLETON_TAB_KINDS = new Set<TabKind>([
   "calendar",
   "printing",
   "skillslibrary",
+  "promptchart",
 ]);
 
 /** Is a second tab like this one a thing that can exist? A Files (Project) tab
@@ -590,6 +592,18 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
         kind: "skillslibrary",
       },
       (tab) => tab.kind === "skillslibrary",
+    );
+    setMenuPos(null);
+  }
+
+  // Open (or focus) the Prompt chart tab: one timeline of this scope's draft,
+  // queued, scheduled and sent agent prompts. The chart is the scope's, so a
+  // second tab would draw the same columns — ensureTab, like the skills tab.
+  function handleAddPromptChart() {
+    focusGroup(groupId);
+    ensureTab(
+      { label: t("promptChart.heading"), cmd: PROMPTCHART_TAB_CMD, cwd: projectCwd, kind: "promptchart" },
+      (tab) => tab.kind === "promptchart",
     );
     setMenuPos(null);
   }
@@ -1625,6 +1639,19 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                   color: TAB_ACCENT.skillslibrary,
                   untested: true,
                   onPick: handleAddSkills,
+                }],
+              }] : []),
+              // The prompt chart's columns are this scope's agent tabs, and the
+              // root scope has those too. See `NewTabMenu` for the same entry.
+              ...(!trashScope ? [{
+                label: t("promptChart.heading"),
+                entries: [{
+                  key: "promptchart",
+                  label: t("promptChart.heading"),
+                  dot: "⧗",
+                  color: TAB_ACCENT.promptchart,
+                  untested: true,
+                  onPick: handleAddPromptChart,
                 }],
               }] : []),
               ...(!trashScope && webBrowser

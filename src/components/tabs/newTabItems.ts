@@ -112,6 +112,7 @@ export const TAB_ACCENT: Record<TabKind, string> = {
   browser: "var(--accent-secondary)",
   printing: "var(--text-muted)",
   skillslibrary: "var(--accent-secondary)",
+  promptchart: "var(--accent)",
 };
 
 /**

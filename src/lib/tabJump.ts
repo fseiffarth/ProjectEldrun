@@ -1,6 +1,8 @@
 import { useBoxesStore, BOX_SCOPE_PREFIX } from "../stores/boxes";
 import { useProjectsStore } from "../stores/projects";
-import { ROOT_SCOPE, useTabsStore } from "../stores/tabs";
+import { translate, useI18nStore } from "./i18n";
+import { PROMPTCHART_TAB_CMD, ROOT_SCOPE, useTabsStore } from "../stores/tabs";
+import { resolveProjectDirectory } from "../types";
 
 /**
  * Show the tab a surface is pointing at: make it the visible tab of its
@@ -24,11 +26,44 @@ import { ROOT_SCOPE, useTabsStore } from "../stores/tabs";
 export function jumpToTab(scope: string, key: string) {
   const tabs = useTabsStore.getState();
   if (!tabs.revealTabInScope(scope, key) && tabs.scope === scope) tabs.setActive(key);
+  void bringUpScope(scope);
+}
+
+/** Bring `scope` up as the one the tab bar shows: a box through the boxes
+ *  store, a project (or the root) through the projects store. Resolves once the
+ *  switch has been asked for; a scope already up costs nothing. */
+function bringUpScope(scope: string): Promise<void> {
+  const tabs = useTabsStore.getState();
   if (scope.startsWith(BOX_SCOPE_PREFIX)) {
-    if (tabs.scope !== scope) void useBoxesStore.getState().openBox(scope.slice(BOX_SCOPE_PREFIX.length));
-    return;
+    return tabs.scope === scope ? Promise.resolve() : useBoxesStore.getState().openBox(scope.slice(BOX_SCOPE_PREFIX.length));
   }
   const { activeId, setActive } = useProjectsStore.getState();
   const target = scope === ROOT_SCOPE ? null : scope;
-  if (activeId !== target) void setActive(target);
+  return activeId === target ? Promise.resolve() : setActive(target);
+}
+
+/**
+ * Open the scope's Prompt chart tab, or focus the one it already has. The
+ * Agents view of the file viewer calls this for ITS scope, which is not
+ * necessarily the one the tab bar shows (a Files (Project) tab of another
+ * project, a docked sidebar) — and `ensureTab` writes to the active scope, so
+ * the scope is brought up first and the tab added only once it is. In a popout
+ * the store owns no layout; the switch is forwarded and the tab is not added,
+ * the same half-honoured jump `jumpToTab` settles for.
+ */
+export async function openPromptChartTab(scope: string): Promise<void> {
+  await bringUpScope(scope);
+  const tabs = useTabsStore.getState();
+  if (tabs.scope !== scope) return;
+  const project = useProjectsStore.getState().projects.find((p) => p.id === scope);
+  tabs.ensureTab(
+    {
+      label: translate(useI18nStore.getState().lang, "promptChart.heading"),
+      cmd: PROMPTCHART_TAB_CMD,
+      // Empty resolves to ~/eldrun/root on the backend, as the root shell's does.
+      cwd: project ? resolveProjectDirectory(project) : "",
+      kind: "promptchart",
+    },
+    (tab) => tab.kind === "promptchart",
+  );
 }

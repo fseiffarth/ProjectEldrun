@@ -3004,6 +3004,11 @@
    static shadow whose opacity changes), while this file keeps the Agents
    vocabulary and narrow-panel breakpoint together. */
 .agent-prompt-chart-section { min-height: 0; }
+/* The chart's own tab (`agents/PromptChartTab`): the section fills the pane and
+   scrolls as one, with the side panel's 6px gutter widened to a tab's. */
+.prompt-chart-tab { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: auto; padding: 8px 12px; }
+.prompt-chart-tab .settings-section-title { margin-top: 0; padding-top: 0; border-top: none; }
+.prompt-chart-tab .agent-prompt-chart-scroll { flex: 1; }
 .agent-prompt-chart-toolbar,
 .agent-prompt-chart-facets,
 .agent-prompt-link-mode { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }

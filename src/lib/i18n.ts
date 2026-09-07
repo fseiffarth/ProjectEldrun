@@ -1016,6 +1016,8 @@ export const en = {
   "promptChart.result.queued": "Queued",
   "promptChart.result.missed": "Missed",
   "promptChart.result.failed": "Failed",
+  "promptChart.openTab": "Open prompt chart",
+  "promptChart.openTabTitle": "Open this project's prompt chart in its own tab: every draft, queued, scheduled and sent prompt on one timeline, one column per agent tab.",
   "projectFilesView.tabAgents": "Agents",
   // The Agents view (Files / Git / Apps / Agents row) and the project prompt collection.
   "agentPrompts.tabsHeading": "Agent tabs",

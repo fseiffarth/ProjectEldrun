@@ -222,6 +222,10 @@ const PANE_MARKER_CMDS: &[&str] = &[
     "__eldrun_diskusage__",
     "__eldrun_calendar__",
     "__eldrun_mail__",
+    "__eldrun_browser__",
+    "__eldrun_printing__",
+    "__eldrun_skillslibrary__",
+    "__eldrun_promptchart__",
 ];
 
 /// Agent CLIs a persisted tab may relaunch. Mirrors the frontend's `AGENT_CMDS`
