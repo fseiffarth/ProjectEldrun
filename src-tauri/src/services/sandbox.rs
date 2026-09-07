@@ -3256,7 +3256,11 @@ mod tests {
         let record = br#"{"claudeAiOauth":{"accessToken":"a","refreshToken":"r","expiresAt":5}}"#;
         std::fs::write(claude.join(".credentials.json"), record).unwrap();
         let pairs = claude_credential_mounts_in(&home_str, &mirror);
-        let dst = format!("{home_str}/.claude/.credentials.json");
+        // Spelled by `host_path`, not by a `/`-joined literal: Windows joins
+        // with a backslash and this test runs there too.
+        let dst = crate::services::agent_creds::host_path(&home)
+            .to_string_lossy()
+            .into_owned();
         if !cfg!(target_os = "linux") {
             // Seatbelt cannot substitute, Windows fences nothing: the real
             // file, in place, and no mirror.
