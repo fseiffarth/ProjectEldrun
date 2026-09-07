@@ -22,7 +22,9 @@
 //! The platform-neutral layer (staging dir + timestamped filename + reporting)
 //! is shared; the actual capture is delegated to a per-OS [`platform`] backend:
 //! - **Linux** spawns an interactive native region tool (`spectacle`/`grim`/…),
-//!   directed to write its PNG into the staging folder.
+//!   directed to write its PNG into the staging folder — or, under Wayland
+//!   with no tool configured, asks the desktop portal
+//!   (`org.freedesktop.portal.Screenshot`) and copies what it hands back.
 //! - **Windows** grabs the whole virtual screen natively via GDI and encodes it
 //!   to PNG with the `png` crate — no external tool required.
 //! - **macOS** drives the built-in `screencapture` CLI in interactive region
@@ -325,17 +327,49 @@ mod platform {
     ];
 
     /// Pick a tool (configured `exec` if directable, else the first native one on
-    /// `PATH`) and spawn it detached, writing into `dir`.
+    /// `PATH`) and spawn it detached, writing into `dir` — or go through the
+    /// desktop portal instead.
+    ///
+    /// Which comes first is the session's call. Under **Wayland** a configured
+    /// tool is still honoured (it is the user's word), but with none set the
+    /// portal is tried before any tool on `PATH`: the X11 grabbers (`scrot`,
+    /// `maim`, `import`) see only XWayland there, `grim` needs a wlroots
+    /// compositor GNOME is not, and GNOME ≥ 42 ships no `gnome-screenshot` at
+    /// all — a fresh GNOME box has nothing on the list (user, 2026-09-07). On
+    /// **X11** the tools keep coming first, exactly as before, and the portal is
+    /// the last resort when none is installed.
     pub fn capture(dir: &Path, exec: Option<&str>, on_shot: super::OnShot) -> Result<(), String> {
         let configured = exec
             .map(str::trim)
             .filter(|e| !e.is_empty())
             .filter(|e| is_directable(&basename(e)));
-        let program = match configured {
-            Some(e) => e.to_string(),
-            None => pick_native_tool().ok_or_else(|| {
-                "no usable screenshot tool found; set one for the Screenshot global app".to_string()
-            })?,
+        let mut portal_err: Option<String> = None;
+        if configured.is_none() && crate::platform::x11::session_is_wayland() {
+            match portal::request() {
+                Ok(responses) => {
+                    portal::watch(responses, dir.to_path_buf(), on_shot);
+                    return Ok(());
+                }
+                Err(e) => portal_err = Some(e),
+            }
+        }
+        let program = match configured.map(str::to_string).or_else(pick_native_tool) {
+            Some(p) => p,
+            None => {
+                if portal_err.is_none() {
+                    match portal::request() {
+                        Ok(responses) => {
+                            portal::watch(responses, dir.to_path_buf(), on_shot);
+                            return Ok(());
+                        }
+                        Err(e) => portal_err = Some(e),
+                    }
+                }
+                return Err(format!(
+                    "no usable screenshot tool found (desktop portal: {}); set one for the Screenshot global app",
+                    portal_err.unwrap_or_default()
+                ));
+            }
         };
 
         let (mut cmd, expected) = capture_command(&program, dir)
@@ -421,6 +455,163 @@ mod platform {
     /// Minimal single-quote shell escaping for a path embedded in `sh -c`.
     pub fn shell_quote(s: &str) -> String {
         format!("'{}'", s.replace('\'', r"'\''"))
+    }
+
+    /// The desktop portal's interactive screenshot
+    /// (`org.freedesktop.portal.Screenshot.Screenshot`, `interactive: true`),
+    /// which on GNOME opens the shell's own region/window/screen picker and on
+    /// KDE Spectacle's — the one capture path a Wayland compositor lets a
+    /// client take without a compositor-specific protocol.
+    ///
+    /// Portal calls are two-step: the method returns a *request* object at once
+    /// and the outcome arrives later as that object's `Response` signal, with
+    /// the shot's `uri` in the results. The request path is predictable from
+    /// our own bus name and the `handle_token` we pass, which is what lets the
+    /// signal subscription go up *before* the call — a fast portal can answer
+    /// before the method reply is even read, and a subscription made after
+    /// would miss it. `request` does the synchronous half (so a bus without a
+    /// portal fails right here, and `capture` can still fall back to a tool);
+    /// `watch` blocks a thread on the signal, exactly the way the tool path
+    /// blocks one on the child's exit.
+    pub(super) mod portal {
+        use std::collections::HashMap;
+        use std::path::{Path, PathBuf};
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        use zbus::blocking::{Connection, Proxy};
+        use zbus::zvariant::{ObjectPath, OwnedObjectPath, OwnedValue, Value};
+
+        const DEST: &str = "org.freedesktop.portal.Desktop";
+        const PATH: &str = "/org/freedesktop/portal/desktop";
+        const SCREENSHOT_IFACE: &str = "org.freedesktop.portal.Screenshot";
+        const REQUEST_IFACE: &str = "org.freedesktop.portal.Request";
+
+        /// `Response` codes, per the portal spec.
+        const RESPONSE_OK: u32 = 0;
+        const RESPONSE_CANCELLED: u32 = 1;
+
+        /// Makes each request's `handle_token` unique within the process.
+        static SEQ: AtomicU32 = AtomicU32::new(0);
+
+        /// The object path the portal will create for a request from `sender`
+        /// (our unique bus name, e.g. `:1.42`) with `token`: the sender minus
+        /// its leading colon with dots turned into underscores, then the token.
+        pub fn request_path(sender: &str, token: &str) -> String {
+            let sender = sender.trim_start_matches(':').replace('.', "_");
+            format!("/org/freedesktop/portal/desktop/request/{sender}/{token}")
+        }
+
+        /// The synchronous half: subscribe, call, and hand back the signal
+        /// iterator the outcome will arrive on. Errors mean "no portal here".
+        pub fn request() -> Result<zbus::blocking::proxy::SignalIterator<'static>, String> {
+            let conn = Connection::session().map_err(|e| format!("session bus: {e}"))?;
+            let sender = conn
+                .unique_name()
+                .ok_or_else(|| "session bus assigned no unique name".to_string())?
+                .to_string();
+            let token = format!(
+                "eldrun_{}_{}",
+                std::process::id(),
+                SEQ.fetch_add(1, Ordering::Relaxed)
+            );
+            let expected = request_path(&sender, &token);
+            let mut responses = subscribe(&conn, &expected)?;
+
+            let screenshot = Proxy::new(&conn, DEST, PATH, SCREENSHOT_IFACE)
+                .map_err(|e| format!("portal proxy: {e}"))?;
+            let mut options: HashMap<&str, Value<'_>> = HashMap::new();
+            options.insert("handle_token", Value::from(token.as_str()));
+            options.insert("interactive", Value::from(true));
+            // An empty parent handle: a Wayland parent needs an xdg-foreign
+            // export we do not have, and the picker is a whole-screen overlay
+            // anyway. Only the dialog's transient-for placement is lost.
+            let handle: OwnedObjectPath = screenshot
+                .call_method("Screenshot", &("", options))
+                .map_err(|e| format!("portal Screenshot: {e}"))?
+                .body()
+                .deserialize()
+                .map_err(|e| format!("portal Screenshot reply: {e}"))?;
+            // A portal older than the handle_token convention answers with a
+            // path of its own; follow it (accepting the small race the
+            // convention exists to close).
+            if handle.as_str() != expected {
+                responses = subscribe(&conn, handle.as_str())?;
+            }
+            Ok(responses)
+        }
+
+        fn subscribe(
+            conn: &Connection,
+            path: &str,
+        ) -> Result<zbus::blocking::proxy::SignalIterator<'static>, String> {
+            let path = ObjectPath::try_from(path.to_string())
+                .map_err(|e| format!("portal request path: {e}"))?;
+            let request: Proxy<'static> = Proxy::new(conn, DEST, path, REQUEST_IFACE)
+                .map_err(|e| format!("portal request proxy: {e}"))?;
+            request
+                .receive_signal("Response")
+                .map_err(|e| format!("portal Response subscription: {e}"))
+        }
+
+        /// The asynchronous half, on its own thread: wait for the `Response`,
+        /// copy the shot into `dir`, put it on the clipboard, report it.
+        ///
+        /// The portal's file is *copied*, not moved: where it lands is the
+        /// portal's business (GNOME's keeps it under the user's Pictures), and
+        /// a file the user can already see must not vanish because Eldrun
+        /// asked for a copy. A cancelled picker (`RESPONSE_CANCELLED`) writes
+        /// nothing and stays silent, like a cancelled tool.
+        pub fn watch(
+            responses: zbus::blocking::proxy::SignalIterator<'static>,
+            dir: PathBuf,
+            on_shot: super::super::OnShot,
+        ) {
+            std::thread::spawn(move || {
+                for msg in responses {
+                    let Ok((code, results)) = msg
+                        .body()
+                        .deserialize::<(u32, HashMap<String, OwnedValue>)>()
+                    else {
+                        continue;
+                    };
+                    match code {
+                        RESPONSE_OK => {}
+                        RESPONSE_CANCELLED => return,
+                        other => {
+                            eprintln!("screenshot portal: request ended with code {other}");
+                            return;
+                        }
+                    }
+                    let Some(uri) = results
+                        .get("uri")
+                        .and_then(|v| <&str>::try_from(&**v).ok())
+                        .map(str::to_owned)
+                    else {
+                        eprintln!("screenshot portal: response carried no uri");
+                        return;
+                    };
+                    match stage(&uri, &dir) {
+                        Ok(shot) => {
+                            let _ = crate::commands::clipboard::copy_png_file_to_clipboard(&shot);
+                            on_shot(&shot);
+                        }
+                        Err(e) => eprintln!("screenshot portal: {e}"),
+                    }
+                    return;
+                }
+            });
+        }
+
+        /// Copy the portal's `file://` result into the staging `dir` under the
+        /// usual timestamped name, and return the staged path.
+        fn stage(uri: &str, dir: &Path) -> Result<PathBuf, String> {
+            let (src, _host) = gtk::glib::filename_from_uri(uri)
+                .map_err(|e| format!("portal uri {uri:?}: {e}"))?;
+            let shot = dir.join(super::super::screenshot_filename());
+            std::fs::copy(&src, &shot)
+                .map_err(|e| format!("copy {} into staging: {e}", src.display()))?;
+            Ok(shot)
+        }
     }
 }
 
@@ -694,6 +885,15 @@ mod tests {
     fn basename_lowercases_and_strips_dir() {
         assert_eq!(platform::basename("/usr/bin/Spectacle"), "spectacle");
         assert_eq!(platform::basename("flameshot"), "flameshot");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn portal_request_path_follows_the_sender_convention() {
+        assert_eq!(
+            platform::portal::request_path(":1.42", "eldrun_7_0"),
+            "/org/freedesktop/portal/desktop/request/1_42/eldrun_7_0"
+        );
     }
 
     #[cfg(target_os = "linux")]

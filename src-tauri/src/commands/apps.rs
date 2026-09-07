@@ -501,7 +501,8 @@ pub async fn open_file(
 ) -> Result<TrackedWindow, String> {
     let registry = registry.inner().clone();
     let workspace = workspace.inner().clone();
-    // Worst case chains `find_window_for_pid` AND `find_new_window` → ~4 s.
+    // Worst case (X11) chains `find_window_for_pid` AND `find_new_window` → ~4 s;
+    // under Wayland both answer at once (`platform::x11::session_is_wayland`).
     run_off_thread(move || {
         open_file_blocking(&registry, &workspace, path, handler, project_id, origin, (x, y))
     })
@@ -2187,6 +2188,12 @@ fn track_opened_file(
 
 #[cfg(target_os = "linux")]
 fn list_window_ids() -> Vec<u64> {
+    // Under Wayland the X client list holds nothing a launch could add to it
+    // (see `platform::x11::session_is_wayland`), so `find_new_window` has no
+    // baseline to diff against either — return the empty one directly.
+    if crate::platform::x11::session_is_wayland() {
+        return Vec::new();
+    }
     x11_client_windows()
         .map(|windows| windows.into_iter().map(|w| w.id as u64).collect())
         .unwrap_or_default()
@@ -2209,6 +2216,12 @@ fn list_window_ids() -> Vec<u64> {
 
 #[cfg(target_os = "linux")]
 fn find_window_for_pid(pid: u32, attempts: usize) -> Option<u64> {
+    // Wayland: the scan cannot see a native window and nothing consumes the id
+    // (`platform::x11::session_is_wayland`) — don't spend `attempts` × 100 ms
+    // per launch finding that out.
+    if crate::platform::x11::session_is_wayland() {
+        return None;
+    }
     for _ in 0..attempts {
         if let Ok(windows) = x11_client_windows() {
             if let Some(window) = windows
@@ -2259,6 +2272,12 @@ fn find_window_for_pid(_pid: u32, _attempts: usize) -> Option<u64> {
 
 #[cfg(target_os = "linux")]
 fn find_new_window(before: &[u64], attempts: usize) -> Option<u64> {
+    // Same Wayland short-circuit as `find_window_for_pid`, and for the same
+    // reason: `open_file` chains the two, so this is the second half of the
+    // up-to-4 s stall.
+    if crate::platform::x11::session_is_wayland() {
+        return None;
+    }
     for _ in 0..attempts {
         if let Ok(windows) = x11_client_windows() {
             if let Some(window) = windows

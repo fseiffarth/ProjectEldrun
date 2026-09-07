@@ -539,13 +539,22 @@ shape or ctag/sync-token behaviour.
 - Default apps: `xdg-mime query/default`; app launch via `.desktop` files.
 - Screenshots: `spectacle | flameshot | gnome-screenshot | scrot | maim | grim |
   import`, `screencapture` (macOS), PowerShell (Windows) — first one found wins.
+  Under Wayland with no tool configured, the desktop portal comes first:
+  `org.freedesktop.portal.Screenshot.Screenshot` with `interactive: true`, the
+  `Response` signal on `/org/freedesktop/portal/desktop/request/<sender>/<token>`,
+  and a `file://` `uri` in its results (`commands/screenshot.rs`, `portal`).
+- Wayland: `WAYLAND_DISPLAY` decides that X11 window scans are skipped
+  (`platform::x11::session_is_wayland`), that popout positions are treated as
+  unreadable, and that the presenter fullscreens by output index through
+  `gtk_window_fullscreen_on_monitor` (GDK's monitor order == tao's).
 - Printing: `lp`, `lpstat` (CUPS). Clipboard: `arboard` with
   `wayland-data-control`. Formatters: `prettier`, `rustfmt`, `black`, `gofmt`.
 - Power: `systemctl`, `starship-battery`; network: `ss`.
 
 **Verify** after a desktop-environment upgrade: switch projects and confirm the
 workspace follows; run `xprop` on the window (see
-`memory: project_xprop_window_debug`); take a screenshot from the tab menu.
+`memory: project_xprop_window_debug`); take a screenshot from the tab menu — on
+Wayland, that is the shell's own picker via the portal.
 
 ---
 

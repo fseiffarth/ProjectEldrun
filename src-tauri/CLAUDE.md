@@ -113,7 +113,7 @@ workflow); see `src/CLAUDE.md` for the frontend file map.
 
 | File | Purpose |
 |------|---------|
-| `x11.rs` | X11 workspace / window management via xlib. |
+| `x11.rs` | X11 workspace / window management via xcb. Also `session_is_wayland`, the one predicate behind every "don't bother under Wayland" branch: the `_NET_CLIENT_LIST` scans in `apps.rs`/`find_window_for_title` answer at once (XWayland's list never holds a native window; nothing consumes the id there), `subwindow.rs` treats positions as unreadable, `screenshot.rs` prefers the portal. |
 | `wayland_kde.rs` | KDE Wayland backend via KWin scripting + DBus (show/hide stub, #18). |
 | `windows.rs` | Windows backend: SW_HIDE "parking", position_window, occlusion probe (Win32 FFI). |
 | `windows_park.rs` | Pure Windows parking logic (un-gated; Linux-run safety tests). |

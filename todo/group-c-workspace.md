@@ -65,3 +65,30 @@
         sidecar starts, and the PowerShell phone-install handoff prints the URL.
 
 ---
+
+20. **GNOME/Wayland first-session fixes (2026-09-07, ✅ Built · 🧪 Untested —
+    no Rust toolchain on the host when written, so not even compiled there).**
+    The dev box moved from Cinnamon/X11 to GNOME/Wayland; GNOME gets the
+    `null` backend (no parking — Mutter has no scripting API), which is
+    expected, but four things around it were wrong. Each needs one live check:
+    - [ ] 🖐️ Detaching a tab group shows a painted popout immediately — not a
+      black window for ~2 s (the X11 title scan used to run to its 20×100 ms
+      cap; `platform::x11::session_is_wayland` now skips every
+      `_NET_CLIENT_LIST` scan, including `find_window_for_pid`/`find_new_window`
+      on app launch, which cost up to 4 s before the Apps view updated).
+    - [ ] 🖐️ Deck ▶ Present with a second monitor: the audience window goes
+      fullscreen on the *other* monitor (`gtk_window_fullscreen_on_monitor`
+      by index; `set_position` is ignored under Wayland, so it used to
+      fullscreen next to the main window).
+    - [ ] 🖐️ Tab-menu Screenshot with no tool configured opens GNOME's own
+      picker (portal, `interactive: true`); the shot reaches the save overlay
+      and the clipboard; Escape in the picker stays silent.
+    - [ ] 🖐️ Popouts on two monitors of different sizes: unplugging/replugging a
+      display and switching projects never shrinks a popout on the larger
+      screen to the smaller one's size (positions read back as (0,0) under
+      Wayland; the snap and switch-back re-placement now skip themselves).
+    - [ ] 🖐️ X11 (Cinnamon/KDE) regression check: all four paths behave as
+      before — scans still resolve ids, presenter still lands on the second
+      monitor, tools still come before the portal, snap still rescues.
+
+---

@@ -381,6 +381,27 @@ fn fit_detached_bounds(
     }
 }
 
+/// Whether a window's on-screen position can be read back and set at all.
+///
+/// Wayland deliberately gives a client neither: `set_position` is dropped by
+/// the compositor and `outer_position()` reads back `(0,0)` for every window
+/// (GTK3 has no toplevel coordinates to report). Sizes are still real. Every
+/// geometry-by-position path below — the #240 snap, the switch-back
+/// re-placement — therefore has to know it is working on `(0,0)` filler rather
+/// than a location, or it "corrects" windows that were fine (user, 2026-09-07,
+/// first session on GNOME/Wayland). X11, Windows and macOS all report real
+/// positions.
+fn window_positions_readable() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        !crate::platform::x11::session_is_wayland()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        true
+    }
+}
+
 /// Fit ONE live popout entirely onto the screen it is currently on (#240):
 /// never larger than that monitor, never hanging off an edge. Returns whether
 /// anything moved (a popout that already fits is left alone).
@@ -399,6 +420,15 @@ fn fit_detached_bounds(
 /// normal, draggable, edge-snappable window rather than a maximized one whose
 /// `set_size` the WM may ignore.
 pub fn snap_detached_to_screen(app: &AppHandle, label: &str) -> bool {
+    // Under Wayland there is no real geometry to read (see
+    // `window_positions_readable`): every popout reports (0,0), i.e. the origin
+    // of the primary monitor, and fitting it "onto the screen it is on" would
+    // shrink a popout that actually sits on a larger secondary display to the
+    // primary's size. The compositor constrains its own windows when a display
+    // goes away, so there is nothing for this rescue to do there.
+    if !window_positions_readable() {
+        return false;
+    }
     let Some(win) = app.get_webview_window(label) else {
         return false;
     };
@@ -502,6 +532,15 @@ pub fn show_detached_windows(
         };
         let _ = win.unminimize();
         let _ = win.show();
+        // Under Wayland the rect captured at hide time is (0,0,w,h) — the
+        // position half is unreadable (`window_positions_readable`) and the
+        // compositor keeps a hidden toplevel's placement itself, so re-applying
+        // it could only do harm: a (0,0) rect that does not fit the PRIMARY
+        // monitor gets "fitted" to it, shrinking a popout that lives on a bigger
+        // secondary display. Leave the compositor's own restore alone.
+        if !window_positions_readable() {
+            continue;
+        }
         // Put the popout back where it was before it was parked: the show()
         // above lets the WM move it (often onto the wrong monitor), so re-apply
         // the geometry captured at hide time. Size before position so a resize

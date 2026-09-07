@@ -77,6 +77,17 @@ pub fn choose_audience_monitor(
     }
 }
 
+/// Index into `monitors` of the one [`choose_audience_monitor`] picks — what a
+/// "fullscreen on THIS output" request wants, where a position is not enough
+/// (see `fullscreen_on`).
+pub fn choose_audience_monitor_index(
+    monitors: &[MonitorRect],
+    main: Option<MonitorRect>,
+) -> Option<usize> {
+    let chosen = choose_audience_monitor(monitors, main)?;
+    monitors.iter().position(|m| *m == chosen)
+}
+
 /// Open (or focus) a presentation window.
 ///
 /// `fullscreen` forces the takeover even when there is only one monitor. Left
@@ -107,6 +118,8 @@ pub async fn open_presenter_window(
     }
 
     let target = audience_monitor(&app);
+    let target_index = target.map(|(i, _)| i);
+    let target = target.map(|(_, m)| m);
 
     let mut builder = WebviewWindowBuilder::new(
         &app,
@@ -197,7 +210,7 @@ pub async fn open_presenter_window(
             let fs_label = nudge_label.clone();
             let _ = nudge_app.run_on_main_thread(move || {
                 if let Some(w) = app_main.get_webview_window(&fs_label) {
-                    let _ = w.set_fullscreen(true);
+                    fullscreen_on(&w, target_index);
                 }
             });
         }
@@ -419,8 +432,44 @@ pub fn presenter_release_sleep() -> Result<(), String> {
     Ok(())
 }
 
-/// Resolve the monitor to hand the audience window, from the live app.
-fn audience_monitor(app: &AppHandle) -> Option<MonitorRect> {
+/// Fullscreen the presentation window on the monitor at `index` (into the
+/// app's `available_monitors()` order), or on whichever it is on when there is
+/// no index.
+///
+/// The `set_position(monitor origin)` + `set_fullscreen(true)` pair above is
+/// how every desktop but one picks the output: the position lands the window
+/// on it, the fullscreen takes it over. Wayland drops the position — a client
+/// may not place its own toplevel — so the window stays on whatever output the
+/// compositor opened it on (the speaker's, next to the main window) and
+/// fullscreens *there*, leaving the projector showing the desktop. Wayland
+/// does let a client name the output it wants to be fullscreen ON, which GTK
+/// exposes as `gtk_window_fullscreen_on_monitor`; that is also honoured on X11
+/// (`_NET_WM_FULLSCREEN_MONITORS`), so Linux takes it for both. GDK numbers
+/// monitors the way tao enumerates them, so the index carries over.
+///
+/// Must run on the GTK main thread — the kick's `run_on_main_thread` closure.
+#[cfg(target_os = "linux")]
+fn fullscreen_on(w: &tauri::WebviewWindow, index: Option<usize>) {
+    use gtk::prelude::*;
+    if let (Some(i), Ok(gtk_win)) = (index, w.gtk_window()) {
+        if let Some(screen) = gtk::gdk::Screen::default() {
+            gtk_win.fullscreen_on_monitor(&screen, i as i32);
+            return;
+        }
+    }
+    let _ = w.set_fullscreen(true);
+}
+
+/// Windows and macOS: the `set_position` above already put the window on the
+/// chosen monitor, so a plain fullscreen takes over the right one.
+#[cfg(not(target_os = "linux"))]
+fn fullscreen_on(w: &tauri::WebviewWindow, _index: Option<usize>) {
+    let _ = w.set_fullscreen(true);
+}
+
+/// Resolve the monitor to hand the audience window, from the live app: its
+/// index in `available_monitors()` order plus its rect.
+fn audience_monitor(app: &AppHandle) -> Option<(usize, MonitorRect)> {
     let to_rect = |m: &tauri::Monitor| MonitorRect {
         x: m.position().x,
         y: m.position().y,
@@ -432,12 +481,30 @@ fn audience_monitor(app: &AppHandle) -> Option<MonitorRect> {
         .get_webview_window("main")
         .and_then(|w| w.current_monitor().ok().flatten())
         .map(|m| to_rect(&m));
-    choose_audience_monitor(&monitors, main)
+    let index = choose_audience_monitor_index(&monitors, main)?;
+    Some((index, monitors[index]))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn audience_monitor_index_names_the_chosen_output() {
+        let monitors = [rect(0, 0), rect(1920, 0), rect(3840, 0)];
+        // Main on the first → the second; main on the second → the first.
+        assert_eq!(
+            choose_audience_monitor_index(&monitors, Some(rect(0, 0))),
+            Some(1)
+        );
+        assert_eq!(
+            choose_audience_monitor_index(&monitors, Some(rect(1920, 0))),
+            Some(0)
+        );
+        // Unknown main → the second; a single monitor → none.
+        assert_eq!(choose_audience_monitor_index(&monitors, None), Some(1));
+        assert_eq!(choose_audience_monitor_index(&monitors[..1], None), None);
+    }
 
     fn rect(x: i32, y: i32) -> MonitorRect {
         MonitorRect {
