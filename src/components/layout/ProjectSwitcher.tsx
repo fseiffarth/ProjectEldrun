@@ -691,11 +691,8 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
                   <button onClick={() => { closeHeaderMenu(ADD_MENU_ID); setDialog("import"); }}>
                     {t("projectSwitcher.importProject")}
                   </button>
-                  <button
-                    className="untested"
-                    onClick={() => { closeHeaderMenu(ADD_MENU_ID); setDialog("clone"); }}
-                  >
-                    {t("projectSwitcher.importFromGitHub")} <UntestedTag />
+                  <button onClick={() => { closeHeaderMenu(ADD_MENU_ID); setDialog("clone"); }}>
+                    {t("projectSwitcher.importFromGitHub")}
                   </button>
                   <button
                     className="untested"

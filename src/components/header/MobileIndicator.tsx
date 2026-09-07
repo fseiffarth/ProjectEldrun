@@ -3,7 +3,6 @@ import { invoke } from "@tauri-apps/api/core";
 import { useSettingsStore } from "../../stores/settings";
 import { useHeaderHoverMenuStore } from "../../stores/headerHoverMenu";
 import { useHeaderStatusReport } from "../../stores/headerStatus";
-import { UntestedTag } from "../common/UntestedTag";
 import { translate, useI18nStore, useT } from "../../lib/i18n";
 
 /** `translate` at the live language, for the async callbacks below (component
@@ -294,7 +293,7 @@ export function MobileIndicator() {
       {open && (
         <div className="tab-new-menu mobile-indicator-menu" role="menu">
           <div className="tab-new-menu-group-label vpn-indicator-title">
-            <span>{t("mobile.title")} <UntestedTag /></span>
+            <span>{t("mobile.title")}</span>
             <button
               type="button"
               className="vpn-indicator-close"

@@ -8,7 +8,6 @@ import {
   useCalendarStore,
 } from "../../stores/calendar";
 import { useSettingsStore } from "../../stores/settings";
-import { UntestedTag } from "../common/UntestedTag";
 import { formatTime, timePart } from "../../lib/calendarTime";
 import { useUse24h } from "../../lib/timeFormat";
 import { conferenceLink } from "../../lib/conference";
@@ -216,7 +215,7 @@ export function CalendarIndicator() {
               rail and the wash live on this element, so it must not be the thing
               that scrolls). */}
           <div className="tab-new-menu-group-label">
-            {t("calendar.menuAgenda")} <UntestedTag />
+            {t("calendar.menuAgenda")}
           </div>
           <div className="menu-scroll-region">
             {days.map((day, i) => (

@@ -1769,7 +1769,6 @@ export function ProjectFilesView({
             (`.git-action-bar` in files-panel.css). */}
         {!activeBox && gitStatus?.is_repo && (
           <div ref={actionBarRef} className="git-action-bar">
-            {gitPendingColor && <UntestedTag />}
             {commitMsg !== null && (
               <textarea
                 ref={commitRef}

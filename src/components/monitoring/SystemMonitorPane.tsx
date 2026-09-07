@@ -830,9 +830,6 @@ export function SystemMonitorPane({ projectId, visible, globalMachine }: Props) 
               its label on hover. */}
           {onHost && carefulTarget && (
             <>
-              <span className="sysmon-mode-tag">
-                <UntestedTag />
-              </span>
               <div
                 className="sysmon-mode"
                 role="radiogroup"
@@ -1370,15 +1367,8 @@ const SYSMON_CSS = `
    track with the live half raised out of it — a switch, not a tab strip — and it
    carries no accent fill at all, so the accent in this row always means "the
    machine you are looking at". */
-/* The "untested" pill rides just outside the switch — inside the pill track it
-   would read as a third segment. The auto margin lives here so the tag and the
-   switch are pushed to the row's right edge together. */
-.sysmon-mode-tag {
-  margin-left: auto;
-  display: inline-flex;
-  align-items: center;
-}
 .sysmon-mode {
+  margin-left: auto;
   display: flex;
   align-items: center;
   gap: 2px;

@@ -4,7 +4,6 @@ import { useSettingsStore } from "../../stores/settings";
 import { useExperimental } from "../../lib/experimental";
 import { DEFAULT_MAIL_CHECK_MIN, onMailNew } from "../../lib/mail";
 import { useT } from "../../lib/i18n";
-import { UntestedTag } from "../common/UntestedTag";
 import { useHeaderHoverMenuStore } from "../../stores/headerHoverMenu";
 
 const MENU_ID = "mail";
@@ -282,7 +281,7 @@ export function MailIndicator() {
               rail and the wash live on this element, so it must not be the thing
               that scrolls). */}
           <div className="tab-new-menu-group-label">
-            {t("mail.overlayTitle")} <UntestedTag />
+            {t("mail.overlayTitle")}
           </div>
           <div className="menu-scroll-region">
             {/* Priority first and outside Accounts, exactly as the rail orders
