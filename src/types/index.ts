@@ -850,6 +850,11 @@ export interface VmDoctorReport {
   reasons: string[];
   fetch_command?: string;
   bake_command?: string;
+  /** Missing host *packages* (QEMU, qemu-img, arm64 firmware, a seed tool) as
+   *  one install command, so the dialog offers a button that runs it rather
+   *  than a sentence to retype. Absent when nothing missing is installable —
+   *  a `/dev/kvm` permission problem and a full disk are reasons to read. */
+  install_command?: string;
 }
 
 /** `vm_status`'s answer — what the pill glyph + VM settings render from. */

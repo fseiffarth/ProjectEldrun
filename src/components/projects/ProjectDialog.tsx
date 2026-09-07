@@ -117,6 +117,10 @@ export function ProjectDialog({
   // `vm_doctor`'s verdict — probed once per dialog open; `null` while pending
   // (the VM option simply isn't offered until it answers).
   const [vmDoctor, setVmDoctor] = useState<VmDoctorReport | null>(null);
+  // Whether the doctor's install button has been clicked: the report is probed
+  // once per open, so without a re-probe the tier would stay unavailable in the
+  // dialog the install was started from.
+  const [vmInstalling, setVmInstalling] = useState(false);
   // A VM boot in flight after create — first boot runs cloud-init and can take
   // a minute, so the dialog says what it is waiting on.
   const [bootingVm, setBootingVm] = useState(false);
@@ -368,6 +372,17 @@ export function ProjectDialog({
       .then(setVmDoctor)
       .catch(() => setVmDoctor(null));
   }, []);
+
+  // …and again while the install button's terminal is working, so the tier
+  // appears in the dropdown the moment QEMU lands instead of after a reopen.
+  // Only runs after that click, and stops as soon as the doctor is happy.
+  useEffect(() => {
+    if (!vmInstalling || vmDoctor?.ok) return;
+    const timer = window.setInterval(() => {
+      invoke<VmDoctorReport>("vm_doctor").then(setVmDoctor).catch(() => {});
+    }, 6000);
+    return () => window.clearInterval(timer);
+  }, [vmInstalling, vmDoctor?.ok]);
 
   // Probe the fork provider's CLI whenever the resolved provider changes (it
   // moves as the URL is typed). Reset to `null` first so the banner never shows
@@ -1353,10 +1368,32 @@ export function ProjectDialog({
           </div>
         )}
         {/* The tier is supported here but something is missing — name it, with
-            the doctor's own actionable sentences. */}
+            the doctor's own actionable sentences, and (house rule: an install is
+            one click, never a command to retype) offer to run the install for
+            the pieces a package manager can actually supply. What it cannot —
+            /dev/kvm access, disk space — stays a sentence, and the doctor omits
+            the command entirely then. */}
         {vmSelectable && vmDoctor && vmDoctor.supported && !vmDoctor.ok && (
           <div className="project-dialog-path">
             {t("projectDialog.vmUnavailable")} {vmDoctor.reasons.join(" ")}
+            {vmDoctor.install_command && (
+              <>
+                {" "}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setVmInstalling(true);
+                    runInstallInTab(
+                      t("projectDialog.vmInstallLabel"),
+                      vmDoctor.install_command!,
+                      IS_WINDOWS ? "default" : "bash",
+                    );
+                  }}
+                >
+                  {t("projectDialog.vmInstallBtn")}
+                </button>
+              </>
+            )}
           </div>
         )}
         {bootingVm && (

@@ -421,6 +421,13 @@ pub struct VmDoctorReport {
     pub fetch_command: Option<String>,
     /// The build-tab command that bakes the toolchain base image (Phase 3).
     pub bake_command: Option<String>,
+    /// For missing *host packages* (QEMU, qemu-img, arm64 firmware, a seed
+    /// tool): the one command that installs them, so the dialog can offer a
+    /// button that runs it instead of a sentence to retype (house rule: any
+    /// install-via-command flow is one click). `None` when nothing is missing
+    /// that a package manager fixes — `/dev/kvm` access and disk space are
+    /// reasons to read, not to install.
+    pub install_command: Option<String>,
 }
 
 /// The raw probe results [`doctor_verdict`] reasons from — split so the
@@ -465,6 +472,62 @@ fn qemu_install_hint() -> &'static str {
         HostOs::Windows => {
             "Install QEMU for Windows (qemu.org → Download → Windows) into C:\\Program Files\\qemu."
         }
+    }
+}
+
+/// The package-manager command that installs whatever host packages the probes
+/// found missing, for `host`/`arch`. Pure (no path lookups), so the button's
+/// command is testable for every OS from any OS. `None` when nothing missing is
+/// installable — a kvm permission problem or a full disk is not.
+///
+/// Only the *packages* appear here. The Linux line follows the same apt
+/// convention as the rest of Eldrun's install buttons; a non-apt distro's user
+/// still has the doctor's sentences above the button.
+fn install_command_for(host: HostOs, arch: GuestArch, p: &VmDoctorProbes) -> Option<String> {
+    if !p.supported {
+        return None;
+    }
+    let needs_qemu = !p.qemu || !p.qemu_img || (arch.needs_firmware() && !p.firmware_ok);
+    let needs_iso = p.iso_tool.is_none();
+    if !needs_qemu && !needs_iso {
+        return None;
+    }
+    match host {
+        HostOs::Linux => {
+            let mut pkgs: Vec<&str> = Vec::new();
+            if !p.qemu {
+                pkgs.push(match arch {
+                    GuestArch::X86_64 => "qemu-system-x86",
+                    GuestArch::Aarch64 => "qemu-system-arm",
+                });
+            }
+            if !p.qemu_img {
+                pkgs.push("qemu-utils");
+            }
+            if arch.needs_firmware() && !p.firmware_ok {
+                pkgs.push("qemu-efi-aarch64");
+            }
+            if needs_iso {
+                pkgs.push("genisoimage");
+            }
+            Some(format!("sudo apt-get install -y {}", pkgs.join(" ")))
+        }
+        // One formula covers every piece: Homebrew's qemu carries qemu-img and
+        // the UEFI firmware, and xorriso is the seed tool it can install.
+        HostOs::Macos => {
+            let mut pkgs: Vec<&str> = Vec::new();
+            if needs_qemu {
+                pkgs.push("qemu");
+            }
+            if needs_iso {
+                pkgs.push("xorriso");
+            }
+            Some(format!("brew install {}", pkgs.join(" ")))
+        }
+        // winget's QEMU ships qemu-img and the firmware images too; no seed tool
+        // is packaged there (the built-in ISO writer covers it).
+        HostOs::Windows => needs_qemu
+            .then(|| "winget install --id SoftwareFreedomConservancy.QEMU -e --source winget".to_string()),
     }
 }
 
@@ -528,6 +591,7 @@ pub fn doctor_verdict(p: &VmDoctorProbes) -> VmDoctorReport {
         reasons,
         fetch_command: None,
         bake_command: None,
+        install_command: install_command_for(HostOs::current(), GuestArch::host(), p),
     }
 }
 
@@ -1728,6 +1792,56 @@ mod tests {
             .any(|r| r.contains(GuestArch::host().qemu_binary())));
         assert!(report.reasons.iter().any(|r| r == "kvm group"));
         assert!(report.reasons.iter().any(|r| r.contains("genisoimage")));
+    }
+
+    #[test]
+    fn install_command_names_only_the_missing_packages() {
+        // apt line for a host missing qemu-img alone.
+        let probes = VmDoctorProbes {
+            qemu_img: false,
+            ..good_probes()
+        };
+        assert_eq!(
+            install_command_for(HostOs::Linux, GuestArch::X86_64, &probes).as_deref(),
+            Some("sudo apt-get install -y qemu-utils")
+        );
+        // …and every piece at once, arm64's firmware included.
+        let probes = VmDoctorProbes {
+            qemu: false,
+            qemu_img: false,
+            firmware_ok: false,
+            iso_tool: None,
+            ..good_probes()
+        };
+        assert_eq!(
+            install_command_for(HostOs::Linux, GuestArch::Aarch64, &probes).as_deref(),
+            Some("sudo apt-get install -y qemu-system-arm qemu-utils qemu-efi-aarch64 genisoimage")
+        );
+        assert_eq!(
+            install_command_for(HostOs::Macos, GuestArch::Aarch64, &probes).as_deref(),
+            Some("brew install qemu xorriso")
+        );
+        assert!(install_command_for(HostOs::Windows, GuestArch::X86_64, &probes)
+            .is_some_and(|c| c.contains("winget install")));
+    }
+
+    #[test]
+    fn install_command_absent_when_nothing_is_installable() {
+        // Everything present: no button.
+        assert!(install_command_for(HostOs::Linux, GuestArch::X86_64, &good_probes()).is_none());
+        // A kvm permission problem is a sentence to read, not a package.
+        let probes = VmDoctorProbes {
+            kvm: false,
+            kvm_reason: Some("not in the kvm group".to_string()),
+            ..good_probes()
+        };
+        assert!(install_command_for(HostOs::Linux, GuestArch::X86_64, &probes).is_none());
+        // An unsupported host has nothing to install either.
+        let probes = VmDoctorProbes {
+            supported: false,
+            ..Default::default()
+        };
+        assert!(install_command_for(HostOs::Linux, GuestArch::X86_64, &probes).is_none());
     }
 
     #[test]

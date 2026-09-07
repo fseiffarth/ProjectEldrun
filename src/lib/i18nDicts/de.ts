@@ -2345,6 +2345,8 @@ export const dict: Dict = {
   "projectDialog.vmBaseMissing": "Das VM-Basisimage (Ubuntu-Cloud-Image, ~600 MB) ist noch nicht heruntergeladen — einmal laden, dann das Projekt anlegen.",
   "projectDialog.vmFetchBaseBtn": "Basisimage in einem Tab laden",
   "projectDialog.vmUnavailable": "Die VM-Stufe ist auf diesem Rechner nicht verfügbar:",
+  "projectDialog.vmInstallLabel": "VM-Voraussetzungen",
+  "projectDialog.vmInstallBtn": "Fehlende Pakete in einem Tab installieren",
   "projectDialog.vmBooting": "VM startet (der erste Start richtet das Gastsystem ein und kann eine Minute dauern)…",
   "projectDialog.scaffoldGuidanceAria": "Scaffold-Anleitung für den Import",
   "projectDialog.importGuidanceTitle": "Import-Anleitung",

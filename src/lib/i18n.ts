@@ -2457,6 +2457,8 @@ export const en = {
   "projectDialog.vmBaseMissing": "The VM base image (Ubuntu cloud image, ~600 MB) isn't downloaded yet — fetch it once, then create the project.",
   "projectDialog.vmFetchBaseBtn": "Fetch base image in a tab",
   "projectDialog.vmUnavailable": "The VM tier is unavailable on this machine:",
+  "projectDialog.vmInstallLabel": "VM prerequisites",
+  "projectDialog.vmInstallBtn": "Install the missing packages in a tab",
   "projectDialog.vmBooting": "Booting the VM (first boot provisions the guest and can take a minute)…",
   "projectDialog.scaffoldGuidanceAria": "Import scaffold guidance",
   "projectDialog.importGuidanceTitle": "Import guidance",
