@@ -107,6 +107,13 @@ pub struct RendererMemory {
     /// The largest mappings by resident size, by kernel name (`[anon]`,
     /// `[heap]`, a library, `memfd:…`), largest first.
     pub top: Vec<MappingRss>,
+    /// The process's thread count, where `/proc` says. Beside the mapping
+    /// names because they cannot tell a leaked Worker from a canvas — both are
+    /// `[anon]` — and a renderer with hundreds of threads is exactly that: the
+    /// main window was found holding 303 `WebCore: Worker` threads, one per
+    /// pdf.js load that had failed mid-compile and was never destroyed
+    /// (2026-09-08).
+    pub threads: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -133,6 +140,7 @@ pub fn webview_renderer_memory(pid: u32) -> Option<RendererMemory> {
         file_kib: b.file_kib,
         shmem_kib: b.shmem_kib,
         top: top.into_iter().map(|(name, rss_kib)| MappingRss { name, rss_kib }).collect(),
+        threads: crate::sysstat::process_threads(pid),
     })
 }
 

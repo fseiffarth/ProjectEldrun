@@ -177,4 +177,20 @@ describe("rendererWatchdog / formatRendererMemory", () => {
       formatRendererMemory({ pid: 1, rss_kib: 0, anon_kib: 0, file_kib: 0, shmem_kib: 0, top: [] }),
     ).toBe(" [anon 0 MB, file 0 MB, shmem 0 MB]");
   });
+
+  it("carries the thread count when the backend reports one", () => {
+    // 575 threads is what the renderer that crashed on 2026-09-08 held: pdf.js
+    // Workers left behind by rejected loads, which no mapping name says.
+    expect(
+      formatRendererMemory({
+        pid: 1,
+        rss_kib: 0,
+        anon_kib: 0,
+        file_kib: 0,
+        shmem_kib: 0,
+        top: [],
+        threads: 575,
+      }),
+    ).toBe(" [anon 0 MB, file 0 MB, shmem 0 MB, 575 threads]");
+  });
 });
