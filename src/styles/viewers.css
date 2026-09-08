@@ -5317,6 +5317,12 @@
   word-break: break-word;
 }
 
+.file-viewer-tex-log-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
 .file-viewer-tex-log-toggle {
   margin-top: 4px;
   background: transparent;
@@ -5339,11 +5345,21 @@
   gap: 2px;
 }
 
+/* Each row is `jump | ⧉`: the jump takes the width it can, the copy keeps its
+   own column so the rows' buttons line up down the card. */
+.file-viewer-tex-errors li,
+.file-viewer-tex-warns li {
+  display: flex;
+  align-items: baseline;
+  gap: 2px;
+}
+
 .file-viewer-tex-error-jump {
   display: flex;
   align-items: baseline;
   gap: 8px;
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   text-align: left;
   background: transparent;
   border: 1px solid transparent;
@@ -5405,6 +5421,12 @@
   border-radius: var(--radius);
 }
 
+.file-viewer-tex-warn-headrow {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
 .file-viewer-tex-warn-head {
   display: flex;
   align-items: center;
@@ -5463,7 +5485,8 @@
   display: flex;
   align-items: baseline;
   gap: 8px;
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   text-align: left;
   background: transparent;
   border: 1px solid transparent;
@@ -5508,6 +5531,57 @@
 .file-viewer-tex-warns li.is-reference .file-viewer-tex-warn-msg,
 .file-viewer-tex-warns li.is-citation .file-viewer-tex-warn-msg {
   color: var(--text-primary);
+}
+
+/* ── Fast copy on a diagnostic (#tex) ─────────────────────────────────────
+   The ⧉ chip beside every error, every warning, each card's head and the full
+   log. Same glyph, same ✓, same muted-until-hover chrome as the connection
+   log's copy — one gesture that means "this text, on the clipboard", wherever
+   it appears. Ghosted on the rows so a card of twelve warnings does not read
+   as a column of buttons, and always solid on a card head, which is the one
+   the user aims for without hovering a row first. */
+.file-viewer-tex-copy {
+  flex-shrink: 0;
+  align-self: center;
+  padding: 0 5px;
+  height: 16px;
+  font-size: 10px;
+  line-height: 1;
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  cursor: var(--cur-pointer, pointer);
+  opacity: 0;
+  transition: opacity 90ms linear;
+}
+
+.file-viewer-tex-errors li:hover .file-viewer-tex-copy,
+.file-viewer-tex-warns li:hover .file-viewer-tex-copy,
+.file-viewer-tex-copy:focus-visible,
+.file-viewer-tex-log-actions .file-viewer-tex-copy,
+.file-viewer-tex-copy-head {
+  opacity: 1;
+}
+
+.file-viewer-tex-copy:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+  border-color: var(--border-color);
+}
+
+.file-viewer-tex-copy-head {
+  color: var(--text-secondary, var(--text-muted));
+}
+
+/* The log's copy stands next to a bordered toggle, so it wears the same box
+   rather than floating unanchored beside it. */
+.file-viewer-tex-log-actions .file-viewer-tex-copy {
+  margin-top: 4px;
+  align-self: flex-start;
+  height: auto;
+  padding: 1px 6px;
+  border-color: var(--border-color);
 }
 
 /* ── Document word count (#245) ───────────────────────────────────────────

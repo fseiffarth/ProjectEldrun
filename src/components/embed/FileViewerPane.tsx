@@ -8768,6 +8768,70 @@ function TexCreateRefBanner({
   );
 }
 
+/** One diagnostic as `file:line: message` — the shape TeX itself prints under
+ *  `-file-line-error`, so a copied row pastes back into a search, a bug report
+ *  or an agent prompt as the same text the log holds. A warning the log could
+ *  not place carries the message alone rather than an invented location. */
+function texDiagnosticText(
+  message: string,
+  file: string | undefined,
+  line: number | undefined,
+): string {
+  return file && line ? `${file}:${line}: ${message}` : message;
+}
+
+/**
+ * The one-click way to get a compile diagnostic out of the card and into an
+ * agent tab, a mail, or a search box (#tex).
+ *
+ * Every row of the error and warning lists is already a *jump* button, and the
+ * app sets `user-select: none` globally (`styles/base.css`) — so the text of a
+ * TeX error was, of all the text in this viewer, the least reachable: clicking
+ * it moved the caret instead of selecting it. This sits beside the jump (never
+ * inside it — a button in a button is not a button) and carries the same ⧉ → ✓
+ * as the connection log, because it is the same promise: the *whole* thing on
+ * the clipboard, not the part that happens to be on screen.
+ */
+function TexCopyButton({
+  text,
+  label,
+  className = "file-viewer-tex-copy",
+}: {
+  text: string;
+  /** What this button copies, for the tooltip and the screen reader. */
+  label: string;
+  className?: string;
+}) {
+  const t = useT();
+  const [copied, setCopied] = useState(false);
+  // The ✓ resets on a timer owned by the effect, so copying again during an
+  // in-flight window restarts it instead of leaving a stale tick behind.
+  useEffect(() => {
+    if (!copied) return;
+    const id = setTimeout(() => setCopied(false), 1600);
+    return () => clearTimeout(id);
+  }, [copied]);
+  const title = copied ? t("fileViewer.copied") : label;
+  return (
+    <button
+      type="button"
+      className={className}
+      title={title}
+      aria-label={title}
+      onClick={(e) => {
+        // The row around this button jumps to the source location; copying is
+        // not a request to move the caret there too.
+        e.stopPropagation();
+        if (!text) return;
+        navigator.clipboard?.writeText(text).catch(() => {});
+        setCopied(true);
+      }}
+    >
+      {copied ? "✓" : "⧉"}
+    </button>
+  );
+}
+
 function TexView({
   path,
   onOpenExternally,
@@ -9644,6 +9708,18 @@ function TexView({
             {errors.length > 0 && (
               <span className="file-viewer-tex-error-count">{errors.length}</span>
             )}
+            {/* Copies every row, not the ones the card's 40%-max-height shows. */}
+            <TexCopyButton
+              className="file-viewer-tex-copy file-viewer-tex-copy-head"
+              label={t("fileViewer.copyAllErrors")}
+              text={
+                errors.length > 0
+                  ? errors
+                      .map((err) => texDiagnosticText(err.message, err.file, err.line))
+                      .join("\n")
+                  : compileError
+              }
+            />
           </div>
           {/* The terse summary line only when no structured errors were parsed —
               otherwise it just repeats the first list row below. */}
@@ -9667,6 +9743,10 @@ function TexView({
                     </span>
                     <span className="file-viewer-tex-error-msg">{err.message}</span>
                   </button>
+                  <TexCopyButton
+                    label={t("fileViewer.copyError")}
+                    text={texDiagnosticText(err.message, err.file, err.line)}
+                  />
                 </li>
               ))}
             </ul>
@@ -9674,30 +9754,50 @@ function TexView({
             <div className="file-viewer-tex-log-line">{compileError}</div>
           )}
           {log && (
-            <button
-              className="file-viewer-tex-log-toggle"
-              onClick={() => setShowLog((s) => !s)}
-            >
-              {showLog ? t("fileViewer.hideLog") : t("fileViewer.showFullLog")}
-            </button>
+            <div className="file-viewer-tex-log-actions">
+              <button
+                className="file-viewer-tex-log-toggle"
+                onClick={() => setShowLog((s) => !s)}
+              >
+                {showLog ? t("fileViewer.hideLog") : t("fileViewer.showFullLog")}
+              </button>
+              {/* The whole log, expanded or not: the point of copying it is to
+                  hand it to someone who will read it elsewhere. */}
+              <TexCopyButton label={t("fileViewer.copyLog")} text={log} />
+              {/* One pill for the whole copy affordance — the row buttons are
+                  the same control and would only repeat it. */}
+              <UntestedTag />
+            </div>
           )}
           {showLog && log && <pre className="file-viewer-tex-log">{log}</pre>}
         </div>
       )}
       {warnings.length > 0 && (
         <div className="file-viewer-tex-warn-card" role="status">
-          <button
-            className="file-viewer-tex-warn-head"
-            onClick={() => setShowWarnings((v) => !v)}
-            aria-expanded={showWarnings}
-          >
-            <span className="file-viewer-tex-warn-icon" aria-hidden="true">⚑</span>
-            <span className="file-viewer-tex-warn-title">{t("fileViewer.warningsTitle")}</span>
-            <span className="file-viewer-tex-warn-count">{warnings.length}</span>
-            <span className="file-viewer-tex-warn-caret" aria-hidden="true">
-              {showWarnings ? "▾" : "▸"}
-            </span>
-          </button>
+          {/* The copy sits BESIDE the fold toggle, not inside it: the head is
+              itself a button, and it copies every warning even while the card
+              is folded shut. */}
+          <div className="file-viewer-tex-warn-headrow">
+            <button
+              className="file-viewer-tex-warn-head"
+              onClick={() => setShowWarnings((v) => !v)}
+              aria-expanded={showWarnings}
+            >
+              <span className="file-viewer-tex-warn-icon" aria-hidden="true">⚑</span>
+              <span className="file-viewer-tex-warn-title">{t("fileViewer.warningsTitle")}</span>
+              <span className="file-viewer-tex-warn-count">{warnings.length}</span>
+              <span className="file-viewer-tex-warn-caret" aria-hidden="true">
+                {showWarnings ? "▾" : "▸"}
+              </span>
+            </button>
+            <TexCopyButton
+              className="file-viewer-tex-copy file-viewer-tex-copy-head"
+              label={t("fileViewer.copyAllWarnings")}
+              text={warnings
+                .map((w) => texDiagnosticText(w.message, w.file ?? rootName, w.line))
+                .join("\n")}
+            />
+          </div>
           {showWarnings && (
             <ul className="file-viewer-tex-warns">
               {warnings.map((w, i) => (
@@ -9727,6 +9827,10 @@ function TexView({
                     </span>
                     <span className="file-viewer-tex-warn-msg">{w.message}</span>
                   </button>
+                  <TexCopyButton
+                    label={t("fileViewer.copyWarning")}
+                    text={texDiagnosticText(w.message, w.file ?? rootName, w.line)}
+                  />
                 </li>
               ))}
             </ul>

@@ -428,4 +428,80 @@ describe("TexView", () => {
       afterReload: true,
     });
   });
+  // #tex: the diagnostics cards are the one place the viewer shows text a user
+  // has to hand to someone else, and the app disables selection globally — so
+  // every row, every card head and the log carry their own copy button.
+  it("copies one error, one warning and the whole log from the diagnostics cards", async () => {
+    const FAIL_LOG = [
+      "(./paper.tex",
+      "./paper.tex:3: Undefined control sequence.",
+      "l.3 \\bogus",
+      "",
+      "LaTeX Warning: Reference `fig:missing' on page 1 undefined on input line 5.",
+      ")",
+    ].join("\n");
+    setupInvoke(true, ["pdflatex"]);
+    mockInvoke.mockImplementation((cmd: string, args?: Record<string, unknown>) => {
+      if (cmd === "tex_capability") {
+        return Promise.resolve({
+          available: true,
+          engines: ["pdflatex"],
+          bibtex: false,
+          latexmk: false,
+        });
+      }
+      if (cmd === "read_file_text") return Promise.resolve(TEX_SOURCE);
+      if (cmd === "resolve_tex_root") return Promise.resolve((args?.path as string) ?? "");
+      if (cmd === "compile_tex") {
+        return Promise.resolve({
+          success: false,
+          pdf_path: null,
+          engine: "pdflatex",
+          log: FAIL_LOG,
+          shell_escape: false,
+        });
+      }
+      return Promise.resolve(null);
+    });
+    const writeText = vi.fn((_text: string) => Promise.resolve());
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    await renderTexView();
+
+    await act(async () => {
+      await userEvent.click(await screen.findByRole("button", { name: /compile/i }));
+    });
+
+    // One error row, one warning row — each with its own copy button, and each
+    // copying `file:line: message`, the shape the log itself prints.
+    await act(async () => {
+      await userEvent.click(await screen.findByRole("button", { name: /copy this error/i }));
+    });
+    expect(writeText).toHaveBeenLastCalledWith("./paper.tex:3: Undefined control sequence.");
+
+    // The warnings card copies every warning while still folded shut…
+    await act(async () => {
+      await userEvent.click(await screen.findByRole("button", { name: /copy every warning/i }));
+    });
+    expect(String(writeText.mock.lastCall?.[0])).toContain("fig:missing");
+
+    // …and each row copies its own once the card is unfolded.
+    await act(async () => {
+      await userEvent.click(screen.getByRole("button", { name: /warnings/i }));
+    });
+    await act(async () => {
+      await userEvent.click(await screen.findByRole("button", { name: /copy this warning/i }));
+    });
+    expect(String(writeText.mock.lastCall?.[0])).toContain("fig:missing");
+    expect(String(writeText.mock.lastCall?.[0])).toMatch(/paper\.tex:5:/);
+
+    // The log button hands over the whole log, not the visible tail — and it
+    // does so without expanding the log first.
+    expect(screen.queryByText(/Undefined control sequence\./, { selector: "pre" })).toBeNull();
+    await act(async () => {
+      await userEvent.click(
+        await screen.findByRole("button", { name: /copy the whole compilation log/i }),
+      );
+    });
+    expect(writeText).toHaveBeenLastCalledWith(FAIL_LOG);
+  });
 });
