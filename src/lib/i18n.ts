@@ -6401,6 +6401,8 @@ export const en = {
   "shortcut.shortcutHelp": "Open shortcut help",
   "shortcut.texUp": "TeX workspace: up to the parent document",
   "shortcut.texBack": "TeX workspace: back to the previous file",
+  "shortcut.texCompile": "TeX workspace: save and compile the document",
+  "shortcut.hint": "{label} ({chord})",
   "viewerType.text": "Text / code",
   "viewerType.tex": "LaTeX",
   "viewerType.markdown": "Markdown",

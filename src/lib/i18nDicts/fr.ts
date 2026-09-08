@@ -6240,6 +6240,8 @@ export const dict: Dict = {
   "shortcut.shortcutHelp": "Ouvrir l’aide des raccourcis",
   "shortcut.texUp": "Espace TeX : remonter au document parent",
   "shortcut.texBack": "Espace TeX : revenir au fichier précédent",
+  "shortcut.texCompile": "Espace TeX : enregistrer et compiler le document",
+  "shortcut.hint": "{label} ({chord})",
   "viewerType.text": "Texte / code",
   "viewerType.tex": "LaTeX",
   "viewerType.markdown": "Markdown",

@@ -2003,3 +2003,41 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       marked. Scroll — the marks must stay glued to their text.
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work
+
+266. **Hover tooltips name the keyboard shortcut, and the TeX build gets one.**
+    Implemented 2026-09-08, not yet verified live. A control that a chord also
+    drives now says so on hover — and the chord it names is the one the user
+    actually has, resolved from the shortcut table (rebindable, ⌘-glyphed on
+    macOS) instead of spelled into a translated string the way the older
+    "Save (Ctrl+S)" tooltips are.
+    - **New chord `texCompile` (Ctrl+Shift+B, rebindable).** Saves and builds
+      the document — the Compile button's keyboard twin, which the TeX viewer
+      had none of. Listened for on the TeX pane's own root, the way `texUp`/
+      `texBack` are: a compile is pressed with the caret in the editor's
+      textarea, exactly the editable target `useKeyboard` drops chords on. The
+      workspace root carries a fallback for focus that is *not* in an editor
+      pane (structure sidebar, error list), routed through the `texCenter`
+      compile registry so the mounted editor — which owns the draft and the
+      options — runs the build. It appears in the F1 cheat sheet and in
+      Settings → Shortcuts under "TeX workspace" automatically.
+    - **Tooltips:** the Compile button ("Save and compile to PDF
+      (Ctrl+Shift+B)"), and in the tab bar the ◫ files toggle, the subwindow
+      hide and close buttons, and the tab **×** — the last only on the *active*
+      tab, since `closeTab` closes that one and naming the chord on any other
+      would advertise a key that closes a different tab than the one under the
+      pointer.
+    - *Files: `src/lib/shortcutHint.ts` (new), `src/lib/shortcuts.ts`,
+      `src/components/embed/FileViewerPane.tsx`,
+      `src/components/tabs/TabBar.tsx`, `src/lib/i18n.ts` (+ the four
+      dictionaries).* Frontend only, hot-reloads.
+    - [x] 🤖 Automated test — `src/__tests__/TexViewer.test.tsx` (Ctrl+Shift+B
+      from the textarea compiles; the button's tooltip names the chord).
+    - [ ] 🖐️ Manual test — in a TeX workspace, press Ctrl+Shift+B with the
+      caret in the source: it should save and build exactly as the button does,
+      and the textarea must not gain a stray character. Press it with the
+      structure sidebar focused: same build. Hover Compile — the tooltip names
+      the chord; rebind `texCompile` in Settings → Shortcuts and the tooltip
+      follows. Hover the ◫ / hide / close subwindow buttons and the active
+      tab's ×: each names its chord, and an inactive tab's × does not.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work

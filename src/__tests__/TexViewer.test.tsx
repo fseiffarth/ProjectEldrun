@@ -172,6 +172,34 @@ describe("TexView", () => {
     expect(mockInvoke).toHaveBeenCalledWith("write_file_text", expect.objectContaining({ path: "/p/paper.tex" }));
   });
 
+  // The build has a chord of its own (`texCompile`), listened for on the pane's
+  // root so it fires with the caret in the textarea — where it is actually
+  // pressed, and where the global keyboard hook drops chords. The button's
+  // tooltip names the same chord, resolved from the shortcut table rather than
+  // spelled into a translated string.
+  it("compiles on Ctrl+Shift+B from the editor, and says so on the Compile button", async () => {
+    setupInvoke(true, ["pdflatex"]);
+    await renderTexView();
+
+    const compileBtn = await screen.findByRole("button", { name: /compile/i });
+    expect(compileBtn.getAttribute("title")).toBe("Save and compile to PDF (Ctrl+Shift+B)");
+
+    const textarea = (await screen.findByRole("textbox")) as HTMLTextAreaElement;
+    await waitFor(() => expect(textarea.value).toBe(TEX_SOURCE));
+    await act(async () => {
+      fireEvent.keyDown(textarea, { key: "B", ctrlKey: true, shiftKey: true });
+    });
+
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenCalledWith("compile_tex", {
+        path: "/p/paper.tex",
+        engine: null,
+        outDir: null,
+        extraFlags: null,
+      }),
+    );
+  });
+
   it("#tex-beamer: the Beamer toggle shows the overlay bar, and Wrap wraps the selection", async () => {
     setupInvoke(true);
     await renderTexView();

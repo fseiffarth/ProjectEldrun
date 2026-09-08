@@ -223,6 +223,7 @@ import {
   compileWasNoop,
 } from "../../lib/viewers/tex";
 import { chordLabel, chordMatches, resolveChord, type ShortcutMap } from "../../lib/shortcuts";
+import { useChordHint, useShortcutOverrides } from "../../lib/shortcutHint";
 import {
   renderTexPreview,
   cachedTexPreview,
@@ -232,6 +233,7 @@ import { TexStructureRail, TexStructureSidebar } from "./tex/TexStructureSidebar
 import { useDialogs } from "../common/PromptDialogs";
 import { focusTexWorkspaceForSource } from "./openTexWorkspace";
 import {
+  compileTexWorkspace,
   registerTexCompile,
   registerTexWorkspace,
   unregisterTexCompile,
@@ -8376,9 +8378,20 @@ function TexWorkspaceView({
         e.preventDefault();
         e.stopPropagation();
         goBack();
+      } else if (chordMatches(resolveChord("texCompile", shortcutOverrides), ev)) {
+        // Compile from anywhere in the workspace that is not an editor pane —
+        // the structure sidebar, the error list, the toolbar. A pane handles
+        // the chord itself and stops it before it gets here; this is the
+        // fallback, routed through the same registry the PDF's rebuild uses so
+        // the mounted editor (which owns the draft and the options) runs the
+        // build. Only consumed when someone answered.
+        if (compileTexWorkspace(activePath) || compileTexWorkspace(mainPath)) {
+          e.preventDefault();
+          e.stopPropagation();
+        }
       }
     },
-    [upTarget, backTarget, shortcutOverrides, goUp, goBack],
+    [upTarget, backTarget, shortcutOverrides, goUp, goBack, activePath, mainPath],
   );
 
   // Advertise this workspace to SyncTeX reverse search (#42): a reverse click's
@@ -9417,6 +9430,23 @@ function TexView({
     return () => unregisterTexCompile(path, run);
   }, [path]);
 
+  // Ctrl+Shift+B (rebindable) builds the document. Bound on this pane's root
+  // rather than in `useKeyboard` for the same reason as the workspace's
+  // up/back chords: it is pressed with the caret in the editor's textarea,
+  // which the global hook skips as an editable target. Consumed here so the
+  // key never reaches the workspace above or the window beneath.
+  const shortcutOverrides = useShortcutOverrides();
+  const chordHint = useChordHint();
+  const onTexKeyDown = useCallback(
+    (e: React.KeyboardEvent) => {
+      if (!chordMatches(resolveChord("texCompile", shortcutOverrides), e.nativeEvent)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      void compileRef.current();
+    },
+    [shortcutOverrides],
+  );
+
   // #245: count the whole document on demand. Reading the draft rather than the
   // file is the point — the count is asked for while writing, and one that lags
   // the last save by a paragraph is the wrong number.
@@ -9549,7 +9579,7 @@ function TexView({
   }
 
   return (
-    <div className="file-viewer">
+    <div className="file-viewer" onKeyDown={onTexKeyDown}>
       {/* Single header row: the compile controls live alongside Save / Open
           externally rather than on a second toolbar line below. */}
       <ViewerHeader onOpenExternally={onOpenExternally}>
@@ -9561,11 +9591,12 @@ function TexView({
           onMouseDown={(e) => e.preventDefault()}
           onClick={() => void compile()}
           disabled={compiling}
-          title={
+          title={chordHint(
             isChild
               ? t("fileViewer.saveAndCompileNamed", { name: rootName })
-              : t("fileViewer.saveAndCompile")
-          }
+              : t("fileViewer.saveAndCompile"),
+            "texCompile",
+          )}
         >
           {compiling
             ? t("fileViewer.compiling")
