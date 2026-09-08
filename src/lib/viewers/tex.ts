@@ -22,6 +22,12 @@ export type TexCompileResult = {
   /** True when the build ran with shell-escape (`\write18`) active behind our
    *  back (system texmf.cnf / latexmkrc). Surfaced as a warning in the viewer. */
   shell_escape: boolean;
+  /** Why `latexmk` exited non-zero, in its own words, when it did — the
+   *  `Collected error summary` block minus the "use -f" advisory. Set even when
+   *  `success` is true: latexmk fails a build over configuration (warnings as
+   *  errors, a bibliography rule, an unresolved reference) while the engine
+   *  still writes the PDF, and that is a note, not a compilation error. */
+  driver_note: string | null;
 };
 
 // TeX tooling is PATH-global, so probe the backend once per app run and share

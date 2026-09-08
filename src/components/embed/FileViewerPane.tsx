@@ -9094,6 +9094,12 @@ function TexView({
   // source unchanged) — a success that produced nothing new. Cleared by the
   // next build; shown until then so it explains the PDF the reader is looking at.
   const [compileNote, setCompileNote] = useState<null | "unchanged">(null);
+  // latexmk exited non-zero over something that is not an error in the document
+  // (warnings treated as errors in a latexmkrc, a bibliography rule, an
+  // unresolved reference) and the PDF was written anyway: its complaint belongs
+  // beside the build, not in place of it. Also carries the reason for a build
+  // that really did fail, where latexmk explains itself better than the log tail.
+  const [driverNote, setDriverNote] = useState<string | null>(null);
 
   // #245 warnings: what the build reported that did NOT stop it. This is where
   // nearly everything worth fixing lives — an undefined `\ref` prints `??` in the
@@ -9288,6 +9294,7 @@ function TexView({
     setWarnings([]);
     setSyncNote(null);
     setCompileNote(null);
+    setDriverNote(null);
     // Snapshot the caret synchronously, before any await can let focus change or
     // a blur reset it: prefer the editor's live cursor, falling back to the last
     // reported offset. This is the position forward search reveals in the PDF.
@@ -9327,8 +9334,11 @@ function TexView({
       // Surface a shell-escape warning regardless of build success — an external
       // command may have run even if the document then failed to compile.
       setShellEscape(res.shell_escape);
+      // latexmk's own account of the failure beats the log's last line, which is
+      // its "use the -f option" advisory — an instruction, not a reason.
+      setDriverNote(res.driver_note ?? null);
       if (!res.success) {
-        const detail = parsedErrors[0]?.message || lastLogLine(res.log);
+        const detail = parsedErrors[0]?.message || res.driver_note || lastLogLine(res.log);
         setCompileError(detail || t("fileViewer.compilationFailed"));
         return;
       }
@@ -9683,6 +9693,16 @@ function TexView({
       {compileNote === "unchanged" && (
         <div className="file-viewer-tex-sync-miss" role="status">
           {t("fileViewer.compileUnchangedMsg")} <UntestedTag />
+        </div>
+      )}
+      {/* Only alongside a *successful* build: a failed one already shows the same
+          text as the error card's reason, and saying it twice reads as two
+          problems. */}
+      {driverNote && !compileError && (
+        <div className="file-viewer-tex-sync-miss" role="status">
+          {t("fileViewer.compileDriverNote")} <code>{driverNote}</code>{" "}
+          <TexCopyButton label={t("fileViewer.copyError")} text={driverNote} />
+          <UntestedTag />
         </div>
       )}
       {syncNote && (

@@ -5062,6 +5062,7 @@ export const dict: Dict = {
   "fileViewer.syncMissMsg": "PDF aktualisiert — SyncTeX konnte den Cursor darin nicht finden (keine Übereinstimmung in dieser Zeile), daher blieb die PDF-Position unverändert. Setze den Cursor in den Fließtext und kompiliere erneut, um dorthin zu springen.",
   "fileViewer.syncUnavailMsg": "PDF aktualisiert — der Sprung zum Cursor ist jedoch nicht verfügbar, weil SyncTeX nicht ausgeführt wurde. Falls du Eldrun gerade geändert hast, baue und starte es neu; andernfalls prüfe, ob das Tool `synctex` installiert ist.",
   "fileViewer.compileUnchangedMsg": "Seit dem letzten Build hat sich nichts geändert — jede Quelle auf der Festplatte entspricht noch dem vorigen Lauf, das PDF blieb daher unverändert. Falls du neuen Inhalt erwartet hast, prüfe, ob jede bearbeitete Datei gespeichert wurde.",
+  "fileViewer.compileDriverNote": "latexmk hat ein Problem gemeldet, die Engine hat das PDF aber dennoch erzeugt — meist Konfiguration statt eines Fehlers im Dokument (in einer `latexmkrc` als Fehler behandelte Warnungen, eine ungelöste Referenz, ein Literaturschritt). Die Meldung:",
   "fileViewer.shellEscapeWarnPre": "⚠ Diese Kompilierung lief mit aktiviertem LaTeX-Shell-Escape (",
   "fileViewer.shellEscapeWarnMid": ") aktiv — das Dokument konnte Shell-Befehle ausführen. Eldrun aktiviert dies nie, also hat ein System-",
   "fileViewer.shellEscapeWarnOr": "oder",

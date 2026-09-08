@@ -56,6 +56,12 @@ pub struct TexCompileResult {
     /// ourselves, so this only trips when a system `texmf.cnf` / `latexmkrc`
     /// turned it on behind our back — surfaced as a warning in the UI.
     pub shell_escape: bool,
+    /// `latexmk`'s own account of why it exited non-zero, when it did: the
+    /// `Collected error summary` block and its `Latexmk: …` cause lines, with
+    /// the boilerplate advisory dropped. Present whether or not the build is
+    /// reported a success — a driver that failed while still producing a PDF
+    /// (see `success`) is exactly the case this exists to explain.
+    pub driver_note: Option<String>,
 }
 
 /// A source location returned by SyncTeX reverse search (`synctex edit`): the
@@ -384,6 +390,143 @@ fn log_shows_shell_escape(log: &str) -> bool {
         (l.contains("write18 enabled") && !l.contains("restricted"))
             || (l.contains("runsystem(") && l.contains("executed"))
     })
+}
+
+// ── latexmk exited non-zero: the document's fault, or the driver's? ──────────
+//
+// `latexmk` returns a non-zero status for a whole class of things that are not
+// errors *in the document*: an unresolved reference with `$warnings_as_errors`
+// set in a `latexmkrc`, `$max_repeat` reached, a `bibtex`/`biber` rule that
+// failed, a missing `.bib`. In every one of those the engine still typeset the
+// document and wrote a PDF — but Eldrun used to report the build as failed,
+// withhold the fresh PDF, and (with no `file:line:` error to quote) title the
+// card with latexmk's trailing advisory, "Use the -f option to force complete
+// processing…". A configuration complaint shown as a compilation error.
+//
+// The discriminator is the log, not the exit code: TeX announces its own errors
+// as `!` lines and — under the `-file-line-error` Eldrun always passes — as
+// `file:line: message`. Neither appears when only the driver is unhappy.
+
+/// True when the log carries an error the *engine* raised: a `-file-line-error`
+/// location line, or TeX's own `!` marker (`! Undefined control sequence`,
+/// `! LaTeX Error: …`, `! Emergency stop`). Driver-level latexmk complaints have
+/// neither, which is what lets a build be forgiven its exit status.
+fn log_has_tex_error(log: &str) -> bool {
+    log.lines().any(|raw| {
+        let line = raw.trim_end();
+        if line.starts_with("! ") || line == "!" {
+            return true;
+        }
+        // `file:line: message` — the file part is non-greedy so the first
+        // `:<digits>: ` wins, mirroring the frontend's `FILE_LINE_ERROR`.
+        let mut rest = line;
+        while let Some(colon) = rest.find(':') {
+            let after = &rest[colon + 1..];
+            let digits: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+            if !digits.is_empty() && after[digits.len()..].starts_with(": ") && colon > 0 {
+                return true;
+            }
+            rest = after;
+        }
+        false
+    })
+}
+
+/// latexmk lines that say what it is *doing*, not what went wrong. Quoting one
+/// of these as the reason a build failed is the bug this list exists to avoid.
+const LATEXMK_NOISE: &[&str] = &[
+    "This is Latexmk",
+    "Use the -f option",
+    "Nothing to do",
+    "All targets",
+    "Examining",
+    "Run number",
+    "applying rule",
+    "Changing directory",
+    "Undoing directory change",
+    "Log file says",
+    "Found input file",
+    "Found bibliography file",
+    "Calling",
+    "Getting log file",
+    "Rules after",
+    "Doing checks",
+    "Not bothering",
+    "Non-existent destination",
+    "Summary of warnings",
+];
+
+/// Extract latexmk's own explanation of a non-zero exit: the indented
+/// `Collected error summary` block plus any `Latexmk: …` line that names a
+/// cause. Returns `None` when latexmk said nothing beyond its progress chatter.
+fn latexmk_summary(log: &str) -> Option<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut push = |msg: &str| {
+        let msg = msg.trim();
+        if !msg.is_empty() && !out.iter().any(|s| s == msg) {
+            out.push(msg.to_string());
+        }
+    };
+    let mut in_collected = false;
+    for raw in log.lines() {
+        let line = raw.trim_end();
+        let text = line.trim_start();
+        if text.starts_with("Collected error summary") {
+            in_collected = true;
+            continue;
+        }
+        if in_collected {
+            // The block is indented; the first unindented line closes it.
+            if line.starts_with(' ') || line.starts_with('\t') {
+                // "Refer to 'main.log' for details" points at a file the user
+                // already has in the log panel below.
+                if !text.starts_with("Refer to ") {
+                    push(text);
+                }
+                continue;
+            }
+            in_collected = false;
+        }
+        if let Some(rest) = text.strip_prefix("Latexmk: ") {
+            if !LATEXMK_NOISE.iter().any(|n| rest.starts_with(n)) {
+                push(rest);
+            }
+        }
+    }
+    if out.is_empty() {
+        return None;
+    }
+    // Four lines is the whole of a normal summary; more than that is the log,
+    // and the log has its own panel.
+    out.truncate(4);
+    Some(out.join("; "))
+}
+
+/// Modification time of the PDF, or `None` when it does not exist. Compared
+/// across a run to tell a PDF this build wrote from one left by an earlier one:
+/// forgiving a non-zero exit status is only safe when the output is actually new.
+fn pdf_stamp(pdf: &Path) -> Option<std::time::SystemTime> {
+    fs::metadata(pdf).ok().and_then(|m| m.modified().ok())
+}
+
+/// Whether a build counts as a success, for both the latexmk and the direct
+/// path. `run_ok` is the *last* build command's exit status.
+///
+/// A clean exit is judged by the PDF alone, and deliberately does not ask
+/// whether it is new: an up-to-date no-op writes nothing and is still a success
+/// (the UI names it separately, `compileWasNoop`).
+///
+/// A non-zero exit is forgiven only when this run wrote a PDF *and* the engine
+/// raised no error of its own — the driver objecting to something around the
+/// document (warnings as errors, a bibliography rule, an unresolved reference)
+/// rather than the document failing to typeset. Both halves matter: without the
+/// freshness check an earlier build's PDF would be passed off as this one's.
+fn build_succeeded(run_ok: bool, pdf_exists: bool, pdf_fresh: bool, doc_errors: bool) -> bool {
+    if run_ok {
+        pdf_exists
+    } else {
+        pdf_fresh && !doc_errors
+    }
 }
 
 // ── Precompiled document preambles (full compiles) ───────────────────────────
@@ -750,6 +893,9 @@ fn compile_tex_blocking(
 
     if cap.latexmk {
         let flag = latexmk_flag(engine.as_deref());
+        // Taken before the build so a PDF this run wrote can be told from one an
+        // earlier run left behind (see {@link pdf_stamp}).
+        let pdf_before = pdf_stamp(&pdf);
         let run_latexmk = |fmt: Option<&str>| -> Result<RunOut, String> {
             let args = latexmk_args(engine.as_deref(), file_name, out_arg.as_deref(), &extra, fmt);
             let envs: Vec<(String, String)> = match fmt {
@@ -774,8 +920,23 @@ fn compile_tex_blocking(
             out = run_latexmk(None)?;
             used_fmt = false;
         }
+        // Read off the FINAL run, not the accumulated log: a format attempt that
+        // was discarded and retried above must not lend its errors to the run
+        // that replaced it.
+        let doc_errors = log_has_tex_error(&out.text);
+        let driver_note = if out.ok {
+            None
+        } else {
+            latexmk_summary(&out.text)
+        };
         log.push_str(&out.text);
-        let success = out.ok && pdf.exists();
+        // `driver_note` carries latexmk's reason whichever way this lands, so a
+        // forgiven build still says what latexmk was unhappy about.
+        let pdf_fresh = {
+            let now = pdf_stamp(&pdf);
+            now.is_some() && now != pdf_before
+        };
+        let success = build_succeeded(out.ok, pdf.exists(), pdf_fresh, doc_errors);
         if success {
             // Record this file as the build root for every .tex it pulls in, so
             // pressing Compile in a child later redirects here (resolve_tex_root).
@@ -791,6 +952,7 @@ fn compile_tex_blocking(
             },
             shell_escape: log_shows_shell_escape(&log),
             log: tail(&log),
+            driver_note,
         });
     }
 
@@ -814,6 +976,10 @@ fn compile_tex_blocking(
     };
     let mut used_fmt = fmt_key.is_some();
     let mut engine_args = build_args(fmt_key.as_deref());
+    // Taken before any pass runs: this path used to answer `pdf.exists()`, which
+    // hands back an earlier build's PDF as this build's output whenever the
+    // engine bailed out. See {@link build_succeeded}.
+    let pdf_before = pdf_stamp(&pdf);
 
     let mut first = run_in(dir, &eng, &engine_args)?;
     // Same retry rule as the latexmk path: only a *format* failure earns a
@@ -827,12 +993,24 @@ fn compile_tex_blocking(
         used_fmt = false;
         first = run_in(dir, &eng, &engine_args)?;
     }
+    // The verdict is the LAST pass's, not the first's: the reruns below are what
+    // finally wrote the PDF, and a first pass that stumbled on a reference the
+    // second resolves is not a failed build.
+    let mut last_ok = first.ok;
+    let mut doc_errors = log_has_tex_error(&first.text);
     log.push_str(&first.text);
 
     // The aux lands in the output dir too when one is set.
     let aux = match &out_path {
         Some(p) => p.join(format!("{stem}.aux")),
         None => dir.join(format!("{stem}.aux")),
+    };
+    let mut pass = |log: &mut String| -> Result<(), String> {
+        let out = run_in(dir, &eng, &engine_args)?;
+        last_ok = out.ok;
+        doc_errors = log_has_tex_error(&out.text);
+        log.push_str(&out.text);
+        Ok(())
     };
     if cap.bibtex && aux_needs_bibtex(&aux) {
         // bibtex resolves its aux relative to its own CWD; run it in the output
@@ -841,14 +1019,18 @@ fn compile_tex_blocking(
         let bib = run_in(bib_dir, "bibtex", std::slice::from_ref(&stem))?;
         log.push_str(&bib.text);
         for _ in 0..2 {
-            log.push_str(&run_in(dir, &eng, &engine_args)?.text);
+            pass(&mut log)?;
         }
     } else {
         // One extra pass resolves cross-references / table of contents.
-        log.push_str(&run_in(dir, &eng, &engine_args)?.text);
+        pass(&mut log)?;
     }
 
-    let success = pdf.exists();
+    let pdf_fresh = {
+        let now = pdf_stamp(&pdf);
+        now.is_some() && now != pdf_before
+    };
+    let success = build_succeeded(last_ok, pdf.exists(), pdf_fresh, doc_errors);
     if success {
         record_root_mappings(&src);
     }
@@ -862,6 +1044,9 @@ fn compile_tex_blocking(
         },
         shell_escape: log_shows_shell_escape(&log),
         log: tail(&log),
+        // Nothing to explain: there is no driver between Eldrun and the engine,
+        // so a failure here is the engine's own and the log already says it.
+        driver_note: None,
     })
 }
 
@@ -2521,6 +2706,71 @@ Count:2
         // `Count:2` sits outside any page and must not become line data.
         let pages = parse_synctex_pages(SYNCTEX, None);
         assert_eq!(pages.len(), 2);
+    }
+
+    // A latexmk failure whose cause is configuration, not the document: no `!`
+    // line, no `file:line:` location — only latexmk's own complaint.
+    const CONFIG_FAILURE_LOG: &str = concat!(
+        "This is pdfTeX, Version 3.141592653\n",
+        "Latexmk: applying rule 'pdflatex'...\n",
+        "Output written on main.pdf (12 pages, 214830 bytes).\n",
+        "Latexmk: Summary of warnings from last run of *latex:\n",
+        "  Latex failed to resolve 2 reference(s)\n",
+        "Latexmk: Some warnings have been treated as errors.\n",
+        "Collected error summary (may duplicate other messages):\n",
+        "  pdflatex: Warnings treated as errors\n",
+        "      Refer to 'main.log' for details\n",
+        "Latexmk: Use the -f option to force complete processing,\n",
+        " unless error was exceeding maximum runs, or warnings treated as errors.\n",
+    );
+
+    #[test]
+    fn config_failure_is_not_a_tex_error() {
+        assert!(
+            !log_has_tex_error(CONFIG_FAILURE_LOG),
+            "a latexmk config complaint must not read as an engine error",
+        );
+    }
+
+    #[test]
+    fn document_errors_are_tex_errors() {
+        assert!(log_has_tex_error("./main.tex:12: Undefined control sequence.\n"));
+        assert!(log_has_tex_error("! LaTeX Error: File `foo.sty' not found.\n"));
+        assert!(log_has_tex_error("! Emergency stop.\n"));
+        // Progress chatter must not trip it: no `:<digits>: ` run anywhere.
+        assert!(!log_has_tex_error("Latexmk: Run number 1 of rule 'pdflatex'\n"));
+        assert!(!log_has_tex_error("Output written on main.pdf (12 pages).\n"));
+    }
+
+    #[test]
+    fn latexmk_summary_names_the_cause_not_the_advisory() {
+        let note = latexmk_summary(CONFIG_FAILURE_LOG).expect("a summary");
+        assert!(
+            note.contains("Warnings treated as errors"),
+            "the collected summary must survive: {note}",
+        );
+        assert!(
+            !note.contains("Use the -f option"),
+            "the trailing advisory is not a reason: {note}",
+        );
+        assert!(
+            !note.contains("Refer to "),
+            "the log pointer is not a reason: {note}",
+        );
+        assert!(
+            !note.contains("applying rule"),
+            "progress chatter is not a reason: {note}",
+        );
+    }
+
+    #[test]
+    fn latexmk_summary_is_none_without_a_complaint() {
+        let clean = concat!(
+            "Latexmk: This is Latexmk, John Collins\n",
+            "Latexmk: Nothing to do for 'main.tex'.\n",
+            "Latexmk: All targets (main.pdf) are up-to-date\n",
+        );
+        assert_eq!(latexmk_summary(clean), None);
     }
 
     #[test]

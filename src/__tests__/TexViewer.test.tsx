@@ -428,6 +428,51 @@ describe("TexView", () => {
       afterReload: true,
     });
   });
+  // #tex: latexmk fails a build over configuration — warnings treated as errors
+  // in a latexmkrc, a bibliography rule, an unresolved reference — while the
+  // engine still writes the PDF. The backend forgives that exit status, so the
+  // viewer must show the PDF and latexmk's complaint as a *note*, not refuse the
+  // build and title an error card with latexmk's "use the -f option" advisory.
+  it("shows a latexmk config complaint as a note, with the PDF, not as a failure", async () => {
+    const NOTE = "Some warnings have been treated as errors; Warnings treated as errors";
+    setupInvoke(true, ["pdflatex"]);
+    mockInvoke.mockImplementation((cmd: string, args?: Record<string, unknown>) => {
+      if (cmd === "tex_capability") {
+        return Promise.resolve({
+          available: true,
+          engines: ["pdflatex"],
+          bibtex: false,
+          latexmk: true,
+        });
+      }
+      if (cmd === "read_file_text") return Promise.resolve(TEX_SOURCE);
+      if (cmd === "resolve_tex_root") return Promise.resolve((args?.path as string) ?? "");
+      if (cmd === "compile_tex") {
+        return Promise.resolve({
+          // The engine typeset the document; only latexmk objected.
+          success: true,
+          pdf_path: "/p/paper.pdf",
+          engine: "latexmk -pdf",
+          log: "Output written on paper.pdf (1 page).\nLatexmk: Use the -f option to force complete processing,\n",
+          shell_escape: false,
+          driver_note: NOTE,
+        });
+      }
+      return Promise.resolve(null);
+    });
+    await renderTexView();
+
+    await act(async () => {
+      await userEvent.click(await screen.findByRole("button", { name: /compile/i }));
+    });
+
+    // The note is there, quoting latexmk…
+    expect(await screen.findByText(NOTE)).toBeTruthy();
+    // …and no failure card is: the advisory line must never become the title.
+    expect(screen.queryByText(/compilation failed/i)).toBeNull();
+    expect(screen.queryByText(/use the -f option/i)).toBeNull();
+  });
+
   // #tex: the diagnostics cards are the one place the viewer shows text a user
   // has to hand to someone else, and the app disables selection globally — so
   // every row, every card head and the log carry their own copy button.

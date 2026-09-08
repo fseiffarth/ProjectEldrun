@@ -3160,7 +3160,9 @@ export function FileTree({
         engine: null,
       });
       if (!res.success) {
-        const detail = lastLogLine(res.log);
+        // latexmk's own summary, when it gave one, says more than the log's last
+        // line (its "use the -f option" advisory).
+        const detail = res.driver_note || lastLogLine(res.log);
         setError(
           t("fileTree.compileFailed", { name: entry.name, detail: detail ? `: ${detail}` : "" }),
         );
