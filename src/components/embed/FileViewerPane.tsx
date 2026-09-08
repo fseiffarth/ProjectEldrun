@@ -3873,13 +3873,14 @@ function CodeEditor({
   // while `preview` is what the CARD is showing.
   const [preview, setPreview] = useState<{
     body: string;
+    si: number; // index into `snippetRanges`: which span the card is about
     anchor: { left: number; top: number; bottom: number };
     result: TexPreview | null; // null = still compiling
   } | null>(null);
   const hoveredBody = useRef<string | null>(null);
   const previewTimer = useRef<number | null>(null);
 
-  // Wash the fragment being previewed. Toggled on the element rather than by a
+  // Wash the fragment under the pointer. Toggled on the element rather than by a
   // `:hover` rule, because the layer takes no pointer events and an element that
   // is never hit-tested is never `:hover`ed — and rather than by re-rendering the
   // layer with the index in it, which would rebuild the whole document's HTML on
@@ -3892,6 +3893,34 @@ function CodeEditor({
     hoveredSpan.current = el;
     el?.classList.add("is-hovered");
   }, []);
+
+  // Mark the fragment the CARD is showing — a stronger mark than the pointer
+  // wash, and tied to the card rather than the pointer: the wash says "this is
+  // previewable", this says "this is what you are looking at", and the two
+  // differ for the whole dwell before a compile lands. Toggled as a class for
+  // the same reason as the wash, but found by INDEX rather than kept as a node:
+  // a keystroke rebuilds the layer (the card stays open — only leaving the
+  // fragment closes it), which would detach the marked span and leave the open
+  // card pointing at unmarked source. Re-finding the span whenever the layer's
+  // HTML changes, and only while the fragment still reads as the card's body,
+  // keeps the mark on the text for as long as the card is honest about it.
+  const previewedSpan = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    let el: HTMLElement | null = null;
+    if (preview && snippetHtml != null) {
+      const range = snippetRanges[preview.si];
+      if (range && draft.slice(range.start, range.end) === preview.body) {
+        el =
+          snippetLayerRef.current?.querySelector<HTMLElement>(
+            `.file-viewer-tex-snippet[data-si="${preview.si}"]`,
+          ) ?? null;
+      }
+    }
+    if (previewedSpan.current === el) return;
+    previewedSpan.current?.classList.remove("is-previewed");
+    previewedSpan.current = el;
+    el?.classList.add("is-previewed");
+  }, [preview, snippetHtml, snippetRanges, draft]);
 
   const cancelPreviewTimer = useCallback(() => {
     if (previewTimer.current != null) {
@@ -3916,7 +3945,7 @@ function CodeEditor({
   // and one `elementsFromPoint` asks the engine, which already knows the answer.
   // Plural, because `elementFromPoint` would only ever return the textarea on top.
   const snippetHitAt = useCallback(
-    (x: number, y: number): { range: TexSnippetRange; rect: DOMRect; span: HTMLElement } | null => {
+    (x: number, y: number): { range: TexSnippetRange; si: number; rect: DOMRect; span: HTMLElement } | null => {
       const layer = snippetLayerRef.current;
       if (!layer) return null;
       if (typeof document.elementsFromPoint === "function") {
@@ -3924,8 +3953,9 @@ function CodeEditor({
           if (el === layer) break; // reached the layer itself: no span here
           if (!(el instanceof HTMLElement) || !layer.contains(el)) continue;
           if (!el.classList.contains("file-viewer-tex-snippet")) continue;
-          const range = snippetRanges[Number(el.dataset.si)];
-          return range ? { range, rect: el.getBoundingClientRect(), span: el } : null;
+          const si = Number(el.dataset.si);
+          const range = snippetRanges[si];
+          return range ? { range, si, rect: el.getBoundingClientRect(), span: el } : null;
         }
         return null;
       }
@@ -3934,8 +3964,9 @@ function CodeEditor({
       for (const span of layer.querySelectorAll<HTMLElement>(".file-viewer-tex-snippet")) {
         const r = span.getBoundingClientRect();
         if (linkRectHit(r, x, y)) {
-          const range = snippetRanges[Number(span.dataset.si)];
-          if (range) return { range, rect: r, span };
+          const si = Number(span.dataset.si);
+          const range = snippetRanges[si];
+          if (range) return { range, si, rect: r, span };
         }
       }
       return null;
@@ -3965,14 +3996,14 @@ function CodeEditor({
       const at = { left: hit.rect.left, top: hit.rect.top, bottom: hit.rect.bottom };
       const cached = hoverPreview.cached(body);
       if (cached) {
-        setPreview({ body, anchor: at, result: cached });
+        setPreview({ body, si: hit.si, anchor: at, result: cached });
         return;
       }
       setPreview(null);
       previewTimer.current = window.setTimeout(() => {
         previewTimer.current = null;
         if (hoveredBody.current !== body) return;
-        setPreview({ body, anchor: at, result: null });
+        setPreview({ body, si: hit.si, anchor: at, result: null });
         void hoverPreview
           .render(body, () => hoveredBody.current === body)
           .then((out) => {

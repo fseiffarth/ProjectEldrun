@@ -2840,6 +2840,19 @@
 .file-viewer-tex-snippet-layer .file-viewer-tex-snippet.is-hovered {
   background: var(--bg-hover);
 }
+/* The fragment whose card is OPEN (`is-previewed`, toggled by the editor while
+   the card shows, and re-applied after a keystroke rebuilds the layer). The
+   pointer wash above says "previewable"; this says "this is what the card is
+   showing", so it must read at a glance: a fill in the occurrence layer's blue
+   (fixed rgba, legible on light and dark) plus a one-pixel accent ring, since
+   the card sits fixed over the page and the ring is what ties it back to a
+   line of source. The ring is an unblurred box-shadow — never a blurred one,
+   which WebKitGTK paints in software — and it is a shadow rather than an
+   outline so it follows the span's rounded corners. */
+.file-viewer-tex-snippet-layer .file-viewer-tex-snippet.is-previewed {
+  background: rgba(88, 166, 255, 0.24);
+  box-shadow: 0 0 0 1px var(--accent);
+}
 
 /* The card. `position: fixed` off the anchor's own rect (the component picks
    top-or-bottom), and NEVER interactive — it sits on the text the pointer is
