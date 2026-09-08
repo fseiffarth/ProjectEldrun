@@ -18,9 +18,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { emit, listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import * as pdfjs from "pdfjs-dist";
 import type { PDFDocumentProxy } from "pdfjs-dist";
-import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
+import { loadPdf } from "../../../lib/viewers/pdfLoad";
 import { readFileBytes } from "../fileAccess";
 import { applyTheme, THEME_CHANGED_EVENT, useSettingsStore } from "../../../stores/settings";
 import { useT } from "../../../lib/i18n";
@@ -30,11 +29,6 @@ import {
   clampPage,
   pdfPresentSeedEvent,
 } from "./present";
-
-// Idempotent, and set here rather than relied upon: this window loads the PDF
-// viewer's module for nothing else, and a worker-less pdf.js parses on the UI
-// thread — which on a 300-page document is a black projector for seconds.
-pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
 /** How often to re-announce readiness until a seed lands (the editor may still
  *  be mounting its listener when this window first asks). */
@@ -187,7 +181,7 @@ export function PdfPresentApp({ label }: PdfPresentAppProps) {
         const bytes = await readFileBytes(path, scope);
         // pdf.js DETACHES the buffer it is handed; nothing here needs the bytes
         // afterwards (this window never writes), so it is given them outright.
-        const loaded = await pdfjs.getDocument({ data: bytes }).promise;
+        const loaded = await loadPdf(bytes);
         opened = loaded;
         if (cancelled) {
           loaded.loadingTask.destroy();

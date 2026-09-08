@@ -15,7 +15,6 @@ import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import * as pdfjs from "pdfjs-dist";
 import type { PDFDocumentProxy } from "pdfjs-dist";
-import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { usePdfSyncStore } from "../../../stores/pdfSync";
 import { useScrollSync } from "../../../stores/scrollSync";
 import {
@@ -152,10 +151,6 @@ import {
   type CaretPhrase,
 } from "../../../lib/viewers/tex";
 import { useT, type TranslationKey } from "../../../lib/i18n";
-
-// pdf.js renders pages on a worker; point it at the bundled worker asset. Vite
-// emits a hashed URL that resolves in both dev and the packaged Tauri build.
-pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
 /** How often the open PDF re-checks its file's mtime for an on-disk change (a
  *  LaTeX recompile rewrites the very bytes this tab is showing). Mirrors the
