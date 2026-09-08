@@ -94,7 +94,9 @@ import { ROOT_SCOPE, useTabsStore } from "../../stores/tabs";
 import { useTimerStore } from "../../stores/timer";
 import { flushUsage } from "../../stores/usage";
 import { useKeyboard } from "../../hooks/useKeyboard";
-import { useT, useI18nStore, translate } from "../../lib/i18n";
+import { useT, useI18nStore, translate, type TranslationKey } from "../../lib/i18n";
+import { sidePanelViewKey, sidePanelViewPatch } from "../../lib/sidePanelView";
+import type { FilesPanelView } from "../../types";
 import { noteTerminalOutputChars } from "../../dev/terminalOutputRate";
 
 // Dev-only perf panel (src/dev/). The ternary is statically resolved at build
@@ -111,6 +113,16 @@ const DevPerfHost = import.meta.env.DEV
 // a 2px strip there is unreachable, so the panel never opened. A wider band is
 // crossed on the way to the edge, so the reveal fires before the dead-zone.
 const REVEAL_EDGE_PX = 8;
+
+// The views the closed panel's edge rail can open it straight onto — the same
+// four the panel's own switcher leads with (`ProjectFilesView`), labelled from
+// the same keys so the rail and the switcher can never read differently.
+const EDGE_VIEWS: ReadonlyArray<{ view: FilesPanelView; labelKey: TranslationKey }> = [
+  { view: "files", labelKey: "projectFilesView.tabFiles" },
+  { view: "git", labelKey: "projectFilesView.tabGit" },
+  { view: "windows", labelKey: "projectFilesView.tabApps" },
+  { view: "agents", labelKey: "projectFilesView.tabAgents" },
+];
 
 // Side-panel width bounds. The default matches the historical fixed 280px so
 // existing installs (no stored width) look unchanged; the max is capped against
@@ -985,21 +997,50 @@ export function AppShell() {
             where the mousemove stream isn't, so this is the reliable path; it
             unmounts the moment the panel is open (revealPanel). It doubles as
             the *edge marker*: unpinned, the panel is invisible, so this labelled
-            tab is the only thing saying which side it will slide in from. */}
+            rail is the only thing saying which side it will slide in from.
+
+            One tab per view the panel's own switcher offers, so a closed panel is
+            one click from Git, Apps or Agents instead of one click plus a second
+            one inside — the panel was otherwise always reopening on whichever view
+            it was last left on. The rail swallows mousemove: with the hover band
+            live underneath it (it sits ON the 8px reveal strip), the panel would
+            open the moment the pointer arrived and unmount the rail before any
+            button could be clicked. Hovering the edge above or below the rail
+            still reveals the panel on its remembered view. */}
         {panelTarget && !panelsHidden && !revealPanel && (
-          <button
-            type="button"
-            className={`side-panel-reveal-handle${panelSide === "left" ? " left" : ""}`}
-            aria-label={t("appShell.showFilesPanel")}
-            title={t("appShell.showFilesPanel")}
-            onClick={() => reveal(panelCloseTimer, setPanelOpen)}
-            onMouseEnter={() => reveal(panelCloseTimer, setPanelOpen)}
+          <div
+            className={`side-panel-reveal-rail${panelSide === "left" ? " left" : ""}`}
+            onMouseMove={(e) => e.stopPropagation()}
           >
             <span className="srh-chevron" aria-hidden="true">
               {panelSide === "left" ? "›" : "‹"}
             </span>
-            <span className="srh-label" aria-hidden="true">{t("appShell.filesEdgeLabel")}</span>
-          </button>
+            {EDGE_VIEWS.map(({ view, labelKey }) => {
+              const label = t(labelKey);
+              return (
+                <button
+                  key={view}
+                  type="button"
+                  className="side-panel-reveal-handle"
+                  aria-label={t("appShell.showPanelView", { view: label })}
+                  title={t("appShell.showPanelView", { view: label })}
+                  onClick={() => {
+                    useHintsStore.getState().markSeen("file-tree");
+                    void updateSettings(
+                      sidePanelViewPatch(
+                        view,
+                        sidePanelViewKey(activeId, scope),
+                        useSettingsStore.getState().settings,
+                      ),
+                    );
+                    reveal(panelCloseTimer, setPanelOpen);
+                  }}
+                >
+                  <span className="srh-label" aria-hidden="true">{label}</span>
+                </button>
+              );
+            })}
+          </div>
         )}
       </div>
       <VpnPasswordPrompt />

@@ -187,3 +187,30 @@
       panel does not open into a Sessions/Jobs view it has no button for.
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work
+
+267. **The closed panel's edge tab is a rail: Files / Git / Apps / Agents.** The
+    edge affordance said only "Files", so reaching Git, Apps or Agents from a
+    closed panel was a click to open plus a second click inside — and with #252
+    remembering the last view per scope, the panel often opened on the *other*
+    one first. The single tab is now a stacked rail of four, one per view the
+    panel's own switcher leads with, labelled from the same i18n keys so the two
+    can never read differently. A click writes the view (the shared
+    `sidePanelViewPatch`, the same patch the in-panel switcher writes) and then
+    reveals the panel, so it slides in already on that view. The rail swallows
+    `mousemove`: it sits *on* the 8px hover-reveal band, which would otherwise
+    open the panel — and unmount the rail — before any button could be clicked.
+    Hovering the edge above or below the rail still reveals the panel on its
+    remembered view, and the click path stays the Windows/WebView2-safe one.
+    Frontend: `lib/sidePanelView.ts` (new), `components/layout/AppShell.tsx`,
+    `components/layout/SidePanel.tsx`, `styles/onboarding.css`, `lib/i18n.ts`
+    + the four dicts (`appShell.showPanelView` replaces `showFilesPanel` and
+    `filesEdgeLabel`).
+    Implemented 2026-09-08, **not live-tested**.
+    - [x] 🤖 Automated test — `SidePanelEdgeRail`
+    - [ ] 🖐️ Manual test — unpin the side panel so it closes. Four tabs stand at
+      the edge: click **Git** → the panel opens on Git; close it, click
+      **Agents** → it opens on Agents. Move the panel to the other edge (⇄) and
+      repeat: the rail mirrors and still works. Hover the edge *above* the rail:
+      the panel still reveals, on whichever view it was last left on.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work

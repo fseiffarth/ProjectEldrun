@@ -14,6 +14,7 @@ import {
 import { useActivityStore, type AttentionKind } from "../../stores/activity";
 import { resolveProjectDirectory, type FilesPanelView } from "../../types";
 import { useT } from "../../lib/i18n";
+import { sidePanelViewKey, sidePanelViewPatch } from "../../lib/sidePanelView";
 import { terminalCharsPerSecond } from "../../dev/terminalOutputRate";
 import {
   RENDERER_CEILING_MB,
@@ -242,7 +243,7 @@ export function SidePanel({
   // settings.json from before either key existed).
   const viewByScope = useSettingsStore((s) => s.settings?.side_panel_view_by_project);
   const lastPanelView = useSettingsStore((s) => s.settings?.side_panel_view ?? "files");
-  const viewKey = activeId ?? scope;
+  const viewKey = sidePanelViewKey(activeId ?? null, scope);
   const panelView = viewByScope?.[viewKey] ?? lastPanelView;
   const updateSettings = useSettingsStore((s) => s.updateSettings);
 
@@ -413,11 +414,11 @@ export function SidePanel({
       view={panelView}
       onViewChange={(view: FilesPanelView) => {
         // Both keys: this scope's own view, and the seed the next scope with no
-        // entry of its own opens on.
-        void updateSettings({
-          side_panel_view: view,
-          side_panel_view_by_project: { ...(viewByScope ?? {}), [viewKey]: view },
-        });
+        // entry of its own opens on. Same patch the closed panel's edge rail
+        // writes when it opens the panel straight onto a view.
+        void updateSettings(
+          sidePanelViewPatch(view, viewKey, { side_panel_view_by_project: viewByScope }),
+        );
       }}
     />
   );

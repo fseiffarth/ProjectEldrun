@@ -298,19 +298,42 @@
 /* Click affordance to open the closed, unpinned side file panel. The hover-only
    right-edge reveal isn't reliable under WebView2 on Windows — the OS resize
    border eats mousemove in the last few edge pixels, so the reveal band never
-   fires and the in-panel pin can't be reached. This tab sits just inside that
+   fires and the in-panel pin can't be reached. This rail sits just inside that
    dead-zone and opens the panel on click (delivered even where mousemove isn't).
    Unmounts as soon as the panel is open, so it never overlaps the panel. */
-/* The closed panel's edge tab. Also the only marker of WHICH edge the unpinned
-   panel lives on, so it carries an accent-tinted body and a vertical label
-   rather than a bare chevron — a 16px grey sliver read as a window artifact. */
-.side-panel-reveal-handle {
+/* The closed panel's edge rail: one tab per view the panel can open on. Also the
+   only marker of WHICH edge the unpinned panel lives on, so the tabs carry an
+   accent-tinted body and a vertical label rather than a bare chevron — a 16px
+   grey sliver read as a window artifact. */
+.side-panel-reveal-rail {
   position: fixed;
   top: 50%;
   right: 0;
   transform: translateY(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 3px;
+  /* Tops the layering contract: it competes in the root stacking context
+     (`.app-body` sets no z-index), where the header (80), menus (1000) and
+     every pane's own chrome (11–15) would otherwise cover it. */
+  z-index: var(--z-edge-handle);
+}
+
+/* The chevron labels the rail, not any one tab — repeated on four tabs it read
+   as decoration rather than "this edge opens". */
+.side-panel-reveal-rail .srh-chevron {
+  align-self: center;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1;
+  opacity: 0.8;
+  pointer-events: none;
+}
+
+.side-panel-reveal-handle {
   width: 20px;
-  min-height: 96px;
+  min-height: 44px;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -326,10 +349,6 @@
   line-height: 1;
   cursor: var(--cur-pointer, pointer);
   opacity: 0.8;
-  /* Tops the layering contract: it competes in the root stacking context
-     (`.app-body` sets no z-index), where the header (80), menus (1000) and
-     every pane's own chrome (11–15) would otherwise cover it. */
-  z-index: var(--z-edge-handle);
   transition: opacity var(--transition), color var(--transition), background-color var(--transition);
 }
 
@@ -348,11 +367,15 @@
   background-color: color-mix(in srgb, var(--accent) 30%, var(--bg-panel));
 }
 
-/* Mirror the reveal handle and tour marker to the left edge when the panel
-   docks there (open edge, border, and rounded corners all flip). */
-.side-panel-reveal-handle.left {
+/* Mirror the reveal rail and tour marker to the left edge when the panel docks
+   there (open edge, border, and rounded corners all flip). */
+.side-panel-reveal-rail.left {
   right: auto;
   left: 0;
+  align-items: flex-start;
+}
+
+.side-panel-reveal-rail.left .side-panel-reveal-handle {
   border-left: none;
   border-right: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border-color));
   border-radius: 0 var(--radius) var(--radius) 0;
