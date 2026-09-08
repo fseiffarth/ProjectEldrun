@@ -2764,6 +2764,25 @@ Count:2
     }
 
     #[test]
+    fn a_clean_exit_is_judged_by_the_pdf_alone() {
+        // An up-to-date no-op writes nothing and is still a success.
+        assert!(build_succeeded(true, true, false, false));
+        // A clean exit with no PDF at all is not.
+        assert!(!build_succeeded(true, false, false, false));
+    }
+
+    #[test]
+    fn a_failed_exit_needs_a_fresh_pdf_and_no_engine_error() {
+        // The forgiven case: latexmk unhappy, engine silent, PDF newly written.
+        assert!(build_succeeded(false, true, true, false));
+        // An earlier build's PDF must never be passed off as this build's.
+        assert!(!build_succeeded(false, true, false, false));
+        // A document that genuinely failed to typeset stays a failure, however
+        // much of a PDF the engine managed to emit.
+        assert!(!build_succeeded(false, true, true, true));
+    }
+
+    #[test]
     fn latexmk_summary_is_none_without_a_complaint() {
         let clean = concat!(
             "Latexmk: This is Latexmk, John Collins\n",
