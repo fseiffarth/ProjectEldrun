@@ -226,24 +226,41 @@
     while the rail is mounted: releasing it when the panel slides open would
     reflow — and re-fit — every terminal underneath by the rail's width on each
     hover-open and again on each close. A pinned panel replaces it with its own,
-    wider inset as before. The `mousemove` stop moved from the whole rail to the
-    tab group (`.srr-group`), because the bar now covers the entire 8px reveal
-    band: the empty run above and below the tabs still bubbles, so hovering the
-    edge away from them reveals the panel on its remembered view exactly as it
-    did. The bar no longer has to top the window to stay visible (nothing is
+    wider inset as before. The tabs run edge to edge across it — no side padding,
+    no side borders, no corner radius — so the whole width of the bar is the
+    button rather than a tab floating in a trough.
+
+    **The hover-open moved onto the bar with them, and that is what made the tabs
+    reliable.** It used to be a body-level `mousemove` band 8px wide at the window
+    edge, fired instantly — and a full-height bar sits *on* that band, so every
+    approach to a tab crossed it: the panel opened, the rail unmounted, and the
+    button vanished from under a click that had not landed yet. The band is gone
+    (`handleBodyMouseMove`, `REVEAL_EDGE_PX`). The bar owns the gesture now:
+    resting on its empty run for `RAIL_DWELL_MS` (400ms) reveals the panel on its
+    remembered view, and moving onto a tab cancels the pending dwell. A tab also
+    commits on `pointerdown` rather than on click — a click only counts if press
+    and release land on the same live element, and this button is one render away
+    from unmounting itself — with `onClick` kept for keyboard and assistive
+    activation and a timestamp so a pointer press never does the work twice.
+
+    The bar no longer has to top the window to stay visible (nothing is
     laid out into its gutter), so `--z-edge-handle: 10001` is gone — z 16 clears
     the pane chrome that can bleed across, and menus, dialogs and tooltips paint
     over a strip that is now full height instead of being buried by it.
     Frontend: `components/layout/AppShell.tsx`, `styles/onboarding.css`,
     `styles/themes.css` (`--side-rail-w` replaces `--z-edge-handle`).
-    Implemented 2026-09-08, **not live-tested**.
+    Implemented 2026-09-09, **not live-tested**.
     - [x] 🤖 Automated test — `SidePanelEdgeRail`
     - [ ] 🖐️ Manual test — unpin the side panel so it closes. The four tabs stand
-      in a bar of their own against the edge, and the terminal/viewer next to it
-      ends *before* the bar — nothing is covered. Open a terminal, hover the edge
-      to reveal the panel and move away to close it: the terminal does not
-      resize or reflow either way. Move the panel to the other edge (⇄): the bar
-      and the gutter mirror. Open a header menu that reaches that edge: it paints
-      over the bar, not under it.
+      in a bar of their own against the edge, filling its full width, and the
+      terminal/viewer next to it ends *before* the bar — nothing is covered.
+      **Click each of Files / Git / Apps / Agents ten times over, approaching
+      from above, from below and straight in: every press opens the panel on that
+      view — none is swallowed.** Then rest the pointer on the bar *away* from
+      the tabs: the panel reveals itself after a moment. Open a terminal, hover
+      to reveal the panel and move away to close it: the terminal does not resize
+      or reflow either way. Move the panel to the other edge (⇄): the bar and the
+      gutter mirror. Open a header menu that reaches that edge: it paints over
+      the bar, not under it.
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work

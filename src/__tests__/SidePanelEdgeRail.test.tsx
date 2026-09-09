@@ -3,10 +3,12 @@
  *
  * With the panel closed the edge is the only way in, and it used to lead to one
  * place: Files. These pin the rail's contract — one tab per view the panel's own
- * switcher offers, and a click that both *stores* that view (so the panel paints
- * it, per #252) and opens the panel. The mousemove stop is here too: the rail
- * sits on the hover-reveal band, and a reveal on hover would unmount the rail
- * before any of its buttons could be clicked.
+ * switcher offers, and an activation that both *stores* that view (so the panel
+ * paints it, per #252) and opens the panel. The hover-open is here too (#268):
+ * the bar covers the window edge for its whole height, so resting on it opens
+ * the panel only after a dwell, and pointing at a tab cancels that dwell —
+ * otherwise the reveal unmounts the rail out from under a click that has not
+ * landed yet.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, act, fireEvent } from "@testing-library/react";
@@ -166,14 +168,83 @@ describe("side panel edge rail", () => {
     expect(document.querySelector(".side-panel-reveal-rail.left")).toBeTruthy();
   });
 
-  it("does not let the hover-reveal band fire underneath it", async () => {
+  it("does not hover-open while the pointer is on a tab", async () => {
+    vi.useFakeTimers();
+    try {
+      await mount();
+      // Travelling to a tab must never reveal the panel: the reveal unmounts the
+      // rail, and the button would go with it before the click landed.
+      await act(async () => {
+        fireEvent.mouseMove(screen.getByTitle("Show the Files panel"));
+        vi.advanceTimersByTime(5000);
+      });
+      expect(screen.queryByTestId("side-panel")).toBeNull();
+      expect(screen.getByTitle("Show the Files panel")).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("hover-opens once the pointer rests on the bar's empty run", async () => {
+    vi.useFakeTimers();
+    try {
+      await mount();
+      const rail = document.querySelector(".side-panel-reveal-rail")!;
+      await act(async () => {
+        fireEvent.mouseMove(rail);
+      });
+      // Deliberate, not instant — the dwell is what keeps the tabs clickable.
+      expect(screen.queryByTestId("side-panel")).toBeNull();
+      await act(async () => {
+        vi.advanceTimersByTime(400);
+      });
+      expect(screen.getByTestId("side-panel")).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("drops a pending dwell when the pointer leaves the bar", async () => {
+    vi.useFakeTimers();
+    try {
+      await mount();
+      const rail = document.querySelector(".side-panel-reveal-rail")!;
+      await act(async () => {
+        fireEvent.mouseMove(rail);
+        fireEvent.mouseLeave(rail);
+        vi.advanceTimersByTime(5000);
+      });
+      expect(screen.queryByTestId("side-panel")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("commits on the press, so an unmount before the click cannot eat it", async () => {
     await mount();
-    const rail = screen.getByTitle("Show the Files panel").parentElement!;
-    // The band reveals on a mousemove within 8px of the edge — which is exactly
-    // where the rail is. Bubbling to `.app-body` must stop at the rail.
+    // pointerdown alone — no click follows, exactly as when the reveal takes the
+    // button away between press and release.
     await act(async () => {
-      fireEvent.mouseMove(rail, { clientX: window.innerWidth - 2 });
+      fireEvent.pointerDown(screen.getByTitle("Show the Agents panel"), { button: 0 });
     });
-    expect(screen.queryByTestId("side-panel")).toBeNull();
+    expect(shared.updateSettings).toHaveBeenCalledWith(
+      expect.objectContaining({ side_panel_view: "agents" }),
+    );
+    expect(screen.getByTestId("side-panel")).toBeTruthy();
+  });
+
+  it("does not act twice when a press is followed by its own click", async () => {
+    await mount();
+    const tab = screen.getByTitle("Show the Git panel");
+    await act(async () => {
+      fireEvent.pointerDown(tab, { button: 0 });
+      fireEvent.click(tab);
+    });
+    // The hints store writes `hints_seen` through the same mock, so count the
+    // view patches rather than every settings write.
+    const patches = shared.updateSettings.mock.calls.filter(
+      (c: unknown[]) => (c[0] as Record<string, unknown>).side_panel_view !== undefined,
+    );
+    expect(patches).toHaveLength(1);
   });
 });

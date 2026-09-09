@@ -345,18 +345,15 @@
   padding-left: var(--side-rail-w);
 }
 
-/* The tabs, centered in the bar. Their own box because the mousemove stop lives
-   here and not on the bar: the bar covers the whole hover-reveal band now, and
-   a reveal fired on the way to a tab would unmount the rail before the click
-   landed. The bar's empty run above and below still bubbles, so hovering the
-   edge away from the tabs opens the panel on its remembered view exactly as it
-   did when the rail was a short cluster. */
+/* The tabs, centered in the bar. Their own box so the bar can tell "pointing at
+   a tab" from "resting on the bar" (`handleRailMouseMove` tests for this class):
+   the bar's empty run hover-opens the panel after a dwell, a tab cancels that
+   dwell, and the two must never be the same gesture. */
 .side-panel-reveal-rail .srr-group {
   display: flex;
   flex-direction: column;
   align-items: stretch;
   gap: 3px;
-  padding: 0 2px;
 }
 
 /* The chevron labels the rail, not any one tab — repeated on four tabs it read
@@ -370,6 +367,12 @@
   pointer-events: none;
 }
 
+/* Edge to edge across the bar: no side padding, no side borders, no corner
+   radius. A tab inset from the bar's own edges left two hairlines of panel
+   ground running the height of the rail and read as a button floating in a
+   trough rather than as the bar's own row — and the inset strip was dead to
+   the click that the whole width should take. Only the top and bottom borders
+   survive, which with the 3px gap are what separate one tab from the next. */
 .side-panel-reveal-handle {
   min-height: 44px;
   display: flex;
@@ -379,7 +382,9 @@
   gap: 5px;
   padding: 10px 0;
   border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border-color));
-  border-radius: var(--radius);
+  border-left: none;
+  border-right: none;
+  border-radius: 0;
   background-color: color-mix(in srgb, var(--accent) 16%, var(--bg-panel));
   color: var(--text-secondary);
   font-size: 13px;
