@@ -1293,6 +1293,8 @@ export const dict: Dict = {
   "projectSwitcher.stopCountSessionsMany": "sesiones persistentes que habrían sobrevivido a un reinicio",
   "projectSwitcher.stopMore": "+{count} más",
   "projectSwitcher.stopKept": "El diseño de pestañas se guarda antes, así que al reabrir el proyecto vuelven donde estaban; el trabajo que corría en ellas no vuelve.",
+  "projectSwitcher.stopRemoteKeptOne": "{count} sesión persistente en un host remoto sigue en marcha; cerrar el proyecto nunca detiene sesiones remotas. Ciérrala desde la vista de sesiones del proyecto.",
+  "projectSwitcher.stopRemoteKeptMany": "{count} sesiones persistentes en hosts remotos siguen en marcha; cerrar el proyecto nunca detiene sesiones remotas. Ciérralas desde la vista de sesiones del proyecto.",
   "projectSwitcher.stopCancel": "Dejar en marcha",
   "projectSwitcher.stopConfirm": "Detener terminales",
   "projectSwitcher.stopError": "No se pudo cerrar el proyecto",

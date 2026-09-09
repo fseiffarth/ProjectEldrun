@@ -62,7 +62,7 @@ export function StopProjectDialog() {
   }, [pending, cancel]);
 
   if (!pending) return null;
-  const { name, tabs, sessions } = pending;
+  const { name, tabs, sessions, remoteSessions } = pending;
   const shown = tabs.slice(0, MAX_LISTED);
   const hidden = tabs.length - shown.length;
 
@@ -121,6 +121,16 @@ export function StopProjectDialog() {
         )}
 
         <p className="stop-project-keep">{t("projectSwitcher.stopKept")}</p>
+        {remoteSessions > 0 && (
+          <p className="stop-project-keep">
+            {t(
+              remoteSessions === 1
+                ? "projectSwitcher.stopRemoteKeptOne"
+                : "projectSwitcher.stopRemoteKeptMany",
+              { count: remoteSessions },
+            )}
+          </p>
+        )}
 
         <div className="project-dialog-actions">
           <button type="button" onClick={cancel}>

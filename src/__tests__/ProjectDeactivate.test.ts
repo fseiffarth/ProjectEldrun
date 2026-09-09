@@ -22,8 +22,8 @@ import { useTabsStore, type GroupNode, type TabEntry } from "../stores/tabs";
 function answerStopPrompt(proceed: boolean) {
   const asked = vi.fn();
   useStopProjectStore.setState({
-    request: (name, tabs, sessions) => {
-      asked(name, tabs, sessions);
+    request: (name, tabs, sessions, remoteSessions) => {
+      asked(name, tabs, sessions, remoteSessions);
       return Promise.resolve(proceed);
     },
   });
@@ -89,6 +89,7 @@ describe("project deactivation", () => {
       "a",
       [expect.objectContaining({ key: shell.key, label: "Shell", kind: "shell" })],
       1,
+      0,
     );
     const commands = mocks.invoke.mock.calls.map((call) => call[0]);
     expect(commands.indexOf("save_tab_layout")).toBeLessThan(commands.indexOf("local_tmux_kill"));
@@ -98,6 +99,60 @@ describe("project deactivation", () => {
     expect(useProjectsStore.getState().projects.find((p) => p.id === "a")?.status).toBe("inactive");
     expect(useProjectsStore.getState().activeId).toBe("b");
     expect(useTabsStore.getState().tabsByScope.a).toBeUndefined();
+  });
+
+  it("leaves remote tmux sessions running and never dials the host", async () => {
+    // A persistent session on a remote host survives the project closing — that
+    // is what it is for, and the host may be unreachable right now. Only the
+    // project's Sessions view kills remote sessions (`remote_tmux_kill`).
+    const remoteShell: TabEntry = { ...shell, location: "remote", tmuxAttach: "gpu-train" };
+    useProjectsStore.setState({
+      projects: [
+        {
+          ...project("a", "current", 0),
+          remote: { host: "h", user: "u", remote_path: "/r" },
+        } as ProjectEntry,
+        project("b", "active", 1),
+      ],
+      activeId: "a",
+    });
+    useTabsStore.setState({ tabs: [remoteShell], tabsByScope: { a: [remoteShell] } });
+    const asked = answerStopPrompt(true);
+    await useProjectsStore.getState().deactivateProject("a");
+
+    // The dialog counts it as KEPT (fourth argument), not as a session to stop.
+    expect(asked).toHaveBeenCalledWith("a", expect.any(Array), 0, 1);
+    expect(mocks.invoke).not.toHaveBeenCalledWith("remote_tmux_kill", expect.anything());
+    expect(mocks.invoke).not.toHaveBeenCalledWith("local_tmux_kill", expect.anything());
+    expect(mocks.invoke).toHaveBeenCalledWith("pty_kill_scope", { scope: "a" });
+    expect(useProjectsStore.getState().projects.find((p) => p.id === "a")?.status).toBe("inactive");
+    expect(useProjectsStore.getState().activeId).toBe("b");
+    expect(mocks.message).not.toHaveBeenCalled();
+  });
+
+  it("hands the window to the next open project, never to the Trash", async () => {
+    // The Trash sits first in the list and is always "active"; closing the current
+    // project used to make it current. Nothing else open → Trash is the fallback.
+    useProjectsStore.setState({
+      projects: [
+        project("eldrun-trash", "active", 0),
+        project("a", "current", 1),
+        project("b", "active", 2),
+        project("c", "inactive", 3),
+      ],
+      activeId: "a",
+    });
+    answerStopPrompt(true);
+    await useProjectsStore.getState().deactivateProject("a");
+    expect(useProjectsStore.getState().activeId).toBe("b");
+
+    useProjectsStore.setState({
+      projects: [project("eldrun-trash", "active", 0), project("b", "current", 1)],
+      activeId: "b",
+    });
+    useTabsStore.setState({ tabsByScope: { b: [] } });
+    await useProjectsStore.getState().deactivateProject("b");
+    expect(useProjectsStore.getState().activeId).toBe("eldrun-trash");
   });
 
   it("does not stop anything when confirmation is declined", async () => {

@@ -1295,6 +1295,8 @@ export const dict: Dict = {
   "projectSwitcher.stopCountSessionsMany": "sessions persistantes qui auraient survécu à un redémarrage",
   "projectSwitcher.stopMore": "+{count} de plus",
   "projectSwitcher.stopKept": "La disposition des onglets est enregistrée d'abord : rouvrir le projet les remet là où ils étaient — le travail qui y tournait, non.",
+  "projectSwitcher.stopRemoteKeptOne": "{count} session persistante sur un hôte distant continue de tourner — fermer le projet n'arrête jamais les sessions distantes. Arrêtez-la depuis la vue Sessions du projet.",
+  "projectSwitcher.stopRemoteKeptMany": "{count} sessions persistantes sur des hôtes distants continuent de tourner — fermer le projet n'arrête jamais les sessions distantes. Arrêtez-les depuis la vue Sessions du projet.",
   "projectSwitcher.stopCancel": "Laisser tourner",
   "projectSwitcher.stopConfirm": "Arrêter les terminaux",
   "projectSwitcher.stopError": "Impossible de fermer le projet",

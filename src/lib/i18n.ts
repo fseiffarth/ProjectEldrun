@@ -1398,6 +1398,8 @@ export const en = {
   "projectSwitcher.stopCountSessionsMany": "persistent sessions that would have survived a relaunch",
   "projectSwitcher.stopMore": "+{count} more",
   "projectSwitcher.stopKept": "The tab layout is saved first, so reopening the project brings these tabs back where they were — the work running in them does not come back.",
+  "projectSwitcher.stopRemoteKeptOne": "{count} persistent session on a remote host keeps running — closing the project never stops remote sessions. Kill it from the project's Sessions view.",
+  "projectSwitcher.stopRemoteKeptMany": "{count} persistent sessions on remote hosts keep running — closing the project never stops remote sessions. Kill them from the project's Sessions view.",
   "projectSwitcher.stopCancel": "Keep running",
   "projectSwitcher.stopConfirm": "Stop terminals",
   "projectSwitcher.stopError": "Could not close project",

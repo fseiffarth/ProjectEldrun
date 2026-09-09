@@ -1297,6 +1297,8 @@ export const dict: Dict = {
   "projectSwitcher.stopCountSessionsMany": "dauerhafte Sitzungen, die einen Neustart überlebt hätten",
   "projectSwitcher.stopMore": "+{count} weitere",
   "projectSwitcher.stopKept": "Das Tab-Layout wird vorher gespeichert: Beim erneuten Öffnen sind diese Tabs wieder da — die darin laufende Arbeit nicht.",
+  "projectSwitcher.stopRemoteKeptOne": "{count} dauerhafte Sitzung auf einem entfernten Host läuft weiter — das Schließen des Projekts beendet nie entfernte Sitzungen. Beende sie in der Sitzungsansicht des Projekts.",
+  "projectSwitcher.stopRemoteKeptMany": "{count} dauerhafte Sitzungen auf entfernten Hosts laufen weiter — das Schließen des Projekts beendet nie entfernte Sitzungen. Beende sie in der Sitzungsansicht des Projekts.",
   "projectSwitcher.stopCancel": "Weiterlaufen lassen",
   "projectSwitcher.stopConfirm": "Terminals beenden",
   "projectSwitcher.stopError": "Projekt konnte nicht geschlossen werden",
