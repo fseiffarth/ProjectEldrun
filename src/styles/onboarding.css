@@ -283,14 +283,16 @@
 
 /* ── Guided tour ("Take a tour") ──────────────────────────────────────────── */
 
-/* Invisible anchor at the right-edge reveal band; gives the file-tree tour step
-   a stable element to spotlight without affecting layout or hit-testing. */
+/* Invisible anchor over the edge rail; gives the file-tree tour step a stable
+   element to spotlight without affecting layout or hit-testing. As wide as the
+   rail's reserved gutter so the spotlight lands on the bar the step is talking
+   about, not on a 6px sliver beside it. */
 .tour-edge-marker {
   position: fixed;
   top: 50%;
   right: 0;
-  width: 6px;
-  height: 120px;
+  width: var(--side-rail-w);
+  height: 160px;
   transform: translateY(-50%);
   pointer-events: none;
 }
@@ -298,26 +300,63 @@
 /* Click affordance to open the closed, unpinned side file panel. The hover-only
    right-edge reveal isn't reliable under WebView2 on Windows — the OS resize
    border eats mousemove in the last few edge pixels, so the reveal band never
-   fires and the in-panel pin can't be reached. This rail sits just inside that
-   dead-zone and opens the panel on click (delivered even where mousemove isn't).
+   fires and the in-panel pin can't be reached. This rail sits in that dead-zone
+   and opens the panel on click (delivered even where mousemove isn't).
    Unmounts as soon as the panel is open, so it never overlaps the panel. */
 /* The closed panel's edge rail: one tab per view the panel can open on. Also the
    only marker of WHICH edge the unpinned panel lives on, so the tabs carry an
    accent-tinted body and a vertical label rather than a bare chevron — a 16px
-   grey sliver read as a window artifact. */
+   grey sliver read as a window artifact.
+
+   It is a BAR, not a floating cluster: `.app-body` reserves --side-rail-w of
+   padding on the panel's edge for as long as an unpinned panel exists, and the
+   rail fills that reserved strip top to bottom. Before, the tabs were fixed and
+   vertically centered ON TOP of the workspace, cutting into whatever terminal or
+   viewer happened to be at that edge. The gutter is held even while the unpinned
+   panel is slid open (the rail itself unmounts, the space does not) so opening
+   and closing the panel never reflows — and re-fits — every terminal underneath
+   by the rail's width. */
 .side-panel-reveal-rail {
-  position: fixed;
-  top: 50%;
+  position: absolute;
+  top: 0;
+  bottom: 0;
   right: 0;
-  transform: translateY(-50%);
+  width: var(--side-rail-w);
   display: flex;
   flex-direction: column;
-  align-items: flex-end;
+  justify-content: center;
+  align-items: stretch;
+  background-color: var(--bg-side-panel);
+  border-left: 1px solid var(--side-panel-border);
+  /* Clears every pane's own chrome (active tab 11, sticky toggles 12, docked
+     sidebar grip 13, the side panel itself 15), all of which resolve in this
+     same stacking context and can bleed into the reserved strip. It stops
+     there: the bar owns its gutter, so nothing in the workspace competes for
+     it, and menus (1000), dialogs and tooltips must still paint OVER a strip
+     that is now full height. */
+  z-index: 16;
+}
+
+.app-body.rail-docked {
+  padding-right: var(--side-rail-w);
+}
+
+.app-body.rail-docked-left {
+  padding-left: var(--side-rail-w);
+}
+
+/* The tabs, centered in the bar. Their own box because the mousemove stop lives
+   here and not on the bar: the bar covers the whole hover-reveal band now, and
+   a reveal fired on the way to a tab would unmount the rail before the click
+   landed. The bar's empty run above and below still bubbles, so hovering the
+   edge away from the tabs opens the panel on its remembered view exactly as it
+   did when the rail was a short cluster. */
+.side-panel-reveal-rail .srr-group {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
   gap: 3px;
-  /* Tops the layering contract: it competes in the root stacking context
-     (`.app-body` sets no z-index), where the header (80), menus (1000) and
-     every pane's own chrome (11–15) would otherwise cover it. */
-  z-index: var(--z-edge-handle);
+  padding: 0 2px;
 }
 
 /* The chevron labels the rail, not any one tab — repeated on four tabs it read
@@ -332,7 +371,6 @@
 }
 
 .side-panel-reveal-handle {
-  width: 20px;
   min-height: 44px;
   display: flex;
   flex-direction: column;
@@ -341,8 +379,7 @@
   gap: 5px;
   padding: 10px 0;
   border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border-color));
-  border-right: none;
-  border-radius: var(--radius) 0 0 var(--radius);
+  border-radius: var(--radius);
   background-color: color-mix(in srgb, var(--accent) 16%, var(--bg-panel));
   color: var(--text-secondary);
   font-size: 13px;
@@ -368,17 +405,12 @@
 }
 
 /* Mirror the reveal rail and tour marker to the left edge when the panel docks
-   there (open edge, border, and rounded corners all flip). */
+   there (the bar's dividing border flips with it). */
 .side-panel-reveal-rail.left {
   right: auto;
   left: 0;
-  align-items: flex-start;
-}
-
-.side-panel-reveal-rail.left .side-panel-reveal-handle {
   border-left: none;
-  border-right: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border-color));
-  border-radius: 0 var(--radius) var(--radius) 0;
+  border-right: 1px solid var(--side-panel-border);
 }
 
 .tour-edge-marker.left {

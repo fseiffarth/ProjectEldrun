@@ -214,3 +214,36 @@
       the panel still reveals, on whichever view it was last left on.
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work
+
+268. **The edge rail is a bar with a gutter of its own, not a floating cluster.**
+    #267's four tabs were `position: fixed` and vertically centred *over* the
+    workspace, so they cut into whichever terminal, viewer or subwindow happened
+    to sit at that edge — a strip of window content permanently under them, and
+    nothing below could be clicked. The rail is now a full-height bar filling a
+    `--side-rail-w` (26px) gutter that `.app-body` holds open on the panel's edge
+    (`rail-docked` / `rail-docked-left`), so no content is laid out beneath it.
+    The gutter is reserved for as long as an *unpinned* panel exists, not only
+    while the rail is mounted: releasing it when the panel slides open would
+    reflow — and re-fit — every terminal underneath by the rail's width on each
+    hover-open and again on each close. A pinned panel replaces it with its own,
+    wider inset as before. The `mousemove` stop moved from the whole rail to the
+    tab group (`.srr-group`), because the bar now covers the entire 8px reveal
+    band: the empty run above and below the tabs still bubbles, so hovering the
+    edge away from them reveals the panel on its remembered view exactly as it
+    did. The bar no longer has to top the window to stay visible (nothing is
+    laid out into its gutter), so `--z-edge-handle: 10001` is gone — z 16 clears
+    the pane chrome that can bleed across, and menus, dialogs and tooltips paint
+    over a strip that is now full height instead of being buried by it.
+    Frontend: `components/layout/AppShell.tsx`, `styles/onboarding.css`,
+    `styles/themes.css` (`--side-rail-w` replaces `--z-edge-handle`).
+    Implemented 2026-09-08, **not live-tested**.
+    - [x] 🤖 Automated test — `SidePanelEdgeRail`
+    - [ ] 🖐️ Manual test — unpin the side panel so it closes. The four tabs stand
+      in a bar of their own against the edge, and the terminal/viewer next to it
+      ends *before* the bar — nothing is covered. Open a terminal, hover the edge
+      to reveal the panel and move away to close it: the terminal does not
+      resize or reflow either way. Move the panel to the other edge (⇄): the bar
+      and the gutter mirror. Open a header menu that reaches that edge: it paints
+      over the bar, not under it.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work

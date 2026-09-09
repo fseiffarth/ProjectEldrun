@@ -921,6 +921,13 @@ export function AppShell() {
 
   const revealPanel = panelTarget && !panelsHidden && (panelOpen || panelPinned);
 
+  // The edge rail is a bar with a gutter of its own, and the gutter is reserved
+  // for as long as an *unpinned* panel exists — not only while the rail is
+  // mounted. Releasing it when the panel slides open would reflow the whole
+  // workspace by the rail's width on every hover-open and re-fit every terminal
+  // underneath; a pinned panel replaces the gutter with its own, wider one.
+  const railDocked = panelTarget && !panelsHidden && !(revealPanel && panelPinned);
+
   const handleBodyMouseMove = (event: ReactMouseEvent<HTMLDivElement>) => {
     if (!panelTarget || panelsHidden || panelOpen) return;
     const nearEdge =
@@ -951,7 +958,17 @@ export function AppShell() {
         <div key={panelsHiddenToast} className="project-switch-toast">{panelsHiddenToast}</div>
       )}
       <div
-        className={`app-body${revealPanel && panelPinned ? (panelSide === "left" ? " left-docked" : " right-docked") : ""}${resizingPanel ? " resizing" : ""}`}
+        className={`app-body${
+          revealPanel && panelPinned
+            ? panelSide === "left"
+              ? " left-docked"
+              : " right-docked"
+            : railDocked
+              ? panelSide === "left"
+                ? " rail-docked-left"
+                : " rail-docked"
+              : ""
+        }${resizingPanel ? " resizing" : ""}`}
         style={
           revealPanel && panelPinned
             ? panelSide === "left"
@@ -1002,44 +1019,48 @@ export function AppShell() {
             One tab per view the panel's own switcher offers, so a closed panel is
             one click from Git, Apps or Agents instead of one click plus a second
             one inside — the panel was otherwise always reopening on whichever view
-            it was last left on. The rail swallows mousemove: with the hover band
-            live underneath it (it sits ON the 8px reveal strip), the panel would
-            open the moment the pointer arrived and unmount the rail before any
-            button could be clicked. Hovering the edge above or below the rail
-            still reveals the panel on its remembered view. */}
+            it was last left on.
+
+            It is its OWN bar: `.app-body` holds a --side-rail-w gutter open on
+            that edge (railDocked) and the rail fills it top to bottom, instead of
+            floating over whatever terminal or viewer sat at the window's edge. The
+            tab group — not the bar — swallows mousemove: the bar covers the whole
+            8px reveal strip, and a hover-reveal fired on the way to a tab would
+            unmount the rail before the click landed. The bar's empty run above and
+            below the tabs still bubbles, so hovering the edge away from them
+            reveals the panel on its remembered view, as before. */}
         {panelTarget && !panelsHidden && !revealPanel && (
-          <div
-            className={`side-panel-reveal-rail${panelSide === "left" ? " left" : ""}`}
-            onMouseMove={(e) => e.stopPropagation()}
-          >
-            <span className="srh-chevron" aria-hidden="true">
-              {panelSide === "left" ? "›" : "‹"}
-            </span>
-            {EDGE_VIEWS.map(({ view, labelKey }) => {
-              const label = t(labelKey);
-              return (
-                <button
-                  key={view}
-                  type="button"
-                  className="side-panel-reveal-handle"
-                  aria-label={t("appShell.showPanelView", { view: label })}
-                  title={t("appShell.showPanelView", { view: label })}
-                  onClick={() => {
-                    useHintsStore.getState().markSeen("file-tree");
-                    void updateSettings(
-                      sidePanelViewPatch(
-                        view,
-                        sidePanelViewKey(activeId, scope),
-                        useSettingsStore.getState().settings,
-                      ),
-                    );
-                    reveal(panelCloseTimer, setPanelOpen);
-                  }}
-                >
-                  <span className="srh-label" aria-hidden="true">{label}</span>
-                </button>
-              );
-            })}
+          <div className={`side-panel-reveal-rail${panelSide === "left" ? " left" : ""}`}>
+            <div className="srr-group" onMouseMove={(e) => e.stopPropagation()}>
+              <span className="srh-chevron" aria-hidden="true">
+                {panelSide === "left" ? "›" : "‹"}
+              </span>
+              {EDGE_VIEWS.map(({ view, labelKey }) => {
+                const label = t(labelKey);
+                return (
+                  <button
+                    key={view}
+                    type="button"
+                    className="side-panel-reveal-handle"
+                    aria-label={t("appShell.showPanelView", { view: label })}
+                    title={t("appShell.showPanelView", { view: label })}
+                    onClick={() => {
+                      useHintsStore.getState().markSeen("file-tree");
+                      void updateSettings(
+                        sidePanelViewPatch(
+                          view,
+                          sidePanelViewKey(activeId, scope),
+                          useSettingsStore.getState().settings,
+                        ),
+                      );
+                      reveal(panelCloseTimer, setPanelOpen);
+                    }}
+                  >
+                    <span className="srh-label" aria-hidden="true">{label}</span>
+                  </button>
+                );
+              })}
+            </div>
           </div>
         )}
       </div>

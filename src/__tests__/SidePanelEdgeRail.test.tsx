@@ -140,6 +140,32 @@ describe("side panel edge rail", () => {
     );
   });
 
+  it("reserves a gutter of its own instead of overlaying the workspace", async () => {
+    await mount();
+    const body = document.querySelector(".app-body")!;
+    expect(body.className).toContain("rail-docked");
+  });
+
+  it("keeps the gutter while the unpinned panel is open, so nothing reflows", async () => {
+    await mount();
+    await act(async () => {
+      fireEvent.click(screen.getByTitle("Show the Git panel"));
+    });
+    // The rail itself is gone (the panel covers its strip) but the space it
+    // occupies is not released: giving it back would resize every terminal
+    // underneath on each hover-open and again on each close.
+    expect(screen.queryByTitle("Show the Git panel")).toBeNull();
+    expect(document.querySelector(".app-body")!.className).toContain("rail-docked");
+  });
+
+  it("mirrors the gutter to the left edge when the panel docks there", async () => {
+    shared.settings = { ...shared.settings, side_panel_edge: "left" };
+    await mount();
+    const body = document.querySelector(".app-body")!;
+    expect(body.className).toContain("rail-docked-left");
+    expect(document.querySelector(".side-panel-reveal-rail.left")).toBeTruthy();
+  });
+
   it("does not let the hover-reveal band fire underneath it", async () => {
     await mount();
     const rail = screen.getByTitle("Show the Files panel").parentElement!;

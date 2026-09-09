@@ -654,17 +654,21 @@
   /* Layering contract, in one place instead of scattered comments. The app's
      layers, bottom to top: hint bubbles (90) < modal backdrop (100) <
      elevated dialogs (110) < context menus/popovers (1000, catcher just
-     under) < tooltips (10000, above everything — they follow the pointer) <
-     the side panel's edge handle (10001). The handle tops even tooltips on
-     purpose: it is a 20px sliver against the window frame and the ONLY marker
-     of which edge the unpinned panel lives on, so nothing may bury it. */
+     under) < tooltips (10000, above everything — they follow the pointer).
+     The side panel's edge rail is NOT in this list: it owns a reserved gutter
+     of its own (--side-rail-w) that no workspace content is laid out into, so
+     it only has to clear the pane chrome that can bleed across (z 16, see
+     onboarding.css) rather than top the whole window as it once did. */
   --z-hint: 90;
   --z-modal: 100;
   --z-modal-elevated: 110;
   --z-menu-catcher: 999;
   --z-menu: 1000;
   --z-tooltip: 10000;
-  --z-edge-handle: 10001;
+  /* Width of the closed side panel's edge rail — the vertical Files/Git/Apps/
+     Agents bar. `.app-body` reserves exactly this much padding on the panel's
+     edge, and the bar fills it, so the two can never disagree. */
+  --side-rail-w: 26px;
 }
 
 /* ── Glass chrome (fancy_dark / light_lavender) ───────────────────────────
