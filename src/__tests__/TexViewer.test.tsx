@@ -63,17 +63,20 @@ function setupInvoke(
   });
 }
 
-async function renderTexView() {
+async function renderTexView(path = "/p/paper.tex", projectId = "proj") {
   vi.resetModules();
   const { FileViewerPane } = await import("../components/embed/FileViewerPane");
   await act(async () => {
-    render(<FileViewerPane viewer="tex" path="/p/paper.tex" projectId="proj" />);
+    render(<FileViewerPane viewer="tex" path={path} projectId={projectId} />);
   });
 }
 
 describe("TexView", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // The beamer/hover switches are remembered per project in localStorage
+    // (`stores/texViewPref`); a test must not inherit the previous one's click.
+    localStorage.clear();
   });
 
   it("degrades to the plain editor with no Compile button when no engine is installed", async () => {
@@ -226,6 +229,45 @@ describe("TexView", () => {
     });
     // The wrapped body stays selected, so a second Wrap re-targets.
     expect(textarea.value.slice(textarea.selectionStart, textarea.selectionEnd)).toBe("Hi");
+  });
+
+  it("#tex-beamer: the switch is the project's — another file of the same project opens with the bar, another project does not", async () => {
+    setupInvoke(true);
+    await renderTexView("/p/paper.tex", "proj");
+    await screen.findByRole("textbox");
+    expect(screen.queryByRole("group", { name: /beamer overlays/i })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /^beamer/i }));
+    await screen.findByRole("group", { name: /beamer overlays/i });
+    cleanup();
+
+    // A different .tex of the same project, in a fresh module registry: the
+    // store is re-read from localStorage, i.e. this is also the relaunch case.
+    await renderTexView("/p/chapter.tex", "proj");
+    // (The bar's own number fields are textboxes too, so wait on the bar.)
+    await screen.findByRole("group", { name: /beamer overlays/i });
+    expect(screen.getByRole("button", { name: /^beamer/i }).getAttribute("aria-pressed")).toBe("true");
+    cleanup();
+
+    // Another project keeps the document default (an article: off).
+    await renderTexView("/q/paper.tex", "other");
+    await screen.findByRole("textbox");
+    expect(screen.queryByRole("group", { name: /beamer overlays/i })).toBeNull();
+    expect(screen.getByRole("button", { name: /^beamer/i }).getAttribute("aria-pressed")).toBe("false");
+  });
+
+  it("#tex-hover-preview: switching the preview off holds for the project's other files", async () => {
+    setupInvoke(true);
+    await renderTexView("/p/paper.tex", "proj");
+    await screen.findByRole("textbox");
+    const toggle = () => screen.getByRole("button", { name: /^preview/i });
+    expect(toggle().getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(toggle());
+    expect(toggle().getAttribute("aria-pressed")).toBe("false");
+    cleanup();
+
+    await renderTexView("/p/chapter.tex", "proj");
+    await screen.findByRole("textbox");
+    expect(toggle().getAttribute("aria-pressed")).toBe("false");
   });
 
   it("#tex-beamer: a beamer document opens with the bar on", async () => {

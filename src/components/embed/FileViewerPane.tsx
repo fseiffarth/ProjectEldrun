@@ -12,6 +12,7 @@ import {
   type ViewerState,
 } from "../../stores/tabs";
 import { useSettingsStore } from "../../stores/settings";
+import { useTexViewPrefStore, texViewScopeKey } from "../../stores/texViewPref";
 import { useExperimental } from "../../lib/experimental";
 import { useProjectsStore } from "../../stores/projects";
 import { useRemoteStatusStore } from "../../stores/remoteStatus";
@@ -5943,54 +5944,45 @@ function useTabAiPrefs(tabKey: string | undefined, type: InternalViewer): TabAiP
   };
 }
 
-/** The hover preview's on/off for THIS tab (#tex-hover-preview): tab-local like
- *  the AI-assist toggles, seeded from the per-type `viewer_prefs.tex` default and
- *  written back to the tab's persisted `viewerState`, so a tab that had it off
- *  still has it off after a reopen and a relaunch.
+/** The hover preview's on/off (#tex-hover-preview): the PROJECT's, not the
+ *  tab's — one click holds for every TeX pane of the project, across a project
+ *  switch and a relaunch (`stores/texViewPref`). Seeded from the per-type
+ *  `viewer_prefs.tex` default while no click has been made.
  *
  *  Unlike autocomplete and grammar it defaults **ON** (absent ⇒ on), and the
  *  difference is what the two cost: those call a language model, this runs the
  *  TeX engine the viewer is already built around — on a fragment, once per
  *  distinct fragment, and only after the pointer has rested. */
-function useTexHoverPreview(tabKey: string | undefined): { on: boolean; toggle: () => void } {
+function useTexHoverPreview(scope: string | null): { on: boolean; toggle: () => void } {
   const pref = useViewerPref("tex");
   const def = pref?.hover_preview !== false;
-  const [override, setOverride] = useState<boolean | undefined>(
-    () => seedViewerState(tabKey)?.texHoverPreview,
-  );
+  const key = texViewScopeKey(scope);
+  const override = useTexViewPrefStore((s) => s.byProject[key]?.hoverPreview);
   const on = override ?? def;
   const toggle = useCallback(() => {
-    setOverride((cur) => {
-      const next = !(cur ?? def);
-      if (tabKey) useTabsStore.getState().setViewerState(tabKey, { texHoverPreview: next });
-      return next;
-    });
-  }, [tabKey, def]);
+    useTexViewPrefStore.getState().set(key, { hoverPreview: !on });
+  }, [key, on]);
   return { on, toggle };
 }
 
 /**
  * Beamer mode for the TeX editor (#tex-beamer): is the overlay bar shown? Per
- * tab, like the hover preview, but its default is the DOCUMENT's — on when any
- * file of it loads `\documentclass{beamer}` (`detected`), off otherwise — so a
- * deck opens with the bar and a paper never sees it, and a click either way is
- * remembered on the tab.
+ * PROJECT, like the hover preview, but its default is the DOCUMENT's — on when
+ * any file of it loads `\documentclass{beamer}` (`detected`), off otherwise — so
+ * a deck opens with the bar and a paper never sees it, and a click either way
+ * is remembered for the project: every file of the deck, this sitting and the
+ * next.
  */
 function useTexBeamerMode(
-  tabKey: string | undefined,
+  scope: string | null,
   detected: boolean,
 ): { on: boolean; toggle: () => void } {
-  const [override, setOverride] = useState<boolean | undefined>(
-    () => seedViewerState(tabKey)?.texBeamer,
-  );
+  const key = texViewScopeKey(scope);
+  const override = useTexViewPrefStore((s) => s.byProject[key]?.beamer);
   const on = override ?? detected;
   const toggle = useCallback(() => {
-    setOverride((cur) => {
-      const next = !(cur ?? detected);
-      if (tabKey) useTabsStore.getState().setViewerState(tabKey, { texBeamer: next });
-      return next;
-    });
-  }, [tabKey, detected]);
+    useTexViewPrefStore.getState().set(key, { beamer: !on });
+  }, [key, on]);
   return { on, toggle };
 }
 
@@ -9237,15 +9229,15 @@ function TexView({
     return () => { cancelled = true; };
   }, [root, path, scope]);
 
-  const hoverPref = useTexHoverPreview(tabKey);
+  const hoverPref = useTexHoverPreview(scope);
   // #tex-beamer: the document decides the default (a deck opens with the bar),
-  // the tab remembers a click. The gather answers for the whole document; the
+  // the project remembers a click. The gather answers for the whole document; the
   // draft answers for a class line typed into THIS file before any compile.
   const beamerDetected = useMemo(
     () => gathered.beamer === true || isBeamerDocument(draft),
     [gathered.beamer, draft],
   );
-  const beamer = useTexBeamerMode(tabKey, beamerDetected);
+  const beamer = useTexBeamerMode(scope, beamerDetected);
   const texEditorApi = useRef<EditorApi | null>(null);
   const beamerSelection = useRef<RememberedSelection | null>(null);
   const onSelectionChange = useCallback((start: number, end: number) => {

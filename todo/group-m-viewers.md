@@ -1929,7 +1929,7 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       document — on when any file of it loads `\documentclass{beamer}` (the
       completion gather's walk reports `beamer`, and the draft itself is read
       for a class line typed before any compile), off for a paper — and a click
-      is remembered per tab (`ViewerState.texBeamer`).
+      is remembered per **project** (#270; was per tab).
     - **The overlay bar** under the header while on: a command dropdown
       (`\only` `\uncover` `\visible` `\invisible` `\alert` `\onslide` `\alt`
       `\temporal`), *from* / *to* / *onward* fields, and the spec as it will be
@@ -2039,5 +2039,32 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       the chord; rebind `texCompile` in Settings → Shortcuts and the tooltip
       follows. Hover the ◫ / hide / close subwindow buttons and the active
       tab's ×: each names its chord, and an inactive tab's × does not.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+270. **TeX editor: the Beamer and Preview switches are the project's, not the
+    tab's.** Implemented 2026-09-10, not yet verified live. Both toggles wrote
+    to the tab's `ViewerState`, so every `.tex` of a deck had to be told
+    "beamer" on its own and a fresh tab of the same document opened without
+    the bar. Now one row per project (`stores/texViewPref`, localStorage keyed
+    by project id, `"root"` for the root scope, capped at 200 rows like
+    `fileSourcePref`), read live by every TeX pane of the project — center,
+    workspace, popout — and surviving a project switch and a relaunch. Absent
+    means the old default: beamer follows the document, the preview follows
+    `viewer_prefs.tex`. The per-tab `texBeamer`/`texHoverPreview` rows in old
+    sessions are ignored.
+    - *Files: `src/stores/texViewPref.ts` (new),
+      `src/components/embed/FileViewerPane.tsx`, `src/stores/tabs.ts`.*
+      Frontend only, hot-reloads.
+    - [x] 🤖 Automated test — `src/__tests__/TexViewPref.test.ts` (merge,
+      persist, junk rows dropped) and `TexViewer.test.tsx` (a second file of
+      the project opens with the bar / the preview off, through a fresh module
+      registry = the relaunch path; another project keeps its default).
+    - [ ] 🖐️ Manual test — in a project with two `.tex` files (an `article`),
+      click **Beamer** on in one: the other file's tab shows the bar at once.
+      Switch **Preview** off there. Switch to another project and back, then
+      quit and relaunch Eldrun: both files still show the bar and Preview
+      off; a different project's `.tex` is unaffected. A beamer document with
+      no click still opens with the bar.
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work
