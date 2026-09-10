@@ -264,3 +264,30 @@
       the bar, not under it.
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work
+
+269. **The edge rail is icons: chevron, Files / Git / Apps / Agents, side switch
+    — and the chevron works.** The chevron was a bare `<span>` with
+    `pointer-events: none` inside the tab group, and the group cancels the
+    hover-dwell — so the one glyph that says "this edge opens" did nothing when
+    clicked. It is now a rail button that opens the panel on its remembered
+    view, storing no view. #267's four vertical text labels are icons now
+    (folder, branch, window grid, chat bubble). Below them a side switch (panel
+    outline with a two-way arrow) moves the panel — and the rail with it — to
+    the other edge without opening anything, reusing the panel's own
+    `toggleSide`. Every button commits on `pointerdown` per #268, and the glyphs
+    share the `SaveIcon` / `PrinterIcon` outline style
+    (`common/EdgeRailIcons.tsx`).
+    Frontend: `components/layout/AppShell.tsx`, `components/common/EdgeRailIcons.tsx`,
+    `styles/onboarding.css`, `lib/i18n.ts` (`appShell.showPanel`).
+    Implemented 2026-09-10, **not live-tested**.
+    - [x] 🤖 Automated test — `SidePanelEdgeRail`
+    - [ ] 🖐️ Manual test — unpin the side panel so it closes. The bar shows six
+      icons: a chevron, Files / Git / Apps / Agents, and a side switch set
+      slightly apart. Click the chevron → the panel opens on whichever view it
+      was last on. Close it, click each of the four → it opens on that view
+      (hover a tab for its name). Close it, click the side
+      switch → the panel does **not** open; the bar jumps to the other edge and
+      the chevron now points the other way. Click the switch again → back.
+      Hover the bar's empty run: the panel still reveals after a moment.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work

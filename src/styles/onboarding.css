@@ -356,15 +356,25 @@
   gap: 3px;
 }
 
-/* The chevron labels the rail, not any one tab — repeated on four tabs it read
-   as decoration rather than "this edge opens". */
-.side-panel-reveal-rail .srh-chevron {
-  align-self: center;
-  color: var(--text-secondary);
-  font-size: 13px;
-  line-height: 1;
-  opacity: 0.8;
-  pointer-events: none;
+/* The chevron is the rail's own tab: it opens the panel on its remembered view,
+   where each tab below it opens on one view in particular. It was an
+   inert span with pointer-events off, and the one glyph that says "this edge
+   opens" did nothing when clicked. Same handle as every other rail button. */
+.side-panel-reveal-rail .srh-chevron svg {
+  width: 18px;
+  height: 18px;
+}
+
+/* The side switch moves the panel to the other edge without opening it. Set
+   apart from the open-the-panel buttons above it by a wider gap, and quieter
+   at rest: it is a layout control, not a destination. */
+.side-panel-reveal-rail .srh-switch {
+  margin-top: 12px;
+  opacity: 0.55;
+}
+
+.side-panel-reveal-rail .srh-switch:hover {
+  opacity: 1;
 }
 
 /* Edge to edge across the bar: no side padding, no side borders, no corner
@@ -392,15 +402,6 @@
   cursor: var(--cur-pointer, pointer);
   opacity: 0.8;
   transition: opacity var(--transition), color var(--transition), background-color var(--transition);
-}
-
-.side-panel-reveal-handle .srh-label {
-  writing-mode: vertical-rl;
-  text-orientation: mixed;
-  font-size: var(--text-xs);
-  font-weight: 600;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
 }
 
 .side-panel-reveal-handle:hover {

@@ -53,6 +53,14 @@ import { TodoOverlayHost } from "../todo/TodoOverlay";
 import { SkillsOverlayHost } from "../skills/SkillsOverlay";
 import { InstallOverlayHost } from "./InstallOverlay";
 import { LocalLossDialog } from "../common/LocalLossDialog";
+import {
+  RailAgentsIcon,
+  RailAppsIcon,
+  RailChevronIcon,
+  RailFilesIcon,
+  RailGitIcon,
+  RailSwitchSideIcon,
+} from "../common/EdgeRailIcons";
 import { HostKeyConfirmDialog } from "../common/HostKeyConfirmDialog";
 import { HpcGuardDialog } from "../common/HpcGuardDialog";
 import { StopProjectDialog } from "../common/StopProjectDialog";
@@ -117,13 +125,20 @@ const DevPerfHost = import.meta.env.DEV
 const RAIL_DWELL_MS = 400;
 
 // The views the closed panel's edge rail can open it straight onto — the same
-// four the panel's own switcher leads with (`ProjectFilesView`), labelled from
-// the same keys so the rail and the switcher can never read differently.
-const EDGE_VIEWS: ReadonlyArray<{ view: FilesPanelView; labelKey: TranslationKey }> = [
-  { view: "files", labelKey: "projectFilesView.tabFiles" },
-  { view: "git", labelKey: "projectFilesView.tabGit" },
-  { view: "windows", labelKey: "projectFilesView.tabApps" },
-  { view: "agents", labelKey: "projectFilesView.tabAgents" },
+// four the panel's own switcher leads with (`ProjectFilesView`), named from the
+// same keys so the rail and the switcher can never read differently. Every rail
+// button is an icon (`EdgeRailIcons`), not a vertical label; the chevron above
+// the tabs opens the panel on whichever view it was last left on, and the
+// switch below them moves the panel to the other edge.
+const EDGE_VIEWS: ReadonlyArray<{
+  view: FilesPanelView;
+  labelKey: TranslationKey;
+  Icon: (props: { className?: string }) => JSX.Element;
+}> = [
+  { view: "files", labelKey: "projectFilesView.tabFiles", Icon: RailFilesIcon },
+  { view: "git", labelKey: "projectFilesView.tabGit", Icon: RailGitIcon },
+  { view: "windows", labelKey: "projectFilesView.tabApps", Icon: RailAppsIcon },
+  { view: "agents", labelKey: "projectFilesView.tabAgents", Icon: RailAgentsIcon },
 ];
 
 // Side-panel width bounds. The default matches the historical fixed 280px so
@@ -970,6 +985,15 @@ export function AppShell() {
   // with no pointer press; the timestamp keeps a pointer press from doing the
   // work twice, and cannot go stale into a later real click.
   const railPressedAt = useRef(0);
+  // The chevron: open the panel on its remembered view, storing nothing. It was
+  // a bare `<span>` inside the tab group — inert, and the group cancels the
+  // hover-dwell — so the one glyph that says "this edge opens" did nothing
+  // when clicked.
+  const openPanel = () => {
+    cancelRailDwell();
+    useHintsStore.getState().markSeen("file-tree");
+    reveal(panelCloseTimer, setPanelOpen);
+  };
   const openPanelOnView = (view: FilesPanelView) => {
     cancelRailDwell();
     useHintsStore.getState().markSeen("file-tree");
@@ -1058,10 +1082,11 @@ export function AppShell() {
             the *edge marker*: unpinned, the panel is invisible, so this labelled
             rail is the only thing saying which side it will slide in from.
 
-            One tab per view the panel's own switcher offers, so a closed panel is
-            one click from Git, Apps or Agents instead of one click plus a second
-            one inside — the panel was otherwise always reopening on whichever view
-            it was last left on.
+            Icon buttons only: a chevron that opens the panel on its remembered
+            view, one tab per view the panel's own switcher offers — so a closed
+            panel is one click from Git, Apps or Agents instead of one click plus
+            a second one inside — and a side switch that moves the panel (and
+            this rail with it) to the other edge without opening anything.
 
             It is its OWN bar: `.app-body` holds a --side-rail-w gutter open on
             that edge (railDocked) and the rail fills it top to bottom, instead of
@@ -1081,10 +1106,24 @@ export function AppShell() {
             onMouseLeave={cancelRailDwell}
           >
             <div className="srr-group">
-              <span className="srh-chevron" aria-hidden="true">
-                {panelSide === "left" ? "›" : "‹"}
-              </span>
-              {EDGE_VIEWS.map(({ view, labelKey }) => {
+              <button
+                type="button"
+                className="side-panel-reveal-handle srh-chevron"
+                aria-label={t("appShell.showPanel")}
+                title={t("appShell.showPanel")}
+                onPointerDown={(e) => {
+                  if (e.button !== 0) return;
+                  railPressedAt.current = Date.now();
+                  openPanel();
+                }}
+                onClick={() => {
+                  if (Date.now() - railPressedAt.current < 700) return;
+                  openPanel();
+                }}
+              >
+                <RailChevronIcon dir={panelSide === "left" ? "right" : "left"} />
+              </button>
+              {EDGE_VIEWS.map(({ view, labelKey, Icon }) => {
                 const label = t(labelKey);
                 return (
                   <button
@@ -1103,10 +1142,30 @@ export function AppShell() {
                       openPanelOnView(view);
                     }}
                   >
-                    <span className="srh-label" aria-hidden="true">{label}</span>
+                    <Icon />
                   </button>
                 );
               })}
+              <button
+                type="button"
+                className="side-panel-reveal-handle srh-switch"
+                aria-label={t(panelSide === "left" ? "sidePanel.moveRight" : "sidePanel.moveLeft")}
+                title={t(panelSide === "left" ? "sidePanel.moveRight" : "sidePanel.moveLeft")}
+                onPointerDown={(e) => {
+                  // Same press-commits contract as the tabs: the rail re-mounts on
+                  // the other edge under the pointer, so a click may never land.
+                  if (e.button !== 0) return;
+                  railPressedAt.current = Date.now();
+                  cancelRailDwell();
+                  toggleSide();
+                }}
+                onClick={() => {
+                  if (Date.now() - railPressedAt.current < 700) return;
+                  toggleSide();
+                }}
+              >
+                <RailSwitchSideIcon />
+              </button>
             </div>
           </div>
         )}

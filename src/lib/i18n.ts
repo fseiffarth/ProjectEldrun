@@ -1616,6 +1616,7 @@ export const en = {
   "appShell.vpnStillActiveTitle": "VPN tunnel still active",
   "appShell.vpnStillActiveMessage": "The OpenVPN tunnel is still active and reroutes this whole machine. It will keep running after Eldrun closes — use the VPN control in the header to close it yourself when you're done.",
   "appShell.showPanelView": "Show the {view} panel",
+  "appShell.showPanel": "Show the side panel",
   "appShell.panelsHiddenToast": "Panels hidden — press {key} to bring them back",
   "detached.loadingSubwindow": "Loading subwindow…",
   "centerPanel.noTabsOpen": "No tabs open",

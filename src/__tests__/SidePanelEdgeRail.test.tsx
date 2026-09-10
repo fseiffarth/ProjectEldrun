@@ -107,29 +107,14 @@ describe("side panel edge rail", () => {
     shared.settings = { side_panel_view_by_project: { other: "git" } };
   });
 
-  it("offers one tab per panel view while the panel is closed", async () => {
+  it("offers the chevron, one tab per panel view and the side switch while closed", async () => {
     await mount();
+    expect(screen.getByTitle("Show the side panel")).toBeTruthy();
     for (const label of ["Files", "Git", "Apps", "Agents"]) {
       expect(screen.getByTitle(`Show the ${label} panel`)).toBeTruthy();
     }
+    expect(screen.getByTitle("Move panel to the left edge")).toBeTruthy();
     expect(screen.queryByTestId("side-panel")).toBeNull();
-  });
-
-  it("stores the clicked view and opens the panel on it", async () => {
-    await mount();
-    await act(async () => {
-      fireEvent.click(screen.getByTitle("Show the Git panel"));
-    });
-
-    // Both keys: this project's own entry (untouched siblings preserved) and the
-    // seed a scope with no entry of its own opens on.
-    expect(shared.updateSettings).toHaveBeenCalledWith({
-      side_panel_view: "git",
-      side_panel_view_by_project: { other: "git", "proj-1": "git" },
-    });
-    expect(screen.getByTestId("side-panel")).toBeTruthy();
-    // Opening the panel takes the rail with it, so it can never overlap.
-    expect(screen.queryByTitle("Show the Files panel")).toBeNull();
   });
 
   it("Apps maps to the panel's windows view, not a view of its own", async () => {
@@ -142,6 +127,44 @@ describe("side panel edge rail", () => {
     );
   });
 
+  it("stores the clicked view and opens the panel on it", async () => {
+    await mount();
+    await act(async () => {
+      fireEvent.click(screen.getByTitle("Show the Agents panel"));
+    });
+
+    // Both keys: this project's own entry (untouched siblings preserved) and the
+    // seed a scope with no entry of its own opens on.
+    expect(shared.updateSettings).toHaveBeenCalledWith({
+      side_panel_view: "agents",
+      side_panel_view_by_project: { other: "git", "proj-1": "agents" },
+    });
+    expect(screen.getByTestId("side-panel")).toBeTruthy();
+    // Opening the panel takes the rail with it, so it can never overlap.
+    expect(screen.queryByTitle("Show the Agents panel")).toBeNull();
+  });
+
+  it("the chevron opens the panel on its remembered view, storing nothing", async () => {
+    await mount();
+    await act(async () => {
+      fireEvent.pointerDown(screen.getByTitle("Show the side panel"), { button: 0 });
+    });
+    expect(screen.getByTestId("side-panel")).toBeTruthy();
+    const patches = shared.updateSettings.mock.calls.filter(
+      (c: unknown[]) => (c[0] as Record<string, unknown>).side_panel_view !== undefined,
+    );
+    expect(patches).toHaveLength(0);
+  });
+
+  it("the side switch moves the panel to the other edge without opening it", async () => {
+    await mount();
+    await act(async () => {
+      fireEvent.pointerDown(screen.getByTitle("Move panel to the left edge"), { button: 0 });
+    });
+    expect(shared.updateSettings).toHaveBeenCalledWith({ side_panel_edge: "left" });
+    expect(screen.queryByTestId("side-panel")).toBeNull();
+  });
+
   it("reserves a gutter of its own instead of overlaying the workspace", async () => {
     await mount();
     const body = document.querySelector(".app-body")!;
@@ -151,12 +174,12 @@ describe("side panel edge rail", () => {
   it("keeps the gutter while the unpinned panel is open, so nothing reflows", async () => {
     await mount();
     await act(async () => {
-      fireEvent.click(screen.getByTitle("Show the Git panel"));
+      fireEvent.click(screen.getByTitle("Show the Agents panel"));
     });
     // The rail itself is gone (the panel covers its strip) but the space it
     // occupies is not released: giving it back would resize every terminal
     // underneath on each hover-open and again on each close.
-    expect(screen.queryByTitle("Show the Git panel")).toBeNull();
+    expect(screen.queryByTitle("Show the Agents panel")).toBeNull();
     expect(document.querySelector(".app-body")!.className).toContain("rail-docked");
   });
 
@@ -175,11 +198,11 @@ describe("side panel edge rail", () => {
       // Travelling to a tab must never reveal the panel: the reveal unmounts the
       // rail, and the button would go with it before the click landed.
       await act(async () => {
-        fireEvent.mouseMove(screen.getByTitle("Show the Files panel"));
+        fireEvent.mouseMove(screen.getByTitle("Show the Agents panel"));
         vi.advanceTimersByTime(5000);
       });
       expect(screen.queryByTestId("side-panel")).toBeNull();
-      expect(screen.getByTitle("Show the Files panel")).toBeTruthy();
+      expect(screen.getByTitle("Show the Agents panel")).toBeTruthy();
     } finally {
       vi.useRealTimers();
     }
@@ -235,7 +258,7 @@ describe("side panel edge rail", () => {
 
   it("does not act twice when a press is followed by its own click", async () => {
     await mount();
-    const tab = screen.getByTitle("Show the Git panel");
+    const tab = screen.getByTitle("Show the Agents panel");
     await act(async () => {
       fireEvent.pointerDown(tab, { button: 0 });
       fireEvent.click(tab);

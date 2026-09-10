@@ -1511,6 +1511,7 @@ export const dict: Dict = {
   "appShell.vpnStillActiveTitle": "Tunnel VPN ancora attivo",
   "appShell.vpnStillActiveMessage": "Il tunnel OpenVPN è ancora attivo e instrada l'intera macchina. Continuerà a funzionare dopo la chiusura di Eldrun — usa il controllo VPN nell'intestazione per chiuderlo tu stesso quando hai finito.",
   "appShell.showPanelView": "Mostra il pannello {view}",
+  "appShell.showPanel": "Mostra il pannello laterale",
   "appShell.panelsHiddenToast": "Pannelli nascosti: premi {key} per mostrarli di nuovo",
   "detached.loadingSubwindow": "Caricamento sottofinestra…",
   "centerPanel.noTabsOpen": "Nessuna scheda aperta",
