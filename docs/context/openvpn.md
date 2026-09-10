@@ -72,3 +72,18 @@ Referenced from `AGENTS.md`.
   the quit: Eldrun warns that the tunnel stays up and closes anyway, and records the
   refusal so the exit-time teardown does not raise a second, parentless polkit dialog
   after the window is gone (which is what used to leave the machine unusable).
+- **A VPN-only mail or CalDAV account** (`require_vpn` on `MailAccount` /
+  `CalDavAccount`, 2026-09-09) is the tunnel's one consumer outside remote projects.
+  An institutional mailbox or calendar server is often reachable only from inside
+  its network; without the gate every interval check burned a connect timeout,
+  painted the header red, and nothing caught up when the tunnel returned. "VPN on"
+  means **a tunnel this registry knows about** — `any_tunnel_up()` is
+  `!active_configs().is_empty()`, headless or terminal-tab — so a tunnel from
+  NetworkManager or WireGuard is invisible and a gated account never syncs; the
+  dialogs say so. Enforced at each subsystem's one choke point (`mail_engine`'s
+  `vpn_gate` before every operation, `commands::caldav::credentials` before the
+  keyring is even read) with one shared sentence, `VPN_GATE_REFUSAL`. The frontend
+  schedulers (`MailIndicator`, `CalDavSyncHost`; `src/lib/vpnGate.ts`) skip a gated
+  account quietly while down and check it on the tunnel's **rising edge** — a
+  reconciled `false → true` only, never the store's first sight of a tunnel at
+  launch, which would be a check at mount by the back door.

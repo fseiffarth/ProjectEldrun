@@ -50,6 +50,9 @@ export interface CalDavAccount {
   save_password: boolean;
   /** Minutes between background syncs; `0`/absent means manual-only. */
   sync_interval_min?: number | null;
+  /** **VPN-only, default false** — the mail account's field, for the same
+   *  institutional-server case; see `lib/vpnGate.ts`. */
+  require_vpn?: boolean;
   /** **Two-way sync — opt-in, default false.** The plan left "is write access
    *  even wanted against an institutional calendar?" open; this is that question
    *  asked rather than answered on the user's behalf. A push bug against a

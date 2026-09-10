@@ -114,10 +114,20 @@ fn validate_input(input: ProjectAgentPromptInput) -> Result<ProjectAgentPromptIn
         Some(tags) => Some(validate_tags(tags)?),
         None => None,
     };
+    // An empty target is the clear request; anything else must be an id.
+    let target = match input.target {
+        Some(target) if target.trim().is_empty() => Some(String::new()),
+        Some(target) => {
+            validate_id("prompt target", &target)?;
+            Some(target)
+        }
+        None => None,
+    };
     Ok(ProjectAgentPromptInput {
         id: input.id,
         message,
         tags,
+        target,
     })
 }
 
@@ -139,6 +149,10 @@ fn apply_upsert(
             if let Some(tags) = input.tags {
                 prompts[index].tags = tags;
             }
+            // Same contract for the aimed tab: silence keeps it, `""` clears.
+            if let Some(target) = input.target {
+                prompts[index].target = Some(target).filter(|value| !value.is_empty());
+            }
         }
         None => {
             if prompts.len() >= MAX_PROMPTS_PER_PROJECT {
@@ -152,6 +166,7 @@ fn apply_upsert(
                 created_at: now.to_string(),
                 updated_at: now.to_string(),
                 tags: input.tags.unwrap_or_default(),
+                target: input.target.filter(|value| !value.is_empty()),
             });
         }
     }
@@ -702,6 +717,14 @@ mod tests {
             id: id.into(),
             message: message.into(),
             tags: None,
+            target: None,
+        }
+    }
+
+    fn aimed(id: &str, message: &str, target: &str) -> ProjectAgentPromptInput {
+        ProjectAgentPromptInput {
+            target: Some(target.into()),
+            ..input(id, message)
         }
     }
 
@@ -761,6 +784,29 @@ mod tests {
         // A new prompt without tags starts untagged.
         let prompts = apply_upsert(&mut file, "p", input("b", "x"), "t4").unwrap();
         assert!(prompts[1].tags.is_empty());
+    }
+
+    #[test]
+    fn upsert_keeps_target_unless_the_editor_names_it() {
+        let mut file = AgentPromptsFile::default();
+        let aimed_at = validate_input(aimed("a", "one", "tab-1")).unwrap();
+        let prompts = apply_upsert(&mut file, "p", aimed_at, "t1").unwrap();
+        assert_eq!(prompts[0].target.as_deref(), Some("tab-1"));
+        // The phone edits the text and says nothing about the target: it stays.
+        let prompts = apply_upsert(&mut file, "p", input("a", "two"), "t2").unwrap();
+        assert_eq!(prompts[0].target.as_deref(), Some("tab-1"));
+        // An editor that names an empty target clears it, and the cleared row
+        // serializes without the key so older builds read it as before.
+        let cleared = validate_input(aimed("a", "two", " ")).unwrap();
+        assert_eq!(cleared.target.as_deref(), Some(""));
+        let prompts = apply_upsert(&mut file, "p", cleared, "t3").unwrap();
+        assert_eq!(prompts[0].target, None);
+        assert!(!serde_json::to_string(&prompts[0]).unwrap().contains("target"));
+        // A new prompt aimed with an empty target starts unaimed, and a target
+        // that is not an id is refused before it reaches the file.
+        let prompts = apply_upsert(&mut file, "p", aimed("b", "x", ""), "t4").unwrap();
+        assert_eq!(prompts[1].target, None);
+        assert!(validate_input(aimed("c", "x", "bad\u{1}id")).is_err());
     }
 
     #[test]

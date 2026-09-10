@@ -42,6 +42,7 @@ use crate::schema::caldav::{
 };
 use crate::schema::calendar::CalendarData;
 use crate::services::caldav::{self, Credentials};
+use crate::services::openvpn;
 use crate::services::remote_credentials::{self, KeyringState};
 use crate::storage;
 
@@ -151,6 +152,11 @@ fn resolve_password(rt: &CalDavState, account: &CalDavAccount) -> Option<String>
 }
 
 fn credentials(rt: &CalDavState, account: &CalDavAccount) -> Result<Credentials, String> {
+    // The VPN gate sits here rather than in each command because this is the
+    // one step every network-bound command takes first: refusing before the
+    // password is even looked up means a gated account never reaches the
+    // keyring, let alone a socket, while the tunnel is down.
+    openvpn::account_gate(account.require_vpn)?;
     let password = resolve_password(rt, account).ok_or_else(|| {
         "no password available for this CalDAV account — open its settings and type one, or \
          unlock the OS keyring"

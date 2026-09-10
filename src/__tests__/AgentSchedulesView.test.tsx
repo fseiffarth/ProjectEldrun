@@ -7,6 +7,7 @@ vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(() => Promise.resolve(()
 
 import { AgentSchedulesView } from "../components/agents/AgentSchedulesView";
 import { PromptChartTab } from "../components/agents/PromptChartTab";
+import { localOccurrenceKey } from "../lib/agentSchedule";
 import { useActivityStore } from "../stores/activity";
 import { useAgentPromptsStore } from "../stores/agentPrompts";
 import { useAgentSchedulesStore } from "../stores/agentSchedules";
@@ -113,7 +114,7 @@ describe("AgentSchedulesView prompt chart", () => {
   it("charts the scope's agent tabs in its own tab", async () => {
     await act(async () => { render(<PromptChartTab scope="p" />); });
     expect(await screen.findByText("Prompt chart")).toBeTruthy();
-    expect(document.querySelector('[data-strand="strand:target-1"]')).toBeTruthy();
+    expect(screen.getByTestId("prompt-timeline")).toBeTruthy();
     expect((await screen.findByTestId("prompt-chart-card-draft")).textContent).toContain("Run the tests");
   });
 
@@ -145,15 +146,16 @@ describe("AgentSchedulesView prompt chart", () => {
     expect(screen.queryByTestId("prompt-chart-card-draft")).toBeNull();
   });
 
-  it("shows queued prompts in the strand rather than the tab row", async () => {
-    const queued = { id: "q", enabled: true, message: "Wait for idle", rule: { type: "once", at: "2026-09-04T00:00" } };
+  it("shows queued prompts at the now line rather than in the tab row", async () => {
+    // Due a minute ago: inside the catch-up window, so it waits at the now line.
+    const queued = { id: "q", enabled: true, message: "Wait for idle", rule: { type: "once", at: localOccurrenceKey(new Date(Date.now() - 60_000)) } };
     vi.mocked(invoke).mockImplementation(async (command) => {
       if (command === "agent_schedules_list") return [queued];
       if (command === "agent_prompts_list" || command === "agent_prompt_history_list" || command === "agent_prompt_links_list") return [];
       return [];
     });
     await act(async () => { render(<PromptChartTab scope="p" />); });
-    const strand = document.querySelector('[data-strand="strand:target-1"]')!;
-    expect(within(strand as HTMLElement).getByText("Wait for idle")).toBeTruthy();
+    const queue = await screen.findByTestId("prompt-timeline-queue");
+    expect(within(queue).getByText("Wait for idle")).toBeTruthy();
   });
 });

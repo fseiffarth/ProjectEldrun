@@ -3000,49 +3000,75 @@
 .agent-prompts-view .settings-section-title > .settings-btn { margin-left: auto; }
 .agent-prompts-section:first-child .settings-section-title { padding-top: 0; border-top: none; }
 
-/* Prompt chart: the card treatment follows `.todo-card` (solid surface plus a
-   static shadow whose opacity changes), while this file keeps the Agents
-   vocabulary and narrow-panel breakpoint together. */
+/* Prompt chart: one horizontal time axis, drafts on a strip above it. The
+   card treatment follows `.todo-card` (solid surface plus a static shadow
+   whose opacity changes); nothing here animates a box-shadow. */
 .agent-prompt-chart-section { min-height: 0; }
 /* The chart's own tab (`agents/PromptChartTab`): the section fills the pane and
    scrolls as one, with the side panel's 6px gutter widened to a tab's. */
 .prompt-chart-tab { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: auto; padding: 8px 12px; }
-.prompt-chart-tab .settings-section-title { margin-top: 0; padding-top: 0; border-top: none; }
-.prompt-chart-tab .agent-prompt-chart-scroll { flex: 1; }
+.prompt-chart-tab .settings-section-title { margin-top: 0; padding-top: 0; border-top: none; display: flex; align-items: center; gap: 8px; }
 .agent-prompt-chart-toolbar,
 .agent-prompt-chart-facets,
-.agent-prompt-link-mode { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
+.agent-prompt-chart-views,
+.agent-prompt-chart-nav,
+.agent-prompt-link-kind { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
 .agent-prompt-chart-toolbar > input { flex: 1 1 180px; min-width: 100px; }
-.agent-prompt-chart-toolbar .dropdown,
 .agent-prompt-chart-facets .dropdown { min-width: 92px; }
+.agent-prompt-chart-range { font-size: 11px; margin-left: 4px; }
+.agent-prompt-link-kind > span { color: var(--text-muted); font-size: 10px; }
 .agent-prompt-new { display: grid; gap: 6px; padding: 8px; border: 1px solid var(--accent); background: var(--accent-soft); border-radius: var(--radius-md); }
 .agent-prompt-new textarea,
 .agent-prompt-new input { width: 100%; box-sizing: border-box; }
-.agent-prompt-chart-scroll { min-height: 360px; overflow-x: auto; overflow-y: visible; padding-bottom: 6px; }
-.agent-prompt-chart { position: relative; display: flex; align-items: flex-start; gap: 8px; min-width: max-content; }
-.agent-prompt-shelf,
-.agent-prompt-strand { position: relative; width: 210px; min-height: 330px; padding: 6px; border: 1px solid var(--border-color); border-radius: var(--radius-md); background: color-mix(in srgb, var(--bg-panel) 92%, transparent); box-sizing: border-box; }
-.agent-prompt-chart > div:nth-of-type(2) { --prompt-strand: var(--accent); }
-.agent-prompt-chart > div:nth-of-type(3) { --prompt-strand: var(--status-working); }
-.agent-prompt-chart > div:nth-of-type(4) { --prompt-strand: var(--status-decision); }
-.agent-prompt-chart > div:nth-of-type(5) { --prompt-strand: var(--success); }
-.agent-prompt-chart > div:nth-of-type(6) { --prompt-strand: var(--warning); }
-.agent-prompt-shelf > header,
-.agent-prompt-strand > header { position: sticky; top: 0; z-index: 3; display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; min-height: 24px; padding: 2px 3px 6px; background: var(--bg-panel); border-bottom: 2px solid var(--prompt-strand, var(--accent)); }
-.agent-prompt-strand > header span,
-.agent-prompt-strand > header small,
-.agent-prompt-shelf > header span { color: var(--text-muted); font-size: 10px; }
-.agent-prompt-past,
-.agent-prompt-queue,
-.agent-prompt-later { display: flex; flex-direction: column; gap: 5px; }
-.agent-prompt-past-group { display: flex; flex-direction: column; gap: 4px; }
-.agent-prompt-past-group > time,
-.agent-prompt-later > small { display: block; margin: 5px 0 1px; color: var(--text-muted); font-size: 9px; text-transform: uppercase; letter-spacing: .04em; }
-.agent-prompt-now { position: relative; height: 24px; margin: 4px -6px; border-top: 1px solid var(--danger); color: var(--danger); }
-.agent-prompt-now > span { position: absolute; top: -7px; right: 4px; padding: 0 3px; background: var(--bg-panel); font-size: 9px; text-transform: uppercase; }
-.agent-prompt-future { position: relative; height: 220px; margin-top: 4px; border-left: 1px solid var(--border-color); }
-.agent-prompt-tick { position: absolute; left: 2px; right: 0; border-top: 1px dotted var(--border-color); color: var(--text-muted); font-size: 8px; line-height: 1; pointer-events: none; }
-.agent-prompt-future-card { position: absolute; left: 30px; right: 3px; transform: translateY(-4px); z-index: 2; }
+.agent-prompt-chart { position: relative; display: flex; flex-direction: column; gap: 8px; min-height: 360px; }
+
+/* The drafts strip: timeless cards in a wrapping row, and the drop zone that
+   takes a card OUT of time (unschedule, collect again). */
+.agent-prompt-drafts-strip { position: relative; padding: 6px; border: 1px solid var(--border-color); border-radius: var(--radius-md); background: color-mix(in srgb, var(--bg-panel) 92%, transparent); }
+.agent-prompt-drafts-strip.is-drop-over { border-color: var(--accent); background: var(--accent-soft); }
+.agent-prompt-drafts-strip > header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; padding: 2px 3px 6px; border-bottom: 1px solid var(--border-color); }
+.agent-prompt-drafts-strip > header span,
+.agent-prompt-drafts-strip > header small { color: var(--text-muted); font-size: 10px; }
+.agent-prompt-drafts-strip > header small { margin-left: auto; }
+.agent-prompt-drafts-row { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px; padding-top: 8px; min-height: 40px; }
+.agent-prompt-drafts-row > .agent-prompt-card { width: 168px; }
+
+/* The axis and the lanes. */
+.agent-prompt-timeline { position: relative; display: flex; flex-direction: column; border: 1px solid var(--border-color); border-radius: var(--radius-md); background: color-mix(in srgb, var(--bg-panel) 92%, transparent); overflow: hidden; }
+.agent-prompt-timeline-axis { position: relative; height: 18px; border-bottom: 1px solid var(--border-color); background: var(--bg-panel); overflow: hidden; }
+.agent-prompt-timeline-tick { position: absolute; top: 2px; padding-left: 3px; border-left: 1px solid var(--border-color); color: var(--text-muted); font-size: 9px; line-height: 14px; white-space: nowrap; }
+.agent-prompt-timeline-tick.is-major { color: var(--text-secondary); border-left-color: var(--text-muted); }
+.agent-prompt-timeline-body { position: relative; overflow: hidden; touch-action: pan-y; user-select: none; }
+.agent-prompt-timeline-line { position: absolute; top: 0; bottom: 0; border-left: 1px dotted var(--border-color); pointer-events: none; }
+.agent-prompt-timeline-line.is-major { border-left-style: solid; }
+.agent-prompt-timeline-past { position: absolute; top: 0; bottom: 0; left: 0; background: color-mix(in srgb, var(--text-muted) 7%, transparent); pointer-events: none; }
+.agent-prompt-timeline-item { position: absolute; z-index: 2; }
+.agent-prompt-timeline-item > .agent-prompt-card { touch-action: none; }
+/* The now line copies `.cal-now-line`, turned on its side. The band around it
+   is the "send now" drop zone: wide enough to hit, narrow enough not to hide
+   the minutes either side. */
+.agent-prompt-timeline-now { position: absolute; top: 0; bottom: 0; z-index: 3; border-left: 2px solid var(--danger); pointer-events: none; }
+.agent-prompt-timeline-now::before { content: ""; position: absolute; top: -1px; left: -4px; width: 7px; height: 7px; border-radius: 50%; background: var(--danger); }
+.agent-prompt-timeline-now-band { position: absolute; top: 0; bottom: 0; z-index: 2; border-radius: var(--radius-sm); }
+.agent-prompt-timeline-now-band.is-outside { opacity: .5; }
+.agent-prompt-timeline-now-band.is-drop-over { background: color-mix(in srgb, var(--danger) 18%, transparent); outline: 1px dashed var(--danger); }
+.agent-prompt-timeline-now-label { position: absolute; top: 2px; left: 50%; transform: translateX(-50%); padding: 0 3px; background: var(--bg-panel); color: var(--danger); font-size: 9px; text-transform: uppercase; pointer-events: none; }
+.agent-prompt-timeline-queue { position: absolute; top: 8px; z-index: 4; display: flex; flex-direction: column; gap: 5px; }
+.agent-prompt-timeline-queue > small { color: var(--warning); font-size: 9px; text-transform: uppercase; letter-spacing: .04em; }
+/* Month view: one column per day, the cards as lamps; the whole day is the
+   way into it. */
+.agent-prompt-timeline-day { position: absolute; top: 4px; bottom: 4px; display: flex; flex-wrap: wrap; align-content: flex-start; gap: 3px; padding: 4px 2px; border: 0; border-radius: var(--radius-sm); background: transparent; cursor: var(--cur-pointer, pointer); }
+.agent-prompt-timeline-day:hover { background: var(--pill-hover-bg); }
+.agent-prompt-timeline-day.is-empty { opacity: .6; }
+.agent-prompt-timeline-day > small { width: 100%; color: var(--text-muted); font-size: 9px; text-align: left; }
+/* The drag decorations, all drawn from the hook's state. */
+.agent-prompt-timeline-indicator { position: absolute; top: 0; bottom: 0; z-index: 5; border-left: 2px dashed var(--accent); pointer-events: none; }
+.agent-prompt-timeline-badge { position: absolute; top: 4px; left: 4px; z-index: 6; padding: 1px 6px; border-radius: 999px; background: var(--accent); color: var(--bg-panel); font-size: 10px; font-weight: 600; white-space: nowrap; pointer-events: none; }
+.agent-prompt-timeline-badge.is-blocked { background: var(--danger); text-decoration: line-through; }
+.agent-prompt-timeline-ghost { position: fixed; top: 0; left: 0; z-index: 40; display: flex; flex-direction: column; gap: 4px; padding: 7px 8px 7px 10px; border: 1px solid var(--accent); border-left: 3px solid var(--accent); border-radius: var(--radius-md); background: var(--control-bg); color: var(--text-primary); opacity: .92; pointer-events: none; }
+.agent-prompt-timeline-ghost::after { content: ""; position: absolute; inset: 0; z-index: -1; border-radius: inherit; box-shadow: 0 6px 18px rgb(0 0 0 / .28); pointer-events: none; }
+.agent-prompt-timeline-ghost > .agent-prompt-timeline-badge { position: static; align-self: flex-start; }
+
 .agent-prompt-card {
   position: relative;
   z-index: 2;
@@ -3050,25 +3076,31 @@
   flex-direction: column;
   gap: 4px;
   min-width: 0;
-  padding: 7px 8px 7px 10px;
+  padding: 9px 8px 10px 10px;
   border: 1px solid var(--border-color);
   border-left: 3px solid var(--prompt-strand, var(--accent));
   border-radius: var(--radius-md);
   background: var(--control-bg);
   color: var(--text-primary);
   cursor: var(--cur-pointer, pointer);
-  transition: opacity var(--transition), border-color var(--transition), transform var(--transition);
+  transition: opacity var(--transition), border-color var(--transition);
 }
 .agent-prompt-card::after { content: ""; position: absolute; inset: 0; z-index: -1; border-radius: inherit; box-shadow: 0 3px 10px rgb(0 0 0 / .18); opacity: 0; transition: opacity var(--transition); pointer-events: none; }
 .agent-prompt-card:hover::after,
 .agent-prompt-card.is-selected::after { opacity: 1; }
 .agent-prompt-card.is-selected { border-color: var(--accent); }
 .agent-prompt-card.is-dimmed { opacity: .28; }
-.agent-prompt-card.is-dragging { opacity: .75; transform: scale(1.02); z-index: 9; touch-action: none; }
+.agent-prompt-card.is-dragging { opacity: .35; }
 .agent-prompt-card.is-chained { border-style: dashed; }
+.agent-prompt-card.is-occurrence { opacity: .7; border-style: dotted; cursor: var(--cur-default, default); }
 .agent-prompt-card.is-link-target { outline: 1px dashed var(--accent); outline-offset: 2px; }
-.agent-prompt-card-head { display: grid; grid-template-columns: 7px minmax(0, 1fr) 7px; align-items: start; gap: 5px; }
-.agent-prompt-card-port { width: 7px; height: 7px; margin-top: 4px; padding: 0; border: 1px solid var(--accent); border-radius: 50%; background: var(--bg-panel); }
+.agent-prompt-card.is-link-over { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* The ports: a link leaves a card from its bottom edge and arrives at the top. */
+.agent-prompt-card-port { position: absolute; left: 50%; z-index: 3; width: 9px; height: 9px; margin: 0; padding: 0; border: 1px solid var(--accent); border-radius: 50%; background: var(--bg-panel); transform: translateX(-50%); }
+.agent-prompt-card-port.is-top { top: -5px; pointer-events: none; }
+.agent-prompt-card-port.is-bottom { bottom: -5px; cursor: var(--cur-crosshair, crosshair); touch-action: none; }
+.agent-prompt-card-port.is-bottom:hover { background: var(--accent); }
+.agent-prompt-card-head { display: grid; grid-template-columns: minmax(0, 1fr) 7px; align-items: start; gap: 5px; }
 .agent-prompt-lamp { width: 7px; height: 7px; margin-top: 4px; border-radius: 50%; background: var(--text-muted); }
 .agent-prompt-lamp.is-delivered { background: var(--success); }
 .agent-prompt-lamp.is-failed,
@@ -3076,6 +3108,9 @@
 .agent-prompt-lamp.is-scheduled { background: var(--accent); }
 .agent-prompt-lamp.is-queued { background: var(--warning); }
 .agent-prompt-card-message { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 3; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px; font-weight: 600; }
+.agent-prompt-card-agent { display: flex; align-items: center; min-height: 16px; color: var(--text-muted); font-size: 10px; }
+.agent-prompt-card-agent .dropdown { min-width: 0; max-width: 100%; }
+.agent-prompt-card-agent .dropdown-trigger { padding: 0 4px; height: 16px; font-size: 10px; }
 .agent-prompt-card-tags { display: flex; flex-wrap: wrap; gap: 3px; }
 .agent-prompt-tag { padding: 0 4px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-size: 8px; }
 .agent-prompt-tag.is-auto,
@@ -3090,23 +3125,11 @@
 .agent-prompt-session,
 .agent-prompt-link-row { padding: 0; border: 0; background: none; color: var(--text-secondary); text-align: left; font-size: 10px; cursor: var(--cur-pointer, pointer); overflow-wrap: anywhere; }
 .agent-prompt-files { margin: 0; padding-left: 16px; color: var(--text-muted); font-size: 9px; }
-.agent-prompt-move { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 5px; color: var(--text-muted); font-size: 10px; }
-.agent-prompt-links { position: absolute; inset: 0; z-index: 1; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
+.agent-prompt-links { position: absolute; inset: 0; z-index: 3; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
 .agent-prompt-links path { fill: none; stroke: var(--text-muted); stroke-width: 1; opacity: .45; }
 .agent-prompt-links path.is-selected { stroke: var(--accent); stroke-width: 2; opacity: 1; }
+.agent-prompt-links path.is-preview { stroke: var(--accent); stroke-width: 1.5; stroke-dasharray: 4 3; opacity: .9; }
 .agent-prompt-links marker path { fill: var(--text-muted); stroke: none; }
-.agent-prompt-closed { display: flex; flex-direction: column; gap: 4px; }
-.agent-prompt-closed-wrap > button { width: 100%; padding: 4px 6px; border: 1px solid var(--border-color); background: var(--control-bg); color: var(--text-secondary); text-align: left; }
-.agent-prompt-strand.is-closed { width: 100%; min-height: 0; margin-top: 4px; }
-
-@media (max-width: 640px) {
-  .agent-prompt-chart { display: flex; flex-direction: column; min-width: 0; width: 100%; }
-  .agent-prompt-shelf,
-  .agent-prompt-strand { width: 100%; min-height: 0; }
-  .agent-prompt-future { height: 260px; }
-  .agent-prompt-chart-scroll { overflow-x: hidden; }
-  .agent-prompt-links { display: none; }
-}
 
 .agent-prompts-tab { flex-direction: row; }
 .agent-prompts-tab-actions { display: flex; flex-direction: column; gap: 4px; align-items: stretch; }

@@ -29,6 +29,11 @@ pub struct ProjectAgentPrompt {
     /// than a pile: a prompt is found by what it is for, not only by its words.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
+    /// The agent tab (`scheduleTargetId`) the prompt chart aims this draft at.
+    /// Advisory: it becomes a rule only when the prompt is sent or scheduled,
+    /// and a target whose tab is gone is simply one the chart no longer knows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
 }
 
 /// A collected prompt that has been aimed at an agent tab, moved out of the
@@ -134,6 +139,10 @@ pub struct ProjectAgentPromptInput {
     /// included. A new prompt with `None` starts untagged.
     #[serde(default)]
     pub tags: Option<Vec<String>>,
+    /// Same three-way contract as `tags`: `None` leaves the target alone,
+    /// `Some("")` clears it, `Some(id)` sets it.
+    #[serde(default)]
+    pub target: Option<String>,
 }
 
 /// A visual/behavioural edge between two prompt cards. Endpoints name prompt
@@ -239,6 +248,8 @@ mod tests {
         assert_eq!(prompt.id, "a");
         assert_eq!(prompt.message, "hello");
         assert_eq!(prompt.tags, vec!["tests".to_string()]);
+        // A library written before drafts could be aimed reads back unaimed.
+        assert_eq!(prompt.target, None);
 
         let sent = &file.history["p1"][0];
         assert_eq!(sent.id, "b");

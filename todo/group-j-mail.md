@@ -433,3 +433,29 @@ sanitizer (`services/web_safety.rs`); neither has been runtime-verified.*
       - [ ] ❌ Doesn't work
 
 ---
+
+---
+
+823. **VPN-only mail account.** `require_vpn` on `MailAccount` (dialog checkbox
+    *Only connect while the VPN is up*). An institutional mailbox reachable only
+    from inside its network used to fail every interval check while the tunnel
+    was down — a connect timeout per tick, a red ✉, and no catch-up when the
+    tunnel came back. Now the header's tick skips the account while no OpenVPN
+    tunnel Eldrun knows about is up (its tooltip says *n account(s) waiting for
+    the VPN*), and checks it the moment one comes up — on a reconciled
+    `false → true` only, so the store's first sight of a tunnel at launch is not
+    a check at mount. The backend enforces the same rule before every engine
+    operation (`mail_engine::vpn_gate`), so a manual *Check mail*, a body fetch,
+    a flag write and a send all refuse with the one shared sentence
+    (`services::openvpn::VPN_GATE_REFUSAL`). Known limit, stated in the hint:
+    only tunnels started from Eldrun count. Design note in
+    `docs/context/openvpn.md`; helper in `src/lib/vpnGate.ts`.
+    - [x] 🤖 Automated test — `VpnGate.test.ts` (the three-valued hook, the
+      rising edge), `openvpn::tests` (the gate's truth table),
+      `mail_engine::tests` (the shared sentence), `schema::mail` round-trip.
+    - [ ] 🖐️ Manual test — with the tunnel down, an account with the box ticked
+      shows no error strip after an interval passes and the ✉ tooltip says it is
+      waiting; *Check mail* refuses with the VPN sentence; connecting the VPN from
+      the header checks it within seconds; an unticked account is unaffected.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work

@@ -135,6 +135,17 @@ pub struct MailAccount {
     pub signature: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub check_interval_min: Option<u32>,
+    /// **VPN-only account, default false.** While set, no socket is opened to
+    /// this account's IMAP or SMTP server unless an OpenVPN tunnel Eldrun knows
+    /// about is up (`services::openvpn::any_tunnel_up`). The case is an
+    /// institutional mailbox reachable only from inside its network: without
+    /// the gate every interval check burns a connect timeout and paints the
+    /// header red, and nothing catches up when the tunnel comes back. Enforced
+    /// in the engine at the point a connection is made, so a manual click, a
+    /// body fetch and a send all refuse the same way — the frontend scheduler
+    /// merely skips the account quietly while the tunnel is down.
+    #[serde(default)]
+    pub require_vpn: bool,
     /// The `authserv-id` this account's own receiving server writes into
     /// `Authentication-Results`. Unset by default, and while it is unset **no
     /// SPF/DKIM/DMARC verdict is ever shown** — an unchecked header is sender
@@ -1148,6 +1159,22 @@ mod tests {
             serde_json::to_string(&MailKeyringState::Available).unwrap(),
             "\"available\""
         );
+    }
+
+    /// `require_vpn` is additive: an account written before it existed reads
+    /// as not gated, and a stored `true` survives the round trip.
+    #[test]
+    fn require_vpn_defaults_off_and_round_trips() {
+        let raw = r#"{"id":"a1","label":"L","address":"a@example.com",
+            "imap":{"host":"i","port":993,"user":"u","security":"tls"},
+            "smtp":{"host":"s","port":465,"user":"u","security":"tls"}}"#;
+        let acct: MailAccount = serde_json::from_str(raw).expect("parse");
+        assert!(!acct.require_vpn);
+        let mut gated = acct.clone();
+        gated.require_vpn = true;
+        let back: MailAccount =
+            serde_json::from_str(&serde_json::to_string(&gated).unwrap()).unwrap();
+        assert!(back.require_vpn);
     }
 
     #[test]

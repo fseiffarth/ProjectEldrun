@@ -16,6 +16,9 @@ export interface ProjectAgentPrompt {
   updated_at: string;
   /** Lowercase tokens the library is searched by (`lib/agentPromptTags`). */
   tags?: string[];
+  /** The agent tab (`scheduleTargetId`) the prompt chart aims this draft at.
+   *  Advisory until the draft is sent or scheduled; absent when unaimed. */
+  target?: string;
 }
 
 /**
@@ -91,10 +94,11 @@ interface AgentPromptsStore {
   loadHistory: (projectId: string) => Promise<SentAgentPrompt[]>;
   loadLinks: (projectId: string) => Promise<PromptLink[]>;
   /** `tags` undefined leaves an existing prompt's tags alone (the phone edits
-   *  text only); an array replaces them, empty included. */
+   *  text only); an array replaces them, empty included. `target` follows the
+   *  same rule: undefined keeps it, `""` clears it. */
   upsert: (
     projectId: string,
-    prompt: { id: string; message: string; tags?: string[] },
+    prompt: { id: string; message: string; tags?: string[]; target?: string },
   ) => Promise<ProjectAgentPrompt[]>;
   remove: (projectId: string, promptId: string) => Promise<ProjectAgentPrompt[]>;
   reorder: (projectId: string, ids: string[]) => Promise<ProjectAgentPrompt[]>;
@@ -147,7 +151,7 @@ export const useAgentPromptsStore = create<AgentPromptsStore>((set, get) => ({
   upsert: async (projectId, prompt) => {
     const prompts = await invoke<ProjectAgentPrompt[]>("agent_prompt_upsert", {
       projectId,
-      prompt: { id: prompt.id, message: prompt.message, tags: prompt.tags ?? null },
+      prompt: { id: prompt.id, message: prompt.message, tags: prompt.tags ?? null, target: prompt.target ?? null },
     });
     set((state) => ({ byProject: { ...state.byProject, [projectId]: prompts } }));
     return prompts;

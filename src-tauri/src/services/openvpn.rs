@@ -2687,8 +2687,57 @@ pub fn disconnect_all_checked() -> Result<(), String> {
     Ok(())
 }
 
+// ── The VPN gate for network accounts ───────────────────────────────────────
+
+/// True while at least one tunnel Eldrun knows about is up — headless,
+/// service-started, or typed into a terminal tab. This is the whole definition
+/// of "VPN on" for a VPN-gated mail or CalDAV account, and its limit is worth
+/// stating: a tunnel brought up outside Eldrun (NetworkManager, WireGuard, a
+/// hand-run `openvpn`) is invisible here, so an account gated on it never
+/// connects. The account dialogs say so.
+pub fn any_tunnel_up() -> bool {
+    !active_configs().is_empty()
+}
+
+/// The refusal a gated account gets while no tunnel is up. One sentence shared
+/// by mail and CalDAV so the two surfaces explain the same state the same way.
+pub const VPN_GATE_REFUSAL: &str = "this account only connects while an OpenVPN tunnel \
+     is up, and none is — connect the VPN from the header, then check again";
+
+/// The decision, separated from the probe so it can be tested without a tunnel:
+/// an account that is not gated may always connect; a gated one only while a
+/// tunnel is up.
+pub fn gate_allows(require_vpn: bool, tunnel_up: bool) -> bool {
+    !require_vpn || tunnel_up
+}
+
+/// Refuse a gated account's network work while no tunnel is up. `Ok` for an
+/// account that is not gated at all, which makes this safe to call
+/// unconditionally at the one choke point each subsystem has.
+pub fn account_gate(require_vpn: bool) -> Result<(), String> {
+    if gate_allows(require_vpn, any_tunnel_up()) {
+        Ok(())
+    } else {
+        Err(VPN_GATE_REFUSAL.to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    /// The gate's truth table. `account_gate` itself is not exercised against
+    /// the registry here: these tests share one process with the ones that
+    /// register tunnels, so "no tunnel is up" is not a state a test can assume.
+    #[test]
+    fn the_vpn_gate_only_bites_a_gated_account_with_no_tunnel() {
+        assert!(super::gate_allows(false, false));
+        assert!(super::gate_allows(false, true));
+        assert!(super::gate_allows(true, true));
+        assert!(!super::gate_allows(true, false));
+        // An account that is not gated never sees the refusal, whatever is up.
+        assert_eq!(super::account_gate(false), Ok(()));
+        assert!(!super::VPN_GATE_REFUSAL.contains("  "), "the sentence is one line");
+    }
+
     use super::*;
 
     #[test]

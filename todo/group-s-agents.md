@@ -464,6 +464,19 @@ unchanged; the new agents are additive.
       - [ ] The same folder asked about only ONCE: answer `Yes, I trust`, then
         open a second Claude tab there and confirm it goes straight in, and that
         a quit/relaunch in between does not bring the question back.
+      - [ ] Claude's grey diff panel ("No changes this session") stays closed
+        once closed (fixed 2026-09-09: the panel is Claude's own fullscreen-layout
+        diff sidebar, which opens by itself once a session has changes and the
+        tab is wide enough; closing it — `/diff` toggles it — writes
+        `diffSidebarOpen: false` to `~/.claude.json`, which a fenced tab only
+        ever sees as the stage copy rewritten at each spawn, so the panel came
+        back in every new tab. Now `sandbox::CLAUDE_CARRIED_PREFS` names the
+        `~/.claude.json` toggles harvested from the stage copy into
+        `agent_trust.json` and re-applied to each later copy — the host file is
+        still never written.) To test after a backend restart: close the panel
+        in a fenced Claude tab, make an edit in a *new* fenced tab, confirm no
+        panel; open it again with `/diff` in one tab and confirm the next tab
+        keeps Claude's own auto-open behaviour.
       - [ ] Fenced Claude starts **logged in**, no per-tab login/onboarding
         (fixed 2026-08-31: `~/.claude.json` staged as a filtered per-project
         copy — login/onboarding kept, foreign projects' history/allowedTools
@@ -1017,6 +1030,48 @@ unchanged; the new agents are additive.
       tab's columns.
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work
+    - **Rework (2026-09-10): one horizontal timeline, real drag-and-drop, the
+      agent on the card.** The per-tab columns gave every agent a column's
+      width and time a column's width; the chart is now one proportional axis
+      across the whole tab — Day / Week / Month with ◀ Today ▶, past left, a
+      now line and a now band, future right, drafts on a strip above — with
+      the calendar's week start and the view's own snap (5/15/60 min). The
+      drag was broken (capture on the card, no `pointermove`, no threshold,
+      `elementFromPoint` on release; a click on a scheduled card re-timed it)
+      and now follows the board's gesture: a ghost, an indicator at the
+      snapped minute, a badge saying what the drop does, and nothing written
+      when the gesture ends over nothing. Links are pulled out of a card's
+      bottom port onto another card; every draft/scheduled/queued/chained
+      card carries an agent picker (a draft's choice persists as the new
+      `target` field on the prompt row). `docs/prompt_chart_plan.md` §9.
+      Built 2026-09-10, **not live-tested**.
+      - [x] 🤖 Automated test — `AgentPromptTimeline` (windows per view and
+        week start, anchor stepping with the month clamp, x ↔ time and snap,
+        tick counts, items incl. recurring expansion and the excluded states,
+        lane packing, day clusters, the hit zones, the whole drop matrix),
+        `AgentPromptChart` (draft `targetId` from `prompt.target`, stale
+        target dropped, chained `chainLink`), `PromptChart` (day/week/month
+        switch and Today; a press without movement is not a drop; draft →
+        future schedules at the snapped minute; draft → now band and left of
+        the now line send; rule → strip unschedules; sent → strip collects; a
+        cancel or a release over nothing writes nothing; port drag links two
+        cards; the agent picker on a draft / rule / chained card writes the
+        three rows, upsert before delete), `AgentSchedulesView` (queued cards
+        at the now line), cargo `upsert_keeps_target_unless_the_editor_names_it`.
+      - [ ] 🖐️ Manual test — open the prompt chart on a project with two agent
+        tabs. In Day view drag a draft to about 14:30: the ghost follows, the
+        badge reads "Schedule · 14:30", and ◷ Schedules on the picked tab shows
+        that minute. Drag it back to the strip (rule gone, draft back). Drop a
+        draft on the now band (queued at the now line, then delivered). Switch
+        to Week and retime a card — it snaps to 15 min. Pull a card's bottom
+        port onto another: the dashed preview follows, the arrow lands; send
+        the first and confirm the second queues on delivery. Change the agent
+        on a draft (check `target` in `agent_prompts.json`), on a scheduled
+        card (rule moved to the other tab's ◷), on a chained card (the link's
+        target). Month view: a day's lamps open the day. ◀ shows yesterday's
+        sent cards on the past side.
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
 
 263. **Agent panes: double-click pastes, and a drag still selects while the TUI
     holds the mouse.** Two gestures the terminal owed an agent tab. A

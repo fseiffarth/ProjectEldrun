@@ -355,6 +355,21 @@ export function MailAccountDialog({
               onChange={(e) => patch({ check_interval_min: Number(e.target.value) || 0 })}
             />
           </label>
+          {/* The VPN gate (`lib/vpnGate.ts`). Its hint names the limit — only a
+              tunnel Eldrun started counts — because the failure mode of the
+              switch is silent: an account gated on a VPN Eldrun cannot see
+              simply never syncs, and nothing else would say why. */}
+          <label className="mail-field mail-field-check">
+            <span className="mail-check-row">
+              <input
+                type="checkbox"
+                checked={form.require_vpn ?? false}
+                onChange={(e) => patch({ require_vpn: e.target.checked })}
+              />
+              <span>{t("mail.requireVpn")}</span>
+            </span>
+            <span className="settings-help">{t("mail.requireVpnHint")}</span>
+          </label>
 
           {/* The trusted `authserv-id`. Optional, and while it is empty **no**
               SPF/DKIM/DMARC verdict is shown anywhere — the hint says so rather

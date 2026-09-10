@@ -3,6 +3,7 @@ import { inboxUnread, unreadTotal, useMailStore } from "../../stores/mail";
 import { useSettingsStore } from "../../stores/settings";
 import { useExperimental } from "../../lib/experimental";
 import { DEFAULT_MAIL_CHECK_MIN, onMailNew } from "../../lib/mail";
+import { useVpnTunnelUp, vpnGateAllows, vpnTunnelUp } from "../../lib/vpnGate";
 import { useT } from "../../lib/i18n";
 import { useHeaderHoverMenuStore } from "../../stores/headerHoverMenu";
 
@@ -53,6 +54,14 @@ const MENU_ID = "mail";
  *
  * The first tick is a whole interval away on purpose: checking at mount would be
  * checking at launch, and a restored window must not open a socket by existing.
+ *
+ * **A VPN-only account** (`require_vpn`, `lib/vpnGate.ts`) is skipped by the
+ * tick while no tunnel is up — no request, no error, no red button for a server
+ * that was never going to answer — and checked the moment a tunnel comes up,
+ * since that is when the mail it has been missing becomes reachable. That
+ * catch-up is a rising edge on the *reconciled* tunnel state only: the store
+ * discovering at launch that a tunnel was up all along is not a tunnel coming
+ * up, and must not turn into a check at mount by the back door.
  *
  * **Hovering the button reveals the way *into* a particular mailbox**, not a
  * second copy of the pane's rail. The ✉ opens mail wherever you left it, which
@@ -118,6 +127,10 @@ export function MailIndicator() {
   });
 
   const live = mailClient;
+  // `null` until the VPN store has reconciled once — see `useVpnTunnelUp`.
+  const tunnelUp = useVpnTunnelUp();
+  const vpnGatedCount = useMailStore((s) => s.accounts.filter((a) => a.require_vpn).length);
+  const prevTunnelUp = useRef<boolean | null>(null);
 
   // Accounts *and their folder counts* are a local read, and the button needs
   // both before any mail surface is opened: the interval check below has nothing
@@ -152,7 +165,11 @@ export function MailIndicator() {
     if (!live || intervalMin <= 0) return;
     const tick = () => {
       const { accounts, sync } = useMailStore.getState();
+      // Read at tick time, not captured: the tunnel state at the moment the
+      // check would go out is the one that matters.
+      const up = vpnTunnelUp();
       for (const account of accounts) {
+        if (!vpnGateAllows(account, up)) continue;
         const phase = sync[account.id]?.phase;
         if (phase === "start" || phase === "folder" || phase === "headers") continue;
         void useMailStore.getState().checkMail(account.id, null);
@@ -161,6 +178,22 @@ export function MailIndicator() {
     const id = setInterval(tick, intervalMin * 60_000);
     return () => clearInterval(id);
   }, [live, intervalMin]);
+
+  // The catch-up: a tunnel coming up (`false → true`, never `null → true`) checks
+  // every VPN-only account at once. Gated on the same interval setting as the
+  // tick, because an explicit *Never* means no unattended check, and this is one.
+  useEffect(() => {
+    const rose = tunnelUp === true && prevTunnelUp.current === false;
+    prevTunnelUp.current = tunnelUp;
+    if (!rose || !live || intervalMin <= 0) return;
+    const { accounts, sync } = useMailStore.getState();
+    for (const account of accounts) {
+      if (!account.require_vpn) continue;
+      const phase = sync[account.id]?.phase;
+      if (phase === "start" || phase === "folder" || phase === "headers") continue;
+      void useMailStore.getState().checkMail(account.id, null);
+    }
+  }, [tunnelUp, live, intervalMin]);
 
   // Escape, for the menu that was opened by keyboard focus and therefore has no
   // mouse-leave coming to close it. Capture + `stopPropagation` because the
@@ -196,6 +229,12 @@ export function MailIndicator() {
   if (unread > 0) parts.push(t("mail.unreadBadge", { count: unread }));
   if (newCount > 0) parts.push(t("mail.indicatorNew", { count: newCount }));
   if (checkError) parts.push(t("mail.indicatorFailed", { reason: checkError }));
+  // Said in the tooltip because the pane's strip is not open when it matters:
+  // a VPN-only account that has not been checked is quiet by design, and the
+  // reading should say so rather than pass as a mailbox with nothing in it.
+  if (vpnGatedCount > 0 && tunnelUp === false) {
+    parts.push(t("mail.indicatorVpnWait", { count: vpnGatedCount }));
+  }
   const label = parts.length
     ? `${t("mail.indicator")} — ${parts.join(" · ")}`
     : t("mail.indicator");

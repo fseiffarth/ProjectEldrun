@@ -1,7 +1,9 @@
 # Prompt chart — one timeline for collected, scheduled and sent prompts
 
-Status: **implemented, awaiting live verification.** Tracked as TODO #262 in
-`todo/group-s-agents.md`.
+Status: **implemented, reworked onto one horizontal timeline on 2026-09-10,
+awaiting live verification.** Tracked as TODO #262 in `todo/group-s-agents.md`.
+Section 9 supersedes section 2's strands and time axis and section 4's
+gesture table; the rest still holds.
 
 Written against the repository on **2026-09-04**.
 
@@ -255,3 +257,56 @@ Each phase ships behind the same `UntestedTag` with its own manual checklist in
   links live beside the prompts they join.
 - **A canvas / force layout.** Strands and time already fix every card's
   position; free placement would make "when" a matter of where it was dropped.
+
+## 9. The horizontal timeline (2026-09-10)
+
+The strands went. One agent tab per column gave every agent a column's
+width and time a column's width too, and the chart's user asked for the
+opposite: one chart across the whole tab, time left to right, refined like a
+calendar. What replaced it:
+
+- **One proportional axis** (`lib/agentPromptTimeline.ts`, pure), fitted
+  edge to edge to a **Day**, a **Week** (honouring
+  `Settings.calendar_week_start`) or a **Month**, with ◀ Today ▶ over it.
+  Past on the left under a grey wash, a red **now line** with a **now band**
+  around it, future on the right. Sent cards sit at `sent_at`, one-time
+  rules at their minute, a recurring rule at each future occurrence in the
+  window (dotted, read-only — its past ones are the history's rows). Cards
+  overlapping in x pack into lanes; the Month view shows each day as a
+  column of lamps that opens the day. Drafts and chained drafts sit on a
+  **strip above the axis**: they have no instant.
+- **Snap is the view's**: 5 min across a day, 15 across a week, 60 across a
+  month. Anything dropped at or left of the now line is a *send now*,
+  never a schedule in the past.
+- **The gesture is `TodoBoard`'s** (`usePromptChartDrag.ts`): release bound
+  synchronously at pointerdown through `bindDragRelease`, a 5 px threshold so
+  a click stays a click, capture on `documentElement` only where the engine
+  needs it, and a commit over no zone that writes nothing — which is what
+  makes WebKitGTK's `pointercancel`-as-release safe. The pressed card never
+  moves; a **ghost** drawn from the hook's state follows the pointer, a dashed
+  **indicator** marks the snapped minute and a **badge** says what the drop
+  will do (Send now · Schedule · Move to · Unschedule · Collect again, or a
+  struck "cannot drop here"). Hit-testing reads rects the chart measured,
+  never `elementFromPoint`, so the same gesture runs under jsdom. The first
+  chart's drag had none of this: capture on the card, no `pointermove`, no
+  threshold, and `elementFromPoint` on release — nothing moved, and a plain
+  click on a scheduled card re-timed it to the snapped y.
+- **Links by drag.** Every card has a top port (in) and a bottom port (out);
+  pulling the bottom port onto another card writes a link of the kind the
+  toolbar chips say (default `after`), previewed as a dashed bezier. The
+  overlay draws every edge bottom port → top port. Click-to-link stays as
+  the keyboard route.
+- **The agent is the card's.** With the columns gone, each draft, scheduled,
+  queued and chained card wears a compact agent picker. A draft's pick is
+  persisted as `ProjectAgentPrompt.target` — an additive, advisory field
+  (`None` keeps, `""` clears, the tags contract) that decides where a drop
+  schedules it; a rule's pick moves the rule (upsert on the new tab **before**
+  the delete on the old one, the order that cannot lose it and the one whose
+  upsert persists the tab binding); a chained card's pick rewrites its link's
+  `target`. A sent card shows its tab read-only.
+
+Decided against, on top of section 8: **per-tab strands** (2026-09-04 →
+09-10, above); a **calendar grid** (seven day columns with vertical hours —
+the user chose the horizontal axis); **chained cards attached under their
+source** (lanes are fixed-height, and a chained draft is still a draft:
+it sits on the strip with its arrow drawn to the source).

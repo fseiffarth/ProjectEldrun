@@ -161,3 +161,20 @@ the invariants that make it worth having: [`docs/context/caldav.md`](../docs/con
       the "set the account's URL to that address" sentence.
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work
+
+---
+
+824. **VPN-only CalDAV account.** `require_vpn` on `CalDavAccount`, the mail
+    account's switch (#823) for a calendar server inside an institutional
+    network. `CalDavSyncHost` never makes the account due while no OpenVPN
+    tunnel Eldrun knows about is up, and makes it due — and syncs it on the spot
+    rather than at the next 60 s wake-up — when one comes up, on the same
+    reconciled rising edge as mail. Enforced in `commands::caldav::credentials`,
+    the step every network-bound command takes first, so fetch, push, delete
+    and access-refresh all refuse alike before the keyring is even read.
+    - [x] 🤖 Automated test — `VpnGate.test.ts`, `schema::caldav` round-trip.
+    - [ ] 🖐️ Manual test — with the tunnel down a ticked account shows no sync
+      error after its interval; *Sync now* refuses with the VPN sentence;
+      connecting the VPN syncs it within seconds.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work

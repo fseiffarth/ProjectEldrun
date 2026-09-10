@@ -2550,7 +2550,8 @@ handle — it swallows the pointer before the card ever sees it. */
 
 /* The push opt-in (Phase 3). A checkbox row inside the field stack, so the
    switch and the sentence explaining both of its positions read as one thing. */
-.caldav-field-check .caldav-check-row {
+.caldav-field-check .caldav-check-row,
+.mail-field-check .mail-check-row {
   display: flex;
   align-items: center;
   gap: 8px;
