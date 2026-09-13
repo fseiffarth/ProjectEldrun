@@ -2545,7 +2545,6 @@ export const dict: Dict = {
   "vpnIndicator.unlocking": "Déverrouillage…",
   "vpnIndicator.unlockKeyring": "Déverrouiller le trousseau",
   "vpnIndicator.heldForPrefix": "pour",
-  "vpnIndicator.heldByNoProject": "détenu par aucun projet",
   "vpnIndicator.stopConnectingTitle": "Arrête la tentative d'établir ce tunnel et restaure le routage normal.",
   "vpnIndicator.stopConnecting": "Arrêter la connexion",
   "vpnIndicator.disconnectTunnelTitle": "Coupe ce tunnel et restaure le routage normal. Les projets qui l'utilisent restent ouverts ; leur SSH peut ou non survivre sans lui.",

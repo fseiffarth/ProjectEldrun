@@ -2543,7 +2543,6 @@ export const dict: Dict = {
   "vpnIndicator.unlocking": "Sblocco in corso…",
   "vpnIndicator.unlockKeyring": "Sblocca portachiavi",
   "vpnIndicator.heldForPrefix": "per",
-  "vpnIndicator.heldByNoProject": "non mantenuto da alcun progetto",
   "vpnIndicator.stopConnectingTitle": "Interrompe il tentativo di attivare questo tunnel e ripristina il routing normale.",
   "vpnIndicator.stopConnecting": "Interrompi connessione",
   "vpnIndicator.disconnectTunnelTitle": "Disattiva questo tunnel e ripristina il routing normale. I progetti che lo usano restano aperti; il loro SSH potrebbe o meno sopravvivere senza di esso.",

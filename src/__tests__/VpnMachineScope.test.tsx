@@ -126,7 +126,8 @@ describe("the header indicator is the tunnel's own surface", () => {
     const btn = await screen.findByRole("button", { name: /openvpn/i });
     await userEvent.hover(btn);
     expect(screen.getByText("office.ovpn")).toBeTruthy();
-    expect(screen.getByText(/held by no project/i)).toBeTruthy();
+    // Nothing holds it, so the dropdown says nothing about holders at all.
+    expect(screen.queryByText(/^for /i)).toBeNull();
   });
 
   it("names the holders and can bring the tunnel down for all of them", async () => {

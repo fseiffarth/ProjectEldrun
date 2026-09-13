@@ -91,7 +91,8 @@ describe("the app CSP is present and restrictive", () => {
  * The print preview renders untrusted file bytes, so it is sandboxed like every
  * other hostile-content frame — asserted here rather than left to review.
  *
- * `buildPreviewDoc` returns an HTML/SVG file's own source verbatim, and
+ * `buildPreviewDoc` returns an HTML/SVG file's own source (HTML gains one
+ * `<base>` line, nothing that disarms it), and
  * `FileViewerPane`'s Print button hands that straight to `printDocument`. The
  * frame is also deliberately same-origin (the module reads `contentDocument`),
  * so `allow-scripts` is the one token that must never appear: with it, a hostile

@@ -2668,7 +2668,6 @@ export const en = {
   "vpnIndicator.unlocking": "Unlocking…",
   "vpnIndicator.unlockKeyring": "Unlock keyring",
   "vpnIndicator.heldForPrefix": "for",
-  "vpnIndicator.heldByNoProject": "held by no project",
   "vpnIndicator.stopConnectingTitle": "Stop trying to bring this tunnel up and restore normal routing.",
   "vpnIndicator.stopConnecting": "Stop connecting",
   "vpnIndicator.disconnectTunnelTitle": "Bring this tunnel down and restore normal routing. Projects using it stay open; their SSH may or may not survive without it.",

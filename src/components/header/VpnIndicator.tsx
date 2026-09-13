@@ -687,9 +687,11 @@ export function VpnIndicator() {
                     {fileOf(config)}
                   </span>
                 </div>
-                <div className="vpn-indicator-holders">
-                  {held.length > 0 ? `${t("vpnIndicator.heldForPrefix")} ${held.map(nameOf).join(", ")}` : t("vpnIndicator.heldByNoProject")}
-                </div>
+                {held.length > 0 && (
+                  <div className="vpn-indicator-holders">
+                    {`${t("vpnIndicator.heldForPrefix")} ${held.map(nameOf).join(", ")}`}
+                  </div>
+                )}
                 {state === "connecting" ? (
                   <button
                     type="button"

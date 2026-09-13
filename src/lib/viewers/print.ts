@@ -471,7 +471,8 @@ export function printDocument(fullHtml: string): Promise<void> {
     // The sandbox is load-bearing and the token list is exactly two, deliberately.
     //
     // What lands in `srcdoc` is not always a document Eldrun assembled: for an
-    // HTML/SVG file `buildPreviewDoc` returns the file's **own source verbatim**,
+    // HTML/SVG file `buildPreviewDoc` returns the file's **own source** (plus,
+    // for HTML, one `<base>` line of Eldrun's — nothing that makes it safer),
     // so a hostile file in a cloned repo reaches this frame the moment someone
     // hits Print. The rendered *preview* of that same file has always been
     // `sandbox=""` (`FileViewerPane`'s `RenderedPreview`); this frame is the same

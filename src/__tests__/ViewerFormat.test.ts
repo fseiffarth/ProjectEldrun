@@ -15,6 +15,8 @@ import {
   previewKindForPath,
   formatJsonText,
   buildPreviewDoc,
+  SRCDOC_BASE_TAG,
+  withSrcdocBase,
 } from "../lib/viewers/format";
 import {
   toggleInline,
@@ -71,9 +73,12 @@ describe("formatJsonText", () => {
 });
 
 describe("buildPreviewDoc", () => {
-  it("returns HTML/SVG source verbatim", () => {
-    expect(buildPreviewDoc("html", "<h1>hi</h1>")).toBe("<h1>hi</h1>");
+  it("returns SVG source verbatim", () => {
     expect(buildPreviewDoc("svg", "<svg/>")).toBe("<svg/>");
+  });
+
+  it("adds only the srcdoc base to HTML source", () => {
+    expect(buildPreviewDoc("html", "<h1>hi</h1>")).toBe(`${SRCDOC_BASE_TAG}<h1>hi</h1>`);
   });
 
   it("injects CSS into a sample document", () => {
@@ -132,5 +137,34 @@ describe("table of contents", () => {
 
   it("slugifies titles GitHub-style", () => {
     expect(slugify("Hello, World!")).toBe("hello-world");
+  });
+});
+
+/** In-page anchors in the HTML preview: `#x` resolves against the *embedder's*
+ *  URL in a srcdoc frame, so without a base of `about:srcdoc` a click is a full
+ *  navigation of the frame, not a scroll (`format.ts` has the measurements). */
+describe("withSrcdocBase", () => {
+  it("goes first in an existing <head>", () => {
+    const doc = withSrcdocBase('<!DOCTYPE html><html lang="en"><head>\n<meta charset="utf-8"><title>t</title></head><body></body></html>');
+    expect(doc).toBe(`<!DOCTYPE html><html lang="en"><head>${SRCDOC_BASE_TAG}\n<meta charset="utf-8"><title>t</title></head><body></body></html>`);
+  });
+
+  it("does not mistake <header> for <head>", () => {
+    const doc = withSrcdocBase("<html><body><header>x</header></body></html>");
+    expect(doc).toBe(`<html>${SRCDOC_BASE_TAG}<body><header>x</header></body></html>`);
+  });
+
+  it("keeps the doctype first when there is no <head> or <html>", () => {
+    expect(withSrcdocBase("<!doctype html>\n<p>x</p>")).toBe(`<!doctype html>${SRCDOC_BASE_TAG}\n<p>x</p>`);
+    expect(withSrcdocBase("<p>x</p>")).toBe(`${SRCDOC_BASE_TAG}<p>x</p>`);
+  });
+
+  it("wins over a base the file brings along", () => {
+    const doc = withSrcdocBase('<head><base href="https://evil.example/"></head>');
+    expect(doc.indexOf(SRCDOC_BASE_TAG)).toBeLessThan(doc.indexOf("evil.example"));
+  });
+
+  it("is case-insensitive", () => {
+    expect(withSrcdocBase("<HTML><HEAD></HEAD></HTML>")).toBe(`<HTML><HEAD>${SRCDOC_BASE_TAG}</HEAD></HTML>`);
   });
 });
