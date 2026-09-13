@@ -141,7 +141,7 @@ export function PromptCard({
       }}
       onPointerDown={occurrence ? undefined : onPointerDown}
     >
-      {!occurrence && <span className="agent-prompt-card-port is-top" aria-hidden="true" />}
+      {!occurrence && <span className="agent-prompt-card-port is-in" aria-hidden="true" />}
       <div className="agent-prompt-card-head">
         <span className="agent-prompt-card-message">{card.message}</span>
         <span className={`agent-prompt-lamp is-${card.history?.result ?? card.state}`} aria-hidden="true" />
@@ -167,7 +167,7 @@ export function PromptCard({
       <small className="agent-prompt-card-fact">{stateFact(card, t, occurrence)}</small>
       {!occurrence && (
         <button
-          className="agent-prompt-card-port is-bottom"
+          className="agent-prompt-card-port is-out"
           type="button"
           data-no-drag
           aria-label={t("promptChart.linkFrom")}

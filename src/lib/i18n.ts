@@ -1040,7 +1040,6 @@ export const en = {
   "promptChart.dropSchedule": "Schedule",
   "promptChart.dropRetime": "Move to",
   "promptChart.dropUnschedule": "Unschedule",
-  "promptChart.dropCollect": "Collect again",
   "promptChart.dropBlocked": "Cannot drop here",
   "promptChart.linkFrom": "Drag to link with another card",
   "promptChart.linkKind": "New links",

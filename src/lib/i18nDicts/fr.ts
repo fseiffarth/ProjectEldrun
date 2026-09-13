@@ -918,7 +918,6 @@ export const dict: Dict = {
   "promptChart.dropSchedule": "Planifier",
   "promptChart.dropRetime": "Déplacer à",
   "promptChart.dropUnschedule": "Déprogrammer",
-  "promptChart.dropCollect": "Recueillir à nouveau",
   "promptChart.dropBlocked": "Impossible de déposer ici",
   "promptChart.linkFrom": "Glisser pour lier à une autre carte",
   "promptChart.linkKind": "Nouveaux liens",

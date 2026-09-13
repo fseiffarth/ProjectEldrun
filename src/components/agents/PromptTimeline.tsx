@@ -36,6 +36,8 @@ interface Props {
 const BODY_PADDING = 8;
 /** The band is the width of the line plus a grip either side. */
 const NOW_BAND_WIDTH = 22;
+/** The queue's caption above its first card. */
+const QUEUE_LABEL_HEIGHT = 16;
 
 function hhmm(at: Date): string {
   return `${String(at.getHours()).padStart(2, "0")}:${String(at.getMinutes()).padStart(2, "0")}`;
@@ -71,7 +73,11 @@ export function PromptTimeline({ win, cards, now, drag, bodyRef, nowBandRef, ren
   const nowInside = now >= win.start && now < win.end;
   const nowX = Math.max(0, Math.min(width, timelineX(now, win, width)));
   const lanes = Math.max(TIMELINE_MIN_LANES, win.view === "month" ? TIMELINE_MIN_LANES : packed.lanes);
-  const bodyHeight = lanes * TIMELINE_LANE_HEIGHT + BODY_PADDING * 2;
+  // The queue is a column at the now line, outside the lanes: the body is as
+  // tall as the taller of the two, so no waiting card sits below the edge.
+  // What still outgrows it (an expanded card) scrolls inside the body.
+  const queueHeight = queued.length > 0 ? QUEUE_LABEL_HEIGHT + queued.length * TIMELINE_LANE_HEIGHT : 0;
+  const bodyHeight = Math.max(lanes * TIMELINE_LANE_HEIGHT, queueHeight) + BODY_PADDING * 2;
 
   const tickLabel = (at: Date, label: "hour" | "day", major: boolean): string => {
     if (label === "hour") return formatTime(hhmm(at), use24h);

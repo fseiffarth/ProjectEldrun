@@ -304,8 +304,6 @@ export function PromptChart({ scope, active, tabs, stateOf }: Props) {
       await schedules.upsert(scope, drop.targetId, { id: card.id, enabled: true, message: card.message, rule: { type: "once", at: drop.at } });
     } else if (drop.type === "unschedule") {
       await unschedule(card);
-    } else if (drop.type === "collect") {
-      await collect(card);
     }
   };
 
@@ -333,12 +331,11 @@ export function PromptChart({ scope, active, tabs, stateOf }: Props) {
   const dropLabel = useMemo(() => {
     if (drag?.kind !== "card") return null;
     const drop = timelineDropAction(drag.card, drag.zone, targetIds);
-    const keys: Record<PromptTimelineDrop["type"], "promptChart.sendNow" | "promptChart.dropSchedule" | "promptChart.dropRetime" | "promptChart.dropUnschedule" | "promptChart.dropCollect" | "promptChart.dropBlocked"> = {
+    const keys: Record<PromptTimelineDrop["type"], "promptChart.sendNow" | "promptChart.dropSchedule" | "promptChart.dropRetime" | "promptChart.dropUnschedule" | "promptChart.dropBlocked"> = {
       send: "promptChart.sendNow",
       schedule: "promptChart.dropSchedule",
       retime: "promptChart.dropRetime",
       unschedule: "promptChart.dropUnschedule",
-      collect: "promptChart.dropCollect",
       none: "promptChart.dropBlocked",
     };
     return t(keys[drop.type]);
@@ -370,7 +367,7 @@ export function PromptChart({ scope, active, tabs, stateOf }: Props) {
           if (node) cardNodes.current.set(card.id, node);
           else cardNodes.current.delete(card.id);
         }}
-        onPointerDown={card.recurring ? undefined : onCardPointerDown(card)}
+        onPointerDown={card.recurring || card.state === "sent" ? undefined : onCardPointerDown(card)}
         onPortPointerDown={onPortPointerDown(card)}
         onSelect={() => {
           if (linkFrom && linkFrom !== card.id) void linkTo(card).catch((cause) => setError(String(cause)));

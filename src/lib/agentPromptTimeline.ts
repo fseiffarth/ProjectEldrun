@@ -23,8 +23,9 @@ export type TimelineView = "day" | "week" | "month";
 export const TIMELINE_SNAP_MIN: Record<TimelineView, number> = { day: 5, week: 15, month: 60 };
 /** A card's fixed width on the axis, in px; it marks an instant, not a span. */
 export const TIMELINE_CARD_WIDTH = 168;
-/** One lane's height (card plus gap), in px. */
-export const TIMELINE_LANE_HEIGHT = 96;
+/** One lane's height (card plus gap), in px: a three-line message with its
+ *  agent row, tags and fact line, so a full card never overlaps the lane below. */
+export const TIMELINE_LANE_HEIGHT = 120;
 /** Lanes the body always shows, so an empty window has somewhere to drop. */
 export const TIMELINE_MIN_LANES = 2;
 
@@ -294,7 +295,6 @@ export type PromptTimelineDrop =
   | { type: "schedule"; targetId: string; at: string }
   | { type: "retime"; targetId: string; fromTargetId?: string; at: string }
   | { type: "unschedule"; fromTargetId?: string }
-  | { type: "collect" }
   | { type: "none" };
 
 /**
@@ -307,13 +307,13 @@ export function timelineDropAction(
   zone: TimelineZone,
   targets: readonly string[],
 ): PromptTimelineDrop {
-  if (zone.kind === "none" || card.recurring) return { type: "none" };
+  // A sent card is history: it stays where it went. "Collect again" is a
+  // button on its face, never a drop.
+  if (zone.kind === "none" || card.recurring || card.state === "sent") return { type: "none" };
   if (zone.kind === "strip") {
-    if (card.state === "sent") return { type: "collect" };
     if (card.schedule) return { type: "unschedule", fromTargetId: card.targetId };
     return { type: "none" };
   }
-  if (card.state === "sent") return { type: "none" };
   const targetId = card.targetId && targets.includes(card.targetId) ? card.targetId : targets[0];
   if (!targetId) return { type: "none" };
   if (zone.kind === "now") {

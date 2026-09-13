@@ -916,7 +916,6 @@ export const dict: Dict = {
   "promptChart.dropSchedule": "Programar",
   "promptChart.dropRetime": "Mover a",
   "promptChart.dropUnschedule": "Desprogramar",
-  "promptChart.dropCollect": "Recoger de nuevo",
   "promptChart.dropBlocked": "No se puede soltar aquí",
   "promptChart.linkFrom": "Arrastra para enlazar con otra tarjeta",
   "promptChart.linkKind": "Enlaces nuevos",

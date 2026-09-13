@@ -174,7 +174,8 @@ describe("timeline drops", () => {
     expect(timelineDropAction(queued, at, targets)).toMatchObject({ type: "retime" });
     expect(timelineDropAction(recurring, at, targets)).toEqual({ type: "none" });
     expect(timelineDropAction(recurring, { kind: "strip" }, targets)).toEqual({ type: "none" });
-    expect(timelineDropAction(sent, { kind: "strip" }, targets)).toEqual({ type: "collect" });
+    expect(timelineDropAction(sent, { kind: "strip" }, targets)).toEqual({ type: "none" });
+    expect(timelineDropAction(sent, { kind: "now" }, targets)).toEqual({ type: "none" });
     expect(timelineDropAction(sent, at, targets)).toEqual({ type: "none" });
     expect(timelineDropAction(draft, { kind: "none" }, targets)).toEqual({ type: "none" });
   });
