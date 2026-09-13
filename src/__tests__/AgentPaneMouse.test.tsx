@@ -46,6 +46,10 @@ const { termSpy } = vi.hoisted(() => ({
     focus: vi.fn(),
     // The live mode the running program sets; flipped per test.
     mouseTrackingMode: "none" as "none" | "any",
+    // What `getSelection()` answers, and the listener the pane registered for
+    // selection changes — a "drag" is: set the text, fire the listener.
+    selection: "",
+    onSelection: null as null | (() => void),
     // Whatever xterm's own mousedown listener would have seen, recorded by a
     // stand-in listener the stub installs on the element it is "opened" into.
     seen: [] as MouseEvent[],
@@ -70,10 +74,10 @@ vi.mock("@xterm/xterm", () => ({
     onResize() {}
     onBell() {}
     onTitleChange() {}
-    onSelectionChange() {}
+    onSelectionChange(cb: () => void) { termSpy.onSelection = cb; }
     buffer = { active: { length: 0, getLine: () => null } };
     attachCustomKeyEventHandler() {}
-    getSelection() { return ""; }
+    getSelection() { return termSpy.selection; }
     focus() { termSpy.focus(); }
     paste(text: string) { termSpy.paste(text); }
     dispose() {}
@@ -91,6 +95,7 @@ vi.mock("../stores/settings", () => ({
 }));
 
 import { TerminalView } from "../components/terminal/TerminalView";
+import { useProjectsStore } from "../stores/projects";
 
 /** Render an agent pane (`zoomable`) and hand back its container element. */
 async function agentPane(id: string): Promise<HTMLElement> {
@@ -123,10 +128,50 @@ describe("agent pane mouse gestures", () => {
     termSpy.focus.mockClear();
     termSpy.seen.length = 0;
     termSpy.mouseTrackingMode = "none";
+    termSpy.selection = "";
+    termSpy.onSelection = null;
+    useProjectsStore.setState({ switchToast: null });
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
       value: { readText: () => Promise.resolve("from the clipboard"), writeText: () => Promise.resolve() },
     });
+  });
+
+  /** Drag `text` out of the pane: the selection settles, the button comes up. */
+  async function drag(text: string) {
+    termSpy.selection = text;
+    await act(async () => {
+      termSpy.onSelection?.();
+      document.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+    });
+  }
+
+  it("copies a drag on mouse-up and says so", async () => {
+    const writeText = vi.fn(() => Promise.resolve());
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { readText: () => Promise.resolve(""), writeText },
+    });
+    await agentPane("p:copy");
+    await drag("one\ntwo\nthree");
+    // Flushed by the release, not the 60 ms debounce.
+    expect(writeText).toHaveBeenCalledWith("one\ntwo\nthree");
+    // Under an agent TUI the highlight is repainted away within milliseconds,
+    // so the copy has to announce itself — in the same toast OSC 52 uses.
+    expect(useProjectsStore.getState().switchToast).toBe("Copied 3 lines to the clipboard");
+
+    await drag("a path");
+    expect(useProjectsStore.getState().switchToast).toBe("Copied 6 characters to the clipboard");
+  });
+
+  it("says nothing when the clipboard refused the copy", async () => {
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { readText: () => Promise.resolve(""), writeText: () => Promise.reject(new Error("no focus")) },
+    });
+    await agentPane("p:refused");
+    await drag("lost");
+    expect(useProjectsStore.getState().switchToast).toBeNull();
   });
 
   it("double-click pastes the clipboard and never reaches xterm", async () => {

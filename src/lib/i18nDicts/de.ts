@@ -2465,6 +2465,8 @@ export const dict: Dict = {
   "credentialPasteBar.typeItForMe": "Für mich eintippen:",
   "credentialPasteBar.pastedFlash": "eingefügt",
   "terminal.clipboardSetByProgram": "Zwischenablage vom Programm in diesem Terminal gesetzt",
+  "terminal.copiedLines": "{n} Zeilen in die Zwischenablage kopiert",
+  "terminal.copiedChars": "{n} Zeichen in die Zwischenablage kopiert",
   "credentialPasteBar.nothingSavedFlash": "für diesen Login nichts gespeichert (oder der Schlüsselbund ist gesperrt)",
   "credentialPasteBar.pasteUsername": "Benutzername einfügen",
   "credentialPasteBar.pasteUsernameTitle": "Tippt „{user}“ an der Cursorposition in das Anmeldeterminal ein.",

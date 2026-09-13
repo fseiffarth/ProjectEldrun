@@ -2457,6 +2457,8 @@ export const dict: Dict = {
   "credentialPasteBar.typeItForMe": "Le taper pour moi :",
   "credentialPasteBar.pastedFlash": "collé",
   "terminal.clipboardSetByProgram": "Presse-papiers défini par le programme de ce terminal",
+  "terminal.copiedLines": "{n} lignes copiées dans le presse-papiers",
+  "terminal.copiedChars": "{n} caractères copiés dans le presse-papiers",
   "credentialPasteBar.nothingSavedFlash": "rien d'enregistré pour cette connexion (ou le trousseau est verrouillé)",
   "credentialPasteBar.pasteUsername": "Coller l'identifiant",
   "credentialPasteBar.pasteUsernameTitle": "Tape « {user} » dans le terminal de connexion à l'emplacement du curseur.",

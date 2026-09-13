@@ -2580,6 +2580,8 @@ export const en = {
   "credentialPasteBar.typeItForMe": "Type it for me:",
   "credentialPasteBar.pastedFlash": "pasted",
   "terminal.clipboardSetByProgram": "Clipboard set by the program in this terminal",
+  "terminal.copiedLines": "Copied {n} lines to the clipboard",
+  "terminal.copiedChars": "Copied {n} characters to the clipboard",
   "credentialPasteBar.nothingSavedFlash": "nothing saved for this login (or the keyring is locked)",
   "credentialPasteBar.pasteUsername": "Paste username",
   "credentialPasteBar.pasteUsernameTitle": "Type \"{user}\" into the login terminal at the cursor.",

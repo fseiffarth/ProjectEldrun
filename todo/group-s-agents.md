@@ -1213,3 +1213,26 @@ unchanged; the new agents are additive.
       Re-check and confirm the version is re-read.
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work
+
+266. **A copy out of a terminal says so.** Copy-on-select worked, and read as
+    "select/copy is broken" (user, 2026-09-13): under an agent TUI the highlight
+    a drag leaves is wiped by the program's next repaint within milliseconds,
+    and no route — drag, Shift+drag, Ctrl+Shift+C — announced the copy. Every
+    user-made copy now goes through one `copyToClipboard` in `TerminalView` that
+    writes the clipboard and, once the write resolved, shows the same transient
+    toast the OSC 52 path uses: "Copied 3 lines to the clipboard" / "Copied 42
+    characters to the clipboard" (`terminal.copiedLines` / `terminal.copiedChars`).
+    A refused write (no window focus) shows nothing. The selection highlight on
+    the two dark grounds (`soft_dark`, `dark`) is one step brighter so it reads
+    through the TUI's own tinted blocks. Frontend only, hot-reloads. Built
+    2026-09-13, **not live-tested**.
+    - [x] 🤖 Automated test — `AgentPaneMouse` (a drag's release copies the
+      text and sets the toast with the line count, a one-line selection with
+      the character count; a refused clipboard write sets no toast).
+    - [ ] 🖐️ Manual test — in a Claude tab, drag across some output: the toast
+      at the top says how many lines were copied and a paste elsewhere has
+      them. Shift+drag and Ctrl+Shift+C (after a Shift+drag) do the same. In a
+      shell tab the same three routes announce too. In soft_dark, the highlight
+      is visible over Claude's dimmed blocks while it lasts.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work

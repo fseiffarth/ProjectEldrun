@@ -2455,6 +2455,8 @@ export const dict: Dict = {
   "credentialPasteBar.typeItForMe": "Scrivilo per me:",
   "credentialPasteBar.pastedFlash": "incollato",
   "terminal.clipboardSetByProgram": "Appunti impostati dal programma in questo terminale",
+  "terminal.copiedLines": "{n} righe copiate negli appunti",
+  "terminal.copiedChars": "{n} caratteri copiati negli appunti",
   "credentialPasteBar.nothingSavedFlash": "nulla salvato per questo accesso (o il portachiavi è bloccato)",
   "credentialPasteBar.pasteUsername": "Incolla nome utente",
   "credentialPasteBar.pasteUsernameTitle": "Digita «{user}» nel terminale di accesso alla posizione del cursore.",

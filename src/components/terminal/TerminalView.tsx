@@ -135,7 +135,9 @@ function terminalTheme(scheme: string | undefined) {
       foreground: "#e8eaf0",
       cursor: "#e8eaf0",
       cursorAccent: "#17181c",
-      selectionBackground: "#3a4150",
+      // A step brighter than the surrounding chrome would suggest: the
+      // selection has to read through an agent TUI's own tinted blocks.
+      selectionBackground: "#4a5570",
       selectionForeground: "#e8eaf0",
       black: "#4a4f5a",
       red: "#f47067",
@@ -239,7 +241,7 @@ function terminalTheme(scheme: string | undefined) {
       foreground: "#ffffff",
       cursor: "#ffffff",
       cursorAccent: "#000000",
-      selectionBackground: "#3d3d3d",
+      selectionBackground: "#4d4d4d",
       selectionForeground: "#ffffff",
       black: "#5a5a5a",
       red: "#f85149",
@@ -381,6 +383,16 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
   const t = useT();
   const clipboardNoticeRef = useRef(t("terminal.clipboardSetByProgram"));
   clipboardNoticeRef.current = t("terminal.clipboardSetByProgram");
+  // What a user-made copy announces itself with (see `copyToClipboard` in the
+  // mount effect). Under an agent TUI the highlight a drag leaves is wiped by
+  // the program's next repaint within milliseconds, so without a word from the
+  // app the copy looks like nothing happened — and Ctrl+Shift+C never showed
+  // anything at all.
+  const copiedNoticeRef = useRef<(text: string) => string>(() => "");
+  copiedNoticeRef.current = (text) => {
+    const lines = text.split("\n").length;
+    return lines > 1 ? t("terminal.copiedLines", { n: lines }) : t("terminal.copiedChars", { n: text.length });
+  };
 
   const focusedRef = useRef(focused);
   visibleRef.current = visible;
@@ -789,6 +801,17 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
     // the drag having copied nothing at all. Releasing the button flushes the
     // pending copy immediately (see `onDocMouseUp`), so a select-then-paste-
     // elsewhere never races the debounce.
+    // Every copy the user makes — drag, Shift+drag, Ctrl+Shift+C — goes through
+    // here so each one is announced in the same transient toast the OSC 52 path
+    // uses, and only once the clipboard actually took it.
+    const copyToClipboard = (text: string) => {
+      navigator.clipboard
+        ?.writeText(text)
+        .then(() => {
+          useProjectsStore.setState({ switchToast: copiedNoticeRef.current(text) });
+        })
+        .catch(() => {});
+    };
     let selectionCopyTimer: ReturnType<typeof setTimeout> | null = null;
     let pendingSelection = "";
     const flushSelectionCopy = () => {
@@ -799,7 +822,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       if (!pendingSelection) return;
       const text = pendingSelection;
       pendingSelection = "";
-      navigator.clipboard?.writeText(text).catch(() => {});
+      copyToClipboard(text);
     };
     term.onSelectionChange(() => {
       const sel = term.getSelection();
@@ -891,7 +914,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       if (!e.ctrlKey || !e.shiftKey) return true;
       if (e.code === "KeyC") {
         const sel = term.getSelection();
-        if (sel) navigator.clipboard?.writeText(sel).catch(() => {});
+        if (sel) copyToClipboard(sel);
         return false;
       }
       if (e.code === "KeyV") {
