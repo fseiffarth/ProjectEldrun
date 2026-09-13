@@ -45,8 +45,11 @@ export PATH="$HOME/.cargo/bin:$PATH"
 build_log="$(mktemp)"
 trap 'rm -f "$build_log"' EXIT
 if ! npm run tauri -- build --no-bundle 2>&1 | tee "$build_log"; then
-  if grep -q "Too many open files" "$build_log"; then
-    echo "package-dev: tauri-cli could not open an inotify instance; building without it." >&2
+  # Two ways inotify runs dry: no instance left ("Too many open files") and no
+  # *watch* left ("OS file watch limit reached", fs.inotify.max_user_watches —
+  # hit 2026-09-13 with the default 65536 and a dev server + Eldrun watching).
+  if grep -qE "Too many open files|file watch limit reached" "$build_log"; then
+    echo "package-dev: tauri-cli could not set up its file watcher; building without it." >&2
     npm run build
     cargo build --release --features custom-protocol \
       --manifest-path "$ROOT/src-tauri/Cargo.toml"
