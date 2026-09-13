@@ -1236,3 +1236,31 @@ unchanged; the new agents are additive.
       is visible over Claude's dimmed blocks while it lasts.
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work
+
+267. **`claude update` works from a fenced agent tab.** The fence bound the
+    agent's own install read-only — `~/.local/bin` from the allowlist and
+    `~/.local/share/claude/versions/` from the launcher's symlink chain — so
+    `claude update` and Claude's background auto-update failed on `EROFS` in
+    every agent tab (user, 2026-09-13: "must be doable from the agent tabs").
+    `agent_fence::updatable_install_dirs` recognises the native-installer
+    layout (a link in `~/.local/bin` into `~/.local/share/<tool>/`) and hands
+    exactly `~/.local/bin` and `~/.local/share/<tool>` back read-write, on
+    Linux as later bind mounts that shadow the allowlist's read-only one and on
+    macOS as `writable` entries of the Seatbelt profile. An npm/nvm or
+    package-managed install stays read-only. Deliberate widening, documented in
+    `docs/context/agent_authority.md`. Backend only — needs a restart. Built
+    2026-09-13, **not live-tested**.
+    - [x] 🤖 Automated test — `agent_fence` (the native layout yields the
+      launcher dir then the install root, never `versions/`; an nvm-style
+      install and a `~/.local/bin` link pointing elsewhere yield nothing; a
+      later read-write bind of `~/.local/bin` comes after the allowlist's
+      read-only one in the bubblewrap argv).
+    - [ ] 🖐️ Manual test — after a restart, in a Claude tab run
+      `! touch ~/.local/share/claude/versions/.probe && rm ~/.local/share/claude/versions/.probe`
+      (no "Read-only file system"), then `! claude update` when a newer
+      release exists: it installs, `! readlink ~/.local/bin/claude` names the
+      new version, and a tab opened afterwards runs it. Confirm a shell tab's
+      view of `~/.local/bin` is unchanged and that `~/.nvm` (if present) is
+      still read-only from the agent tab.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work

@@ -76,7 +76,17 @@ read-only (`command_bind_paths`): the native Claude installer leaves
 only `~/.local/bin` restored the link dangles inside the sandbox and bubblewrap
 fails with `execvp claude: No such file or directory`. Allowlisting the binary's
 home is therefore never required, only a way to expose more of an install dir.
-Login state gets the same treatment: `~/.claude.json` (oauthAccount +
+The one part of that chain handed back **read-write** is the agent's own
+native-installer layout (`updatable_install_dirs`): a launcher link in
+`~/.local/bin` pointing at a payload under `~/.local/share/<tool>/` — so
+`claude update`, and Claude's background auto-update, work from a fenced tab
+instead of failing on a read-only `versions/` every session (user,
+2026-09-13). The updater writes the new binary into `versions/` and swaps the
+link by rename, so exactly `~/.local/bin` and `~/.local/share/<tool>` open up;
+an npm/nvm or package-managed install stays read-only, because a Node prefix's
+`bin/` holds every global tool. This is a deliberate widening: an agent that
+can update its CLI can replace it, and that binary is the one the user runs
+everywhere. Login state gets the same treatment: `~/.claude.json` (oauthAccount +
 onboarding) is staged as a per-project **copy** with its cross-project
 `projects` map filtered to the box's own roots — without it every fenced tab
 demanded a fresh login, and mounting the host original writable would hand a

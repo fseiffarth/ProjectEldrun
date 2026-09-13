@@ -136,6 +136,13 @@ Claude's `/fast` — different thing.
 - Home files: `~/.claude/`, `~/.claude.json` (+ `.bak`, `.backup.N`),
   `~/.claude/settings.json`, `settings.local.json`,
   `~/.local/share/claude/versions/`.
+- `claude update` (native installer) writes the new binary into
+  `~/.local/share/claude/versions/<v>` and swaps the `~/.local/bin/claude`
+  symlink by rename; its result lands in `~/.claude/.last-update-result.json`.
+  Measured against 2.1.270 (2026-09-13). `agent_fence::updatable_install_dirs`
+  hands exactly those two directories back read-write inside the fence — an
+  updater that starts writing elsewhere (a lock under `~/.local/share/claude/`
+  is covered, `~/.local/state` or `~/.cache` is not) fails read-only again.
 - Credentials: the OAuth record is `~/.claude/.credentials.json`
   (`{"claudeAiOauth":{accessToken, refreshToken, expiresAt, …}}`, 0600). The
   CLI opens it with `O_NOFOLLOW` — a symlink is refused (`refused-symlink`,
