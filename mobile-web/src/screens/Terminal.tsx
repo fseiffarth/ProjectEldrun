@@ -1,3 +1,5 @@
+import { useT } from "../../../src/lib/i18n";
+import { OutboxViewer } from "../components/OutboxViewer";
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
@@ -9,10 +11,10 @@ import {
   listDesktopImages,
   listOutbox,
   MAX_INBOX_FILE,
-  outboxImageUrl,
+  outboxFileUrl,
   uploadToInbox,
   type DesktopImage,
-  type OutboxImage,
+  type OutboxFile,
   type TabRow,
 } from "../api";
 import { TERMINAL_PROTOCOL, TERMINAL_SIZE } from "../terminal/protocol";
@@ -164,7 +166,7 @@ const OUTBOX_POLL = 8_000;
 
 /** Whether two outbox listings would paint the same strip, so a poll that
  * found nothing new does not re-render every thumbnail. */
-function sameOutbox(a: OutboxImage[], b: OutboxImage[]) {
+function sameOutbox(a: OutboxFile[], b: OutboxFile[]) {
   return a.length === b.length && a.every((image, i) => image.name === b[i].name && image.modified === b[i].modified && image.size === b[i].size);
 }
 
@@ -257,6 +259,7 @@ function OptionSheet({ title, note, options, waiting, busy, onPick, onClose }: {
 }
 
 export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
+  const t = useT();
   const host = useRef<HTMLDivElement>(null);
   const wideHint = useRef<HTMLDivElement>(null);
   const readableHost = useRef<HTMLElement>(null);
@@ -331,11 +334,11 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
    * composer, and the one way an image reaches the phone from a session: a
    * terminal carries none, and Focus classifies nothing, so a path printed
    * by the agent is never guessed at. */
-  const [outbox, setOutbox] = useState<OutboxImage[]>([]);
+  const [outbox, setOutbox] = useState<OutboxFile[]>([]);
   /** Names the strip's ✕ hid; a picture that arrives afterwards still shows. */
   const [outboxHidden, setOutboxHidden] = useState<Set<string>>(() => new Set());
   /** The picture open full-screen. */
-  const [outboxOpen, setOutboxOpen] = useState<OutboxImage | null>(null);
+  const [outboxOpen, setOutboxOpen] = useState<OutboxFile | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   /** Bumped when the tab changes so a late upload result lands nowhere. */
   const uploadRun = useRef(0);
@@ -1346,13 +1349,27 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
       {tab.kind === "agent" && (voiceFailure || voicePreview || voiceStatus) && <div className={voiceFailure ? "voice-feedback error" : "voice-feedback"} role={voiceFailure ? "alert" : "status"} aria-live="polite">{voiceFailure || (voicePreview ? `Heard: ${voicePreview}` : voiceStatus)}</div>}
       {stoppedReason && <div className="voice-feedback error" role="alert">{stoppedReason}</div>}
       {sendFailed && !stoppedReason && <div className="voice-feedback error" role="alert">That did not reach the desktop — the connection dropped. It will retry on its own.</div>}
-      {outboxShown.length > 0 && <div className="outbox-strip" role="region" aria-label="Images from the agent">
-        <div className="outbox-strip-head"><strong>From the agent <small>Untested</small></strong><span>{outboxShown.length === 1 ? "1 image" : `${outboxShown.length} images`} in the project's outbox</span><button onClick={hideOutbox} aria-label="Hide these images">✕</button></div>
+      {outboxShown.length > 0 && <div className="outbox-strip" role="region" aria-label={t("mobile.outbox.region")}>
+        <div className="outbox-strip-head"><strong>{t("mobile.outbox.from")} <small>{t("mobile.outbox.untested")}</small></strong><span>{t(outboxShown.length === 1 ? "mobile.outbox.countOne" : "mobile.outbox.count", { count: outboxShown.length })}</span><button onClick={hideOutbox} aria-label={t("mobile.outbox.hide")}>✕</button></div>
         <div className="outbox-thumbs">
-          {outboxShown.map((image) => <button key={image.name} className="outbox-thumb" onClick={() => setOutboxOpen(image)} aria-label={`Open ${image.name}`} title={image.name}>
-            <img src={outboxImageUrl(tab.id, image.name)} alt="" loading="lazy" decoding="async" />
-            <span>{ageLabel(Math.max(0, Math.floor(Date.now() / 1000) - image.modified))}</span>
-          </button>)}
+          {outboxShown.map((file) => {
+            const isImage = file.kind.startsWith("image/");
+            const download = !isImage && !file.kind.startsWith("text/") && file.kind !== "application/pdf";
+            const label = t("mobile.outbox.open", { name: file.name });
+            const content = <>
+              {isImage ? <img src={outboxFileUrl(tab.id, file.name)} alt="" loading="lazy" decoding="async" /> : <span aria-hidden="true">{file.kind === "application/pdf" ? "PDF" : file.kind.startsWith("text/") ? "≡" : "↓"}</span>}
+              {!isImage && <strong>{file.name}</strong>}
+              <span>{ageLabel(Math.max(0, Math.floor(Date.now() / 1000) - file.modified))}{!isImage && ` · ${sizeLabel(file.size)}`}</span>
+            </>;
+            return <div key={file.name} className="outbox-entry">
+              {download ? <a className="outbox-file" href={outboxFileUrl(tab.id, file.name, true)} download={file.name} aria-label={label}>{content}</a>
+                : <button className={isImage ? "outbox-thumb" : "outbox-file"} onClick={() => {
+                  if (file.kind === "application/pdf") window.open(outboxFileUrl(tab.id, file.name), "_blank", "noopener");
+                  else setOutboxOpen(file);
+                }} aria-label={label} title={file.name}>{content}</button>}
+              {!isImage && <button className="outbox-details" onClick={() => setOutboxOpen(file)} aria-label={t("mobile.outbox.actions", { name: file.name })}>⋯</button>}
+            </div>;
+          })}
         </div>
       </div>}
       {lastSent && <div className="last-sent"><span>Sent</span><p>{lastSent}</p></div>}
@@ -1436,13 +1453,7 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
       onClose={() => { if (!switching) setModeSheet(false); }}
     />}
     {statusSheet && <StatusSheet tab={tab} live={status} onClose={() => setStatusSheet(false)} />}
-    {outboxOpen && <div className="outbox-viewer" role="dialog" aria-modal="true" aria-label={outboxOpen.name} onClick={() => setOutboxOpen(null)}>
-      <div className="outbox-viewer-head" onClick={(event) => event.stopPropagation()}>
-        <button className="sheet-close" onClick={() => setOutboxOpen(null)} aria-label="Close">✕</button>
-        <h2>{outboxOpen.name}</h2>
-        <small>{ageLabel(Math.max(0, Math.floor(Date.now() / 1000) - outboxOpen.modified))} · {sizeLabel(outboxOpen.size)}</small>
-      </div>
-      <img src={outboxImageUrl(tab.id, outboxOpen.name)} alt={outboxOpen.name} onClick={(event) => event.stopPropagation()} />
-    </div>}
+    {outboxOpen && <OutboxViewer key={`${tab.id}/${outboxOpen.name}`} tabId={tab.id} file={outboxOpen} onClose={() => setOutboxOpen(null)} />}
+
   </main>;
 }

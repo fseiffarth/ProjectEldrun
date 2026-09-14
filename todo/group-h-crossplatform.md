@@ -462,6 +462,23 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
         left out deliberately rather than forgotten — it is the one part that
         reaches the network unasked.
 
+- [~] **31ad — `eldrun-send`: files from agent terminals to the phone** (2026-09-14;
+  implemented, pending live QA). See `docs/mobile_send_plan.md`. Local and
+  container tabs get an installed command, scoped root env, and read-only
+  mounts. Focus previews images/text/PDF and offers downloads and file sharing.
+  After deliberately restarting Eldrun, verify on the tailnet:
+  1. Ask fenced Claude from Focus to render and show a plot; it should run
+     `eldrun-send` itself and the thumbnail should arrive within about 8 s.
+  2. Pipe a test log with `eldrun-send -n tests.log`; open the text chip.
+  3. Send a PDF; it opens a new browser tab.
+  4. Copy a PNG into `.eldrun/outbox/` manually; its thumbnail still appears.
+  5. Repeat the log from a container tab.
+  6. Send a ZIP; Save downloads and Share offers other apps where supported.
+  7. `eldrun-send --clear` empties the strip; with the desktop closed, existing
+     outbox files still list through the sidecar.
+  8. Send text named `.png` and an SVG; both preview as inert text.
+  Windows PowerShell and macOS runtime behavior also require platform QA.
+
 - [~] **31ab — Mobile Focus reads as a chat** (2026-09-05; ✅ code-complete and
   automated tests passing, ⚠️ phone QA pending — and a rebuild + restart first,
   since the phone serves the bundle baked into the binary). Focus painted an

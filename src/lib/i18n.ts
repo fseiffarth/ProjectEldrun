@@ -54,6 +54,22 @@ export function normalizeLang(value: string | null | undefined): Language {
 // solely for the test aggregator (`i18nDicts/all.ts`) — components go through
 // `useT()`/`translate`, never this object.
 export const en = {
+  "mobile.outbox.countOne": "1 file in the project's outbox",
+  "mobile.outbox.actions": "File actions for {name}",
+  "mobile.outbox.region": "Files from the agent",
+  "mobile.outbox.from": "From the agent",
+  "mobile.outbox.untested": "Untested",
+  "mobile.outbox.count": "{count} files in the project's outbox",
+  "mobile.outbox.hide": "Hide these files",
+  "mobile.outbox.open": "Open {name}",
+  "mobile.outbox.close": "Close",
+  "mobile.outbox.save": "Save",
+  "mobile.outbox.share": "Share…",
+  "mobile.outbox.loading": "Loading…",
+  "mobile.outbox.error": "The file could not be loaded. Try again or save it.",
+  "mobile.outbox.shareError": "The file could not be shared. Save it to share from your files app.",
+  "mobile.outbox.whole": "Open the whole file",
+
   // Common action words, shared across surfaces.
   "common.back": "Back",
   "common.cancel": "Cancel",

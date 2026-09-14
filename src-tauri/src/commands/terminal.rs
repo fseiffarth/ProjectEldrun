@@ -66,6 +66,13 @@ fn cwd_within(cwd: &str, allowed: &std::path::Path) -> bool {
     std::path::Path::new(cwd).starts_with(allowed)
 }
 
+/// Select the scope's root independently of a tab's working subdirectory.
+fn scope_root_for<'a>(local: &'a str, remote: Option<&'a str>, mirror: &'a str, box_folder: Option<&'a str>, local_only: bool) -> &'a str {
+    if let Some(folder) = box_folder { folder }
+    else if let Some(remote) = remote { if local_only { mirror } else { remote } }
+    else { local }
+}
+
 /// The VM tier's spawn-refusal decision (`docs/vm_projects_plan.md`), pure so
 /// the no-local-fallback guard is testable: for a VM project a local spawn is
 /// refused outright (the untrusted agent stepping outside the boundary, never
@@ -98,6 +105,14 @@ fn vm_spawn_refusal(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn scope_root_is_not_the_tab_cwd() {
+        assert_eq!(super::scope_root_for("local", None, "mirror", None, false), "local");
+        assert_eq!(super::scope_root_for("local", Some("host"), "mirror", None, false), "host");
+        assert_eq!(super::scope_root_for("local", Some("host"), "mirror", None, true), "mirror");
+        assert_eq!(super::scope_root_for("member", None, "mirror", Some("box"), false), "box");
+    }
+
     use super::*;
     use crate::schema::projects::ProjectEntry;
     use std::collections::HashMap;
@@ -307,6 +322,18 @@ pub async fn pty_spawn(
                     ));
                 }
             }
+        }
+    }
+
+    if let Some(pid) = opts.project_id.as_deref() {
+        let box_folder = crate::commands::boxes::box_id_of_scope(pid).and_then(|id|
+            crate::commands::boxes::get_boxes().ok()?.into_iter().find(|b| b.id == id)?.folder);
+        let remote = crate::services::remote::remote_target_for(pid);
+        let local = crate::services::sandbox::project_dir_for(pid).unwrap_or_default();
+        let mirror = crate::services::remote_sync::mirror_dir(pid).to_string_lossy().into_owned();
+        let root = scope_root_for(&local, remote.as_ref().map(|r| r.spec.remote_path.as_str()), &mirror, box_folder.as_deref(), opts.local_only);
+        if !root.is_empty() {
+            opts.env.entry("ELDRUN_PROJECT_DIR".into()).or_insert_with(|| root.into());
         }
     }
 

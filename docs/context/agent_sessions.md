@@ -38,6 +38,15 @@ one-time trust (`/hooks` in Codex) before they run; until then
 record. Gemini and the other "continue last" agents restore on their CLI's
 continue flag, not a captured id.
 
+### The phone send hint
+
+An accepted Claude `SessionStart` prints a one-line `eldrun-send <file>` hint
+when `ELDRUN_PROJECT_DIR` is set. The existing continuity check runs first, so
+a nested startup cannot print it; `Stop` and Codex never print it. Claude adds
+SessionStart stdout to context. The PowerShell hook mirrors it; other agents
+learn the command from the project's scaffold `AGENTS.md`. See
+`docs/mobile_send_plan.md` and the third-party update checklist.
+
 ### Where Codex keeps a session, and why resume died
 
 The resume arg is emitted only when Codex still *has* the recorded

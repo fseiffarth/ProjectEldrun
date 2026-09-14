@@ -571,6 +571,10 @@ fn agent_state_mounts(scope_id: &str, roots: &[PathBuf]) -> (Vec<BindMount>, Vec
             .into_iter()
             .filter_map(|m| mount_pair(&m, true)),
     );
+    let bin = crate::services::agent_bin::bin_dir();
+    let _ = std::fs::create_dir_all(&bin);
+    let bin = bin.to_string_lossy().into_owned();
+    mounts.push(BindMount { src: bin.clone(), dst: bin, read_only: true });
     (mounts, symlinks)
 }
 
@@ -639,10 +643,6 @@ pub(crate) fn bwrap_args(
 }
 
 /// Rewrite a local agent spawn into its outer bubblewrap boundary.
-#[cfg(target_os = "linux")]
-pub fn wrap_pty_options_bwrap(
-    opts: &mut PtyOptions,
-    roots: &[PathBuf],
 /// Codex's nested bwrap is denied by Ubuntu's stacked AppArmor profile. Use
 /// its Landlock backend inside our fence, preserving its permissions policy.
 /// Prepending lets an explicit user override later in argv take precedence.
@@ -656,6 +656,10 @@ fn codex_fence_args(cmd: &str, args: &[String]) -> Vec<String> {
     out
 }
 
+#[cfg(target_os = "linux")]
+pub fn wrap_pty_options_bwrap(
+    opts: &mut PtyOptions,
+    roots: &[PathBuf],
     scope_id: &str,
 ) -> Result<(), String> {
     if !bwrap_available() {
@@ -813,6 +817,7 @@ fn sandbox_exec_inputs(opts: &PtyOptions, roots: &[PathBuf], scope_id: &str) -> 
         protected.push(format!("{home}/{rel}"));
     }
     protected.push(state_dir.join("hooks").to_string_lossy().into_owned());
+    protected.push(crate::services::agent_bin::bin_dir().to_string_lossy().into_owned());
     // Claude's identity/onboarding file: readable and writable so a fenced tab
     // is not a fresh install (see `staged_claude_json_mounts` for why Linux
     // stages a filtered copy instead — Seatbelt cannot substitute a file).
@@ -1360,11 +1365,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
-    #[test]
-    fn later_rw_mount_shadows_the_allowlist_read_only_bin() {
-        let bin = "/home/u/.local/bin".to_string();
-        let mounts = vec![BindMount {
-            src: bin.clone(),
     #[cfg(target_os = "linux")]
     #[test]
     fn fenced_codex_uses_landlock_without_changing_permissions_or_resume() {
@@ -1380,6 +1380,11 @@ mod tests {
         assert_eq!(codex_fence_args("custom-codex", &args), args);
     }
 
+    #[test]
+    fn later_rw_mount_shadows_the_allowlist_read_only_bin() {
+        let bin = "/home/u/.local/bin".to_string();
+        let mounts = vec![BindMount {
+            src: bin.clone(),
             dst: bin.clone(),
             read_only: false,
         }];

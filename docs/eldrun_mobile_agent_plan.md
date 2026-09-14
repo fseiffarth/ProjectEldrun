@@ -127,7 +127,7 @@ A native iOS/Android wrapper may follow, but it must reuse this API and protocol
   tree, skipped by sync) and the phone gets back only the project-relative
   `.eldrun/inbox/<file>` reference to put after an `@` — never a host path;
   and the one thing the phone may *see* is the mirror of that box, the
-  images an agent copies into `.eldrun/outbox/` (§4.3) — listed and served
+  files an agent explicitly sends into `.eldrun/outbox/` (§4.3) — listed and served
   by leaf name, image bytes only, nothing else in the tree;
 - muting calendar events, configuring CalDAV credentials, or editing a single
   occurrence of a recurring event;
@@ -333,26 +333,23 @@ recognition but not Chromium's downloadable on-device language-pack APIs, so it
 uses that compatibility path; the local branch is feature-detected and becomes
 active only on a browser/platform that actually exposes it.
 
-**Pictures from the agent.** A terminal carries no images, and Focus
-classifies nothing, so a path the session prints is never guessed at. What a
-vendor's remote app does when its agent reads a screenshot — show it — is
-done here by a folder: an agent that wants the phone to see an image copies
-it into the project's `.eldrun/outbox/`, the mirror of the inbox (git-ignored,
-hidden from the tree, skipped by sync, and inside the roots the agent fence
-lets it write). The sidecar lists that folder itself (`GET
-/api/v1/tabs/{id}/outbox`, no desktop round trip, so it answers with the
-desktop closed too) and serves one image by leaf name; Focus polls it while
-the page is visible and shows a thumbnail strip above the composer, one tap
-to full screen, ✕ to hide until something newer lands. The read is as
-defensive as the inbox write (`outbox.rs`): the folder must canonicalize
-below the project root, symlinks inside it are never followed, a file is
-served only when its **bytes** are PNG/JPEG/GIF/WebP (an SVG can carry
-script and is not an image here), the name that crosses is a leaf from the
-inbox's safe alphabet, and anything else answers `image_not_found` so the
-tree cannot be probed by error code. Nothing is copied into the folder on
-the agent's behalf: a hook mirroring every image the agent reads would file
-pictures from anywhere on the host into a project tree, which is exactly
-what the inbox's consent design guards against.
+**Files from the agent.** A terminal carries no files, and Focus never guesses
+at paths printed in it. An agent explicitly runs `eldrun-send <file>` (or
+`command | eldrun-send -n tests.log`) in a local or container tab. The command
+uses `ELDRUN_PROJECT_DIR` to fill the scope's `.eldrun/outbox/`; manual copies
+still work. The sidecar lists that folder itself (`GET /api/v1/tabs/{id}/outbox`,
+returning `{files: [{name, kind, size, modified}]}`), even with the desktop closed.
+Focus polls every eight visible seconds, shows image thumbnails and file chips,
+previews at most 1 MiB of text, opens PDFs as top-level browser tabs, and offers
+downloads and feature-detected file sharing. The untested badge stays until QA.
+
+The folder must canonicalize below the project root; symlinks inside it are
+never followed. File names are safe leaves and files are nonempty, at most
+24 MiB. PNG/JPEG/GIF/WebP/PDF are typed by bytes; UTF-8 text, including SVG/HTML,
+is inert `text/plain` with `nosniff`. Everything else uses `application/octet-stream`
+and attachment disposition; `?download=1` forces attachment for any type.
+Invalid files all answer `file_not_found`. Nothing is copied on the agent's
+behalf. Remote SSH delivery is deferred. See `docs/mobile_send_plan.md`.
 
 Resize is debounced. Network loss or closing the browser detaches only the
 mobile tmux client and never calls `kill-session`. One mobile viewer may attach
@@ -733,6 +730,11 @@ GET    /api/v1/tabs/:tab_id
 PUT    /api/v1/tabs/:tab_id                                        {label}
 DELETE /api/v1/tabs/:tab_id
 GET    /api/v1/tabs/:tab_id/terminal   (WebSocket upgrade)
+POST   /api/v1/tabs/:tab_id/inbox?name=...                         (raw file bytes)
+GET    /api/v1/tabs/:tab_id/desktop-images
+POST   /api/v1/tabs/:tab_id/desktop-images                        {image_id}
+GET    /api/v1/tabs/:tab_id/outbox                                {files}
+GET    /api/v1/tabs/:tab_id/outbox/:name[?download=1]
 ```
 
 `/healthz` returns only `{ "ok": true }`. Authenticated responses expose opaque

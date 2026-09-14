@@ -1036,6 +1036,9 @@ pub fn run() {
             commands::subwindow::spawn_monitor_watcher(_app.handle().clone());
             // Install the global Claude SessionStart hook so Eldrun can follow a
             // tab's live session id across `/clear` (see services::agent_session).
+            if let Err(e) = services::agent_bin::install() {
+                eprintln!("agent_bin: install commands: {e}");
+            }
             if let Err(e) = services::agent_session::install_session_start_hook() {
                 eprintln!("agent_session: install SessionStart hook: {e}");
             }

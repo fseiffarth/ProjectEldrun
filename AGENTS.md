@@ -310,9 +310,12 @@ loopback port, and from there is an ordinary `RemoteSpec` with `vm: true`.
   what the user set in-session and must not grow into a mode Eldrun chooses.
 - Terminal `kill`/`kill_all` must reap the child process subtree, not just the
   shell leader.
-- To show the user a picture on their phone (Eldrun Mobile), copy it into the
-  project's `.eldrun/outbox/`; the phone's Focus view lists that folder.
-  Images only — nothing is copied there on an agent's behalf.
+- To show the user a file on their phone (Eldrun Mobile), run
+  `eldrun-send <file>` in a local or container tab (24 MiB per file), or pipe
+  stdin with `command | eldrun-send -n tests.log`. The phone's Focus view lists
+  the scope's `.eldrun/outbox/`: images, PDFs and text preview; other files
+  download or share. `eldrun-send --clear` empties it. Manual copies still
+  work. Nothing is copied there on an agent's behalf; remote SSH is deferred.
 
 ## Frontend notes
 

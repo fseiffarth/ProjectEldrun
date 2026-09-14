@@ -384,17 +384,21 @@ pub fn docker_exec_args(
     ];
     for (k, v) in env {
         a.push("-e".to_string());
-        a.push(format!("{k}={v}"));
+        let value = if k == "ELDRUN_PROJECT_DIR" { container_path(v) } else { v.clone() };
+        a.push(format!("{k}={value}"));
     }
     for (k, v) in auth_env {
         a.push("-e".to_string());
-        a.push(format!("{k}={v}"));
+        let value = if k == "ELDRUN_PROJECT_DIR" { container_path(v) } else { v.clone() };
+        a.push(format!("{k}={value}"));
     }
     a.push(name.to_string());
     a.push("sh".to_string());
     a.push("-c".to_string());
     // `pidfile` is built from sanitize_key output — shell-safe by construction.
-    a.push(format!("echo $$ > {pidfile}; exec \"$@\""));
+    let bin = container_path(&crate::services::agent_bin::bin_dir().to_string_lossy());
+    let bin = bin.replace('\'', "'\"'\"'");
+    a.push(format!("export PATH='{bin}':\"$PATH\"; echo $$ > {pidfile}; exec \"$@\""));
     a.push("sh".to_string());
     a.push(cmd.to_string());
     a.extend(cmd_args.iter().cloned());
@@ -911,6 +915,9 @@ pub fn up(
         );
         ro_mounts.extend(ro_mounts_for_hooks(&hooks_dir));
     }
+    let bin = crate::services::agent_bin::bin_dir();
+    std::fs::create_dir_all(&bin).map_err(|e| e.to_string())?;
+    ro_mounts.push(format!("{0}:{0}", bin.to_string_lossy()));
     let harden = harden_opts(spec);
     let image = image_for(project_id, spec);
 
@@ -2969,10 +2976,9 @@ mod tests {
         // Kill-wrapper shape: name, sh -c '<pidfile script>' sh <cmd> <args…>.
         assert_eq!(out[name + 1], "sh");
         assert_eq!(out[name + 2], "-c");
-        assert_eq!(
-            out[name + 3],
-            "echo $$ > /tmp/eldrun-tab-t1-0.pid; exec \"$@\""
-        );
+        assert!(out[name + 3].starts_with("export PATH='"));
+        assert!(out[name + 3].contains("/bin"));
+        assert!(out[name + 3].ends_with("echo $$ > /tmp/eldrun-tab-t1-0.pid; exec \"$@\""));
         assert_eq!(out[name + 4], "sh");
         // Original command + resume args preserved in order after the wrapper.
         assert_eq!(&out[name + 5..], &["claude", "--resume", "uuid-1"]);

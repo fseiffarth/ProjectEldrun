@@ -96,6 +96,15 @@ resumes.
 
 ### 1.1 Claude Code (deepest coupling)
 
+- Mobile send hint (2026-09-14): installed CLI is 2.1.270. The official
+  [hooks reference](https://code.claude.com/docs/en/hooks#sessionstart) specifies
+  SessionStart stdout as model context. Eldrun prints `eldrun-send <file>` only
+  after session continuity accepts the payload, with `ELDRUN_TAB_AGENT=claude`
+  and `ELDRUN_PROJECT_DIR` set; tests execute the hook and prove nested startups,
+  Stop, Codex and unscoped invocations stay silent. Verify context ingestion
+  again on CLI upgrades; an authenticated live Claude round trip remains QA.
+
+
 **Where** `services/agent_session.rs`, `services/agent_usage.rs`,
 `commands/terminal.rs` (`--remote-control`), `commands/ollama.rs`
 (`LOCAL_DRIVERS`), `src/lib/agentPrefaces.ts`, `src/lib/fastMode.ts` is *not*

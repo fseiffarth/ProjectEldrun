@@ -2376,11 +2376,13 @@ _Build, run and test commands._
 
 _Layout, style, and anything an agent must not do._
 
-## Showing the user a picture
+## Showing the user a file
 
-To put an image in front of the user on their phone (Eldrun Mobile), copy it
-into `.eldrun/outbox/` in this project — the phone lists that folder. Images
-only (PNG, JPEG, GIF, WebP); it is git-ignored and never synced.
+To put a file in front of the user on their phone (Eldrun Mobile), run
+`eldrun-send <file>` — any file up to 24 MiB; images, PDFs and text show
+on the phone, anything else is offered as a download. Local and container
+tabs. `command | eldrun-send -n tests.log` sends stdin; `eldrun-send --clear`
+empties the outbox. Copying into `.eldrun/outbox/` by hand still works.
 
 ## Agent files
 

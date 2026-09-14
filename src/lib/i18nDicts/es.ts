@@ -7,6 +7,22 @@
 import type { Dict } from "../i18n";
 
 export const dict: Dict = {
+  "mobile.outbox.countOne": "1 archivo en la bandeja de salida del proyecto",
+  "mobile.outbox.actions": "Acciones de archivo para {name}",
+  "mobile.outbox.region": "Archivos del agente",
+  "mobile.outbox.from": "Del agente",
+  "mobile.outbox.untested": "Sin probar",
+  "mobile.outbox.count": "{count} archivos en la bandeja de salida del proyecto",
+  "mobile.outbox.hide": "Ocultar estos archivos",
+  "mobile.outbox.open": "Abrir {name}",
+  "mobile.outbox.close": "Cerrar",
+  "mobile.outbox.save": "Guardar",
+  "mobile.outbox.share": "Compartir…",
+  "mobile.outbox.loading": "Cargando…",
+  "mobile.outbox.error": "No se pudo cargar el archivo. Inténtalo de nuevo o guárdalo.",
+  "mobile.outbox.shareError": "No se pudo compartir el archivo. Guárdalo para compartirlo desde tu aplicación de archivos.",
+  "mobile.outbox.whole": "Abrir el archivo completo",
+
   "settings.projectRemarks": "Observaciones de archivos del proyecto",
   "settings.projectRemarksHelp": "Adjunta notas de revisión y líneas opcionales a archivos del proyecto en un REMARKS.md apto para git.",
   "projectRemarks.addTitle": "Añadir observación de archivo",

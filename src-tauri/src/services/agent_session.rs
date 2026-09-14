@@ -1125,6 +1125,10 @@ fn posix_hook_script_body(live_dir: &str) -> String {
          \x20      case \"$src\" in clear|resume) ;; *) exit 0 ;; esac\n\
          \x20    fi ;;\n\
          esac\n\
+         event=$(printf '%s' \"$input\" | tr '\\n' ' ' | sed -n 's/.*\"hook_event_name\"[[:space:]]*:[[:space:]]*\"\\([a-zA-Z]*\\)\".*/\\1/p')\n\
+         if [ \"$event\" = SessionStart ] && [ \"$ELDRUN_TAB_AGENT\" = claude ] && [ -n \"$ELDRUN_PROJECT_DIR\" ]; then\n\
+         \x20 printf '%s\\n' 'To put a file in front of the user on their phone, run `eldrun-send <file>` (local and container tabs).'\n\
+         fi\n\
          printf '%s' \"$sid\" > \"$dir/$ELDRUN_TAB_UID\"\n\
          [ -n \"$mode\" ] && printf '%s' \"$mode\" > \"$dir/$ELDRUN_TAB_UID.mode\"\n\
          exit 0\n",
@@ -1172,6 +1176,7 @@ fn hook_script_body(live_dir: &str) -> String {
          \x20 if ($ms.Success) {{ $src = $ms.Groups[1].Value }}\r\n\
          \x20 if (($src -ne 'clear') -and ($src -ne 'resume')) {{ exit 0 }}\r\n\
          }}\r\n\
+         if ($env:ELDRUN_TAB_AGENT -eq 'claude' -and $env:ELDRUN_PROJECT_DIR -and $payload -match '\"hook_event_name\"\\s*:\\s*\"SessionStart\"') {{ Write-Output 'To put a file in front of the user on their phone, run `eldrun-send <file>` (local and container tabs).' }}\r\n\
          [IO.File]::WriteAllText($rec, $sid)\r\n\
          if ($mm.Success) {{ [IO.File]::WriteAllText(($rec + '.mode'), $mm.Groups[1].Value) }}\r\n\
          exit 0\r\n",
@@ -1733,6 +1738,33 @@ mod tests {
         assert!(child.wait().unwrap().success());
         let read = |name: String| std::fs::read_to_string(live_dir.join(name)).ok();
         (read(uid.to_string()), read(format!("{uid}.mode")))
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn phone_hint_only_reaches_the_scoped_claude_session_start() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("hook.sh");
+        std::fs::write(&script, posix_hook_script_body(&dir.path().join("live").to_string_lossy())).unwrap();
+        for (agent, scoped, sid, event, expected) in [
+            ("claude", true, "aaaa", "SessionStart", true),
+            ("claude", false, "aaaa", "SessionStart", false),
+            ("claude", true, "bbbb", "SessionStart", false),
+            ("claude", true, "aaaa", "Stop", false),
+            ("codex", true, "aaaa", "SessionStart", false),
+        ] {
+            let mut cmd = std::process::Command::new("sh");
+            cmd.arg(&script).env_clear().env("PATH", std::env::var_os("PATH").unwrap_or_default())
+                .env("ELDRUN_TAB_UID", "aaaa").env("ELDRUN_TAB_AGENT", agent)
+                .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped());
+            if scoped { cmd.env("ELDRUN_PROJECT_DIR", dir.path()); }
+            let mut child = cmd.spawn().unwrap();
+            write!(child.stdin.take().unwrap(), "{{\"session_id\":\"{sid}\",\"hook_event_name\":\"{event}\",\"source\":\"startup\"}}").unwrap();
+            let out = child.wait_with_output().unwrap();
+            assert!(out.status.success());
+            assert_eq!(String::from_utf8_lossy(&out.stdout).contains("eldrun-send <file>"), expected, "{agent} {scoped} {sid} {event}");
+        }
     }
 
     #[cfg(unix)]

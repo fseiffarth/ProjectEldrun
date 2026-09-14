@@ -139,7 +139,8 @@ cannot run under the outer boundary on Linux systems with the
 falls back to unsandboxed execution *inside* Eldrun's outer fence. Docker commands
 also cannot work there because `/run` is private and the Docker socket is hidden.
 The agent-state mounts deliberately reuse `services::sandbox`: narrowed auth and
-resume state, immutable hook scripts, writable staged copies of hook-registration
+resume state, immutable hook scripts and `<state_dir>/bin` commands (including
+`eldrun-send`, prepended to PATH inside containers too), writable staged copies of hook-registration
 config, and per-root Claude transcript permissions. That keeps the hook-repointing
 and cross-project transcript protections identical across the two containment
 mechanisms.

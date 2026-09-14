@@ -535,3 +535,13 @@ body.terminal-open { min-height:0; overflow:hidden; }
 .outbox-viewer-head h2 { flex:1; margin:0; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:.95rem; }
 .outbox-viewer-head small { flex:0 0 auto; color:#95a6c8; font-size:.72rem; }
 .outbox-viewer img { justify-self:center; align-self:center; max-width:100%; max-height:100%; object-fit:contain; }
+
+.outbox-entry { flex:0 0 auto; scroll-snap-align:start; }
+.outbox-file { display:grid; gap:5px; width:160px; padding:9px; border:1px solid #34384a; border-radius:7px; background:#0f131c; color:#d8e2f5; text-align:left; text-decoration:none; font-size:.75rem; }
+.outbox-file strong { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.outbox-file span { color:#95a6c8; }
+.outbox-details { border:0; background:transparent; color:#8fb8ff; font-size:.7rem; padding:5px 0; }
+.outbox-viewer-head a, .outbox-text-body a, .outbox-viewer > a { color:#8fb8ff; }
+.outbox-text-body { overflow:auto; padding:12px; }
+.outbox-text-body pre { margin:0 0 12px; white-space:pre-wrap; overflow-wrap:anywhere; font-size:.8rem; }
+.outbox-viewer:has(> [role=alert]) { grid-template-rows:auto auto minmax(0,1fr); }

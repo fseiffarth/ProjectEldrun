@@ -145,13 +145,15 @@ fn supplemental_path_dirs_for(
 /// Directories prepended to every child process PATH. GUI-launched applications
 /// commonly miss per-user package directories on every supported OS.
 pub fn extra_path_dirs() -> Vec<PathBuf> {
-    supplemental_path_dirs_for(
+    let mut dirs = vec![crate::services::agent_bin::bin_dir()];
+    dirs.extend(supplemental_path_dirs_for(
         OsKind::current(),
         &home_dir(),
         std::env::var_os("LOCALAPPDATA").as_deref(),
         std::env::var_os("APPDATA").as_deref(),
         std::env::var_os("ProgramFiles").as_deref(),
-    )
+    ));
+    dirs
 }
 
 /// Prepend [`extra_path_dirs`] to `cmd`'s PATH env.

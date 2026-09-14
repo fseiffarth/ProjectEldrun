@@ -1,5 +1,6 @@
 pub mod agent_prompts;
 pub mod agent_session;
+pub mod agent_bin;
 pub mod agent_tasks;
 // One agent CLI's own usage panel (Claude's `/usage`), read in print mode
 // without a tab: recipe table, envelope parsing, and the short-lived cache
