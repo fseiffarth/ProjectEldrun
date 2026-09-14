@@ -479,6 +479,21 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
   8. Send text named `.png` and an SVG; both preview as inert text.
   Windows PowerShell and macOS runtime behavior also require platform QA.
 
+- [~] **31ac — "Set up in terminal" opens the install overlay** (2026-09-14;
+  ✅ code-complete, tests passing, ⚠️ live QA pending). The Tailscale Serve
+  guide's button switched the whole window to the root scope and opened a tab
+  there, unlike every other one-click install. It now goes through
+  `runInstallInTab`: the root tab still owns the PTY, and the centered install
+  overlay mirrors it right over Settings; closing the overlay leaves the
+  command running in the root terminal with the usual toast. The confirmation
+  before running stays.
+      - [ ] **Manual QA:** Settings → Mobile → open "Set up Tailscale Serve" →
+        *Set up in terminal* → confirm. Expect the overlay terminal over
+        Settings running `tailscale serve --bg …`, the active project unchanged,
+        and a root tab holding the same terminal after closing the overlay
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+
 - [~] **31ab — Mobile Focus reads as a chat** (2026-09-05; ✅ code-complete and
   automated tests passing, ⚠️ phone QA pending — and a rebuild + restart first,
   since the phone serves the bundle baked into the binary). Focus painted an
