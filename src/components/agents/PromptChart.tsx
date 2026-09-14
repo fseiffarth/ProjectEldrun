@@ -13,6 +13,7 @@ import {
   shiftAnchor,
   timelineDropAction,
   timelineWindow,
+  zoomTimelineView,
   type PromptTimelineDrop,
   type SessionSpan,
   type TimelineView,
@@ -20,7 +21,7 @@ import {
 } from "../../lib/agentPromptTimeline";
 import { localOccurrenceKey, localWallClock } from "../../lib/agentSchedule";
 import { parseTags, tagCounts } from "../../lib/agentPromptTags";
-import { formatLongDate, monthName, todayStr } from "../../lib/calendarTime";
+import { formatLongDate, monthName, toDateStr, todayStr } from "../../lib/calendarTime";
 import { useI18nStore, useT } from "../../lib/i18n";
 import { jumpToTab } from "../../lib/tabJump";
 import {
@@ -427,6 +428,14 @@ export function PromptChart({ scope, active, tabs, stateOf }: Props) {
     );
   };
 
+  /** Ctrl + wheel: the next view in, or out, keeping the pointed-at day. */
+  const zoom = (direction: "in" | "out", at: Date) => {
+    const next = zoomTimelineView(view, direction);
+    if (!next) return;
+    setAnchor(toDateStr(at));
+    setView(next);
+  };
+
   const stripCards = cards.filter((card) => card.state === "draft" || card.state === "chained");
   const rangeLabel = view === "day"
     ? formatLongDate(anchor, lang)
@@ -440,7 +449,7 @@ export function PromptChart({ scope, active, tabs, stateOf }: Props) {
       <div className="agent-prompt-chart-toolbar">
         <button className="settings-btn sm primary" type="button" aria-label={t("promptChart.newDraft")} onClick={() => setNewOpen((value) => !value)}>＋</button>
         <input type="search" value={filter.text} placeholder={t("promptChart.search")} aria-label={t("promptChart.search")} onChange={(event) => setFilter((value) => ({ ...value, text: event.target.value }))} />
-        <div className="agent-prompt-chart-views" role="group" aria-label={t("promptChart.zoom")}>
+        <div className="agent-prompt-chart-views" role="group" aria-label={t("promptChart.zoom")} title={t("promptChart.zoomHint")}>
           {VIEWS.map((item) => (
             <button key={item} type="button" className={`agent-composer-chip${view === item ? " active" : ""}`} aria-pressed={view === item} onClick={() => setView(item)}>
               {t(`promptChart.view.${item}` as "promptChart.view.day")}
@@ -498,6 +507,7 @@ export function PromptChart({ scope, active, tabs, stateOf }: Props) {
           renderCard={renderCard}
           onRefine={(date) => { setAnchor(date); setView("day"); }}
           dropLabel={dropLabel}
+          onZoom={zoom}
         />
       </div>
       {dialog && <AgentScheduleDialog scope={scope} tab={dialog.tab} initialMessage={dialog.message} onClose={() => setDialog(null)} />}

@@ -1,7 +1,10 @@
 import { useEffect, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { formatTags, parseTags } from "../../lib/agentPromptTags";
-import { useT } from "../../lib/i18n";
+import { useI18nStore, useT } from "../../lib/i18n";
+import { useUse24h } from "../../lib/timeFormat";
+import { localWallClock } from "../../lib/agentSchedule";
 import type { PromptChartCard } from "../../lib/agentPromptChart";
+import { formatTimelineInstant } from "../../lib/agentPromptTimeline";
 import type { PromptLink } from "../../stores/agentPrompts";
 import { Dropdown } from "../common/Dropdown";
 
@@ -49,19 +52,27 @@ interface Props {
   onGoToTab?: () => void;
 }
 
-function stateFact(card: PromptChartCard, t: ReturnType<typeof useT>, occurrence?: string): string {
+/** The card's one line of fact. Its instants are written by the chart's own
+ *  clock (`formatTimelineInstant`): the app's language and 12/24-hour
+ *  setting, matching the axis above the card. */
+function stateFact(
+  card: PromptChartCard,
+  t: ReturnType<typeof useT>,
+  when: (at: Date | null | undefined) => string,
+  occurrence?: string,
+): string {
   if (card.state === "queued") return t("promptChart.waiting");
   if (card.state === "chained") return card.chainStopped
     ? t("promptChart.chainClosed")
     : t("promptChart.chained");
   if (card.state === "sent") {
     const result = card.history?.result ?? "delivered";
-    return `${t(`promptChart.result.${result}` as "promptChart.result.delivered")} · ${card.at?.toLocaleString() ?? ""}`;
+    return `${t(`promptChart.result.${result}` as "promptChart.result.delivered")} · ${when(card.at)}`;
   }
   if (card.state === "scheduled") {
-    if (occurrence) return `↻ ${occurrence.replace("T", " ")}`;
+    if (occurrence) return `↻ ${when(localWallClock(occurrence)) || occurrence.replace("T", " ")}`;
     return card.at
-      ? `${card.recurring ? "↻ " : ""}${card.at.toLocaleString()}`
+      ? `${card.recurring ? "↻ " : ""}${when(card.at)}`
       : t("promptChart.paused");
   }
   return t("promptChart.draft");
@@ -98,6 +109,9 @@ export function PromptCard({
   onGoToTab,
 }: Props) {
   const t = useT();
+  const lang = useI18nStore((s) => s.lang);
+  const use24h = useUse24h();
+  const when = (at: Date | null | undefined) => (at ? formatTimelineInstant(at, lang, use24h) : "");
   const [expanded, setExpanded] = useState(false);
   const [editing, setEditing] = useState(false);
   const [message, setMessage] = useState(card.message);
@@ -164,7 +178,7 @@ export function PromptCard({
         {card.tags.map((tag) => <span key={`stored:${tag}`} className="agent-prompt-tag">#{tag}</span>)}
         {card.autoTags.map((tag) => <span key={`auto:${tag}`} className="agent-prompt-tag is-auto">#{tag}</span>)}
       </div>
-      <small className="agent-prompt-card-fact">{stateFact(card, t, occurrence)}</small>
+      <small className="agent-prompt-card-fact">{stateFact(card, t, when, occurrence)}</small>
       {!occurrence && (
         <button
           className="agent-prompt-card-port is-out"

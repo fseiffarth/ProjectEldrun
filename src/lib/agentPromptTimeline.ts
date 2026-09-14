@@ -1,4 +1,4 @@
-import { addDays, addMonths, startOfWeek, toDateStr } from "./calendarTime";
+import { addDays, addMonths, formatTime, monthName, startOfWeek, toDateStr, weekdayLabel } from "./calendarTime";
 import {
   latestScheduleOccurrence,
   localOccurrenceKey,
@@ -67,6 +67,32 @@ export function timelineWindow(view: TimelineView, anchor: string, weekStart: 0 
     end: localMidnight(after),
     snapMinutes: TIMELINE_SNAP_MIN[view],
   };
+}
+
+/** Ctrl + wheel: one step finer (a month to its week, a week to its day) or
+ *  coarser; `null` at either end, so a spin past Day or Month is a no-op. */
+export function zoomTimelineView(view: TimelineView, direction: "in" | "out"): TimelineView | null {
+  const order: TimelineView[] = ["month", "week", "day"];
+  const next = order[order.indexOf(view) + (direction === "in" ? 1 : -1)];
+  return next ?? null;
+}
+
+/** Wheel notches per zoom step: a mouse notch is ~100 px (or one line), a
+ *  trackpad streams small deltas that add up to one. */
+export const TIMELINE_ZOOM_NOTCH = 50;
+
+/**
+ * An instant as the chart writes it everywhere — a card's fact line, a
+ * session row, the drop badge — in the app's language and its 12/24-hour
+ * clock, never the browser locale's `toLocaleString()` (which showed
+ * "9/14/2026, 10:02:52 PM" beside a 24-hour axis). `withDate` prefixes the
+ * short weekday and date; a day view's cards leave it off.
+ */
+export function formatTimelineInstant(at: Date, lang: string, use24h: boolean, withDate = true): string {
+  if (!Number.isFinite(at.getTime())) return "";
+  const time = formatTime(`${String(at.getHours()).padStart(2, "0")}:${String(at.getMinutes()).padStart(2, "0")}`, use24h);
+  if (!withDate) return time;
+  return `${weekdayLabel(lang, at.getDay(), "short")} ${at.getDate()} ${monthName(lang, at.getMonth() + 1).slice(0, 3)} · ${time}`;
 }
 
 /** ◀ ▶: a day, a week, or a calendar month (the day of month is clamped). */

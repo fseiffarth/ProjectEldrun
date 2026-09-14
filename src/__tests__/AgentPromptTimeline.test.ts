@@ -3,6 +3,7 @@ import { buildPromptChart, type PromptChartCard, type PromptChartStrand } from "
 import {
   attachedChains,
   dayClusters,
+  formatTimelineInstant,
   packLanes,
   promptTargetColor,
   queuedStack,
@@ -16,6 +17,7 @@ import {
   timelineTimeAt,
   timelineWindow,
   timelineX,
+  zoomTimelineView,
   type TimelineRects,
 } from "../lib/agentPromptTimeline";
 
@@ -208,5 +210,25 @@ describe("timeline drops", () => {
     expect(promptTargetColor(0)).toBe("var(--accent)");
     expect(promptTargetColor(5)).toBe(promptTargetColor(0));
     expect(promptTargetColor(-1)).toBe("var(--text-muted)");
+  });
+});
+
+describe("timeline zoom and clock", () => {
+  it("steps one view finer or coarser and stops at either end", () => {
+    expect(zoomTimelineView("month", "in")).toBe("week");
+    expect(zoomTimelineView("week", "in")).toBe("day");
+    expect(zoomTimelineView("day", "in")).toBeNull();
+    expect(zoomTimelineView("day", "out")).toBe("week");
+    expect(zoomTimelineView("week", "out")).toBe("month");
+    expect(zoomTimelineView("month", "out")).toBeNull();
+  });
+
+  it("writes an instant in the app's clock, not the browser locale's", () => {
+    const at = new Date(2026, 8, 14, 22, 2, 52);
+    expect(formatTimelineInstant(at, "en", true)).toBe("Mon 14 Sep · 22:02");
+    expect(formatTimelineInstant(at, "en", false)).toBe("Mon 14 Sep · 10:02 PM");
+    expect(formatTimelineInstant(at, "en", true, false)).toBe("22:02");
+    expect(formatTimelineInstant(at, "de", true)).toMatch(/^Mo\.? 14 Sep · 22:02$/u);
+    expect(formatTimelineInstant(new Date(Number.NaN), "en", true)).toBe("");
   });
 });

@@ -1,8 +1,8 @@
 import { useState, type PointerEvent as ReactPointerEvent } from "react";
-import { formatTime } from "../../lib/calendarTime";
-import { useT } from "../../lib/i18n";
+import { useI18nStore, useT } from "../../lib/i18n";
 import { useUse24h } from "../../lib/timeFormat";
 import type { PromptChartCard } from "../../lib/agentPromptChart";
+import { formatTimelineInstant } from "../../lib/agentPromptTimeline";
 
 interface Props {
   /** The session's sent prompts inside the window, oldest first. */
@@ -22,11 +22,6 @@ interface Props {
   onCollect: (card: PromptChartCard) => Promise<void>;
   onDelete: (card: PromptChartCard) => Promise<void>;
   onGoToTab?: () => void;
-}
-
-function hhmm(at: Date | null): string {
-  if (!at) return "";
-  return `${String(at.getHours()).padStart(2, "0")}:${String(at.getMinutes()).padStart(2, "0")}`;
 }
 
 /**
@@ -55,7 +50,9 @@ export function PromptSessionCard({
   onGoToTab,
 }: Props) {
   const t = useT();
+  const lang = useI18nStore((s) => s.lang);
   const use24h = useUse24h();
+  const when = (at: Date | null, withDate = true) => (at ? formatTimelineInstant(at, lang, use24h, withDate) : "");
   const [expanded, setExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
   const first = cards[0];
@@ -90,7 +87,7 @@ export function PromptSessionCard({
         <small>{latest.history?.tab_label || t("promptChart.noAgent")}</small>
       </div>
       <small className="agent-prompt-card-fact">
-        {t("promptChart.sessionPrompts", { count: cards.length })} · {formatTime(hhmm(first.at), use24h)} – {formatTime(hhmm(latest.at), use24h)}
+        {t("promptChart.sessionPrompts", { count: cards.length })} · {when(first.at, false)} – {when(latest.at, false)}
       </small>
       <div className="agent-prompt-session-ticks" aria-hidden="true">
         {cards.map((card, index) => (
@@ -131,7 +128,7 @@ export function PromptSessionCard({
               <li key={card.key} className={matchedKeys.has(card.key) ? "" : "is-dimmed"} data-testid="prompt-chart-session-row">
                 <div className="agent-prompt-session-row-head">
                   <span className={`agent-prompt-lamp is-${card.history?.result ?? "delivered"}`} aria-hidden="true" />
-                  <small>{t(`promptChart.result.${card.history?.result ?? "delivered"}` as "promptChart.result.delivered")} · {card.at?.toLocaleString() ?? ""}</small>
+                  <small>{t(`promptChart.result.${card.history?.result ?? "delivered"}` as "promptChart.result.delivered")} · {when(card.at)}</small>
                 </div>
                 <p className="agent-prompt-card-full">{card.message}</p>
                 {(card.history?.files?.length ?? 0) > 0 && (

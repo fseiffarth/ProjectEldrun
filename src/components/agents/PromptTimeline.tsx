@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState, type ReactNode, type RefObject } from "react";
-import { formatTime, monthName, weekdayLabel } from "../../lib/calendarTime";
+import { useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
+import { formatTime, weekdayLabel } from "../../lib/calendarTime";
 import { useI18nStore, useT } from "../../lib/i18n";
 import { useUse24h } from "../../lib/timeFormat";
 import type { PromptChartCard } from "../../lib/agentPromptChart";
@@ -7,12 +7,15 @@ import {
   TIMELINE_CARD_WIDTH,
   TIMELINE_LANE_HEIGHT,
   TIMELINE_MIN_LANES,
+  TIMELINE_ZOOM_NOTCH,
   dayClusters,
+  formatTimelineInstant,
   packLanes,
   queuedStack,
   sessionItems,
   timelineItems,
   timelineTicks,
+  timelineTimeAt,
   timelineX,
   type SessionSpan,
   type TimelineWindow,
@@ -35,6 +38,9 @@ interface Props {
   onRefine: (date: string) => void;
   /** The badge text for the card being carried, decided by the chart. */
   dropLabel: string | null;
+  /** Ctrl + wheel over the axis: one view finer or coarser, around the
+   *  instant under the pointer. */
+  onZoom?: (direction: "in" | "out", at: Date) => void;
 }
 
 const BODY_PADDING = 8;
@@ -60,11 +66,14 @@ function hhmm(at: Date): string {
  * that scrolled the body took the now line away with it. The axis, with the
  * NOW label, is sticky, so scrolling the tab keeps the clock in view too.
  */
-export function PromptTimeline({ win, cards, now, drag, bodyRef, nowBandRef, renderCard, onRefine, dropLabel }: Props) {
+export function PromptTimeline({ win, cards, now, drag, bodyRef, nowBandRef, renderCard, onRefine, dropLabel, onZoom }: Props) {
   const t = useT();
   const lang = useI18nStore((s) => s.lang);
   const use24h = useUse24h();
   const [width, setWidth] = useState(0);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const zoomRef = useRef(onZoom);
+  zoomRef.current = onZoom;
 
   useEffect(() => {
     const body = bodyRef.current;
@@ -75,6 +84,31 @@ export function PromptTimeline({ win, cards, now, drag, bodyRef, nowBandRef, ren
     observer.observe(body);
     return () => observer.disconnect();
   }, [bodyRef]);
+
+  // Ctrl + wheel zooms the axis, the way a map does, centred on the instant
+  // under the pointer. A native, non-passive listener: React's `onWheel` is
+  // passive, and only `preventDefault` keeps the webview from zooming the
+  // page instead. Notches accumulate so a trackpad's stream steps once.
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!root) return;
+    let notches = 0;
+    const onWheel = (event: WheelEvent) => {
+      if (!event.ctrlKey && !event.metaKey) return;
+      event.preventDefault();
+      const zoom = zoomRef.current;
+      const body = bodyRef.current;
+      if (!zoom || !body) return;
+      notches += event.deltaMode === WheelEvent.DOM_DELTA_PIXEL ? event.deltaY : event.deltaY * TIMELINE_ZOOM_NOTCH;
+      if (Math.abs(notches) < TIMELINE_ZOOM_NOTCH) return;
+      const direction = notches < 0 ? "in" : "out";
+      notches = 0;
+      const rect = body.getBoundingClientRect();
+      zoom(direction, timelineTimeAt(event.clientX - rect.left + body.scrollLeft, win, rect.width));
+    };
+    root.addEventListener("wheel", onWheel, { passive: false });
+    return () => root.removeEventListener("wheel", onWheel);
+  }, [bodyRef, win]);
 
   const items = useMemo(() => timelineItems(cards, win, now), [cards, now, win]);
   // A session's sent prompts share one card on the lanes; the month's lamps
@@ -101,12 +135,10 @@ export function PromptTimeline({ win, cards, now, drag, bodyRef, nowBandRef, ren
 
   const dropAt = drag?.kind === "card" && drag.zone.kind === "time" ? drag.zone.at : null;
   const dropNow = drag?.kind === "card" && drag.zone.kind === "now";
-  const dropDate = (at: Date) => win.view === "day"
-    ? formatTime(hhmm(at), use24h)
-    : `${weekdayLabel(lang, at.getDay(), "short")} ${at.getDate()} ${monthName(lang, at.getMonth() + 1).slice(0, 3)} · ${formatTime(hhmm(at), use24h)}`;
+  const dropDate = (at: Date) => formatTimelineInstant(at, lang, use24h, win.view !== "day");
 
   return (
-    <div className={`agent-prompt-timeline is-${win.view}`} data-testid="prompt-timeline">
+    <div className={`agent-prompt-timeline is-${win.view}`} data-testid="prompt-timeline" ref={rootRef}>
       <div className="agent-prompt-timeline-axis" aria-hidden="true">
         {ticks.filter((tick) => tick.major || win.view === "day").map((tick) => (
           <span key={tick.at.getTime()} className={`agent-prompt-timeline-tick${tick.major ? " is-major" : ""}`} style={{ left: tick.x }}>
