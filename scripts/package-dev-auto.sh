@@ -34,6 +34,15 @@
 # Log: ~/.local/share/eldrun/package-dev-auto.log (the last build's output).
 set -uo pipefail
 
+# A post-commit hook inherits git's own environment, and GIT_INDEX_FILE arrives
+# RELATIVE (".git/index"). Every `git -C "$FREEZE_TREE" …` in package-dev.sh
+# then resolves it against the worktree, where `.git` is a file, not a
+# directory — so the freeze checkout died on "index.lock: Not a directory" and
+# every commit's build failed at pass 1 while --status still read "idle"
+# (2026-09-14). The build wants a clean git environment, not the committing
+# one's.
+unset GIT_DIR GIT_INDEX_FILE GIT_WORK_TREE GIT_PREFIX GIT_OBJECT_DIRECTORY
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SELF="$ROOT/scripts/package-dev-auto.sh"
 # Beside the binary package-dev.sh installs, and for the same reason it hardcodes
