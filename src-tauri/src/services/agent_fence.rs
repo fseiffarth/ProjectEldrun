@@ -643,6 +643,19 @@ pub(crate) fn bwrap_args(
 pub fn wrap_pty_options_bwrap(
     opts: &mut PtyOptions,
     roots: &[PathBuf],
+/// Codex's nested bwrap is denied by Ubuntu's stacked AppArmor profile. Use
+/// its Landlock backend inside our fence, preserving its permissions policy.
+/// Prepending lets an explicit user override later in argv take precedence.
+#[cfg(target_os = "linux")]
+fn codex_fence_args(cmd: &str, args: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    if Path::new(cmd).file_name().and_then(|s| s.to_str()) == Some("codex") {
+        out.extend(["-c".into(), "features.use_legacy_landlock=true".into()]);
+    }
+    out.extend_from_slice(args);
+    out
+}
+
     scope_id: &str,
 ) -> Result<(), String> {
     if !bwrap_available() {
@@ -674,7 +687,7 @@ pub fn wrap_pty_options_bwrap(
         &paths::home_dir_string(),
         &opts.cwd,
         &opts.cmd,
-        &opts.args,
+        &codex_fence_args(&opts.cmd, &opts.args),
         roots,
         &extra_ro,
         &mounts,
@@ -1352,6 +1365,21 @@ mod tests {
         let bin = "/home/u/.local/bin".to_string();
         let mounts = vec![BindMount {
             src: bin.clone(),
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn fenced_codex_uses_landlock_without_changing_permissions_or_resume() {
+        let args: Vec<String> = ["resume", "session-id", "--sandbox", "workspace-write",
+            "--ask-for-approval", "on-request", "-c", "features.use_legacy_landlock=false"]
+            .into_iter().map(String::from).collect();
+        for cmd in ["codex", "/home/u/.local/bin/codex"] {
+            let out = codex_fence_args(cmd, &args);
+            assert_eq!(&out[..2], &["-c", "features.use_legacy_landlock=true"]);
+            assert_eq!(&out[2..], args);
+        }
+        assert_eq!(codex_fence_args("claude", &args), args);
+        assert_eq!(codex_fence_args("custom-codex", &args), args);
+    }
+
             dst: bin.clone(),
             read_only: false,
         }];

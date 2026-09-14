@@ -411,6 +411,12 @@ unchanged; the new agents are additive.
 
 ---
 
+- [ ] Live-check fenced Codex after the Landlock compatibility fix (2026-09-14):
+  with workspace permissions, read/edit a project file and run a local command
+  without a bubblewrap failure or repeated escalation; verify read-only mode
+  still refuses writes. Recheck the deprecated `use_legacy_landlock` flag on
+  Codex upgrades. Automated launch-argument coverage and CLI probes added.
+
 203. **Manage CLIs is two lists, not one.** ✅ **Shipped** (2026-08-31). The
     panel rendered every CLI in the registry as a full install card, sorted
     installed-first, so the handful of entries anyone manages (enable, remove,

@@ -123,6 +123,16 @@ Composition is explicit:
   status says so rather than presenting a false guarantee.
 - Shell/script tabs are the user's terminals and are never fenced.
 
+Fenced Linux Codex launches prepend `-c features.use_legacy_landlock=true`:
+the installed Codex 0.154.0 otherwise tries a nested bubblewrap for ordinary
+commands, which the stacked AppArmor profile denies, causing repeated approval
+requests for retries. Landlock can enforce Codex's selected policy inside the
+outer fence without creating another namespace. This selects an enforcement
+backend, not an approval or permission mode; explicit later CLI overrides win.
+The flag is deprecated upstream and must be rechecked on Codex updates. Local
+probes verified a workspace-write command can write temporary files while a
+read-only command cannot. Interactive Eldrun verification remains pending.
+
 The boundary is filesystem-only: network access is shared. A nested bubblewrap
 cannot run under the outer boundary on Linux systems with the
 `bwrap-userns-restrict` AppArmor profile, so Claude Code's own bubblewrap sandbox
