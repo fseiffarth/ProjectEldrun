@@ -1,4 +1,5 @@
 import { useAgentPromptsStore, type SentAgentPrompt } from "../stores/agentPrompts";
+import { isSessionCommand } from "./agentPromptChart";
 import type { TabEntry } from "../stores/tabs";
 
 /**
@@ -48,9 +49,11 @@ export function alreadyRecorded(history: readonly SentAgentPrompt[], prompt: str
 }
 
 /** Record `prompt` as delivered to `tab` unless it is already the tab's
- * newest history row. Never throws: a prompt the history cannot take is
- * still shown in the Agents view. */
+ * newest history row, or a session command (`/rename …`, `/model …`, any
+ * bare `/command` — `lib/agentPromptChart.isSessionCommand`). Never throws: a prompt the
+ * history cannot take is still shown in the Agents view. */
 export async function adoptTypedPrompt(scope: string, tab: TabEntry, prompt: string): Promise<void> {
+  if (isSessionCommand(prompt)) return;
   const store = useAgentPromptsStore.getState();
   const history = store.historyByProject[scope] ?? await store.loadHistory(scope).catch(() => [] as SentAgentPrompt[]);
   if (alreadyRecorded(history, prompt, tab)) return;

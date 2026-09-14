@@ -26,6 +26,8 @@ export const TIMELINE_CARD_WIDTH = 168;
 /** One lane's height (card plus gap), in px: a three-line message with its
  *  agent row, tags and fact line, so a full card never overlaps the lane below. */
 export const TIMELINE_LANE_HEIGHT = 120;
+/** Room past a session card's last tick, so that tick is not cut by the edge. */
+export const SESSION_TICK_ROOM = 6;
 /** Lanes the body always shows, so an empty window has somewhere to drop. */
 export const TIMELINE_MIN_LANES = 2;
 
@@ -128,6 +130,16 @@ export interface TimelineItem {
   at: Date;
   /** Set on every expanded occurrence of a recurring rule but its first. */
   occurrence?: string;
+  /** A session's sent prompts drawn as one card (`sessionItems`), oldest
+   *  first. `at` is then the first of them and `card` the newest. */
+  members?: TimelineItem[];
+}
+
+/** What a session card is handed to draw: its prompts oldest first, and each
+ *  one's distance in px from the card's left edge, where its tick goes. */
+export interface SessionSpan {
+  cards: PromptChartCard[];
+  offsets: number[];
 }
 
 const MAX_OCCURRENCES = 64;
@@ -171,6 +183,44 @@ export function timelineItems(cards: PromptChartCard[], win: TimelineWindow, now
   return items.sort((a, b) => a.at.getTime() - b.at.getTime());
 }
 
+/** Which session a sent card belongs to: its session id, or its strand (the
+ *  tab) for a row written before the tab had one. Only sent cards group. */
+export function sessionGroupKey(card: PromptChartCard): string | null {
+  if (card.state !== "sent") return null;
+  return card.history?.session_id ? `session:${card.history.session_id}` : `session:${card.strandId}`;
+}
+
+/**
+ * One card per session instead of one per prompt: the sent items of a session
+ * become one item that starts at its first prompt and carries the rest as
+ * `members`. A session with a single prompt in the window stays a plain card,
+ * and scheduled and queued cards are never folded in — they are the ones a
+ * user still drags. Day and week views only; a month's lamps stay per prompt.
+ */
+export function sessionItems(items: TimelineItem[]): TimelineItem[] {
+  const out: TimelineItem[] = [];
+  const groups = new Map<string, TimelineItem[]>();
+  for (const item of items) {
+    const key = sessionGroupKey(item.card);
+    if (!key) {
+      out.push(item);
+      continue;
+    }
+    const rows = groups.get(key);
+    if (rows) rows.push(item);
+    else groups.set(key, [item]);
+  }
+  for (const [key, rows] of groups) {
+    if (rows.length === 1) {
+      out.push(rows[0]);
+      continue;
+    }
+    const sorted = [...rows].sort((a, b) => a.at.getTime() - b.at.getTime());
+    out.push({ key, card: sorted[sorted.length - 1].card, at: sorted[0].at, members: sorted });
+  }
+  return out.sort((a, b) => a.at.getTime() - b.at.getTime());
+}
+
 /** Queued cards in the order the scheduler will take them. */
 export function queuedStack(cards: PromptChartCard[], now: Date): PromptChartCard[] {
   const due = (card: PromptChartCard) =>
@@ -195,11 +245,18 @@ export function attachedChains(cards: PromptChartCard[]): Map<string, PromptChar
 export interface LaneItem extends TimelineItem {
   x: number;
   lane: number;
+  /** The card's width: the fixed one, or a session's span when that is wider. */
+  width: number;
 }
 
 /**
- * Greedy interval packing: in time order, each card takes the lowest lane
- * whose last card ends (plus a gap) before this one starts.
+ * Greedy interval packing, newest first: from the latest card back (a session
+ * card counts from its newest prompt), each takes the lowest lane whose
+ * earliest card so far starts (less a gap) after this one ends — so the
+ * newest prompt is always on the top lane and older overlapping ones step
+ * down beneath it. Items come back in time order. A
+ * session card is as wide as its first-to-last span (and never narrower than
+ * a card), so its last tick sits on its last prompt's minute.
  */
 export function packLanes(
   items: TimelineItem[],
@@ -208,17 +265,22 @@ export function packLanes(
   cardWidth = TIMELINE_CARD_WIDTH,
   gap = 6,
 ): { lanes: number; items: LaneItem[] } {
-  const ends: number[] = [];
+  const starts: number[] = [];
+  const newest = (item: TimelineItem) => (item.members?.[item.members.length - 1] ?? item).at.getTime();
   const placed = [...items]
-    .sort((a, b) => a.at.getTime() - b.at.getTime())
+    .sort((a, b) => newest(b) - newest(a))
     .map((item) => {
       const x = timelineX(item.at, win, width);
-      let lane = ends.findIndex((end) => end + gap <= x);
-      if (lane < 0) lane = ends.length;
-      ends[lane] = x + cardWidth;
-      return { ...item, x, lane };
-    });
-  return { lanes: ends.length, items: placed };
+      const last = item.members?.[item.members.length - 1];
+      const span = last ? timelineX(last.at, win, width) - x + SESSION_TICK_ROOM : 0;
+      const itemWidth = Math.max(cardWidth, span);
+      let lane = starts.findIndex((start) => x + itemWidth + gap <= start);
+      if (lane < 0) lane = starts.length;
+      starts[lane] = x;
+      return { ...item, x, lane, width: itemWidth };
+    })
+    .sort((a, b) => a.at.getTime() - b.at.getTime());
+  return { lanes: starts.length, items: placed };
 }
 
 export interface DayCluster {

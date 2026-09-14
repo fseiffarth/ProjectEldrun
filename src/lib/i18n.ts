@@ -1024,6 +1024,7 @@ export const en = {
   "promptChart.related": "Related",
   "promptChart.after": "After delivery",
   "promptChart.session": "session {id}",
+  "promptChart.sessionPrompts": "{count} prompts",
   "promptChart.result.delivered": "Delivered",
   "promptChart.result.queued": "Queued",
   "promptChart.result.missed": "Missed",

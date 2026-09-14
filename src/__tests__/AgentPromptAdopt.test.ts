@@ -5,6 +5,7 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(() => Promise.resolve([])
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(() => Promise.resolve(() => {})), emit: vi.fn(() => Promise.resolve()) }));
 
 import { alreadyRecorded, foldPrompt } from "../lib/agentPromptAdopt";
+import { isSessionCommand } from "../lib/agentPromptChart";
 import { useActivityStore } from "../stores/activity";
 import { useAgentModelsStore } from "../stores/agentModels";
 import { useAgentPromptsStore, type SentAgentPrompt } from "../stores/agentPrompts";
@@ -70,5 +71,26 @@ describe("adopting a prompt typed into the terminal", () => {
     useActivityStore.setState({ busyByTab: { "p:agent-1": true } });
     await flush(); await flush(); await flush();
     expect(recorded).toHaveLength(1);
+    // The auto-`/rename`, a model switch, a clear and a login steer the session; none is stored.
+    for (const command of ["/rename p1 (feature)", "/model opus", "/clear", "/login"]) {
+      lastPrompt = command;
+      useActivityStore.setState({ busyByTab: {} });
+      useActivityStore.setState({ busyByTab: { "p:agent-1": true } });
+      await flush(); await flush(); await flush();
+    }
+    expect(recorded).toHaveLength(1);
+  });
+
+  it("tells a session command from a prompt that mentions one", () => {
+    expect(isSessionCommand("/rename eldrun")).toBe(true);
+    expect(isSessionCommand("  /MODEL sonnet")).toBe(true);
+    expect(isSessionCommand("/clear")).toBe(true);
+    expect(isSessionCommand("/login")).toBe(true);
+    expect(isSessionCommand("/compact")).toBe(true);
+    expect(isSessionCommand("/goal ship the release")).toBe(false);
+    expect(isSessionCommand("/renamed-thing is broken")).toBe(false);
+    expect(isSessionCommand("run /clear before the tests")).toBe(false);
+    expect(isSessionCommand("/")).toBe(false);
+    expect(isSessionCommand("! git status")).toBe(false);
   });
 });

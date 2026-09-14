@@ -6,6 +6,7 @@ import {
   packLanes,
   promptTargetColor,
   queuedStack,
+  sessionItems,
   shiftAnchor,
   snapTimelineTime,
   timelineDropAction,
@@ -113,6 +114,28 @@ describe("timeline items", () => {
     expect([...attachedChains(cards).entries()].map(([from, rows]) => [from, rows.map((row) => row.message)])).toEqual([["draft", ["Next"]]]);
   });
 
+  it("folds a session's sent prompts into one card spanning its first to its last", () => {
+    const day = timelineWindow("day", "2026-09-04", 1);
+    const sent = (id: string, hour: number, session?: string) => ({
+      key: id,
+      card: card({ id, key: id, state: "sent", strandId: "s1", history: { id, message: id, created_at: "x", sent_at: "x", tab_label: "Claude", session_id: session, result: "delivered" } }),
+      at: new Date(2026, 8, 4, hour),
+    });
+    const rule = { key: "r", card: card({ id: "r", key: "r", state: "scheduled" }), at: new Date(2026, 8, 4, 11) };
+    const grouped = sessionItems([sent("a", 9, "one"), sent("b", 10, "two"), sent("c", 12, "one"), rule]);
+    // A lone prompt stays a card of its own, and a rule is never folded in.
+    expect(grouped.map((item) => item.key)).toEqual(["session:one", "b", "r"]);
+    expect(grouped[0].card.id).toBe("c");
+    expect(grouped[0].members?.map((item) => item.key)).toEqual(["a", "c"]);
+    // A 2400px day is 100px an hour: 9:00 to 12:00 is 300px, plus the tick room.
+    const packed = packLanes(grouped, day, 2400);
+    expect(packed.items.map((item) => [item.key, item.x, item.width, item.lane])).toEqual([
+      ["session:one", 900, 306, 0],
+      ["b", 1000, 168, 2],
+      ["r", 1100, 168, 1],
+    ]);
+  });
+
   it("packs overlapping cards into lanes and clusters a month by day", () => {
     const at = (hour: number, minute = 0) => new Date(2026, 8, 4, hour, minute);
     const day = timelineWindow("day", "2026-09-04", 1);
@@ -123,7 +146,8 @@ describe("timeline items", () => {
     ];
     const packed = packLanes(items, day, 2400, 168, 6);
     expect(packed.lanes).toBe(2);
-    expect(packed.items.map((item) => [item.key, item.lane])).toEqual([["a", 0], ["b", 1], ["c", 0]]);
+    // Newest on top: the 9:30 card keeps lane 0 and the 9:00 one it overlaps steps down.
+    expect(packed.items.map((item) => [item.key, item.lane])).toEqual([["a", 1], ["b", 0], ["c", 0]]);
     expect(packLanes(items, day, 24_000).lanes).toBe(1);
     const clusters = dayClusters(items, timelineWindow("month", "2026-09-04", 1), 3000);
     expect(clusters).toHaveLength(30);

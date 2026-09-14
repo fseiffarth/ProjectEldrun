@@ -955,6 +955,7 @@ export const dict: Dict = {
   "promptChart.related": "Verwandt",
   "promptChart.after": "Nach Zustellung",
   "promptChart.session": "Sitzung {id}",
+  "promptChart.sessionPrompts": "{count} Prompts",
   "promptChart.result.delivered": "Zugestellt",
   "promptChart.result.queued": "Eingereiht",
   "promptChart.result.missed": "Verpasst",

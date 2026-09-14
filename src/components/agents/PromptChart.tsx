@@ -14,6 +14,7 @@ import {
   timelineDropAction,
   timelineWindow,
   type PromptTimelineDrop,
+  type SessionSpan,
   type TimelineView,
   type TimelineZone,
 } from "../../lib/agentPromptTimeline";
@@ -37,6 +38,7 @@ import { MarkdownPromptField } from "../common/MarkdownPromptField";
 import { UntestedTag } from "../common/UntestedTag";
 import { AgentScheduleDialog } from "./AgentScheduleDialog";
 import { PromptCard } from "./PromptCard";
+import { PromptSessionCard } from "./PromptSessionCard";
 import { PromptChartLinks } from "./PromptChartLinks";
 import { PromptTimeline } from "./PromptTimeline";
 import { usePromptChartDrag } from "./usePromptChartDrag";
@@ -347,7 +349,41 @@ export function PromptChart({ scope, active, tabs, stateOf }: Props) {
     return text.length > 40 ? `${text.slice(0, 40)}…` : text;
   };
 
-  const renderCard = (card: PromptChartCard, occurrence?: string) => {
+  /** A session's sent prompts as one card, drawn under the newest of them. */
+  const renderSession = (latest: PromptChartCard, session: SessionSpan) => {
+    if (!session.cards.some(visible)) return null;
+    const strand = strands.find((item) => item.id === latest.strandId);
+    const ids = session.cards.map((card) => card.id);
+    return (
+      <PromptSessionCard
+        cards={session.cards}
+        offsets={session.offsets}
+        matchedKeys={matched}
+        selected={!!selected && ids.includes(selected)}
+        linking={!!linkFrom && !ids.includes(linkFrom)}
+        linkOver={drag?.kind === "link" && !!drag.overId && ids.includes(drag.overId)}
+        color={colorOf(latest)}
+        register={(node) => {
+          for (const id of ids) {
+            if (node) cardNodes.current.set(id, node);
+            else cardNodes.current.delete(id);
+          }
+        }}
+        onPortPointerDown={onPortPointerDown(latest)}
+        onSelect={() => {
+          if (linkFrom && !ids.includes(linkFrom)) void linkTo(latest).catch((cause) => setError(String(cause)));
+          setSelected(latest.id);
+        }}
+        onLink={() => void beginLink(latest).catch((cause) => setError(String(cause)))}
+        onCollect={(card) => collect(card)}
+        onDelete={(card) => remove(card)}
+        onGoToTab={strand?.tabKey ? () => jumpToTab(scope, strand.tabKey!) : undefined}
+      />
+    );
+  };
+
+  const renderCard = (card: PromptChartCard, occurrence?: string, session?: SessionSpan) => {
+    if (session) return renderSession(card, session);
     if (!visible(card)) return null;
     const strand = strands.find((item) => item.id === card.strandId);
     return (
