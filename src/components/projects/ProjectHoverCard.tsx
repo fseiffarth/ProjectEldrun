@@ -9,6 +9,7 @@ import {
 } from "../../types";
 import { useTimerStore } from "../../stores/timer";
 import { useTabsStore } from "../../stores/tabs";
+import { useGitDirtyStore, type GitDirtyState } from "../../stores/gitDirty";
 import { projectTypeTags } from "./projectTypeTags";
 import { OrbitSpinner } from "../common/OrbitSpinner";
 import { useT, type TranslationKey } from "../../lib/i18n";
@@ -32,6 +33,15 @@ export function formatTime(t: Translator, secs: number): string {
 export function formatCpu(t: Translator, pct: number): string {
   return pct < 0.1 ? t("projectHoverCard.cpuIdle") : `${pct.toFixed(1)}%`;
 }
+
+/** Hover-card line per pending git state. "clean" has none: the card names a
+ *  state only when there is something left to add, commit, or push. */
+export const GIT_STATE_LABEL_KEY: Record<Exclude<GitDirtyState, "clean">, TranslationKey> = {
+  dirty: "pill.gitDirty",
+  staged: "pill.gitStaged",
+  unpushed: "pill.gitUnpushed",
+  broken: "pill.gitBroken",
+};
 
 export function projectDescription(project: ProjectEntry): string {
   return typeof project.description === "string" ? project.description.trim() : "";
@@ -156,7 +166,7 @@ export function useProjectHoverCard(project: ProjectEntry | undefined) {
 export type ProjectHoverState = ReturnType<typeof useProjectHoverCard>;
 
 /** The hover popup shown for a project — description, type tags (optional),
- *  paths, git address, status, today's time and CPU. Rendered into a portal at
+ *  paths, git address, pending git state, status, today's time and CPU. Rendered into a portal at
  *  `state.popupPos`; returns null while closed. `showTags` is off in the right
  *  file-viewer, where the type tags already sit beside the project name. */
 export function ProjectHoverCard({
@@ -170,6 +180,7 @@ export function ProjectHoverCard({
 }) {
   const t = useT();
   const { popupPos, timeToday, cpu, scaffoldMissing, isLiveProject, timerPaused } = state;
+  const gitState = useGitDirtyStore((s) => s.byId[project.id]);
   if (!popupPos) return null;
 
   const description = projectDescription(project);
@@ -219,6 +230,9 @@ export function ProjectHoverCard({
           <span className="pill-popup-path-label">{t("projectHoverCard.originLabel")}</span>
           <span className="pill-popup-path">{gitRemote}</span>
         </span>
+      )}
+      {gitState && gitState !== "clean" && (
+        <span className={`pill-popup-git git-${gitState}`}>{t(GIT_STATE_LABEL_KEY[gitState])}</span>
       )}
       <span className={`pill-popup-status ${project.status === "inactive" ? "inactive" : "active"}`}>
         {statusLabel(t, project.status)}

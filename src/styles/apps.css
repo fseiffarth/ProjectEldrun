@@ -650,7 +650,7 @@
 /* "broken" is not a pending-change state but a contradiction: the project is
    tagged as a git repo yet has no readable `.git` (empty/missing). Muted grey +
    a dashed outline reads as "not a working repo / needs attention" rather than
-   borrowing the alarm-red of an ordinary dirty tree. Tooltip carries the why. */
+   borrowing the alarm-red of an ordinary dirty tree. The hover card carries the why. */
 .pill-folder-icon.git-broken {
   color: #8b949e;
   outline: 1px dashed #8b949e;
