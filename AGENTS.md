@@ -79,7 +79,11 @@ change was not run live.
   every commit reporting success while the desktop icon stayed two days behind.
   The build is real (`target/` is inside the bound project), so
   `start-eldrun-dev-build.sh` adopts `target/release/eldrun` at launch instead,
-  in the user's own session, guarded by `scripts/assert-embedded-frontend.sh`.
+  in the user's own session, trusting the `.frozen` record `package-dev.sh`
+  leaves beside a binary that passed `scripts/assert-embedded-frontend.sh` —
+  not a re-run of that check, since `dist/` moves on with every gate an agent
+  runs and a launch-time re-check refused four days of good builds
+  (2026-09-14). The launcher notifies either way: what it adopted, or why not.
   It declines in CI and from a linked worktree (freezing an agent's tree over
   the user's binary is exactly the surprise to avoid). Off with `git config
   eldrun.autoDevBuild false`, or `ELDRUN_NO_AUTO_DEV_BUILD=1` for one commit;

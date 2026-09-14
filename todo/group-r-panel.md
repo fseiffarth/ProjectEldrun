@@ -291,3 +291,32 @@
       Hover the bar's empty run: the panel still reveals after a moment.
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work
+
+270. **Resting on a rail icon opens the panel on that view; the side switch sits
+    at the top of the bar.** #268 made pointing at a tab *cancel* the hover
+    dwell, because the dwell opened the panel on its remembered view and that
+    reveal unmounted the tab from under a click. The tabs were click-only as a
+    result (user, 2026-09-14: "make the icons also hover not only click"). The
+    dwell now keys on what the pointer rests on (`data-rail-view` /
+    `data-rail-action`): a tab opens the panel on **its** view after the same
+    400ms, so press and dwell can only ever agree; crossing one tab on the way
+    to another restarts the dwell for the new one; the chevron and the bar's
+    empty run keep opening on the remembered view; the switch only cancels —
+    hovering must never move the panel. The switch itself left the centred
+    group for the top of the bar (`position: absolute; top: 0` inside the
+    positioned rail), where a layout control reads as chrome rather than as a
+    fifth destination.
+    Frontend: `components/layout/AppShell.tsx`, `styles/onboarding.css`.
+    Implemented 2026-09-14, **not live-tested**.
+    - [x] 🤖 Automated test — `SidePanelEdgeRail`
+    - [ ] 🖐️ Manual test — unpin the side panel so it closes. The side switch
+      is the topmost icon on the bar; the chevron and Files / Git / Apps /
+      Agents stay centred. Rest the pointer on **Git** without clicking → after
+      a moment the panel opens on Git. Close it; rest on **Agents** → Agents.
+      Sweep the pointer down across Files → Git → Apps and stop on **Apps** →
+      only Apps opens, and only once the pointer has settled there. Rest on the
+      side switch for a few seconds → nothing opens and the bar stays on its
+      edge; click it → the bar jumps to the other edge, still with the switch
+      on top. Clicking any tab still opens it at once.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work

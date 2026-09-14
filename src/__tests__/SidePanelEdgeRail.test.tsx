@@ -6,9 +6,9 @@
  * switcher offers, and an activation that both *stores* that view (so the panel
  * paints it, per #252) and opens the panel. The hover-open is here too (#268):
  * the bar covers the window edge for its whole height, so resting on it opens
- * the panel only after a dwell, and pointing at a tab cancels that dwell —
- * otherwise the reveal unmounts the rail out from under a click that has not
- * landed yet.
+ * the panel only after a dwell. Resting on a tab opens the panel on THAT view
+ * after the same dwell (#270) — never on some other view, which is what used to
+ * unmount the rail out from under a click that had not landed yet.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, act, fireEvent } from "@testing-library/react";
@@ -191,21 +191,80 @@ describe("side panel edge rail", () => {
     expect(document.querySelector(".side-panel-reveal-rail.left")).toBeTruthy();
   });
 
-  it("does not hover-open while the pointer is on a tab", async () => {
+  it("resting on a tab hover-opens the panel on that tab's view", async () => {
     vi.useFakeTimers();
     try {
       await mount();
-      // Travelling to a tab must never reveal the panel: the reveal unmounts the
-      // rail, and the button would go with it before the click landed.
       await act(async () => {
         fireEvent.mouseMove(screen.getByTitle("Show the Agents panel"));
-        vi.advanceTimersByTime(5000);
       });
+      // Same dwell as the bar: a press that comes first still wins, and both
+      // land on the same view, so neither can rob the other.
       expect(screen.queryByTestId("side-panel")).toBeNull();
-      expect(screen.getByTitle("Show the Agents panel")).toBeTruthy();
+      expect(shared.updateSettings).not.toHaveBeenCalledWith(
+        expect.objectContaining({ side_panel_view: "agents" }),
+      );
+      await act(async () => {
+        vi.advanceTimersByTime(400);
+      });
+      expect(shared.updateSettings).toHaveBeenCalledWith(
+        expect.objectContaining({ side_panel_view: "agents" }),
+      );
+      expect(screen.getByTestId("side-panel")).toBeTruthy();
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("crossing one tab on the way to another opens the one the pointer settles on", async () => {
+    vi.useFakeTimers();
+    try {
+      await mount();
+      await act(async () => {
+        fireEvent.mouseMove(screen.getByTitle("Show the Git panel"));
+        vi.advanceTimersByTime(300);
+        fireEvent.mouseMove(screen.getByTitle("Show the Agents panel"));
+        vi.advanceTimersByTime(300);
+      });
+      // Git's dwell was restarted for Agents, not left to fire at 400ms.
+      expect(screen.queryByTestId("side-panel")).toBeNull();
+      await act(async () => {
+        vi.advanceTimersByTime(100);
+      });
+      expect(shared.updateSettings).toHaveBeenCalledWith(
+        expect.objectContaining({ side_panel_view: "agents" }),
+      );
+      expect(shared.updateSettings).not.toHaveBeenCalledWith(
+        expect.objectContaining({ side_panel_view: "git" }),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("resting on the side switch neither opens the panel nor moves it", async () => {
+    vi.useFakeTimers();
+    try {
+      await mount();
+      await act(async () => {
+        fireEvent.mouseMove(screen.getByTitle("Move panel to the left edge"));
+        vi.advanceTimersByTime(5000);
+      });
+      expect(screen.queryByTestId("side-panel")).toBeNull();
+      expect(shared.updateSettings).not.toHaveBeenCalledWith(
+        expect.objectContaining({ side_panel_edge: "left" }),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the side switch at the top of the bar, outside the centred group", async () => {
+    await mount();
+    const rail = document.querySelector(".side-panel-reveal-rail")!;
+    const sw = screen.getByTitle("Move panel to the left edge");
+    expect(sw.closest(".srr-group")).toBeNull();
+    expect(rail.firstElementChild).toBe(sw);
   });
 
   it("hover-opens once the pointer rests on the bar's empty run", async () => {

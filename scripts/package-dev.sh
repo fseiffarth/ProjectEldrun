@@ -71,6 +71,27 @@ fi
 # and launch fine and then show only WebKit's connection-refused page.
 "$ROOT/scripts/assert-embedded-frontend.sh" "$RAW_BIN"
 
+VERSION="$(node -p "require('$ROOT/package.json').version")"
+COMMIT="$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+DIRTY=""
+if ! git -C "$ROOT" diff --quiet HEAD -- 2>/dev/null; then DIRTY="+local"; fi
+
+# Record that THIS artifact passed that check against the dist/ it was built
+# from. The launcher adopts on this record rather than re-running the check:
+# dist/ does not stand still after a build — every `npm run build` an agent
+# runs as a gate rewrites it with new content hashes, uncommitted edits and all
+# — and re-checking a finished binary against whatever dist/ holds at LAUNCH
+# time called four days of correct builds "stale" and left the desktop icon on
+# a snapshot from before them (2026-09-14). The sha pins the record to the
+# exact bytes, so a later build that fails the check cannot inherit it.
+FROZEN_STAMP="$RAW_BIN.frozen"
+{
+  printf 'sha256=%s\n' "$(sha256sum "$RAW_BIN" | cut -d' ' -f1)"
+  printf 'version=%s\n' "$VERSION"
+  printf 'commit=%s%s\n' "$COMMIT" "$DIRTY"
+  printf 'built=%s\n' "$(date -Is)"
+} >"$FROZEN_STAMP"
+
 # Installing into a tmpfs is not installing.
 #
 # Run from inside an agent tab, `services::agent_fence` has replaced $HOME with
@@ -101,10 +122,6 @@ fi
 # atomically enough that a relaunch picks the new snapshot up.
 install -Dm755 "$RAW_BIN" "$BINARY_DEST"
 
-VERSION="$(node -p "require('$ROOT/package.json').version")"
-COMMIT="$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
-DIRTY=""
-if ! git -C "$ROOT" diff --quiet HEAD -- 2>/dev/null; then DIRTY="+local"; fi
 STAMP="$(date +%Y-%m-%d)"
 
 cat >"$DESKTOP_DEST" <<DESKTOP

@@ -114,14 +114,16 @@ const DevPerfHost = import.meta.env.DEV
   ? lazy(() => import("../../dev/DevPerfHost").then((m) => ({ default: m.DevPerfHost })))
   : null;
 
-// How long the pointer must rest on the edge rail's empty run before the panel
-// reveals itself. The hover-open used to be instant, fired by a mousemove
-// anywhere in an 8px band at the window edge — and once the rail became a
-// full-height bar sitting on that band, every approach to a tab crossed it: the
-// panel opened, the rail unmounted, and the button vanished from under a click
-// that had not landed yet. That is what made the tabs feel unreliable. A dwell
-// makes hover-open deliberate; travelling to a tab cancels it, so the click
-// always wins the race.
+// How long the pointer must rest on the edge rail before the panel reveals
+// itself. The hover-open used to be instant, fired by a mousemove anywhere in
+// an 8px band at the window edge — and once the rail became a full-height bar
+// sitting on that band, every approach to a tab crossed it: the panel opened
+// on some OTHER view, the rail unmounted, and the button vanished from under a
+// click that had not landed yet. That is what made the tabs feel unreliable.
+// A dwell makes hover-open deliberate, and a dwell that settles on a tab opens
+// the panel on THAT tab's view — the very thing the click would have done — so
+// whichever of press and dwell comes first, the user gets what they pointed at.
+// Crossing a tab on the way to another restarts the dwell for the new one.
 const RAIL_DWELL_MS = 400;
 
 // The views the closed panel's edge rail can open it straight onto — the same
@@ -129,7 +131,7 @@ const RAIL_DWELL_MS = 400;
 // same keys so the rail and the switcher can never read differently. Every rail
 // button is an icon (`EdgeRailIcons`), not a vertical label; the chevron above
 // the tabs opens the panel on whichever view it was last left on, and the
-// switch below them moves the panel to the other edge.
+// switch pinned to the top of the bar moves the panel to the other edge.
 const EDGE_VIEWS: ReadonlyArray<{
   view: FilesPanelView;
   labelKey: TranslationKey;
@@ -950,23 +952,36 @@ export function AppShell() {
   // unpinned panel exists, so a band underneath it could only ever fire from on
   // top of the bar — and firing there is exactly what stole the tabs' clicks.
   const railDwellTimer = useRef<number | null>(null);
+  // What the pending dwell will open on: a view for a tab, "open" for the
+  // chevron and the bar's empty run (the remembered view). The key is what lets
+  // a move from one tab to the next restart the dwell instead of letting the
+  // first tab's dwell fire while the pointer is already on the second.
+  const railDwellKey = useRef<string | null>(null);
   const cancelRailDwell = () => {
     if (railDwellTimer.current !== null) {
       window.clearTimeout(railDwellTimer.current);
       railDwellTimer.current = null;
     }
+    railDwellKey.current = null;
   };
   const handleRailMouseMove = (event: ReactMouseEvent<HTMLDivElement>) => {
-    // Pointing at a tab is a click in progress, not a request to hover-open.
-    if ((event.target as HTMLElement).closest(".srr-group")) {
+    const handle = (event.target as HTMLElement).closest<HTMLElement>(".side-panel-reveal-handle");
+    // The side switch moves the panel; resting on it must never do that, and it
+    // opens nothing either.
+    if (handle?.dataset.railAction === "switch") {
       cancelRailDwell();
       return;
     }
-    if (railDwellTimer.current !== null) return;
+    const view = handle?.dataset.railView as FilesPanelView | undefined;
+    const key = view ?? "open";
+    if (railDwellTimer.current !== null && railDwellKey.current === key) return;
+    cancelRailDwell();
+    railDwellKey.current = key;
     railDwellTimer.current = window.setTimeout(() => {
       railDwellTimer.current = null;
-      useHintsStore.getState().markSeen("file-tree");
-      reveal(panelCloseTimer, setPanelOpen);
+      railDwellKey.current = null;
+      if (view) openPanelOnView(view);
+      else openPanel();
     }, RAIL_DWELL_MS);
   };
   // A dwell still pending when the panel opens (or the rail goes away with the
@@ -1082,11 +1097,12 @@ export function AppShell() {
             the *edge marker*: unpinned, the panel is invisible, so this labelled
             rail is the only thing saying which side it will slide in from.
 
-            Icon buttons only: a chevron that opens the panel on its remembered
-            view, one tab per view the panel's own switcher offers — so a closed
-            panel is one click from Git, Apps or Agents instead of one click plus
-            a second one inside — and a side switch that moves the panel (and
-            this rail with it) to the other edge without opening anything.
+            Icon buttons only: a side switch pinned to the top of the bar that
+            moves the panel (and this rail with it) to the other edge without
+            opening anything, then — centred — a chevron that opens the panel on
+            its remembered view and one tab per view the panel's own switcher
+            offers, so a closed panel is one click from Git, Apps or Agents
+            instead of one click plus a second one inside.
 
             It is its OWN bar: `.app-body` holds a --side-rail-w gutter open on
             that edge (railDocked) and the rail fills it top to bottom, instead of
@@ -1096,19 +1112,42 @@ export function AppShell() {
             covers the window edge for its whole height, so the old body-level
             reveal band could only have fired from on top of the bar — which is
             precisely how a tab used to vanish from under a click that had not
-            landed yet. Resting on the bar's empty run still reveals the panel on
-            its remembered view; travelling across it to a tab cancels the dwell,
-            and the tab commits on the press rather than the click. */}
+            landed yet. Resting on the bar's empty run (or the chevron) reveals
+            the panel on its remembered view; resting on a tab reveals it on
+            that tab's view, and a tab still commits on the press rather than
+            the click, so press and dwell can only ever agree. */}
         {panelTarget && !panelsHidden && !revealPanel && (
           <div
             className={`side-panel-reveal-rail${panelSide === "left" ? " left" : ""}`}
             onMouseMove={handleRailMouseMove}
             onMouseLeave={cancelRailDwell}
           >
+            <button
+              type="button"
+              className="side-panel-reveal-handle srh-switch"
+              data-rail-action="switch"
+              aria-label={t(panelSide === "left" ? "sidePanel.moveRight" : "sidePanel.moveLeft")}
+              title={t(panelSide === "left" ? "sidePanel.moveRight" : "sidePanel.moveLeft")}
+              onPointerDown={(e) => {
+                // Same press-commits contract as the tabs: the rail re-mounts on
+                // the other edge under the pointer, so a click may never land.
+                if (e.button !== 0) return;
+                railPressedAt.current = Date.now();
+                cancelRailDwell();
+                toggleSide();
+              }}
+              onClick={() => {
+                if (Date.now() - railPressedAt.current < 700) return;
+                toggleSide();
+              }}
+            >
+              <RailSwitchSideIcon />
+            </button>
             <div className="srr-group">
               <button
                 type="button"
                 className="side-panel-reveal-handle srh-chevron"
+                data-rail-action="open"
                 aria-label={t("appShell.showPanel")}
                 title={t("appShell.showPanel")}
                 onPointerDown={(e) => {
@@ -1130,6 +1169,7 @@ export function AppShell() {
                     key={view}
                     type="button"
                     className="side-panel-reveal-handle"
+                    data-rail-view={view}
                     aria-label={t("appShell.showPanelView", { view: label })}
                     title={t("appShell.showPanelView", { view: label })}
                     onPointerDown={(e) => {
@@ -1146,26 +1186,6 @@ export function AppShell() {
                   </button>
                 );
               })}
-              <button
-                type="button"
-                className="side-panel-reveal-handle srh-switch"
-                aria-label={t(panelSide === "left" ? "sidePanel.moveRight" : "sidePanel.moveLeft")}
-                title={t(panelSide === "left" ? "sidePanel.moveRight" : "sidePanel.moveLeft")}
-                onPointerDown={(e) => {
-                  // Same press-commits contract as the tabs: the rail re-mounts on
-                  // the other edge under the pointer, so a click may never land.
-                  if (e.button !== 0) return;
-                  railPressedAt.current = Date.now();
-                  cancelRailDwell();
-                  toggleSide();
-                }}
-                onClick={() => {
-                  if (Date.now() - railPressedAt.current < 700) return;
-                  toggleSide();
-                }}
-              >
-                <RailSwitchSideIcon />
-              </button>
             </div>
           </div>
         )}

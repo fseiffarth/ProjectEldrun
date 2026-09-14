@@ -345,10 +345,11 @@
   padding-left: var(--side-rail-w);
 }
 
-/* The tabs, centered in the bar. Their own box so the bar can tell "pointing at
-   a tab" from "resting on the bar" (`handleRailMouseMove` tests for this class):
-   the bar's empty run hover-opens the panel after a dwell, a tab cancels that
-   dwell, and the two must never be the same gesture. */
+/* The chevron and the tabs, centered in the bar. The side switch sits outside
+   this box, pinned to the bar's top. `handleRailMouseMove` reads each handle's
+   data attribute, not this class: the bar's empty run and the chevron hover-open
+   the panel on its remembered view after a dwell, a tab hover-opens it on that
+   tab's view after the same dwell, the switch only cancels. */
 .side-panel-reveal-rail .srr-group {
   display: flex;
   flex-direction: column;
@@ -365,11 +366,16 @@
   height: 18px;
 }
 
-/* The side switch moves the panel to the other edge without opening it. Set
-   apart from the open-the-panel buttons above it by a wider gap, and quieter
-   at rest: it is a layout control, not a destination. */
+/* The side switch moves the panel to the other edge without opening it. Pinned
+   to the top of the bar, apart from the centred open-the-panel buttons, and
+   quieter at rest: it is a layout control, not a destination. The rail is
+   positioned, so the bar's own top-left is the anchor on either edge. */
 .side-panel-reveal-rail .srh-switch {
-  margin-top: 12px;
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  border-top: none;
   opacity: 0.55;
 }
 
