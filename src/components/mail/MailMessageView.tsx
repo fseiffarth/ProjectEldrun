@@ -22,6 +22,7 @@ import {
   mailCryptoNoteKey,
   mailCryptoTone,
   openMailLink,
+  previewIsPdf,
   stripFormatControls,
 } from "../../lib/mail";
 import { useI18nStore, useT } from "../../lib/i18n";
@@ -29,6 +30,7 @@ import { useProjectsStore } from "../../stores/projects";
 import { useUse24h } from "../../lib/timeFormat";
 import { UntestedTag } from "../common/UntestedTag";
 import { MailAiMessageActions, MailAiProvenance } from "./MailAiMessageActions";
+import { MailPdfPreview } from "./MailPdfPreview";
 import type {
   MailAttachmentMeta,
   MailAuthResults,
@@ -715,13 +717,15 @@ function AttachmentSaveDialog({
   );
 }
 
-/** In-pane preview of bounded bytes. Images render from a `data:` URI; anything
- *  textual renders as escaped text in a `<pre>`; everything else says so rather
- *  than offering a way out of the app. */
+/** In-pane preview of bounded bytes. Images render from a `data:` URI; a PDF is
+ *  drawn page by page onto canvases (`MailPdfPreview` — no text layer, no
+ *  links); anything textual renders as escaped text in a `<pre>`; everything
+ *  else says so rather than offering a way out of the app. */
 function AttachmentPreview({ blob }: { blob: MailPreviewBlob }) {
   const t = useT();
-  const isImage = blob.mime.startsWith("image/") && blob.mime !== "image/svg+xml";
-  const isText = blob.mime.startsWith("text/") || blob.mime === "application/json";
+  const isPdf = previewIsPdf(blob);
+  const isImage = !isPdf && blob.mime.startsWith("image/") && blob.mime !== "image/svg+xml";
+  const isText = !isPdf && (blob.mime.startsWith("text/") || blob.mime === "application/json");
 
   let text = "";
   if (isText) {
@@ -743,9 +747,13 @@ function AttachmentPreview({ blob }: { blob: MailPreviewBlob }) {
           alt=""
         />
       )}
+      {isPdf && <MailPdfPreview bytesB64={blob.bytes_b64} truncated={blob.truncated} />}
       {isText && <pre className="mail-attachment-text">{text}</pre>}
-      {!isImage && !isText && <div className="mail-note">{t("mail.previewUnavailable")}</div>}
-      {blob.truncated && <div className="mail-note">{t("mail.previewTruncated")}</div>}
+      {!isImage && !isText && !isPdf && (
+        <div className="mail-note">{t("mail.previewUnavailable")}</div>
+      )}
+      {/* A cut-off PDF already says it is too large; "shortened" would be false comfort. */}
+      {blob.truncated && !isPdf && <div className="mail-note">{t("mail.previewTruncated")}</div>}
     </div>
   );
 }

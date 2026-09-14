@@ -551,6 +551,17 @@ export function mailAttachmentSaveToProject(
 }
 
 /** Bounded bytes for an in-pane preview. Nothing touches the filesystem. */
+/**
+ * Whether a preview blob is a PDF the pane should draw with pdf.js. Decided by
+ * the bytes alone — a `%PDF-` magic, which is `JVBERi` in base64 — never by the
+ * declared type: mail clients regularly send a PDF as
+ * `application/octet-stream`, and a declared `application/pdf` without the
+ * magic is not one, whatever the sender claimed.
+ */
+export function previewIsPdf(blob: Pick<MailPreviewBlob, "bytes_b64">): boolean {
+  return blob.bytes_b64.startsWith("JVBERi");
+}
+
 export function mailAttachmentPreview(
   messageId: string,
   partId: string,

@@ -2414,6 +2414,35 @@ handle — it swallows the pointer before the card ever sees it. */
   max-height: 340px;
   border-radius: var(--radius);
 }
+.mail-attachment-pdf {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.mail-attachment-pdf-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.mail-attachment-pdf-pages {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 70vh;
+  overflow: auto;
+  padding: 8px;
+  background: var(--bg-input);
+  border-radius: var(--radius);
+}
+.mail-attachment-pdf-page canvas {
+  display: block;
+  max-width: 100%;
+  background: #fff;
+  border: 1px solid var(--border-subtle);
+  border-radius: 2px;
+}
 .mail-attachment-text {
   max-height: 260px;
   overflow: auto;
