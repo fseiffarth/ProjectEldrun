@@ -136,13 +136,24 @@ Claude's `/fast` — different thing.
 - Home files: `~/.claude/`, `~/.claude.json` (+ `.bak`, `.backup.N`),
   `~/.claude/settings.json`, `settings.local.json`,
   `~/.local/share/claude/versions/`.
-- `claude update` (native installer) writes the new binary into
-  `~/.local/share/claude/versions/<v>` and swaps the `~/.local/bin/claude`
-  symlink by rename; its result lands in `~/.claude/.last-update-result.json`.
-  Measured against 2.1.270 (2026-09-13). `agent_fence::updatable_install_dirs`
-  hands exactly those two directories back read-write inside the fence — an
-  updater that starts writing elsewhere (a lock under `~/.local/share/claude/`
-  is covered, `~/.local/state` or `~/.cache` is not) fails read-only again.
+- `claude update` and the background auto-updater (native installer) share
+  one write path, read out of the 2.1.270 bundle (2026-09-14): the download
+  is staged under `$XDG_CACHE_HOME/claude/staging/<v>` (`~/.cache/…`),
+  **copied** (`copyFile`, not `rename`) to
+  `~/.local/share/claude/versions/<v>.tmp.<pid>.…`, renamed into place,
+  and the `~/.local/bin/claude` symlink is swapped by rename; a per-version
+  lock lives under `$XDG_STATE_HOME/claude/locks/`; the result lands in
+  `~/.claude/.last-update-result.json`. `agent_fence::updatable_install_dirs`
+  hands `~/.local/bin` and `~/.local/share/claude` back read-write; staging
+  and locks stay in the fence's tmpfs home, which is fine precisely because
+  the staging→versions hop is a copy — a release that switches it to a rename
+  breaks with `EXDEV` inside the fence (also across two separate bind mounts).
+  The whole sequence was dry-run inside a fenced tab on 2026-09-14 and
+  passed. Reading the result file: `status: "install_failed"` with
+  `version_to: null` means the updater threw *before* resolving the target
+  version — the version check talks to `downloads.claude.ai`, which is
+  IPv4-only, so an IPv6-only moment on the host produces exactly that record
+  while every directory is writable.
 - Credentials: the OAuth record is `~/.claude/.credentials.json`
   (`{"claudeAiOauth":{accessToken, refreshToken, expiresAt, …}}`, 0600). The
   CLI opens it with `O_NOFOLLOW` — a symlink is refused (`refused-symlink`,
