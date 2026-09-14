@@ -70,7 +70,14 @@ change was not run live.
   hook queues `scripts/package-dev-auto.sh`, which builds detached (the commit
   never waits), nice'd/`SCHED_IDLE` so it does not fight the window it serves,
   and coalescing — a commit landing mid-build queues one more pass instead of a
-  second build, so a rebase costs one or two and ends on the *last* tree. It
+  second build, so a rebase costs one or two and ends on the *last* commit.
+  **It freezes the commit, not the tree** (user, 2026-09-14): `package-dev.sh
+  --head` checks `HEAD` out into the detached worktree `target/freeze-tree`
+  (node_modules symlinked, cargo target dir shared) and builds there, so the
+  frozen binary is exactly one commit — never "+local" with someone else's
+  dirty edits swept in, and never failed by an `npm run build` that rewrites
+  `dist/` mid-compile. `npm run package:dev` by hand still freezes the live
+  tree, as the explicit way to try an uncommitted change. It
   installs and notifies; it never launches or stops anything, and a running
   frozen window keeps its old inode until the user relaunches it. **From an
   agent tab it builds and stops there** (2026-09-04): `services::agent_fence`

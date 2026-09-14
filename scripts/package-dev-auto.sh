@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
 # Move the frozen "Eldrun (dev)" snapshot to the commit that was just made.
 #
-# `npm run package:dev` freezes the CURRENT WORKING TREE as a release binary
-# (AGENTS.md "Running"), and the frozen window is where the day's real work
-# happens — so it is only ever as good as the last time somebody remembered to
-# re-run it. A commit is the honest moment to move it: it is the point where a
-# change is finished, it is frequent, and it is local (never CI).
+# The frozen window is where the day's real work happens, so it is only ever
+# as good as the last time somebody remembered to re-freeze it. A commit is the
+# honest moment to move it: it is the point where a change is finished, it is
+# frequent, and it is local (never CI). And it freezes THE COMMIT — package-dev
+# `--head` builds HEAD from a detached worktree — not the working tree around
+# it: a tree freeze swept in whatever other edits happened to be dirty (another
+# agent's half-done work, labelled "+local"), and an `npm run build` landing
+# mid-compile could fail the finished binary's own check (2026-09-14). By hand,
+# `npm run package:dev` still freezes the live tree, on purpose.
 #
 # Three properties make that safe to do automatically:
 #
@@ -69,13 +73,10 @@ declined() {
   return 1
 }
 
-# What the frozen build would be built FROM: the commit plus the dirty tree
-# around it, since package-dev.sh freezes the working tree rather than HEAD.
+# What the frozen build would be built FROM: the commit, exactly — the
+# --head freeze reads nothing from the working tree.
 tree_signature() {
-  {
-    git -C "$ROOT" rev-parse HEAD 2>/dev/null
-    git -C "$ROOT" status --porcelain --untracked-files=all 2>/dev/null
-  } | sha1sum | cut -d' ' -f1
+  git -C "$ROOT" rev-parse HEAD 2>/dev/null
 }
 
 queue() {
@@ -107,11 +108,11 @@ build_once() {
   low+=(nice -n 19)
   # A hook inherits whatever environment the committing shell had, and a GUI
   # git client's has no ~/.cargo/bin at all.
-  PATH="$HOME/.cargo/bin:$PATH" "${low[@]}" npm --prefix "$ROOT" run package:dev
+  PATH="$HOME/.cargo/bin:$PATH" "${low[@]}" npm --prefix "$ROOT" run package:dev -- --head
   local status=$?
   if [ "$status" -eq 0 ]; then
-    # Stamped from the tree as it was BEFORE the build, so an edit made while
-    # the build ran is not mistaken for something already frozen.
+    # Stamped from HEAD as it was BEFORE the build, so a commit made while the
+    # build ran is not mistaken for something already frozen.
     printf '%s\n' "$signature" >"$STAMP"
   fi
   return "$status"
