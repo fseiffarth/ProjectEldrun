@@ -71,6 +71,7 @@ export const AGENT_ITEMS: StaticMenuItem[] = [
   { label: "Amp",      cmd: "amp",          kind: "agent" },
   { label: "Kimi Code", cmd: "kimi",        kind: "agent" },
   { label: "Qoder",    cmd: "qoder",        kind: "agent" },
+  { label: "Meta Muse Code", cmd: "muse",   kind: "agent" },
 ];
 
 export const SHELL_ITEMS: StaticMenuItem[] = [

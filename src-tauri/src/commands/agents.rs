@@ -324,6 +324,15 @@ const AGENTS: &[AgentSpec] = &[
         extra_paths: &[".local/bin/qoder"],
         docs: "https://docs.qoder.com/cli/installation",
     },
+    AgentSpec {
+        id: "muse",
+        label: "Meta Muse Code",
+        bin: "muse",
+        install_cmd: "curl -fsSL https://dev.meta.ai/install.sh | bash",
+        install_cmd_windows: None,
+        extra_paths: &[".local/bin/muse"],
+        docs: "https://dev.meta.ai",
+    },
 ];
 
 /// Public view of one agent + whether it is currently installed.
@@ -1576,6 +1585,7 @@ mod tests {
             ("amp", "amp", "npm install -g @sourcegraph/amp"),
             ("kimi", "kimi", "https://code.kimi.com/install.sh"),
             ("qoder", "qoder", "https://qoder.com/install"),
+            ("muse", "muse", "https://dev.meta.ai/install.sh"),
         ];
         for (id, bin, install_fragment) in expected {
             let spec = find_spec(id).unwrap_or_else(|| panic!("{id} missing from registry"));
