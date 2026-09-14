@@ -37,9 +37,9 @@
 //!
 //! **One write into a project tree exists, and it is the exception that keeps
 //! the rule legible.** [`mail_attachment_save_to_project`] drops a single
-//! attachment into `<project>/emails/`, creating that folder on demand. It still
+//! attachment into `<project>/eldrun-emails/`, creating it on demand. It still
 //! names **no path**: the project is an opaque `project_id` the backend resolves
-//! to that project's own directory, the `emails/` subfolder is fixed, and the
+//! to that project's own directory, the `eldrun-emails/` subfolder is fixed, and the
 //! filename is sanitized exactly as the OS-dialog path pre-fills it — so the
 //! message's bytes can neither choose the folder nor traverse out of it. It is
 //! reached only from an explicit, per-file confirmation in the UI (which also
@@ -3186,13 +3186,19 @@ pub async fn mail_attachment_save(
     .map_err(|e| e.to_string())?
 }
 
-/// Save an attachment into a project's `emails/` folder, creating that folder if
-/// it does not exist yet, and return the full path written (for a toast).
+/// Save an attachment into a project's `eldrun-emails/` folder, creating that
+/// folder if it does not exist yet, and return the full path written (for a
+/// toast).
+///
+/// The folder is `eldrun-`prefixed so it can be ignored without ever swallowing
+/// a folder the project itself owns, and the write ensures that ignore line
+/// first: filing somebody's mail into a project tree is consent to keep it, not
+/// to push it to that project's remote.
 ///
 /// The exception to rule 2, kept honest by naming **no path**: the project is an
 /// opaque `project_id` the backend resolves to that project's own `directory`
 /// (via [`crate::services::remote::project_directory`]), the destination is
-/// fixed at `<project>/emails/`, and the filename is sanitized exactly as the
+/// fixed at `<project>/eldrun-emails/`, and the filename is sanitized as the
 /// OS-dialog path pre-fills it. An attacker who controls the bytes and the
 /// filename can neither choose the folder nor traverse out of it. The
 /// pick-any-location path stays [`mail_attachment_save`]'s OS dialog, offered
@@ -3221,12 +3227,22 @@ pub async fn mail_attachment_save_to_project(
         let dir = crate::services::remote::project_directory(&project_id)
             .filter(|d| !d.is_empty())
             .ok_or_else(|| "no such project".to_string())?;
-        let emails = PathBuf::from(dir).join("emails");
+        let root = PathBuf::from(dir);
+        // The folder is Eldrun's own, so Eldrun makes sure git ignores it before
+        // the first attachment lands in it — a project scaffolded before the
+        // folder existed would otherwise stage somebody's mail on the next
+        // `git add -A`. Best-effort: a project with no git and no writable
+        // `.gitignore` still gets its attachment.
+        let _ = crate::commands::projects::ensure_generated_dir_ignored(
+            &root,
+            crate::commands::projects::EMAILS_DIR,
+        );
+        let emails = root.join(crate::commands::projects::EMAILS_DIR);
         std::fs::create_dir_all(&emails).map_err(|e| e.to_string())?;
 
         // The filename is the message's, so it is sanitized (no path component,
         // no traversal, no control/bidi trickery) before being joined under the
-        // fixed `emails/` subfolder.
+        // fixed `eldrun-emails/` subfolder.
         let safe = mail_sanitize::sanitize_attachment_name(&meta.filename).value;
         let target = unique_in_dir(&emails, &safe);
 

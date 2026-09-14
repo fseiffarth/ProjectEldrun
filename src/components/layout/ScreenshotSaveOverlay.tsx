@@ -6,6 +6,7 @@ import { useProjectsStore } from "../../stores/projects";
 import { useScreenshotPendingStore } from "../../stores/screenshotPending";
 import { resolveProjectDirectory } from "../../types";
 import { useT } from "../../lib/i18n";
+import { ELDRUN_SCREENSHOTS_DIR } from "../../lib/screenshot";
 import { UntestedTag } from "../common/UntestedTag";
 
 /**
@@ -13,12 +14,17 @@ import { UntestedTag } from "../common/UntestedTag";
  * through before a single byte is written into a project.
  *
  * A capture used to be filed automatically into the active project's
- * `screenshots/` folder. That is the wrong default for a tool whose projects
+ * screenshots folder. That is the wrong default for a tool whose projects
  * routinely have public git remotes: a screen grab holds whatever was on the
  * screen — another project's window, mail, a token in a terminal — and a
  * `git add -A` publishes it. So the shot waits in a staging area outside every
- * project tree until this overlay is answered, and `screenshots/` is in the
- * scaffold's `.gitignore` defaults so even a saved shot is ignored by default.
+ * project tree until this overlay is answered, and `eldrun-screenshots/` is in
+ * the scaffold's `.gitignore` defaults — and the backend ensures that line
+ * before it writes — so even a saved shot is ignored by default.
+ *
+ * The folder is `eldrun-`prefixed because the bare name is one a project itself
+ * may own: ignoring a repo's own `screenshots/` of documentation images would
+ * hide the user's files from git.
  *
  * Discard is a cheap answer on purpose: the capture is on the system clipboard
  * either way, so dropping the file loses nothing that was not already pasteable.
@@ -36,7 +42,7 @@ export function ScreenshotSaveOverlay() {
   const activeId = useProjectsStore((s) => s.activeId);
 
   const [projectId, setProjectId] = useState<string>("");
-  const [folder, setFolder] = useState("screenshots");
+  const [folder, setFolder] = useState(ELDRUN_SCREENSHOTS_DIR);
   const [name, setName] = useState("");
   const [preview, setPreview] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -68,7 +74,7 @@ export function ScreenshotSaveOverlay() {
     if (!pending) return;
     setError(null);
     setBusy(false);
-    setFolder("screenshots");
+    setFolder(ELDRUN_SCREENSHOTS_DIR);
     setName(pending.name);
     const hinted = pending.hintDir
       ? savable.find((p) => p.dir === pending.hintDir)

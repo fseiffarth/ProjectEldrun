@@ -13,6 +13,7 @@ import {
   mailAttachmentPreview,
   mailAttachmentSave,
   mailAttachmentSaveToProject,
+  ELDRUN_EMAILS_DIR,
   mailAuthDmarcCarried,
   mailAuthPanelTone,
   mailAuthShown,
@@ -516,11 +517,11 @@ function LinkConfirmDialog({
  * bounded by the capability boundary:
  *
  *  - **Save** opens a per-file confirmation offering two destinations, neither
- *    of which is a path this component constructs. *Save to emails folder* calls
+ *    of which is a path this component constructs. *Save to eldrun-emails* calls
  *    `mail_attachment_save_to_project` with the active project's **opaque id**
- *    (the backend resolves it to `<project>/emails/`, creating that folder);
+ *    (the backend resolves it to `<project>/eldrun-emails/`, creating it);
  *    *Choose another location…* calls `mail_attachment_save`, whose OS save
- *    dialog the backend raises. The emails-folder option is only shown while a
+ *    dialog the backend raises. That option is only shown while a
  *    project is active. There is no "save all" — one confirmation per file is
  *    deliberate friction at the point the boundary is crossed.
  *  - **Preview** calls `mail_attachment_preview`, which returns bounded bytes
@@ -644,8 +645,8 @@ function MailAttachments({
 
 /**
  * The per-file save confirmation. Two destinations, neither a path this
- * component builds: *Save to emails folder* (only while a project is active —
- * the backend resolves the project's opaque id to `<project>/emails/`) and
+ * component builds: *Save to eldrun-emails* (only while a project is active —
+ * the backend resolves the project's opaque id to `<project>/eldrun-emails/`) and
  * *Choose another location…* (the backend's OS save dialog). Wears the mail
  * client's canonical dialog chrome, exactly as `LinkConfirmDialog` does.
  */
@@ -664,9 +665,11 @@ function AttachmentSaveDialog({
 }) {
   const t = useT();
   // A project with no local directory (never expected, but the type allows it)
-  // is treated as "no emails folder": only the pick-a-location path is offered.
+  // is treated as "no eldrun-emails folder": only the pick-a-location path is
+  // offered. The folder name mirrors the backend's; this is a label, not the
+  // path the write uses (that stays the backend's, resolved from an opaque id).
   const emailsFolder = project?.directory
-    ? `${project.directory.replace(/[/\\]+$/, "")}/emails`
+    ? `${project.directory.replace(/[/\\]+$/, "")}/${ELDRUN_EMAILS_DIR}`
     : "";
 
   return createPortal(

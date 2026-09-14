@@ -8,10 +8,10 @@
 //! so `ScreenshotSaveOverlay` can ask for a destination.
 //!
 //! **Nothing is written into a project without that answer.** An earlier version
-//! filed every shot straight into the active project's `screenshots/` folder,
+//! filed every shot straight into the active project's screenshots folder,
 //! which for a project with a public remote is a private-data leak one `git add
 //! -A` away — a screen grab holds whatever happened to be on the screen. The
-//! overlay is the consent step, and `screenshots/` is in `GITIGNORE_DEFAULT` so
+//! overlay is the consent step, and `eldrun-screenshots/` is in `GITIGNORE_DEFAULT` so
 //! a saved shot is ignored by default even after the user picks a project.
 //!
 //! The shot is *also* put on the system clipboard, so it can be pasted straight
@@ -122,6 +122,18 @@ pub async fn save_pending_screenshot(
 ) -> Result<String, String> {
     let shot = pending_shot(&path)?;
     let bytes = std::fs::read(&shot).map_err(|e| e.to_string())?;
+    // When the shot goes to Eldrun's own folder, make sure git ignores that
+    // folder before the PNG lands in it: scaffold repair is the only other way
+    // the pattern arrives and it only runs when the user asks. A folder the
+    // user typed instead is theirs, and `ensure_generated_dir_ignored` refuses
+    // to touch `.gitignore` for it. Local trees only — a remote project's
+    // bytes go over SFTP, and its `.gitignore` is the host's.
+    let root = std::path::Path::new(&project_dir);
+    if root.is_dir() {
+        if let Some(first) = rel_path.split(['/', '\\']).find(|s| !s.is_empty()) {
+            let _ = crate::commands::projects::ensure_generated_dir_ignored(root, first);
+        }
+    }
     crate::commands::fs::write_project_file_bytes(
         project_dir.clone(),
         rel_path.clone(),
@@ -622,7 +634,7 @@ mod platform {
     //! ubiquitous interactive region CLI, so rather than shelling out we grab the
     //! entire virtual screen (every monitor) with `BitBlt` + `GetDIBits` and
     //! encode it to PNG with the `png` crate, writing the file directly into the
-    //! project's `screenshots/` folder. This is deterministic — it always
+    //! project's `eldrun-screenshots/` folder. This is deterministic — it always
     //! produces image data — and needs no external tool. The configured `exec`
     //! (which names a Linux tool) is ignored. Every GDI object acquired here is
     //! released on both the success and error paths.
