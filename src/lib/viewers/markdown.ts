@@ -30,19 +30,34 @@ function safeHref(url: string): string | null {
   return /^[a-z][a-z0-9+.-]*:/i.test(trimmed) ? null : trimmed;
 }
 
-/** Classify an image URL from `![alt](url)`. Remote `http(s)` and `data:image/`
- *  targets are emitted directly as the <img src>. Local targets (relative or
- *  absolute filesystem paths, or `file:`) can't be loaded by the webview from the
- *  app origin nor resolved here (the markdown file's directory is unknown), so
- *  they are reported as `local` for the viewer to resolve and inline from disk.
- *  Anything carrying another scheme (e.g. `javascript:`) is rejected. */
-function imgSrc(url: string): { kind: "remote" | "local"; url: string } | null {
+/** Classify an image URL from `![alt](url)`. A `data:image/` target is emitted
+ *  directly as the <img src>. A remote `http(s)` target is NOT: fetching it on
+ *  render would let any document make the app contact any server (a tracking
+ *  pixel, or a leak out of a VM/agent sandbox through the host), so it is
+ *  reported as `remote` and rendered as a placeholder the markdown viewer fills
+ *  only after the user presses Load (`commands::markdown`). Local targets
+ *  (relative or absolute filesystem paths, or `file:`) can't be loaded by the
+ *  webview from the app origin nor resolved here (the markdown file's directory
+ *  is unknown), so they are reported as `local` for the viewer to resolve and
+ *  inline from disk. Anything carrying another scheme (e.g. `javascript:`) is
+ *  rejected. */
+function imgSrc(url: string): { kind: "inline" | "remote" | "local"; url: string } | null {
   const u = url.trim();
   if (!u) return null;
-  if (/^(https?:\/\/|data:image\/)/i.test(u)) return { kind: "remote", url: u };
+  if (/^data:image\//i.test(u)) return { kind: "inline", url: u };
+  if (/^https?:\/\//i.test(u)) return { kind: "remote", url: u };
   if (/^file:/i.test(u)) return { kind: "local", url: u };
   if (/^[a-z][a-z0-9+.-]*:/i.test(u)) return null; // other explicit scheme → reject
   return { kind: "local", url: u }; // no scheme → relative/absolute local path
+}
+
+/** The host a remote image would be fetched from, for a placeholder with no alt. */
+function remoteHost(url: string): string {
+  try {
+    return new URL(url).host || url;
+  } catch {
+    return url;
+  }
 }
 
 /** #49: true when a (already-safe) href points at a local file rather than a
@@ -196,12 +211,16 @@ function renderInline(raw: string, spans?: InlineSpans): string {
     const img = imgSrc(url);
     // Local images get a placeholder (no `src`, so they don't 404 against the app
     // origin); the markdown viewer resolves `data-md-src` against the file's dir
-    // and swaps in the bytes. Remote/data images are emitted directly.
+    // and swaps in the bytes. Remote images get a chip showing their alt text
+    // (or host) that the viewer fills only once the user allows it. Data images
+    // are emitted directly.
     const html = !img
       ? `[${altEsc}]`
-      : img.kind === "remote"
+      : img.kind === "inline"
         ? `<img src="${escapeHtml(img.url)}" alt="${altEsc}" />`
-        : `<img class="md-img-local" data-md-src="${escapeHtml(img.url)}" alt="${altEsc}" />`;
+        : img.kind === "remote"
+          ? `<span class="md-img-remote" data-md-remote="${escapeHtml(img.url)}" title="${escapeHtml(img.url)}">${altEsc || escapeHtml(remoteHost(img.url))}</span>`
+          : `<img class="md-img-local" data-md-src="${escapeHtml(img.url)}" alt="${altEsc}" />`;
     const idx = links.push(html) - 1;
     return mark("L", idx);
   });

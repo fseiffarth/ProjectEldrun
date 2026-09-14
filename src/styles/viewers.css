@@ -5830,6 +5830,39 @@
   border-radius: var(--radius-sm);
 }
 
+/* A remote image not fetched (yet): a small chip holding its alt text, badge
+   height, so a README's badge row still reads as a row. Filled in place once
+   the viewer's "Load" is pressed. */
+.markdown-body .md-img-remote {
+  display: inline-block;
+  vertical-align: middle;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0 7px;
+  margin: 1px 0;
+  font-size: 0.75em;
+  line-height: 20px;
+  color: var(--text-secondary);
+  background: var(--bg-secondary);
+  border: 1px dashed var(--border-color);
+  border-radius: var(--radius-sm);
+}
+.markdown-body .md-img-remote.is-loading { opacity: 0.6; }
+.markdown-body .md-img-remote.is-failed {
+  border-style: solid;
+  border-color: color-mix(in srgb, var(--danger) 55%, var(--border-color));
+}
+.markdown-body .md-img-remote.is-loaded {
+  padding: 0;
+  line-height: normal;
+  background: none;
+  border: 0;
+  overflow: visible;
+}
+.markdown-body .md-img-remote.is-loaded > img { vertical-align: middle; }
+
 /* Tables: rounded frame, header tint, zebra striping. */
 .markdown-body table,
 .markdown-body table.md-table {

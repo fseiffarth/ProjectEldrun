@@ -735,10 +735,29 @@ pub fn extract_title(raw: &str) -> String {
 /// pins the connection to the addresses it checked. Neither is sufficient alone:
 /// this one bounds the spelling, that one bounds the resolution.
 pub fn reader_hop_allowed(url: &Url, previous: Option<&Url>, hop: usize) -> Result<(), String> {
+    hop_allowed(url, previous, hop, FetchOrigin::User)
+}
+
+/// Who chose the first URL of a backend fetch, which decides how far into the
+/// machine's own network that first hop may reach.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FetchOrigin {
+    /// Typed or clicked by the user (a reader tab, a calendar feed): hop 0 may
+    /// be a loopback or private address, as [`reader_hop_allowed`] explains.
+    User,
+    /// Named by a document's *contents* (an image in a markdown preview). The
+    /// user agreed to fetch the document's images, not to aim a request at a
+    /// particular address, so hop 0 is judged as though a server had chosen it —
+    /// no loopback, no private network — and every hop must be `https`.
+    Document,
+}
+
+fn hop_allowed(url: &Url, previous: Option<&Url>, hop: usize, origin: FetchOrigin) -> Result<(), String> {
     if hop > MAX_READER_REDIRECTS {
         return Err(BlockReason::RedirectLoop.token());
     }
-    if url.scheme() != "http" && url.scheme() != "https" {
+    let https_only = origin == FetchOrigin::Document;
+    if url.scheme() != "https" && (https_only || url.scheme() != "http") {
         return Err(BlockReason::Scheme(url.scheme().to_ascii_lowercase()).token());
     }
     let ctx = NavContext {
@@ -748,13 +767,11 @@ pub fn reader_hop_allowed(url: &Url, previous: Option<&Url>, hop: usize) -> Resu
     match navigation_decision(url, &ctx) {
         NavDecision::Allow => Ok(()),
         NavDecision::Block(r) => Err(r.token()),
-        NavDecision::Confirm(r) => {
-            if hop == 0 {
-                Ok(())
-            } else {
-                Err(format!("redirect-to-{}", r.token()))
-            }
-        }
+        NavDecision::Confirm(r) => match (origin, hop) {
+            (FetchOrigin::User, 0) => Ok(()),
+            (FetchOrigin::Document, 0) => Err(r.token().to_string()),
+            _ => Err(format!("redirect-to-{}", r.token())),
+        },
     }
 }
 
@@ -765,8 +782,12 @@ pub fn reader_hop_allowed(url: &Url, previous: Option<&Url>, hop: usize) -> Resu
 /// which both need the same "may this backend touch this URL" answer and would
 /// otherwise carry two copies of the SSRF defence to keep in sync.
 async fn fetch_raw(raw: &str) -> Result<(Vec<u8>, String, Url, bool), String> {
+    fetch_raw_from(raw, FetchOrigin::User).await
+}
+
+async fn fetch_raw_from(raw: &str, origin: FetchOrigin) -> Result<(Vec<u8>, String, Url, bool), String> {
     let mut url = Url::parse(raw).map_err(|_| BlockReason::Unparsable.token())?;
-    reader_hop_allowed(&url, None, 0)?;
+    hop_allowed(&url, None, 0, origin)?;
 
     let mut hop = 0usize;
     let response = loop {
@@ -775,7 +796,7 @@ async fn fetch_raw(raw: &str) -> Result<(Vec<u8>, String, Url, bool), String> {
         // builder-level setting; three hops of client construction is nothing
         // against one network round trip, and sharing a client across hops would
         // mean the pin for hop 1 still applied at hop 2.
-        let pin = resolve_hop(&url, hop).await?;
+        let pin = resolve_hop(&url, hop, origin).await?;
         let client = reader_client(pin.as_ref())?;
         let resp = client
             .get(url.clone())
@@ -793,7 +814,7 @@ async fn fetch_raw(raw: &str) -> Result<(Vec<u8>, String, Url, bool), String> {
                 .join(location)
                 .map_err(|_| BlockReason::Unparsable.token())?;
             hop += 1;
-            reader_hop_allowed(&next, Some(&url), hop)?;
+            hop_allowed(&next, Some(&url), hop, origin)?;
             url = next;
             continue;
         }
@@ -901,6 +922,68 @@ pub async fn fetch_ics(raw: &str) -> Result<String, String> {
     Ok(text)
 }
 
+/// Cap on one image a document names. A README badge is a few kilobytes; the
+/// bytes cross the IPC boundary as base64, so the reader's 5 MB page cap would
+/// be far more than a preview image has any business costing.
+pub const MAX_DOCUMENT_IMAGE_BYTES: usize = 2 * 1024 * 1024;
+
+/// The raster and vector formats an `<img>` can show. Anything else a server
+/// answers with — an HTML login page, a JSON error — is refused rather than
+/// handed to the webview as a blob of unknown type.
+const DOCUMENT_IMAGE_TYPES: &[&str] = &[
+    "image/png",
+    "image/jpeg",
+    "image/gif",
+    "image/webp",
+    "image/avif",
+    "image/bmp",
+    "image/svg+xml",
+    "image/x-icon",
+    "image/vnd.microsoft.icon",
+];
+
+pub struct DocumentImage {
+    pub mime: String,
+    pub bytes: Vec<u8>,
+}
+
+/// The accepted image type for a `Content-Type` header, or `None`.
+pub fn document_image_mime(content_type: &str) -> Option<&'static str> {
+    let essence = content_type
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    DOCUMENT_IMAGE_TYPES.iter().copied().find(|t| *t == essence)
+}
+
+/// Fetch one remote image a markdown document names — only ever after the user
+/// clicked "Load" on that document (`commands::markdown`).
+///
+/// The page's CSP stays `img-src 'self' data: blob:`, so a document can never
+/// make the webview reach the network by itself; this is the one door, and it is
+/// narrower than the reader's. The URL is the *document's* choice, so
+/// [`FetchOrigin::Document`] applies to every hop: `https` only, and no address
+/// on this machine or its local network (which is also what stops a planted
+/// file from turning a preview into requests against a LAN device). No cookies,
+/// no `Referer` — `reader_client`'s properties, unchanged. An SVG is safe to
+/// return: the frontend shows it through `<img>`, where it runs no script and
+/// loads nothing.
+pub async fn fetch_document_image(raw: &str) -> Result<DocumentImage, String> {
+    let (body, content_type, _final_url, over_cap) =
+        fetch_raw_from(raw.trim(), FetchOrigin::Document).await?;
+    if over_cap || body.len() > MAX_DOCUMENT_IMAGE_BYTES {
+        return Err("image-too-large".to_string());
+    }
+    let mime = document_image_mime(&content_type)
+        .ok_or_else(|| format!("unsupported-content-type:{content_type}"))?;
+    Ok(DocumentImage {
+        mime: mime.to_string(),
+        bytes: body,
+    })
+}
+
 /// Build the reader's HTTP client.
 ///
 /// Split out so it can be constructed in a unit test: `reqwest` is compiled
@@ -956,7 +1039,14 @@ fn reader_client(pin: Option<&(String, Vec<SocketAddr>)>) -> Result<reqwest::Cli
 ///
 /// Returns `None` when the URL's host is already an IP literal — there is no
 /// name for DNS to change its mind about, and `reader_hop_allowed` has judged it.
-async fn resolve_hop(url: &Url, hop: usize) -> Result<Option<(String, Vec<SocketAddr>)>, String> {
+///
+/// A [`FetchOrigin::Document`] fetch gets the later-hop rule on hop 0 as well:
+/// the address came out of a file, not from the user.
+async fn resolve_hop(
+    url: &Url,
+    hop: usize,
+    origin: FetchOrigin,
+) -> Result<Option<(String, Vec<SocketAddr>)>, String> {
     let Some(url::Host::Domain(name)) = url.host() else {
         return Ok(None);
     };
@@ -971,14 +1061,20 @@ async fn resolve_hop(url: &Url, hop: usize) -> Result<Option<(String, Vec<Socket
     if addrs.is_empty() {
         return Err("fetch-failed: name resolved to no address".to_string());
     }
-    if hop > 0 {
+    if hop > 0 || origin == FetchOrigin::Document {
         for addr in &addrs {
             if !address_is_global(addr.ip()) {
                 // Reuses the existing `redirect-to-*` vocabulary rather than
                 // minting a token for "resolved somewhere private": to the user
                 // the two are the same event, and a new token would be a new
-                // untranslated string.
-                return Err(format!("redirect-to-{}", reach_reason(addr.ip()).token()));
+                // untranslated string. A document's own first hop was not a
+                // redirect, so it carries the plain reach token instead.
+                let reason = reach_reason(addr.ip()).token();
+                return Err(if hop > 0 {
+                    format!("redirect-to-{reason}")
+                } else {
+                    reason.to_string()
+                });
             }
         }
     }
@@ -1331,6 +1427,43 @@ mod tests {
     }
 
     // ── Reader hops ─────────────────────────────────────────────────────────
+
+    /// A markdown image URL is the document's choice, not the user's: even hop
+    /// 0 may not reach this machine or its network, and only https passes.
+    #[test]
+    fn a_document_image_is_judged_like_a_server_chosen_hop() {
+        let doc = FetchOrigin::Document;
+        assert!(hop_allowed(&u("https://img.shields.io/badge/x.svg"), None, 0, doc).is_ok());
+        assert_eq!(
+            hop_allowed(&u("https://127.0.0.1/x.png"), None, 0, doc),
+            Err("loopback".into())
+        );
+        assert_eq!(
+            hop_allowed(&u("https://192.168.1.5/x.png"), None, 0, doc),
+            Err("private-network".into())
+        );
+        assert_eq!(
+            hop_allowed(&u("http://example.com/x.png"), None, 0, doc),
+            Err("scheme:http".into())
+        );
+        assert_eq!(
+            hop_allowed(&u("https://10.0.0.5/x.png"), Some(&u("https://example.com/")), 1, doc),
+            Err("redirect-to-private-network".into())
+        );
+        // The user-typed reader path keeps its hop-0 allowance.
+        assert!(hop_allowed(&u("http://127.0.0.1:3000/"), None, 0, FetchOrigin::User).is_ok());
+    }
+
+    #[test]
+    fn a_document_image_must_arrive_as_an_image_type() {
+        assert_eq!(
+            document_image_mime("image/svg+xml; charset=utf-8"),
+            Some("image/svg+xml")
+        );
+        assert_eq!(document_image_mime("IMAGE/PNG"), Some("image/png"));
+        assert_eq!(document_image_mime("text/html"), None);
+        assert_eq!(document_image_mime(""), None);
+    }
 
     /// Hop 0 is the user's choice; every later hop is the server's. That
     /// distinction is the entire SSRF defence for a backend fetch.

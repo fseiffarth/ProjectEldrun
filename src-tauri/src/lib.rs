@@ -1284,6 +1284,7 @@ pub fn run() {
             commands::calendar::calendar_read_ics,
             commands::calendar::calendar_write_ics,
             commands::calendar::calendar_fetch_ics,
+            commands::markdown::markdown_remote_image,
             commands::calendar::calendar_replace_events,
             // CalDAV accounts (docs/caldav_plan.md, Phases 1-3).
             // A sync is deliberately two commands: `caldav_fetch` speaks the

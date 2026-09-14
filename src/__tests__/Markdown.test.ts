@@ -120,13 +120,20 @@ describe("renderMarkdown", () => {
     expect(renderMarkdown("## Hello World")).toContain('<h2 id="hello-world">');
   });
 
-  it("emits remote and data images directly", () => {
-    expect(renderMarkdown("![badge](https://img.shields.io/x.svg)")).toContain(
-      '<img src="https://img.shields.io/x.svg" alt="badge" />',
-    );
+  it("emits data images directly", () => {
     expect(renderMarkdown("![d](data:image/png;base64,AAAA)")).toContain(
       '<img src="data:image/png;base64,AAAA" alt="d" />',
     );
+  });
+
+  it("renders remote images as placeholders that fetch nothing", () => {
+    const html = renderMarkdown("![badge](https://img.shields.io/x.svg) ![](http://example.com/p.png)");
+    expect(html).toContain(
+      '<span class="md-img-remote" data-md-remote="https://img.shields.io/x.svg" title="https://img.shields.io/x.svg">badge</span>',
+    );
+    // No alt text: the chip names the host instead of rendering empty.
+    expect(html).toContain('data-md-remote="http://example.com/p.png" title="http://example.com/p.png">example.com</span>');
+    expect(html).not.toMatch(/<img[^>]*src="https?:/);
   });
 
   it("tags local images for the viewer to resolve from disk", () => {

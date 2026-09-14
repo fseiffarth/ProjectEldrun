@@ -117,6 +117,7 @@ import {
 } from "../../lib/slurm";
 import { FileDropContext } from "../files/fileDropContext";
 import { UntestedTag } from "../common/UntestedTag";
+import { fetchRemoteImage, hostsLabel, remoteImageHosts } from "../../lib/remoteImages";
 import { AddRemarkDialog } from "../files/AddRemarkDialog";
 import { FileSourceSwitch } from "../files/ProjectFilesPane";
 import {
@@ -7648,6 +7649,12 @@ function TextView({
   );
 }
 
+/** Markdown documents whose remote images the user chose to load this session.
+ *  Module scope so the choice survives the tab remounting; deliberately not
+ *  persisted, since "yes, fetch from these hosts" was said about a file's
+ *  contents at one moment, and the file can change. */
+const remoteImagesAllowed = new Set<string>();
+
 function MarkdownView({
   path,
   onOpenExternally,
@@ -7795,6 +7802,63 @@ function MarkdownView({
     }
     return () => { cancelled = true; observer?.disconnect(); };
   }, [html, mode, visible, path, images]);
+
+  // Remote (http/https) images render as placeholders and fetch nothing until
+  // the user presses Load in the banner: a document must not be able to make
+  // the app contact a server just by being opened (tracking, or a leak out of a
+  // VM/agent sandbox through the host). The fetch itself is the backend's
+  // (`markdown_remote_image`), and the result lands as a blob: URL, which the
+  // CSP already allows.
+  const [remoteUrls, setRemoteUrls] = useState<string[]>([]);
+  const [, bumpRemoteAllowed] = useState(0);
+  const remoteAllowed = remoteImagesAllowed.has(path);
+  const remoteMime = useRef(new Map<string, string>());
+  const remoteImages = useMemo(() => new PreviewImages(
+    async (url) => {
+      const image = await fetchRemoteImage(url);
+      remoteMime.current.set(url, image.mime);
+      return image.bytes;
+    },
+    (url) => remoteMime.current.get(url) ?? "application/octet-stream",
+  ), []);
+  useEffect(() => () => remoteImages.dispose(), [remoteImages]);
+  useEffect(() => {
+    remoteImages.pause(!visible || mode !== "preview");
+    return () => remoteImages.pause(true);
+  }, [remoteImages, visible, mode]);
+  useEffect(() => {
+    if (!visible || mode !== "preview") return;
+    const root = previewRef.current;
+    if (!root) return;
+    const spans = Array.from(root.querySelectorAll<HTMLElement>("span.md-img-remote[data-md-remote]"));
+    const urls = [...new Set(spans.map((s) => s.dataset.mdRemote ?? "").filter(Boolean))];
+    setRemoteUrls((prev) => (prev.length === urls.length && prev.every((u, i) => u === urls[i]) ? prev : urls));
+    if (!remoteAllowed) return;
+    let cancelled = false;
+    remoteImages.retain(new Set(urls));
+    for (const span of spans) {
+      const url = span.dataset.mdRemote;
+      // A failed image is not retried on every re-render; reopening the
+      // document (or editing it) gives it a fresh placeholder to try again.
+      if (!url || span.classList.contains("is-loaded") || span.classList.contains("is-failed")) continue;
+      span.classList.add("is-loading");
+      void remoteImages.load(url).then((blobUrl) => {
+        if (cancelled || !span.isConnected) return;
+        span.classList.remove("is-loading");
+        if (!blobUrl) {
+          span.classList.add("is-failed");
+          span.title = `${t("fileViewer.remoteImageFailed")}\n${url}`;
+          return;
+        }
+        const img = document.createElement("img");
+        img.src = blobUrl;
+        img.alt = span.textContent ?? "";
+        span.replaceChildren(img);
+        span.classList.add("is-loaded");
+      });
+    }
+    return () => { cancelled = true; };
+  }, [html, mode, visible, remoteAllowed, remoteImages, t]);
 
   // Cross-file `#fragment` navigation (stores/mdAnchor): when a followed link
   // into this document carried a fragment, scroll the rendered preview to that
@@ -7986,6 +8050,27 @@ function MarkdownView({
       {saveError && <div className="file-viewer-error">{saveError}</div>}
       {mode === "edit" && fmt.status && (
         <div className="file-viewer-status-line">{fmt.status}</div>
+      )}
+      {mode === "preview" && loaded && remoteUrls.length > 0 && !remoteAllowed && (
+        <div className="file-viewer-reload-banner" role="status">
+          <span>
+            {t("fileViewer.remoteImagesBlocked", {
+              count: remoteUrls.length,
+              hosts: hostsLabel(remoteImageHosts(remoteUrls)),
+            })}
+          </span>
+          <UntestedTag />
+          <button
+            className="file-viewer-reload-btn"
+            title={t("fileViewer.remoteImagesLoadTitle")}
+            onClick={() => {
+              remoteImagesAllowed.add(path);
+              bumpRemoteAllowed((n) => n + 1);
+            }}
+          >
+            {t("fileViewer.remoteImagesLoad")}
+          </button>
+        </div>
       )}
       <div
         className={`file-viewer-body${mode === "edit" ? " file-viewer-code-body" : ""}`}

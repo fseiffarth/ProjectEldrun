@@ -46,7 +46,7 @@ describe("markdown link labels", () => {
       "[![CI](https://img.shields.io/ci.svg)](https://example.com/ci)",
     );
     expect(html).not.toContain("undefined");
-    expect(html).toContain('<img src="https://img.shields.io/ci.svg" alt="CI" />');
+    expect(html).toContain('data-md-remote="https://img.shields.io/ci.svg" title="https://img.shields.io/ci.svg">CI</span>');
     expect(html).toContain('href="https://example.com/ci"');
     expectInert(html);
   });
