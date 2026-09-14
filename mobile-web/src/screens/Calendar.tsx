@@ -23,6 +23,9 @@ const inputOf = (event: MobileCalendarEvent, calendarId: string): MobileCalendar
  * reopened one showed the day after it actually ends. */
 export const shownAllDayEnd = (start: string, end: string) => { const last = addDays(datePart(end), -1); return last >= datePart(start) ? last : datePart(start); };
 export const storedAllDayEnd = (day: string) => addDays(day, 1);
+/** A new event runs an hour by default: the end a start of `stamp` implies,
+ * as wall-clock math rolling past midnight, or null for a half-typed stamp. */
+export const defaultEnd = (stamp: string) => { const m = /^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2})$/.exec(stamp); if (!m) return null; const total = Number(m[2]) * 60 + Number(m[3]) + 60; return `${addDays(m[1], Math.floor(total / 1440))}T${String(Math.floor((total % 1440) / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`; };
 type Editing = { event?: MobileCalendarEvent; draft: MobileCalendarEventInput } | null;
 
 export function Calendar() {
@@ -51,11 +54,18 @@ export function Calendar() {
 }
 
 function EventEditor({ editing, calendars, busy, close, save, remove }: { editing: Exclude<Editing, null>; calendars: MobileCalendarInfo[]; busy: boolean; close: () => void; save: (value: MobileCalendarEventInput) => Promise<void>; remove?: () => Promise<void> }) {
-  const [draft, setDraft] = useState(editing.draft); const patch = (change: Partial<MobileCalendarEventInput>) => setDraft((v) => ({ ...v, ...change }));
+  const [draft, setDraft] = useState(editing.draft); const [endTouched, setEndTouched] = useState(false); const patch = (change: Partial<MobileCalendarEventInput>) => setDraft((v) => ({ ...v, ...change }));
   const startDay = datePart(draft.start), startTime = draft.start.slice(11, 16) || "09:00", endTime = draft.end.slice(11, 16) || "10:00";
   const endDay = draft.all_day ? shownAllDayEnd(draft.start, draft.end) : datePart(draft.end);
   const setTime = (which: "start" | "end", day: string, time: string) => {
-    if (!draft.all_day) { patch({ [which]: `${day}T${time}` } as Partial<MobileCalendarEventInput>); return; }
+    if (which === "end") setEndTouched(true);
+    if (!draft.all_day) {
+      const stamp = `${day}T${time}`;
+      // Moving a new event's start carries its end an hour later — until the end is set by hand.
+      const end = which === "start" && !editing.event && !endTouched ? defaultEnd(stamp) : null;
+      patch(end ? { start: stamp, end } : { [which]: stamp } as Partial<MobileCalendarEventInput>);
+      return;
+    }
     if (which === "end") { patch({ end: storedAllDayEnd(day) }); return; }
     // Moving an all-day start past the end would otherwise be refused on save.
     patch({ start: day, end: storedAllDayEnd(day) > draft.end ? storedAllDayEnd(day) : draft.end });

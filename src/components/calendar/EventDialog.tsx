@@ -11,6 +11,7 @@ import type {
 } from "../../types";
 import { CATEGORIES, categoryLabel } from "../../lib/calendarCategories";
 import {
+  addMinutes,
   allDayEndToLastDay,
   datePart,
   lastDayToAllDayEnd,
@@ -94,6 +95,9 @@ interface Form {
   alarms: Alarm[];
 }
 
+/** How long a new event runs once its start is moved, until its end is set by hand. */
+const DEFAULT_EVENT_MINUTES = 60;
+
 /** Seed the form from the event/occurrence being edited, or from a new draft. */
 function initialForm(
   target: EventDialogTarget,
@@ -170,6 +174,8 @@ export function EventDialog({
   /** Set when a recurring event needs its scope confirmed; holds the pending act. */
   const [scopeAsk, setScopeAsk] = useState<"save" | "delete" | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /** Set once the end is edited by hand; until then a new event's end follows its start. */
+  const [endTouched, setEndTouched] = useState(false);
 
   const creating = target.event === null;
   const recurring = !!target.event?.rrule;
@@ -182,10 +188,25 @@ export function EventDialog({
     setForm(initialForm(target, defaultCalendarId, defaultReminderMinutes));
     setScopeAsk(null);
     setError(null);
+    setEndTouched(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [target]);
 
   const patch = (p: Partial<Form>) => setForm((f) => ({ ...f, ...p }));
+
+  // A new event defaults to one hour: moving its start carries the end along,
+  // an hour later. Once the end is set by hand, the start no longer moves it.
+  const patchStart = (p: Partial<Pick<Form, "startDate" | "startTime">>) =>
+    setForm((f) => {
+      const next = { ...f, ...p };
+      if (!creating || endTouched || next.allDay || !next.startDate) return next;
+      const end = addMinutes(`${next.startDate}T${next.startTime}`, DEFAULT_EVENT_MINUTES);
+      return { ...next, endDate: datePart(end), endTime: timePart(end) };
+    });
+  const patchEnd = (p: Partial<Pick<Form, "endDate" | "endTime">>) => {
+    setEndTouched(true);
+    patch(p);
+  };
 
   // The call this event would offer as you type — the field when it holds a
   // usable link, otherwise whatever the location or notes give up. Computed off
@@ -418,13 +439,13 @@ export function EventDialog({
                     className="cal-input"
                     type="date"
                     value={form.startDate}
-                    onChange={(e) => patch({ startDate: e.target.value })}
+                    onChange={(e) => patchStart({ startDate: e.target.value })}
                   />
                   {!form.allDay ? (
                     <TimeField
                       className="cal-input"
                       value={form.startTime}
-                      onChange={(startTime) => patch({ startTime })}
+                      onChange={(startTime) => patchStart({ startTime })}
                     />
                   ) : null}
                 </div>
@@ -437,13 +458,13 @@ export function EventDialog({
                     className="cal-input"
                     type="date"
                     value={form.endDate}
-                    onChange={(e) => patch({ endDate: e.target.value })}
+                    onChange={(e) => patchEnd({ endDate: e.target.value })}
                   />
                   {!form.allDay ? (
                     <TimeField
                       className="cal-input"
                       value={form.endTime}
-                      onChange={(endTime) => patch({ endTime })}
+                      onChange={(endTime) => patchEnd({ endTime })}
                     />
                   ) : null}
                 </div>
