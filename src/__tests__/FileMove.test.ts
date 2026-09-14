@@ -18,10 +18,11 @@
  *    mirror. The section now shares the project-wide side (`useFileSource`) and
  *    derives its tree dir via `remoteMemberTreeDir`.
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 // @ts-expect-error node:fs has no type declarations in this project (no @types/node)
 import { readFileSync } from "node:fs";
 import {
+  createSpringLoader,
   moveDestRel,
   movedEntryAbs,
   remoteMemberTreeDir,
@@ -188,5 +189,96 @@ describe("BoxRootSection source tripwires", () => {
     expect(SRC).toContain("syncSource={remote ? source : undefined}");
     // The source flip must remount the tree (dir is the tree's identity).
     expect(SRC).toMatch(/key=\{`\$\{rootId\}\|\$\{treeDir\}`\}/);
+  });
+});
+
+describe("createSpringLoader (spring-loaded folders while dragging)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+  const at = { x: 10, y: 10 };
+
+  it("opens a hovered key after the dwell, once", () => {
+    const onOpen = vi.fn();
+    const s = createSpringLoader({ delayMs: 500, onOpen });
+    s.hover("docs", at);
+    vi.advanceTimersByTime(499);
+    expect(onOpen).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(onOpen).toHaveBeenCalledWith("docs");
+    vi.advanceTimersByTime(5000);
+    expect(onOpen).toHaveBeenCalledTimes(1);
+  });
+
+  it("hovering the same key keeps the running timer; a new key restarts it", () => {
+    const onOpen = vi.fn();
+    const s = createSpringLoader({ delayMs: 500, onOpen });
+    s.hover("docs", at);
+    vi.advanceTimersByTime(300);
+    s.hover("docs", { x: 12, y: 11 });
+    vi.advanceTimersByTime(200);
+    expect(onOpen).toHaveBeenCalledWith("docs");
+    // Sweeping across folders: each new key restarts the dwell, so none opens.
+    s.hover("a", { x: 50, y: 50 });
+    vi.advanceTimersByTime(300);
+    s.hover("b", { x: 50, y: 70 });
+    vi.advanceTimersByTime(300);
+    s.hover("c", { x: 50, y: 90 });
+    vi.advanceTimersByTime(300);
+    expect(onOpen).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(200);
+    expect(onOpen).toHaveBeenLastCalledWith("c");
+  });
+
+  it("null (nothing springable under the cursor) and cancel() drop a pending open", () => {
+    const onOpen = vi.fn();
+    const s = createSpringLoader({ delayMs: 500, onOpen });
+    s.hover("docs", at);
+    vi.advanceTimersByTime(400);
+    s.hover(null, at);
+    vi.advanceTimersByTime(1000);
+    expect(onOpen).not.toHaveBeenCalled();
+    s.hover("docs", at);
+    vi.advanceTimersByTime(400);
+    s.cancel();
+    vi.advanceTimersByTime(1000);
+    expect(onOpen).not.toHaveBeenCalled();
+  });
+
+  it("after an open, a still cursor does not drill into whatever lands under it", () => {
+    // The freshly listed folder puts new rows under a cursor that has not
+    // moved — a held-still drag must not descend one level per dwell.
+    const onOpen = vi.fn();
+    const s = createSpringLoader({ delayMs: 500, onOpen, settleRadius: 6 });
+    s.hover("docs", at);
+    vi.advanceTimersByTime(500);
+    expect(onOpen).toHaveBeenCalledTimes(1);
+    // The post-navigation re-hit-test reports the new row at the same spot.
+    s.hover("docs/api", at);
+    vi.advanceTimersByTime(5000);
+    expect(onOpen).toHaveBeenCalledTimes(1);
+    // A nudge inside the settle radius still counts as "not moved".
+    s.hover("docs/api", { x: 12, y: 13 });
+    vi.advanceTimersByTime(5000);
+    expect(onOpen).toHaveBeenCalledTimes(1);
+    // Moving away re-arms: hovering a row for the dwell opens it.
+    s.hover("docs/api", { x: 10, y: 40 });
+    vi.advanceTimersByTime(500);
+    expect(onOpen).toHaveBeenLastCalledWith("docs/api");
+  });
+
+  it("the settle point is where the pointer WAS at fire time, not at arm time", () => {
+    const onOpen = vi.fn();
+    const s = createSpringLoader({ delayMs: 500, onOpen, settleRadius: 6 });
+    s.hover("docs", { x: 10, y: 10 });
+    s.hover("docs", { x: 10, y: 30 }); // wandered within the row before firing
+    vi.advanceTimersByTime(500);
+    // Back near the ARM point is 20px from the fire point → counts as moved.
+    s.hover("docs/api", { x: 10, y: 10 });
+    vi.advanceTimersByTime(500);
+    expect(onOpen).toHaveBeenLastCalledWith("docs/api");
   });
 });

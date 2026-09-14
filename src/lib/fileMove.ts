@@ -106,3 +106,68 @@ export function remoteMemberTreeDir(
     (stateDir ? `${stateDir.replace(/[/\\]+$/, "")}/mirror` : stateDir)
   );
 }
+
+/**
+ * Spring-loaded folders for drag-to-move. The tree lists ONE folder at a time,
+ * so a file dragged toward a destination deeper (or higher) than the visible
+ * listing has nowhere to land — the user had to drop, navigate, and drag
+ * again. Hovering a folder row, a breadcrumb crumb, or the ↑ button for
+ * `delayMs` while dragging therefore navigates the tree there and the drag
+ * carries on (Finder's / Explorer's spring-loading). This is the pure timing
+ * core; `FileTree` feeds it the `data-move-rel` under the cursor.
+ *
+ * - `hover(key, at)`: the same key keeps its running timer; a new key restarts
+ *   it; `null` (nothing springable under the cursor) cancels.
+ * - After `onOpen` fires, the pointer must MOVE at least `settleRadius` px away
+ *   from where it fired before another key can arm: the freshly listed folder
+ *   puts new rows under a cursor that has not moved, and without this a
+ *   held-still drag would keep drilling down one level per delay.
+ * - `cancel()` on release / gesture teardown drops any pending open.
+ */
+export interface SpringLoader {
+  hover(key: string | null, at: { x: number; y: number }): void;
+  cancel(): void;
+}
+
+export function createSpringLoader(opts: {
+  delayMs: number;
+  onOpen: (key: string) => void;
+  settleRadius?: number;
+}): SpringLoader {
+  const settleRadius = opts.settleRadius ?? 6;
+  let current: string | null = null;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let firedAt: { x: number; y: number } | null = null;
+  // Where the pointer last was — the spot `onOpen` fires at, which is not
+  // necessarily where the key was armed (the cursor can wander within a row).
+  let lastAt = { x: 0, y: 0 };
+  const clear = () => {
+    if (timer !== null) clearTimeout(timer);
+    timer = null;
+  };
+  return {
+    hover(key, at) {
+      lastAt = { x: at.x, y: at.y };
+      if (firedAt) {
+        if (Math.hypot(at.x - firedAt.x, at.y - firedAt.y) < settleRadius) return;
+        firedAt = null;
+      }
+      if (key === current) return;
+      clear();
+      current = key;
+      if (key === null) return;
+      const armed = key;
+      timer = setTimeout(() => {
+        timer = null;
+        current = null;
+        firedAt = lastAt;
+        opts.onOpen(armed);
+      }, opts.delayMs);
+    },
+    cancel() {
+      clear();
+      current = null;
+      firedAt = null;
+    },
+  };
+}
