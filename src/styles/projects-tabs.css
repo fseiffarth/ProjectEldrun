@@ -2246,6 +2246,19 @@
    caller's chrome class and owns position + z, so a chrome class with its own
    in-flow positioning (e.g. .tab-new-menu) still layers correctly — call
    sites must not inline a z-index. */
+/* The project pill's menu: height-capped inline to the room below the pill,
+   scrolled by an inner wrapper rather than the menu itself so the absolutely
+   positioned accent wash still spans the full menu. */
+.project-pill-menu {
+  display: flex;
+  flex-direction: column;
+}
+
+.project-pill-menu-scroll {
+  min-height: 0;
+  overflow-y: auto;
+}
+
 .context-menu-catcher {
   position: fixed;
   inset: 0;

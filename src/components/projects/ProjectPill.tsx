@@ -1811,10 +1811,19 @@ export function ProjectPill({
       {/* Right-click context menu */}
       {contextMenu && createPortal(
         <div
-          className="context-menu"
-          style={{ left: contextMenu.x, top: contextMenu.y }}
+          className="context-menu project-pill-menu"
+          // Opens downward from the pill, so a long menu (remote, git, Python
+          // entries all present) ran past the window's bottom edge. Cap it to
+          // the room below the anchor; the inner wrapper scrolls, keeping the
+          // accent wash (`::before`, inset 0) covering the whole menu.
+          style={{
+            left: contextMenu.x,
+            top: contextMenu.y,
+            maxHeight: `calc(100vh - ${contextMenu.y}px - 8px)`,
+          }}
           onPointerDown={(e) => e.stopPropagation()}
         >
+          <div className="project-pill-menu-scroll">
           {/* View / inspect */}
           <div className="context-menu-group">
             <div className="context-menu-group-label">{t("pill.viewGroup")}</div>
@@ -2367,6 +2376,7 @@ export function ProjectPill({
             >
               {t("pill.deleteProjectEllipsis")}
             </button>
+          </div>
           </div>
         </div>,
         document.body,
