@@ -192,6 +192,21 @@ missing capability — is the project's dominant risk.
      - Builds and installs only. It never launches or stops Eldrun; a running
        frozen window keeps its old inode, and the completion notification is
        what says to relaunch.
+     - **Since 2026-09-13/14 it freezes the commit, not the tree** (`374c650`,
+       `0c449ca`, `af6f0c9`, `5d1389b`): `package-dev.sh --head` checks `HEAD`
+       out into the detached worktree `target/freeze-tree` (node_modules
+       symlinked, kept out of `git clean`; cargo target dir shared) with its own
+       git environment, so a hook's inherited `GIT_DIR`/`GIT_INDEX_FILE` cannot
+       point the checkout at the main tree, and it falls back to a plain build
+       when inotify is out of watches. From an agent tab it builds and stops;
+       `start-eldrun-dev-build.sh` adopts `target/release/eldrun` on its `.frozen`
+       record (`2aa8f34`). The "dirty tree" signature and "LAST tree" wording
+       above predate this; AGENTS.md holds the current contract.
+     - [ ] 🖐️ Manual test — with uncommitted edits in the tree, commit an
+       unrelated file: the frozen binary's version names the commit without
+       "+local", and the uncommitted edits are not in it.
+       - [ ] ✅ Works
+       - [ ] ❌ Doesn't work
      - [ ] 🖐️ Manual test — commit twice in quick succession: expect one
        "rebuilding the frozen snapshot" line per commit, a single build in
        `~/.local/share/eldrun/package-dev-auto.log` with a second pass at the

@@ -462,6 +462,18 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
         left out deliberately rather than forgotten — it is the one part that
         reaches the network unasked.
 
+- [~] **31ae — Every phone section glyph asks for emoji presentation** (2026-09-14;
+  ✅ code-complete, tests passing, ⚠️ phone QA pending after a PWA rebuild,
+  `1e7f9fb`). The tab bar drew Projects and Calendar in colour but To-do and
+  Mail as thin grey line art: ☑ and ✉ exist as text symbols, so phones took them
+  from a text font. One `SECTION_GLYPH` table (`mobile-web/src/glyphs.ts`),
+  shared by the tab bar and Home's alert list, appends U+FE0F to all four; a
+  test (`MobileSectionGlyphs`) guards the invisible selector.
+      - [ ] **Manual QA:** on the phone all four tab-bar icons and the Home alert
+        rows are colour emoji, none grey outline.
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+
 - [~] **31ad — `eldrun-send`: files from agent terminals to the phone** (2026-09-14;
   implemented, pending live QA). See `docs/mobile_send_plan.md`. Local and
   container tabs get an installed command, scoped root env, and read-only

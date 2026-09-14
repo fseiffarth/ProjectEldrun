@@ -1059,7 +1059,8 @@ unchanged; the new agents are additive.
         target dropped, chained `chainLink`), `PromptChart` (day/week/month
         switch and Today; a press without movement is not a drop; draft →
         future schedules at the snapped minute; draft → now band and left of
-        the now line send; rule → strip unschedules; sent → strip collects; a
+        the now line send; rule → strip unschedules; sent → strip ~~collects~~ writes nothing (since
+        2026-09-13, see follow-up below); a
         cancel or a release over nothing writes nothing; port drag links two
         cards; the agent picker on a draft / rule / chained card writes the
         three rows, upsert before delete), `AgentSchedulesView` (queued cards
@@ -1076,6 +1077,29 @@ unchanged; the new agents are additive.
         card (rule moved to the other tab's ◷), on a chained card (the link's
         target). Month view: a day's lamps open the day. ◀ shows yesterday's
         sent cards on the past side.
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+    - **Follow-ups (2026-09-13/14), not live-tested.** (1) `c24ee4c`: a sent
+      card is history — no drag starts on it and every drop zone refuses it
+      (the strip's "collect again" drop is gone; the card's button stays); sent
+      cards wear the past band's grey, queued cards a dashed border; the
+      undefined `--radius-md` token (square corners) points at `--radius`; lane
+      height fits a three-line card and the queue column never clips; ports sit
+      on left/right edges and links bend horizontally. (2) `5e8b2c8`: the past
+      band, grid, now line and drop band are drawn in layers beside the
+      scrolling body so they span its full height, with a sticky NOW axis; lanes
+      pack newest first; Day/Week fold one session's sent prompts into one
+      `PromptSessionCard` with a tick per prompt; bare slash commands and
+      `/rename`/`/model` are not adopted. (3) `fad5a09`: Ctrl + wheel steps
+      month ⇄ week ⇄ day around the day under the pointer (non-passive
+      listener, trackpad deltas accumulate); instants are written by
+      `formatTimelineInstant` in the app's language and 12/24 h setting.
+      - [x] 🤖 Automated test — `PromptChart`, `AgentPromptTimeline`
+      - [ ] 🖐️ Manual test — try to drag a sent card: nothing moves. Scroll a
+        busy Day view down: the now line and NOW label stay full-height and
+        visible. A session with five sent prompts shows one card with five
+        ticks. Ctrl + wheel over the timeline changes the view (the page does
+        not zoom). Switch Settings to 12 h → card times follow.
         - [ ] ✅ Works
         - [ ] ❌ Doesn't work
 
@@ -1268,5 +1292,21 @@ unchanged; the new agents are additive.
       new version, and a tab opened afterwards runs it. Confirm a shell tab's
       view of `~/.local/bin` is unchanged and that `~/.nvm` (if present) is
       still read-only from the agent tab.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+837. **Meta's Muse Code joins the agent registry.** `muse` installs from Meta's
+    own one-liner into `~/.local/bin` (verified against `dev.meta.ai/install.sh`);
+    no Windows installer, so Windows gets the docs link. Launch-only like Kimi and
+    Qoder: a Muse tab does not restore and cannot be scheduled — its resume
+    (`muse resume --last`) and one-shot (`muse exec`) modes are documented only
+    by third parties, and `WARMUPS` takes a documented recipe or nothing. Files:
+    `commands/agents.rs`, `components/tabs/newTabItems.ts`, `lib/usageMetrics.ts`.
+    Implemented 2026-09-14 (`b011bb6`), **not live-tested; backend change.**
+    - [x] 🤖 Automated test — `CustomAgents`
+    - [ ] 🖐️ Manual test — Agents panel: Muse Code shows an install card; the
+      one-click install opens a tab and puts `muse` in `~/.local/bin`; the new-tab
+      menu then offers Muse and it launches. Relaunch Eldrun → the Muse tab is not
+      resumed (expected).
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work

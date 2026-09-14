@@ -178,3 +178,19 @@ the invariants that make it worth having: [`docs/context/caldav.md`](../docs/con
       connecting the VPN syncs it within seconds.
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work
+
+839. **A new event's end follows its start, an hour later.** Moving a new
+    event's start left its end where the draft put it, so an event dragged to
+    the afternoon ended in the morning and was refused on save. On the desktop
+    `EventDialog` and the phone's editor (`mobile-web/src/screens/Calendar.tsx`)
+    alike, a new timed event carries its end one hour past the start —
+    wall-clock math that rolls past midnight and month ends — until the end is
+    set by hand. Existing and all-day events are unchanged. Implemented
+    2026-09-14 (`78e706a`), **not live-tested; the phone needs a PWA rebuild.**
+    - [x] 🤖 Automated test — `MobileCalendarDates` (roll-over)
+    - [ ] 🖐️ Manual test — new event, move the start to 15:00 → end reads 16:00;
+      set the end to 17:30 by hand, move the start again → end stays 17:30. A
+      start at 23:30 on the 31st ends 00:30 on the 1st. Editing an existing event
+      does not move its end. Repeat on the phone.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work

@@ -844,3 +844,26 @@ screen is not.*
   switch files with autosave pending, and confirm its final bytes; edit multiple
   TeX children and compile from another child; recompile a PDF while scrolled and
   zoomed, then check restored position, thumbnails, and search results.
+
+836. **A rejected PDF load leaves no Worker behind; the memory report counts
+    threads.** `pdfjs.getDocument()` spawns a Worker per document and only
+    `loadingTask.destroy()` ends it; every caller let a rejection propagate, so
+    each failed load left an unreferenced ~18 MB JS VM. A LaTeX build rewriting
+    the PDF while the viewer retried a truncated read is how the main window
+    reached 303 `WebCore: Worker` threads at 4.7 GB (a crashed renderer: 575 at
+    8.7 GB). `lib/viewers/pdfLoad.ts` is now the one way a PDF opens — it
+    destroys the task on rejection and is the single place `workerSrc` is set
+    (viewer, deck, present window, TeX hover preview). The renderer memory
+    report now prints `/proc/<pid>/status`'s `Threads:` (Linux only), which is
+    what tells a leaked Worker from a canvas. Files: `lib/viewers/pdfLoad.ts`,
+    `components/embed/{pdf,deck}/…`, `lib/viewers/texPreview.ts`,
+    `lib/rendererWatchdog.ts`, `sysstat.rs`, `commands/debug.rs`. Implemented
+    2026-09-08 (`7c06db6`, `a3b5b58`), **not live-tested; thread count needs a
+    backend restart.**
+    - [x] 🤖 Automated test — `PdfLoad` (destroy on rejection),
+      `RendererWatchdog` (threads line only when present)
+    - [ ] 🖐️ Manual test — open a TeX document's PDF and compile ten times while
+      it is visible; the renderer memory report's thread count stays flat
+      (compare `grep Threads /proc/<renderer pid>/status` before and after).
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
