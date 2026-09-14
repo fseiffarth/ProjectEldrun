@@ -75,9 +75,11 @@ if [ "$MODE" = head ]; then
   else
     git -C "$SRC" checkout --quiet --detach --force "$HEAD_SHA"
     # Files a newer commit deleted are gone with the checkout; this clears
-    # anything untracked and unignored that an older one left behind. Ignored
-    # paths — dist/, mobile-dist/, the node_modules link — stay.
-    git -C "$SRC" clean -fdq
+    # anything untracked and unignored that an older one left behind. dist/
+    # and mobile-dist/ are ignored and stay; the node_modules symlink is not
+    # (`node_modules/` in .gitignore matches a directory, not a link), so it is
+    # excluded by name rather than deleted and re-linked on every freeze.
+    git -C "$SRC" clean -fdq -e node_modules
   fi
   ln -sfn "$ROOT/node_modules" "$SRC/node_modules"
 
