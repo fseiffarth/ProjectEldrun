@@ -17,7 +17,6 @@ import {
   printSequence,
   thumbSizePx,
   contentBoxCm,
-  printableCssCm,
   rasterScaleFor,
   loadPrintOptions,
   savePrintOptions,
@@ -169,20 +168,15 @@ describe("sheet geometry", () => {
     // of flow and pre-constrained to the swapped printable box.
     const css = buildOptionsCss(withOpts({ paper: "A4", margin: "none" }), true);
     expect(css).toContain(".print-page.eldrun-rot-90>img,.print-page.eldrun-rot-270>img");
-    expect(css).toContain("max-width:29.7cm;max-height:21cm");
+    // Read off the sheet in container units: a box stated in centimetres would
+    // overflow the engine's page box exactly as the cm-sized sheet did.
+    expect(css).toContain("max-width:100cqh;max-height:100cqw");
+    expect(css).toContain("container-type:size");
     expect(css).toContain("rotate(90deg)");
     expect(css).toContain("rotate(270deg)");
     expect(css).toContain(".print-page.eldrun-rot-180>img{transform:rotate(180deg)}");
   });
 
-  it("states the printable box in the zoomed document's own centimetres", () => {
-    // Scale is `zoom` on the body, so a rule under it lands on paper multiplied
-    // by the zoom: the sheet is divided by it first, the margins are not.
-    expect(printableCssCm(withOpts({ margin: "none" }))).toEqual([21, 29.7]);
-    expect(printableCssCm(withOpts({ margin: "none", scale: 50 }))).toEqual([42, 59.4]);
-    // 21/0.5 − 2×2.54 = 36.92; on paper that is 21 − 2×2.54×0.5 = 18.46cm.
-    expect(printableCssCm(withOpts({ margin: "normal", scale: 50 }))).toEqual([36.92, 54.32]);
-  });
 });
 
 describe("buildOptionsCss", () => {
@@ -226,7 +220,8 @@ describe("buildOptionsCss", () => {
       withOpts({ grayscale: true, background: false, pageNumbers: true }),
     );
     expect(on).toContain("body{filter:grayscale(1)}");
-    expect(on).toContain("body *{background:transparent!important");
+    // The sheet of a paged document is paper on screen and keeps its white.
+    expect(on).toContain("body *:not(.print-page){background:transparent!important");
     expect(on).toContain(".print-page::after{content:attr(data-page)");
   });
 
@@ -246,13 +241,40 @@ describe("a document made of sheets", () => {
 
   it("gives every sheet the whole page box to fill", () => {
     const css = paged();
-    // Just under A4 tall (a rounding spill would print a blank sheet between
-    // every page), and the image capped on BOTH axes so it fits the box.
-    expect(css).toContain("height:29.65cm");
+    // The page box is the ENGINE's, resolved through a 100% chain from the root:
+    // a sheet sized from the paper (29.65cm) overflowed WebKitGTK's 27.84cm page
+    // box and printed a blank sheet after every page. The image is capped on
+    // BOTH axes so it fits the box.
+    expect(css).toContain("html,body{height:100%}");
+    expect(css).toContain(".print-page{position:relative;box-sizing:border-box;height:100%;");
+    // No centimetre height on the sheet outside the screen-only preview rules.
+    const printOnly = css.replace(/@media screen\{.*?\}\}/g, "");
+    expect(printOnly).not.toMatch(/\.print-page\{[^}]*height:\d+(\.\d+)?cm/);
+    expect(css).not.toContain("100vh");
     expect(css).toContain(".print-page>img{width:auto;height:auto;max-width:100%;max-height:100%}");
     expect(css).toContain("align-items:center");
     // Sized on neither axis: an A1 page fitted onto A4 keeps its aspect.
     expect(css).not.toContain(".print-page>img{width:100%");
+  });
+
+  it("scales the image inside the sheet, never the sheet", () => {
+    // `zoom` on the body would scale the box the sheet's 100% resolves against;
+    // the printer-dialog scale is the image's cap instead, on both axes and in
+    // the turned rule too.
+    const css = paged({ scale: 50 });
+    expect(css).toContain("body{zoom:1}");
+    expect(css).toContain("max-width:50%;max-height:50%");
+    expect(css).toContain("max-width:50cqh;max-height:50cqw");
+  });
+
+  it("shows the sheets as separate pieces of paper on screen", () => {
+    // Each sheet is true paper size with a gap and its own shadow; the body is
+    // no longer the one white column a flowing document renders as.
+    const css = paged();
+    expect(css).toContain("@media screen{html{padding-bottom:0}html,body{height:auto}");
+    expect(css).toContain("body{width:21cm;min-height:0;background:transparent;box-shadow:none}");
+    expect(css).toContain(".print-page{height:29.7cm;margin:0 auto 18px;background:#fff;");
+    expect(paged({ orientation: "landscape" })).toContain(".print-page{height:21cm;margin:0 auto 18px");
   });
 
   it("prints edge to edge by default — the sheet carries its own margins", () => {

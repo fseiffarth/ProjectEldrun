@@ -96,26 +96,6 @@ export function contentBoxCm(opts: PrintOptions): [number, number] {
 }
 
 /**
- * The printable box in **CSS centimetres inside the print document**, which is
- * what a rule living in the zoomed body has to be written in.
- *
- * Scale is `zoom` on the body, so every length below it lands on paper
- * multiplied by the zoom factor: the sheet is therefore divided by it first
- * (exactly as the on-screen sheet is), while the margins are not — a printer's
- * scale shrinks the content and leaves the paper's margins where they are. At
- * 100% this is `contentBoxCm`.
- */
-export function printableCssCm(opts: PrintOptions): [number, number] {
-  const [w, h] = pageBoxCm(opts);
-  const m = MARGIN_CM[opts.margin] ?? MARGIN_CM.normal;
-  const zoom = clampScale(opts.scale) / 100;
-  return [
-    round2(Math.max(1, w / zoom - 2 * m)),
-    round2(Math.max(1, h / zoom - 2 * m)),
-  ];
-}
-
-/**
  * Thumbnail box in px for the strip, in the sheet's own proportions — so a
  * landscape sheet gets a landscape card rather than an upright one. Height is
  * fixed so the strip keeps a single row height; the width follows the aspect.
@@ -189,7 +169,9 @@ export function printSequence(pages: PageList, opts: PrintOptions): PageList {
  * stylesheets below set `body{padding}`; a bare `@page` margin prints
  * edge-to-edge). On screen the sheet must stay true size while the content
  * scales inside it (that is what a printer's scale does), so the sheet box is
- * divided by the zoom factor, which then multiplies it back.
+ * divided by the zoom factor, which then multiplies it back. That is the
+ * flowing document's arrangement; a paged one takes its page box from the
+ * engine and scales the image instead (see the paged block).
  *
  * `paged` says the document is built out of `.print-page` sheets (the PDF and
  * image viewers) rather than flowing text, which changes where the margins live
@@ -198,10 +180,10 @@ export function printSequence(pages: PageList, opts: PrintOptions): PageList {
 export function buildOptionsCss(opts: PrintOptions, paged = false): string {
   const [w, h] = pageBoxCm(opts);
   const pad = MARGIN_CM[opts.margin] ?? MARGIN_CM.normal;
-  const zoom = clampScale(opts.scale) / 100;
+  const scale = clampScale(opts.scale);
+  const zoom = scale / 100;
   const sheetW = round2(w / zoom);
   const sheetH = round2(h / zoom);
-  const [pw, ph] = printableCssCm(opts);
 
   const css = [
     `@page{size:${w}cm ${h}cm;margin:0}`,
@@ -220,10 +202,12 @@ export function buildOptionsCss(opts: PrintOptions, paged = false): string {
   if (opts.background) {
     css.push(`body,body *{-webkit-print-color-adjust:exact;print-color-adjust:exact}`);
   } else {
-    // Scoped to body's descendants so the sheet itself keeps its white/shadow.
+    // Scoped to body's descendants so the sheet itself keeps its white/shadow —
+    // and a `.print-page` IS a sheet (a paged document's paper on screen), so it
+    // keeps its own too.
     css.push(
-      `body *{background:transparent!important;background-image:none!important;` +
-        `box-shadow:none!important}`,
+      `body *:not(.print-page){background:transparent!important;` +
+        `background-image:none!important;box-shadow:none!important}`,
     );
   }
 
@@ -235,6 +219,19 @@ export function buildOptionsCss(opts: PrintOptions, paged = false): string {
     // and left standing at the top of the sheet, so an A4 page came out around
     // three quarters of A4 with a band of white under it.
     //
+    // The page box is taken from the ENGINE, never computed from the paper:
+    // `html,body{height:100%}` resolves against the page box in print, and the
+    // sheet is 100% of that. It used to be `<paper height − 0.05cm>`, and that
+    // printed every second page BLANK: measured headlessly (an offscreen
+    // WebKitGTK 2.52 WebView printing to PDF; A4; 0, 6.35 and 12.7 mm printer
+    // margins), the page box is 27.84 cm of CSS height for 29.7 cm of paper — WebKitGTK hands
+    // WebCore the paper in points and lays out at 1.25× (its shrink-to-fit
+    // minimum), so a CSS centimetre lands on paper as 1.066 cm and a sheet sized
+    // from the paper always overflows it by ~2 cm, spilling into a blank sheet
+    // after every page. Three sheets printed six pages; at 100% they print three.
+    // `100vh` is NOT an alternative — it resolves to 0 in this engine's print
+    // layout (measured in the same run).
+    //
     // The margins cannot be body padding here the way they are for a flowing
     // document: in paged media the block-direction padding of a fragmented box is
     // applied to its first and last fragment only, so body padding indents the
@@ -242,22 +239,30 @@ export function buildOptionsCss(opts: PrintOptions, paged = false): string {
     // printing flush to the paper edge. Padding on the sheet element repeats on
     // every sheet, each one being a box of its own.
     //
-    // The sheet is a hair shorter than the paper so that a rounding error in the
-    // cm→device conversion cannot spill each sheet into a blank following page.
-    const sheetBoxH = round2(Math.max(1, sheetH - 0.05));
+    // Scale is the image's cap, not `zoom` on the body: a zoomed body would make
+    // the sheet's 100% mean 100% of a scaled box, and at `margin: none` the old
+    // zoom changed nothing at all (the image was capped by the sheet, which zoom
+    // multiplied straight back to paper size). An image capped at `scale%` of the
+    // printable box prints at that fraction of it, which is what a printer's
+    // scale does — and the preview shows the same fraction, since the sheet on
+    // screen is the same box at the paper's true size.
     css.push(
-      `.print-page{position:relative;box-sizing:border-box;height:${sheetBoxH}cm;` +
+      `html,body{height:100%}body{zoom:1}` +
+        `.print-page{position:relative;box-sizing:border-box;height:100%;` +
         `padding:${pad}cm;display:flex;align-items:center;justify-content:center;` +
-        `overflow:hidden}` +
+        `overflow:hidden;container-type:size}` +
         // Capped on BOTH axes, sized on neither: the binding axis decides, so the
         // page prints as large as its margins allow whatever its aspect is.
-        `.print-page>img{width:auto;height:auto;max-width:100%;max-height:100%}` +
-        // Screen-only: now that a sheet is exactly one page, the preview is one
-        // unbroken white column and nothing shows where the paper ends — which is
-        // the one thing this preview exists to answer. Drawn as a pseudo-element
-        // (::after is the page number) so it costs no layout height.
-        `@media screen{.print-page+.print-page::before{content:"";position:absolute;` +
-        `left:0;right:0;top:0;border-top:1px dashed rgba(0,0,0,.2)}}`,
+        `.print-page>img{width:auto;height:auto;max-width:${scale}%;max-height:${scale}%}` +
+        // Screen-only: the preview is a stack of paper sheets on the backdrop, each
+        // at the paper's true size with a gap and its own shadow — so where one
+        // page ends and the next begins is visible, which is the one thing this
+        // preview exists to answer. The body loses the single white column it is
+        // for a flowing document; the sheets carry the paper themselves.
+        `@media screen{html{padding-bottom:0}html,body{height:auto}` +
+        `body{width:${w}cm;min-height:0;background:transparent;box-shadow:none}` +
+        `.print-page{height:${h}cm;margin:0 auto 18px;background:#fff;` +
+        `box-shadow:0 2px 12px rgba(0,0,0,.45)}}`,
     );
 
     // Per-page rotation (classes stamped on the page elements by printDocument;
@@ -265,10 +270,14 @@ export function buildOptionsCss(opts: PrintOptions, paged = false): string {
     // awkward one: `transform` does not change the layout box, so a rotated image
     // would reserve its *unrotated* size and overflow the sheet. It is therefore
     // centred out of flow inside the sheet and pre-constrained to the *swapped*
-    // printable box — after the turn its bounding box is exactly the printable area.
+    // printable box — after the turn its bounding box is exactly the printable
+    // area. The swapped box is read off the sheet itself in container units
+    // (`cqh` for the width, `cqw` for the height — the sheet is a size container
+    // for exactly this), so it follows the engine's page box the way the sheet
+    // does; a box stated in centimetres would overflow it by the same ~2 cm.
     css.push(
       `.print-page.eldrun-rot-90>img,.print-page.eldrun-rot-270>img{position:absolute;` +
-        `left:50%;top:50%;width:auto;height:auto;max-width:${ph}cm;max-height:${pw}cm}` +
+        `left:50%;top:50%;width:auto;height:auto;max-width:${scale}cqh;max-height:${scale}cqw}` +
         `.print-page.eldrun-rot-90>img{transform:translate(-50%,-50%) rotate(90deg)}` +
         `.print-page.eldrun-rot-270>img{transform:translate(-50%,-50%) rotate(270deg)}` +
         `.print-page.eldrun-rot-180>img{transform:rotate(180deg)}`,
