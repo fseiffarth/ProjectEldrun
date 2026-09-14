@@ -58,6 +58,25 @@ const TAKEOVER_ATTR = "data-eldrun-scrollbar";
  * replaces the flag, which is exactly the case that would double up.
  */
 const INSTALL_KEY = "__eldrunCustomScrollbars";
+/**
+ * How long a container is followed frame by frame after a motion starts on an
+ * ancestor, if no end event ever retires it. Well past the app's longest
+ * transition (--transition-slow, 240ms); an element removed mid-motion fires
+ * no end event at all, and this is what stops following it.
+ */
+const MOTION_FOLLOW_CAP_MS = 2000;
+
+/**
+ * Does a transition on this property move or resize the element's box (and so
+ * every container inside it)? Colour, opacity and the like do not, and the app
+ * runs those on hover all day long — following them would be per-frame work for
+ * nothing. `all` may be anything, so it counts.
+ */
+export function movesBox(propertyName: string): boolean {
+  return /^(all|transform|translate|scale|rotate|width|height|top|left|right|bottom|inset(-.*)?|margin(-.*)?|padding(-.*)?|flex(-.*)?|gap|grid-.*|font-size|line-height)$/.test(
+    propertyName,
+  );
+}
 
 export interface TrackMetrics {
   /** Full scrollable extent (`scrollHeight` / `scrollWidth`). */
@@ -198,6 +217,13 @@ interface Entry {
   el: HTMLElement;
   vertical: HTMLElement | null;
   horizontal: HTMLElement | null;
+  /**
+   * Which axes the container's overflow style lets scroll at all. A thumb is
+   * made only once that axis actually overflows (see `applyScroll`), so a
+   * container whose content grows after it registered still gets one.
+   */
+  axisV: boolean;
+  axisH: boolean;
   /** Viewport rect of the container, refreshed only by a geometry pass. */
   top: number;
   left: number;
@@ -238,6 +264,16 @@ export function installCustomScrollbars(): () => void {
   let scrollQueued = false;
   const dirtyScroll = new Set<HTMLElement>();
   let rafHandle = 0;
+  /**
+   * Elements whose box is in motion right now — a `transform`/inset/size
+   * transition or an animation is running on them — each with the time after
+   * which it is dropped whether or not its end event ever arrives (an element
+   * unmounted mid-slide fires none). While the set is non-empty, every frame
+   * re-measures the containers inside those elements so their thumbs ride the
+   * motion instead of standing where one mid-flight measurement left them.
+   */
+  const movers = new Map<Element, { until: number; running: Set<string> }>();
+  let followHandle = 0;
 
   // ── Registration ──────────────────────────────────────────────────────────
 
@@ -261,8 +297,10 @@ export function installCustomScrollbars(): () => void {
     if (entries.has(el)) return;
     const style = getComputedStyle(el);
     if (optedOut(style)) return;
-    const canV = scrollableAxis(style.overflowY) && el.scrollHeight - el.clientHeight > 1;
-    const canH = scrollableAxis(style.overflowX) && el.scrollWidth - el.clientWidth > 1;
+    const axisV = scrollableAxis(style.overflowY);
+    const axisH = scrollableAxis(style.overflowX);
+    const canV = axisV && el.scrollHeight - el.clientHeight > 1;
+    const canH = axisH && el.scrollWidth - el.clientWidth > 1;
     if (!canV && !canH) return;
     el.setAttribute(TAKEOVER_ATTR, "");
     // The attribute's own rule carries `!important`, which is what keeps a
@@ -274,6 +312,8 @@ export function installCustomScrollbars(): () => void {
       el,
       vertical: canV ? makeThumb("vertical", el) : null,
       horizontal: canH ? makeThumb("horizontal", el) : null,
+      axisV,
+      axisH,
       top: 0,
       left: 0,
       width: 0,
@@ -323,6 +363,19 @@ export function installCustomScrollbars(): () => void {
 
   function applyScroll(entry: Entry): void {
     const { el } = entry;
+    // A container registers with a thumb per axis that overflowed AT THAT
+    // MOMENT. The file tree's list is the case that broke: first painted with
+    // a few top-level rows and long names, it overflowed sideways only, so it
+    // got a horizontal thumb and no vertical one — and every later scan
+    // skipped it as already registered, so expanding folders never earned it
+    // a vertical bar. Which axis was over at registration is a matter of
+    // timing, so the bar showed on some opens and stayed missing on others.
+    if (!entry.vertical && entry.axisV && el.scrollHeight - el.clientHeight > 1) {
+      entry.vertical = makeThumb("vertical", el);
+    }
+    if (!entry.horizontal && entry.axisH && el.scrollWidth - el.clientWidth > 1) {
+      entry.horizontal = makeThumb("horizontal", el);
+    }
     if (entry.vertical) {
       const geom = thumbGeometry({
         scrollSize: el.scrollHeight,
@@ -475,6 +528,49 @@ export function installCustomScrollbars(): () => void {
     }
   }
 
+  /**
+   * Re-measure only the containers inside `roots` — the per-frame pass while
+   * something is in motion. The full pass's clip cache is per call, so the
+   * chains above these containers are walked once per frame, not once per thumb.
+   */
+  function measureWithin(roots: Iterable<Element>): void {
+    const clipCache = new Map<Element, Box>();
+    for (const entry of entries.values()) {
+      let inside = false;
+      for (const root of roots) {
+        if (root === entry.el || root.contains(entry.el)) {
+          inside = true;
+          break;
+        }
+      }
+      if (!inside) continue;
+      const rect = entry.el.getBoundingClientRect();
+      entry.top = rect.top;
+      entry.left = rect.left;
+      entry.width = rect.width;
+      entry.height = rect.height;
+      entry.clip = ancestorClip(entry.el, clipCache);
+      entry.visible = isReachable(entry);
+      applyScroll(entry);
+    }
+  }
+
+  /** One frame of following whatever is in motion; re-arms itself while anything is. */
+  function followMotion(): void {
+    followHandle = 0;
+    const now = performance.now();
+    for (const [el, mover] of movers) {
+      if (!el.isConnected || now > mover.until) movers.delete(el);
+    }
+    if (movers.size === 0 || document.hidden) {
+      movers.clear();
+      return;
+    }
+    // A queued full pass this frame measures everything anyway.
+    if (!geometryQueued) measureWithin(movers.keys());
+    followHandle = requestAnimationFrame(followMotion);
+  }
+
   function flush(): void {
     rafHandle = 0;
     if (document.hidden) {
@@ -609,18 +705,86 @@ export function installCustomScrollbars(): () => void {
   // on a `transform` transition, and a view mounted while it is still on its
   // way (the settings write that picks the view resolves mid-slide) got its
   // thumb measured at wherever the panel was that frame — a bar standing in
-  // the middle of the panel, and nothing left to re-measure it. Transitions
-  // and animations are the one geometry change no observer above reports, so
-  // their end is a geometry pass of its own. Capture: the events do not bubble
-  // past a shadow root, and a thumb's own transitions (none today) would only
-  // cost one coalesced rAF.
-  const onMotionEnd = () => queueGeometry();
+  // the middle of the panel. Transitions and animations are the one geometry
+  // change no observer above reports. Their end is a full geometry pass, and
+  // that alone still showed as a two-step open: the thumb painted wherever the
+  // slide had reached when the tree mounted, hung there for the rest of the
+  // slide, then snapped into place. So for as long as a box-moving transition
+  // or an animation runs, the containers inside it are re-measured every frame
+  // and the thumb rides the panel in. Per frame, but only for those containers
+  // and only for the slide's 240ms — a terminal scrolling is not in here.
+  // Capture: the events do not bubble past a shadow root, and a thumb's own
+  // transitions (none today) would only cost one coalesced rAF.
+  // What one motion event is about: which element, and which of its
+  // transitions/animations. Duck-typed — jsdom has no `TransitionEvent` — and
+  // an animation is named rather than asked what it animates, so it is followed
+  // whatever it moves. A pseudo-element's motion (the panel's drop glow, a
+  // banner) has no container inside it to follow; a non-box property (colour,
+  // opacity — the hover transitions the app runs all day) moves none either.
+  const motionOf = (e: Event): { target: Element; key: string } | null => {
+    const target = e.target;
+    if (!(target instanceof Element) || target === document.documentElement) return null;
+    const { propertyName, animationName, pseudoElement } = e as Partial<
+      TransitionEvent & AnimationEvent
+    >;
+    if (pseudoElement) return null;
+    if (typeof propertyName === "string") {
+      return movesBox(propertyName) ? { target, key: propertyName } : null;
+    }
+    return { target, key: `animation:${animationName ?? ""}` };
+  };
+  const onMotionEnd = (e: Event) => {
+    const motion = motionOf(e);
+    if (motion) {
+      const mover = movers.get(motion.target);
+      // Retired only once the last of its box-moving motions has ended: a
+      // colour transition finishing early must not drop the slide it rides with.
+      if (mover && (mover.running.delete(motion.key), mover.running.size === 0)) {
+        movers.delete(motion.target);
+      }
+      // Discovery, not only measurement. A container is found when nodes are
+      // ADDED under it or when it is first scrolled; a box that grew scrollable
+      // through a class flip, a width change or a resize added no node and
+      // fired no scroll, so it went unnoticed — the side panel opened with a
+      // list that plainly overflowed and no bar on it until the wheel touched
+      // it. The element that just moved is the natural place to look, and once
+      // per slide is cheap.
+      if (motion.target instanceof HTMLElement && motion.target.isConnected) {
+        scan(motion.target);
+      }
+    }
+    queueGeometry();
+  };
+  // The same gap on the two whole-window geometry changes that add no nodes.
+  const rescanAll = () => {
+    if (!document.hidden) scan(document.body);
+    queueGeometry();
+  };
+  const onMotionStart = (e: Event) => {
+    const motion = motionOf(e);
+    if (!motion) return;
+    const mover = movers.get(motion.target);
+    // The cap outlasts any motion the app runs; the end event retires it far
+    // sooner. It is what stops following an element unmounted mid-motion, which
+    // fires no end event at all.
+    const until = performance.now() + MOTION_FOLLOW_CAP_MS;
+    if (mover) {
+      mover.running.add(motion.key);
+      mover.until = until;
+    } else {
+      movers.set(motion.target, { until, running: new Set([motion.key]) });
+    }
+    if (!followHandle) followHandle = requestAnimationFrame(followMotion);
+  };
   document.addEventListener("scroll", onScroll, true);
-  window.addEventListener("resize", queueGeometry);
-  document.addEventListener("visibilitychange", queueGeometry);
+  window.addEventListener("resize", rescanAll);
+  document.addEventListener("visibilitychange", rescanAll);
+  document.addEventListener("transitionrun", onMotionStart, true);
+  document.addEventListener("animationstart", onMotionStart, true);
   document.addEventListener("transitionend", onMotionEnd, true);
   document.addEventListener("transitioncancel", onMotionEnd, true);
   document.addEventListener("animationend", onMotionEnd, true);
+  document.addEventListener("animationcancel", onMotionEnd, true);
   mutationObserver.observe(document.body, { childList: true, subtree: true });
 
   scan(document.body);
@@ -628,14 +792,19 @@ export function installCustomScrollbars(): () => void {
 
   const uninstall = () => {
     document.removeEventListener("scroll", onScroll, true);
-    window.removeEventListener("resize", queueGeometry);
-    document.removeEventListener("visibilitychange", queueGeometry);
+    window.removeEventListener("resize", rescanAll);
+    document.removeEventListener("visibilitychange", rescanAll);
+    document.removeEventListener("transitionrun", onMotionStart, true);
+    document.removeEventListener("animationstart", onMotionStart, true);
     document.removeEventListener("transitionend", onMotionEnd, true);
     document.removeEventListener("transitioncancel", onMotionEnd, true);
     document.removeEventListener("animationend", onMotionEnd, true);
+    document.removeEventListener("animationcancel", onMotionEnd, true);
     mutationObserver.disconnect();
     resizeObserver.disconnect();
     if (rafHandle) cancelAnimationFrame(rafHandle);
+    if (followHandle) cancelAnimationFrame(followHandle);
+    movers.clear();
     for (const el of [...entries.keys()]) unregister(el);
     layer.remove();
     if (host[INSTALL_KEY] === uninstall) delete host[INSTALL_KEY];

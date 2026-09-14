@@ -81,14 +81,25 @@ export function RailAgentsIcon({ className }: IconProps) {
   );
 }
 
-/** Move the panel to the other edge: a panel outline with a two-way arrow. */
-export function RailSwitchSideIcon({ className }: IconProps) {
+/**
+ * Move the panel to the other edge. A window frame with the panel filled in on
+ * the edge it sits on now and an arrow pointing at the edge it will jump to.
+ * It replaced a frame with a two-headed arrow inside, which read as
+ * "swap"/"sync" — nothing about it said "this panel, other side", and the
+ * user could not tell what the button did. Drawn for a panel on the right
+ * edge; the left edge is the same picture mirrored, so the arrow always points
+ * where the panel is going. Shared by the closed panel's rail and the open
+ * panel's header, so the two say the same thing.
+ */
+export function RailSwitchSideIcon({ side, className }: IconProps & { side: "left" | "right" }) {
   return (
     <Frame className={className}>
-      <rect x="3.5" y="4.5" width="17" height="15" rx="2" />
-      <path d="M8 12h8" />
-      <path d="M10.5 9.5L8 12l2.5 2.5" />
-      <path d="M13.5 9.5L16 12l-2.5 2.5" />
+      <g transform={side === "left" ? "matrix(-1 0 0 1 24 0)" : undefined}>
+        <rect x="3" y="4" width="18" height="16" rx="2" />
+        <rect x="15" y="4" width="6" height="16" rx="2" fill="currentColor" stroke="none" />
+        <path d="M12 12H6" />
+        <path d="M9 9l-3 3 3 3" />
+      </g>
     </Frame>
   );
 }

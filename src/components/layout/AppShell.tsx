@@ -1197,7 +1197,7 @@ export function AppShell() {
                 toggleSide();
               }}
             >
-              <RailSwitchSideIcon />
+              <RailSwitchSideIcon side={panelSide} />
             </button>
             <div className="srr-group">
               <button

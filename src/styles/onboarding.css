@@ -367,20 +367,18 @@
 }
 
 /* The side switch moves the panel to the other edge without opening it. Pinned
-   to the top of the bar, apart from the centred open-the-panel buttons, and
-   quieter at rest: it is a layout control, not a destination. The rail is
-   positioned, so the bar's own top-left is the anchor on either edge. */
+   to the top of the bar, apart from the centred open-the-panel buttons. The
+   rail is positioned, so the bar's own top-left is the anchor on either edge.
+   It takes the same resting presence as the tabs below it: it used to sit at
+   an extra 0.55 on top of the handle's own 0.8, and at that dimness with a
+   two-headed arrow for a glyph it was not detectable as a control at all —
+   the picture now says where the panel goes, and the tone lets it be seen. */
 .side-panel-reveal-rail .srh-switch {
   position: absolute;
   top: 0;
   left: 0;
   right: 0;
   border-top: none;
-  opacity: 0.55;
-}
-
-.side-panel-reveal-rail .srh-switch:hover {
-  opacity: 1;
 }
 
 /* Edge to edge across the bar: no side padding, no side borders, no corner

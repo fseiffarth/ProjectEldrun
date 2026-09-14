@@ -365,3 +365,44 @@
       it stays open (as before).
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work
+
+272. **The side switch says where the panel goes; the panel's list gets its
+    bar whatever its first paint held.** (1) "The side rail switch side button
+    is hardly detectable as switch sides" (user, 2026-09-14): the rail's switch
+    was a frame with a two-headed arrow inside at 0.55 on top of the handle's
+    own 0.8, and the open panel's header had a bare `⇄` — both read as
+    swap/sync. One shared `RailSwitchSideIcon` now draws a window frame with
+    the panel filled in on the edge it sits on and an arrow at the edge it will
+    jump to, mirrored for a left-docked panel; the rail's switch takes the
+    tabs' own resting tone, the header's lights accent on hover. (2) "Scroll
+    bar on unhide sometimes shows, sometimes keeps hidden, sometimes not at the
+    wished position" (user, 2026-09-14): two discovery gaps in
+    `lib/customScrollbar.ts`. A container got a thumb per axis that overflowed
+    *when it was found* and was then skipped by every later scan, so a file
+    tree first painted with few rows and long names had a horizontal bar and
+    never a vertical one; the missing axis's thumb is now made the moment that
+    axis overflows. And a container was found only when nodes were added under
+    it or when it was first scrolled, so one that grew scrollable through a
+    class flip, a width change or a window resize had no bar until the wheel
+    touched it; the end of a box-moving transition rescans the element that
+    moved, and a window resize or visibility change rescans the document.
+    Frontend: `components/common/EdgeRailIcons.tsx`,
+    `components/layout/{AppShell,SidePanel}.tsx`, `lib/customScrollbar.ts`,
+    `styles/{onboarding,files-panel}.css`. Implemented 2026-09-14, **not
+    live-tested**.
+    - [x] 🤖 Automated test — `SidePanelFlip`, `CustomScrollbar` (discovering
+      late overflow)
+    - [ ] 🖐️ Manual test — unpin the side panel. The topmost rail icon shows a
+      window with a filled strip on the panel's edge and an arrow pointing the
+      other way; it is as visible as the tabs below it. Click it → the bar jumps
+      to the other edge and the icon mirrors. Open the panel: the header's
+      leftmost button shows the same picture. Then, on a project with a deep
+      tree: hide the panels (F9) and show them again, and hover-open the panel
+      from the rail several times → every time the file list overflows, its
+      thumb is along the panel's edge, at the list's scroll position, not
+      missing and not standing mid-panel. Expand folders until the list
+      overflows downward when it did not before → a vertical thumb appears
+      without scrolling first. Shrink the window until a list that fitted no
+      longer does → same.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work

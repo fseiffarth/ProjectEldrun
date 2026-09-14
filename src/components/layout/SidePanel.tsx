@@ -14,6 +14,7 @@ import {
 import { useActivityStore, type AttentionKind } from "../../stores/activity";
 import { resolveProjectDirectory, type FilesPanelView } from "../../types";
 import { useT } from "../../lib/i18n";
+import { RailSwitchSideIcon } from "../common/EdgeRailIcons";
 import { sidePanelViewKey, sidePanelViewPatch } from "../../lib/sidePanelView";
 import { terminalCharsPerSecond } from "../../dev/terminalOutputRate";
 import {
@@ -290,7 +291,9 @@ export function SidePanel({
             title={t(side === "left" ? "sidePanel.moveRight" : "sidePanel.moveLeft")}
             aria-label={t(side === "left" ? "sidePanel.moveRight" : "sidePanel.moveLeft")}
           >
-            ⇄
+            {/* The same picture the closed panel's rail shows for this: the panel
+                on the edge it is on, an arrow at the edge it goes to. */}
+            <RailSwitchSideIcon side={side} />
           </button>
         )}
         {onTogglePin && (
