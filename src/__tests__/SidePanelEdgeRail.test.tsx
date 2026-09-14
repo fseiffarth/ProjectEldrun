@@ -86,7 +86,8 @@ vi.mock("../stores/timer", () => ({
 vi.mock("../components/layout/HeaderBar", () => ({ HeaderBar: () => null }));
 vi.mock("../components/layout/CenterPanel", () => ({ CenterPanel: () => null }));
 vi.mock("../components/layout/SidePanel", () => ({
-  SidePanel: ({ open }: { open: boolean }) => (open ? <div data-testid="side-panel" /> : null),
+  SidePanel: ({ open }: { open: boolean }) =>
+    open ? <div data-testid="side-panel" className="side-panel" /> : null,
 }));
 // Project-scoped hosts that fetch on mount: with a project active they run
 // against the blanket `invoke` mock above and have nothing to do with the rail.
@@ -297,6 +298,67 @@ describe("side panel edge rail", () => {
         vi.advanceTimersByTime(5000);
       });
       expect(screen.queryByTestId("side-panel")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("closes a hover-open the pointer walked away from", async () => {
+    vi.useFakeTimers();
+    try {
+      await mount();
+      await act(async () => {
+        fireEvent.mouseMove(document.querySelector(".side-panel-reveal-rail")!);
+        vi.advanceTimersByTime(400);
+      });
+      expect(screen.getByTestId("side-panel")).toBeTruthy();
+      // The pointer left while the panel was still sliding in: it never enters
+      // the panel, so the panel's own mouseleave can never close it.
+      await act(async () => {
+        fireEvent.mouseMove(document.body, { clientX: 10, clientY: 10 });
+        vi.advanceTimersByTime(450);
+      });
+      expect(screen.queryByTestId("side-panel")).toBeNull();
+      // And the rail is back for the next approach.
+      expect(screen.getByTitle("Show the side panel")).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("hands a hover-open the pointer settled into over to the panel's own enter/leave", async () => {
+    vi.useFakeTimers();
+    try {
+      await mount();
+      await act(async () => {
+        fireEvent.mouseMove(document.querySelector(".side-panel-reveal-rail")!);
+        vi.advanceTimersByTime(400);
+      });
+      await act(async () => {
+        fireEvent.mouseMove(screen.getByTestId("side-panel"), { clientX: 900, clientY: 300 });
+        // From here on only the panel's mouseleave closes it — a move elsewhere
+        // (a portaled menu opened from the panel lands there too) does not.
+        fireEvent.mouseMove(document.body, { clientX: 10, clientY: 10 });
+        vi.advanceTimersByTime(5000);
+      });
+      expect(screen.getByTestId("side-panel")).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("leaves a click-open alone: it was opened to be looked at", async () => {
+    vi.useFakeTimers();
+    try {
+      await mount();
+      await act(async () => {
+        fireEvent.pointerDown(screen.getByTitle("Show the Agents panel"), { button: 0 });
+      });
+      await act(async () => {
+        fireEvent.mouseMove(document.body, { clientX: 10, clientY: 10 });
+        vi.advanceTimersByTime(5000);
+      });
+      expect(screen.getByTestId("side-panel")).toBeTruthy();
     } finally {
       vi.useRealTimers();
     }

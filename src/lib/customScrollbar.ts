@@ -605,9 +605,22 @@ export function installCustomScrollbars(): () => void {
     queueGeometry();
   });
 
+  // A container can move without the tree changing: the side panel slides in
+  // on a `transform` transition, and a view mounted while it is still on its
+  // way (the settings write that picks the view resolves mid-slide) got its
+  // thumb measured at wherever the panel was that frame — a bar standing in
+  // the middle of the panel, and nothing left to re-measure it. Transitions
+  // and animations are the one geometry change no observer above reports, so
+  // their end is a geometry pass of its own. Capture: the events do not bubble
+  // past a shadow root, and a thumb's own transitions (none today) would only
+  // cost one coalesced rAF.
+  const onMotionEnd = () => queueGeometry();
   document.addEventListener("scroll", onScroll, true);
   window.addEventListener("resize", queueGeometry);
   document.addEventListener("visibilitychange", queueGeometry);
+  document.addEventListener("transitionend", onMotionEnd, true);
+  document.addEventListener("transitioncancel", onMotionEnd, true);
+  document.addEventListener("animationend", onMotionEnd, true);
   mutationObserver.observe(document.body, { childList: true, subtree: true });
 
   scan(document.body);
@@ -617,6 +630,9 @@ export function installCustomScrollbars(): () => void {
     document.removeEventListener("scroll", onScroll, true);
     window.removeEventListener("resize", queueGeometry);
     document.removeEventListener("visibilitychange", queueGeometry);
+    document.removeEventListener("transitionend", onMotionEnd, true);
+    document.removeEventListener("transitioncancel", onMotionEnd, true);
+    document.removeEventListener("animationend", onMotionEnd, true);
     mutationObserver.disconnect();
     resizeObserver.disconnect();
     if (rafHandle) cancelAnimationFrame(rafHandle);

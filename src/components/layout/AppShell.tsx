@@ -125,6 +125,10 @@ const DevPerfHost = import.meta.env.DEV
 // whichever of press and dwell comes first, the user gets what they pointed at.
 // Crossing a tab on the way to another restarts the dwell for the new one.
 const RAIL_DWELL_MS = 400;
+// How long a hover-opened panel waits for the pointer before it gives up on it
+// (see `hoverGuard`). Longer than the panel's slide (--transition-slow, 240ms)
+// so a pointer resting where the panel is about to arrive is found under it.
+const HOVER_GUARD_MS = 450;
 
 // The views the closed panel's edge rail can open it straight onto — the same
 // four the panel's own switcher leads with (`ProjectFilesView`), named from the
@@ -980,10 +984,62 @@ export function AppShell() {
     railDwellTimer.current = window.setTimeout(() => {
       railDwellTimer.current = null;
       railDwellKey.current = null;
+      hoverGuard.current = { x: NaN, y: NaN, timer: null };
       if (view) openPanelOnView(view);
       else openPanel();
     }, RAIL_DWELL_MS);
   };
+  // A hover-open has to be able to close again. The panel closes on its own
+  // mouseleave, which only ever fires after a mouseenter — and a hover-open
+  // gives it none: the pointer is resting on the rail, the rail unmounts, and
+  // the panel takes a slide to arrive under a pointer that is not moving. A
+  // pointer that wandered off in the meantime (the dwell felt like nothing was
+  // happening) never enters, so never leaves, and the panel it opened stood
+  // open until it was hovered and left on purpose. Until the pointer's first
+  // move OVER the panel — from then on enter/leave carry it, portals included —
+  // the guard watches the document: a move elsewhere starts a check, and a
+  // check that finds the pointer off the panel closes it. Only a hover arms
+  // it: a click or the lessons event opened the panel to be looked at.
+  const hoverGuard = useRef<{ x: number; y: number; timer: number | null } | null>(null);
+  useEffect(() => {
+    // A close (by whatever path) retires the guard: the next open may be a click.
+    if (!revealPanel) {
+      hoverGuard.current = null;
+      return;
+    }
+    const guard = hoverGuard.current;
+    if (panelPinned || !guard) return;
+    const disarm = () => {
+      if (guard.timer !== null) window.clearTimeout(guard.timer);
+      guard.timer = null;
+      hoverGuard.current = null;
+      document.removeEventListener("mousemove", onMove);
+    };
+    const onMove = (event: MouseEvent) => {
+      if ((event.target as Element | null)?.closest?.(".side-panel")) {
+        disarm();
+        return;
+      }
+      guard.x = event.clientX;
+      guard.y = event.clientY;
+      if (guard.timer !== null) return;
+      guard.timer = window.setTimeout(() => {
+        guard.timer = null;
+        const under = document.elementFromPoint?.(guard.x, guard.y) ?? null;
+        // Resting where the panel has since arrived: it is being looked at, and
+        // its next move over the panel hands it to enter/leave.
+        if (under?.closest(".side-panel")) return;
+        disarm();
+        setPanelOpen(false);
+      }, HOVER_GUARD_MS);
+    };
+    document.addEventListener("mousemove", onMove);
+    return () => {
+      document.removeEventListener("mousemove", onMove);
+      if (guard.timer !== null) window.clearTimeout(guard.timer);
+      guard.timer = null;
+    };
+  }, [revealPanel, panelPinned]);
   // A dwell still pending when the panel opens (or the rail goes away with the
   // panels) has nothing left to reveal.
   useEffect(() => {

@@ -165,6 +165,41 @@ describe("side panel reveal", () => {
   });
 });
 
+describe("side panel side switch", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    clearFileViewSnapshots();
+    setupInvoke();
+    const state = {
+      projects: [ACTIVE_PROJECT],
+      activeId: "proj-1",
+      sidePanelFolderByProject: {},
+      setSidePanelFolder: vi.fn(),
+    } as unknown as ReturnType<typeof useProjectsStore>;
+    mockUseProjectsStore.mockImplementation(((selector?: (s: typeof state) => unknown) =>
+      selector ? selector(state) : state) as typeof useProjectsStore);
+  });
+
+  it("switches edges without the slide transition, then gets it back", async () => {
+    const { rerender } = render(<SidePanel open={false} side="right" />);
+    await act(async () => {});
+    expect(document.querySelector(".side-panel")!.className).not.toContain("switching");
+
+    // The frame that moves the panel: the closed resting point flips from one
+    // edge to the other, and eased that flip slid the panel across the window.
+    rerender(<SidePanel open={false} side="left" />);
+    const panel = document.querySelector(".side-panel")!;
+    expect(panel.className).toContain("left");
+    expect(panel.className).toContain("switching");
+
+    // One frame later the transition is back for the next open/close.
+    await act(async () => {
+      await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
+    });
+    expect(document.querySelector(".side-panel")!.className).not.toContain("switching");
+  });
+});
+
 describe("fileViewSnapshots store", () => {
   beforeEach(() => clearFileViewSnapshots());
 

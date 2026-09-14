@@ -93,6 +93,14 @@
   transition: none;
 }
 
+/* The frame a side switch lands on (layout/SidePanel.tsx): the closed panel's
+   resting transform flips from +100% to -100%, and eased, that flip slid the
+   panel across the whole window. Off for that one frame, it simply appears at
+   the other edge. */
+.side-panel.switching {
+  transition: none;
+}
+
 .app-body.resizing {
   transition: none;
 }

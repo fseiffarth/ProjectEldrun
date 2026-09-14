@@ -247,6 +247,22 @@ export function SidePanel({
   const panelView = viewByScope?.[viewKey] ?? lastPanelView;
   const updateSettings = useSettingsStore((s) => s.updateSettings);
 
+  // A side switch is a jump, not a slide. The closed panel rests one panel-width
+  // past its edge and eases its transform on open and close; flipping `side`
+  // changes that resting point from +100% to -100%, and the same easing carried
+  // the panel — contents and all — across the whole window on its way to the
+  // other edge. `settled` lags `side` by one frame, and while the two differ the
+  // panel wears `switching`, which turns the transition off for exactly the
+  // render that moves it. Render-derived (no ref written during render): the
+  // class is on the first frame at the new edge, and off again the frame after.
+  const [settledSide, setSettledSide] = useState(side);
+  const switching = settledSide !== side;
+  useEffect(() => {
+    if (settledSide === side) return;
+    const id = window.requestAnimationFrame(() => setSettledSide(side));
+    return () => window.cancelAnimationFrame(id);
+  }, [side, settledSide]);
+
   // Drag the left border to resize the panel; width persists in settings.
   // Pointer capture (set in onResizeStart) keeps the drag alive once the cursor
   // leaves this thin strip.
@@ -404,7 +420,7 @@ export function SidePanel({
       // Right-click → "Open in a new tab": the same file view, on that folder,
       // as a Files (Project) tab in this project's scope.
       onOpenFolderTab={(rel) => openProjectFilesTab(t, projectDir, rel)}
-      containerClassName={`side-panel${side === "left" ? " left" : ""} ${open ? "open" : ""}${resizing ? " resizing" : ""}`}
+      containerClassName={`side-panel${side === "left" ? " left" : ""} ${open ? "open" : ""}${resizing ? " resizing" : ""}${switching ? " switching" : ""}`}
       containerStyle={width ? { width } : undefined}
       containerProps={{ onMouseEnter, onMouseLeave }}
       resizeHandle={resizeHandle}

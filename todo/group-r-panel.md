@@ -320,3 +320,48 @@
       on top. Clicking any tab still opens it at once.
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work
+
+271. **The rail's hover-open is quick, lands on the right view, and can close
+    again; a side switch is a jump; the panel's scrollbar thumb sits where the
+    panel ended up.** Four faults behind "show side panel is very slow and
+    buggy" (user, 2026-09-14). (1) `updateSettings` set state only after the
+    backend's write answered, so a rail tab opening the panel on Agents opened
+    it on the *old* view first — the file tree mounted, listed and probed, then
+    was thrown away a write later — and the side switch answered its press a
+    write later too. The patch is now in state before it is on disk; the
+    backend's merged answer replaces it, a failed write rolls back. (2) The
+    app-drawn scrollbar (`lib/customScrollbar.ts`) re-measured on resize,
+    mutation and scroll but never when a *transition* moved a container: a view
+    mounted mid-slide had its thumb measured wherever the panel was that frame
+    and left there — "the scrollbar in the agents view is in the middle of the
+    side panel". `transitionend`/`transitioncancel`/`animationend` now queue a
+    geometry pass. (3) The closed panel's resting transform flips from +100%
+    to −100% on a side switch, and eased, that flip slid the panel and its
+    contents across the whole window ("side switching shows underlying view").
+    `SidePanel` wears `.switching` (transition: none) for the one frame that
+    moves it. (4) A hover-open gave the panel no mouseenter — the pointer rests
+    on the rail, the rail unmounts, the panel arrives under a pointer that is
+    not moving — so a pointer that wandered off during the slide never left it
+    either, and the panel stood open. A hover-armed guard watches the document
+    until the pointer's first move over the panel; a move elsewhere that is
+    still elsewhere 450ms later closes it. Clicks and the lessons event are not
+    guarded. Also: `CenterPanel` is memoised — it takes no props, and the shell
+    re-rendered the whole workspace under it on every hover-open and close.
+    Frontend: `stores/settings.ts`, `lib/customScrollbar.ts`,
+    `components/layout/{AppShell,SidePanel,CenterPanel}.tsx`,
+    `styles/files-panel.css`. Implemented 2026-09-14, **not live-tested**.
+    - [x] 🤖 Automated test — `SettingsPatchOptimistic`, `SidePanelEdgeRail`,
+      `SidePanelReveal` (side switch), `CustomScrollbar` (install)
+    - [ ] 🖐️ Manual test — unpin the side panel so it closes. Rest on the
+      **Agents** icon → the panel opens straight onto Agents (no flash of the
+      file tree first) and, once it has slid in, a long Agents list shows its
+      thumb along the panel's right edge, not down its middle. Rest on an icon
+      and, while the panel is still sliding in, move the pointer away into the
+      terminal → the panel closes on its own within about half a second and the
+      rail is back. Rest again and stay put → it stays open; move into it and
+      out → it closes as before. Click the side switch on the rail → the bar
+      jumps to the other edge at once, and nothing slides across the window.
+      Open the panel with a click, move the pointer away without entering it →
+      it stays open (as before).
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work

@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -75,7 +75,7 @@ interface Rect {
   height: number;
 }
 
-export function CenterPanel() {
+function CenterPanelImpl() {
   const t = useT();
   // A live local agent that was already running when Mobile access was enabled
   // must not be respawned merely to put tmux underneath it. Record eligibility
@@ -1760,3 +1760,9 @@ function SplitView(props: TreeProps & { node: Extract<LayoutNode, { type: "split
     </div>
   );
 }
+
+/** Memoised: it takes no props, so the only thing a re-render of the shell can
+ *  hand it is a re-render of the whole workspace — which the shell did on every
+ *  hover-open and hover-close of the side panel. Its own state, stores and
+ *  contexts still reach it. */
+export const CenterPanel = memo(CenterPanelImpl);

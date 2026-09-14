@@ -1,9 +1,16 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 // Read the stylesheet at test time, the way `NativeEditorMetricsCss.test.ts`
 // does: a `?raw` import yields "" under the config's `css: false`, which would
 // make every assertion below pass vacuously. Vitest runs from the repo root.
 import { readAppStylesheet } from "./cssCorpus";
-import { thumbGeometry, scrollFromDrag, clipBox, type Box, type TrackMetrics } from "../lib/customScrollbar";
+import {
+  installCustomScrollbars,
+  thumbGeometry,
+  scrollFromDrag,
+  clipBox,
+  type Box,
+  type TrackMetrics,
+} from "../lib/customScrollbar";
 
 /**
  * The scrollbar's arithmetic, which is the whole of what can be wrong about it
@@ -167,6 +174,30 @@ describe("clipBox", () => {
  * exactly how the two-scrollbars bug survived a round of fixing, so the rule is
  * asserted rather than left to memory.
  */
+describe("installCustomScrollbars", () => {
+  it("re-measures when a transition or animation ends, and stops on uninstall", () => {
+    // A container can move with no DOM mutation, no resize and no scroll: the
+    // side panel slides in on a transform transition, and a thumb measured
+    // mid-slide stood in the middle of the panel with nothing to re-measure it.
+    // jsdom lays nothing out, so what is checkable is that the pass is wired.
+    const listened = new Set<string>();
+    const added = vi.spyOn(document, "addEventListener");
+    const removed = vi.spyOn(document, "removeEventListener");
+    const uninstall = installCustomScrollbars();
+    for (const call of added.mock.calls) if (call[2] === true) listened.add(call[0]);
+    expect([...listened]).toEqual(
+      expect.arrayContaining(["transitionend", "transitioncancel", "animationend"]),
+    );
+    uninstall();
+    const dropped = removed.mock.calls.filter((c) => c[2] === true).map((c) => c[0]);
+    expect(dropped).toEqual(
+      expect.arrayContaining(["transitionend", "transitioncancel", "animationend"]),
+    );
+    added.mockRestore();
+    removed.mockRestore();
+  });
+});
+
 describe("stylesheet scrollbar invariants", () => {
   // Comments are prose about scrollbars, including the values banned below.
   // The whole split corpus, in import order — one offender anywhere counts.
