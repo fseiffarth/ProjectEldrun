@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   buildPromptChart,
   occupiedTargets,
@@ -7,6 +7,7 @@ import {
   snapPromptTime,
   type PromptChartStrand,
 } from "../lib/agentPromptChart";
+import type { SentAgentPrompt } from "../stores/agentPrompts";
 
 const now = new Date(2026, 8, 4, 12, 2, 0);
 const strand: PromptChartStrand = {
@@ -124,6 +125,26 @@ describe("prompt chart model", () => {
     expect(rowOnStrand(closed, row("e", "gone-too", "third-launch", "Renamed"))).toBe(false);
   });
 
+  it("files a row by its strongest identity only, never by a label another tab shares", () => {
+    const live: PromptChartStrand = { id: "s1", label: "Claude", scheduleTargetId: "target-1", sessionId: "launch", tabId: "launch", agent: "claude", schedules: [] };
+    const row = (id: string, over: Partial<SentAgentPrompt> = {}): SentAgentPrompt => ({
+      id, message: id, created_at: "x", sent_at: "2026-09-04T10:00:00Z", tab_label: "Claude", result: "delivered", ...over,
+    });
+    // A gone tab also labelled "Claude" is not the live one: it gets a closed strand.
+    const gone = row("gone", { tab_id: "old-launch", session_id: "old-session" });
+    expect(rowOnStrand(live, gone)).toBe(false);
+    expect(rowOnStrand(live, row("old-session-only", { session_id: "old-session" }))).toBe(false);
+    const cards = buildPromptChart({ now, strands: [live], prompts: [], links: [], history: [gone] });
+    expect(cards[0].strandId).toBe("closed:old-launch");
+    // A relaunched, resumed tab carries its persisted session id as both ids.
+    const resumed: PromptChartStrand = { ...live, sessionId: "persisted", tabId: "persisted" };
+    expect(rowOnStrand(resumed, row("after-clear", { tab_id: "persisted", session_id: "live-2" }))).toBe(true);
+    expect(rowOnStrand(resumed, row("before-tab-id", { session_id: "persisted" }))).toBe(true);
+    // A row written before the tab had either id still goes by its label.
+    expect(rowOnStrand(live, row("legacy"))).toBe(true);
+    expect(rowOnStrand(live, row("legacy-codex", { tab_label: "Codex" }))).toBe(false);
+  });
+
   it("names the tabs already holding a live rule, a paused rule aside", () => {
     const paused: PromptChartStrand = {
       ...strand, id: "s2", scheduleTargetId: "target-2", sessionId: "session-2",
@@ -140,6 +161,29 @@ describe("prompt chart model", () => {
 
   it("rewrites a queue into chronological minutes inside the catch-up window", () => {
     expect(queueOrderTimes(["b", "a", "c"], now)).toEqual({ b: "2026-09-04T12:00", a: "2026-09-04T12:01", c: "2026-09-04T12:02" });
+  });
+});
+
+describe("snapping on the local wall clock", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("lands an hour snap on the local hour in a :30 and a :45 zone", () => {
+    const offset = vi.spyOn(Date.prototype, "getTimezoneOffset").mockReturnValue(-330);
+    // 10:40 at UTC+5:30 is 05:10 UTC; the local hour it rounds to, 11:00, is 05:30 UTC.
+    expect(snapPromptTime(new Date(Date.UTC(2026, 8, 4, 5, 10)), 60).getTime()).toBe(Date.UTC(2026, 8, 4, 5, 30));
+    offset.mockReturnValue(-345);
+    // 10:40 at UTC+5:45 is 04:55 UTC; 11:00 there is 05:15 UTC.
+    expect(snapPromptTime(new Date(Date.UTC(2026, 8, 4, 4, 55)), 60).getTime()).toBe(Date.UTC(2026, 8, 4, 5, 15));
+  });
+
+  it("is unchanged in whole-hour zones", () => {
+    const offset = vi.spyOn(Date.prototype, "getTimezoneOffset").mockReturnValue(0);
+    expect(snapPromptTime(new Date(Date.UTC(2026, 8, 4, 10, 40)), 60).getTime()).toBe(Date.UTC(2026, 8, 4, 11, 0));
+    offset.mockReturnValue(-120);
+    expect(snapPromptTime(new Date(Date.UTC(2026, 8, 4, 10, 7)), 15).getTime()).toBe(Date.UTC(2026, 8, 4, 10, 0));
+    expect(snapPromptTime(new Date(Date.UTC(2026, 8, 4, 10, 8)), 5).getTime()).toBe(Date.UTC(2026, 8, 4, 10, 10));
   });
 });
 

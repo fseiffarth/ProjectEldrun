@@ -4,7 +4,7 @@ import {
   localOccurrenceKey,
   nextScheduleOccurrence,
 } from "./agentSchedule";
-import { snapPromptTime, type PromptChartCard } from "./agentPromptChart";
+import { queueOrderTimes, snapPromptTime, type PromptChartCard } from "./agentPromptChart";
 
 /**
  * The prompt chart's time axis: one proportional, horizontal scale that a Day,
@@ -15,7 +15,9 @@ import { snapPromptTime, type PromptChartCard } from "./agentPromptChart";
  * write it means — so the component that draws the chart owns only the DOM
  * and the tests need none of it. The one rule the whole file leans on: a card
  * that lands at or before the now line is a **send now**, never a schedule in
- * the past, because nothing can be scheduled for a minute that has gone.
+ * the past, because nothing can be scheduled for a minute that has gone — and
+ * a selection is sent only from the now band itself, never by being dropped
+ * somewhere left of it.
  */
 export type TimelineView = "hour" | "day" | "week" | "month";
 
@@ -118,12 +120,20 @@ export function formatTimelineInstant(at: Date, lang: string, use24h: boolean, w
   return `${weekdayLabel(lang, at.getDay(), "short")} ${at.getDate()} ${monthName(lang, at.getMonth() + 1).slice(0, 3)} · ${time}`;
 }
 
-/** ◀ ▶: an hour, a day, a week, or a calendar month (the day of month is clamped). */
+/**
+ * ◀ ▶: an hour, a day, a week, or a calendar month (the day of month is clamped).
+ * An hour steps real time, not the wall clock: on a spring-forward day the
+ * hour before 03:00 is 01:00, and `new Date(y, m, d, 2)` normalises back to
+ * 03:00, which kept ◀ where it was. On a fall-back day the repeated hour has
+ * one anchor, so a step that lands on the same anchor steps once more.
+ */
 export function shiftAnchor(view: TimelineView, anchor: string, step: -1 | 1): string {
   const day = anchor.slice(0, 10);
   if (view === "hour") {
-    const at = localMidnight(day);
-    return hourAnchor(new Date(at.getFullYear(), at.getMonth(), at.getDate(), anchorHour(anchor) + step));
+    const start = timelineWindow("hour", anchor, 1).start.getTime();
+    const from = hourAnchor(new Date(start));
+    const next = hourAnchor(new Date(start + step * 3_600_000));
+    return next !== from ? next : hourAnchor(new Date(start + 2 * step * 3_600_000));
   }
   if (view === "day") return addDays(day, step);
   if (view === "week") return addDays(day, 7 * step);
@@ -149,35 +159,47 @@ export interface TimelineTick {
   at: Date;
   major: boolean;
   label: "hour" | "day";
+  /** Whether the axis writes this tick's time: every 5-minute tick of an
+   *  hour, every hour of a day wide enough to hold them, the majors elsewhere. */
+  labelled: boolean;
 }
+
+/** The narrowest hour a Day view still labels every hour at, in px. */
+export const DAY_HOUR_LABEL_MIN_PX = 36;
 
 /**
  * Axis marks: 5-minute steps across an hour (every quarter major), hours
  * across a day (every sixth major), days across a week with quarter-day
- * minors, days across a month (Mondays major).
+ * minors, days across a month (Mondays major). A day's hours step real time
+ * from its midnight, so a spring-forward day has 23 ticks and a fall-back day
+ * 25, and no two share an instant (the wall-clock `new Date(y, m, d, 2)` of a
+ * spring-forward day IS 03:00, which drew one hour twice under one key).
  */
 export function timelineTicks(win: TimelineWindow, width: number): TimelineTick[] {
   const ticks: TimelineTick[] = [];
   if (win.view === "hour") {
     for (let minute = 0; minute < 60; minute += HOUR_TICK_MIN) {
       const at = new Date(win.start.getTime() + minute * 60_000);
-      ticks.push({ x: timelineX(at, win, width), at, major: minute % 15 === 0, label: "hour" });
+      ticks.push({ x: timelineX(at, win, width), at, major: minute % 15 === 0, label: "hour", labelled: true });
     }
     return ticks;
   }
   if (win.view === "day") {
-    for (let hour = 0; hour < 24; hour += 1) {
-      const at = new Date(win.start.getFullYear(), win.start.getMonth(), win.start.getDate(), hour);
-      ticks.push({ x: timelineX(at, win, width), at, major: hour % 6 === 0, label: "hour" });
+    const everyHour = width / 24 >= DAY_HOUR_LABEL_MIN_PX;
+    for (let t = win.start.getTime(); t < win.end.getTime(); t += 3_600_000) {
+      const at = new Date(t);
+      const major = at.getHours() % 6 === 0;
+      ticks.push({ x: timelineX(at, win, width), at, major, label: "hour", labelled: everyHour || major });
     }
     return ticks;
   }
   for (let day = new Date(win.start); day < win.end; day = new Date(day.getFullYear(), day.getMonth(), day.getDate() + 1)) {
-    ticks.push({ x: timelineX(day, win, width), at: day, major: win.view === "week" || day.getDay() === 1, label: "day" });
+    const major = win.view === "week" || day.getDay() === 1;
+    ticks.push({ x: timelineX(day, win, width), at: day, major, label: "day", labelled: major });
     if (win.view === "week") {
       for (const hour of [6, 12, 18]) {
         const at = new Date(day.getFullYear(), day.getMonth(), day.getDate(), hour);
-        ticks.push({ x: timelineX(at, win, width), at, major: false, label: "hour" });
+        ticks.push({ x: timelineX(at, win, width), at, major: false, label: "hour", labelled: false });
       }
     }
   }
@@ -293,16 +315,30 @@ export function queuedStack(cards: PromptChartCard[], now: Date): PromptChartCar
   return cards.filter((card) => card.state === "queued").sort((a, b) => due(a) - due(b) || a.id.localeCompare(b.id));
 }
 
-/** Chained cards by the id of the card they wait for. */
-export function attachedChains(cards: PromptChartCard[]): Map<string, PromptChartCard[]> {
-  const map = new Map<string, PromptChartCard[]>();
-  for (const card of cards) {
-    if (card.state !== "chained" || !card.chainLink) continue;
-    const rows = map.get(card.chainLink.from) ?? [];
-    rows.push(card);
-    map.set(card.chainLink.from, rows);
-  }
-  return map;
+/**
+ * The writes ↑ or ↓ on a queued card means: its own tab's queue in the order
+ * the queue column shows it (`queuedStack`, by due minute — never the rules'
+ * stored order, which the first reorder has already made different), with the
+ * card swapped one place and the whole queue rewritten as consecutive minutes
+ * (`queueOrderTimes`). Each write names a schedule id and its new minute;
+ * `[]` when the card is already at that end, is not queued, or has no tab.
+ */
+export function queueReorderWrites(
+  cards: PromptChartCard[],
+  card: PromptChartCard,
+  step: -1 | 1,
+  now: Date,
+): { id: string; at: string }[] {
+  if (!card.targetId) return [];
+  const queue = queuedStack(cards, now).filter((item) => item.targetId === card.targetId && item.schedule);
+  const from = queue.findIndex((item) => item.key === card.key);
+  const to = from + step;
+  if (from < 0 || to < 0 || to >= queue.length) return [];
+  const ordered = [...queue];
+  [ordered[from], ordered[to]] = [ordered[to], ordered[from]];
+  const ids = ordered.map((item) => item.schedule!.id);
+  const times = queueOrderTimes(ids, now);
+  return ids.map((id) => ({ id, at: times[id] }));
 }
 
 export interface LaneItem extends TimelineItem {
@@ -370,10 +406,13 @@ export function dayClusters(items: TimelineItem[], win: TimelineWindow, width: n
   return clusters;
 }
 
+/** `now` is the now band itself; `past` is the body at or before the now line
+ *  outside that band — a send for one card, but never for a selection. */
 export type TimelineZone =
   | { kind: "none" }
   | { kind: "strip" }
   | { kind: "now" }
+  | { kind: "past" }
   | { kind: "time"; at: Date };
 
 export interface TimelineRect {
@@ -397,8 +436,10 @@ function contains(rect: TimelineRect | null, point: { x: number; y: number }): r
 }
 
 /**
- * Where a pointer is, in the chart's terms. The now band and everything at or
- * left of the now line mean "send now"; the future maps to a snapped minute.
+ * Where a pointer is, in the chart's terms. The now band is `now`; the rest of
+ * the body at or left of the now line is `past` — a send for one card, which
+ * `timelineGroupDrop` refuses for a selection — and the future maps to a
+ * snapped minute.
  */
 export function timelineHitZone(
   point: { x: number; y: number },
@@ -412,21 +453,26 @@ export function timelineHitZone(
   if (contains(rects.nowBand, point)) return { kind: "now" };
   if (!contains(rects.body, point)) return { kind: "none" };
   const at = snapTimelineTime(timelineTimeAt(point.x - rects.body.left + scrollLeft, win, width), win);
-  return at.getTime() <= now.getTime() ? { kind: "now" } : { kind: "time", at };
+  return at.getTime() <= now.getTime() ? { kind: "past" } : { kind: "time", at };
 }
+
+/** Why a drop writes nothing, when there is a reason worth saying: `occupied`,
+ *  the only tab it could reach already holds a rule; `no-target`, there is no
+ *  agent tab at all; `past`, a selection would be sent or land at or before now. */
+export type PromptTimelineDropRefusal = "occupied" | "no-target" | "past";
 
 export type PromptTimelineDrop =
   | { type: "send"; targetId: string }
   | { type: "schedule"; targetId: string; at: string }
   | { type: "retime"; targetId: string; fromTargetId?: string; at: string }
   | { type: "unschedule"; fromTargetId?: string }
-  /** `occupied`: the only tab the drop could reach already holds a rule. */
-  | { type: "none"; reason?: "occupied" };
+  | { type: "none"; reason?: PromptTimelineDropRefusal };
 
 /**
  * A drop is a write, decided here and nowhere else. `targets` are the live
  * agent tabs' schedule target ids, first one the default: a card aimed at a
- * tab that is gone falls back to it, and with no tab at all nothing moves.
+ * tab that is gone falls back to it, and with no tab at all nothing moves
+ * (`no-target`). The band and the past body are both a send for one card.
  */
 export function timelineDropAction(
   card: PromptChartCard,
@@ -447,8 +493,8 @@ export function timelineDropAction(
   const free = card.schedule ? targets : targets.filter((id) => !occupied.has(id));
   if (card.targetId && targets.includes(card.targetId) && !free.includes(card.targetId)) return { type: "none", reason: "occupied" };
   const targetId = card.targetId && free.includes(card.targetId) ? card.targetId : free[0];
-  if (!targetId) return targets.length > 0 ? { type: "none", reason: "occupied" } : { type: "none" };
-  if (zone.kind === "now") {
+  if (!targetId) return { type: "none", reason: targets.length > 0 ? "occupied" : "no-target" };
+  if (zone.kind === "now" || zone.kind === "past") {
     return card.state === "queued" ? { type: "none" } : { type: "send", targetId };
   }
   const at = localOccurrenceKey(zone.at);
@@ -464,13 +510,18 @@ export function timelineGroupMovable(card: PromptChartCard): boolean {
 }
 
 /**
- * The writes one drop means for a whole selection. A time drop moves every
+ * The writes one drop means for a whole selection, decided before any of
+ * them runs so a selection moves whole or not at all. A time drop moves every
  * member by the distance the carried card moved, each snapped to the view's
  * grid, so their spacing survives; if any member would land at or before the
- * now line the whole drop is refused (every entry `none`) rather than sending
- * part of the selection by accident. The now band and the strip mean the same
- * for each member as for one card, and members that drop means nothing for
- * are simply left out.
+ * now line the whole drop is refused (every entry `none`, reason `past`)
+ * rather than sending part of the selection by accident. The past body is
+ * refused the same way — only the now band sends a selection — and so is a
+ * drop where a member whose tab is gone would fall back onto another tab that
+ * already holds a rule (`occupied`): moving the members before it and then
+ * failing on it would leave half the selection moved. The now band and the
+ * strip otherwise mean the same for each member as for one card, and members
+ * that drop means nothing for are simply left out.
  */
 export function timelineGroupDrop(
   carried: PromptChartCard,
@@ -479,23 +530,30 @@ export function timelineGroupDrop(
   targets: readonly string[],
   win: TimelineWindow,
   now: Date,
+  occupied: ReadonlySet<string> = new Set(),
 ): { card: PromptChartCard; drop: PromptTimelineDrop }[] {
-  if (zone.kind !== "time") {
-    return members
-      .map((card) => ({ card, drop: timelineDropAction(card, zone, targets) }))
-      .filter((entry) => entry.drop.type !== "none");
+  const refuse = (reason?: PromptTimelineDropRefusal) =>
+    members.map((card) => ({ card, drop: { type: "none" as const, ...(reason ? { reason } : {}) } }));
+  if (zone.kind === "past") return refuse("past");
+  let moves: { card: PromptChartCard; drop: PromptTimelineDrop }[];
+  if (zone.kind === "time") {
+    const delta = carried.at ? zone.at.getTime() - carried.at.getTime() : 0;
+    const landings = members.map((card) =>
+      card === carried || !card.at ? zone.at : snapTimelineTime(new Date(card.at.getTime() + delta), win));
+    if (landings.some((at) => at.getTime() <= now.getTime())) return refuse("past");
+    moves = members.map((card, index) => ({
+      card,
+      drop: timelineDropAction(card, { kind: "time", at: landings[index] }, targets, occupied),
+    }));
+  } else {
+    moves = members.map((card) => ({ card, drop: timelineDropAction(card, zone, targets, occupied) }));
   }
-  const delta = carried.at ? zone.at.getTime() - carried.at.getTime() : 0;
-  const moves = members.map((card) => {
-    const at = card === carried || !card.at ? zone.at : snapTimelineTime(new Date(card.at.getTime() + delta), win);
-    const drop: PromptTimelineDrop = at.getTime() > now.getTime()
-      ? timelineDropAction(card, { kind: "time", at }, targets)
-      : { type: "none" };
-    return { card, drop };
-  });
-  return moves.some((entry) => entry.drop.type === "none")
-    ? moves.map((entry) => ({ card: entry.card, drop: { type: "none" as const } }))
-    : moves;
+  const fallsOntoOccupied = moves.some(({ card, drop }) =>
+    "targetId" in drop && drop.targetId !== card.targetId && occupied.has(drop.targetId));
+  if (fallsOntoOccupied) return refuse("occupied");
+  if (zone.kind !== "time") return moves.filter((entry) => entry.drop.type !== "none");
+  const refused = moves.find((entry) => entry.drop.type === "none");
+  return refused?.drop.type === "none" ? refuse(refused.drop.reason) : moves;
 }
 
 const TARGET_COLORS = [

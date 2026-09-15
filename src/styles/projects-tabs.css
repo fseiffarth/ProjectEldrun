@@ -3090,6 +3090,14 @@
 .agent-prompt-draft-position { position: absolute; width: 168px; }
 .agent-prompt-draft-position:has(.is-selected), .agent-prompt-draft-position:has(.is-editing) { z-index: 4; }
 .agent-prompt-draft-position > .agent-prompt-card.is-editing { width: 460px; }
+/* The same for a card edited on the timeline: it grows past its lane item,
+   whose inline width (and so the lane packing) stays as it is. */
+.agent-prompt-timeline-item:has(> .agent-prompt-card.is-editing) { z-index: 5; overflow: visible; }
+.agent-prompt-timeline-item > .agent-prompt-card.is-editing { width: 460px; }
+/* Near the right edge the body (`overflow-x: hidden`) would clip it, so there
+   it grows leftward instead: PromptTimeline sets the shift that keeps its
+   460px inside the body (TIMELINE_EDIT_WIDTH). */
+.agent-prompt-timeline-item.is-edit-flip > .agent-prompt-card.is-editing { margin-left: var(--edit-shift, 0px); }
 /* The composer a double click on an empty spot opens, where it was opened. */
 .agent-prompt-draft-composer { display: flex; flex-direction: column; gap: 6px; width: min(460px, 100%); padding: 8px; border: 1px solid var(--accent); border-radius: var(--radius); background: var(--bg-panel); color: var(--text-primary); }
 .agent-prompt-draft-position.agent-prompt-draft-composer { width: 460px; z-index: 5; }
@@ -3164,6 +3172,9 @@
 .agent-prompt-card.is-multi-selected { outline: 2px solid var(--accent); outline-offset: 1px; }
 .agent-prompt-chart-selection { display: inline-flex; align-items: center; gap: 6px; color: var(--text-secondary); font-size: 11px; }
 .agent-prompt-chart-select-hint { color: var(--text-muted); font-size: 10px; }
+/* The chart's error line and its Dismiss: `.mail-error-strip`'s row layout. */
+.agent-prompt-chart-error { display: flex; align-items: center; gap: 10px; }
+.agent-prompt-chart-error > span { flex: 1; word-break: break-word; }
 
 .agent-prompt-card {
   position: relative;
@@ -3185,6 +3196,8 @@
 .agent-prompt-card:hover::after,
 .agent-prompt-card.is-selected::after { opacity: 1; }
 .agent-prompt-card.is-selected { border-color: var(--accent); }
+/* A card reached with Tab: `.pill-status-bar`'s focus ring. */
+.agent-prompt-card:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
 .agent-prompt-card.is-dimmed { opacity: .28; }
 .agent-prompt-card.is-dragging { opacity: .35; }
 .agent-prompt-card.is-chained { border-style: dashed; }

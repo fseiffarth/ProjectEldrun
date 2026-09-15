@@ -35,7 +35,7 @@ export function PromptLinkEditor({ link, fromLabel, toLabel, tabLabel, offered, 
   const choices = edgeCommandChoices(offered, preface);
   const write = (patch: Pick<PromptLink, "kind" | "preface">) => {
     setError("");
-    void onChange(patch).catch((cause) => setError(String(cause)));
+    void onChange(patch).catch((cause) => setError(cause instanceof Error ? cause.message : String(cause)));
   };
   return (
     <ContextMenuPortal x={x} y={y} onClose={onClose} className="context-menu agent-prompt-link-editor">
@@ -68,7 +68,7 @@ export function PromptLinkEditor({ link, fromLabel, toLabel, tabLabel, offered, 
       ) : <p className="context-menu-note">{t("promptChart.edgeRelatedHelp")}</p>}
       {error && <p className="context-menu-note project-dialog-error">{error}</p>}
       <div className="agent-prompt-link-editor-row">
-        <button type="button" className="settings-btn sm danger" onClick={() => void onRemove().catch((cause) => setError(String(cause)))}>{t("common.remove")}</button>
+        <button type="button" className="settings-btn sm danger" onClick={() => void onRemove().catch((cause) => setError(cause instanceof Error ? cause.message : String(cause)))}>{t("common.remove")}</button>
       </div>
     </ContextMenuPortal>
   );

@@ -74,6 +74,13 @@ interface Options {
   /** Every card's rect, read once when a link drag starts. */
   measureCards: () => ChartCardRect[];
   onDropCard: (card: PromptChartCard, zone: TimelineZone, drag: Extract<ChartDrag, { kind: "card" }>) => void;
+  /** The chart's newest cards. A carry is committed from the card as it is
+   *  NOW, looked up by key — the one pressed may have been delivered, removed
+   *  or re-stated by the scheduler while it was in the air. */
+  cards?: readonly PromptChartCard[];
+  /** The pressed card is gone, or is no longer the thing that was pressed:
+   *  nothing is written. */
+  onStale?: () => void;
   onDropLink: (from: PromptChartCard, toId: string) => void;
   /** A lift ended: each item now sits that many px off its lane. */
   onLift: (lifts: Record<string, number>) => void;
@@ -260,7 +267,15 @@ export function usePromptChartDrag(options: Options) {
         if (finished.kind === "lift") { lift?.commit(finished); return; }
         if (finished.kind !== "card" || finished.zone.kind === "none") return;
         swallowNextClick();
-        latest.current.onDropCard(finished.card, finished.zone, finished);
+        // Never write from the snapshot taken at the press: a one-time rule the
+        // scheduler retired mid-drag would be re-created and sent twice.
+        const { cards, onStale, onDropCard } = latest.current;
+        const fresh = cards ? cards.find((item) => item.key === finished.card.key) : finished.card;
+        if (!fresh || fresh.state !== finished.card.state || fresh.schedule?.id !== finished.card.schedule?.id) {
+          onStale?.();
+          return;
+        }
+        onDropCard(fresh, finished.zone, { ...finished, card: fresh });
       },
     });
   };

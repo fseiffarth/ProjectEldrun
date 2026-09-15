@@ -1199,6 +1199,131 @@ unchanged; the new agents are additive.
         refuse the drop with the error line, and accept an After link.
         - [ ] ✅ Works
         - [ ] ❌ Doesn't work
+    - **Nothing is sent that nobody asked to send (2026-09-15), not
+      live-tested.** A two-coder pass over the chart's review findings; see
+      `docs/prompt_chart_plan.md` §13. The **backend guards need a restart**
+      (frozen build: `npm run package:dev`, then relaunch); the frontend half
+      hot-reloads.
+      - [x] 🤖 Automated tests — `PromptChart`, `PromptChartSelect`,
+        `PromptChartLift`, `PromptCardKeyboard`, `PromptSessionCard`,
+        `AgentPromptTimeline`, `AgentPromptTimelineGroup`,
+        `AgentPromptTimelineDst`, `AgentPromptLinks`, `AgentPromptChart`,
+        `AgentSchedulesStoreGuard`, cargo `agent_tasks` / `agent_prompts`.
+      - [ ] 🖐️ Manual test — **selections and the past** (after restarting):
+        Ctrl+click two future rules, drag them left of the now line but off
+        the band: the badge reads "A selection is sent only from the now
+        band", nothing is sent. Drop them on the band: both go. A single draft
+        dropped left of the now line is still sent.
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+      - [ ] 🖐️ Manual test — **the scheduler got there first** (after
+        restarting): schedule a prompt one minute out, start dragging it and
+        hold it past its minute until it is delivered, then drop it later on
+        the axis: nothing is re-created and the line says "already delivered
+        or removed". Press "+ 5 min" on a card rendered before its delivery
+        landed: the same. No prompt arrives twice.
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+      - [ ] 🖐️ Manual test — **Send on a daily rule**: expand a daily card and
+        press Send: the prompt goes once, and the daily rule is still in the
+        tab's ◷ Schedules afterwards.
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+      - [ ] 🖐️ Manual test — **badge, − 5 min, queued picker, ↑/↓**: carry an
+        unaimed draft over the axis with two tabs open: "Schedule on <first
+        tab> · time". With no agent tab: the blocked "No agent tab open — use
+        Send". A card due in 3 min has "− 5 min earlier" greyed out. A queued
+        card's agent picker refuses another tab with a message. With three
+        queued prompts on one tab (Agents view composer), ↑/↓ move a card one
+        place in the order the queue column shows.
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+      - [ ] 🖐️ Manual test — **links** (after restarting): with A → B (After),
+        drag B's port onto A: refused, "That link would make a loop". Add a
+        related edge C — B and switch it to After in its editor: "That prompt
+        already follows another". Type `/clear` in a Claude tab between two
+        sends: its edge is still drawn.
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+      - [ ] 🖐️ Manual test — **errors and deletes**: trigger "already has a
+        scheduled prompt", then retime any card: the line disappears; trigger
+        it again and press Dismiss. Delete a scheduled card that has one link:
+        a dialog names the prompt and "1 link"; Cancel keeps it, Delete removes
+        it. A session row's Delete asks too; a draft's × does not.
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+      - [ ] 🖐️ Manual test — **keyboard**: Tab onto a card (a focus ring),
+        Enter opens it, its Link arms linking, Tab to another card's port and
+        press Enter: the link is drawn. Arm a link with a selection present and
+        press Escape: link mode ends, the selection stays; Escape again clears
+        it. Escape inside a card editor cancels the edit and keeps the
+        selection.
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+      - [ ] 🖐️ Manual test — **drawing and performance**: before 08:00, a daily
+        08:00 card in tomorrow's Day view reads tomorrow's date, and When
+        "Today" dims it. A session running past midnight in Week view shows
+        both dates. On a wide pane the Day axis labels every hour. Edit a
+        scheduled card on the timeline: the Markdown toolbar fits (460 px) and
+        the lanes do not move. Hide the chart tab while an agent works, show
+        it again: its cards are current. Drag a card across the timeline with
+        several links on screen: no stutter compared with a lift.
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+      - [ ] 🖐️ Manual test — **drafts board and empty states**: in row layout
+        the hint does not say "Move cards freely" and carrying a draft over the
+        strip shows the blocked "Turn on Free layout…"; in Free layout it says
+        "Move here" and moves. ＋ (tooltip "New draft") opens the board's own
+        composer, Escape / Ctrl+Enter work. A project with no agent tabs and no
+        history shows the empty-timeline hint. Type in the timeline search:
+        "N of M" and Clear appear, Clear leaves the drafts search alone. Lift a
+        card: "Reset positions" appears and puts it back.
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+      - [ ] 🖐️ Manual test — **± 5 min and the wide editor**: in Week and in
+        Month view, "+ 5 min later" on a card due in 8 min moves it (no "That
+        minute has passed" line); "+ 5 min later" on a queued card moves it 5
+        min past now. "− 5 min earlier" on a card due in 30 min is enabled the
+        same in Day and Month view. Edit a scheduled card in the right part of
+        the axis: the editor grows leftward and its whole Markdown toolbar is
+        visible. Carry one draft left of the now line: the now band lights; a
+        two-card selection there leaves it dark. Drop a selection on a future
+        minute where its earlier card would land in the past: "A card in the
+        selection would land in the past".
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+      - [ ] 🖐️ Manual test — **closed strands** (after restarting): send a
+        prompt from a Claude tab, close that tab, open a new Claude tab and
+        send another: the old rows sit on a greyed closed strand of their own,
+        not on the new tab's strand. Relaunch Eldrun with a resumed Claude tab
+        and type `/clear` in it: its rows before and after stay on that tab's
+        strand.
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+      - [ ] 🖐️ Manual test — **snapping in a :30 zone**: start Eldrun with
+        `TZ=Asia/Kolkata`, drop a draft on the Month view (60-min snap): it is
+        scheduled on a local whole hour (e.g. 14:00, not 14:30).
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+      - [ ] 🖐️ Manual test — **DST** (twice a year, Europe/Berlin): on the
+        spring-forward and fall-back days, Hour view ◀/▶ step past 02:00 and
+        the Day axis draws each hour once.
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+      - Open questions: should yesterday's axis still be a send-now zone for
+        a single card? Should a dropped unaimed draft get the new-tab
+        `/model` preface? Offer compact Week cards after QA?
+      - Follow-up (accessibility, spans the mail list too): a prompt card's
+        `<article role="button">` holds real buttons and a dropdown, and ARIA
+        makes a button's children presentational, so a screen reader flattens
+        Send/Schedule/Link into the card's name. `mail/MailList.tsx` rows do
+        the same with their star and actions. Move the role onto a toggle
+        element (the card head, or a visually hidden button) on both surfaces
+        together, so they do not drift; keyboard access already works.
+      - Pending doc: update the `src/CLAUDE.md` prompt-chart and
+        `PromptDraftBoard` rows once the other session's `src/CLAUDE.md` WIP
+        has landed (the rows still say bottom port → top port, and that
+        cycles and joins are refused only at schedule time).
 
 263. **Agent panes: double-click pastes, and a drag still selects while the TUI
     holds the mouse.** Two gestures the terminal owed an agent tab. A

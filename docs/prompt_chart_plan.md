@@ -291,11 +291,13 @@ calendar. What replaced it:
   chart's drag had none of this: capture on the card, no `pointermove`, no
   threshold, and `elementFromPoint` on release — nothing moved, and a plain
   click on a scheduled card re-timed it to the snapped y.
-- **Links by drag.** Every card has a top port (in) and a bottom port (out);
-  pulling the bottom port onto another card writes a link of the kind the
-  toolbar chips say (default `after`), previewed as a dashed bezier. The
-  overlay draws every edge bottom port → top port. Click-to-link stays as
-  the keyboard route.
+- **Links by drag.** Every card has a left port (in) and a right port (out)
+  — the axis is horizontal, so a link leaves the way time runs. Pulling the
+  right port onto another card writes a link of the kind the toolbar chips
+  say (default `after`), previewed as a dashed bezier; the overlay draws
+  every edge right port → left port. While a link is armed, a click or Enter
+  on another card's port finishes it, so click-to-link is the keyboard route
+  (§13).
 - **The agent is the card's.** With the columns gone, each draft, scheduled,
   queued and chained card wears a compact agent picker. A draft's pick is
   persisted as `ProjectAgentPrompt.target` — an additive, advisory field
@@ -424,3 +426,85 @@ first *free* tab. A rule keeps its own tab and is not offered another rule's.
 A chained card keeps every tab: it is linked, which is exactly the sanctioned
 way onto an occupied tab. The tab's own ◷ Schedules dialog, which manages a
 tab's several recurring rules, warns instead of refusing.
+
+## 13. Nothing is sent that nobody asked to send (2026-09-15)
+
+A review of the chart found writes that could deliver a prompt twice, or
+deliver one from a gesture that did not mean to. None of the fixes moves a
+protected decision: chained cards stay on the board, a lift writes nothing,
+the drag hit-tests measured rects with its release bound at pointerdown, the
+backend resolves live session ids, filters are unpersisted view state, and
+the chart keeps its UntestedTag.
+
+- **The past body is not the now band.** `timelineHitZone` answers `past`
+  for a body point at or left of the now line outside the band. One card
+  dropped there is still a send-now (the rule this plan started from); a
+  **selection** is refused whole there (`timelineGroupDrop`, reason `past`,
+  badge "A selection is sent only from the now band") and sends only from the
+  band itself. A selection dropped on a future minute where one member would
+  land at or before now is refused with its own text ("A card in the selection
+  would land in the past"): the chart tells the two apart by the drop's zone,
+  since both carry reason `past`. The band lights for one card over the past
+  body (a send) and stays dark for a refused drop. Occupancy is checked for
+  every member before any write, so a selection moves whole or not at all.
+- **The badge names the tab.** "Schedule on Claude · 14:30", "Send now in
+  Claude": an unaimed draft still falls back to the first free tab, and the
+  card's face ("New agent tab") does not say which. With no agent tab at all
+  the drop is blocked with "No agent tab open — use Send" (reason
+  `no-target`); Send on the card still opens a new tab. In row layout a draft
+  carried over the strip says "Turn on Free layout to arrange drafts".
+- **Edits of an existing rule are guarded.** Every chart upsert that edits or
+  moves a rule (a retime, a drop, a reorder, a save, a retarget) passes
+  `expectExistingOn` (the tab it was drawn from), and taking a one-time rule
+  back to queue it now passes `expectUndelivered`. The backend refuses with
+  `schedule_gone` (the rule is gone, or a one-time rule already went out) or
+  `schedule_busy` (a delivery claim is in flight) instead of re-creating a rule
+  the scheduler just retired — which would have been delivered a second time.
+  The chart shows "already delivered or removed" / "being delivered right
+  now". On top of that, a carry is committed from the card as it is at the
+  release, looked up by key; if it is gone or changed, nothing is written.
+- **A recurring card's Send queues a copy** under a fresh id and leaves the
+  rule. Queuing under the rule's own id replaced the rule with a one-time one
+  that was then retired after delivery; `queuePromptForTab` also mints a fresh
+  id itself when the id it is handed belongs to a recurring rule on that tab.
+- **A queued card is not retargeted.** Moving it writes the new tab before
+  deleting the old, and a queued rule is due on both in between. A future
+  rule still moves in that order. "− 5 min" is disabled when it would land at
+  or before now plus 5 min, and refused if called anyway — one fixed margin in
+  every view, since the button steps 5 min at any zoom. "+ 5 min" only needs
+  the target ahead of now and counts from now for a card already due, so a
+  queued card moves to 5 min past now instead of being refused.
+- **A card edited near the right edge grows leftward.** The body clips
+  sideways, so an item whose 460px editor would pass the body's edge gets
+  `is-edit-flip` and a negative `--edit-shift`; its inline width and the lane
+  packing stay as they are.
+- **↑/↓ follow the queue as drawn** (`queueReorderWrites`, by due minute),
+  not the rules' stored order.
+- **Cycles and joins are refused when a link is written**, not only when a
+  sequence is scheduled: `afterLinkRefusal` in the port drop, click-to-link
+  and the edge editor's switch to After, and `apply_link_upsert` in the
+  backend (`prompt_link_cycle` / `prompt_link_join`). The history's own
+  `roll:` edges are exempt, so a `/clear` still draws its edge.
+- **Errors clear and can be dismissed.** Every write clears the last error
+  first and reports its own without the "Error: " prefix; the line has a
+  Dismiss button. Deleting a scheduled, queued or sent prompt, or a session
+  row, asks first and names the links that go with it; a draft's × and a
+  link's Remove stay one click.
+- **The keyboard route works.** Cards are focusable (Enter or Space opens
+  one), a port finishes an armed link, and Escape cancels link mode before it
+  clears the selection, leaving keys typed into an editor or dialog alone.
+- **Hidden charts reload on show.** A hidden chart only marks itself stale
+  on `agent-prompts-changed` and reloads once when shown; the tab's schedule
+  fill waits for it to be visible. Links are re-measured during a lift or a
+  free-layout carry only (one frame at a time), never on a carry or rubber
+  band over the timeline, and the overlay keeps one ResizeObserver.
+- **Readability.** A future window prints and filters a recurring rule at the
+  instant it is drawn at; a session that crosses midnight shows its dates; a
+  wide Day view labels every hour; a timeline card being edited widens to the
+  Markdown toolbar's 460 px over its lane item; an empty timeline says what to
+  do; each filter bar shows "N of M" and a Clear while a facet is set; a
+  "Reset positions" chip clears the view's lifts.
+
+Open, for after QA: should yesterday's axis still be a send-now zone for a
+single card; should a dropped unaimed draft get the new tab's `/model`
+preface; and compact Week cards.
