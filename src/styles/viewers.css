@@ -4932,10 +4932,32 @@
   white-space: pre;
   cursor: var(--cur-text, text);
   transform-origin: 0% 0%;
+  /* The opt back in, and without it there is no selection at all: the app root sets
+     `user-select: none` (base.css), which every span here inherits. pdf.js's own
+     sheet carries this line; dropping it in the copy left a layer that looked right
+     and selected nothing. Prefixed too, for WebKitGTK. */
+  -webkit-user-select: text;
+  user-select: text;
+}
+/* Sized as pdf.js sizes them. Each span carries its own `--font-height` (and, once
+   measured, `--scale-x`/`--rotate`) and expects the page zoom as
+   `--total-scale-factor` — without these the runs take the inherited font size, so
+   their boxes neither cover the glyphs nor stretch to the run's real width, and a
+   drag selects whatever the misplaced boxes happen to overlap. `--min-font-size` is
+   the engine's minimum font size, measured and set on the container by pdf.js. */
+.file-viewer-pdf-text-layer {
+  --min-font-size: 1;
+  --text-scale-factor: calc(var(--total-scale-factor) * var(--min-font-size));
+  --min-font-size-inv: calc(1 / var(--min-font-size));
 }
 .file-viewer-pdf-text-layer > :not(.markedContent),
 .file-viewer-pdf-text-layer .markedContent span:not(.markedContent) {
   z-index: 1;
+  --font-height: 0;
+  font-size: calc(var(--text-scale-factor) * var(--font-height));
+  --scale-x: 1;
+  --rotate: 0deg;
+  transform: rotate(var(--rotate)) scaleX(var(--scale-x)) scale(var(--min-font-size-inv));
 }
 .file-viewer-pdf-text-layer span.markedContent {
   top: 0;
