@@ -1,11 +1,16 @@
 import { describe, expect, it } from "vitest";
+import { en } from "../lib/i18n";
 import {
   prepareOnDeviceSpeech,
   sanitizeVoiceTranscript,
   speechRecognitionConstructor,
   speechRecognitionError,
   speechRecognitionSupported,
-  transcriptsFrom,
+  advanceDictation,
+  DICTATION_START,
+  dictationPreview,
+  readDictation,
+  settleDictation,
   type MobileSpeechRecognition,
   type MobileSpeechRecognitionConstructor,
   type MobileSpeechRecognitionResultEvent,
@@ -65,21 +70,63 @@ describe("Eldrun Mobile voice input", () => {
     await expect(prepareOnDeviceSpeech(RemoteRecognition, "en-US")).resolves.toBe("remote");
   });
 
-  it("separates finalized text from the current interim hypothesis", () => {
+  it("reads the whole result list, whatever resultIndex says", () => {
     const event = {
       resultIndex: 1,
       results: {
-        0: result("ignored old result", true),
-        1: result("fix the login", true),
-        2: result("and add a test", false),
+        0: result("fix the login", true),
+        1: result("and add a test", true),
+        2: result("please", false),
         length: 3,
       },
     } as unknown as MobileSpeechRecognitionResultEvent;
 
-    expect(transcriptsFrom(event)).toEqual({
-      final: "fix the login",
-      interim: "and add a test",
+    expect(readDictation(event)).toEqual({
+      heard: ["fix", "the", "login", "and", "add", "a", "test"],
+      interim: "please",
     });
+  });
+
+  it("collapses a final result that repeats the earlier words as its head", () => {
+    const event = {
+      resultIndex: 0,
+      results: {
+        0: result("fix the login", true),
+        1: result("Fix the login, and test", true),
+        2: result("fix the login and test and", false),
+        length: 3,
+      },
+    } as unknown as MobileSpeechRecognitionResultEvent;
+
+    expect(readDictation(event)).toEqual({ heard: ["Fix", "the", "login,", "and", "test"], interim: "and" });
+  });
+
+  it("inserts each heard word once, and none of them again after a send", () => {
+    let step = advanceDictation(DICTATION_START, ["fix", "the"]);
+    expect(step.insert).toBe("fix the");
+    step = advanceDictation(step.progress, ["fix", "the", "login"]);
+    expect(step.insert).toBe("login");
+    step = advanceDictation(step.progress, ["fix", "the", "login"]);
+    expect(step.insert).toBe("");
+
+    const sent = settleDictation(step.progress);
+    expect(dictationPreview(sent, "and")).toBe("and");
+    step = advanceDictation(sent, ["fix", "the", "login", "and", "test"]);
+    expect(step.insert).toBe("and test");
+    expect(dictationPreview(step.progress, "")).toBe("and test");
+  });
+
+  it("keeps counting through a revised word instead of inserting the sentence again", () => {
+    const before = advanceDictation(DICTATION_START, ["why", "is", "this", "other"]).progress;
+    const step = advanceDictation(before, ["why", "is", "the", "other", "prompt"]);
+    expect(step.insert).toBe("prompt");
+  });
+
+  it("takes a result list that starts over as new words", () => {
+    const before = advanceDictation(DICTATION_START, ["fix", "the", "login"]).progress;
+    const step = advanceDictation(settleDictation(before), ["add", "a", "test"]);
+    expect(step.insert).toBe("add a test");
+    expect(dictationPreview(step.progress, "")).toBe("add a test");
   });
 
   it("removes control bytes before a transcript reaches the PTY", () => {
@@ -89,8 +136,14 @@ describe("Eldrun Mobile voice input", () => {
   });
 
   it("turns browser speech failures into actionable phone guidance", () => {
-    expect(speechRecognitionError("not-allowed")).toContain("Allow it");
-    expect(speechRecognitionError("audio-capture")).toContain("microphone");
-    expect(speechRecognitionError("aborted")).toBe("");
+    expect(speechRecognitionError("not-allowed")).toBe("mobile.voice.errDenied");
+    expect(speechRecognitionError("service-not-allowed")).toBe("mobile.voice.errDenied");
+    expect(speechRecognitionError("audio-capture")).toBe("mobile.voice.errNoMic");
+    expect(speechRecognitionError("something-new")).toBe("mobile.voice.errStopped");
+    expect(speechRecognitionError("aborted")).toBeNull();
+    for (const error of ["not-allowed", "audio-capture", "network", "language-not-supported", "no-speech", "x"]) {
+      const key = speechRecognitionError(error);
+      expect(key && en[key]).toBeTruthy();
+    }
   });
 });
