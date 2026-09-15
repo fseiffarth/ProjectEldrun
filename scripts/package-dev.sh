@@ -190,6 +190,9 @@ fi
 # The running frozen instance keeps its old inode; `install` replaces the path
 # atomically enough that a relaunch picks the new snapshot up.
 install -Dm755 "$RAW_BIN" "$BINARY_DEST"
+# The record travels with the binary: the launcher reads `<installed>.frozen`
+# to say which commit it is opening and whether that is behind HEAD.
+install -m644 "$FROZEN_STAMP" "$BINARY_DEST.frozen" 2>/dev/null || true
 
 STAMP="$(date +%Y-%m-%d)"
 

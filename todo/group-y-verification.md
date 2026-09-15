@@ -213,6 +213,27 @@ missing capability — is the project's dominant risk.
        end, and one "Eldrun (dev) rebuilt" notification naming the newer sha.
        - [ ] ✅ Works
        - [ ] ❌ Doesn't work
+     - **A failed pass stopped the queue (2026-09-15), fixed, not
+       live-tested.** A change split over two commits (`50465af` registered a
+       Tauri command `8078639` only then defined) made pass 2 fail; the loop
+       `break`ed on the failure with the compiling commit still queued, and
+       `--status` read "idle / a rebuild is queued" while the icon opened a
+       build three commits old — the hook's failure notification never
+       arrives from an agent tab. Now the loop goes on while `.pending`
+       exists, a failure is recorded in `package-dev-auto.failed`, `--status`
+       and `backend:stale` print it plus "N commit(s) behind HEAD", the
+       `.frozen` record is installed beside `eldrun-dev` (by `package-dev.sh`
+       and by the launcher's adoption), and the launcher — in the user's own
+       session — notifies how far behind the snapshot it opens is and why.
+     - [ ] 🖐️ Manual test — make a commit that does not compile, then one
+       that fixes it, within a minute: the log shows pass 1 failing, "a newer
+       commit is queued — building it despite the failure", and pass 2
+       succeeding; `scripts/package-dev-auto.sh --status` shows no failure
+       afterwards. Then relaunch "Eldrun (dev)" with two unfrozen commits
+       (`git config eldrun.autoDevBuild false` for the test): a notification
+       says "2 commit(s) behind".
+       - [ ] ✅ Works
+       - [ ] ❌ Doesn't work
      - [ ] 🖐️ Manual test — `git config eldrun.autoDevBuild false`, commit:
        expect no line, no build, and `--status` to say why.
        - [ ] ✅ Works

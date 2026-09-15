@@ -91,6 +91,16 @@ change was not run live.
   not a re-run of that check, since `dist/` moves on with every gate an agent
   runs and a launch-time re-check refused four days of good builds
   (2026-09-14). The launcher notifies either way: what it adopted, or why not.
+  **A failed pass does not end the queue** (2026-09-15): a commit that landed
+  mid-build is a different tree — usually the one that fixes it, since a
+  change split over two commits compiles only as a pair — so the loop goes on
+  to it instead of leaving it "queued" for good. A failure is written to
+  `~/.local/share/eldrun/package-dev-auto.failed` (commit, status, when),
+  which `--status`, `npm run backend:stale` and the launcher all read: the
+  launcher compares the installed snapshot's recorded commit (`.frozen`, now
+  kept beside the installed binary) with `HEAD` and notifies how many commits
+  behind it is opening, and why — the hook's own failure notice never
+  arrives from an agent tab.
   It declines in CI and from a linked worktree (freezing an agent's tree over
   the user's binary is exactly the surprise to avoid). Off with `git config
   eldrun.autoDevBuild false`, or `ELDRUN_NO_AUTO_DEV_BUILD=1` for one commit;

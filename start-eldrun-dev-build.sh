@@ -95,6 +95,9 @@ if [ -f "$BUILT" ] && [ "$BUILT" -nt "$BINARY" ]; then
       "target/release/eldrun is newer but unverified; run npm run package:dev and relaunch." 2>/dev/null || true
   elif install -Dm755 "$BUILT" "$BINARY"; then
     printf 'adopted it as %s (%s; %s)\n' "$BINARY" "$label" "$verdict"
+    # Keep the build-time record beside what was installed, so the next launch
+    # can say which commit it is opening without hashing anything.
+    if [ -f "$FROZEN" ]; then install -m644 "$FROZEN" "$BINARY.frozen" 2>/dev/null || true; else rm -f "$BINARY.frozen"; fi
     # The desktop entry's Comment names the frozen snapshot; keep it honest.
     desktop="$HOME/.local/share/applications/EldrunDev.desktop"
     if [ -f "$desktop" ]; then
@@ -110,6 +113,35 @@ fi
 
 if [ ! -x "$BINARY" ]; then
   bail "no frozen build installed at $BINARY." "Build one: cd $ROOT && npm run package:dev"
+fi
+
+# Say when the snapshot about to open is behind the repository, and why. The
+# commit hook's own failure notice never arrives from an agent tab (no session
+# bus), so a commit that broke the auto-freeze — or one the loop never reached
+# — left the icon opening yesterday's build with every commit reporting green
+# (2026-09-15). The launcher runs in the user's session: this notice does.
+APP_DIR="$(dirname "$BINARY")"
+FROZEN_INSTALLED="$BINARY.frozen"
+# No record beside the installed binary (adopted before records were kept
+# there): the tree's record speaks for it only if it IS that build.
+if [ ! -f "$FROZEN_INSTALLED" ] && [ -f "$FROZEN" ] &&
+   [ "$(sed -n 's/^sha256=//p' "$FROZEN")" = "$(sha256sum "$BINARY" 2>/dev/null | cut -d' ' -f1)" ]; then
+  FROZEN_INSTALLED="$FROZEN"
+fi
+frozen_commit="$(sed -n 's/^commit=//p' "$FROZEN_INSTALLED" 2>/dev/null)"
+if [ -n "$frozen_commit" ] && git -C "$ROOT" rev-parse --verify --quiet "$frozen_commit^{commit}" >/dev/null 2>&1; then
+  behind="$(git -C "$ROOT" rev-list --count "$frozen_commit..HEAD" 2>/dev/null || echo 0)"
+  if [ "$behind" -gt 0 ] 2>/dev/null; then
+    why="the post-commit freeze has not caught up yet."
+    failed="$APP_DIR/package-dev-auto.failed"
+    if [ -f "$failed" ]; then
+      read -r fcommit fstatus _ <"$failed"
+      why="the post-commit freeze FAILED at $fcommit (status $fstatus) — see $APP_DIR/package-dev-auto.log."
+    fi
+    printf 'snapshot %s is %s commit(s) behind HEAD: %s\n' "$frozen_commit" "$behind" "$why"
+    notify-send -u normal -a Eldrun "Eldrun (dev) is $behind commit(s) behind" \
+      "Opening $frozen_commit; $why" 2>/dev/null || true
+  fi
 fi
 
 # Same reason as start-eldrun-tauri-hotreload.sh: keep the CSS-themed scrollbar.
