@@ -347,3 +347,143 @@ fn flush_project_secs(project_id: &str, secs: f64) {
         eprintln!("project_runtime: record time for '{project_id}': {error}");
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A project dir with a `project.json` in it, the shape every helper here
+    /// is keyed by.
+    fn project_file(dir: &tempfile::TempDir) -> String {
+        dir.path().join("project.json").to_string_lossy().into_owned()
+    }
+
+    fn filetabs_path(dir: &tempfile::TempDir) -> std::path::PathBuf {
+        dir.path().join(".eldrun").join("sessions").join("filetabs.json")
+    }
+
+    /// The frontend's switch payload can be as small as `{}` — every field has
+    /// a default — and its keys are camelCase.
+    #[test]
+    fn a_previous_snapshot_deserializes_from_an_empty_object_and_camel_case_keys() {
+        let empty: PreviousProjectSnapshot = serde_json::from_str("{}").unwrap();
+        // project-tree-read: ok — the frontend's switch snapshot, not project.json.
+        assert!(empty.tab_layout.is_empty());
+        assert_eq!(empty.active_tab_index, 0);
+        assert!(empty.tab_groups.is_none() && empty.side_panel_folder.is_none());
+        assert_eq!(empty.flush_secs, 0.0);
+
+        let full: PreviousProjectSnapshot = serde_json::from_str(
+            r#"{"activeTabIndex":2,"flushSecs":12.5,"sidePanelFolder":"src","fileTabs":[{"p":1}],
+                "activeLayoutMetadata":{"name":"x"}}"#,
+        )
+        .unwrap();
+        assert_eq!(full.active_tab_index, 2);
+        assert_eq!(full.flush_secs, 12.5);
+        assert_eq!(full.side_panel_folder.as_deref(), Some("src"));
+        assert_eq!(full.file_tabs.len(), 1);
+        assert_eq!(full.active_layout_metadata.unwrap()["name"], "x");
+    }
+
+    /// No session file yet: the panel folder is simply unknown, and saving one
+    /// creates `.eldrun/sessions/filetabs.json` beside the project file.
+    #[test]
+    fn the_side_panel_folder_round_trips_through_filetabs_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let local = project_file(&dir);
+        assert_eq!(load_side_panel_folder(&local), None);
+        assert!(!filetabs_path(&dir).exists());
+
+        save_side_panel_folder(&local, Some("src/components".into())).unwrap();
+        assert!(filetabs_path(&dir).exists());
+        assert_eq!(load_side_panel_folder(&local).as_deref(), Some("src/components"));
+
+        save_side_panel_folder(&local, None).unwrap();
+        assert_eq!(load_side_panel_folder(&local), None);
+        let raw = std::fs::read_to_string(filetabs_path(&dir)).unwrap();
+        assert!(!raw.contains("sidePanelFolder"), "cleared means absent: {raw}");
+    }
+
+    /// Saving the folder is a merge: the file tabs already stored, and any key
+    /// a newer build wrote, stay exactly as they were.
+    #[test]
+    fn saving_the_side_panel_folder_preserves_the_other_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let local = project_file(&dir);
+        std::fs::create_dir_all(filetabs_path(&dir).parent().unwrap()).unwrap();
+        std::fs::write(
+            filetabs_path(&dir),
+            r#"{"fileTabs":[{"path":"README.md"}],"sidePanelFolder":"docs","futureKey":true}"#,
+        )
+        .unwrap();
+
+        save_side_panel_folder(&local, Some("src".into())).unwrap();
+        let raw: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(filetabs_path(&dir)).unwrap()).unwrap();
+        assert_eq!(raw["sidePanelFolder"], "src");
+        assert_eq!(raw["fileTabs"][0]["path"], "README.md");
+        assert_eq!(raw["futureKey"], true);
+        let (tabs, folder) = load_file_tab_session(&local);
+        assert_eq!(tabs.len(), 1);
+        assert_eq!(folder.as_deref(), Some("src"));
+    }
+
+    /// A file from before the panel was renamed still yields its folder, and
+    /// the first save rewrites it under the new key only.
+    #[test]
+    fn a_legacy_right_panel_key_is_read_once_and_rewritten_as_side_panel() {
+        let dir = tempfile::tempdir().unwrap();
+        let local = project_file(&dir);
+        std::fs::create_dir_all(filetabs_path(&dir).parent().unwrap()).unwrap();
+        std::fs::write(filetabs_path(&dir), r#"{"fileTabs":[],"rightPanelFolder":"old"}"#).unwrap();
+        assert_eq!(load_side_panel_folder(&local).as_deref(), Some("old"));
+
+        save_side_panel_folder(&local, Some("new".into())).unwrap();
+        let raw = std::fs::read_to_string(filetabs_path(&dir)).unwrap();
+        assert!(raw.contains("\"sidePanelFolder\": \"new\""), "{raw}");
+        assert!(!raw.contains("rightPanelFolder"), "{raw}");
+    }
+
+    /// A corrupt session file reads as "no tabs, no folder" rather than
+    /// failing the switch, and a project file with no parent cannot be saved.
+    #[test]
+    fn a_corrupt_session_file_reads_as_empty_and_a_rootless_path_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let local = project_file(&dir);
+        std::fs::create_dir_all(filetabs_path(&dir).parent().unwrap()).unwrap();
+        std::fs::write(filetabs_path(&dir), "{not json").unwrap();
+        assert_eq!(load_file_tab_session(&local), (vec![], None));
+        assert!(save_side_panel_folder("", Some("x".into())).is_err());
+    }
+
+    /// Leaving a project writes three files: the file tabs and layout under
+    /// `.eldrun/sessions/`, and `.eldrun/state.json` one level up naming the
+    /// project id and its directory.
+    #[test]
+    fn leaving_a_project_writes_filetabs_layout_and_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let local = project_file(&dir);
+        let snapshot = PreviousProjectSnapshot {
+            tab_layout: vec![],
+            active_tab_index: 0,
+            tab_groups: None,
+            file_tabs: vec![serde_json::json!({"path":"a.rs"})],
+            side_panel_folder: Some("src".into()),
+            active_layout_metadata: Some(serde_json::json!({"name":"wide"})),
+            flush_secs: 0.0,
+        };
+        save_previous_sessions(&local, Some("p-42"), &snapshot);
+
+        let sessions = dir.path().join(".eldrun").join("sessions");
+        let tabs: FileTabSession = storage::read_json(&sessions.join("filetabs.json")).unwrap();
+        assert_eq!(tabs.file_tabs[0]["path"], "a.rs");
+        assert_eq!(tabs.side_panel_folder.as_deref(), Some("src"));
+        let layout: LayoutSession = storage::read_json(&sessions.join("layout.json")).unwrap();
+        assert_eq!(layout.active_layout_metadata.unwrap()["name"], "wide");
+        let state: ProjectState =
+            storage::read_json(&dir.path().join(".eldrun").join("state.json")).unwrap();
+        assert_eq!(state.project_id, "p-42");
+        assert_eq!(std::path::Path::new(&state.project_dir), dir.path());
+        assert!(state.saved_at.is_some());
+    }
+}

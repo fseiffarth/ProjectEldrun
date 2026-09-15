@@ -474,3 +474,117 @@ pub async fn global_machine_usage_check(
     .await
     .map_err(|e| format!("usage probe task failed: {e}"))?
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn file(dir: &tempfile::TempDir, name: &str, content: &str) -> String {
+        let path = dir.path().join(name);
+        std::fs::write(&path, content).unwrap();
+        path.to_string_lossy().into_owned()
+    }
+
+    /// The export shape: a versioned wrapper whose rows carry host/port/label
+    /// and, on the way out, never a username; import accepts the wrapper and
+    /// a bare array alike, in file order.
+    #[test]
+    fn import_reads_the_versioned_wrapper_and_a_bare_array_in_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let wrapped = file(
+            &dir,
+            "machines.json",
+            r#"{"version":1,"machines":[{"host":"b.example","label":"B"},{"host":"a.example","port":2222}]}"#,
+        );
+        let rows = global_machines_import_read(wrapped).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].host, "b.example");
+        assert_eq!(rows[0].label.as_deref(), Some("B"));
+        assert_eq!(rows[1].port, Some(2222));
+        assert!(rows[1].user.is_none());
+
+        let bare = file(&dir, "bare.json", r#"[{"host":"c.example","user":"me"}]"#);
+        let rows = global_machines_import_read(bare).unwrap();
+        assert_eq!(rows[0].user.as_deref(), Some("me"));
+    }
+
+    /// Rows are trimmed, and a row whose host or user would be unsafe as an
+    /// ssh argument is dropped rather than carried to a later add.
+    #[test]
+    fn import_trims_rows_and_drops_unsafe_hosts_and_users() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = file(
+            &dir,
+            "m.json",
+            "[{\"host\":\"  ok.example  \",\"user\":\"  \"},\
+              {\"host\":\"-oProxyCommand=evil\"},\
+              {\"host\":\"ctl\\u0007.example\"},\
+              {\"host\":\"fine.example\",\"user\":\"-bad\"},\
+              {\"host\":\"\"},\
+              {\"host\":\"last.example\",\"user\":\" root \"}]",
+        );
+        let rows = global_machines_import_read(path).unwrap();
+        let hosts: Vec<&str> = rows.iter().map(|r| r.host.as_str()).collect();
+        assert_eq!(hosts, vec!["ok.example", "last.example"]);
+        assert!(rows[0].user.is_none(), "a blank user is dropped, not kept as spaces");
+        assert_eq!(rows[1].user.as_deref(), Some("root"));
+    }
+
+    /// The label is display text from a shared file: bidi overrides and
+    /// zero-width characters are stripped instead of refusing the row, and a
+    /// label that was nothing but controls is dropped.
+    #[test]
+    fn import_strips_format_controls_from_labels_instead_of_refusing_the_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = file(
+            &dir,
+            "m.json",
+            "[{\"host\":\"a.example\",\"label\":\"\\u202egpu\\u200b-2\"},\
+              {\"host\":\"b.example\",\"label\":\"\\u200b\\u200b\"}]",
+        );
+        let rows = global_machines_import_read(path).unwrap();
+        assert_eq!(rows[0].label.as_deref(), Some("gpu-2"));
+        assert!(rows[1].label.is_none());
+    }
+
+    /// A file that parses but yields nothing usable, and one that is not a
+    /// machines file at all, each fail with their own message.
+    #[test]
+    fn import_distinguishes_no_valid_rows_from_not_a_machines_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let empty = file(&dir, "empty.json", r#"{"version":1,"machines":[{"host":"-x"}]}"#);
+        assert_eq!(
+            global_machines_import_read(empty).unwrap_err(),
+            "no valid machines found in file"
+        );
+        let garbage = file(&dir, "garbage.json", r#"{"hosts":["a"]}"#);
+        assert!(global_machines_import_read(garbage).unwrap_err().starts_with("not a machines export file"));
+        let missing = dir.path().join("nope.json").to_string_lossy().into_owned();
+        assert!(global_machines_import_read(missing).unwrap_err().starts_with("failed to read"));
+    }
+
+    /// An exported row omits every absent field — and `user` is `None` on the
+    /// way out by construction, so a file Eldrun wrote never names a login.
+    #[test]
+    fn machine_io_omits_absent_fields_on_export() {
+        let row = MachineIo {
+            host: "h.example".into(),
+            port: None,
+            label: Some("H".into()),
+            user: None,
+        };
+        assert_eq!(
+            serde_json::to_value(&row).unwrap(),
+            serde_json::json!({"host":"h.example","label":"H"})
+        );
+        let export = MachineExportFile {
+            version: 1,
+            machines: vec![row],
+        };
+        let back: MachineExportFile =
+            serde_json::from_str(&serde_json::to_string(&export).unwrap()).unwrap();
+        assert_eq!(back.version, 1);
+        assert_eq!(back.machines[0].host, "h.example");
+        assert!(back.machines[0].user.is_none());
+    }
+}

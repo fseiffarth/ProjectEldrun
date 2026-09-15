@@ -62,3 +62,72 @@ pub struct ProjectBox {
 /// Full `boxes.json` — an unordered list of project boxes (ordering is by each
 /// box's `position`).
 pub type BoxesList = Vec<ProjectBox>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn json<T: Serialize>(value: &T) -> Value {
+        serde_json::to_value(value).expect("serialize")
+    }
+
+    /// Only `id` and `name` are required: a hand-edited or pre-#41 record
+    /// loads with everything else defaulted.
+    #[test]
+    fn a_minimal_box_record_defaults_everything_else() {
+        let b: ProjectBox = serde_json::from_str(r#"{"id":"b1","name":"Thesis"}"#).unwrap();
+        assert!(b.member_ids.is_empty());
+        assert_eq!(b.position, 0);
+        assert!(b.folder.is_none());
+        assert!(b.relations.is_empty());
+        assert!(!b.eldrun_mobile_access);
+        assert!(b.extra.is_empty());
+    }
+
+    /// The phone-reach bit is absent from disk while off and present only
+    /// when on — the sidecar reads this file directly and keys on presence.
+    #[test]
+    fn mobile_access_is_written_only_while_on() {
+        let off = ProjectBox {
+            id: "b".into(),
+            name: "n".into(),
+            ..Default::default()
+        };
+        let out = json(&off);
+        assert!(out.get("eldrun_mobile_access").is_none(), "{out}");
+        assert!(out.get("relations").is_none(), "empty relations are omitted");
+        assert!(out.get("folder").is_none());
+        assert_eq!(out["member_ids"], serde_json::json!([]));
+        assert_eq!(out["position"], 0);
+
+        let on = ProjectBox {
+            eldrun_mobile_access: true,
+            ..off
+        };
+        assert_eq!(json(&on)["eldrun_mobile_access"], true);
+        let back: ProjectBox = serde_json::from_value(json(&on)).unwrap();
+        assert!(back.eldrun_mobile_access);
+    }
+
+    /// Relations keep their optional labels only when set, and unknown keys on
+    /// both the box and a relation ride through `extra`.
+    #[test]
+    fn relations_and_unknown_keys_round_trip() {
+        let raw = r##"{"id":"b","name":"n","member_ids":["p1","p2"],"position":150,
+            "relations":[{"source":"p1","target":"p2","kind":"python-lib","weight":2}],
+            "color":"#fff"}"##;
+        let b: ProjectBox = serde_json::from_str(raw).unwrap();
+        let rel = &b.relations[0];
+        assert_eq!(rel.kind.as_deref(), Some("python-lib"));
+        assert!(rel.hint.is_none());
+        assert_eq!(rel.extra["weight"], 2);
+        assert_eq!(b.extra["color"], "#fff");
+        let out = json(&b);
+        assert!(out["relations"][0].get("hint").is_none());
+        assert_eq!(out["relations"][0]["weight"], 2);
+        let back: ProjectBox = serde_json::from_value(out).unwrap();
+        assert_eq!(back, b);
+        let list: BoxesList = serde_json::from_str(&format!("[{raw}]")).unwrap();
+        assert_eq!(list[0].member_ids, vec!["p1", "p2"]);
+    }
+}
