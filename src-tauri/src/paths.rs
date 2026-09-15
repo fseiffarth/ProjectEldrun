@@ -119,7 +119,19 @@ fn supplemental_path_dirs_for(
         home.join(".opencode").join("bin"),
     ];
     match os {
-        OsKind::Macos => dirs.extend(MACOS_EXTRA_DIRS.iter().map(PathBuf::from)),
+        OsKind::Macos => {
+            dirs.extend(MACOS_EXTRA_DIRS.iter().map(PathBuf::from));
+            // Container CLIs a Finder-launched app cannot see: Docker Desktop's
+            // per-user install (no admin rights, nothing in /usr/local/bin),
+            // OrbStack's, and the CLI inside Docker.app itself. Mac-only on
+            // purpose — the common list above is prepended on Linux too, where an
+            // extra dir would change which binary wins.
+            dirs.push(home.join(".docker").join("bin"));
+            dirs.push(home.join(".orbstack").join("bin"));
+            dirs.push(PathBuf::from(
+                "/Applications/Docker.app/Contents/Resources/bin",
+            ));
+        }
         OsKind::Windows => {
             if let Some(local) = local_app_data {
                 let local = PathBuf::from(local);
@@ -562,6 +574,12 @@ mod tests {
         let mac = supplemental_path_dirs_for(OsKind::Macos, home, None, None, None);
         assert!(mac.contains(&PathBuf::from("/opt/homebrew/bin")));
         assert!(mac.contains(&PathBuf::from("/Library/TeX/texbin")));
+        assert!(mac.contains(&home.join(".docker").join("bin")));
+        assert!(mac.contains(&home.join(".orbstack").join("bin")));
+        assert!(mac.contains(&PathBuf::from("/Applications/Docker.app/Contents/Resources/bin")));
+        // The container dirs are the Mac's alone: Linux keeps its list unchanged.
+        assert!(!unix.contains(&home.join(".docker").join("bin")));
+        assert!(!unix.contains(&home.join(".orbstack").join("bin")));
 
         let windows = supplemental_path_dirs_for(
             OsKind::Windows,
