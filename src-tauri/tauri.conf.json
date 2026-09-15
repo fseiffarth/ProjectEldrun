@@ -47,8 +47,12 @@
       "deb": {
         "depends": [
           "libwebkit2gtk-4.1-0",
-          "libgtk-3-0",
-          "libappindicator3-1"
+          "libgtk-3-0"
+        ],
+        "recommends": [
+          "bubblewrap",
+          "tmux",
+          "cups-client"
         ]
       }
     },
