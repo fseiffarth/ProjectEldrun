@@ -119,6 +119,8 @@ export function PromptCard({
   const [copied, setCopied] = useState(false);
   const storedTags = formatTags(card.tags);
   const readOnly = card.state === "sent" || !!occurrence;
+  /** A card on the drafts strip deletes from its face, without expanding. */
+  const quickDelete = !occurrence && (card.state === "draft" || card.state === "chained");
 
   useEffect(() => {
     setMessage(card.message);
@@ -156,8 +158,17 @@ export function PromptCard({
       onPointerDown={occurrence ? undefined : onPointerDown}
     >
       {!occurrence && <span className="agent-prompt-card-port is-in" aria-hidden="true" />}
-      <div className="agent-prompt-card-head">
+      <div className={`agent-prompt-card-head${quickDelete ? " has-delete" : ""}`}>
         <span className="agent-prompt-card-message">{card.message}</span>
+        {quickDelete && (
+          <button
+            className="agent-prompt-card-delete"
+            type="button"
+            aria-label={t("promptChart.deleteDraft")}
+            title={t("promptChart.deleteDraft")}
+            onClick={(event) => { event.stopPropagation(); void onDelete(); }}
+          >×</button>
+        )}
         <span className={`agent-prompt-lamp is-${card.history?.result ?? card.state}`} aria-hidden="true" />
       </div>
       <div className="agent-prompt-card-agent" onClick={(event) => event.stopPropagation()}>

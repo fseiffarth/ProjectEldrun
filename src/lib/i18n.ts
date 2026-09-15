@@ -1023,6 +1023,7 @@ export const en = {
   "promptChart.hideOthers": "Hide others",
   "promptChart.drafts": "Drafts",
   "promptChart.noDrafts": "No draft prompts.",
+  "promptChart.deleteDraft": "Delete draft",
   "promptChart.draft": "Draft",
   "promptChart.now": "now",
   "promptChart.waiting": "Waiting for idle",

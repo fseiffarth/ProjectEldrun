@@ -950,6 +950,7 @@ export const dict: Dict = {
   "promptChart.hideOthers": "Ocultar otros",
   "promptChart.drafts": "Borradores",
   "promptChart.noDrafts": "No hay borradores.",
+  "promptChart.deleteDraft": "Eliminar borrador",
   "promptChart.draft": "Borrador",
   "promptChart.now": "ahora",
   "promptChart.waiting": "Esperando inactividad",
