@@ -330,6 +330,7 @@ export const en = {
   "settings.takeTour": "Take a tour",
   "settings.lessons": "Lessons",
   "settings.takeAdvancedTour": "Advanced tour",
+  "settings.advancedOptions": "Advanced options",
   "settings.resetHints": "Reset hints",
 
   // Settings — layout.

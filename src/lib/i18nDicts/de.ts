@@ -276,6 +276,7 @@ export const dict: Dict = {
   "settings.takeTour": "Tour starten",
   "settings.lessons": "Lektionen",
   "settings.takeAdvancedTour": "Erweiterte Tour",
+  "settings.advancedOptions": "Erweiterte Optionen",
   "settings.resetHints": "Hinweise zurücksetzen",
 
   "settings.layout": "Layout",

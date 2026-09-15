@@ -645,6 +645,7 @@ button.settings-btn.danger:hover:not(:disabled),
      .settings-row             the same line outside one (inside lists, etc.)
      .settings-list[.boxed]    a repeated-row list
      .settings-btn             the one button
+     .settings-advanced        the collapsed "Advanced options" fold
 
    Keeping to them is what holds the left edge, the control column and the type
    scale identical down the whole scroll — so add a variant here rather than a
@@ -921,6 +922,73 @@ label.settings-toggle-card-row {
 /* Air above it when it follows content, none when it opens a card. */
 * + .settings-subheader {
   margin-top: 6px;
+}
+
+/* ── Advanced options ──────────────────────────────────────────────────── */
+/* The fold at a panel's foot (`SettingsAdvanced`). Deliberately *not* a
+   section title: a section is always there, this is something you open. So it
+   gets a dashed hairline instead of the solid one, sentence case instead of
+   small caps, and a muted label that only takes the accent once opened — and
+   the open body hangs off an accent rail, so everything in it reads as "the
+   advanced part" however far down the cards run. */
+.settings-advanced {
+  display: flex;
+  flex-direction: column;
+  margin-top: 6px;
+  border-top: 1px dashed var(--border-subtle);
+}
+
+.settings-advanced-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 12px 0 2px;
+  border: none;
+  background: none;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--text-md);
+  font-weight: 650;
+  text-align: left;
+  cursor: var(--cur-pointer, pointer);
+}
+
+.settings-advanced-toggle:hover,
+.settings-advanced.open > .settings-advanced-toggle {
+  color: var(--accent-secondary);
+}
+
+.settings-advanced-toggle:focus-visible {
+  outline: 1px solid var(--accent-secondary);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.settings-advanced-chevron {
+  display: inline-block;
+  width: 12px;
+  font-size: 15px;
+  line-height: 1;
+  text-align: center;
+  transition: transform 120ms ease;
+}
+
+.settings-advanced.open .settings-advanced-chevron {
+  transform: rotate(90deg);
+}
+
+.settings-advanced-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 10px 0 0 5px;
+  padding-left: 12px;
+  border-left: 2px solid color-mix(in srgb, var(--accent-secondary) 45%, transparent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .settings-advanced-chevron { transition: none; }
 }
 
 /* A row of buttons under a section (Add folder, Take the tour, …). */
