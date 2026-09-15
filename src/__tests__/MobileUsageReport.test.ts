@@ -22,6 +22,23 @@ describe("Eldrun Mobile agent usage panel", () => {
     ]);
   });
 
+  it("keeps a dated reset whole — date, time and zone", () => {
+    // What Claude Code 2.1.272 prints (2026-09-15). The comma inside the date
+    // used to end the phrase, leaving `Sep 15` and no time at all.
+    const report = parseUsageReport([
+      "You are currently using your subscription to power your Claude Code usage",
+      "",
+      "Current session: 39% used · resets Sep 15, 10:30pm (Europe/Berlin)",
+      "Current week (all models): 54% used · resets Sep 17, 2pm (Europe/Berlin)",
+      "Current week (Fable): 94% used · resets Jan 3, 2027, 9am (Europe/Berlin)",
+    ].join("\n"));
+    expect(report.meters).toEqual([
+      { label: "Current session", percent: 39, resets: "Sep 15, 10:30pm (Europe/Berlin)" },
+      { label: "Current week (all models)", percent: 54, resets: "Sep 17, 2pm (Europe/Berlin)" },
+      { label: "Current week (Fable)", percent: 94, resets: "Jan 3, 2027, 9am (Europe/Berlin)" },
+    ]);
+  });
+
   it("keeps a readout with no percentage as a note rather than dropping it", () => {
     const report = parseUsageReport(CLAUDE_PANEL);
     expect(report.notes).toEqual([{ label: "Last 24h", value: "41 requests · 6 sessions" }]);

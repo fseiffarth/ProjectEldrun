@@ -44,6 +44,16 @@ describe("usageResetMarks", () => {
     expect(marks[0].percent).toBe(52);
   });
 
+  it("repeats a dated weekly reset the way it repeats a weekday one", () => {
+    // Claude Code 2.1.272 names the weekly reset by its date, not its weekday.
+    const report = parseUsageReport("Current week (all models): 54% used · resets Sep 7, 9am");
+    const marks = usageResetMarks("claude", report, TUE_1400, new Date(2026, 7, 25), new Date(2026, 8, 22));
+    expect(marks.map((mark) => mark.at)).toEqual([
+      new Date(2026, 7, 31, 9), new Date(2026, 8, 7, 9), new Date(2026, 8, 14, 9), new Date(2026, 8, 21, 9),
+    ]);
+    expect(marks[0].resets).toBe("Sep 7, 9am");
+  });
+
   it("draws nothing for a session reset outside the range or a phrase it cannot place", () => {
     const report = parseUsageReport("Current session: 10% used · resets Feb 3\nCurrent week: 5% used");
     expect(usageResetMarks("claude", report, TUE_1400, new Date(2026, 0, 1), new Date(2027, 0, 1))).toEqual([]);

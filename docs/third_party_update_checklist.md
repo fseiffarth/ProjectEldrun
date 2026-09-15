@@ -144,8 +144,15 @@ Claude's `/fast` — different thing.
   `<command-name>…<command-args>` reads as `/name args`, `<bash-input>` as
   `! cmd`. A new wrapper tag shows up as a prompt until it is added here.
 - `/usage` in print mode returns a JSON envelope with `result` (panel text),
-  `is_error`, `num_turns: 0`. The panel text itself is parsed on the phone
-  (five-hour / weekly windows, per-model lines) — a re-layout may cost figures.
+  `is_error`, `num_turns: 0` (re-checked live against 2.1.272, 2026-09-15). The
+  panel text is parsed by `shared/usageReport.ts` for the phone's bars, the
+  prompt chart's reset lines and auto-continue (five-hour / weekly windows,
+  per-model lines) — a re-layout may cost figures. `resolveResetAt` places the
+  reset phrase in time: 2.1.272 prints `resets Sep 15, 10:30pm (Europe/Berlin)`
+  (a year only when it is not the current one, the zone always) where earlier
+  builds printed `resets 6:20pm` / `resets Mon 9am`. A shape it does not know
+  resolves to nothing, which silently empties the chart's reset lines and
+  leaves auto-continue unable to arm.
 - Model short names `opus | sonnet | haiku | fable` for the `/model` chips.
 - Preface commands `/clear /compact /context /cost`.
 - Home files: `~/.claude/`, `~/.claude.json` (+ `.bak`, `.backup.N`),
