@@ -26,7 +26,7 @@ export interface SessionStatus {
   context?: string;
 }
 
-interface StatusLineLike { text: string }
+interface StatusLineLike { text: string; frameText?: string }
 
 /** The input prompt after `readableScreen` stripped the box frame: `>`, `›` or
  * `❯`, alone or followed by the draft being typed. `*` is Qwen Code's YOLO
@@ -167,8 +167,8 @@ const OPTION_ROW = /^\s*[>›❯*]\s*\d{1,2}[.)]\s/u;
 
 /** The rule an agent draws across the top of its input box, with the project
  * or model name sitting in it (`──────── ProjectEldrun ─`). `readableScreen`
- * already drops a bare rule; this one carries a word, so it survives as far as
- * here — and on a phone it is still decoration, not output. */
+ * drops the strokes but preserves the original in `frameText`, so the input
+ * frame can still be distinguished from an ordinary output line. */
 function labelledRule(text: string) {
   if (!/[─―—]{8,}/u.test(text)) return false;
   const rest = text.replace(/[\s─―—-]+/gu, "");
@@ -202,7 +202,7 @@ export function inputFrameStart(lines: readonly StatusLineLike[]): number {
   // The box's own top edge and the blank rows the TUI keeps above it belong to
   // the frame; left behind they would trail the output with a rule and a gap.
   while (start > 0) {
-    const above = lines[start - 1].text;
+    const above = lines[start - 1].frameText ?? lines[start - 1].text;
     if (!above.trim() || labelledRule(above)) start -= 1;
     else break;
   }

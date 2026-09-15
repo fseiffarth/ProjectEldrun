@@ -24,8 +24,9 @@
  * indented under it. On a phone the answer is what is wanted and the
  * edit-by-edit status beside it is noise, so each `⏺` message is one agent
  * turn and a tool call, status rows included, is left out of the layout.
- * Only that exact shape is dropped — a capitalised name followed directly by
- * `(` — and a permission dialog under a tool call sits at the left edge,
+ * Only those exact shapes are dropped — a capitalised name followed directly
+ * by `(`, or an MCP tool's `server - tool (MCP)` — and a permission dialog
+ * under a tool call sits at the left edge,
  * which ends the call's block, so a question the session is waiting on is
  * still shown.
  *
@@ -61,11 +62,15 @@ const OPTION_ROW = /^ ?[>›❯] \d{1,2}[.)] /u;
 const CONTINUATION = /^\s+\S/u;
 /** Columns the marker and its space occupy — what the indent lines up with. */
 const MARKER_WIDTH = 2;
-/** Claude Code's message bullet at the left edge, opening a message. */
-const CLAUDE_MESSAGE = /^ ?⏺ (?=\S)/u;
-/** A Claude Code tool call: the bullet, a capitalised tool name (`Bash`,
- * `Update`, `Web Search`), its argument in parentheses. */
-const CLAUDE_TOOL_CALL = /^ ?⏺ [A-Z][A-Za-z]*(?: [A-Z][A-Za-z]*)*\(/u;
+/** Claude Code's message bullet at the left edge, opening a message: `⏺`, or
+ * `●`, which is what it draws on Linux. */
+const CLAUDE_MESSAGE = /^ ?[⏺●] (?=\S)/u;
+/** A Claude Code tool call: the bullet, then either a capitalised built-in
+ * tool name (`Bash`, `Update`, `Web Search`) with its argument in parentheses,
+ * or an MCP tool, which Claude Code names `server - tool (MCP)` (`mcp__…
+ * (MCP)` for one whose server is gone) — lowercase, so the first form never
+ * matched it — followed by its argument, or by nothing when it takes none. */
+const CLAUDE_TOOL_CALL = /^ ?[⏺●] (?:[A-Z][A-Za-z]*(?: [A-Z][A-Za-z]*)*\(|(?:\S+ - \S+|mcp__\S+) \(MCP\)(?:\(|$))/u;
 /** A row that belongs to the tool call above it: its `⎿` status line, an
  * indented output or continuation row, or a blank between them. */
 const TOOL_ROW = /^(?:\s*⎿|\s{2,}\S|\s*$)/u;

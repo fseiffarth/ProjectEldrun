@@ -528,6 +528,10 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
   `src/__tests__/MobileChatTurns.test.ts` (7 cases) and
   `MobileTerminalReadableView.test.tsx` (2 cases); `/terminal-preview.html`
   shows two exchanges.
+  - [ ] Manual phone QA (2026-09-15): Codex labelled dividers such as
+    `─ Worked for 2m ─────` show only their label in Focus, with no wrapped
+    white rules; input-frame labels remain hidden. Regression coverage in
+    `MobileReadableScreen.test.ts`; live verification pending.
   - [ ] 🖐️ Manual phone QA — open a Claude agent tab in Focus and send a prompt
     from the composer: it appears as a bubble on the right, in the same violet
     as the "Sent" strip, without the `>`; the answer sits on the left as

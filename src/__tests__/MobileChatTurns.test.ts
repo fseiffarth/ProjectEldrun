@@ -155,6 +155,39 @@ describe("Eldrun Mobile chat turns", () => {
     expect(turns[2].answer?.map((row) => row.text)).toEqual(["Ready when you are."]);
   });
 
+  it("leaves MCP tool calls out too, with or without an argument", () => {
+    const turns = chatTurns(lines(
+      "● context7 - resolve-library-id (MCP)(libraryName: \"react\")",
+      "  ⎿  Available Libraries (top matches):",
+      "     - Title: React",
+      "",
+      "⏺ mcp__github__list_issues (MCP)(repo: \"eldrun\")",
+      "  ⎿  []",
+      "",
+      "● claude-in-chrome - tabs_context (MCP)",
+      "  ⎿  1 tab open",
+      "",
+      "● The context7 server (MCP) had the docs.",
+    ));
+    expect(turns.map((turn) => turn.role)).toEqual(["agent"]);
+    // Prose that merely mentions MCP is not a call.
+    expect(turns[0].answer?.map((row) => row.text)).toEqual(["The context7 server (MCP) had the docs."]);
+  });
+
+  it("reads the ● bullet Claude Code draws on Linux as its message bullet", () => {
+    const turns = chatTurns(lines(
+      "❯ why is this shown",
+      "",
+      "● Bash(git status)",
+      "  ⎿  clean",
+      "",
+      "● The panel shared the rows.",
+      "  It is cut off now.",
+    ));
+    expect(turns.map((turn) => turn.role)).toEqual(["user", "agent"]);
+    expect(turns[1].answer?.map((row) => row.text)).toEqual(["The panel shared the rows.", "It is cut off now."]);
+  });
+
   it("leaves another TUI's output as one plain agent turn", () => {
     const turns = chatTurns(lines("› explain", "", "• Sure, this repo is a phone app.", "  It has two screens."));
     expect(turns.map((turn) => turn.role)).toEqual(["user", "agent"]);
