@@ -1,4 +1,5 @@
 import type { ProjectAgentPrompt, PromptLink } from "../stores/agentPrompts";
+import { MAX_PREFACE_COMMANDS, sanitizePrefaceCommand } from "./agentPrefaces";
 
 export type PromptLinkKind = "related" | "after";
 
@@ -24,6 +25,25 @@ export function validPromptLink(link: PromptLink): boolean {
 export function prunePromptLinks(links: PromptLink[], endpointIds: Iterable<string>): PromptLink[] {
   const ids = new Set(endpointIds);
   return links.filter((link) => validPromptLink(link) && ids.has(link.from) && ids.has(link.to));
+}
+
+/**
+ * The command chips an edge offers: what the target tab's agent offers, then
+ * any command the edge already carries that it no longer does — a chip that
+ * disappeared would drop a command the edge still types.
+ */
+export function edgeCommandChoices(offered: readonly string[], preface: readonly string[] = []): string[] {
+  const choices = offered.map(sanitizePrefaceCommand).filter(Boolean);
+  for (const command of preface) if (!choices.includes(command)) choices.push(command);
+  return choices;
+}
+
+/** An edge's commands with `command` switched on or off, in chip order. */
+export function toggleEdgeCommand(choices: readonly string[], preface: readonly string[] = [], command: string): string[] {
+  const on = new Set(preface);
+  if (on.has(command)) on.delete(command);
+  else on.add(command);
+  return choices.filter((choice) => on.has(choice)).slice(0, MAX_PREFACE_COMMANDS);
 }
 
 /** Resolve the drafts an actual successful delivery should queue. */

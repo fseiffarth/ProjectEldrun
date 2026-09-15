@@ -12,8 +12,9 @@ use crate::{
         RecordedAgentPromptInput, SentAgentPrompt, SentAgentPromptInput,
     },
     services::{
+        agent_session,
         agent_tasks::{
-            sanitize_message, validate_id, validate_preface_command, MAX_MESSAGE_BYTES,
+            self, sanitize_message, validate_id, validate_preface_command, MAX_MESSAGE_BYTES,
             MAX_PREFACE_COMMANDS,
         },
         prompt_blame::{self, RepoHead, MAX_BLAME_FILES},
@@ -182,6 +183,9 @@ fn validate_sent(input: SentAgentPromptInput) -> Result<SentAgentPromptInput, St
     if let Some(session_id) = &input.session_id {
         validate_id("session id", session_id)?;
     }
+    if let Some(tab_id) = &input.tab_id {
+        validate_id("tab id", tab_id)?;
+    }
     let agent = input.agent.as_ref().map(|agent| {
         sanitize_message(agent)
             .replace('\n', " ")
@@ -212,13 +216,20 @@ fn validate_sent(input: SentAgentPromptInput) -> Result<SentAgentPromptInput, St
         .iter()
         .map(|command| validate_preface_command(command))
         .collect::<Result<Vec<_>, _>>()?;
+    if let Some(sent_at) = &input.sent_at {
+        if prompt_blame::iso_to_epoch(sent_at).is_none() {
+            return Err(format!("invalid sent time: {sent_at}"));
+        }
+    }
     Ok(SentAgentPromptInput {
         tab_label,
         session_id: input.session_id,
+        tab_id: input.tab_id,
         preface,
         agent,
         result: input.result,
         scheduled_for: input.scheduled_for,
+        sent_at: input.sent_at,
     })
 }
 
@@ -228,15 +239,21 @@ fn validate_sent(input: SentAgentPromptInput) -> Result<SentAgentPromptInput, St
 /// must update that record, not duplicate it. The cap drops the oldest.
 fn push_history(file: &mut AgentPromptsFile, project_id: &str, sent: SentAgentPrompt) {
     let history = file.history.entry(project_id.to_string()).or_default();
-    match history.iter().position(|item| item.id == sent.id) {
-        Some(index) => {
-            // Ordering is by when it happened, so an entry that just became a
-            // delivery moves to the end with the other recent ones.
-            history.remove(index);
-            history.push(sent);
-        }
-        None => history.push(sent),
+    // Ordering is by when it happened, so an entry that just became a delivery
+    // moves to the end with the other recent ones — and a prompt recorded
+    // after the fact (adopted from a transcript) lands among its neighbours.
+    if let Some(index) = history.iter().position(|item| item.id == sent.id) {
+        history.remove(index);
     }
+    let at = prompt_blame::iso_to_epoch(&sent.sent_at);
+    let index = match at {
+        Some(at) => history
+            .iter()
+            .rposition(|item| prompt_blame::iso_to_epoch(&item.sent_at).is_none_or(|t| t <= at))
+            .map_or(0, |i| i + 1),
+        None => history.len(),
+    };
+    history.insert(index, sent);
     if history.len() > MAX_HISTORY_PER_PROJECT {
         let drop = history.len() - MAX_HISTORY_PER_PROJECT;
         history.drain(0..drop);
@@ -255,6 +272,7 @@ fn apply_archive(
     prompt_id: &str,
     input: &SentAgentPromptInput,
     head: Option<&RepoHead>,
+    roll: Option<&str>,
     now: &str,
 ) -> Option<SentAgentPrompt> {
     let prompt = file
@@ -275,6 +293,7 @@ fn apply_archive(
         sent_at: now.to_string(),
         tab_label: input.tab_label.clone(),
         session_id: input.session_id.clone(),
+        tab_id: input.tab_id.clone(),
         preface: input.preface.clone(),
         agent: input.agent.clone(),
         result: input.result.clone(),
@@ -286,6 +305,7 @@ fn apply_archive(
         files_at: None,
     };
     push_history(file, project_id, sent.clone());
+    link_session_roll(file, project_id, &sent, roll);
     prune_links(file, project_id);
     Some(sent)
 }
@@ -302,6 +322,7 @@ fn apply_record(
     entry: &RecordedAgentPromptInput,
     input: &SentAgentPromptInput,
     head: Option<&RepoHead>,
+    roll: Option<&str>,
     now: &str,
 ) -> SentAgentPrompt {
     // The row this delivery updates, if the send already wrote one. What the
@@ -331,9 +352,10 @@ fn apply_record(
         id: entry.id.clone(),
         message: entry.message.clone(),
         created_at,
-        sent_at: now.to_string(),
+        sent_at: input.sent_at.clone().unwrap_or_else(|| now.to_string()),
         tab_label: input.tab_label.clone(),
         session_id: input.session_id.clone(),
+        tab_id: input.tab_id.clone(),
         preface: input.preface.clone(),
         agent: input.agent.clone(),
         result: input.result.clone(),
@@ -351,7 +373,91 @@ fn apply_record(
         files_at: existing.and_then(|item| item.files_at),
     };
     push_history(file, project_id, sent.clone());
+    link_session_roll(file, project_id, &sent, roll);
     sent
+}
+
+/// The id of the edge the history draws by itself when a tab's session rolls:
+/// one per new-session row, so a re-record of that row (a queued send turning
+/// into its delivery) updates the edge instead of adding a second.
+fn session_roll_link_id(row_id: &str) -> String {
+    format!("roll:{row_id}")
+}
+
+/// Draw the edge a `/clear` (or `/resume`) leaves behind: `sent` is the first
+/// row the tab wrote under a NEW session id, and `roll` is how the hook says
+/// that session started. The tab's newest earlier row under another session
+/// becomes the source — the chart shows the two session cards of one tab
+/// joined, an `after` edge carrying `/clear` when that is what happened,
+/// a plain `related` one when the session was resumed or the hook did not
+/// say. Nothing is drawn for a row without a tab id or session id, for a
+/// tab's first session, or when the project's links are full — the record
+/// itself must never fail over its decoration.
+fn link_session_roll(
+    file: &mut AgentPromptsFile,
+    project_id: &str,
+    sent: &SentAgentPrompt,
+    roll: Option<&str>,
+) {
+    let (Some(tab_id), Some(session_id)) = (sent.tab_id.as_deref(), sent.session_id.as_deref())
+    else {
+        return;
+    };
+    let Some(history) = file.history.get(project_id) else {
+        return;
+    };
+    let Some(index) = history.iter().position(|row| row.id == sent.id) else {
+        return;
+    };
+    let mut earlier = history[..index]
+        .iter()
+        .filter(|row| row.tab_id.as_deref() == Some(tab_id));
+    // Only the first row of a session gets the edge; the rest of the session
+    // fold into the same card on the chart.
+    if earlier.clone().any(|row| row.session_id.as_deref() == Some(session_id)) {
+        return;
+    }
+    let Some(previous) = earlier.rfind(|row| row.session_id.is_some()) else {
+        return;
+    };
+    let (kind, preface) = match roll {
+        Some("clear") => ("after", vec!["/clear".to_string()]),
+        _ => ("related", Vec::new()),
+    };
+    let link = PromptLink {
+        id: session_roll_link_id(&sent.id),
+        from: previous.id.clone(),
+        to: sent.id.clone(),
+        kind: kind.to_string(),
+        target: None,
+        preface,
+    };
+    let _ = apply_link_upsert(file, project_id, link);
+}
+
+/// Resolve the tab's launch id the frontend sent as `session_id` to the live
+/// session the hook recorded for it — the conversation the prompt actually
+/// reached — keeping the launch id as `tab_id`. Returns how that session
+/// started, for [`link_session_roll`]. A tab without a record (an agent that
+/// fires no hooks, a remote tab, an id that is already the live one) keeps
+/// what it sent.
+fn resolve_live_session(
+    project_id: &str,
+    mut input: SentAgentPromptInput,
+) -> (SentAgentPromptInput, Option<String>) {
+    let Some(launch) = input.session_id.clone() else {
+        return (input, None);
+    };
+    if input.tab_id.is_none() {
+        input.tab_id = Some(launch.clone());
+    }
+    match agent_session::read_live_session_and_source_for(Some(project_id), &launch) {
+        Some((live, source)) => {
+            input.session_id = Some(live);
+            (input, source)
+        }
+        None => (input, None),
+    }
 }
 
 /// Write the files a delivered prompt touched onto its history row. Pure core
@@ -455,12 +561,18 @@ fn validate_link(input: PromptLinkInput) -> Result<PromptLink, String> {
     if let Some(target) = &input.target {
         validate_id("schedule target", target)?;
     }
+    if !input.preface.is_empty() && input.kind != "after" {
+        return Err("only an after link can carry commands".into());
+    }
+    // The same rules a schedule's preface obeys, since this one becomes one.
+    let preface = agent_tasks::validate_preface(input.preface)?;
     Ok(PromptLink {
         id: input.id,
         from: input.from,
         to: input.to,
         kind: input.kind,
         target: input.target,
+        preface,
     })
 }
 
@@ -592,6 +704,7 @@ pub fn archive(
     validate_id("project id", project_id)?;
     validate_id("prompt id", prompt_id)?;
     let input = validate_sent(input)?;
+    let (input, roll) = resolve_live_session(project_id, input);
     // Read before the lock: it spawns git (local projects only), and nothing
     // in the file depends on it.
     let head = prompt_blame::head(project_id);
@@ -603,6 +716,7 @@ pub fn archive(
         prompt_id,
         &input,
         head.as_ref(),
+        roll.as_deref(),
         &storage::iso_now(),
     );
     write(&file)?;
@@ -625,6 +739,7 @@ pub fn record(
         return Err(format!("prompt exceeds {MAX_MESSAGE_BYTES} bytes"));
     }
     let input = validate_sent(entry.sent.clone())?;
+    let (input, roll) = resolve_live_session(project_id, input);
     let entry = RecordedAgentPromptInput { message, ..entry };
     let head = prompt_blame::head(project_id);
     let _guard = lock();
@@ -635,6 +750,7 @@ pub fn record(
         &entry,
         &input,
         head.as_ref(),
+        roll.as_deref(),
         &storage::iso_now(),
     );
     write(&file)?;
@@ -742,6 +858,7 @@ mod tests {
             to: to.into(),
             kind: kind.into(),
             target: Some("target-1".into()),
+            preface: Vec::new(),
         }
     }
 
@@ -829,6 +946,24 @@ mod tests {
     }
 
     #[test]
+    fn an_after_link_carries_commands_and_a_related_one_cannot() {
+        let with = |kind: &str, preface: &[&str]| PromptLinkInput {
+            preface: preface.iter().map(|c| c.to_string()).collect(),
+            ..link("l", "a", "b", kind)
+        };
+        let stored = validate_link(with("after", &[" /clear "])).unwrap();
+        assert_eq!(stored.preface, vec!["/clear"]);
+        assert!(serde_json::to_string(&stored).unwrap().contains("\"preface\""));
+        // No commands: the key is omitted, so an older build reads the edge as before.
+        let plain = validate_link(link("l", "a", "b", "after")).unwrap();
+        assert!(!serde_json::to_string(&plain).unwrap().contains("preface"));
+        assert!(validate_link(with("related", &["/clear"])).is_err());
+        assert!(validate_link(with("after", &["clear"])).is_err());
+        let many: Vec<&str> = vec!["/clear"; agent_tasks::MAX_PREFACE_COMMANDS + 1];
+        assert!(validate_link(with("after", &many)).is_err());
+    }
+
+    #[test]
     fn archive_keeps_a_link_when_the_endpoint_moves_to_history() {
         let mut file = AgentPromptsFile::default();
         apply_upsert(&mut file, "p", input("a", "one"), "t1").unwrap();
@@ -839,7 +974,7 @@ mod tests {
             validate_link(link("l", "a", "b", "after")).unwrap(),
         )
         .unwrap();
-        apply_archive(&mut file, "p", "a", &sent("Claude"), None, "t2").unwrap();
+        apply_archive(&mut file, "p", "a", &sent("Claude"), None, None, "t2").unwrap();
         assert_eq!(file.links["p"].len(), 1);
     }
 
@@ -853,6 +988,7 @@ mod tests {
             "a",
             &sent("Claude"),
             Some(&head("abcdef0123456789", Some("develop"))),
+            None,
             "t2",
         )
         .unwrap();
@@ -862,7 +998,7 @@ mod tests {
         assert!(moved.files.is_empty());
         // Without a repo there is no blame, and no fake one either.
         apply_upsert(&mut file, "p", input("b", "two"), "t3").unwrap();
-        let plain = apply_archive(&mut file, "p", "b", &sent("Claude"), None, "t4").unwrap();
+        let plain = apply_archive(&mut file, "p", "b", &sent("Claude"), None, None, "t4").unwrap();
         assert!(plain.commit.is_none() && plain.branch.is_none());
     }
 
@@ -876,6 +1012,7 @@ mod tests {
             "a",
             &sent("Claude"),
             Some(&head("1111111", Some("main"))),
+            None,
             "t2",
         )
         .unwrap();
@@ -887,19 +1024,20 @@ mod tests {
             &entry,
             &entry.sent,
             Some(&head("2222222", None)),
+            None,
             "t3",
         );
         assert_eq!(row.tags, vec!["paper"]);
         assert_eq!(row.commit.as_deref(), Some("2222222"));
         assert!(row.branch.is_none());
         // A delivery that could not read HEAD keeps what the send stamped.
-        let row = apply_record(&mut file, "p", &entry, &entry.sent, None, "t4");
+        let row = apply_record(&mut file, "p", &entry, &entry.sent, None, None, "t4");
         assert_eq!(row.commit.as_deref(), Some("2222222"));
         // The blame lands on the row and survives a later re-record.
         let blamed = apply_blame(&mut file, "p", "a", vec!["src/a.rs".into()], "t5").unwrap();
         assert_eq!(blamed.files, vec!["src/a.rs"]);
         assert_eq!(blamed.files_at.as_deref(), Some("t5"));
-        let row = apply_record(&mut file, "p", &entry, &entry.sent, None, "t6");
+        let row = apply_record(&mut file, "p", &entry, &entry.sent, None, None, "t6");
         assert_eq!(row.files, vec!["src/a.rs"]);
         // A row that is gone records nothing.
         assert!(apply_blame(&mut file, "p", "missing", vec![], "t7").is_none());
@@ -965,18 +1103,105 @@ mod tests {
         SentAgentPromptInput {
             tab_label: label.into(),
             session_id: Some("session-1".into()),
+            tab_id: None,
             preface: vec!["/clear".into()],
             agent: Some("claude".into()),
             result: None,
             scheduled_for: None,
+            sent_at: None,
         }
+    }
+
+    #[test]
+    fn a_prompt_recorded_after_the_fact_keeps_its_time_and_place() {
+        let mut file = AgentPromptsFile::default();
+        let at = |id: &str, sent_at: Option<&str>| RecordedAgentPromptInput {
+            sent: SentAgentPromptInput {
+                result: Some("delivered".into()),
+                sent_at: sent_at.map(str::to_string),
+                ..sent("Claude")
+            },
+            ..recorded(id, id, "delivered")
+        };
+        let input = at("late", None);
+        apply_record(&mut file, "p", &input, &input.sent, None, None, "2026-09-15T08:30:00+00:00");
+        let input = at("early", Some("2026-09-15T08:21:48.991Z"));
+        apply_record(&mut file, "p", &input, &input.sent, None, None, "2026-09-15T08:31:00+00:00");
+        let history = &file.history["p"];
+        assert_eq!(history.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(), ["early", "late"]);
+        assert_eq!(history[0].sent_at, "2026-09-15T08:21:48.991Z");
+        assert!(validate_sent(SentAgentPromptInput { sent_at: Some("yesterday".into()), ..sent("Claude") }).is_err());
+    }
+
+    #[test]
+    fn a_rolled_session_links_the_new_rows_to_the_tabs_previous_session() {
+        let mut file = AgentPromptsFile::default();
+        let on = |id: &str, session: &str, sent_at: &str| RecordedAgentPromptInput {
+            sent: SentAgentPromptInput {
+                session_id: Some(session.into()),
+                tab_id: Some("launch".into()),
+                sent_at: Some(sent_at.into()),
+                ..sent("Claude")
+            },
+            ..recorded(id, id, "delivered")
+        };
+        let links = |file: &AgentPromptsFile| file.links.get("p").cloned().unwrap_or_default();
+        // The tab's first session: nothing to join.
+        let a = on("a", "launch", "2026-09-15T08:00:00Z");
+        apply_record(&mut file, "p", &a, &a.sent, None, Some("startup"), "t");
+        let b = on("b", "launch", "2026-09-15T08:05:00Z");
+        apply_record(&mut file, "p", &b, &b.sent, None, Some("startup"), "t");
+        assert!(links(&file).is_empty());
+        // `/clear` rolled the id: the first row under the new one is joined to
+        // the tab's newest earlier row by an `after` edge carrying `/clear`.
+        let c = on("c", "cleared", "2026-09-15T08:10:00Z");
+        apply_record(&mut file, "p", &c, &c.sent, None, Some("clear"), "t");
+        let drawn = links(&file);
+        assert_eq!(drawn.len(), 1);
+        assert_eq!((drawn[0].from.as_str(), drawn[0].to.as_str(), drawn[0].kind.as_str()), ("b", "c", "after"));
+        assert_eq!(drawn[0].preface, vec!["/clear".to_string()]);
+        // The rest of the session fold into the same card: no second edge, and
+        // a re-record of the first row updates its edge rather than doubling it.
+        let d = on("d", "cleared", "2026-09-15T08:15:00Z");
+        apply_record(&mut file, "p", &d, &d.sent, None, Some("clear"), "t");
+        apply_record(&mut file, "p", &c, &c.sent, None, Some("clear"), "t");
+        assert_eq!(links(&file).len(), 1);
+        // A `/resume` (or a hook that did not say) joins with a plain edge.
+        let e = on("e", "resumed", "2026-09-15T08:20:00Z");
+        apply_record(&mut file, "p", &e, &e.sent, None, Some("resume"), "t");
+        let drawn = links(&file);
+        assert_eq!(drawn.len(), 2);
+        assert_eq!((drawn[1].from.as_str(), drawn[1].to.as_str(), drawn[1].kind.as_str()), ("d", "e", "related"));
+        assert!(drawn[1].preface.is_empty());
+        // Another tab's session is not this tab's: no edge across tabs, and a
+        // row without a tab id draws nothing.
+        let other = RecordedAgentPromptInput {
+            sent: SentAgentPromptInput {
+                session_id: Some("elsewhere".into()),
+                tab_id: Some("other-launch".into()),
+                ..sent("Codex")
+            },
+            ..recorded("f", "f", "delivered")
+        };
+        apply_record(&mut file, "p", &other, &other.sent, None, Some("clear"), "t");
+        let untagged = on("g", "fresh", "2026-09-15T08:30:00Z");
+        let untagged = RecordedAgentPromptInput {
+            sent: SentAgentPromptInput { tab_id: None, ..untagged.sent },
+            ..untagged
+        };
+        apply_record(&mut file, "p", &untagged, &untagged.sent, None, Some("clear"), "t");
+        assert_eq!(links(&file).len(), 2);
+        // The edge lives on the history: a row that is gone takes its edge.
+        file.history.get_mut("p").unwrap().retain(|row| row.id != "e");
+        prune_links(&mut file, "p");
+        assert_eq!(links(&file).len(), 1);
     }
 
     #[test]
     fn archive_moves_the_prompt_and_keeps_its_created_at() {
         let mut file = AgentPromptsFile::default();
         apply_upsert(&mut file, "p", input("a", "one"), "t1").unwrap();
-        let moved = apply_archive(&mut file, "p", "a", &sent("Claude"), None, "t2").unwrap();
+        let moved = apply_archive(&mut file, "p", "a", &sent("Claude"), None, None, "t2").unwrap();
         assert_eq!(moved.created_at, "t1");
         assert_eq!(moved.sent_at, "t2");
         assert_eq!(moved.tab_label, "Claude");
@@ -984,7 +1209,7 @@ mod tests {
         assert!(!file.projects.contains_key("p"));
         assert_eq!(file.history["p"].len(), 1);
         // A prompt that is already gone records nothing and does not panic.
-        assert!(apply_archive(&mut file, "p", "a", &sent("Claude"), None, "t3").is_none());
+        assert!(apply_archive(&mut file, "p", "a", &sent("Claude"), None, None, "t3").is_none());
     }
 
     #[test]
@@ -993,7 +1218,7 @@ mod tests {
         for index in 0..MAX_HISTORY_PER_PROJECT + 3 {
             let id = format!("id-{index}");
             apply_upsert(&mut file, "p", input(&id, "x"), "t").unwrap();
-            apply_archive(&mut file, "p", &id, &sent("Claude"), None, "t").unwrap();
+            apply_archive(&mut file, "p", &id, &sent("Claude"), None, None, "t").unwrap();
         }
         let history = &file.history["p"];
         assert_eq!(history.len(), MAX_HISTORY_PER_PROJECT);
@@ -1021,13 +1246,13 @@ mod tests {
     fn a_delivery_updates_the_entry_its_send_already_wrote() {
         let mut file = AgentPromptsFile::default();
         apply_upsert(&mut file, "p", input("a", "one"), "t1").unwrap();
-        apply_archive(&mut file, "p", "a", &sent("Claude"), None, "t2").unwrap();
+        apply_archive(&mut file, "p", "a", &sent("Claude"), None, None, "t2").unwrap();
         // Queued: on the history, with no outcome yet.
         assert_eq!(file.history["p"].len(), 1);
         assert!(file.history["p"][0].result.is_none());
 
         let entry = recorded("a", "one", "delivered");
-        let recorded = apply_record(&mut file, "p", &entry, &entry.sent, None, "t3");
+        let recorded = apply_record(&mut file, "p", &entry, &entry.sent, None, None, "t3");
         assert_eq!(file.history["p"].len(), 1, "one prompt, one row");
         assert_eq!(recorded.result.as_deref(), Some("delivered"));
         assert_eq!(recorded.sent_at, "t3");
@@ -1041,9 +1266,9 @@ mod tests {
     fn a_schedule_that_was_never_collected_records_a_new_row() {
         let mut file = AgentPromptsFile::default();
         let first = recorded("s1@2026-09-02T09:00", "daily standup", "delivered");
-        apply_record(&mut file, "p", &first, &first.sent, None, "t1");
+        apply_record(&mut file, "p", &first, &first.sent, None, None, "t1");
         let second = recorded("s1@2026-09-03T09:00", "daily standup", "missed");
-        apply_record(&mut file, "p", &second, &second.sent, None, "t2");
+        apply_record(&mut file, "p", &second, &second.sent, None, None, "t2");
         let history = &file.history["p"];
         assert_eq!(history.len(), 2, "each occurrence is its own row");
         assert_eq!(history[1].result.as_deref(), Some("missed"));

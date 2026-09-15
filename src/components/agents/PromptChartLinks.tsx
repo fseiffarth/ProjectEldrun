@@ -24,6 +24,11 @@ function path(x1: number, y1: number, x2: number, y2: number): string {
  * nodes. `version` is the caller's way of saying the cards moved without
  * the links changing — a view switch, a drag that ended, a body that
  * scrolled — so the paths are re-measured.
+ *
+ * Each edge carries a handle at its midpoint (the one part of the overlay
+ * that takes the pointer) which opens the edge's editor, and an `after`
+ * edge's commands are written beside it, so a `/clear` between two prompts
+ * is visible on the chart rather than only inside a card.
  */
 export function PromptChartLinks({
   rootRef,
@@ -32,6 +37,8 @@ export function PromptChartLinks({
   selectedId,
   preview,
   version,
+  onEdit,
+  editLabel,
 }: {
   rootRef: RefObject<HTMLDivElement | null>;
   cardNodes: MutableRefObject<Map<string, HTMLElement>>;
@@ -39,6 +46,9 @@ export function PromptChartLinks({
   selectedId: string | null;
   preview?: LinkPreview | null;
   version: number;
+  /** Open the edge's editor at a client point. */
+  onEdit?: (link: PromptLink, x: number, y: number) => void;
+  editLabel?: string;
 }) {
   const marker = `prompt-arrow-${useId().replace(/:/g, "")}`;
   const [lines, setLines] = useState<Line[]>([]);
@@ -65,7 +75,7 @@ export function PromptChartLinks({
     const observer = new ResizeObserver(measure);
     observer.observe(root);
     for (const node of cardNodes.current.values()) observer.observe(node);
-    const scrollers = [root.closest(".prompt-chart-tab"), root.querySelector(".agent-prompt-timeline-body")];
+    const scrollers = [root.closest(".prompt-chart-tab"), root.querySelector(".agent-prompt-timeline-body"), root.querySelector(".agent-prompt-draft-viewport")];
     for (const scroller of scrollers) scroller?.addEventListener("scroll", measure, { passive: true });
     measure();
     return () => {
@@ -89,6 +99,25 @@ export function PromptChartLinks({
           markerEnd={link.kind === "after" ? `url(#${marker})` : undefined}
         />
       ))}
+      {onEdit && lines.map(({ link, x1, y1, x2, y2 }) => {
+        // The bezier's control points mirror each other, so its t = ½ point
+        // is the chord's midpoint.
+        const commands = link.kind === "after" ? link.preface ?? [] : [];
+        return (
+          <g
+            key={`handle:${link.id}`}
+            className={`agent-prompt-link-handle${commands.length ? " has-commands" : ""}`}
+            transform={`translate(${(x1 + x2) / 2} ${(y1 + y2) / 2})`}
+            data-testid={`prompt-link-handle-${link.id}`}
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={(event) => { event.stopPropagation(); onEdit(link, event.clientX, event.clientY); }}
+          >
+            {editLabel && <title>{editLabel}</title>}
+            <circle r={5} />
+            {commands.length > 0 && <text x={9} y={3}>{commands.join(" · ")}</text>}
+          </g>
+        );
+      })}
       {preview && base && (
         <path
           className="is-preview"

@@ -34,6 +34,14 @@ export type ChartDrag =
       x: number;
       y: number;
       overId: string | null;
+    }
+  | {
+      /** A sent card pulled up or down its lane for a clearer view. */
+      kind: "lift";
+      /** The timeline item's key. */
+      key: string;
+      /** Pointer travel since the press, never above the body's top. */
+      dy: number;
     };
 
 export interface ChartMeasure {
@@ -55,12 +63,26 @@ interface Options {
   measure: () => ChartMeasure;
   /** Every card's rect, read once when a link drag starts. */
   measureCards: () => ChartCardRect[];
-  onDropCard: (card: PromptChartCard, zone: TimelineZone) => void;
+  onDropCard: (card: PromptChartCard, zone: TimelineZone, drag: Extract<ChartDrag, { kind: "card" }>) => void;
   onDropLink: (from: PromptChartCard, toId: string) => void;
+  /** A lift ended: the item now sits `lift` px off its lane. */
+  onLift: (key: string, lift: number) => void;
 }
 
 /** Presses on these are the control's, never a drag's. */
 const NO_DRAG = "button, input, textarea, select, a, .dropdown, [data-no-drag]";
+
+/** A lifted card travels with the pointer, so the release lands on it and the
+ *  engine follows with a click that would toggle it open. That click belongs
+ *  to the drag: swallow it, and only it — the listener is gone next task. */
+function swallowNextClick() {
+  const swallow = (event: MouseEvent) => {
+    event.stopPropagation();
+    event.preventDefault();
+  };
+  window.addEventListener("click", swallow, { capture: true, once: true });
+  setTimeout(() => window.removeEventListener("click", swallow, { capture: true }), 0);
+}
 
 /**
  * The chart's two gestures — carrying a card, pulling a link out of a port —
@@ -172,7 +194,36 @@ export function usePromptChartDrag(options: Options) {
       move: (current, pointer) => ({ ...current, x: pointer.clientX, y: pointer.clientY, zone: zoneAt(pointer) }),
       commit: (finished) => {
         if (finished.kind !== "card" || finished.zone.kind === "none") return;
-        latest.current.onDropCard(finished.card, finished.zone);
+        swallowNextClick();
+        latest.current.onDropCard(finished.card, finished.zone, finished);
+      },
+    });
+  };
+
+  /**
+   * A sent card is history — its instant is not the reader's to change — but
+   * where it sits in its column is: overlapping sessions stack lanes deep, and
+   * the one being read is often under another. So it moves vertically only,
+   * the card itself following the pointer (nothing is dropped anywhere, so no
+   * ghost). The lane's own top and the item's drawn top are read off the item
+   * wrapper `PromptTimeline` renders; the lift reported is measured from the
+   * lane, so a card a repack pushed against the top edge has no dead zone.
+   */
+  const onLiftPointerDown = (key: string) => (event: ReactPointerEvent<HTMLElement>) => {
+    if ((event.target as Element).closest(NO_DRAG)) return;
+    const item = event.currentTarget.closest<HTMLElement>("[data-lane-top]");
+    if (!item) return;
+    const top = parseFloat(item.style.top) || 0;
+    const laneTop = Number(item.dataset.laneTop) || 0;
+    const startY = event.clientY;
+    const dyAt = (pointer: PointerEvent) => Math.max(-top, pointer.clientY - startY);
+    start(event, {
+      begin: (pointer) => ({ kind: "lift", key, dy: dyAt(pointer) }),
+      move: (current, pointer) => (current.kind === "lift" ? { ...current, dy: dyAt(pointer) } : current),
+      commit: (finished) => {
+        if (finished.kind !== "lift") return;
+        swallowNextClick();
+        latest.current.onLift(key, top - laneTop + finished.dy);
       },
     });
   };
@@ -208,5 +259,5 @@ export function usePromptChartDrag(options: Options) {
     });
   };
 
-  return { drag, onCardPointerDown, onPortPointerDown };
+  return { drag, onCardPointerDown, onLiftPointerDown, onPortPointerDown };
 }

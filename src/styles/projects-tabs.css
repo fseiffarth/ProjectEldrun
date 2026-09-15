@@ -3048,14 +3048,22 @@
 .agent-prompt-chart-views,
 .agent-prompt-chart-nav,
 .agent-prompt-link-kind { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
-.agent-prompt-chart-toolbar > input { flex: 1 1 180px; min-width: 100px; }
+.agent-prompt-chart-facets > input { flex: 1 1 180px; min-width: 100px; }
 .agent-prompt-chart-facets .dropdown { min-width: 92px; }
+/* The drafts strip and the timeline each filter on their own. */
+.agent-prompt-chart-filter,
+.agent-prompt-chart-timeline-bar { display: flex; flex-direction: column; gap: 5px; }
+.agent-prompt-drafts-strip > .agent-prompt-chart-filter { padding: 6px 3px 0; }
 .agent-prompt-chart-range { font-size: 11px; margin-left: 4px; }
 .agent-prompt-link-kind > span { color: var(--text-muted); font-size: 10px; }
+/* The toolbar's "New agent tab" picks: two compact dropdowns beside their label. */
+.agent-prompt-new-tab .dropdown { min-width: 92px; }
 .agent-prompt-new { display: grid; gap: 6px; padding: 8px; border: 1px solid var(--accent); background: var(--accent-soft); border-radius: var(--radius); }
 .agent-prompt-new textarea,
 .agent-prompt-new input { width: 100%; box-sizing: border-box; }
 .agent-prompt-chart { position: relative; display: flex; flex-direction: column; gap: 8px; min-height: 360px; }
+/* Timeline hidden: the chart is the drafts alone, no reserved axis height. */
+.agent-prompt-chart.is-drafts-only { min-height: 0; }
 
 /* The drafts strip: timeless cards in a wrapping row, and the drop zone that
    takes a card OUT of time (unschedule, collect again). */
@@ -3067,6 +3075,16 @@
 .agent-prompt-drafts-strip > header small { margin-left: auto; }
 .agent-prompt-drafts-row { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px; padding-top: 8px; min-height: 40px; }
 .agent-prompt-drafts-row > .agent-prompt-card { width: 168px; }
+/* Editing needs the Markdown toolbar's width, not a strip card's. */
+.agent-prompt-drafts-row > .agent-prompt-card.is-editing { width: min(460px, 100%); }
+.agent-prompt-draft-layout-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 8px 3px 4px; }
+.agent-prompt-draft-layout-bar small, .agent-prompt-completion-hint { color: var(--text-muted); font-size: 10px; }
+.agent-prompt-completion-hint { display: block; padding: 0 3px 6px; }
+.agent-prompt-draft-viewport { overflow: auto; max-height: 55vh; min-height: 220px; }
+.agent-prompt-draft-canvas { position: relative; min-width: 100%; background-image: radial-gradient(var(--border-color) 1px, transparent 1px); background-size: 16px 16px; }
+.agent-prompt-draft-position { position: absolute; width: 168px; }
+.agent-prompt-draft-position:has(.is-selected), .agent-prompt-draft-position:has(.is-editing) { z-index: 4; }
+.agent-prompt-draft-position > .agent-prompt-card.is-editing { width: 460px; }
 
 /* The axis and the lanes. `overflow: clip`, not `hidden`: a hidden box is a
    scroll container, and the sticky axis would stick to it instead of to the
@@ -3095,6 +3113,8 @@
    under the lane below it, which is drawn later. */
 .agent-prompt-timeline-item:has(> .agent-prompt-card.is-selected),
 .agent-prompt-timeline-item:focus-within { z-index: 5; }
+/* A sent card being lifted up or down its lane rides above everything. */
+.agent-prompt-timeline-item.is-lifting { z-index: 6; }
 .agent-prompt-timeline-item > .agent-prompt-card { touch-action: none; }
 /* The now line copies `.cal-now-line`, turned on its side. The band around it
    is the "send now" drop zone: wide enough to hit, narrow enough not to hide
@@ -3107,6 +3127,15 @@
 .agent-prompt-timeline-now-band.is-drop-over { background: color-mix(in srgb, var(--danger) 18%, transparent); outline: 1px dashed var(--danger); }
 .agent-prompt-timeline-now-label { position: absolute; top: 2px; z-index: 1; transform: translateX(-50%); padding: 0 3px; background: var(--bg-panel); color: var(--danger); font-size: 9px; line-height: 14px; text-transform: uppercase; }
 .agent-prompt-timeline-now-label.is-outside { opacity: .5; }
+/* An agent's own rate-limit rollover: a dashed line under the cards (it marks
+   time, like the grid) and a coloured label in the axis carrying the tooltip.
+   Session (5 h) and weekly windows differ by colour. */
+.agent-prompt-timeline-reset { position: absolute; top: 0; bottom: 0; border-left: 1px dashed var(--reset-color); opacity: .8; pointer-events: none; }
+.agent-prompt-timeline-reset-label { position: absolute; top: 2px; padding: 0 3px; border-left: 1px dashed var(--reset-color); background: var(--bg-panel); color: var(--reset-color); font-size: 9px; line-height: 14px; white-space: nowrap; }
+.agent-prompt-timeline-reset.is-session,
+.agent-prompt-timeline-reset-label.is-session { --reset-color: var(--warning); }
+.agent-prompt-timeline-reset.is-week,
+.agent-prompt-timeline-reset-label.is-week { --reset-color: var(--accent); }
 .agent-prompt-timeline-queue { position: absolute; top: 8px; z-index: 4; display: flex; flex-direction: column; gap: 5px; }
 .agent-prompt-timeline-queue > small { color: var(--warning); font-size: 9px; text-transform: uppercase; letter-spacing: .04em; }
 /* Month view: one column per day, the cards as lamps; the whole day is the
@@ -3156,6 +3185,8 @@
   color: var(--text-secondary);
   cursor: var(--cur-default, default);
 }
+/* …though on the axis it does move up or down, out of another card's way. */
+.agent-prompt-timeline-item > .agent-prompt-card.is-sent { cursor: var(--cur-ns-resize, ns-resize); }
 .agent-prompt-card.is-sent .agent-prompt-card-message { font-weight: 500; }
 .agent-prompt-card.is-queued { border-style: dashed; }
 /* A session's sent prompts as one card (`agents/PromptSessionCard`): as wide
@@ -3208,13 +3239,25 @@
 .agent-prompt-card-full { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px; }
 .agent-prompt-card-actions { display: flex; flex-wrap: wrap; gap: 4px; }
 .agent-prompt-session,
-.agent-prompt-link-row { padding: 0; border: 0; background: none; color: var(--text-secondary); text-align: left; font-size: 10px; cursor: var(--cur-pointer, pointer); overflow-wrap: anywhere; }
+.agent-prompt-link-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; color: var(--text-secondary); font-size: 10px; overflow-wrap: anywhere; }
+.agent-prompt-link-row > span { flex: 1 1 120px; min-width: 0; }
+.agent-prompt-link-row em { color: var(--accent); font-style: normal; }
 .agent-prompt-files { margin: 0; padding-left: 16px; color: var(--text-muted); font-size: 9px; }
 .agent-prompt-links { position: absolute; inset: 0; z-index: 3; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
 .agent-prompt-links path { fill: none; stroke: var(--text-muted); stroke-width: 1; opacity: .45; }
 .agent-prompt-links path.is-selected { stroke: var(--accent); stroke-width: 2; opacity: 1; }
 .agent-prompt-links path.is-preview { stroke: var(--accent); stroke-width: 1.5; stroke-dasharray: 4 3; opacity: .9; }
 .agent-prompt-links marker path { fill: var(--text-muted); stroke: none; }
+/* An edge's midpoint handle: the one part of the overlay that takes the
+   pointer, opening the edge's editor; an `after` edge's commands read beside it. */
+.agent-prompt-links .agent-prompt-link-handle { pointer-events: auto; cursor: var(--cur-pointer, pointer); }
+.agent-prompt-link-handle circle { fill: var(--bg-panel); stroke: var(--text-muted); stroke-width: 1; }
+.agent-prompt-link-handle:hover circle,
+.agent-prompt-link-handle.has-commands circle { stroke: var(--accent); stroke-width: 1.5; }
+.agent-prompt-link-handle text { fill: var(--accent); font-size: 9px; paint-order: stroke; stroke: var(--bg-panel); stroke-width: 3px; }
+.agent-prompt-link-editor { display: flex; flex-direction: column; gap: 4px; max-width: 280px; color: var(--text-primary); }
+.agent-prompt-link-editor-ends { margin: 0; padding: 0 9px; font-size: 11px; overflow-wrap: anywhere; }
+.agent-prompt-link-editor-row { display: flex; flex-wrap: wrap; gap: 4px; padding: 2px 9px; }
 
 .agent-prompts-tab { flex-direction: row; }
 .agent-prompts-tab-actions { display: flex; flex-direction: column; gap: 4px; align-items: stretch; }

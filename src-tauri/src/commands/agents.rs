@@ -1194,6 +1194,28 @@ pub async fn agent_tab_last_prompt(
     .flatten()
 }
 
+/// The newest prompts the tab launched as `agent` with launch id `session_id`
+/// was given, each with the moment its transcript says it went — messages
+/// sent while the agent was working included
+/// (`services::agent_session::agent_session_recent_prompts`). What the prompt
+/// chart adopts typed prompts from; empty when there is no transcript to read.
+#[tauri::command]
+pub async fn agent_tab_recent_prompts(
+    agent: String,
+    project_id: Option<String>,
+    session_id: String,
+) -> Vec<crate::services::agent_session::TranscriptPrompt> {
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::services::agent_session::agent_session_recent_prompts(
+            &agent,
+            project_id.as_deref(),
+            &session_id,
+        )
+    })
+    .await
+    .unwrap_or_default()
+}
+
 /// The stored conversation of the tab launched as `agent` with launch id
 /// `session_id` — its prompts and answers, read from the CLI's own transcript
 /// (`services::agent_transcript`) for the phone's Focus view. `version` is

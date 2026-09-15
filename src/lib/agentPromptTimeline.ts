@@ -5,6 +5,7 @@ import {
   nextScheduleOccurrence,
 } from "./agentSchedule";
 import { snapPromptTime, type PromptChartCard } from "./agentPromptChart";
+import { draftChainAnchors } from "./agentPromptDrafts";
 
 /**
  * The prompt chart's time axis: one proportional, horizontal scale that a Day,
@@ -17,10 +18,13 @@ import { snapPromptTime, type PromptChartCard } from "./agentPromptChart";
  * that lands at or before the now line is a **send now**, never a schedule in
  * the past, because nothing can be scheduled for a minute that has gone.
  */
-export type TimelineView = "day" | "week" | "month";
+export type TimelineView = "hour" | "day" | "week" | "month";
 
-/** What a drop snaps to, per view: a finer grid is meaningless at a coarser scale. */
-export const TIMELINE_SNAP_MIN: Record<TimelineView, number> = { day: 5, week: 15, month: 60 };
+/** What a drop snaps to, per view: a finer grid is meaningless at a coarser
+ *  scale, and 5 minutes is the finest any view offers. */
+export const TIMELINE_SNAP_MIN: Record<TimelineView, number> = { hour: 5, day: 5, week: 15, month: 60 };
+/** The Hour view's grid: one line per snap step, a label on each quarter. */
+export const HOUR_TICK_MIN = 5;
 /** A card's fixed width on the axis, in px; it marks an instant, not a span. */
 export const TIMELINE_CARD_WIDTH = 168;
 /** One lane's height (card plus gap), in px: a three-line message with its
@@ -33,7 +37,8 @@ export const TIMELINE_MIN_LANES = 2;
 
 export interface TimelineWindow {
   view: TimelineView;
-  /** `YYYY-MM-DD`; the day, or any day of the week or month shown. */
+  /** `YYYY-MM-DD`; the day, or any day of the week or month shown. The Hour
+   *  view's is `YYYY-MM-DDTHH`: it names the hour too. */
   anchor: string;
   /** Inclusive, local midnight. */
   start: Date;
@@ -47,8 +52,26 @@ function localMidnight(stamp: string): Date {
   return new Date(y, m - 1, d);
 }
 
+/** The Hour view's anchor for the hour `at` falls in. */
+export function hourAnchor(at: Date): string {
+  return `${toDateStr(at)}T${String(at.getHours()).padStart(2, "0")}`;
+}
+
+/** The hour an anchor names; a date-only anchor (every other view's) names
+ *  none, and reads as `fallback`. */
+export function anchorHour(anchor: string, fallback = 0): number {
+  const hour = /T(\d{2})/.exec(anchor)?.[1];
+  return hour === undefined ? fallback : Math.min(23, Number(hour));
+}
+
 export function timelineWindow(view: TimelineView, anchor: string, weekStart: 0 | 1): TimelineWindow {
   const day = anchor.slice(0, 10);
+  if (view === "hour") {
+    const start = localMidnight(day);
+    start.setHours(anchorHour(anchor));
+    const end = new Date(start.getFullYear(), start.getMonth(), start.getDate(), start.getHours() + 1);
+    return { view, anchor: hourAnchor(start), start, end, snapMinutes: TIMELINE_SNAP_MIN.hour };
+  }
   let first = day;
   let after: string;
   if (view === "day") {
@@ -69,10 +92,11 @@ export function timelineWindow(view: TimelineView, anchor: string, weekStart: 0 
   };
 }
 
-/** Ctrl + wheel: one step finer (a month to its week, a week to its day) or
- *  coarser; `null` at either end, so a spin past Day or Month is a no-op. */
+/** Ctrl + wheel: one step finer (a month to its week, a week to its day, a
+ *  day to an hour) or coarser; `null` at either end, so a spin past Hour or
+ *  Month is a no-op. */
 export function zoomTimelineView(view: TimelineView, direction: "in" | "out"): TimelineView | null {
-  const order: TimelineView[] = ["month", "week", "day"];
+  const order: TimelineView[] = ["month", "week", "day", "hour"];
   const next = order[order.indexOf(view) + (direction === "in" ? 1 : -1)];
   return next ?? null;
 }
@@ -95,9 +119,13 @@ export function formatTimelineInstant(at: Date, lang: string, use24h: boolean, w
   return `${weekdayLabel(lang, at.getDay(), "short")} ${at.getDate()} ${monthName(lang, at.getMonth() + 1).slice(0, 3)} · ${time}`;
 }
 
-/** ◀ ▶: a day, a week, or a calendar month (the day of month is clamped). */
+/** ◀ ▶: an hour, a day, a week, or a calendar month (the day of month is clamped). */
 export function shiftAnchor(view: TimelineView, anchor: string, step: -1 | 1): string {
   const day = anchor.slice(0, 10);
+  if (view === "hour") {
+    const at = localMidnight(day);
+    return hourAnchor(new Date(at.getFullYear(), at.getMonth(), at.getDate(), anchorHour(anchor) + step));
+  }
   if (view === "day") return addDays(day, step);
   if (view === "week") return addDays(day, 7 * step);
   return addMonths(day, step);
@@ -125,11 +153,19 @@ export interface TimelineTick {
 }
 
 /**
- * Axis marks: hours across a day (every sixth major), days across a week with
- * quarter-day minors, days across a month (Mondays major).
+ * Axis marks: 5-minute steps across an hour (every quarter major), hours
+ * across a day (every sixth major), days across a week with quarter-day
+ * minors, days across a month (Mondays major).
  */
 export function timelineTicks(win: TimelineWindow, width: number): TimelineTick[] {
   const ticks: TimelineTick[] = [];
+  if (win.view === "hour") {
+    for (let minute = 0; minute < 60; minute += HOUR_TICK_MIN) {
+      const at = new Date(win.start.getTime() + minute * 60_000);
+      ticks.push({ x: timelineX(at, win, width), at, major: minute % 15 === 0, label: "hour" });
+    }
+    return ticks;
+  }
   if (win.view === "day") {
     for (let hour = 0; hour < 24; hour += 1) {
       const at = new Date(win.start.getFullYear(), win.start.getMonth(), win.start.getDate(), hour);
@@ -179,9 +215,15 @@ const MAX_OCCURRENCES = 64;
  */
 export function timelineItems(cards: PromptChartCard[], win: TimelineWindow, now: Date): TimelineItem[] {
   const items: TimelineItem[] = [];
+  const anchors = draftChainAnchors(cards, now);
   const inside = (at: Date | null): at is Date =>
     !!at && Number.isFinite(at.getTime()) && at >= win.start && at < win.end;
   for (const card of cards) {
+    if (card.state === "chained") {
+      const at = anchors.get(card.id) ?? null;
+      if (inside(at)) items.push({ key: card.key, card, at });
+      continue;
+    }
     if (card.state === "sent") {
       if (inside(card.at)) items.push({ key: card.key, card, at: card.at });
       continue;

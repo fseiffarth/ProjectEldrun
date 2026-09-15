@@ -24,10 +24,23 @@ export interface PromptChartStrand {
   label: string;
   scheduleTargetId?: string;
   tabKey?: string;
+  /** A live tab's launch id; a closed strand's first session id. */
   sessionId?: string;
+  /** The launch id the strand's rows carry as `tab_id` — a tab's sessions
+   *  after a `/clear` still belong to the one strand. */
+  tabId?: string;
   agent?: string;
   closed?: boolean;
   schedules: ScheduledAgentPrompt[];
+}
+
+/** Whether a sent row belongs to `strand`: by the tab it went to, by the
+ *  session (a live tab's launch id, before the tab id was recorded), or by
+ *  label for a row written before the tab had either. */
+export function rowOnStrand(strand: PromptChartStrand, row: SentAgentPrompt): boolean {
+  return (!!row.tab_id && strand.tabId === row.tab_id)
+    || (!!row.session_id && strand.sessionId === row.session_id)
+    || strand.label === row.tab_label;
 }
 
 export interface PromptChartCard {
@@ -55,6 +68,10 @@ export interface PromptChartInput {
   strands: PromptChartStrand[];
   links: PromptLink[];
   now: Date;
+  /** The agent an unaimed draft's "New agent tab" would launch (the chart's
+   *  toolbar pick): worn as the draft's `agent:` tag so the strip filters by
+   *  it like any aimed card. Absent, an unaimed draft carries no agent. */
+  newTabAgent?: string;
 }
 
 /** Lines that steer the session rather than ask it anything, never adopted
@@ -146,7 +163,7 @@ export function buildPromptChart(input: PromptChartInput): PromptChartCard[] {
       state: chained ? "chained" : "draft",
       message: prompt.message,
       tags: prompt.tags ?? [],
-      autoTags: agentPromptAutoTags({ message: prompt.message, chained, agent: strand?.agent ?? aimed?.agent }),
+      autoTags: agentPromptAutoTags({ message: prompt.message, chained, agent: strand?.agent ?? aimed?.agent ?? (chained ? undefined : input.newTabAgent), preface: link?.preface }),
       strandId: strand?.id ?? "drafts",
       targetId: chained ? link?.target : aimed?.scheduleTargetId,
       at: null,
@@ -158,13 +175,9 @@ export function buildPromptChart(input: PromptChartInput): PromptChartCard[] {
   }
   for (const row of input.history) {
     if (!row.result || isSessionCommand(row.message)) continue;
-    const liveStrand = input.strands.find((strand) =>
-      !strand.closed && (strand.sessionId === row.session_id || strand.label === row.tab_label),
-    );
-    const closed = input.strands.find((strand) => strand.closed && (
-      strand.sessionId === row.session_id || strand.label === row.tab_label
-    ));
-    const strandId = liveStrand?.id ?? closed?.id ?? `closed:${row.session_id ?? row.tab_label}`;
+    const liveStrand = input.strands.find((strand) => !strand.closed && rowOnStrand(strand, row));
+    const closed = input.strands.find((strand) => strand.closed && rowOnStrand(strand, row));
+    const strandId = liveStrand?.id ?? closed?.id ?? `closed:${row.tab_id ?? row.session_id ?? row.tab_label}`;
     cards.push({
       key: `history:${row.id}`,
       id: row.id,
@@ -206,6 +219,46 @@ export interface PromptChartFilter {
   tag: string;
   agent: string;
   result: string;
+}
+
+/** The timeline's "When" facet, in the order the picker offers it. */
+export const PROMPT_CHART_WINDOWS = ["any", "past", "upcoming", "hour", "today", "week", "month"] as const;
+export type PromptChartWindow = (typeof PROMPT_CHART_WINDOWS)[number];
+
+/**
+ * Whether a card's instant falls in a "When" window. The axis runs both ways
+ * from now, so the rolling windows do too: "within a week" admits last
+ * Tuesday's delivery and next Tuesday's rule alike, and `today` is the day on
+ * the wall. A queued card is waiting at the now line whatever its due minute
+ * said, so it counts as upcoming, never past. A card with no instant (a
+ * paused rule) is kept: a window says nothing about it.
+ */
+export function promptChartInWindow(
+  card: Pick<PromptChartCard, "state">,
+  at: Date | null,
+  window: PromptChartWindow,
+  now: Date,
+): boolean {
+  if (window === "any" || !at) return true;
+  const t = card.state === "queued" ? now.getTime() : at.getTime();
+  const n = now.getTime();
+  switch (window) {
+    case "past":
+      return card.state !== "queued" && t <= n;
+    case "upcoming":
+      return card.state === "queued" || t > n;
+    case "hour":
+      return Math.abs(t - n) <= 3_600_000;
+    case "today": {
+      const start = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+      const end = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1).getTime();
+      return t >= start && t < end;
+    }
+    case "week":
+      return Math.abs(t - n) <= 7 * 86_400_000;
+    case "month":
+      return Math.abs(t - n) <= 30 * 86_400_000;
+  }
 }
 
 export function promptChartCardMatches(card: PromptChartCard, filter: PromptChartFilter): boolean {

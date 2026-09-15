@@ -17,6 +17,8 @@ interface Props {
   color: string;
   register?: (node: HTMLElement | null) => void;
   onSelect: () => void;
+  /** Lifts the card up or down its lane (`usePromptChartDrag`'s lift). */
+  onPointerDown?: (event: ReactPointerEvent<HTMLElement>) => void;
   onPortPointerDown?: (event: ReactPointerEvent<HTMLElement>) => void;
   onLink: () => void;
   onCollect: (card: PromptChartCard) => Promise<void>;
@@ -43,6 +45,7 @@ export function PromptSessionCard({
   color,
   register,
   onSelect,
+  onPointerDown,
   onPortPointerDown,
   onLink,
   onCollect,
@@ -77,6 +80,7 @@ export function PromptSessionCard({
         onSelect();
         setExpanded((value) => !value);
       }}
+      onPointerDown={onPointerDown}
     >
       <span className="agent-prompt-card-port is-in" aria-hidden="true" />
       <div className="agent-prompt-card-head">

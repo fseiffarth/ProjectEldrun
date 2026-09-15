@@ -18,6 +18,7 @@ import {
   timelineWindow,
   timelineX,
   zoomTimelineView,
+  hourAnchor,
   type TimelineRects,
 } from "../lib/agentPromptTimeline";
 
@@ -52,6 +53,21 @@ describe("timeline windows", () => {
     expect(shiftAnchor("week", "2026-09-04", -1)).toBe("2026-08-28");
     expect(shiftAnchor("month", "2026-08-31", 1)).toBe("2026-09-30");
     expect(shiftAnchor("month", "2026-01-31", 1)).toBe("2026-02-28");
+  });
+
+  it("fits an hour with a 5-minute grid and steps it across midnight", () => {
+    const hour = timelineWindow("hour", "2026-09-04T13", 1);
+    expect([hour.start, hour.end]).toEqual([new Date(2026, 8, 4, 13), new Date(2026, 8, 4, 14)]);
+    expect(hour.snapMinutes).toBe(5);
+    expect(timelineWindow("hour", "2026-09-04", 1).start).toEqual(new Date(2026, 8, 4, 0));
+    const ticks = timelineTicks(hour, 1200);
+    expect(ticks).toHaveLength(12);
+    expect(ticks.filter((tick) => tick.major)).toHaveLength(4);
+    expect(ticks[1].x).toBe(100);
+    expect(snapTimelineTime(new Date(2026, 8, 4, 13, 7), hour)).toEqual(new Date(2026, 8, 4, 13, 5));
+    expect(shiftAnchor("hour", "2026-09-04T23", 1)).toBe("2026-09-05T00");
+    expect(shiftAnchor("hour", "2026-09-05T00", -1)).toBe("2026-09-04T23");
+    expect(hourAnchor(new Date(2026, 8, 4, 9, 41))).toBe("2026-09-04T09");
   });
 
   it("maps x to time and back, and snaps per view", () => {
@@ -217,7 +233,9 @@ describe("timeline zoom and clock", () => {
   it("steps one view finer or coarser and stops at either end", () => {
     expect(zoomTimelineView("month", "in")).toBe("week");
     expect(zoomTimelineView("week", "in")).toBe("day");
-    expect(zoomTimelineView("day", "in")).toBeNull();
+    expect(zoomTimelineView("day", "in")).toBe("hour");
+    expect(zoomTimelineView("hour", "in")).toBeNull();
+    expect(zoomTimelineView("hour", "out")).toBe("day");
     expect(zoomTimelineView("day", "out")).toBe("week");
     expect(zoomTimelineView("week", "out")).toBe("month");
     expect(zoomTimelineView("month", "out")).toBeNull();

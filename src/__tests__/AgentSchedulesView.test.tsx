@@ -137,13 +137,58 @@ describe("AgentSchedulesView prompt chart", () => {
     expect((call?.[1] as { prompt: { message: string } }).prompt.message).toBe("Summarise the diff");
   });
 
-  it("dims a non-match and can hide it", async () => {
+  it("filters the drafts and the timeline apart, each dimming and hiding only its own cards", async () => {
+    const queued = { id: "q", enabled: true, message: "Wait for idle", rule: { type: "once", at: localOccurrenceKey(new Date(Date.now() - 60_000)) } };
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === "agent_prompts_list") return [{ id: "draft", message: "Run the tests", tags: ["tests"], created_at: "x", updated_at: "x" }];
+      if (command === "agent_schedules_list") return [queued];
+      return [];
+    });
+    await act(async () => { render(<PromptChartTab scope="p" />); });
+    const draftBar = within(screen.getByTestId("prompt-chart-draft-filter"));
+    const timelineBar = within(screen.getByTestId("prompt-chart-timeline-filter"));
+    const draft = await screen.findByTestId("prompt-chart-card-draft");
+    const waiting = await screen.findByTestId("prompt-chart-card-queued");
+
+    fireEvent.change(screen.getByLabelText("Search drafts or #tag…"), { target: { value: "nothing" } });
+    expect(draft.className).toContain("is-dimmed");
+    expect(waiting.className).not.toContain("is-dimmed");
+    fireEvent.click(draftBar.getByRole("button", { name: "Hide others" }));
+    expect(screen.queryByTestId("prompt-chart-card-draft")).toBeNull();
+    expect(screen.getByTestId("prompt-chart-card-queued")).toBeTruthy();
+
+    // The timeline's When window: a queued card waits at now, so it is upcoming.
+    fireEvent.click(timelineBar.getByRole("button", { name: /Any time/ }));
+    fireEvent.click(screen.getByRole("option", { name: "Past" }));
+    expect(screen.getByTestId("prompt-chart-card-queued").className).toContain("is-dimmed");
+    fireEvent.click(timelineBar.getByRole("button", { name: "Hide others" }));
+    expect(screen.queryByTestId("prompt-chart-card-queued")).toBeNull();
+  });
+
+  it("hides the timeline to leave the drafts alone, and remembers it", async () => {
+    localStorage.removeItem("eldrun.promptChart.timeline");
+    const { unmount } = await act(async () => render(<PromptChartTab scope="p" />));
+    expect(screen.getByTestId("prompt-timeline")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Timeline" }));
+    expect(screen.queryByTestId("prompt-timeline")).toBeNull();
+    expect(screen.queryByTestId("prompt-chart-timeline-filter")).toBeNull();
+    expect(await screen.findByTestId("prompt-chart-card-draft")).toBeTruthy();
+    unmount();
+    await act(async () => { render(<PromptChartTab scope="p" />); });
+    expect(screen.queryByTestId("prompt-timeline")).toBeNull();
+    localStorage.removeItem("eldrun.promptChart.timeline");
+  });
+
+  it("opens a draft's Markdown editor on double click and saves the edit", async () => {
     await act(async () => { render(<PromptChartTab scope="p" />); });
     const card = await screen.findByTestId("prompt-chart-card-draft");
-    fireEvent.change(screen.getByLabelText("Search every prompt or #tag…"), { target: { value: "nothing" } });
-    expect(card.className).toContain("is-dimmed");
-    fireEvent.click(screen.getByRole("button", { name: "Hide others" }));
-    expect(screen.queryByTestId("prompt-chart-card-draft")).toBeNull();
+    fireEvent.doubleClick(within(card).getByText("Run the tests"));
+    const field = within(card).getByLabelText("Write a prompt to keep for later…");
+    expect(card.querySelector(".md-prompt")).toBeTruthy();
+    fireEvent.change(field, { target: { value: "Run the unit tests" } });
+    await act(async () => { fireEvent.keyDown(field, { key: "Enter", ctrlKey: true }); });
+    const call = vi.mocked(invoke).mock.calls.find(([name]) => name === "agent_prompt_upsert");
+    expect((call?.[1] as { prompt: { message: string } }).prompt.message).toBe("Run the unit tests");
   });
 
   it("shows queued prompts at the now line rather than in the tab row", async () => {

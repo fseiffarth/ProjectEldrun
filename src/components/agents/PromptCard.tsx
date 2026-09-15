@@ -7,6 +7,7 @@ import type { PromptChartCard } from "../../lib/agentPromptChart";
 import { formatTimelineInstant } from "../../lib/agentPromptTimeline";
 import type { PromptLink } from "../../stores/agentPrompts";
 import { Dropdown } from "../common/Dropdown";
+import { MarkdownPromptField } from "../common/MarkdownPromptField";
 
 export interface PromptCardTarget {
   id: string;
@@ -31,6 +32,10 @@ interface Props {
   targets: PromptCardTarget[];
   /** What a sent card shows instead of a picker: the tab it went to. */
   targetLabel?: string;
+  /** For a draft: the picker's first, default choice — a new agent tab
+   *  running the chart's agent (`lib/agentPromptNewTab`). Its value is the
+   *  empty target, so an unaimed draft selects it, and Send opens the tab. */
+  newTabLabel?: string;
   register?: (node: HTMLElement | null) => void;
   onSelect: () => void;
   onPointerDown?: (event: ReactPointerEvent<HTMLElement>) => void;
@@ -46,6 +51,8 @@ interface Props {
   onQueueMove: (step: -1 | 1) => Promise<void>;
   onLink: () => void;
   onUnlink: (linkId: string) => Promise<void>;
+  /** Open a link's editor (its kind, the commands between the prompts) at a client point. */
+  onEditLink?: (link: PromptLink, x: number, y: number) => void;
   links: PromptLink[];
   /** A short reading of the card at the other end of a link. */
   linkLabel: (id: string) => string;
@@ -62,9 +69,13 @@ function stateFact(
   occurrence?: string,
 ): string {
   if (card.state === "queued") return t("promptChart.waiting");
-  if (card.state === "chained") return card.chainStopped
-    ? t("promptChart.chainClosed")
-    : t("promptChart.chained");
+  if (card.state === "chained") {
+    if (card.chainStopped) return t("promptChart.chainClosed");
+    const commands = card.chainLink?.preface ?? [];
+    return commands.length
+      ? t("promptChart.chainedPreface", { commands: commands.join(" · ") })
+      : t("promptChart.chained");
+  }
   if (card.state === "sent") {
     const result = card.history?.result ?? "delivered";
     return `${t(`promptChart.result.${result}` as "promptChart.result.delivered")} · ${when(card.at)}`;
@@ -89,6 +100,7 @@ export function PromptCard({
   color,
   targets,
   targetLabel,
+  newTabLabel,
   register,
   onSelect,
   onPointerDown,
@@ -104,6 +116,7 @@ export function PromptCard({
   onQueueMove,
   onLink,
   onUnlink,
+  onEditLink,
   links,
   linkLabel,
   onGoToTab,
@@ -128,6 +141,12 @@ export function PromptCard({
   }, [card.message, storedTags]);
 
   const ownLinks = links.filter((link) => link.from === card.id || link.to === card.id);
+  const newTab = card.state === "draft" && !occurrence ? newTabLabel : undefined;
+  const pickOptions = [
+    ...(newTab ? [{ value: "", label: newTab }] : []),
+    ...targets.map((target) => ({ value: target.id, label: target.label })),
+  ];
+  const canSend = !occurrence && (targets.length > 0 || !!newTab);
   const save = async () => {
     if (!message.trim()) return;
     await onSave(message.trim(), parseTags(tags));
@@ -142,7 +161,13 @@ export function PromptCard({
     dragging ? "is-dragging" : "",
     linkOver ? "is-link-over" : "",
     occurrence ? "is-occurrence" : "",
+    expanded && editing ? "is-editing" : "",
   ].filter(Boolean).join(" ");
+  const cancelEdit = () => {
+    setMessage(card.message);
+    setTags(storedTags);
+    setEditing(false);
+  };
 
   return (
     <article
@@ -154,6 +179,14 @@ export function PromptCard({
       onClick={() => {
         onSelect();
         setExpanded((value) => !value);
+      }}
+      // A double click is the way into the editor. Its two clicks have already
+      // toggled the card shut and open again, so this only has to land it open
+      // and editing; one on a control (the × on the face) stays that control's.
+      onDoubleClick={(event) => {
+        if (readOnly || (event.target as HTMLElement).closest("button, input, textarea, .dropdown")) return;
+        setExpanded(true);
+        setEditing(true);
       }}
       onPointerDown={occurrence ? undefined : onPointerDown}
     >
@@ -172,7 +205,7 @@ export function PromptCard({
         <span className={`agent-prompt-lamp is-${card.history?.result ?? card.state}`} aria-hidden="true" />
       </div>
       <div className="agent-prompt-card-agent" onClick={(event) => event.stopPropagation()}>
-        {readOnly || targets.length === 0
+        {readOnly || pickOptions.length === 0
           ? <small>{targetLabel ?? targets.find((target) => target.id === card.targetId)?.label ?? t("promptChart.noAgent")}</small>
           : (
             <Dropdown
@@ -180,7 +213,7 @@ export function PromptCard({
               title={t("promptChart.agent")}
               value={card.targetId ?? ""}
               placeholder={t("promptChart.noAgent")}
-              options={targets.map((target) => ({ value: target.id, label: target.label }))}
+              options={pickOptions}
               onChange={(value) => void onAgent(value)}
             />
           )}
@@ -206,11 +239,21 @@ export function PromptCard({
         <div className="agent-prompt-card-expanded" onClick={(event) => event.stopPropagation()}>
           {editing ? (
             <>
-              <textarea rows={6} value={message} onChange={(event) => setMessage(event.target.value)} />
+              <MarkdownPromptField
+                rows={6}
+                autoFocus
+                value={message}
+                ariaLabel={t("agentPrompts.placeholder")}
+                onChange={setMessage}
+                onKeyDown={(event) => {
+                  if (event.key === "Escape") { event.preventDefault(); cancelEdit(); }
+                  else if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) { event.preventDefault(); void save(); }
+                }}
+              />
               <input value={tags} aria-label={t("agentPrompts.tags")} placeholder={t("agentPrompts.tagsPlaceholder")} onChange={(event) => setTags(event.target.value)} />
               <div className="agent-prompt-card-actions">
                 <button className="settings-btn sm primary" type="button" onClick={() => void save()}>{t("common.save")}</button>
-                <button className="settings-btn sm" type="button" onClick={() => setEditing(false)}>{t("common.cancel")}</button>
+                <button className="settings-btn sm" type="button" onClick={cancelEdit}>{t("common.cancel")}</button>
               </div>
             </>
           ) : (
@@ -235,7 +278,7 @@ export function PromptCard({
                 </ul>
               )}
               <div className="agent-prompt-card-actions">
-                {targets.length > 0 && !occurrence && <button className="settings-btn sm primary" type="button" onClick={onSend}>{t("agentPrompts.send")}</button>}
+                {canSend && <button className="settings-btn sm primary" type="button" onClick={onSend}>{t("agentPrompts.send")}</button>}
                 {(card.state === "draft" || card.state === "chained") && <button className="settings-btn sm" type="button" onClick={onSchedule}>{t("agentPrompts.schedule")}</button>}
                 {card.state === "sent" && <button className="settings-btn sm" type="button" onClick={() => void onCollect()}>{t("promptChart.collectAgain")}</button>}
                 {!readOnly && <button className="settings-btn sm" type="button" onClick={() => setEditing(true)}>{t("common.edit")}</button>}
@@ -253,10 +296,24 @@ export function PromptCard({
                 {!occurrence && <button className="settings-btn sm danger" type="button" onClick={() => void onDelete()}>{t("common.delete")}</button>}
               </div>
               {ownLinks.map((link) => (
-                <button key={link.id} className="agent-prompt-link-row" type="button" onClick={() => void onUnlink(link.id)}>
-                  {link.from === card.id ? (link.kind === "after" ? "→ " : "— ") : (link.kind === "after" ? "← " : "— ")}
-                  {linkLabel(link.from === card.id ? link.to : link.from)} · {t("common.remove")}
-                </button>
+                <div key={link.id} className="agent-prompt-link-row">
+                  <span>
+                    {link.from === card.id ? (link.kind === "after" ? "→ " : "— ") : (link.kind === "after" ? "← " : "— ")}
+                    {linkLabel(link.from === card.id ? link.to : link.from)}
+                    {link.kind === "after" && (link.preface?.length ?? 0) > 0 && <em> · {link.preface!.join(" · ")}</em>}
+                  </span>
+                  {onEditLink && (
+                    <button
+                      type="button"
+                      className="agent-composer-chip"
+                      onClick={(event) => {
+                        const rect = event.currentTarget.getBoundingClientRect();
+                        onEditLink(link, rect.left, rect.bottom);
+                      }}
+                    >{t("common.edit")}</button>
+                  )}
+                  <button type="button" className="agent-composer-chip" onClick={() => void onUnlink(link.id)}>{t("common.remove")}</button>
+                </div>
               ))}
             </>
           )}

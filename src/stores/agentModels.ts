@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { create } from "zustand";
 import { shortModelName } from "../lib/agentModel";
-import { adoptTypedPrompt } from "../lib/agentPromptAdopt";
+import { adoptTranscriptPrompts, adoptTypedPrompt, type TranscriptPrompt } from "../lib/agentPromptAdopt";
 import { lastPromptEcho } from "../lib/agentPromptEcho";
 import { terminalFor } from "../lib/terminalRegistry";
 import { splitPtyId } from "../lib/ptyId";
@@ -64,24 +64,37 @@ export const useAgentModelsStore = create<AgentModelsStore>((set, get) => ({
     if (!force && asked !== undefined && now - asked < REFRESH_FLOOR_MS) return;
     askedAt[ptyId] = now;
     const args = { agent: tab.cmd, projectId: scope === "root" ? null : scope, sessionId: tab.sessionId };
-    // Two reads of the same tail; a failure of one must not cost the other.
-    const [model, prompt] = await Promise.all([
+    // Reads of the same tail; a failure of one must not cost the others.
+    const [model, recent] = await Promise.all([
       invoke("agent_tab_model", args).catch(() => null),
-      invoke("agent_tab_last_prompt", args).catch(() => null),
+      invoke("agent_tab_recent_prompts", args).catch(() => null),
     ]);
+    // A backend predating the recent-prompts read answers with a rejection;
+    // then the last prompt alone is read, and adopted the old way below. An
+    // empty list still asks for the last prompt: one whose record carries no
+    // timestamp is not in the timed list, and the line beside the tab still
+    // has something to say.
+    const timed = Array.isArray(recent) ? (recent as TranscriptPrompt[]) : null;
+    const prompt = timed?.length
+      ? timed[timed.length - 1].text
+      : await invoke("agent_tab_last_prompt", args).catch(() => null);
     const label = typeof model === "string" && model.trim() ? shortModelName(model) : "";
     let text = typeof prompt === "string" ? prompt.trim() : "";
     if (!text) {
       const term = terminalFor(ptyId);
       if (term) text = lastPromptEcho(term.buffer.active) ?? "";
     }
-    const known = get().promptByTab[ptyId];
-    if ((get().byTab[ptyId] ?? "") === label && (known ?? "") === text) return;
-    // A prompt this store had never read (first read of a restored tab) is a
-    // baseline, not news: only a change from a known one is a submission.
     // One window records: a popout's own copy of this store sees the same
     // edge, and the history's dedupe is only against rows already written.
-    if (turnStarted && text && known !== undefined && known !== text && !isDetachedWindow()) void adoptTypedPrompt(scope, tab, text);
+    // With timestamps every missing prompt is adopted at its own time —
+    // messages sent mid-turn and the first prompt after a launch included.
+    if (timed?.length && !isDetachedWindow()) void adoptTranscriptPrompts(scope, tab, timed);
+    const known = get().promptByTab[ptyId];
+    if ((get().byTab[ptyId] ?? "") === label && (known ?? "") === text) return;
+    // Without them, a prompt this store had never read (first read of a
+    // restored tab) is a baseline, not news: only a change from a known one
+    // is a submission.
+    if (!timed && turnStarted && text && known !== undefined && known !== text && !isDetachedWindow()) void adoptTypedPrompt(scope, tab, text);
     set((state) => {
       const byTab = { ...state.byTab };
       if (label) byTab[ptyId] = label;

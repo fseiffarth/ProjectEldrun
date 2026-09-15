@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildPromptChart,
   queueOrderTimes,
+  rowOnStrand,
   snapPromptTime,
   type PromptChartStrand,
 } from "../lib/agentPromptChart";
@@ -53,6 +54,29 @@ describe("prompt chart model", () => {
     });
     expect(cards).toHaveLength(1);
     expect(cards[0]).toMatchObject({ state: "scheduled", id: "prompt" });
+  });
+
+  it("keeps a tab's rows on its strand across a /clear, as separate sessions", () => {
+    // The tab's launch id is `launch`; after a `/clear` the backend files rows
+    // under the new live id `cleared` with `tab_id` still `launch`.
+    const live: PromptChartStrand = { id: "s1", label: "Claude", scheduleTargetId: "target-1", sessionId: "launch", tabId: "launch", agent: "claude", schedules: [] };
+    const row = (id: string, session: string, tab_id?: string, tab_label = "Claude") => ({
+      id, message: id, created_at: "x", sent_at: `2026-09-04T1${id.length}:00:00Z`, tab_label, session_id: session, tab_id, result: "delivered" as const,
+    });
+    const history = [
+      row("a", "launch"),                 // before the tab id was recorded
+      row("bb", "cleared", "launch"),     // after /clear
+      row("ccc", "gone", "other-launch", "Codex"),
+    ];
+    const cards = buildPromptChart({ now, strands: [live], prompts: [], links: [], history });
+    expect(cards.map((card) => [card.id, card.strandId])).toEqual([
+      ["a", "s1"], ["bb", "s1"], ["ccc", "closed:other-launch"],
+    ]);
+    expect(rowOnStrand(live, history[1])).toBe(true);
+    // A closed strand stands for the gone TAB: both of its sessions land on it.
+    const closed: PromptChartStrand = { id: "closed:other-launch", label: "Codex", sessionId: "gone", tabId: "other-launch", closed: true, schedules: [] };
+    expect(rowOnStrand(closed, row("d", "gone-too", "other-launch", "Renamed"))).toBe(true);
+    expect(rowOnStrand(closed, row("e", "gone-too", "third-launch", "Renamed"))).toBe(false);
   });
 
   it("snaps to five minutes", () => {

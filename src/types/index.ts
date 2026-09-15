@@ -355,6 +355,13 @@ export interface Settings {
   agent_preface_commands?: Record<string, string[]>;
   /** Model names per agent command, typed as that CLI's own `/model <name>`. */
   agent_models?: Record<string, string[]>;
+  /** The agent a prompt-chart draft aimed at "New agent tab" launches (the
+   *  bare command, `"claude"`); unset falls back to `default_agent_cmd`. Set
+   *  from the chart's own toolbar. Rides in the backend's `extra` catch-all. */
+  prompt_chart_agent?: string;
+  /** The model that new tab is told to use, typed as the agent's own `/model`
+   *  ahead of the prompt; unset or empty leaves the agent's default. */
+  prompt_chart_model?: string;
   /** User-defined custom agents offered in the add-tab menu's Agents group,
    *  added/removed from the "＋ Add agent…" dialog. Round-trips through the
    *  backend settings `extra` catch-all — no Rust field needed. See CustomAgent. */

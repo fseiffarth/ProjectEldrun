@@ -154,7 +154,10 @@ export const DETACHED_DRAG_END = "detached-drag-end";
 export const DETACHED_ACTIVITY = "detached-activity";
 export interface DetachedActivityEnvelope {
   ptyId: string;
-  kind: "input" | "seen" | "bell";
+  /** `interrupt` is input that cuts the agent off (a bare Escape, Ctrl+C) —
+   *  the one keystroke the classifier reads differently (see
+   *  `activity.noteUserInput`). */
+  kind: "input" | "interrupt" | "seen" | "bell";
 }
 
 /**
@@ -997,6 +1000,7 @@ export async function listenDetachedHost(): Promise<() => void> {
   const unActivity = await listen<DetachedActivityEnvelope>(DETACHED_ACTIVITY, (ev) => {
     const { ptyId, kind } = ev.payload;
     if (kind === "input") noteUserInput(ptyId);
+    else if (kind === "interrupt") noteUserInput(ptyId, true);
     else if (kind === "seen") useActivityStore.getState().clearAttention(ptyId);
     else if (kind === "bell") useActivityStore.getState().noteBell(ptyId);
   });

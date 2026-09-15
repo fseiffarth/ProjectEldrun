@@ -1107,6 +1107,78 @@ unchanged; the new agents are additive.
         not zoom). Switch Settings to 12 h → card times follow.
         - [ ] ✅ Works
         - [ ] ❌ Doesn't work
+    - **Edge commands, Hour view, every typed prompt adopted (2026-09-15),
+      not live-tested.** An `after` link carries the target agent's own
+      commands (`PromptLink.preface`) — `/clear` between two chained prompts —
+      typed as the queued prompt's preface when the chain fires; edited from a
+      handle at the edge's midpoint or a card's link rows. A 5-minute Hour
+      view below Day. Typed prompts are adopted from a timed read of the
+      transcript (`agent_tab_recent_prompts`), so messages sent mid-turn and
+      the first prompt after a launch reach the chart at their real time.
+      `docs/prompt_chart_plan.md` §10. Needs a backend restart.
+      - [x] 🤖 Automated test — cargo `an_after_link_carries_commands_and_a_related_one_cannot`,
+        `a_prompt_recorded_after_the_fact_keeps_its_time_and_place`,
+        `recent_prompts_carry_their_times_and_take_in_mid_turn_messages`;
+        `AgentPromptLinks`, `AgentScheduleRetire` (edge commands on the queued
+        rule), `AgentPromptTimeline` (hour window, ticks, snap, stepping),
+        `AgentPromptAdopt` (timed adoption + old-backend fallback),
+        `PromptChart` (Hour button, edge handle → `/clear`, related drops it).
+      - [ ] 🖐️ Manual test — after restarting: link two drafts `after`, click
+        the dot on the arrow, switch on `/clear`; the arrow reads `/clear` and
+        the chained card says so. Send the first: the agent tab receives the
+        prompt, then `/clear`, then the second prompt. Click Hour: 5-minute
+        grid, ◀ ▶ step an hour, a drop snaps to 5 min. In an agent tab type a
+        prompt, then send another while it is still working: both appear on
+        the chart at the times they were sent.
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+    - **A `/clear` splits the session card and draws the edge (2026-09-15),
+      not live-tested.** A history row's `session_id` is now the LIVE session
+      the prompt reached — the backend resolves the tab's launch id through
+      the hook's record at write time (`agent_prompts::resolve_live_session`)
+      and keeps the launch id as the new `tab_id` — so the prompts after a
+      `/clear` (or a `/resume`) fold into a second session card on the same
+      strand instead of the first. The hook now also records how the session
+      started (`<uid>.src`: startup / resume / clear / compact), and the
+      first row under a rolled id gets an edge from the tab's previous row by
+      itself: `after` carrying `/clear` when that is what happened, plain
+      `related` for a resume (`link_session_roll`, id `roll:<row>`; deleting
+      the row takes it). Closed strands are one per gone *tab* now, keyed by
+      `tab_id`. Rows written before this carry the launch id and stay where
+      they were. `docs/prompt_chart_plan.md` §11. Needs a backend restart
+      (frozen build: `npm run package:dev`, then relaunch).
+      - [x] 🤖 Automated test — cargo
+        `a_rolled_session_links_the_new_rows_to_the_tabs_previous_session`,
+        `hook_script_lets_only_the_tabs_own_session_move_the_record` (the
+        source record), `per_project_live_session_records_are_separate_and_the_newer_one_wins`
+        (`read_live_source_in`); `AgentPromptChart` (rows on one strand across
+        a `/clear`, closed strand per tab), `AgentPromptAdopt` (a rolled row is
+        still the tab's).
+      - [ ] 🖐️ Manual test — after restarting: in a Claude tab send a prompt
+        from the chart, type `/clear` in the tab, send another. Day view: two
+        session cards on the tab's strand, an arrow from the first to the
+        second whose midpoint dot reads `/clear`. Send a third: it folds into
+        the second card, no new arrow. Close the tab: one grey strand, both
+        cards still on it. `/resume` to an older conversation then send: the
+        new card is joined by a plain (arrowless) line.
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+
+    - **Free draft layout and completion-gated sequences (2026-09-15), not
+      live-tested.** Free layout remembers each project's card positions;
+      ports link drafts with the timeline hidden. Dragging any After member
+      schedules only the start and brings its descendants onto the timeline.
+      The next prompt waits for an explicit working→done hook pair, stable
+      for three seconds; silence and timeouts cannot release it. Hook-free
+      agents pause after their first input. See `docs/prompt_chart_plan.md` §12.
+      - [x] 🤖 Automated tests — `AgentPromptDrafts`, `PromptChart`,
+        `AgentScheduleQuietTab`, `AgentScheduleRetire`, `AgentTurnHooks`.
+      - [ ] 🖐️ Manual test — enable Free layout, move and link three drafts,
+        hide/show the timeline, and reopen the chart to check positions.
+        Drag the middle card to a future time: all three appear on the chart.
+        Use a slow tool and an approval wait on the source, with the next card
+        aimed at another tab: it must stay paused until confirmed completion.
+        Check `/clear` on the edge runs only after that completion.
 
 263. **Agent panes: double-click pastes, and a drag still selects while the TUI
     holds the mouse.** Two gestures the terminal owed an agent tab. A

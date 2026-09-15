@@ -8,10 +8,9 @@
  *  - The delivery settle gate treated a PTY with NO recorded output as one that
  *    had produced output this instant, so a tab whose whole TUI arrived as a
  *    restored snapshot (nothing streamed since) was never deliverable at all.
- *  - The blame wait after a delivery blocks the next one, so two prompts cannot
- *    overlap. A delivery that never produced output (the agent exited, the CLI
- *    swallowed the paste) held that block for the life of the window, and every
- *    later "Send to this tab" silently did nothing.
+ *  - The completion wait blocks subsequent prompts until an explicit, stable
+ *    done event. Its former ten-minute timeout let a slow agent receive the
+ *    next prompt while still working; silence must never release that wait.
  */
 import { act, render } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -32,7 +31,7 @@ import {
   _clearScheduledAgentInputsForTest,
   registerScheduledAgentInput,
 } from "../lib/scheduledAgentInput";
-import { useActivityStore } from "../stores/activity";
+import { _clearPtyActivityForTest, noteAgentTurn, useActivityStore } from "../stores/activity";
 import { useAgentPromptsStore } from "../stores/agentPrompts";
 import { useAgentSchedulesStore } from "../stores/agentSchedules";
 import { useTabsStore, type TabEntry } from "../stores/tabs";
@@ -73,6 +72,7 @@ beforeEach(() => {
   writeMock.mockReset();
   writeMock.mockResolvedValue(undefined);
   _clearScheduledAgentInputsForTest();
+  _clearPtyActivityForTest();
   useAgentSchedulesStore.setState({ byTarget: {}, loading: {} });
   useAgentPromptsStore.setState({ byProject: {}, historyByProject: {}, loading: {} });
   useActivityStore.setState({ busyByTab: {}, attentionByTab: {} });
@@ -92,6 +92,44 @@ afterEach(() => {
 });
 
 describe("delivering to a tab nobody is watching", () => {
+  it("advances a cross-tab chain only after stable completion, preserving edge commands", async () => {
+    const review = { id: "review", message: "Review the result", created_at: "x", updated_at: "x" };
+    invokeMock.mockImplementation((command, args) => Promise.resolve(
+      command === "agent_schedules_list" && (args as { scheduleTargetId: string }).scheduleTargetId === "target-1"
+        ? [sendNow("prompt-1", "first prompt")]
+        : command === "agent_schedule_claim" ? true
+        : command === "agent_prompts_list" ? [review]
+        : command === "agent_prompt_links_list" ? [{ id: "edge", from: "prompt-1", to: "review", kind: "after", target: "target-2", preface: ["/clear"] }]
+        : [],
+    ));
+    useTabsStore.setState({ tabsByScope: { p: [agent, { ...agent, key: "agent-2", scheduleTargetId: "target-2" }] } });
+    registerScheduledAgentInput("target-1", {
+      ptyId: "p:agent-1", ready: () => true, bracketedPaste: () => false,
+      recordAuthorizedInput: () => noteAgentTurn("p:agent-1", "working"),
+    });
+    const queued = () => invokeMock.mock.calls.filter(([name]) => name === "agent_schedule_upsert");
+    await act(async () => { render(<AgentScheduleHost />); });
+    await act(async () => { await settle(); });
+    expect(delivered().join("")).toContain("first prompt");
+    expect(queued()).toEqual([]);
+    // Stop just before a sweep: not yet stable.
+    await act(async () => { await vi.advanceTimersByTimeAsync(12_000); });
+    act(() => noteAgentTurn("p:agent-1", "done"));
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
+    expect(queued()).toEqual([]);
+    // A resumed turn or approval invalidates that Stop.
+    act(() => noteAgentTurn("p:agent-1", "working"));
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+    expect(queued()).toEqual([]);
+    act(() => noteAgentTurn("p:agent-1", "decision"));
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+    expect(queued()).toEqual([]);
+    act(() => noteAgentTurn("p:agent-1", "done"));
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+    expect(queued()).toHaveLength(1);
+    expect(queued()[0][1]).toMatchObject({ scheduleTargetId: "target-2", schedule: { id: "review", preface: ["/clear"] } });
+  });
+
   it("sends to a ready tab that has produced no output this session", async () => {
     invokeMock.mockImplementation((command) =>
       Promise.resolve(command === "agent_schedules_list"
@@ -115,7 +153,7 @@ describe("delivering to a tab nobody is watching", () => {
     expect(delivered().join("")).toContain("check the build");
   });
 
-  it("gives up on the blame wait rather than blocking every later prompt", async () => {
+  it("never releases the next prompt on silence or a timeout; waits for stable explicit completion", async () => {
     let schedules = [sendNow("prompt-1", "first prompt")];
     invokeMock.mockImplementation((command) =>
       Promise.resolve(command === "agent_schedules_list"
@@ -137,14 +175,21 @@ describe("delivering to a tab nobody is watching", () => {
     await act(async () => { await settle(); });
     expect(delivered().join("")).toContain("first prompt");
 
-    // The tab produced nothing at all in reply, so the blame wait never
-    // resolves on its own. A second prompt aimed at the same tab must still go.
+    // Silence, even beyond the old ten-minute bypass, is not completion.
     writeMock.mockClear();
     schedules = [sendNow("prompt-2", "second prompt")];
     useAgentSchedulesStore.setState({ byTarget: {} });
     await act(async () => { await vi.advanceTimersByTimeAsync(11 * 60_000); });
     await act(async () => { await settle(); });
 
+    expect(delivered()).toEqual([]);
+    act(() => noteAgentTurn("p:agent-1", "working"));
+    act(() => noteAgentTurn("p:agent-1", "decision"));
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    expect(delivered()).toEqual([]);
+    act(() => noteAgentTurn("p:agent-1", "working"));
+    act(() => noteAgentTurn("p:agent-1", "done"));
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
     expect(delivered().join("")).toContain("second prompt");
   });
 });

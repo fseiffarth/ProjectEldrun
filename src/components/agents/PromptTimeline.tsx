@@ -3,6 +3,7 @@ import { formatTime, weekdayLabel } from "../../lib/calendarTime";
 import { useI18nStore, useT } from "../../lib/i18n";
 import { useUse24h } from "../../lib/timeFormat";
 import type { PromptChartCard } from "../../lib/agentPromptChart";
+import type { UsageResetMark } from "../../lib/agentUsageResets";
 import {
   TIMELINE_CARD_WIDTH,
   TIMELINE_LANE_HEIGHT,
@@ -41,6 +42,10 @@ interface Props {
   /** Ctrl + wheel over the axis: one view finer or coarser, around the
    *  instant under the pointer. */
   onZoom?: (direction: "in" | "out", at: Date) => void;
+  /** How far the reader lifted each item off its lane, in px, by item key. */
+  lifts?: Record<string, number>;
+  /** Where the agents' own rate-limit windows roll over. */
+  resets?: UsageResetMark[];
 }
 
 const BODY_PADDING = 8;
@@ -66,7 +71,7 @@ function hhmm(at: Date): string {
  * that scrolled the body took the now line away with it. The axis, with the
  * NOW label, is sticky, so scrolling the tab keeps the clock in view too.
  */
-export function PromptTimeline({ win, cards, now, drag, bodyRef, nowBandRef, renderCard, onRefine, dropLabel, onZoom }: Props) {
+export function PromptTimeline({ win, cards, now, drag, bodyRef, nowBandRef, renderCard, onRefine, dropLabel, onZoom, lifts, resets = [] }: Props) {
   const t = useT();
   const lang = useI18nStore((s) => s.lang);
   const use24h = useUse24h();
@@ -125,7 +130,15 @@ export function PromptTimeline({ win, cards, now, drag, bodyRef, nowBandRef, ren
   // tall as the taller of the two, so no waiting card sits below the edge.
   // What still outgrows it (an expanded card) scrolls inside the body.
   const queueHeight = queued.length > 0 ? QUEUE_LABEL_HEIGHT + queued.length * TIMELINE_LANE_HEIGHT : 0;
-  const bodyHeight = Math.max(lanes * TIMELINE_LANE_HEIGHT, queueHeight) + BODY_PADDING * 2;
+  // A sent card the reader lifted sits off its lane: the stored lift, never
+  // above the body's top edge (a repack can move the lane under it), plus the
+  // distance of a lift in flight.
+  const laneTop = (item: { lane: number }) => BODY_PADDING + item.lane * TIMELINE_LANE_HEIGHT;
+  const itemTop = (item: { key: string; lane: number }) =>
+    Math.max(0, laneTop(item) + (lifts?.[item.key] ?? 0))
+    + (drag?.kind === "lift" && drag.key === item.key ? drag.dy : 0);
+  const liftedBottom = win.view === "month" ? 0 : Math.max(0, ...packed.items.map((item) => itemTop(item) + TIMELINE_LANE_HEIGHT));
+  const bodyHeight = Math.max(Math.max(lanes * TIMELINE_LANE_HEIGHT, queueHeight) + BODY_PADDING * 2, liftedBottom + BODY_PADDING);
 
   const tickLabel = (at: Date, label: "hour" | "day", major: boolean): string => {
     if (label === "hour") return formatTime(hhmm(at), use24h);
@@ -133,16 +146,34 @@ export function PromptTimeline({ win, cards, now, drag, bodyRef, nowBandRef, ren
     return String(at.getDate());
   };
 
+  const visibleResets = resets.filter((mark) => mark.at >= win.start && mark.at < win.end);
+  // The agent is named on the label only once there is more than one to tell apart.
+  const resetAgents = new Set(visibleResets.map((mark) => mark.agent)).size;
+  const resetText = (mark: UsageResetMark) =>
+    `${resetAgents > 1 ? `${mark.agent} ` : ""}${t(`promptChart.reset.${mark.kind}` as "promptChart.reset.session")}`;
+  const resetTitle = (mark: UsageResetMark) => t("promptChart.resetTitle", {
+    agent: mark.agent,
+    labels: mark.labels.join(", "),
+    percent: Math.round(mark.percent),
+    resets: `${mark.resets} (${formatTimelineInstant(mark.at, lang, use24h, true)})`,
+  });
+
   const dropAt = drag?.kind === "card" && drag.zone.kind === "time" ? drag.zone.at : null;
   const dropNow = drag?.kind === "card" && drag.zone.kind === "now";
-  const dropDate = (at: Date) => formatTimelineInstant(at, lang, use24h, win.view !== "day");
+  // Inside one day, the date is the range label's to say.
+  const dropDate = (at: Date) => formatTimelineInstant(at, lang, use24h, win.view !== "day" && win.view !== "hour");
 
   return (
     <div className={`agent-prompt-timeline is-${win.view}`} data-testid="prompt-timeline" ref={rootRef}>
       <div className="agent-prompt-timeline-axis" aria-hidden="true">
-        {ticks.filter((tick) => tick.major || win.view === "day").map((tick) => (
+        {ticks.filter((tick) => tick.major || win.view === "day" || win.view === "hour").map((tick) => (
           <span key={tick.at.getTime()} className={`agent-prompt-timeline-tick${tick.major ? " is-major" : ""}`} style={{ left: tick.x }}>
             {tick.major || win.view !== "day" ? tickLabel(tick.at, tick.label, tick.major) : ""}
+          </span>
+        ))}
+        {visibleResets.map((mark) => (
+          <span key={`reset:${mark.key}`} className={`agent-prompt-timeline-reset-label is-${mark.kind}`} style={{ left: timelineX(mark.at, win, width) }} title={resetTitle(mark)}>
+            {resetText(mark)}
           </span>
         ))}
         <span className={`agent-prompt-timeline-now-label${nowInside ? "" : " is-outside"}`} style={{ left: nowX }} title={t("promptChart.nowBand")}>
@@ -154,6 +185,9 @@ export function PromptTimeline({ win, cards, now, drag, bodyRef, nowBandRef, ren
           {(nowInside || now >= win.end) && <div className="agent-prompt-timeline-past" style={{ width: nowInside ? nowX : width }} />}
           {ticks.map((tick) => (
             <span key={`line:${tick.at.getTime()}`} className={`agent-prompt-timeline-line${tick.major ? " is-major" : ""}`} style={{ left: tick.x }} />
+          ))}
+          {visibleResets.map((mark) => (
+            <span key={`reset:${mark.key}`} className={`agent-prompt-timeline-reset is-${mark.kind}`} style={{ left: timelineX(mark.at, win, width) }} />
           ))}
         </div>
         <div
@@ -185,8 +219,9 @@ export function PromptTimeline({ win, cards, now, drag, bodyRef, nowBandRef, ren
             : packed.items.map((item) => (
               <div
                 key={item.key}
-                className="agent-prompt-timeline-item"
-                style={{ left: item.x, top: BODY_PADDING + item.lane * TIMELINE_LANE_HEIGHT, width: item.width }}
+                className={`agent-prompt-timeline-item${drag?.kind === "lift" && drag.key === item.key ? " is-lifting" : ""}`}
+                style={{ left: item.x, top: itemTop(item), width: item.width }}
+                data-lane-top={laneTop(item)}
               >
                 {renderCard(item.card, item.occurrence, item.members && {
                   cards: item.members.map((member) => member.card),

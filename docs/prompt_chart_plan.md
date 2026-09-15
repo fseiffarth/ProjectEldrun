@@ -310,3 +310,100 @@ Decided against, on top of section 8: **per-tab strands** (2026-09-04 →
 the user chose the horizontal axis); **chained cards attached under their
 source** (lanes are fixed-height, and a chained draft is still a draft:
 it sits on the strip with its arrow drawn to the source).
+
+## 10. Edge commands, the Hour view, and adopting every typed prompt (2026-09-15)
+
+- **An `after` edge can carry commands.** `PromptLink.preface` (additive,
+  omitted when empty, refused on a `related` edge, validated by
+  `agent_tasks::validate_preface`) holds the target agent's own slash
+  commands — `/clear` between two scheduled prompts. When the chain fires,
+  `AgentScheduleHost` passes them to `sendCollectedPrompt` as the queued
+  draft's preface, so the scheduler types them one at a time before the
+  target's text: the composer's prefix-chip path, not a second one. The edge
+  is edited on the edge: a midpoint handle (the one part of the overlay that
+  takes the pointer) opens `PromptLinkEditor` — kind, the target tab's
+  command chips (`prefaceCommandsFor`, plus any command the edge carries that
+  the agent no longer offers), remove — and a card's link rows open the same
+  editor. The commands are written beside the handle and on the chained
+  card's fact line. Each toggle writes at once.
+- **Hour view.** Hour · Day · Week · Month; Ctrl + wheel reaches it from Day.
+  The Hour anchor is `YYYY-MM-DDTHH`; the grid is 5 minutes (labels on each
+  quarter) and so is the snap, the finest any view offers.
+- **Every typed prompt reaches the history.** Adoption read only the *last*
+  prompt, and only at a turn's start, so a message sent while the agent was
+  working (Claude records it as a `queued_command` attachment and it starts no
+  turn) never appeared, and the first prompt after a launch was taken as a
+  baseline. `agent_tab_recent_prompts` (`agent_session_recent_prompts`)
+  returns the tail's prompts with their transcript timestamps, queued ones
+  included; `lib/agentPromptAdopt.promptsToAdopt` records each one the history
+  lacks — not a session command, within 24 h, no row of this tab with the same
+  words within 65 min — with `sent_at` set to that timestamp
+  (`SentAgentPromptInput.sent_at`, and `push_history` now inserts by time).
+  A backend predating the command falls back to the old last-prompt path.
+
+## 11. A `/clear` is a new session card, joined to the old one (2026-09-15)
+
+Two prompts with a `/clear` between them showed under one session card,
+because the card's "session" was the tab's **launch id**: `tab.sessionId` is
+minted once (`stores/tabs`, passed as `--session-id`) and never changes,
+while `/clear` rolls Claude onto a fresh id that only the hook's
+`live_sessions/<uid>` record knew — read at respawn and nowhere else.
+
+- **The history files a row under the live session.** `agent_prompts::archive`
+  and `record` resolve the launch id the frontend sends through
+  `agent_session::read_live_session_and_source_for` (`resolve_live_session`)
+  and store the live id as `session_id`, keeping the launch id as the new
+  `SentAgentPrompt.tab_id`. The frontend does not learn the live id and does
+  not need to: the row carries it, and `sessionGroupKey` already groups on
+  `history.session_id`, so the prompts after a `/clear` fold into a second
+  card. Rows written before this carry the launch id as before and group as
+  before.
+- **The strand is the tab.** `lib/agentPromptChart.rowOnStrand` matches a row
+  to a strand by `tab_id` first (a live strand's `tabId` is its launch id),
+  then by session id (older rows), then by label. A closed strand stands for a
+  gone *tab*, keyed by `tab_id`, so both of its sessions stay on one grey
+  strand. `lib/agentPromptAdopt`'s "my rows" filter reads the same three.
+- **The edge draws itself.** The hook writes `<uid>.src` — `SessionStart`'s
+  `source` — before the id. `link_session_roll` runs after every history
+  write: the first row a tab writes under a session id it has not written
+  before gets an edge from the tab's newest earlier row — `after` carrying
+  `/clear` when the source says `clear`, `related` otherwise (a `/resume`
+  opens a picker and cannot be replayed as a preface). The edge's id is
+  `roll:<row id>`, so a queued send turning into its delivery updates it
+  rather than doubling it; later rows of the same session draw nothing; the
+  edge is pruned with its row like any other. Since the session card
+  registers its node under every member's id, the arrow runs card to card.
+- **Resume.** An Eldrun relaunch resumes the recorded live id and the hook's
+  `resume` start carries the same id: no roll, no edge. A `/resume` inside
+  the tab to another conversation rolls the id like a `/clear` and gets the
+  plain edge.
+
+## 12. Free draft layout and completion-gated sequences (2026-09-15)
+
+`PromptDraftBoard` adds a Free layout option, with project-scoped positions
+remembered in localStorage. Moving a draft changes only its position; the
+existing ports and edge editor work with the timeline hidden too. Dragging
+any member of an unscheduled After sequence to the time chart schedules its
+single start. Descendants retain their links and are drawn at the timed
+ancestor's position, with no independent delivery times. Related links do not
+carry cards. Cycles and multiple incoming After edges block the transfer.
+`agentPromptDrafts` owns the sequence traversal and display anchors. The
+keyboard Send/Schedule actions resolve the same start; the schedule dialog
+keeps its prompt id so the links survive delivery.
+
+**Completion replaces submission as the chain trigger.** A delivered receipt
+means the message reached the terminal, not that the agent finished. The host
+now waits for a fresh working→done hook pair after the actual message (after
+any prefix commands), with done stable for at least three seconds. It checks
+on the existing 15-second sweep. This applies across tabs too: successors are
+not even queued until the source completes. Neither silence, approval waits,
+nor the old ten-minute timeout may release the next prompt. The activity
+store keeps a separate automation reading that cannot fall back to the UI's
+silence heuristic or depend on whether the user read the output.
+
+An untouched, ready terminal can receive its first prompt; subsequent input
+requires a stable completion hook. Hook-free agents therefore pause automatic
+progression. Recovered receipts without an observed turn do not advance a
+chain. This conservative behavior is intentional: an uncertain completion
+must not type into an agent still working. The chart explains this and keeps
+its UntestedTag until live verification.
