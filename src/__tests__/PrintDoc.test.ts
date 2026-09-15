@@ -15,6 +15,8 @@ import {
   parsePageRange,
   selectedPages,
   printSequence,
+  withCopies,
+  clampCopies,
   thumbSizePx,
   contentBoxCm,
   rasterScaleFor,
@@ -142,6 +144,21 @@ describe("what actually prints", () => {
 
   it("prints nothing from an empty arrangement", () => {
     expect(printSequence([], DEFAULT_PRINT_OPTIONS)).toEqual([]);
+  });
+
+  it("prints copies collated, each one the whole sequence", () => {
+    const seq = printSequence(initialPages(3), withOpts({ pages: "custom", range: "1-2" }));
+    expect(withCopies(seq, 3).map((r) => r.page)).toEqual([1, 2, 1, 2, 1, 2]);
+    expect(withCopies(seq, 1)).toEqual(seq);
+    expect(withCopies([], 5)).toEqual([]);
+  });
+
+  it("clamps a copy count to a whole number a printer should get", () => {
+    expect(clampCopies(0)).toBe(1);
+    expect(clampCopies(-4)).toBe(1);
+    expect(clampCopies(2.6)).toBe(3);
+    expect(clampCopies(1e6)).toBe(99);
+    expect(clampCopies(NaN)).toBe(1);
   });
 });
 
@@ -340,6 +357,12 @@ describe("loadPrintOptions", () => {
     // A range typed for one document must not silently drop pages of the next.
     expect(loaded.pages).toBe("all");
     expect(loaded.range).toBe("");
+  });
+
+  it("never carries a copy count over to the next document", () => {
+    savePrintOptions(withOpts({ copies: 10 }));
+    expect(loadPrintOptions().copies).toBe(1);
+    expect(sanitizePrintOptions({ copies: 500 }).copies).toBe(99);
   });
 
   it("remembers sheets and flowing text apart", () => {

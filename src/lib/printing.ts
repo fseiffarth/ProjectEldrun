@@ -147,3 +147,127 @@ export function orphanJobs(snapshot: PrintSnapshot): PrintJob[] {
   const known = new Set(snapshot.printers.map((p) => p.name));
   return snapshot.jobs.filter((job) => !known.has(job.printer));
 }
+
+// ── Following one print job ──────────────────────────────────────────────────
+// The print preview hands its document to the platform dialog, which submits
+// the job itself and reports nothing back. What the preview CAN see is the
+// queue, so it follows its job there: a job that was not in the queue before
+// Print, preferably one carrying the document's title.
+
+/** Where a submitted job is, as far as the queue shows it. */
+export type PrintProgress =
+  | { phase: "waiting" }
+  | { phase: "queued"; printer: string; ahead: number }
+  | {
+      phase: "printing";
+      printer: string;
+      /** The page under way (1-based), when the print system counts pages. */
+      page: number | null;
+      total: number | null;
+      /** Seconds left at the pace so far; null until a page has gone out. */
+      etaSecs: number | null;
+      /** Jobs queued on the same printer after this one. */
+      behind: number;
+    }
+  | { phase: "held"; printer: string }
+  /** The job left the queue — printed, or cancelled elsewhere; the queue does
+   *  not say which, so the wording must not claim paper. */
+  | { phase: "done" }
+  /** No new job ever appeared: saved to a file, cancelled in the dialog, or
+   *  through the queue before the first look. */
+  | { phase: "unseen" };
+
+/** How long after Print a job may take to show up before we stop looking. */
+export const JOB_APPEAR_TIMEOUT_MS = 90_000;
+
+/**
+ * Whether a queued job's title names this document. `lpq` cuts its file column
+ * short, so a job title that is a long enough prefix of the document's counts
+ * too; a job whose title could not be recovered carries its id and matches
+ * nothing, which leaves the caller's fallback to decide.
+ */
+export function jobTitleMatches(jobTitle: string, docTitle: string): boolean {
+  const job = jobTitle.trim().toLowerCase();
+  const doc = docTitle.trim().toLowerCase();
+  if (!job || !doc) return false;
+  return job.startsWith(doc) || (job.length >= 8 && doc.startsWith(job));
+}
+
+/**
+ * Seconds left for a job `done` pages into `total`, `elapsedSecs` after it
+ * started: the pace so far, carried over the pages still to go. Nothing until a
+ * page has gone out — a pace measured over zero pages is the warm-up, not the
+ * printer.
+ */
+export function printEtaSecs(done: number, total: number, elapsedSecs: number): number | null {
+  if (!(done >= 1) || !(total > done) || !(elapsedSecs > 0)) return null;
+  return Math.round((elapsedSecs / done) * (total - done));
+}
+
+/**
+ * One step of following a job: given a fresh queue reading, the job ids that
+ * existed before Print (`baseline`) and the ids already being followed, say
+ * where the job is. Once a job has been picked it stays picked — a later
+ * stranger in the queue does not take its place.
+ *
+ * With no title match among the new jobs, every new job is followed: the title
+ * is a preference, not a requirement, because a job whose `lpq` line did not
+ * parse must still be followed rather than reported as unseen.
+ *
+ * `expectedPages` is the page count the caller put into the job, used when the
+ * print system does not report one (CUPS often does not).
+ */
+export function followPrintJob(
+  snapshot: PrintSnapshot,
+  baseline: ReadonlySet<string>,
+  tracked: readonly string[],
+  docTitle: string,
+  elapsedMs: number,
+  expectedPages: number | null = null,
+): { progress: PrintProgress; tracked: string[] } {
+  let ids = [...tracked];
+  if (ids.length === 0) {
+    const fresh = snapshot.jobs.filter((job) => !baseline.has(job.id));
+    const named = fresh.filter((job) => jobTitleMatches(job.title, docTitle));
+    ids = (named.length > 0 ? named : fresh).map((job) => job.id);
+    if (ids.length === 0) {
+      return {
+        progress: { phase: elapsedMs > JOB_APPEAR_TIMEOUT_MS ? "unseen" : "waiting" },
+        tracked: [],
+      };
+    }
+  }
+  const live = snapshot.jobs.filter((job) => ids.includes(job.id));
+  if (live.length === 0) return { progress: { phase: "done" }, tracked: ids };
+
+  const printing = live.find((job) => jobStateKey(job.state) === "printing");
+  if (printing) {
+    const queue = jobsFor(snapshot.jobs, printing.printer);
+    const done = printing.pages_done ?? null;
+    let total = printing.pages_total ?? expectedPages ?? null;
+    // More pages out than the job has means they are counted differently
+    // (n-up, duplex sheets): there is no honest fraction left to show.
+    if (total !== null && done !== null && done > total) total = null;
+    const page = done === null ? null : total === null ? done + 1 : Math.min(done + 1, total);
+    const secs = printing.printing_secs ?? null;
+    return {
+      progress: {
+        phase: "printing",
+        printer: printing.printer,
+        page,
+        total,
+        etaSecs: done !== null && total !== null && secs !== null ? printEtaSecs(done, total, secs) : null,
+        behind: Math.max(0, queue.length - 1 - queue.findIndex((job) => job.id === printing.id)),
+      },
+      tracked: ids,
+    };
+  }
+  const held = live.find((job) => jobStateKey(job.state) === "held");
+  if (held) return { progress: { phase: "held", printer: held.printer }, tracked: ids };
+  const first = live[0];
+  const ahead = jobsFor(snapshot.jobs, first.printer).findIndex((job) => job.id === first.id);
+  return {
+    progress: { phase: "queued", printer: first.printer, ahead: Math.max(0, ahead) },
+    tracked: ids,
+  };
+}

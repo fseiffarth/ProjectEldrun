@@ -162,6 +162,61 @@ button.settings-btn.danger:hover:not(:disabled),
   font-weight: 650;
   color: var(--accent);
 }
+/* Where the last Print is: sent → queued → printing → done, read off the queue. */
+.print-preview-progress {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.print-preview-progress[data-phase="done"] {
+  color: var(--success);
+}
+.print-preview-progress[data-phase="held"],
+.print-preview-progress[data-phase="unseen"] {
+  color: var(--warning);
+}
+.print-progress-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.print-progress-steps {
+  display: inline-flex;
+  flex: none;
+  gap: 3px;
+}
+.print-progress-steps > i {
+  width: 14px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--border-color);
+}
+.print-progress-steps > i.on {
+  background: var(--accent);
+}
+/* The step under way: filled as far as the page count shows (`--fill`), and
+   pulsing (opacity only) while it lasts. */
+.print-progress-steps > i.next {
+  background: linear-gradient(
+    to right,
+    var(--accent) var(--fill, 0%),
+    var(--border-color) var(--fill, 0%)
+  );
+  animation: print-progress-pulse 1.2s ease-in-out infinite;
+}
+@keyframes print-progress-pulse {
+  50% {
+    opacity: 0.45;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .print-progress-steps > i.next {
+    animation: none;
+  }
+}
 .print-preview-actions {
   display: flex;
   align-items: center;
@@ -234,6 +289,9 @@ button.settings-btn.danger:hover:not(:disabled),
 }
 .print-opt-range {
   width: 96px;
+}
+.print-opt-number {
+  width: 56px;
 }
 .print-opt-select:disabled,
 .print-opt-range:disabled {

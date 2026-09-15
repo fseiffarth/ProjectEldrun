@@ -13,6 +13,10 @@
  */
 import { describe, it, expect } from "vitest";
 import {
+  followPrintJob,
+  jobTitleMatches,
+  printEtaSecs,
+  JOB_APPEAR_TIMEOUT_MS,
   jobStateLabelKey,
   jobsFor,
   orphanJobs,
@@ -20,7 +24,7 @@ import {
   printerStateLabelKey,
   printerTone,
 } from "../lib/printing";
-import type { PrintJob, PrintSnapshot, PrinterInfo } from "../types/printing";
+import type { PrintJob, PrintJobState, PrintSnapshot, PrinterInfo } from "../types/printing";
 
 function printer(over: Partial<PrinterInfo> = {}): PrinterInfo {
   return {
@@ -111,5 +115,100 @@ describe("grouping jobs", () => {
 
   it("reports no orphans when every job's printer is listed", () => {
     expect(orphanJobs({ ...snapshot, jobs: snapshot.jobs.slice(0, 2) })).toEqual([]);
+  });
+});
+
+describe("following a print job", () => {
+  const queue = (jobs: PrintJob[]): PrintSnapshot => ({
+    supported: true,
+    backend: "cups",
+    default_printer: "Office",
+    printers: [printer()],
+    jobs,
+    note: "",
+  });
+  const before = new Set(["Office-1"]);
+  const theirs = job({ id: "Office-1", number: 1, title: "someone-else.odt" });
+
+  it("waits for a job to appear, then gives up after the timeout", () => {
+    expect(followPrintJob(queue([theirs]), before, [], "notes.md", 1000).progress).toEqual({
+      phase: "waiting",
+    });
+    expect(
+      followPrintJob(queue([theirs]), before, [], "notes.md", JOB_APPEAR_TIMEOUT_MS + 1).progress,
+    ).toEqual({ phase: "unseen" });
+  });
+
+  it("follows the new job named like the document, counting the jobs ahead", () => {
+    const stranger = job({ id: "Office-2", number: 2, title: "other-app.pdf" });
+    const mine = job({ id: "Office-3", number: 3, title: "notes.md" });
+    const step = followPrintJob(queue([theirs, stranger, mine]), before, [], "notes.md", 1500);
+    expect(step.tracked).toEqual(["Office-3"]);
+    expect(step.progress).toEqual({ phase: "queued", printer: "Office", ahead: 2 });
+  });
+
+  it("moves through printing and held, and is done once the job leaves", () => {
+    const mine = (state: PrintJobState) => job({ id: "Office-3", number: 3, title: "notes.md", state });
+    const tracked = ["Office-3"];
+    expect(followPrintJob(queue([mine("printing")]), before, tracked, "notes.md", 0).progress)
+      .toMatchObject({ phase: "printing", printer: "Office", page: null, etaSecs: null, behind: 0 });
+    expect(followPrintJob(queue([mine("held")]), before, tracked, "notes.md", 0).progress)
+      .toEqual({ phase: "held", printer: "Office" });
+    // A stranger arriving later does not take the finished job's place.
+    const later = job({ id: "Office-4", number: 4, title: "notes.md" });
+    expect(followPrintJob(queue([theirs, later]), before, tracked, "notes.md", 0).progress)
+      .toEqual({ phase: "done" });
+  });
+
+  it("says which page is under way, what is left, and who waits behind", () => {
+    const mine = job({
+      id: "Office-3",
+      number: 3,
+      title: "notes.md",
+      state: "printing",
+      pages_done: 3,
+      pages_total: 12,
+      printing_secs: 60,
+    });
+    const next = job({ id: "Office-4", number: 4, title: "other.pdf" });
+    expect(followPrintJob(queue([mine, next]), before, ["Office-3"], "notes.md", 0).progress).toEqual({
+      phase: "printing",
+      printer: "Office",
+      page: 4,
+      total: 12,
+      etaSecs: 180, // 20 s a page so far, nine pages to go
+      behind: 1,
+    });
+  });
+
+  it("takes the page count it printed when the queue has none", () => {
+    const mine = job({ id: "Office-3", number: 3, state: "printing", pages_done: 1, printing_secs: 30 });
+    const step = followPrintJob(queue([mine]), before, ["Office-3"], "notes.md", 0, 4);
+    expect(step.progress).toMatchObject({ page: 2, total: 4, etaSecs: 90 });
+    // A count past the total is counted differently: no fraction, no estimate.
+    const over = { ...mine, pages_done: 9 };
+    expect(followPrintJob(queue([over]), before, ["Office-3"], "notes.md", 0, 4).progress)
+      .toMatchObject({ page: 10, total: null, etaSecs: null });
+  });
+
+  it("estimates nothing before a page has gone out", () => {
+    expect(printEtaSecs(0, 10, 30)).toBeNull();
+    expect(printEtaSecs(10, 10, 30)).toBeNull();
+    expect(printEtaSecs(2, 10, 0)).toBeNull();
+    expect(printEtaSecs(2, 10, 30)).toBe(120);
+  });
+
+  it("follows any new job when none carries the title", () => {
+    const untitled = job({ id: "Office-5", number: 5, title: "Office-5" });
+    const step = followPrintJob(queue([untitled]), before, [], "notes.md", 0);
+    expect(step.tracked).toEqual(["Office-5"]);
+    expect(step.progress.phase).toBe("queued");
+  });
+
+  it("matches a title lpq cut short, but not a bare fragment", () => {
+    expect(jobTitleMatches("Quarterly report dra", "Quarterly report draft v2.md")).toBe(true);
+    expect(jobTitleMatches("notes.md", "notes.md")).toBe(true);
+    expect(jobTitleMatches("no", "notes.md")).toBe(false);
+    expect(jobTitleMatches("", "notes.md")).toBe(false);
   });
 });

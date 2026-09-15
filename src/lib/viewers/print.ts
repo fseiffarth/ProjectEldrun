@@ -22,6 +22,13 @@ import {
   type MountedPageStrip,
 } from "../../components/common/mountPageStrip";
 import type { PageStripProps } from "../../components/common/PageStrip";
+import {
+  followPrintJob,
+  printSnapshot,
+  JOB_APPEAR_TIMEOUT_MS,
+  type PrintProgress,
+} from "../printing";
+import type { PrintSnapshot } from "../../types/printing";
 
 // ── Print options ────────────────────────────────────────────────────────────
 // The preview overlay exposes the options a printer dialog normally would. They
@@ -49,6 +56,9 @@ export interface PrintOptions {
   background: boolean;
   /** Footer page numbers; only possible on page-based documents (see below). */
   pageNumbers: boolean;
+  /** How many times the whole job prints, collated (1-2-3, 1-2-3). Per job, like
+   *  the page selection — see `loadPrintOptions`. */
+  copies: number;
 }
 
 /** Paper dimensions in cm, portrait (width × height). */
@@ -80,7 +90,11 @@ export const DEFAULT_PRINT_OPTIONS: PrintOptions = {
   grayscale: false,
   background: true,
   pageNumbers: false,
+  copies: 1,
 };
+
+/** The most copies one job asks for — a typo of 1000 should not feed a printer. */
+export const MAX_COPIES = 99;
 
 /** Sheet box in cm for the chosen paper + orientation (landscape swaps them). */
 export function pageBoxCm(opts: PrintOptions): [number, number] {
@@ -161,6 +175,16 @@ export function printSequence(pages: PageList, opts: PrintOptions): PageList {
 }
 
 /**
+ * The print order with every copy spelled out, collated: each copy is the whole
+ * sequence, so a stack comes off the printer ready to hand out rather than as
+ * piles of page 1, page 2… to sort by hand.
+ */
+export function withCopies<T>(sequence: readonly T[], copies: number): T[] {
+  const n = clampCopies(copies);
+  return Array.from({ length: n }, () => sequence).flat();
+}
+
+/**
  * The stylesheet the options translate to, injected last into the print
  * document so it overrides both the `buildPrintDoc` base and the caller's CSS.
  *
@@ -191,6 +215,10 @@ export function buildOptionsCss(opts: PrintOptions, paged = false): string {
     // (see the paged block) and carries them on the sheets instead.
     `body{margin:0;padding:${paged ? 0 : pad}cm;zoom:${zoom};background:#fff}`,
     `.eldrun-print-hidden{display:none!important}`,
+    // Where a flowing document's next copy starts (see `printDocument`): a new
+    // sheet on paper, a visible seam on screen.
+    `.eldrun-copy-break{break-before:page;page-break-before:always;height:0}` +
+      `@media screen{.eldrun-copy-break{margin:1cm 0;border-top:2px dashed #999}}`,
     // Screen-only: show the actual sheet on a backdrop, so the preview is WYSIWYG.
     `@media screen{html{background:#3f4245;padding:18px 0}` +
       `body{width:${sheetW}cm;min-height:${sheetH}cm;margin:0 auto;` +
@@ -339,8 +367,10 @@ function storageKey(kind: PrintKind): string {
  *
  * The page *selection* is deliberately not restored: a range like "2-3" belongs
  * to the document it was typed for, and silently re-applying it to the next file
- * would drop pages the user never chose to drop. Printer settings (paper,
- * margins, scale…) do carry over, which is what a printer dialog does.
+ * would drop pages the user never chose to drop. Nor is the copy count — ten
+ * handouts of one agenda must not become ten copies of the next PDF. Printer
+ * settings (paper, margins, scale…) do carry over, which is what a printer
+ * dialog does.
  */
 export function loadPrintOptions(kind: PrintKind = "flow"): PrintOptions {
   const defaults = printDefaults(kind);
@@ -352,7 +382,7 @@ export function loadPrintOptions(kind: PrintKind = "flow"): PrintOptions {
       return { ...defaults };
     }
   })();
-  return { ...stored, pages: defaults.pages, range: defaults.range };
+  return { ...stored, pages: defaults.pages, range: defaults.range, copies: defaults.copies };
 }
 
 export function savePrintOptions(opts: PrintOptions, kind: PrintKind = "flow"): void {
@@ -381,6 +411,7 @@ export function sanitizePrintOptions(
     grayscale: o.grayscale === true,
     background: o.background !== false,
     pageNumbers: o.pageNumbers === true,
+    copies: clampCopies(typeof o.copies === "number" ? o.copies : defaults.copies),
   };
 }
 
@@ -396,6 +427,11 @@ function tr(
 function clampScale(n: number): number {
   if (!Number.isFinite(n)) return 100;
   return Math.min(400, Math.max(10, Math.round(n)));
+}
+
+export function clampCopies(n: number): number {
+  if (!Number.isFinite(n)) return 1;
+  return Math.min(MAX_COPIES, Math.max(1, Math.round(n)));
 }
 
 function round2(n: number): number {
@@ -468,6 +504,13 @@ export function printDocument(fullHtml: string): Promise<void> {
     printBtn.disabled = true;
     printBtn.innerHTML =
       `<span class="file-viewer-save-spinner" aria-hidden="true"></span>${escapeAttr(tr("print.preparing"))}`;
+
+    // Where the last job is once it has left for the printer (see `followJob`).
+    const progressEl = document.createElement("span");
+    progressEl.className = "print-preview-progress";
+    progressEl.setAttribute("role", "status");
+    progressEl.setAttribute("aria-live", "polite");
+    progressEl.hidden = true;
 
     const closeBtn = document.createElement("button");
     closeBtn.className = "dialog-close-btn print-preview-close";
@@ -573,7 +616,13 @@ export function printDocument(fullHtml: string): Promise<void> {
       set({ pageNumbers: v }),
     );
 
+    // A number rather than a select: 1–99 is too long a list to scroll. It is
+    // clamped on commit, not per keystroke, so clearing the box to type "12"
+    // does not snap back to 1 in between.
+    const copies = numberField(tr("print.copies"), opts.copies, (v) => set({ copies: v }));
+
     optionsRow.append(
+      copies.wrap,
       paper.wrap,
       orientation.wrap,
       margin.wrap,
@@ -615,7 +664,7 @@ export function printDocument(fullHtml: string): Promise<void> {
     strip.append(stripBar, stripPages);
 
     actions.append(printBtn, closeBtn);
-    titlebar.append(title, actions);
+    titlebar.append(title, progressEl, actions);
     dialog.append(titlebar, optionsRow, strip, iframe);
     backdrop.append(dialog);
 
@@ -630,6 +679,15 @@ export function printDocument(fullHtml: string): Promise<void> {
     let ready = false; // images decoded — safe to print
     /** The mounted <PageStrip>; created on the first paged render. */
     let stripUi: MountedPageStrip | null = null;
+    /** What copies 2..n put into the document: cloned sheets, or for a flowing
+     *  document a page break plus its body again. Rebuilt from the originals, so
+     *  nothing here is ever the source of another clone. */
+    let copyNodes: Node[] = [];
+    /** A flowing document's own body content, captured before any copy exists. */
+    let flowNodes: Node[] = [];
+    /** The copy count `copyNodes` holds for a flowing document (its copies do not
+     *  depend on any other option, so they are only rebuilt when this changes). */
+    let flowCopies = 1;
 
     const NO_PAGES_HINT = tr("print.noPagesHint");
 
@@ -677,6 +735,8 @@ export function printDocument(fullHtml: string): Promise<void> {
         if (ref.rot) el.classList.add(`eldrun-rot-${ref.rot}`);
       });
 
+      realiseCopies(sequence, paged);
+
       // Safe to re-render mid-drag: React reorders the SAME card elements (they are
       // keyed by page id), so the dragged card keeps its identity — and its grab.
       renderStrip(sequence);
@@ -686,11 +746,63 @@ export function printDocument(fullHtml: string): Promise<void> {
       printBtn.disabled = empty;
       printBtn.textContent = empty
         ? tr("print.noneSelected")
-        : paged && sequence.length < pageEls.length
-          ? sequence.length === 1
-            ? tr("print.printOnePage")
-            : tr("print.printPages", { count: sequence.length })
-          : tr("print.print");
+        : (paged && sequence.length < pageEls.length
+            ? sequence.length === 1
+              ? tr("print.printOnePage")
+              : tr("print.printPages", { count: sequence.length })
+            : tr("print.print")) +
+          (opts.copies > 1 ? tr("print.copiesSuffix", { count: opts.copies }) : "");
+    };
+
+    /**
+     * Put copies 2..n into the previewed document after the first. The document
+     * is what prints, so a copy has to be real content in it: `window.print()`
+     * takes no copy count, and the system dialog's own field would leave the
+     * preview showing one copy of a job that prints several.
+     *
+     * A paged copy clones the sheets as `apply` just arranged them (turns
+     * included) and numbers them from 1 again, each copy being a whole document.
+     * A flowing copy is a page break and the body's original content once more.
+     */
+    const realiseCopies = (sequence: PageList, paged: boolean) => {
+      const n = clampCopies(opts.copies);
+      if (!paged && n === flowCopies) return;
+      copyNodes.forEach((node) => node.parentNode?.removeChild(node));
+      copyNodes = [];
+      flowCopies = 1;
+      if (n <= 1) return;
+      if (paged) {
+        const parent = pageEls[0]?.parentElement;
+        if (!parent || sequence.length === 0) return;
+        // The first copy is the arranged originals themselves; clone the rest.
+        withCopies(sequence, n)
+          .slice(sequence.length)
+          .forEach((ref, i) => {
+            const el = pageEls[ref.page - 1];
+            if (!el) return;
+            const copy = el.cloneNode(true) as HTMLElement;
+            copy.style.pageBreakBefore = "always";
+            copy.style.breakBefore = "page";
+            copy.setAttribute("data-page", String((i % sequence.length) + 1));
+            parent.appendChild(copy);
+            copyNodes.push(copy);
+          });
+      } else {
+        const body = iframe.contentDocument?.body;
+        if (!body) return;
+        for (let c = 1; c < n; c++) {
+          const seam = body.ownerDocument.createElement("div");
+          seam.className = "eldrun-copy-break";
+          body.appendChild(seam);
+          copyNodes.push(seam);
+          for (const node of flowNodes) {
+            const copy = node.cloneNode(true);
+            body.appendChild(copy);
+            copyNodes.push(copy);
+          }
+        }
+        flowCopies = n;
+      }
     };
 
     /** Whether the user has touched the options row — after which nothing this
@@ -716,6 +828,7 @@ export function printDocument(fullHtml: string): Promise<void> {
       background.input.checked = opts.background;
       grayscale.input.checked = opts.grayscale;
       pageNumbers.input.checked = opts.pageNumbers;
+      copies.input.value = String(opts.copies);
     };
 
     /**
@@ -757,6 +870,100 @@ export function printDocument(fullHtml: string): Promise<void> {
       else stripUi = mountPageStrip(stripPages, props);
     };
 
+    // ── Job progress ────────────────────────────────────────────────────────
+    /** The newest queue reading — the "before" a new job is told apart from. */
+    let lastSnapshot: PrintSnapshot | null = null;
+    /** Bumped per Print; a follow loop whose number is stale stops. */
+    let followRun = 0;
+
+    const showProgress = (progress: PrintProgress) => {
+      progressEl.hidden = false;
+      progressEl.dataset.phase = progress.phase;
+      progressEl.replaceChildren();
+      const busy = ["waiting", "queued", "printing"].includes(progress.phase);
+      if (busy) {
+        const spinner = document.createElement("span");
+        spinner.className = "file-viewer-save-spinner";
+        spinner.setAttribute("aria-hidden", "true");
+        progressEl.append(spinner);
+      }
+      // Sent → queued → printing → done, filled as far as the job has come.
+      const reached = PROGRESS_STEPS[progress.phase];
+      const steps = document.createElement("span");
+      steps.className = "print-progress-steps";
+      steps.setAttribute("aria-hidden", "true");
+      for (let i = 0; i < 4; i++) {
+        const step = document.createElement("i");
+        if (i < reached) step.className = "on";
+        else if (i === reached && busy) step.className = "next";
+        // The printing step fills as its pages go out.
+        if (i === reached && progress.phase === "printing" && progress.page && progress.total) {
+          const fill = Math.round(((progress.page - 1) / progress.total) * 100);
+          step.style.setProperty("--fill", `${fill}%`);
+        }
+        steps.append(step);
+      }
+      const text = document.createElement("span");
+      text.className = "print-progress-text";
+      // Printer names come from the print system: a text node, never markup.
+      text.textContent = progressText(progress);
+      progressEl.title =
+        progress.phase === "printing" && progress.page !== null
+          ? `${text.textContent}\n${tr("print.progressPagesNote")}`
+          : text.textContent;
+      progressEl.append(steps, text, untestedTag());
+    };
+
+    /**
+     * Follow the job this Print submitted through the queue until it leaves it.
+     * `window.print()` reports nothing about the job, so the queue is the only
+     * witness; on a machine without a readable print system there is nothing
+     * to show and the status stays hidden rather than guessing.
+     */
+    const followJob = async () => {
+      const run = ++followRun;
+      const docTitle = iframe.contentDocument?.title ?? "";
+      // What this Print put into the job, for when the queue has no page count:
+      // exact for sheets, unknown for flowing text (the engine paginates it).
+      const expectedPages =
+        pageEls.length > 0
+          ? printSequence(arrangement, opts).length * clampCopies(opts.copies)
+          : null;
+      const before = lastSnapshot ?? (await printSnapshot());
+      if (done || run !== followRun || !before.supported) return;
+      const baseline = new Set(before.jobs.map((job) => job.id));
+      const started = Date.now();
+      let tracked: string[] = [];
+      showProgress({ phase: "waiting" });
+      while (!done && run === followRun) {
+        await new Promise((r) => setTimeout(r, JOB_POLL_MS));
+        if (done || run !== followRun) return;
+        const snap = await printSnapshot();
+        if (done || run !== followRun) return;
+        // A reading with a note is a failed one (a timed-out lpstat): an empty
+        // job list from it must not be mistaken for the job having finished.
+        if (!snap.supported || snap.note) {
+          if (tracked.length === 0 && Date.now() - started > JOB_APPEAR_TIMEOUT_MS) {
+            showProgress({ phase: "unseen" });
+            return;
+          }
+          continue;
+        }
+        lastSnapshot = snap;
+        const step = followPrintJob(
+          snap,
+          baseline,
+          tracked,
+          docTitle,
+          Date.now() - started,
+          expectedPages,
+        );
+        tracked = step.tracked;
+        showProgress(step.progress);
+        if (step.progress.phase === "done" || step.progress.phase === "unseen") return;
+      }
+    };
+
     // ── Teardown (single-shot) ──────────────────────────────────────────────
     let done = false;
     const cleanup = () => {
@@ -789,7 +996,9 @@ export function printDocument(fullHtml: string): Promise<void> {
         frameWin.print();
       } catch {
         /* printing unsupported / dialog refused: leave preview open */
+        return;
       }
+      void followJob();
     });
 
     iframe.onload = () => {
@@ -805,6 +1014,7 @@ export function printDocument(fullHtml: string): Promise<void> {
       (doc.head ?? doc.documentElement).appendChild(styleEl);
 
       pageEls = Array.from(doc.querySelectorAll<HTMLElement>(".print-page"));
+      flowNodes = doc.body ? Array.from(doc.body.childNodes) : [];
       arrangement = initialPages(pageEls.length);
       // A document made of sheets keeps its own printer settings (see `PrintKind`):
       // its margins default to none, because the sheet already carries the ones its
@@ -848,6 +1058,11 @@ export function printDocument(fullHtml: string): Promise<void> {
 
     document.body.appendChild(backdrop);
     iframe.srcdoc = fullHtml;
+    // The queue as it stands before anything is printed, read in the background
+    // so Print never waits on a slow print server for it.
+    void printSnapshot().then((snap) => {
+      if (!done && snap.supported && !snap.note) lastSnapshot ??= snap;
+    });
   });
 }
 
@@ -875,6 +1090,101 @@ function selectField(
   select.addEventListener("change", () => onChange(select.value));
   wrap.append(text, select);
   return { wrap, select };
+}
+
+/** A labelled whole-number input for the options row, clamped to 1..MAX_COPIES. */
+function numberField(
+  label: string,
+  value: number,
+  onChange: (value: number) => void,
+): { wrap: HTMLLabelElement; input: HTMLInputElement } {
+  const wrap = document.createElement("label");
+  wrap.className = "print-opt";
+  const text = document.createElement("span");
+  text.className = "print-opt-label";
+  text.textContent = label;
+  const input = document.createElement("input");
+  input.className = "print-opt-range print-opt-number";
+  input.type = "number";
+  input.min = "1";
+  input.max = String(MAX_COPIES);
+  input.step = "1";
+  input.value = String(value);
+  input.addEventListener("input", () => {
+    if (input.value.trim() === "") return; // mid-edit: wait for a number
+    onChange(clampCopies(Number(input.value)));
+  });
+  input.addEventListener("change", () => {
+    const n = clampCopies(Number(input.value));
+    input.value = String(n);
+    onChange(n);
+  });
+  wrap.append(text, input, untestedTag());
+  return { wrap, input };
+}
+
+/** Not yet live-verified — the DOM twin of `<UntestedTag/>`. */
+function untestedTag(): HTMLSpanElement {
+  const tag = document.createElement("span");
+  tag.className = "untested-tag";
+  tag.title = tr("untested.title");
+  tag.textContent = tr("untested.label");
+  return tag;
+}
+
+/** How often the queue is re-read while a job is followed. */
+const JOB_POLL_MS = 1500;
+
+/** Steps of sent → queued → printing → done a phase has reached. */
+const PROGRESS_STEPS: Record<PrintProgress["phase"], number> = {
+  waiting: 1,
+  queued: 2,
+  held: 2,
+  printing: 3,
+  done: 4,
+  unseen: 1,
+};
+
+/** A rough time left: to the next 5 s under a minute, whole minutes above —
+ *  it is an estimate, and more digits would claim otherwise. */
+function formatEta(secs: number): string {
+  return secs < 60
+    ? tr("print.durationSecs", { count: Math.max(5, Math.ceil(secs / 5) * 5) })
+    : tr("print.durationMins", { count: Math.ceil(secs / 60) });
+}
+
+function progressText(progress: PrintProgress): string {
+  switch (progress.phase) {
+    case "waiting":
+      return tr("print.progressWaiting");
+    case "queued":
+      return progress.ahead > 0
+        ? tr("print.progressAhead", { printer: progress.printer, count: progress.ahead })
+        : tr("print.progressQueued", { printer: progress.printer });
+    case "printing": {
+      const parts = [tr("print.progressPrinting", { printer: progress.printer })];
+      if (progress.page !== null) {
+        parts.push(
+          progress.total !== null
+            ? tr("print.progressPage", { page: progress.page, total: progress.total })
+            : tr("print.progressPageOnly", { page: progress.page }),
+        );
+      }
+      if (progress.etaSecs !== null) {
+        parts.push(tr("print.progressEta", { time: formatEta(progress.etaSecs) }));
+      }
+      if (progress.behind > 0) {
+        parts.push(tr("print.progressBehind", { count: progress.behind }));
+      }
+      return parts.join(" · ");
+    }
+    case "held":
+      return tr("print.progressHeld", { printer: progress.printer });
+    case "done":
+      return tr("print.progressDone");
+    case "unseen":
+      return tr("print.progressUnseen");
+  }
 }
 
 /** A labelled checkbox for the options row. */

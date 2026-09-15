@@ -41,6 +41,13 @@ export interface PrintJob {
   /** As the print system reported it: a locale-formatted string, not a date. */
   submitted: string;
   state: PrintJobState;
+  /** Pages the print system has passed on to the printer — not sheets out of
+   *  it. Absent when the print system does not say, and from an older backend. */
+  pages_done?: number | null;
+  /** The job's page count, when the print system knows it. */
+  pages_total?: number | null;
+  /** Seconds the job has been printing, on the print server's own clock. */
+  printing_secs?: number | null;
 }
 
 export interface PrintSnapshot {

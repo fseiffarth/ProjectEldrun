@@ -641,7 +641,13 @@ shape or ctag/sync-token behaviour.
   (`platform::x11::session_is_wayland`), that popout positions are treated as
   unreadable, and that the presenter fullscreens by output index through
   `gtk_window_fullscreen_on_monitor` (GDK's monitor order == tao's).
-- Printing: `lp`, `lpstat` (CUPS). Clipboard: `arboard` with
+- Printing: `lp`, `lpstat` (CUPS). The print preview's job progress also asks
+  CUPS over IPP — one `Get-Jobs` for `job-impressions-completed` (falling back to
+  `job-media-sheets-completed`), `job-impressions`, `time-at-processing` and
+  `job-printer-up-time` (the same epoch clock, verified against CUPS 2.4) — at
+  `CUPS_SERVER`, `client.conf`'s `ServerName`, the local socket or
+  `localhost:631`, loopback only; Windows reads `Get-PrintJob`'s
+  `PagesPrinted`/`TotalPages`. Clipboard: `arboard` with
   `wayland-data-control`. Formatters: `prettier`, `rustfmt`, `black`, `gofmt`.
 - Power: `systemctl`, `starship-battery`; network: `ss`.
 

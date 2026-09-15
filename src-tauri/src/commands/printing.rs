@@ -83,6 +83,15 @@ pub struct PrintJob {
     pub submitted: String,
     /// `printing` | `pending` | `held` | `unknown`.
     pub state: String,
+    /// Pages the print system has passed on to the printer so far — not sheets
+    /// out of it: once a page is sent the paper can lag behind. `None` when the
+    /// print system does not say (see [`ipp_job_progress`]).
+    pub pages_done: Option<u32>,
+    /// The job's page count, when the print system knows it.
+    pub pages_total: Option<u32>,
+    /// Seconds since the job started printing, measured on the print server's
+    /// own clock at both ends, so a skewed remote clock cannot bend it.
+    pub printing_secs: Option<u64>,
 }
 
 /// One whole reading of the machine's print system — printers *and* jobs in a
@@ -340,6 +349,7 @@ pub fn parse_lpstat_jobs(out: &str) -> Vec<PrintJob> {
             size_bytes,
             submitted: it.collect::<Vec<_>>().join(" "),
             state: "pending".to_string(),
+            ..Default::default()
         });
     }
     jobs
@@ -417,6 +427,374 @@ fn merge_cups_jobs(
     jobs
 }
 
+// ── CUPS job progress over IPP ───────────────────────────────────────────────
+//
+// `lpstat` and `lpq` print no page counts at all. CUPS keeps them on the job —
+// `job-impressions-completed` advances as the filter chain passes each page on —
+// and answers for them only over IPP. So one `Get-Jobs` request goes to the same
+// server `lpstat` talks to, and everything it adds is optional: a failed read (a
+// remote server, encryption required, an old CUPS) leaves those fields `None`
+// and the rest of the snapshot as it was.
+//
+// It is HTTP spoken by hand: IPP's wire format is a flat run of tag–length–value
+// records, and three integers do not justify a client dependency.
+
+/// Where the CUPS client library would connect.
+#[cfg_attr(target_os = "windows", allow(dead_code))]
+#[derive(Debug, Clone, PartialEq)]
+pub enum CupsServer {
+    Socket(std::path::PathBuf),
+    /// `host:port`, plus the bare host for the `Host` header.
+    Tcp { addr: String, host: String },
+}
+
+/// The page counters one IPP job record carries.
+#[cfg_attr(target_os = "windows", allow(dead_code))]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct JobProgress {
+    pub pages_done: Option<u32>,
+    pub pages_total: Option<u32>,
+    pub printing_secs: Option<u64>,
+}
+
+/// The attributes asked for. `job-printer-up-time` is the server's "now", on the
+/// same clock as `time-at-processing`.
+#[cfg_attr(target_os = "windows", allow(dead_code))]
+const IPP_JOB_ATTRS: [&str; 6] = [
+    "job-id",
+    "job-impressions",
+    "job-impressions-completed",
+    "job-media-sheets-completed",
+    "time-at-processing",
+    "job-printer-up-time",
+];
+
+/// Connect + whole exchange. Shorter than [`RUN_TIMEOUT`]: this rides on a
+/// snapshot that has already spent its time on `lpstat`, and it is only extra.
+#[cfg_attr(target_os = "windows", allow(dead_code))]
+const IPP_TIMEOUT: Duration = Duration::from_secs(2);
+#[cfg_attr(target_os = "windows", allow(dead_code))]
+const IPP_MAX_RESPONSE: usize = 4 << 20;
+
+/// The `ServerName` a `client.conf` names, if any.
+#[cfg_attr(target_os = "windows", allow(dead_code))]
+pub fn client_conf_server_name(text: &str) -> Option<String> {
+    text.lines().find_map(|line| {
+        let mut it = line.split_whitespace();
+        match (it.next(), it.next()) {
+            (Some(key), Some(value)) if key.eq_ignore_ascii_case("ServerName") => {
+                Some(value.to_string())
+            }
+            _ => None,
+        }
+    })
+}
+
+/// A `CUPS_SERVER` / `ServerName` value: a socket path or `host[:port]`, either
+/// possibly suffixed with `/version=1.1`.
+#[cfg_attr(target_os = "windows", allow(dead_code))]
+pub fn parse_cups_server(value: &str) -> Option<CupsServer> {
+    let value = value.trim();
+    let value = match value.find("/version=") {
+        Some(i) if i > 0 => &value[..i],
+        _ => value,
+    };
+    if value.is_empty() {
+        return None;
+    }
+    if value.starts_with('/') {
+        return Some(CupsServer::Socket(value.into()));
+    }
+    let (host, port) = if let Some(rest) = value.strip_prefix('[') {
+        let (inner, tail) = rest.split_once(']')?;
+        (format!("[{inner}]"), tail.strip_prefix(':').unwrap_or("631"))
+    } else {
+        match value.rsplit_once(':') {
+            Some((h, p)) if !h.contains(':') => (h.to_string(), p),
+            Some(_) => return None, // an unbracketed IPv6 address
+            None => (value.to_string(), "631"),
+        }
+    };
+    let port: u16 = port.parse().ok()?;
+    Some(CupsServer::Tcp {
+        addr: format!("{host}:{port}"),
+        host,
+    })
+}
+
+/// Whether reaching `server` costs nothing that can hang: the socket, or a
+/// loopback address. A named remote host is skipped rather than resolved —
+/// name resolution has no timeout to give it, and a print server behind a dead
+/// VPN would stall every poll on it for the sake of a page count.
+#[cfg_attr(target_os = "windows", allow(dead_code))]
+pub fn cups_server_is_local(server: &CupsServer) -> bool {
+    match server {
+        CupsServer::Socket(_) => true,
+        CupsServer::Tcp { host, .. } => {
+            host.eq_ignore_ascii_case("localhost")
+                || host
+                    .trim_start_matches('[')
+                    .trim_end_matches(']')
+                    .parse::<std::net::IpAddr>()
+                    .is_ok_and(|ip| ip.is_loopback())
+        }
+    }
+}
+
+/// An IPP/2.0 `Get-Jobs` request for the not-completed jobs of every queue.
+#[cfg_attr(target_os = "windows", allow(dead_code))]
+pub fn ipp_get_jobs_request(user: &str) -> Vec<u8> {
+    fn attr(buf: &mut Vec<u8>, tag: u8, name: &str, value: &[u8]) {
+        buf.push(tag);
+        buf.extend((name.len() as u16).to_be_bytes());
+        buf.extend(name.as_bytes());
+        buf.extend((value.len() as u16).to_be_bytes());
+        buf.extend(value);
+    }
+    // version 2.0, operation Get-Jobs (0x000A), request-id 1, operation group.
+    let mut buf = vec![0x02, 0x00, 0x00, 0x0A, 0, 0, 0, 1, 0x01];
+    attr(&mut buf, 0x47, "attributes-charset", b"utf-8");
+    attr(&mut buf, 0x48, "attributes-natural-language", b"en");
+    attr(&mut buf, 0x45, "printer-uri", b"ipp://localhost/");
+    attr(&mut buf, 0x42, "requesting-user-name", user.as_bytes());
+    for (i, name) in IPP_JOB_ATTRS.iter().enumerate() {
+        // Additional values of a 1setOf carry an empty name.
+        let key = if i == 0 { "requested-attributes" } else { "" };
+        attr(&mut buf, 0x44, key, name.as_bytes());
+    }
+    buf.push(0x03);
+    buf
+}
+
+/// The IPP body of a raw HTTP response: `None` unless the status is 200, with a
+/// chunked body put back together.
+#[cfg_attr(target_os = "windows", allow(dead_code))]
+pub fn http_ipp_body(raw: &[u8]) -> Option<Vec<u8>> {
+    let split = raw.windows(4).position(|w| w == b"\r\n\r\n")?;
+    let head = std::str::from_utf8(&raw[..split]).ok()?;
+    let body = &raw[split + 4..];
+    let mut lines = head.split("\r\n");
+    if lines.next()?.split_whitespace().nth(1) != Some("200") {
+        return None;
+    }
+    let chunked = lines.any(|line| {
+        let line = line.to_ascii_lowercase();
+        line.starts_with("transfer-encoding:") && line.contains("chunked")
+    });
+    if !chunked {
+        return Some(body.to_vec());
+    }
+    let mut out = Vec::new();
+    let mut rest = body;
+    loop {
+        let eol = rest.windows(2).position(|w| w == b"\r\n")?;
+        let size_line = std::str::from_utf8(&rest[..eol]).ok()?;
+        let size = usize::from_str_radix(size_line.split(';').next()?.trim(), 16).ok()?;
+        rest = &rest[eol + 2..];
+        if size == 0 {
+            return Some(out);
+        }
+        out.extend_from_slice(rest.get(..size)?);
+        rest = rest.get(size + 2..)?;
+    }
+}
+
+#[cfg_attr(target_os = "windows", allow(dead_code))]
+#[derive(Default)]
+struct RawIppJob {
+    id: Option<u32>,
+    total: Option<i32>,
+    impressions: Option<i32>,
+    sheets: Option<i32>,
+    processing: Option<i32>,
+    up: Option<i32>,
+}
+
+#[cfg_attr(target_os = "windows", allow(dead_code))]
+fn finish_ipp_job(raw: RawIppJob, out: &mut HashMap<u32, JobProgress>) {
+    let Some(id) = raw.id else { return };
+    let count = |v: Option<i32>| v.and_then(|n| u32::try_from(n).ok());
+    out.insert(
+        id,
+        JobProgress {
+            pages_done: count(raw.impressions.or(raw.sheets)),
+            // CUPS reports 0 for "not counted yet", which is not a page count.
+            pages_total: count(raw.total).filter(|&n| n > 0),
+            printing_secs: match (raw.processing, raw.up) {
+                (Some(start), Some(now)) if start > 0 && now >= start => {
+                    Some(u64::from((now - start).unsigned_abs()))
+                }
+                _ => None,
+            },
+        },
+    );
+}
+
+/// Job id → page counters, from a `Get-Jobs` response body. An error status or
+/// a damaged record yields what was read before the damage and nothing
+/// invented after it; an out-of-band value (`no-value` for a job not yet
+/// processing) simply leaves its field unset.
+#[cfg_attr(target_os = "windows", allow(dead_code))]
+pub fn parse_ipp_job_progress(body: &[u8]) -> HashMap<u32, JobProgress> {
+    let mut out = HashMap::new();
+    // Any status from 0x0100 up is an error (client-error-*, server-error-*).
+    if body.len() < 8 || u16::from_be_bytes([body[2], body[3]]) >= 0x0100 {
+        return out;
+    }
+    let read_len = |at: usize| {
+        body.get(at..at + 2)
+            .map(|b| usize::from(u16::from_be_bytes([b[0], b[1]])))
+    };
+    let mut job: Option<RawIppJob> = None;
+    let mut pos = 8;
+    while pos < body.len() {
+        let tag = body[pos];
+        if tag <= 0x0F {
+            // A group delimiter: 0x02 opens a job, 0x03 ends the message.
+            pos += 1;
+            if let Some(raw) = job.take() {
+                finish_ipp_job(raw, &mut out);
+            }
+            match tag {
+                0x03 => break,
+                0x02 => job = Some(RawIppJob::default()),
+                _ => {}
+            }
+            continue;
+        }
+        let Some(name_len) = read_len(pos + 1) else { break };
+        let name_at = pos + 3;
+        let Some(name) = body.get(name_at..name_at + name_len) else { break };
+        let Some(value_len) = read_len(name_at + name_len) else { break };
+        let value_at = name_at + name_len + 2;
+        let Some(value) = body.get(value_at..value_at + value_len) else { break };
+        pos = value_at + value_len;
+        // integer (0x21) and enum (0x23) are the only shapes read here.
+        let (Some(raw), 0x21 | 0x23, [a, b, c, d]) = (job.as_mut(), tag, value) else {
+            continue;
+        };
+        let n = i32::from_be_bytes([*a, *b, *c, *d]);
+        match name {
+            b"job-id" => raw.id = u32::try_from(n).ok(),
+            b"job-impressions" => raw.total = Some(n),
+            b"job-impressions-completed" => raw.impressions = Some(n),
+            b"job-media-sheets-completed" => raw.sheets = Some(n),
+            b"time-at-processing" => raw.processing = Some(n),
+            b"job-printer-up-time" => raw.up = Some(n),
+            _ => {}
+        }
+    }
+    if let Some(raw) = job.take() {
+        finish_ipp_job(raw, &mut out);
+    }
+    out
+}
+
+/// The server the CUPS client library would pick, in its own precedence:
+/// `CUPS_SERVER`, `~/.cups/client.conf`, `/etc/cups/client.conf`, then the
+/// local socket, then `localhost:631`.
+#[cfg(not(target_os = "windows"))]
+fn cups_server() -> Option<CupsServer> {
+    if let Ok(value) = std::env::var("CUPS_SERVER") {
+        if !value.trim().is_empty() {
+            return parse_cups_server(&value);
+        }
+    }
+    let user_conf = std::env::var_os("HOME")
+        .map(|home| std::path::Path::new(&home).join(".cups/client.conf"));
+    for conf in user_conf
+        .into_iter()
+        .chain([std::path::PathBuf::from("/etc/cups/client.conf")])
+    {
+        if let Some(name) = std::fs::read_to_string(&conf)
+            .ok()
+            .and_then(|text| client_conf_server_name(&text))
+        {
+            return parse_cups_server(&name);
+        }
+    }
+    for sock in ["/run/cups/cups.sock", "/var/run/cups/cups.sock", "/private/var/run/cupsd"] {
+        if std::path::Path::new(sock).exists() {
+            return Some(CupsServer::Socket(sock.into()));
+        }
+    }
+    Some(CupsServer::Tcp {
+        addr: "localhost:631".into(),
+        host: "localhost".into(),
+    })
+}
+
+/// Page counters for every not-completed job, keyed by CUPS job number. Empty
+/// whenever they cannot be had cheaply — see [`cups_server_is_local`].
+#[cfg(not(target_os = "windows"))]
+fn ipp_job_progress() -> HashMap<u32, JobProgress> {
+    use std::io::{Read, Write};
+
+    fn exchange<S: Read + Write>(mut stream: S, request: &[u8]) -> Option<Vec<u8>> {
+        stream.write_all(request).ok()?;
+        let deadline = Instant::now() + IPP_TIMEOUT;
+        let mut raw = Vec::new();
+        let mut chunk = [0u8; 8192];
+        loop {
+            if Instant::now() >= deadline || raw.len() > IPP_MAX_RESPONSE {
+                return None;
+            }
+            match stream.read(&mut chunk) {
+                Ok(0) => return Some(raw),
+                Ok(n) => raw.extend_from_slice(&chunk[..n]),
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(_) => return None,
+            }
+        }
+    }
+
+    let Some(server) = cups_server().filter(cups_server_is_local) else {
+        return HashMap::new();
+    };
+    let user = std::env::var("USER")
+        .or_else(|_| std::env::var("LOGNAME"))
+        .ok()
+        .filter(|u| !u.is_empty() && u.len() <= 255 && !u.contains(['\r', '\n']))
+        .unwrap_or_else(|| "eldrun".into());
+    let body = ipp_get_jobs_request(&user);
+    let host = match &server {
+        CupsServer::Socket(_) => "localhost",
+        CupsServer::Tcp { host, .. } => host.as_str(),
+    };
+    let mut request = format!(
+        "POST / HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/ipp\r\n\
+         Content-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    )
+    .into_bytes();
+    request.extend_from_slice(&body);
+
+    let raw = match &server {
+        CupsServer::Socket(path) => std::os::unix::net::UnixStream::connect(path)
+            .ok()
+            .and_then(|stream| {
+                stream.set_read_timeout(Some(IPP_TIMEOUT)).ok()?;
+                stream.set_write_timeout(Some(IPP_TIMEOUT)).ok()?;
+                exchange(stream, &request)
+            }),
+        CupsServer::Tcp { addr, .. } => {
+            use std::net::ToSocketAddrs;
+            addr.to_socket_addrs()
+                .ok()
+                .and_then(|mut addrs| addrs.next())
+                .and_then(|sa| std::net::TcpStream::connect_timeout(&sa, IPP_TIMEOUT).ok())
+                .and_then(|stream| {
+                    stream.set_read_timeout(Some(IPP_TIMEOUT)).ok()?;
+                    stream.set_write_timeout(Some(IPP_TIMEOUT)).ok()?;
+                    exchange(stream, &request)
+                })
+        }
+    };
+    raw.and_then(|raw| http_ipp_body(&raw))
+        .map(|body| parse_ipp_job_progress(&body))
+        .unwrap_or_default()
+}
+
 // ── CUPS backend ─────────────────────────────────────────────────────────────
 
 #[cfg(not(target_os = "windows"))]
@@ -468,7 +846,7 @@ fn snapshot_impl() -> PrintSnapshot {
         }
     }
 
-    let jobs = match run_capped("lpstat", &["-o"]) {
+    let mut jobs = match run_capped("lpstat", &["-o"]) {
         Ok((_, out, _)) => {
             let titles = run_capped("lpq", &["-a"])
                 .map(|(_, lpq, _)| parse_lpq_titles(&lpq))
@@ -480,6 +858,18 @@ fn snapshot_impl() -> PrintSnapshot {
             Vec::new()
         }
     };
+
+    // Page counts are one extra read, only worth making with something queued.
+    if !jobs.is_empty() {
+        let progress = ipp_job_progress();
+        for job in &mut jobs {
+            if let Some(p) = progress.get(&job.number) {
+                job.pages_done = p.pages_done;
+                job.pages_total = p.pages_total;
+                job.printing_secs = p.printing_secs;
+            }
+        }
+    }
 
     PrintSnapshot {
         supported: true,
@@ -609,6 +999,13 @@ fn json_str(row: &serde_json::Value, key: &str) -> String {
         .to_string()
 }
 
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn json_u32(row: &serde_json::Value, key: &str) -> Option<u32> {
+    row.get(key)
+        .and_then(|v| v.as_u64())
+        .and_then(|n| u32::try_from(n).ok())
+}
+
 /// Parse the one JSON document the Windows probe returns. Kept separate from
 /// the spawn so it is testable on any OS — Windows is CI-verified only here, so
 /// the shape must at least be pinned by a test that runs everywhere.
@@ -654,6 +1051,10 @@ pub fn parse_windows_snapshot(json: &str) -> Result<PrintSnapshot, String> {
                 size_bytes: row.get("Size").and_then(|v| v.as_u64()).unwrap_or(0),
                 submitted: json_str(row, "SubmittedTime"),
                 state: windows_job_state(&json_str(row, "JobStatus")).to_string(),
+                pages_done: json_u32(row, "PagesPrinted"),
+                // The spooler reports 0 for a page count it does not know yet.
+                pages_total: json_u32(row, "TotalPages").filter(|&n| n > 0),
+                printing_secs: None,
                 title: if title.is_empty() {
                     number.to_string()
                 } else {
@@ -677,7 +1078,7 @@ pub fn parse_windows_snapshot(json: &str) -> Result<PrintSnapshot, String> {
 const WINDOWS_SNAPSHOT_SCRIPT: &str = "\
 $ErrorActionPreference='SilentlyContinue';\
 $p=@(Get-Printer | Select-Object Name,Comment,Location,PrinterStatus);\
-$j=@(Get-Printer | Get-PrintJob | Select-Object Id,PrinterName,UserName,DocumentName,JobStatus,Size,SubmittedTime);\
+$j=@(Get-Printer | Get-PrintJob | Select-Object Id,PrinterName,UserName,DocumentName,JobStatus,Size,SubmittedTime,PagesPrinted,TotalPages);\
 $d=(Get-CimInstance Win32_Printer -Filter 'Default=True' | Select-Object -First 1).Name;\
 [pscustomobject]@{printers=$p;jobs=$j;default=$d} | ConvertTo-Json -Depth 4 -Compress";
 
@@ -998,7 +1399,7 @@ printer Lab-Plotter now printing Lab-Plotter-7.  enabled since Mon 28 Jul 2026 0
         // both shapes must read as one printer and one job.
         let snap = parse_windows_snapshot(
             r#"{"printers":{"Name":"HP LaserJet","Comment":"Front desk","Location":"Hall","PrinterStatus":"Normal"},
-                "jobs":{"Id":3,"PrinterName":"HP LaserJet","UserName":"ada","DocumentName":"report.pdf","JobStatus":"Printing","Size":2048,"SubmittedTime":"2026-07-28T09:12:00"},
+                "jobs":{"Id":3,"PrinterName":"HP LaserJet","UserName":"ada","DocumentName":"report.pdf","JobStatus":"Printing","Size":2048,"SubmittedTime":"2026-07-28T09:12:00","PagesPrinted":1,"TotalPages":4},
                 "default":"HP LaserJet"}"#,
         )
         .expect("parses");
@@ -1010,7 +1411,139 @@ printer Lab-Plotter now printing Lab-Plotter-7.  enabled since Mon 28 Jul 2026 0
         assert_eq!(snap.jobs[0].id, "3");
         assert_eq!(snap.jobs[0].title, "report.pdf");
         assert_eq!(snap.jobs[0].state, "printing");
+        assert_eq!(snap.jobs[0].pages_done, Some(1));
+        assert_eq!(snap.jobs[0].pages_total, Some(4));
         assert_eq!(snap.default_printer.as_deref(), Some("HP LaserJet"));
+    }
+
+    /// One IPP attribute, as a server writes it.
+    fn ipp_attr(buf: &mut Vec<u8>, tag: u8, name: &str, value: &[u8]) {
+        buf.push(tag);
+        buf.extend((name.len() as u16).to_be_bytes());
+        buf.extend(name.as_bytes());
+        buf.extend((value.len() as u16).to_be_bytes());
+        buf.extend(value);
+    }
+
+    fn ipp_int(buf: &mut Vec<u8>, name: &str, n: i32) {
+        ipp_attr(buf, 0x21, name, &n.to_be_bytes());
+    }
+
+    #[test]
+    fn ipp_response_yields_each_jobs_page_counters() {
+        let mut body = vec![0x02, 0x00, 0x00, 0x00, 0, 0, 0, 1, 0x01];
+        ipp_attr(&mut body, 0x47, "attributes-charset", b"utf-8");
+        body.push(0x02);
+        ipp_int(&mut body, "job-printer-up-time", 1_789_424_700);
+        ipp_int(&mut body, "time-at-processing", 1_789_424_640);
+        ipp_int(&mut body, "job-id", 42);
+        ipp_attr(&mut body, 0x23, "job-state", &5i32.to_be_bytes());
+        ipp_int(&mut body, "job-impressions-completed", 3);
+        ipp_int(&mut body, "job-impressions", 12);
+        body.push(0x02);
+        ipp_int(&mut body, "job-id", 43);
+        // `no-value`: a job not yet processing has no start time.
+        ipp_attr(&mut body, 0x13, "time-at-processing", b"");
+        ipp_int(&mut body, "job-impressions", 0);
+        ipp_int(&mut body, "job-media-sheets-completed", 0);
+        body.push(0x03);
+
+        let jobs = parse_ipp_job_progress(&body);
+        assert_eq!(
+            jobs[&42],
+            JobProgress {
+                pages_done: Some(3),
+                pages_total: Some(12),
+                printing_secs: Some(60),
+            }
+        );
+        assert_eq!(
+            jobs[&43],
+            JobProgress {
+                pages_done: Some(0),
+                pages_total: None,
+                printing_secs: None,
+            }
+        );
+    }
+
+    #[test]
+    fn ipp_error_or_damage_yields_nothing_invented() {
+        // client-error-not-found
+        assert!(parse_ipp_job_progress(&[0x02, 0x00, 0x04, 0x06, 0, 0, 0, 1, 0x03]).is_empty());
+
+        let mut cut = vec![0x02, 0x00, 0x00, 0x00, 0, 0, 0, 1, 0x02];
+        ipp_int(&mut cut, "job-id", 7);
+        cut.extend([0x21, 0x00, 0x20]); // a name running past the end
+        let jobs = parse_ipp_job_progress(&cut);
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[&7], JobProgress::default());
+    }
+
+    #[test]
+    fn get_jobs_request_asks_for_every_counter() {
+        let req = ipp_get_jobs_request("ada");
+        assert_eq!(&req[..4], &[0x02, 0x00, 0x00, 0x0A]);
+        assert_eq!(req.last(), Some(&0x03));
+        let text = String::from_utf8_lossy(&req);
+        for name in IPP_JOB_ATTRS {
+            assert!(text.contains(name), "{name}");
+        }
+        assert!(text.contains("ada"));
+    }
+
+    #[test]
+    fn http_body_is_unchunked_and_refused_on_an_error_status() {
+        let plain = b"HTTP/1.1 200 OK\r\nContent-Type: application/ipp\r\n\r\nABC";
+        assert_eq!(http_ipp_body(plain).as_deref(), Some(&b"ABC"[..]));
+        let chunked =
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nABC\r\n2;x=y\r\nDE\r\n0\r\n\r\n";
+        assert_eq!(http_ipp_body(chunked).as_deref(), Some(&b"ABCDE"[..]));
+        assert_eq!(http_ipp_body(b"HTTP/1.1 426 Upgrade Required\r\n\r\n"), None);
+        let truncated = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nAB";
+        assert_eq!(http_ipp_body(truncated), None);
+    }
+
+    #[test]
+    fn cups_server_values_parse_and_only_local_ones_are_asked() {
+        assert_eq!(
+            parse_cups_server("/run/cups/cups.sock"),
+            Some(CupsServer::Socket("/run/cups/cups.sock".into()))
+        );
+        assert_eq!(
+            parse_cups_server("localhost"),
+            Some(CupsServer::Tcp {
+                addr: "localhost:631".into(),
+                host: "localhost".into()
+            })
+        );
+        assert_eq!(
+            parse_cups_server("127.0.0.1:8631/version=1.1"),
+            Some(CupsServer::Tcp {
+                addr: "127.0.0.1:8631".into(),
+                host: "127.0.0.1".into()
+            })
+        );
+        assert_eq!(
+            parse_cups_server("[::1]:631"),
+            Some(CupsServer::Tcp {
+                addr: "[::1]:631".into(),
+                host: "[::1]".into()
+            })
+        );
+        assert_eq!(parse_cups_server("host:notaport"), None);
+        assert_eq!(
+            client_conf_server_name("# comment\nservername print.example:631\n"),
+            Some("print.example:631".into())
+        );
+        assert_eq!(client_conf_server_name("Encryption Required\n"), None);
+
+        let local = |v: &str| cups_server_is_local(&parse_cups_server(v).expect("parses"));
+        assert!(local("/run/cups/cups.sock"));
+        assert!(local("[::1]"));
+        assert!(local("127.0.0.1:631"));
+        assert!(!local("print.example"));
+        assert!(!local("192.0.2.7"));
     }
 
     #[test]
