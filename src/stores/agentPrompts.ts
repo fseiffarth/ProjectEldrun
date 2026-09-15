@@ -283,18 +283,25 @@ export async function queuePromptForTab(
   scheduleTargetId: string,
   message: string,
   options: { preface?: string[]; now?: Date; id?: string } = {},
-): Promise<{ pruned: number }> {
+): Promise<{ pruned: number; id: string }> {
   const now = options.now ?? new Date();
   const schedules = useAgentSchedulesStore.getState();
   const existing = await schedules.load(projectId, scheduleTargetId);
+  // The backend replaces a rule by id. A prompt carried by a recurring rule
+  // shares that rule's id, so queueing it under the id would turn the daily
+  // rule into this one delivery — which is then retired. Checked against the
+  // list just read, never the cache, which may not hold this tab yet.
+  const clash = options.id !== undefined
+    && existing.some((schedule) => schedule.id === options.id && schedule.rule.type !== "once");
+  const id = options.id !== undefined && !clash ? options.id : crypto.randomUUID();
   const prune = schedulesToPruneForSend(existing);
-  for (const id of prune) await schedules.remove(projectId, scheduleTargetId, id);
+  for (const pruned of prune) await schedules.remove(projectId, scheduleTargetId, pruned);
   await schedules.upsert(
     projectId,
     scheduleTargetId,
-    buildSendNowSchedule(message, now, options.id ?? crypto.randomUUID(), options.preface),
+    buildSendNowSchedule(message, now, id, options.preface),
   );
-  return { pruned: prune.length };
+  return { pruned: prune.length, id };
 }
 
 /**
