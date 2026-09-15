@@ -553,18 +553,42 @@ fn install_webview_crash_reporter(app: &tauri::App) {
     }
 }
 
+/// How many times ONE window's renderer is reloaded after it dies before the
+/// reporter stops trying — a page that kills its renderer on load would
+/// otherwise loop forever.
+const MAX_RENDERER_RELOADS: u32 = 5;
+
+/// The reload budget, pure: `prior` is how many crashes this window had already
+/// counted. Kept **per window** by every caller. It was one process-wide static
+/// per OS, so a popout or a live browser page crash-looping five times used up
+/// the main window's reloads for the rest of the session.
+fn renderer_reload_allowed(prior: u32) -> bool {
+    prior < MAX_RENDERER_RELOADS
+}
+
+/// macOS's hook is app-wide (one builder callback for every window), so the
+/// per-window count there lives in a map keyed by webview label. Counts the
+/// crash and answers whether that window may reload.
+#[cfg(any(target_os = "macos", test))]
+fn bump_renderer_reloads(counts: &mut std::collections::BTreeMap<String, u32>, label: &str) -> bool {
+    let n = counts.entry(label.to_string()).or_insert(0);
+    let allowed = renderer_reload_allowed(*n);
+    *n = n.saturating_add(1);
+    allowed
+}
+
 /// Hook one window's renderer-crash signal. Safe to call on any window, at any
 /// point after it is built.
 #[cfg(target_os = "linux")]
 pub(crate) fn hook_webview_crash_reporter(window: &tauri::WebviewWindow) {
     use webkit2gtk::{WebProcessTerminationReason, WebViewExt};
 
-    static RELOADS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-    const MAX_RELOADS: u32 = 5;
-
     let label = window.label().to_string();
     let _ = window.with_webview(move |webview| {
         let label = label.clone();
+        // This window's own budget: the hook runs once per window, so a counter
+        // made here and moved into the handler is per-window by construction.
+        let crashes = std::sync::atomic::AtomicU32::new(0);
         webview
             .inner()
             .connect_web_process_terminated(move |view, reason| {
@@ -574,10 +598,14 @@ pub(crate) fn hook_webview_crash_reporter(window: &tauri::WebviewWindow) {
                 );
                 crash_log_append(&msg);
                 eprintln!("{msg}");
+                // An intentional restart (the memory watchdog's) is not a crash
+                // and must not spend the budget — so this stays before the count.
                 if reason == WebProcessTerminationReason::TerminatedByApi {
                     return;
                 }
-                if RELOADS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < MAX_RELOADS {
+                if renderer_reload_allowed(
+                    crashes.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+                ) {
                     view.reload();
                 }
             });
@@ -602,11 +630,10 @@ pub(crate) fn hook_webview_crash_reporter(window: &tauri::WebviewWindow) {
     };
     use webview2_com::ProcessFailedEventHandler;
 
-    static RELOADS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-    const MAX_RELOADS: u32 = 5;
-
     let label = window.label().to_string();
     let _ = window.with_webview(move |webview| {
+        // This window's own reload budget (see `renderer_reload_allowed`).
+        let crashes = std::sync::atomic::AtomicU32::new(0);
         // SAFETY: COM calls on the live controller Tauri handed us, on the
         // thread `with_webview` runs on (the webview's own); the handler is
         // reference-counted by WebView2 for as long as it is registered.
@@ -637,7 +664,9 @@ pub(crate) fn hook_webview_crash_reporter(window: &tauri::WebviewWindow) {
                 crash_log_append(&msg);
                 eprintln!("{msg}");
                 if kind == COREWEBVIEW2_PROCESS_FAILED_KIND_RENDER_PROCESS_EXITED
-                    && RELOADS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < MAX_RELOADS
+                    && renderer_reload_allowed(
+                        crashes.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+                    )
                 {
                     if let Some(view) = sender.as_ref() {
                         let _ = view.Reload();
@@ -671,8 +700,9 @@ pub(crate) fn hook_webview_crash_reporter(window: &tauri::WebviewWindow) {
 /// than beside the per-window Linux/Windows hooks.
 #[cfg(target_os = "macos")]
 fn with_webview_crash_reporter(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry> {
-    static RELOADS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-    const MAX_RELOADS: u32 = 5;
+    // Per-window budgets behind one app-wide hook: keyed by webview label.
+    static RELOADS: std::sync::Mutex<std::collections::BTreeMap<String, u32>> =
+        std::sync::Mutex::new(std::collections::BTreeMap::new());
     builder.on_web_content_process_terminate(|webview| {
         let msg = format!(
             "=== WEBVIEW '{}' TERMINATED {} (WebContent process died) ===",
@@ -681,7 +711,11 @@ fn with_webview_crash_reporter(builder: tauri::Builder<tauri::Wry>) -> tauri::Bu
         );
         crash_log_append(&msg);
         eprintln!("{msg}");
-        if RELOADS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < MAX_RELOADS {
+        let allowed = RELOADS
+            .lock()
+            .map(|mut counts| bump_renderer_reloads(&mut counts, webview.label()))
+            .unwrap_or(false);
+        if allowed {
             let _ = webview.reload();
         }
     })
@@ -691,6 +725,133 @@ fn with_webview_crash_reporter(builder: tauri::Builder<tauri::Wry>) -> tauri::Bu
 /// [`hook_webview_crash_reporter`]); nothing to add to the builder.
 #[cfg(not(target_os = "macos"))]
 fn with_webview_crash_reporter(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry> {
+    builder
+}
+
+/// One item of the explicit macOS menu bar, as data — so the one decision that
+/// matters (what is in it, and what is not) is testable on Linux, where the
+/// builder below cannot even compile.
+#[cfg(any(target_os = "macos", test))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MacMenuItem {
+    About,
+    Services,
+    Hide,
+    HideOthers,
+    /// Eldrun's own "Quit Eldrun" (⌘Q, id [`MAC_MENU_QUIT_ID`]), not the
+    /// predefined `terminate:` one.
+    Quit,
+    Undo,
+    Redo,
+    Cut,
+    Copy,
+    Paste,
+    SelectAll,
+    Minimize,
+    Fullscreen,
+    Separator,
+}
+
+#[cfg(any(target_os = "macos", test))]
+const MAC_MENU_QUIT_ID: &str = "eldrun-quit";
+
+/// The macOS menu bar: (submenu title, items). Tauri would otherwise install
+/// its default menu, and that one is wrong for Eldrun in two ways:
+///
+/// - It binds **⌘W to Close Window**. The webview sees the key first, but from
+///   a terminal or editor the frontend used to let it pass, and the menu then
+///   closed the main window — i.e. quit the whole app — for a "close tab".
+///   So there is **no Close Window item anywhere** here, and ⌘W is the
+///   frontend's close-tab (`useKeyboard`).
+/// - Its Quit is `terminate:`, which skips the window's close handler (layout
+///   flush, tmux reap). The custom Quit closes the main window instead, so
+///   AppShell's `onCloseRequested` teardown runs, then `RunEvent::Exit`.
+///
+/// The **Edit submenu is mandatory**: its predefined Copy/Paste dispatch
+/// `copy:`/`paste:` to WKWebView, which is how ⌘C/⌘V reach xterm and every
+/// input. A frontend ⌘V handler instead would double-paste.
+#[cfg(any(target_os = "macos", test))]
+fn macos_menu_plan() -> Vec<(&'static str, Vec<MacMenuItem>)> {
+    use MacMenuItem::*;
+    vec![
+        (
+            "Eldrun",
+            vec![About, Separator, Services, Separator, Hide, HideOthers, Separator, Quit],
+        ),
+        ("Edit", vec![Undo, Redo, Separator, Cut, Copy, Paste, SelectAll]),
+        ("Window", vec![Minimize, Fullscreen]),
+    ]
+}
+
+#[cfg(target_os = "macos")]
+fn build_macos_menu(app: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
+    use tauri::menu::{IsMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
+    type Item = Box<dyn IsMenuItem<tauri::Wry>>;
+
+    let mut submenus: Vec<Submenu<tauri::Wry>> = Vec::new();
+    for (title, entries) in macos_menu_plan() {
+        let mut items: Vec<Item> = Vec::new();
+        for entry in entries {
+            let item: Item = match entry {
+                MacMenuItem::About => Box::new(PredefinedMenuItem::about(app, None, None)?),
+                MacMenuItem::Services => Box::new(PredefinedMenuItem::services(app, None)?),
+                MacMenuItem::Hide => Box::new(PredefinedMenuItem::hide(app, None)?),
+                MacMenuItem::HideOthers => Box::new(PredefinedMenuItem::hide_others(app, None)?),
+                MacMenuItem::Quit => Box::new(MenuItem::with_id(
+                    app,
+                    MAC_MENU_QUIT_ID,
+                    "Quit Eldrun",
+                    true,
+                    Some("CmdOrCtrl+Q"),
+                )?),
+                MacMenuItem::Undo => Box::new(PredefinedMenuItem::undo(app, None)?),
+                MacMenuItem::Redo => Box::new(PredefinedMenuItem::redo(app, None)?),
+                MacMenuItem::Cut => Box::new(PredefinedMenuItem::cut(app, None)?),
+                MacMenuItem::Copy => Box::new(PredefinedMenuItem::copy(app, None)?),
+                MacMenuItem::Paste => Box::new(PredefinedMenuItem::paste(app, None)?),
+                MacMenuItem::SelectAll => Box::new(PredefinedMenuItem::select_all(app, None)?),
+                MacMenuItem::Minimize => Box::new(PredefinedMenuItem::minimize(app, None)?),
+                MacMenuItem::Fullscreen => Box::new(PredefinedMenuItem::fullscreen(app, None)?),
+                MacMenuItem::Separator => Box::new(PredefinedMenuItem::separator(app)?),
+            };
+            items.push(item);
+        }
+        let refs: Vec<&dyn IsMenuItem<tauri::Wry>> = items.iter().map(|i| i.as_ref()).collect();
+        submenus.push(Submenu::with_items(app, title, true, &refs)?);
+    }
+    let refs: Vec<&dyn IsMenuItem<tauri::Wry>> = submenus
+        .iter()
+        .map(|s| s as &dyn IsMenuItem<tauri::Wry>)
+        .collect();
+    Menu::with_items(app, &refs)
+}
+
+/// macOS: install the explicit menu bar (see [`macos_menu_plan`]) and route its
+/// custom Quit through the main window's close, so the frontend teardown runs.
+#[cfg(target_os = "macos")]
+fn with_macos_menu(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry> {
+    builder
+        .menu(build_macos_menu)
+        .on_menu_event(|app, event| {
+            if event.id().0 != MAC_MENU_QUIT_ID {
+                return;
+            }
+            use tauri::Manager;
+            match app.get_webview_window("main") {
+                Some(main) => {
+                    if main.close().is_err() {
+                        app.exit(0);
+                    }
+                }
+                None => app.exit(0),
+            }
+        })
+}
+
+/// Linux and Windows get no menu bar: Tauri installs none there, and one would
+/// draw into Windows' undecorated overlay header.
+#[cfg(not(target_os = "macos"))]
+fn with_macos_menu(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry> {
     builder
 }
 
@@ -907,7 +1068,7 @@ pub fn run() {
     let usage_watch = services::usage_stats::new_state();
     let mobile_desktop = commands::mobile_control::MobileDesktopState::default();
 
-    with_webview_crash_reporter(tauri::Builder::default())
+    with_macos_menu(with_webview_crash_reporter(tauri::Builder::default()))
         .manage(pty_registry)
         .manage(win_registry)
         .manage(workspace)
@@ -943,7 +1104,11 @@ pub fn run() {
             // the same cleanup for every clean exit. `AppHandle::exit` from a
             // runtime thread goes through the event-loop proxy, which is what
             // makes the exit events deliverable at all. Unix only: Windows has
-            // no signals, and its console close is a hard kill either way.
+            // no such signals, and needs no bridge for the session-end case —
+            // tao's hidden top-level window receives `WM_ENDSESSION` at logoff
+            // or shutdown and ends the loop, which Tauri delivers as
+            // `RunEvent::Exit`, so the same teardown runs there already. (A
+            // console close only exists in the debug build's console.)
             #[cfg(unix)]
             {
                 let handle = _app.handle().clone();
@@ -1621,6 +1786,7 @@ pub fn run() {
             commands::apps::list_installed_apps,
             // Workspace / network
             commands::workspace::workspace_info,
+            commands::workspace::workspace_capabilities,
             commands::workspace::workspace_switch,
             commands::workspace::desktop_owns_super_key,
             commands::workspace::show_window,
@@ -1899,6 +2065,12 @@ pub fn run() {
                 // is deliberately left alone: Ollama is a machine service as
                 // often as it is an Eldrun detail.
                 commands::ollama::shutdown_owned_server();
+                // Let the machine sleep again if a talk was on: the presenter's
+                // own unmount never runs on an exit the frontend didn't drive.
+                // Idempotent, and non-blocking on every OS (Windows only drops
+                // the parked thread's sender — no join inside the shutdown
+                // budget).
+                let _ = commands::presenter::presenter_release_sleep();
                 // Tear down any OpenVPN tunnels brought up for VPN-gated
                 // remote projects so no privileged tunnel outlives the app.
                 // Best-effort: a tunnel the close-path already asked about and was
@@ -1948,6 +2120,76 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// tauri-utils merges `tauri.macos.conf.json` over the base config with RFC
+    /// 7396 merge-patch, which REPLACES arrays: a `windows` array there drops
+    /// every key of the base window it does not repeat. `visible: false` is the
+    /// one that matters — the window must stay hidden until
+    /// `restore_main_window` has placed it.
+    #[test]
+    fn every_window_config_starts_hidden() {
+        for (name, text) in [
+            ("tauri.conf.json", include_str!("../tauri.conf.json")),
+            ("tauri.macos.conf.json", include_str!("../tauri.macos.conf.json")),
+        ] {
+            let conf: serde_json::Value = serde_json::from_str(text).unwrap();
+            let windows = conf["app"]["windows"].as_array().unwrap();
+            assert!(!windows.is_empty(), "{name}");
+            for w in windows {
+                assert_eq!(w["visible"], serde_json::Value::Bool(false), "{name}: {w}");
+            }
+        }
+    }
+
+    #[test]
+    fn macos_menu_never_offers_close_window_and_keeps_edit() {
+        let plan = macos_menu_plan();
+        let titles: Vec<&str> = plan.iter().map(|(t, _)| *t).collect();
+        assert_eq!(titles, ["Eldrun", "Edit", "Window"]);
+        // No item of any submenu is a window close (⌘W is the frontend's).
+        for (_, items) in &plan {
+            for item in items {
+                assert!(!format!("{item:?}").contains("Close"), "{item:?}");
+            }
+        }
+        // Edit carries the four ⌘-editing items xterm and inputs rely on.
+        let edit = &plan[1].1;
+        for needed in [MacMenuItem::Copy, MacMenuItem::Paste, MacMenuItem::Cut, MacMenuItem::SelectAll] {
+            assert!(edit.contains(&needed), "{needed:?}");
+        }
+        // Exactly one Quit, in the app menu, and it is Eldrun's own.
+        let quits: usize = plan
+            .iter()
+            .map(|(_, items)| items.iter().filter(|i| **i == MacMenuItem::Quit).count())
+            .sum();
+        assert_eq!(quits, 1);
+        assert_eq!(plan[0].1.last(), Some(&MacMenuItem::Quit));
+        assert!(!MAC_MENU_QUIT_ID.is_empty());
+        assert!(plan[2].1.contains(&MacMenuItem::Minimize));
+        assert!(plan[2].1.contains(&MacMenuItem::Fullscreen));
+    }
+
+    #[test]
+    fn renderer_reload_budget_allows_five() {
+        assert!((0..MAX_RENDERER_RELOADS).all(renderer_reload_allowed));
+        assert!(!renderer_reload_allowed(MAX_RENDERER_RELOADS));
+        assert!(!renderer_reload_allowed(u32::MAX));
+    }
+
+    #[test]
+    fn renderer_reload_budgets_are_per_window() {
+        let mut counts = std::collections::BTreeMap::new();
+        // A popout crash-looping spends only its own budget …
+        for _ in 0..MAX_RENDERER_RELOADS {
+            assert!(bump_renderer_reloads(&mut counts, "detached-p-g1"));
+        }
+        assert!(!bump_renderer_reloads(&mut counts, "detached-p-g1"));
+        // … and the main window still gets all of its reloads.
+        for _ in 0..MAX_RENDERER_RELOADS {
+            assert!(bump_renderer_reloads(&mut counts, "main"));
+        }
+        assert!(!bump_renderer_reloads(&mut counts, "main"));
+    }
 
     #[test]
     fn iso_now_uses_z_suffix() {
