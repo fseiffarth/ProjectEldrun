@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
+import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from "react";
 import { formatTime, weekdayLabel } from "../../lib/calendarTime";
 import { useI18nStore, useT } from "../../lib/i18n";
 import { useUse24h } from "../../lib/timeFormat";
@@ -46,6 +46,8 @@ interface Props {
   lifts?: Record<string, number>;
   /** Where the agents' own rate-limit windows roll over. */
   resets?: UsageResetMark[];
+  /** A press on the empty lanes (not on a card): the selection marquee. */
+  onBodyPointerDown?: (event: ReactPointerEvent<HTMLDivElement>) => void;
 }
 
 const BODY_PADDING = 8;
@@ -71,7 +73,7 @@ function hhmm(at: Date): string {
  * that scrolled the body took the now line away with it. The axis, with the
  * NOW label, is sticky, so scrolling the tab keeps the clock in view too.
  */
-export function PromptTimeline({ win, cards, now, drag, bodyRef, nowBandRef, renderCard, onRefine, dropLabel, onZoom, lifts, resets = [] }: Props) {
+export function PromptTimeline({ win, cards, now, drag, bodyRef, nowBandRef, renderCard, onRefine, dropLabel, onZoom, lifts, resets = [], onBodyPointerDown }: Props) {
   const t = useT();
   const lang = useI18nStore((s) => s.lang);
   const use24h = useUse24h();
@@ -130,13 +132,14 @@ export function PromptTimeline({ win, cards, now, drag, bodyRef, nowBandRef, ren
   // tall as the taller of the two, so no waiting card sits below the edge.
   // What still outgrows it (an expanded card) scrolls inside the body.
   const queueHeight = queued.length > 0 ? QUEUE_LABEL_HEIGHT + queued.length * TIMELINE_LANE_HEIGHT : 0;
-  // A sent card the reader lifted sits off its lane: the stored lift, never
-  // above the body's top edge (a repack can move the lane under it), plus the
+  // A card the reader lifted sits off its lane: the stored lift, never above
+  // the body's top edge (a repack can move the lane under it), plus the
   // distance of a lift in flight.
   const laneTop = (item: { lane: number }) => BODY_PADDING + item.lane * TIMELINE_LANE_HEIGHT;
+  const lifting = (key: string) => drag?.kind === "lift" && drag.keys.includes(key);
   const itemTop = (item: { key: string; lane: number }) =>
     Math.max(0, laneTop(item) + (lifts?.[item.key] ?? 0))
-    + (drag?.kind === "lift" && drag.key === item.key ? drag.dy : 0);
+    + (drag?.kind === "lift" && lifting(item.key) ? drag.dy : 0);
   const liftedBottom = win.view === "month" ? 0 : Math.max(0, ...packed.items.map((item) => itemTop(item) + TIMELINE_LANE_HEIGHT));
   const bodyHeight = Math.max(Math.max(lanes * TIMELINE_LANE_HEIGHT, queueHeight) + BODY_PADDING * 2, liftedBottom + BODY_PADDING);
 
@@ -195,6 +198,10 @@ export function PromptTimeline({ win, cards, now, drag, bodyRef, nowBandRef, ren
           ref={bodyRef}
           data-testid="prompt-timeline-body"
           style={{ height: bodyHeight }}
+          // Only a press on the lanes themselves: a card's press is its own.
+          onPointerDown={win.view === "month" || !onBodyPointerDown ? undefined : (event) => {
+            if (event.target === event.currentTarget) onBodyPointerDown(event);
+          }}
         >
           {win.view === "month"
             ? clusters.map((cluster) => (
@@ -219,9 +226,10 @@ export function PromptTimeline({ win, cards, now, drag, bodyRef, nowBandRef, ren
             : packed.items.map((item) => (
               <div
                 key={item.key}
-                className={`agent-prompt-timeline-item${drag?.kind === "lift" && drag.key === item.key ? " is-lifting" : ""}`}
+                className={`agent-prompt-timeline-item${lifting(item.key) ? " is-lifting" : ""}`}
                 style={{ left: item.x, top: itemTop(item), width: item.width }}
                 data-lane-top={laneTop(item)}
+                data-item-key={item.key}
               >
                 {renderCard(item.card, item.occurrence, item.members && {
                   cards: item.members.map((member) => member.card),
@@ -251,6 +259,19 @@ export function PromptTimeline({ win, cards, now, drag, bodyRef, nowBandRef, ren
           )}
         </div>
       </div>
+      {drag?.kind === "marquee" && (
+        <div
+          className="agent-prompt-timeline-marquee"
+          data-testid="prompt-timeline-marquee"
+          aria-hidden="true"
+          style={{
+            left: Math.min(drag.x1, drag.x),
+            top: Math.min(drag.y1, drag.y),
+            width: Math.abs(drag.x - drag.x1),
+            height: Math.abs(drag.y - drag.y1),
+          }}
+        />
+      )}
       {drag?.kind === "card" && (
         <div
           className="agent-prompt-timeline-ghost"

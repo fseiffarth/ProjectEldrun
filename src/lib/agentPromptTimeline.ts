@@ -5,7 +5,6 @@ import {
   nextScheduleOccurrence,
 } from "./agentSchedule";
 import { snapPromptTime, type PromptChartCard } from "./agentPromptChart";
-import { draftChainAnchors } from "./agentPromptDrafts";
 
 /**
  * The prompt chart's time axis: one proportional, horizontal scale that a Day,
@@ -210,20 +209,16 @@ const MAX_OCCURRENCES = 64;
  * Every card with a place on the axis inside the window: sent cards at their
  * `sent_at`, one-time rules at their minute, recurring rules at each future
  * occurrence in the window (their past ones are the history's rows already).
- * Queued cards sit at the now line, drafts on the strip, chained cards under
- * their source — none of those has an instant of its own.
+ * Queued cards sit at the now line, and drafts and chained cards on the board
+ * — none of those has an instant of its own. A chained card in particular is
+ * never drawn at its source's minute: it goes when the source's turn has
+ * finished, whenever that is, and a place on the axis would read as a time.
  */
 export function timelineItems(cards: PromptChartCard[], win: TimelineWindow, now: Date): TimelineItem[] {
   const items: TimelineItem[] = [];
-  const anchors = draftChainAnchors(cards, now);
   const inside = (at: Date | null): at is Date =>
     !!at && Number.isFinite(at.getTime()) && at >= win.start && at < win.end;
   for (const card of cards) {
-    if (card.state === "chained") {
-      const at = anchors.get(card.id) ?? null;
-      if (inside(at)) items.push({ key: card.key, card, at });
-      continue;
-    }
     if (card.state === "sent") {
       if (inside(card.at)) items.push({ key: card.key, card, at: card.at });
       continue;
@@ -425,7 +420,8 @@ export type PromptTimelineDrop =
   | { type: "schedule"; targetId: string; at: string }
   | { type: "retime"; targetId: string; fromTargetId?: string; at: string }
   | { type: "unschedule"; fromTargetId?: string }
-  | { type: "none" };
+  /** `occupied`: the only tab the drop could reach already holds a rule. */
+  | { type: "none"; reason?: "occupied" };
 
 /**
  * A drop is a write, decided here and nowhere else. `targets` are the live
@@ -436,6 +432,7 @@ export function timelineDropAction(
   card: PromptChartCard,
   zone: TimelineZone,
   targets: readonly string[],
+  occupied: ReadonlySet<string> = new Set(),
 ): PromptTimelineDrop {
   // A sent card is history: it stays where it went. "Collect again" is a
   // button on its face, never a drop.
@@ -444,8 +441,13 @@ export function timelineDropAction(
     if (card.schedule) return { type: "unschedule", fromTargetId: card.targetId };
     return { type: "none" };
   }
-  const targetId = card.targetId && targets.includes(card.targetId) ? card.targetId : targets[0];
-  if (!targetId) return { type: "none" };
+  // A rule keeps its own tab; a draft goes to the tab it is aimed at, else
+  // the first tab — but never onto a tab already holding another rule
+  // (`occupiedTargets`): there the draft has to be linked after that rule.
+  const free = card.schedule ? targets : targets.filter((id) => !occupied.has(id));
+  if (card.targetId && targets.includes(card.targetId) && !free.includes(card.targetId)) return { type: "none", reason: "occupied" };
+  const targetId = card.targetId && free.includes(card.targetId) ? card.targetId : free[0];
+  if (!targetId) return targets.length > 0 ? { type: "none", reason: "occupied" } : { type: "none" };
   if (zone.kind === "now") {
     return card.state === "queued" ? { type: "none" } : { type: "send", targetId };
   }
@@ -453,6 +455,47 @@ export function timelineDropAction(
   return card.schedule
     ? { type: "retime", targetId, fromTargetId: card.targetId, at }
     : { type: "schedule", targetId, at };
+}
+
+/** A card a selection carries along on a drop: a one-time rule with a minute
+ *  of its own. Recurring rules, queued, chained and sent cards stay put. */
+export function timelineGroupMovable(card: PromptChartCard): boolean {
+  return card.state === "scheduled" && !!card.schedule && !card.recurring && !!card.at;
+}
+
+/**
+ * The writes one drop means for a whole selection. A time drop moves every
+ * member by the distance the carried card moved, each snapped to the view's
+ * grid, so their spacing survives; if any member would land at or before the
+ * now line the whole drop is refused (every entry `none`) rather than sending
+ * part of the selection by accident. The now band and the strip mean the same
+ * for each member as for one card, and members that drop means nothing for
+ * are simply left out.
+ */
+export function timelineGroupDrop(
+  carried: PromptChartCard,
+  members: PromptChartCard[],
+  zone: TimelineZone,
+  targets: readonly string[],
+  win: TimelineWindow,
+  now: Date,
+): { card: PromptChartCard; drop: PromptTimelineDrop }[] {
+  if (zone.kind !== "time") {
+    return members
+      .map((card) => ({ card, drop: timelineDropAction(card, zone, targets) }))
+      .filter((entry) => entry.drop.type !== "none");
+  }
+  const delta = carried.at ? zone.at.getTime() - carried.at.getTime() : 0;
+  const moves = members.map((card) => {
+    const at = card === carried || !card.at ? zone.at : snapTimelineTime(new Date(card.at.getTime() + delta), win);
+    const drop: PromptTimelineDrop = at.getTime() > now.getTime()
+      ? timelineDropAction(card, { kind: "time", at }, targets)
+      : { type: "none" };
+    return { card, drop };
+  });
+  return moves.some((entry) => entry.drop.type === "none")
+    ? moves.map((entry) => ({ card: entry.card, drop: { type: "none" as const } }))
+    : moves;
 }
 
 const TARGET_COLORS = [

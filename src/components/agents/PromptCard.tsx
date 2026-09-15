@@ -26,12 +26,20 @@ interface Props {
   linkOver: boolean;
   /** A later occurrence of a recurring rule: read-only, no ports, unregistered. */
   occurrence?: string;
+  /** Part of the timeline's multi-selection. */
+  multiSelected?: boolean;
+  /** Ctrl/⌘ + click: add the card to the selection or take it out. Absent
+   *  where a card cannot be selected (the strip, the queue). */
+  onToggleSelect?: () => void;
   /** The stripe colour of the tab the card is aimed at. */
   color: string;
   /** The live agent tabs a card can be aimed at. */
   targets: PromptCardTarget[];
   /** What a sent card shows instead of a picker: the tab it went to. */
   targetLabel?: string;
+  /** The tab a draft is aimed at, when that tab already holds a scheduled
+   *  prompt: the picker no longer lists it, and the card says why. */
+  targetBlocked?: string;
   /** For a draft: the picker's first, default choice — a new agent tab
    *  running the chart's agent (`lib/agentPromptNewTab`). Its value is the
    *  empty target, so an unaimed draft selects it, and Send opens the tab. */
@@ -97,9 +105,12 @@ export function PromptCard({
   dragging,
   linkOver,
   occurrence,
+  multiSelected,
+  onToggleSelect,
   color,
   targets,
   targetLabel,
+  targetBlocked,
   newTabLabel,
   register,
   onSelect,
@@ -157,6 +168,7 @@ export function PromptCard({
     `is-${card.state}`,
     matched ? "" : "is-dimmed",
     selected ? "is-selected" : "",
+    multiSelected ? "is-multi-selected" : "",
     linking ? "is-link-target" : "",
     dragging ? "is-dragging" : "",
     linkOver ? "is-link-over" : "",
@@ -176,7 +188,8 @@ export function PromptCard({
       data-prompt-card={occurrence ? undefined : card.id}
       data-testid={`prompt-chart-card-${card.state}`}
       style={{ "--prompt-strand": color } as React.CSSProperties}
-      onClick={() => {
+      onClick={(event) => {
+        if (onToggleSelect && (event.ctrlKey || event.metaKey)) { onToggleSelect(); return; }
         onSelect();
         setExpanded((value) => !value);
       }}
@@ -188,7 +201,7 @@ export function PromptCard({
         setExpanded(true);
         setEditing(true);
       }}
-      onPointerDown={occurrence ? undefined : onPointerDown}
+      onPointerDown={onPointerDown}
     >
       {!occurrence && <span className="agent-prompt-card-port is-in" aria-hidden="true" />}
       <div className={`agent-prompt-card-head${quickDelete ? " has-delete" : ""}`}>
@@ -217,6 +230,7 @@ export function PromptCard({
               onChange={(value) => void onAgent(value)}
             />
           )}
+        {targetBlocked && <div className="agent-schedule-warn agent-prompt-card-warn">{t("promptChart.targetOccupiedShort", { tab: targetBlocked })}</div>}
       </div>
       <div className="agent-prompt-card-tags">
         {card.tags.map((tag) => <span key={`stored:${tag}`} className="agent-prompt-tag">#{tag}</span>)}

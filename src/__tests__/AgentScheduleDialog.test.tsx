@@ -43,6 +43,24 @@ describe("AgentScheduleDialog", () => {
     expect(document.querySelector(".agent-schedule-dialog")).toBeTruthy();
   });
 
+  it("warns that a new rule joins a tab with a live one, and not for a paused one", async () => {
+    vi.mocked(invoke).mockResolvedValueOnce([
+      { id: "a", enabled: true, message: "Continue", rule: { type: "daily", time: "09:00" } },
+    ]);
+    const first = render(<AgentScheduleDialog scope="project-1" tab={tab} onClose={() => {}} />);
+    await act(async () => {});
+    expect(screen.getByTestId("agent-schedule-occupied").textContent).toContain("already has a scheduled prompt");
+    first.unmount();
+
+    vi.mocked(invoke).mockResolvedValueOnce([
+      { id: "b", enabled: false, message: "Weekly review", rule: { type: "daily", time: "17:00" } },
+    ]);
+    await act(async () => {
+      render(<AgentScheduleDialog scope="project-1" tab={tab} onClose={() => {}} />);
+    });
+    expect(screen.queryByTestId("agent-schedule-occupied")).toBeNull();
+  });
+
   it("states what each schedule is doing, and what the tab as a whole will do next", async () => {
     // Through the load the dialog itself runs: seeding the store alone proves
     // nothing, since that load lands afterwards and replaces the cache.

@@ -231,6 +231,12 @@ export function AgentScheduleDialog({ scope, tab, onClose, initialMessage, initi
     && !Number.isNaN(new Date(once).getTime())
     && new Date(once).getTime() < now.getTime();
 
+  // A second rule on a tab that already has a live one: the two fire in no
+  // set order (the host delivers whichever minute comes first and holds the
+  // other). The chart refuses such a tab for a draft outright; here, where a
+  // tab's own menu manages its rules, it is said rather than forbidden.
+  const otherLive = editing ? [] : schedules.filter((item) => item.enabled && item.id !== promptId);
+
   const summary = scheduleSummary(schedules, now);
 
   if (!targetId) return null;
@@ -439,6 +445,7 @@ export function AgentScheduleDialog({ scope, tab, onClose, initialMessage, initi
                 </div>
               )}
               {oncePast && <div className="agent-schedule-warn">{t("agentSchedule.pastOnce")}</div>}
+              {otherLive.length > 0 && <div className="agent-schedule-warn" data-testid="agent-schedule-occupied">{t("agentSchedule.tabOccupied")}</div>}
               {error && <div className="project-dialog-error">{error}</div>}
               <div className="agent-schedule-form-actions">
                 {editing && <button className="settings-btn" type="button" onClick={reset}>{t("common.cancel")}</button>}

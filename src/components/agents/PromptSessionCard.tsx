@@ -12,6 +12,10 @@ interface Props {
   /** Keys of the cards the chart's filter matches. */
   matchedKeys: Set<string>;
   selected: boolean;
+  /** Part of the timeline's multi-selection. */
+  multiSelected?: boolean;
+  /** Ctrl/⌘ + click: add the card to the selection or take it out. */
+  onToggleSelect?: () => void;
   linking: boolean;
   linkOver: boolean;
   color: string;
@@ -40,6 +44,8 @@ export function PromptSessionCard({
   offsets,
   matchedKeys,
   selected,
+  multiSelected,
+  onToggleSelect,
   linking,
   linkOver,
   color,
@@ -65,6 +71,7 @@ export function PromptSessionCard({
     "agent-prompt-card todo-card is-sent is-session",
     cards.some((card) => matchedKeys.has(card.key)) ? "" : "is-dimmed",
     selected ? "is-selected" : "",
+    multiSelected ? "is-multi-selected" : "",
     linking ? "is-link-target" : "",
     linkOver ? "is-link-over" : "",
   ].filter(Boolean).join(" ");
@@ -76,7 +83,8 @@ export function PromptSessionCard({
       data-prompt-card={latest.id}
       data-testid="prompt-chart-session"
       style={{ "--prompt-strand": color } as React.CSSProperties}
-      onClick={() => {
+      onClick={(event) => {
+        if (onToggleSelect && (event.ctrlKey || event.metaKey)) { onToggleSelect(); return; }
         onSelect();
         setExpanded((value) => !value);
       }}

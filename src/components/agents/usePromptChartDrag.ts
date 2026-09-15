@@ -36,12 +36,22 @@ export type ChartDrag =
       overId: string | null;
     }
   | {
-      /** A sent card pulled up or down its lane for a clearer view. */
+      /** Cards pulled up or down their lanes for a clearer view: a sent card
+       *  always, any other lane card while Shift is held. */
       kind: "lift";
-      /** The timeline item's key. */
-      key: string;
+      /** The timeline items' keys — the pressed one first, then the rest of
+       *  the selection riding along. */
+      keys: string[];
       /** Pointer travel since the press, never above the body's top. */
       dy: number;
+    }
+  | {
+      /** A rubber band drawn across the empty lanes to select cards. */
+      kind: "marquee";
+      x1: number;
+      y1: number;
+      x: number;
+      y: number;
     };
 
 export interface ChartMeasure {
@@ -65,8 +75,13 @@ interface Options {
   measureCards: () => ChartCardRect[];
   onDropCard: (card: PromptChartCard, zone: TimelineZone, drag: Extract<ChartDrag, { kind: "card" }>) => void;
   onDropLink: (from: PromptChartCard, toId: string) => void;
-  /** A lift ended: the item now sits `lift` px off its lane. */
-  onLift: (key: string, lift: number) => void;
+  /** A lift ended: each item now sits that many px off its lane. */
+  onLift: (lifts: Record<string, number>) => void;
+  /** Every lane item's rect by item key, read once when a marquee starts. */
+  measureItems?: () => ChartCardRect[];
+  /** A marquee ended over these item keys (none for a plain click on the
+   *  empty lanes); `additive` when Ctrl/⌘ was held at the press. */
+  onMarquee?: (keys: string[], additive: boolean) => void;
 }
 
 /** Presses on these are the control's, never a drag's. */
@@ -116,6 +131,8 @@ export function usePromptChartDrag(options: Options) {
       begin: (pointer: PointerEvent) => ChartDrag;
       move: (current: ChartDrag, pointer: PointerEvent) => ChartDrag;
       commit: (current: ChartDrag) => void;
+      /** The press never crossed the threshold. */
+      click?: () => void;
     },
   ) => {
     if (event.button !== 0) return;
@@ -161,6 +178,7 @@ export function usePromptChartDrag(options: Options) {
       setDrag(null);
       // Never crossed the threshold: a click, and the card's own click handles it.
       if (finished) gesture.commit(finished);
+      else gesture.click?.();
     };
     const onAbort = () => {
       cleanup();
@@ -171,16 +189,60 @@ export function usePromptChartDrag(options: Options) {
     bindDragRelease({ onCommit, onAbort });
   };
 
-  const onCardPointerDown = (card: PromptChartCard) => (event: ReactPointerEvent<HTMLElement>) => {
+  /**
+   * A sent card is history — its instant is not the reader's to change — but
+   * where it sits in its column is: overlapping sessions stack lanes deep, and
+   * the one being read is often under another. So it moves vertically only,
+   * the card itself following the pointer (nothing is dropped anywhere, so no
+   * ghost). The lane's own top and the item's drawn top are read off the item
+   * wrappers `PromptTimeline` renders; the lift reported is measured from the
+   * lane, so a card a repack pushed against the top edge has no dead zone.
+   * `keys` past the first are the rest of a selection, which move by the same
+   * distance and stop together when the highest of them meets the top.
+   * Returns null when the pressed card sits on no lane (the strip, the queue).
+   */
+  const liftGesture = (event: ReactPointerEvent<HTMLElement>, keys: string[]) => {
+    const pressed = event.currentTarget.closest<HTMLElement>("[data-lane-top]");
+    if (!pressed) return null;
+    const body = pressed.parentElement;
+    const nodes = [pressed, ...[...(body?.querySelectorAll<HTMLElement>("[data-item-key]") ?? [])]
+      .filter((node) => node !== pressed && keys.includes(node.dataset.itemKey ?? ""))];
+    const bases = nodes.map((node) => ({
+      key: node === pressed ? keys[0] : node.dataset.itemKey!,
+      top: parseFloat(node.style.top) || 0,
+      laneTop: Number(node.dataset.laneTop) || 0,
+    }));
+    const floor = Math.max(...bases.map((base) => -base.top));
+    const startY = event.clientY;
+    const dyAt = (pointer: PointerEvent) => Math.max(floor, pointer.clientY - startY);
+    return {
+      begin: (pointer: PointerEvent): ChartDrag => ({ kind: "lift", keys: bases.map((base) => base.key), dy: dyAt(pointer) }),
+      move: (current: ChartDrag, pointer: PointerEvent): ChartDrag => (current.kind === "lift" ? { ...current, dy: dyAt(pointer) } : current),
+      commit: (finished: ChartDrag) => {
+        if (finished.kind !== "lift") return;
+        swallowNextClick();
+        latest.current.onLift(Object.fromEntries(bases.map((base) => [base.key, base.top - base.laneTop + finished.dy])));
+      },
+    };
+  };
+
+  /**
+   * Carry a card to a drop zone — or, when it sits on a lane and Shift is held
+   * as the drag starts (at the press or once the pointer is moving), lift it
+   * up or down instead, which moves nothing in time and writes nothing.
+   */
+  const onCardPointerDown = (card: PromptChartCard, liftKeys?: string[]) => (event: ReactPointerEvent<HTMLElement>) => {
     if ((event.target as Element).closest(NO_DRAG)) return;
     const rect = event.currentTarget.getBoundingClientRect();
+    const lift = liftKeys ? liftGesture(event, liftKeys) : null;
+    const pressShift = event.shiftKey;
     const zoneAt = (pointer: PointerEvent): TimelineZone => {
       const { win, now, measure } = latest.current;
       const measured = measure();
       return timelineHitZone({ x: pointer.clientX, y: pointer.clientY }, measured.rects, win, measured.width, measured.scrollLeft, now);
     };
     start(event, {
-      begin: (pointer) => ({
+      begin: (pointer) => (lift && (pressShift || pointer.shiftKey) ? lift.begin(pointer) : {
         kind: "card",
         card,
         x: pointer.clientX,
@@ -191,8 +253,11 @@ export function usePromptChartDrag(options: Options) {
         height: rect.height,
         zone: zoneAt(pointer),
       }),
-      move: (current, pointer) => ({ ...current, x: pointer.clientX, y: pointer.clientY, zone: zoneAt(pointer) }),
+      move: (current, pointer) => (current.kind === "lift" && lift
+        ? lift.move(current, pointer)
+        : { ...current, x: pointer.clientX, y: pointer.clientY, zone: zoneAt(pointer) } as ChartDrag),
       commit: (finished) => {
+        if (finished.kind === "lift") { lift?.commit(finished); return; }
         if (finished.kind !== "card" || finished.zone.kind === "none") return;
         swallowNextClick();
         latest.current.onDropCard(finished.card, finished.zone, finished);
@@ -200,31 +265,38 @@ export function usePromptChartDrag(options: Options) {
     });
   };
 
-  /**
-   * A sent card is history — its instant is not the reader's to change — but
-   * where it sits in its column is: overlapping sessions stack lanes deep, and
-   * the one being read is often under another. So it moves vertically only,
-   * the card itself following the pointer (nothing is dropped anywhere, so no
-   * ghost). The lane's own top and the item's drawn top are read off the item
-   * wrapper `PromptTimeline` renders; the lift reported is measured from the
-   * lane, so a card a repack pushed against the top edge has no dead zone.
-   */
-  const onLiftPointerDown = (key: string) => (event: ReactPointerEvent<HTMLElement>) => {
+  /** A lane card that only lifts: always (`shiftOnly` false, a sent card), or
+   *  only with Shift held at the press (a recurring rule, which never carries). */
+  const onLiftPointerDown = (keys: string[], shiftOnly = false) => (event: ReactPointerEvent<HTMLElement>) => {
     if ((event.target as Element).closest(NO_DRAG)) return;
-    const item = event.currentTarget.closest<HTMLElement>("[data-lane-top]");
-    if (!item) return;
-    const top = parseFloat(item.style.top) || 0;
-    const laneTop = Number(item.dataset.laneTop) || 0;
-    const startY = event.clientY;
-    const dyAt = (pointer: PointerEvent) => Math.max(-top, pointer.clientY - startY);
+    if (shiftOnly && !event.shiftKey) return;
+    const gesture = liftGesture(event, keys);
+    if (gesture) start(event, gesture);
+  };
+
+  /** A rubber band over the empty lanes; a plain click there reports no keys. */
+  const onMarqueePointerDown = (event: ReactPointerEvent<HTMLElement>) => {
+    const additive = event.ctrlKey || event.metaKey;
+    const x1 = event.clientX;
+    const y1 = event.clientY;
+    let items: ChartCardRect[] = [];
     start(event, {
-      begin: (pointer) => ({ kind: "lift", key, dy: dyAt(pointer) }),
-      move: (current, pointer) => (current.kind === "lift" ? { ...current, dy: dyAt(pointer) } : current),
-      commit: (finished) => {
-        if (finished.kind !== "lift") return;
-        swallowNextClick();
-        latest.current.onLift(key, top - laneTop + finished.dy);
+      begin: (pointer) => {
+        items = latest.current.measureItems?.() ?? [];
+        return { kind: "marquee", x1, y1, x: pointer.clientX, y: pointer.clientY };
       },
+      move: (current, pointer) => (current.kind === "marquee" ? { ...current, x: pointer.clientX, y: pointer.clientY } : current),
+      commit: (finished) => {
+        if (finished.kind !== "marquee") return;
+        const left = Math.min(finished.x1, finished.x);
+        const right = Math.max(finished.x1, finished.x);
+        const top = Math.min(finished.y1, finished.y);
+        const bottom = Math.max(finished.y1, finished.y);
+        const hit = items.filter(({ rect }) =>
+          rect.left <= right && rect.left + rect.width >= left && rect.top <= bottom && rect.top + rect.height >= top);
+        latest.current.onMarquee?.(hit.map((item) => item.id), additive);
+      },
+      click: () => latest.current.onMarquee?.([], additive),
     });
   };
 
@@ -259,5 +331,5 @@ export function usePromptChartDrag(options: Options) {
     });
   };
 
-  return { drag, onCardPointerDown, onLiftPointerDown, onPortPointerDown };
+  return { drag, onCardPointerDown, onLiftPointerDown, onMarqueePointerDown, onPortPointerDown };
 }

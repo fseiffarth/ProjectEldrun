@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildPromptChart,
+  occupiedTargets,
   queueOrderTimes,
   rowOnStrand,
   snapPromptTime,
@@ -47,6 +48,38 @@ describe("prompt chart model", () => {
     expect(cards.find((card) => card.id === "stale")?.targetId).toBeUndefined();
   });
 
+  it("wears the model beside the agent: the tab's own, the new-tab pick, the recorded answer, a typed /model first", () => {
+    const cards = buildPromptChart({
+      now,
+      strands: [{ ...strand, model: "opus-4-1", schedules: [
+        { id: "plain", enabled: true, message: "Plain", rule: { type: "once", at: "2026-09-04T13:00" } },
+        { id: "picked", enabled: true, message: "Picked", rule: { type: "once", at: "2026-09-04T14:00" }, preface: ["/model haiku"] },
+      ] }],
+      prompts: [
+        { id: "aimed", message: "Aimed", created_at: "x", updated_at: "x", target: "target-1" },
+        { id: "unaimed", message: "Unaimed", created_at: "x", updated_at: "x" },
+        { id: "next", message: "Next", created_at: "x", updated_at: "x" },
+      ],
+      links: [{ id: "l", from: "aimed", to: "next", kind: "after", target: "target-1" }],
+      history: [
+        { id: "answered", message: "Answered", created_at: "x", sent_at: "2026-09-04T11:00:00Z", tab_label: "Claude", session_id: "session-1", result: "delivered", model: "claude-sonnet-4-5-20250929" },
+        { id: "unknown", message: "Unknown", created_at: "x", sent_at: "2026-09-04T11:30:00Z", tab_label: "Gone", session_id: "session-9", result: "delivered" },
+      ],
+      newTabAgent: "codex",
+      newTabModel: "gpt-5-codex",
+    });
+    const modelOf = (id: string) => cards.find((card) => card.id === id)?.autoTags.filter((tag) => tag.startsWith("model:"));
+    expect(modelOf("plain")).toEqual(["model:opus-4-1"]);
+    // What is typed ahead of the prompt is what it runs under.
+    expect(modelOf("picked")).toEqual(["model:haiku"]);
+    expect(modelOf("aimed")).toEqual(["model:opus-4-1"]);
+    expect(modelOf("next")).toEqual(["model:opus-4-1"]);
+    expect(cards.find((card) => card.id === "unaimed")?.autoTags).toEqual(expect.arrayContaining(["agent:codex", "model:gpt-5-codex"]));
+    // A sent row wears the model its transcript named, shortened like the pill.
+    expect(modelOf("answered")).toEqual(["model:sonnet-4-5"]);
+    expect(modelOf("unknown")).toEqual([]);
+  });
+
   it("joins a collected prompt to a rule by normalized text", () => {
     const cards = buildPromptChart({
       now, strands: [{ ...strand, schedules: [{ id: "rule", enabled: true, message: "Same text", rule: { type: "daily", time: "13:00" } }] }], links: [], history: [],
@@ -54,6 +87,18 @@ describe("prompt chart model", () => {
     });
     expect(cards).toHaveLength(1);
     expect(cards[0]).toMatchObject({ state: "scheduled", id: "prompt" });
+  });
+
+  it("joins a rule to one prompt only, so a second prompt with the same words is its own draft", () => {
+    const rule = { id: "first", enabled: true, message: "Same text", rule: { type: "once" as const, at: "2026-09-04T13:00" } };
+    const cards = buildPromptChart({
+      now, strands: [{ ...strand, schedules: [rule] }], links: [], history: [],
+      prompts: [
+        { id: "first", message: "Same text", created_at: "x", updated_at: "x" },
+        { id: "second", message: "Same text", created_at: "y", updated_at: "y" },
+      ],
+    });
+    expect(cards.map((card) => [card.id, card.state])).toEqual([["first", "scheduled"], ["second", "draft"]]);
   });
 
   it("keeps a tab's rows on its strand across a /clear, as separate sessions", () => {
@@ -77,6 +122,16 @@ describe("prompt chart model", () => {
     const closed: PromptChartStrand = { id: "closed:other-launch", label: "Codex", sessionId: "gone", tabId: "other-launch", closed: true, schedules: [] };
     expect(rowOnStrand(closed, row("d", "gone-too", "other-launch", "Renamed"))).toBe(true);
     expect(rowOnStrand(closed, row("e", "gone-too", "third-launch", "Renamed"))).toBe(false);
+  });
+
+  it("names the tabs already holding a live rule, a paused rule aside", () => {
+    const paused: PromptChartStrand = {
+      ...strand, id: "s2", scheduleTargetId: "target-2", sessionId: "session-2",
+      schedules: [{ id: "off", enabled: false, message: "Off", rule: { type: "daily", time: "09:00" } }],
+    };
+    const occupied = occupiedTargets(buildPromptChart({ now, strands: [strand, paused], prompts: [], links: [], history: [] }));
+    expect([...occupied.keys()]).toEqual(["target-1"]);
+    expect(occupied.get("target-1")?.map((card) => card.id).sort()).toEqual(["queued", "scheduled"]);
   });
 
   it("snaps to five minutes", () => {

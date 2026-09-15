@@ -394,8 +394,10 @@ keeps its prompt id so the links survive delivery.
 **Completion replaces submission as the chain trigger.** A delivered receipt
 means the message reached the terminal, not that the agent finished. The host
 now waits for a fresh working→done hook pair after the actual message (after
-any prefix commands), with done stable for at least three seconds. It checks
-on the existing 15-second sweep. This applies across tabs too: successors are
+any prefix commands), and then — as a safety margin before anything is typed
+into an agent that may still be settling — for the tab to stay idle for five
+minutes after that done (`AFTER_LINK_IDLE_MS`; a new turn restarts the wait).
+It checks on the existing 15-second sweep. This applies across tabs too: successors are
 not even queued until the source completes. Neither silence, approval waits,
 nor the old ten-minute timeout may release the next prompt. The activity
 store keeps a separate automation reading that cannot fall back to the UI's
@@ -407,3 +409,18 @@ progression. Recovered receipts without an observed turn do not advance a
 chain. This conservative behavior is intentional: an uncertain completion
 must not type into an agent still working. The chart explains this and keeps
 its UntestedTag until live verification.
+
+**One independent rule per tab (2026-09-15).** Two unlinked rules on one tab
+have no order between them: the host delivers whichever minute comes first
+and holds the other until that turn completes, or misses it. So a tab that
+already holds a live rule — `lib/agentPromptChart.occupiedTargets`: any
+enabled scheduled or queued rule, one-time or recurring; a paused rule
+occupies nothing — is not offered to a draft at all: the card's picker drops
+it, a timeline drop refuses it (`timelineDropAction`'s `occupied` set, the
+badge reads "Tab already scheduled · link After it instead", the release
+writes nothing and the chart's error line says why), and Send/Schedule on a
+draft still aimed at such a tab say the same. An unaimed draft goes to the
+first *free* tab. A rule keeps its own tab and is not offered another rule's.
+A chained card keeps every tab: it is linked, which is exactly the sanctioned
+way onto an occupied tab. The tab's own ◷ Schedules dialog, which manages a
+tab's several recurring rules, warns instead of refusing.

@@ -92,7 +92,7 @@ afterEach(() => {
 });
 
 describe("delivering to a tab nobody is watching", () => {
-  it("advances a cross-tab chain only after stable completion, preserving edge commands", async () => {
+  it("advances a cross-tab chain only after completion plus five idle minutes, preserving edge commands", async () => {
     const review = { id: "review", message: "Review the result", created_at: "x", updated_at: "x" };
     invokeMock.mockImplementation((command, args) => Promise.resolve(
       command === "agent_schedules_list" && (args as { scheduleTargetId: string }).scheduleTargetId === "target-1"
@@ -126,6 +126,17 @@ describe("delivering to a tab nobody is watching", () => {
     expect(queued()).toEqual([]);
     act(() => noteAgentTurn("p:agent-1", "done"));
     await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+    expect(queued()).toEqual([]);
+    // A finished turn is not enough: the tab must then stay idle for five
+    // minutes, and a turn inside that window restarts it.
+    await act(async () => { await vi.advanceTimersByTimeAsync(4 * 60_000); });
+    expect(queued()).toEqual([]);
+    act(() => noteAgentTurn("p:agent-1", "working"));
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+    act(() => noteAgentTurn("p:agent-1", "done"));
+    await act(async () => { await vi.advanceTimersByTimeAsync(4 * 60_000 + 30_000); });
+    expect(queued()).toEqual([]);
+    await act(async () => { await vi.advanceTimersByTimeAsync(45_000); });
     expect(queued()).toHaveLength(1);
     expect(queued()[0][1]).toMatchObject({ scheduleTargetId: "target-2", schedule: { id: "review", preface: ["/clear"] } });
   });

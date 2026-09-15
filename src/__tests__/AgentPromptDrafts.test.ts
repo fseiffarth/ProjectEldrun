@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildPromptChart } from "../lib/agentPromptChart";
-import { draftChainAnchors, draftSequence } from "../lib/agentPromptDrafts";
+import { draftSequence } from "../lib/agentPromptDrafts";
 import { timelineItems, timelineWindow } from "../lib/agentPromptTimeline";
 import type { PromptLink } from "../stores/agentPrompts";
 
@@ -23,17 +23,17 @@ describe("draft sequences", () => {
       expect(draftSequence("b", build(edges), edges)).toBeNull();
     }
   });
-  it("shows the entire sequence on the timeline with only its start scheduled", () => {
+  it("puts only the scheduled start on the timeline; the chained members keep no minute", () => {
     const cards = buildPromptChart({ prompts: [...prompts].reverse(), links, history: [], now, strands: [{
       id: "strand:t", label: "Agent", scheduleTargetId: "t", schedules: [{
         id: "a", message: "a", enabled: true, rule: { type: "once", at: "2026-09-15T12:00" },
       }],
     }] });
-    const anchors = draftChainAnchors(cards, now);
-    expect([...anchors.keys()].sort()).toEqual(["a", "b", "c"]);
     const items = timelineItems(cards, timelineWindow("day", "2026-09-15", 0), now);
-    expect(items.map((item) => item.card.id).sort()).toEqual(["a", "b", "c"]);
-    expect(items.filter((item) => item.card.schedule)).toHaveLength(1);
-    expect(cards.find((card) => card.id === "c")?.at).toBeNull();
+    // A chained card goes when its source's turn has finished, not at the
+    // source's minute, so it is never drawn at that minute.
+    expect(items.map((item) => item.card.id)).toEqual(["a"]);
+    expect(cards.filter((card) => card.state === "chained").map((card) => card.id)).toEqual(["c", "b"]);
+    for (const id of ["b", "c"]) expect(cards.find((card) => card.id === id)?.at).toBeNull();
   });
 });

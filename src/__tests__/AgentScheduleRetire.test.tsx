@@ -117,6 +117,24 @@ describe("retiring a finished schedule to the sent prompts", () => {
     });
   });
 
+  it("retires the rule's own prompt and leaves a second prompt with the same words collected", async () => {
+    invokeMock.mockImplementation((command) => {
+      if (command === "agent_schedules_list") return Promise.resolve([delivered]);
+      if (command === "agent_prompts_list") return Promise.resolve([
+        { id: "prompt-1", message: "Run the tests", created_at: "x", updated_at: "x" },
+        { id: "prompt-2", message: "Run the tests", created_at: "y", updated_at: "y" },
+      ]);
+      return Promise.resolve([]);
+    });
+
+    await act(async () => {
+      render(<AgentScheduleHost />);
+    });
+
+    const removed = invokeMock.mock.calls.filter(([name]) => name === "agent_prompt_delete").map(([, args]) => (args as { promptId: string }).promptId);
+    expect(removed).toEqual(["prompt-1"]);
+  });
+
   it("keeps a recurring rule, which still has a next run", async () => {
     invokeMock.mockImplementation((command) =>
       Promise.resolve(command === "agent_schedules_list" ? [daily] : []),

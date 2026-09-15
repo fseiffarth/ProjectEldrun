@@ -213,6 +213,14 @@ describe("timeline drops", () => {
     expect(timelineDropAction(scheduled, { kind: "now" }, targets)).toEqual({ type: "send", targetId: "t1" });
     expect(timelineDropAction(scheduled, { kind: "strip" }, targets)).toEqual({ type: "unschedule", fromTargetId: "t1" });
     expect(timelineDropAction(queued, { kind: "now" }, targets)).toEqual({ type: "none" });
+    // A tab already holding a rule takes no second one from a draft: an
+    // unaimed draft goes to the first free tab, an aimed one is refused, and
+    // a rule keeps its own tab.
+    const occupied = new Set(["t1"]);
+    expect(timelineDropAction(draft, at, targets, occupied)).toEqual({ type: "schedule", targetId: "t2", at: "2026-09-04T14:05" });
+    expect(timelineDropAction(card({ state: "draft", targetId: "t1" }), at, targets, occupied)).toEqual({ type: "none", reason: "occupied" });
+    expect(timelineDropAction(draft, { kind: "now" }, targets, new Set(targets))).toEqual({ type: "none", reason: "occupied" });
+    expect(timelineDropAction(scheduled, at, targets, occupied)).toEqual({ type: "retime", targetId: "t1", fromTargetId: "t1", at: "2026-09-04T14:05" });
     expect(timelineDropAction(queued, at, targets)).toMatchObject({ type: "retime" });
     expect(timelineDropAction(recurring, at, targets)).toEqual({ type: "none" });
     expect(timelineDropAction(recurring, { kind: "strip" }, targets)).toEqual({ type: "none" });

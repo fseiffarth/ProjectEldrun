@@ -30,23 +30,3 @@ export function draftSequence(id: string, cards: PromptChartCard[], links: Promp
   }
   return ordered.length === members.size ? ordered.map((member) => drafts.get(member)!) : null;
 }
-
-/** Chained drafts have no delivery time. Draw them at their timed ancestor's
- * position without writing independent schedules or inventing delivery times. */
-export function draftChainAnchors(cards: PromptChartCard[], now: Date): Map<string, Date> {
-  const anchors = new Map<string, Date>();
-  for (const card of cards) {
-    if (card.state === "queued") anchors.set(card.id, now);
-    else if (card.at && Number.isFinite(card.at.getTime())) anchors.set(card.id, card.at);
-  }
-  for (let pass = 0; pass < cards.length; pass += 1) {
-    let changed = false;
-    for (const card of cards) {
-      if (card.state !== "chained" || !card.chainLink || anchors.has(card.id)) continue;
-      const at = anchors.get(card.chainLink.from);
-      if (at) { anchors.set(card.id, at); changed = true; }
-    }
-    if (!changed) break;
-  }
-  return anchors;
-}

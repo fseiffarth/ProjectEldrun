@@ -3052,7 +3052,10 @@
 .agent-prompt-chart-facets .dropdown { min-width: 92px; }
 /* The drafts strip and the timeline each filter on their own. */
 .agent-prompt-chart-filter,
-.agent-prompt-chart-timeline-bar { display: flex; flex-direction: column; gap: 5px; }
+/* The timeline's head wears the drafts strip's box, so the two areas read as
+   siblings; its Hide/Show chip sits where the strip's hint does. */
+.agent-prompt-chart-timeline-bar { display: flex; flex-direction: column; gap: 5px; padding: 6px; border: 1px solid var(--border-color); border-radius: var(--radius); background: color-mix(in srgb, var(--bg-panel) 92%, transparent); }
+.agent-prompt-chart-timeline-bar > header .agent-composer-chip { margin-left: auto; }
 .agent-prompt-drafts-strip > .agent-prompt-chart-filter { padding: 6px 3px 0; }
 .agent-prompt-chart-range { font-size: 11px; margin-left: 4px; }
 .agent-prompt-link-kind > span { color: var(--text-muted); font-size: 10px; }
@@ -3069,8 +3072,10 @@
    takes a card OUT of time (unschedule, collect again). */
 .agent-prompt-drafts-strip { position: relative; padding: 6px; border: 1px solid var(--border-color); border-radius: var(--radius); background: color-mix(in srgb, var(--bg-panel) 92%, transparent); }
 .agent-prompt-drafts-strip.is-drop-over { border-color: var(--accent); background: var(--accent-soft); }
-.agent-prompt-drafts-strip > header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; padding: 2px 3px 6px; border-bottom: 1px solid var(--border-color); }
+.agent-prompt-drafts-strip > header,
+.agent-prompt-chart-timeline-bar > header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; padding: 2px 3px 6px; border-bottom: 1px solid var(--border-color); }
 .agent-prompt-drafts-strip > header span,
+.agent-prompt-chart-timeline-bar > header span,
 .agent-prompt-drafts-strip > header small { color: var(--text-muted); font-size: 10px; }
 .agent-prompt-drafts-strip > header small { margin-left: auto; }
 .agent-prompt-drafts-row { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px; padding-top: 8px; min-height: 40px; }
@@ -3085,6 +3090,9 @@
 .agent-prompt-draft-position { position: absolute; width: 168px; }
 .agent-prompt-draft-position:has(.is-selected), .agent-prompt-draft-position:has(.is-editing) { z-index: 4; }
 .agent-prompt-draft-position > .agent-prompt-card.is-editing { width: 460px; }
+/* The composer a double click on an empty spot opens, where it was opened. */
+.agent-prompt-draft-composer { display: flex; flex-direction: column; gap: 6px; width: min(460px, 100%); padding: 8px; border: 1px solid var(--accent); border-radius: var(--radius); background: var(--bg-panel); color: var(--text-primary); }
+.agent-prompt-draft-position.agent-prompt-draft-composer { width: 460px; z-index: 5; }
 
 /* The axis and the lanes. `overflow: clip`, not `hidden`: a hidden box is a
    scroll container, and the sticky axis would stick to it instead of to the
@@ -3151,6 +3159,11 @@
 .agent-prompt-timeline-ghost { position: fixed; top: 0; left: 0; z-index: 40; display: flex; flex-direction: column; gap: 4px; padding: 7px 8px 7px 10px; border: 1px solid var(--accent); border-left: 3px solid var(--accent); border-radius: var(--radius); background: var(--control-bg); color: var(--text-primary); opacity: .92; pointer-events: none; }
 .agent-prompt-timeline-ghost::after { content: ""; position: absolute; inset: 0; z-index: -1; border-radius: inherit; box-shadow: 0 6px 18px rgb(0 0 0 / .28); pointer-events: none; }
 .agent-prompt-timeline-ghost > .agent-prompt-timeline-badge { position: static; align-self: flex-start; }
+/* The selection: a rubber band over the lanes, and a ring on each selected card. */
+.agent-prompt-timeline-marquee { position: fixed; z-index: 40; border: 1px dashed var(--accent); border-radius: var(--radius-sm); background: color-mix(in srgb, var(--accent) 12%, transparent); pointer-events: none; }
+.agent-prompt-card.is-multi-selected { outline: 2px solid var(--accent); outline-offset: 1px; }
+.agent-prompt-chart-selection { display: inline-flex; align-items: center; gap: 6px; color: var(--text-secondary); font-size: 11px; }
+.agent-prompt-chart-select-hint { color: var(--text-muted); font-size: 10px; }
 
 .agent-prompt-card {
   position: relative;

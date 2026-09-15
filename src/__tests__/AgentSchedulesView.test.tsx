@@ -169,13 +169,20 @@ describe("AgentSchedulesView prompt chart", () => {
     localStorage.removeItem("eldrun.promptChart.timeline");
     const { unmount } = await act(async () => render(<PromptChartTab scope="p" />));
     expect(screen.getByTestId("prompt-timeline")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Timeline" }));
+    // The toggle lives in the timeline's own head, beside its name and count.
+    const head = within(screen.getByTestId("prompt-chart-timeline-bar"));
+    expect(head.getByText("Timeline")).toBeTruthy();
+    fireEvent.click(head.getByRole("button", { name: "Hide" }));
     expect(screen.queryByTestId("prompt-timeline")).toBeNull();
     expect(screen.queryByTestId("prompt-chart-timeline-filter")).toBeNull();
+    // The head stays, or there would be nothing to bring the axis back with.
+    expect(head.getByRole("button", { name: "Show" })).toBeTruthy();
     expect(await screen.findByTestId("prompt-chart-card-draft")).toBeTruthy();
     unmount();
     await act(async () => { render(<PromptChartTab scope="p" />); });
     expect(screen.queryByTestId("prompt-timeline")).toBeNull();
+    fireEvent.click(within(screen.getByTestId("prompt-chart-timeline-bar")).getByRole("button", { name: "Show" }));
+    expect(screen.getByTestId("prompt-timeline")).toBeTruthy();
     localStorage.removeItem("eldrun.promptChart.timeline");
   });
 

@@ -1187,6 +1187,18 @@ unchanged; the new agents are additive.
         Use a slow tool and an approval wait on the source, with the next card
         aimed at another tab: it must stay paused until confirmed completion.
         Check `/clear` on the edge runs only after that completion.
+    - **One independent rule per tab (2026-09-15):** a tab already holding a
+      live rule is not offered to a draft — picker, timeline drop, Send and
+      Schedule all point at linking After it instead; a rule keeps its own tab;
+      the ◷ Schedules dialog only warns. `occupiedTargets` in
+      `lib/agentPromptChart`; plan §12.
+      - [ ] 🖐️ Manual test — with a rule on the Claude tab, a draft's picker
+        must list only the other tabs; drop the draft on the timeline and it
+        lands on a free tab; aim a draft at the Claude tab first (before the
+        rule exists), add the rule, and the card must show the amber note,
+        refuse the drop with the error line, and accept an After link.
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
 
 263. **Agent panes: double-click pastes, and a drag still selects while the TUI
     holds the mouse.** Two gestures the terminal owed an agent tab. A
