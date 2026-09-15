@@ -134,6 +134,9 @@ pub enum FenceDecision {
     Unavailable,
 }
 
+// The mount/symlink planners below feed the bubblewrap fence (Linux) and the
+// Seatbelt profile inputs (macOS, `sandbox_exec_inputs`); Windows has no fence.
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct BindMount {
     pub src: String,
@@ -142,6 +145,7 @@ pub(crate) struct BindMount {
 }
 
 /// A symlink created inside the fence, pointing at a staged shadow copy.
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct FenceSymlink {
     pub target: String,
@@ -161,6 +165,7 @@ pub(crate) struct FenceSymlink {
 /// writer: an in-place rewrite still lands in the throwaway copy, and a rename
 /// simply replaces the symlink with a plain file in the home tmpfs. Neither
 /// reaches the host original, which is the whole point of the shadow.
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
 pub(crate) const STAGE_MOUNT: &str = "/run/eldrun-agent-config";
 
 #[derive(Debug, Clone, Serialize)]
@@ -395,6 +400,7 @@ pub fn configured_read_only_paths() -> Vec<String> {
 /// Pure over the filesystem: it reads links but never mounts anything, and a
 /// command that cannot be found on the host yields nothing — bubblewrap then
 /// reports the same not-found error the shell would.
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
 pub(crate) fn command_bind_paths(
     cmd: &str,
     path_dirs: &[PathBuf],
@@ -443,6 +449,7 @@ pub(crate) fn command_bind_paths(
 
 /// Collapse `.` and `..` without touching the filesystem, so a relative link
 /// target like `../share/claude/versions/2.1.251` yields a clean mount path.
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
 fn normalize_lexically(path: &Path) -> PathBuf {
     use std::path::Component;
     let mut out = PathBuf::new();
@@ -477,6 +484,7 @@ fn normalize_lexically(path: &Path) -> PathBuf {
 /// that can update its own CLI can also replace it, and that binary is the one
 /// the user runs everywhere. Pure over the filesystem, like
 /// [`command_bind_paths`].
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
 pub(crate) fn updatable_install_dirs(
     cmd: &str,
     path_dirs: &[PathBuf],
@@ -567,6 +575,7 @@ pub fn bwrap_available() -> bool {
     }
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
 fn mount_pair(pair: &str, read_only: bool) -> Option<BindMount> {
     let (src, dst) = pair.split_once(':')?;
     Some(BindMount {
@@ -578,6 +587,7 @@ fn mount_pair(pair: &str, read_only: bool) -> Option<BindMount> {
 
 /// Turn a `(staged copy, real path)` pair into the symlink that puts the copy
 /// at the real path — see [`STAGE_MOUNT`] for why it is a link, not a mount.
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
 fn staged_symlink(src: &str, dst: &str) -> Option<FenceSymlink> {
     let leaf = Path::new(src).file_name()?.to_string_lossy().into_owned();
     Some(FenceSymlink {
@@ -586,6 +596,7 @@ fn staged_symlink(src: &str, dst: &str) -> Option<FenceSymlink> {
     })
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
 fn agent_state_mounts(scope_id: &str, roots: &[PathBuf]) -> (Vec<BindMount>, Vec<FenceSymlink>) {
     let home = paths::home_dir_string();
     let state_dir = storage::state_dir();
@@ -669,6 +680,7 @@ fn agent_state_mounts(scope_id: &str, roots: &[PathBuf]) -> (Vec<BindMount>, Vec
 /// ones: the empty home hides secrets, selected state/config is restored, and
 /// project/box roots finally become read-write.  `symlinks` come last of the
 /// filesystem setup, after the mount that holds what they point at.
+#[cfg(any(target_os = "linux", test))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn bwrap_args(
     home: &str,
