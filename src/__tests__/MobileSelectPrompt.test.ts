@@ -132,7 +132,7 @@ describe("Eldrun Mobile select dialog", () => {
 describe("Eldrun Mobile permission modes", () => {
   it("offers the family of the mode the session is showing", () => {
     expect(modeChoices("plan").map((choice) => choice.value))
-      .toEqual(["default", "accept edits", "plan", "bypass permissions"]);
+      .toEqual(["default", "accept edits", "plan", "auto", "bypass permissions"]);
     expect(modeChoices("full access").map((choice) => choice.value))
       .toEqual(["working", "plan", "read only", "auto", "full access"]);
     expect(modeChoices("yolo").map((choice) => choice.value))
@@ -151,7 +151,7 @@ describe("Eldrun Mobile permission modes", () => {
     expect(modeChoices("plan", "Qwen").map((choice) => choice.value))
       .toEqual(["ask permissions", "plan", "auto-accept", "auto", "yolo"]);
     expect(modeChoices("plan", "Claude 2").map((choice) => choice.value))
-      .toEqual(["default", "accept edits", "plan", "bypass permissions"]);
+      .toEqual(["default", "accept edits", "plan", "auto", "bypass permissions"]);
     // "auto" is Codex's without a label and Qwen's with one.
     expect(modeChoices("auto", "Qwen")[0].value).toBe("ask permissions");
     expect(modeChoices("auto")[0].value).toBe("working");
@@ -162,13 +162,22 @@ describe("Eldrun Mobile permission modes", () => {
   });
 
   it("never hands a labelled tab another family's list for a mode its own does not know", () => {
-    // Claude Code drawing "auto mode": bare "auto" is claimed by Codex and Qwen,
-    // and the sheet used to walk the Claude session through Codex's choices.
-    // The label names the family; a mode it does not list earns no list.
-    expect(modeChoices("auto", "Claude")).toEqual([]);
+    // The label names the family; a mode it does not list earns no list,
+    // rather than walking the session through another family's choices.
     expect(modeChoices("read only", "Qwen")).toEqual([]);
-    // Unlabelled, the first claimant still wins, as before.
+    expect(modeChoices("full access", "Claude")).toEqual([]);
+  });
+
+  it("gives Claude Code's auto mode to a Claude tab, and only to one", () => {
+    // Claude Code draws "auto mode on" (read out of the 2.1.272 bundle). Bare
+    // "auto" is Codex's and Qwen's word too, so only the label hands it to
+    // Claude — unlabelled, the first family that always claimed it still wins.
+    const claude = modeChoices("auto", "Claude");
+    expect(claude.map((choice) => choice.value))
+      .toEqual(["default", "accept edits", "plan", "auto", "bypass permissions"]);
+    expect(currentMode(claude, "auto", true)).toBe("auto");
     expect(modeChoices("auto")[0].value).toBe("working");
+    expect(modeChoices("auto", "Qwen")[0].value).toBe("ask permissions");
   });
 
   it("reads a frame without mode text as a silent-mode family's default", () => {
@@ -176,7 +185,7 @@ describe("Eldrun Mobile permission modes", () => {
     // earns the list — but only for a family that has a silent mode.
     const claude = modeChoices(undefined, "Claude");
     expect(claude.map((choice) => choice.value))
-      .toEqual(["default", "accept edits", "plan", "bypass permissions"]);
+      .toEqual(["default", "accept edits", "plan", "auto", "bypass permissions"]);
     expect(currentMode(claude, undefined, true)).toBe("default");
     // With no input frame on screen, absence of text says nothing.
     expect(currentMode(claude, undefined, false)).toBeUndefined();

@@ -190,8 +190,10 @@ Claude's `/fast` — different thing.
   the file join the staged shadows instead.
 - Ollama-side: `ollama launch claude --model <m>` is the only way an
   Anthropic-compatible endpoint is stood up for Claude (Ollama ≥ 0.15).
-- Mobile: mode family `default | accept edits | plan | bypass permissions`,
-  `default` draws no mode line; Shift+Tab is the legacy backtab `ESC [ Z`.
+- Mobile: mode family `default | accept edits | plan | auto | bypass
+  permissions` — the cycle's labels `accept edits on`, `plan mode on`, `auto
+  mode on` read out of the 2.1.272 bundle — `default` draws no mode line;
+  Shift+Tab is the legacy backtab `ESC [ Z`.
 
 **Verify**
 
@@ -308,7 +310,9 @@ npx vitest run src/__tests__/MobileSelectPrompt.test.ts src/__tests__/MobileMode
 `gemini -p`; preface `/clear /compact /stats`; footer says `NN% used`
 without the word "context" (mobile `statusLine.ts`); since ~0.5 the approval
 mode is conveyed only as prompt text, so the phone cannot read it.
-Install via `npm install -g @google/gemini-cli`.
+Install via `npm install -g @google/gemini-cli`. The 0.59.0 bundle still
+defines `--resume` (alias `-r`) and renders the `NN% used` footer (read out of
+the package, 2026-09-15; not live).
 
 - No transcript is read: the Agents view's last-prompt line comes from the
   prompt echo on the pane's screen (`> …`, parsed by the mobile `chatTurns`),
@@ -341,9 +345,13 @@ The last-prompt line reads the screen echo, as for Gemini.
 | Aider | — | refused (no print mode) | `curl … aider.chat/install.sh` (uv) |
 | Kiro, Cline, OpenClaw, OpenHands, Plandex, SWE-agent, mini-SWE-agent, Mentat, gpt-engineer, Qoder | — | — | see `AGENTS` |
 
-Vibe and OpenCode are full-screen (alternate-screen) TUIs; the phone's Focus
-view cannot read them — a release that changes that is an *opportunity*, not a
-break. Droid, OpenClaw and OpenCode are also `LOCAL_DRIVERS` (Ollama-backed
+Vibe, OpenCode and Copilot are full-screen (alternate-screen) TUIs; the phone's
+Focus view cannot read them — a release that changes that is an *opportunity*,
+not a break. Copilot has been alt-screen unconditionally since 1.0.12 (its
+`--alt-screen` flag was removed). Copilot 1.0.81–1.0.82 also offered to restore
+interrupted sessions at startup, a prompt a restored tab would open on; 1.0.83
+turned it off by default. Vibe 2.25.4 still has `-c/--continue` and
+`-p/--prompt` (read out of the wheel, 2026-09-15). Droid, OpenClaw and OpenCode are also `LOCAL_DRIVERS` (Ollama-backed
 tabs via `ollama launch <agent>`).
 
 ---

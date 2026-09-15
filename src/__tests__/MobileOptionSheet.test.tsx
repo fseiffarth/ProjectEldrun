@@ -157,7 +157,7 @@ describe("Eldrun Mobile composer sheets", () => {
     fireEvent.click(screen.getByTitle("Choose the permission mode"));
     const modes = screen.getAllByRole("button").filter((button) => button.querySelector("strong"));
     expect(modes.map((row) => row.querySelector("strong")?.textContent))
-      .toEqual(["Default", "Accept edits", "Plan", "Bypass permissions"]);
+      .toEqual(["Default", "Accept edits", "Plan", "Auto", "Bypass permissions"]);
     expect(modes[1].getAttribute("aria-current")).toBe("true");
 
     FakeWebSocket.keys = [];
@@ -182,7 +182,7 @@ describe("Eldrun Mobile composer sheets", () => {
     fireEvent.click(screen.getByTitle("Choose the permission mode"));
     const modes = screen.getAllByRole("button").filter((button) => button.querySelector("strong"));
     expect(modes.map((row) => row.querySelector("strong")?.textContent))
-      .toEqual(["Default", "Accept edits", "Plan", "Bypass permissions"]);
+      .toEqual(["Default", "Accept edits", "Plan", "Auto", "Bypass permissions"]);
     expect(modes[0].getAttribute("aria-current")).toBe("true");
 
     FakeWebSocket.keys = [];
