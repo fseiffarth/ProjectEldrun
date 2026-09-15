@@ -118,7 +118,18 @@ Composition is explicit:
   not redirect, so the agents' hook-registration files are read-only there
   (an agent rewriting its own `settings.json` gets `EPERM`) instead of shadowed
   by a throwaway copy, and `~/.claude.json` is exposed unfiltered rather than
-  as the per-project filtered copy Linux stages.
+  as the per-project filtered copy Linux stages. Device writes are denied too,
+  except `/dev/null`, `/dev/zero`, `/dev/tty`, `/dev/dtracehelper` and
+  `/dev/fd`; other terminals' `/dev/ttys*` stay denied, so a fenced agent cannot
+  write into another tab's terminal.
+- The macOS fence is a filesystem fence only. The profile starts from
+  `(allow default)`, so mach services stay reachable — `securityd` among them.
+  A fenced agent can therefore ask the keychain for any item whose access list
+  trusts the requesting tool (`/usr/bin/security` included), which is how the
+  agents sign in at all. The Linux fence hides the keyring; the macOS one cannot
+  without breaking agent authentication, so treat login-keychain items as
+  reachable from a fenced Mac agent. The keychain *file* itself stays unreadable
+  (it sits under the hidden `$HOME`).
 - Windows has no unprivileged filesystem sandbox to build a fence on; the
   status says so rather than presenting a false guarantee.
 - Shell/script tabs are the user's terminals and are never fenced.

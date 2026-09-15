@@ -202,6 +202,14 @@ installer on Windows, or the unsigned universal Intel/Apple Silicon `.dmg`
 on macOS. The CI release workflow publishes each platform whose packaging job
 succeeds. To build from source instead, follow the requirements below.
 
+The macOS `.dmg` is neither signed nor notarized, so Gatekeeper refuses to open
+the app as downloaded ("damaged" or "cannot be opened"). After dragging Eldrun
+into Applications, clear the download quarantine once:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/Eldrun.app
+```
+
 The Linux packages are built on Ubuntu 24.04, so they need glibc 2.39 or newer
 (Ubuntu 24.04+, Debian 13+, Fedora 40+). On an older distro the loader fails
 with `GLIBC_2.39 not found` — build from source there instead.
