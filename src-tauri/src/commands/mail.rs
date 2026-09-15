@@ -3180,6 +3180,9 @@ pub async fn mail_attachment_save(
         // returned. We do not create directories, do not follow the name, do
         // not append.
         std::fs::write(&target, &bytes).map_err(|e| e.to_string())?;
+        // Mark-of-the-Web / quarantine, so the OS treats it as the download it
+        // is. Best-effort; never fails the save.
+        crate::services::web_safety::mark_downloaded(&target);
         Ok(Some(target.to_string_lossy().into_owned()))
     })
     .await
@@ -3247,6 +3250,7 @@ pub async fn mail_attachment_save_to_project(
         let target = unique_in_dir(&emails, &safe);
 
         std::fs::write(&target, &bytes).map_err(|e| e.to_string())?;
+        crate::services::web_safety::mark_downloaded(&target);
         Ok(target.to_string_lossy().into_owned())
     })
     .await
