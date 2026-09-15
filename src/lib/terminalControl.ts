@@ -274,3 +274,39 @@ export function agentMouseDownAction(
  * always starts a fresh selection.
  */
 export const FORCE_SELECTION_MODIFIER: "altKey" | "shiftKey" = IS_MAC ? "altKey" : "shiftKey";
+
+/** How long a freshly spawned tab may stay silent before it says so. */
+export const SILENT_START_MS = 10_000;
+
+/** Where a silent launch is stuck: the spawn never came back, or it came back
+ *  and the program has drawn nothing. */
+export type SilentStartNotice = "pending" | "noOutput";
+
+/**
+ * What a tab that is still blank {@link SILENT_START_MS} after its launch should
+ * say about itself, or `null` for nothing.
+ *
+ * A launch that never completes leaves the pane empty with no message at all —
+ * a spawn error prints itself, and an exit prints `[process exited]`, but a
+ * spawn call that simply never resolves looks exactly like a program that is
+ * slow to draw, and on a light theme the pane is plain white. So a silent start
+ * names which of the two it is: `pending` (Eldrun never heard back from the
+ * launch) or `noOutput` (the program runs and has shown nothing). A failed spawn
+ * has already explained itself and an exited program has its own line, so
+ * neither gets a second one.
+ */
+export function silentStartNotice(state: {
+  spawn: "pending" | "spawned" | "failed";
+  sawOutput: boolean;
+  exited: boolean;
+}): SilentStartNotice | null {
+  if (state.sawOutput || state.exited || state.spawn === "failed") return null;
+  return state.spawn === "pending" ? "pending" : "noOutput";
+}
+
+/** The program a tab runs, as a person would name it: the command's basename,
+ *  without a Windows `.exe`. Empty for the default shell. */
+export function terminalProgramLabel(cmd: string): string {
+  const base = cmd.trim().split(/[\\/]/).pop() ?? "";
+  return base.replace(/\.exe$/i, "");
+}
