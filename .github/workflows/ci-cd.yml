@@ -28,9 +28,13 @@ jobs:
           PUSH_BEFORE: ${{ github.event.before }}
           PR_BASE: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.sha }}
-          # $USER/$HOME here are the runner's ("runner", "/home/runner"), not the
-          # developer's, so those two patterns would only match innocuous text.
+          # $USER/$HOME/hostname here are the runner's ("runner", "/home/runner"),
+          # not the developer's, so those patterns would only match innocuous text.
           PRIVACY_CHECK_SKIP_IDENTITY: '1'
+          # Private literals the scan must refuse but no committed file may hold
+          # (a real name, personal addresses, institution domains), one per line.
+          # Optional: an unset secret is an empty denylist, and a fork's PR gets none.
+          PRIVACY_CHECK_DENYLIST_TEXT: ${{ secrets.PRIVACY_DENYLIST }}
         run: |
           set -euo pipefail
           empty_tree=4b825dc642cb6eb9a060e54bf8d69288fbee4904
