@@ -1042,7 +1042,8 @@ pub fn copy_path_blocking(
 
 /// Move (cut/paste) a file or directory tree into another location. Same
 /// confinement and pre-conditions as [`copy_path`]. Falls back to copy+remove
-/// when a plain rename is not possible (e.g. across filesystems/mountpoints).
+/// only when the rename failed because source and destination are on different
+/// filesystems/volumes; any other rename error is returned as it is.
 #[tauri::command]
 pub async fn move_path(
     src_project_dir: String,
@@ -1064,10 +1065,17 @@ pub fn move_path_blocking(
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-    if fs::rename(&src, &dest).is_ok() {
-        return Ok(());
+    match fs::rename(&src, &dest) {
+        Ok(()) => return Ok(()),
+        // Only a cross-device rename is answered with copy-then-delete. A file
+        // held open (Windows), a permission refusal or a protected folder would
+        // otherwise leave a full copy at the destination and the original in
+        // place — a duplicate, reported as an error only after the copy.
+        Err(e) if !crate::paths::is_cross_device(&e) => {
+            return Err(format!("could not move: {e}"));
+        }
+        Err(_) => {}
     }
-    // Cross-device rename fails with EXDEV — copy then delete the original.
     copy_recursive(&src, &dest).map_err(|e| e.to_string())?;
     let remove = if src.is_dir() {
         fs::remove_dir_all(&src)
@@ -2450,6 +2458,32 @@ mod tests {
     }
 
     // ── copy_path / move_path ──────────────────────────────────────────────
+
+    /// A rename that fails for a reason other than a cross-device move must be
+    /// reported as it is. The old fallback copied the file first and only then
+    /// failed to remove the source, leaving a duplicate behind an error.
+    #[cfg(unix)]
+    #[test]
+    fn move_path_surfaces_a_non_cross_device_rename_error() {
+        use std::os::unix::fs::PermissionsExt;
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_string_lossy().to_string();
+        let locked = tmp.path().join("locked");
+        std::fs::create_dir(&locked).unwrap();
+        std::fs::write(locked.join("a.txt"), "hello").unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+        let result =
+            move_path_blocking(dir.clone(), "locked/a.txt".into(), dir.clone(), "b.txt".into());
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert!(result.is_err(), "EACCES must surface: {result:?}");
+        assert!(!tmp.path().join("b.txt").exists(), "no copy was made");
+        assert!(locked.join("a.txt").exists(), "the source is untouched");
+    }
 
     #[test]
     fn copy_path_duplicates_a_file() {

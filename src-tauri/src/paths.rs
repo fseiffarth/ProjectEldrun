@@ -60,6 +60,38 @@ pub fn binary_on_path(bin: &str) -> bool {
     resolve_executable(bin).is_some()
 }
 
+/// True when a failed `rename` failed only because source and destination sit
+/// on different filesystems or volumes — the one failure a copy-then-delete
+/// fallback is the right answer to. Anything else (a file held open on Windows,
+/// a permission refusal, a TCC-protected folder on macOS) must surface: a copy
+/// would either fail the same way halfway through or succeed and then leave the
+/// source behind, i.e. a duplicate the user never asked for.
+///
+/// `ErrorKind::CrossesDevices` maps both `EXDEV` and `ERROR_NOT_SAME_DEVICE`.
+/// The raw-code arms are a belt-and-braces fallback and are deliberately
+/// cfg-gated per OS family: raw 17 is `ERROR_NOT_SAME_DEVICE` on Windows but
+/// `EEXIST` on Linux and macOS, so comparing it across OSes would turn "the
+/// destination already exists" into a silent copy over it.
+pub fn is_cross_device(e: &std::io::Error) -> bool {
+    if e.kind() == std::io::ErrorKind::CrossesDevices {
+        return true;
+    }
+    #[cfg(unix)]
+    {
+        // EXDEV is 18 on Linux and macOS alike.
+        e.raw_os_error() == Some(18)
+    }
+    #[cfg(windows)]
+    {
+        // ERROR_NOT_SAME_DEVICE.
+        e.raw_os_error() == Some(17)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        false
+    }
+}
+
 /// Standard directories macOS package managers (Homebrew, MacTeX) install CLI
 /// tools into but which a Finder/Dock-launched GUI app's inherited PATH omits —
 /// so a tool can be installed yet unreachable by bare name. The macOS analogue of
@@ -622,6 +654,38 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         panic!("background waiter did not reap pid {pid}");
+    }
+
+    #[test]
+    fn cross_device_is_recognized_by_kind_on_every_os() {
+        let e = std::io::Error::from(std::io::ErrorKind::CrossesDevices);
+        assert!(is_cross_device(&e));
+        let denied = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        assert!(!is_cross_device(&denied));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cross_device_raw_codes_on_unix() {
+        // EXDEV.
+        assert!(is_cross_device(&std::io::Error::from_raw_os_error(18)));
+        // EEXIST — the code Windows uses for ERROR_NOT_SAME_DEVICE. Treating it as
+        // cross-device here would copy over an existing destination.
+        assert!(!is_cross_device(&std::io::Error::from_raw_os_error(17)));
+        // ENOTEMPTY / EACCES.
+        assert!(!is_cross_device(&std::io::Error::from_raw_os_error(39)));
+        assert!(!is_cross_device(&std::io::Error::from_raw_os_error(13)));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn cross_device_raw_codes_on_windows() {
+        let not_same_device = std::io::Error::from_raw_os_error(17);
+        assert!(is_cross_device(&not_same_device));
+        // Checks std's own mapping on the windows-latest job.
+        assert_eq!(not_same_device.kind(), std::io::ErrorKind::CrossesDevices);
+        // ERROR_SHARING_VIOLATION: a file inside is open — must surface.
+        assert!(!is_cross_device(&std::io::Error::from_raw_os_error(32)));
     }
 
     #[test]
