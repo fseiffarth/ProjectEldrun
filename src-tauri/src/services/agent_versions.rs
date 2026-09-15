@@ -117,6 +117,11 @@ const VERIFIED: &[Verified] = &[
         version: "0.153.4",
         surface: "§1.2 — the two-step /model sheet read off the screen",
     },
+    Verified {
+        agent: "codex",
+        version: "0.154.0",
+        surface: "§1.2 — resume writer-lock conflict and release on process exit (offline probe)",
+    },
 ];
 
 /// The one-shot version argv for `agent_id`, or `None` when nobody has checked
@@ -559,13 +564,15 @@ mod tests {
 
     #[test]
     fn drift_names_every_stale_check_oldest_first() {
-        // Codex's three notes: installed 0.153.4 matches one and has moved past
-        // the other two, and the weakest assumption sorts first.
+        // Installed 0.153.4 matches one note, has moved past two and predates
+        // the writer-lock check. The oldest baseline sorts first.
         let (state, stale) = drift("codex", Some("0.153.4"));
         assert_eq!(state, DriftState::Moved);
-        assert_eq!(stale.len(), 2);
+        assert_eq!(stale.len(), 3);
         assert_eq!(stale[0].version, "0.151.0");
         assert_eq!(stale[0].direction, Direction::Newer);
+        assert_eq!(stale[2].version, "0.154.0");
+        assert_eq!(stale[2].direction, Direction::Older);
         assert!(stale.iter().all(|note| note.surface.contains("§1.2")));
     }
 

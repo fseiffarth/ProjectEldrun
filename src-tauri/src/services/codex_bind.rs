@@ -18,8 +18,8 @@
 //! and still nag):
 //!
 //! - Two Codex tabs started fresh in the *same* cwd within one tick can end up
-//!   with each other's sessions. Both conversations stay resumable — possibly in
-//!   the wrong tabs.
+//!   with each other's sessions. Claims are exclusive within the pass, so they
+//!   cannot both be assigned the same conversation.
 //! - A Codex started *outside* Eldrun in a tracked tab's cwd can be mis-claimed
 //!   when that tab's `/clear` is being rebound.
 //!
@@ -83,6 +83,72 @@ struct Tracked {
 struct Binder {
     tabs: HashMap<String, Tracked>,
     next_seq: u64,
+    resume_claims: HashMap<String, (u64, String)>,
+}
+
+/// A spawn-time reservation, including when rollout tracking is disabled.
+/// Failed spawns release it; successful spawns hand cleanup to the PTY's exit.
+pub struct ResumeClaim {
+    pty: String,
+    seq: u64,
+    kept: bool,
+}
+
+impl ResumeClaim {
+    pub fn keep(mut self) {
+        self.kept = true;
+    }
+}
+
+impl Drop for ResumeClaim {
+    fn drop(&mut self) {
+        if !self.kept {
+            release_resume(&self.pty, self.seq);
+        }
+    }
+}
+
+/// Old binder records may already name one conversation for multiple tabs.
+/// Let one resume it and open Codex's own session picker for the others, so the
+/// user can recover the intended conversation without deleting any history or
+/// bypassing Codex's live-writer lock.
+pub fn reserve_resume(opts: &mut crate::terminal::PtyOptions) -> Option<ResumeClaim> {
+    let mut b = binder().lock().unwrap();
+    let seq = b.reserve_resume(&opts.id, &mut opts.args)?;
+    Some(ResumeClaim { pty: opts.id.clone(), seq, kept: false })
+}
+
+impl Binder {
+    fn release_resume(&mut self, pty: &str, seq: u64) {
+        if self.resume_claims.get(pty).is_some_and(|(current, _)| *current == seq) {
+            self.resume_claims.remove(pty);
+        }
+    }
+
+    fn reserve_resume(&mut self, pty: &str, args: &mut Vec<String>) -> Option<u64> {
+        if args.first().map(String::as_str) != Some("resume") {
+            return None;
+        }
+        let id = args.get(1).filter(|id| agent_session::is_uuidish(id))?.clone();
+        if self.resume_claims.iter().any(|(other, (_, claimed))| other != pty && claimed == &id) {
+            // Keep any trailing CLI options, but drop the conflicting target.
+            args.remove(1);
+            eprintln!("codex_bind: duplicate resume target for {pty}; opening the Codex session picker");
+            return None;
+        }
+        self.next_seq += 1;
+        let seq = self.next_seq;
+        self.resume_claims.insert(pty.to_string(), (seq, id));
+        Some(seq)
+    }
+}
+
+pub fn resume_seq(pty: &str) -> Option<u64> {
+    binder().lock().unwrap().resume_claims.get(pty).map(|(seq, _)| *seq)
+}
+
+pub fn release_resume(pty: &str, seq: u64) {
+    binder().lock().unwrap().release_resume(pty, seq);
 }
 
 fn binder() -> &'static Mutex<Binder> {
@@ -265,7 +331,9 @@ pub fn untrack(pty_id: &str, seq: u64) {
 /// Stop following `pty_id` outright — the tab itself is gone (explicit kill), so
 /// there is no successor spawn to protect.
 pub fn untrack_now(pty_id: &str) {
-    binder().lock().unwrap().tabs.remove(pty_id);
+    let mut b = binder().lock().unwrap();
+    b.tabs.remove(pty_id);
+    b.resume_claims.remove(pty_id);
 }
 
 /// The seq currently tracking `pty_id`, if any. Lets `spawn_pty` hand its
@@ -306,8 +374,16 @@ struct Snapshot {
 /// One pass: bind every tracked tab that can be bound. Returns how long to wait
 /// before the next pass.
 fn poll_once(root: &Path) -> Duration {
+    if binder().lock().unwrap().tabs.is_empty() {
+        return SLOW_TICK;
+    }
+    let store = crate::services::codex_store::state_db();
+    poll_once_in(root, &agent_session::live_sessions_dir(), store.as_deref(), binder())
+}
+
+fn poll_once_in(root: &Path, live_dir: &Path, store: Option<&Path>, state: &Mutex<Binder>) -> Duration {
     let tabs: Vec<Snapshot> = {
-        let b = binder().lock().unwrap();
+        let b = state.lock().unwrap();
         b.tabs
             .iter()
             .map(|(pty, t)| Snapshot {
@@ -340,12 +416,7 @@ fn poll_once(root: &Path) -> Duration {
         .collect();
 
     // Ids bound to *some* live tab — off-limits to every other tab.
-    let claimed: HashSet<String> = tabs.iter().filter_map(|t| t.bound.clone()).collect();
-
-    // Resolved once per pass, not once per tab: since 0.153.4 the "does Codex
-    // still have this conversation" question is answered by the SQLite thread
-    // store, and locating it means a `read_dir` of `~/.codex`.
-    let store = crate::services::codex_store::state_db();
+    let mut claimed: HashSet<String> = tabs.iter().filter_map(|t| t.bound.clone()).collect();
 
     // Parse each fresh rollout at most once per tick, and only when at least one
     // tab hasn't already written it off.
@@ -355,7 +426,14 @@ fn poll_once(root: &Path) -> Duration {
         .filter_map(|(path, _, mtime)| read_rollout_meta(path, *mtime))
         .collect();
 
-    let live_dir = agent_session::live_sessions_dir();
+    // A hook's precise assignment outranks the cwd heuristic even when its tab
+    // comes later in this pass. Reserve every hook record before guessing any.
+    let hook_ids: HashMap<String, String> = tabs.iter().filter_map(|t| {
+        let id = agent_session::read_live_session_in(live_dir, &t.uid)
+            .filter(|id| agent_session::codex_session_exists(root, store, id))?;
+        Some((t.pty.clone(), id))
+    }).collect();
+    claimed.extend(hook_ids.values().cloned());
     for Snapshot {
         pty,
         uid,
@@ -371,11 +449,9 @@ fn poll_once(root: &Path) -> Duration {
         // by a *Claude* fired under this tab (its hook inherits the tab's key),
         // and adopting that id would leave the tab with a session Codex cannot
         // resume.
-        if let Some(hook_id) = agent_session::read_live_session_in(&live_dir, &uid)
-            .filter(|id| agent_session::codex_session_exists(root, store.as_deref(), id))
-        {
+        if let Some(hook_id) = hook_ids.get(&pty).cloned() {
             if Some(&hook_id) != bound.as_ref() && !known.contains(&hook_id) {
-                adopt(&pty, hook_id);
+                adopt(state, &pty, hook_id);
                 continue;
             }
         }
@@ -388,13 +464,17 @@ fn poll_once(root: &Path) -> Duration {
 
         match pick_binding(&metas, &cwd, &known, &mine) {
             Some(id) => {
-                if let Err(e) = agent_session::write_live_session_in(&live_dir, &uid, &id) {
+                if let Err(e) = agent_session::write_live_session_in(live_dir, &uid, &id) {
                     eprintln!("codex_bind: record session for {uid}: {e}");
                     continue;
                 }
-                adopt(&pty, id);
+                // This pass's next tab must see the claim we just wrote. A
+                // snapshot frozen at the start assigned the same oldest rollout
+                // to every fresh tab in a cwd, making their next resumes collide.
+                claimed.insert(id.clone());
+                adopt(state, &pty, id);
             }
-            None => remember(&pty, inspected),
+            None => remember(state, &pty, inspected),
         }
     }
 
@@ -406,8 +486,8 @@ fn poll_once(root: &Path) -> Duration {
 }
 
 /// Record `id` as a tab's bound session (and never reconsider it).
-fn adopt(pty_id: &str, id: String) {
-    let mut b = binder().lock().unwrap();
+fn adopt(state: &Mutex<Binder>, pty_id: &str, id: String) {
+    let mut b = state.lock().unwrap();
     if let Some(t) = b.tabs.get_mut(pty_id) {
         t.known.insert(id.clone());
         t.bound = Some(id);
@@ -416,8 +496,8 @@ fn adopt(pty_id: &str, id: String) {
 
 /// Write off rollouts this tab has now looked at and does not want, so a later
 /// tick never opens them again.
-fn remember(pty_id: &str, ids: Vec<String>) {
-    let mut b = binder().lock().unwrap();
+fn remember(state: &Mutex<Binder>, pty_id: &str, ids: Vec<String>) {
+    let mut b = state.lock().unwrap();
     if let Some(t) = b.tabs.get_mut(pty_id) {
         t.known.extend(ids);
     }
@@ -445,6 +525,72 @@ mod tests {
     const A: &str = "019f5080-245c-7813-8a7c-0e3c988ff891";
     const B: &str = "019f5081-1111-7813-8a7c-0e3c988ff892";
     const C: &str = "019f5082-2222-7813-8a7c-0e3c988ff893";
+
+    #[test]
+    fn one_poll_assigns_distinct_sessions_to_tabs_in_the_same_cwd() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("sessions");
+        let live = dir.path().join("live");
+        std::fs::create_dir_all(&root).unwrap();
+        let state = Mutex::new(Binder::default());
+        for (seq, uid) in [A, B].into_iter().enumerate() {
+            state.lock().unwrap().tabs.insert(uid.into(), Tracked {
+                uid: uid.into(), cwd: dir.path().into(), since: SystemTime::UNIX_EPOCH,
+                known: HashSet::new(), bound: None, seq: seq as u64,
+            });
+            let header = serde_json::json!({"type": "session_meta", "payload": {
+                "session_id": uid, "cwd": dir.path(),
+            }});
+            std::fs::write(root.join(format!("rollout-2026-09-15-{uid}.jsonl")), header.to_string()).unwrap();
+        }
+        poll_once_in(&root, &live, None, &state);
+        let first = agent_session::read_live_session_in(&live, A).unwrap();
+        let second = agent_session::read_live_session_in(&live, B).unwrap();
+        assert_ne!(first, second, "two restored tabs must not resume the same writer");
+        assert_eq!(HashSet::from([first, second]), HashSet::from([A.into(), B.into()]));
+        poll_once_in(&root, &live, None, &state);
+        assert_ne!(agent_session::read_live_session_in(&live, A), agent_session::read_live_session_in(&live, B));
+    }
+
+    #[test]
+    fn duplicate_saved_resume_uses_picker_without_changing_other_options() {
+        let mut state = Binder::default();
+        let mut first = vec!["resume".into(), A.into()];
+        let old_seq = state.reserve_resume("tab-a", &mut first).unwrap();
+        let mut duplicate = vec!["resume".into(), A.into(), "--no-alt-screen".into()];
+        assert!(state.reserve_resume("tab-b", &mut duplicate).is_none());
+        assert_eq!(duplicate, vec!["resume", "--no-alt-screen"]);
+        assert_eq!(first, vec!["resume", A]);
+        let new_seq = state.reserve_resume("tab-a", &mut first).unwrap();
+        assert_ne!(old_seq, new_seq);
+        state.release_resume("tab-a", old_seq);
+        assert!(state.resume_claims.contains_key("tab-a"));
+        state.release_resume("tab-a", new_seq);
+        let mut recovered = vec!["resume".into(), A.into()];
+        assert!(state.reserve_resume("tab-c", &mut recovered).is_some());
+        let mut other = vec!["resume".into(), B.into()];
+        assert!(state.reserve_resume("tab-b", &mut other).is_some());
+        assert!(state.reserve_resume("picker", &mut vec!["resume".into()]).is_none());
+        assert!(state.reserve_resume("fresh", &mut vec![]).is_none());
+    }
+
+    #[test]
+    fn failed_spawn_drops_claim_successful_spawn_keeps_it_until_exit() {
+        let pty = "codex-resume-claim-lifecycle-test";
+        let reserve = || {
+            let seq = binder().lock().unwrap()
+                .reserve_resume(pty, &mut vec!["resume".into(), C.into()]).unwrap();
+            ResumeClaim { pty: pty.into(), seq, kept: false }
+        };
+        drop(reserve());
+        assert_eq!(resume_seq(pty), None);
+        let claim = reserve();
+        let seq = claim.seq;
+        claim.keep();
+        assert_eq!(resume_seq(pty), Some(seq));
+        release_resume(pty, seq);
+        assert_eq!(resume_seq(pty), None);
+    }
 
     #[test]
     fn rollout_id_parses_out_of_the_filename() {

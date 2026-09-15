@@ -215,6 +215,12 @@ aliases, and anything about where or how credentials are stored.
 **Assumes**
 
 - `codex resume <uuid>`; `codex exec --skip-git-repo-check <msg>` (warm-up).
+- Codex 0.154.0 reports an active writer when two processes resume one thread.
+  An isolated offline app-server probe verified that killing the writer releases
+  the lock. Keep the binder's within-pass claims exclusive and its spawn-time
+  duplicate guard independent of hook trust; duplicates use the documented
+  `codex resume` picker (no id). Never delete Codex's writer locks to force a
+  resume. Verify this lifecycle again when its thread store changes.
 - Session rollouts at `~/.codex/sessions/<YYYY>/<MM>/<DD>/rollout-<ts>-<uuid>.jsonl`
   whose **first line** is `{"type":"session_meta","payload":{"session_id","cwd",…}}`.
   This is the hook-free binding path; a new layout or header breaks every

@@ -1065,6 +1065,7 @@ pub fn spawn_pty(
     // tracking and mints a new token, so the old process exiting below can only
     // ever tear down its own.
     let bind_seq = crate::services::codex_bind::current_seq(&opts.id);
+    let resume_seq = crate::services::codex_bind::resume_seq(&opts.id);
     let route_seq = route_open(&opts.id);
     tokio::spawn(async move {
         let emitter = app.clone();
@@ -1150,6 +1151,9 @@ pub fn spawn_pty(
         // Codex quit by itself (`/exit`, crash) — stop watching for its session.
         if let Some(seq) = bind_seq {
             crate::services::codex_bind::untrack(&id, seq);
+        }
+        if let Some(seq) = resume_seq {
+            crate::services::codex_bind::release_resume(&id, seq);
         }
         if current_spawn_ended {
             crate::services::agent_fence::on_tab_gone(&id);

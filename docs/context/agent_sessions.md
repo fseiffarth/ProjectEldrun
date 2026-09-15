@@ -85,6 +85,19 @@ learn the command from the project's scaffold `AGENTS.md`. See
 
 ### Where Codex keeps a session, and why resume died
 
+Codex 0.154 also exclusively locks a conversation while its writer is alive.
+The hook-free binder used to freeze its claimed-session set at the beginning
+of a poll, then give every fresh tab in the same cwd the same oldest rollout.
+On restart one resumed and the others reported "This conversation is open in
+another app". Claims now accumulate during the pass, with hook records reserved
+before heuristic assignments. Spawn-time reservations also catch old duplicate
+records: the first tab resumes the recorded conversation, and another tab with
+that target opens `codex resume`'s picker to recover its intended conversation.
+Reservations are released on failed spawns and PTY exit, including when hooks
+are trusted and the fallback binder is disabled. Codex's locks and history are
+never edited. An isolated offline check on 0.154 confirmed that a live writer
+blocks resume and SIGKILL releases the lock; stale lock files alone do not.
+
 The resume arg is emitted only when Codex still *has* the recorded
 conversation, and that question has two answers in the field:
 

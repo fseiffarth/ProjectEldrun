@@ -358,6 +358,11 @@ pub async fn pty_spawn(
             .project_id
             .as_deref()
             .is_some_and(|id| crate::services::remote::remote_target_for(id).is_some());
+    let resume_claim = if opts.cmd == "codex" && !remote_agent_run {
+        crate::services::codex_bind::reserve_resume(&mut opts)
+    } else {
+        None
+    };
     let agent_spawn = crate::services::agent_fence::is_agent(&opts);
     let fence_roots = if agent_spawn && !remote_agent_run {
         Some(
@@ -595,6 +600,9 @@ pub async fn pty_spawn(
 
     let result = crate::terminal::spawn_pty(app, registry.inner().clone(), opts);
     if result.is_ok() {
+        if let Some(claim) = resume_claim {
+            claim.keep();
+        }
         if let Some((tab_id, scope_id)) = fenced_registration {
             crate::services::agent_fence::register_tab(&tab_id, &scope_id);
         }

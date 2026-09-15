@@ -1,4 +1,12 @@
 ## Group S — Local Agents via Ollama Integrations (`ollama launch`)
+
+- [ ] Live-check Codex resume after a deliberate backend restart (2026-09-15):
+  tabs started together in one folder must retain distinct conversations.
+  Old duplicate assignments now open Codex's session picker in the conflicting
+  tab; choose its intended conversation. Verify close/reopen and trusted-hook
+  tracking too. Automated regression covers duplicate binding within one poll
+  and reservation of saved resume targets; no live Eldrun restart performed.
+
 *New feature. Generalizes the existing single "Local Model" tab (Mistral `vibe`)
 into a family of local, Ollama-backed agent tabs — Claude Code, Hermes, OpenClaw,
 OpenCode — that behave exactly like the vibe local-agent tab does today (per
