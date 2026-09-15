@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { PLATFORM } from "../lib/dragPlatform";
+import { IS_MAC } from "../lib/platform";
 import { desktopOwnsSuperKey, probeSuperKeyOwnership } from "../lib/superKey";
 import { allGroups, findGroup, useTabsStore } from "../stores/tabs";
 import { useProjectsStore } from "../stores/projects";
@@ -20,6 +21,35 @@ import {
 
 interface KeyboardOptions {
   onTogglePanels: () => void;
+}
+
+/** The close actions a chord may still trigger while a text field or terminal
+ *  has focus — on macOS, with ⌘, and nothing else (see
+ *  {@link editorMayTakeChord}). */
+const EDITOR_CLOSE_ACTIONS: ReadonlySet<ShortcutAction> = new Set<ShortcutAction>([
+  "closeTab",
+  "closeSubwindow",
+  "closeAllTabs",
+]);
+
+/** Whether `action` may be resolved for a keydown whose target is an editable
+ *  field (an input, the code editor, xterm's helper textarea).
+ *
+ *  Normally never: those keys are the field's. The one exception is ⌘W and its
+ *  close-family siblings on macOS, where ⌘ is never text editing — and where a
+ *  ⌘W the frontend let pass used to reach the default menu's Close Window and
+ *  quit the whole app from a focused terminal. The gate is strict on purpose:
+ *  `IS_MAC && metaKey && !ctrlKey`. ⌃W is readline's delete-word on a Mac too,
+ *  and on Linux and Windows Ctrl+W (and Super+W, which is `metaKey` there) must
+ *  keep reaching the terminal. Shared with the popout's handler. */
+export function editorMayTakeChord(action: ShortcutAction, e: KeyboardEvent): boolean {
+  return isMacCommandChord(e) && EDITOR_CLOSE_ACTIONS.has(action);
+}
+
+/** ⌘ without ⌃ on macOS — the only keydown from an editable target that is
+ *  worth resolving at all (see {@link editorMayTakeChord}). */
+export function isMacCommandChord(e: KeyboardEvent): boolean {
+  return IS_MAC && e.metaKey && !e.ctrlKey;
 }
 
 /** True when keystrokes belong to a text field (input/textarea/contenteditable)
@@ -301,13 +331,17 @@ export function useKeyboard({ onTogglePanels }: KeyboardOptions) {
         return;
       }
 
-      // Don't steal keys from a focused text field (e.g. inline tab rename).
-      if (isEditableTarget(e.target)) return;
+      // Don't steal keys from a focused text field (e.g. inline tab rename) —
+      // except the macOS ⌘W family, which `editorMayTakeChord` admits.
+      const editable = isEditableTarget(e.target);
+      if (editable && !isMacCommandChord(e)) return;
 
       // Resolve the configured chord for an action (user override or default).
+      // From an editable target only the close family may match.
       const overrides = useSettingsStore.getState().settings
         ?.keyboard_shortcuts as ShortcutMap | undefined;
       const is = (action: ShortcutAction) =>
+        (!editable || editorMayTakeChord(action, e)) &&
         chordMatches(resolveChord(action, overrides), e);
 
       // Toggle app-internal fullscreen of the focused subwindow.
