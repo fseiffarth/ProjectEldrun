@@ -463,6 +463,11 @@ export function MobileSettings() {
       <p className="settings-help">
         {t("mobile.scopeHelp")}
       </p>
+      {IS_WINDOWS && (
+        <p className="settings-help">
+          {t("mobile.windowsTerminalsNote")} <UntestedTag />
+        </p>
+      )}
       {/* The handoff script has a PowerShell twin on Windows, so the QR flow
           is offered on every desktop. */}
       <div className="mobile-phone-install">
