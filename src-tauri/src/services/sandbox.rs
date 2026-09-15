@@ -1070,13 +1070,21 @@ pub fn harvest_and_clear_stage() {
 /// copies are cleared by [`harvest_and_clear_stage`], which must have run first
 /// and synchronously. Best-effort; cheap no-op when docker is absent.
 pub fn sweep_orphans() {
-    // Containers are Unix-only (`up_for_project` is a no-op and spawn refuses on
-    // Windows), so a previous run can't have left one behind — don't spawn
-    // `docker --version`/`docker ps` at every Windows startup for nothing.
-    if !cfg!(unix) || preflight_docker().is_err() {
+    // Containers run on every OS with Docker (Docker Desktop on Windows and
+    // macOS), so a crashed or killed previous run can leave one behind anywhere.
+    // What must not happen is a `docker --version`/`docker ps` spawn at every
+    // startup on a machine with no Docker at all — hence the PATH walk first,
+    // which spawns nothing.
+    if !sweep_should_probe(crate::paths::binary_on_path("docker")) || preflight_docker().is_err() {
         return;
     }
     remove_all_owned_except_trash();
+}
+
+/// Whether the startup sweep may spend a `docker` spawn at all: only when a
+/// docker CLI resolves on Eldrun's PATH. Pure so the gate is testable on any OS.
+fn sweep_should_probe(docker_on_path: bool) -> bool {
+    docker_on_path
 }
 
 /// `docker rm -f` every container carrying our owner label. Best-effort.
@@ -1331,16 +1339,37 @@ fn build_command(project_id: &str, image: &str) -> Option<String> {
     if image != DEFAULT_IMAGE && !image.starts_with("eldrun-") {
         return Some(format!("docker pull {image}"));
     }
+    let windows = cfg!(target_os = "windows");
     if let Some(dir) = project_dir_for(project_id) {
         let in_repo = Path::new(&dir).join("docker").join("agent-sandbox");
         if in_repo.join("Dockerfile").is_file() {
-            return Some(format!("docker build -t {image} '{}'", in_repo.display()));
+            return Some(format!(
+                "docker build -t {image} {}",
+                install_shell_quote(&in_repo.to_string_lossy(), windows)
+            ));
         }
     }
     let stage = storage::state_dir().join("agent-sandbox");
     std::fs::create_dir_all(&stage).ok()?;
     std::fs::write(stage.join("Dockerfile"), REFERENCE_DOCKERFILE).ok()?;
-    Some(format!("docker build -t {image} '{}'", stage.display()))
+    Some(format!(
+        "docker build -t {image} {}",
+        install_shell_quote(&stage.to_string_lossy(), windows)
+    ))
+}
+
+/// Quote `path` as one argument for the shell the frontend runs the build in:
+/// PowerShell on Windows, bash elsewhere (`ProjectPill`/`ProjectDialog` pick the
+/// matching shell). Both take `'…'` literally, but they escape an apostrophe
+/// differently — doubled in PowerShell, `'\''` in POSIX shells. cmd.exe is never
+/// the target: it does not treat `'` as a quote at all, so a path with a space
+/// would split.
+pub(crate) fn install_shell_quote(path: &str, windows: bool) -> String {
+    if windows {
+        format!("'{}'", path.replace('\'', "''"))
+    } else {
+        format!("'{}'", path.replace('\'', "'\\''"))
+    }
 }
 
 // ── Tab-kill contract ─────────────────────────────────────────────────────
@@ -2644,6 +2673,32 @@ fn host_uid_gid() -> (u32, u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn orphan_sweep_probes_only_when_docker_is_on_path() {
+        assert!(sweep_should_probe(true));
+        assert!(!sweep_should_probe(false));
+    }
+
+    #[test]
+    fn install_shell_quote_posix_flavor() {
+        assert_eq!(install_shell_quote("/home/a/x", false), "'/home/a/x'");
+        assert_eq!(install_shell_quote("/home/a/my dir", false), "'/home/a/my dir'");
+        assert_eq!(install_shell_quote("/home/o'brien/x", false), "'/home/o'\\''brien/x'");
+    }
+
+    #[test]
+    fn install_shell_quote_powershell_flavor() {
+        assert_eq!(
+            install_shell_quote(r"C:\Users\a\AppData\Local\eldrun\agent-sandbox", true),
+            r"'C:\Users\a\AppData\Local\eldrun\agent-sandbox'"
+        );
+        assert_eq!(
+            install_shell_quote(r"C:\Users\Jane Doe\p", true),
+            r"'C:\Users\Jane Doe\p'"
+        );
+        assert_eq!(install_shell_quote(r"C:\Users\o'brien\p", true), r"'C:\Users\o''brien\p'");
+    }
 
     fn env(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
         pairs
