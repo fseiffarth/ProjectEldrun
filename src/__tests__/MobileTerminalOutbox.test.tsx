@@ -51,7 +51,7 @@ const settle = () => act(async () => { await new Promise((resolve) => window.set
  * the time of the call — the folder the agent fills between polls. */
 function outboxFetch(images: () => unknown[]) {
   return vi.fn((url: string) => url.endsWith("/outbox")
-    ? Promise.resolve(jsonResponse(200, { images: images() }))
+    ? Promise.resolve(jsonResponse(200, { files: images() }))
     : Promise.resolve(jsonResponse(404, { error: "not_found" })));
 }
 
@@ -78,9 +78,9 @@ describe("Eldrun Mobile Focus shows the pictures the agent left in the project's
     await settle();
 
     expect(fetchMock.mock.calls.map(([url]) => url)).toEqual(["/api/v1/tabs/tab-7/outbox"]);
-    const strip = screen.getByRole("region", { name: "Images from the agent" });
+    const strip = screen.getByRole("region", { name: "Files from the agent" });
     expect(strip.textContent).toContain("From the agent");
-    expect(strip.textContent).toContain("2 images");
+    expect(strip.textContent).toContain("2 files");
     // The thumbnails load from the sidecar's own route — same origin, the
     // session cookie is the credential — never from a path.
     const thumbs = Array.from(strip.querySelectorAll("img")).map((img) => img.getAttribute("src"));
@@ -101,29 +101,88 @@ describe("Eldrun Mobile Focus shows the pictures the agent left in the project's
     vi.stubGlobal("fetch", outboxFetch(() => images));
     render(<Terminal tab={TAB} back={() => {}} />);
     await settle();
-    expect(screen.getByRole("region", { name: "Images from the agent" })).toBeTruthy();
+    expect(screen.getByRole("region", { name: "Files from the agent" })).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("button", { name: "Hide these images" }));
-    expect(screen.queryByRole("region", { name: "Images from the agent" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Hide these files" }));
+    expect(screen.queryByRole("region", { name: "Files from the agent" })).toBeNull();
 
     // Coming back to the page re-reads the folder; the same picture stays
     // hidden, a new one shows on its own.
     act(() => { document.dispatchEvent(new Event("visibilitychange")); });
     await settle();
-    expect(screen.queryByRole("region", { name: "Images from the agent" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "Files from the agent" })).toBeNull();
 
     images.unshift({ name: "diagram.png", kind: "image/png", size: 9_000, modified: NOW - 5 });
     act(() => { document.dispatchEvent(new Event("visibilitychange")); });
     await settle();
-    const strip = screen.getByRole("region", { name: "Images from the agent" });
-    expect(strip.textContent).toContain("1 image");
+    const strip = screen.getByRole("region", { name: "Files from the agent" });
+    expect(strip.textContent).toContain("1 file");
     expect(Array.from(strip.querySelectorAll("img")).map((img) => img.getAttribute("src"))).toEqual(["/api/v1/tabs/tab-7/outbox/diagram.png"]);
+  });
+
+  it("opens text as inert text, PDFs in a new tab, and binary files as downloads", async () => {
+    const open = vi.spyOn(window, "open").mockReturnValue(null);
+    vi.stubGlobal("fetch", vi.fn((url: string) => Promise.resolve(url.endsWith("/outbox")
+      ? jsonResponse(200, { files: [
+        { name: "notes.svg", kind: "text/plain; charset=utf-8", size: 80, modified: NOW },
+        { name: "paper.pdf", kind: "application/pdf", size: 400, modified: NOW },
+        { name: "data.zip", kind: "application/octet-stream", size: 400, modified: NOW },
+      ] }) : new Response("<svg onload='alert(1)'>inert text</svg>"))));
+    render(<Terminal tab={TAB} back={() => {}} />);
+    await settle();
+    fireEvent.click(screen.getByRole("button", { name: "Open notes.svg" }));
+    await settle();
+    const dialog = screen.getByRole("dialog", { name: "notes.svg" });
+    expect(dialog.querySelector("pre")?.textContent).toContain("<svg onload=");
+    expect(dialog.querySelector("svg")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open paper.pdf" }));
+    expect(open).toHaveBeenCalledWith("/api/v1/tabs/tab-7/outbox/paper.pdf", "_blank", "noopener");
+    const link = screen.getByRole("link", { name: "Open data.zip" });
+    expect(link.getAttribute("href")).toBe("/api/v1/tabs/tab-7/outbox/data.zip?download=1");
+    expect(link.getAttribute("download")).toBe("data.zip");
+  });
+
+  it("shares the prepared file from the actions sheet when supported", async () => {
+    const share = vi.fn(() => Promise.resolve());
+    Object.defineProperty(navigator, "canShare", { configurable: true, value: vi.fn(() => true) });
+    Object.defineProperty(navigator, "share", { configurable: true, value: share });
+    try {
+      vi.stubGlobal("fetch", vi.fn((url: string) => Promise.resolve(url.endsWith("/outbox")
+        ? jsonResponse(200, { files: [{ name: "data.zip", kind: "application/octet-stream", size: 4, modified: NOW }] })
+        : new Response(new Uint8Array([80, 75, 0, 1])))));
+      render(<Terminal tab={TAB} back={() => {}} />);
+      await settle();
+      fireEvent.click(screen.getByRole("button", { name: "File actions for data.zip" }));
+      await settle();
+      fireEvent.click(screen.getByRole("button", { name: "Share…" }));
+      expect(share).toHaveBeenCalledTimes(1);
+      const file = (share.mock.calls[0] as unknown as [{ files: File[] }])[0].files[0];
+      expect(file.name).toBe("data.zip");
+      expect(file.type).toBe("application/octet-stream");
+      expect(file.size).toBe(4);
+    } finally {
+      Reflect.deleteProperty(navigator, "canShare");
+      Reflect.deleteProperty(navigator, "share");
+    }
+  });
+
+  it("caps the inline text preview and offers the whole file", async () => {
+    vi.stubGlobal("fetch", vi.fn((url: string) => Promise.resolve(url.endsWith("/outbox")
+      ? jsonResponse(200, { files: [{ name: "large.log", kind: "text/plain; charset=utf-8", size: 2 * 1024 * 1024, modified: NOW }] })
+      : new Response("x".repeat(2 * 1024 * 1024)))));
+    render(<Terminal tab={TAB} back={() => {}} />);
+    await settle();
+    fireEvent.click(screen.getByRole("button", { name: "Open large.log" }));
+    await settle();
+    expect(screen.getByRole("dialog").querySelector("pre")?.textContent?.length).toBe(1024 * 1024);
+    expect(screen.getByRole("link", { name: "Open the whole file" }).getAttribute("target")).toBe("_blank");
   });
 
   it("shows nothing for an empty or unreachable outbox", async () => {
     vi.stubGlobal("fetch", vi.fn(() => Promise.reject(new TypeError("offline"))));
     render(<Terminal tab={TAB} back={() => {}} />);
     await settle();
-    expect(screen.queryByRole("region", { name: "Images from the agent" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "Files from the agent" })).toBeNull();
   });
 });

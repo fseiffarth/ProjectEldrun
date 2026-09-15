@@ -14,6 +14,8 @@ import {
 import { useActivityStore, type AttentionKind } from "../../stores/activity";
 import { resolveProjectDirectory, type FilesPanelView } from "../../types";
 import { useT } from "../../lib/i18n";
+import { RailSwitchSideIcon } from "../common/EdgeRailIcons";
+import { sidePanelViewKey, sidePanelViewPatch } from "../../lib/sidePanelView";
 import { terminalCharsPerSecond } from "../../dev/terminalOutputRate";
 import {
   RENDERER_CEILING_MB,
@@ -242,9 +244,25 @@ export function SidePanel({
   // settings.json from before either key existed).
   const viewByScope = useSettingsStore((s) => s.settings?.side_panel_view_by_project);
   const lastPanelView = useSettingsStore((s) => s.settings?.side_panel_view ?? "files");
-  const viewKey = activeId ?? scope;
+  const viewKey = sidePanelViewKey(activeId ?? null, scope);
   const panelView = viewByScope?.[viewKey] ?? lastPanelView;
   const updateSettings = useSettingsStore((s) => s.updateSettings);
+
+  // A side switch is a jump, not a slide. The closed panel rests one panel-width
+  // past its edge and eases its transform on open and close; flipping `side`
+  // changes that resting point from +100% to -100%, and the same easing carried
+  // the panel — contents and all — across the whole window on its way to the
+  // other edge. `settled` lags `side` by one frame, and while the two differ the
+  // panel wears `switching`, which turns the transition off for exactly the
+  // render that moves it. Render-derived (no ref written during render): the
+  // class is on the first frame at the new edge, and off again the frame after.
+  const [settledSide, setSettledSide] = useState(side);
+  const switching = settledSide !== side;
+  useEffect(() => {
+    if (settledSide === side) return;
+    const id = window.requestAnimationFrame(() => setSettledSide(side));
+    return () => window.cancelAnimationFrame(id);
+  }, [side, settledSide]);
 
   // Drag the left border to resize the panel; width persists in settings.
   // Pointer capture (set in onResizeStart) keeps the drag alive once the cursor
@@ -273,7 +291,9 @@ export function SidePanel({
             title={t(side === "left" ? "sidePanel.moveRight" : "sidePanel.moveLeft")}
             aria-label={t(side === "left" ? "sidePanel.moveRight" : "sidePanel.moveLeft")}
           >
-            ⇄
+            {/* The same picture the closed panel's rail shows for this: the panel
+                on the edge it is on, an arrow at the edge it goes to. */}
+            <RailSwitchSideIcon side={side} />
           </button>
         )}
         {onTogglePin && (
@@ -403,7 +423,7 @@ export function SidePanel({
       // Right-click → "Open in a new tab": the same file view, on that folder,
       // as a Files (Project) tab in this project's scope.
       onOpenFolderTab={(rel) => openProjectFilesTab(t, projectDir, rel)}
-      containerClassName={`side-panel${side === "left" ? " left" : ""} ${open ? "open" : ""}${resizing ? " resizing" : ""}`}
+      containerClassName={`side-panel${side === "left" ? " left" : ""} ${open ? "open" : ""}${resizing ? " resizing" : ""}${switching ? " switching" : ""}`}
       containerStyle={width ? { width } : undefined}
       containerProps={{ onMouseEnter, onMouseLeave }}
       resizeHandle={resizeHandle}
@@ -413,11 +433,11 @@ export function SidePanel({
       view={panelView}
       onViewChange={(view: FilesPanelView) => {
         // Both keys: this scope's own view, and the seed the next scope with no
-        // entry of its own opens on.
-        void updateSettings({
-          side_panel_view: view,
-          side_panel_view_by_project: { ...(viewByScope ?? {}), [viewKey]: view },
-        });
+        // entry of its own opens on. Same patch the closed panel's edge rail
+        // writes when it opens the panel straight onto a view.
+        void updateSettings(
+          sidePanelViewPatch(view, viewKey, { side_panel_view_by_project: viewByScope }),
+        );
       }}
     />
   );

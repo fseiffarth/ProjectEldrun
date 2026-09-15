@@ -345,6 +345,37 @@ export async function getAgentStatus(tabId: string, refresh = false): Promise<Ag
   return report;
 }
 
+/** One turn of an agent tab's stored conversation, as the desktop reads it
+ * off the CLI's own transcript (`services::agent_transcript`). */
+export interface TranscriptEntry { kind: "prompt" | "answer"; text: string; at?: string; cut?: boolean }
+export interface SessionTranscript {
+  available: boolean;
+  /** Why not, when unavailable: `unsupported`, `no_session`, `no_transcript`, `read_failed`. */
+  reason?: string;
+  /** Hand back on the next read to be answered `unchanged`. */
+  version?: string;
+  unchanged?: boolean;
+  entries: TranscriptEntry[];
+  /** Earlier turns exist that this answer does not carry. */
+  truncated: boolean;
+}
+
+/** `GET /api/v1/tabs/{id}/transcript` — the Focus view's stored-session feed.
+ * `version` is what the last answer carried: while the transcript file has
+ * not moved the desktop answers `unchanged` and no turns cross the link, which
+ * is what makes polling it while the agent works affordable on cellular. */
+export async function getTranscript(tabId: string, version?: string, limit?: number, signal?: AbortSignal): Promise<SessionTranscript> {
+  const query = new URLSearchParams();
+  if (version) query.set("version", version);
+  if (limit) query.set("limit", String(limit));
+  const suffix = query.size > 0 ? `?${query}` : "";
+  const { transcript } = await api<{ transcript: SessionTranscript }>(
+    `/api/v1/tabs/${encodeURIComponent(tabId)}/transcript${suffix}`,
+    { signal },
+  );
+  return transcript;
+}
+
 /** A file the phone dropped into the tab's project inbox. `reference` is
  * project-relative (`.eldrun/inbox/<file>`) — the one path shape that crosses
  * this boundary, because it carries no host component and is exactly what the
@@ -418,20 +449,20 @@ export async function attachDesktopImage(tabId: string, imageId: string): Promis
  * (`outbox.rs`) — the mirror of the inbox. `name` is the leaf the desktop
  * validated and the only thing the phone hands back; `kind` is what the
  * bytes say, not the extension; `modified` is unix seconds. */
-export interface OutboxImage { name: string; kind: string; size: number; modified: number }
+export interface OutboxFile { name: string; kind: string; size: number; modified: number }
 
 /** `GET /api/v1/tabs/{id}/outbox` — the images the agent put out for the
  * phone, newest first. Read from disk by the sidecar, so it answers with the
  * desktop closed too. */
-export async function listOutbox(tabId: string, signal?: AbortSignal): Promise<OutboxImage[]> {
-  const { images } = await api<{ images: OutboxImage[] }>(`/api/v1/tabs/${encodeURIComponent(tabId)}/outbox`, { signal });
-  return images;
+export async function listOutbox(tabId: string, signal?: AbortSignal): Promise<OutboxFile[]> {
+  const { files } = await api<{ files: OutboxFile[] }>(`/api/v1/tabs/${encodeURIComponent(tabId)}/outbox`, { signal });
+  return files;
 }
 
 /** The URL an `<img>` loads one outbox image from — same origin, so the
  * session cookie rides along and the CSP's `img-src 'self'` lets it render. */
-export function outboxImageUrl(tabId: string, name: string): string {
-  return `/api/v1/tabs/${encodeURIComponent(tabId)}/outbox/${encodeURIComponent(name)}`;
+export function outboxFileUrl(tabId: string, name: string, download = false): string {
+  return `/api/v1/tabs/${encodeURIComponent(tabId)}/outbox/${encodeURIComponent(name)}${download ? "?download=1" : ""}`;
 }
 
 export async function uploadToInbox(tabId: string, file: Blob, name: string): Promise<InboxAttachment> {

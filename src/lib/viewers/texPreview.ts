@@ -208,11 +208,10 @@ function base64Bytes(b64: string): Uint8Array {
 async function rasterize(
   bytes: Uint8Array,
 ): Promise<{ url: string; width: number; height: number } | null> {
-  const pdfjs = await import("pdfjs-dist");
-  const workerUrl = (await import("pdfjs-dist/build/pdf.worker.min.mjs?url")).default;
-  // Idempotent — the PDF viewer and the deck set the same value.
-  pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
-  const doc = await pdfjs.getDocument({ data: bytes }).promise;
+  // The loader module brings pdf.js and its worker script in with it, so the
+  // import is deferred to the first preview.
+  const { loadPdf } = await import("./pdfLoad");
+  const doc = await loadPdf(bytes);
   try {
     const page = await doc.getPage(1);
     const base = page.getViewport({ scale: 1 });

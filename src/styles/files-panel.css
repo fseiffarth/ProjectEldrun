@@ -81,15 +81,33 @@
   right: -3px;
 }
 
-/* Side-flip button in the header — shares the pin's box; the ⇄ is a plain glyph
-   (not a color emoji), so it's unaffected by the pin's filter caveat. */
+/* Side-flip button in the header — shares the pin's box. Its icon is inline
+   line-art in currentColor (a frame, the panel filled on its present edge, an
+   arrow at the other one), so unlike the 📌 colour emoji it honours `color`:
+   the resting tone is the header's secondary text and hover lights it accent,
+   which the pin cannot do. Same opacity step as the pin, so the pair dims and
+   wakes together. */
 .side-panel-flip {
   font-size: 14px;
+}
+.side-panel-flip svg {
+  display: block;
+}
+.side-panel-flip:hover {
+  color: var(--accent);
 }
 
 /* While dragging the resize handle, kill the open/close transition so the panel
    tracks the cursor 1:1 instead of easing toward each intermediate width. */
 .side-panel.resizing {
+  transition: none;
+}
+
+/* The frame a side switch lands on (layout/SidePanel.tsx): the closed panel's
+   resting transform flips from +100% to -100%, and eased, that flip slid the
+   panel across the whole window. Off for that one frame, it simply appears at
+   the other edge. */
+.side-panel.switching {
   transition: none;
 }
 

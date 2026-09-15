@@ -74,6 +74,10 @@ describe("Eldrun Mobile terminal dictation", () => {
     FakeWebSocket.instances = [];
     Object.defineProperty(window, "webkitSpeechRecognition", { configurable: true, value: FakeRecognition });
     vi.stubGlobal("WebSocket", FakeWebSocket);
+    // These read the Focus view; the phone opens on Terminal until the
+    // reader chose Focus for the agent, so the stored choice is preset.
+    localStorage.setItem("eldrun.mobile.view.agent", "focus");
+    localStorage.setItem("eldrun.mobile.view.shell", "focus");
     vi.useFakeTimers({ shouldAdvanceTime: true });
   });
 
@@ -123,14 +127,18 @@ describe("Eldrun Mobile terminal dictation", () => {
   });
 
   it("keeps the native shell composer available beside the read-only terminal", async () => {
+    // No choice stored for shells: the tab opens on the terminal itself.
+    localStorage.removeItem("eldrun.mobile.view.shell");
     render(<Terminal tab={{ id: "opaque-shell", label: "Shell", kind: "shell", available: true, viewer_busy: false }} back={() => {}} />);
     await act(async () => {});
 
     const focus = screen.getByRole("button", { name: "Focus" });
     const terminal = screen.getByRole("button", { name: "Terminal" });
-    expect(focus.getAttribute("aria-pressed")).toBe("true");
-    fireEvent.click(terminal);
     expect(terminal.getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("textbox", { name: "Shell command" })).toBeTruthy();
+    fireEvent.click(focus);
+    expect(focus.getAttribute("aria-pressed")).toBe("true");
+    expect(localStorage.getItem("eldrun.mobile.view.shell")).toBe("focus");
     expect(screen.getByRole("textbox", { name: "Shell command" })).toBeTruthy();
   });
 

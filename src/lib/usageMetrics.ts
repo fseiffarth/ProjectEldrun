@@ -117,6 +117,7 @@ const AGENT_LABELS: Record<string, string> = {
   amp: "Amp",
   kimi: "Kimi Code",
   qoder: "Qoder",
+  muse: "Meta Muse Code",
 };
 
 /** Display name for a metric leaf (`claude` → "Claude", `local.qwen3:8b` → "qwen3:8b"). */

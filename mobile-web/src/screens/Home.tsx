@@ -3,14 +3,15 @@ import { api, resolveAlert, type ActivityTab, type MobileAlertItem, type MobileA
 import { classifyUnavailable, describeUnavailable, type UnavailableReason } from "../connection";
 import { readFlag, writeFlag } from "../prefs";
 import { Activity } from "./Activity";
+import { SECTION_GLYPH } from "../glyphs";
 // Kept in lockstep with the desktop and mobile-host package versions by the
 // release bump, so the phone always reports the build it is running.
 import { version as APP_VERSION } from "../../../package.json";
 
 const ALERT_ICON: Record<MobileAlertItem["kind"], string> = {
-  mail: "✉",
-  event: "🗓",
-  task: "☑",
+  mail: SECTION_GLYPH.mail,
+  event: SECTION_GLYPH.calendar,
+  task: SECTION_GLYPH.todo,
 };
 
 function relativeAlertTime(item: MobileAlertItem): string {

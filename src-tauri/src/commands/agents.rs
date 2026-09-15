@@ -324,6 +324,15 @@ const AGENTS: &[AgentSpec] = &[
         extra_paths: &[".local/bin/qoder"],
         docs: "https://docs.qoder.com/cli/installation",
     },
+    AgentSpec {
+        id: "muse",
+        label: "Meta Muse Code",
+        bin: "muse",
+        install_cmd: "curl -fsSL https://dev.meta.ai/install.sh | bash",
+        install_cmd_windows: None,
+        extra_paths: &[".local/bin/muse"],
+        docs: "https://dev.meta.ai",
+    },
 ];
 
 /// Public view of one agent + whether it is currently installed.
@@ -1185,6 +1194,56 @@ pub async fn agent_tab_last_prompt(
     .flatten()
 }
 
+/// The newest prompts the tab launched as `agent` with launch id `session_id`
+/// was given, each with the moment its transcript says it went — messages
+/// sent while the agent was working included
+/// (`services::agent_session::agent_session_recent_prompts`). What the prompt
+/// chart adopts typed prompts from; empty when there is no transcript to read.
+#[tauri::command]
+pub async fn agent_tab_recent_prompts(
+    agent: String,
+    project_id: Option<String>,
+    session_id: String,
+) -> Vec<crate::services::agent_session::TranscriptPrompt> {
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::services::agent_session::agent_session_recent_prompts(
+            &agent,
+            project_id.as_deref(),
+            &session_id,
+        )
+    })
+    .await
+    .unwrap_or_default()
+}
+
+/// The stored conversation of the tab launched as `agent` with launch id
+/// `session_id` — its prompts and answers, read from the CLI's own transcript
+/// (`services::agent_transcript`) for the phone's Focus view. `version` is
+/// the fingerprint the caller last saw; a matching one is answered
+/// `unchanged` without a parse. Always answers: an agent with no readable
+/// transcript comes back `available: false` with the reason, never an error.
+#[tauri::command]
+pub async fn agent_tab_transcript(
+    agent: String,
+    project_id: Option<String>,
+    session_id: String,
+    version: Option<String>,
+    limit: Option<usize>,
+) -> crate::services::agent_transcript::AgentTranscript {
+    use crate::services::agent_transcript::{self, AgentTranscript, DEFAULT_LIMIT};
+    tauri::async_runtime::spawn_blocking(move || {
+        agent_transcript::agent_session_transcript(
+            &agent,
+            project_id.as_deref(),
+            &session_id,
+            version.as_deref(),
+            limit.unwrap_or(DEFAULT_LIMIT),
+        )
+    })
+    .await
+    .unwrap_or_else(|_| AgentTranscript::unavailable("read_failed"))
+}
+
 /// Read `agent`'s own usage panel by running its CLI's print mode once.
 ///
 /// Free in every sense that matters: the run is client-side (Claude's envelope
@@ -1576,6 +1635,7 @@ mod tests {
             ("amp", "amp", "npm install -g @sourcegraph/amp"),
             ("kimi", "kimi", "https://code.kimi.com/install.sh"),
             ("qoder", "qoder", "https://qoder.com/install"),
+            ("muse", "muse", "https://dev.meta.ai/install.sh"),
         ];
         for (id, bin, install_fragment) in expected {
             let spec = find_spec(id).unwrap_or_else(|| panic!("{id} missing from registry"));

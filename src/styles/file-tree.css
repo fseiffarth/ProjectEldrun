@@ -1947,7 +1947,7 @@
   text-align: left;
   padding: 8px 10px;
   border: 1px solid var(--control-border);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius);
   background: var(--control-bg);
   color: var(--text-primary);
   cursor: var(--cur-pointer, pointer);

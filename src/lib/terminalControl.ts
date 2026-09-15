@@ -56,19 +56,47 @@ export function stripTerminalQueries(data: string): string {
  *  Used to refuse a reply provoked by a *stale* write — the belt to
  *  {@link stripTerminalQueries}'s braces, covering any query shape that list
  *  does not know about. */
-const TERMINAL_REPORT = new RegExp(
+const TERMINAL_REPORTS = [
+  "\\x1b\\[[?>=]?[0-9;]*[cnR]", // DA reply, DSR status, CPR cursor position
+  "\\x1b\\[\\??[0-9;]*\\$y", // DECRPM — the mode report
+  "\\x1b\\](?:4;[0-9]+|1[0-9]);[^\\x07\\x1b]*(?:\\x1b\\\\|\\x07)", // OSC colour reply
+  "\\x1bP[01]\\$r[^\\x1b]*\\x1b\\\\", // DECRPSS
+];
+
+const TERMINAL_REPORT = new RegExp(`^(?:${TERMINAL_REPORTS.join("|")})+$`);
+
+export function isTerminalReport(data: string): boolean {
+  return TERMINAL_REPORT.test(data);
+}
+
+/** Everything xterm emits through `onData` that no person typed: the replies
+ *  above, plus the two streams a program switches on and the terminal then
+ *  sends by itself — focus in/out reports (`ESC [ I` / `ESC [ O`, mode 1004,
+ *  which every agent TUI enables, so a click into or out of a tab produces
+ *  one) and mouse tracking (X10 `ESC [ M` + 3 bytes, SGR `ESC [ < … M/m`, and
+ *  the urxvt form; a wheel scroll over an agent pane is a burst of them).
+ *
+ *  These must not be stamped as the user's input to the tab. The activity
+ *  store reads "input after the agent's Stop" as a new turn in flight and holds
+ *  scheduled delivery until the agent's next Stop — correct for a prompt the
+ *  user is submitting, and a permanent hold for a tab that was only looked at,
+ *  since a focus report is followed by no Stop at all. Each is a CSI sequence
+ *  no key produces (arrows are `ESC [ A`…`D`, F1–F4 are SS3), so matching the
+ *  whole chunk is safe against real keystrokes. */
+const TERMINAL_AUTO_REPLY = new RegExp(
   "^(?:" +
     [
-      "\\x1b\\[[?>=]?[0-9;]*[cnR]", // DA reply, DSR status, CPR cursor position
-      "\\x1b\\[\\??[0-9;]*\\$y", // DECRPM — the mode report
-      "\\x1b\\](?:4;[0-9]+|1[0-9]);[^\\x07\\x1b]*(?:\\x1b\\\\|\\x07)", // OSC colour reply
-      "\\x1bP[01]\\$r[^\\x1b]*\\x1b\\\\", // DECRPSS
+      ...TERMINAL_REPORTS,
+      "\\x1b\\[[IO]", // focus in / focus out
+      "\\x1b\\[<[0-9;]*[Mm]", // SGR mouse
+      "\\x1b\\[M[\\s\\S]{3}", // X10 / normal mouse
+      "\\x1b\\[[0-9;]+M", // urxvt mouse
     ].join("|") +
     ")+$",
 );
 
-export function isTerminalReport(data: string): boolean {
-  return TERMINAL_REPORT.test(data);
+export function isTerminalAutoReply(data: string): boolean {
+  return data.length > 1 && data.startsWith("\x1b") && TERMINAL_AUTO_REPLY.test(data);
 }
 
 /** Clear any startup junk already sitting in a shell's readline buffer before

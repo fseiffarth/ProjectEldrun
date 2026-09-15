@@ -143,7 +143,7 @@ pub(crate) fn validate_preface_command(command: &str) -> Result<String, String> 
     Ok(clean)
 }
 
-fn validate_preface(preface: Vec<String>) -> Result<Vec<String>, String> {
+pub(crate) fn validate_preface(preface: Vec<String>) -> Result<Vec<String>, String> {
     if preface.len() > MAX_PREFACE_COMMANDS {
         return Err(format!(
             "a prompt may carry at most {MAX_PREFACE_COMMANDS} prefix commands"

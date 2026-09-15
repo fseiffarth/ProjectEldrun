@@ -127,7 +127,7 @@ A native iOS/Android wrapper may follow, but it must reuse this API and protocol
   tree, skipped by sync) and the phone gets back only the project-relative
   `.eldrun/inbox/<file>` reference to put after an `@` — never a host path;
   and the one thing the phone may *see* is the mirror of that box, the
-  images an agent copies into `.eldrun/outbox/` (§4.3) — listed and served
+  files an agent explicitly sends into `.eldrun/outbox/` (§4.3) — listed and served
   by leaf name, image bytes only, nothing else in the tree;
 - muting calendar events, configuring CalDAV credentials, or editing a single
   occurrence of a recurring event;
@@ -299,13 +299,51 @@ grouping: the reading view already cuts at `inputFrameStart`. The grouping is
 layout only — the lines keep their keys and colours, Copy copies the transcript
 as printed, and a shell tab has no turns and paints flat.
 
+Each `⏺` message Claude prints is one answer turn, shown without its bullet,
+and a tool call — `⏺ Update(src/App.tsx)` with its `⎿ Updated … with 3
+additions` status rows indented under it — is left out of the layout: on a
+phone the answer is what is wanted, the edit-by-edit status beside it is
+noise. Only that exact shape is dropped, so a permission question drawn under
+a tool call still shows.
+
+**The stored session.** The screen is a poor record of a conversation — the
+pane's scrollback, at the desktop window's width, cut by every redraw — and
+the agent keeps a better one: every prompt and every answer as a record in
+its own transcript (`~/.claude/projects/<cwd>/<id>.jsonl`, a Codex rollout).
+For an agent tab, Focus reads that instead (`GET
+/api/v1/tabs/{id}/transcript`, answered by the desktop's
+`services::agent_transcript` over the same live-id-first resolution the
+Agents view's model tag uses): the prompts and answers laid out as the same
+chat, from the first turn on, with no tool status. It is polled every five
+seconds while in view and a second after the screen last changed, carrying
+the last file fingerprint so an unmoved transcript answers `unchanged` in a
+few bytes; "Show earlier turns" asks for more of the tail. Thinking blocks,
+tool calls and results, attachments and the CLI's notes to itself are never
+read. What the file cannot carry is what the session is drawing *now*, so a
+select prompt on screen is shown under the turns, answered by the key row as
+before, and a **Session / Screen** switch in the corner returns to the screen
+reading. A tab whose agent keeps no readable transcript (a shell, Gemini,
+Codex on a release with no rollout), or whose desktop is closed, reads the
+screen as before. Untested live.
+
+**Which view opens.** The terminal itself, until the reader chooses Focus —
+and then whatever they last chose *for that agent* (`prefs.readTerminalView`,
+keyed by the agent's label; shells share one key), since whether Focus reads
+a session well is a property of the TUI rather than of the tab.
+
 For repeatable visual QA without a live Eldrun or tmux session, run the Mobile
 Vite target and open `/terminal-preview.html?kind=agent` or `?kind=shell`. The
 development-only fixture renders the production `Terminal` component, xterm,
 and styles against representative in-page WebSocket output; production builds
 still have only `mobile-web/index.html` as their entry point.
 It provides touch-friendly Ctrl, Esc, Tab, arrows, Enter, Backspace, and a guarded
-Interrupt key, plus a visible input proxy so mobile keyboards open reliably.
+Interrupt key, plus a visible input proxy so mobile keyboards open reliably. The composer
+shows a ✕ while it holds a draft, which empties it (and the dictation
+transcript with it) in one tap. When the page comes back into view — a phone
+unlocked — the socket is asked to prove itself: one the browser still reports
+open must answer a ping within four seconds or it is closed and reconnected,
+and one that closed while the page was frozen is reconnected at once, so a
+reader is not typing into a dead link that looks connected.
 Agent terminals expose **Dictate** independently of the configured CLI. On
 browsers with on-device Web Speech, the PWA checks for a dictation-quality model
 in the phone's language and offers the browser-managed language-pack install when
@@ -333,26 +371,23 @@ recognition but not Chromium's downloadable on-device language-pack APIs, so it
 uses that compatibility path; the local branch is feature-detected and becomes
 active only on a browser/platform that actually exposes it.
 
-**Pictures from the agent.** A terminal carries no images, and Focus
-classifies nothing, so a path the session prints is never guessed at. What a
-vendor's remote app does when its agent reads a screenshot — show it — is
-done here by a folder: an agent that wants the phone to see an image copies
-it into the project's `.eldrun/outbox/`, the mirror of the inbox (git-ignored,
-hidden from the tree, skipped by sync, and inside the roots the agent fence
-lets it write). The sidecar lists that folder itself (`GET
-/api/v1/tabs/{id}/outbox`, no desktop round trip, so it answers with the
-desktop closed too) and serves one image by leaf name; Focus polls it while
-the page is visible and shows a thumbnail strip above the composer, one tap
-to full screen, ✕ to hide until something newer lands. The read is as
-defensive as the inbox write (`outbox.rs`): the folder must canonicalize
-below the project root, symlinks inside it are never followed, a file is
-served only when its **bytes** are PNG/JPEG/GIF/WebP (an SVG can carry
-script and is not an image here), the name that crosses is a leaf from the
-inbox's safe alphabet, and anything else answers `image_not_found` so the
-tree cannot be probed by error code. Nothing is copied into the folder on
-the agent's behalf: a hook mirroring every image the agent reads would file
-pictures from anywhere on the host into a project tree, which is exactly
-what the inbox's consent design guards against.
+**Files from the agent.** A terminal carries no files, and Focus never guesses
+at paths printed in it. An agent explicitly runs `eldrun-send <file>` (or
+`command | eldrun-send -n tests.log`) in a local or container tab. The command
+uses `ELDRUN_PROJECT_DIR` to fill the scope's `.eldrun/outbox/`; manual copies
+still work. The sidecar lists that folder itself (`GET /api/v1/tabs/{id}/outbox`,
+returning `{files: [{name, kind, size, modified}]}`), even with the desktop closed.
+Focus polls every eight visible seconds, shows image thumbnails and file chips,
+previews at most 1 MiB of text, opens PDFs as top-level browser tabs, and offers
+downloads and feature-detected file sharing. The untested badge stays until QA.
+
+The folder must canonicalize below the project root; symlinks inside it are
+never followed. File names are safe leaves and files are nonempty, at most
+24 MiB. PNG/JPEG/GIF/WebP/PDF are typed by bytes; UTF-8 text, including SVG/HTML,
+is inert `text/plain` with `nosniff`. Everything else uses `application/octet-stream`
+and attachment disposition; `?download=1` forces attachment for any type.
+Invalid files all answer `file_not_found`. Nothing is copied on the agent's
+behalf. Remote SSH delivery is deferred. See `docs/mobile_send_plan.md`.
 
 Resize is debounced. Network loss or closing the browser detaches only the
 mobile tmux client and never calls `kill-session`. One mobile viewer may attach
@@ -733,6 +768,12 @@ GET    /api/v1/tabs/:tab_id
 PUT    /api/v1/tabs/:tab_id                                        {label}
 DELETE /api/v1/tabs/:tab_id
 GET    /api/v1/tabs/:tab_id/terminal   (WebSocket upgrade)
+POST   /api/v1/tabs/:tab_id/inbox?name=...                         (raw file bytes)
+GET    /api/v1/tabs/:tab_id/desktop-images
+POST   /api/v1/tabs/:tab_id/desktop-images                        {image_id}
+GET    /api/v1/tabs/:tab_id/outbox                                {files}
+GET    /api/v1/tabs/:tab_id/outbox/:name[?download=1]
+GET    /api/v1/tabs/:tab_id/transcript[?version=&limit=]          {transcript}
 ```
 
 `/healthz` returns only `{ "ok": true }`. Authenticated responses expose opaque

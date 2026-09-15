@@ -16,6 +16,9 @@ export interface ProjectAgentPrompt {
   updated_at: string;
   /** Lowercase tokens the library is searched by (`lib/agentPromptTags`). */
   tags?: string[];
+  /** The agent tab (`scheduleTargetId`) the prompt chart aims this draft at.
+   *  Advisory until the draft is sent or scheduled; absent when unaimed. */
+  target?: string;
 }
 
 /**
@@ -31,7 +34,13 @@ export interface SentAgentPrompt {
   created_at: string;
   sent_at: string;
   tab_label: string;
+  /** The LIVE session the prompt reached — the backend resolves the tab's
+   *  launch id to the hook's record at write time, so rows sent after a
+   *  `/clear` carry the new conversation's id. */
   session_id?: string;
+  /** The tab it went to: its launch id, the same across `/clear`. What ties
+   *  one tab's sessions to one strand. Absent on older rows. */
+  tab_id?: string;
   preface?: string[];
   /** The agent the tab runs (`claude`, `codex`, …) — what the tab *is*, which
    *  still means something once a tab called "Agent 3" is closed. */
@@ -51,6 +60,9 @@ export interface SentAgentPrompt {
    *  the scheduler has seen the tab idle again. */
   files?: string[];
   files_at?: string;
+  /** The model that answered, as the transcript names it; recorded with the
+   *  blame. Absent until then, and for an agent whose transcript is not read. */
+  model?: string;
 }
 
 export interface PromptLink {
@@ -59,16 +71,24 @@ export interface PromptLink {
   to: string;
   kind: "related" | "after";
   target?: string;
+  /** Commands (`/clear`, …) an `after` edge types between its two prompts:
+   *  the queued target's preface. */
+  preface?: string[];
 }
 
 /** Send-time facts a history entry records. */
 export interface SentPromptFacts {
   tabLabel: string;
+  /** The tab's `sessionId` — its launch id. The backend files the row under
+   *  the live session the hook recorded for it and keeps this as `tab_id`. */
   sessionId?: string;
   preface?: string[];
   agent?: string;
   result?: SentAgentPrompt["result"];
   scheduledFor?: string;
+  /** When it went, for a prompt recorded after the fact (ISO). Absent, the
+   *  backend stamps now. */
+  sentAt?: string;
 }
 
 function sentPayload(sent: SentPromptFacts) {
@@ -79,6 +99,8 @@ function sentPayload(sent: SentPromptFacts) {
     agent: sent.agent ?? null,
     result: sent.result ?? null,
     scheduled_for: sent.scheduledFor ?? null,
+    // Only when set: a backend predating the field refuses the key outright.
+    ...(sent.sentAt ? { sent_at: sent.sentAt } : {}),
   };
 }
 
@@ -91,10 +113,11 @@ interface AgentPromptsStore {
   loadHistory: (projectId: string) => Promise<SentAgentPrompt[]>;
   loadLinks: (projectId: string) => Promise<PromptLink[]>;
   /** `tags` undefined leaves an existing prompt's tags alone (the phone edits
-   *  text only); an array replaces them, empty included. */
+   *  text only); an array replaces them, empty included. `target` follows the
+   *  same rule: undefined keeps it, `""` clears it. */
   upsert: (
     projectId: string,
-    prompt: { id: string; message: string; tags?: string[] },
+    prompt: { id: string; message: string; tags?: string[]; target?: string },
   ) => Promise<ProjectAgentPrompt[]>;
   remove: (projectId: string, promptId: string) => Promise<ProjectAgentPrompt[]>;
   reorder: (projectId: string, ids: string[]) => Promise<ProjectAgentPrompt[]>;
@@ -147,7 +170,7 @@ export const useAgentPromptsStore = create<AgentPromptsStore>((set, get) => ({
   upsert: async (projectId, prompt) => {
     const prompts = await invoke<ProjectAgentPrompt[]>("agent_prompt_upsert", {
       projectId,
-      prompt: { id: prompt.id, message: prompt.message, tags: prompt.tags ?? null },
+      prompt: { id: prompt.id, message: prompt.message, tags: prompt.tags ?? null, target: prompt.target ?? null },
     });
     set((state) => ({ byProject: { ...state.byProject, [projectId]: prompts } }));
     return prompts;
@@ -212,7 +235,11 @@ export const useAgentPromptsStore = create<AgentPromptsStore>((set, get) => ({
   },
 
   link: async (projectId, link) => {
-    const links = await invoke<PromptLink[]>("agent_prompt_link_upsert", { projectId, link });
+    // An edge with no commands is sent without the key, the shape a backend
+    // predating edge commands still accepts.
+    const { preface, ...plain } = link;
+    const payload = preface?.length ? link : plain;
+    const links = await invoke<PromptLink[]>("agent_prompt_link_upsert", { projectId, link: payload });
     set((state) => ({ linksByProject: { ...state.linksByProject, [projectId]: links } }));
     return links;
   },

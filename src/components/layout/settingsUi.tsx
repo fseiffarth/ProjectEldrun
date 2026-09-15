@@ -1,4 +1,4 @@
-import type { ChangeEventHandler, ReactNode } from "react";
+import { useId, useState, type ChangeEventHandler, type ReactNode } from "react";
 import { Toggle } from "../common/Toggle";
 import { useT } from "../../lib/i18n";
 
@@ -17,6 +17,7 @@ import { useT } from "../../lib/i18n";
  *   `SettingRow`       a labelled control (+ its help) as a card
  *   `ToggleRow`        one switch line, for stacking several in one card
  *   `ToggleCard`       a single switch (+ its help) as a card
+ *   `SettingsAdvanced` a collapsed "Advanced options" fold at a panel's foot
  *
  * The rule of thumb: **help text belongs to a control, not to the scroll**.
  * Pass it as `help` so it renders inside that control's card; a loose
@@ -71,6 +72,48 @@ export function SettingsSection({
       {help && <p className="settings-help">{help}</p>}
       {children}
     </>
+  );
+}
+
+/** The one fold for rarely-touched settings, closed on every open of its
+ *  panel. Put it last in a panel's scroll, and put whole cards in it: it is a
+ *  demotion of controls most users never need, not a place to hide a warning.
+ *  The body is its own flex column (the scroll's gap does not reach inside a
+ *  wrapper), and it is unmounted while closed, so a card inside it costs
+ *  nothing until someone asks for it. */
+export function SettingsAdvanced({
+  title,
+  help,
+  children,
+}: {
+  title?: ReactNode;
+  help?: ReactNode;
+  children: ReactNode;
+}) {
+  const t = useT();
+  const [open, setOpen] = useState(false);
+  const bodyId = useId();
+  return (
+    <div className={`settings-advanced${open ? " open" : ""}`}>
+      <button
+        type="button"
+        className="settings-advanced-toggle"
+        aria-expanded={open}
+        aria-controls={bodyId}
+        onClick={() => setOpen((o) => !o)}
+      >
+        <span className="settings-advanced-chevron" aria-hidden="true">
+          ›
+        </span>
+        {title ?? t("settings.advancedOptions")}
+      </button>
+      {open && (
+        <div id={bodyId} className="settings-advanced-body">
+          {help && <p className="settings-help">{help}</p>}
+          {children}
+        </div>
+      )}
+    </div>
   );
 }
 

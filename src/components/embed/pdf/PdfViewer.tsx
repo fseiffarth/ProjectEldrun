@@ -15,7 +15,6 @@ import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import * as pdfjs from "pdfjs-dist";
 import type { PDFDocumentProxy } from "pdfjs-dist";
-import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { usePdfSyncStore } from "../../../stores/pdfSync";
 import { useScrollSync } from "../../../stores/scrollSync";
 import {
@@ -152,10 +151,6 @@ import {
   type CaretPhrase,
 } from "../../../lib/viewers/tex";
 import { useT, type TranslationKey } from "../../../lib/i18n";
-
-// pdf.js renders pages on a worker; point it at the bundled worker asset. Vite
-// emits a hashed URL that resolves in both dev and the packaged Tauri build.
-pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
 /** How often the open PDF re-checks its file's mtime for an on-disk change (a
  *  LaTeX recompile rewrites the very bytes this tab is showing). Mirrors the
@@ -1726,7 +1721,8 @@ function PdfCanvas({
   /** The blackout tool is armed — a drag over a page marks an area. */
   const [redacting, setRedacting] = useState(false);
   /** The region-capture mode is armed — a drag over a page writes that crop to
-   *  the native system clipboard (and into the project's screenshots/ folder).
+   *  the native system clipboard (and into the project's eldrun-screenshots/
+   *  folder).
    *  Armed by the global Screenshot app rather than a toolbar button: pressing
    *  Screenshot while a PDF is on screen means this document, at document
    *  sharpness, not a grab of the screen around it. Mutually exclusive with
@@ -1742,8 +1738,9 @@ function PdfCanvas({
     [],
   );
   // The project the viewed file belongs to (the longest project directory that is
-  // a prefix of `path`), so a capture files its PNG into the right screenshots/
-  // folder and the merge picker lists the right tree even in a detached window.
+  // a prefix of `path`), so a capture files its PNG into the right
+  // eldrun-screenshots/ folder and the merge picker lists the right tree even in
+  // a detached window.
   // It must stay project-scoped: the backend confines every write and read to the
   // scope's tree, so an arbitrary path would simply be refused.
   const pdfProjectDir = useMemo(() => {

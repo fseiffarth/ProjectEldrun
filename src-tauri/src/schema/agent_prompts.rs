@@ -29,6 +29,11 @@ pub struct ProjectAgentPrompt {
     /// than a pile: a prompt is found by what it is for, not only by its words.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
+    /// The agent tab (`scheduleTargetId`) the prompt chart aims this draft at.
+    /// Advisory: it becomes a rule only when the prompt is sent or scheduled,
+    /// and a target whose tab is gone is simply one the chart no longer knows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
 }
 
 /// A collected prompt that has been aimed at an agent tab, moved out of the
@@ -44,11 +49,19 @@ pub struct SentAgentPrompt {
     pub created_at: String,
     pub sent_at: String,
     pub tab_label: String,
-    /// The agent session the prompt was aimed at. Absent for a tab that has no
+    /// The agent session the prompt was aimed at — the LIVE one, read from the
+    /// hook's record at write time, so a prompt sent after a `/clear` is filed
+    /// under the conversation it actually reached. Absent for a tab that has no
     /// session id (a non-resumable agent), which is a fact worth showing rather
     /// than a blank to paper over.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
+    /// The tab the prompt went to: its launch id, which stays the same while
+    /// `session_id` rolls on `/clear` or `/resume`. What ties the sessions of
+    /// one tab together on the chart. Absent on rows written before it was
+    /// recorded, and for a tab without a session id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tab_id: Option<String>,
     /// The prefix commands submitted ahead of the message, if any.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub preface: Vec<String>,
@@ -87,6 +100,14 @@ pub struct SentAgentPrompt {
     pub files: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub files_at: Option<String>,
+    /// The model that answered the prompt, as the agent's own transcript names
+    /// it (`services::agent_session::agent_session_model`) — read with the
+    /// blame, once the tab is idle again, because that is the first moment the
+    /// transcript's last answer is *this* prompt's. The chart wears it as a
+    /// `model:` tag. Absent for an agent whose transcript Eldrun does not read,
+    /// and on rows written before it was recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 /// Send-time facts the frontend supplies; the service owns `sent_at` and
@@ -95,8 +116,14 @@ pub struct SentAgentPrompt {
 #[serde(deny_unknown_fields)]
 pub struct SentAgentPromptInput {
     pub tab_label: String,
+    /// The tab's session id as the frontend knows it — the LAUNCH id. The
+    /// service resolves it to the live id the hook recorded and keeps the
+    /// launch id as `tab_id`; a caller that already passes a live id gets it
+    /// stored as given.
     #[serde(default)]
     pub session_id: Option<String>,
+    #[serde(default)]
+    pub tab_id: Option<String>,
     #[serde(default)]
     pub preface: Vec<String>,
     #[serde(default)]
@@ -105,6 +132,11 @@ pub struct SentAgentPromptInput {
     pub result: Option<String>,
     #[serde(default)]
     pub scheduled_for: Option<String>,
+    /// When the prompt actually went, for one recorded after the fact — a
+    /// prompt typed into the terminal, adopted from the agent's transcript
+    /// with the transcript's own timestamp. Absent, the service stamps now.
+    #[serde(default)]
+    pub sent_at: Option<String>,
 }
 
 /// A prompt written straight onto the history without ever having been a
@@ -134,6 +166,10 @@ pub struct ProjectAgentPromptInput {
     /// included. A new prompt with `None` starts untagged.
     #[serde(default)]
     pub tags: Option<Vec<String>>,
+    /// Same three-way contract as `tags`: `None` leaves the target alone,
+    /// `Some("")` clears it, `Some(id)` sets it.
+    #[serde(default)]
+    pub target: Option<String>,
 }
 
 /// A visual/behavioural edge between two prompt cards. Endpoints name prompt
@@ -147,6 +183,12 @@ pub struct PromptLink {
     pub kind: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<String>,
+    /// The agent's own slash commands (`/clear`, …) an `after` edge submits
+    /// between the two prompts: carried onto the queued draft as its preface,
+    /// so the scheduler types them one at a time before the target's text.
+    /// Only an `after` edge has a delivery to put them behind.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub preface: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -158,6 +200,8 @@ pub struct PromptLinkInput {
     pub kind: String,
     #[serde(default)]
     pub target: Option<String>,
+    #[serde(default)]
+    pub preface: Vec<String>,
 }
 
 fn agent_prompts_version() -> u8 {
@@ -239,6 +283,8 @@ mod tests {
         assert_eq!(prompt.id, "a");
         assert_eq!(prompt.message, "hello");
         assert_eq!(prompt.tags, vec!["tests".to_string()]);
+        // A library written before drafts could be aimed reads back unaimed.
+        assert_eq!(prompt.target, None);
 
         let sent = &file.history["p1"][0];
         assert_eq!(sent.id, "b");

@@ -54,8 +54,12 @@ function replayOutput(id: string, totalMs = 1600) {
 
 // The same sustained output, but COMMANDED: the user typed into the tab first,
 // which is what lets it register as "working" at all.
+// The agent's first frame lands a moment after the keystroke: output inside
+// ECHO_MS (150) of input is the keystroke's own echo and is not the agent
+// saying anything.
 function sustainOutput(id: string, totalMs = 1600) {
   noteUserInput(id);
+  vi.advanceTimersByTime(200);
   replayOutput(id, totalMs);
 }
 
@@ -63,10 +67,9 @@ function sustainOutput(id: string, totalMs = 1600) {
 // them one after the other would let the first go stale (its last output ages
 // past BUSY_WINDOW_MS) while the second is still being fed.
 function sustainAll(ids: string[], totalMs = 1600) {
-  ids.forEach((id) => {
-    noteUserInput(id);
-    notePtyOutput(id, "working…\n");
-  });
+  ids.forEach((id) => noteUserInput(id));
+  vi.advanceTimersByTime(200);
+  ids.forEach((id) => notePtyOutput(id, "working…\n"));
   for (let elapsed = 0; elapsed < totalMs; elapsed += 400) {
     vi.advanceTimersByTime(400);
     ids.forEach((id) => notePtyOutput(id, "working…\n"));
@@ -119,12 +122,12 @@ describe("activity store running indicator", () => {
   });
 
   it("keeps a bursty stream working across a short quiet gap", () => {
-    // Gaps under BUSY_WINDOW_MS belong to the SAME burst, so they must not reset
+    // Gaps under TEXT_GAP_MS belong to the SAME burst, so they must not reset
     // the onset — otherwise bursty agent output could never age past the debounce
     // and the working indicator would never appear at all.
     noteUserInput("proj-a:agent-1");
     notePtyOutput("proj-a:agent-1"); // onset at t0
-    vi.advanceTimersByTime(700); // < BUSY_WINDOW_MS (800) → still one burst
+    vi.advanceTimersByTime(700); // < TEXT_GAP_MS (1500) → still one burst
     notePtyOutput("proj-a:agent-1");
     vi.advanceTimersByTime(700);
     notePtyOutput("proj-a:agent-1");
@@ -139,7 +142,7 @@ describe("activity store running indicator", () => {
     useActivityStore.getState().recompute();
     expect(useActivityStore.getState().busyByTab["proj-a:agent-1"]).toBe(true);
 
-    vi.advanceTimersByTime(900); // > BUSY_WINDOW_MS → the burst has ended
+    vi.advanceTimersByTime(1600); // > TEXT_GAP_MS (1500) → the burst has ended
     notePtyOutput("proj-a:agent-1"); // a fresh burst: onset restarts from here
     useActivityStore.getState().recompute();
     // Recent output, but the new burst has not been sustained — not working yet.
@@ -234,6 +237,25 @@ describe("activity store attention state", () => {
     useActivityStore.getState().recompute();
     expect(useActivityStore.getState().attentionByTab[id]).toBe("decision");
     expect(useActivityStore.getState().attentionByScope["proj-a"]).toBe("decision");
+  });
+
+  it("does not read Codex's idle dot animation as work", () => {
+    // Codex 0.154 animates a field of braille dots around its composer every
+    // ~150ms for as long as it sits idle. Visible cells, but decoration: a turn
+    // that ended must go quiet and finish, not stay "working" forever.
+    const id = "proj-a:agent-1";
+    runThenFinish(id);
+    for (let frame = 0; frame < 30; frame += 1) {
+      vi.advanceTimersByTime(150);
+      notePtyOutput(
+        id,
+        `\x1b[?2026h\x1b[16;${10 + frame}H\x1b[38;2;90;90;90;48;2;57;57;57m\u2801` +
+          "\x1b[16;40H\u2808\u2880 \x1b[18;53H\u2820\x1b[39m\x1b[49m\x1b[0m\x1b[?2026l",
+      );
+    }
+    useActivityStore.getState().recompute();
+    expect(useActivityStore.getState().busyByTab[id]).toBeUndefined();
+    expect(useActivityStore.getState().attentionByTab[id]).toBe("done");
   });
 
   it("never flags uncommanded output as done (resume/restart replay)", () => {
@@ -365,6 +387,36 @@ describe("activity store attention state", () => {
     vi.advanceTimersByTime(5000);
     useActivityStore.getState().recompute();
     expect(useActivityStore.getState().attentionByTab["proj-a:agent-1"]).toBeUndefined();
+  });
+
+  it("does not bring a read turn back when the idle agent merely repaints", () => {
+    // An idle Claude TUI still paints: a resize when its pane is hidden, a focus
+    // report, a status-line refresh. None of that is a new turn, so looking away
+    // after reading the result must not re-raise "done" a few seconds later.
+    useTabsStore.setState({ scope: "proj-a" });
+    runThenFinish("proj-a:agent-1");
+    useActivityStore.getState().recompute();
+    useTabsStore.setState({ scope: "proj-b" });
+
+    notePtyOutput("proj-a:agent-1", "\x1b[2J\x1b[H> \n  ? for shortcuts\n");
+    useActivityStore.getState().noteBell("proj-a:agent-1");
+    vi.advanceTimersByTime(3000);
+    notePtyOutput("proj-a:agent-1", "  ? for shortcuts\n");
+    vi.advanceTimersByTime(3000);
+    useActivityStore.getState().recompute();
+    expect(useActivityStore.getState().attentionByTab["proj-a:agent-1"]).toBeUndefined();
+  });
+
+  it("raises done again for a real turn finished after the user looked away", () => {
+    useTabsStore.setState({ scope: "proj-a" });
+    runThenFinish("proj-a:agent-1");
+    useActivityStore.getState().recompute();
+    useTabsStore.setState({ scope: "proj-b" });
+    useActivityStore.getState().recompute();
+
+    runThenFinish("proj-a:agent-1");
+    useActivityStore.getState().recompute();
+    expect(useActivityStore.getState().attentionByTab["proj-a:agent-1"]).toBe("done");
   });
 
   it("keeps flagging a decision on the tab the user IS looking at", () => {
@@ -626,10 +678,11 @@ describe("activity store per-scope status counts (pill status bars)", () => {
       { key: "agent-1", state: "working" },
     ]);
 
-    // 850ms + agent-2's own 1600ms of output leaves agent-1 quiet for 2450ms:
-    // past BUSY_WINDOW_MS (800) so it stops working, short of DONE_QUIET_MS
-    // (2500) so it raises no flag either — the tally is 1 working throughout.
-    vi.advanceTimersByTime(850);
+    // 600ms + agent-2's own 200ms echo gap + 1600ms of output leaves agent-1
+    // quiet for 2400ms: past BUSY_WINDOW_MS (800) so it stops working, short of
+    // DONE_QUIET_MS (2500) so it raises no flag either — the tally is 1 working
+    // throughout.
+    vi.advanceTimersByTime(600);
     sustainOutput("proj-a:agent-2");
     useActivityStore.getState().recompute();
     expect(useActivityStore.getState().statusCountsByScope["proj-a"]).toEqual({

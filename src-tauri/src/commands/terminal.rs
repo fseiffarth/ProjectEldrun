@@ -66,6 +66,13 @@ fn cwd_within(cwd: &str, allowed: &std::path::Path) -> bool {
     std::path::Path::new(cwd).starts_with(allowed)
 }
 
+/// Select the scope's root independently of a tab's working subdirectory.
+fn scope_root_for<'a>(local: &'a str, remote: Option<&'a str>, mirror: &'a str, box_folder: Option<&'a str>, local_only: bool) -> &'a str {
+    if let Some(folder) = box_folder { folder }
+    else if let Some(remote) = remote { if local_only { mirror } else { remote } }
+    else { local }
+}
+
 /// The VM tier's spawn-refusal decision (`docs/vm_projects_plan.md`), pure so
 /// the no-local-fallback guard is testable: for a VM project a local spawn is
 /// refused outright (the untrusted agent stepping outside the boundary, never
@@ -98,6 +105,14 @@ fn vm_spawn_refusal(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn scope_root_is_not_the_tab_cwd() {
+        assert_eq!(super::scope_root_for("local", None, "mirror", None, false), "local");
+        assert_eq!(super::scope_root_for("local", Some("host"), "mirror", None, false), "host");
+        assert_eq!(super::scope_root_for("local", Some("host"), "mirror", None, true), "mirror");
+        assert_eq!(super::scope_root_for("member", None, "mirror", Some("box"), false), "box");
+    }
+
     use super::*;
     use crate::schema::projects::ProjectEntry;
     use std::collections::HashMap;
@@ -310,6 +325,18 @@ pub async fn pty_spawn(
         }
     }
 
+    if let Some(pid) = opts.project_id.as_deref() {
+        let box_folder = crate::commands::boxes::box_id_of_scope(pid).and_then(|id|
+            crate::commands::boxes::get_boxes().ok()?.into_iter().find(|b| b.id == id)?.folder);
+        let remote = crate::services::remote::remote_target_for(pid);
+        let local = crate::services::sandbox::project_dir_for(pid).unwrap_or_default();
+        let mirror = crate::services::remote_sync::mirror_dir(pid).to_string_lossy().into_owned();
+        let root = scope_root_for(&local, remote.as_ref().map(|r| r.spec.remote_path.as_str()), &mirror, box_folder.as_deref(), opts.local_only);
+        if !root.is_empty() {
+            opts.env.entry("ELDRUN_PROJECT_DIR".into()).or_insert_with(|| root.into());
+        }
+    }
+
     // Resolve agent-session resume args (Claude `--resume`, Codex `resume …`)
     // BEFORE any ssh wrapping. `wrap_pty_options` rewrites `opts.cmd` to "ssh",
     // after which the resolver (which dispatches on `cmd == "claude"|"codex"`)
@@ -331,6 +358,11 @@ pub async fn pty_spawn(
             .project_id
             .as_deref()
             .is_some_and(|id| crate::services::remote::remote_target_for(id).is_some());
+    let resume_claim = if opts.cmd == "codex" && !remote_agent_run {
+        crate::services::codex_bind::reserve_resume(&mut opts)
+    } else {
+        None
+    };
     let agent_spawn = crate::services::agent_fence::is_agent(&opts);
     let fence_roots = if agent_spawn && !remote_agent_run {
         Some(
@@ -362,6 +394,13 @@ pub async fn pty_spawn(
             .cloned()
             .unwrap_or_else(|| std::path::PathBuf::from(&opts.cwd));
         crate::services::agent_fence::add_box_root_args(&mut opts, roots, &own);
+    }
+
+    // The agent's hooks report its turn state under its tab uid; bind that uid
+    // to this PTY so the report reaches the tab's own marks, and drop any
+    // record a previous run of the same tab left behind (see agent_turn).
+    if let Some(uid) = opts.env.get("ELDRUN_TAB_UID").cloned() {
+        crate::services::agent_turn::bind_tab(&uid, &opts.id, opts.project_id.as_deref());
     }
 
     // Codex resume, without the hook. Codex will not run Eldrun's SessionStart
@@ -561,6 +600,9 @@ pub async fn pty_spawn(
 
     let result = crate::terminal::spawn_pty(app, registry.inner().clone(), opts);
     if result.is_ok() {
+        if let Some(claim) = resume_claim {
+            claim.keep();
+        }
         if let Some((tab_id, scope_id)) = fenced_registration {
             crate::services::agent_fence::register_tab(&tab_id, &scope_id);
         }
@@ -764,6 +806,7 @@ pub async fn pty_kill(registry: State<'_, RegistryState>, id: String) -> Result<
     crate::commands::credentials::forget_login_pty(&id);
     registry.lock().unwrap().kill(&id);
     crate::services::agent_fence::on_tab_gone(&id);
+    crate::services::agent_turn::on_tab_gone(&id);
     Ok(())
 }
 
@@ -781,6 +824,7 @@ pub async fn pty_kill_scope(
         crate::terminal::route_remove_all_views(id);
         registry.lock().unwrap().kill(id);
         crate::services::agent_fence::on_tab_gone(id);
+        crate::services::agent_turn::on_tab_gone(id);
     }
     Ok(ids)
 }

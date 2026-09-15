@@ -384,17 +384,21 @@ pub fn docker_exec_args(
     ];
     for (k, v) in env {
         a.push("-e".to_string());
-        a.push(format!("{k}={v}"));
+        let value = if k == "ELDRUN_PROJECT_DIR" { container_path(v) } else { v.clone() };
+        a.push(format!("{k}={value}"));
     }
     for (k, v) in auth_env {
         a.push("-e".to_string());
-        a.push(format!("{k}={v}"));
+        let value = if k == "ELDRUN_PROJECT_DIR" { container_path(v) } else { v.clone() };
+        a.push(format!("{k}={value}"));
     }
     a.push(name.to_string());
     a.push("sh".to_string());
     a.push("-c".to_string());
     // `pidfile` is built from sanitize_key output — shell-safe by construction.
-    a.push(format!("echo $$ > {pidfile}; exec \"$@\""));
+    let bin = container_path(&crate::services::agent_bin::bin_dir().to_string_lossy());
+    let bin = bin.replace('\'', "'\"'\"'");
+    a.push(format!("export PATH='{bin}':\"$PATH\"; echo $$ > {pidfile}; exec \"$@\""));
     a.push("sh".to_string());
     a.push(cmd.to_string());
     a.extend(cmd_args.iter().cloned());
@@ -911,6 +915,9 @@ pub fn up(
         );
         ro_mounts.extend(ro_mounts_for_hooks(&hooks_dir));
     }
+    let bin = crate::services::agent_bin::bin_dir();
+    std::fs::create_dir_all(&bin).map_err(|e| e.to_string())?;
+    ro_mounts.push(format!("{0}:{0}", bin.to_string_lossy()));
     let harden = harden_opts(spec);
     let image = image_for(project_id, spec);
 
@@ -2272,9 +2279,9 @@ fn staged_claude_json_copy(
         .replace(['/', '\\', ':'], "_");
     let dst = stage.join(&leaf);
     // The refresh below overwrites whatever the last tab left here, so take the
-    // trust answers out of it first — see [`agent_trust_path`] for why they
-    // cannot simply stay in the stage.
-    harvest_claude_trust_file(&dst);
+    // trust answers and carried preferences out of it first — see
+    // [`agent_trust_path`] for why they cannot simply stay in the stage.
+    harvest_claude_staged_copy(&dst);
     let mut value: serde_json::Value = std::fs::read(src_path)
         .ok()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
@@ -2287,6 +2294,7 @@ fn staged_claude_json_copy(
         });
     }
     apply_recorded_trust(&mut value, roots);
+    apply_recorded_claude_prefs(&mut value);
     let body = serde_json::to_vec(&value).ok()?;
     std::fs::write(&dst, body).ok()?;
     Some((dst.to_string_lossy().into_owned(), src))
@@ -2310,15 +2318,33 @@ fn staged_claude_json_copy(
 /// staged copy. The host `~/.claude.json` is never written — that is the rule
 /// this whole shadow exists to keep (`AGENTS.md`: Eldrun must never manipulate
 /// another application's config).
+///
+/// The same file carries the few *preferences* Claude keeps in `~/.claude.json`
+/// that the user toggles from inside a tab ([`CLAUDE_CARRIED_PREFS`]). They
+/// suffer the identical amnesia: Claude's fullscreen layout opens its diff
+/// sidebar by itself once a session has changes, and closing it records
+/// `diffSidebarOpen: false` so it stays closed — into the stage copy, which the
+/// next spawn rewrites from the host. So the grey "No changes this session"
+/// panel came back in every new tab, and nothing the user did inside one could
+/// stop it.
 fn agent_trust_path() -> PathBuf {
     storage::state_dir().join("agent_trust.json")
 }
+
+/// Top-level `~/.claude.json` keys whose value, once Claude writes it inside a
+/// fenced or contained tab, is carried into every later staged copy. Only
+/// user-facing toggles belong here — never identity, permissions, or anything
+/// a compromised agent could turn into standing authority for other sessions.
+const CLAUDE_CARRIED_PREFS: &[&str] = &["diffSidebarOpen"];
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct AgentTrust {
     /// Absolute working directories accepted for Claude, in the order seen.
     #[serde(default)]
     claude: Vec<String>,
+    /// The [`CLAUDE_CARRIED_PREFS`] values last seen in a staged copy.
+    #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
+    claude_prefs: serde_json::Map<String, serde_json::Value>,
 }
 
 fn read_agent_trust() -> AgentTrust {
@@ -2365,9 +2391,10 @@ fn accepted_trust_paths(value: &serde_json::Value) -> Vec<String> {
         .collect()
 }
 
-/// Take the trust answers out of one staged `.claude.json` copy before it is
-/// overwritten or deleted. No-op for a missing or unparsable file.
-fn harvest_claude_trust_file(staged: &Path) {
+/// Take the trust answers and the carried preferences out of one staged
+/// `.claude.json` copy before it is overwritten or deleted. No-op for a missing
+/// or unparsable file.
+fn harvest_claude_staged_copy(staged: &Path) {
     let Ok(bytes) = std::fs::read(staged) else {
         return;
     };
@@ -2375,9 +2402,67 @@ fn harvest_claude_trust_file(staged: &Path) {
         return;
     };
     record_claude_trust(&accepted_trust_paths(&value));
+    record_claude_prefs(carried_claude_prefs(&value));
 }
 
-/// Startup counterpart to [`harvest_claude_trust_file`]: every stage dir's
+/// The [`CLAUDE_CARRIED_PREFS`] entries a `.claude.json`-shaped value holds.
+/// Anything else in the file — and the whole file when it is not an object —
+/// is ignored, so a staged copy an agent rewrote cannot smuggle a key in.
+fn carried_claude_prefs(value: &serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
+    let mut prefs = serde_json::Map::new();
+    let Some(obj) = value.as_object() else {
+        return prefs;
+    };
+    for key in CLAUDE_CARRIED_PREFS {
+        if let Some(v) = obj.get(*key) {
+            prefs.insert((*key).to_string(), v.clone());
+        }
+    }
+    prefs
+}
+
+/// Remember `prefs` (already filtered by [`carried_claude_prefs`]); a key the
+/// copy no longer has keeps its last recorded value.
+fn record_claude_prefs(prefs: serde_json::Map<String, serde_json::Value>) {
+    if prefs.is_empty() {
+        return;
+    }
+    let _ = storage::patch_json(&agent_trust_path(), AgentTrust::default(), |trust| {
+        for (key, value) in prefs {
+            trust.claude_prefs.insert(key, value);
+        }
+        Ok(())
+    });
+}
+
+/// Put the recorded preferences into a staged copy, over whatever the host
+/// file says: the tab is where the user last toggled them, and a value Claude
+/// wrote in an unfenced session cannot be told apart by mtime from the file's
+/// constant bookkeeping rewrites.
+fn apply_recorded_claude_prefs(value: &mut serde_json::Value) {
+    apply_claude_prefs(value, &read_agent_trust().claude_prefs);
+}
+
+/// Pure core of [`apply_recorded_claude_prefs`]. Re-filtered against
+/// [`CLAUDE_CARRIED_PREFS`] so an edited state file cannot widen the set.
+fn apply_claude_prefs(
+    value: &mut serde_json::Value,
+    prefs: &serde_json::Map<String, serde_json::Value>,
+) {
+    if prefs.is_empty() {
+        return;
+    }
+    let Some(obj) = value.as_object_mut() else {
+        return;
+    };
+    for key in CLAUDE_CARRIED_PREFS {
+        if let Some(v) = prefs.get(*key) {
+            obj.insert((*key).to_string(), v.clone());
+        }
+    }
+}
+
+/// Startup counterpart to [`harvest_claude_staged_copy`]: every stage dir's
 /// staged `.claude.json` copies, harvested before the stage root is cleared.
 /// A clean quit leaves the last tab's answer in the stage, so without this it
 /// would be wiped by the very next launch.
@@ -2394,7 +2479,7 @@ fn harvest_all_claude_trust() {
             // the `.claude.json` copies (`<escaped host path>` + that suffix)
             // carry a `projects` map.
             if file.file_name().to_string_lossy().ends_with(".claude.json") {
-                harvest_claude_trust_file(&file.path());
+                harvest_claude_staged_copy(&file.path());
             }
         }
     }
@@ -2891,10 +2976,9 @@ mod tests {
         // Kill-wrapper shape: name, sh -c '<pidfile script>' sh <cmd> <args…>.
         assert_eq!(out[name + 1], "sh");
         assert_eq!(out[name + 2], "-c");
-        assert_eq!(
-            out[name + 3],
-            "echo $$ > /tmp/eldrun-tab-t1-0.pid; exec \"$@\""
-        );
+        assert!(out[name + 3].starts_with("export PATH='"));
+        assert!(out[name + 3].contains("/bin"));
+        assert!(out[name + 3].ends_with("echo $$ > /tmp/eldrun-tab-t1-0.pid; exec \"$@\""));
         assert_eq!(out[name + 4], "sh");
         // Original command + resume args preserved in order after the wrapper.
         assert_eq!(&out[name + 5..], &["claude", "--resume", "uuid-1"]);
@@ -3187,6 +3271,55 @@ mod tests {
         // A non-object staged file is left alone rather than indexed into.
         let mut weird = serde_json::json!([1, 2]);
         apply_trust_paths(&mut weird, &trusted, &roots);
+        assert_eq!(weird, serde_json::json!([1, 2]));
+    }
+
+    #[test]
+    fn carried_claude_prefs_take_only_the_listed_keys() {
+        let value = serde_json::json!({
+            "diffSidebarOpen": false,
+            "oauthAccount": {"emailAddress": "u@example.org"},
+            "hasCompletedOnboarding": true,
+            "projects": {"/home/u/work/p": {"allowedTools": ["Bash"]}},
+        });
+        let prefs = carried_claude_prefs(&value);
+        assert_eq!(prefs.len(), 1, "got: {prefs:?}");
+        assert_eq!(prefs["diffSidebarOpen"], false);
+        // A copy without the key records nothing (so the last answer stands),
+        // and a non-object file is ignored rather than indexed into.
+        assert!(carried_claude_prefs(&serde_json::json!({"theme": "dark"})).is_empty());
+        assert!(carried_claude_prefs(&serde_json::json!([1, 2])).is_empty());
+    }
+
+    #[test]
+    fn recorded_claude_prefs_overwrite_the_staged_copy_and_nothing_else() {
+        let mut recorded = serde_json::Map::new();
+        recorded.insert("diffSidebarOpen".to_string(), serde_json::json!(false));
+        // An edited state file cannot widen the set past the allow-list.
+        recorded.insert("hasCompletedOnboarding".to_string(), serde_json::json!(false));
+        recorded.insert("apiKeyHelper".to_string(), serde_json::json!("evil"));
+        let mut value = serde_json::json!({
+            "diffSidebarOpen": true,
+            "hasCompletedOnboarding": true,
+            "oauthAccount": {"emailAddress": "u@example.org"},
+        });
+        apply_claude_prefs(&mut value, &recorded);
+        assert_eq!(value["diffSidebarOpen"], false, "the tab's answer wins over the host's");
+        assert_eq!(value["hasCompletedOnboarding"], true);
+        assert!(value.get("apiKeyHelper").is_none());
+        assert_eq!(value["oauthAccount"]["emailAddress"], "u@example.org");
+        // A key the host file never had is created, since that is exactly the
+        // case in which Claude re-opens the sidebar on its own.
+        let mut fresh = serde_json::json!({});
+        apply_claude_prefs(&mut fresh, &recorded);
+        assert_eq!(fresh, serde_json::json!({"diffSidebarOpen": false}));
+        // Nothing recorded leaves a staged `{}` byte-identical, and a non-object
+        // file is left alone.
+        let mut empty = serde_json::json!({});
+        apply_claude_prefs(&mut empty, &serde_json::Map::new());
+        assert_eq!(empty, serde_json::json!({}));
+        let mut weird = serde_json::json!([1, 2]);
+        apply_claude_prefs(&mut weird, &recorded);
         assert_eq!(weird, serde_json::json!([1, 2]));
     }
 

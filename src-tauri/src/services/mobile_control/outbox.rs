@@ -1,49 +1,35 @@
-//! The project → phone picture box: what an agent shows on the phone.
+//! Explicit project → phone files, published into `.eldrun/outbox/`.
 //!
-//! The mirror of `inbox.rs`. A terminal carries no pictures, so an agent that
-//! wants the phone to *see* an image — a screenshot it took, a plot it
-//! rendered, a diagram it read — copies the file into the project's own
-//! `.eldrun/outbox/` (git-ignored, hidden from the tree, skipped by sync, and
-//! inside the roots the agent fence lets it write). The Focus view lists that
-//! folder and renders the images inline, the way a vendor's remote app shows
-//! the image its agent just read. Nothing detects images in terminal text: a
-//! path printed by the session is a guess, and Focus classifies nothing.
-//!
-//! The project tree is attacker-controlled by policy (`AGENTS.md`), so the
-//! read is as defensive as the inbox write: the folder must canonicalize
-//! *below* the project root (a planted `.eldrun` symlink cannot point the
-//! phone at another directory), symlinks *inside* it are never followed (one
-//! pointing at a picture elsewhere on the host would leak it), a file is
-//! served only when its **bytes** are an image the browser renders — the
-//! extension decides nothing, and SVG, which can carry script, is not an
-//! image here — and the name that crosses to the phone is a leaf drawn from
-//! the inbox's safe alphabet. The phone never names a path, only a leaf.
+//! Only safe leaf names of bounded, non-symlink regular files cross the API.
+//! The directory must resolve below its project root. Types come from bytes:
+//! images/PDF, inert UTF-8 text (including HTML/SVG), or attachment downloads.
+//! Nothing detects terminal paths or copies files on the agent's behalf.
 
 use std::{
     fs,
-    io::Read,
+    io::{Read, Seek},
     path::Path,
     time::{SystemTime, UNIX_EPOCH},
 };
 
-/// Project-relative directory an agent puts pictures for the phone in.
+/// Project-relative directory an agent puts files for the phone in.
 pub const OUTBOX_DIR: &str = ".eldrun/outbox";
-/// One picture the phone will load. The inbox's ceiling, for the same reason:
+/// One file the phone will load. The inbox's ceiling, for the same reason:
 /// a screenshot or a plot is a few MiB; a raw camera dump is not a message.
-pub const MAX_OUTBOX_IMAGE: u64 = 24 * 1024 * 1024;
-/// How many pictures the listing returns, newest first — a strip on a phone,
+pub const MAX_OUTBOX_FILE: u64 = 24 * 1024 * 1024;
+/// How many files the listing returns, newest first — a strip on a phone,
 /// not a gallery, and a folder nobody prunes must stay cheap to list.
 pub const MAX_LISTED: usize = 40;
 /// The longest leaf that crosses.
 const MAX_NAME: usize = 120;
 /// Enough of a file to tell its format.
-const SNIFF_BYTES: usize = 16;
+const SNIFF_BYTES: usize = 4096;
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-pub struct OutboxImage {
+pub struct OutboxFile {
     /// The leaf the phone asks for again — the file name, validated.
     pub name: String,
-    /// `image/png`, `image/jpeg`, `image/gif` or `image/webp`, from the bytes.
+    /// Closed media type determined by the bytes, never by the extension.
     pub kind: &'static str,
     pub size: u64,
     /// Unix seconds of the file's mtime — ordering, and "just now" on the phone.
@@ -54,7 +40,7 @@ pub struct OutboxImage {
 pub enum OutboxError {
     /// The project root is gone, or the outbox does not resolve below it.
     Unavailable,
-    /// No such name, or it names something that is not a servable image.
+    /// No such name, or it names something that is not a servable file.
     NotFound,
     Io(String),
 }
@@ -64,7 +50,7 @@ impl OutboxError {
     pub fn code(&self) -> &'static str {
         match self {
             OutboxError::Unavailable => "project_unavailable",
-            OutboxError::NotFound => "image_not_found",
+            OutboxError::NotFound => "file_not_found",
             OutboxError::Io(_) => "read_failed",
         }
     }
@@ -94,9 +80,23 @@ pub fn sniff(head: &[u8]) -> Option<&'static str> {
         Some("image/gif")
     } else if head.len() >= 12 && head.starts_with(b"RIFF") && &head[8..12] == b"WEBP" {
         Some("image/webp")
+    } else if head.starts_with(b"%PDF-") {
+        Some("application/pdf")
     } else {
         None
     }
+}
+
+/// Active formats such as HTML/SVG/JS are always inert text. A UTF-8
+/// sequence cut by the bounded head read is accepted only at that boundary.
+pub fn classify(head: &[u8]) -> &'static str {
+    if let Some(kind) = sniff(head) { return kind; }
+    let utf8 = match std::str::from_utf8(head) {
+        Ok(_) => true,
+        Err(e) => head.len() == SNIFF_BYTES && e.error_len().is_none(),
+    };
+    if utf8 && !head.contains(&0) { "text/plain; charset=utf-8" }
+    else { "application/octet-stream" }
 }
 
 /// The outbox directory, proven to sit below the project root — or `None`
@@ -111,16 +111,16 @@ fn outbox_dir(root: &Path) -> Result<Option<std::path::PathBuf>, OutboxError> {
     }
     let canonical_root = root.canonicalize().map_err(|_| OutboxError::Unavailable)?;
     let canonical_dir = dir.canonicalize().map_err(|_| OutboxError::Unavailable)?;
-    if !canonical_dir.starts_with(&canonical_root) || !canonical_dir.is_dir() {
+    if canonical_dir == canonical_root || !canonical_dir.starts_with(&canonical_root) || !canonical_dir.is_dir() {
         return Err(OutboxError::Unavailable);
     }
     Ok(Some(canonical_dir))
 }
 
 /// Reads the first bytes of a regular, non-symlink, bounded file under the
-/// outbox and says what image it is — or `None` for anything the phone must
+/// outbox and classifies its media type — or `None` for anything the phone must
 /// not be handed.
-fn probe(dir: &Path, name: &str) -> Option<(fs::Metadata, &'static str)> {
+fn probe(dir: &Path, name: &str) -> Option<(fs::File, fs::Metadata, &'static str)> {
     if !valid_name(name) {
         return None;
     }
@@ -128,11 +128,25 @@ fn probe(dir: &Path, name: &str) -> Option<(fs::Metadata, &'static str)> {
     // `symlink_metadata` does not follow: a link inside the outbox is refused
     // as such, wherever it points.
     let meta = fs::symlink_metadata(&path).ok()?;
-    if !meta.is_file() || meta.len() == 0 || meta.len() > MAX_OUTBOX_IMAGE {
+    if !meta.is_file() || meta.len() == 0 || meta.len() > MAX_OUTBOX_FILE {
+        return None;
+    }
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)] {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    #[cfg(windows)] {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.custom_flags(0x0020_0000); // FILE_FLAG_OPEN_REPARSE_POINT
+    }
+    let mut file = options.open(&path).ok()?;
+    let meta = file.metadata().ok()?;
+    if !meta.is_file() || meta.len() == 0 || meta.len() > MAX_OUTBOX_FILE {
         return None;
     }
     let mut head = [0u8; SNIFF_BYTES];
-    let mut file = fs::File::open(&path).ok()?;
     let mut filled = 0;
     while filled < SNIFF_BYTES {
         match file.read(&mut head[filled..]) {
@@ -141,19 +155,19 @@ fn probe(dir: &Path, name: &str) -> Option<(fs::Metadata, &'static str)> {
             Err(_) => return None,
         }
     }
-    let kind = sniff(&head[..filled])?;
-    Some((meta, kind))
+    let kind = classify(&head[..filled]);
+    Some((file, meta, kind))
 }
 
 fn unix_secs(time: SystemTime) -> u64 {
     time.duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
-/// The images in `root/.eldrun/outbox/`, newest first, at most `MAX_LISTED`.
+/// The files in `root/.eldrun/outbox/`, newest first, at most `MAX_LISTED`.
 /// A project without an outbox lists nothing. Files that are not servable
-/// images are left out silently — the folder is the agent's to fill and the
+/// files are left out silently — the folder is the agent's to fill and the
 /// listing is what the phone can actually show.
-pub fn list(root: &Path) -> Result<Vec<OutboxImage>, OutboxError> {
+pub fn list(root: &Path) -> Result<Vec<OutboxFile>, OutboxError> {
     let Some(dir) = outbox_dir(root)? else {
         return Ok(Vec::new());
     };
@@ -163,10 +177,10 @@ pub fn list(root: &Path) -> Result<Vec<OutboxImage>, OutboxError> {
         let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
             continue;
         };
-        let Some((meta, kind)) = probe(&dir, &name) else {
+        let Some((_file, meta, kind)) = probe(&dir, &name) else {
             continue;
         };
-        images.push(OutboxImage {
+        images.push(OutboxFile {
             name,
             kind,
             size: meta.len(),
@@ -178,21 +192,23 @@ pub fn list(root: &Path) -> Result<Vec<OutboxImage>, OutboxError> {
     Ok(images)
 }
 
-/// One image's bytes and media type, by the leaf the listing handed out.
+/// One file's bytes and media type, by the leaf the listing handed out.
 pub fn read(root: &Path, name: &str) -> Result<(Vec<u8>, &'static str), OutboxError> {
     let Some(dir) = outbox_dir(root)? else {
         return Err(OutboxError::NotFound);
     };
-    let Some((meta, kind)) = probe(&dir, name) else {
+    let Some((mut file, meta, _kind)) = probe(&dir, name) else {
         return Err(OutboxError::NotFound);
     };
-    let path = dir.join(name);
     let mut bytes = Vec::with_capacity(meta.len() as usize);
-    // Bounded again on the way in: the size was read before the file was,
-    // and a file growing under the read must not grow the response.
-    fs::File::open(&path)
-        .and_then(|file| file.take(MAX_OUTBOX_IMAGE).read_to_end(&mut bytes))
+    // Keep the already validated descriptor: never reopen a replaceable leaf.
+    file.rewind().map_err(|_| OutboxError::NotFound)?;
+    file.take(MAX_OUTBOX_FILE + 1).read_to_end(&mut bytes)
         .map_err(|e| OutboxError::Io(e.to_string()))?;
+    if bytes.is_empty() || bytes.len() as u64 > MAX_OUTBOX_FILE {
+        return Err(OutboxError::NotFound);
+    }
+    let kind = classify(&bytes[..bytes.len().min(SNIFF_BYTES)]);
     Ok((bytes, kind))
 }
 
@@ -224,7 +240,15 @@ mod tests {
         assert_eq!(sniff(b"GIF89a\x01\x00"), Some("image/gif"));
         assert_eq!(sniff(b"RIFF\x10\0\0\0WEBPVP8 "), Some("image/webp"));
         assert_eq!(sniff(b"<svg xmlns=\"http://www.w3.org/2000/svg\">"), None);
-        assert_eq!(sniff(b"%PDF-1.7"), None);
+        assert_eq!(classify(b"%PDF-1.7"), "application/pdf");
+        assert_eq!(classify(b"<svg onload='alert(1)'/>"), "text/plain; charset=utf-8");
+        assert_eq!(classify(b"<html><script>alert(1)</script>"), "text/plain; charset=utf-8");
+        assert_eq!(classify(b"PK\0\x01"), "application/octet-stream");
+        assert_eq!(classify(b"\xff"), "application/octet-stream");
+        let mut head = vec![b'a'; SNIFF_BYTES];
+        head[SNIFF_BYTES - 1] = 0xc3;
+        assert_eq!(classify(&head), "text/plain; charset=utf-8");
+        assert_eq!(classify(b"a\xc3"), "application/octet-stream");
         assert_eq!(sniff(b"\x89PN"), None);
         assert_eq!(sniff(b""), None);
     }
@@ -252,12 +276,12 @@ mod tests {
     }
 
     #[test]
-    fn images_list_newest_first_and_only_real_images_by_a_safe_name() {
+    fn files_list_newest_first_by_safe_name() {
         let dir = tempfile::tempdir().unwrap();
         let box_dir = outbox(dir.path());
         touch(&box_dir, "old.png", PNG, Duration::from_secs(3_600));
         touch(&box_dir, "new.jpg", JPEG, Duration::from_secs(60));
-        // The extension says image; the bytes say text. Not listed.
+        // The extension says image; the bytes say inert text.
         touch(&box_dir, "fake.png", b"hello, not a picture", Duration::from_secs(10));
         // Script can hide in an SVG; it is not an image here.
         touch(&box_dir, "vector.svg", b"<svg onload=\"alert(1)\"/>", Duration::from_secs(10));
@@ -268,15 +292,15 @@ mod tests {
 
         let listed = list(dir.path()).unwrap();
         let names: Vec<&str> = listed.iter().map(|i| i.name.as_str()).collect();
-        assert_eq!(names, ["new.jpg", "old.png"]);
-        assert_eq!(listed[0].kind, "image/jpeg");
-        assert_eq!(listed[0].size, JPEG.len() as u64);
-        assert!(listed[0].modified > listed[1].modified);
+        assert_eq!(names, ["vector.svg", "fake.png", "new.jpg", "old.png"]);
+        assert_eq!(listed[2].kind, "image/jpeg");
+        assert_eq!(listed[2].size, JPEG.len() as u64);
+        assert!(listed[2].modified > listed[3].modified);
 
         let (bytes, kind) = read(dir.path(), "old.png").unwrap();
         assert_eq!(bytes, PNG);
         assert_eq!(kind, "image/png");
-        for refused in ["fake.png", "vector.svg", "empty.png", ".hidden.png", "with space.png", "folder.png", "../old.png", "gone.png"] {
+        for refused in ["empty.png", ".hidden.png", "with space.png", "folder.png", "../old.png", "gone.png"] {
             assert_eq!(read(dir.path(), refused), Err(OutboxError::NotFound), "{refused}");
         }
     }
@@ -294,12 +318,12 @@ mod tests {
     }
 
     #[test]
-    fn an_oversized_file_is_not_an_image_here() {
+    fn an_oversized_file_is_not_served() {
         let dir = tempfile::tempdir().unwrap();
         let box_dir = outbox(dir.path());
         let path = box_dir.join("huge.png");
         let file = fs::File::create(&path).unwrap();
-        file.set_len(MAX_OUTBOX_IMAGE + 1).unwrap();
+        file.set_len(MAX_OUTBOX_FILE + 1).unwrap();
         drop(file);
         // A sparse file: the header is zeros, so it would fail the sniff too —
         // make it a real PNG header to prove the size alone refuses it.
@@ -326,6 +350,13 @@ mod tests {
         let names: Vec<String> = list(&root).unwrap().into_iter().map(|i| i.name).collect();
         assert_eq!(names, ["own.png"]);
         assert_eq!(read(&root, "leak.png"), Err(OutboxError::NotFound));
+
+        // Resolving to the root itself is not below it: it must not turn
+        // the outbox route into a listing of every file in the project.
+        let root = dir.path().join("root-alias");
+        fs::create_dir_all(root.join(".eldrun")).unwrap();
+        std::os::unix::fs::symlink(&root, root.join(OUTBOX_DIR)).unwrap();
+        assert_eq!(list(&root), Err(OutboxError::Unavailable));
 
         // The outbox itself as a link out of the project.
         let root = dir.path().join("linked-dir");

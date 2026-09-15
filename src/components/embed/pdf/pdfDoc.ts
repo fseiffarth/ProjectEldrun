@@ -22,6 +22,7 @@ import {
 import type { PDFContext, PDFPage } from "pdf-lib";
 import * as pdfjs from "pdfjs-dist";
 import type { PDFDocumentProxy } from "pdfjs-dist";
+import { loadPdf } from "../../../lib/viewers/pdfLoad";
 import type { PageList, PageRef, PdfNote, SourceId } from "../../../lib/viewers/pageModel";
 import { isHighlight } from "../../../lib/viewers/pdfNotes";
 import {
@@ -78,7 +79,7 @@ export async function openSource(
   // One copy for pdf.js to detach, one to keep — unless the caller said where the
   // bytes can be found again, in which case the copy is what we are avoiding.
   const pristine = opts.reread ? undefined : bytes.slice();
-  const doc = await pdfjs.getDocument({ data: bytes }).promise;
+  const doc = await loadPdf(bytes);
   return { ...(pristine ? { bytes: pristine } : {}), ...opts, doc };
 }
 

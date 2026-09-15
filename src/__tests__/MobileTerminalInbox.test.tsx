@@ -68,12 +68,15 @@ function jsonResponse(status: number, body: unknown) {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 }
 
-/** The outbox poll the screen runs on mount answers empty here and stays out
- * of the counted calls — these tests are about the inbox. */
+/** The outbox poll and the stored-session read the screen runs on mount
+ * answer empty here and stay out of the counted calls — these tests are
+ * about the inbox. */
 function routeOutbox(inner: (url: string, init?: RequestInit) => Promise<Response>) {
   return (url: string, init?: RequestInit) => url.endsWith("/outbox")
     ? Promise.resolve(jsonResponse(200, { images: [] }))
-    : inner(url, init);
+    : url.includes("/transcript")
+      ? Promise.resolve(jsonResponse(200, { transcript: { available: false, reason: "no_session", entries: [], truncated: false } }))
+      : inner(url, init);
 }
 
 const fileInput = () => screen.getByTestId("inbox-file-input") as HTMLInputElement;
@@ -90,6 +93,10 @@ describe("Eldrun Mobile composer + and the frozen reading view", () => {
     terminalState.lines = [];
     FakeWebSocket.instances = [];
     vi.stubGlobal("WebSocket", FakeWebSocket);
+    // These read the Focus view; the phone opens on Terminal until the
+    // reader chose Focus for the agent, so the stored choice is preset.
+    localStorage.setItem("eldrun.mobile.view.agent", "focus");
+    localStorage.setItem("eldrun.mobile.view.shell", "focus");
     Object.defineProperty(HTMLElement.prototype, "scrollTo", { configurable: true, value: vi.fn() });
   });
 

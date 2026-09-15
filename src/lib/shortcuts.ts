@@ -49,7 +49,8 @@ export type ShortcutAction =
   | "cycleProjectBack"
   | "shortcutHelp"
   | "texUp"
-  | "texBack";
+  | "texBack"
+  | "texCompile";
 
 /** Section ids for the cheat-sheet/settings grouping (`SHORTCUT_GROUPS`). */
 export type ShortcutGroup = "navigation" | "tabs" | "steering" | "tex";
@@ -204,6 +205,18 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
     labelKey: "shortcut.texBack",
     group: "tex",
     default: { key: "ArrowDown", ctrl: true, shift: true },
+    untested: true,
+  },
+  // The build itself. Listened for the same way as the two navigation steps
+  // above — on the TeX pane's own root, not in `useKeyboard` — because a
+  // compile is asked for from inside the editor's textarea, exactly where the
+  // global hook's editable-target guard drops a chord. Ctrl+Shift+B is VS
+  // Code's "run build task" and collides with nothing else in this table.
+  {
+    action: "texCompile",
+    labelKey: "shortcut.texCompile",
+    group: "tex",
+    default: { key: "b", ctrl: true, shift: true },
     untested: true,
   },
 ];

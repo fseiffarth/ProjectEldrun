@@ -123,6 +123,11 @@ export interface RendererMemory {
   shmem_kib: number;
   /** Largest mappings by kernel name (`[anon]`, `[heap]`, a library, `memfd:…`), largest first. */
   top: { name: string; rss_kib: number }[];
+  /** The process's thread count — absent on a backend that predates it. A
+   *  renderer with hundreds of threads is a page leaking Workers (pdf.js spawns
+   *  one per document, 2026-09-08), which no mapping name can say: a dead
+   *  worker's heap and a canvas are both `[anon]`. */
+  threads?: number;
 }
 
 /**
@@ -138,8 +143,9 @@ export function formatRendererMemory(m: RendererMemory): string {
     .slice(0, 8)
     .map((t) => `${t.name} ${mb(t.rss_kib)} MB`)
     .join(", ");
+  const threads = typeof m.threads === "number" ? `, ${m.threads} threads` : "";
   return (
-    ` [anon ${mb(m.anon_kib)} MB, file ${mb(m.file_kib)} MB, shmem ${mb(m.shmem_kib)} MB` +
+    ` [anon ${mb(m.anon_kib)} MB, file ${mb(m.file_kib)} MB, shmem ${mb(m.shmem_kib)} MB${threads}` +
     (top ? `; largest mappings: ${top}]` : "]")
   );
 }

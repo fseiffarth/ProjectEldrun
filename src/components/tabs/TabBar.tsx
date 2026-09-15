@@ -62,6 +62,7 @@ import { registerHostBoundTab } from "../../lib/hostBound";
 import { useActivityStore } from "../../stores/activity";
 import { UntestedTag } from "../common/UntestedTag";
 import { useT } from "../../lib/i18n";
+import { useChordHint } from "../../lib/shortcutHint";
 import { TRASH_PROJECT_ID } from "../../lib/trashProject";
 import { AgentScheduleDialog } from "../agents/AgentScheduleDialog";
 import { scheduleCacheKey, useAgentSchedulesStore } from "../../stores/agentSchedules";
@@ -137,6 +138,9 @@ interface Props {
 
 export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth }: Props) {
   const t = useT();
+  // Every control here has a keyboard twin in `useKeyboard`; the tooltip names
+  // the chord the user actually has (rebindable, and ⌘-glyphed on macOS).
+  const chordHint = useChordHint();
   // Fine-grained subscriptions (Eff #3/#4): this bar tracks ONLY its own group
   // node + that group's resolved tab payloads, so a tab change in another
   // subwindow no longer re-renders every bar, and the per-render Map-of-all-tabs
@@ -1346,7 +1350,14 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
             <button
               className="tab-close"
               onClick={(e) => { e.stopPropagation(); closeTabWithConfirm(tab.key); }}
-              title={t("tabBar.closeTabTitle")}
+              // The chord closes the ACTIVE tab, so only the active tab's ×
+              // claims it — on any other it would name a key that closes a
+              // different tab than the one being pointed at.
+              title={
+                isActive
+                  ? chordHint(t("tabBar.closeTabTitle"), "closeTab")
+                  : t("tabBar.closeTabTitle")
+              }
             >
               ×
             </button>
@@ -1403,7 +1414,10 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
         {groupId !== EMPTY_GROUP_ID && (
           <button
             className={`subwindow-files-toggle${filesOpen ? " open" : ""}`}
-            title={filesOpen ? t("tabBar.filesToggleOpenTitle") : t("tabBar.filesToggleClosedTitle")}
+            title={chordHint(
+              filesOpen ? t("tabBar.filesToggleOpenTitle") : t("tabBar.filesToggleClosedTitle"),
+              "toggleSubwindowFiles",
+            )}
             // Same self-contained interaction discipline as the hide/close buttons:
             // stop the bar's focusGroup mousedown and don't let the click bubble.
             onMouseDown={(e) => e.stopPropagation()}
@@ -1415,7 +1429,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
         {groupId !== EMPTY_GROUP_ID && (
           <button
             className="subwindow-hide"
-            title={t("tabBar.hideSubwindowTitle")}
+            title={chordHint(t("tabBar.hideSubwindowTitle"), "hideSubwindow")}
             // Same self-contained interaction discipline as the close button below:
             // stop the bar's focusGroup mousedown and don't let the click bubble.
             onMouseDown={(e) => e.stopPropagation()}
@@ -1427,7 +1441,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
         {showGroupClose && (
           <button
             className="subwindow-close"
-            title={t("tabBar.closeSubwindowTitle")}
+            title={chordHint(t("tabBar.closeSubwindowTitle"), "closeSubwindow")}
             // Stop the bar's onMouseDown focusGroup from running first (it isn't
             // harmful, but keeping the close interaction self-contained avoids any
             // focus/state churn racing the click) and ensure the click itself

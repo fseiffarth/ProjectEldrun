@@ -187,3 +187,222 @@
       panel does not open into a Sessions/Jobs view it has no button for.
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work
+
+267. **The closed panel's edge tab is a rail: Files / Git / Apps / Agents.** The
+    edge affordance said only "Files", so reaching Git, Apps or Agents from a
+    closed panel was a click to open plus a second click inside — and with #252
+    remembering the last view per scope, the panel often opened on the *other*
+    one first. The single tab is now a stacked rail of four, one per view the
+    panel's own switcher leads with, labelled from the same i18n keys so the two
+    can never read differently. A click writes the view (the shared
+    `sidePanelViewPatch`, the same patch the in-panel switcher writes) and then
+    reveals the panel, so it slides in already on that view. The rail swallows
+    `mousemove`: it sits *on* the 8px hover-reveal band, which would otherwise
+    open the panel — and unmount the rail — before any button could be clicked.
+    Hovering the edge above or below the rail still reveals the panel on its
+    remembered view, and the click path stays the Windows/WebView2-safe one.
+    Frontend: `lib/sidePanelView.ts` (new), `components/layout/AppShell.tsx`,
+    `components/layout/SidePanel.tsx`, `styles/onboarding.css`, `lib/i18n.ts`
+    + the four dicts (`appShell.showPanelView` replaces `showFilesPanel` and
+    `filesEdgeLabel`).
+    Implemented 2026-09-08, **not live-tested**.
+    - [x] 🤖 Automated test — `SidePanelEdgeRail`
+    - [ ] 🖐️ Manual test — unpin the side panel so it closes. Four tabs stand at
+      the edge: click **Git** → the panel opens on Git; close it, click
+      **Agents** → it opens on Agents. Move the panel to the other edge (⇄) and
+      repeat: the rail mirrors and still works. Hover the edge *above* the rail:
+      the panel still reveals, on whichever view it was last left on.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+268. **The edge rail is a bar with a gutter of its own, not a floating cluster.**
+    #267's four tabs were `position: fixed` and vertically centred *over* the
+    workspace, so they cut into whichever terminal, viewer or subwindow happened
+    to sit at that edge — a strip of window content permanently under them, and
+    nothing below could be clicked. The rail is now a full-height bar filling a
+    `--side-rail-w` (26px) gutter that `.app-body` holds open on the panel's edge
+    (`rail-docked` / `rail-docked-left`), so no content is laid out beneath it.
+    The gutter is reserved for as long as an *unpinned* panel exists, not only
+    while the rail is mounted: releasing it when the panel slides open would
+    reflow — and re-fit — every terminal underneath by the rail's width on each
+    hover-open and again on each close. A pinned panel replaces it with its own,
+    wider inset as before. The tabs run edge to edge across it — no side padding,
+    no side borders, no corner radius — so the whole width of the bar is the
+    button rather than a tab floating in a trough.
+
+    **The hover-open moved onto the bar with them, and that is what made the tabs
+    reliable.** It used to be a body-level `mousemove` band 8px wide at the window
+    edge, fired instantly — and a full-height bar sits *on* that band, so every
+    approach to a tab crossed it: the panel opened, the rail unmounted, and the
+    button vanished from under a click that had not landed yet. The band is gone
+    (`handleBodyMouseMove`, `REVEAL_EDGE_PX`). The bar owns the gesture now:
+    resting on its empty run for `RAIL_DWELL_MS` (400ms) reveals the panel on its
+    remembered view, and moving onto a tab cancels the pending dwell. A tab also
+    commits on `pointerdown` rather than on click — a click only counts if press
+    and release land on the same live element, and this button is one render away
+    from unmounting itself — with `onClick` kept for keyboard and assistive
+    activation and a timestamp so a pointer press never does the work twice.
+
+    The bar no longer has to top the window to stay visible (nothing is
+    laid out into its gutter), so `--z-edge-handle: 10001` is gone — z 16 clears
+    the pane chrome that can bleed across, and menus, dialogs and tooltips paint
+    over a strip that is now full height instead of being buried by it.
+    Frontend: `components/layout/AppShell.tsx`, `styles/onboarding.css`,
+    `styles/themes.css` (`--side-rail-w` replaces `--z-edge-handle`).
+    Implemented 2026-09-09, **not live-tested**.
+    - [x] 🤖 Automated test — `SidePanelEdgeRail`
+    - [ ] 🖐️ Manual test — unpin the side panel so it closes. The four tabs stand
+      in a bar of their own against the edge, filling its full width, and the
+      terminal/viewer next to it ends *before* the bar — nothing is covered.
+      **Click each of Files / Git / Apps / Agents ten times over, approaching
+      from above, from below and straight in: every press opens the panel on that
+      view — none is swallowed.** Then rest the pointer on the bar *away* from
+      the tabs: the panel reveals itself after a moment. Open a terminal, hover
+      to reveal the panel and move away to close it: the terminal does not resize
+      or reflow either way. Move the panel to the other edge (⇄): the bar and the
+      gutter mirror. Open a header menu that reaches that edge: it paints over
+      the bar, not under it.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+269. **The edge rail is icons: chevron, Files / Git / Apps / Agents, side switch
+    — and the chevron works.** The chevron was a bare `<span>` with
+    `pointer-events: none` inside the tab group, and the group cancels the
+    hover-dwell — so the one glyph that says "this edge opens" did nothing when
+    clicked. It is now a rail button that opens the panel on its remembered
+    view, storing no view. #267's four vertical text labels are icons now
+    (folder, branch, window grid, chat bubble). Below them a side switch (panel
+    outline with a two-way arrow) moves the panel — and the rail with it — to
+    the other edge without opening anything, reusing the panel's own
+    `toggleSide`. Every button commits on `pointerdown` per #268, and the glyphs
+    share the `SaveIcon` / `PrinterIcon` outline style
+    (`common/EdgeRailIcons.tsx`).
+    Frontend: `components/layout/AppShell.tsx`, `components/common/EdgeRailIcons.tsx`,
+    `styles/onboarding.css`, `lib/i18n.ts` (`appShell.showPanel`).
+    Implemented 2026-09-10, **not live-tested**.
+    - [x] 🤖 Automated test — `SidePanelEdgeRail`
+    - [ ] 🖐️ Manual test — unpin the side panel so it closes. The bar shows six
+      icons: a chevron, Files / Git / Apps / Agents, and a side switch set
+      slightly apart. Click the chevron → the panel opens on whichever view it
+      was last on. Close it, click each of the four → it opens on that view
+      (hover a tab for its name). Close it, click the side
+      switch → the panel does **not** open; the bar jumps to the other edge and
+      the chevron now points the other way. Click the switch again → back.
+      Hover the bar's empty run: the panel still reveals after a moment.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+270. **Resting on a rail icon opens the panel on that view; the side switch sits
+    at the top of the bar.** #268 made pointing at a tab *cancel* the hover
+    dwell, because the dwell opened the panel on its remembered view and that
+    reveal unmounted the tab from under a click. The tabs were click-only as a
+    result (user, 2026-09-14: "make the icons also hover not only click"). The
+    dwell now keys on what the pointer rests on (`data-rail-view` /
+    `data-rail-action`): a tab opens the panel on **its** view after the same
+    400ms, so press and dwell can only ever agree; crossing one tab on the way
+    to another restarts the dwell for the new one; the chevron and the bar's
+    empty run keep opening on the remembered view; the switch only cancels —
+    hovering must never move the panel. The switch itself left the centred
+    group for the top of the bar (`position: absolute; top: 0` inside the
+    positioned rail), where a layout control reads as chrome rather than as a
+    fifth destination.
+    Frontend: `components/layout/AppShell.tsx`, `styles/onboarding.css`.
+    Implemented 2026-09-14, **not live-tested**.
+    - [x] 🤖 Automated test — `SidePanelEdgeRail`
+    - [ ] 🖐️ Manual test — unpin the side panel so it closes. The side switch
+      is the topmost icon on the bar; the chevron and Files / Git / Apps /
+      Agents stay centred. Rest the pointer on **Git** without clicking → after
+      a moment the panel opens on Git. Close it; rest on **Agents** → Agents.
+      Sweep the pointer down across Files → Git → Apps and stop on **Apps** →
+      only Apps opens, and only once the pointer has settled there. Rest on the
+      side switch for a few seconds → nothing opens and the bar stays on its
+      edge; click it → the bar jumps to the other edge, still with the switch
+      on top. Clicking any tab still opens it at once.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+271. **The rail's hover-open is quick, lands on the right view, and can close
+    again; a side switch is a jump; the panel's scrollbar thumb sits where the
+    panel ended up.** Four faults behind "show side panel is very slow and
+    buggy" (user, 2026-09-14). (1) `updateSettings` set state only after the
+    backend's write answered, so a rail tab opening the panel on Agents opened
+    it on the *old* view first — the file tree mounted, listed and probed, then
+    was thrown away a write later — and the side switch answered its press a
+    write later too. The patch is now in state before it is on disk; the
+    backend's merged answer replaces it, a failed write rolls back. (2) The
+    app-drawn scrollbar (`lib/customScrollbar.ts`) re-measured on resize,
+    mutation and scroll but never when a *transition* moved a container: a view
+    mounted mid-slide had its thumb measured wherever the panel was that frame
+    and left there — "the scrollbar in the agents view is in the middle of the
+    side panel". `transitionend`/`transitioncancel`/`animationend` now queue a
+    geometry pass. (3) The closed panel's resting transform flips from +100%
+    to −100% on a side switch, and eased, that flip slid the panel and its
+    contents across the whole window ("side switching shows underlying view").
+    `SidePanel` wears `.switching` (transition: none) for the one frame that
+    moves it. (4) A hover-open gave the panel no mouseenter — the pointer rests
+    on the rail, the rail unmounts, the panel arrives under a pointer that is
+    not moving — so a pointer that wandered off during the slide never left it
+    either, and the panel stood open. A hover-armed guard watches the document
+    until the pointer's first move over the panel; a move elsewhere that is
+    still elsewhere 450ms later closes it. Clicks and the lessons event are not
+    guarded. Also: `CenterPanel` is memoised — it takes no props, and the shell
+    re-rendered the whole workspace under it on every hover-open and close.
+    Frontend: `stores/settings.ts`, `lib/customScrollbar.ts`,
+    `components/layout/{AppShell,SidePanel,CenterPanel}.tsx`,
+    `styles/files-panel.css`. Implemented 2026-09-14, **not live-tested**.
+    - [x] 🤖 Automated test — `SettingsPatchOptimistic`, `SidePanelEdgeRail`,
+      `SidePanelReveal` (side switch), `CustomScrollbar` (install)
+    - [ ] 🖐️ Manual test — unpin the side panel so it closes. Rest on the
+      **Agents** icon → the panel opens straight onto Agents (no flash of the
+      file tree first) and, once it has slid in, a long Agents list shows its
+      thumb along the panel's right edge, not down its middle. Rest on an icon
+      and, while the panel is still sliding in, move the pointer away into the
+      terminal → the panel closes on its own within about half a second and the
+      rail is back. Rest again and stay put → it stays open; move into it and
+      out → it closes as before. Click the side switch on the rail → the bar
+      jumps to the other edge at once, and nothing slides across the window.
+      Open the panel with a click, move the pointer away without entering it →
+      it stays open (as before).
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+272. **The side switch says where the panel goes; the panel's list gets its
+    bar whatever its first paint held.** (1) "The side rail switch side button
+    is hardly detectable as switch sides" (user, 2026-09-14): the rail's switch
+    was a frame with a two-headed arrow inside at 0.55 on top of the handle's
+    own 0.8, and the open panel's header had a bare `⇄` — both read as
+    swap/sync. One shared `RailSwitchSideIcon` now draws a window frame with
+    the panel filled in on the edge it sits on and an arrow at the edge it will
+    jump to, mirrored for a left-docked panel; the rail's switch takes the
+    tabs' own resting tone, the header's lights accent on hover. (2) "Scroll
+    bar on unhide sometimes shows, sometimes keeps hidden, sometimes not at the
+    wished position" (user, 2026-09-14): two discovery gaps in
+    `lib/customScrollbar.ts`. A container got a thumb per axis that overflowed
+    *when it was found* and was then skipped by every later scan, so a file
+    tree first painted with few rows and long names had a horizontal bar and
+    never a vertical one; the missing axis's thumb is now made the moment that
+    axis overflows. And a container was found only when nodes were added under
+    it or when it was first scrolled, so one that grew scrollable through a
+    class flip, a width change or a window resize had no bar until the wheel
+    touched it; the end of a box-moving transition rescans the element that
+    moved, and a window resize or visibility change rescans the document.
+    Frontend: `components/common/EdgeRailIcons.tsx`,
+    `components/layout/{AppShell,SidePanel}.tsx`, `lib/customScrollbar.ts`,
+    `styles/{onboarding,files-panel}.css`. Implemented 2026-09-14, **not
+    live-tested**.
+    - [x] 🤖 Automated test — `SidePanelFlip`, `CustomScrollbar` (discovering
+      late overflow)
+    - [ ] 🖐️ Manual test — unpin the side panel. The topmost rail icon shows a
+      window with a filled strip on the panel's edge and an arrow pointing the
+      other way; it is as visible as the tabs below it. Click it → the bar jumps
+      to the other edge and the icon mirrors. Open the panel: the header's
+      leftmost button shows the same picture. Then, on a project with a deep
+      tree: hide the panels (F9) and show them again, and hover-open the panel
+      from the rail several times → every time the file list overflows, its
+      thumb is along the panel's edge, at the list's scroll position, not
+      missing and not standing mid-panel. Expand folders until the list
+      overflows downward when it did not before → a vertical thumb appears
+      without scrolling first. Shrink the window until a list that fitted no
+      longer does → same.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work

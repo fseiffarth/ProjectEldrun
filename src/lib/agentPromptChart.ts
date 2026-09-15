@@ -5,7 +5,8 @@ import {
   scheduleStatus,
   type ScheduledAgentPrompt,
 } from "./agentSchedule";
-import { promptScheduleKey } from "./agentPromptScheduled";
+import { promptOfSchedule } from "./agentPromptScheduled";
+import { shortModelName } from "./agentModel";
 import { agentPromptAutoTags } from "./agentPromptAutoTags";
 import { matchesTagsOrText } from "./agentPromptTags";
 import type {
@@ -16,15 +17,35 @@ import type {
 
 export type PromptCardState = "draft" | "scheduled" | "queued" | "sent" | "chained";
 
+/** One agent tab as the chart knows it: the target a card can be aimed at,
+ *  the label and agent it wears, and the rules that live on it. A closed
+ *  session is a strand too, so its sent cards keep a name. */
 export interface PromptChartStrand {
   id: string;
   label: string;
   scheduleTargetId?: string;
   tabKey?: string;
+  /** A live tab's launch id; a closed strand's first session id. */
   sessionId?: string;
+  /** The launch id the strand's rows carry as `tab_id` — a tab's sessions
+   *  after a `/clear` still belong to the one strand. */
+  tabId?: string;
   agent?: string;
+  /** The model a live tab last answered with (`stores/agentModels`), as the
+   *  pill beside the tab shows it. Absent on a closed strand: its rows carry
+   *  their own. */
+  model?: string;
   closed?: boolean;
   schedules: ScheduledAgentPrompt[];
+}
+
+/** Whether a sent row belongs to `strand`: by the tab it went to, by the
+ *  session (a live tab's launch id, before the tab id was recorded), or by
+ *  label for a row written before the tab had either. */
+export function rowOnStrand(strand: PromptChartStrand, row: SentAgentPrompt): boolean {
+  return (!!row.tab_id && strand.tabId === row.tab_id)
+    || (!!row.session_id && strand.sessionId === row.session_id)
+    || strand.label === row.tab_label;
 }
 
 export interface PromptChartCard {
@@ -42,6 +63,8 @@ export interface PromptChartCard {
   targetId?: string;
   recurring: boolean;
   chainStopped?: boolean;
+  /** The `after` edge a chained card waits on. */
+  chainLink?: PromptLink;
 }
 
 export interface PromptChartInput {
@@ -50,6 +73,28 @@ export interface PromptChartInput {
   strands: PromptChartStrand[];
   links: PromptLink[];
   now: Date;
+  /** The agent an unaimed draft's "New agent tab" would launch (the chart's
+   *  toolbar pick): worn as the draft's `agent:` tag so the strip filters by
+   *  it like any aimed card. Absent, an unaimed draft carries no agent. */
+  newTabAgent?: string;
+  /** The model that tab is told to use (the toolbar's second pick), worn the
+   *  same way as a `model:` tag. */
+  newTabModel?: string;
+}
+
+/** Lines that steer the session rather than ask it anything, never adopted
+ * into the history (and rows an older build stored are not drawn): any bare
+ * one-word slash command (`/clear`, `/login`, `/compact`, …), plus the two
+ * that take an argument and still only housekeep — the `/rename <name>` Eldrun
+ * types into a new agent tab and a `/model <name>` switch. A command that
+ * carries words for the agent (`/goal ship the release`) is a prompt. */
+const SESSION_COMMANDS_WITH_ARGS = new Set(["/rename", "/model"]);
+
+export function isSessionCommand(prompt: string): boolean {
+  const words = prompt.trim().split(/\s+/u);
+  const head = words[0].toLowerCase();
+  if (!/^\/[\w:-]+$/u.test(head)) return false;
+  return words.length === 1 || SESSION_COMMANDS_WITH_ARGS.has(head);
 }
 
 /** Join the three persisted sources without manufacturing another state field. */
@@ -63,14 +108,13 @@ export function buildPromptChart(input: PromptChartInput): PromptChartCard[] {
   for (const strand of input.strands.filter((item) => !item.closed)) {
     for (const schedule of strand.schedules) {
       if (schedule.rule.type === "once" && schedule.last) continue;
-      const key = promptScheduleKey(schedule.message);
-      const linked = input.prompts.filter((prompt) =>
-        prompt.id === schedule.id || promptScheduleKey(prompt.message) === key,
-      );
-      for (const prompt of linked) {
-        const rows = rulesByPrompt.get(prompt.id) ?? [];
+      // One prompt per rule, never every prompt with the words: the others
+      // are their own drafts (`promptOfSchedule`).
+      const linked = promptOfSchedule(input.prompts, schedule);
+      if (linked) {
+        const rows = rulesByPrompt.get(linked.id) ?? [];
         rows.push({ strand, schedule });
-        rulesByPrompt.set(prompt.id, rows);
+        rulesByPrompt.set(linked.id, rows);
       }
       const status = scheduleStatus(schedule, input.now);
       const queued = status.kind === "due";
@@ -81,13 +125,14 @@ export function buildPromptChart(input: PromptChartInput): PromptChartCard[] {
       const recurring = schedule.rule.type !== "once";
       cards.push({
         key: `rule:${strand.id}:${schedule.id}`,
-        id: linked[0]?.id ?? schedule.id,
+        id: linked?.id ?? schedule.id,
         state: queued ? "queued" : "scheduled",
         message: schedule.message,
-        tags: history?.tags ?? linked[0]?.tags ?? [],
+        tags: history?.tags ?? linked?.tags ?? [],
         autoTags: agentPromptAutoTags({
           message: schedule.message,
           agent: strand.agent,
+          model: strand.model,
           preface: schedule.preface,
           recurring,
           queued,
@@ -95,7 +140,7 @@ export function buildPromptChart(input: PromptChartInput): PromptChartCard[] {
         strandId: strand.id,
         targetId: strand.scheduleTargetId,
         at,
-        prompt: linked[0],
+        prompt: linked,
         history,
         schedule,
         recurring,
@@ -115,30 +160,38 @@ export function buildPromptChart(input: PromptChartInput): PromptChartCard[] {
       ? input.history.filter((row) => row.id === link.from || row.id.startsWith(`${link.from}@`))
       : [];
     const stoppedResult = sourceRows[sourceRows.length - 1]?.result;
+    // A draft's aim is advisory: the tab it names may be gone, and then the
+    // card is simply unaimed rather than stuck on a strand nobody can see.
+    const aimed = !chained && prompt.target
+      ? input.strands.find((item) => !item.closed && item.scheduleTargetId === prompt.target)
+      : undefined;
     cards.push({
       key: `prompt:${prompt.id}`,
       id: prompt.id,
       state: chained ? "chained" : "draft",
       message: prompt.message,
       tags: prompt.tags ?? [],
-      autoTags: agentPromptAutoTags({ message: prompt.message, chained, agent: strand?.agent }),
+      autoTags: agentPromptAutoTags({
+        message: prompt.message,
+        chained,
+        agent: strand?.agent ?? aimed?.agent ?? (chained ? undefined : input.newTabAgent),
+        model: strand?.model ?? aimed?.model ?? (chained ? undefined : input.newTabModel),
+        preface: link?.preface,
+      }),
       strandId: strand?.id ?? "drafts",
-      targetId: link?.target,
+      targetId: chained ? link?.target : aimed?.scheduleTargetId,
       at: null,
       prompt,
       recurring: false,
       chainStopped: chained && ((!!link?.target && !strand) || stoppedResult === "missed" || stoppedResult === "failed"),
+      chainLink: link,
     });
   }
   for (const row of input.history) {
-    if (!row.result) continue;
-    const liveStrand = input.strands.find((strand) =>
-      !strand.closed && (strand.sessionId === row.session_id || strand.label === row.tab_label),
-    );
-    const closed = input.strands.find((strand) => strand.closed && (
-      strand.sessionId === row.session_id || strand.label === row.tab_label
-    ));
-    const strandId = liveStrand?.id ?? closed?.id ?? `closed:${row.session_id ?? row.tab_label}`;
+    if (!row.result || isSessionCommand(row.message)) continue;
+    const liveStrand = input.strands.find((strand) => !strand.closed && rowOnStrand(strand, row));
+    const closed = input.strands.find((strand) => strand.closed && rowOnStrand(strand, row));
+    const strandId = liveStrand?.id ?? closed?.id ?? `closed:${row.tab_id ?? row.session_id ?? row.tab_label}`;
     cards.push({
       key: `history:${row.id}`,
       id: row.id,
@@ -148,6 +201,7 @@ export function buildPromptChart(input: PromptChartInput): PromptChartCard[] {
       autoTags: agentPromptAutoTags({
         message: row.message,
         agent: row.agent,
+        model: row.model ? shortModelName(row.model) : undefined,
         preface: row.preface,
         files: row.files,
         result: row.result,
@@ -162,49 +216,27 @@ export function buildPromptChart(input: PromptChartInput): PromptChartCard[] {
   return cards;
 }
 
+/**
+ * The tabs that already hold a live rule, and the cards holding them. Two
+ * independent rules on one tab have no order between them — the host
+ * delivers whichever minute comes first and the other waits, or is missed —
+ * so the chart does not offer such a tab as a target for a second one: the
+ * way to put a further prompt on it is an `after` link from the rule it
+ * holds. A paused rule fires nothing and occupies nothing.
+ */
+export function occupiedTargets(cards: PromptChartCard[]): Map<string, PromptChartCard[]> {
+  const occupied = new Map<string, PromptChartCard[]>();
+  for (const card of cards) {
+    if (!card.schedule?.enabled || !card.targetId) continue;
+    if (card.state !== "scheduled" && card.state !== "queued") continue;
+    occupied.set(card.targetId, [...(occupied.get(card.targetId) ?? []), card]);
+  }
+  return occupied;
+}
+
 export function snapPromptTime(date: Date, minutes = 5): Date {
   const step = minutes * 60_000;
   return new Date(Math.round(date.getTime() / step) * step);
-}
-
-export function futureTimeAt(y: number, height: number, now: Date, zoomHours: number): Date {
-  const ratio = Math.max(0, Math.min(1, y / Math.max(1, height)));
-  return snapPromptTime(new Date(now.getTime() + ratio * zoomHours * 3_600_000));
-}
-
-export function futureOffsetPercent(at: Date, now: Date, zoomHours: number): number {
-  return Math.max(0, Math.min(100, ((at.getTime() - now.getTime()) / (zoomHours * 3_600_000)) * 100));
-}
-
-export type PromptChartDrop =
-  | { type: "send"; targetId: string }
-  | { type: "schedule"; targetId: string; at: string }
-  | { type: "retime"; targetId: string; fromTargetId?: string; at: string }
-  | { type: "move"; targetId: string; fromTargetId?: string }
-  | { type: "unschedule"; fromTargetId?: string }
-  | { type: "collect" }
-  | { type: "none" };
-
-export function promptChartDropAction(
-  card: PromptChartCard,
-  zone: { kind: "shelf" } | { kind: "strand"; targetId: string; at?: Date; now?: boolean },
-): PromptChartDrop {
-  if (zone.kind === "shelf") {
-    if (card.state === "sent") return { type: "collect" };
-    if (card.schedule) return { type: "unschedule", fromTargetId: card.targetId };
-    return { type: "none" };
-  }
-  if (card.state === "sent") return { type: "none" };
-  if (zone.now) return { type: "send", targetId: zone.targetId };
-  if (zone.at) {
-    const at = localOccurrenceKey(snapPromptTime(zone.at));
-    return card.schedule
-      ? { type: "retime", targetId: zone.targetId, fromTargetId: card.targetId, at }
-      : { type: "schedule", targetId: zone.targetId, at };
-  }
-  return card.schedule && card.targetId !== zone.targetId
-    ? { type: "move", targetId: zone.targetId, fromTargetId: card.targetId }
-    : { type: "none" };
 }
 
 export function queueOrderTimes(ids: string[], now: Date): Record<string, string> {
@@ -220,48 +252,57 @@ export interface PromptChartFilter {
   tag: string;
   agent: string;
   result: string;
-  window: "any" | "hour" | "today" | "week" | "month";
 }
 
-export function promptChartCardMatches(card: PromptChartCard, filter: PromptChartFilter, now: Date): boolean {
+/** The timeline's "When" facet, in the order the picker offers it. */
+export const PROMPT_CHART_WINDOWS = ["any", "past", "upcoming", "hour", "today", "week", "month"] as const;
+export type PromptChartWindow = (typeof PROMPT_CHART_WINDOWS)[number];
+
+/**
+ * Whether a card's instant falls in a "When" window. The axis runs both ways
+ * from now, so the rolling windows do too: "within a week" admits last
+ * Tuesday's delivery and next Tuesday's rule alike, and `today` is the day on
+ * the wall. A queued card is waiting at the now line whatever its due minute
+ * said, so it counts as upcoming, never past. A card with no instant (a
+ * paused rule) is kept: a window says nothing about it.
+ */
+export function promptChartInWindow(
+  card: Pick<PromptChartCard, "state">,
+  at: Date | null,
+  window: PromptChartWindow,
+  now: Date,
+): boolean {
+  if (window === "any" || !at) return true;
+  const t = card.state === "queued" ? now.getTime() : at.getTime();
+  const n = now.getTime();
+  switch (window) {
+    case "past":
+      return card.state !== "queued" && t <= n;
+    case "upcoming":
+      return card.state === "queued" || t > n;
+    case "hour":
+      return Math.abs(t - n) <= 3_600_000;
+    case "today": {
+      const start = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+      const end = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1).getTime();
+      return t >= start && t < end;
+    }
+    case "week":
+      return Math.abs(t - n) <= 7 * 86_400_000;
+    case "month":
+      return Math.abs(t - n) <= 30 * 86_400_000;
+  }
+}
+
+export function promptChartCardMatches(card: PromptChartCard, filter: PromptChartFilter): boolean {
   const tags = [...card.tags, ...card.autoTags];
   if (filter.tag && !tags.includes(filter.tag)) return false;
   const agent = card.history?.agent ?? card.autoTags.find((tag) => tag.startsWith("agent:"))?.slice(6) ?? "";
   if (filter.agent && agent !== filter.agent) return false;
   const result = card.state === "queued" ? "queued" : card.history?.result ?? "";
   if (filter.result && result !== filter.result) return false;
-  if (card.state === "sent" && filter.window !== "any" && card.at && Number.isFinite(card.at.getTime())) {
-    const starts: Record<string, Date> = {
-      hour: new Date(now.getTime() - 3_600_000),
-      today: new Date(now.getFullYear(), now.getMonth(), now.getDate()),
-      week: new Date(now.getTime() - 7 * 86_400_000),
-      month: new Date(now.getTime() - 30 * 86_400_000),
-    };
-    if (card.at < starts[filter.window]) return false;
-  }
   const needle = filter.text.trim();
   if (!needle) return true;
   const haystack = [card.message, card.history?.tab_label ?? "", card.history?.session_id ?? "", ...(card.history?.files ?? [])].join("\n");
   return matchesTagsOrText(tags, haystack, needle);
-}
-
-export interface PromptPastGroup { label: string; cards: PromptChartCard[] }
-
-export function groupPromptPast(cards: PromptChartCard[], now: Date, locale?: string): PromptPastGroup[] {
-  const groups = new Map<string, PromptPastGroup>();
-  const today = now.toDateString();
-  for (const card of [...cards].filter((item) => item.state === "sent").sort((a, b) =>
-    (a.at?.getTime() ?? 0) - (b.at?.getTime() ?? 0))) {
-    if (!card.at || !Number.isFinite(card.at.getTime())) continue;
-    const key = card.at.toDateString() === today
-      ? `${card.at.toDateString()} ${card.at.getHours()}`
-      : card.at.toDateString();
-    const label = card.at.toDateString() === today
-      ? card.at.toLocaleTimeString(locale, { hour: "numeric" })
-      : card.at.toLocaleDateString(locale, { weekday: "short", month: "short", day: "numeric" });
-    const group = groups.get(key) ?? { label, cards: [] };
-    group.cards.push(card);
-    groups.set(key, group);
-  }
-  return [...groups.values()];
 }

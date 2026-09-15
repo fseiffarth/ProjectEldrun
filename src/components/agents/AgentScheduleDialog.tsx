@@ -38,6 +38,7 @@ interface Props {
   onClose: () => void;
   /** Prefill for the add form — a collected prompt being turned into a rule. */
   initialMessage?: string;
+  initialPromptId?: string;
 }
 
 // Zustand selectors are React external-store snapshots: their fallback must be
@@ -60,7 +61,7 @@ function defaultOnce(): string {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
-export function AgentScheduleDialog({ scope, tab, onClose, initialMessage }: Props) {
+export function AgentScheduleDialog({ scope, tab, onClose, initialMessage, initialPromptId }: Props) {
   const t = useT();
   const lang = useI18nStore((state) => state.lang);
   const use24h = useUse24h();
@@ -81,6 +82,7 @@ export function AgentScheduleDialog({ scope, tab, onClose, initialMessage }: Pro
   const remove = useAgentSchedulesStore((state) => state.remove);
   const [editing, setEditing] = useState<string | null>(null);
   const [message, setMessage] = useState(initialMessage ?? "");
+  const [promptId, setPromptId] = useState(initialPromptId);
   // One-time is the default: the common case is "run this prompt once, in a
   // while", and a rule that repeats forever is the one worth picking on purpose.
   const [kind, setKind] = useState<ScheduleRule["type"]>("once");
@@ -149,6 +151,7 @@ export function AgentScheduleDialog({ scope, tab, onClose, initialMessage }: Pro
   };
 
   const reset = () => {
+    setPromptId(undefined);
     setEditing(null);
     setMessage("");
     setKind("once");
@@ -162,6 +165,7 @@ export function AgentScheduleDialog({ scope, tab, onClose, initialMessage }: Pro
   };
 
   const beginEdit = (schedule: ScheduledAgentPrompt) => {
+    setPromptId(undefined);
     setEditing(schedule.id);
     setMessage(schedule.message);
     setKind(schedule.rule.type);
@@ -202,7 +206,7 @@ export function AgentScheduleDialog({ scope, tab, onClose, initialMessage }: Pro
       const prior = schedules.find((item) => item.id === editing);
       const commands = normalizedSchedulePreface(preface);
       await upsert(scope, targetId, {
-        id: editing ?? crypto.randomUUID(),
+        id: editing ?? promptId ?? crypto.randomUUID(),
         enabled: prior?.enabled ?? true,
         message: clean,
         // Omitted rather than `[]` when nothing is picked, so a rule without
@@ -226,6 +230,12 @@ export function AgentScheduleDialog({ scope, tab, onClose, initialMessage }: Pro
     && !!once
     && !Number.isNaN(new Date(once).getTime())
     && new Date(once).getTime() < now.getTime();
+
+  // A second rule on a tab that already has a live one: the two fire in no
+  // set order (the host delivers whichever minute comes first and holds the
+  // other). The chart refuses such a tab for a draft outright; here, where a
+  // tab's own menu manages its rules, it is said rather than forbidden.
+  const otherLive = editing ? [] : schedules.filter((item) => item.enabled && item.id !== promptId);
 
   const summary = scheduleSummary(schedules, now);
 
@@ -435,6 +445,7 @@ export function AgentScheduleDialog({ scope, tab, onClose, initialMessage }: Pro
                 </div>
               )}
               {oncePast && <div className="agent-schedule-warn">{t("agentSchedule.pastOnce")}</div>}
+              {otherLive.length > 0 && <div className="agent-schedule-warn" data-testid="agent-schedule-occupied">{t("agentSchedule.tabOccupied")}</div>}
               {error && <div className="project-dialog-error">{error}</div>}
               <div className="agent-schedule-form-actions">
                 {editing && <button className="settings-btn" type="button" onClick={reset}>{t("common.cancel")}</button>}

@@ -303,6 +303,19 @@ export function CalDavAccountDialog({
             <span className="caldav-field-hint">{t("caldav.syncIntervalHint")}</span>
           </label>
 
+          {/* The VPN gate (`lib/vpnGate.ts`), the mail dialog's row. */}
+          <label className="caldav-field caldav-field-check">
+            <span className="caldav-check-row">
+              <input
+                type="checkbox"
+                checked={form.require_vpn ?? false}
+                onChange={(e) => patch({ require_vpn: e.target.checked })}
+              />
+              <span>{t("caldav.requireVpn")}</span>
+            </span>
+            <span className="caldav-field-hint">{t("caldav.requireVpnHint")}</span>
+          </label>
+
           {/* Two-way sync, opt-in and default off (`docs/caldav_plan.md` Phase
               3). The plan's own open question — "is write access even wanted
               against an institutional calendar?" — is answered by asking, here,

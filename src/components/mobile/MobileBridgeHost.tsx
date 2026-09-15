@@ -156,6 +156,15 @@ interface MobileAgentStatus {
   today: MobileAgentTally;
   usage: MobileAgentUsage;
 }
+/** Mirrors `services::agent_transcript::AgentTranscript` on the wire. */
+interface MobileAgentTranscript {
+  available: boolean;
+  reason?: string;
+  version?: string;
+  unchanged?: boolean;
+  entries: { kind: string; text: string; at?: string; cut?: boolean }[];
+  truncated: boolean;
+}
 interface MobileScheduleInput { enabled: boolean; message: string; rule: ScheduleRule }
 type ScheduleMutation =
   | { type: "create"; schedule: MobileScheduleInput }
@@ -190,6 +199,7 @@ type DesktopRequest =
   | { type: "prompts"; request_id: string; project_id: string }
   | { type: "prompt_mutate"; request_id: string; project_id: string; action: PromptMutation }
   | { type: "agent_status"; request_id: string; project_id: string; tmux_session: string; refresh: boolean }
+  | { type: "agent_transcript"; request_id: string; project_id: string; tmux_session: string; version?: string | null; limit?: number | null }
   | { type: "tab_seen"; request_id: string; project_id: string; tmux_session: string }
   | { type: "tab_input"; request_id: string; project_id: string; tmux_session: string }
   | { type: "desktop_images"; request_id: string; project_id: string }
@@ -208,6 +218,7 @@ type DesktopResponse =
   | { status: "closed" }
   | { status: "prompts"; prompts: ProjectAgentPrompt[] }
   | { status: "agent_status"; report: MobileAgentStatus }
+  | { status: "agent_transcript"; transcript: MobileAgentTranscript }
   | { status: "seen" }
   | { status: "desktop_images"; images: DesktopImage[] }
   | { status: "attached"; attachment: InboxAttachment }
@@ -1408,6 +1419,39 @@ async function attachDesktopImage(projectId: string, imageId: string): Promise<D
   }
 }
 
+/**
+ * The phone's Focus view on an agent tab: the conversation as the agent's own
+ * transcript records it, read by the backend (`agent_tab_transcript`,
+ * `services::agent_transcript`) for the tab's launch id — the same resolution
+ * the Agents view's model tag and last-prompt line use, live id first. A tab
+ * with no session id (an agent Eldrun does not resume) has no transcript to
+ * name, and says so rather than answering with somebody else's.
+ */
+async function agentTranscriptFor(
+  projectId: string,
+  tmuxSession: string,
+  version: string | null | undefined,
+  limit: number | null | undefined,
+): Promise<DesktopResponse> {
+  const scope = mobileScope(projectId);
+  if (!scope) {
+    return { status: "error", code: "project_ineligible", message: "Project is not enabled for Mobile access" };
+  }
+  const tab = scheduleTargetTab(scope.id, tmuxSession);
+  if (!tab) return { status: "error", code: "tab_not_found", message: "Agent tab is unavailable" };
+  if (!tab.sessionId) {
+    return { status: "agent_transcript", transcript: { available: false, reason: "no_session", entries: [], truncated: false } };
+  }
+  const transcript = await invoke<MobileAgentTranscript>("agent_tab_transcript", {
+    agent: tab.cmd,
+    projectId: scope.id,
+    sessionId: tab.sessionId,
+    version: version ?? null,
+    limit: limit ?? null,
+  }).catch((): MobileAgentTranscript => ({ available: false, reason: "read_failed", entries: [], truncated: false }));
+  return { status: "agent_transcript", transcript };
+}
+
 async function handleRequest(
   request: DesktopRequest,
   t: ReturnType<typeof useT>,
@@ -1441,6 +1485,7 @@ async function handleRequest(
     case "prompts": return promptsFor(request.project_id);
     case "prompt_mutate": return mutatePrompt(request.project_id, request.action);
     case "agent_status": return agentStatusFor(request.project_id, request.tmux_session, request.refresh);
+    case "agent_transcript": return agentTranscriptFor(request.project_id, request.tmux_session, request.version, request.limit);
     case "tab_seen": return markTabSeen(request.project_id, request.tmux_session);
     case "tab_input": return markTabInput(request.project_id, request.tmux_session);
     case "desktop_images": return desktopImagesFor(request.project_id);

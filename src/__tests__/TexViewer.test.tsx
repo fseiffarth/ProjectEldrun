@@ -63,17 +63,20 @@ function setupInvoke(
   });
 }
 
-async function renderTexView() {
+async function renderTexView(path = "/p/paper.tex", projectId = "proj") {
   vi.resetModules();
   const { FileViewerPane } = await import("../components/embed/FileViewerPane");
   await act(async () => {
-    render(<FileViewerPane viewer="tex" path="/p/paper.tex" projectId="proj" />);
+    render(<FileViewerPane viewer="tex" path={path} projectId={projectId} />);
   });
 }
 
 describe("TexView", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // The beamer/hover switches are remembered per project in localStorage
+    // (`stores/texViewPref`); a test must not inherit the previous one's click.
+    localStorage.clear();
   });
 
   it("degrades to the plain editor with no Compile button when no engine is installed", async () => {
@@ -172,6 +175,34 @@ describe("TexView", () => {
     expect(mockInvoke).toHaveBeenCalledWith("write_file_text", expect.objectContaining({ path: "/p/paper.tex" }));
   });
 
+  // The build has a chord of its own (`texCompile`), listened for on the pane's
+  // root so it fires with the caret in the textarea — where it is actually
+  // pressed, and where the global keyboard hook drops chords. The button's
+  // tooltip names the same chord, resolved from the shortcut table rather than
+  // spelled into a translated string.
+  it("compiles on Ctrl+Shift+B from the editor, and says so on the Compile button", async () => {
+    setupInvoke(true, ["pdflatex"]);
+    await renderTexView();
+
+    const compileBtn = await screen.findByRole("button", { name: /compile/i });
+    expect(compileBtn.getAttribute("title")).toBe("Save and compile to PDF (Ctrl+Shift+B)");
+
+    const textarea = (await screen.findByRole("textbox")) as HTMLTextAreaElement;
+    await waitFor(() => expect(textarea.value).toBe(TEX_SOURCE));
+    await act(async () => {
+      fireEvent.keyDown(textarea, { key: "B", ctrlKey: true, shiftKey: true });
+    });
+
+    await waitFor(() =>
+      expect(mockInvoke).toHaveBeenCalledWith("compile_tex", {
+        path: "/p/paper.tex",
+        engine: null,
+        outDir: null,
+        extraFlags: null,
+      }),
+    );
+  });
+
   it("#tex-beamer: the Beamer toggle shows the overlay bar, and Wrap wraps the selection", async () => {
     setupInvoke(true);
     await renderTexView();
@@ -198,6 +229,45 @@ describe("TexView", () => {
     });
     // The wrapped body stays selected, so a second Wrap re-targets.
     expect(textarea.value.slice(textarea.selectionStart, textarea.selectionEnd)).toBe("Hi");
+  });
+
+  it("#tex-beamer: the switch is the project's — another file of the same project opens with the bar, another project does not", async () => {
+    setupInvoke(true);
+    await renderTexView("/p/paper.tex", "proj");
+    await screen.findByRole("textbox");
+    expect(screen.queryByRole("group", { name: /beamer overlays/i })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /^beamer/i }));
+    await screen.findByRole("group", { name: /beamer overlays/i });
+    cleanup();
+
+    // A different .tex of the same project, in a fresh module registry: the
+    // store is re-read from localStorage, i.e. this is also the relaunch case.
+    await renderTexView("/p/chapter.tex", "proj");
+    // (The bar's own number fields are textboxes too, so wait on the bar.)
+    await screen.findByRole("group", { name: /beamer overlays/i });
+    expect(screen.getByRole("button", { name: /^beamer/i }).getAttribute("aria-pressed")).toBe("true");
+    cleanup();
+
+    // Another project keeps the document default (an article: off).
+    await renderTexView("/q/paper.tex", "other");
+    await screen.findByRole("textbox");
+    expect(screen.queryByRole("group", { name: /beamer overlays/i })).toBeNull();
+    expect(screen.getByRole("button", { name: /^beamer/i }).getAttribute("aria-pressed")).toBe("false");
+  });
+
+  it("#tex-hover-preview: switching the preview off holds for the project's other files", async () => {
+    setupInvoke(true);
+    await renderTexView("/p/paper.tex", "proj");
+    await screen.findByRole("textbox");
+    const toggle = () => screen.getByRole("button", { name: /^preview/i });
+    expect(toggle().getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(toggle());
+    expect(toggle().getAttribute("aria-pressed")).toBe("false");
+    cleanup();
+
+    await renderTexView("/p/chapter.tex", "proj");
+    await screen.findByRole("textbox");
+    expect(toggle().getAttribute("aria-pressed")).toBe("false");
   });
 
   it("#tex-beamer: a beamer document opens with the bar on", async () => {
@@ -427,5 +497,126 @@ describe("TexView", () => {
       rect: { page: 2, x: 10, y: 20, w: 100, h: 12 },
       afterReload: true,
     });
+  });
+  // #tex: latexmk fails a build over configuration — warnings treated as errors
+  // in a latexmkrc, a bibliography rule, an unresolved reference — while the
+  // engine still writes the PDF. The backend forgives that exit status, so the
+  // viewer must show the PDF and latexmk's complaint as a *note*, not refuse the
+  // build and title an error card with latexmk's "use the -f option" advisory.
+  it("shows a latexmk config complaint as a note, with the PDF, not as a failure", async () => {
+    const NOTE = "Some warnings have been treated as errors; Warnings treated as errors";
+    setupInvoke(true, ["pdflatex"]);
+    mockInvoke.mockImplementation((cmd: string, args?: Record<string, unknown>) => {
+      if (cmd === "tex_capability") {
+        return Promise.resolve({
+          available: true,
+          engines: ["pdflatex"],
+          bibtex: false,
+          latexmk: true,
+        });
+      }
+      if (cmd === "read_file_text") return Promise.resolve(TEX_SOURCE);
+      if (cmd === "resolve_tex_root") return Promise.resolve((args?.path as string) ?? "");
+      if (cmd === "compile_tex") {
+        return Promise.resolve({
+          // The engine typeset the document; only latexmk objected.
+          success: true,
+          pdf_path: "/p/paper.pdf",
+          engine: "latexmk -pdf",
+          log: "Output written on paper.pdf (1 page).\nLatexmk: Use the -f option to force complete processing,\n",
+          shell_escape: false,
+          driver_note: NOTE,
+        });
+      }
+      return Promise.resolve(null);
+    });
+    await renderTexView();
+
+    await act(async () => {
+      await userEvent.click(await screen.findByRole("button", { name: /compile/i }));
+    });
+
+    // The note is there, quoting latexmk…
+    expect(await screen.findByText(NOTE)).toBeTruthy();
+    // …and no failure card is: the advisory line must never become the title.
+    expect(screen.queryByText(/compilation failed/i)).toBeNull();
+    expect(screen.queryByText(/use the -f option/i)).toBeNull();
+  });
+
+  // #tex: the diagnostics cards are the one place the viewer shows text a user
+  // has to hand to someone else, and the app disables selection globally — so
+  // every row, every card head and the log carry their own copy button.
+  it("copies one error, one warning and the whole log from the diagnostics cards", async () => {
+    const FAIL_LOG = [
+      "(./paper.tex",
+      "./paper.tex:3: Undefined control sequence.",
+      "l.3 \\bogus",
+      "",
+      "LaTeX Warning: Reference `fig:missing' on page 1 undefined on input line 5.",
+      ")",
+    ].join("\n");
+    setupInvoke(true, ["pdflatex"]);
+    mockInvoke.mockImplementation((cmd: string, args?: Record<string, unknown>) => {
+      if (cmd === "tex_capability") {
+        return Promise.resolve({
+          available: true,
+          engines: ["pdflatex"],
+          bibtex: false,
+          latexmk: false,
+        });
+      }
+      if (cmd === "read_file_text") return Promise.resolve(TEX_SOURCE);
+      if (cmd === "resolve_tex_root") return Promise.resolve((args?.path as string) ?? "");
+      if (cmd === "compile_tex") {
+        return Promise.resolve({
+          success: false,
+          pdf_path: null,
+          engine: "pdflatex",
+          log: FAIL_LOG,
+          shell_escape: false,
+        });
+      }
+      return Promise.resolve(null);
+    });
+    const writeText = vi.fn((_text: string) => Promise.resolve());
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    await renderTexView();
+
+    await act(async () => {
+      await userEvent.click(await screen.findByRole("button", { name: /compile/i }));
+    });
+
+    // One error row, one warning row — each with its own copy button, and each
+    // copying `file:line: message`, the shape the log itself prints.
+    await act(async () => {
+      await userEvent.click(await screen.findByRole("button", { name: /copy this error/i }));
+    });
+    expect(writeText).toHaveBeenLastCalledWith("./paper.tex:3: Undefined control sequence.");
+
+    // The warnings card copies every warning while still folded shut…
+    await act(async () => {
+      await userEvent.click(await screen.findByRole("button", { name: /copy every warning/i }));
+    });
+    expect(String(writeText.mock.lastCall?.[0])).toContain("fig:missing");
+
+    // …and each row copies its own once the card is unfolded.
+    await act(async () => {
+      await userEvent.click(screen.getByRole("button", { name: /warnings/i }));
+    });
+    await act(async () => {
+      await userEvent.click(await screen.findByRole("button", { name: /copy this warning/i }));
+    });
+    expect(String(writeText.mock.lastCall?.[0])).toContain("fig:missing");
+    expect(String(writeText.mock.lastCall?.[0])).toMatch(/paper\.tex:5:/);
+
+    // The log button hands over the whole log, not the visible tail — and it
+    // does so without expanding the log first.
+    expect(screen.queryByText(/Undefined control sequence\./, { selector: "pre" })).toBeNull();
+    await act(async () => {
+      await userEvent.click(
+        await screen.findByRole("button", { name: /copy the whole compilation log/i }),
+      );
+    });
+    expect(writeText).toHaveBeenLastCalledWith(FAIL_LOG);
   });
 });

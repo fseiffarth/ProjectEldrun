@@ -228,6 +228,9 @@ when its old chunk is gone.
 
 ## D. Read-only file browsing
 
+Downloads already exist for explicitly sent outbox files (`docs/mobile_send_plan.md`).
+This section concerns browsing beyond that outbox.
+
 ### D.1 Goal
 
 Browse a mobile-enabled project's tree and read text files, bounded and

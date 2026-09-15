@@ -291,6 +291,13 @@ case "$app_kind" in
     echo "  ./start-eldrun-tauri-hotreload.sh"
     ;;
   'frozen "Eldrun (dev)" build')
+    # The commit hook refreezes on its own; when it could not, say so here —
+    # its notification has no session bus to reach from an agent tab.
+    if [ -f "$APP_DIR/package-dev-auto.failed" ]; then
+      read -r fcommit fstatus fwhen <"$APP_DIR/package-dev-auto.failed"
+      echo "  The post-commit auto-freeze FAILED at commit $fcommit ($fwhen, status $fstatus):"
+      echo "  see $APP_DIR/package-dev-auto.log. Fix the build, or freeze by hand:"
+    fi
     echo "  npm run package:dev   # refreezes the tree, mobile bundle included"
     echo "  then quit and relaunch the \"Eldrun (dev)\" entry"
     ;;

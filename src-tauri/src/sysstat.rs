@@ -352,6 +352,26 @@ pub fn parse_rss_breakdown(status: &str) -> RssBreakdown {
     out
 }
 
+/// The `Threads:` count out of a `/proc/<pid>/status` body.
+pub fn parse_threads(status: &str) -> Option<u32> {
+    status
+        .lines()
+        .find_map(|line| line.strip_prefix("Threads:"))
+        .and_then(|rest| rest.trim().parse().ok())
+}
+
+/// The thread count of one live process. `/proc`-only, like [`process_memory`].
+#[cfg(target_os = "linux")]
+pub fn process_threads(pid: u32) -> Option<u32> {
+    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+    parse_threads(&status)
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn process_threads(_pid: u32) -> Option<u32> {
+    None
+}
+
 /// Resident size per mapping *name* from a `/proc/<pid>/smaps` body, largest
 /// first, at most `top` entries. Anonymous mappings (no name) are pooled under
 /// `[anon]`; everything else keeps the kernel's name (`[heap]`, a library path,
@@ -3390,5 +3410,22 @@ AMD\t1\tlink_speed\t\n\
         assert_eq!(snap.gpu_procs.len(), 1);
         assert_eq!(snap.gpu_procs[0].pid, 4321);
         assert_eq!(snap.gpu_procs[0].mem_bytes, 1536 * 1024 * 1024);
+    }
+}
+
+#[cfg(test)]
+mod thread_count_tests {
+    use super::parse_threads;
+
+    #[test]
+    fn reads_the_threads_field_of_a_status_body() {
+        let status = "Name:\tWebKitWebProces\nVmRSS:\t 8669544 kB\nThreads:\t575\nSigQ:\t0/514585\n";
+        assert_eq!(parse_threads(status), Some(575));
+    }
+
+    #[test]
+    fn absent_or_unparseable_is_none() {
+        assert_eq!(parse_threads("Name:\tx\nVmRSS:\t1 kB\n"), None);
+        assert_eq!(parse_threads("Threads:\tmany\n"), None);
     }
 }

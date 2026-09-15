@@ -25,6 +25,8 @@ export interface ScheduledAgentInput {
 }
 
 export interface SubmitOptions {
+  /** Called at the message, after any prefix commands have settled. */
+  beforeMessage?: () => void;
   /** Slash commands submitted one at a time, in order, before the message. */
   preface?: string[];
   /** Awaited between submissions instead of the fixed {@link PREFACE_GAP_MS}. */
@@ -81,7 +83,7 @@ export async function submitScheduledAgentMessage(
   for (let submission = 0; submission < submissions.length; submission += 1) {
     // Only the message counts as a prompt asked; a prefix command still stamps
     // input, or the output it provokes would not read as this tab working.
-    if (submission === submissions.length - 1) input.recordAuthorizedInput();
+    if (submission === submissions.length - 1) { options.beforeMessage?.(); input.recordAuthorizedInput(); }
     else input.noteInput?.();
     const writes = submissions[submission];
     for (let index = 0; index < writes.length; index += 1) {

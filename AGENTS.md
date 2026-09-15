@@ -70,7 +70,14 @@ change was not run live.
   hook queues `scripts/package-dev-auto.sh`, which builds detached (the commit
   never waits), nice'd/`SCHED_IDLE` so it does not fight the window it serves,
   and coalescing — a commit landing mid-build queues one more pass instead of a
-  second build, so a rebase costs one or two and ends on the *last* tree. It
+  second build, so a rebase costs one or two and ends on the *last* commit.
+  **It freezes the commit, not the tree** (user, 2026-09-14): `package-dev.sh
+  --head` checks `HEAD` out into the detached worktree `target/freeze-tree`
+  (node_modules symlinked, cargo target dir shared) and builds there, so the
+  frozen binary is exactly one commit — never "+local" with someone else's
+  dirty edits swept in, and never failed by an `npm run build` that rewrites
+  `dist/` mid-compile. `npm run package:dev` by hand still freezes the live
+  tree, as the explicit way to try an uncommitted change. It
   installs and notifies; it never launches or stops anything, and a running
   frozen window keeps its old inode until the user relaunches it. **From an
   agent tab it builds and stops there** (2026-09-04): `services::agent_fence`
@@ -79,7 +86,21 @@ change was not run live.
   every commit reporting success while the desktop icon stayed two days behind.
   The build is real (`target/` is inside the bound project), so
   `start-eldrun-dev-build.sh` adopts `target/release/eldrun` at launch instead,
-  in the user's own session, guarded by `scripts/assert-embedded-frontend.sh`.
+  in the user's own session, trusting the `.frozen` record `package-dev.sh`
+  leaves beside a binary that passed `scripts/assert-embedded-frontend.sh` —
+  not a re-run of that check, since `dist/` moves on with every gate an agent
+  runs and a launch-time re-check refused four days of good builds
+  (2026-09-14). The launcher notifies either way: what it adopted, or why not.
+  **A failed pass does not end the queue** (2026-09-15): a commit that landed
+  mid-build is a different tree — usually the one that fixes it, since a
+  change split over two commits compiles only as a pair — so the loop goes on
+  to it instead of leaving it "queued" for good. A failure is written to
+  `~/.local/share/eldrun/package-dev-auto.failed` (commit, status, when),
+  which `--status`, `npm run backend:stale` and the launcher all read: the
+  launcher compares the installed snapshot's recorded commit (`.frozen`, now
+  kept beside the installed binary) with `HEAD` and notifies how many commits
+  behind it is opening, and why — the hook's own failure notice never
+  arrives from an agent tab.
   It declines in CI and from a linked worktree (freezing an agent's tree over
   the user's binary is exactly the surprise to avoid). Off with `git config
   eldrun.autoDevBuild false`, or `ELDRUN_NO_AUTO_DEV_BUILD=1` for one commit;
@@ -299,9 +320,12 @@ loopback port, and from there is an ordinary `RemoteSpec` with `vm: true`.
   what the user set in-session and must not grow into a mode Eldrun chooses.
 - Terminal `kill`/`kill_all` must reap the child process subtree, not just the
   shell leader.
-- To show the user a picture on their phone (Eldrun Mobile), copy it into the
-  project's `.eldrun/outbox/`; the phone's Focus view lists that folder.
-  Images only — nothing is copied there on an agent's behalf.
+- To show the user a file on their phone (Eldrun Mobile), run
+  `eldrun-send <file>` in a local or container tab (24 MiB per file), or pipe
+  stdin with `command | eldrun-send -n tests.log`. The phone's Focus view lists
+  the scope's `.eldrun/outbox/`: images, PDFs and text preview; other files
+  download or share. `eldrun-send --clear` empties it. Manual copies still
+  work. Nothing is copied there on an agent's behalf; remote SSH is deferred.
 
 ## Frontend notes
 

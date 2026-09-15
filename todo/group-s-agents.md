@@ -1,4 +1,12 @@
 ## Group S — Local Agents via Ollama Integrations (`ollama launch`)
+
+- [ ] Live-check Codex resume after a deliberate backend restart (2026-09-15):
+  tabs started together in one folder must retain distinct conversations.
+  Old duplicate assignments now open Codex's session picker in the conflicting
+  tab; choose its intended conversation. Verify close/reopen and trusted-hook
+  tracking too. Automated regression covers duplicate binding within one poll
+  and reservation of saved resume targets; no live Eldrun restart performed.
+
 *New feature. Generalizes the existing single "Local Model" tab (Mistral `vibe`)
 into a family of local, Ollama-backed agent tabs — Claude Code, Hermes, OpenClaw,
 OpenCode — that behave exactly like the vibe local-agent tab does today (per
@@ -411,6 +419,17 @@ unchanged; the new agents are additive.
 
 ---
 
+- [ ] Live-check fenced Codex without a sandbox-backend override (2026-09-15):
+  the forced `features.use_legacy_landlock` (2026-09-14) is gone — Codex
+  0.154.0 warns it is deprecated on every start, and its legacy backend panics
+  on workspace-write unless `/tmp` is excluded from the writable roots. Nested
+  bubblewrap stays impossible under the fence (AppArmor `unpriv_bwrap` denies
+  the second user namespace), so expect Codex to report the failed sandbox and
+  ask to run outside it; confirm "approve for session" makes that a one-time
+  question, and that the fence still bounds writes to the project roots. If
+  the per-command asking is unbearable, the honest options are a fence-off
+  toggle for that project or a Codex-side exec rule, not another backend flag.
+
 203. **Manage CLIs is two lists, not one.** ✅ **Shipped** (2026-08-31). The
     panel rendered every CLI in the registry as a full install card, sorted
     installed-first, so the handful of entries anyone manages (enable, remove,
@@ -464,6 +483,19 @@ unchanged; the new agents are additive.
       - [ ] The same folder asked about only ONCE: answer `Yes, I trust`, then
         open a second Claude tab there and confirm it goes straight in, and that
         a quit/relaunch in between does not bring the question back.
+      - [ ] Claude's grey diff panel ("No changes this session") stays closed
+        once closed (fixed 2026-09-09: the panel is Claude's own fullscreen-layout
+        diff sidebar, which opens by itself once a session has changes and the
+        tab is wide enough; closing it — `/diff` toggles it — writes
+        `diffSidebarOpen: false` to `~/.claude.json`, which a fenced tab only
+        ever sees as the stage copy rewritten at each spawn, so the panel came
+        back in every new tab. Now `sandbox::CLAUDE_CARRIED_PREFS` names the
+        `~/.claude.json` toggles harvested from the stage copy into
+        `agent_trust.json` and re-applied to each later copy — the host file is
+        still never written.) To test after a backend restart: close the panel
+        in a fenced Claude tab, make an edit in a *new* fenced tab, confirm no
+        panel; open it again with `/diff` in one tab and confirm the next tab
+        keeps Claude's own auto-open behaviour.
       - [ ] Fenced Claude starts **logged in**, no per-tab login/onboarding
         (fixed 2026-08-31: `~/.claude.json` staged as a filtered per-project
         copy — login/onboarding kept, foreign projects' history/allowedTools
@@ -1017,6 +1049,156 @@ unchanged; the new agents are additive.
       tab's columns.
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work
+    - **Rework (2026-09-10): one horizontal timeline, real drag-and-drop, the
+      agent on the card.** The per-tab columns gave every agent a column's
+      width and time a column's width; the chart is now one proportional axis
+      across the whole tab — Day / Week / Month with ◀ Today ▶, past left, a
+      now line and a now band, future right, drafts on a strip above — with
+      the calendar's week start and the view's own snap (5/15/60 min). The
+      drag was broken (capture on the card, no `pointermove`, no threshold,
+      `elementFromPoint` on release; a click on a scheduled card re-timed it)
+      and now follows the board's gesture: a ghost, an indicator at the
+      snapped minute, a badge saying what the drop does, and nothing written
+      when the gesture ends over nothing. Links are pulled out of a card's
+      bottom port onto another card; every draft/scheduled/queued/chained
+      card carries an agent picker (a draft's choice persists as the new
+      `target` field on the prompt row). `docs/prompt_chart_plan.md` §9.
+      Built 2026-09-10, **not live-tested**.
+      - [x] 🤖 Automated test — `AgentPromptTimeline` (windows per view and
+        week start, anchor stepping with the month clamp, x ↔ time and snap,
+        tick counts, items incl. recurring expansion and the excluded states,
+        lane packing, day clusters, the hit zones, the whole drop matrix),
+        `AgentPromptChart` (draft `targetId` from `prompt.target`, stale
+        target dropped, chained `chainLink`), `PromptChart` (day/week/month
+        switch and Today; a press without movement is not a drop; draft →
+        future schedules at the snapped minute; draft → now band and left of
+        the now line send; rule → strip unschedules; sent → strip ~~collects~~ writes nothing (since
+        2026-09-13, see follow-up below); a
+        cancel or a release over nothing writes nothing; port drag links two
+        cards; the agent picker on a draft / rule / chained card writes the
+        three rows, upsert before delete), `AgentSchedulesView` (queued cards
+        at the now line), cargo `upsert_keeps_target_unless_the_editor_names_it`.
+      - [ ] 🖐️ Manual test — open the prompt chart on a project with two agent
+        tabs. In Day view drag a draft to about 14:30: the ghost follows, the
+        badge reads "Schedule · 14:30", and ◷ Schedules on the picked tab shows
+        that minute. Drag it back to the strip (rule gone, draft back). Drop a
+        draft on the now band (queued at the now line, then delivered). Switch
+        to Week and retime a card — it snaps to 15 min. Pull a card's bottom
+        port onto another: the dashed preview follows, the arrow lands; send
+        the first and confirm the second queues on delivery. Change the agent
+        on a draft (check `target` in `agent_prompts.json`), on a scheduled
+        card (rule moved to the other tab's ◷), on a chained card (the link's
+        target). Month view: a day's lamps open the day. ◀ shows yesterday's
+        sent cards on the past side.
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+    - **Follow-ups (2026-09-13/14), not live-tested.** (1) `c24ee4c`: a sent
+      card is history — no drag starts on it and every drop zone refuses it
+      (the strip's "collect again" drop is gone; the card's button stays); sent
+      cards wear the past band's grey, queued cards a dashed border; the
+      undefined `--radius-md` token (square corners) points at `--radius`; lane
+      height fits a three-line card and the queue column never clips; ports sit
+      on left/right edges and links bend horizontally. (2) `5e8b2c8`: the past
+      band, grid, now line and drop band are drawn in layers beside the
+      scrolling body so they span its full height, with a sticky NOW axis; lanes
+      pack newest first; Day/Week fold one session's sent prompts into one
+      `PromptSessionCard` with a tick per prompt; bare slash commands and
+      `/rename`/`/model` are not adopted. (3) `fad5a09`: Ctrl + wheel steps
+      month ⇄ week ⇄ day around the day under the pointer (non-passive
+      listener, trackpad deltas accumulate); instants are written by
+      `formatTimelineInstant` in the app's language and 12/24 h setting.
+      - [x] 🤖 Automated test — `PromptChart`, `AgentPromptTimeline`
+      - [ ] 🖐️ Manual test — try to drag a sent card: nothing moves. Scroll a
+        busy Day view down: the now line and NOW label stay full-height and
+        visible. A session with five sent prompts shows one card with five
+        ticks. Ctrl + wheel over the timeline changes the view (the page does
+        not zoom). Switch Settings to 12 h → card times follow.
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+    - **Edge commands, Hour view, every typed prompt adopted (2026-09-15),
+      not live-tested.** An `after` link carries the target agent's own
+      commands (`PromptLink.preface`) — `/clear` between two chained prompts —
+      typed as the queued prompt's preface when the chain fires; edited from a
+      handle at the edge's midpoint or a card's link rows. A 5-minute Hour
+      view below Day. Typed prompts are adopted from a timed read of the
+      transcript (`agent_tab_recent_prompts`), so messages sent mid-turn and
+      the first prompt after a launch reach the chart at their real time.
+      `docs/prompt_chart_plan.md` §10. Needs a backend restart.
+      - [x] 🤖 Automated test — cargo `an_after_link_carries_commands_and_a_related_one_cannot`,
+        `a_prompt_recorded_after_the_fact_keeps_its_time_and_place`,
+        `recent_prompts_carry_their_times_and_take_in_mid_turn_messages`;
+        `AgentPromptLinks`, `AgentScheduleRetire` (edge commands on the queued
+        rule), `AgentPromptTimeline` (hour window, ticks, snap, stepping),
+        `AgentPromptAdopt` (timed adoption + old-backend fallback),
+        `PromptChart` (Hour button, edge handle → `/clear`, related drops it).
+      - [ ] 🖐️ Manual test — after restarting: link two drafts `after`, click
+        the dot on the arrow, switch on `/clear`; the arrow reads `/clear` and
+        the chained card says so. Send the first: the agent tab receives the
+        prompt, then `/clear`, then the second prompt. Click Hour: 5-minute
+        grid, ◀ ▶ step an hour, a drop snaps to 5 min. In an agent tab type a
+        prompt, then send another while it is still working: both appear on
+        the chart at the times they were sent.
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+    - **A `/clear` splits the session card and draws the edge (2026-09-15),
+      not live-tested.** A history row's `session_id` is now the LIVE session
+      the prompt reached — the backend resolves the tab's launch id through
+      the hook's record at write time (`agent_prompts::resolve_live_session`)
+      and keeps the launch id as the new `tab_id` — so the prompts after a
+      `/clear` (or a `/resume`) fold into a second session card on the same
+      strand instead of the first. The hook now also records how the session
+      started (`<uid>.src`: startup / resume / clear / compact), and the
+      first row under a rolled id gets an edge from the tab's previous row by
+      itself: `after` carrying `/clear` when that is what happened, plain
+      `related` for a resume (`link_session_roll`, id `roll:<row>`; deleting
+      the row takes it). Closed strands are one per gone *tab* now, keyed by
+      `tab_id`. Rows written before this carry the launch id and stay where
+      they were. `docs/prompt_chart_plan.md` §11. Needs a backend restart
+      (frozen build: `npm run package:dev`, then relaunch).
+      - [x] 🤖 Automated test — cargo
+        `a_rolled_session_links_the_new_rows_to_the_tabs_previous_session`,
+        `hook_script_lets_only_the_tabs_own_session_move_the_record` (the
+        source record), `per_project_live_session_records_are_separate_and_the_newer_one_wins`
+        (`read_live_source_in`); `AgentPromptChart` (rows on one strand across
+        a `/clear`, closed strand per tab), `AgentPromptAdopt` (a rolled row is
+        still the tab's).
+      - [ ] 🖐️ Manual test — after restarting: in a Claude tab send a prompt
+        from the chart, type `/clear` in the tab, send another. Day view: two
+        session cards on the tab's strand, an arrow from the first to the
+        second whose midpoint dot reads `/clear`. Send a third: it folds into
+        the second card, no new arrow. Close the tab: one grey strand, both
+        cards still on it. `/resume` to an older conversation then send: the
+        new card is joined by a plain (arrowless) line.
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+
+    - **Free draft layout and completion-gated sequences (2026-09-15), not
+      live-tested.** Free layout remembers each project's card positions;
+      ports link drafts with the timeline hidden. Dragging any After member
+      schedules only the start and brings its descendants onto the timeline.
+      The next prompt waits for an explicit working→done hook pair, stable
+      for three seconds; silence and timeouts cannot release it. Hook-free
+      agents pause after their first input. See `docs/prompt_chart_plan.md` §12.
+      - [x] 🤖 Automated tests — `AgentPromptDrafts`, `PromptChart`,
+        `AgentScheduleQuietTab`, `AgentScheduleRetire`, `AgentTurnHooks`.
+      - [ ] 🖐️ Manual test — enable Free layout, move and link three drafts,
+        hide/show the timeline, and reopen the chart to check positions.
+        Drag the middle card to a future time: all three appear on the chart.
+        Use a slow tool and an approval wait on the source, with the next card
+        aimed at another tab: it must stay paused until confirmed completion.
+        Check `/clear` on the edge runs only after that completion.
+    - **One independent rule per tab (2026-09-15):** a tab already holding a
+      live rule is not offered to a draft — picker, timeline drop, Send and
+      Schedule all point at linking After it instead; a rule keeps its own tab;
+      the ◷ Schedules dialog only warns. `occupiedTargets` in
+      `lib/agentPromptChart`; plan §12.
+      - [ ] 🖐️ Manual test — with a rule on the Claude tab, a draft's picker
+        must list only the other tabs; drop the draft on the timeline and it
+        lands on a free tab; aim a draft at the Claude tab first (before the
+        rule exists), add the rule, and the card must show the amber note,
+        refuse the drop with the error line, and accept an After link.
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
 
 263. **Agent panes: double-click pastes, and a drag still selects while the TUI
     holds the mouse.** Two gestures the terminal owed an agent tab. A
@@ -1158,3 +1340,131 @@ unchanged; the new agents are additive.
       Re-check and confirm the version is re-read.
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work
+
+266. **A copy out of a terminal says so.** Copy-on-select worked, and read as
+    "select/copy is broken" (user, 2026-09-13): under an agent TUI the highlight
+    a drag leaves is wiped by the program's next repaint within milliseconds,
+    and no route — drag, Shift+drag, Ctrl+Shift+C — announced the copy. Every
+    user-made copy now goes through one `copyToClipboard` in `TerminalView` that
+    writes the clipboard and, once the write resolved, shows the same transient
+    toast the OSC 52 path uses: "Copied 3 lines to the clipboard" / "Copied 42
+    characters to the clipboard" (`terminal.copiedLines` / `terminal.copiedChars`).
+    A refused write (no window focus) shows nothing. The selection highlight on
+    the two dark grounds (`soft_dark`, `dark`) is one step brighter so it reads
+    through the TUI's own tinted blocks. Frontend only, hot-reloads. Built
+    2026-09-13, **not live-tested**.
+    - [x] 🤖 Automated test — `AgentPaneMouse` (a drag's release copies the
+      text and sets the toast with the line count, a one-line selection with
+      the character count; a refused clipboard write sets no toast).
+    - [ ] 🖐️ Manual test — in a Claude tab, drag across some output: the toast
+      at the top says how many lines were copied and a paste elsewhere has
+      them. Shift+drag and Ctrl+Shift+C (after a Shift+drag) do the same. In a
+      shell tab the same three routes announce too. In soft_dark, the highlight
+      is visible over Claude's dimmed blocks while it lasts.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+267. **`claude update` works from a fenced agent tab.** The fence bound the
+    agent's own install read-only — `~/.local/bin` from the allowlist and
+    `~/.local/share/claude/versions/` from the launcher's symlink chain — so
+    `claude update` and Claude's background auto-update failed on `EROFS` in
+    every agent tab (user, 2026-09-13: "must be doable from the agent tabs").
+    `agent_fence::updatable_install_dirs` recognises the native-installer
+    layout (a link in `~/.local/bin` into `~/.local/share/<tool>/`) and hands
+    exactly `~/.local/bin` and `~/.local/share/<tool>` back read-write, on
+    Linux as later bind mounts that shadow the allowlist's read-only one and on
+    macOS as `writable` entries of the Seatbelt profile. An npm/nvm or
+    package-managed install stays read-only. Deliberate widening, documented in
+    `docs/context/agent_authority.md`. Backend only — needs a restart. Built
+    2026-09-13, **not live-tested**.
+    - [x] 🤖 Automated test — `agent_fence` (the native layout yields the
+      launcher dir then the install root, never `versions/`; an nvm-style
+      install and a `~/.local/bin` link pointing elsewhere yield nothing; a
+      later read-write bind of `~/.local/bin` comes after the allowlist's
+      read-only one in the bubblewrap argv).
+    - [ ] 🖐️ Manual test — after a restart, in a Claude tab run
+      `! touch ~/.local/share/claude/versions/.probe && rm ~/.local/share/claude/versions/.probe`
+      (no "Read-only file system"), then `! claude update` when a newer
+      release exists: it installs, `! readlink ~/.local/bin/claude` names the
+      new version, and a tab opened afterwards runs it. Confirm a shell tab's
+      view of `~/.local/bin` is unchanged and that `~/.nvm` (if present) is
+      still read-only from the agent tab.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+837. **Meta's Muse Code joins the agent registry.** `muse` installs from Meta's
+    own one-liner into `~/.local/bin` (verified against `dev.meta.ai/install.sh`);
+    no Windows installer, so Windows gets the docs link. Launch-only like Kimi and
+    Qoder: a Muse tab does not restore and cannot be scheduled — its resume
+    (`muse resume --last`) and one-shot (`muse exec`) modes are documented only
+    by third parties, and `WARMUPS` takes a documented recipe or nothing. Files:
+    `commands/agents.rs`, `components/tabs/newTabItems.ts`, `lib/usageMetrics.ts`.
+    Implemented 2026-09-14 (`b011bb6`), **not live-tested; backend change.**
+    - [x] 🤖 Automated test — `CustomAgents`
+    - [ ] 🖐️ Manual test — Agents panel: Muse Code shows an install card; the
+      one-click install opens a tab and puts `muse` in `~/.local/bin`; the new-tab
+      menu then offers Muse and it launches. Relaunch Eldrun → the Muse tab is not
+      resumed (expected).
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+838. **Working / done marks come from the agent's own hooks.** The byte heuristic
+    could not survive every agent TUI (Codex paints a spinner and its title on a
+    timer whether it works, waits or idles, and while thinking changes one timer
+    digit a second — so after the braille/empty-frame filters a working Codex
+    never lit). The hook script now also serves `UserPromptSubmit`, `PostToolUse`,
+    `Notification` (Claude) and `SessionEnd`, writes `live_sessions/<uid>.turn`,
+    and `services::agent_turn` relays it as `agent-turn` by PTY id; the activity
+    store takes that as authority (retired by an interrupt key, by input on a
+    decision, by 20 s without paint, by respawn) and keeps a sharper byte fallback
+    (paint vs. text, 1.5 s text gap, keystroke-echo suppression) for hookless
+    agents. Files: `services/agent_turn.rs`, `services/agent_session.rs`,
+    `commands/terminal.rs`, `stores/activity.ts`, `TerminalView.tsx`,
+    `AppShell.tsx`. Implemented 2026-09-15, **not live-tested; backend change
+    (restart needed; Codex needs `/hooks` re-trust for the four new hooks).**
+    - [x] 🤖 Automated test — `AgentTurnHooks`, `PillRunningIndicator`,
+      `agent_session::tests::hook_script_records_the_turn_state_for_the_tabs_own_session_only`
+    - [ ] 🖐️ Manual test — after a restart: (1) in a Claude tab send a prompt,
+      switch to another tab — its bar/ring shows working within a second, and
+      finished when the answer lands; look at it → the finish clears. (2) Ask
+      Claude for something that needs a permission → the decision lamp lights
+      (also while the tab is on screen); answer → it clears and working resumes.
+      (3) Same in a Codex tab (after trusting the hooks via `/hooks`): working
+      while it thinks (only its timer moves), an approval menu → decision, and
+      idle Codex with its dot field is neither. (4) Press Esc mid-turn → working
+      clears within a second. (5) Type a long prompt slowly → no working glow.
+      (6) A Gemini/Qwen tab (no hooks) still shows working/finished off its bytes.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+    - **Fix (2026-09-15): scheduled prompts to different tabs no longer wait on
+      each other.** Two prompts due at 12:35 on two Claude tabs: the first went
+      at 12:35:01, the second only at 12:37:12, after a hook event happened to
+      land. Cause: `TerminalView` stamped **everything** xterm emits through
+      `onData` as the user's input — including the focus in/out reports, mouse
+      tracking and cursor-position / attribute replies the terminal sends by
+      itself — and the delivery gate (new that morning) reads any input after a
+      Stop as a turn in flight, waiting for a Stop that no submission was going
+      to bring. So a tab that was merely clicked into could not receive a
+      scheduled prompt until its next real turn ended. Now: `isTerminalAutoReply`
+      keeps those out of the stamp (they still reach the PTY); a real keystroke
+      holds delivery only for the 20 s a submission needs to be reported by the
+      hook (`INPUT_SUBMIT_GRACE_MS`), after which an abandoned draft or an arrow
+      key holds nothing; and a tab whose agent fires no hooks (Gemini, Qwen,
+      custom) falls back to its bytes — after a keystroke's grace before a
+      delivery, and after 30 s of quiet (`HOOKLESS_DONE_QUIET_MS`) after one —
+      instead of never being deliverable again. Files: `lib/terminalControl.ts`,
+      `TerminalView.tsx`, `stores/activity.ts`, `AgentScheduleHost.tsx`.
+      Frontend only, hot-reloads; **not live-tested**.
+      - [x] 🤖 Automated test — `AgentScheduleParallelTabs` (two tabs, a
+        stale keystroke, a hook-free second delivery), `AgentTurnHooks` (the
+        grace), `TerminalControl` (`isTerminalAutoReply`).
+      - [ ] 🖐️ Manual test — two Claude tabs, both idle after a finished turn.
+        Click into tab B, then back to A. From the prompt chart drop one draft
+        on each tab at the now line: both prompts land within a tick (15 s),
+        B's without waiting for A's turn to end. Then send a prompt to A, and
+        while A works schedule one for B: B receives it at once. Type half a
+        prompt into an idle tab and leave it: a prompt sent to that tab arrives
+        after ~20 s, not never. In a Gemini tab send two prompts in a row from
+        the chart: the second arrives ~30 s after the first answer goes quiet.
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work

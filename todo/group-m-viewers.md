@@ -1159,13 +1159,13 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     `lib/screenshot.ts`; first visible viewer claims, so the OS region tool is
     only spawned when no PDF is on screen). The drag captures from the rendered
     page canvas (document-sharp, pending blackouts burned in), copies the PNG
-    to the clipboard AND files it as `screenshots/Screenshot-….png` in the
+    to the clipboard AND files it as `eldrun-screenshots/Screenshot-….png` (was `screenshots/`, see #835) in the
     PDF's own project (`write_project_file_bytes`) — the global screenshot's
     file-plus-clipboard contract. One press is one shot; Esc cancels.
     - [ ] 🤖 Automated test
     - [ ] 🖐️ Manual test — open a PDF, press the header Screenshot button:
       the capture bar should appear (no OS tool); drag a region and check the
-      clipboard paste and the new file under `screenshots/`; press Screenshot
+      clipboard paste and the new file under `eldrun-screenshots/`; press Screenshot
       with no PDF visible and check the OS region tool still runs; Esc while
       armed cancels without a shot.
       - [ ] ✅ Works
@@ -1929,7 +1929,7 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       document — on when any file of it loads `\documentclass{beamer}` (the
       completion gather's walk reports `beamer`, and the draft itself is read
       for a class line typed before any compile), off for a paper — and a click
-      is remembered per tab (`ViewerState.texBeamer`).
+      is remembered per **project** (#270; was per tab).
     - **The overlay bar** under the header while on: a command dropdown
       (`\only` `\uncover` `\visible` `\invisible` `\alert` `\onslide` `\alt`
       `\temporal`), *from* / *to* / *onward* fields, and the spec as it will be
@@ -2001,5 +2001,212 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       starting with the same letters must stay unmarked. Type anything, or
       click elsewhere: the marks go. Double-click a plain word: nothing is
       marked. Scroll — the marks must stay glued to their text.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+266. **Hover tooltips name the keyboard shortcut, and the TeX build gets one.**
+    Implemented 2026-09-08, not yet verified live. A control that a chord also
+    drives now says so on hover — and the chord it names is the one the user
+    actually has, resolved from the shortcut table (rebindable, ⌘-glyphed on
+    macOS) instead of spelled into a translated string the way the older
+    "Save (Ctrl+S)" tooltips are.
+    - **New chord `texCompile` (Ctrl+Shift+B, rebindable).** Saves and builds
+      the document — the Compile button's keyboard twin, which the TeX viewer
+      had none of. Listened for on the TeX pane's own root, the way `texUp`/
+      `texBack` are: a compile is pressed with the caret in the editor's
+      textarea, exactly the editable target `useKeyboard` drops chords on. The
+      workspace root carries a fallback for focus that is *not* in an editor
+      pane (structure sidebar, error list), routed through the `texCenter`
+      compile registry so the mounted editor — which owns the draft and the
+      options — runs the build. It appears in the F1 cheat sheet and in
+      Settings → Shortcuts under "TeX workspace" automatically.
+    - **Tooltips:** the Compile button ("Save and compile to PDF
+      (Ctrl+Shift+B)"), and in the tab bar the ◫ files toggle, the subwindow
+      hide and close buttons, and the tab **×** — the last only on the *active*
+      tab, since `closeTab` closes that one and naming the chord on any other
+      would advertise a key that closes a different tab than the one under the
+      pointer.
+    - *Files: `src/lib/shortcutHint.ts` (new), `src/lib/shortcuts.ts`,
+      `src/components/embed/FileViewerPane.tsx`,
+      `src/components/tabs/TabBar.tsx`, `src/lib/i18n.ts` (+ the four
+      dictionaries).* Frontend only, hot-reloads.
+    - [x] 🤖 Automated test — `src/__tests__/TexViewer.test.tsx` (Ctrl+Shift+B
+      from the textarea compiles; the button's tooltip names the chord).
+    - [ ] 🖐️ Manual test — in a TeX workspace, press Ctrl+Shift+B with the
+      caret in the source: it should save and build exactly as the button does,
+      and the textarea must not gain a stray character. Press it with the
+      structure sidebar focused: same build. Hover Compile — the tooltip names
+      the chord; rebind `texCompile` in Settings → Shortcuts and the tooltip
+      follows. Hover the ◫ / hide / close subwindow buttons and the active
+      tab's ×: each names its chord, and an inactive tab's × does not.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+270. **TeX editor: the Beamer and Preview switches are the project's, not the
+    tab's.** Implemented 2026-09-10, not yet verified live. Both toggles wrote
+    to the tab's `ViewerState`, so every `.tex` of a deck had to be told
+    "beamer" on its own and a fresh tab of the same document opened without
+    the bar. Now one row per project (`stores/texViewPref`, localStorage keyed
+    by project id, `"root"` for the root scope, capped at 200 rows like
+    `fileSourcePref`), read live by every TeX pane of the project — center,
+    workspace, popout — and surviving a project switch and a relaunch. Absent
+    means the old default: beamer follows the document, the preview follows
+    `viewer_prefs.tex`. The per-tab `texBeamer`/`texHoverPreview` rows in old
+    sessions are ignored.
+    - *Files: `src/stores/texViewPref.ts` (new),
+      `src/components/embed/FileViewerPane.tsx`, `src/stores/tabs.ts`.*
+      Frontend only, hot-reloads.
+    - [x] 🤖 Automated test — `src/__tests__/TexViewPref.test.ts` (merge,
+      persist, junk rows dropped) and `TexViewer.test.tsx` (a second file of
+      the project opens with the bar / the preview off, through a fresh module
+      registry = the relaunch path; another project keeps its default).
+    - [ ] 🖐️ Manual test — in a project with two `.tex` files (an `article`),
+      click **Beamer** on in one: the other file's tab shows the bar at once.
+      Switch **Preview** off there. Switch to another project and back, then
+      quit and relaunch Eldrun: both files still show the bar and Preview
+      off; a different project's `.tex` is unaffected. A beamer document with
+      no click still opens with the bar.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+828. **Markdown: remote images load on request, never on open.** A README's
+    badges rendered broken: the renderer emitted `<img src="https://…">`, which
+    the app CSP (`img-src 'self' data: blob:`) blocks — and widening the CSP
+    would let any opened document contact any server (a tracking pixel, or a
+    leak out of a VM/agent sandbox through the host). The CSP stays; http(s)
+    images render as badge-sized placeholder chips that fetch nothing, the
+    preview shows "Remote images not loaded (N) · hosts" with **Load**
+    (remembered per document for the session), and Load goes through the new
+    `markdown_remote_image` command on the reader's hardened fetch — https on
+    every hop, no loopback/private address even on hop 0, image content types
+    only, 2 MB cap — landing as a `blob:` URL. Files: `lib/remoteImages.ts`,
+    `lib/viewers/markdown.ts`, `components/embed/FileViewerPane.tsx`,
+    `commands/markdown.rs`, `services/browser_engine.rs`. Implemented 2026-09-14
+    (`2ee40a3`), **not live-tested; Load needs a backend restart.**
+    - [x] 🤖 Automated test — `RemoteImages`, `MarkdownLinkLabel`
+    - [ ] 🖐️ Manual test — open a README with shields.io badges: chips, no
+      network request, the "not loaded (N)" bar names the hosts. Click Load →
+      the badges appear; close and reopen the file in the same session → still
+      loaded. An image pointing at `http://127.0.0.1/…` stays a chip after Load.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+829. **TeX: a latexmk exit code is not the document's verdict.** latexmk exits
+    non-zero for things that are not document errors (a `latexmkrc` treating
+    warnings as errors, `$max_repeat`, a failed bibtex/biber rule, a missing
+    `.bib`) while the engine still wrote a PDF; Eldrun reported a failed build,
+    withheld the PDF and titled the card "Use the -f option to force complete
+    processing". A non-zero exit is now forgiven when the log has no engine error
+    (`!` or `file:line:`) **and** this run's PDF is newer than the one it started
+    with. Either way the build carries `driver_note` — latexmk's own
+    `Collected error summary` and `Latexmk:` cause lines — titling a real
+    failure and standing beside a forgiven one. Files: `commands/tex.rs`,
+    `components/embed/FileViewerPane.tsx`, `components/files/FileTree.tsx`,
+    `lib/viewers/tex.ts`. Implemented 2026-09-08 (`d81f579`), **not live-tested;
+    backend change.**
+    - [x] 🤖 Automated test — cargo `commands::tex` (verdict + driver note),
+      `TexViewer`
+    - [ ] 🖐️ Manual test — cite a key with no `.bib` present and compile: the
+      fresh PDF shows, with latexmk's note beside it rather than a failure card.
+      Introduce a real `\undefinedmacro` → a failure card titled by the engine
+      error. Delete the PDF, break the document → no stale PDF shown as success.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+830. **TeX: copy an error, a warning, or the whole log.** Every diagnostics row
+    is a jump button and the app sets `user-select: none`, so a TeX error was the
+    least copyable text in the viewer. A ⧉ → ✓ chip now sits beside every error,
+    every warning, each card's head and the full log — the whole text, not the
+    part the card's 40 % max-height shows; rows copy as `file:line: message`.
+    The chip sits beside the jump and the fold toggle, never inside, and stops
+    the click. Frontend: `components/embed/FileViewerPane.tsx`,
+    `styles/viewers.css`. Implemented 2026-09-08 (`736f09a`), **not live-tested**.
+    - [x] 🤖 Automated test — `TexViewer` (copy chips)
+    - [ ] 🖐️ Manual test — compile a document with an error and warnings:
+      clicking a row's ⧉ copies `file:line: message` without moving the caret;
+      the card head's ⧉ and the log's ⧉ copy everything, including lines scrolled
+      out of view.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+831. **TeX hover preview marks the fragment its card is showing.** With a
+    preview card open nothing tied the card back to its source line. An
+    `is-previewed` mark (occurrence-layer blue fill + 1 px accent ring,
+    unblurred) follows the card, not the pointer; kept by index into
+    `snippetRanges` so a keystroke's layer rebuild keeps it, and dropped once the
+    span no longer reads as the card's body. Frontend: `FileViewerPane.tsx`,
+    `styles/viewers.css`. Implemented 2026-09-08 (`c4b51e1`), **not live-tested**.
+    - [ ] 🤖 Automated test
+    - [ ] 🖐️ Manual test — hover a formula until its card opens: the formula's
+      source is ringed while the card stays; type elsewhere → ring stays; edit
+      inside the formula so it no longer matches → ring goes.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+832. **TeX: Beamer completions in a deck; `\begin{` accept closes its brace.**
+    `TEX_BEAMER_COMMANDS` (`\frametitle`, `\usetheme`, `\pause`, `\only`,
+    `\setbeamercolor`, …) join command completion only when the document is a
+    deck (gathered `beamer` flag, or a `\documentclass{beamer}` in the draft);
+    `block`/`alertblock`/`exampleblock` join environments with a `{}` title
+    seed. Accepting an environment after an unclosed `\begin{`/`\end{` writes
+    the missing `}` and, for `\begin`, opens the block. Frontend:
+    `lib/viewers/tex.ts`. Implemented 2026-09-09 (`e7f36e6`), **not live-tested**.
+    - [x] 🤖 Automated test — `TexCompletions`
+    - [ ] 🖐️ Manual test — in a beamer deck type `\frame` → `\frametitle` is
+      offered; in an article it is not. Type `\begin{ali`, accept `align` → the
+      line reads `\begin{align}` with a body and `\end{align}`.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+833. **HTML preview anchors scroll in-page** (+ VPN dropdown tidy). A rendered
+    HTML file is a `sandbox=""` srcdoc frame whose base URL fell back to
+    `tauri://localhost/`, so `<a href="#section">` navigated the frame blank.
+    `buildPreviewDoc` prepends `<base href="about:srcdoc">` first in `<head>`
+    (`withSrcdocBase`) so a file's own `<base>` cannot win; SVG stays verbatim.
+    Also: the VPN indicator no longer prints "held by no project" when nothing
+    holds the tunnel. Files: `lib/viewers/format.ts`, `lib/viewers/print.ts`,
+    `components/embed/FileViewerPane.tsx`, `components/header/VpnIndicator.tsx`.
+    Implemented 2026-09-13 (`51e5e14`), **not live-tested**.
+    - [x] 🤖 Automated test — `ViewerFormat`, `VpnMachineScope`
+    - [ ] 🖐️ Manual test — open an HTML file with a table of contents in
+      Preview: clicking an entry scrolls to it and `:target` styling applies.
+      Open the VPN dropdown with the tunnel up and no project holding it → no
+      holders line.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+834. **Print: a paged document takes its page box from the engine.** Sheets
+    sized from the paper (29.65 cm) overflowed WebKitGTK's 27.84 cm print page
+    box and printed a blank page after every sheet. The sheet is now 100 % of an
+    html/body 100 % chain, rotated images are capped in container units, and
+    scale caps the image instead of zooming the body; on screen sheets show as
+    separate papers with a gap and shadow. Frontend: `lib/viewers/print.ts`.
+    Implemented 2026-09-14 (`b1d09d3`), **not live-tested**.
+    - [x] 🤖 Automated test — `PrintDoc`
+    - [ ] 🖐️ Manual test — print a 3-page document (portrait and one rotated
+      image) to PDF: exactly 3 pages, no blank interleaves, the rotated image
+      fits its sheet; scale 50 % shrinks the image, not the margins.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+835. **Screenshots and saved attachments land in `eldrun-`prefixed, always-ignored
+    folders.** `screenshots/` is a name a project plausibly owns (docs images),
+    so private captures were filed into a tracked folder, and ignoring it would
+    hide the project's own files. Saved shots now go to `eldrun-screenshots/`
+    and *Save to emails folder* to `eldrun-emails/`; both join
+    `GITIGNORE_DEFAULT` (the old unprefixed names stay listed so already-filed
+    data is not un-ignored). Scaffold repair runs only on request, so the write
+    paths call `ensure_generated_dir_ignored` — append the one pattern (or write
+    a minimal `.gitignore`) before the first file lands, refusing any other
+    folder. Files: `commands/{projects,mail,screenshot}.rs`, `lib/screenshot.ts`,
+    `lib/mail.ts`, `components/layout/ScreenshotSaveOverlay.tsx`,
+    `components/mail/MailMessageView.tsx`, `components/embed/pdf/PdfViewer.tsx`.
+    Implemented 2026-09-14 (`296c396`), **not live-tested; backend change.**
+    - [ ] 🤖 Automated test
+    - [ ] 🖐️ Manual test — in a git project with no `.gitignore` entry, take a
+      screenshot and save it to the project: it lands in `eldrun-screenshots/`,
+      `.gitignore` gains that line before the file exists, and `git status` is
+      clean. Save a mail attachment to the emails folder → `eldrun-emails/`,
+      same. A project with no `.gitignore` gets a minimal one.
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work

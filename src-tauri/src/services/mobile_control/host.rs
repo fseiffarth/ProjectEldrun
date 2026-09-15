@@ -1423,6 +1423,63 @@ async fn agent_status(
     }
 }
 
+/// `?version=` is the fingerprint the phone last saw; `?limit=` how many of
+/// the newest turns it wants. Anything else is refused.
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct TranscriptQuery {
+    version: Option<String>,
+    limit: Option<usize>,
+}
+
+/// `GET /api/v1/tabs/{tab_id}/transcript` — the stored conversation behind
+/// an agent tab, for the phone's Focus view. The desktop reads the CLI's own
+/// transcript (`services::agent_transcript`) and answers with its prompts and
+/// answers, or with why it cannot (`available: false`); a phone that hands
+/// back the `version` it last saw is answered `unchanged`.
+async fn agent_transcript(
+    State(state): State<HostState>,
+    headers: HeaderMap,
+    Path(tab_id): Path<String>,
+    Query(query): Query<TranscriptQuery>,
+) -> impl IntoResponse {
+    if let Err(error) = authenticate(&headers, &state) {
+        return error;
+    }
+    let (project_id, tmux_session) = match agent_tab_target(&state, &tab_id) {
+        Ok(target) => target,
+        Err(error) => return error,
+    };
+    let desktop_socket = state.config.control_dir.join("desktop-control.sock");
+    let request_id = Base64UrlUnpadded::encode_string(&random_16());
+    match admin::desktop_call(
+        &desktop_socket,
+        &DesktopRequest::AgentTranscript {
+            request_id,
+            project_id,
+            tmux_session,
+            version: query.version,
+            limit: query.limit,
+        },
+    )
+    .await
+    {
+        Ok(DesktopResponse::AgentTranscript { transcript }) => (
+            StatusCode::OK,
+            Json(json!({ "transcript": transcript })),
+        ),
+        Ok(DesktopResponse::Error { code, .. }) => api_error(
+            if code == "tab_not_found" {
+                StatusCode::NOT_FOUND
+            } else {
+                StatusCode::BAD_REQUEST
+            },
+            &code,
+        ),
+        _ => api_error(StatusCode::SERVICE_UNAVAILABLE, "desktop_unavailable"),
+    }
+}
+
 async fn schedule_mutation(
     state: &HostState,
     tab_id: &str,
@@ -2047,7 +2104,7 @@ fn outbox_error(error: outbox::OutboxError) -> (StatusCode, Json<serde_json::Val
     )
 }
 
-/// `GET /api/v1/tabs/{tab_id}/outbox` — the pictures the agent left in the
+/// `GET /api/v1/tabs/{tab_id}/outbox` — the files the agent left in the
 /// project's `.eldrun/outbox/` for the phone to see (`outbox.rs`): leaf name,
 /// kind, size and mtime, newest first. Read from disk by the sidecar itself,
 /// like the inbox write — no desktop round trip, and no path in the answer.
@@ -2068,33 +2125,35 @@ async fn outbox_list(
         .await
         .unwrap_or_else(|error| Err(outbox::OutboxError::Io(error.to_string())));
     match listed {
-        Ok(images) => (StatusCode::OK, Json(json!({ "images": images }))),
+        Ok(files) => (StatusCode::OK, Json(json!({ "files": files }))),
         Err(error) => outbox_error(error),
     }
 }
 
-/// `GET /api/v1/tabs/{tab_id}/outbox/{name}` — one listed image's bytes,
+/// `GET /api/v1/tabs/{tab_id}/outbox/{name}` — one listed file's bytes,
 /// typed by what its header says it is, never by its name. Loaded by an
 /// `<img>` on the PWA's own origin, so the session cookie is the credential
 /// and the CSP's `img-src 'self'` is what lets it render; the middleware's
 /// `nosniff` and `no-store` apply as to every `/api/` answer. Anything the
-/// listing would not offer — a symlink, a non-image, a name with a
-/// separator — is `image_not_found`, not a different error.
-async fn outbox_image(
+/// listing would not offer — a symlink, an oversized file, a name with a
+/// separator — is `file_not_found`, not a different error.
+async fn outbox_file(
     State(state): State<HostState>,
     headers: HeaderMap,
     Path((tab_id, name)): Path<(String, String)>,
+    Query(query): Query<HashMap<String, String>>,
 ) -> Response<Body> {
     if let Err(error) = authenticate(&headers, &state) {
         return error.into_response();
     }
     if !outbox::valid_name(&name) {
-        return api_error(StatusCode::NOT_FOUND, "image_not_found").into_response();
+        return api_error(StatusCode::NOT_FOUND, "file_not_found").into_response();
     }
     let root = match outbox_root(&state, &tab_id) {
         Ok(root) => root,
         Err(error) => return error.into_response(),
     };
+    let filename = name.clone();
     let read = tokio::task::spawn_blocking(move || outbox::read(&root, &name))
         .await
         .unwrap_or_else(|error| Err(outbox::OutboxError::Io(error.to_string())));
@@ -2103,7 +2162,7 @@ async fn outbox_image(
             .status(StatusCode::OK)
             .header(header::CONTENT_TYPE, kind)
             .header(header::CONTENT_LENGTH, bytes.len())
-            .header(header::CONTENT_DISPOSITION, "inline")
+            .header(header::CONTENT_DISPOSITION, if kind == "application/octet-stream" || query.get("download").is_some_and(|v| v == "1") { format!("attachment; filename=\"{filename}\"") } else { "inline".into() })
             .body(Body::from(bytes))
             .unwrap_or_else(|_| {
                 api_error(StatusCode::INTERNAL_SERVER_ERROR, "read_failed").into_response()
@@ -2215,6 +2274,7 @@ fn router(state: HostState) -> Router {
             put(schedule_update).delete(schedule_delete),
         )
         .route("/api/v1/tabs/{tab_id}/status", get(agent_status))
+        .route("/api/v1/tabs/{tab_id}/transcript", get(agent_transcript))
         .route("/api/v1/tabs/{tab_id}/terminal", get(terminal))
         // The phone's drop box takes a whole photo; every other body stays at
         // the control-message limit below (the inner layer wins).
@@ -2227,7 +2287,7 @@ fn router(state: HostState) -> Router {
             get(desktop_images).post(attach_desktop_image),
         )
         .route("/api/v1/tabs/{tab_id}/outbox", get(outbox_list))
-        .route("/api/v1/tabs/{tab_id}/outbox/{name}", get(outbox_image))
+        .route("/api/v1/tabs/{tab_id}/outbox/{name}", get(outbox_file))
         .route("/", get(index))
         .route("/{*path}", get(static_asset))
         .layer(DefaultBodyLimit::max(MAX_CONTROL_MESSAGE))
@@ -2586,6 +2646,7 @@ mod tests {
         "/api/v1/projects/anything",
         "/api/v1/tabs/anything",
         "/api/v1/tabs/anything/schedules",
+        "/api/v1/tabs/anything/transcript",
         "/api/v1/projects/anything/prompts",
         "/api/v1/tabs/anything/desktop-images",
     ];
@@ -3498,7 +3559,7 @@ mod tests {
         // No outbox yet: an empty strip, not an error.
         let (status, _, body) = host.send(get_as(&list, &cookie)).await;
         assert_eq!(status, StatusCode::OK, "answered: {body}");
-        assert_eq!(json(&body)["images"], serde_json::json!([]));
+        assert_eq!(json(&body)["files"], serde_json::json!([]));
 
         let png = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR-body".to_vec();
         let dir = host.root.join(outbox::OUTBOX_DIR);
@@ -3508,12 +3569,12 @@ mod tests {
 
         let (status, _, body) = host.send(get_as(&list, &cookie)).await;
         assert_eq!(status, StatusCode::OK, "answered: {body}");
-        let images = json(&body)["images"].clone();
-        assert_eq!(images.as_array().map(Vec::len), Some(1), "{body}");
-        assert_eq!(images[0]["name"], "plot.png");
-        assert_eq!(images[0]["kind"], "image/png");
-        assert_eq!(images[0]["size"], png.len());
-        assert!(images[0]["modified"].as_u64().unwrap() > 0);
+        let images = json(&body)["files"].clone();
+        assert_eq!(images.as_array().map(Vec::len), Some(2), "{body}");
+        let image = images.as_array().unwrap().iter().find(|file| file["name"] == "plot.png").unwrap();
+        assert_eq!(image["kind"], "image/png");
+        assert_eq!(image["size"], png.len());
+        assert!(image["modified"].as_u64().unwrap() > 0);
         assert!(!body.contains(RAW_PROJECT));
         assert!(!body.contains(host.root.to_str().unwrap()));
 
@@ -3530,14 +3591,26 @@ mod tests {
         assert_eq!(headers.get(header::CONTENT_LENGTH).unwrap(), png.len().to_string().as_str());
         assert!(body.ends_with("IHDR-body"), "{body:?}");
 
+        std::fs::write(dir.join("archive.zip"), b"PK\0\x01").unwrap();
+        for (name, kind, disposition) in [
+            ("notes.png", "text/plain; charset=utf-8", "inline"),
+            ("plot.png?download=1", "image/png", "attachment; filename=\"plot.png\""),
+            ("archive.zip", "application/octet-stream", "attachment; filename=\"archive.zip\""),
+        ] {
+            let (status, headers, _) = host.send(get_as(&format!("{list}/{name}"), &cookie)).await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(headers.get(header::CONTENT_TYPE).unwrap(), kind);
+            assert_eq!(headers.get(header::CONTENT_DISPOSITION).unwrap(), disposition);
+        }
+
         // Not an image by its bytes, a traversal, an unlisted name: all one
         // answer, so the phone cannot probe the tree by its error codes.
-        for refused in ["notes.png", "..%2F..%2Fproject.json", "gone.png", ".hidden.png"] {
+        for refused in ["..%2F..%2Fproject.json", "gone.png", ".hidden.png"] {
             let (status, _, body) = host
                 .send(get_as(&format!("{list}/{refused}"), &cookie))
                 .await;
             assert_eq!(status, StatusCode::NOT_FOUND, "{refused} answered: {body}");
-            assert_eq!(json(&body)["error"], "image_not_found");
+            assert_eq!(json(&body)["error"], "file_not_found");
         }
 
         let (status, _, body) = host

@@ -1034,8 +1034,14 @@ pub fn run() {
             // external monitor otherwise leaves a borderless popout larger than
             // the laptop panel, with its title bar and resize edges off-screen.
             commands::subwindow::spawn_monitor_watcher(_app.handle().clone());
+            // Relay the turn state the agents' own hooks record per tab
+            // (working / decision / done) to the window's activity store.
+            services::agent_turn::start(_app.handle().clone());
             // Install the global Claude SessionStart hook so Eldrun can follow a
             // tab's live session id across `/clear` (see services::agent_session).
+            if let Err(e) = services::agent_bin::install() {
+                eprintln!("agent_bin: install commands: {e}");
+            }
             if let Err(e) = services::agent_session::install_session_start_hook() {
                 eprintln!("agent_session: install SessionStart hook: {e}");
             }
@@ -1284,6 +1290,7 @@ pub fn run() {
             commands::calendar::calendar_read_ics,
             commands::calendar::calendar_write_ics,
             commands::calendar::calendar_fetch_ics,
+            commands::markdown::markdown_remote_image,
             commands::calendar::calendar_replace_events,
             // CalDAV accounts (docs/caldav_plan.md, Phases 1-3).
             // A sync is deliberately two commands: `caldav_fetch` speaks the
@@ -1738,6 +1745,8 @@ pub fn run() {
             commands::agents::dismiss_agent_version,
             commands::agents::agent_tab_model,
             commands::agents::agent_tab_last_prompt,
+            commands::agents::agent_tab_recent_prompts,
+            commands::agents::agent_tab_transcript,
             commands::ollama::ollama_is_running,
             commands::ollama::ollama_status,
             commands::ollama::ollama_gpu_status,

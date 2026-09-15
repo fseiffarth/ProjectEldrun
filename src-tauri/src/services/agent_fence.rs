@@ -371,6 +371,56 @@ fn normalize_lexically(path: &Path) -> PathBuf {
     out
 }
 
+/// The part of the agent's own install that must be **writable** for the CLI
+/// to update itself from inside the fence — `claude update`, and Claude's
+/// background auto-update, which otherwise fails on every fenced tab.
+///
+/// Recognised is the native-installer layout only: a launcher link in
+/// `~/.local/bin` pointing at a payload under `~/.local/share/<tool>/`. The
+/// updater writes the new binary into `~/.local/share/claude/versions/` and
+/// swaps the `~/.local/bin/claude` link by rename (measured 2026-09-13: those
+/// two directories and nothing else), so both are handed back read-write —
+/// the `~/.local/share/<tool>` root rather than `versions/`, so a lock or
+/// staging file beside it is not refused either. An install that lives
+/// anywhere else (npm/nvm, a package manager) stays read-only: making a Node
+/// prefix's `bin/` writable would expose every global tool in it, and those
+/// installs update from a plain terminal tab anyway.
+///
+/// This is a deliberate widening of the fence (user, 2026-09-13): an agent
+/// that can update its own CLI can also replace it, and that binary is the one
+/// the user runs everywhere. Pure over the filesystem, like
+/// [`command_bind_paths`].
+pub(crate) fn updatable_install_dirs(
+    cmd: &str,
+    path_dirs: &[PathBuf],
+    home: &Path,
+) -> Vec<String> {
+    let hops = command_bind_paths(cmd, path_dirs, home, &[]);
+    let bin = home.join(".local/bin");
+    let share = home.join(".local/share");
+    let mut out: Vec<String> = Vec::new();
+    for hop in &hops {
+        let hop = Path::new(hop);
+        if let Ok(rest) = hop.strip_prefix(&share) {
+            if let Some(tool) = rest.components().next() {
+                let root = share
+                    .join(tool.as_os_str())
+                    .to_string_lossy()
+                    .into_owned();
+                if !out.contains(&root) {
+                    out.push(root);
+                }
+            }
+        }
+    }
+    // Only a native-installer payload earns the launcher dir: a link in
+    // `~/.local/bin` that points somewhere else is left read-only.
+    if !out.is_empty() && hops.iter().any(|h| Path::new(h) == bin) {
+        out.insert(0, bin.to_string_lossy().into_owned());
+    }
+    out
+}
+
 /// PATH as the fenced command will see it: an explicit per-tab override wins,
 /// otherwise the launcher-augmented PATH the PTY is spawned with.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -521,6 +571,10 @@ fn agent_state_mounts(scope_id: &str, roots: &[PathBuf]) -> (Vec<BindMount>, Vec
             .into_iter()
             .filter_map(|m| mount_pair(&m, true)),
     );
+    let bin = crate::services::agent_bin::bin_dir();
+    let _ = std::fs::create_dir_all(&bin);
+    let bin = bin.to_string_lossy().into_owned();
+    mounts.push(BindMount { src: bin.clone(), dst: bin, read_only: true });
     (mounts, symlinks)
 }
 
@@ -589,6 +643,14 @@ pub(crate) fn bwrap_args(
 }
 
 /// Rewrite a local agent spawn into its outer bubblewrap boundary.
+///
+/// The agent's argv passes through untouched. Codex in particular gets no
+/// sandbox-backend override: its own bubblewrap cannot nest under this fence
+/// on Ubuntu (the stacked `unpriv_bwrap` AppArmor profile denies the uid-map
+/// write of a second user namespace), and the Landlock fallback that used to
+/// be forced here (`features.use_legacy_landlock`) is deprecated upstream and
+/// warns on every start, so Codex is left to report the failed sandbox and
+/// ask, as it does anywhere else its sandbox cannot spawn.
 #[cfg(target_os = "linux")]
 pub fn wrap_pty_options_bwrap(
     opts: &mut PtyOptions,
@@ -600,14 +662,26 @@ pub fn wrap_pty_options_bwrap(
             "Agent fence: bubblewrap is unavailable, so this agent was not started. Install it with `{INSTALL_HINT}`, or turn the Agent fence off for this project."
         ));
     }
-    let (mounts, symlinks) = agent_state_mounts(scope_id, roots);
+    let (mut mounts, symlinks) = agent_state_mounts(scope_id, roots);
     let mut extra_ro = configured_read_only_paths();
+    let search_dirs = command_search_dirs(opts);
+    // The agent's own install, read-write so it can update itself. These go
+    // into `mounts`, which `bwrap_args` places after `extra_ro`, so they shadow
+    // the allowlist's read-only `~/.local/bin` (later mounts win).
+    let updatable = updatable_install_dirs(&opts.cmd, &search_dirs, &paths::home_dir());
+    let mut visible = extra_ro.clone();
+    visible.extend(updatable.iter().cloned());
     extra_ro.extend(command_bind_paths(
         &opts.cmd,
-        &command_search_dirs(opts),
+        &search_dirs,
         &paths::home_dir(),
-        &extra_ro,
+        &visible,
     ));
+    mounts.extend(updatable.into_iter().map(|dir| BindMount {
+        src: dir.clone(),
+        dst: dir,
+        read_only: false,
+    }));
     let args = bwrap_args(
         &paths::home_dir_string(),
         &opts.cwd,
@@ -738,6 +812,7 @@ fn sandbox_exec_inputs(opts: &PtyOptions, roots: &[PathBuf], scope_id: &str) -> 
         protected.push(format!("{home}/{rel}"));
     }
     protected.push(state_dir.join("hooks").to_string_lossy().into_owned());
+    protected.push(crate::services::agent_bin::bin_dir().to_string_lossy().into_owned());
     // Claude's identity/onboarding file: readable and writable so a fenced tab
     // is not a fresh install (see `staged_claude_json_mounts` for why Linux
     // stages a filtered copy instead — Seatbelt cannot substitute a file).
@@ -755,10 +830,18 @@ fn sandbox_exec_inputs(opts: &PtyOptions, roots: &[PathBuf], scope_id: &str) -> 
         writable.push(dir.to_string_lossy().into_owned());
     }
     readable.extend(configured_read_only_paths());
+    let search_dirs = command_search_dirs(opts);
+    // The agent's own install, writable so it can update itself — the same
+    // native-installer layout the Linux fence hands back read-write.
+    writable.extend(updatable_install_dirs(
+        &opts.cmd,
+        &search_dirs,
+        &paths::home_dir(),
+    ));
     let visible = readable.clone();
     readable.extend(command_bind_paths(
         &opts.cmd,
-        &command_search_dirs(opts),
+        &search_dirs,
         &paths::home_dir(),
         &visible,
     ));
@@ -1228,6 +1311,85 @@ mod tests {
         );
         assert!(command_bind_paths("no-such-agent", &dirs, &home, &[]).is_empty());
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn native_installer_layout_is_writable_other_installs_are_not() {
+        let tmp = std::env::temp_dir().join(format!(
+            "eldrun-fence-upd-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let home = tmp.join("home");
+        let bin = home.join(".local/bin");
+        let versions = home.join(".local/share/claude/versions");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::create_dir_all(&versions).unwrap();
+        std::fs::write(versions.join("2.1.270"), "#!/bin/sh\n").unwrap();
+        std::os::unix::fs::symlink(versions.join("2.1.270"), bin.join("claude")).unwrap();
+        // An nvm-style install: a link in the Node prefix's bin/ into its
+        // node_modules — nothing under ~/.local/share, so nothing opens up.
+        let node_bin = home.join(".nvm/versions/node/v22/bin");
+        let pkg = home.join(".nvm/versions/node/v22/lib/node_modules/@openai/codex/bin");
+        std::fs::create_dir_all(&node_bin).unwrap();
+        std::fs::create_dir_all(&pkg).unwrap();
+        std::fs::write(pkg.join("codex.js"), "").unwrap();
+        std::os::unix::fs::symlink(pkg.join("codex.js"), node_bin.join("codex")).unwrap();
+        // A launcher link in ~/.local/bin that points OUTSIDE ~/.local/share
+        // does not earn the launcher dir either.
+        std::os::unix::fs::symlink(pkg.join("codex.js"), bin.join("codex-link")).unwrap();
+        let dirs = vec![bin.clone(), node_bin];
+
+        let bin_s = bin.to_string_lossy().into_owned();
+        let root_s = home
+            .join(".local/share/claude")
+            .to_string_lossy()
+            .into_owned();
+        // The launcher dir first, then the install root — not `versions/`.
+        assert_eq!(
+            updatable_install_dirs("claude", &dirs, &home),
+            vec![bin_s, root_s]
+        );
+        assert!(updatable_install_dirs("codex", &dirs, &home).is_empty());
+        assert!(updatable_install_dirs("codex-link", &dirs, &home).is_empty());
+        assert!(updatable_install_dirs("no-such-agent", &dirs, &home).is_empty());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn later_rw_mount_shadows_the_allowlist_read_only_bin() {
+        let bin = "/home/u/.local/bin".to_string();
+        let mounts = vec![BindMount {
+            src: bin.clone(),
+            dst: bin.clone(),
+            read_only: false,
+        }];
+        let out = bwrap_args(
+            "/home/u",
+            "/p",
+            "claude",
+            &[],
+            &[],
+            std::slice::from_ref(&bin),
+            &mounts,
+            &[],
+        );
+        let ro = out
+            .iter()
+            .position(|a| a == "--ro-bind-try")
+            .expect("allowlist bind");
+        let rw = out
+            .iter()
+            .enumerate()
+            .position(|(i, a)| a == "--bind" && out.get(i + 1) == Some(&bin))
+            .expect("read-write bind");
+        // bubblewrap applies mounts in order; the later read-write bind of the
+        // same path is the one the agent sees.
+        assert!(rw > ro, "{out:?}");
     }
 
     #[test]

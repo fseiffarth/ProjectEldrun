@@ -22,6 +22,12 @@ export type TexCompileResult = {
   /** True when the build ran with shell-escape (`\write18`) active behind our
    *  back (system texmf.cnf / latexmkrc). Surfaced as a warning in the viewer. */
   shell_escape: boolean;
+  /** Why `latexmk` exited non-zero, in its own words, when it did — the
+   *  `Collected error summary` block minus the "use -f" advisory. Set even when
+   *  `success` is true: latexmk fails a build over configuration (warnings as
+   *  errors, a bibliography rule, an unresolved reference) while the engine
+   *  still writes the PDF, and that is a note, not a compilation error. */
+  driver_note: string | null;
 };
 
 // TeX tooling is PATH-global, so probe the backend once per app run and share
@@ -2770,6 +2776,26 @@ export const TEX_STANDARD_COMMANDS: TexCommandEntry[] = texCmdTable(`
   Gamma Delta Theta Lambda Xi Pi Sigma Upsilon Phi Psi Omega
 `);
 
+/**
+ * The beamer commands, offered ONLY in a document that is a deck. They are a
+ * table of their own rather than lines in the standard one for the reason that
+ * table is curated at all: `\frametitle` and `\setbeamercolor` are noise in an
+ * article, and a list nobody can scan is a list nobody reads. What makes a file
+ * a deck is `isBeamerDocument` over the whole document — a `\input`-ed fragment
+ * of a deck is a deck too, which is why the flag rides the source walk rather
+ * than the file on screen.
+ */
+export const TEX_BEAMER_COMMANDS: TexCommandEntry[] = texCmdTable(`
+  frametitle:1 framesubtitle:1 titlepage subtitle:1 institute:1 titlegraphic:1 logo:1
+  usetheme:1 usecolortheme:1 usefonttheme:1 useinnertheme:1 useoutertheme:1
+  setbeamertemplate:2 setbeamercolor:2 setbeamerfont:2 setbeamersize:1 setbeamercovered:1
+  pause onslide only:1 uncover:1 visible:1 invisible:1 alt:2 temporal:3
+  alert:1 structure:1 note:1 againframe:1 hyperlink:2 hypertarget:2
+  AtBeginSection:1 AtBeginSubsection:1 AtBeginPart:1
+  insertframenumber inserttotalframenumber insertsection insertsubsection
+  inserttitle insertauthor insertdate insertshorttitle
+`);
+
 /** The standard environments offered inside `\begin{…}`/`\end{…}`. `seed` is the
  *  argument an environment cannot compile without; `item` the first body line for
  *  a list. */
@@ -2819,6 +2845,9 @@ export const TEX_STANDARD_ENVIRONMENTS: TexEnvEntry[] = [
   { name: "frame" },
   { name: "columns" },
   { name: "column", seed: "{0.5\\textwidth}" },
+  { name: "block", seed: "{}" },
+  { name: "alertblock", seed: "{}" },
+  { name: "exampleblock", seed: "{}" },
   { name: "tikzpicture" },
   { name: "algorithm" },
   { name: "algorithmic" },
@@ -2945,16 +2974,18 @@ export function insertTexCommand(
 
 /**
  * Accept an environment completion. In an `\end{…}` it just writes the name and
- * steps past the brace. In a `\begin{…}` on a line with nothing after it, and
- * with no unmatched `\end{name}` already ahead, it also opens the block —
- * `\end{name}` on its own line at the `\begin`'s indent, a body line between
- * them (carrying `\item ` for a list), and the caret waiting in the body or,
- * where the environment takes one, inside its seeded argument.
+ * steps past the brace — writing that brace itself when the name was still
+ * being typed and it is not there yet. In a `\begin{…}` on a line with nothing
+ * after it, and with no unmatched `\end{name}` already ahead, it also opens the
+ * block — `\end{name}` on its own line at the `\begin`'s indent, a body line
+ * between them (carrying `\item ` for a list), and the caret waiting in the body
+ * or, where the environment takes one, inside its seeded argument.
  *
  * Anything less certain than that degrades to writing the name alone: leftover
- * text inside the braces, a line that continues after them, or no closing brace
- * on the line at all. Restructuring a line the user is in the middle of is the
- * one thing an autocomplete must not do. Pure.
+ * text inside the braces (which, with no `}` on the line, is anything at all
+ * still following the caret), or a line that continues after them. Restructuring
+ * a line the user is in the middle of is the one thing an autocomplete must not
+ * do. Pure.
  */
 export function insertTexEnvironment(
   source: string,
@@ -2968,11 +2999,15 @@ export function insertTexEnvironment(
   const lineRest = nl < 0 ? rest : rest.slice(0, nl);
   const afterLine = nl < 0 ? "" : rest.slice(nl);
   const closeRel = lineRest.indexOf("}");
+  // With no `}` on the line the whole line-rest counts as being inside the
+  // braces — an unclosed `{` at the end of a line is simply a name being typed
+  // left to right, and the accept writes the missing `}` itself. Leaving
+  // `\begin{align` behind is the one outcome that cannot compile.
   const inner = closeRel < 0 ? lineRest : lineRest.slice(0, closeRel);
-  // No `}` on this line, or something else still inside the braces → name only.
-  if (closeRel < 0 || /\S/.test(inner)) return { text: head + rest, caret: head.length };
+  // Something else still inside the braces → name only.
+  if (/\S/.test(inner)) return { text: head + rest, caret: head.length };
 
-  const tail = lineRest.slice(closeRel + 1);
+  const tail = closeRel < 0 ? "" : lineRest.slice(closeRel + 1);
   const closed = `${head}}`;
   const which = texEnvComplCommand(source, ctx);
   if (which !== "begin" || /\S/.test(tail) || hasMatchingTexEnd(rest, name)) {
@@ -3183,8 +3218,16 @@ export function texCompletionsFor(
     case "cite":
       // A `.bib` is never the file being edited here, so there is nothing live.
       return gathered.cites;
-    case "cmd":
-      return mergeFirst(parseTexDefinedCommands(draft), gathered.commands, (c) => c.name);
+    case "cmd": {
+      // The beamer table joins the standard one only for a deck (#245): the
+      // gathered flag knows the whole document, and `draft` catches the
+      // `\documentclass{beamer}` typed a minute ago in the file on screen.
+      const base =
+        gathered.beamer === true || isBeamerDocument(draft)
+          ? mergeFirst(gathered.commands, TEX_BEAMER_COMMANDS, (c) => c.name)
+          : gathered.commands;
+      return mergeFirst(parseTexDefinedCommands(draft), base, (c) => c.name);
+    }
     case "env":
       return mergeFirst(parseTexDocumentEnvironments(draft), gathered.envs, (e) => e.name);
   }

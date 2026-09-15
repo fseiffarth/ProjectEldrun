@@ -252,6 +252,7 @@ describe("Group B — two heaps, one protocol", () => {
     // never reads as work). A popout recorded that into its own, never-read
     // activity store, so a popped-out agent could never light the project pill.
     popout.activity.noteUserInput(ptyId);
+    vi.advanceTimersByTime(200); // past ECHO_MS: the agent's frames, not the keystroke's echo
     main.activity.notePtyOutput(ptyId, "thinking…");
     vi.advanceTimersByTime(700);
     main.activity.notePtyOutput(ptyId, "still…");

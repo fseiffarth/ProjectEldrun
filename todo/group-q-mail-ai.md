@@ -1,4 +1,17 @@
-## Group Q — Local-Model Mail Assistant (on-device) · 🚧 Planned
+## Group Q — Local-Model Mail Assistant (on-device) · ✅ Implemented · 🧪 Untested
+
+> **Status (reconciled 2026-09-14):** #203–#208 all landed 2026-07-30
+> (`51a8e4b`, settings dialog `981987f`) and were never marked. Present in code:
+> `services/mail_ai.rs` (14 unit tests), `mail_summarize` /
+> `mail_formalize_reply` / `mail_extract_event` / `mail_extract_task` /
+> `mail_ai_classify_apply` in `commands/mail.rs`, sealed
+> `priority_source`/`priority_reason` columns in `mail_store.rs`, the 🧠 Mail
+> role live (no `pending`), `MailAiMessageActions` / `MailAiSettings{,Dialog}`
+> with `UntestedTag`. **One deviation from the plan below:** the toggles are
+> **per account** (`MailAccount.ai: MailAiPrefs` — `summarize`, `autoclassify`,
+> `formalize`, `calendar`, `todo`, `auto_create`) behind one global master
+> switch `Settings::mail_ai_allow`, not five global `mail_ai_*` settings flags.
+> The plan text below is kept as written; the manual checks are at the end.
 
 *Five opt-in mail features driven by a **local** Ollama model: summarize a
 message, auto-file it into Important/Urgent, formalize a reply from rough notes,
@@ -86,3 +99,29 @@ date anchoring, classify/event/task parsers, provenance round-trip,
 loopback-refusal), `npm test`, `npm run lint`, clippy, `privacy-check.sh`. **No
 live run** (Claude cannot launch Eldrun); every feature stays `untested` until
 the user runs it, and each new surface carries an `UntestedTag`.
+
+**Live QA (#203–#208)** — needs a loopback Ollama with a completion model tagged
+🧠 Mail, `mail_ai_allow` on, and the per-account toggles on.
+- [ ] 🖐️ #203 — with Ollama pointed at a non-loopback host, every AI action
+  refuses with the loopback reason; an embedding-only model says to load a
+  completion model; Ollama stopped → "not running", not an error dump.
+  - [ ] ✅ Works
+  - [ ] ❌ Doesn't work
+- [ ] 🖐️ #204 — *Summarize (local)* on an open message yields bullets; reopening
+  the message does not show a stored summary.
+  - [ ] ✅ Works
+  - [ ] ❌ Doesn't work
+- [ ] 🖐️ #205 — a sync with new inbox mail marks some Important/Urgent and the UI
+  says "marked by the local model: '…'"; Ollama stopped → the sync still
+  succeeds; the dry-run apply lists matches without changing anything.
+  - [ ] ✅ Works
+  - [ ] ❌ Doesn't work
+- [ ] 🖐️ #206 — in the composer, notes + *Draft from notes* fills the body and
+  nothing is sent.
+  - [ ] ✅ Works
+  - [ ] ❌ Doesn't work
+- [ ] 🖐️ #207/#208 — a mail with "meeting tomorrow at 3" pre-fills the event
+  dialog with the right date; to-do extraction makes a first-column card with the
+  mail link; with `auto_create` on, both are created without a dialog.
+  - [ ] ✅ Works
+  - [ ] ❌ Doesn't work

@@ -28,7 +28,7 @@
  * reader actually scrolls to, which is what Ctrl+F already pays.
  *
  * **Zoom costs nothing.** pdf.js lays the spans out in the page's own units and
- * multiplies by `--scale-factor` in CSS, so a zoom is one custom property away and
+ * multiplies by `--total-scale-factor` in CSS, so a zoom is one custom property away and
  * the text content is never re-read. That is the same bargain the link boxes and the
  * search hits strike by storing big points and multiplying at render.
  */
@@ -95,10 +95,11 @@ export function PdfTextLayer({
     <div
       ref={ref}
       className="file-viewer-pdf-text-layer"
-      // The zoom, as the custom property pdf.js's own layout arithmetic reads. A
-      // React style is the right home for it: it changes on every zoom step, while
-      // the spans inside are built once.
-      style={{ "--scale-factor": scale } as React.CSSProperties}
+      // The zoom, as the custom properties pdf.js's own layout arithmetic reads —
+      // `--total-scale-factor` sizes every span's font (pdf.js 5+), `--scale-factor`
+      // is the older name. A React style is the right home for them: they change on
+      // every zoom step, while the spans inside are built once.
+      style={{ "--scale-factor": scale, "--total-scale-factor": scale } as React.CSSProperties}
     />
   );
 }

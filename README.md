@@ -161,7 +161,11 @@ every agent tab in every project from the phone over your own tailnet, because
 it attaches to the tab's session on your desktop rather than to a vendor
 service: one phone app for all agents, independent of whether one exists for
 that agent. A picture the agent wants you to see — a screenshot it took, a
-plot it rendered — it drops into the project's outbox, and the phone shows it.
+plot it rendered — it runs `eldrun-send <file>`, and the phone shows it.
+Local and container tabs can send any file up to 24 MiB: images open full
+screen, text opens a preview, PDFs open a browser tab, and other files download.
+Share is available where the phone browser supports file sharing; stdin works
+with `command | eldrun-send -n tests.log`.
 
 Eldrun occupies the gap none of them fill: project ownership of *windows and
 desktop context*, project ownership of *the machines the work runs on*, and one

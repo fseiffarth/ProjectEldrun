@@ -9,6 +9,7 @@ import {
   texCompletionsFor,
   texEnvComplCommand,
   texKeyRefRanges,
+  TEX_BEAMER_COMMANDS,
   TEX_STANDARD_COMMANDS,
   TEX_STANDARD_ENVIRONMENTS,
   type TexComplContext,
@@ -210,6 +211,36 @@ describe("insertTexEnvironment", () => {
     expect(out.caret).toBe(out.text.indexOf("\\end{align}") + "\\end{align}".length);
   });
 
+  it("closes a brace the user has not typed yet, and opens the block", () => {
+    // Names are typed left to right: the `}` is normally still missing when the
+    // dropdown is accepted, and leaving `\begin{align` behind cannot compile.
+    const { text, ctx } = ctxAt("\\begin{ali|\n");
+    const out = insertTexEnvironment(text, ctx!, { name: "align" });
+    expect(out.text).toBe("\\begin{align}\n  \n\\end{align}\n");
+    expect(out.caret).toBe("\\begin{align}\n  ".length);
+  });
+
+  it("closes an unclosed brace at the very end of the document", () => {
+    const { text, ctx } = ctxAt("\\begin{ali|");
+    const out = insertTexEnvironment(text, ctx!, { name: "align" });
+    expect(out.text).toBe("\\begin{align}\n  \n\\end{align}");
+  });
+
+  it("closes an unclosed brace in an \\end{…} too, without a second block", () => {
+    const { text, ctx } = ctxAt("\\begin{align}\nx\n\\end{ali|\n");
+    const out = insertTexEnvironment(text, ctx!, { name: "align" });
+    expect(out.text).toBe("\\begin{align}\nx\n\\end{align}\n");
+    expect(out.caret).toBe(out.text.indexOf("\\end{align}") + "\\end{align}".length);
+  });
+
+  it("writes the name only when text follows an unclosed brace", () => {
+    // With no `}` on the line that text is still inside the braces, so this is
+    // the leftover-text case, not a name waiting to be closed.
+    const { text, ctx } = ctxAt("\\begin{cen| some text\n");
+    const out = insertTexEnvironment(text, ctx!, { name: "center" });
+    expect(out.text).toBe("\\begin{center some text\n");
+  });
+
   it("writes the name only when the line continues after the braces", () => {
     // Restructuring a line the user is in the middle of is what an autocomplete
     // must not do.
@@ -242,6 +273,25 @@ describe("the standard tables", () => {
     expect(new Set(cmds).size).toBe(cmds.length);
     const envs = TEX_STANDARD_ENVIRONMENTS.map((e) => e.name);
     expect(new Set(envs).size).toBe(envs.length);
+  });
+
+  it("keep the beamer table well-formed and disjoint from the standard one", () => {
+    const standard = new Set(TEX_STANDARD_COMMANDS.map((c) => c.name));
+    for (const c of TEX_BEAMER_COMMANDS) {
+      expect(c.name).toMatch(/^[a-zA-Z]+$/);
+      expect(Number.isInteger(c.args)).toBe(true);
+      expect(standard.has(c.name)).toBe(false);
+    }
+    const names = TEX_BEAMER_COMMANDS.map((c) => c.name);
+    expect(new Set(names).size).toBe(names.length);
+    expect(TEX_BEAMER_COMMANDS.find((c) => c.name === "frametitle")?.args).toBe(1);
+    expect(TEX_BEAMER_COMMANDS.find((c) => c.name === "pause")?.args).toBe(0);
+  });
+
+  it("offer beamer's own block environments", () => {
+    const byName = new Map(TEX_STANDARD_ENVIRONMENTS.map((e) => [e.name, e]));
+    expect(byName.get("block")?.seed).toBe("{}");
+    expect(byName.get("alertblock")?.seed).toBe("{}");
   });
 
   it("give every list environment a first item and every argument-taking one a seed", () => {
@@ -356,6 +406,24 @@ describe("texCompletionsFor — the per-family live merge", () => {
     ]);
     expect(cmds.filter((c) => c.name === "section")).toHaveLength(1);
     expect(cmds.length).toBe(TEX_STANDARD_COMMANDS.length + 1);
+  });
+
+  it("offers the beamer commands only in a deck", () => {
+    const has = (cmds: { name: string }[]) => cmds.some((c) => c.name === "frametitle");
+    expect(has(texCompletionsFor(gathered, draft, "cmd"))).toBe(false);
+    // The class line in the draft is enough — the file on screen may be the one
+    // that just became a deck.
+    const deck = `\\documentclass{beamer}\n${draft}`;
+    expect(has(texCompletionsFor(gathered, deck, "cmd"))).toBe(true);
+    // And so is the gathered flag, for an \\input-ed fragment that has no class
+    // line of its own.
+    expect(has(texCompletionsFor({ ...gathered, beamer: true }, draft, "cmd"))).toBe(true);
+  });
+
+  it("offers each beamer command once, after the standard table", () => {
+    const cmds = texCompletionsFor({ ...gathered, beamer: true }, draft, "cmd");
+    expect(cmds.filter((c) => c.name === "frametitle")).toHaveLength(1);
+    expect(cmds.length).toBe(TEX_STANDARD_COMMANDS.length + TEX_BEAMER_COMMANDS.length + 1);
   });
 
   it("adds an environment the draft already uses", () => {

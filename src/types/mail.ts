@@ -60,6 +60,11 @@ export interface MailAccount {
   save_password: boolean;
   signature?: string;
   check_interval_min?: number;
+  /** **VPN-only, default false.** While set, the backend opens no socket to
+   *  this account unless an OpenVPN tunnel Eldrun knows about is up, and the
+   *  header's interval check skips it quietly instead of failing — then checks
+   *  it the moment a tunnel comes up (`lib/vpnGate.ts`). */
+  require_vpn?: boolean;
   /**
    * The `authserv-id` this account's receiving server writes into
    * `Authentication-Results`. While unset, **no SPF/DKIM/DMARC verdict is shown

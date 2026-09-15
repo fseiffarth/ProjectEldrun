@@ -96,6 +96,15 @@ resumes.
 
 ### 1.1 Claude Code (deepest coupling)
 
+- Mobile send hint (2026-09-14): installed CLI is 2.1.270. The official
+  [hooks reference](https://code.claude.com/docs/en/hooks#sessionstart) specifies
+  SessionStart stdout as model context. Eldrun prints `eldrun-send <file>` only
+  after session continuity accepts the payload, with `ELDRUN_TAB_AGENT=claude`
+  and `ELDRUN_PROJECT_DIR` set; tests execute the hook and prove nested startups,
+  Stop, Codex and unscoped invocations stay silent. Verify context ingestion
+  again on CLI upgrades; an authenticated live Claude round trip remains QA.
+
+
 **Where** `services/agent_session.rs`, `services/agent_usage.rs`,
 `commands/terminal.rs` (`--remote-control`), `commands/ollama.rs`
 (`LOCAL_DRIVERS`), `src/lib/agentPrefaces.ts`, `src/lib/fastMode.ts` is *not*
@@ -109,12 +118,18 @@ Claude's `/fast` — different thing.
   `-p <prompt>`, `-p "/usage" --output-format json`.
 - Permission modes are exactly `default | plan | acceptEdits | auto | dontAsk |
   bypassPermissions` (`is_permission_mode`); anything else is dropped.
-- Hooks: `SessionStart` (matcher `startup|resume|clear|compact`) and `Stop`
-  are registered in `~/.claude/settings.json` under `hooks.<Event>[].hooks[]`
-  as `{type:"command", command:…}`. The hook payload carries `session_id`,
-  `hook_event_name`, and (on `Stop`) `permission_mode`. The hook script greps
-  those keys with `sed`, so a renamed key breaks resume silently.
-  Verified against Claude Code 2.1.251 — a `/clear` fires no Stop event.
+- Hooks: `SessionStart`, `Stop`, `UserPromptSubmit`, `PostToolUse`,
+  `Notification` and `SessionEnd` (`HOOK_EVENTS`) are registered in
+  `~/.claude/settings.json` under `hooks.<Event>[].hooks[]` as
+  `{type:"command", command:…}`, no matchers. The hook payload carries
+  `session_id`, `hook_event_name`, (on `Stop`) `permission_mode`, and (on
+  `Notification`) `notification_type` — the tab's working / decision / done
+  marks (`services::agent_turn`) read `permission_prompt`,
+  `elicitation_dialog` and `idle_prompt` off it; a renamed type means the
+  decision lamp for a Claude tab falls back to the screen. The hook script
+  greps those keys with `sed`, so a renamed key breaks resume silently.
+  Verified against Claude Code 2.1.251 — a `/clear` fires no Stop event; the
+  turn events against 2.1.272 by reading the binary's strings, not live.
 - Session logs: `~/.claude/projects/<encoded-cwd>/<uuid>.jsonl`; `--resume` is
   emitted only when that file exists.
 - The model tag in the Agents views (`agent_session_model`) reads the tail of
@@ -136,6 +151,24 @@ Claude's `/fast` — different thing.
 - Home files: `~/.claude/`, `~/.claude.json` (+ `.bak`, `.backup.N`),
   `~/.claude/settings.json`, `settings.local.json`,
   `~/.local/share/claude/versions/`.
+- `claude update` and the background auto-updater (native installer) share
+  one write path, read out of the 2.1.270 bundle (2026-09-14): the download
+  is staged under `$XDG_CACHE_HOME/claude/staging/<v>` (`~/.cache/…`),
+  **copied** (`copyFile`, not `rename`) to
+  `~/.local/share/claude/versions/<v>.tmp.<pid>.…`, renamed into place,
+  and the `~/.local/bin/claude` symlink is swapped by rename; a per-version
+  lock lives under `$XDG_STATE_HOME/claude/locks/`; the result lands in
+  `~/.claude/.last-update-result.json`. `agent_fence::updatable_install_dirs`
+  hands `~/.local/bin` and `~/.local/share/claude` back read-write; staging
+  and locks stay in the fence's tmpfs home, which is fine precisely because
+  the staging→versions hop is a copy — a release that switches it to a rename
+  breaks with `EXDEV` inside the fence (also across two separate bind mounts).
+  The whole sequence was dry-run inside a fenced tab on 2026-09-14 and
+  passed. Reading the result file: `status: "install_failed"` with
+  `version_to: null` means the updater threw *before* resolving the target
+  version — the version check talks to `downloads.claude.ai`, which is
+  IPv4-only, so an IPv6-only moment on the host produces exactly that record
+  while every directory is writable.
 - Credentials: the OAuth record is `~/.claude/.credentials.json`
   (`{"claudeAiOauth":{accessToken, refreshToken, expiresAt, …}}`, 0600). The
   CLI opens it with `O_NOFOLLOW` — a symlink is refused (`refused-symlink`,
@@ -182,6 +215,12 @@ aliases, and anything about where or how credentials are stored.
 **Assumes**
 
 - `codex resume <uuid>`; `codex exec --skip-git-repo-check <msg>` (warm-up).
+- Codex 0.154.0 reports an active writer when two processes resume one thread.
+  An isolated offline app-server probe verified that killing the writer releases
+  the lock. Keep the binder's within-pass claims exclusive and its spawn-time
+  duplicate guard independent of hook trust; duplicates use the documented
+  `codex resume` picker (no id). Never delete Codex's writer locks to force a
+  resume. Verify this lifecycle again when its thread store changes.
 - Session rollouts at `~/.codex/sessions/<YYYY>/<MM>/<DD>/rollout-<ts>-<uuid>.jsonl`
   whose **first line** is `{"type":"session_meta","payload":{"session_id","cwd",…}}`.
   This is the hook-free binding path; a new layout or header breaks every
@@ -196,8 +235,16 @@ aliases, and anything about where or how credentials are stored.
   pane's screen (mobile `chatTurns`).
 - User hooks in `~/.codex/config.toml` as `[[hooks.SessionStart]]` with
   `matcher = "startup|resume|clear|compact"` and `[[hooks.SessionStart.hooks]]`
-  `type="command"`. Trust state is read from `[hooks.state."…"]` tables
-  (`trusted_hash`, enabled flag). Text-appended, never reserialized.
+  `type="command"`, plus — since 2026-09-15, for the tab's working / done
+  marks — `[[hooks.UserPromptSubmit]]`, `[[hooks.PostToolUse]]`,
+  `[[hooks.Stop]]` and `[[hooks.SessionEnd]]` without matchers
+  (`CODEX_HOOK_EVENTS`; 0.154.0 names those events and no `Notification`, read
+  off the binary's strings, not live — so a Codex approval wait is still read
+  off its screen). Their payloads are assumed to carry `session_id` and
+  `hook_event_name` like Claude's. Trust state is read from
+  `[hooks.state."…"]` tables (`trusted_hash`, enabled flag), each hook by
+  position, so the new blocks need the same one-time `/hooks` trust.
+  Text-appended per event, never reserialized.
 - Local models: `codex --oss -c oss_provider="ollama" -m <model>` as the
   fallback when `ollama launch codex` cannot be used; reasoning is turned off
   with `-c model_reasoning_effort="none"`; the model catalog Codex expects is
@@ -212,6 +259,12 @@ aliases, and anything about where or how credentials are stored.
     frames paint no text, and `notePtyOutput` therefore drops them; if a
     release starts animating VISIBLE cells behind an approval instead, the tab
     never goes quiet and the orange bar never lights.
+  - **An idle Codex is not a quiet Codex either** (0.154.0). Once the terminal
+    answers its `OSC 11` background query, it animates a field of braille dots
+    (U+2800–U+28FF) around the composer every ~150ms, indefinitely.
+    `notePtyOutput` drops braille cells before judging a frame, or a finished
+    turn reads as "working" forever. An animation in any other glyph range
+    brings that back.
   - **Approval menus are numbered rows whose labels decide, not their index.**
     Codex offers two flavours of yes before the no ("Yes, just this once",
     "Yes, and don't ask again for this command in this session", "No, and tell
@@ -608,7 +661,13 @@ shape or ctag/sync-token behaviour.
   (`platform::x11::session_is_wayland`), that popout positions are treated as
   unreadable, and that the presenter fullscreens by output index through
   `gtk_window_fullscreen_on_monitor` (GDK's monitor order == tao's).
-- Printing: `lp`, `lpstat` (CUPS). Clipboard: `arboard` with
+- Printing: `lp`, `lpstat` (CUPS). The print preview's job progress also asks
+  CUPS over IPP — one `Get-Jobs` for `job-impressions-completed` (falling back to
+  `job-media-sheets-completed`), `job-impressions`, `time-at-processing` and
+  `job-printer-up-time` (the same epoch clock, verified against CUPS 2.4) — at
+  `CUPS_SERVER`, `client.conf`'s `ServerName`, the local socket or
+  `localhost:631`, loopback only; Windows reads `Get-PrintJob`'s
+  `PagesPrinted`/`TotalPages`. Clipboard: `arboard` with
   `wayland-data-control`. Formatters: `prettier`, `rustfmt`, `black`, `gofmt`.
 - Power: `systemctl`, `starship-battery`; network: `ss`.
 

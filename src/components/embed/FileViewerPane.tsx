@@ -12,6 +12,7 @@ import {
   type ViewerState,
 } from "../../stores/tabs";
 import { useSettingsStore } from "../../stores/settings";
+import { useTexViewPrefStore, texViewScopeKey } from "../../stores/texViewPref";
 import { useExperimental } from "../../lib/experimental";
 import { useProjectsStore } from "../../stores/projects";
 import { useRemoteStatusStore } from "../../stores/remoteStatus";
@@ -116,6 +117,7 @@ import {
 } from "../../lib/slurm";
 import { FileDropContext } from "../files/fileDropContext";
 import { UntestedTag } from "../common/UntestedTag";
+import { fetchRemoteImage, hostsLabel, remoteImageHosts } from "../../lib/remoteImages";
 import { AddRemarkDialog } from "../files/AddRemarkDialog";
 import { FileSourceSwitch } from "../files/ProjectFilesPane";
 import {
@@ -223,6 +225,7 @@ import {
   compileWasNoop,
 } from "../../lib/viewers/tex";
 import { chordLabel, chordMatches, resolveChord, type ShortcutMap } from "../../lib/shortcuts";
+import { useChordHint, useShortcutOverrides } from "../../lib/shortcutHint";
 import {
   renderTexPreview,
   cachedTexPreview,
@@ -232,6 +235,7 @@ import { TexStructureRail, TexStructureSidebar } from "./tex/TexStructureSidebar
 import { useDialogs } from "../common/PromptDialogs";
 import { focusTexWorkspaceForSource } from "./openTexWorkspace";
 import {
+  compileTexWorkspace,
   registerTexCompile,
   registerTexWorkspace,
   unregisterTexCompile,
@@ -3871,13 +3875,14 @@ function CodeEditor({
   // while `preview` is what the CARD is showing.
   const [preview, setPreview] = useState<{
     body: string;
+    si: number; // index into `snippetRanges`: which span the card is about
     anchor: { left: number; top: number; bottom: number };
     result: TexPreview | null; // null = still compiling
   } | null>(null);
   const hoveredBody = useRef<string | null>(null);
   const previewTimer = useRef<number | null>(null);
 
-  // Wash the fragment being previewed. Toggled on the element rather than by a
+  // Wash the fragment under the pointer. Toggled on the element rather than by a
   // `:hover` rule, because the layer takes no pointer events and an element that
   // is never hit-tested is never `:hover`ed — and rather than by re-rendering the
   // layer with the index in it, which would rebuild the whole document's HTML on
@@ -3890,6 +3895,34 @@ function CodeEditor({
     hoveredSpan.current = el;
     el?.classList.add("is-hovered");
   }, []);
+
+  // Mark the fragment the CARD is showing — a stronger mark than the pointer
+  // wash, and tied to the card rather than the pointer: the wash says "this is
+  // previewable", this says "this is what you are looking at", and the two
+  // differ for the whole dwell before a compile lands. Toggled as a class for
+  // the same reason as the wash, but found by INDEX rather than kept as a node:
+  // a keystroke rebuilds the layer (the card stays open — only leaving the
+  // fragment closes it), which would detach the marked span and leave the open
+  // card pointing at unmarked source. Re-finding the span whenever the layer's
+  // HTML changes, and only while the fragment still reads as the card's body,
+  // keeps the mark on the text for as long as the card is honest about it.
+  const previewedSpan = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    let el: HTMLElement | null = null;
+    if (preview && snippetHtml != null) {
+      const range = snippetRanges[preview.si];
+      if (range && draft.slice(range.start, range.end) === preview.body) {
+        el =
+          snippetLayerRef.current?.querySelector<HTMLElement>(
+            `.file-viewer-tex-snippet[data-si="${preview.si}"]`,
+          ) ?? null;
+      }
+    }
+    if (previewedSpan.current === el) return;
+    previewedSpan.current?.classList.remove("is-previewed");
+    previewedSpan.current = el;
+    el?.classList.add("is-previewed");
+  }, [preview, snippetHtml, snippetRanges, draft]);
 
   const cancelPreviewTimer = useCallback(() => {
     if (previewTimer.current != null) {
@@ -3914,7 +3947,7 @@ function CodeEditor({
   // and one `elementsFromPoint` asks the engine, which already knows the answer.
   // Plural, because `elementFromPoint` would only ever return the textarea on top.
   const snippetHitAt = useCallback(
-    (x: number, y: number): { range: TexSnippetRange; rect: DOMRect; span: HTMLElement } | null => {
+    (x: number, y: number): { range: TexSnippetRange; si: number; rect: DOMRect; span: HTMLElement } | null => {
       const layer = snippetLayerRef.current;
       if (!layer) return null;
       if (typeof document.elementsFromPoint === "function") {
@@ -3922,8 +3955,9 @@ function CodeEditor({
           if (el === layer) break; // reached the layer itself: no span here
           if (!(el instanceof HTMLElement) || !layer.contains(el)) continue;
           if (!el.classList.contains("file-viewer-tex-snippet")) continue;
-          const range = snippetRanges[Number(el.dataset.si)];
-          return range ? { range, rect: el.getBoundingClientRect(), span: el } : null;
+          const si = Number(el.dataset.si);
+          const range = snippetRanges[si];
+          return range ? { range, si, rect: el.getBoundingClientRect(), span: el } : null;
         }
         return null;
       }
@@ -3932,8 +3966,9 @@ function CodeEditor({
       for (const span of layer.querySelectorAll<HTMLElement>(".file-viewer-tex-snippet")) {
         const r = span.getBoundingClientRect();
         if (linkRectHit(r, x, y)) {
-          const range = snippetRanges[Number(span.dataset.si)];
-          if (range) return { range, rect: r, span };
+          const si = Number(span.dataset.si);
+          const range = snippetRanges[si];
+          if (range) return { range, si, rect: r, span };
         }
       }
       return null;
@@ -3963,14 +3998,14 @@ function CodeEditor({
       const at = { left: hit.rect.left, top: hit.rect.top, bottom: hit.rect.bottom };
       const cached = hoverPreview.cached(body);
       if (cached) {
-        setPreview({ body, anchor: at, result: cached });
+        setPreview({ body, si: hit.si, anchor: at, result: cached });
         return;
       }
       setPreview(null);
       previewTimer.current = window.setTimeout(() => {
         previewTimer.current = null;
         if (hoveredBody.current !== body) return;
-        setPreview({ body, anchor: at, result: null });
+        setPreview({ body, si: hit.si, anchor: at, result: null });
         void hoverPreview
           .render(body, () => hoveredBody.current === body)
           .then((out) => {
@@ -5722,7 +5757,9 @@ function ModeToggle<T extends string>({
 
 /** Rendered-preview pane for HTML/SVG/CSS — a fully sandboxed (`sandbox=""`,
  *  no scripts) iframe so even a hostile file is inert. CSS is applied to a small
- *  sample document; HTML/SVG render their own source. */
+ *  sample document; HTML/SVG render their own source (HTML with a
+ *  `<base href="about:srcdoc">` added, so its `#anchor` links scroll instead of
+ *  navigating the frame away — see `SRCDOC_BASE_TAG`). */
 function RenderedPreview({
   kind,
   content,
@@ -5910,54 +5947,45 @@ function useTabAiPrefs(tabKey: string | undefined, type: InternalViewer): TabAiP
   };
 }
 
-/** The hover preview's on/off for THIS tab (#tex-hover-preview): tab-local like
- *  the AI-assist toggles, seeded from the per-type `viewer_prefs.tex` default and
- *  written back to the tab's persisted `viewerState`, so a tab that had it off
- *  still has it off after a reopen and a relaunch.
+/** The hover preview's on/off (#tex-hover-preview): the PROJECT's, not the
+ *  tab's — one click holds for every TeX pane of the project, across a project
+ *  switch and a relaunch (`stores/texViewPref`). Seeded from the per-type
+ *  `viewer_prefs.tex` default while no click has been made.
  *
  *  Unlike autocomplete and grammar it defaults **ON** (absent ⇒ on), and the
  *  difference is what the two cost: those call a language model, this runs the
  *  TeX engine the viewer is already built around — on a fragment, once per
  *  distinct fragment, and only after the pointer has rested. */
-function useTexHoverPreview(tabKey: string | undefined): { on: boolean; toggle: () => void } {
+function useTexHoverPreview(scope: string | null): { on: boolean; toggle: () => void } {
   const pref = useViewerPref("tex");
   const def = pref?.hover_preview !== false;
-  const [override, setOverride] = useState<boolean | undefined>(
-    () => seedViewerState(tabKey)?.texHoverPreview,
-  );
+  const key = texViewScopeKey(scope);
+  const override = useTexViewPrefStore((s) => s.byProject[key]?.hoverPreview);
   const on = override ?? def;
   const toggle = useCallback(() => {
-    setOverride((cur) => {
-      const next = !(cur ?? def);
-      if (tabKey) useTabsStore.getState().setViewerState(tabKey, { texHoverPreview: next });
-      return next;
-    });
-  }, [tabKey, def]);
+    useTexViewPrefStore.getState().set(key, { hoverPreview: !on });
+  }, [key, on]);
   return { on, toggle };
 }
 
 /**
  * Beamer mode for the TeX editor (#tex-beamer): is the overlay bar shown? Per
- * tab, like the hover preview, but its default is the DOCUMENT's — on when any
- * file of it loads `\documentclass{beamer}` (`detected`), off otherwise — so a
- * deck opens with the bar and a paper never sees it, and a click either way is
- * remembered on the tab.
+ * PROJECT, like the hover preview, but its default is the DOCUMENT's — on when
+ * any file of it loads `\documentclass{beamer}` (`detected`), off otherwise — so
+ * a deck opens with the bar and a paper never sees it, and a click either way
+ * is remembered for the project: every file of the deck, this sitting and the
+ * next.
  */
 function useTexBeamerMode(
-  tabKey: string | undefined,
+  scope: string | null,
   detected: boolean,
 ): { on: boolean; toggle: () => void } {
-  const [override, setOverride] = useState<boolean | undefined>(
-    () => seedViewerState(tabKey)?.texBeamer,
-  );
+  const key = texViewScopeKey(scope);
+  const override = useTexViewPrefStore((s) => s.byProject[key]?.beamer);
   const on = override ?? detected;
   const toggle = useCallback(() => {
-    setOverride((cur) => {
-      const next = !(cur ?? detected);
-      if (tabKey) useTabsStore.getState().setViewerState(tabKey, { texBeamer: next });
-      return next;
-    });
-  }, [tabKey, detected]);
+    useTexViewPrefStore.getState().set(key, { beamer: !on });
+  }, [key, on]);
   return { on, toggle };
 }
 
@@ -7621,6 +7649,12 @@ function TextView({
   );
 }
 
+/** Markdown documents whose remote images the user chose to load this session.
+ *  Module scope so the choice survives the tab remounting; deliberately not
+ *  persisted, since "yes, fetch from these hosts" was said about a file's
+ *  contents at one moment, and the file can change. */
+const remoteImagesAllowed = new Set<string>();
+
 function MarkdownView({
   path,
   onOpenExternally,
@@ -7768,6 +7802,63 @@ function MarkdownView({
     }
     return () => { cancelled = true; observer?.disconnect(); };
   }, [html, mode, visible, path, images]);
+
+  // Remote (http/https) images render as placeholders and fetch nothing until
+  // the user presses Load in the banner: a document must not be able to make
+  // the app contact a server just by being opened (tracking, or a leak out of a
+  // VM/agent sandbox through the host). The fetch itself is the backend's
+  // (`markdown_remote_image`), and the result lands as a blob: URL, which the
+  // CSP already allows.
+  const [remoteUrls, setRemoteUrls] = useState<string[]>([]);
+  const [, bumpRemoteAllowed] = useState(0);
+  const remoteAllowed = remoteImagesAllowed.has(path);
+  const remoteMime = useRef(new Map<string, string>());
+  const remoteImages = useMemo(() => new PreviewImages(
+    async (url) => {
+      const image = await fetchRemoteImage(url);
+      remoteMime.current.set(url, image.mime);
+      return image.bytes;
+    },
+    (url) => remoteMime.current.get(url) ?? "application/octet-stream",
+  ), []);
+  useEffect(() => () => remoteImages.dispose(), [remoteImages]);
+  useEffect(() => {
+    remoteImages.pause(!visible || mode !== "preview");
+    return () => remoteImages.pause(true);
+  }, [remoteImages, visible, mode]);
+  useEffect(() => {
+    if (!visible || mode !== "preview") return;
+    const root = previewRef.current;
+    if (!root) return;
+    const spans = Array.from(root.querySelectorAll<HTMLElement>("span.md-img-remote[data-md-remote]"));
+    const urls = [...new Set(spans.map((s) => s.dataset.mdRemote ?? "").filter(Boolean))];
+    setRemoteUrls((prev) => (prev.length === urls.length && prev.every((u, i) => u === urls[i]) ? prev : urls));
+    if (!remoteAllowed) return;
+    let cancelled = false;
+    remoteImages.retain(new Set(urls));
+    for (const span of spans) {
+      const url = span.dataset.mdRemote;
+      // A failed image is not retried on every re-render; reopening the
+      // document (or editing it) gives it a fresh placeholder to try again.
+      if (!url || span.classList.contains("is-loaded") || span.classList.contains("is-failed")) continue;
+      span.classList.add("is-loading");
+      void remoteImages.load(url).then((blobUrl) => {
+        if (cancelled || !span.isConnected) return;
+        span.classList.remove("is-loading");
+        if (!blobUrl) {
+          span.classList.add("is-failed");
+          span.title = `${t("fileViewer.remoteImageFailed")}\n${url}`;
+          return;
+        }
+        const img = document.createElement("img");
+        img.src = blobUrl;
+        img.alt = span.textContent ?? "";
+        span.replaceChildren(img);
+        span.classList.add("is-loaded");
+      });
+    }
+    return () => { cancelled = true; };
+  }, [html, mode, visible, remoteAllowed, remoteImages, t]);
 
   // Cross-file `#fragment` navigation (stores/mdAnchor): when a followed link
   // into this document carried a fragment, scroll the rendered preview to that
@@ -7959,6 +8050,27 @@ function MarkdownView({
       {saveError && <div className="file-viewer-error">{saveError}</div>}
       {mode === "edit" && fmt.status && (
         <div className="file-viewer-status-line">{fmt.status}</div>
+      )}
+      {mode === "preview" && loaded && remoteUrls.length > 0 && !remoteAllowed && (
+        <div className="file-viewer-reload-banner" role="status">
+          <span>
+            {t("fileViewer.remoteImagesBlocked", {
+              count: remoteUrls.length,
+              hosts: hostsLabel(remoteImageHosts(remoteUrls)),
+            })}
+          </span>
+          <UntestedTag />
+          <button
+            className="file-viewer-reload-btn"
+            title={t("fileViewer.remoteImagesLoadTitle")}
+            onClick={() => {
+              remoteImagesAllowed.add(path);
+              bumpRemoteAllowed((n) => n + 1);
+            }}
+          >
+            {t("fileViewer.remoteImagesLoad")}
+          </button>
+        </div>
       )}
       <div
         className={`file-viewer-body${mode === "edit" ? " file-viewer-code-body" : ""}`}
@@ -8376,9 +8488,20 @@ function TexWorkspaceView({
         e.preventDefault();
         e.stopPropagation();
         goBack();
+      } else if (chordMatches(resolveChord("texCompile", shortcutOverrides), ev)) {
+        // Compile from anywhere in the workspace that is not an editor pane —
+        // the structure sidebar, the error list, the toolbar. A pane handles
+        // the chord itself and stops it before it gets here; this is the
+        // fallback, routed through the same registry the PDF's rebuild uses so
+        // the mounted editor (which owns the draft and the options) runs the
+        // build. Only consumed when someone answered.
+        if (compileTexWorkspace(activePath) || compileTexWorkspace(mainPath)) {
+          e.preventDefault();
+          e.stopPropagation();
+        }
       }
     },
-    [upTarget, backTarget, shortcutOverrides, goUp, goBack],
+    [upTarget, backTarget, shortcutOverrides, goUp, goBack, activePath, mainPath],
   );
 
   // Advertise this workspace to SyncTeX reverse search (#42): a reverse click's
@@ -8768,6 +8891,70 @@ function TexCreateRefBanner({
   );
 }
 
+/** One diagnostic as `file:line: message` — the shape TeX itself prints under
+ *  `-file-line-error`, so a copied row pastes back into a search, a bug report
+ *  or an agent prompt as the same text the log holds. A warning the log could
+ *  not place carries the message alone rather than an invented location. */
+function texDiagnosticText(
+  message: string,
+  file: string | undefined,
+  line: number | undefined,
+): string {
+  return file && line ? `${file}:${line}: ${message}` : message;
+}
+
+/**
+ * The one-click way to get a compile diagnostic out of the card and into an
+ * agent tab, a mail, or a search box (#tex).
+ *
+ * Every row of the error and warning lists is already a *jump* button, and the
+ * app sets `user-select: none` globally (`styles/base.css`) — so the text of a
+ * TeX error was, of all the text in this viewer, the least reachable: clicking
+ * it moved the caret instead of selecting it. This sits beside the jump (never
+ * inside it — a button in a button is not a button) and carries the same ⧉ → ✓
+ * as the connection log, because it is the same promise: the *whole* thing on
+ * the clipboard, not the part that happens to be on screen.
+ */
+function TexCopyButton({
+  text,
+  label,
+  className = "file-viewer-tex-copy",
+}: {
+  text: string;
+  /** What this button copies, for the tooltip and the screen reader. */
+  label: string;
+  className?: string;
+}) {
+  const t = useT();
+  const [copied, setCopied] = useState(false);
+  // The ✓ resets on a timer owned by the effect, so copying again during an
+  // in-flight window restarts it instead of leaving a stale tick behind.
+  useEffect(() => {
+    if (!copied) return;
+    const id = setTimeout(() => setCopied(false), 1600);
+    return () => clearTimeout(id);
+  }, [copied]);
+  const title = copied ? t("fileViewer.copied") : label;
+  return (
+    <button
+      type="button"
+      className={className}
+      title={title}
+      aria-label={title}
+      onClick={(e) => {
+        // The row around this button jumps to the source location; copying is
+        // not a request to move the caret there too.
+        e.stopPropagation();
+        if (!text) return;
+        navigator.clipboard?.writeText(text).catch(() => {});
+        setCopied(true);
+      }}
+    >
+      {copied ? "✓" : "⧉"}
+    </button>
+  );
+}
+
 function TexView({
   path,
   onOpenExternally,
@@ -9030,6 +9217,12 @@ function TexView({
   // source unchanged) — a success that produced nothing new. Cleared by the
   // next build; shown until then so it explains the PDF the reader is looking at.
   const [compileNote, setCompileNote] = useState<null | "unchanged">(null);
+  // latexmk exited non-zero over something that is not an error in the document
+  // (warnings treated as errors in a latexmkrc, a bibliography rule, an
+  // unresolved reference) and the PDF was written anyway: its complaint belongs
+  // beside the build, not in place of it. Also carries the reason for a build
+  // that really did fail, where latexmk explains itself better than the log tail.
+  const [driverNote, setDriverNote] = useState<string | null>(null);
 
   // #245 warnings: what the build reported that did NOT stop it. This is where
   // nearly everything worth fixing lives — an undefined `\ref` prints `??` in the
@@ -9123,15 +9316,15 @@ function TexView({
     return () => { cancelled = true; };
   }, [root, path, scope]);
 
-  const hoverPref = useTexHoverPreview(tabKey);
+  const hoverPref = useTexHoverPreview(scope);
   // #tex-beamer: the document decides the default (a deck opens with the bar),
-  // the tab remembers a click. The gather answers for the whole document; the
+  // the project remembers a click. The gather answers for the whole document; the
   // draft answers for a class line typed into THIS file before any compile.
   const beamerDetected = useMemo(
     () => gathered.beamer === true || isBeamerDocument(draft),
     [gathered.beamer, draft],
   );
-  const beamer = useTexBeamerMode(tabKey, beamerDetected);
+  const beamer = useTexBeamerMode(scope, beamerDetected);
   const texEditorApi = useRef<EditorApi | null>(null);
   const beamerSelection = useRef<RememberedSelection | null>(null);
   const onSelectionChange = useCallback((start: number, end: number) => {
@@ -9224,6 +9417,7 @@ function TexView({
     setWarnings([]);
     setSyncNote(null);
     setCompileNote(null);
+    setDriverNote(null);
     // Snapshot the caret synchronously, before any await can let focus change or
     // a blur reset it: prefer the editor's live cursor, falling back to the last
     // reported offset. This is the position forward search reveals in the PDF.
@@ -9263,8 +9457,11 @@ function TexView({
       // Surface a shell-escape warning regardless of build success — an external
       // command may have run even if the document then failed to compile.
       setShellEscape(res.shell_escape);
+      // latexmk's own account of the failure beats the log's last line, which is
+      // its "use the -f option" advisory — an instruction, not a reason.
+      setDriverNote(res.driver_note ?? null);
       if (!res.success) {
-        const detail = parsedErrors[0]?.message || lastLogLine(res.log);
+        const detail = parsedErrors[0]?.message || res.driver_note || lastLogLine(res.log);
         setCompileError(detail || t("fileViewer.compilationFailed"));
         return;
       }
@@ -9342,6 +9539,23 @@ function TexView({
     registerTexCompile(path, run);
     return () => unregisterTexCompile(path, run);
   }, [path]);
+
+  // Ctrl+Shift+B (rebindable) builds the document. Bound on this pane's root
+  // rather than in `useKeyboard` for the same reason as the workspace's
+  // up/back chords: it is pressed with the caret in the editor's textarea,
+  // which the global hook skips as an editable target. Consumed here so the
+  // key never reaches the workspace above or the window beneath.
+  const shortcutOverrides = useShortcutOverrides();
+  const chordHint = useChordHint();
+  const onTexKeyDown = useCallback(
+    (e: React.KeyboardEvent) => {
+      if (!chordMatches(resolveChord("texCompile", shortcutOverrides), e.nativeEvent)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      void compileRef.current();
+    },
+    [shortcutOverrides],
+  );
 
   // #245: count the whole document on demand. Reading the draft rather than the
   // file is the point — the count is asked for while writing, and one that lags
@@ -9475,7 +9689,7 @@ function TexView({
   }
 
   return (
-    <div className="file-viewer">
+    <div className="file-viewer" onKeyDown={onTexKeyDown}>
       {/* Single header row: the compile controls live alongside Save / Open
           externally rather than on a second toolbar line below. */}
       <ViewerHeader onOpenExternally={onOpenExternally}>
@@ -9487,11 +9701,12 @@ function TexView({
           onMouseDown={(e) => e.preventDefault()}
           onClick={() => void compile()}
           disabled={compiling}
-          title={
+          title={chordHint(
             isChild
               ? t("fileViewer.saveAndCompileNamed", { name: rootName })
-              : t("fileViewer.saveAndCompile")
-          }
+              : t("fileViewer.saveAndCompile"),
+            "texCompile",
+          )}
         >
           {compiling
             ? t("fileViewer.compiling")
@@ -9621,6 +9836,16 @@ function TexView({
           {t("fileViewer.compileUnchangedMsg")} <UntestedTag />
         </div>
       )}
+      {/* Only alongside a *successful* build: a failed one already shows the same
+          text as the error card's reason, and saying it twice reads as two
+          problems. */}
+      {driverNote && !compileError && (
+        <div className="file-viewer-tex-sync-miss" role="status">
+          {t("fileViewer.compileDriverNote")} <code>{driverNote}</code>{" "}
+          <TexCopyButton label={t("fileViewer.copyError")} text={driverNote} />
+          <UntestedTag />
+        </div>
+      )}
       {syncNote && (
         <div className="file-viewer-tex-sync-miss" role="status">
           {t(syncNote === "unavail" ? "fileViewer.syncUnavailMsg" : "fileViewer.syncMissMsg")}
@@ -9644,6 +9869,18 @@ function TexView({
             {errors.length > 0 && (
               <span className="file-viewer-tex-error-count">{errors.length}</span>
             )}
+            {/* Copies every row, not the ones the card's 40%-max-height shows. */}
+            <TexCopyButton
+              className="file-viewer-tex-copy file-viewer-tex-copy-head"
+              label={t("fileViewer.copyAllErrors")}
+              text={
+                errors.length > 0
+                  ? errors
+                      .map((err) => texDiagnosticText(err.message, err.file, err.line))
+                      .join("\n")
+                  : compileError
+              }
+            />
           </div>
           {/* The terse summary line only when no structured errors were parsed —
               otherwise it just repeats the first list row below. */}
@@ -9667,6 +9904,10 @@ function TexView({
                     </span>
                     <span className="file-viewer-tex-error-msg">{err.message}</span>
                   </button>
+                  <TexCopyButton
+                    label={t("fileViewer.copyError")}
+                    text={texDiagnosticText(err.message, err.file, err.line)}
+                  />
                 </li>
               ))}
             </ul>
@@ -9674,30 +9915,50 @@ function TexView({
             <div className="file-viewer-tex-log-line">{compileError}</div>
           )}
           {log && (
-            <button
-              className="file-viewer-tex-log-toggle"
-              onClick={() => setShowLog((s) => !s)}
-            >
-              {showLog ? t("fileViewer.hideLog") : t("fileViewer.showFullLog")}
-            </button>
+            <div className="file-viewer-tex-log-actions">
+              <button
+                className="file-viewer-tex-log-toggle"
+                onClick={() => setShowLog((s) => !s)}
+              >
+                {showLog ? t("fileViewer.hideLog") : t("fileViewer.showFullLog")}
+              </button>
+              {/* The whole log, expanded or not: the point of copying it is to
+                  hand it to someone who will read it elsewhere. */}
+              <TexCopyButton label={t("fileViewer.copyLog")} text={log} />
+              {/* One pill for the whole copy affordance — the row buttons are
+                  the same control and would only repeat it. */}
+              <UntestedTag />
+            </div>
           )}
           {showLog && log && <pre className="file-viewer-tex-log">{log}</pre>}
         </div>
       )}
       {warnings.length > 0 && (
         <div className="file-viewer-tex-warn-card" role="status">
-          <button
-            className="file-viewer-tex-warn-head"
-            onClick={() => setShowWarnings((v) => !v)}
-            aria-expanded={showWarnings}
-          >
-            <span className="file-viewer-tex-warn-icon" aria-hidden="true">⚑</span>
-            <span className="file-viewer-tex-warn-title">{t("fileViewer.warningsTitle")}</span>
-            <span className="file-viewer-tex-warn-count">{warnings.length}</span>
-            <span className="file-viewer-tex-warn-caret" aria-hidden="true">
-              {showWarnings ? "▾" : "▸"}
-            </span>
-          </button>
+          {/* The copy sits BESIDE the fold toggle, not inside it: the head is
+              itself a button, and it copies every warning even while the card
+              is folded shut. */}
+          <div className="file-viewer-tex-warn-headrow">
+            <button
+              className="file-viewer-tex-warn-head"
+              onClick={() => setShowWarnings((v) => !v)}
+              aria-expanded={showWarnings}
+            >
+              <span className="file-viewer-tex-warn-icon" aria-hidden="true">⚑</span>
+              <span className="file-viewer-tex-warn-title">{t("fileViewer.warningsTitle")}</span>
+              <span className="file-viewer-tex-warn-count">{warnings.length}</span>
+              <span className="file-viewer-tex-warn-caret" aria-hidden="true">
+                {showWarnings ? "▾" : "▸"}
+              </span>
+            </button>
+            <TexCopyButton
+              className="file-viewer-tex-copy file-viewer-tex-copy-head"
+              label={t("fileViewer.copyAllWarnings")}
+              text={warnings
+                .map((w) => texDiagnosticText(w.message, w.file ?? rootName, w.line))
+                .join("\n")}
+            />
+          </div>
           {showWarnings && (
             <ul className="file-viewer-tex-warns">
               {warnings.map((w, i) => (
@@ -9727,6 +9988,10 @@ function TexView({
                     </span>
                     <span className="file-viewer-tex-warn-msg">{w.message}</span>
                   </button>
+                  <TexCopyButton
+                    label={t("fileViewer.copyWarning")}
+                    text={texDiagnosticText(w.message, w.file ?? rootName, w.line)}
+                  />
                 </li>
               ))}
             </ul>

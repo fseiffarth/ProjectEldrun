@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Toggle } from "../common/Toggle";
-import { SettingsCard, SettingsHeader, SettingsList, SettingsSection, ToggleRow } from "./settingsUi";
+import { SettingsAdvanced, SettingsCard, SettingsHeader, SettingsList, SettingsSection, ToggleRow } from "./settingsUi";
 import { formatBytes as fmtBytes } from "../../lib/formatBytes";
 import { UntestedTag } from "../common/UntestedTag";
 import { listen } from "@tauri-apps/api/event";
@@ -1802,9 +1802,6 @@ export function AgentsPanel({ onBack, onClose }: SubPanelProps) {
       </p>
       <p className="settings-help">{t("agents.googleCliChoice")}</p>
       <NodeRuntimeNotice />
-      <AgentFenceCard />
-      <AgentCronSection agents={agents} />
-      <AgentComposerCard agents={agents} />
       {agents === null ? (
         <p className="settings-help">{t("agents.checkingInstalled")}</p>
       ) : (
@@ -1856,6 +1853,14 @@ export function AgentsPanel({ onBack, onClose }: SubPanelProps) {
           </SettingsSection>
         </>
       )}
+      {/* The fence, the warm-up schedule and the prompt composer are set once
+          and then forgotten, and on top they pushed the CLIs this panel is
+          named for below the fold. */}
+      <SettingsAdvanced>
+        <AgentFenceCard />
+        <AgentCronSection agents={agents} />
+        <AgentComposerCard agents={agents} />
+      </SettingsAdvanced>
       </div>
     </>
   );

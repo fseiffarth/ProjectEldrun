@@ -9,16 +9,11 @@
  * leaked worker per reload, which only shows up after an hour of editing.
  */
 
-import * as pdfjs from "pdfjs-dist";
 import type { PDFDocumentProxy } from "pdfjs-dist";
-import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { invoke } from "@tauri-apps/api/core";
 import { readFileBytes } from "../fileAccess";
 import type { BasePage } from "../../../lib/viewers/deck/sidecar";
-
-// Idempotent: the PDF viewer sets the same value, and a deck can be opened
-// without that module ever having loaded.
-pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+import { loadPdf } from "../../../lib/viewers/pdfLoad";
 
 /**
  * How much page text the fingerprint needs.
@@ -50,7 +45,7 @@ export interface LoadedBase {
  */
 export async function loadBase(path: string, scope: string | null): Promise<LoadedBase> {
   const bytes = await readFileBytes(path, scope);
-  const doc = await pdfjs.getDocument({ data: new Uint8Array(bytes) }).promise;
+  const doc = await loadPdf(new Uint8Array(bytes));
 
   const linesByPage = await pageLines(path);
 
@@ -178,7 +173,7 @@ export interface RasterizedFigure {
  * concerns — and destroys it before returning.
  */
 export async function renderPdfPageToPng(bytes: Uint8Array): Promise<RasterizedFigure | null> {
-  const doc = await pdfjs.getDocument({ data: bytes }).promise;
+  const doc = await loadPdf(bytes);
   try {
     const page = await doc.getPage(1);
     const viewport = page.getViewport({ scale: TEX_FIGURE_SCALE });

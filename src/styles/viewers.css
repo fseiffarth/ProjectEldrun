@@ -2840,6 +2840,19 @@
 .file-viewer-tex-snippet-layer .file-viewer-tex-snippet.is-hovered {
   background: var(--bg-hover);
 }
+/* The fragment whose card is OPEN (`is-previewed`, toggled by the editor while
+   the card shows, and re-applied after a keystroke rebuilds the layer). The
+   pointer wash above says "previewable"; this says "this is what the card is
+   showing", so it must read at a glance: a fill in the occurrence layer's blue
+   (fixed rgba, legible on light and dark) plus a one-pixel accent ring, since
+   the card sits fixed over the page and the ring is what ties it back to a
+   line of source. The ring is an unblurred box-shadow — never a blurred one,
+   which WebKitGTK paints in software — and it is a shadow rather than an
+   outline so it follows the span's rounded corners. */
+.file-viewer-tex-snippet-layer .file-viewer-tex-snippet.is-previewed {
+  background: rgba(88, 166, 255, 0.24);
+  box-shadow: 0 0 0 1px var(--accent);
+}
 
 /* The card. `position: fixed` off the anchor's own rect (the component picks
    top-or-bottom), and NEVER interactive — it sits on the text the pointer is
@@ -4919,10 +4932,32 @@
   white-space: pre;
   cursor: var(--cur-text, text);
   transform-origin: 0% 0%;
+  /* The opt back in, and without it there is no selection at all: the app root sets
+     `user-select: none` (base.css), which every span here inherits. pdf.js's own
+     sheet carries this line; dropping it in the copy left a layer that looked right
+     and selected nothing. Prefixed too, for WebKitGTK. */
+  -webkit-user-select: text;
+  user-select: text;
+}
+/* Sized as pdf.js sizes them. Each span carries its own `--font-height` (and, once
+   measured, `--scale-x`/`--rotate`) and expects the page zoom as
+   `--total-scale-factor` — without these the runs take the inherited font size, so
+   their boxes neither cover the glyphs nor stretch to the run's real width, and a
+   drag selects whatever the misplaced boxes happen to overlap. `--min-font-size` is
+   the engine's minimum font size, measured and set on the container by pdf.js. */
+.file-viewer-pdf-text-layer {
+  --min-font-size: 1;
+  --text-scale-factor: calc(var(--total-scale-factor) * var(--min-font-size));
+  --min-font-size-inv: calc(1 / var(--min-font-size));
 }
 .file-viewer-pdf-text-layer > :not(.markedContent),
 .file-viewer-pdf-text-layer .markedContent span:not(.markedContent) {
   z-index: 1;
+  --font-height: 0;
+  font-size: calc(var(--text-scale-factor) * var(--font-height));
+  --scale-x: 1;
+  --rotate: 0deg;
+  transform: rotate(var(--rotate)) scaleX(var(--scale-x)) scale(var(--min-font-size-inv));
 }
 .file-viewer-pdf-text-layer span.markedContent {
   top: 0;
@@ -5317,6 +5352,12 @@
   word-break: break-word;
 }
 
+.file-viewer-tex-log-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
 .file-viewer-tex-log-toggle {
   margin-top: 4px;
   background: transparent;
@@ -5339,11 +5380,21 @@
   gap: 2px;
 }
 
+/* Each row is `jump | ⧉`: the jump takes the width it can, the copy keeps its
+   own column so the rows' buttons line up down the card. */
+.file-viewer-tex-errors li,
+.file-viewer-tex-warns li {
+  display: flex;
+  align-items: baseline;
+  gap: 2px;
+}
+
 .file-viewer-tex-error-jump {
   display: flex;
   align-items: baseline;
   gap: 8px;
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   text-align: left;
   background: transparent;
   border: 1px solid transparent;
@@ -5405,6 +5456,12 @@
   border-radius: var(--radius);
 }
 
+.file-viewer-tex-warn-headrow {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
 .file-viewer-tex-warn-head {
   display: flex;
   align-items: center;
@@ -5463,7 +5520,8 @@
   display: flex;
   align-items: baseline;
   gap: 8px;
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   text-align: left;
   background: transparent;
   border: 1px solid transparent;
@@ -5508,6 +5566,57 @@
 .file-viewer-tex-warns li.is-reference .file-viewer-tex-warn-msg,
 .file-viewer-tex-warns li.is-citation .file-viewer-tex-warn-msg {
   color: var(--text-primary);
+}
+
+/* ── Fast copy on a diagnostic (#tex) ─────────────────────────────────────
+   The ⧉ chip beside every error, every warning, each card's head and the full
+   log. Same glyph, same ✓, same muted-until-hover chrome as the connection
+   log's copy — one gesture that means "this text, on the clipboard", wherever
+   it appears. Ghosted on the rows so a card of twelve warnings does not read
+   as a column of buttons, and always solid on a card head, which is the one
+   the user aims for without hovering a row first. */
+.file-viewer-tex-copy {
+  flex-shrink: 0;
+  align-self: center;
+  padding: 0 5px;
+  height: 16px;
+  font-size: 10px;
+  line-height: 1;
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  cursor: var(--cur-pointer, pointer);
+  opacity: 0;
+  transition: opacity 90ms linear;
+}
+
+.file-viewer-tex-errors li:hover .file-viewer-tex-copy,
+.file-viewer-tex-warns li:hover .file-viewer-tex-copy,
+.file-viewer-tex-copy:focus-visible,
+.file-viewer-tex-log-actions .file-viewer-tex-copy,
+.file-viewer-tex-copy-head {
+  opacity: 1;
+}
+
+.file-viewer-tex-copy:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+  border-color: var(--border-color);
+}
+
+.file-viewer-tex-copy-head {
+  color: var(--text-secondary, var(--text-muted));
+}
+
+/* The log's copy stands next to a bordered toggle, so it wears the same box
+   rather than floating unanchored beside it. */
+.file-viewer-tex-log-actions .file-viewer-tex-copy {
+  margin-top: 4px;
+  align-self: flex-start;
+  height: auto;
+  padding: 1px 6px;
+  border-color: var(--border-color);
 }
 
 /* ── Document word count (#245) ───────────────────────────────────────────
@@ -5742,6 +5851,39 @@
   max-width: 100%;
   border-radius: var(--radius-sm);
 }
+
+/* A remote image not fetched (yet): a small chip holding its alt text, badge
+   height, so a README's badge row still reads as a row. Filled in place once
+   the viewer's "Load" is pressed. */
+.markdown-body .md-img-remote {
+  display: inline-block;
+  vertical-align: middle;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0 7px;
+  margin: 1px 0;
+  font-size: 0.75em;
+  line-height: 20px;
+  color: var(--text-secondary);
+  background: var(--bg-secondary);
+  border: 1px dashed var(--border-color);
+  border-radius: var(--radius-sm);
+}
+.markdown-body .md-img-remote.is-loading { opacity: 0.6; }
+.markdown-body .md-img-remote.is-failed {
+  border-style: solid;
+  border-color: color-mix(in srgb, var(--danger) 55%, var(--border-color));
+}
+.markdown-body .md-img-remote.is-loaded {
+  padding: 0;
+  line-height: normal;
+  background: none;
+  border: 0;
+  overflow: visible;
+}
+.markdown-body .md-img-remote.is-loaded > img { vertical-align: middle; }
 
 /* Tables: rounded frame, header tint, zebra striping. */
 .markdown-body table,

@@ -76,7 +76,17 @@ read-only (`command_bind_paths`): the native Claude installer leaves
 only `~/.local/bin` restored the link dangles inside the sandbox and bubblewrap
 fails with `execvp claude: No such file or directory`. Allowlisting the binary's
 home is therefore never required, only a way to expose more of an install dir.
-Login state gets the same treatment: `~/.claude.json` (oauthAccount +
+The one part of that chain handed back **read-write** is the agent's own
+native-installer layout (`updatable_install_dirs`): a launcher link in
+`~/.local/bin` pointing at a payload under `~/.local/share/<tool>/` — so
+`claude update`, and Claude's background auto-update, work from a fenced tab
+instead of failing on a read-only `versions/` every session (user,
+2026-09-13). The updater writes the new binary into `versions/` and swaps the
+link by rename, so exactly `~/.local/bin` and `~/.local/share/<tool>` open up;
+an npm/nvm or package-managed install stays read-only, because a Node prefix's
+`bin/` holds every global tool. This is a deliberate widening: an agent that
+can update its CLI can replace it, and that binary is the one the user runs
+everywhere. Login state gets the same treatment: `~/.claude.json` (oauthAccount +
 onboarding) is staged as a per-project **copy** with its cross-project
 `projects` map filtered to the box's own roots — without it every fenced tab
 demanded a fresh login, and mounting the host original writable would hand a
@@ -113,13 +123,33 @@ Composition is explicit:
   status says so rather than presenting a false guarantee.
 - Shell/script tabs are the user's terminals and are never fenced.
 
+Fenced Linux Codex gets no sandbox-backend override. Its own bubblewrap
+cannot nest under the fence on Ubuntu: the outer bwrap runs under the stacked
+`bwrap//&unpriv_bwrap` AppArmor profile, which denies the uid-map write of a
+second user namespace (`unshare -Ur` fails inside the fence, so does a nested
+`bwrap`). Eldrun briefly forced Codex's Landlock backend instead
+(`-c features.use_legacy_landlock=true`, 2026-09-14), but Codex 0.154.0
+prints a deprecation warning for that key on every start and its legacy
+backend refuses workspace-write outright ("permission profiles requiring
+direct runtime enforcement are incompatible with --use-legacy-landlock")
+unless `sandbox_workspace_write.exclude_slash_tmp` is also set — a policy
+narrowing Eldrun must not choose for the agent. So the flag was dropped
+(2026-09-15): inside the fence Codex's sandbox fails to spawn, Codex reports
+that and asks to run the command outside its sandbox — which is still inside
+Eldrun's fence — and the user answers per command or once per session. A user
+who prefers Landlock for now can opt in through their own `~/.codex/config.toml`
+(`[features] use_legacy_landlock = true` plus
+`[sandbox_workspace_write] exclude_slash_tmp = true`) and live with the
+warning until upstream removes the backend.
+
 The boundary is filesystem-only: network access is shared. A nested bubblewrap
 cannot run under the outer boundary on Linux systems with the
 `bwrap-userns-restrict` AppArmor profile, so Claude Code's own bubblewrap sandbox
 falls back to unsandboxed execution *inside* Eldrun's outer fence. Docker commands
 also cannot work there because `/run` is private and the Docker socket is hidden.
 The agent-state mounts deliberately reuse `services::sandbox`: narrowed auth and
-resume state, immutable hook scripts, writable staged copies of hook-registration
+resume state, immutable hook scripts and `<state_dir>/bin` commands (including
+`eldrun-send`, prepended to PATH inside containers too), writable staged copies of hook-registration
 config, and per-root Claude transcript permissions. That keeps the hook-repointing
 and cross-project transcript protections identical across the two containment
 mechanisms.

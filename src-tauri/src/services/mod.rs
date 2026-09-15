@@ -1,5 +1,13 @@
 pub mod agent_prompts;
 pub mod agent_session;
+// The turn state an agent's own hooks report (working / decision / done),
+// relayed from the hook script's per-tab record to the window's activity
+// store — the authority for the tab's working and finished marks.
+pub mod agent_turn;
+// The stored conversation behind an agent tab (Claude's session log, Codex's
+// rollout) as the prompt/answer entries the phone's Focus view lays out.
+pub mod agent_transcript;
+pub mod agent_bin;
 pub mod agent_tasks;
 // One agent CLI's own usage panel (Claude's `/usage`), read in print mode
 // without a tab: recipe table, envelope parsing, and the short-lived cache

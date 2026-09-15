@@ -21,7 +21,7 @@ import { cmdToKind, isResumableAgentTab, isRestorableTab, useTabsStore } from ".
 import { IS_LINUX, IS_WINDOWS } from "../../lib/platform";
 import { runInstallInTab, PROVIDER_CLI_INSTALL, providerAuthLoginCmd } from "../../lib/installCommand";
 import { PythonInterpreterWindow } from "./PythonInterpreterWindow";
-import { useGitDirtyStore, type GitDirtyState } from "../../stores/gitDirty";
+import { useGitDirtyStore } from "../../stores/gitDirty";
 import { providerName, gitTypeLabel } from "./projectTypeTags";
 import { GitTokenScopes, tokenPageUrl } from "../common/GitTokenScopes";
 import { ProjectHoverCard, projectDescription, useProjectHoverCard } from "./ProjectHoverCard";
@@ -45,7 +45,7 @@ import { usePillSelectionStore } from "../../stores/pillSelection";
 import { useBoxEditorStore } from "../../stores/boxEditor";
 import { useBoxesStore } from "../../stores/boxes";
 import { bindDragRelease, dragPlatform } from "../../lib/dragPlatform";
-import { useT, type TranslationKey } from "../../lib/i18n";
+import { useT } from "../../lib/i18n";
 import { isTrashProject } from "../../lib/trashProject";
 import { TrashProjectIcon } from "./TrashProjectIcon";
 import {
@@ -91,16 +91,6 @@ interface Props {
  *  menu entry is offered only when one is present. Matched against
  *  `list_project_endings` (lowercased). */
 const PYTHON_ENDINGS = new Set([".py", ".pyw", ".pyi"]);
-
-/** Folder-icon title/color per git state — mirrors the file-tree markers'
- *  priority (red ▸ orange ▸ green), plus a neutral "clean" default. */
-const GIT_ICON_TITLE_KEY: Record<GitDirtyState, TranslationKey> = {
-  clean: "pill.gitClean",
-  dirty: "pill.gitDirty",
-  staged: "pill.gitStaged",
-  unpushed: "pill.gitUnpushed",
-  broken: "pill.gitBroken",
-};
 
 interface ContextMenuPos { x: number; y: number }
 
@@ -1821,10 +1811,19 @@ export function ProjectPill({
       {/* Right-click context menu */}
       {contextMenu && createPortal(
         <div
-          className="context-menu"
-          style={{ left: contextMenu.x, top: contextMenu.y }}
+          className="context-menu project-pill-menu"
+          // Opens downward from the pill, so a long menu (remote, git, Python
+          // entries all present) ran past the window's bottom edge. Cap it to
+          // the room below the anchor; the inner wrapper scrolls, keeping the
+          // accent wash (`::before`, inset 0) covering the whole menu.
+          style={{
+            left: contextMenu.x,
+            top: contextMenu.y,
+            maxHeight: `calc(100vh - ${contextMenu.y}px - 8px)`,
+          }}
           onPointerDown={(e) => e.stopPropagation()}
         >
+          <div className="project-pill-menu-scroll">
           {/* View / inspect */}
           <div className="context-menu-group">
             <div className="context-menu-group-label">{t("pill.viewGroup")}</div>
@@ -2378,6 +2377,7 @@ export function ProjectPill({
               {t("pill.deleteProjectEllipsis")}
             </button>
           </div>
+          </div>
         </div>,
         document.body,
       )}
@@ -2566,7 +2566,6 @@ export function ProjectPill({
             <>
               <span
                 className={`pill-folder-icon git-${gitDirty ?? "clean"}`}
-                title={t(GIT_ICON_TITLE_KEY[gitDirty ?? "clean"])}
                 aria-hidden
               >
                 {/* The folder + its git color are shown ALWAYS — the git dirty state

@@ -2376,11 +2376,13 @@ _Build, run and test commands._
 
 _Layout, style, and anything an agent must not do._
 
-## Showing the user a picture
+## Showing the user a file
 
-To put an image in front of the user on their phone (Eldrun Mobile), copy it
-into `.eldrun/outbox/` in this project — the phone lists that folder. Images
-only (PNG, JPEG, GIF, WebP); it is git-ignored and never synced.
+To put a file in front of the user on their phone (Eldrun Mobile), run
+`eldrun-send <file>` — any file up to 24 MiB; images, PDFs and text show
+on the phone, anything else is offered as a download. Local and container
+tabs. `command | eldrun-send -n tests.log` sends stdin; `eldrun-send --clear`
+empties the outbox. Copying into `.eldrun/outbox/` by hand still works.
 
 ## Agent files
 
@@ -2482,10 +2484,30 @@ pub const SCAFFOLD_FILES: &[(&str, &str)] = &[
     ("DOCUMENTATION.md", "# Documentation\n"),
 ];
 
-// `screenshots/` is ignored by default because a screen grab holds whatever
-// happened to be on the screen — mail, tokens, another project's window — and
-// a project with a public remote is one `git add -A` away from publishing it.
-pub const GITIGNORE_DEFAULT: &str = "__pycache__/\n*.pyc\n.venv/\nnode_modules/\ntarget/\ndist/\nbuild/\n.env\n.env.local\n.DS_Store\n*.log\n*.swp\n*.swo\n.idea/\n.eldrun/\nscreenshots/\nproject.json\n";
+/// The folder a saved screen grab lands in. `eldrun-` prefixed because the
+/// plain name is one a *project* plausibly owns — a repo with its own
+/// `screenshots/` of documentation images would have Eldrun filing private
+/// captures into a tracked folder, and ignoring that folder would then hide the
+/// project's own files from git. The prefix makes the folder unmistakably
+/// Eldrun's, so ignoring it can never swallow something the user wrote.
+pub const SCREENSHOTS_DIR: &str = "eldrun-screenshots";
+
+/// The folder a saved mail attachment lands in (*Save to emails folder*), named
+/// on the same rule as [`SCREENSHOTS_DIR`].
+pub const EMAILS_DIR: &str = "eldrun-emails";
+
+// `eldrun-screenshots/` is ignored by default because a screen grab holds
+// whatever happened to be on the screen — mail, tokens, another project's
+// window — and a project with a public remote is one `git add -A` away from
+// publishing it. `eldrun-emails/` is the same argument from the same direction:
+// it holds correspondence somebody sent to the user, not project source, and
+// the consent that filed it was consent to keep it, never to publish it.
+//
+// The unprefixed `screenshots/` and `emails/` stay on the list. They are what
+// Eldrun wrote into before the rename, so dropping them would un-ignore a
+// folder of already-filed private data the moment a project's `.gitignore` was
+// regenerated — the exact leak these entries exist to prevent.
+pub const GITIGNORE_DEFAULT: &str = "__pycache__/\n*.pyc\n.venv/\nnode_modules/\ntarget/\ndist/\nbuild/\n.env\n.env.local\n.DS_Store\n*.log\n*.swp\n*.swo\n.idea/\n.eldrun/\neldrun-screenshots/\neldrun-emails/\nscreenshots/\nemails/\nproject.json\n";
 
 pub const CLAUDE_SETTINGS: &str = r#"{"permissions":{"allow":[],"deny":[]}}"#;
 
@@ -2628,6 +2650,43 @@ fn ensure_gitignore_defaults(dir: &Path) -> std::io::Result<Vec<String>> {
     }
     fs::write(&path, updated)?;
     Ok(missing)
+}
+
+/// Make sure `dir/.gitignore` ignores one of Eldrun's own generated folders
+/// (`eldrun-screenshots/`, `eldrun-emails/`) before anything is written into it.
+///
+/// Scaffold repair is the other way these patterns arrive, but it only runs when
+/// the user asks for it — so a project scaffolded before the folder existed
+/// would take its first saved screenshot or attachment into a tracked path and
+/// stage it on the next `git add -A`. The write paths call this instead of
+/// trusting that a repair happened.
+///
+/// Refuses any other folder: this appends to a file the user owns, so the set of
+/// patterns it may add is closed. Returns whether a line was added. A project
+/// with no `.gitignore` at all gets one holding just this pattern — a full
+/// scaffold is `scaffold_project`'s job, not a side effect of saving a file.
+pub fn ensure_generated_dir_ignored(dir: &Path, folder: &str) -> std::io::Result<bool> {
+    if folder != SCREENSHOTS_DIR && folder != EMAILS_DIR {
+        return Ok(false);
+    }
+    let pattern = format!("{folder}/");
+    let path = dir.join(".gitignore");
+    if !path.exists() {
+        fs::write(&path, format!("{pattern}\n"))?;
+        return Ok(true);
+    }
+    let existing = fs::read_to_string(&path)?;
+    if existing.lines().any(|line| line.trim() == pattern) {
+        return Ok(false);
+    }
+    let mut updated = existing;
+    if !updated.is_empty() && !updated.ends_with('\n') {
+        updated.push('\n');
+    }
+    updated.push_str(&pattern);
+    updated.push('\n');
+    fs::write(&path, updated)?;
+    Ok(true)
 }
 
 /// Result of repairing one project's scaffold — which pieces were actually
@@ -4883,7 +4942,60 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         scaffold_project(dir.path(), true).unwrap();
         let gitignore = fs::read_to_string(dir.path().join(".gitignore")).unwrap();
+        assert!(gitignore.lines().any(|line| line == "eldrun-screenshots/"));
+        // The pre-rename folder stays ignored: projects still hold one.
         assert!(gitignore.lines().any(|line| line == "screenshots/"));
+    }
+
+    /// A saved attachment is someone's mail, filed into the tree by a user who
+    /// wanted to keep it — not to push it to a public remote. Scaffold repair
+    /// appends the pattern to projects whose `.gitignore` predates it.
+    #[test]
+    fn scaffold_project_gitignores_saved_emails() {
+        let dir = tempfile::tempdir().unwrap();
+        scaffold_project(dir.path(), true).unwrap();
+        let gitignore = fs::read_to_string(dir.path().join(".gitignore")).unwrap();
+        assert!(gitignore.lines().any(|line| line == "eldrun-emails/"));
+        assert!(gitignore.lines().any(|line| line == "emails/"));
+    }
+
+    /// The write paths cannot wait for a scaffold repair that may never be run:
+    /// a project whose `.gitignore` predates the folder gets the pattern before
+    /// the first file lands in it.
+    #[test]
+    fn ensure_generated_dir_ignored_appends_once_and_only_for_eldrun_folders() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join(".gitignore"), "node_modules/\n").unwrap();
+
+        assert!(ensure_generated_dir_ignored(dir.path(), SCREENSHOTS_DIR).unwrap());
+        // Idempotent: a second save appends nothing.
+        assert!(!ensure_generated_dir_ignored(dir.path(), SCREENSHOTS_DIR).unwrap());
+        assert!(ensure_generated_dir_ignored(dir.path(), EMAILS_DIR).unwrap());
+
+        let gitignore = fs::read_to_string(dir.path().join(".gitignore")).unwrap();
+        assert_eq!(
+            gitignore
+                .lines()
+                .filter(|l| *l == "eldrun-screenshots/")
+                .count(),
+            1
+        );
+        assert!(gitignore.lines().any(|line| line == "node_modules/"));
+
+        // Not a folder Eldrun generates: the file is left alone.
+        assert!(!ensure_generated_dir_ignored(dir.path(), "src").unwrap());
+        let after = fs::read_to_string(dir.path().join(".gitignore")).unwrap();
+        assert!(!after.contains("src"));
+    }
+
+    /// No `.gitignore` at all: saving a shot writes the one pattern it needs and
+    /// does not quietly scaffold the rest of the project around it.
+    #[test]
+    fn ensure_generated_dir_ignored_creates_a_minimal_file() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(ensure_generated_dir_ignored(dir.path(), EMAILS_DIR).unwrap());
+        let gitignore = fs::read_to_string(dir.path().join(".gitignore")).unwrap();
+        assert_eq!(gitignore, "eldrun-emails/\n");
     }
 
     #[test]

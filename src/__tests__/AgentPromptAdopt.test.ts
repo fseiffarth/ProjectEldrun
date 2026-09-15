@@ -4,7 +4,8 @@ import { invoke } from "@tauri-apps/api/core";
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(() => Promise.resolve([])) }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(() => Promise.resolve(() => {})), emit: vi.fn(() => Promise.resolve()) }));
 
-import { alreadyRecorded, foldPrompt } from "../lib/agentPromptAdopt";
+import { alreadyRecorded, foldPrompt, promptsToAdopt } from "../lib/agentPromptAdopt";
+import { isSessionCommand } from "../lib/agentPromptChart";
 import { useActivityStore } from "../stores/activity";
 import { useAgentModelsStore } from "../stores/agentModels";
 import { useAgentPromptsStore, type SentAgentPrompt } from "../stores/agentPrompts";
@@ -36,6 +37,9 @@ describe("adopting a prompt typed into the terminal", () => {
     // tab had a session id is matched by label.
     expect(alreadyRecorded([row("write docs", "2026-09-07T13:00:00Z", { tab_label: "Codex", session_id: "other" })], "write docs", tab)).toBe(false);
     expect(alreadyRecorded([row("write docs", "2026-09-07T13:00:00Z", { session_id: undefined })], "write docs", tab)).toBe(true);
+    // A row filed under the live session the tab rolled onto (`/clear`) is
+    // still this tab's: its tab id is the launch id.
+    expect(alreadyRecorded([row("write docs", "2026-09-07T13:00:00Z", { tab_label: "Renamed", session_id: "cleared", tab_id: "session-abc" })], "write docs", tab)).toBe(true);
     expect(foldPrompt("  a \n\n b\tc ")).toBe("a b c");
   });
 
@@ -44,6 +48,8 @@ describe("adopting a prompt typed into the terminal", () => {
     const recorded: unknown[] = [];
     vi.mocked(invoke).mockImplementation(async (command, args) => {
       if (command === "agent_tab_model") return "claude-opus-4-1";
+      // A backend predating the timed read: the last prompt is adopted as before.
+      if (command === "agent_tab_recent_prompts") throw new Error("command agent_tab_recent_prompts not found");
       if (command === "agent_tab_last_prompt") return lastPrompt;
       if (command === "agent_prompt_history_list") return [row("fix the tests", "2026-09-07T10:00:00Z")];
       if (command === "agent_prompt_record") { recorded.push(args); return []; }
@@ -70,5 +76,71 @@ describe("adopting a prompt typed into the terminal", () => {
     useActivityStore.setState({ busyByTab: { "p:agent-1": true } });
     await flush(); await flush(); await flush();
     expect(recorded).toHaveLength(1);
+    // The auto-`/rename`, a model switch, a clear and a login steer the session; none is stored.
+    for (const command of ["/rename p1 (feature)", "/model opus", "/clear", "/login"]) {
+      lastPrompt = command;
+      useActivityStore.setState({ busyByTab: {} });
+      useActivityStore.setState({ busyByTab: { "p:agent-1": true } });
+      await flush(); await flush(); await flush();
+    }
+    expect(recorded).toHaveLength(1);
+  });
+
+  it("tells a session command from a prompt that mentions one", () => {
+    expect(isSessionCommand("/rename eldrun")).toBe(true);
+    expect(isSessionCommand("  /MODEL sonnet")).toBe(true);
+    expect(isSessionCommand("/clear")).toBe(true);
+    expect(isSessionCommand("/login")).toBe(true);
+    expect(isSessionCommand("/compact")).toBe(true);
+    expect(isSessionCommand("/goal ship the release")).toBe(false);
+    expect(isSessionCommand("/renamed-thing is broken")).toBe(false);
+    expect(isSessionCommand("run /clear before the tests")).toBe(false);
+    expect(isSessionCommand("/")).toBe(false);
+    expect(isSessionCommand("! git status")).toBe(false);
+  });
+});
+
+describe("adopting the transcript's timed prompts", () => {
+  beforeEach(() => {
+    vi.useRealTimers();
+    vi.mocked(invoke).mockReset();
+    useTabsStore.setState((state) => ({ ...state, tabsByScope: { p: [tab] } }));
+    useActivityStore.setState({ busyByTab: {}, lastDoneByTab: {} });
+    useAgentModelsStore.setState({ byTab: {}, promptByTab: {} });
+    useAgentPromptsStore.setState({ byProject: {}, historyByProject: {}, linksByProject: {}, loading: {} });
+  });
+
+  it("picks every prompt the history is missing, and nothing it already has", () => {
+    const now = Date.parse("2026-09-15T09:00:00Z");
+    const history = [row("sent by the scheduler", "2026-09-15T08:10:00Z")];
+    const prompts = [
+      { text: "from two days ago", at: "2026-09-13T08:00:00Z" },
+      { text: "sent by the scheduler", at: "2026-09-15T08:10:03Z" },
+      { text: "/clear", at: "2026-09-15T08:11:00Z" },
+      { text: "typed", at: "2026-09-15T08:20:44Z" },
+      { text: "sent while it worked", at: "2026-09-15T08:21:48Z" },
+      { text: "typed", at: "2026-09-15T08:20:44Z" },
+    ];
+    expect(promptsToAdopt(history, prompts, tab, now).map((prompt) => prompt.text)).toEqual(["typed", "sent while it worked"]);
+    const adopted = [...history, row("typed", "2026-09-15T08:20:44Z"), row("sent while it worked", "2026-09-15T08:21:48Z")];
+    expect(promptsToAdopt(adopted, prompts, tab, now)).toEqual([]);
+  });
+
+  it("records them at the transcript's time, the first read of a tab included", async () => {
+    const at = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString();
+    const prompts = [{ text: "first prompt", at: at(10) }, { text: "sent while it worked", at: at(5) }];
+    const recorded: { entry: { message: string; sent: { sent_at?: string } } }[] = [];
+    vi.mocked(invoke).mockImplementation(async (command, args) => {
+      if (command === "agent_tab_model") return "claude-opus-5";
+      if (command === "agent_tab_recent_prompts") return prompts;
+      if (command === "agent_prompt_record") { recorded.push(args as (typeof recorded)[number]); return []; }
+      return [];
+    });
+    useActivityStore.setState({ busyByTab: { "p:agent-1": true } });
+    await flush(); await flush(); await flush(); await flush();
+    expect(recorded.map((call) => call.entry.message)).toEqual(["first prompt", "sent while it worked"]);
+    expect(recorded[1].entry.sent.sent_at).toBe(prompts[1].at);
+    expect(useAgentModelsStore.getState().promptByTab["p:agent-1"]).toBe("sent while it worked");
+    expect(vi.mocked(invoke).mock.calls.some(([command]) => command === "agent_tab_last_prompt")).toBe(false);
   });
 });

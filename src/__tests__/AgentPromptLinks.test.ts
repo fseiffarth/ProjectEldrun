@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { nextAfter, prunePromptLinks } from "../lib/agentPromptLinks";
+import { edgeCommandChoices, nextAfter, prunePromptLinks, toggleEdgeCommand } from "../lib/agentPromptLinks";
 
 const links = [
   { id: "l1", from: "source", to: "target", kind: "after" as const, target: "tab-1" },
@@ -22,6 +22,15 @@ describe("prompt links", () => {
 
   it("keeps a closed target visible but refuses to nominate a strand", () => {
     expect(nextAfter("source", links, [draft], [])[0]).toMatchObject({ stopped: "closed", strand: undefined });
+  });
+
+  it("carries an edge's commands to the queued target and offers them as chips", () => {
+    const withClear = [{ ...links[0], preface: ["/clear"] }];
+    expect(nextAfter("source", withClear, [draft], [{ scheduleTargetId: "tab-1", label: "Codex" }])[0].link.preface).toEqual(["/clear"]);
+    // A command the agent no longer offers stays a chip, so it can be switched off.
+    expect(edgeCommandChoices(["/clear", "/compact"], ["/old"])).toEqual(["/clear", "/compact", "/old"]);
+    expect(toggleEdgeCommand(["/clear", "/compact"], ["/compact"], "/clear")).toEqual(["/clear", "/compact"]);
+    expect(toggleEdgeCommand(["/clear", "/compact"], ["/clear"], "/clear")).toEqual([]);
   });
 
   it("does not resolve a target that is no longer a draft", () => {

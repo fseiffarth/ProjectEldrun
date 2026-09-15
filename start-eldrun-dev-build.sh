@@ -63,27 +63,85 @@ fi
 # is exactly why the checks above come first.
 #
 # Conservative by construction: the artifact must be newer than what is
-# installed and must carry the frontend that is in dist/ right now (a half-built
-# or dev-mode binary fails that and is left alone), and any failure keeps the
+# installed and must be a verified prod binary, and any failure keeps the
 # installed binary. The window opens either way.
+#
+# "Verified" means package-dev.sh checked it against the dist/ it was built
+# from and left `<binary>.frozen` (sha256 + version + commit) beside it. That
+# record is what is trusted here — NOT a fresh run of the check against dist/:
+# dist/ keeps moving after a build (every `npm run build` an agent runs as a
+# gate rewrites it with new hashes, uncommitted edits included), and checking a
+# finished binary against whatever dist/ holds at launch time refused four days
+# of correct builds as "stale" while the icon kept opening the old one
+# (2026-09-14). The check itself stays as the fallback for an artifact that
+# predates the record. Whatever happens is said out loud: a notification names
+# the snapshot adopted, or why the older one is still running.
 BUILT="$ROOT/target/release/eldrun"
+FROZEN="$BUILT.frozen"
 if [ -f "$BUILT" ] && [ "$BUILT" -nt "$BINARY" ]; then
   printf 'newer snapshot in the tree: %s\n' "$BUILT"
-  if "$ROOT/scripts/assert-embedded-frontend.sh" "$BUILT"; then
-    if install -Dm755 "$BUILT" "$BINARY"; then
-      printf 'adopted it as %s (%s @ %s)\n' "$BINARY" \
-        "$(node -p "require('$ROOT/package.json').version" 2>/dev/null || echo '?')" \
-        "$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo '?')"
-    else
-      printf 'could not install it; launching the binary that is already there\n'
+  verdict=""
+  label="$(node -p "require('$ROOT/package.json').version" 2>/dev/null || echo '?') @ $(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo '?')"
+  if [ -f "$FROZEN" ] &&
+     [ "$(sed -n 's/^sha256=//p' "$FROZEN")" = "$(sha256sum "$BUILT" | cut -d' ' -f1)" ]; then
+    label="$(sed -n 's/^version=//p' "$FROZEN") @ $(sed -n 's/^commit=//p' "$FROZEN")"
+    verdict="verified when it was built ($(sed -n 's/^built=//p' "$FROZEN"))"
+  elif "$ROOT/scripts/assert-embedded-frontend.sh" "$BUILT"; then
+    verdict="carries the current dist/ frontend"
+  fi
+  if [ -z "$verdict" ]; then
+    printf 'not adopting it: no build-time record and it does not carry the current dist/ frontend\n'
+    notify-send -u normal -a Eldrun 'Eldrun (dev) is running an older snapshot' \
+      "target/release/eldrun is newer but unverified; run npm run package:dev and relaunch." 2>/dev/null || true
+  elif install -Dm755 "$BUILT" "$BINARY"; then
+    printf 'adopted it as %s (%s; %s)\n' "$BINARY" "$label" "$verdict"
+    # Keep the build-time record beside what was installed, so the next launch
+    # can say which commit it is opening without hashing anything.
+    if [ -f "$FROZEN" ]; then install -m644 "$FROZEN" "$BINARY.frozen" 2>/dev/null || true; else rm -f "$BINARY.frozen"; fi
+    # The desktop entry's Comment names the frozen snapshot; keep it honest.
+    desktop="$HOME/.local/share/applications/EldrunDev.desktop"
+    if [ -f "$desktop" ]; then
+      sed -i "s|^Comment=.*|Comment=Frozen build $label ($(date +%Y-%m-%d)) — no hot reload|" "$desktop" 2>/dev/null || true
     fi
+    notify-send -u low -a Eldrun 'Eldrun (dev) moved forward' "Now running $label." 2>/dev/null || true
   else
-    printf 'not adopting it: it does not carry the current dist/ frontend\n'
+    printf 'could not install it; launching the binary that is already there\n'
+    notify-send -u normal -a Eldrun 'Eldrun (dev) is running an older snapshot' \
+      "Could not install the newer build into $BINARY; see eldrun-dev.log." 2>/dev/null || true
   fi
 fi
 
 if [ ! -x "$BINARY" ]; then
   bail "no frozen build installed at $BINARY." "Build one: cd $ROOT && npm run package:dev"
+fi
+
+# Say when the snapshot about to open is behind the repository, and why. The
+# commit hook's own failure notice never arrives from an agent tab (no session
+# bus), so a commit that broke the auto-freeze — or one the loop never reached
+# — left the icon opening yesterday's build with every commit reporting green
+# (2026-09-15). The launcher runs in the user's session: this notice does.
+APP_DIR="$(dirname "$BINARY")"
+FROZEN_INSTALLED="$BINARY.frozen"
+# No record beside the installed binary (adopted before records were kept
+# there): the tree's record speaks for it only if it IS that build.
+if [ ! -f "$FROZEN_INSTALLED" ] && [ -f "$FROZEN" ] &&
+   [ "$(sed -n 's/^sha256=//p' "$FROZEN")" = "$(sha256sum "$BINARY" 2>/dev/null | cut -d' ' -f1)" ]; then
+  FROZEN_INSTALLED="$FROZEN"
+fi
+frozen_commit="$(sed -n 's/^commit=//p' "$FROZEN_INSTALLED" 2>/dev/null)"
+if [ -n "$frozen_commit" ] && git -C "$ROOT" rev-parse --verify --quiet "$frozen_commit^{commit}" >/dev/null 2>&1; then
+  behind="$(git -C "$ROOT" rev-list --count "$frozen_commit..HEAD" 2>/dev/null || echo 0)"
+  if [ "$behind" -gt 0 ] 2>/dev/null; then
+    why="the post-commit freeze has not caught up yet."
+    failed="$APP_DIR/package-dev-auto.failed"
+    if [ -f "$failed" ]; then
+      read -r fcommit fstatus _ <"$failed"
+      why="the post-commit freeze FAILED at $fcommit (status $fstatus) — see $APP_DIR/package-dev-auto.log."
+    fi
+    printf 'snapshot %s is %s commit(s) behind HEAD: %s\n' "$frozen_commit" "$behind" "$why"
+    notify-send -u normal -a Eldrun "Eldrun (dev) is $behind commit(s) behind" \
+      "Opening $frozen_commit; $why" 2>/dev/null || true
+  fi
 fi
 
 # Same reason as start-eldrun-tauri-hotreload.sh: keep the CSS-themed scrollbar.

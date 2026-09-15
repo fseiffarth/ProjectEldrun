@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { installCalDavPush, useCalDavStore } from "../../stores/caldav";
 import { DEFAULT_CALDAV_SYNC_MIN } from "../../lib/caldav";
+import { useVpnTunnelUp, vpnGateAllows, vpnTunnelUp } from "../../lib/vpnGate";
 
 /** How often the scheduler wakes up. Each account is still synced on its own
  *  interval; this is only the granularity at which "is it due yet" is asked. */
@@ -30,6 +31,12 @@ const TICK_MS = 60_000;
  * The ctag check on the backend is what keeps a short interval cheap: a tick
  * against an unchanged collection is one small `PROPFIND`, not a re-download of
  * the calendar.
+ *
+ * A **VPN-only account** (`require_vpn`, `lib/vpnGate.ts`) is never due while no
+ * tunnel is up, and is made due at once — and synced on the spot — when one
+ * comes up. Same rising-edge rule as `MailIndicator`: only a reconciled
+ * `false → true` counts, so the store first learning of a tunnel at launch does
+ * not sync at mount.
  */
 export function CalDavSyncHost() {
   const accounts = useCalDavStore((s) => s.accounts);
@@ -37,6 +44,10 @@ export function CalDavSyncHost() {
    *  A failing server must not be retried every tick. */
   const lastRun = useRef<Record<string, number>>({});
   const inFlight = useRef(false);
+  /** The scheduler's tick, kept where the VPN catch-up below can call it. */
+  const tickRef = useRef<() => void>(() => {});
+  const tunnelUp = useVpnTunnelUp();
+  const prevTunnelUp = useRef<boolean | null>(null);
 
   // A purely local read: it is what tells the timer whether there is anything
   // to schedule at all.
@@ -76,12 +87,16 @@ export function CalDavSyncHost() {
       // a client gets rate-limited by an institutional gateway.
       if (inFlight.current) return;
       const at = Date.now();
+      const up = vpnTunnelUp();
       const due = useCalDavStore
         .getState()
         .accounts.filter((a) => a.calendars.length > 0)
         .filter((a) => {
           const minutes = a.sync_interval_min ?? DEFAULT_CALDAV_SYNC_MIN;
           if (minutes <= 0) return false;
+          // Not "not due yet": not reachable. `lastRun` is left alone, so the
+          // account is due the moment the tunnel makes it reachable.
+          if (!vpnGateAllows(a, up)) return false;
           const last = lastRun.current[a.id] ?? at;
           return at - last >= minutes * 60_000;
         });
@@ -104,12 +119,29 @@ export function CalDavSyncHost() {
       })();
     };
 
+    tickRef.current = tick;
     const id = setInterval(tick, TICK_MS);
-    return () => clearInterval(id);
+    return () => {
+      clearInterval(id);
+      tickRef.current = () => {};
+    };
     // `scheduled` is derived from `accounts` and re-created each render; `key`
     // is its identity, which is what the timer actually depends on.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key]);
+
+  // The catch-up. Making the gated accounts due and running the tick now, rather
+  // than waiting for the next 60 s wake-up: the tunnel coming up is the event
+  // the calendar has been waiting for.
+  useEffect(() => {
+    const rose = tunnelUp === true && prevTunnelUp.current === false;
+    prevTunnelUp.current = tunnelUp;
+    if (!rose) return;
+    for (const account of useCalDavStore.getState().accounts) {
+      if (account.require_vpn) lastRun.current[account.id] = 0;
+    }
+    tickRef.current();
+  }, [tunnelUp]);
 
   return null;
 }

@@ -34,6 +34,14 @@ interface VpnStatusStore {
   byConfig: Record<string, ConnState>;
   /** Project ids currently holding each config's tunnel — the refcount. */
   holders: Record<string, string[]>;
+  /**
+   * True once `refresh` has heard from the backend at all. Until then an empty
+   * `byConfig` means "not asked yet", not "no tunnel" — and the VPN-gated
+   * schedulers (`lib/vpnGate.ts`) need the difference: a tunnel that was up all
+   * along, first *seen* a second after launch, must not read as one that just
+   * came up, or a restored window would open a socket by existing.
+   */
+  reconciled: boolean;
 
   /** Set a tunnel's state. `off` forgets it (and its holders) entirely. */
   setState: (config: string, state: ConnState) => void;
@@ -69,6 +77,7 @@ function forget(s: VpnStatusStore, config: string) {
 export const useVpnStatusStore = create<VpnStatusStore>((set) => ({
   byConfig: {},
   holders: {},
+  reconciled: false,
 
   setState: (config, state) =>
     set((s) => {
@@ -126,7 +135,7 @@ export const useVpnStatusStore = create<VpnStatusStore>((set) => ({
       dropped = Object.keys(s.byConfig).filter(
         (config) => s.byConfig[config] === "connected" && !(config in byConfig),
       );
-      return { byConfig };
+      return { byConfig, reconciled: true };
     });
     for (const config of dropped) {
       onTunnelDropped(config);

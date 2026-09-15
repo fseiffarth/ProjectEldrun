@@ -103,6 +103,13 @@ pub struct CalDavAccount {
     /// Minutes between background syncs. `None` or `0` means manual-only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sync_interval_min: Option<u32>,
+    /// **VPN-only account, default false** — the mail account's field of the
+    /// same name, for the same institutional-server case. Enforced where the
+    /// credentials are resolved (`commands::caldav::credentials`), which every
+    /// network-bound command goes through, so a fetch, a push, a delete and an
+    /// access refresh all refuse alike while no OpenVPN tunnel is up.
+    #[serde(default)]
+    pub require_vpn: bool,
     /// **Two-way sync — opt-in, default false** (`docs/caldav_plan.md` Phase 3).
     ///
     /// The plan left "is write access even wanted against an institutional
@@ -275,4 +282,19 @@ pub struct CalDavChanges {
     /// applying. The whole point of the cheap check.
     #[serde(default)]
     pub unchanged: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn require_vpn_defaults_off_and_round_trips() {
+        let raw = r#"{"id":"c1","base_url":"https://dav.example.com/","user":"u"}"#;
+        let acct: super::CalDavAccount = serde_json::from_str(raw).expect("parse");
+        assert!(!acct.require_vpn);
+        let mut gated = acct.clone();
+        gated.require_vpn = true;
+        let back: super::CalDavAccount =
+            serde_json::from_str(&serde_json::to_string(&gated).unwrap()).unwrap();
+        assert!(back.require_vpn);
+    }
 }

@@ -259,3 +259,41 @@
       - [ ] ❌ Doesn't work
 
 ---
+
+826. **The project pill: pending git state in the hover card, a menu that
+    scrolls.** (1) The folder icon's git colour (uncommitted / staged /
+    committed-not-pushed / broken) was explained only by a native `title` on
+    the icon — a second popup beside the hover card. `ProjectHoverCard` now
+    names the state itself, coloured like the icon, and shows nothing for a
+    clean project; the file viewer shares the card and gains the line (`303fc16`).
+    (2) The right-click menu opens downward and, with remote, git and Python
+    entries all present, ran past the bottom edge; it is capped to the room
+    below the anchor and scrolls an inner wrapper so the accent wash still spans
+    the menu (`35b249f`). Frontend: `components/projects/{ProjectHoverCard,ProjectPill}.tsx`,
+    `styles/{projects-tabs,apps}.css`. Implemented 2026-09-14, **not live-tested**.
+    - [x] 🤖 Automated test — `ProjectHoverCardGitState` (git state line)
+    - [ ] 🖐️ Manual test — edit a tracked file in a project: hovering its pill
+      names "uncommitted" in the icon's colour and the icon has no tooltip of its
+      own; commit without pushing → the line changes; a clean project shows no
+      line. Right-click a remote project's pill with the window made short: the
+      menu stops at the window's bottom edge and scrolls, header wash intact.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+827. **Folders spring open while dragging a file to move it.** The tree lists
+    one folder at a time, so a file dragged toward a folder the listing did not
+    show had nowhere to land. Hovering a folder row, a breadcrumb or ↑ of the
+    same tree for 650 ms now navigates there and the drag carries on,
+    re-resolving the drop target once the new rows paint; after an open the
+    pointer must move before another folder can arm, so a held-still drag does
+    not drill down a level per dwell. Timing core `createSpringLoader` in
+    `lib/fileMove.ts`; `components/files/FileTree.tsx`. Frontend only.
+    Implemented 2026-09-14 (`de0f931`), **not live-tested**.
+    - [x] 🤖 Automated test — `FileMove` (spring loader: dwell, re-arm only
+      after movement, cancel)
+    - [ ] 🖐️ Manual test — drag a file over a folder row and hold still: after
+      about ⅔ s the tree opens that folder and exactly one level, not deeper;
+      wiggle onto a subfolder → it opens too; drop → the file moves there. Hover
+      a breadcrumb and ↑ the same way. Pass over folders quickly → nothing opens.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work

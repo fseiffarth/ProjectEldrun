@@ -8,6 +8,7 @@ import { SettingsCard, SettingsList, ToggleRow } from "../layout/settingsUi";
 import { UntestedTag } from "../common/UntestedTag";
 import { isTrashProject } from "../../lib/trashProject";
 import { IS_WINDOWS } from "../../lib/platform";
+import { runInstallInTab } from "../../lib/installCommand";
 import { translate, useI18nStore, useT } from "../../lib/i18n";
 
 /** `translate` at the live language, for code that runs outside a render: the
@@ -295,20 +296,13 @@ export function MobileSettings() {
     }
   };
 
+  // Same one-click shape as every other install-via-command flow: the command
+  // runs in a root terminal tab, watched through the centered install overlay
+  // right here in Settings — never a scope switch away from the panel.
   const setUpInTerminal = () => {
     const command = `tailscale serve --bg http://127.0.0.1:${guidePort}`;
     if (!window.confirm(tr("mobile.setUpConfirm", { command }))) return;
-    const tabs = useTabsStore.getState();
-    tabs.setScope(ROOT_SCOPE);
-    tabs.addTab({
-      label: tr("mobile.guideSummary"),
-      cmd: "",
-      args: [],
-      env: {},
-      initialInput: command,
-      cwd: rootDir ?? "",
-      kind: "shell",
-    });
+    runInstallInTab(tr("mobile.guideSummary"), command, "default");
   };
 
   const installOnPhone = async () => {

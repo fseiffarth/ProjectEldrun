@@ -2,7 +2,7 @@ import { useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { deliveryRecordId, isFinishedOneTime } from "../../lib/agentPromptSend";
-import { promptScheduleKey } from "../../lib/agentPromptScheduled";
+import { promptOfSchedule } from "../../lib/agentPromptScheduled";
 import { nextAfter } from "../../lib/agentPromptLinks";
 import {
   scheduleVerdict,
@@ -14,22 +14,45 @@ import {
   scheduledAgentInput,
   submitScheduledAgentMessage,
 } from "../../lib/scheduledAgentInput";
-import { lastPtyOutputAt, useActivityStore } from "../../stores/activity";
+import { agentDeliveryReady, agentDeliveryTurn, lastPtyOutputAt, useActivityStore } from "../../stores/activity";
 import { recordScheduledDelivery, sendCollectedPrompt, useAgentPromptsStore } from "../../stores/agentPrompts";
 import { useAgentSchedulesStore } from "../../stores/agentSchedules";
 import { useTabsStore, type TabEntry } from "../../stores/tabs";
 
 const TICK_MS = 15_000;
 const OUTPUT_SETTLE_MS = 1_200;
+/** A Stop must remain current before another prompt can be inserted. */
+const COMPLETION_STABLE_MS = 3_000;
 /**
- * How long the blame wait after a delivery may hold a tab before it is given up
- * on. The wait exists to stamp the files an agent touched onto the history row,
- * and it blocks the next delivery to that tab so two prompts cannot overlap —
- * which meant a delivery that never produced output (the agent exited, the CLI
- * refused the paste) blocked *every* later send to that tab for the life of the
- * window, silently. Blame is best-effort; delivery is not.
+ * For a tab whose agent fires no hooks (Gemini, Qwen, a custom command, an
+ * untrusted Codex) there is no Stop to wait for, so completion is read off the
+ * bytes: output after the submission, then this much quiet with the byte
+ * classifier calling the tab idle. Longer than the classifier's own done
+ * window on purpose — a silent tool is the one thing bytes cannot see — and
+ * only ever consulted when no hook verdict has been recorded for the PTY this
+ * session, so a Claude or a trusted Codex never falls back to it.
  */
-const IDLE_WAIT_MAX_MS = 10 * 60_000;
+const HOOKLESS_DONE_QUIET_MS = 30_000;
+/**
+ * An `after` link's next prompt is queued only once the source's turn has
+ * finished AND the tab has then stayed idle this long — a safety margin for an
+ * agent that stops, then picks up a background task, a hook or a follow-up of
+ * its own. Measured from the latest done, so any new turn in between (the user
+ * typing, the agent resuming) restarts the wait.
+ */
+const AFTER_LINK_IDLE_MS = 5 * 60_000;
+
+function completedTurn(ptyId: string, submittedAt: number, stableMs = COMPLETION_STABLE_MS): boolean {
+  const turn = agentDeliveryTurn(ptyId);
+  const activity = useActivityStore.getState();
+  const idle = !activity.busyByTab[ptyId] && activity.attentionByTab[ptyId] !== "decision";
+  if (!turn) {
+    const lastOutput = lastPtyOutputAt(ptyId) ?? 0;
+    return lastOutput > submittedAt && Date.now() - lastOutput >= Math.max(HOOKLESS_DONE_QUIET_MS, stableMs) && idle;
+  }
+  return turn.state === "done" && (turn.startedAt ?? 0) >= submittedAt
+    && turn.at >= submittedAt && Date.now() - turn.at >= stableMs && idle;
+}
 /**
  * Between the submissions of one delivery (a prefix command, then the next, then
  * the message) the tab is given time to act before the following line arrives.
@@ -150,23 +173,19 @@ async function retire(
       scheduledFor: last.occurrence || undefined,
     },
   );
-  if (last.result === "delivered") {
-    await continueAfterDelivery(
-      binding,
-      deliveryRecordId(schedule, last.occurrence),
-    ).catch(() => {});
-  }
   if (schedule.rule.type !== "once") return;
   await useAgentSchedulesStore
     .getState()
     .remove(binding.projectId, binding.scheduleTargetId, schedule.id)
     .catch(() => {});
-  await retireCollected(binding.projectId, schedule.message);
+  await retireCollected(binding.projectId, schedule);
 }
 
-/** Queue one hop of every `after` chain. This runs only after the durable
- * delivered record exists; failed and missed runs never reach it. */
-async function continueAfterDelivery(binding: Binding, recordId: string): Promise<void> {
+/** Queue one hop only after the source's turn has explicitly finished and
+ * the tab has stayed idle for `AFTER_LINK_IDLE_MS`. A receipt proves
+ * submission, never completion. Returns false while a successor is still
+ * waiting out that window, so the sweep asks again next tick. */
+async function continueAfterDelivery(binding: Binding, recordId: string, ready: (stableMs?: number) => boolean): Promise<boolean> {
   const store = useAgentPromptsStore.getState();
   const [drafts, links] = await Promise.all([
     store.load(binding.projectId),
@@ -183,22 +202,28 @@ async function continueAfterDelivery(binding: Binding, recordId: string): Promis
   const schedule = useAgentSchedulesStore.getState().byTarget[bindingKey(binding)]
     ?.find((item) => deliveryRecordId(item, item.last?.occurrence ?? "") === recordId);
   const sourceIds = [recordId];
-  if (schedule) {
-    const key = promptScheduleKey(schedule.message);
-    sourceIds.push(...drafts.filter((prompt) => promptScheduleKey(prompt.message) === key).map((prompt) => prompt.id));
-  }
+  // The one prompt the rule carries, whose edges are the rule's edges. Another
+  // prompt with the same words is a different prompt with its own chain.
+  const carried = schedule ? promptOfSchedule(drafts, schedule) : undefined;
+  if (carried && carried.id !== recordId) sourceIds.push(carried.id);
   const nextRows = sourceIds.flatMap((sourceId) => nextAfter(sourceId, links, drafts, live, binding.scheduleTargetId));
+  if (nextRows.some((next) => next.strand) && !ready(AFTER_LINK_IDLE_MS)) return false;
   const seen = new Set<string>();
   for (const next of nextRows) {
+    if (!ready(AFTER_LINK_IDLE_MS)) return false;
     if (seen.has(next.prompt.id)) continue;
     seen.add(next.prompt.id);
     if (!next.strand) continue;
+    // The edge's own commands (`/clear` between the two prompts) ride as the
+    // queued target's preface, typed one at a time before its text.
     await sendCollectedPrompt(
       binding.projectId,
       next.strand,
       next.prompt,
+      next.link.preface?.length ? next.link.preface : undefined,
     ).catch(() => {});
   }
+  return ready();
 }
 
 /**
@@ -215,25 +240,24 @@ async function continueAfterDelivery(binding: Binding, recordId: string): Promis
  *
  * The delivery has already been recorded by the caller, so this only DELETES —
  * archiving would write a second history row for one delivery. The link is the
- * prompt's text, `lib/agentPromptScheduled`'s key, which is the same link the
- * Scheduled section marks the row by; a prompt reworded since the rule was made
- * simply stays collected, as it should, since the rule no longer carried it.
- * Best-effort throughout: the record is the part that matters, and the next tick
- * cannot retry this one (the rule is gone) but nothing is lost if it fails.
+ * rule's id, which is the prompt's id, with the prompt's text as the fallback
+ * for a rule that predates that (`promptOfSchedule`) — and it retires ONE
+ * prompt: a second prompt with the same words was never this rule's, and
+ * deleting it here was how two same-text prompts could not coexist. A prompt
+ * reworded since the rule was made simply stays collected, as it should, since
+ * the rule no longer carried it. Best-effort throughout: the record is the part
+ * that matters, and the next tick cannot retry this one (the rule is gone) but
+ * nothing is lost if it fails.
  */
-async function retireCollected(projectId: string, message: string): Promise<void> {
-  const key = promptScheduleKey(message);
-  if (!key) return;
+async function retireCollected(projectId: string, schedule: { id: string; message: string }): Promise<void> {
   const store = useAgentPromptsStore.getState();
   // Read the list fresh rather than off the store: this window may never have
   // opened that scope's Agents view, and the send-now path has already deleted
   // its own prompt, so a stale copy would be the one thing that could delete a
   // prompt somebody re-collected in the meantime.
   const prompts = await store.load(projectId).catch(() => []);
-  for (const prompt of prompts) {
-    if (promptScheduleKey(prompt.message) !== key) continue;
-    await store.remove(projectId, prompt.id).catch(() => {});
-  }
+  const prompt = promptOfSchedule(prompts, schedule);
+  if (prompt) await store.remove(projectId, prompt.id).catch(() => {});
 }
 
 /**
@@ -247,7 +271,7 @@ export function AgentScheduleHost() {
   // tab is idle again — the agent has done what the prompt asked — the files
   // it touched can be written onto that row (prompt blame, `agent_prompt_blame`).
   const waitingForIdle = useRef(
-    new Map<string, { ptyId: string; submittedAt: number; recordId?: string; projectId: string }>(),
+    new Map<string, { ptyId: string; submittedAt: number; recordId: string; projectId: string; schedule: ScheduledAgentPrompt; occurrence: string; recorded: boolean; blamed?: boolean }>(),
   );
 
   useEffect(() => {
@@ -270,32 +294,38 @@ export function AgentScheduleHost() {
           if (disposed) break;
           const key = bindingKey(binding);
           const input = scheduledAgentInput(binding.scheduleTargetId);
-          const activity = useActivityStore.getState();
           const waiting = waitingForIdle.current.get(key);
           if (waiting) {
-            const lastOutput = lastPtyOutputAt(waiting.ptyId) ?? 0;
-            const producedOutput = lastOutput > waiting.submittedAt;
-            const settled = Date.now() - lastOutput >= OUTPUT_SETTLE_MS;
-            const idle = !activity.busyByTab[waiting.ptyId]
-              && activity.attentionByTab[waiting.ptyId] !== "decision";
-            const expired = Date.now() - waiting.submittedAt >= IDLE_WAIT_MAX_MS;
-            if (expired) {
-              // Give up on the blame stamp rather than on the tab: whatever
-              // happened to that delivery, the next prompt aimed here has to be
-              // deliverable. Falls through, so this very tick can send it.
-              waitingForIdle.current.delete(key);
-            } else if (!producedOutput || !settled || !idle) {
+            if (!waiting.recorded) {
+              try {
+                await retire(binding, waiting.schedule, { occurrence: waiting.occurrence, result: "delivered" });
+                waiting.recorded = true;
+              } catch { continue; }
+            }
+            const ready = (stableMs?: number) => !disposed && scheduledAgentInput(binding.scheduleTargetId)?.ptyId === waiting.ptyId
+              && completedTurn(waiting.ptyId, waiting.submittedAt, stableMs);
+            // No silence fallback and no timeout bypass where the agent has
+            // hooks: a long tool or an approval wait must not release the next
+            // prompt, even on another tab. The one exception is a tab whose
+            // agent has never reported a verdict (see `completedTurn`).
+            if (!ready()) {
               continue;
             } else {
-              waitingForIdle.current.delete(key);
               // Best-effort and off the delivery path: a row the user already
               // cleared, or a project without a local repo, records nothing.
               if (waiting.recordId) {
-                void useAgentPromptsStore
-                  .getState()
-                  .blame(waiting.projectId, waiting.recordId, new Date(waiting.submittedAt).toISOString())
-                  .catch(() => []);
+                // Once: the after-link idle window keeps this entry for
+                // minutes, re-entering here every tick.
+                if (!waiting.blamed) {
+                  waiting.blamed = true;
+                  void useAgentPromptsStore
+                    .getState()
+                    .blame(waiting.projectId, waiting.recordId, new Date(waiting.submittedAt).toISOString())
+                    .catch(() => []);
+                }
+                try { if (!await continueAfterDelivery(binding, waiting.recordId, ready)) continue; } catch { continue; }
               }
+              waitingForIdle.current.delete(key);
             }
           }
 
@@ -345,6 +375,7 @@ export function AgentScheduleHost() {
             // The tab being focused is deliberately not part of this gate.
             if (!input || !input.ready()) break;
             const latestActivity = useActivityStore.getState();
+            if (!agentDeliveryReady(input.ptyId, COMPLETION_STABLE_MS)) break;
             // `?? 0`, not `?? Date.now()`: a PTY that has produced no output this
             // session has nothing to settle after, and reading "no output" as
             // "output just now" made the gate permanently false — a tab whose
@@ -361,26 +392,36 @@ export function AgentScheduleHost() {
               occurrence: verdict.occurrence.key,
             }).catch(() => false);
             if (!claimed) continue;
-            const submittedAt = Date.now();
+            let submittedAt = Date.now();
             try {
+              // Claiming crosses IPC. Recheck before the first keystroke in
+              // case the human or another input path started a turn meanwhile.
+              if (!input.ready() || scheduledAgentInput(binding.scheduleTargetId) !== input
+                  || !agentDeliveryReady(input.ptyId, COMPLETION_STABLE_MS)
+                  || useActivityStore.getState().busyByTab[input.ptyId]
+                  || useActivityStore.getState().attentionByTab[input.ptyId] === "decision") throw new Error("agent readiness changed");
               const ptyId = await submitScheduledAgentMessage(
                 binding.scheduleTargetId,
                 schedule.message,
-                { preface: schedule.preface, settle: settleBetweenSubmissions },
+                { preface: schedule.preface, settle: settleBetweenSubmissions, beforeMessage: () => { submittedAt = Date.now(); } },
               );
               // Completion after all writes means a partial/write failure becomes
               // `failed`; the durable claim prevents retry in either case.
               await complete(binding, schedule.id, verdict.occurrence.key, "delivered");
-              waitingForIdle.current.set(key, {
+              const waiting = {
                 ptyId,
                 submittedAt,
                 projectId: binding.projectId,
                 recordId: deliveryRecordId(schedule, verdict.occurrence.key),
-              });
+                schedule,
+                occurrence: verdict.occurrence.key,
+                recorded: false,
+              };
+              waitingForIdle.current.set(key, waiting);
               await retire(binding, schedule, {
                 occurrence: verdict.occurrence.key,
                 result: "delivered",
-              }).catch(() => {});
+              }).then(() => { waiting.recorded = true; }).catch(() => {});
             } catch {
               await complete(binding, schedule.id, verdict.occurrence.key, "failed").catch(() => {});
               await retire(binding, schedule, {

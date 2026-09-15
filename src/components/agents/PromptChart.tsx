@@ -1,41 +1,94 @@
-import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
   buildPromptChart,
-  futureOffsetPercent,
-  futureTimeAt,
-  groupPromptPast,
+  occupiedTargets,
   promptChartCardMatches,
-  promptChartDropAction,
+  promptChartInWindow,
   queueOrderTimes,
+  rowOnStrand,
   type PromptChartCard,
   type PromptChartFilter,
   type PromptChartStrand,
+  type PromptChartWindow,
 } from "../../lib/agentPromptChart";
-import { localOccurrenceKey } from "../../lib/agentSchedule";
+import { agentModelsFor, prefaceCommandsFor } from "../../lib/agentPrefaces";
+import { agentItemFor, newAgentTabForDraft, promptChartNewTabAgent } from "../../lib/agentPromptNewTab";
+import { useUse24h } from "../../lib/timeFormat";
+import {
+  formatTimelineInstant,
+  hourAnchor,
+  promptTargetColor,
+  sessionGroupKey,
+  shiftAnchor,
+  timelineDropAction,
+  timelineGroupDrop,
+  timelineGroupMovable,
+  timelineWindow,
+  zoomTimelineView,
+  type PromptTimelineDrop,
+  type SessionSpan,
+  type TimelineView,
+  type TimelineZone,
+} from "../../lib/agentPromptTimeline";
+import { localOccurrenceKey, localWallClock } from "../../lib/agentSchedule";
 import { parseTags, tagCounts } from "../../lib/agentPromptTags";
-import { useT } from "../../lib/i18n";
+import { formatLongDate, monthName, toDateStr, todayStr } from "../../lib/calendarTime";
+import { useI18nStore, useT } from "../../lib/i18n";
 import { jumpToTab } from "../../lib/tabJump";
 import {
   queuePromptForTab,
   sendCollectedPrompt,
   useAgentPromptsStore,
   type ProjectAgentPrompt,
+  type PromptLink,
   type SentAgentPrompt,
 } from "../../stores/agentPrompts";
+import { useAgentModelsStore } from "../../stores/agentModels";
 import { scheduleCacheKey, useAgentSchedulesStore } from "../../stores/agentSchedules";
-import type { TabEntry } from "../../stores/tabs";
+import { useProjectsStore } from "../../stores/projects";
+import { useSettingsStore } from "../../stores/settings";
+import { useTabsStore, type TabEntry } from "../../stores/tabs";
+import { resolveProjectDirectory } from "../../types";
+import { ContextMenuPortal } from "../common/ContextMenuPortal";
 import { Dropdown } from "../common/Dropdown";
 import { MarkdownPromptField } from "../common/MarkdownPromptField";
+import { UntestedTag } from "../common/UntestedTag";
 import { AgentScheduleDialog } from "./AgentScheduleDialog";
 import { PromptCard } from "./PromptCard";
+import { PromptSessionCard } from "./PromptSessionCard";
+import { PromptChartFilterBar } from "./PromptChartFilterBar";
 import { PromptChartLinks } from "./PromptChartLinks";
+import { PromptLinkEditor } from "./PromptLinkEditor";
+import { PromptTimeline } from "./PromptTimeline";
+import { usePromptChartDrag } from "./usePromptChartDrag";
+import { usePromptChartUsage } from "./usePromptChartUsage";
+import { PromptDraftBoard, type DraftBoardHandle } from "./PromptDraftBoard";
+import { draftSequence } from "../../lib/agentPromptDrafts";
+import { AGENT_ITEMS, EMPTY_CUSTOM_AGENTS } from "../tabs/newTabItems";
+import { useAddTabMenuData } from "../tabs/useAddTabMenuData";
 
 const EMPTY_PROMPTS: ProjectAgentPrompt[] = [];
 const EMPTY_HISTORY: SentAgentPrompt[] = [];
 const EMPTY_LINKS: ReturnType<typeof useAgentPromptsStore.getState>["linksByProject"][string] = [];
-const ZOOMS = [1, 6, 24, 48];
-const EMPTY_FILTER: PromptChartFilter = { text: "", tag: "", agent: "", result: "", window: "any" };
+const EMPTY_FILTER: PromptChartFilter = { text: "", tag: "", agent: "", result: "" };
+const VIEWS: TimelineView[] = ["hour", "day", "week", "month"];
+/** Whether the timeline is shown: a reader's convenience, remembered per
+ *  window like the Agents view's sort. The filters are not — a filter that
+ *  survives a relaunch is how a card goes missing. */
+const TIMELINE_STORAGE_KEY = "eldrun.promptChart.timeline";
+
+function readShowTimeline(): boolean {
+  try { return localStorage.getItem(TIMELINE_STORAGE_KEY) !== "hidden"; } catch { return true; }
+}
+
+function isStripCard(card: PromptChartCard): boolean {
+  return card.state === "draft" || card.state === "chained";
+}
+
+function agentsOf(cards: PromptChartCard[]): string[] {
+  return [...new Set(cards.flatMap((card) => card.autoTags.filter((tag) => tag.startsWith("agent:")).map((tag) => tag.slice(6))))].sort();
+}
 
 interface Props {
   scope: string;
@@ -53,8 +106,24 @@ function target(tab: TabEntry) {
   };
 }
 
+function rectOf(node: Element | null) {
+  if (!node) return null;
+  const rect = node.getBoundingClientRect();
+  return { left: rect.left, top: rect.top, width: rect.width, height: rect.height };
+}
+
+/**
+ * One horizontal time axis for every prompt of the scope — sent, queued,
+ * scheduled — with the timeless drafts on a strip above it. The chart owns
+ * the data and every write; the axis (`PromptTimeline`) owns only geometry,
+ * and the gesture (`usePromptChartDrag`) owns only the pointer. A drop is
+ * turned into exactly one write by `timelineDropAction`, and which tab a
+ * card is aimed at is the card's own, picked on its face.
+ */
 export function PromptChart({ scope, active, tabs, stateOf }: Props) {
   const t = useT();
+  const lang = useI18nStore((s) => s.lang);
+  const weekStart = useSettingsStore((s) => (s.settings?.calendar_week_start ?? 0) as 0 | 1);
   const prompts = useAgentPromptsStore((state) => state.byProject[scope] ?? EMPTY_PROMPTS);
   const history = useAgentPromptsStore((state) => state.historyByProject[scope] ?? EMPTY_HISTORY);
   const links = useAgentPromptsStore((state) => state.linksByProject[scope] ?? EMPTY_LINKS);
@@ -67,23 +136,57 @@ export function PromptChart({ scope, active, tabs, stateOf }: Props) {
   const upsertLink = useAgentPromptsStore((state) => state.link);
   const removeLink = useAgentPromptsStore((state) => state.unlink);
   const schedulesByTarget = useAgentSchedulesStore((state) => state.byTarget);
+  // The model pill beside each tab, by composed PTY id — worn by the tab's
+  // cards as a `model:` tag.
+  const modelByTab = useAgentModelsStore((state) => state.byTab);
   const schedules = useAgentSchedulesStore();
   const [now, setNow] = useState(() => new Date());
-  const [zoom, setZoom] = useState(6);
-  const [filter, setFilter] = useState<PromptChartFilter>(EMPTY_FILTER);
-  const [hideOthers, setHideOthers] = useState(false);
+  const [view, setView] = useState<TimelineView>("day");
+  const [anchor, setAnchor] = useState(() => todayStr());
+  const [draftFilter, setDraftFilter] = useState<PromptChartFilter>(EMPTY_FILTER);
+  const [draftHide, setDraftHide] = useState(false);
+  const [chartFilter, setChartFilter] = useState<PromptChartFilter>(EMPTY_FILTER);
+  const [chartHide, setChartHide] = useState(false);
+  const [when, setWhen] = useState<PromptChartWindow>("any");
+  const [showTimeline, setShowTimeline] = useState(readShowTimeline);
   const [selected, setSelected] = useState<string | null>(null);
   const [linkFrom, setLinkFrom] = useState<string | null>(null);
-  const [linkKind, setLinkKind] = useState<"related" | "after">("related");
+  const [linkKind, setLinkKind] = useState<"related" | "after">("after");
   const [newOpen, setNewOpen] = useState(false);
   const [draft, setDraft] = useState("");
   const [draftTags, setDraftTags] = useState("");
-  const [dialog, setDialog] = useState<{ tab: TabEntry; message?: string } | null>(null);
+  const [dialog, setDialog] = useState<{ tab: TabEntry; message?: string; promptId?: string } | null>(null);
   const [error, setError] = useState("");
-  const [closedOpen, setClosedOpen] = useState<string[]>([]);
+  const [linksVersion, setLinksVersion] = useState(0);
+  /** The edge whose editor is open, and where. */
+  const [edgeEdit, setEdgeEdit] = useState<{ id: string; x: number; y: number } | null>(null);
+  const [edgeMenu, setEdgeMenu] = useState<{ id: string; x: number; y: number } | null>(null);
+  /** Sent cards the reader dragged up or down out of the way, per view (the
+   *  lanes pack differently in each): px off their lane, by timeline item key.
+   *  A way of reading the axis, so it is not persisted — like the filters. */
+  const [lifts, setLifts] = useState<Partial<Record<TimelineView, Record<string, number>>>>({});
+  /** The timeline's multi-selection, by timeline item key (a session card's is
+   *  its session). Session-only view state: it picks what one drag carries. */
+  const [multi, setMulti] = useState<ReadonlySet<string>>(() => new Set());
+  const prefaceOverrides = useSettingsStore((s) => s.settings?.agent_preface_commands);
+  // What a draft's "New agent tab" opens: the chart's own agent and model
+  // picks, one pair for every chart (`lib/agentPromptNewTab`).
+  const newTabAgent = useSettingsStore((s) => promptChartNewTabAgent(s.settings));
+  const newTabModel = useSettingsStore((s) => s.settings?.prompt_chart_model?.trim() ?? "");
+  const modelOverrides = useSettingsStore((s) => s.settings?.agent_models);
+  const customAgents = useSettingsStore((s) => s.settings?.custom_agents ?? EMPTY_CUSTOM_AGENTS);
+  const updateSettings = useSettingsStore((s) => s.updateSettings);
+  const { enabledAgents, installedCustom } = useAddTabMenuData(scope);
+  const addTabToScope = useTabsStore((s) => s.addTabToScope);
+  const project = useProjectsStore((s) => s.projects.find((item) => item.id === scope));
+  const use24h = useUse24h();
   const rootRef = useRef<HTMLDivElement>(null);
+  const stripRef = useRef<HTMLDivElement>(null);
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const nowBandRef = useRef<HTMLDivElement>(null);
   const cardNodes = useRef(new Map<string, HTMLElement>());
-  const drag = useRef<{ card: PromptChartCard; pointerId: number } | null>(null);
+  const draftBoard = useRef<DraftBoardHandle>(null);
+  const refreshLinks = useCallback(() => setLinksVersion((value) => value + 1), []);
 
   useEffect(() => {
     void Promise.all([
@@ -108,26 +211,35 @@ export function PromptChart({ scope, active, tabs, stateOf }: Props) {
     return () => clearInterval(timer);
   }, [active]);
 
+  const win = useMemo(() => timelineWindow(view, anchor, weekStart), [anchor, view, weekStart]);
+
   const liveStrands = useMemo<PromptChartStrand[]>(() => tabs.map((tab) => ({
     id: `strand:${tab.scheduleTargetId}`,
     label: tab.label,
     scheduleTargetId: tab.scheduleTargetId,
     tabKey: tab.key,
     sessionId: tab.sessionId,
+    tabId: tab.sessionId,
     agent: tab.cmd,
+    model: modelByTab[`${scope}:${tab.key}`],
     schedules: schedulesByTarget[scheduleCacheKey(scope, tab.scheduleTargetId!)] ?? [],
-  })), [scope, schedulesByTarget, tabs]);
+  })), [modelByTab, scope, schedulesByTarget, tabs]);
 
+  // One closed strand per gone TAB, not per session: a tab's rows after a
+  // `/clear` carry a new session id but the same tab id, and they stay on
+  // its strand — as separate session cards, joined by the edge the history
+  // drew when the id rolled.
   const closedStrands = useMemo<PromptChartStrand[]>(() => {
-    const liveSessions = new Set(liveStrands.flatMap((strand) => [strand.sessionId, strand.label]).filter(Boolean));
     const map = new Map<string, PromptChartStrand>();
     for (const row of history) {
-      const identity = row.session_id ?? row.tab_label;
-      if (liveSessions.has(identity) || map.has(identity)) continue;
+      if (liveStrands.some((strand) => rowOnStrand(strand, row))) continue;
+      const identity = row.tab_id ?? row.session_id ?? row.tab_label;
+      if (map.has(identity)) continue;
       map.set(identity, {
         id: `closed:${identity}`,
         label: row.tab_label || t("promptChart.closed"),
         sessionId: row.session_id,
+        tabId: row.tab_id,
         agent: row.agent,
         closed: true,
         schedules: [],
@@ -136,13 +248,100 @@ export function PromptChart({ scope, active, tabs, stateOf }: Props) {
     return [...map.values()];
   }, [history, liveStrands, t]);
   const strands = useMemo(() => [...liveStrands, ...closedStrands], [closedStrands, liveStrands]);
-  const cards = useMemo(() => buildPromptChart({ prompts, history, strands, links, now }), [history, links, now, prompts, strands]);
-  const matched = useMemo(() => new Set(cards.filter((card) => promptChartCardMatches(card, filter, now)).map((card) => card.key)), [cards, filter, now]);
-  const allTags = useMemo(() => tagCounts(cards.map((card) => ({ tags: [...card.tags, ...card.autoTags] }))), [cards]);
-  const allAgents = useMemo(() => [...new Set(cards.flatMap((card) => card.autoTags.filter((tag) => tag.startsWith("agent:")).map((tag) => tag.slice(6))))].sort(), [cards]);
-  const visible = (card: PromptChartCard) => !hideOthers || matched.has(card.key);
+  const cards = useMemo(() => buildPromptChart({ prompts, history, strands, links, now, newTabAgent, newTabModel }), [history, links, newTabAgent, newTabModel, now, prompts, strands]);
+  // Tabs already holding a live rule: not offered to a draft or to another
+  // rule, since two rules on one tab fire in no set order. A further prompt
+  // reaches such a tab by an `after` link from the rule it holds.
+  const occupiedIds = useMemo(() => new Set(occupiedTargets(cards).keys()), [cards]);
+  // Chained cards stay on the board with the drafts: they have no minute of
+  // their own (they go once their source's turn has finished), and the board
+  // is where a card without a time can be moved freely.
+  const stripCards = useMemo(() => cards.filter(isStripCard), [cards]);
+  const stripIds = useMemo(() => new Set(stripCards.map((card) => card.id)), [stripCards]);
+  const timeCards = useMemo(() => cards.filter((card) => !stripIds.has(card.id)), [cards, stripIds]);
+  const draftMatched = useMemo(() => new Set(stripCards.filter((card) => promptChartCardMatches(card, draftFilter)).map((card) => card.key)), [draftFilter, stripCards]);
+  // The timeline's text/tag/agent/outcome match, by key; the "When" window is
+  // asked per drawn instant, since a recurring rule's occurrences share a key.
+  const chartMatched = useMemo(() => new Set(timeCards.filter((card) => promptChartCardMatches(card, chartFilter)).map((card) => card.key)), [chartFilter, timeCards]);
+  const draftTagCounts = useMemo(() => tagCounts(stripCards.map((card) => ({ tags: [...card.tags, ...card.autoTags] }))), [stripCards]);
+  const chartTagCounts = useMemo(() => tagCounts(timeCards.map((card) => ({ tags: [...card.tags, ...card.autoTags] }))), [timeCards]);
+  const draftAgents = useMemo(() => agentsOf(stripCards), [stripCards]);
+  const chartAgents = useMemo(() => agentsOf(timeCards), [timeCards]);
+  const tabAgents = useMemo(() => tabs.map((tab) => tab.cmd), [tabs]);
+  const usageResets = usePromptChartUsage(tabAgents, active && showTimeline, now, win.start, win.end, chartFilter.agent);
+  const matches = (card: PromptChartCard, occurrence?: string): boolean => {
+    if (stripIds.has(card.id)) return draftMatched.has(card.key);
+    const at = occurrence ? localWallClock(occurrence) : card.at ?? null;
+    return chartMatched.has(card.key) && promptChartInWindow(card, at, when, now);
+  };
+  const visible = (card: PromptChartCard, occurrence?: string) =>
+    !(stripIds.has(card.id) ? draftHide : chartHide) || matches(card, occurrence);
+  const sessionMatched = useMemo(
+    () => new Set(timeCards.filter((card) => chartMatched.has(card.key) && promptChartInWindow(card, card.at, when, now)).map((card) => card.key)),
+    [chartMatched, now, timeCards, when],
+  );
+  const targetIds = useMemo(() => tabs.map((tab) => tab.scheduleTargetId!), [tabs]);
+  const targets = useMemo(() => tabs.map((tab) => ({
+    id: tab.scheduleTargetId!,
+    label: stateOf ? `${tab.label} · ${stateOf(tab)}` : tab.label,
+  })), [stateOf, tabs]);
 
-  const strandTab = (strand?: PromptChartStrand) => tabs.find((tab) => tab.scheduleTargetId === strand?.scheduleTargetId);
+  useEffect(() => setLinksVersion((value) => value + 1), [cards, view, anchor]);
+
+  const tabOf = (targetId?: string) => tabs.find((tab) => tab.scheduleTargetId === targetId);
+  /** The tabs a card's picker offers: a draft is not offered an occupied tab,
+   *  a rule keeps its own tab and is not offered another rule's; a chained
+   *  card is linked already, which is the one way onto an occupied tab. */
+  const targetsFor = (card: PromptChartCard) => card.state === "chained" || card.state === "sent"
+    ? targets
+    : targets.filter((item) => !occupiedIds.has(item.id) || (!!card.schedule && item.id === card.targetId));
+  const occupiedError = (targetId?: string) => {
+    const tab = tabOf(targetId);
+    return tab ? t("promptChart.targetOccupied", { tab: tab.label }) : t("promptChart.noFreeTarget");
+  };
+  const newTabItem = agentItemFor(newTabAgent, customAgents);
+  const newTabLabel = t("promptChart.newAgentTab", { agent: newTabItem.label });
+  // The agents the toolbar offers: the "+" menu's own set (installed built-ins
+  // the user has not turned off, custom agents that probe present), plus the
+  // one already picked, so the pick never reads blank while a probe is out or
+  // after its CLI went missing.
+  const newTabAgentOptions = useMemo(() => {
+    const options = [
+      ...AGENT_ITEMS.filter((item) => enabledAgents?.has(item.cmd)).map((item) => ({ value: item.cmd, label: item.label })),
+      ...customAgents.filter((agent) => installedCustom === null || installedCustom.has(agent.cmd)).map((agent) => ({ value: agent.cmd, label: agent.label })),
+    ];
+    if (!options.some((option) => option.value === newTabAgent)) options.unshift({ value: newTabAgent, label: newTabItem.label });
+    return options;
+  }, [customAgents, enabledAgents, installedCustom, newTabAgent, newTabItem.label]);
+  const newTabModels = useMemo(() => agentModelsFor(newTabAgent, modelOverrides), [modelOverrides, newTabAgent]);
+  /** A draft with no tab of its own: Send opens a new agent tab running the
+   *  chart's agent and queues the prompt at it, with the model pick typed
+   *  ahead as the agent's own `/model`; Schedule opens the tab and then the
+   *  rule dialog on it. The tab opens on the project root — the "+" menu's
+   *  worktree question is not asked here. */
+  const openNewTab = (): { tab: TabEntry; preface: string[] } => {
+    const spec = newAgentTabForDraft({
+      agent: newTabAgent,
+      model: newTabModel,
+      customAgents,
+      cwd: project ? resolveProjectDirectory(project) : "",
+      projectName: project?.name ?? "",
+      t,
+    });
+    return { tab: addTabToScope(scope, spec.tab), preface: spec.preface };
+  };
+  const sendToNewTab = async (card: PromptChartCard) => {
+    if (!card.prompt) return;
+    const { tab, preface } = openNewTab();
+    await sendCollectedPrompt(scope, target(tab), card.prompt, preface);
+  };
+  const colorOf = (card: PromptChartCard) => {
+    const strand = strands.find((item) => item.id === card.strandId);
+    if (strand?.closed) return promptTargetColor(-1);
+    const targetId = card.targetId ?? strand?.scheduleTargetId;
+    return promptTargetColor(targetId ? targetIds.indexOf(targetId) : 0);
+  };
+
   const send = async (card: PromptChartCard, tab: TabEntry) => {
     if (card.prompt && !card.schedule) {
       await sendCollectedPrompt(scope, target(tab), card.prompt);
@@ -154,28 +353,41 @@ export function PromptChart({ scope, active, tabs, stateOf }: Props) {
       });
     }
   };
-  const pickTab = (card: PromptChartCard, action: "send" | "schedule", targetId?: string) => {
-    const tab = tabs.find((item) => item.scheduleTargetId === targetId)
-      ?? strandTab(strands.find((strand) => strand.id === card.strandId))
-      ?? tabs[0];
-    if (!tab) return;
+  const pickTab = (picked: PromptChartCard, action: "send" | "schedule") => {
+    const card = isStripCard(picked) ? draftSequence(picked.id, cards, links)?.[0] : picked;
+    if (!card) { setError(t("promptChart.sequenceBlocked")); return; }
+    if (card.state === "draft" && !card.targetId) {
+      if (action === "send") void sendToNewTab(card).catch((cause) => setError(String(cause)));
+      else setDialog({ tab: openNewTab().tab, message: card.message, promptId: card.prompt?.id });
+      return;
+    }
+    const tab = tabOf(card.targetId) ?? tabs.find((item) => !occupiedIds.has(item.scheduleTargetId!));
+    if (!tab) { setError(occupiedError()); return; }
+    if (!card.schedule && occupiedIds.has(tab.scheduleTargetId!)) { setError(occupiedError(tab.scheduleTargetId)); return; }
     if (action === "send") void send(card, tab).catch((cause) => setError(String(cause)));
-    else setDialog({ tab, message: card.message });
+    else setDialog({ tab, message: card.message, promptId: card.prompt?.id });
+  };
+  /** Write the rule to its (new) tab first, then drop the old copy: the
+   *  order that cannot lose the rule, and the one whose upsert persists the
+   *  tab binding. */
+  const moveRule = async (card: PromptChartCard, targetId: string, at?: Date) => {
+    if (!card.schedule) return;
+    const rule = at ? { type: "once" as const, at: localOccurrenceKey(at) } : card.schedule.rule;
+    if (targetId === card.targetId && !at) return;
+    if (targetId !== card.targetId && occupiedIds.has(targetId)) throw new Error(occupiedError(targetId));
+    await schedules.upsert(scope, targetId, { ...card.schedule, last: undefined, rule });
+    if (card.targetId && targetId !== card.targetId) await schedules.remove(scope, card.targetId, card.schedule.id);
   };
   const retime = async (card: PromptChartCard, at: Date, targetId = card.targetId) => {
     if (!card.schedule || !targetId || card.recurring) return;
-    if (targetId !== card.targetId && card.targetId) await schedules.remove(scope, card.targetId, card.schedule.id);
-    await schedules.upsert(scope, targetId, { ...card.schedule, last: undefined, rule: { type: "once", at: localOccurrenceKey(at) } });
+    await moveRule(card, targetId, at);
   };
-  const reorderQueue = async (card: PromptChartCard, stepOrTarget: -1 | 1 | string) => {
+  const reorderQueue = async (card: PromptChartCard, step: -1 | 1) => {
     if (!card.schedule || !card.targetId) return;
-    const strand = strands.find((item) => item.scheduleTargetId === card.targetId);
-    const queue = cards.filter((item) => item.strandId === strand?.id && item.state === "queued" && item.schedule);
+    const queue = cards.filter((item) => item.targetId === card.targetId && item.state === "queued" && item.schedule);
     const from = queue.findIndex((item) => item.schedule?.id === card.schedule?.id);
-    const to = typeof stepOrTarget === "number"
-      ? Math.max(0, Math.min(queue.length - 1, from + stepOrTarget))
-      : queue.findIndex((item) => item.id === stepOrTarget || item.schedule?.id === stepOrTarget);
-    if (from < 0 || to < 0 || from === to) return;
+    const to = Math.max(0, Math.min(queue.length - 1, from + step));
+    if (from < 0 || from === to) return;
     const ordered = [...queue];
     const [moved] = ordered.splice(from, 1);
     ordered.splice(to, 0, moved);
@@ -199,186 +411,501 @@ export function PromptChart({ scope, active, tabs, stateOf }: Props) {
   const unschedule = async (card: PromptChartCard) => {
     if (!card.prompt) await upsertPrompt(scope, { id: crypto.randomUUID(), message: card.message, tags: card.tags });
     if (card.schedule && card.targetId) await schedules.remove(scope, card.targetId, card.schedule.id);
+    // A prompt taken off the axis leaves its sequence: an edge left behind
+    // would chain it again, or point at a rule that no longer exists.
+    for (const link of links.filter((item) => item.from === card.id || item.to === card.id)) {
+      await removeLink(scope, link.id);
+    }
   };
   const save = async (card: PromptChartCard, message: string, tags: string[]) => {
     if (card.prompt) await upsertPrompt(scope, { id: card.prompt.id, message, tags });
     if (card.schedule && card.targetId) await schedules.upsert(scope, card.targetId, { ...card.schedule, message });
+  };
+  /** The agent picker on a card: what "aim this at that tab" writes per state. */
+  const setAgent = async (card: PromptChartCard, targetId: string) => {
+    if (card.state === "draft" && card.prompt) {
+      if (targetId && occupiedIds.has(targetId)) throw new Error(occupiedError(targetId));
+      await upsertPrompt(scope, { id: card.prompt.id, message: card.message, tags: card.tags, target: targetId || "" });
+    } else if (card.state === "chained" && card.chainLink) {
+      await upsertLink(scope, { ...card.chainLink, target: targetId || undefined });
+    } else if (card.schedule && targetId) {
+      await moveRule(card, targetId);
+    }
   };
 
   const ensureLinkEndpoint = async (card: PromptChartCard) => {
     if (card.prompt || card.history) return;
     await upsertPrompt(scope, { id: card.id, message: card.message, tags: card.tags });
   };
-
   const beginLink = async (card: PromptChartCard) => {
     await ensureLinkEndpoint(card);
     setLinkFrom(card.id);
     setSelected(card.id);
   };
-
-  const linkTo = async (to: PromptChartCard) => {
-    if (!linkFrom || linkFrom === to.id) { setLinkFrom(null); return; }
-    const source = cards.find((card) => card.id === linkFrom);
-    if (source) await ensureLinkEndpoint(source);
+  const targetOf = (card?: PromptChartCard) =>
+    card?.targetId ?? strands.find((strand) => strand.id === card?.strandId)?.scheduleTargetId;
+  const linkCards = async (fromId: string, toId: string) => {
+    if (fromId === toId) return;
+    const source = cards.find((card) => card.id === fromId);
+    const to = cards.find((card) => card.id === toId);
+    if (!source || !to) return;
+    await ensureLinkEndpoint(source);
     await ensureLinkEndpoint(to);
-    const sourceStrand = strands.find((strand) => strand.id === source?.strandId);
-    const targetStrand = strands.find((strand) => strand.id === to.strandId);
     await upsertLink(scope, {
-      id: crypto.randomUUID(), from: linkFrom, to: to.id, kind: linkKind,
-      target: linkKind === "after" ? targetStrand?.scheduleTargetId ?? sourceStrand?.scheduleTargetId : undefined,
+      id: crypto.randomUUID(), from: fromId, to: toId, kind: linkKind,
+      target: linkKind === "after" ? targetOf(to) ?? targetOf(source) : undefined,
     });
+  };
+  const linkTo = async (to: PromptChartCard) => {
+    const from = linkFrom;
     setLinkFrom(null);
+    if (from) await linkCards(from, to.id);
   };
+  /** The tab an edge queues its target on: its own, else the target's, else the source's. */
+  const edgeTarget = (link: PromptLink) =>
+    link.target ?? targetOf(cards.find((card) => card.id === link.to)) ?? targetOf(cards.find((card) => card.id === link.from));
+  const editEdge = async (link: PromptLink, patch: Pick<PromptLink, "kind" | "preface">) => {
+    await upsertLink(scope, {
+      ...link,
+      ...patch,
+      target: patch.kind === "after" ? edgeTarget(link) : undefined,
+    });
+  };
+  const openEdgeEditor = (link: PromptLink, x: number, y: number) => setEdgeEdit({ id: link.id, x, y });
 
-  const applyDrop = async (card: PromptChartCard, element: Element, clientY: number) => {
-    const queue = element.closest<HTMLElement>("[data-drop-queue]");
-    const queueCard = element.closest<HTMLElement>("[data-prompt-card]");
-    if (queue && queueCard && card.state === "queued") {
-      await reorderQueue(card, queueCard.dataset.promptCard ?? "");
-      return;
-    }
-    const shelf = element.closest<HTMLElement>("[data-drop-shelf]");
-    const zone = element.closest<HTMLElement>("[data-drop-target]");
-    const action = shelf
-      ? promptChartDropAction(card, { kind: "shelf" })
-      : zone
-        ? promptChartDropAction(card, zone.dataset.dropRegion === "future"
-          ? { kind: "strand", targetId: zone.dataset.dropTarget!, at: futureTimeAt(clientY - zone.getBoundingClientRect().top, zone.getBoundingClientRect().height, now, zoom) }
-          : { kind: "strand", targetId: zone.dataset.dropTarget!, now: true })
-        : { type: "none" as const };
-    if (action.type === "send") {
-      const tab = tabs.find((item) => item.scheduleTargetId === action.targetId);
+  const applyDrop = async (card: PromptChartCard, drop: PromptTimelineDrop) => {
+    if (drop.type === "send") {
+      const tab = tabOf(drop.targetId);
       if (tab) await send(card, tab);
-    } else if (action.type === "schedule" || action.type === "retime") {
-      const tab = tabs.find((item) => item.scheduleTargetId === action.targetId);
-      if (!tab) return;
-      if (card.schedule) await retime(card, new Date(action.at), action.targetId);
-      else await schedules.upsert(scope, action.targetId, { id: card.id, enabled: true, message: card.message, rule: { type: "once", at: action.at } });
-    } else if (action.type === "unschedule") {
-      if (!card.prompt) await upsertPrompt(scope, { id: crypto.randomUUID(), message: card.message, tags: card.tags });
-      if (card.schedule && card.targetId) await schedules.remove(scope, card.targetId, card.schedule.id);
-    } else if (action.type === "collect") await collect(card);
+    } else if (drop.type === "retime") {
+      const at = localWallClock(drop.at);
+      if (at) await retime(card, at, drop.targetId);
+    } else if (drop.type === "schedule") {
+      await schedules.upsert(scope, drop.targetId, { id: card.id, enabled: true, message: card.message, rule: { type: "once", at: drop.at } });
+    } else if (drop.type === "unschedule") {
+      await unschedule(card);
+    }
   };
 
-  const pointerDown = (card: PromptChartCard) => (event: ReactPointerEvent<HTMLElement>) => {
-    if (event.button !== 0 || (event.target as Element).closest("button, input, textarea, select")) return;
-    drag.current = { card, pointerId: event.pointerId };
-    event.currentTarget.setPointerCapture(event.pointerId);
-    event.currentTarget.classList.add("is-dragging");
-  };
-  const pointerUp = (event: ReactPointerEvent<HTMLDivElement>) => {
-    const current = drag.current;
-    if (!current || current.pointerId !== event.pointerId) return;
-    document.querySelectorAll(".agent-prompt-card.is-dragging").forEach((node) => node.classList.remove("is-dragging"));
-    drag.current = null;
-    const element = document.elementFromPoint(event.clientX, event.clientY);
-    if (element) void applyDrop(current.card, element, event.clientY).catch((cause) => setError(String(cause)));
+  // Pulling any unscheduled member carries its sequence's start. The remaining
+  // prompts keep their dependency edges; only the start acquires a schedule.
+  const dropSource = (card: PromptChartCard) => isStripCard(card) ? draftSequence(card.id, cards, links)?.[0] : card;
+
+  const toggleMulti = (key: string) => setMulti((keys) => {
+    const next = new Set(keys);
+    if (next.has(key)) next.delete(key);
+    else next.add(key);
+    return next;
+  });
+  const clearMulti = () => setMulti((keys) => (keys.size ? new Set() : keys));
+  /** What pressing the item `key` lifts: the whole selection when it is part
+   *  of one, the pressed item first. */
+  const liftKeysFor = (key: string) => (multi.has(key) ? [key, ...[...multi].filter((other) => other !== key)] : [key]);
+  /** The cards one carry moves: a selected one-time rule takes the selection's
+   *  other one-time rules along; anything else moves alone. */
+  const carriedWith = (card: PromptChartCard): PromptChartCard[] => {
+    if (multi.size < 2 || !multi.has(card.key) || !timelineGroupMovable(card)) return [card];
+    const others = timeCards.filter((item) => item !== card && multi.has(item.key) && timelineGroupMovable(item));
+    return [card, ...others];
   };
 
-  const renderCard = (card: PromptChartCard, strand?: PromptChartStrand) => {
-    if (!visible(card)) return null;
+  useEffect(() => {
+    if (!active || multi.size === 0) return;
+    const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") clearMulti(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [active, multi.size]);
+
+  const { drag, onCardPointerDown, onLiftPointerDown, onMarqueePointerDown, onPortPointerDown } = usePromptChartDrag({
+    win,
+    now,
+    measure: () => {
+      const body = bodyRef.current;
+      const bodyRect = rectOf(body);
+      return {
+        rects: { strip: rectOf(stripRef.current), body: bodyRect, nowBand: rectOf(nowBandRef.current) },
+        width: bodyRect?.width ?? 0,
+        scrollLeft: body?.scrollLeft ?? 0,
+      };
+    },
+    measureCards: () => [...cardNodes.current.entries()].map(([id, node]) => ({ id, rect: rectOf(node)! })),
+    onDropCard: (card, zone: TimelineZone, carried) => {
+      if (zone.kind === "strip" && stripIds.has(card.id)) {
+        draftBoard.current?.place(card.id, carried.x - carried.grabDx, carried.y - carried.grabDy);
+        return;
+      }
+      const source = dropSource(card);
+      if (!source) { setError(t("promptChart.sequenceBlocked")); return; }
+      const group = carriedWith(source);
+      if (group.length > 1) {
+        const drops = timelineGroupDrop(source, group, zone, targetIds, win, now);
+        void (async () => { for (const { card: member, drop } of drops) await applyDrop(member, drop); })()
+          .catch((cause) => setError(String(cause)));
+        return;
+      }
+      const drop = timelineDropAction(source, zone, targetIds, occupiedIds);
+      if (drop.type === "none" && drop.reason === "occupied") { setError(occupiedError(source.targetId)); return; }
+      void applyDrop(source, drop).catch((cause) => setError(String(cause)));
+    },
+    onDropLink: (from, toId) => void linkCards(from.id, toId).catch((cause) => setError(String(cause))),
+    onLift: (moved) => setLifts((all) => ({ ...all, [view]: { ...all[view], ...moved } })),
+    measureItems: () => [...(bodyRef.current?.querySelectorAll<HTMLElement>("[data-item-key]") ?? [])]
+      .map((node) => ({ id: node.dataset.itemKey!, rect: rectOf(node)! })),
+    onMarquee: (keys, additive) => setMulti((current) => {
+      if (!additive) return keys.length || current.size ? new Set(keys) : current;
+      return keys.length ? new Set([...current, ...keys]) : current;
+    }),
+  });
+  const carried = drag?.kind === "card" ? carriedWith(dropSource(drag.card) ?? drag.card) : [];
+  // A lifted card moves under the pointer, so its links follow every step.
+  useEffect(refreshLinks, [drag, refreshLinks]);
+
+  const dropLabel = (() => {
+    if (drag?.kind !== "card") return null;
+    if (drag.zone.kind === "strip" && stripIds.has(drag.card.id)) return t("promptChart.freeLayout");
+    const source = dropSource(drag.card);
+    const keys: Record<PromptTimelineDrop["type"], "promptChart.sendNow" | "promptChart.dropSchedule" | "promptChart.dropRetime" | "promptChart.dropUnschedule" | "promptChart.dropBlocked"> = {
+      send: "promptChart.sendNow",
+      schedule: "promptChart.dropSchedule",
+      retime: "promptChart.dropRetime",
+      unschedule: "promptChart.dropUnschedule",
+      none: "promptChart.dropBlocked",
+    };
+    if (source && carried.length > 1) {
+      const drops = timelineGroupDrop(source, carried, drag.zone, targetIds, win, now);
+      const type = drops.find((entry) => entry.drop.type !== "none")?.drop.type ?? "none";
+      return type === "none" ? t(keys.none) : t("promptChart.dropGroup", { action: t(keys[type]), count: drops.length });
+    }
+    const drop = source ? timelineDropAction(source, drag.zone, targetIds, occupiedIds) : { type: "none" as const };
+    if (drop.type === "none" && drop.reason === "occupied") return t("promptChart.dropOccupied");
+    const sequence = draftSequence(drag.card.id, cards, links);
+    return sequence && sequence.length > 1 && (drop.type === "send" || drop.type === "schedule")
+      ? t("promptChart.dropSequence", { action: t(keys[drop.type]), count: sequence.length }) : t(keys[drop.type]);
+  })();
+
+  const linkLabel = (id: string) => {
+    const card = cards.find((item) => item.id === id);
+    const text = card?.message ?? id;
+    return text.length > 40 ? `${text.slice(0, 40)}…` : text;
+  };
+
+  /** A session's sent prompts as one card, drawn under the newest of them. */
+  const renderSession = (latest: PromptChartCard, session: SessionSpan) => {
+    if (!session.cards.some((card) => visible(card))) return null;
+    const strand = strands.find((item) => item.id === latest.strandId);
+    const ids = session.cards.map((card) => card.id);
+    const itemKey = sessionGroupKey(latest) ?? latest.key;
     return (
-      <PromptCard
-        key={card.key}
-        card={card}
-        strand={strand}
-        matched={matched.has(card.key)}
-        selected={selected === card.id}
-        linking={!!linkFrom && linkFrom !== card.id}
+      <PromptSessionCard
+        cards={session.cards}
+        offsets={session.offsets}
+        matchedKeys={sessionMatched}
+        selected={!!selected && ids.includes(selected)}
+        multiSelected={multi.has(itemKey)}
+        onToggleSelect={() => toggleMulti(itemKey)}
+        linking={!!linkFrom && !ids.includes(linkFrom)}
+        linkOver={drag?.kind === "link" && !!drag.overId && ids.includes(drag.overId)}
+        color={colorOf(latest)}
         register={(node) => {
-          if (node) cardNodes.current.set(card.id, node);
-          else cardNodes.current.delete(card.id);
+          for (const id of ids) {
+            if (node) cardNodes.current.set(id, node);
+            else cardNodes.current.delete(id);
+          }
         }}
-        onPointerDown={card.recurring ? undefined : pointerDown(card)}
+        onPointerDown={onLiftPointerDown(liftKeysFor(itemKey))}
+        onPortPointerDown={onPortPointerDown(latest)}
         onSelect={() => {
-          if (linkFrom && linkFrom !== card.id) void linkTo(card).catch((cause) => setError(String(cause)));
-          setSelected(card.id);
+          if (linkFrom && !ids.includes(linkFrom)) void linkTo(latest).catch((cause) => setError(String(cause)));
+          setSelected(latest.id);
+          clearMulti();
         }}
-        onSave={(message, tags) => save(card, message, tags)}
-        onDelete={() => remove(card)}
-        onSend={(targetId) => pickTab(card, "send", targetId)}
-        onSchedule={(targetId) => pickTab(card, "schedule", targetId)}
-        onUnschedule={() => unschedule(card)}
-        onCollect={() => collect(card)}
-        onRetime={(minutes) => retime(card, new Date((card.at ?? now).getTime() + minutes * 60_000))}
-        onQueueMove={(step) => reorderQueue(card, step)}
-        onMove={(targetId) => retime(card, card.at ?? new Date(now.getTime() + 5 * 60_000), targetId)}
-        onLink={() => void beginLink(card).catch((cause) => setError(String(cause)))}
-        onUnlink={(linkId) => removeLink(scope, linkId).then(() => undefined)}
-        links={links}
-        strands={strands}
+        onLink={() => void beginLink(latest).catch((cause) => setError(String(cause)))}
+        onCollect={(card) => collect(card)}
+        onDelete={(card) => remove(card)}
         onGoToTab={strand?.tabKey ? () => jumpToTab(scope, strand.tabKey!) : undefined}
       />
     );
   };
 
-  const strandColumn = (strand: PromptChartStrand) => {
-    const own = cards.filter((card) => card.strandId === strand.id);
-    const past = own.filter((card) => card.state === "sent");
-    const queued = own.filter((card) => card.state === "queued");
-    const future = own.filter((card) => card.state === "scheduled" && card.at && card.at.getTime() <= now.getTime() + zoom * 3_600_000);
-    const later = own.filter((card) => card.state === "scheduled" && (!card.at || card.at.getTime() > now.getTime() + zoom * 3_600_000));
-    const chained = own.filter((card) => card.state === "chained");
-    const content = (
-      <div className={`agent-prompt-strand${strand.closed ? " is-closed" : ""}`} data-strand={strand.id}>
-        <header>
-          <strong>{strand.label}</strong>
-          {strand.closed ? <span>{t("promptChart.closed")}</span> : <span>{stateOf?.(strandTab(strand)!)}</span>}
-          <small>{strand.agent}</small>
-        </header>
-        <div className="agent-prompt-past" data-drop-target={strand.scheduleTargetId} data-drop-region="now">
-          {groupPromptPast(past, now).map((group) => (
-            <div key={group.label} className="agent-prompt-past-group"><time>{group.label}</time>{group.cards.map((card) => renderCard(card, strand))}</div>
-          ))}
-        </div>
-        {!strand.closed && <div className="agent-prompt-now" data-drop-target={strand.scheduleTargetId} data-drop-region="now"><span>{t("promptChart.now")}</span></div>}
-        {!strand.closed && <div className="agent-prompt-queue" data-drop-queue data-drop-target={strand.scheduleTargetId}>{queued.map((card) => renderCard(card, strand))}</div>}
-        {!strand.closed && (
-          <div className="agent-prompt-future" data-drop-target={strand.scheduleTargetId} data-drop-region="future">
-            {[0, .25, .5, .75, 1].map((part) => <span key={part} className="agent-prompt-tick" style={{ top: `${part * 100}%` }}>{new Date(now.getTime() + part * zoom * 3_600_000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>)}
-            {future.map((card) => <div key={card.key} className="agent-prompt-future-card" style={{ top: `${futureOffsetPercent(card.at!, now, zoom)}%` }}>{renderCard(card, strand)}</div>)}
-          </div>
-        )}
-        {!strand.closed && later.length > 0 && <div className="agent-prompt-later"><small>{t("promptChart.later")}</small>{later.map((card) => renderCard(card, strand))}</div>}
-        {!strand.closed && chained.map((card) => renderCard(card, strand))}
-      </div>
+  const renderCard = (card: PromptChartCard, occurrence?: string, session?: SessionSpan) => {
+    if (session) return renderSession(card, session);
+    if (!visible(card, occurrence)) return null;
+    const strand = strands.find((item) => item.id === card.strandId);
+    const itemKey = occurrence ? `${card.key}@${occurrence}` : card.key;
+    // On a lane: selectable, and liftable. The strip and the queue are neither.
+    const onLane = !stripIds.has(card.id) && card.state !== "queued";
+    const pointerDown = card.state === "sent"
+      ? onLiftPointerDown(liftKeysFor(itemKey))
+      // A recurring rule never carries; with Shift it still lifts.
+      : card.recurring || occurrence
+        ? onLane ? onLiftPointerDown(liftKeysFor(itemKey), true) : undefined
+        : onCardPointerDown(card, onLane ? liftKeysFor(itemKey) : undefined);
+    return (
+      <PromptCard
+        key={itemKey}
+        card={card}
+        occurrence={occurrence}
+        matched={matches(card, occurrence)}
+        selected={selected === card.id}
+        multiSelected={onLane && multi.has(itemKey)}
+        onToggleSelect={onLane ? () => toggleMulti(itemKey) : undefined}
+        linking={!!linkFrom && linkFrom !== card.id}
+        dragging={drag?.kind === "card" && (drag.card.key === card.key || (!occurrence && carried.includes(card)))}
+        linkOver={drag?.kind === "link" && drag.overId === card.id}
+        color={colorOf(card)}
+        targets={targetsFor(card)}
+        targetBlocked={card.state === "draft" && card.targetId && occupiedIds.has(card.targetId) ? tabOf(card.targetId)?.label : undefined}
+        targetLabel={card.state === "sent" ? card.history?.tab_label : undefined}
+        newTabLabel={newTabLabel}
+        register={(node) => {
+          if (node) cardNodes.current.set(card.id, node);
+          else cardNodes.current.delete(card.id);
+        }}
+        // A sent card keeps its instant; it only lifts up or down its lane.
+        onPointerDown={pointerDown}
+        onPortPointerDown={onPortPointerDown(card)}
+        onSelect={() => {
+          if (linkFrom && linkFrom !== card.id) void linkTo(card).catch((cause) => setError(String(cause)));
+          setSelected(card.id);
+          clearMulti();
+        }}
+        onAgent={(targetId) => setAgent(card, targetId).catch((cause) => setError(String(cause)))}
+        onSave={(message, tags) => save(card, message, tags)}
+        onDelete={() => remove(card)}
+        onSend={() => pickTab(card, "send")}
+        onSchedule={() => pickTab(card, "schedule")}
+        onUnschedule={() => unschedule(card)}
+        onCollect={() => collect(card)}
+        onRetime={(minutes) => retime(card, new Date((card.at ?? now).getTime() + minutes * 60_000))}
+        onQueueMove={(step) => reorderQueue(card, step)}
+        onLink={() => void beginLink(card).catch((cause) => setError(String(cause)))}
+        onUnlink={(linkId) => removeLink(scope, linkId).then(() => undefined)}
+        links={links}
+        linkLabel={linkLabel}
+        onEditLink={openEdgeEditor}
+        onGoToTab={strand?.tabKey ? () => jumpToTab(scope, strand.tabKey!) : undefined}
+      />
     );
-    if (!strand.closed) return content;
-    const open = closedOpen.includes(strand.id);
-    return <div key={strand.id} className="agent-prompt-closed-wrap"><button type="button" onClick={() => setClosedOpen((ids) => open ? ids.filter((id) => id !== strand.id) : [...ids, strand.id])}>{open ? "▾" : "▸"} {strand.label} · {past.length}</button>{open && content}</div>;
   };
 
+  /** Ctrl + wheel: the next view in, or out, keeping the pointed-at day. */
+  const zoom = (direction: "in" | "out", at: Date) => {
+    const next = zoomTimelineView(view, direction);
+    if (!next) return;
+    setAnchor(next === "hour" ? hourAnchor(at) : toDateStr(at));
+    setView(next);
+  };
+  /** A view button: the Hour view needs an hour, and takes the clock's. */
+  const pickView = (next: TimelineView) => {
+    if (next === "hour") setAnchor((value) => value.includes("T") ? value : `${value.slice(0, 10)}${hourAnchor(new Date()).slice(10)}`);
+    setView(next);
+  };
+
+  const toggleTimeline = () => setShowTimeline((shown) => {
+    try { localStorage.setItem(TIMELINE_STORAGE_KEY, shown ? "hidden" : "shown"); } catch { /* the choice lasts the session */ }
+    return !shown;
+  });
+  const rangeLabel = view === "hour"
+    ? `${formatLongDate(anchor.slice(0, 10), lang)} · ${formatTimelineInstant(win.start, lang, use24h, false)} – ${formatTimelineInstant(win.end, lang, use24h, false)}`
+    : view === "day"
+    ? formatLongDate(anchor.slice(0, 10), lang)
+    : view === "week"
+      ? `${formatLongDate(todayStr(win.start), lang)} – ${formatLongDate(todayStr(new Date(win.end.getTime() - 1)), lang)}`
+      : `${monthName(lang, win.start.getMonth() + 1)} ${win.start.getFullYear()}`;
+
   return (
-    <section className="agent-prompts-section agent-prompt-chart-section" onPointerUp={pointerUp}>
-      <h3 className="settings-section-title">{t("promptChart.heading")}</h3>
+    <section className="agent-prompts-section agent-prompt-chart-section">
+      <h3 className="settings-section-title">{t("promptChart.heading")} <UntestedTag /></h3>
       <div className="agent-prompt-chart-toolbar">
         <button className="settings-btn sm primary" type="button" aria-label={t("promptChart.newDraft")} onClick={() => setNewOpen((value) => !value)}>＋</button>
-        <input type="search" value={filter.text} placeholder={t("promptChart.search")} aria-label={t("promptChart.search")} onChange={(event) => setFilter((value) => ({ ...value, text: event.target.value }))} />
-        <Dropdown value={String(zoom)} title={t("promptChart.zoom")} options={ZOOMS.map((hours) => ({ value: String(hours), label: t("promptChart.hours", { count: hours }) }))} onChange={(value) => setZoom(Number(value))} />
-        <button className={`agent-composer-chip${hideOthers ? " active" : ""}`} type="button" aria-pressed={hideOthers} onClick={() => setHideOthers((value) => !value)}>{t("promptChart.hideOthers")}</button>
-      </div>
-      <div className="agent-prompt-chart-facets">
-        <Dropdown value={filter.agent} title={t("agentPrompts.filterAgent")} options={[{ value: "", label: t("agentPrompts.filterAgentAll") }, ...allAgents.map((agent) => ({ value: agent, label: agent }))]} onChange={(agent) => setFilter((value) => ({ ...value, agent }))} />
-        <Dropdown value={filter.result} title={t("agentPrompts.filterResult")} options={[{ value: "", label: t("agentPrompts.filterResultAll") }, ...["delivered", "queued", "missed", "failed"].map((result) => ({ value: result, label: t(`promptChart.result.${result}` as "promptChart.result.delivered") }))]} onChange={(result) => setFilter((value) => ({ ...value, result }))} />
-        <Dropdown value={filter.window} title={t("agentPrompts.filterWindow")} options={["any", "today", "week", "month"].map((window) => ({ value: window, label: t(`agentPrompts.window.${window}` as "agentPrompts.window.any") }))} onChange={(window) => setFilter((value) => ({ ...value, window: window as PromptChartFilter["window"] }))} />
-        {linkFrom && <div className="agent-prompt-link-mode"><span>{t("promptChart.pickLink")}</span><button type="button" className={`agent-composer-chip${linkKind === "related" ? " active" : ""}`} onClick={() => setLinkKind("related")}>{t("promptChart.related")}</button><button type="button" className={`agent-composer-chip${linkKind === "after" ? " active" : ""}`} onClick={() => setLinkKind("after")}>{t("promptChart.after")}</button><button type="button" className="agent-composer-chip" onClick={() => setLinkFrom(null)}>{t("common.cancel")}</button></div>}
-      </div>
-      {allTags.length > 0 && <div className="agent-prompts-tags">{allTags.map(({ tag, count }) => <button key={tag} type="button" className={`agent-composer-chip agent-prompts-tag${filter.tag === tag ? " active" : ""}${tag.includes(":") ? " is-auto" : ""}`} onClick={() => setFilter((value) => ({ ...value, tag: value.tag === tag ? "" : tag }))}>#{tag}<span>{count}</span></button>)}</div>}
-      {newOpen && <div className="agent-prompt-new"><MarkdownPromptField rows={4} value={draft} ariaLabel={t("agentPrompts.placeholder")} placeholder={t("agentPrompts.placeholder")} onChange={setDraft} /><input value={draftTags} aria-label={t("agentPrompts.tags")} placeholder={t("agentPrompts.tagsPlaceholder")} onChange={(event) => setDraftTags(event.target.value)} /><button className="settings-btn sm primary" type="button" disabled={!draft.trim()} onClick={() => void upsertPrompt(scope, { id: crypto.randomUUID(), message: draft.trim(), tags: parseTags(draftTags) }).then(() => { setDraft(""); setDraftTags(""); setNewOpen(false); }).catch((cause) => setError(String(cause)))}>{t("agentPrompts.add")}</button></div>}
-      {error && <div className="project-dialog-error">{error}</div>}
-      <div className="agent-prompt-chart-scroll">
-        <div className="agent-prompt-chart" ref={rootRef}>
-          <PromptChartLinks rootRef={rootRef} cardNodes={cardNodes} links={links} selectedId={selected} />
-          <div className="agent-prompt-shelf" data-drop-shelf>
-            <header><strong>{t("promptChart.drafts")}</strong><span>{prompts.length}</span></header>
-            {cards.filter((card) => card.strandId === "drafts").map((card) => renderCard(card))}
-            {cards.filter((card) => card.strandId === "drafts").length === 0 && <div className="file-tree-empty">{t("promptChart.noDrafts")}</div>}
-          </div>
-          {liveStrands.map((strand) => <div key={strand.id}>{strandColumn(strand)}</div>)}
+        <div className="agent-prompt-link-kind" role="group" aria-label={t("promptChart.linkKind")}>
+          <span>{t("promptChart.linkKind")}</span>
+          <button type="button" className={`agent-composer-chip${linkKind === "after" ? " active" : ""}`} aria-pressed={linkKind === "after"} onClick={() => setLinkKind("after")}>{t("promptChart.after")}</button>
+          <button type="button" className={`agent-composer-chip${linkKind === "related" ? " active" : ""}`} aria-pressed={linkKind === "related"} onClick={() => setLinkKind("related")}>{t("promptChart.related")}</button>
+          {linkFrom && <><span>{t("promptChart.pickLink")}</span><button type="button" className="agent-composer-chip" onClick={() => setLinkFrom(null)}>{t("common.cancel")}</button></>}
+        </div>
+        <div className="agent-prompt-link-kind agent-prompt-new-tab" role="group" aria-label={t("promptChart.newTabDefaults")} title={t("promptChart.newTabDefaultsTitle")}>
+          <span>{t("promptChart.newTabDefaults")}</span>
+          <Dropdown
+            title={t("promptChart.newTabAgent")}
+            value={newTabAgent}
+            options={newTabAgentOptions}
+            onChange={(value) => void updateSettings({ prompt_chart_agent: value, prompt_chart_model: "" }).catch((cause) => setError(String(cause)))}
+          />
+          {newTabModels.length > 0 && (
+            <Dropdown
+              title={t("agentPrompts.modelTitle")}
+              value={newTabModel}
+              placeholder={t("promptChart.newTabModelDefault")}
+              options={[
+                { value: "", label: t("promptChart.newTabModelDefault") },
+                ...newTabModels.map((name) => ({ value: name, label: name })),
+              ]}
+              onChange={(value) => void updateSettings({ prompt_chart_model: value }).catch((cause) => setError(String(cause)))}
+            />
+          )}
         </div>
       </div>
-      {closedStrands.length > 0 && <div className="agent-prompt-closed">{closedStrands.map(strandColumn)}</div>}
-      {dialog && <AgentScheduleDialog scope={scope} tab={dialog.tab} initialMessage={dialog.message} onClose={() => setDialog(null)} />}
+      {newOpen && <div className="agent-prompt-new"><MarkdownPromptField rows={4} value={draft} ariaLabel={t("agentPrompts.placeholder")} placeholder={t("agentPrompts.placeholder")} onChange={setDraft} /><input value={draftTags} aria-label={t("agentPrompts.tags")} placeholder={t("agentPrompts.tagsPlaceholder")} onChange={(event) => setDraftTags(event.target.value)} /><button className="settings-btn sm primary" type="button" disabled={!draft.trim()} onClick={() => void upsertPrompt(scope, { id: crypto.randomUUID(), message: draft.trim(), tags: parseTags(draftTags) }).then(() => { setDraft(""); setDraftTags(""); setNewOpen(false); }).catch((cause) => setError(String(cause)))}>{t("agentPrompts.add")}</button></div>}
+      {error && <div className="project-dialog-error">{error}</div>}
+      <div className={`agent-prompt-chart${showTimeline ? "" : " is-drafts-only"}`} ref={rootRef}>
+        <PromptChartLinks
+          rootRef={rootRef}
+          cardNodes={cardNodes}
+          links={links}
+          selectedId={selected}
+          version={linksVersion}
+          preview={drag?.kind === "link" ? { x1: drag.x1, y1: drag.y1, x2: drag.x, y2: drag.y, kind: linkKind } : null}
+          onEdit={openEdgeEditor}
+          onMenu={(link, x, y) => { setEdgeEdit(null); setEdgeMenu({ id: link.id, x, y }); }}
+          editLabel={t("promptChart.editLink")}
+        />
+        <div
+          className={`agent-prompt-drafts-strip${drag?.kind === "card" && drag.zone.kind === "strip" ? " is-drop-over" : ""}`}
+          ref={stripRef}
+          data-testid="prompt-chart-strip"
+        >
+          <header><strong>{t("promptChart.drafts")}</strong><span>{stripCards.length}</span>{showTimeline && <small>{t("promptChart.dropHint")}</small>}</header>
+          <PromptChartFilterBar
+            testId="prompt-chart-draft-filter"
+            filter={draftFilter}
+            onChange={setDraftFilter}
+            placeholder={t("promptChart.draftSearch")}
+            agents={draftAgents}
+            tags={draftTagCounts}
+            hideOthers={draftHide}
+            onHideOthers={() => setDraftHide((value) => !value)}
+          />
+          <PromptDraftBoard
+            key={scope}
+            ref={draftBoard}
+            scope={scope}
+            cards={stripCards}
+            drag={drag}
+            renderCard={renderCard}
+            onLayout={refreshLinks}
+            onCreate={async (message, tags) => {
+              const id = crypto.randomUUID();
+              try {
+                await upsertPrompt(scope, { id, message, tags });
+              } catch (cause) {
+                setError(String(cause));
+                throw cause;
+              }
+              return id;
+            }}
+          />
+        </div>
+        {/* The timeline's own head, the drafts strip's twin: name, count and
+            the one place it is hidden or shown from. It stays when the axis
+            is hidden, or there would be nothing to bring it back with. */}
+        <div className="agent-prompt-chart-timeline-bar" data-testid="prompt-chart-timeline-bar">
+          <header>
+            <strong>{t("promptChart.timeline")}</strong>
+            <span>{timeCards.length}</span>
+            <button
+              className={`agent-composer-chip${showTimeline ? "" : " active"}`}
+              type="button"
+              aria-pressed={!showTimeline}
+              title={t("promptChart.timelineTitle")}
+              onClick={toggleTimeline}
+            >
+              {showTimeline ? t("promptChart.hideTimeline") : t("promptChart.showTimeline")}
+            </button>
+          </header>
+          {showTimeline && (
+            <>
+              <div className="agent-prompt-chart-toolbar">
+                <div className="agent-prompt-chart-views" role="group" aria-label={t("promptChart.zoom")} title={t("promptChart.zoomHint")}>
+                  {VIEWS.map((item) => (
+                    <button key={item} type="button" className={`agent-composer-chip${view === item ? " active" : ""}`} aria-pressed={view === item} onClick={() => pickView(item)}>
+                      {t(`promptChart.view.${item}` as "promptChart.view.day")}
+                    </button>
+                  ))}
+                </div>
+                <div className="agent-prompt-chart-nav">
+                  <button className="settings-btn sm" type="button" aria-label={t("promptChart.prev")} title={t("promptChart.prev")} onClick={() => setAnchor((value) => shiftAnchor(view, value, -1))}>◀</button>
+                  <button className="settings-btn sm" type="button" onClick={() => setAnchor(view === "hour" ? hourAnchor(new Date()) : todayStr())}>{t("promptChart.today")}</button>
+                  <button className="settings-btn sm" type="button" aria-label={t("promptChart.next")} title={t("promptChart.next")} onClick={() => setAnchor((value) => shiftAnchor(view, value, 1))}>▶</button>
+                  <strong className="agent-prompt-chart-range" data-testid="prompt-chart-range">{rangeLabel}</strong>
+                </div>
+                {multi.size > 0
+                  ? (
+                    <span className="agent-prompt-chart-selection" data-testid="prompt-chart-selection">
+                      {t("promptChart.selectedCount", { count: multi.size })}
+                      <button type="button" className="agent-composer-chip" onClick={clearMulti}>{t("promptChart.clearSelection")}</button>
+                    </span>
+                  )
+                  : <small className="agent-prompt-chart-select-hint">{t("promptChart.selectHint")}</small>}
+              </div>
+              <PromptChartFilterBar
+                testId="prompt-chart-timeline-filter"
+                filter={chartFilter}
+                onChange={setChartFilter}
+                placeholder={t("promptChart.timelineSearch")}
+                agents={chartAgents}
+                tags={chartTagCounts}
+                hideOthers={chartHide}
+                onHideOthers={() => setChartHide((value) => !value)}
+                results
+                window={when}
+                onWindow={setWhen}
+              />
+            </>
+          )}
+        </div>
+        {showTimeline && (
+          <>
+            <PromptTimeline
+              win={win}
+              cards={cards}
+              now={now}
+              drag={drag}
+              bodyRef={bodyRef}
+              nowBandRef={nowBandRef}
+              renderCard={renderCard}
+              onRefine={(date) => { setAnchor(date); setView("day"); }}
+              dropLabel={dropLabel}
+              onZoom={zoom}
+              lifts={lifts[view]}
+              resets={usageResets}
+              onBodyPointerDown={onMarqueePointerDown}
+            />
+          </>
+        )}
+      </div>
+      {(() => {
+        const link = edgeMenu && links.find((item) => item.id === edgeMenu.id);
+        if (!edgeMenu || !link) return null;
+        return (
+          <ContextMenuPortal x={edgeMenu.x} y={edgeMenu.y} onClose={() => setEdgeMenu(null)} className="context-menu agent-prompt-link-editor">
+            <div className="context-menu-group-label">{t("promptChart.link")}</div>
+            <p className="agent-prompt-link-editor-ends">{linkLabel(link.from)} {link.kind === "after" ? "→" : "—"} {linkLabel(link.to)}</p>
+            <button type="button" onClick={() => { setEdgeMenu(null); openEdgeEditor(link, edgeMenu.x, edgeMenu.y); }}>{t("promptChart.editLink")}</button>
+            <button type="button" onClick={() => { setEdgeMenu(null); void removeLink(scope, link.id).catch((cause) => setError(String(cause))); }}>{t("promptChart.removeLink")}</button>
+          </ContextMenuPortal>
+        );
+      })()}
+      {(() => {
+        const link = edgeEdit && links.find((item) => item.id === edgeEdit.id);
+        if (!edgeEdit || !link) return null;
+        const tab = tabOf(edgeTarget(link));
+        return (
+          <PromptLinkEditor
+            link={link}
+            fromLabel={linkLabel(link.from)}
+            toLabel={linkLabel(link.to)}
+            tabLabel={tab?.label}
+            offered={tab ? prefaceCommandsFor(tab.cmd, prefaceOverrides) : []}
+            x={edgeEdit.x}
+            y={edgeEdit.y}
+            onChange={(patch) => editEdge(link, patch)}
+            onRemove={() => removeLink(scope, link.id).then(() => setEdgeEdit(null))}
+            onClose={() => setEdgeEdit(null)}
+          />
+        );
+      })()}
+      {dialog && <AgentScheduleDialog scope={scope} tab={dialog.tab} initialMessage={dialog.message} initialPromptId={dialog.promptId} onClose={() => setDialog(null)} />}
     </section>
   );
 }

@@ -46,6 +46,28 @@ export function promptScheduleKey(message: string): string {
 }
 
 /**
+ * The collected prompt a rule carries, at most ONE: the prompt sharing the
+ * rule's id (every path that turns a prompt into a rule — the chart's drop,
+ * the schedule dialog opened from a prompt, send-now — writes the rule under
+ * the prompt's id), else, for a rule written before rules carried that id or
+ * typed straight into the dialog, the oldest prompt with its text.
+ *
+ * Never every prompt with the text: a second prompt with the same words is a
+ * second prompt, and joining it to the first one's rule made it vanish from
+ * the chart and get deleted when that rule retired.
+ */
+export function promptOfSchedule<P extends { id: string; message: string }>(
+  prompts: readonly P[],
+  schedule: { id: string; message: string },
+): P | undefined {
+  const byId = prompts.find((prompt) => prompt.id === schedule.id);
+  if (byId) return byId;
+  const key = promptScheduleKey(schedule.message);
+  if (!key) return undefined;
+  return prompts.find((prompt) => promptScheduleKey(prompt.message) === key);
+}
+
+/**
  * Mark, by prompt id, every collected prompt whose text has a live rule.
  *
  * A finished one-time rule is not one: it is a receipt, already in the Sent

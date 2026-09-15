@@ -433,3 +433,53 @@ sanitizer (`services/web_safety.rs`); neither has been runtime-verified.*
       - [ ] ❌ Doesn't work
 
 ---
+
+---
+
+823. **VPN-only mail account.** `require_vpn` on `MailAccount` (dialog checkbox
+    *Only connect while the VPN is up*). An institutional mailbox reachable only
+    from inside its network used to fail every interval check while the tunnel
+    was down — a connect timeout per tick, a red ✉, and no catch-up when the
+    tunnel came back. Now the header's tick skips the account while no OpenVPN
+    tunnel Eldrun knows about is up (its tooltip says *n account(s) waiting for
+    the VPN*), and checks it the moment one comes up — on a reconciled
+    `false → true` only, so the store's first sight of a tunnel at launch is not
+    a check at mount. The backend enforces the same rule before every engine
+    operation (`mail_engine::vpn_gate`), so a manual *Check mail*, a body fetch,
+    a flag write and a send all refuse with the one shared sentence
+    (`services::openvpn::VPN_GATE_REFUSAL`). Known limit, stated in the hint:
+    only tunnels started from Eldrun count. Design note in
+    `docs/context/openvpn.md`; helper in `src/lib/vpnGate.ts`.
+    - [x] 🤖 Automated test — `VpnGate.test.ts` (the three-valued hook, the
+      rising edge), `openvpn::tests` (the gate's truth table),
+      `mail_engine::tests` (the shared sentence), `schema::mail` round-trip.
+    - [ ] 🖐️ Manual test — with the tunnel down, an account with the box ticked
+      shows no error strip after an interval passes and the ✉ tooltip says it is
+      waiting; *Check mail* refuses with the VPN sentence; connecting the VPN from
+      the header checks it within seconds; an unticked account is unaffected.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+825. **In-pane PDF preview for mail attachments.** *Preview* on a PDF attachment
+    used to say "no in-app preview for this file type", which sent every
+    invoice and paper through the save dialog just to be read. Now
+    `MailPdfPreview` draws the pages with pdf.js onto plain canvases, right in
+    the attachment row — **canvas only, by design**: no text layer, no link
+    annotations, no outline, no forms, since a PDF's links are a way out of the
+    app and the attachment boundary exists so nothing an attachment carries can
+    open anything. Six pages at first, *Show n more pages* for the rest; the
+    document's Worker is destroyed when the preview closes (`pdfLoad` rules).
+    Detection is by the `%PDF-` magic, not the declared type — mailers send PDFs
+    as `application/octet-stream`. A blob the 4 MB IPC preview bound cut short
+    is refused as *too large* rather than parsed (no xref table at the end).
+    Nothing in `src-tauri/` changed; hot-reloads.
+    - [x] 🤖 Automated test — `MailPdfPreview.test.tsx` (magic detection over
+      declared type, truncated blob never parsed, page steps, destroy on
+      unmount, failed open says so).
+    - [ ] 🖐️ Manual test — open a mail with a PDF attachment and click
+      *Preview*: pages render sharp at the column's width, *Show more* appends
+      the next six, *Hide preview* removes them; a PDF over 4 MB shows the
+      too-large note; an attachment declared `application/octet-stream` that is
+      really a PDF previews as one; clicking on a rendered page does nothing.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work

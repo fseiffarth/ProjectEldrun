@@ -43,6 +43,7 @@ function seedRunTab() {
 // shape the store requires before a tab counts as "working".
 function sustain(id: string, totalMs = 1600) {
   noteUserInput(id);
+  vi.advanceTimersByTime(200); // past ECHO_MS: the program's frames, not the keystroke's echo
   notePtyOutput(id, "running…\n");
   for (let elapsed = 0; elapsed < totalMs; elapsed += 400) {
     vi.advanceTimersByTime(400);

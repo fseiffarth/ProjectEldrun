@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { shownAllDayEnd, storedAllDayEnd } from "../../mobile-web/src/screens/Calendar";
+import { defaultEnd, shownAllDayEnd, storedAllDayEnd } from "../../mobile-web/src/screens/Calendar";
 
 /** The desktop stores an all-day end as the day after the last day (iCal's
  * exclusive DTEND); the editor shows the last day itself. Without the
@@ -27,5 +27,21 @@ describe("mobile calendar all-day end conversion", () => {
     // `end == start` should not exist on disk, but a shown end before the
     // start would immediately re-save as an invalid span.
     expect(shownAllDayEnd("2026-08-26", "2026-08-26")).toBe("2026-08-26");
+  });
+});
+
+describe("mobile calendar default event length", () => {
+  it("ends a new event one hour after its start", () => {
+    expect(defaultEnd("2026-08-26T09:30")).toBe("2026-08-26T10:30");
+  });
+
+  it("rolls past midnight into the next day, and across months", () => {
+    expect(defaultEnd("2026-08-26T23:15")).toBe("2026-08-27T00:15");
+    expect(defaultEnd("2026-08-31T23:00")).toBe("2026-09-01T00:00");
+  });
+
+  it("leaves a half-typed stamp alone", () => {
+    expect(defaultEnd("2026-08-26T")).toBeNull();
+    expect(defaultEnd("T09:00")).toBeNull();
   });
 });

@@ -37,13 +37,23 @@ interface Pending {
   /** Persistent tmux sessions the tabs own — the work that would otherwise have
    *  survived a relaunch, which is exactly why it is counted separately. */
   sessions: number;
+  /** Persistent tmux sessions on remote hosts that this close does NOT touch —
+   *  they keep running on the host and are only killed from the project's
+   *  Sessions view. Named so the user is not left guessing which of the two
+   *  fates their remote training run meets. */
+  remoteSessions: number;
   resolve: (proceed: boolean) => void;
 }
 
 interface StopProjectState {
   pending: Pending | null;
   /** Ask before stopping. Resolves `true` only on an explicit confirm. */
-  request: (name: string, tabs: StopProjectTab[], sessions: number) => Promise<boolean>;
+  request: (
+    name: string,
+    tabs: StopProjectTab[],
+    sessions: number,
+    remoteSessions?: number,
+  ) => Promise<boolean>;
   /** Stop them — the user's call. */
   proceed: () => void;
   /** Leave everything running. */
@@ -53,7 +63,7 @@ interface StopProjectState {
 export const useStopProjectStore = create<StopProjectState>((set, get) => ({
   pending: null,
 
-  request: (name, tabs, sessions) =>
+  request: (name, tabs, sessions, remoteSessions = 0) =>
     new Promise<boolean>((resolve) => {
       // A second ask while one is open answers the newcomer "no" rather than
       // stacking modals or replacing the question being read. `deactivateProject`
@@ -64,7 +74,7 @@ export const useStopProjectStore = create<StopProjectState>((set, get) => ({
         resolve(false);
         return;
       }
-      set({ pending: { name, tabs, sessions, resolve } });
+      set({ pending: { name, tabs, sessions, remoteSessions, resolve } });
     }),
 
   proceed: () => {

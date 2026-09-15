@@ -14,6 +14,7 @@ import { Terminal } from "./screens/Terminal";
 import { Todo } from "./screens/Todo";
 import { Mail } from "./screens/Mail";
 import { Calendar } from "./screens/Calendar";
+import { SECTION_GLYPH } from "./glyphs";
 
 /**
  * The four top-level sections. To-do, Calendar and Mail used to be pushed on
@@ -36,10 +37,10 @@ function currentPlace(tab: Tab, projectView: ProjectView, terminal: { project: s
   return projectView.kind === "project" ? { section: "projects", projectId: projectView.id } : { section: "projects" };
 }
 const TABS: { id: Tab; icon: string; label: string }[] = [
-  { id: "projects", icon: "🗂", label: "Projects" },
-  { id: "todo", icon: "☑", label: "To-do" },
-  { id: "calendar", icon: "🗓", label: "Calendar" },
-  { id: "mail", icon: "✉", label: "Mail" },
+  { id: "projects", icon: SECTION_GLYPH.projects, label: "Projects" },
+  { id: "todo", icon: SECTION_GLYPH.todo, label: "To-do" },
+  { id: "calendar", icon: SECTION_GLYPH.calendar, label: "Calendar" },
+  { id: "mail", icon: SECTION_GLYPH.mail, label: "Mail" },
 ];
 const UNLOCKED_SESSION = "eldrun-mobile-local-unlocked";
 /**

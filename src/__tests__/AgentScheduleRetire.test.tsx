@@ -117,6 +117,24 @@ describe("retiring a finished schedule to the sent prompts", () => {
     });
   });
 
+  it("retires the rule's own prompt and leaves a second prompt with the same words collected", async () => {
+    invokeMock.mockImplementation((command) => {
+      if (command === "agent_schedules_list") return Promise.resolve([delivered]);
+      if (command === "agent_prompts_list") return Promise.resolve([
+        { id: "prompt-1", message: "Run the tests", created_at: "x", updated_at: "x" },
+        { id: "prompt-2", message: "Run the tests", created_at: "y", updated_at: "y" },
+      ]);
+      return Promise.resolve([]);
+    });
+
+    await act(async () => {
+      render(<AgentScheduleHost />);
+    });
+
+    const removed = invokeMock.mock.calls.filter(([name]) => name === "agent_prompt_delete").map(([, args]) => (args as { promptId: string }).promptId);
+    expect(removed).toEqual(["prompt-1"]);
+  });
+
   it("keeps a recurring rule, which still has a next run", async () => {
     invokeMock.mockImplementation((command) =>
       Promise.resolve(command === "agent_schedules_list" ? [daily] : []),
@@ -144,7 +162,7 @@ describe("retiring a finished schedule to the sent prompts", () => {
     expect(call("agent_schedule_delete")).toBeUndefined();
   });
 
-  it("queues an after target only after a delivered record lands", async () => {
+  it("does not advance a recovered receipt without evidence its turn completed", async () => {
     invokeMock.mockImplementation((command) => {
       if (command === "agent_schedules_list") return Promise.resolve([delivered]);
       if (command === "agent_prompts_list") return Promise.resolve([
@@ -161,8 +179,28 @@ describe("retiring a finished schedule to the sent prompts", () => {
 
     const queued = invokeMock.mock.calls.find(([name, args]) =>
       name === "agent_schedule_upsert" && (args as { schedule?: { id?: string } })?.schedule?.id === "review");
-    expect(queued).toBeTruthy();
+    expect(queued).toBeUndefined();
     expect(call("agent_prompt_record")).toBeTruthy();
+  });
+
+  it("does not type edge commands merely because the source was submitted", async () => {
+    invokeMock.mockImplementation((command) => {
+      if (command === "agent_schedules_list") return Promise.resolve([delivered]);
+      if (command === "agent_prompts_list") return Promise.resolve([
+        { id: "prompt-1", message: "Run the tests", created_at: "x", updated_at: "x" },
+        { id: "review", message: "Review the result", created_at: "x", updated_at: "x" },
+      ]);
+      if (command === "agent_prompt_links_list") return Promise.resolve([
+        { id: "link", from: "prompt-1", to: "review", kind: "after", target: "target-1", preface: ["/clear"] },
+      ]);
+      return Promise.resolve([]);
+    });
+
+    await act(async () => { render(<AgentScheduleHost />); });
+
+    const queued = invokeMock.mock.calls.find(([name, args]) =>
+      name === "agent_schedule_upsert" && (args as { schedule?: { id?: string } })?.schedule?.id === "review");
+    expect(queued).toBeUndefined();
   });
 
   it("does not fire an after chain for a missed source", async () => {

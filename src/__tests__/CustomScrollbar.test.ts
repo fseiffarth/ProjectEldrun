@@ -1,9 +1,17 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 // Read the stylesheet at test time, the way `NativeEditorMetricsCss.test.ts`
 // does: a `?raw` import yields "" under the config's `css: false`, which would
 // make every assertion below pass vacuously. Vitest runs from the repo root.
 import { readAppStylesheet } from "./cssCorpus";
-import { thumbGeometry, scrollFromDrag, clipBox, type Box, type TrackMetrics } from "../lib/customScrollbar";
+import {
+  installCustomScrollbars,
+  movesBox,
+  thumbGeometry,
+  scrollFromDrag,
+  clipBox,
+  type Box,
+  type TrackMetrics,
+} from "../lib/customScrollbar";
 
 /**
  * The scrollbar's arithmetic, which is the whole of what can be wrong about it
@@ -167,6 +175,197 @@ describe("clipBox", () => {
  * exactly how the two-scrollbars bug survived a round of fixing, so the rule is
  * asserted rather than left to memory.
  */
+describe("installCustomScrollbars", () => {
+  it("re-measures when a transition or animation ends, and stops on uninstall", () => {
+    // A container can move with no DOM mutation, no resize and no scroll: the
+    // side panel slides in on a transform transition, and a thumb measured
+    // mid-slide stood in the middle of the panel with nothing to re-measure it.
+    // jsdom lays nothing out, so what is checkable is that the pass is wired.
+    const listened = new Set<string>();
+    const added = vi.spyOn(document, "addEventListener");
+    const removed = vi.spyOn(document, "removeEventListener");
+    const uninstall = installCustomScrollbars();
+    for (const call of added.mock.calls) if (call[2] === true) listened.add(call[0]);
+    expect([...listened]).toEqual(
+      expect.arrayContaining(["transitionend", "transitioncancel", "animationend"]),
+    );
+    uninstall();
+    const dropped = removed.mock.calls.filter((c) => c[2] === true).map((c) => c[0]);
+    expect(dropped).toEqual(
+      expect.arrayContaining(["transitionend", "transitioncancel", "animationend"]),
+    );
+    added.mockRestore();
+    removed.mockRestore();
+  });
+});
+
+describe("movesBox", () => {
+  it("names the properties whose transition moves the boxes inside", () => {
+    // The side panel's slide, the pinned body's padding, a resize drag's width.
+    for (const prop of ["transform", "translate", "padding-right", "width", "left", "all"]) {
+      expect(movesBox(prop)).toBe(true);
+    }
+  });
+
+  it("leaves the hover-and-focus transitions alone", () => {
+    // These run all day on every button and row; following them would be
+    // per-frame measuring for a box that never moved.
+    for (const prop of ["color", "background-color", "opacity", "border-color", "box-shadow"]) {
+      expect(movesBox(prop)).toBe(false);
+    }
+  });
+});
+
+/**
+ * The live half, as far as jsdom can carry it: it lays nothing out, so the
+ * container below is given a scrollable box by hand and its rect is whatever
+ * the test says. What is checked is the mechanism — that a box-moving
+ * transition on an ancestor makes the layer re-measure the container every
+ * frame until the transition ends, and that nothing else does.
+ */
+describe("installCustomScrollbars following motion", () => {
+  function motionEvent(type: string, init: Record<string, unknown>): Event {
+    // jsdom has neither TransitionEvent nor AnimationEvent; the module reads the
+    // fields duck-typed, so a plain Event carrying them is the same thing.
+    return Object.assign(new Event(type, { bubbles: true }), init);
+  }
+
+  function mountPanelWithList() {
+    // jsdom has no hit testing; the container is the topmost thing at its own
+    // point, which is what a reachable, uncovered panel reports.
+    const panel = document.createElement("div");
+    const list = document.createElement("div");
+    list.style.overflowY = "auto";
+    Object.defineProperty(list, "scrollHeight", { value: 1000, configurable: true });
+    Object.defineProperty(list, "clientHeight", { value: 200, configurable: true });
+    Object.defineProperty(list, "offsetWidth", { value: 100, configurable: true });
+    Object.defineProperty(list, "clientWidth", { value: 100, configurable: true });
+    Object.defineProperty(list, "scrollWidth", { value: 100, configurable: true });
+    const rect = vi.fn(() => ({ top: 0, left: 0, width: 100, height: 200 }) as DOMRect);
+    list.getBoundingClientRect = rect;
+    panel.appendChild(list);
+    document.body.appendChild(panel);
+    (document as unknown as { elementFromPoint: (x: number, y: number) => Element | null })
+      .elementFromPoint = () => list;
+    return { panel, list, rect };
+  }
+
+  // A hand-cranked frame clock: the layer coalesces everything into rAF, and
+  // jsdom's own never fires unless asked.
+  function frameClock() {
+    let queue: FrameRequestCallback[] = [];
+    const raf = vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb) => {
+      queue.push(cb);
+      return queue.length;
+    });
+    const caf = vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => {});
+    return {
+      tick() {
+        const due = queue;
+        queue = [];
+        for (const cb of due) cb(performance.now());
+      },
+      pending: () => queue.length,
+      restore() {
+        raf.mockRestore();
+        caf.mockRestore();
+      },
+    };
+  }
+
+  it("re-measures a container every frame while its ancestor's slide runs, then stops", () => {
+    const clock = frameClock();
+    const { panel, list, rect } = mountPanelWithList();
+    const uninstall = installCustomScrollbars();
+    clock.tick(); // the install's own geometry pass
+    const measuredBefore = rect.mock.calls.length;
+    expect(measuredBefore).toBeGreaterThan(0);
+
+    panel.dispatchEvent(motionEvent("transitionrun", { propertyName: "transform" }));
+    for (let i = 0; i < 3; i++) clock.tick();
+    // One measurement per frame: the thumb rides the panel instead of standing
+    // where a single mid-slide measurement left it.
+    expect(rect.mock.calls.length).toBe(measuredBefore + 3);
+
+    panel.dispatchEvent(motionEvent("transitionend", { propertyName: "transform" }));
+    clock.tick(); // the end's own full pass (queued by the end event)
+    const measuredAtEnd = rect.mock.calls.length;
+    clock.tick();
+    clock.tick();
+    // Nothing left in flight: no further frames are requested.
+    expect(rect.mock.calls.length).toBe(measuredAtEnd);
+    expect(clock.pending()).toBe(0);
+
+    uninstall();
+    list.remove();
+    panel.remove();
+    clock.restore();
+  });
+
+  it("ignores transitions that do not move a box, and a pseudo-element's motion", () => {
+    const clock = frameClock();
+    const { panel, list, rect } = mountPanelWithList();
+    const uninstall = installCustomScrollbars();
+    clock.tick();
+    const measured = rect.mock.calls.length;
+
+    panel.dispatchEvent(motionEvent("transitionrun", { propertyName: "background-color" }));
+    panel.dispatchEvent(
+      motionEvent("animationstart", { animationName: "side-panel-drop-pulse", pseudoElement: "::before" }),
+    );
+    clock.tick();
+    clock.tick();
+    expect(rect.mock.calls.length).toBe(measured);
+    expect(clock.pending()).toBe(0);
+
+    uninstall();
+    list.remove();
+    panel.remove();
+    clock.restore();
+  });
+
+  it("keeps following the slide when a colour transition on the same element ends first", () => {
+    const clock = frameClock();
+    const { panel, list, rect } = mountPanelWithList();
+    const uninstall = installCustomScrollbars();
+    clock.tick();
+
+    panel.dispatchEvent(motionEvent("transitionrun", { propertyName: "transform" }));
+    panel.dispatchEvent(motionEvent("transitionrun", { propertyName: "border-left-color" }));
+    panel.dispatchEvent(motionEvent("transitionend", { propertyName: "border-left-color" }));
+    clock.tick(); // the end's full pass
+    const measured = rect.mock.calls.length;
+    clock.tick();
+    clock.tick();
+    expect(rect.mock.calls.length).toBe(measured + 2);
+
+    uninstall();
+    list.remove();
+    panel.remove();
+    clock.restore();
+  });
+
+  it("stops following an element that was unmounted mid-motion", () => {
+    const clock = frameClock();
+    const { panel, list, rect } = mountPanelWithList();
+    const uninstall = installCustomScrollbars();
+    clock.tick();
+
+    panel.dispatchEvent(motionEvent("transitionrun", { propertyName: "transform" }));
+    clock.tick();
+    panel.remove(); // no transitionend will ever come from it
+    const measured = rect.mock.calls.length;
+    clock.tick();
+    clock.tick();
+    expect(rect.mock.calls.length).toBe(measured);
+    expect(clock.pending()).toBe(0);
+
+    uninstall();
+    list.remove();
+    clock.restore();
+  });
+});
+
 describe("stylesheet scrollbar invariants", () => {
   // Comments are prose about scrollbars, including the values banned below.
   // The whole split corpus, in import order — one offender anywhere counts.
@@ -207,5 +406,119 @@ describe("stylesheet scrollbar invariants", () => {
     // it, which only a registered `inherits: false` property guarantees.
     const at = css.match(/@property\s+--eldrun-scrollbar\s*\{[^}]*\}/);
     expect(at?.[0]).toMatch(/inherits\s*:\s*false/);
+  });
+});
+
+/**
+ * Discovery after the fact. A container earns its thumbs by what overflowed
+ * when it was found, and is found only when nodes are added under it or when
+ * it is first scrolled. Both left the side panel's list bar-less on some opens
+ * and not others, depending on what its first paint happened to hold.
+ */
+describe("installCustomScrollbars discovering late overflow", () => {
+  function frameClock() {
+    let queue: FrameRequestCallback[] = [];
+    const raf = vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb) => {
+      queue.push(cb);
+      return queue.length;
+    });
+    const caf = vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => {});
+    return {
+      tick() {
+        const due = queue;
+        queue = [];
+        for (const cb of due) cb(performance.now());
+      },
+      restore() {
+        raf.mockRestore();
+        caf.mockRestore();
+      },
+    };
+  }
+
+  function mountList(over: { scrollHeight: number; scrollWidth: number }) {
+    const panel = document.createElement("div");
+    const list = document.createElement("div");
+    list.style.overflowY = "auto";
+    list.style.overflowX = "auto";
+    const metrics: Record<string, number> = {
+      clientHeight: 200,
+      clientWidth: 100,
+      offsetWidth: 100,
+      ...over,
+    };
+    for (const [key, value] of Object.entries(metrics)) {
+      Object.defineProperty(list, key, { value, configurable: true });
+    }
+    list.getBoundingClientRect = () => ({ top: 0, left: 0, width: 100, height: 200 }) as DOMRect;
+    panel.appendChild(list);
+    document.body.appendChild(panel);
+    (document as unknown as { elementFromPoint: (x: number, y: number) => Element | null })
+      .elementFromPoint = () => list;
+    return { panel, list };
+  }
+
+  const thumbs = (axis: "vertical" | "horizontal") =>
+    document.querySelectorAll(`.eldrun-scrollbar-layer .eldrun-scrollbar-${axis}`).length;
+
+  it("grows a vertical thumb for a list that overflowed sideways only when it was found", () => {
+    const clock = frameClock();
+    // Long names, few rows: the first paint of a file tree.
+    const { panel, list } = mountList({ scrollHeight: 200, scrollWidth: 400 });
+    const uninstall = installCustomScrollbars();
+    clock.tick();
+    expect(thumbs("horizontal")).toBe(1);
+    expect(thumbs("vertical")).toBe(0);
+
+    // Folders expand: the same element now overflows downward as well. No node
+    // was added under it here, and every scan skips it as already registered.
+    Object.defineProperty(list, "scrollHeight", { value: 1000, configurable: true });
+    window.dispatchEvent(new Event("resize"));
+    clock.tick();
+    expect(thumbs("vertical")).toBe(1);
+
+    uninstall();
+    panel.remove();
+    clock.restore();
+  });
+
+  it("finds a container that became scrollable by the time the slide it rode in on ended", () => {
+    const clock = frameClock();
+    // Fits when found: nothing to take over, so it is not registered at all.
+    const { panel, list } = mountList({ scrollHeight: 200, scrollWidth: 100 });
+    const uninstall = installCustomScrollbars();
+    clock.tick();
+    expect(list.hasAttribute("data-eldrun-scrollbar")).toBe(false);
+
+    // The panel slides open and, with no DOM change, the list now overflows
+    // (a class flip, a width change). The slide's end looks under the panel.
+    Object.defineProperty(list, "scrollHeight", { value: 1000, configurable: true });
+    panel.dispatchEvent(
+      Object.assign(new Event("transitionend", { bubbles: true }), { propertyName: "transform" }),
+    );
+    clock.tick();
+    expect(list.hasAttribute("data-eldrun-scrollbar")).toBe(true);
+    expect(thumbs("vertical")).toBe(1);
+
+    uninstall();
+    panel.remove();
+    clock.restore();
+  });
+
+  it("does not look again on a motion that moves nothing", () => {
+    const clock = frameClock();
+    const { panel, list } = mountList({ scrollHeight: 200, scrollWidth: 100 });
+    const uninstall = installCustomScrollbars();
+    clock.tick();
+    Object.defineProperty(list, "scrollHeight", { value: 1000, configurable: true });
+    panel.dispatchEvent(
+      Object.assign(new Event("transitionend", { bubbles: true }), { propertyName: "opacity" }),
+    );
+    clock.tick();
+    expect(list.hasAttribute("data-eldrun-scrollbar")).toBe(false);
+
+    uninstall();
+    panel.remove();
+    clock.restore();
   });
 });

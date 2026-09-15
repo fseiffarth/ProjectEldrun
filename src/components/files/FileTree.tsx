@@ -43,6 +43,7 @@ import {
   moveDestRel,
   movedEntryAbs,
   resolveMoveTarget,
+  createSpringLoader,
   type ResolvedMoveTarget,
 } from "../../lib/fileMove";
 import { resolveLocalMirror, resolveProjectDirectory } from "../../types";
@@ -104,6 +105,10 @@ const EMPTY_PY_ARGS: Record<string, string> = {};
 /// that sweeping the tree never opens (or measures) anything — see
 /// `handleEntryMouseEnter` for why entry-triggered tooltips were expensive.
 const TOOLTIP_DWELL_MS = 400;
+// Drag-to-move dwell before a hovered folder / crumb / ↑ spring-opens (the
+// tree navigates there and the drag continues). Long enough that sweeping the
+// cursor across folders toward a sibling never opens one by accident.
+const SPRING_LOAD_MS = 650;
 
 function sizeCategory(bytes: number): string {
   if (bytes < 10 * 1024) return "size-small";
@@ -573,6 +578,12 @@ export function FileTree({
   // classed imperatively instead (`moveTargetElRef`).
   const moveTargetRef = useRef<ResolvedMoveTarget | null>(null);
   const moveTargetElRef = useRef<HTMLElement | null>(null);
+  // The folder on screen, readable from inside a drag gesture that outlives
+  // renders: spring-loading (below) navigates the tree mid-drag, so the
+  // `relPath` a pointerdown closure captured is the folder the drag STARTED in
+  // (which is what the move's no-op check wants), not the one now listed.
+  const relPathRef = useRef(relPath);
+  relPathRef.current = relPath;
   const [moveTargetRel, setMoveTargetRel] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<EntryContextMenu>(null);
   const contextMenuRef = useRef<HTMLDivElement | null>(null);
@@ -1997,6 +2008,7 @@ export function FileTree({
       if (!dragging || nativeActive) return;
       nativeActive = true;
       // The in-app drop targets are meaningless while the OS owns the drag.
+      spring.cancel();
       setMoveTarget(null);
       detached.hover(null, { x: 0, y: 0 }, entry.name);
       beginNativeFileDrag(dragEntries.map((en) => en.path));
@@ -2100,15 +2112,25 @@ export function FileTree({
       ctrlDown = ev.ctrlKey;
       lastClient = { x: ev.clientX, y: ev.clientY };
       useDragStore.getState().move(ev.clientX, ev.clientY);
-      // Drag-to-move: highlight the folder row / breadcrumb / up button under the
-      // cursor as the destination. The drag ghost is pointer-events:none, so
-      // elementFromPoint reaches the rows beneath it — including rows of OTHER
-      // mounted trees (a box member root, a Files tab of another project), so
-      // every target carries its own tree's identity and `resolveMoveTarget`
-      // decides what a drop there means: a same-tree move (dropping onto the
-      // file's current folder is a no-op), a cross-project move (local↔local
-      // only), or nothing.
-      const overEl = document.elementFromPoint(ev.clientX, ev.clientY) as HTMLElement | null;
+      hitTestMove(ev.clientX, ev.clientY);
+      // Inside a detached popout, CenterPanel's window-wide drop authority isn't
+      // there to resolve the pane under the cursor — do it here so the popout's
+      // split/merge preview lights up and the release has a target to commit to.
+      // (In the main window CenterPanel owns this; `fileDrop` is null there.)
+      if (fileDrop) fileDrop.resolveTarget(ev.clientX, ev.clientY);
+    };
+
+    // Drag-to-move: highlight the folder row / breadcrumb / up button under the
+    // cursor as the destination. The drag ghost is pointer-events:none, so
+    // elementFromPoint reaches the rows beneath it — including rows of OTHER
+    // mounted trees (a box member root, a Files tab of another project), so
+    // every target carries its own tree's identity and `resolveMoveTarget`
+    // decides what a drop there means: a same-tree move (dropping onto the
+    // file's current folder is a no-op), a cross-project move (local↔local
+    // only), or nothing. Runs on every pointermove, and once more after a
+    // spring-load navigation lands (the rows under a still cursor changed).
+    function hitTestMove(x: number, y: number) {
+      const overEl = document.elementFromPoint(x, y) as HTMLElement | null;
       const moveEl = overEl?.closest<HTMLElement>("[data-move-rel]") ?? null;
       const target = moveEl
         ? {
@@ -2123,12 +2145,39 @@ export function FileTree({
         remote: remoteListing,
       });
       setMoveTarget(resolved, resolved?.crossRoot ? moveEl : null);
-      // Inside a detached popout, CenterPanel's window-wide drop authority isn't
-      // there to resolve the pane under the cursor — do it here so the popout's
-      // split/merge preview lights up and the release has a target to commit to.
-      // (In the main window CenterPanel owns this; `fileDrop` is null there.)
-      if (fileDrop) fileDrop.resolveTarget(ev.clientX, ev.clientY);
-    };
+      // Spring-loading: hovering a folder row / crumb / ↑ of THIS tree navigates
+      // there after a dwell, so the drag can reach folders the current listing
+      // doesn't show. Same tree only — another tree's `load` is out of reach
+      // from here. Not the folder already listed (nothing to open), and not a
+      // folder that is itself being dragged (it can't hold itself).
+      const springKey =
+        target && target.root === projectDir && target.rel !== relPathRef.current
+          ? target.rel
+          : null;
+      spring.hover(
+        springKey !== null &&
+          !dragEntries.some((de) => de.is_dir && relForEntry(de) === springKey)
+          ? springKey
+          : null,
+        { x, y },
+      );
+    }
+    const spring = createSpringLoader({
+      delayMs: SPRING_LOAD_MS,
+      onOpen: (rel) => {
+        if (gestureOver || nativeActive) return;
+        dragDbg(`spring-load → ${rel || "/"}`); // TEMPORARY drag QA
+        void load(rel).then(() => {
+          // The listing under the (unmoved) cursor changed: re-resolve the drop
+          // target against the new rows once React has painted them, so the
+          // highlight and a release without further movement agree with what
+          // the user sees.
+          requestAnimationFrame(() => {
+            if (!gestureOver && !nativeActive) hitTestMove(lastClient.x, lastClient.y);
+          });
+        });
+      },
+    });
 
     // Tear down the move listener, poll, popout highlight, and pointer capture —
     // however the gesture resolves.
@@ -2137,6 +2186,7 @@ export function FileTree({
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup", onKeyUp);
+      spring.cancel();
       setMoveTarget(null);
       stopPoll?.();
       unlistenEnded?.();
@@ -3160,7 +3210,9 @@ export function FileTree({
         engine: null,
       });
       if (!res.success) {
-        const detail = lastLogLine(res.log);
+        // latexmk's own summary, when it gave one, says more than the log's last
+        // line (its "use the -f option" advisory).
+        const detail = res.driver_note || lastLogLine(res.log);
         setError(
           t("fileTree.compileFailed", { name: entry.name, detail: detail ? `: ${detail}` : "" }),
         );

@@ -697,6 +697,15 @@ function dropRemotePool(projectId: string): void {
   void invoke("remote_disconnect_all_hosts", { projectId }).catch(() => {});
 }
 
+/** First project matching `pick` that is not the Trash — `deactivateProject`'s
+ *  successor choice, where the Trash may only ever be the last resort. */
+function successorAmong(
+  projects: ProjectEntry[],
+  pick: (entry: ProjectEntry) => boolean,
+): ProjectEntry | undefined {
+  return projects.find((entry) => entry.id !== TRASH_PROJECT_ID && pick(entry));
+}
+
 interface ProjectTmuxTarget {
   session: string;
   hostId: string | null;
@@ -1378,6 +1387,14 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
         !IS_WINDOWS &&
         useSettingsStore.getState().settings?.persist_local_sessions !== false;
       const tmuxTargets = projectTmuxTargets(project, tabs, localPersistenceEnabled);
+      // Closing a project stops what runs HERE. A persistent session on a remote
+      // host is left running: surviving the desktop going away is what it is for,
+      // and the host may well be unreachable at this moment (VPN down, laptop
+      // offline) — an SSH failure must never veto closing the project. Remote
+      // sessions are killed only on purpose, from the project's Sessions view
+      // (`remote_tmux_kill`); the dialog says so.
+      const localTargets = tmuxTargets.filter((target) => target.hostId === null);
+      const remoteSessions = tmuxTargets.length - localTargets.length;
 
       if (ptyTabs.length > 0 || tmuxTargets.length > 0) {
         // Eldrun's own dialog, not the platform's: it wears the theme, and it
@@ -1391,7 +1408,8 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
             kind: tab.kind,
             location: effectiveTabLocation(tab, { vmProject: !!project.vm?.enabled }),
           })),
-          tmuxTargets.length,
+          localTargets.length,
+          remoteSessions,
         );
         if (!ok) return;
       }
@@ -1402,23 +1420,15 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
         await tabsStore.persistScopeStrict(id, project.local_file);
       }
 
-      // Kill only sessions named by this project's tabs. Never use tmux
-      // kill-server: remote hosts and local tmux servers are shared with other
-      // projects and with sessions created outside Eldrun.
+      // Kill only LOCAL sessions named by this project's tabs. Never use tmux
+      // kill-server: the local tmux server is shared with other projects and with
+      // sessions created outside Eldrun.
       const kills = await Promise.allSettled(
-        tmuxTargets.map((target) =>
-          target.hostId === null
-            ? invoke<void>("local_tmux_kill", { session: target.session })
-            : invoke<void>("remote_tmux_kill", {
-                projectId: id,
-                hostId: target.hostId,
-                session: target.session,
-              }),
-        ),
+        localTargets.map((target) => invoke<void>("local_tmux_kill", { session: target.session })),
       );
       const failures = kills.flatMap((result, index) =>
         result.status === "rejected"
-          ? [`${tmuxTargets[index].session}: ${String(result.reason)}`]
+          ? [`${localTargets[index].session}: ${String(result.reason)}`]
           : [],
       );
       if (failures.length > 0) {
@@ -1434,10 +1444,18 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
       const nextProjects = currentProjects.map((entry) =>
         entry.id === id ? { ...entry, status: "inactive" } : entry,
       );
+      // The successor is the first remaining open project — never the Trash. It
+      // sits first in the list with status "active" (it is always open), so the
+      // plain first-active pick used to hand the window to the Trash whenever the
+      // user closed the project they were working in. The Trash is a fallback only
+      // when nothing else is open.
       const nextActiveId =
         currentActiveId === id
-          ? (nextProjects.find((entry) => entry.status === "active") ??
-              nextProjects.find((entry) => entry.status !== "inactive"))?.id ?? null
+          ? (successorAmong(nextProjects, (entry) => entry.status === "active") ??
+              successorAmong(nextProjects, (entry) => entry.status !== "inactive") ??
+              nextProjects.find(
+                (entry) => entry.id === TRASH_PROJECT_ID && entry.status !== "inactive",
+              ))?.id ?? null
           : currentActiveId;
 
       // Persist status before exposing it in the UI. If this fails, the project

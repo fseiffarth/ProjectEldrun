@@ -151,6 +151,9 @@ pub enum MailError {
     AuthFailed,
     /// The server offers no password mechanism we accept post-TLS.
     NoSupportedAuth,
+    /// The account is VPN-only (`MailAccount::require_vpn`) and no OpenVPN
+    /// tunnel is up. Raised before any socket is opened.
+    VpnRequired,
     /// Anything else, already stripped of anything secret.
     Protocol(String),
 }
@@ -181,6 +184,7 @@ impl fmt::Display for MailError {
             MailError::Unparseable => write!(f, "message could not be parsed"),
             MailError::NoDisplayableContent => write!(f, "no displayable content"),
             MailError::Timeout { op } => write!(f, "{op} timed out"),
+            MailError::VpnRequired => f.write_str(crate::services::openvpn::VPN_GATE_REFUSAL),
             MailError::AuthFailed => write!(
                 f,
                 "the server rejected the username or password. Eldrun does not retry \
@@ -1305,6 +1309,18 @@ impl Drop for Lease {
     }
 }
 
+/// The VPN gate, asked at the top of every engine operation — before
+/// `acquire` and before `smtp_connect`, so a gated account opens no socket in
+/// either direction while no tunnel is up. It cannot live inside those two:
+/// they see a `MailServer`, and the gate is the *account's* setting.
+fn vpn_gate(account: &MailAccount) -> Result<(), MailError> {
+    if crate::services::openvpn::account_gate(account.require_vpn).is_ok() {
+        Ok(())
+    } else {
+        Err(MailError::VpnRequired)
+    }
+}
+
 /// The one place a session is obtained. Every IMAP operation in this module
 /// goes through it, and a test reads this file's own source to keep that true.
 async fn acquire(
@@ -1397,6 +1413,12 @@ impl MailEngine for InProcessEngine {
     async fn probe(&self, account: &MailAccount, password: &Password) -> MailProbe {
         let mut out = MailProbe::default();
         let mut errors: Vec<String> = Vec::new();
+        if let Err(e) = vpn_gate(account) {
+            // Neither side is probed: a test that quietly opened the socket the
+            // setting forbids would be the setting lying.
+            out.error = Some(e.to_string());
+            return out;
+        }
 
         // `Fresh`, and closed rather than pooled: this is the one operation whose
         // entire job is to answer "do these credentials work *now*".
@@ -1427,6 +1449,7 @@ impl MailEngine for InProcessEngine {
         account: &MailAccount,
         password: &Password,
     ) -> Result<Vec<FetchedFolder>, MailError> {
+        vpn_gate(account)?;
         let mut session = acquire(&account.imap, password, Acquire::Pooled).await?;
         let out: Result<Vec<FetchedFolder>, MailError> = async {
             let mut out = Vec::new();
@@ -1480,6 +1503,7 @@ impl MailEngine for InProcessEngine {
         folder_path: &str,
         limit: u32,
     ) -> Result<Vec<FetchedHeader>, MailError> {
+        vpn_gate(account)?;
         let mut session = acquire(&account.imap, password, Acquire::Pooled).await?;
         let out: Result<Vec<FetchedHeader>, MailError> = async {
             // `select_now`, never the cached `ensure_selected`: this is the one
@@ -1535,6 +1559,7 @@ impl MailEngine for InProcessEngine {
         folder_path: &str,
         uid: u32,
     ) -> Result<Vec<u8>, MailError> {
+        vpn_gate(account)?;
         let mut session = acquire(&account.imap, password, Acquire::Pooled).await?;
         let out: Result<Vec<u8>, MailError> = async {
             session.ensure_selected(folder_path).await?;
@@ -1576,6 +1601,7 @@ impl MailEngine for InProcessEngine {
         flag: &str,
         value: bool,
     ) -> Result<(), MailError> {
+        vpn_gate(account)?;
         let mut session = acquire(&account.imap, password, Acquire::Pooled).await?;
         let out: Result<(), MailError> = async {
             session.ensure_selected(folder_path).await?;
@@ -1605,6 +1631,7 @@ impl MailEngine for InProcessEngine {
         flag: &str,
         value: bool,
     ) -> Result<(), MailError> {
+        vpn_gate(account)?;
         if uids.is_empty() {
             return Ok(());
         }
@@ -1641,6 +1668,7 @@ impl MailEngine for InProcessEngine {
         uids: &[u32],
         dest_path: &str,
     ) -> Result<(), MailError> {
+        vpn_gate(account)?;
         if uids.is_empty() {
             return Ok(());
         }
@@ -1673,6 +1701,7 @@ impl MailEngine for InProcessEngine {
         recipients: &[String],
         raw: &[u8],
     ) -> Result<(), MailError> {
+        vpn_gate(account)?;
         if recipients.is_empty() {
             return Err(MailError::Protocol("no recipients".into()));
         }
@@ -1697,6 +1726,7 @@ impl MailEngine for InProcessEngine {
         folder_path: &str,
         raw: &[u8],
     ) -> Result<(), MailError> {
+        vpn_gate(account)?;
         if raw.len() > MAX_OUTBOUND_BYTES {
             return Err(MailError::TooLarge { bytes: raw.len() });
         }
@@ -2136,6 +2166,36 @@ mod tests {
         let pool = pool().lock().unwrap();
         assert!(!pool.contains_key(&pool_key(&a)));
         assert!(pool.contains_key(&pool_key(&b)));
+    }
+
+    /// The refusal a VPN-only account gets is the gate's own sentence, so mail
+    /// and CalDAV explain the state identically; and an account that is not
+    /// gated passes the gate whatever the tunnel registry holds.
+    #[test]
+    fn the_vpn_refusal_is_the_shared_sentence_and_spares_ungated_accounts() {
+        assert_eq!(
+            MailError::VpnRequired.to_string(),
+            crate::services::openvpn::VPN_GATE_REFUSAL
+        );
+        let account = MailAccount {
+            id: "a1".into(),
+            label: "Work".into(),
+            address: "user@example.com".into(),
+            imap: MailServer {
+                host: "imap.example.com".into(),
+                port: 993,
+                user: "u".into(),
+                security: MailSecurity::Tls,
+            },
+            smtp: MailServer {
+                host: "smtp.example.com".into(),
+                port: 465,
+                user: "u".into(),
+                security: MailSecurity::Tls,
+            },
+            ..Default::default()
+        };
+        assert_eq!(vpn_gate(&account), Ok(()));
     }
 
     #[tokio::test]

@@ -18,6 +18,11 @@ describe("agentPromptAutoTags", () => {
     ]);
   });
 
+  it("wears the given model only when the preface names none", () => {
+    expect(agentPromptAutoTags({ message: "x", model: "opus-4-1" })).toEqual(["model:opus-4-1"]);
+    expect(agentPromptAutoTags({ message: "x", model: "opus-4-1", preface: ["/model haiku"] })).toEqual(["model:haiku"]);
+  });
+
   it("marks a message longer than 2 KiB", () => {
     expect(agentPromptAutoTags({ message: "é".repeat(1_025) })).toContain("long");
   });

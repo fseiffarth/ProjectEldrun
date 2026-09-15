@@ -588,7 +588,23 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
   },
 
   updateSettings: async (patch) => {
-    const updated = await persistSettingsPatch(patch);
+    // The patch is on screen before it is on disk. Everything below used to
+    // wait for the backend's round trip, so a rail tab that opens the panel on
+    // Agents first opened it on the OLD view — the file tree mounted, listed and
+    // probed, then was thrown away when the write came back — and the side
+    // switch answered its press a write later. The backend's answer still
+    // replaces this guess (it may carry another window's writes); a failed
+    // write puts the previous state back, unless a later patch already moved on.
+    const before = get().settings;
+    const guess = before ? ({ ...before, ...patch } as Settings) : null;
+    if (guess) set({ settings: guess });
+    let updated: Settings;
+    try {
+      updated = await persistSettingsPatch(patch);
+    } catch (err) {
+      if (guess && get().settings === guess) set({ settings: before });
+      throw err;
+    }
     void emit(SETTINGS_CHANGED_EVENT, updated);
     if (typeof updated.color_scheme === "string") {
       applyTheme(updated.color_scheme);

@@ -400,14 +400,10 @@ export interface ViewerState {
   autocompleteMode?: AutocompleteMode;
   grammarCheck?: boolean;
   spellCheck?: boolean;
-  // Tab-local hover-preview override for the TeX editor (#tex-hover-preview).
-  // Absent means the tab tracks the per-type `viewer_prefs.tex` default, which
-  // is ON — see `useTexHoverPreview`.
-  texHoverPreview?: boolean;
-  // Tab-local beamer-mode override for the TeX editor (#tex-beamer). Absent
-  // means the tab follows the document: on when any file of it loads
-  // `\documentclass{beamer}`, off otherwise — see `useTexBeamerMode`.
-  texBeamer?: boolean;
+  // The TeX editor's hover-preview and beamer switches are NOT here: they are
+  // the project's, in `stores/texViewPref` (a tab of a deck is not where "this
+  // is a deck" belongs). Old sessions may still carry `texHoverPreview` /
+  // `texBeamer` rows; they are ignored.
   // Debug breakpoints (#py), as 1-based line numbers into the file. Persisted per
   // tab like the reader's scroll position, so the dots survive closing the file
   // and an Eldrun restart. Remapped as the draft is edited (see useBreakpoints);

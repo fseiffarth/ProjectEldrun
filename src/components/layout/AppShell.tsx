@@ -14,7 +14,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { PLATFORM } from "../../lib/dragPlatform";
 import { nextWindowState } from "../../lib/windowState";
-import { notePtyOutput, useActivityStore } from "../../stores/activity";
+import { noteAgentTurn, notePtyOutput, useActivityStore } from "../../stores/activity";
+import type { AgentTurnState } from "../../stores/activity";
 import {
   usePowerStore,
   useQuiesce,
@@ -53,6 +54,14 @@ import { TodoOverlayHost } from "../todo/TodoOverlay";
 import { SkillsOverlayHost } from "../skills/SkillsOverlay";
 import { InstallOverlayHost } from "./InstallOverlay";
 import { LocalLossDialog } from "../common/LocalLossDialog";
+import {
+  RailAgentsIcon,
+  RailAppsIcon,
+  RailChevronIcon,
+  RailFilesIcon,
+  RailGitIcon,
+  RailSwitchSideIcon,
+} from "../common/EdgeRailIcons";
 import { HostKeyConfirmDialog } from "../common/HostKeyConfirmDialog";
 import { HpcGuardDialog } from "../common/HpcGuardDialog";
 import { StopProjectDialog } from "../common/StopProjectDialog";
@@ -94,7 +103,9 @@ import { ROOT_SCOPE, useTabsStore } from "../../stores/tabs";
 import { useTimerStore } from "../../stores/timer";
 import { flushUsage } from "../../stores/usage";
 import { useKeyboard } from "../../hooks/useKeyboard";
-import { useT, useI18nStore, translate } from "../../lib/i18n";
+import { useT, useI18nStore, translate, type TranslationKey } from "../../lib/i18n";
+import { sidePanelViewKey, sidePanelViewPatch } from "../../lib/sidePanelView";
+import type { FilesPanelView } from "../../types";
 import { noteTerminalOutputChars } from "../../dev/terminalOutputRate";
 
 // Dev-only perf panel (src/dev/). The ternary is statically resolved at build
@@ -104,13 +115,38 @@ const DevPerfHost = import.meta.env.DEV
   ? lazy(() => import("../../dev/DevPerfHost").then((m) => ({ default: m.DevPerfHost })))
   : null;
 
-// Width of the right-edge band that reveals the (unpinned) side panel on hover.
-// Kept wide because on Windows/WebView2 the window often isn't true-fullscreen
-// (the Windows platform backend is a stub, so setFullscreen may not take) and
-// the OS resize border swallows mousemove events for the last few edge pixels —
-// a 2px strip there is unreachable, so the panel never opened. A wider band is
-// crossed on the way to the edge, so the reveal fires before the dead-zone.
-const REVEAL_EDGE_PX = 8;
+// How long the pointer must rest on the edge rail before the panel reveals
+// itself. The hover-open used to be instant, fired by a mousemove anywhere in
+// an 8px band at the window edge — and once the rail became a full-height bar
+// sitting on that band, every approach to a tab crossed it: the panel opened
+// on some OTHER view, the rail unmounted, and the button vanished from under a
+// click that had not landed yet. That is what made the tabs feel unreliable.
+// A dwell makes hover-open deliberate, and a dwell that settles on a tab opens
+// the panel on THAT tab's view — the very thing the click would have done — so
+// whichever of press and dwell comes first, the user gets what they pointed at.
+// Crossing a tab on the way to another restarts the dwell for the new one.
+const RAIL_DWELL_MS = 400;
+// How long a hover-opened panel waits for the pointer before it gives up on it
+// (see `hoverGuard`). Longer than the panel's slide (--transition-slow, 240ms)
+// so a pointer resting where the panel is about to arrive is found under it.
+const HOVER_GUARD_MS = 450;
+
+// The views the closed panel's edge rail can open it straight onto — the same
+// four the panel's own switcher leads with (`ProjectFilesView`), named from the
+// same keys so the rail and the switcher can never read differently. Every rail
+// button is an icon (`EdgeRailIcons`), not a vertical label; the chevron above
+// the tabs opens the panel on whichever view it was last left on, and the
+// switch pinned to the top of the bar moves the panel to the other edge.
+const EDGE_VIEWS: ReadonlyArray<{
+  view: FilesPanelView;
+  labelKey: TranslationKey;
+  Icon: (props: { className?: string }) => JSX.Element;
+}> = [
+  { view: "files", labelKey: "projectFilesView.tabFiles", Icon: RailFilesIcon },
+  { view: "git", labelKey: "projectFilesView.tabGit", Icon: RailGitIcon },
+  { view: "windows", labelKey: "projectFilesView.tabApps", Icon: RailAppsIcon },
+  { view: "agents", labelKey: "projectFilesView.tabAgents", Icon: RailAgentsIcon },
+];
 
 // Side-panel width bounds. The default matches the historical fixed 280px so
 // existing installs (no stored width) look unchanged; the max is capped against
@@ -801,7 +837,17 @@ export function AppShell() {
     })
       .then((fn) => { unlistenDigest = fn; })
       .catch(() => {});
-    return () => { unlisten?.(); unlistenDigest?.(); };
+    // What the agent's OWN hooks say its turn is doing (working / decision /
+    // done), relayed by `services::agent_turn` off the per-tab record the hook
+    // script writes. The authority for the tab's marks wherever it speaks; the
+    // byte classifier above stays for agents that fire no hooks.
+    let unlistenTurn: (() => void) | undefined;
+    listen<{ id: string; state: AgentTurnState }>("agent-turn", (ev) => {
+      noteAgentTurn(ev.payload.id, ev.payload.state);
+    })
+      .then((fn) => { unlistenTurn = fn; })
+      .catch(() => {});
+    return () => { unlisten?.(); unlistenDigest?.(); unlistenTurn?.(); };
   }, []);
 
   // Recompute the running-task indicators on a fixed cadence. Split from the
@@ -909,16 +955,138 @@ export function AppShell() {
 
   const revealPanel = panelTarget && !panelsHidden && (panelOpen || panelPinned);
 
-  const handleBodyMouseMove = (event: ReactMouseEvent<HTMLDivElement>) => {
-    if (!panelTarget || panelsHidden || panelOpen) return;
-    const nearEdge =
-      panelSide === "left"
-        ? event.clientX <= REVEAL_EDGE_PX
-        : window.innerWidth - event.clientX <= REVEAL_EDGE_PX;
-    if (nearEdge) {
-      useHintsStore.getState().markSeen("file-tree");
-      reveal(panelCloseTimer, setPanelOpen);
+  // The edge rail is a bar with a gutter of its own, and the gutter is reserved
+  // for as long as an *unpinned* panel exists — not only while the rail is
+  // mounted. Releasing it when the panel slides open would reflow the whole
+  // workspace by the rail's width on every hover-open and re-fit every terminal
+  // underneath; a pinned panel replaces the gutter with its own, wider one.
+  const railDocked = panelTarget && !panelsHidden && !(revealPanel && panelPinned);
+
+  // Hover-open, now owned entirely by the rail. There is no separate edge band
+  // any more: the bar covers the window edge for its full height whenever an
+  // unpinned panel exists, so a band underneath it could only ever fire from on
+  // top of the bar — and firing there is exactly what stole the tabs' clicks.
+  const railDwellTimer = useRef<number | null>(null);
+  // What the pending dwell will open on: a view for a tab, "open" for the
+  // chevron and the bar's empty run (the remembered view). The key is what lets
+  // a move from one tab to the next restart the dwell instead of letting the
+  // first tab's dwell fire while the pointer is already on the second.
+  const railDwellKey = useRef<string | null>(null);
+  const cancelRailDwell = () => {
+    if (railDwellTimer.current !== null) {
+      window.clearTimeout(railDwellTimer.current);
+      railDwellTimer.current = null;
     }
+    railDwellKey.current = null;
+  };
+  const handleRailMouseMove = (event: ReactMouseEvent<HTMLDivElement>) => {
+    const handle = (event.target as HTMLElement).closest<HTMLElement>(".side-panel-reveal-handle");
+    // The side switch moves the panel; resting on it must never do that, and it
+    // opens nothing either.
+    if (handle?.dataset.railAction === "switch") {
+      cancelRailDwell();
+      return;
+    }
+    const view = handle?.dataset.railView as FilesPanelView | undefined;
+    const key = view ?? "open";
+    if (railDwellTimer.current !== null && railDwellKey.current === key) return;
+    cancelRailDwell();
+    railDwellKey.current = key;
+    railDwellTimer.current = window.setTimeout(() => {
+      railDwellTimer.current = null;
+      railDwellKey.current = null;
+      hoverGuard.current = { x: NaN, y: NaN, timer: null };
+      if (view) openPanelOnView(view);
+      else openPanel();
+    }, RAIL_DWELL_MS);
+  };
+  // A hover-open has to be able to close again. The panel closes on its own
+  // mouseleave, which only ever fires after a mouseenter — and a hover-open
+  // gives it none: the pointer is resting on the rail, the rail unmounts, and
+  // the panel takes a slide to arrive under a pointer that is not moving. A
+  // pointer that wandered off in the meantime (the dwell felt like nothing was
+  // happening) never enters, so never leaves, and the panel it opened stood
+  // open until it was hovered and left on purpose. Until the pointer's first
+  // move OVER the panel — from then on enter/leave carry it, portals included —
+  // the guard watches the document: a move elsewhere starts a check, and a
+  // check that finds the pointer off the panel closes it. Only a hover arms
+  // it: a click or the lessons event opened the panel to be looked at.
+  const hoverGuard = useRef<{ x: number; y: number; timer: number | null } | null>(null);
+  useEffect(() => {
+    // A close (by whatever path) retires the guard: the next open may be a click.
+    if (!revealPanel) {
+      hoverGuard.current = null;
+      return;
+    }
+    const guard = hoverGuard.current;
+    if (panelPinned || !guard) return;
+    const disarm = () => {
+      if (guard.timer !== null) window.clearTimeout(guard.timer);
+      guard.timer = null;
+      hoverGuard.current = null;
+      document.removeEventListener("mousemove", onMove);
+    };
+    const onMove = (event: MouseEvent) => {
+      if ((event.target as Element | null)?.closest?.(".side-panel")) {
+        disarm();
+        return;
+      }
+      guard.x = event.clientX;
+      guard.y = event.clientY;
+      if (guard.timer !== null) return;
+      guard.timer = window.setTimeout(() => {
+        guard.timer = null;
+        const under = document.elementFromPoint?.(guard.x, guard.y) ?? null;
+        // Resting where the panel has since arrived: it is being looked at, and
+        // its next move over the panel hands it to enter/leave.
+        if (under?.closest(".side-panel")) return;
+        disarm();
+        setPanelOpen(false);
+      }, HOVER_GUARD_MS);
+    };
+    document.addEventListener("mousemove", onMove);
+    return () => {
+      document.removeEventListener("mousemove", onMove);
+      if (guard.timer !== null) window.clearTimeout(guard.timer);
+      guard.timer = null;
+    };
+  }, [revealPanel, panelPinned]);
+  // A dwell still pending when the panel opens (or the rail goes away with the
+  // panels) has nothing left to reveal.
+  useEffect(() => {
+    if (revealPanel || panelsHidden) cancelRailDwell();
+  }, [revealPanel, panelsHidden]);
+  useEffect(() => cancelRailDwell, []);
+
+  // A rail tab commits at pointerdown, not at click. A click only counts if the
+  // press and the release land on the same live element, and this button is one
+  // React render away from being unmounted by its own effect — anything that
+  // opens the panel between the two (a dwell that just elapsed, the lessons
+  // event) swallows the activation silently. Pressing is enough. `onClick`
+  // stays for keyboard and assistive activation, which arrives as a bare click
+  // with no pointer press; the timestamp keeps a pointer press from doing the
+  // work twice, and cannot go stale into a later real click.
+  const railPressedAt = useRef(0);
+  // The chevron: open the panel on its remembered view, storing nothing. It was
+  // a bare `<span>` inside the tab group — inert, and the group cancels the
+  // hover-dwell — so the one glyph that says "this edge opens" did nothing
+  // when clicked.
+  const openPanel = () => {
+    cancelRailDwell();
+    useHintsStore.getState().markSeen("file-tree");
+    reveal(panelCloseTimer, setPanelOpen);
+  };
+  const openPanelOnView = (view: FilesPanelView) => {
+    cancelRailDwell();
+    useHintsStore.getState().markSeen("file-tree");
+    void updateSettings(
+      sidePanelViewPatch(
+        view,
+        sidePanelViewKey(activeId, scope),
+        useSettingsStore.getState().settings,
+      ),
+    );
+    reveal(panelCloseTimer, setPanelOpen);
   };
 
   return (
@@ -939,7 +1107,17 @@ export function AppShell() {
         <div key={panelsHiddenToast} className="project-switch-toast">{panelsHiddenToast}</div>
       )}
       <div
-        className={`app-body${revealPanel && panelPinned ? (panelSide === "left" ? " left-docked" : " right-docked") : ""}${resizingPanel ? " resizing" : ""}`}
+        className={`app-body${
+          revealPanel && panelPinned
+            ? panelSide === "left"
+              ? " left-docked"
+              : " right-docked"
+            : railDocked
+              ? panelSide === "left"
+                ? " rail-docked-left"
+                : " rail-docked"
+              : ""
+        }${resizingPanel ? " resizing" : ""}`}
         style={
           revealPanel && panelPinned
             ? panelSide === "left"
@@ -947,7 +1125,6 @@ export function AppShell() {
               : { paddingRight: panelWidth }
             : undefined
         }
-        onMouseMove={handleBodyMouseMove}
       >
         <CenterPanel />
         {panelTarget && !panelsHidden && (
@@ -985,21 +1162,99 @@ export function AppShell() {
             where the mousemove stream isn't, so this is the reliable path; it
             unmounts the moment the panel is open (revealPanel). It doubles as
             the *edge marker*: unpinned, the panel is invisible, so this labelled
-            tab is the only thing saying which side it will slide in from. */}
+            rail is the only thing saying which side it will slide in from.
+
+            Icon buttons only: a side switch pinned to the top of the bar that
+            moves the panel (and this rail with it) to the other edge without
+            opening anything, then — centred — a chevron that opens the panel on
+            its remembered view and one tab per view the panel's own switcher
+            offers, so a closed panel is one click from Git, Apps or Agents
+            instead of one click plus a second one inside.
+
+            It is its OWN bar: `.app-body` holds a --side-rail-w gutter open on
+            that edge (railDocked) and the rail fills it top to bottom, instead of
+            floating over whatever terminal or viewer sat at the window's edge.
+
+            The bar also owns the hover-open outright (handleRailMouseMove): it
+            covers the window edge for its whole height, so the old body-level
+            reveal band could only have fired from on top of the bar — which is
+            precisely how a tab used to vanish from under a click that had not
+            landed yet. Resting on the bar's empty run (or the chevron) reveals
+            the panel on its remembered view; resting on a tab reveals it on
+            that tab's view, and a tab still commits on the press rather than
+            the click, so press and dwell can only ever agree. */}
         {panelTarget && !panelsHidden && !revealPanel && (
-          <button
-            type="button"
-            className={`side-panel-reveal-handle${panelSide === "left" ? " left" : ""}`}
-            aria-label={t("appShell.showFilesPanel")}
-            title={t("appShell.showFilesPanel")}
-            onClick={() => reveal(panelCloseTimer, setPanelOpen)}
-            onMouseEnter={() => reveal(panelCloseTimer, setPanelOpen)}
+          <div
+            className={`side-panel-reveal-rail${panelSide === "left" ? " left" : ""}`}
+            onMouseMove={handleRailMouseMove}
+            onMouseLeave={cancelRailDwell}
           >
-            <span className="srh-chevron" aria-hidden="true">
-              {panelSide === "left" ? "›" : "‹"}
-            </span>
-            <span className="srh-label" aria-hidden="true">{t("appShell.filesEdgeLabel")}</span>
-          </button>
+            <button
+              type="button"
+              className="side-panel-reveal-handle srh-switch"
+              data-rail-action="switch"
+              aria-label={t(panelSide === "left" ? "sidePanel.moveRight" : "sidePanel.moveLeft")}
+              title={t(panelSide === "left" ? "sidePanel.moveRight" : "sidePanel.moveLeft")}
+              onPointerDown={(e) => {
+                // Same press-commits contract as the tabs: the rail re-mounts on
+                // the other edge under the pointer, so a click may never land.
+                if (e.button !== 0) return;
+                railPressedAt.current = Date.now();
+                cancelRailDwell();
+                toggleSide();
+              }}
+              onClick={() => {
+                if (Date.now() - railPressedAt.current < 700) return;
+                toggleSide();
+              }}
+            >
+              <RailSwitchSideIcon side={panelSide} />
+            </button>
+            <div className="srr-group">
+              <button
+                type="button"
+                className="side-panel-reveal-handle srh-chevron"
+                data-rail-action="open"
+                aria-label={t("appShell.showPanel")}
+                title={t("appShell.showPanel")}
+                onPointerDown={(e) => {
+                  if (e.button !== 0) return;
+                  railPressedAt.current = Date.now();
+                  openPanel();
+                }}
+                onClick={() => {
+                  if (Date.now() - railPressedAt.current < 700) return;
+                  openPanel();
+                }}
+              >
+                <RailChevronIcon dir={panelSide === "left" ? "right" : "left"} />
+              </button>
+              {EDGE_VIEWS.map(({ view, labelKey, Icon }) => {
+                const label = t(labelKey);
+                return (
+                  <button
+                    key={view}
+                    type="button"
+                    className="side-panel-reveal-handle"
+                    data-rail-view={view}
+                    aria-label={t("appShell.showPanelView", { view: label })}
+                    title={t("appShell.showPanelView", { view: label })}
+                    onPointerDown={(e) => {
+                      if (e.button !== 0) return;
+                      railPressedAt.current = Date.now();
+                      openPanelOnView(view);
+                    }}
+                    onClick={() => {
+                      if (Date.now() - railPressedAt.current < 700) return;
+                      openPanelOnView(view);
+                    }}
+                  >
+                    <Icon />
+                  </button>
+                );
+              })}
+            </div>
+          </div>
         )}
       </div>
       <VpnPasswordPrompt />

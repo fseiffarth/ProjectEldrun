@@ -1499,3 +1499,24 @@ untested tag until a VM has actually booted on this machine).
       network connectivity.
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work
+
+838. **Closing a project leaves remote tmux alone and never hands the window to
+    the Trash.** Two faults in `deactivateProject`: closing a remote project
+    killed its persistent tmux sessions over SSH, and any SSH failure (host
+    unreachable, VPN down) vetoed the close with "Could not stop every
+    persistent session". Closing now stops only local sessions and the dialog
+    says how many remote ones keep running; remote sessions die only on purpose,
+    from the Sessions view. And the successor pick took the first "active"
+    project — the always-open Trash — so closing the current project made the
+    Trash current; the Trash is now the fallback only when nothing else is open.
+    Frontend: `stores/{projects,stopProjectPrompt}.ts`,
+    `components/common/StopProjectDialog.tsx`. Implemented 2026-09-09 (`dab6d09`),
+    **not live-tested**.
+    - [x] 🤖 Automated test — `ProjectDeactivate`
+    - [ ] 🖐️ Manual test — with two projects open (one remote with a persistent
+      tmux tab), disconnect the VPN and close the remote project: it closes, the
+      dialog says its remote session keeps running, and the other project (not
+      the Trash) becomes current. Reconnect → the tmux session is still in the
+      Sessions view.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work

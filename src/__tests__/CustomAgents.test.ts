@@ -137,6 +137,7 @@ describe("expanded built-in agents", () => {
     expect([
       "kiro", "cline", "goose", "openhands", "pi", "plandex", "sweagent",
       "mini", "mentat", "gpte", "crush", "amp", "kimi", "qoder",
+      "muse",
     ].every((cmd) => cmds.has(cmd))).toBe(true);
   });
 });

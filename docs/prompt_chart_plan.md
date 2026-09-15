@@ -1,7 +1,9 @@
 # Prompt chart — one timeline for collected, scheduled and sent prompts
 
-Status: **implemented, awaiting live verification.** Tracked as TODO #262 in
-`todo/group-s-agents.md`.
+Status: **implemented, reworked onto one horizontal timeline on 2026-09-10,
+awaiting live verification.** Tracked as TODO #262 in `todo/group-s-agents.md`.
+Section 9 supersedes section 2's strands and time axis and section 4's
+gesture table; the rest still holds.
 
 Written against the repository on **2026-09-04**.
 
@@ -255,3 +257,170 @@ Each phase ships behind the same `UntestedTag` with its own manual checklist in
   links live beside the prompts they join.
 - **A canvas / force layout.** Strands and time already fix every card's
   position; free placement would make "when" a matter of where it was dropped.
+
+## 9. The horizontal timeline (2026-09-10)
+
+The strands went. One agent tab per column gave every agent a column's
+width and time a column's width too, and the chart's user asked for the
+opposite: one chart across the whole tab, time left to right, refined like a
+calendar. What replaced it:
+
+- **One proportional axis** (`lib/agentPromptTimeline.ts`, pure), fitted
+  edge to edge to a **Day**, a **Week** (honouring
+  `Settings.calendar_week_start`) or a **Month**, with ◀ Today ▶ over it.
+  Past on the left under a grey wash, a red **now line** with a **now band**
+  around it, future on the right. Sent cards sit at `sent_at`, one-time
+  rules at their minute, a recurring rule at each future occurrence in the
+  window (dotted, read-only — its past ones are the history's rows). Cards
+  overlapping in x pack into lanes; the Month view shows each day as a
+  column of lamps that opens the day. Drafts and chained drafts sit on a
+  **strip above the axis**: they have no instant.
+- **Snap is the view's**: 5 min across a day, 15 across a week, 60 across a
+  month. Anything dropped at or left of the now line is a *send now*,
+  never a schedule in the past.
+- **The gesture is `TodoBoard`'s** (`usePromptChartDrag.ts`): release bound
+  synchronously at pointerdown through `bindDragRelease`, a 5 px threshold so
+  a click stays a click, capture on `documentElement` only where the engine
+  needs it, and a commit over no zone that writes nothing — which is what
+  makes WebKitGTK's `pointercancel`-as-release safe. The pressed card never
+  moves; a **ghost** drawn from the hook's state follows the pointer, a dashed
+  **indicator** marks the snapped minute and a **badge** says what the drop
+  will do (Send now · Schedule · Move to · Unschedule · Collect again, or a
+  struck "cannot drop here"). Hit-testing reads rects the chart measured,
+  never `elementFromPoint`, so the same gesture runs under jsdom. The first
+  chart's drag had none of this: capture on the card, no `pointermove`, no
+  threshold, and `elementFromPoint` on release — nothing moved, and a plain
+  click on a scheduled card re-timed it to the snapped y.
+- **Links by drag.** Every card has a top port (in) and a bottom port (out);
+  pulling the bottom port onto another card writes a link of the kind the
+  toolbar chips say (default `after`), previewed as a dashed bezier. The
+  overlay draws every edge bottom port → top port. Click-to-link stays as
+  the keyboard route.
+- **The agent is the card's.** With the columns gone, each draft, scheduled,
+  queued and chained card wears a compact agent picker. A draft's pick is
+  persisted as `ProjectAgentPrompt.target` — an additive, advisory field
+  (`None` keeps, `""` clears, the tags contract) that decides where a drop
+  schedules it; a rule's pick moves the rule (upsert on the new tab **before**
+  the delete on the old one, the order that cannot lose it and the one whose
+  upsert persists the tab binding); a chained card's pick rewrites its link's
+  `target`. A sent card shows its tab read-only.
+
+Decided against, on top of section 8: **per-tab strands** (2026-09-04 →
+09-10, above); a **calendar grid** (seven day columns with vertical hours —
+the user chose the horizontal axis); **chained cards attached under their
+source** (lanes are fixed-height, and a chained draft is still a draft:
+it sits on the strip with its arrow drawn to the source).
+
+## 10. Edge commands, the Hour view, and adopting every typed prompt (2026-09-15)
+
+- **An `after` edge can carry commands.** `PromptLink.preface` (additive,
+  omitted when empty, refused on a `related` edge, validated by
+  `agent_tasks::validate_preface`) holds the target agent's own slash
+  commands — `/clear` between two scheduled prompts. When the chain fires,
+  `AgentScheduleHost` passes them to `sendCollectedPrompt` as the queued
+  draft's preface, so the scheduler types them one at a time before the
+  target's text: the composer's prefix-chip path, not a second one. The edge
+  is edited on the edge: a midpoint handle (the one part of the overlay that
+  takes the pointer) opens `PromptLinkEditor` — kind, the target tab's
+  command chips (`prefaceCommandsFor`, plus any command the edge carries that
+  the agent no longer offers), remove — and a card's link rows open the same
+  editor. The commands are written beside the handle and on the chained
+  card's fact line. Each toggle writes at once.
+- **Hour view.** Hour · Day · Week · Month; Ctrl + wheel reaches it from Day.
+  The Hour anchor is `YYYY-MM-DDTHH`; the grid is 5 minutes (labels on each
+  quarter) and so is the snap, the finest any view offers.
+- **Every typed prompt reaches the history.** Adoption read only the *last*
+  prompt, and only at a turn's start, so a message sent while the agent was
+  working (Claude records it as a `queued_command` attachment and it starts no
+  turn) never appeared, and the first prompt after a launch was taken as a
+  baseline. `agent_tab_recent_prompts` (`agent_session_recent_prompts`)
+  returns the tail's prompts with their transcript timestamps, queued ones
+  included; `lib/agentPromptAdopt.promptsToAdopt` records each one the history
+  lacks — not a session command, within 24 h, no row of this tab with the same
+  words within 65 min — with `sent_at` set to that timestamp
+  (`SentAgentPromptInput.sent_at`, and `push_history` now inserts by time).
+  A backend predating the command falls back to the old last-prompt path.
+
+## 11. A `/clear` is a new session card, joined to the old one (2026-09-15)
+
+Two prompts with a `/clear` between them showed under one session card,
+because the card's "session" was the tab's **launch id**: `tab.sessionId` is
+minted once (`stores/tabs`, passed as `--session-id`) and never changes,
+while `/clear` rolls Claude onto a fresh id that only the hook's
+`live_sessions/<uid>` record knew — read at respawn and nowhere else.
+
+- **The history files a row under the live session.** `agent_prompts::archive`
+  and `record` resolve the launch id the frontend sends through
+  `agent_session::read_live_session_and_source_for` (`resolve_live_session`)
+  and store the live id as `session_id`, keeping the launch id as the new
+  `SentAgentPrompt.tab_id`. The frontend does not learn the live id and does
+  not need to: the row carries it, and `sessionGroupKey` already groups on
+  `history.session_id`, so the prompts after a `/clear` fold into a second
+  card. Rows written before this carry the launch id as before and group as
+  before.
+- **The strand is the tab.** `lib/agentPromptChart.rowOnStrand` matches a row
+  to a strand by `tab_id` first (a live strand's `tabId` is its launch id),
+  then by session id (older rows), then by label. A closed strand stands for a
+  gone *tab*, keyed by `tab_id`, so both of its sessions stay on one grey
+  strand. `lib/agentPromptAdopt`'s "my rows" filter reads the same three.
+- **The edge draws itself.** The hook writes `<uid>.src` — `SessionStart`'s
+  `source` — before the id. `link_session_roll` runs after every history
+  write: the first row a tab writes under a session id it has not written
+  before gets an edge from the tab's newest earlier row — `after` carrying
+  `/clear` when the source says `clear`, `related` otherwise (a `/resume`
+  opens a picker and cannot be replayed as a preface). The edge's id is
+  `roll:<row id>`, so a queued send turning into its delivery updates it
+  rather than doubling it; later rows of the same session draw nothing; the
+  edge is pruned with its row like any other. Since the session card
+  registers its node under every member's id, the arrow runs card to card.
+- **Resume.** An Eldrun relaunch resumes the recorded live id and the hook's
+  `resume` start carries the same id: no roll, no edge. A `/resume` inside
+  the tab to another conversation rolls the id like a `/clear` and gets the
+  plain edge.
+
+## 12. Free draft layout and completion-gated sequences (2026-09-15)
+
+`PromptDraftBoard` adds a Free layout option, with project-scoped positions
+remembered in localStorage. Moving a draft changes only its position; the
+existing ports and edge editor work with the timeline hidden too. Dragging
+any member of an unscheduled After sequence to the time chart schedules its
+single start. Descendants retain their links and are drawn at the timed
+ancestor's position, with no independent delivery times. Related links do not
+carry cards. Cycles and multiple incoming After edges block the transfer.
+`agentPromptDrafts` owns the sequence traversal and display anchors. The
+keyboard Send/Schedule actions resolve the same start; the schedule dialog
+keeps its prompt id so the links survive delivery.
+
+**Completion replaces submission as the chain trigger.** A delivered receipt
+means the message reached the terminal, not that the agent finished. The host
+now waits for a fresh working→done hook pair after the actual message (after
+any prefix commands), and then — as a safety margin before anything is typed
+into an agent that may still be settling — for the tab to stay idle for five
+minutes after that done (`AFTER_LINK_IDLE_MS`; a new turn restarts the wait).
+It checks on the existing 15-second sweep. This applies across tabs too: successors are
+not even queued until the source completes. Neither silence, approval waits,
+nor the old ten-minute timeout may release the next prompt. The activity
+store keeps a separate automation reading that cannot fall back to the UI's
+silence heuristic or depend on whether the user read the output.
+
+An untouched, ready terminal can receive its first prompt; subsequent input
+requires a stable completion hook. Hook-free agents therefore pause automatic
+progression. Recovered receipts without an observed turn do not advance a
+chain. This conservative behavior is intentional: an uncertain completion
+must not type into an agent still working. The chart explains this and keeps
+its UntestedTag until live verification.
+
+**One independent rule per tab (2026-09-15).** Two unlinked rules on one tab
+have no order between them: the host delivers whichever minute comes first
+and holds the other until that turn completes, or misses it. So a tab that
+already holds a live rule — `lib/agentPromptChart.occupiedTargets`: any
+enabled scheduled or queued rule, one-time or recurring; a paused rule
+occupies nothing — is not offered to a draft at all: the card's picker drops
+it, a timeline drop refuses it (`timelineDropAction`'s `occupied` set, the
+badge reads "Tab already scheduled · link After it instead", the release
+writes nothing and the chart's error line says why), and Send/Schedule on a
+draft still aimed at such a tab say the same. An unaimed draft goes to the
+first *free* tab. A rule keeps its own tab and is not offered another rule's.
+A chained card keeps every tab: it is linked, which is exactly the sanctioned
+way onto an occupied tab. The tab's own ◷ Schedules dialog, which manages a
+tab's several recurring rules, warns instead of refusing.
