@@ -60,6 +60,9 @@ export interface SentAgentPrompt {
    *  the scheduler has seen the tab idle again. */
   files?: string[];
   files_at?: string;
+  /** The model that answered, as the transcript names it; recorded with the
+   *  blame. Absent until then, and for an agent whose transcript is not read. */
+  model?: string;
 }
 
 export interface PromptLink {

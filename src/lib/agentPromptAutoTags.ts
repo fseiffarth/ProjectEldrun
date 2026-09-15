@@ -3,6 +3,9 @@ import { splitPreface } from "./agentPrefaces";
 export interface PromptAutoTagInput {
   message: string;
   agent?: string;
+  /** The model the prompt runs (or ran) under when the preface names none:
+   *  the tab's own, read from its transcript, or the chart's new-tab pick. */
+  model?: string;
   preface?: string[];
   files?: string[];
   result?: string;
@@ -19,8 +22,11 @@ export function agentPromptAutoTags(input: PromptAutoTagInput): string[] {
     if (clean && !tags.includes(clean)) tags.push(clean);
   };
   if (input.agent) add(`agent:${input.agent}`);
+  // A `/model` typed ahead of the prompt is the model it runs under, whatever
+  // the tab answered with before.
   const { commands, model } = splitPreface(input.preface);
-  if (model) add(`model:${model}`);
+  const picked = model || input.model;
+  if (picked) add(`model:${picked}`);
   for (const command of commands) {
     const name = /^\/([^\s]+)/.exec(command)?.[1];
     if (name) add(`cmd:${name}`);

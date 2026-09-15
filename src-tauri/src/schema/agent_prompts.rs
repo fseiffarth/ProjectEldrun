@@ -100,6 +100,14 @@ pub struct SentAgentPrompt {
     pub files: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub files_at: Option<String>,
+    /// The model that answered the prompt, as the agent's own transcript names
+    /// it (`services::agent_session::agent_session_model`) — read with the
+    /// blame, once the tab is idle again, because that is the first moment the
+    /// transcript's last answer is *this* prompt's. The chart wears it as a
+    /// `model:` tag. Absent for an agent whose transcript Eldrun does not read,
+    /// and on rows written before it was recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 /// Send-time facts the frontend supplies; the service owns `sent_at` and

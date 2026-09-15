@@ -303,6 +303,7 @@ fn apply_archive(
         branch: head.and_then(|head| head.branch.clone()),
         files: Vec::new(),
         files_at: None,
+        model: None,
     };
     push_history(file, project_id, sent.clone());
     link_session_roll(file, project_id, &sent, roll);
@@ -370,6 +371,7 @@ fn apply_record(
             .as_ref()
             .map(|item| item.files.clone())
             .unwrap_or_default(),
+        model: existing.as_ref().and_then(|item| item.model.clone()),
         files_at: existing.and_then(|item| item.files_at),
     };
     push_history(file, project_id, sent.clone());
@@ -460,14 +462,17 @@ fn resolve_live_session(
     }
 }
 
-/// Write the files a delivered prompt touched onto its history row. Pure core
-/// of `blame`, so what is recorded is testable without git. `None` when the
-/// row is gone — the agent finished, but the user cleared the history first.
+/// Write the files a delivered prompt touched, and the model that answered it,
+/// onto its history row. Pure core of `blame`, so what is recorded is testable
+/// without git or a transcript. `None` when the row is gone — the agent
+/// finished, but the user cleared the history first. A model the transcript
+/// could not name leaves whatever the row already holds.
 fn apply_blame(
     file: &mut AgentPromptsFile,
     project_id: &str,
     entry_id: &str,
     files: Vec<String>,
+    model: Option<String>,
     now: &str,
 ) -> Option<SentAgentPrompt> {
     let entry = file
@@ -477,6 +482,9 @@ fn apply_blame(
         .find(|item| item.id == entry_id)?;
     entry.files = files;
     entry.files_at = Some(now.to_string());
+    if model.is_some() {
+        entry.model = model;
+    }
     Some(entry.clone())
 }
 
@@ -770,7 +778,7 @@ pub fn blame(
 ) -> Result<Vec<SentAgentPrompt>, String> {
     validate_id("project id", project_id)?;
     validate_id("history entry id", entry_id)?;
-    let (commit, sent_at) = {
+    let (commit, sent_at, agent, launch_id) = {
         let _guard = lock();
         let file = read()?;
         let entry = file
@@ -778,7 +786,14 @@ pub fn blame(
             .get(project_id)
             .and_then(|history| history.iter().find(|item| item.id == entry_id))
             .ok_or_else(|| "history entry not found".to_string())?;
-        (entry.commit.clone(), entry.sent_at.clone())
+        (
+            entry.commit.clone(),
+            entry.sent_at.clone(),
+            entry.agent.clone(),
+            // The launch id names the transcript; a row from before `tab_id`
+            // was recorded carried the launch id as its session id.
+            entry.tab_id.clone().or_else(|| entry.session_id.clone()),
+        )
     };
     let since = match since {
         Some(value) if prompt_blame::iso_to_epoch(value).is_some() => value.to_string(),
@@ -790,9 +805,15 @@ pub fn blame(
         .filter(|path| path.len() <= MAX_BLAME_PATH_BYTES && !path.chars().any(char::is_control))
         .take(MAX_BLAME_FILES)
         .collect();
+    // The tab is idle again, so the transcript's last answer is this prompt's:
+    // the one moment the model that answered it can be read. A transcript
+    // tail read, outside the lock like git.
+    let model = agent.zip(launch_id).and_then(|(agent, launch_id)| {
+        crate::services::agent_session::agent_session_model(&agent, Some(project_id), &launch_id)
+    });
     let _guard = lock();
     let mut file = read()?;
-    if apply_blame(&mut file, project_id, entry_id, files, &storage::iso_now()).is_some() {
+    if apply_blame(&mut file, project_id, entry_id, files, model, &storage::iso_now()).is_some() {
         write(&file)?;
     }
     Ok(file.history.get(project_id).cloned().unwrap_or_default())
@@ -1034,13 +1055,26 @@ mod tests {
         let row = apply_record(&mut file, "p", &entry, &entry.sent, None, None, "t4");
         assert_eq!(row.commit.as_deref(), Some("2222222"));
         // The blame lands on the row and survives a later re-record.
-        let blamed = apply_blame(&mut file, "p", "a", vec!["src/a.rs".into()], "t5").unwrap();
+        let blamed = apply_blame(
+            &mut file,
+            "p",
+            "a",
+            vec!["src/a.rs".into()],
+            Some("claude-opus-4-1-20250805".into()),
+            "t5",
+        )
+        .unwrap();
         assert_eq!(blamed.files, vec!["src/a.rs"]);
         assert_eq!(blamed.files_at.as_deref(), Some("t5"));
+        assert_eq!(blamed.model.as_deref(), Some("claude-opus-4-1-20250805"));
         let row = apply_record(&mut file, "p", &entry, &entry.sent, None, None, "t6");
         assert_eq!(row.files, vec!["src/a.rs"]);
+        assert_eq!(row.model.as_deref(), Some("claude-opus-4-1-20250805"));
+        // A blame whose transcript names no model keeps the one recorded.
+        let blamed = apply_blame(&mut file, "p", "a", vec![], None, "t6").unwrap();
+        assert_eq!(blamed.model.as_deref(), Some("claude-opus-4-1-20250805"));
         // A row that is gone records nothing.
-        assert!(apply_blame(&mut file, "p", "missing", vec![], "t7").is_none());
+        assert!(apply_blame(&mut file, "p", "missing", vec![], None, "t7").is_none());
         assert_eq!(file.history["p"].len(), 1, "still one prompt, one row");
     }
 
