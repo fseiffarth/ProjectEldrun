@@ -643,19 +643,14 @@ pub(crate) fn bwrap_args(
 }
 
 /// Rewrite a local agent spawn into its outer bubblewrap boundary.
-/// Codex's nested bwrap is denied by Ubuntu's stacked AppArmor profile. Use
-/// its Landlock backend inside our fence, preserving its permissions policy.
-/// Prepending lets an explicit user override later in argv take precedence.
-#[cfg(target_os = "linux")]
-fn codex_fence_args(cmd: &str, args: &[String]) -> Vec<String> {
-    let mut out = Vec::new();
-    if Path::new(cmd).file_name().and_then(|s| s.to_str()) == Some("codex") {
-        out.extend(["-c".into(), "features.use_legacy_landlock=true".into()]);
-    }
-    out.extend_from_slice(args);
-    out
-}
-
+///
+/// The agent's argv passes through untouched. Codex in particular gets no
+/// sandbox-backend override: its own bubblewrap cannot nest under this fence
+/// on Ubuntu (the stacked `unpriv_bwrap` AppArmor profile denies the uid-map
+/// write of a second user namespace), and the Landlock fallback that used to
+/// be forced here (`features.use_legacy_landlock`) is deprecated upstream and
+/// warns on every start, so Codex is left to report the failed sandbox and
+/// ask, as it does anywhere else its sandbox cannot spawn.
 #[cfg(target_os = "linux")]
 pub fn wrap_pty_options_bwrap(
     opts: &mut PtyOptions,
@@ -691,7 +686,7 @@ pub fn wrap_pty_options_bwrap(
         &paths::home_dir_string(),
         &opts.cwd,
         &opts.cmd,
-        &codex_fence_args(&opts.cmd, &opts.args),
+        &opts.args,
         roots,
         &extra_ro,
         &mounts,
@@ -1363,21 +1358,6 @@ mod tests {
         assert!(updatable_install_dirs("codex-link", &dirs, &home).is_empty());
         assert!(updatable_install_dirs("no-such-agent", &dirs, &home).is_empty());
         let _ = std::fs::remove_dir_all(&tmp);
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn fenced_codex_uses_landlock_without_changing_permissions_or_resume() {
-        let args: Vec<String> = ["resume", "session-id", "--sandbox", "workspace-write",
-            "--ask-for-approval", "on-request", "-c", "features.use_legacy_landlock=false"]
-            .into_iter().map(String::from).collect();
-        for cmd in ["codex", "/home/u/.local/bin/codex"] {
-            let out = codex_fence_args(cmd, &args);
-            assert_eq!(&out[..2], &["-c", "features.use_legacy_landlock=true"]);
-            assert_eq!(&out[2..], args);
-        }
-        assert_eq!(codex_fence_args("claude", &args), args);
-        assert_eq!(codex_fence_args("custom-codex", &args), args);
     }
 
     #[test]

@@ -123,15 +123,24 @@ Composition is explicit:
   status says so rather than presenting a false guarantee.
 - Shell/script tabs are the user's terminals and are never fenced.
 
-Fenced Linux Codex launches prepend `-c features.use_legacy_landlock=true`:
-the installed Codex 0.154.0 otherwise tries a nested bubblewrap for ordinary
-commands, which the stacked AppArmor profile denies, causing repeated approval
-requests for retries. Landlock can enforce Codex's selected policy inside the
-outer fence without creating another namespace. This selects an enforcement
-backend, not an approval or permission mode; explicit later CLI overrides win.
-The flag is deprecated upstream and must be rechecked on Codex updates. Local
-probes verified a workspace-write command can write temporary files while a
-read-only command cannot. Interactive Eldrun verification remains pending.
+Fenced Linux Codex gets no sandbox-backend override. Its own bubblewrap
+cannot nest under the fence on Ubuntu: the outer bwrap runs under the stacked
+`bwrap//&unpriv_bwrap` AppArmor profile, which denies the uid-map write of a
+second user namespace (`unshare -Ur` fails inside the fence, so does a nested
+`bwrap`). Eldrun briefly forced Codex's Landlock backend instead
+(`-c features.use_legacy_landlock=true`, 2026-09-14), but Codex 0.154.0
+prints a deprecation warning for that key on every start and its legacy
+backend refuses workspace-write outright ("permission profiles requiring
+direct runtime enforcement are incompatible with --use-legacy-landlock")
+unless `sandbox_workspace_write.exclude_slash_tmp` is also set — a policy
+narrowing Eldrun must not choose for the agent. So the flag was dropped
+(2026-09-15): inside the fence Codex's sandbox fails to spawn, Codex reports
+that and asks to run the command outside its sandbox — which is still inside
+Eldrun's fence — and the user answers per command or once per session. A user
+who prefers Landlock for now can opt in through their own `~/.codex/config.toml`
+(`[features] use_legacy_landlock = true` plus
+`[sandbox_workspace_write] exclude_slash_tmp = true`) and live with the
+warning until upstream removes the backend.
 
 The boundary is filesystem-only: network access is shared. A nested bubblewrap
 cannot run under the outer boundary on Linux systems with the

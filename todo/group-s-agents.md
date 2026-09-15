@@ -411,11 +411,16 @@ unchanged; the new agents are additive.
 
 ---
 
-- [ ] Live-check fenced Codex after the Landlock compatibility fix (2026-09-14):
-  with workspace permissions, read/edit a project file and run a local command
-  without a bubblewrap failure or repeated escalation; verify read-only mode
-  still refuses writes. Recheck the deprecated `use_legacy_landlock` flag on
-  Codex upgrades. Automated launch-argument coverage and CLI probes added.
+- [ ] Live-check fenced Codex without a sandbox-backend override (2026-09-15):
+  the forced `features.use_legacy_landlock` (2026-09-14) is gone — Codex
+  0.154.0 warns it is deprecated on every start, and its legacy backend panics
+  on workspace-write unless `/tmp` is excluded from the writable roots. Nested
+  bubblewrap stays impossible under the fence (AppArmor `unpriv_bwrap` denies
+  the second user namespace), so expect Codex to report the failed sandbox and
+  ask to run outside it; confirm "approve for session" makes that a one-time
+  question, and that the fence still bounds writes to the project roots. If
+  the per-command asking is unbearable, the honest options are a fence-off
+  toggle for that project or a Codex-side exec rule, not another backend flag.
 
 203. **Manage CLIs is two lists, not one.** ✅ **Shipped** (2026-08-31). The
     panel rendered every CLI in the registry as a full install card, sorted
