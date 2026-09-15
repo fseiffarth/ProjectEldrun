@@ -206,8 +206,16 @@ export function expandEvent(
 
   // A recurring event's occurrences never start before the master, but a
   // long-running one may still cover the window's first days, so generation runs
-  // to windowEnd and the window filter below decides what is visible.
-  const starts = generateStarts(event, windowEnd);
+  // to windowEnd and the window filter below decides what is visible. An
+  // override can also pull a slot the rule generates *after* the window back
+  // into it (next week's standup moved to this Friday), so generation reaches
+  // every such slot too.
+  let generateTo = windowEnd;
+  for (const o of event.overrides ?? []) {
+    if (!o.start || datePart(o.start) >= datePart(windowEnd)) continue;
+    if (datePart(o.occurrence_start) > datePart(generateTo)) generateTo = o.occurrence_start;
+  }
+  const starts = generateStarts(event, generateTo);
 
   // Duration is taken from the master and carried to every occurrence, so moving
   // the master's end lengthens the whole series (what an unqualified edit means).

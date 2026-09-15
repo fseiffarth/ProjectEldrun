@@ -49,22 +49,44 @@ export function unfold(text: string): string[] {
   return out.filter((l) => l.trim() !== "");
 }
 
-/** Fold a content line at 75 octets, per RFC 5545. */
+/** The UTF-8 length of one code point. */
+function octetsOf(ch: string): number {
+  const cp = ch.codePointAt(0) ?? 0;
+  return cp < 0x80 ? 1 : cp < 0x800 ? 2 : cp < 0x10000 ? 3 : 4;
+}
+
+/**
+ * Fold a content line at 75 octets, per RFC 5545 — octets, not UTF-16 units, so
+ * a line of non-ASCII text folds where the RFC says and never splits a code
+ * point (which no reader could stitch back).
+ */
 export function fold(line: string): string {
-  if (line.length <= 75) return line;
-  const parts: string[] = [line.slice(0, 75)];
-  let rest = line.slice(75);
-  while (rest.length > 74) {
-    parts.push(" " + rest.slice(0, 74));
-    rest = rest.slice(74);
+  const parts: string[] = [];
+  let cur = "";
+  let octets = 0;
+  for (const ch of line) {
+    const n = octetsOf(ch);
+    if (octets + n > 75) {
+      parts.push(cur);
+      cur = " ";
+      octets = 1;
+    }
+    cur += ch;
+    octets += n;
   }
-  if (rest) parts.push(" " + rest);
+  parts.push(cur);
   return parts.join("\r\n");
 }
 
-/** Escape a TEXT value: backslash, semicolon, comma and newline are special. */
+/**
+ * Escape a TEXT value: backslash, semicolon, comma and newline are special. A
+ * CR (a note pasted from Windows) has no TEXT form at all — written raw it would
+ * read back as a line break and take the rest of the value with it — so line
+ * endings are normalised to `\n` first.
+ */
 export function escapeText(value: string): string {
   return value
+    .replace(/\r\n?/g, "\n")
     .replace(/\\/g, "\\\\")
     .replace(/;/g, "\\;")
     .replace(/,/g, "\\,")
@@ -109,7 +131,21 @@ export function parseLine(line: string): Line | null {
 
   const head = line.slice(0, colon);
   const value = line.slice(colon + 1);
-  const segments = head.split(";");
+  // Parameters split on `;` outside quotes: a quoted value may hold one
+  // (`CN="Doe; Jane"`) as well as a `:`.
+  const segments: string[] = [];
+  let seg = "";
+  let quoted = false;
+  for (const c of head) {
+    if (c === '"') quoted = !quoted;
+    if (c === ";" && !quoted) {
+      segments.push(seg);
+      seg = "";
+    } else {
+      seg += c;
+    }
+  }
+  segments.push(seg);
   const name = segments[0].toUpperCase();
 
   const params: Record<string, string> = {};
@@ -491,7 +527,10 @@ function buildTask(
   const start = cur.DTSTART?.[0] ? parseIcsDate(cur.DTSTART[0].value) : null;
   const completed = cur.COMPLETED?.[0] ? parseIcsDate(cur.COMPLETED[0].value) : null;
 
-  const percentRaw = Number(val("PERCENT-COMPLETE"));
+  // `Number("")` is 0, which would make an absent PERCENT-COMPLETE look like an
+  // explicit 0 % and hide a COMPLETED status; only a present value counts.
+  const percentText = val("PERCENT-COMPLETE").trim();
+  const percentRaw = percentText === "" ? NaN : Number(percentText);
   const status = val("STATUS").toUpperCase();
   const percent = Number.isFinite(percentRaw)
     ? Math.max(0, Math.min(100, percentRaw))

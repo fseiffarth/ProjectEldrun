@@ -194,3 +194,28 @@ the invariants that make it worth having: [`docs/context/caldav.md`](../docs/con
       does not move its end. Repeat on the phone.
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work
+
+841. **ICS round-trip and recurrence edge cases that lose data.** Found
+    2026-09-15 by the edge-case sweep; each is an `it.skip` in `IcsEdgeCases` /
+    `RecurrenceEdgeCases` naming the bug — un-skip when fixed. `ics.ts`: (1) a
+    bare `\r` in a text value (Windows-pasted note) is serialised raw and
+    `unfold` reads it as a line break on re-import, dropping the rest of the
+    note; (2) `parseLine` splits parameters on every `;`, truncating a quoted
+    `CN="Doe; Jane"` to `Doe`; (3) `buildTask` reads an absent PERCENT-COMPLETE
+    as `0`, so a `STATUS:COMPLETED` VTODO imports at 0 % yet gets a completed
+    date; (4) `fold` counts UTF-16 units, not octets, so non-ASCII lines exceed
+    RFC 5545's 75 (SHOULD-level, round-trip still correct). `recurrence.ts`:
+    (5) `generateStarts` stops at the first start past the window, so an
+    occurrence moved *into* the window by an override never appears (next
+    week's standup moved to this Friday is missing from this week). Fixed
+    the same day: text values normalise CR/CRLF to `\n` before escaping (TEXT
+    has no form for a CR); parameters split on `;` outside quotes only; an
+    absent PERCENT-COMPLETE is absent, not 0; `fold` counts UTF-8 octets and
+    never splits a code point; expansion generates far enough to reach every
+    override moved into the window. **Not live-tested.**
+    - [x] 🤖 Automated test — `IcsEdgeCases`, `RecurrenceEdgeCases`
+    - [ ] 🖐️ Manual test — paste a note with a Windows line break into an
+      event, sync, reopen: the whole note survives. Move next week's recurring
+      event to this Friday: it shows on this week's view.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
