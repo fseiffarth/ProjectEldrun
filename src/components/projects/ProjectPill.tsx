@@ -49,6 +49,7 @@ import { useT } from "../../lib/i18n";
 import { isTrashProject } from "../../lib/trashProject";
 import { TrashProjectIcon } from "./TrashProjectIcon";
 import {
+  agentFenceInstallCommand,
   agentFenceLabelKey,
   agentFenceReasonKey,
   type AgentFenceStatus,
@@ -2174,16 +2175,14 @@ export function ProjectPill({
                 )}
               <UntestedTag />
             </button>
-            {IS_LINUX && agentFenceStatus?.bwrap_available === false && (
+            {IS_LINUX && agentFenceInstallCommand(agentFenceStatus) && (
                 <button
                   className="untested"
                   onClick={() => {
+                    const command = agentFenceInstallCommand(agentFenceStatus);
                     setContextMenu(null);
-                    runInstallInTab(
-                      t("pill.agentFenceInstall"),
-                      "sudo apt install -y bubblewrap",
-                      "bash",
-                    );
+                    if (!command) return;
+                    runInstallInTab(t("pill.agentFenceInstall"), command, "bash");
                   }}
                 >
                   {t("pill.agentFenceInstall")}

@@ -21,7 +21,90 @@ use crate::schema::projects::{ProjectEntry, ProjectsList};
 use crate::terminal::PtyOptions;
 use crate::{paths, storage};
 
-pub const INSTALL_HINT: &str = "sudo apt install bubblewrap";
+/// A package the fence may ask the user to install. Only bubblewrap for now: it
+/// is the one missing tool that makes Eldrun fail closed.
+#[cfg(any(target_os = "linux", test))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstallPkg {
+    Bubblewrap,
+}
+
+/// The distribution's own install command for `pkg`, chosen from an
+/// `os-release` file: its `ID` first, then each `ID_LIKE` entry in order.
+/// `None` for a distribution this does not recognize — the pill runs this
+/// command with one click, and another package manager's command is worse than
+/// no button.
+#[cfg(any(target_os = "linux", test))]
+pub fn package_install_cmd(os_release: &str, pkg: InstallPkg) -> Option<String> {
+    let field = |key: &str| {
+        os_release.lines().find_map(|line| {
+            let (k, v) = line.split_once('=')?;
+            (k.trim() == key)
+                .then(|| v.trim().trim_matches(|c| c == '"' || c == '\'').to_ascii_lowercase())
+        })
+    };
+    let mut ids: Vec<String> = field("ID").into_iter().collect();
+    if let Some(like) = field("ID_LIKE") {
+        ids.extend(like.split_whitespace().map(str::to_string));
+    }
+    let package = match pkg {
+        InstallPkg::Bubblewrap => "bubblewrap",
+    };
+    ids.iter().find_map(|id| {
+        let manager = match id.as_str() {
+            "debian" | "ubuntu" | "linuxmint" | "pop" | "elementary" | "raspbian" | "kali"
+            | "zorin" | "neon" => "sudo apt install -y",
+            "fedora" | "rhel" | "centos" | "rocky" | "almalinux" | "nobara" => {
+                "sudo dnf install -y"
+            }
+            "arch" | "manjaro" | "endeavouros" | "cachyos" => "sudo pacman -S --needed",
+            "suse" | "sles" => "sudo zypper install -y",
+            other if other.starts_with("opensuse") => "sudo zypper install -y",
+            _ => return None,
+        };
+        Some(format!("{manager} {package}"))
+    })
+}
+
+/// The install command for the fence tool on this machine, or `None` when there
+/// is nothing honest to offer: not Linux (macOS ships `sandbox-exec`, Windows
+/// has no fence), or a distribution [`package_install_cmd`] does not know.
+pub fn fence_install_cmd() -> Option<String> {
+    #[cfg(target_os = "linux")]
+    {
+        static CMD: OnceLock<Option<String>> = OnceLock::new();
+        CMD.get_or_init(|| {
+            let release = std::fs::read_to_string("/etc/os-release")
+                .or_else(|_| std::fs::read_to_string("/usr/lib/os-release"))
+                .unwrap_or_default();
+            package_install_cmd(&release, InstallPkg::Bubblewrap)
+        })
+        .clone()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
+    }
+}
+
+/// The spawn refusal when the fence tool is missing — one wording for both
+/// places that refuse (`pty_spawn`'s decision and the bubblewrap wrapper).
+pub fn fence_unavailable_message() -> String {
+    let tool = fence_tool_name();
+    if cfg!(target_os = "macos") {
+        return format!(
+            "Agent fence: {tool} is unavailable on this Mac, so this agent was not started. Turn the Agent fence off for this project."
+        );
+    }
+    match fence_install_cmd() {
+        Some(cmd) => format!(
+            "Agent fence: {tool} is unavailable, so this agent was not started. Install it with `{cmd}`, or turn the Agent fence off for this project."
+        ),
+        None => format!(
+            "Agent fence: {tool} is unavailable, so this agent was not started. Install the {tool} package with your distribution's package manager, or turn the Agent fence off for this project."
+        ),
+    }
+}
 
 /// The sandboxing tool this OS's fence is built on, for messages.
 pub fn fence_tool_name() -> &'static str {
@@ -45,7 +128,10 @@ pub fn platform_fenceable() -> bool {
 pub enum FenceDecision {
     Fenced { roots: Vec<PathBuf> },
     NotApplicable { reason: &'static str },
-    Unavailable { install_hint: &'static str },
+    /// The fence tool is missing or unusable. The install advice is not carried
+    /// here: it depends on the distribution, and [`fence_unavailable_message`]
+    /// reads it, which keeps this decision pure.
+    Unavailable,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -83,6 +169,9 @@ pub struct AgentFenceStatus {
     pub reason: String,
     pub roots: Vec<String>,
     pub bwrap_available: bool,
+    /// The one-click install for the missing fence tool on this distribution;
+    /// `None` when the tool works or there is no command worth running.
+    pub install_cmd: Option<String>,
 }
 
 /// Default read-only host paths made visible inside the otherwise-empty home.
@@ -131,9 +220,7 @@ pub fn decide(
         return FenceDecision::NotApplicable { reason: "off" };
     }
     if !tool_ok {
-        return FenceDecision::Unavailable {
-            install_hint: INSTALL_HINT,
-        };
+        return FenceDecision::Unavailable;
     }
     FenceDecision::Fenced { roots }
 }
@@ -658,9 +745,7 @@ pub fn wrap_pty_options_bwrap(
     scope_id: &str,
 ) -> Result<(), String> {
     if !bwrap_available() {
-        return Err(format!(
-            "Agent fence: bubblewrap is unavailable, so this agent was not started. Install it with `{INSTALL_HINT}`, or turn the Agent fence off for this project."
-        ));
+        return Err(fence_unavailable_message());
     }
     let (mut mounts, symlinks) = agent_state_mounts(scope_id, roots);
     let mut extra_ro = configured_read_only_paths();
@@ -970,12 +1055,14 @@ pub fn status_for_scope(scope_id: &str) -> AgentFenceStatus {
         .map(|r| r.iter().map(|p| p.to_string_lossy().into_owned()).collect())
         .unwrap_or_default();
     let available = bwrap_available();
+    let install_cmd = if available { None } else { fence_install_cmd() };
     let Some(roots) = roots else {
         return AgentFenceStatus {
             enforced: false,
             reason: "unknown project or box".to_string(),
             roots: root_strings,
             bwrap_available: available,
+            install_cmd,
         };
     };
     let decision = decide(
@@ -992,13 +1079,14 @@ pub fn status_for_scope(scope_id: &str) -> AgentFenceStatus {
             (false, platform_reason().to_string())
         }
         FenceDecision::NotApplicable { reason } => (false, reason.to_string()),
-        FenceDecision::Unavailable { .. } => (false, format!("{} unavailable", fence_tool_name())),
+        FenceDecision::Unavailable => (false, format!("{} unavailable", fence_tool_name())),
     };
     AgentFenceStatus {
         enforced,
         reason,
         roots: root_strings,
         bwrap_available: available,
+        install_cmd,
     }
 }
 
@@ -1109,6 +1197,36 @@ mod tests {
     }
 
     #[test]
+    fn fence_install_command_follows_the_distribution() {
+        let cmd = |release: &str| package_install_cmd(release, InstallPkg::Bubblewrap);
+        assert_eq!(
+            cmd("NAME=\"Ubuntu\"\nID=ubuntu\nID_LIKE=debian\n").as_deref(),
+            Some("sudo apt install -y bubblewrap")
+        );
+        assert_eq!(cmd("ID=debian\n").as_deref(), Some("sudo apt install -y bubblewrap"));
+        assert_eq!(cmd("ID=fedora\n").as_deref(), Some("sudo dnf install -y bubblewrap"));
+        assert_eq!(cmd("ID=arch\n").as_deref(), Some("sudo pacman -S --needed bubblewrap"));
+        assert_eq!(
+            cmd("ID=\"opensuse-tumbleweed\"\nID_LIKE=\"opensuse suse\"\n").as_deref(),
+            Some("sudo zypper install -y bubblewrap")
+        );
+        // An unrecognized ID falls through to ID_LIKE, in its order.
+        assert_eq!(
+            cmd("ID=\"someforge\"\nID_LIKE=\"rhel fedora\"\n").as_deref(),
+            Some("sudo dnf install -y bubblewrap")
+        );
+        // ID wins over ID_LIKE.
+        assert_eq!(
+            cmd("ID=ubuntu\nID_LIKE=\"arch\"\n").as_deref(),
+            Some("sudo apt install -y bubblewrap")
+        );
+        // Unknown distributions and an empty file offer nothing to run.
+        assert_eq!(cmd("ID=nixos\n"), None);
+        assert_eq!(cmd("ID=gentoo\n"), None);
+        assert_eq!(cmd(""), None);
+    }
+
+    #[test]
     fn decision_matrix() {
         let roots = vec![PathBuf::from("/p")];
         assert_eq!(
@@ -1149,7 +1267,7 @@ mod tests {
         );
         assert!(matches!(
             decide(&opts("claude"), roots.clone(), false, true, true, false),
-            FenceDecision::Unavailable { .. }
+            FenceDecision::Unavailable
         ));
         let mut custom = opts("my-agent-wrapper");
         custom.agent = true;

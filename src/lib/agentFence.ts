@@ -5,6 +5,17 @@ export interface AgentFenceStatus {
   reason: string;
   roots: string[];
   bwrap_available: boolean;
+  /** The backend's distro-aware install command for the missing fence tool;
+   *  absent/null when the tool works or no command is worth running. */
+  install_cmd?: string | null;
+}
+
+/** The pill's one-click install for a missing fence tool, or `null` when the
+ *  button must not be offered: the tool works, the distribution is unknown, or
+ *  a backend that predates the field sends no command. Never a guessed `apt`. */
+export function agentFenceInstallCommand(status: AgentFenceStatus | null | undefined): string | null {
+  if (!status || status.bwrap_available) return null;
+  return status.install_cmd || null;
 }
 
 export const AGENT_FENCE_DEFAULT_PATHS = [
