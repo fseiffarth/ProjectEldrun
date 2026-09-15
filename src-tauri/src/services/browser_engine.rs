@@ -1439,16 +1439,16 @@ mod tests {
             Err("loopback".into())
         );
         assert_eq!(
-            hop_allowed(&u("https://192.168.1.5/x.png"), None, 0, doc),
-            Err("private-network".into())
+            hop_allowed(&u("https://169.254.169.254/x.png"), None, 0, doc),
+            Err("link-local".into())
         );
         assert_eq!(
             hop_allowed(&u("http://example.com/x.png"), None, 0, doc),
             Err("scheme:http".into())
         );
         assert_eq!(
-            hop_allowed(&u("https://10.0.0.5/x.png"), Some(&u("https://example.com/")), 1, doc),
-            Err("redirect-to-private-network".into())
+            hop_allowed(&u("https://169.254.169.254/x.png"), Some(&u("https://example.com/")), 1, doc),
+            Err("redirect-to-link-local".into())
         );
         // The user-typed reader path keeps its hop-0 allowance.
         assert!(hop_allowed(&u("http://127.0.0.1:3000/"), None, 0, FetchOrigin::User).is_ok());
