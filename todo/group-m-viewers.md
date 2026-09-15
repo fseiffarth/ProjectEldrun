@@ -2210,3 +2210,22 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       same. A project with no `.gitignore` gets a minimal one.
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work
+
+840. **Table and BibTeX parsers break their own text-preservation promise on
+    four inputs.** Found 2026-09-15 by the edge-case sweep; each case is an
+    `it.skip` in `TableEdgeCases` / `BibEdgeCases` naming the bug, so un-skip
+    the test when the fix lands. (1) `table.ts parseTable`: the docstring says a
+    mid-field `"` in an unquoted field is a literal, but any `"` opens a quoted
+    region — `a,b"c,d` parses as two cells, not three. (2) `bib.ts
+    deleteBibField` on a CRLF file eats the LF of the *previous* line's CRLF
+    while keeping the deleted field's own, leaving a bare `\r`. (3) `addBibField`
+    and (4) `addBibEntry` hardcode `\n`, so one card edit gives a CRLF file mixed
+    endings. Files: `lib/viewers/table.ts`, `lib/viewers/bib.ts`. Fixed the
+    same day: a quote opens a quoted region only at the start of a field; the
+    delete takes the field's own line ending; add-field and add-entry write
+    the file's line ending. **Not live-tested.**
+    - [x] 🤖 Automated test — `TableEdgeCases`, `BibEdgeCases`
+    - [ ] 🖐️ Manual test — edit a card in a CRLF `.bib`; `file` still reports
+      CRLF line terminators and git shows one changed line.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work

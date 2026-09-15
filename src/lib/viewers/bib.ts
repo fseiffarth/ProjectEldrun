@@ -614,12 +614,22 @@ function sanitizeToken(value: string): string {
 export function deleteBibField(text: string, field: BibField): string {
   let start = field.start;
   let end = field.end;
-  // Absorb the indentation in front of the field and the newline behind it, so a
-  // delete leaves no ragged blank line in the record.
+  // Absorb the indentation in front of the field and, when the field has its
+  // line to itself, the line ending behind it — its *own* ending, so a CRLF file
+  // loses a whole `\r\n` rather than the previous line's `\n` (which left a
+  // bare `\r` behind).
   while (start > 0 && (text[start - 1] === " " || text[start - 1] === "\t")) start--;
-  if (start > 0 && text[start - 1] === "\n" && endsLine(text, end)) start--;
   while (end < text.length && (text[end] === " " || text[end] === "\t")) end++;
+  if ((start === 0 || text[start - 1] === "\n") && endsLine(text, end)) {
+    if (text[end] === "\r") end++;
+    if (text[end] === "\n") end++;
+  }
   return splice(text, start, end, "");
+}
+
+/** The line ending `text` uses: CRLF when any line ends that way, else LF. */
+function lineEndingOf(text: string): string {
+  return text.includes("\r\n") ? "\r\n" : "\n";
 }
 
 /** True when only whitespace separates `at` from the end of its line. */
@@ -650,7 +660,8 @@ export function addBibField(text: string, rec: BibRecord, name: string): string 
     ? text[last.end - 1] !== ","
     : !text.slice(rec.keyEnd, closing).includes(",");
   const head = text.slice(0, closing).replace(/\s*$/, "");
-  const insert = `${needsComma ? "," : ""}\n${indent}${clean} = {},\n`;
+  const nl = lineEndingOf(text);
+  const insert = `${needsComma ? "," : ""}${nl}${indent}${clean} = {},${nl}`;
   return head + insert + text.slice(closing);
 }
 
@@ -725,8 +736,9 @@ export function addBibEntry(
   const taken = new Set(doc.records.map((r) => r.key.toLowerCase()).filter(Boolean));
   let key = "entry";
   for (let n = 1; taken.has(key.toLowerCase()); n++) key = `entry${n}`;
-  const sep = text.length === 0 || text.endsWith("\n\n") ? "" : text.endsWith("\n") ? "\n" : "\n\n";
-  const entry = `@${type}{${key},\n  title = {},\n  author = {},\n  year = {},\n}\n`;
+  const nl = lineEndingOf(text);
+  const sep = text.length === 0 || text.endsWith(nl + nl) ? "" : text.endsWith(nl) ? nl : nl + nl;
+  const entry = `@${type}{${key},${nl}  title = {},${nl}  author = {},${nl}  year = {},${nl}}${nl}`;
   return { text: text + sep + entry, key };
 }
 
