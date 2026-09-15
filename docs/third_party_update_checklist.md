@@ -239,6 +239,12 @@ aliases, and anything about where or how credentials are stored.
     frames paint no text, and `notePtyOutput` therefore drops them; if a
     release starts animating VISIBLE cells behind an approval instead, the tab
     never goes quiet and the orange bar never lights.
+  - **An idle Codex is not a quiet Codex either** (0.154.0). Once the terminal
+    answers its `OSC 11` background query, it animates a field of braille dots
+    (U+2800–U+28FF) around the composer every ~150ms, indefinitely.
+    `notePtyOutput` drops braille cells before judging a frame, or a finished
+    turn reads as "working" forever. An animation in any other glyph range
+    brings that back.
   - **Approval menus are numbered rows whose labels decide, not their index.**
     Codex offers two flavours of yes before the no ("Yes, just this once",
     "Yes, and don't ask again for this command in this session", "No, and tell

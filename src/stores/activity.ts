@@ -70,6 +70,14 @@ const readAtByPty: Record<string, number> = {};
 /// `lastDoneByTab`): a turn "finishes" only after it was seen working, so a
 /// stray blip followed by silence never books a finished turn.
 const busySinceMarkByPty: Record<string, boolean> = {};
+/// When the tab last produced output inside a burst that counted as WORK —
+/// sustained past `WORK_ONSET_MS`, the bar "working" has to clear. This, not
+/// `lastOutputByPty`, is what a `done` flag is raised from: an idle agent TUI
+/// still paints now and then (a repaint when its pane is resized on a show or
+/// hide, a focus report, a status-line refresh), and each of those is output
+/// "after the user looked". Counting them brought a turn the user had already
+/// read back as unread a few seconds after every look away.
+const workAtByPty: Record<string, number> = {};
 
 /// Memo for the decision-prompt test, keyed by PTY id and validated against the
 /// tail it was computed from. `attentionFor` asks the question of every agent tab
@@ -101,14 +109,26 @@ const PTY_MAPS: Record<string, unknown>[] = [
   inputByPty,
   readAtByPty,
   busySinceMarkByPty,
+  workAtByPty,
 ];
+
+/// Braille pattern cells (U+2800–U+28FF), which an agent TUI paints as
+/// decoration, never as content. Codex 0.154 fills the empty rows around its
+/// composer with a drifting field of them — ~1.2 KB of visible cells every
+/// 150ms, for as long as it sits idle, once the terminal answers its
+/// background-colour query (xterm.js does). Counted as text, that animation
+/// kept a commanded Codex tab "working" forever after its turn ended, and
+/// pushed the prompt it was waiting on out of the tail. The cost is a TUI whose
+/// ONLY sign of life is a lone braille spinner cell; every agent Eldrun knows
+/// repaints a status word or a timer beside its spinner.
+const BRAILLE_CELLS = /[\u2800-\u28ff]/g;
 
 /** Record that a PTY produced output just now, keeping the tail of the current
  *  burst so `recompute` can tell a finished turn from a decision prompt. Cheap;
  *  safe to call often. */
 export function notePtyOutput(ptyId: string, data = "") {
   const now = Date.now();
-  const text = data ? stripAnsi(data) : "";
+  const text = data ? stripAnsi(data).replace(BRAILLE_CELLS, "") : "";
   // A frame that paints no text — a terminal-title update, a cursor move, a
   // blanked cell — says nothing about what the agent is doing, and a BLOCKED
   // Codex tab emits nothing else: its title alternates between
@@ -118,7 +138,8 @@ export function notePtyOutput(ptyId: string, data = "") {
   // a tab stuck on "working": the quiet never reached DECISION_QUIET_MS, so its
   // tail was never classified and the decision lamp never lit. Claude Code's
   // prompts do not hit this — it goes properly silent — which is why the bug
-  // looked Codex-only.
+  // looked Codex-only. Its idle dot animation is dropped the same way (see
+  // `BRAILLE_CELLS`).
   if (data && !text.trim()) return;
   const prev = lastOutputByPty[ptyId];
   // Start of a fresh burst after quiet (or the very first output): reset the
@@ -133,6 +154,7 @@ export function notePtyOutput(ptyId: string, data = "") {
     tailByPty[ptyId] = "";
   }
   lastOutputByPty[ptyId] = now;
+  if (now - onsetByPty[ptyId] >= WORK_ONSET_MS) workAtByPty[ptyId] = now;
   if (text) {
     const tail = (tailByPty[ptyId] ?? "") + text;
     tailByPty[ptyId] = tail.length > TAIL_CAP ? tail.slice(-TAIL_CAP) : tail;
@@ -289,8 +311,9 @@ export type AttentionKind = "decision" | "done";
  *  The two kinds treat "the user is looking at this tab" differently, because
  *  they mean different things:
  *  - `done` is about UNREAD output, so looking at the tab IS the thing that
- *    retires it. A looked-at tab also stamps `seenAtByPty`, so only what the
- *    agent does AFTER the user looks away can raise the flag again.
+ *    retires it. A looked-at tab also stamps `seenAtByPty`, so only WORK the
+ *    agent does after the user looks away can raise the flag again — a repaint
+ *    of a finished screen is not a new turn (see `workAtByPty`).
  *  - `decision` is about a BLOCKED agent, and looking at a prompt does not answer
  *    it. It therefore holds while watched (nothing else in the UI says "this one
  *    is stuck on you" once the tab is on screen but the eyes are elsewhere), and
@@ -320,8 +343,10 @@ function attentionFor(
   // Past here everything is inferred from silence, which a watched tab's own
   // screen already tells the user better than a lamp could.
   if (lookedAt) return null;
-  // Nothing has happened here since the user last had eyes on the tab.
-  if (out <= seen && bell <= seen) return null;
+  // The agent has done no work since the user last had eyes on the tab. A
+  // repaint, or a bell replayed with one, is not a turn: without a sustained
+  // burst after the look there is nothing unread to report.
+  if ((workAtByPty[ptyId] ?? 0) <= seen) return null;
   // "Done" means the agent finished work somebody asked for, so it requires
   // input to have been sent this session (see `noteUserInput`): without it, the
   // quiet that follows a restore banner or a resumed session's replayed

@@ -236,6 +236,25 @@ describe("activity store attention state", () => {
     expect(useActivityStore.getState().attentionByScope["proj-a"]).toBe("decision");
   });
 
+  it("does not read Codex's idle dot animation as work", () => {
+    // Codex 0.154 animates a field of braille dots around its composer every
+    // ~150ms for as long as it sits idle. Visible cells, but decoration: a turn
+    // that ended must go quiet and finish, not stay "working" forever.
+    const id = "proj-a:agent-1";
+    runThenFinish(id);
+    for (let frame = 0; frame < 30; frame += 1) {
+      vi.advanceTimersByTime(150);
+      notePtyOutput(
+        id,
+        `\x1b[?2026h\x1b[16;${10 + frame}H\x1b[38;2;90;90;90;48;2;57;57;57m\u2801` +
+          "\x1b[16;40H\u2808\u2880 \x1b[18;53H\u2820\x1b[39m\x1b[49m\x1b[0m\x1b[?2026l",
+      );
+    }
+    useActivityStore.getState().recompute();
+    expect(useActivityStore.getState().busyByTab[id]).toBeUndefined();
+    expect(useActivityStore.getState().attentionByTab[id]).toBe("done");
+  });
+
   it("never flags uncommanded output as done (resume/restart replay)", () => {
     // The restored-tab case: on launch or project reopen the agent replays its
     // banner and prior transcript, then goes quiet. Nobody typed anything, so
@@ -365,6 +384,36 @@ describe("activity store attention state", () => {
     vi.advanceTimersByTime(5000);
     useActivityStore.getState().recompute();
     expect(useActivityStore.getState().attentionByTab["proj-a:agent-1"]).toBeUndefined();
+  });
+
+  it("does not bring a read turn back when the idle agent merely repaints", () => {
+    // An idle Claude TUI still paints: a resize when its pane is hidden, a focus
+    // report, a status-line refresh. None of that is a new turn, so looking away
+    // after reading the result must not re-raise "done" a few seconds later.
+    useTabsStore.setState({ scope: "proj-a" });
+    runThenFinish("proj-a:agent-1");
+    useActivityStore.getState().recompute();
+    useTabsStore.setState({ scope: "proj-b" });
+
+    notePtyOutput("proj-a:agent-1", "\x1b[2J\x1b[H> \n  ? for shortcuts\n");
+    useActivityStore.getState().noteBell("proj-a:agent-1");
+    vi.advanceTimersByTime(3000);
+    notePtyOutput("proj-a:agent-1", "  ? for shortcuts\n");
+    vi.advanceTimersByTime(3000);
+    useActivityStore.getState().recompute();
+    expect(useActivityStore.getState().attentionByTab["proj-a:agent-1"]).toBeUndefined();
+  });
+
+  it("raises done again for a real turn finished after the user looked away", () => {
+    useTabsStore.setState({ scope: "proj-a" });
+    runThenFinish("proj-a:agent-1");
+    useActivityStore.getState().recompute();
+    useTabsStore.setState({ scope: "proj-b" });
+    useActivityStore.getState().recompute();
+
+    runThenFinish("proj-a:agent-1");
+    useActivityStore.getState().recompute();
+    expect(useActivityStore.getState().attentionByTab["proj-a:agent-1"]).toBe("done");
   });
 
   it("keeps flagging a decision on the tab the user IS looking at", () => {
