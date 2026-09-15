@@ -247,17 +247,28 @@ pub fn close_presenter_window(app: AppHandle, label: String) -> Result<(), Strin
 // thread that asserted `SetThreadExecutionState`. The cost of being wrong here
 // is asymmetric — an inhibit that never released would leave the user's machine
 // unable to sleep for the rest of the session — so the holder lives in a mutex,
-// is idempotent, and is released on the presenter's unmount, on app exit, and
-// by the child (or thread) dying with us if all else fails.
+// is idempotent, and is released on the presenter's unmount, on a clean exit
+// (`RunEvent::Exit` calls `presenter_release_sleep`), and — for a crash, where
+// neither runs — by a lifetime tie each mechanism carries on its own: see the
+// variants below.
 
 /// What is keeping the machine awake. One variant per mechanism; dropping the
 /// value is not enough on its own (a `Child` needs its kill), so release goes
 /// through [`Inhibitor::release`].
 enum Inhibitor {
-    /// A long-lived child whose lifetime *is* the inhibition (`systemd-inhibit
-    /// … sleep infinity` on Linux, `caffeinate -w <our pid>` on macOS). Killing
-    /// it releases; a crashed Eldrun releases it too — `systemd-inhibit` dies
-    /// with its parent, and `caffeinate -w` exits when the pid it watches does.
+    /// A long-lived child whose lifetime *is* the inhibition. Killing it
+    /// releases. How a *crashed* Eldrun releases it differs per OS:
+    ///
+    /// - Linux: `systemd-inhibit … cat` with a piped stdin whose write end
+    ///   stays inside this `Child` (never taken). When Eldrun dies the kernel
+    ///   closes that end, `cat` reads EOF and exits, and `systemd-inhibit`
+    ///   releases the lock and exits with it. Nothing else inherits the write
+    ///   end: std's pipes are `O_CLOEXEC`. (A child does NOT die with its
+    ///   parent by default — the previous `sleep infinity` outlived a crash —
+    ///   and `PR_SET_PDEATHSIG` would follow the forking *thread*, not the
+    ///   process, so it would drop mid-talk if the spawn ever moved off the
+    ///   main thread.)
+    /// - macOS: `caffeinate -w <our pid>` exits when the pid it watches does.
     #[cfg(not(target_os = "windows"))]
     Child(std::process::Child),
     /// A thread holding `ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED`.
@@ -302,25 +313,33 @@ fn inhibit_reason(reason: &str) -> String {
     }
 }
 
+/// The `systemd-inhibit` argv (program excluded). The inhibited child is
+/// `cat`, which blocks on a stdin pipe Eldrun holds open — see
+/// [`Inhibitor::Child`] for why that, and not `sleep infinity`, is the
+/// lifetime tie. The reason is a single argv element (never a shell), since
+/// the desktop's own "what is keeping this machine awake" UI shows it.
+#[cfg(any(target_os = "linux", test))]
+fn linux_inhibit_argv(reason: &str) -> Vec<String> {
+    vec![
+        "--what=idle:sleep".to_string(),
+        "--who=Eldrun".to_string(),
+        format!("--why={}", inhibit_reason(reason)),
+        "--mode=block".to_string(),
+        "cat".to_string(),
+    ]
+}
+
 /// Linux: `systemd-inhibit` with a long-lived child. `xdg-screensaver suspend
 /// <window-id>` is the portable spelling and needs an X11 window id we do not
 /// have here, so the inhibition lasts exactly as long as the child instead.
 /// `None` when there is no `systemd-inhibit` on PATH.
 #[cfg(target_os = "linux")]
 fn acquire_inhibitor(reason: &str) -> Option<Inhibitor> {
-    // The reason string is shown by the desktop's own "what is keeping this
-    // machine awake" UI, so it is passed as a single argv element (never a
-    // shell).
     let child = crate::paths::command_no_window("systemd-inhibit")
-        .args([
-            "--what=idle:sleep",
-            "--who=Eldrun",
-            &format!("--why={}", inhibit_reason(reason)),
-            "--mode=block",
-            "sleep",
-            "infinity",
-        ])
-        .stdin(std::process::Stdio::null())
+        .args(linux_inhibit_argv(reason))
+        // Piped, and the handle deliberately left in `child.stdin`: its write
+        // end closing (release's kill, or Eldrun dying) is what ends `cat`.
+        .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
@@ -331,7 +350,7 @@ fn acquire_inhibitor(reason: &str) -> Option<Inhibitor> {
 /// macOS: the system's own `caffeinate`, asserting "no display sleep" (`-d`) and
 /// "no idle sleep" (`-i`). `-w <pid>` ties its lifetime to Eldrun's: it exits on
 /// its own the moment this process is gone, which is the crash-safety the Linux
-/// child gets from dying with its parent. Always present on macOS (it ships in
+/// child gets from its stdin pipe closing. Always present on macOS (it ships in
 /// `/usr/bin`), so a `None` here means the spawn itself failed.
 #[cfg(target_os = "macos")]
 fn acquire_inhibitor(reason: &str) -> Option<Inhibitor> {
@@ -572,6 +591,45 @@ mod tests {
         // sitting at, i.e. the one surface the audience must NOT get.
         let ms = [rect(0, 0), rect(1920, 0), rect(3840, 0)];
         assert_eq!(choose_audience_monitor(&ms, None), Some(rect(1920, 0)));
+    }
+
+    #[test]
+    fn linux_inhibit_blocks_on_cat_not_sleep() {
+        let argv = linux_inhibit_argv("Talk\nwith\u{7} controls");
+        assert_eq!(argv.last().map(String::as_str), Some("cat"));
+        assert!(!argv.iter().any(|a| a == "sleep" || a == "infinity"));
+        assert!(argv.contains(&"--mode=block".to_string()));
+        let why = argv.iter().find(|a| a.starts_with("--why=")).unwrap();
+        assert!(!why.chars().any(|c| c.is_control()), "{why}");
+        let long = linux_inhibit_argv(&"x".repeat(500));
+        let why = long.iter().find(|a| a.starts_with("--why=")).unwrap();
+        assert_eq!(why.len(), "--why=".len() + 80);
+    }
+
+    /// The lifetime tie itself, without logind: a `cat` on a piped stdin exits
+    /// once the write end is gone — which is what the kernel does to it when
+    /// Eldrun dies holding the handle.
+    #[cfg(unix)]
+    #[test]
+    fn cat_exits_when_its_stdin_write_end_closes() {
+        let mut child = std::process::Command::new("cat")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("cat is on every unix");
+        drop(child.stdin.take());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            if child.try_wait().unwrap().is_some() {
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                let _ = child.kill();
+                panic!("cat outlived its closed stdin");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
     }
 
     #[test]
