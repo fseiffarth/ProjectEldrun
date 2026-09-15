@@ -10,7 +10,7 @@ import { useProjectsStore } from "../../stores/projects";
 import { useT } from "../../lib/i18n";
 import { useExperimental } from "../../lib/experimental";
 import { cmdToKind, isDetachedPtyId, type TabKind } from "../../stores/tabs";
-import { lastPtyOutputAt, notePtySpawn, noteUserInput, splitPtyId, useActivityStore } from "../../stores/activity";
+import { isInterruptInput, lastPtyOutputAt, notePtySpawn, noteUserInput, splitPtyId, useActivityStore } from "../../stores/activity";
 import { useAgentTaskStore } from "../../stores/agentTask";
 import { noteInput } from "../../lib/promptCount";
 import { METRIC, agentPromptLeaf, sub } from "../../lib/usageMetrics";
@@ -743,7 +743,10 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       if (initialInputPending.current && data && !data.startsWith("\x1b")) {
         initialInputPending.current = false;
       }
-      noteUserInput(id);
+      // A bare Escape / Ctrl+C is the user cutting the agent off: its hook
+      // verdict of "working" would otherwise stand (an interrupted turn fires
+      // no Stop) — see noteUserInput.
+      noteUserInput(id, isInterruptInput(data));
       if (noteInput(id, data) > 0) countSubmit();
       writePtyInput(id, PTY_ENCODER.encode(data)).catch(console.error);
     });

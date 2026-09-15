@@ -14,7 +14,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { PLATFORM } from "../../lib/dragPlatform";
 import { nextWindowState } from "../../lib/windowState";
-import { notePtyOutput, useActivityStore } from "../../stores/activity";
+import { noteAgentTurn, notePtyOutput, useActivityStore } from "../../stores/activity";
+import type { AgentTurnState } from "../../stores/activity";
 import {
   usePowerStore,
   useQuiesce,
@@ -836,7 +837,17 @@ export function AppShell() {
     })
       .then((fn) => { unlistenDigest = fn; })
       .catch(() => {});
-    return () => { unlisten?.(); unlistenDigest?.(); };
+    // What the agent's OWN hooks say its turn is doing (working / decision /
+    // done), relayed by `services::agent_turn` off the per-tab record the hook
+    // script writes. The authority for the tab's marks wherever it speaks; the
+    // byte classifier above stays for agents that fire no hooks.
+    let unlistenTurn: (() => void) | undefined;
+    listen<{ id: string; state: AgentTurnState }>("agent-turn", (ev) => {
+      noteAgentTurn(ev.payload.id, ev.payload.state);
+    })
+      .then((fn) => { unlistenTurn = fn; })
+      .catch(() => {});
+    return () => { unlisten?.(); unlistenDigest?.(); unlistenTurn?.(); };
   }, []);
 
   // Recompute the running-task indicators on a fixed cadence. Split from the

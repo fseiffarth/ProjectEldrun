@@ -1315,3 +1315,32 @@ unchanged; the new agents are additive.
       resumed (expected).
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work
+
+838. **Working / done marks come from the agent's own hooks.** The byte heuristic
+    could not survive every agent TUI (Codex paints a spinner and its title on a
+    timer whether it works, waits or idles, and while thinking changes one timer
+    digit a second — so after the braille/empty-frame filters a working Codex
+    never lit). The hook script now also serves `UserPromptSubmit`, `PostToolUse`,
+    `Notification` (Claude) and `SessionEnd`, writes `live_sessions/<uid>.turn`,
+    and `services::agent_turn` relays it as `agent-turn` by PTY id; the activity
+    store takes that as authority (retired by an interrupt key, by input on a
+    decision, by 20 s without paint, by respawn) and keeps a sharper byte fallback
+    (paint vs. text, 1.5 s text gap, keystroke-echo suppression) for hookless
+    agents. Files: `services/agent_turn.rs`, `services/agent_session.rs`,
+    `commands/terminal.rs`, `stores/activity.ts`, `TerminalView.tsx`,
+    `AppShell.tsx`. Implemented 2026-09-15, **not live-tested; backend change
+    (restart needed; Codex needs `/hooks` re-trust for the four new hooks).**
+    - [x] 🤖 Automated test — `AgentTurnHooks`, `PillRunningIndicator`,
+      `agent_session::tests::hook_script_records_the_turn_state_for_the_tabs_own_session_only`
+    - [ ] 🖐️ Manual test — after a restart: (1) in a Claude tab send a prompt,
+      switch to another tab — its bar/ring shows working within a second, and
+      finished when the answer lands; look at it → the finish clears. (2) Ask
+      Claude for something that needs a permission → the decision lamp lights
+      (also while the tab is on screen); answer → it clears and working resumes.
+      (3) Same in a Codex tab (after trusting the hooks via `/hooks`): working
+      while it thinks (only its timer moves), an approval menu → decision, and
+      idle Codex with its dot field is neither. (4) Press Esc mid-turn → working
+      clears within a second. (5) Type a long prompt slowly → no working glow.
+      (6) A Gemini/Qwen tab (no hooks) still shows working/finished off its bytes.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work

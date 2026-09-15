@@ -391,6 +391,13 @@ pub async fn pty_spawn(
         crate::services::agent_fence::add_box_root_args(&mut opts, roots, &own);
     }
 
+    // The agent's hooks report its turn state under its tab uid; bind that uid
+    // to this PTY so the report reaches the tab's own marks, and drop any
+    // record a previous run of the same tab left behind (see agent_turn).
+    if let Some(uid) = opts.env.get("ELDRUN_TAB_UID").cloned() {
+        crate::services::agent_turn::bind_tab(&uid, &opts.id, opts.project_id.as_deref());
+    }
+
     // Codex resume, without the hook. Codex will not run Eldrun's SessionStart
     // hook until the user trusts it (`/hooks`), and an untrusted hook fails
     // silently — so nothing recorded a tab's live session id and every restored
@@ -791,6 +798,7 @@ pub async fn pty_kill(registry: State<'_, RegistryState>, id: String) -> Result<
     crate::commands::credentials::forget_login_pty(&id);
     registry.lock().unwrap().kill(&id);
     crate::services::agent_fence::on_tab_gone(&id);
+    crate::services::agent_turn::on_tab_gone(&id);
     Ok(())
 }
 
@@ -808,6 +816,7 @@ pub async fn pty_kill_scope(
         crate::terminal::route_remove_all_views(id);
         registry.lock().unwrap().kill(id);
         crate::services::agent_fence::on_tab_gone(id);
+        crate::services::agent_turn::on_tab_gone(id);
     }
     Ok(ids)
 }

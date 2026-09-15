@@ -70,6 +70,7 @@ async function tabStatus(requestId: string): Promise<Status | undefined> {
 /** A burst of agent output long enough to count as work (past the onset
  * debounce), the way `AgentActivityTurns` sustains one. */
 function sustain(totalMs = 1600) {
+  vi.advanceTimersByTime(200); // past ECHO_MS: the agent's frames, not the phone keystroke's echo
   notePtyOutput(PTY, "thinking…\n");
   for (let elapsed = 0; elapsed < totalMs; elapsed += 400) {
     vi.advanceTimersByTime(400);

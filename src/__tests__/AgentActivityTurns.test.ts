@@ -21,6 +21,7 @@ function seedAgentTab() {
 
 function sustain(id: string, totalMs = 1600) {
   noteUserInput(id);
+  vi.advanceTimersByTime(200); // past ECHO_MS: the agent's frames, not the keystroke's echo
   notePtyOutput(id, "thinking…\n");
   for (let elapsed = 0; elapsed < totalMs; elapsed += 400) {
     vi.advanceTimersByTime(400);

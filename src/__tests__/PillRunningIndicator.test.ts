@@ -54,8 +54,12 @@ function replayOutput(id: string, totalMs = 1600) {
 
 // The same sustained output, but COMMANDED: the user typed into the tab first,
 // which is what lets it register as "working" at all.
+// The agent's first frame lands a moment after the keystroke: output inside
+// ECHO_MS (150) of input is the keystroke's own echo and is not the agent
+// saying anything.
 function sustainOutput(id: string, totalMs = 1600) {
   noteUserInput(id);
+  vi.advanceTimersByTime(200);
   replayOutput(id, totalMs);
 }
 
@@ -63,10 +67,9 @@ function sustainOutput(id: string, totalMs = 1600) {
 // them one after the other would let the first go stale (its last output ages
 // past BUSY_WINDOW_MS) while the second is still being fed.
 function sustainAll(ids: string[], totalMs = 1600) {
-  ids.forEach((id) => {
-    noteUserInput(id);
-    notePtyOutput(id, "working…\n");
-  });
+  ids.forEach((id) => noteUserInput(id));
+  vi.advanceTimersByTime(200);
+  ids.forEach((id) => notePtyOutput(id, "working…\n"));
   for (let elapsed = 0; elapsed < totalMs; elapsed += 400) {
     vi.advanceTimersByTime(400);
     ids.forEach((id) => notePtyOutput(id, "working…\n"));
@@ -119,12 +122,12 @@ describe("activity store running indicator", () => {
   });
 
   it("keeps a bursty stream working across a short quiet gap", () => {
-    // Gaps under BUSY_WINDOW_MS belong to the SAME burst, so they must not reset
+    // Gaps under TEXT_GAP_MS belong to the SAME burst, so they must not reset
     // the onset — otherwise bursty agent output could never age past the debounce
     // and the working indicator would never appear at all.
     noteUserInput("proj-a:agent-1");
     notePtyOutput("proj-a:agent-1"); // onset at t0
-    vi.advanceTimersByTime(700); // < BUSY_WINDOW_MS (800) → still one burst
+    vi.advanceTimersByTime(700); // < TEXT_GAP_MS (1500) → still one burst
     notePtyOutput("proj-a:agent-1");
     vi.advanceTimersByTime(700);
     notePtyOutput("proj-a:agent-1");
@@ -139,7 +142,7 @@ describe("activity store running indicator", () => {
     useActivityStore.getState().recompute();
     expect(useActivityStore.getState().busyByTab["proj-a:agent-1"]).toBe(true);
 
-    vi.advanceTimersByTime(900); // > BUSY_WINDOW_MS → the burst has ended
+    vi.advanceTimersByTime(1600); // > TEXT_GAP_MS (1500) → the burst has ended
     notePtyOutput("proj-a:agent-1"); // a fresh burst: onset restarts from here
     useActivityStore.getState().recompute();
     // Recent output, but the new burst has not been sustained — not working yet.
@@ -675,10 +678,11 @@ describe("activity store per-scope status counts (pill status bars)", () => {
       { key: "agent-1", state: "working" },
     ]);
 
-    // 850ms + agent-2's own 1600ms of output leaves agent-1 quiet for 2450ms:
-    // past BUSY_WINDOW_MS (800) so it stops working, short of DONE_QUIET_MS
-    // (2500) so it raises no flag either — the tally is 1 working throughout.
-    vi.advanceTimersByTime(850);
+    // 600ms + agent-2's own 200ms echo gap + 1600ms of output leaves agent-1
+    // quiet for 2400ms: past BUSY_WINDOW_MS (800) so it stops working, short of
+    // DONE_QUIET_MS (2500) so it raises no flag either — the tally is 1 working
+    // throughout.
+    vi.advanceTimersByTime(600);
     sustainOutput("proj-a:agent-2");
     useActivityStore.getState().recompute();
     expect(useActivityStore.getState().statusCountsByScope["proj-a"]).toEqual({

@@ -6,8 +6,11 @@
 //! to the launch id — so resuming the launch id brings back the pre-`/clear`
 //! conversation. To follow the live id we install a global Claude `SessionStart`
 //! hook (fires on startup / resume / clear / compact) that records the live
-//! `session_id` keyed by `$ELDRUN_TAB_UID` — an env var Eldrun sets on the
-//! spawned agent to the stable launch id (see `terminal::resolve_claude_session`).
+//! `session_id` — and, beside it, that `source` — keyed by `$ELDRUN_TAB_UID`,
+//! an env var Eldrun sets on the spawned agent to the stable launch id (see
+//! `terminal::resolve_claude_session`). The prompt history reads the same
+//! record at write time (`services::agent_prompts`), so a prompt sent after a
+//! `/clear` is filed under the session it actually reached.
 //! The hook no-ops for any Claude not launched by Eldrun (no `ELDRUN_TAB_UID`),
 //! so it is safe to install once, globally.
 
@@ -435,11 +438,20 @@ pub fn last_prompt_in_transcript(path: &std::path::Path, kind: TranscriptKind) -
 }
 
 /// Read the last `MODEL_TAIL_BYTES` of `path` and return `pick`'s answer for
-/// the *last* line it accepts. A line cut by the tail boundary is skipped
-/// rather than parsed — it would parse as garbage, or worse, as a record.
+/// the *last* line it accepts.
 fn last_in_transcript_tail<T>(
     path: &std::path::Path,
     pick: impl Fn(&str) -> Option<T>,
+) -> Option<T> {
+    with_transcript_tail(path, |lines| lines.iter().rev().find_map(|line| pick(line)))
+}
+
+/// Hand `read` the whole lines of the last `MODEL_TAIL_BYTES` of `path`, in
+/// file order. A line cut by the tail boundary is dropped rather than parsed —
+/// it would parse as garbage, or worse, as a record.
+fn with_transcript_tail<T>(
+    path: &std::path::Path,
+    read: impl FnOnce(&[&str]) -> Option<T>,
 ) -> Option<T> {
     use std::io::{Read, Seek, SeekFrom};
     let mut file = std::fs::File::open(path).ok()?;
@@ -454,7 +466,118 @@ fn last_in_transcript_tail<T>(
         // Whatever came before the seek point is missing from the first line.
         lines.remove(0);
     }
-    lines.iter().rev().find_map(|line| pick(line))
+    read(&lines)
+}
+
+// ── The prompts a tab was given, with their times ────────────────────────────
+//
+// The last prompt alone cannot say what the prompt chart needs: a message the
+// user sends while the agent is still working never starts a turn of its own,
+// and Claude records it as a `queued_command` attachment rather than a `user`
+// record, so it is never "the last prompt" at a turn's start. The chart adopts
+// from this list instead — every prompt in the tail, each with the moment the
+// transcript says it went.
+
+/// Most prompts one read returns: the tail's newest.
+const MAX_RECENT_PROMPTS: usize = 20;
+/// The same words recorded twice this close together are one prompt (Codex
+/// writes the typed event and the model-facing message for every turn).
+const SAME_PROMPT_SECS: u64 = 120;
+
+/// One prompt out of a transcript, and when it went (the record's own ISO
+/// timestamp).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct TranscriptPrompt {
+    pub text: String,
+    pub at: String,
+}
+
+/// The newest prompts (oldest first) the tab launched as `cmd` with launch id
+/// `launch_id` was given, however they were submitted. Empty when there is no
+/// transcript Eldrun reads (Codex's thread store keeps no messages).
+pub fn agent_session_recent_prompts(
+    cmd: &str,
+    project_id: Option<&str>,
+    launch_id: &str,
+) -> Vec<TranscriptPrompt> {
+    read_agent_transcript(cmd, project_id, launch_id, recent_prompts_in_transcript, |_, _| None)
+        .unwrap_or_default()
+}
+
+/// The prompts in the tail of the transcript at `path`, oldest first, at most
+/// [`MAX_RECENT_PROMPTS`]. `None` when it holds none, so the resolver still
+/// falls back from a fresh live transcript to the launch one.
+pub fn recent_prompts_in_transcript(
+    path: &std::path::Path,
+    kind: TranscriptKind,
+) -> Option<Vec<TranscriptPrompt>> {
+    with_transcript_tail(path, |lines| {
+        let mut prompts: Vec<TranscriptPrompt> = Vec::new();
+        for line in lines {
+            let Some(prompt) = timed_prompt_in_record(line, kind) else { continue };
+            let repeat = prompts.last().is_some_and(|last| {
+                last.text == prompt.text
+                    && match (
+                        crate::services::prompt_blame::iso_to_epoch(&last.at),
+                        crate::services::prompt_blame::iso_to_epoch(&prompt.at),
+                    ) {
+                        (Some(a), Some(b)) => b.abs_diff(a) <= SAME_PROMPT_SECS,
+                        _ => false,
+                    }
+            });
+            if !repeat {
+                prompts.push(prompt);
+            }
+        }
+        let skip = prompts.len().saturating_sub(MAX_RECENT_PROMPTS);
+        prompts.drain(..skip);
+        (!prompts.is_empty()).then_some(prompts)
+    })
+}
+
+/// A prompt record with a readable timestamp. A record without one is skipped:
+/// the chart places a prompt by its time, and a guessed one would misplace it.
+fn timed_prompt_in_record(line: &str, kind: TranscriptKind) -> Option<TranscriptPrompt> {
+    let line = line.trim();
+    if line.is_empty() {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_str(line).ok()?;
+    let raw = match kind {
+        TranscriptKind::Claude => {
+            claude_prompt_in_record(&value).or_else(|| claude_queued_prompt(&value))?
+        }
+        TranscriptKind::Codex => codex_prompt_in_record(&value)?,
+    };
+    let at = value.get("timestamp")?.as_str()?;
+    crate::services::prompt_blame::iso_to_epoch(at)?;
+    Some(TranscriptPrompt {
+        text: clean_prompt_text(&raw)?,
+        at: at.to_string(),
+    })
+}
+
+/// A message the user sent while Claude was working: a `queued_command`
+/// attachment (`attachment.prompt`), absorbed into the running turn. Only a
+/// human's plain prompt counts — a queued `!` line or a notification the CLI
+/// queued for itself is not one.
+fn claude_queued_prompt(value: &serde_json::Value) -> Option<String> {
+    if value.get("type").and_then(|t| t.as_str()) != Some("attachment") {
+        return None;
+    }
+    let attachment = value.get("attachment")?;
+    if attachment.get("type").and_then(|t| t.as_str()) != Some("queued_command") {
+        return None;
+    }
+    let mode = attachment.get("commandMode").and_then(|m| m.as_str());
+    if mode.is_some_and(|mode| mode != "prompt") {
+        return None;
+    }
+    let origin = attachment.get("origin").and_then(|o| o.get("kind")).and_then(|k| k.as_str());
+    if origin.is_some_and(|origin| origin != "human") {
+        return None;
+    }
+    claude_prompt_text(attachment.get("prompt")?.as_str()?)
 }
 
 fn model_in_record(line: &str, kind: TranscriptKind) -> Option<String> {
@@ -755,15 +878,38 @@ pub fn is_uuid_shaped(s: &str) -> bool {
 /// So both are read and the **more recently written** record wins; preferring one
 /// root unconditionally would resume a stale conversation after a toggle flip.
 pub fn read_live_session_for(project_id: Option<&str>, uid: &str) -> Option<String> {
+    read_live_session_and_source_for(project_id, uid).map(|(id, _)| id)
+}
+
+/// Suffix of the record beside the session record that says how the current
+/// session came about — `SessionStart`'s `source`: `startup`, `resume`,
+/// `clear` or `compact`. Written by the hook on every start, before the id.
+pub const LIVE_SOURCE_SUFFIX: &str = ".src";
+
+/// The `source` words Claude's `SessionStart` payload can carry. Anything else
+/// in the record is discarded: the file is written by a hook parsing
+/// attacker-visible JSON.
+fn is_session_source(s: &str) -> bool {
+    matches!(s, "startup" | "resume" | "clear" | "compact")
+}
+
+/// The live session id recorded for `uid` and, beside it, how that session
+/// started — same two-root, newest-wins rule as [`read_live_session_for`],
+/// with the source read from the root the winning id came from. The source is
+/// `None` for a record written by a hook predating it.
+pub fn read_live_session_and_source_for(
+    project_id: Option<&str>,
+    uid: &str,
+) -> Option<(String, Option<String>)> {
     let root = live_sessions_dir();
-    let mut best: Option<(std::time::SystemTime, String)> = None;
+    let mut best: Option<(std::time::SystemTime, PathBuf)> = None;
     let mut consider = |dir: &std::path::Path| {
-        if let Some(id) = read_live_session_in(dir, uid) {
+        if read_live_session_in(dir, uid).is_some() {
             let stamp = std::fs::metadata(dir.join(uid))
                 .and_then(|m| m.modified())
                 .unwrap_or(std::time::UNIX_EPOCH);
             if best.as_ref().is_none_or(|(t, _)| stamp >= *t) {
-                best = Some((stamp, id));
+                best = Some((stamp, dir.to_path_buf()));
             }
         }
     };
@@ -771,7 +917,19 @@ pub fn read_live_session_for(project_id: Option<&str>, uid: &str) -> Option<Stri
     if let Some(pid) = project_id {
         consider(&project_live_sessions_dir(pid));
     }
-    best.map(|(_, id)| id)
+    let (_, dir) = best?;
+    let id = read_live_session_in(&dir, uid)?;
+    Some((id, read_live_source_in(&dir, uid)))
+}
+
+/// The `SessionStart` source recorded beside `uid`'s session record in `dir`.
+pub fn read_live_source_in(dir: &std::path::Path, uid: &str) -> Option<String> {
+    if !is_uuid_shaped(uid) {
+        return None;
+    }
+    let raw = std::fs::read_to_string(dir.join(format!("{uid}{LIVE_SOURCE_SUFFIX}"))).ok()?;
+    let word = raw.trim().to_string();
+    is_session_source(&word).then_some(word)
 }
 
 /// Read the live session id recorded for `uid` from the shared (host-agent) root
@@ -1010,10 +1168,11 @@ pub fn codex_binder_enabled() -> bool {
 }
 
 /// Install (idempotently) the session hooks and their script for every agent
-/// Eldrun can track (Claude + Codex), so it learns each tab's live session id —
-/// and, for Claude (`SessionStart` + `Stop`), its live permission mode.
-/// Safe to call on every startup. The shared script keys by `$ELDRUN_TAB_UID`
-/// and reads `session_id` from the hook's stdin JSON — both CLIs use that schema.
+/// Eldrun can track (Claude + Codex), so it learns each tab's live session id,
+/// its live permission mode (Claude's `Stop`), and its turn state (see
+/// [`HOOK_EVENTS`] and `services::agent_turn`). Safe to call on every startup.
+/// The shared script keys by `$ELDRUN_TAB_UID` and reads `session_id` from the
+/// hook's stdin JSON — both CLIs use that schema.
 pub fn install_session_start_hook() -> std::io::Result<()> {
     write_hook_script()?;
     register_hook_in_settings(&paths::home_dir().join(".claude").join("settings.json"))?;
@@ -1076,10 +1235,13 @@ pub(crate) fn container_hook_command() -> String {
 }
 
 /// POSIX-sh hook body. Reads the hook JSON on stdin and records, per tab key:
-/// `session_id` → `<live_dir>/<ELDRUN_TAB_UID>`, and — when the event carries it
-/// (`SessionStart` does not; `Stop` does) — `permission_mode` →
-/// `<live_dir>/<ELDRUN_TAB_UID>.mode`. No jq dependency: one `sed` per field
-/// pulls the value out of the one-line JSON.
+/// `session_id` → `<live_dir>/<ELDRUN_TAB_UID>` (on `SessionStart`/`Stop`), —
+/// when the event carries it (`SessionStart` does not; `Stop` does) —
+/// `permission_mode` → `<live_dir>/<ELDRUN_TAB_UID>.mode`, and the turn state
+/// the event implies → `<live_dir>/<ELDRUN_TAB_UID>.turn` (`working` /
+/// `decision` / `done` / `idle` plus the epoch second, read by
+/// `services::agent_turn`). No jq dependency: one `sed` per field pulls the
+/// value out of the one-line JSON.
 ///
 /// **Only the tab's own session may move the record.** Every process under the
 /// tab inherits `ELDRUN_TAB_UID`, so a nested CLI — the tab's agent running
@@ -1103,34 +1265,61 @@ fn hook_script_body(live_dir: &str) -> String {
 fn posix_hook_script_body(live_dir: &str) -> String {
     format!(
         "#!/bin/sh\n\
-         # Eldrun agent hook (SessionStart + Stop) — records Claude's live session\n\
-         # id and permission mode per tab so Eldrun can resume the current session\n\
-         # in the mode it was left in (incl. after /clear). No-op unless\n\
-         # launched by Eldrun (ELDRUN_TAB_UID set). Managed by Eldrun; do not edit.\n\
+         # Eldrun agent hook (SessionStart, Stop, UserPromptSubmit, PostToolUse,\n\
+         # Notification, SessionEnd) — records, per tab, the agent's live session id\n\
+         # and permission mode (so Eldrun resumes the current session in the mode it\n\
+         # was left in, incl. after /clear), how the session started (so a prompt\n\
+         # sent after a /clear is filed under the new session, linked to the old\n\
+         # one), and its turn state (working / decision / done / idle), which\n\
+         # lights the tab's working and finished marks. No-op\n\
+         # unless launched by Eldrun (ELDRUN_TAB_UID set). Managed by Eldrun; do not edit.\n\
          [ -n \"$ELDRUN_TAB_UID\" ] || exit 0\n\
          case \"$ELDRUN_TAB_UID\" in *[!a-zA-Z0-9-]*|\"\") exit 0 ;; esac\n\
-         input=$(cat)\n\
-         sid=$(printf '%s' \"$input\" | tr '\\n' ' ' | sed -n 's/.*\"session_id\"[[:space:]]*:[[:space:]]*\"\\([0-9a-fA-F-]*\\)\".*/\\1/p')\n\
-         mode=$(printf '%s' \"$input\" | tr '\\n' ' ' | sed -n 's/.*\"permission_mode\"[[:space:]]*:[[:space:]]*\"\\([a-zA-Z]*\\)\".*/\\1/p')\n\
-         src=$(printf '%s' \"$input\" | tr '\\n' ' ' | sed -n 's/.*\"source\"[[:space:]]*:[[:space:]]*\"\\([a-zA-Z]*\\)\".*/\\1/p')\n\
+         input=$(cat | tr '\\n' ' ')\n\
+         sid=$(printf '%s' \"$input\" | sed -n 's/.*\"session_id\"[[:space:]]*:[[:space:]]*\"\\([0-9a-fA-F-]*\\)\".*/\\1/p')\n\
+         mode=$(printf '%s' \"$input\" | sed -n 's/.*\"permission_mode\"[[:space:]]*:[[:space:]]*\"\\([a-zA-Z]*\\)\".*/\\1/p')\n\
+         src=$(printf '%s' \"$input\" | sed -n 's/.*\"source\"[[:space:]]*:[[:space:]]*\"\\([a-zA-Z]*\\)\".*/\\1/p')\n\
+         event=$(printf '%s' \"$input\" | sed -n 's/.*\"hook_event_name\"[[:space:]]*:[[:space:]]*\"\\([a-zA-Z]*\\)\".*/\\1/p')\n\
+         ntype=$(printf '%s' \"$input\" | sed -n 's/.*\"notification_type\"[[:space:]]*:[[:space:]]*\"\\([a-zA-Z_]*\\)\".*/\\1/p')\n\
          [ -n \"$sid\" ] || exit 0\n\
          dir=\"{live_dir}\"\n\
          mkdir -p \"$dir\" 2>/dev/null || exit 0\n\
          cur=$(cat \"$dir/$ELDRUN_TAB_UID\" 2>/dev/null)\n\
-         # Only the tab's own session may move the record: a nested CLI under the\n\
+         # Only the tab's own session may move the records: a nested CLI under the\n\
          # tab inherits ELDRUN_TAB_UID and fires this hook too.\n\
          case \"$ELDRUN_TAB_AGENT\" in\n\
-         \x20 codex) [ -z \"$CLAUDECODE\" ] || exit 0 ;;\n\
+         \x20 codex) [ -z \"$CLAUDECODE\" ] || exit 0\n\
+         \x20   # Codex mints its own ids, so a start is free-form; every later event\n\
+         \x20   # must come from the session the tab already recorded.\n\
+         \x20   if [ \"$event\" != SessionStart ] && [ -n \"$cur\" ] && [ \"$sid\" != \"$cur\" ]; then exit 0; fi ;;\n\
          \x20 *) if [ \"$sid\" != \"$ELDRUN_TAB_UID\" ] && [ \"$sid\" != \"$cur\" ]; then\n\
          \x20      case \"$src\" in clear|resume) ;; *) exit 0 ;; esac\n\
          \x20    fi ;;\n\
          esac\n\
-         event=$(printf '%s' \"$input\" | tr '\\n' ' ' | sed -n 's/.*\"hook_event_name\"[[:space:]]*:[[:space:]]*\"\\([a-zA-Z]*\\)\".*/\\1/p')\n\
          if [ \"$event\" = SessionStart ] && [ \"$ELDRUN_TAB_AGENT\" = claude ] && [ -n \"$ELDRUN_PROJECT_DIR\" ]; then\n\
          \x20 printf '%s\\n' 'To put a file in front of the user on their phone, run `eldrun-send <file>` (local and container tabs).'\n\
          fi\n\
-         printf '%s' \"$sid\" > \"$dir/$ELDRUN_TAB_UID\"\n\
-         [ -n \"$mode\" ] && printf '%s' \"$mode\" > \"$dir/$ELDRUN_TAB_UID.mode\"\n\
+         # The turn state, from the events the agent fires as it works: a prompt\n\
+         # submitted or a tool finished means working (a finished tool is also what\n\
+         # ends an approval wait), Stop means done, a permission or elicitation\n\
+         # notice means blocked on the user, the end of the session means idle.\n\
+         turn=\n\
+         case \"$event\" in\n\
+         \x20 UserPromptSubmit|PostToolUse) turn=working ;;\n\
+         \x20 Stop) turn=done ;;\n\
+         \x20 Notification) case \"$ntype\" in permission_prompt|elicitation_dialog) turn=decision ;; idle_prompt) turn=done ;; esac ;;\n\
+         \x20 SessionEnd) turn=idle ;;\n\
+         esac\n\
+         [ -n \"$turn\" ] && printf '%s %s' \"$turn\" \"$(date +%s)\" > \"$dir/$ELDRUN_TAB_UID.turn\"\n\
+         # A start also records how the session came about (startup / resume /\n\
+         # clear / compact), written BEFORE the id so a reader that sees the new\n\
+         # id sees the source that produced it.\n\
+         case \"$event\" in\n\
+         \x20 SessionStart|Stop)\n\
+         \x20   [ \"$event\" = SessionStart ] && [ -n \"$src\" ] && printf '%s' \"$src\" > \"$dir/$ELDRUN_TAB_UID.src\"\n\
+         \x20   printf '%s' \"$sid\" > \"$dir/$ELDRUN_TAB_UID\"\n\
+         \x20   [ -n \"$mode\" ] && printf '%s' \"$mode\" > \"$dir/$ELDRUN_TAB_UID.mode\" ;;\n\
+         esac\n\
          exit 0\n",
         live_dir = live_dir,
     )
@@ -1148,10 +1337,12 @@ fn hook_script_body(live_dir: &str) -> String {
     // PowerShell literal so backslashes are not treated as escapes.
     let live_dir = live_dir.replace('\'', "''");
     format!(
-        "# Eldrun agent hook (SessionStart + Stop) - records the agent's live session\r\n\
-         # id and permission mode per tab so Eldrun can resume the current session\r\n\
-         # (incl. after /clear). No-op unless launched by Eldrun (ELDRUN_TAB_UID set).\r\n\
-         # Managed by Eldrun; do not edit.\r\n\
+        "# Eldrun agent hook (SessionStart, Stop, UserPromptSubmit, PostToolUse,\r\n\
+         # Notification, SessionEnd) - records, per tab, the agent's live session id\r\n\
+         # and permission mode (so Eldrun resumes the current session in the mode it\r\n\
+         # was left in, incl. after /clear) and its turn state (working / decision /\r\n\
+         # done / idle), which lights the tab's working and finished marks. No-op\r\n\
+         # unless launched by Eldrun (ELDRUN_TAB_UID set). Managed by Eldrun; do not edit.\r\n\
          $ErrorActionPreference = 'SilentlyContinue'\r\n\
          $uid = $env:ELDRUN_TAB_UID\r\n\
          if ([string]::IsNullOrEmpty($uid)) {{ exit 0 }}\r\n\
@@ -1160,38 +1351,76 @@ fn hook_script_body(live_dir: &str) -> String {
          $m = [regex]::Match($payload, '\"session_id\"\\s*:\\s*\"([0-9A-Fa-f-]+)\"')\r\n\
          $mm = [regex]::Match($payload, '\"permission_mode\"\\s*:\\s*\"([A-Za-z]+)\"')\r\n\
          $ms = [regex]::Match($payload, '\"source\"\\s*:\\s*\"([A-Za-z]+)\"')\r\n\
+         $me = [regex]::Match($payload, '\"hook_event_name\"\\s*:\\s*\"([A-Za-z]+)\"')\r\n\
+         $mn = [regex]::Match($payload, '\"notification_type\"\\s*:\\s*\"([A-Za-z_]+)\"')\r\n\
          if (-not $m.Success) {{ exit 0 }}\r\n\
          $sid = $m.Groups[1].Value\r\n\
+         $event = ''\r\n\
+         if ($me.Success) {{ $event = $me.Groups[1].Value }}\r\n\
+         $ntype = ''\r\n\
+         if ($mn.Success) {{ $ntype = $mn.Groups[1].Value }}\r\n\
          $dir = '{live_dir}'\r\n\
          [void](New-Item -ItemType Directory -Force -Path $dir -ErrorAction SilentlyContinue)\r\n\
          $rec = Join-Path $dir $uid\r\n\
          $cur = ''\r\n\
          if (Test-Path $rec) {{ $cur = [IO.File]::ReadAllText($rec).Trim() }}\r\n\
-         # Only the tab's own session may move the record: a nested CLI under the\r\n\
+         # Only the tab's own session may move the records: a nested CLI under the\r\n\
          # tab inherits ELDRUN_TAB_UID and fires this hook too.\r\n\
          if ($env:ELDRUN_TAB_AGENT -eq 'codex') {{\r\n\
          \x20 if (-not [string]::IsNullOrEmpty($env:CLAUDECODE)) {{ exit 0 }}\r\n\
+         \x20 # Codex mints its own ids, so a start is free-form; every later event\r\n\
+         \x20 # must come from the session the tab already recorded.\r\n\
+         \x20 if (($event -ne 'SessionStart') -and ($cur -ne '') -and ($sid -ne $cur)) {{ exit 0 }}\r\n\
          }} elseif (($sid -ne $uid) -and ($sid -ne $cur)) {{\r\n\
          \x20 $src = ''\r\n\
          \x20 if ($ms.Success) {{ $src = $ms.Groups[1].Value }}\r\n\
          \x20 if (($src -ne 'clear') -and ($src -ne 'resume')) {{ exit 0 }}\r\n\
          }}\r\n\
-         if ($env:ELDRUN_TAB_AGENT -eq 'claude' -and $env:ELDRUN_PROJECT_DIR -and $payload -match '\"hook_event_name\"\\s*:\\s*\"SessionStart\"') {{ Write-Output 'To put a file in front of the user on their phone, run `eldrun-send <file>` (local and container tabs).' }}\r\n\
-         [IO.File]::WriteAllText($rec, $sid)\r\n\
-         if ($mm.Success) {{ [IO.File]::WriteAllText(($rec + '.mode'), $mm.Groups[1].Value) }}\r\n\
+         if ($env:ELDRUN_TAB_AGENT -eq 'claude' -and $env:ELDRUN_PROJECT_DIR -and $event -eq 'SessionStart') {{ Write-Output 'To put a file in front of the user on their phone, run `eldrun-send <file>` (local and container tabs).' }}\r\n\
+         # The turn state, from the events the agent fires as it works (see the\r\n\
+         # POSIX twin for the mapping).\r\n\
+         $turn = ''\r\n\
+         switch ($event) {{\r\n\
+         \x20 'UserPromptSubmit' {{ $turn = 'working' }}\r\n\
+         \x20 'PostToolUse' {{ $turn = 'working' }}\r\n\
+         \x20 'Stop' {{ $turn = 'done' }}\r\n\
+         \x20 'Notification' {{ if (($ntype -eq 'permission_prompt') -or ($ntype -eq 'elicitation_dialog')) {{ $turn = 'decision' }} elseif ($ntype -eq 'idle_prompt') {{ $turn = 'done' }} }}\r\n\
+         \x20 'SessionEnd' {{ $turn = 'idle' }}\r\n\
+         }}\r\n\
+         if ($turn -ne '') {{ [IO.File]::WriteAllText(($rec + '.turn'), ($turn + ' ' + [DateTimeOffset]::UtcNow.ToUnixTimeSeconds())) }}\r\n\
+         if (($event -eq 'SessionStart') -or ($event -eq 'Stop')) {{\r\n\
+         \x20 if (($event -eq 'SessionStart') -and $ms.Success) {{ [IO.File]::WriteAllText(($rec + '.src'), $ms.Groups[1].Value) }}\r\n\
+         \x20 [IO.File]::WriteAllText($rec, $sid)\r\n\
+         \x20 if ($mm.Success) {{ [IO.File]::WriteAllText(($rec + '.mode'), $mm.Groups[1].Value) }}\r\n\
+         }}\r\n\
          exit 0\r\n",
         live_dir = live_dir,
     )
 }
 
+/// The hook events one script serves, for both CLIs. `SessionStart` tracks the
+/// live session id across startup/resume/clear/compact; `Stop` re-records it
+/// *with* `permission_mode` after every response — SessionStart payloads don't
+/// carry the mode and a shift+tab mode cycle fires no event of its own, so the
+/// latest Stop record is what resume re-applies. The other four carry the tab's
+/// **turn state** (`services::agent_turn`): a submitted prompt or a finished
+/// tool means working, Stop means done, a permission/elicitation notice means
+/// blocked on the user, the session's end means idle. Codex has no
+/// `Notification` hook; its approval wait is still read off its screen.
+pub const HOOK_EVENTS: [&str; 6] = [
+    "SessionStart",
+    "Stop",
+    "UserPromptSubmit",
+    "PostToolUse",
+    "Notification",
+    "SessionEnd",
+];
+
 /// Merge our handlers into a Claude `settings.json`, preserving all other content
-/// and other hooks. `SessionStart` tracks the live session id across
-/// startup/resume/clear/compact; `Stop` re-records it *with* `permission_mode`
-/// after every response — SessionStart payloads don't carry the mode and a
-/// shift+tab mode cycle fires no event of its own, so the latest Stop record is
-/// what resume re-applies. Idempotent per event: a handler already pointing at
-/// our script is left untouched. Matchers are omitted so each hook fires for
-/// every `source`.
+/// and other hooks — one group per event in [`HOOK_EVENTS`]. Idempotent per
+/// event: a handler already pointing at our script is left untouched, and an
+/// install that predates an event gains just that event. Matchers are omitted
+/// so each hook fires for every `source` / tool / notification type.
 fn register_hook_in_settings(settings_path: &std::path::Path) -> std::io::Result<()> {
     if let Some(parent) = settings_path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -1211,7 +1440,7 @@ fn register_hook_in_settings(settings_path: &std::path::Path) -> std::io::Result
         *hooks = serde_json::json!({});
     }
     let mut changed = false;
-    for event in ["SessionStart", "Stop"] {
+    for event in HOOK_EVENTS {
         let entry = hooks
             .as_object_mut()
             .unwrap()
@@ -1267,28 +1496,87 @@ fn register_codex_hook() -> std::io::Result<()> {
     register_codex_hook_in(&codex_dir.join("config.toml"))
 }
 
+/// The events registered with Codex: [`HOOK_EVENTS`] minus `Notification`,
+/// which Codex 0.154 does not offer (its approval wait is read off its screen).
+pub const CODEX_HOOK_EVENTS: [&str; 5] = [
+    "SessionStart",
+    "Stop",
+    "UserPromptSubmit",
+    "PostToolUse",
+    "SessionEnd",
+];
+
+/// Which events already carry our hook in a Codex config: every
+/// `[[hooks.<Event>.hooks]]` table whose `command` is `cmd`. A line scanner for
+/// the reason [`codex_hook_state_in`] is one — the shapes are fixed and a TOML
+/// dependency for this is not worth its weight. Per event rather than "is the
+/// command in the file", so an install that registered `SessionStart` alone
+/// gains the turn-state events on the next start instead of being read as done.
+pub fn codex_registered_events(src: &str, cmd: &str) -> std::collections::HashSet<String> {
+    let mut current: Option<String> = None;
+    let mut out = std::collections::HashSet::new();
+    for raw in src.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if line.starts_with('[') {
+            current = line
+                .strip_prefix("[[hooks.")
+                .and_then(|s| s.strip_suffix(".hooks]]"))
+                .map(str::to_string);
+            continue;
+        }
+        if let Some(ev) = current.as_ref() {
+            if toml_value(line, "command").as_deref() == Some(cmd) {
+                out.insert(ev.clone());
+            }
+        }
+    }
+    out
+}
+
 /// Testable core of [`register_codex_hook`] against an explicit config path.
+/// Appends one block per event of [`CODEX_HOOK_EVENTS`] the file does not
+/// already hold.
 fn register_codex_hook_in(config_path: &std::path::Path) -> std::io::Result<()> {
     let cmd = hook_command();
     let mut content = std::fs::read_to_string(config_path).unwrap_or_default();
-    if content.contains(&cmd) {
+    let have = codex_registered_events(&content, &cmd);
+    let missing: Vec<&str> = CODEX_HOOK_EVENTS
+        .iter()
+        .copied()
+        .filter(|ev| !have.contains(*ev))
+        .collect();
+    if missing.is_empty() {
         return Ok(());
     }
     if !content.is_empty() && !content.ends_with('\n') {
         content.push('\n');
     }
-    content.push_str(&format!(
-        "\n# Eldrun: record the live Codex session id per tab so Eldrun can resume\n\
-         # the current session (incl. after /clear). Keyed by $ELDRUN_TAB_UID; a\n\
-         # no-op for any Codex not launched by Eldrun. Managed by Eldrun.\n\
-         [[hooks.SessionStart]]\n\
-         matcher = \"startup|resume|clear|compact\"\n\n\
-         [[hooks.SessionStart.hooks]]\n\
-         type = \"command\"\n\
-         command = '{cmd}'\n\
-         timeout = 10\n",
-        cmd = cmd,
-    ));
+    content.push_str(
+        "\n# Eldrun: record the live Codex session id and turn state per tab so Eldrun\n\
+         # can resume the current session (incl. after /clear) and mark the tab\n\
+         # working / finished. Keyed by $ELDRUN_TAB_UID; a no-op for any Codex not\n\
+         # launched by Eldrun. Managed by Eldrun.\n",
+    );
+    for ev in missing {
+        // Only SessionStart has a source to match on; the others fire for every
+        // prompt, tool and end.
+        let matcher = if ev == "SessionStart" {
+            "matcher = \"startup|resume|clear|compact\"\n"
+        } else {
+            ""
+        };
+        content.push_str(&format!(
+            "[[hooks.{ev}]]\n\
+             {matcher}\n\
+             [[hooks.{ev}.hooks]]\n\
+             type = \"command\"\n\
+             command = '{cmd}'\n\
+             timeout = 10\n\n",
+        ));
+    }
     std::fs::write(config_path, content)?;
     Ok(())
 }
@@ -1670,6 +1958,15 @@ mod tests {
             Some(contained_id)
         );
 
+        // The source record sits beside the id in whichever root holds it, and
+        // only a word the hook can have written counts.
+        assert_eq!(read_live_source_in(&own, uid), None);
+        std::fs::write(own.join(format!("{uid}{LIVE_SOURCE_SUFFIX}")), "clear\n").unwrap();
+        assert_eq!(read_live_source_in(&own, uid).as_deref(), Some("clear"));
+        std::fs::write(own.join(format!("{uid}{LIVE_SOURCE_SUFFIX}")), "--resume x").unwrap();
+        assert_eq!(read_live_source_in(&own, uid), None);
+        assert_eq!(read_live_source_in(&own, "not-a-uid"), None);
+
         // The project id is reduced to exactly one path-safe component.
         assert_eq!(sanitize_project_key("my proj/../x"), "my_proj____x");
         assert_eq!(sanitize_project_key(""), "x");
@@ -1786,12 +2083,16 @@ mod tests {
         };
         let claude = Some("claude");
 
-        // The tab's own start records its launch id; Stop records the mode.
+        // The tab's own start records its launch id and how it started; Stop
+        // records the mode and leaves the source alone.
+        let source = || read_live_source_in(&live, uid);
         let (rec, _) = run_hook(&script, &live, uid, claude, true, &start(uid, "startup"));
         assert_eq!(rec.as_deref(), Some(uid));
+        assert_eq!(source().as_deref(), Some("startup"));
         let (rec, mode) = run_hook(&script, &live, uid, claude, true, &stop(uid, "acceptEdits"));
         assert_eq!(rec.as_deref(), Some(uid));
         assert_eq!(mode.as_deref(), Some("acceptEdits"));
+        assert_eq!(source().as_deref(), Some("startup"));
 
         // A nested `claude -p` under the tab (same env, CLAUDECODE set) is refused
         // on both events: neither record moves.
@@ -1801,10 +2102,13 @@ mod tests {
         let (rec, mode) = run_hook(&script, &live, uid, claude, true, &stop(nested, "default"));
         assert_eq!(rec.as_deref(), Some(uid));
         assert_eq!(mode.as_deref(), Some("acceptEdits"));
+        assert_eq!(source().as_deref(), Some("startup"));
 
-        // `/clear` rolls the id, and the following Stop is accepted for the new one.
+        // `/clear` rolls the id — and says so — and the following Stop is
+        // accepted for the new one.
         let (rec, _) = run_hook(&script, &live, uid, claude, true, &start(cleared, "clear"));
         assert_eq!(rec.as_deref(), Some(cleared));
+        assert_eq!(source().as_deref(), Some("clear"));
         let (rec, mode) = run_hook(&script, &live, uid, claude, true, &stop(cleared, "plan"));
         assert_eq!(rec.as_deref(), Some(cleared));
         assert_eq!(mode.as_deref(), Some("plan"));
@@ -1815,6 +2119,7 @@ mod tests {
         // A `resume` start to another conversation is the user's choice.
         let (rec, _) = run_hook(&script, &live, uid, claude, true, &start(nested, "resume"));
         assert_eq!(rec.as_deref(), Some(nested));
+        assert_eq!(source().as_deref(), Some("resume"));
 
         // No agent marker (an older launch): the strict rule applies.
         let (rec, _) = run_hook(&script, &live, uid, None, true, &start(cleared, "startup"));
@@ -1833,6 +2138,77 @@ mod tests {
         let other = "66666666-6666-4666-8666-666666666666";
         let (rec, mode) = run_hook(&script, &live, other, claude, true, r#"{"permission_mode":"plan"}"#);
         assert!(rec.is_none() && mode.is_none());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hook_script_records_the_turn_state_for_the_tabs_own_session_only() {
+        let tmp = unique_tmp("eldrun-hook-turn");
+        let live = tmp.join("live");
+        std::fs::create_dir_all(&tmp).unwrap();
+        let script = tmp.join("hook.sh");
+        std::fs::write(&script, hook_script_body(&live.to_string_lossy())).unwrap();
+        let uid = "11111111-1111-4111-8111-111111111111";
+        let nested = "22222222-2222-4222-8222-222222222222";
+        let claude = Some("claude");
+        let turn = || {
+            std::fs::read_to_string(live.join(format!("{uid}.turn")))
+                .ok()
+                .map(|t| t.split_whitespace().next().unwrap_or("").to_string())
+        };
+        let ev = |sid: &str, event: &str, extra: &str| {
+            format!(r#"{{"session_id":"{sid}","hook_event_name":"{event}"{extra}}}"#)
+        };
+
+        // Nothing until a turn event: a start writes the session record only.
+        run_hook(&script, &live, uid, claude, true, &ev(uid, "SessionStart", r#","source":"startup""#));
+        assert_eq!(turn(), None);
+        run_hook(&script, &live, uid, claude, true, &ev(uid, "UserPromptSubmit", ""));
+        assert_eq!(turn().as_deref(), Some("working"));
+        run_hook(&script, &live, uid, claude, true, &ev(uid, "Notification", r#","notification_type":"permission_prompt""#));
+        assert_eq!(turn().as_deref(), Some("decision"));
+        run_hook(&script, &live, uid, claude, true, &ev(uid, "PostToolUse", r#","tool_name":"Bash""#));
+        assert_eq!(turn().as_deref(), Some("working"));
+        // A notification that is not a wait leaves the state alone.
+        run_hook(&script, &live, uid, claude, true, &ev(uid, "Notification", r#","notification_type":"auth_success""#));
+        assert_eq!(turn().as_deref(), Some("working"));
+        let (rec, mode) = run_hook(&script, &live, uid, claude, true, &ev(uid, "Stop", r#","permission_mode":"plan""#));
+        assert_eq!(turn().as_deref(), Some("done"));
+        // Stop still keeps the session record and the mode current.
+        assert_eq!(rec.as_deref(), Some(uid));
+        assert_eq!(mode.as_deref(), Some("plan"));
+        run_hook(&script, &live, uid, claude, true, &ev(uid, "Notification", r#","notification_type":"idle_prompt""#));
+        assert_eq!(turn().as_deref(), Some("done"));
+
+        // A nested `claude -p` under the tab fires the same events for its own
+        // session: none of them may move this tab's state.
+        run_hook(&script, &live, uid, claude, true, &ev(nested, "UserPromptSubmit", ""));
+        assert_eq!(turn().as_deref(), Some("done"));
+        run_hook(&script, &live, uid, claude, true, &ev(nested, "Stop", ""));
+        assert_eq!(turn().as_deref(), Some("done"));
+
+        run_hook(&script, &live, uid, claude, true, &ev(uid, "SessionEnd", r#","reason":"prompt_input_exit""#));
+        assert_eq!(turn().as_deref(), Some("idle"));
+
+        // Codex: its start is free-form, and from then on only that session's
+        // turn events count — a nested `codex exec` is somebody else.
+        let codex_uid = "44444444-4444-4444-8444-444444444444";
+        let codex_id = "55555555-5555-4555-8555-555555555555";
+        let cturn = || {
+            std::fs::read_to_string(live.join(format!("{codex_uid}.turn")))
+                .ok()
+                .map(|t| t.split_whitespace().next().unwrap_or("").to_string())
+        };
+        run_hook(&script, &live, codex_uid, Some("codex"), false, &ev(codex_id, "SessionStart", r#","source":"startup""#));
+        run_hook(&script, &live, codex_uid, Some("codex"), false, &ev(codex_id, "UserPromptSubmit", ""));
+        assert_eq!(cturn().as_deref(), Some("working"));
+        run_hook(&script, &live, codex_uid, Some("codex"), false, &ev(nested, "Stop", ""));
+        assert_eq!(cturn().as_deref(), Some("working"));
+        let (rec, _) = run_hook(&script, &live, codex_uid, Some("codex"), false, &ev(codex_id, "Stop", ""));
+        assert_eq!(cturn().as_deref(), Some("done"));
+        // …and the nested Stop did not steal the session record either.
+        assert_eq!(rec.as_deref(), Some(codex_id));
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
@@ -1907,6 +2283,27 @@ mod tests {
             })
         };
         assert!(!ours(&stop[0]) && ours(&stop[1]));
+        // The turn-state events are registered too, one group each.
+        for ev in ["UserPromptSubmit", "PostToolUse", "Notification", "SessionEnd"] {
+            let groups = v["hooks"][ev].as_array().unwrap();
+            assert_eq!(groups.len(), 1, "{ev}");
+            assert!(ours(&groups[0]), "{ev}");
+        }
+        // An install that predates the turn events gains exactly those.
+        std::fs::write(
+            &settings,
+            format!(
+                r#"{{"hooks":{{"SessionStart":[{{"hooks":[{{"type":"command","command":{cmd}}}]}}],"Stop":[{{"hooks":[{{"type":"command","command":{cmd}}}]}}]}}}}"#,
+                cmd = serde_json::to_string(&hook_command()).unwrap()
+            ),
+        )
+        .unwrap();
+        register_hook_in_settings(&settings).unwrap();
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
+        for ev in HOOK_EVENTS {
+            assert_eq!(v["hooks"][ev].as_array().unwrap().len(), 1, "{ev}");
+        }
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
@@ -1930,10 +2327,44 @@ mod tests {
         // original content preserved verbatim at the top
         assert!(out.starts_with("model = \"o3\""));
         assert!(out.contains("[projects.\"/home/x\"]"));
-        // hook appended exactly once
+        // hook appended exactly once per event
         assert_eq!(out.matches("[[hooks.SessionStart]]").count(), 1);
         assert!(out.contains("matcher = \"startup|resume|clear|compact\""));
         assert!(out.contains(HOOK_SCRIPT_NAME));
+        for ev in CODEX_HOOK_EVENTS {
+            assert_eq!(out.matches(&format!("[[hooks.{ev}]]")).count(), 1, "{ev}");
+            assert_eq!(out.matches(&format!("[[hooks.{ev}.hooks]]")).count(), 1, "{ev}");
+        }
+        // Only SessionStart carries a matcher.
+        assert_eq!(out.matches("matcher =").count(), 1);
+        let have = codex_registered_events(&out, &hook_command());
+        assert!(CODEX_HOOK_EVENTS.iter().all(|ev| have.contains(*ev)));
+
+        // An install that registered SessionStart alone gains the turn events
+        // and keeps its one SessionStart block.
+        std::fs::write(
+            &config,
+            format!(
+                "model = \"o3\"\n\n[[hooks.SessionStart]]\nmatcher = \"startup\"\n\n\
+                 [[hooks.SessionStart.hooks]]\ntype = \"command\"\ncommand = '{}'\ntimeout = 10\n",
+                hook_command()
+            ),
+        )
+        .unwrap();
+        register_codex_hook_in(&config).unwrap();
+        let out = std::fs::read_to_string(&config).unwrap();
+        assert_eq!(out.matches("[[hooks.SessionStart]]").count(), 1);
+        assert_eq!(out.matches("[[hooks.Stop]]").count(), 1);
+        assert_eq!(out.matches("[[hooks.UserPromptSubmit]]").count(), 1);
+        // Somebody else's hook on an event we register does not count as ours.
+        assert_eq!(
+            codex_registered_events(
+                "[[hooks.Stop]]\n\n[[hooks.Stop.hooks]]\ntype = \"command\"\ncommand = '/theirs.sh'\n",
+                &hook_command()
+            )
+            .len(),
+            0
+        );
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
@@ -2203,6 +2634,35 @@ mod tests {
         std::fs::write(&claude, "{\"type\":\"user\"}\n").unwrap();
         assert_eq!(last_model_in_transcript(&claude, TranscriptKind::Claude), None);
         assert_eq!(last_model_in_transcript(&dir.path().join("missing.jsonl"), TranscriptKind::Claude), None);
+    }
+
+    #[test]
+    fn recent_prompts_carry_their_times_and_take_in_mid_turn_messages() {
+        let dir = tempfile::tempdir().unwrap();
+        let claude = dir.path().join("s.jsonl");
+        std::fs::write(
+            &claude,
+            concat!(
+                "{\"type\":\"user\",\"timestamp\":\"2026-09-15T08:20:44.127Z\",\"message\":{\"role\":\"user\",\"content\":\"add an edge option\"}}\n",
+                "{\"type\":\"assistant\",\"timestamp\":\"2026-09-15T08:20:50.000Z\",\"message\":{\"model\":\"claude-opus-5\"}}\n",
+                // Sent while the agent worked: an attachment, never a user record.
+                "{\"type\":\"attachment\",\"timestamp\":\"2026-09-15T08:21:48.991Z\",\"attachment\":{\"type\":\"queued_command\",\"prompt\":\"zoom to 5 min\",\"commandMode\":\"prompt\",\"origin\":{\"kind\":\"human\"}}}\n",
+                // Queued by something that is not the user, or not a prompt.
+                "{\"type\":\"attachment\",\"timestamp\":\"2026-09-15T08:22:00.000Z\",\"attachment\":{\"type\":\"queued_command\",\"prompt\":\"task done\",\"commandMode\":\"prompt\",\"origin\":{\"kind\":\"task\"}}}\n",
+                "{\"type\":\"attachment\",\"timestamp\":\"2026-09-15T08:22:01.000Z\",\"attachment\":{\"type\":\"queued_command\",\"prompt\":\"git status\",\"commandMode\":\"bash\"}}\n",
+                // No timestamp: it cannot be placed, so it is not offered.
+                "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"when was this\"}}\n",
+                "{\"type\":\"user\",\"timestamp\":\"2026-09-15T08:24:22.470Z\",\"message\":{\"role\":\"user\",\"content\":\"not live\"}}\n",
+                "{\"type\":\"user\",\"timestamp\":\"2026-09-15T08:24:30.000Z\",\"message\":{\"role\":\"user\",\"content\":\"not live\"}}\n",
+            ),
+        )
+        .unwrap();
+        let prompts = recent_prompts_in_transcript(&claude, TranscriptKind::Claude).unwrap();
+        let texts: Vec<&str> = prompts.iter().map(|p| p.text.as_str()).collect();
+        assert_eq!(texts, ["add an edge option", "zoom to 5 min", "not live"]);
+        assert_eq!(prompts[1].at, "2026-09-15T08:21:48.991Z");
+        std::fs::write(&claude, "{\"type\":\"assistant\"}\n").unwrap();
+        assert_eq!(recent_prompts_in_transcript(&claude, TranscriptKind::Claude), None);
     }
 
     #[test]

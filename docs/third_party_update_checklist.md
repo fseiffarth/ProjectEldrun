@@ -118,12 +118,18 @@ Claude's `/fast` — different thing.
   `-p <prompt>`, `-p "/usage" --output-format json`.
 - Permission modes are exactly `default | plan | acceptEdits | auto | dontAsk |
   bypassPermissions` (`is_permission_mode`); anything else is dropped.
-- Hooks: `SessionStart` (matcher `startup|resume|clear|compact`) and `Stop`
-  are registered in `~/.claude/settings.json` under `hooks.<Event>[].hooks[]`
-  as `{type:"command", command:…}`. The hook payload carries `session_id`,
-  `hook_event_name`, and (on `Stop`) `permission_mode`. The hook script greps
-  those keys with `sed`, so a renamed key breaks resume silently.
-  Verified against Claude Code 2.1.251 — a `/clear` fires no Stop event.
+- Hooks: `SessionStart`, `Stop`, `UserPromptSubmit`, `PostToolUse`,
+  `Notification` and `SessionEnd` (`HOOK_EVENTS`) are registered in
+  `~/.claude/settings.json` under `hooks.<Event>[].hooks[]` as
+  `{type:"command", command:…}`, no matchers. The hook payload carries
+  `session_id`, `hook_event_name`, (on `Stop`) `permission_mode`, and (on
+  `Notification`) `notification_type` — the tab's working / decision / done
+  marks (`services::agent_turn`) read `permission_prompt`,
+  `elicitation_dialog` and `idle_prompt` off it; a renamed type means the
+  decision lamp for a Claude tab falls back to the screen. The hook script
+  greps those keys with `sed`, so a renamed key breaks resume silently.
+  Verified against Claude Code 2.1.251 — a `/clear` fires no Stop event; the
+  turn events against 2.1.272 by reading the binary's strings, not live.
 - Session logs: `~/.claude/projects/<encoded-cwd>/<uuid>.jsonl`; `--resume` is
   emitted only when that file exists.
 - The model tag in the Agents views (`agent_session_model`) reads the tail of
@@ -223,8 +229,16 @@ aliases, and anything about where or how credentials are stored.
   pane's screen (mobile `chatTurns`).
 - User hooks in `~/.codex/config.toml` as `[[hooks.SessionStart]]` with
   `matcher = "startup|resume|clear|compact"` and `[[hooks.SessionStart.hooks]]`
-  `type="command"`. Trust state is read from `[hooks.state."…"]` tables
-  (`trusted_hash`, enabled flag). Text-appended, never reserialized.
+  `type="command"`, plus — since 2026-09-15, for the tab's working / done
+  marks — `[[hooks.UserPromptSubmit]]`, `[[hooks.PostToolUse]]`,
+  `[[hooks.Stop]]` and `[[hooks.SessionEnd]]` without matchers
+  (`CODEX_HOOK_EVENTS`; 0.154.0 names those events and no `Notification`, read
+  off the binary's strings, not live — so a Codex approval wait is still read
+  off its screen). Their payloads are assumed to carry `session_id` and
+  `hook_event_name` like Claude's. Trust state is read from
+  `[hooks.state."…"]` tables (`trusted_hash`, enabled flag), each hook by
+  position, so the new blocks need the same one-time `/hooks` trust.
+  Text-appended per event, never reserialized.
 - Local models: `codex --oss -c oss_provider="ollama" -m <model>` as the
   fallback when `ollama launch codex` cannot be used; reasoning is turned off
   with `-c model_reasoning_effort="none"`; the model catalog Codex expects is

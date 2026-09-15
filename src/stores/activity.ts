@@ -13,15 +13,54 @@ import { isDetachedWindow } from "./detachedContext";
  *  stays free of that import: detached.ts imports this one). */
 const DETACHED_ACTIVITY_EVENT = "detached-activity";
 
-/// A scope (project) stays "running" until its PTYs have been quiet for this
-/// window. Short enough to clear quickly when a task ends, long enough to bridge
-/// the gaps in bursty agent/terminal output.
+// ── The two readings of an agent tab ────────────────────────────────────────
+//
+// The tab's OWN HOOKS are the authority where they fire (`turnByPty`, fed by
+// the backend's `agent-turn` event off the record `services::agent_turn`
+// watches): Claude Code and a trusted Codex tell Eldrun when a prompt was
+// submitted, when a tool finished, when they stopped, and (Claude) when they
+// wait on a permission. That is exact, and it is what the bytes could never be:
+// every agent TUI paints something while idle (Codex a braille field and its
+// title, on a timer), paints almost nothing while it thinks (Codex changes one
+// digit a second), and paints a lot while it waits (a menu redraw). Two rounds
+// of byte filtering each fixed one agent's habit and broke another's reading.
+//
+// The BYTE HEURISTIC below stays for the tabs with no hook — Gemini, Qwen, a
+// custom command, a Codex whose hooks are not yet trusted — and as the net
+// under a verdict that can go stale (an interrupted turn fires no Stop). It
+// reads two things off each frame: whether the program is PAINTING (any output,
+// spinner and title included) and whether it is SAYING anything (visible text
+// past the decoration). Working is both at once, sustained; idle is painting
+// without saying; blocked is saying nothing while a menu sits in the tail.
+
+/// A tab is painting right now when any output — a spinner cell, a title
+/// frame, real text — arrived within this window. Short enough to clear
+/// quickly when a turn ends, long enough to bridge a TUI's own repaint timer.
 const BUSY_WINDOW_MS = 800;
 
-/// But it only BECOMES "running" once output has been sustained for this long —
-/// an onset debounce so a brief blip (a quick command, a keystroke echo) doesn't
+/// A tab is still SAYING something when a text-bearing frame arrived within
+/// this window. Wider than the paint window on purpose: a working Codex writes
+/// one digit of its timer a second and paints its spinner in between, so a
+/// 800 ms text window read every second of its work as a fresh burst and
+/// "working" never came on. A gap past this ends the burst and its tail.
+const TEXT_GAP_MS = 1500;
+
+/// But it only BECOMES "working" once text has been sustained for this long —
+/// an onset debounce so a brief blip (a quick command, a single redraw) doesn't
 /// flash the working indicator. A burst must last past this before it counts.
 const WORK_ONSET_MS = 1500;
+
+/// A text frame landing this soon after the user's own keystroke is its echo —
+/// the composer repainting the character just typed — and says nothing about
+/// the agent. Not counted as text (it never starts or sustains a burst), so
+/// typing a long prompt never lights "working"; still counted as paint.
+const ECHO_MS = 150;
+
+/// A hook verdict of "working" is trusted only while the tab is painting at
+/// all. An agent whose turn was interrupted fires no Stop, and a Claude that
+/// idles goes fully silent, so this much total silence under a "working"
+/// verdict means the verdict outlived the turn: drop it and read the bytes.
+const HOOK_WORK_SILENCE_MS = 20_000;
 
 /// How long an unwatched agent tab must have been quiet before we call what it's
 /// doing. The two are deliberately asymmetric: a decision prompt in its output is
@@ -53,9 +92,18 @@ let lastTickAt: number | null = null;
 /// not something we observed. Billing it would silently invent hours.
 const MAX_WORK_TICK_MS = 5_000;
 
+/// When a text-bearing frame (not an echo) last arrived — "saying".
 const lastOutputByPty: Record<string, number> = {};
+/// When ANY frame last arrived, decoration included — "painting".
+const lastRawByPty: Record<string, number> = {};
+/// When the current text burst began (a gap past `TEXT_GAP_MS` starts a new one).
 const onsetByPty: Record<string, number> = {};
 const tailByPty: Record<string, string> = {};
+/// The tab's own hook verdict (see the header comment), stamped at receipt.
+/// Absent for a tab whose agent fires no hooks, or once a verdict was retired.
+const turnByPty: Record<string, { state: AgentTurnState; at: number }> = {};
+// Automation must not inherit the UI's silence fallback or unread state.
+const deliveryTurns: Record<string, { state: AgentTurnState; at: number; startedAt?: number }> = {};
 const seenAtByPty: Record<string, number> = {};
 const bellByPty: Record<string, number> = {};
 const inputByPty: Record<string, number> = {};
@@ -102,8 +150,11 @@ function tailLooksLikeDecision(ptyId: string): boolean {
 
 const PTY_MAPS: Record<string, unknown>[] = [
   lastOutputByPty,
+  lastRawByPty,
   onsetByPty,
   tailByPty,
+  turnByPty,
+  deliveryTurns,
   seenAtByPty,
   bellByPty,
   inputByPty,
@@ -128,24 +179,38 @@ const BRAILLE_CELLS = /[\u2800-\u28ff]/g;
  *  safe to call often. */
 export function notePtyOutput(ptyId: string, data = "") {
   const now = Date.now();
+  // Every frame is paint, whatever it says.
+  lastRawByPty[ptyId] = now;
   const text = data ? stripAnsi(data).replace(BRAILLE_CELLS, "") : "";
   // A frame that paints no text — a terminal-title update, a cursor move, a
   // blanked cell — says nothing about what the agent is doing, and a BLOCKED
   // Codex tab emits nothing else: its title alternates between
   // "[ ! ] Action Required" and "[ . ] Action Required" on a ~100ms timer for as
   // long as an approval sits unanswered (the same timer spins a braille frame
-  // into the title while it works). Counting those as activity is what kept such
+  // into the title while it works). Counting those as text is what kept such
   // a tab stuck on "working": the quiet never reached DECISION_QUIET_MS, so its
-  // tail was never classified and the decision lamp never lit. Claude Code's
-  // prompts do not hit this — it goes properly silent — which is why the bug
-  // looked Codex-only. Its idle dot animation is dropped the same way (see
-  // `BRAILLE_CELLS`).
+  // tail was never classified and the decision lamp never lit. Its idle dot
+  // animation is dropped the same way (see `BRAILLE_CELLS`).
   if (data && !text.trim()) return;
+  const appendTail = () => {
+    if (!text) return;
+    const tail = (tailByPty[ptyId] ?? "") + text;
+    tailByPty[ptyId] = tail.length > TAIL_CAP ? tail.slice(-TAIL_CAP) : tail;
+  };
+  // The echo of the user's own keystroke: on the screen (so in the tail, where
+  // an answered menu will be dropped by `noteUserInput` anyway) but not a word
+  // from the agent. See `ECHO_MS`. A call with no data is the test hook and
+  // always counts.
+  const input = inputByPty[ptyId];
+  if (data && input !== undefined && now - input < ECHO_MS) {
+    appendTail();
+    return;
+  }
   const prev = lastOutputByPty[ptyId];
-  // Start of a fresh burst after quiet (or the very first output): reset the
-  // onset. Output within the busy window keeps the existing onset, so a
-  // continuous stream ages past WORK_ONSET_MS and flips to "working".
-  if (prev === undefined || now - prev >= BUSY_WINDOW_MS) {
+  // Start of a fresh burst after quiet (or the very first text): reset the
+  // onset. Text within the gap keeps the existing onset, so a continuous
+  // stream ages past WORK_ONSET_MS and flips to "working".
+  if (prev === undefined || now - prev >= TEXT_GAP_MS) {
     onsetByPty[ptyId] = now;
     // A new burst redraws the screen, so the last one's tail is stale. Dropping
     // it is what stops an ALREADY-ANSWERED prompt from being matched again as a
@@ -155,10 +220,77 @@ export function notePtyOutput(ptyId: string, data = "") {
   }
   lastOutputByPty[ptyId] = now;
   if (now - onsetByPty[ptyId] >= WORK_ONSET_MS) workAtByPty[ptyId] = now;
-  if (text) {
-    const tail = (tailByPty[ptyId] ?? "") + text;
-    tailByPty[ptyId] = tail.length > TAIL_CAP ? tail.slice(-TAIL_CAP) : tail;
+  appendTail();
+}
+
+/** What an agent's own hooks last said about its turn: `working` (a prompt
+ *  was submitted, or a tool finished — which is also how an approval wait
+ *  ends), `decision` (a permission or elicitation notice), `done` (Stop, or
+ *  the idle notice) — or `idle`, the session's end, which retires the verdict
+ *  and hands the tab back to its bytes. */
+export type AgentTurnState = "working" | "decision" | "done" | "idle";
+
+/** Record a hook verdict for a PTY (the backend's `agent-turn` event, keyed by
+ *  the composed PTY id). Stamped at receipt so it compares with the store's
+ *  own clock (`seenAtByPty`, `inputByPty`). Recomputes at once: a verdict is
+ *  the one input here that is exact, and the 300 ms tick would only delay it. */
+export function noteAgentTurn(ptyId: string, state: AgentTurnState) {
+  if (isDetachedWindow()) return;
+  if (!splitPtyId(ptyId)) return;
+  const at = Date.now();
+  deliveryTurns[ptyId] = { state, at, startedAt: state === "working" ? at : deliveryTurns[ptyId]?.startedAt };
+  if (state === "idle") delete turnByPty[ptyId];
+  else turnByPty[ptyId] = { state, at: Date.now() };
+  useActivityStore.getState().recompute();
+}
+
+/** The last explicit hook event, even when the display falls back to silence.
+ * A stopped session and an interrupted turn are never proof of completion. */
+export function agentDeliveryTurn(ptyId: string) {
+  const turn = deliveryTurns[ptyId];
+  if (turn?.state === "done" && (inputByPty[ptyId] ?? 0) > turn.at) return { ...turn, state: "working" as const };
+  return turn;
+}
+
+/** An untouched ready terminal may receive its first prompt. Once there has
+ * been input, automation needs the agent's own stable completion event. */
+export function agentDeliveryReady(ptyId: string, stableMs: number): boolean {
+  const turn = agentDeliveryTurn(ptyId);
+  return turn ? turn.state === "done" && Date.now() - turn.at >= stableMs : !inputByPty[ptyId];
+}
+
+/** The hook verdict for a PTY, if one stands: absent for a tab with no hooks,
+ *  and dropped here once a "working" has outlived all paint (see
+ *  `HOOK_WORK_SILENCE_MS`). Test-visible through the store's derived maps. */
+function turnVerdict(ptyId: string, now: number): { state: AgentTurnState; at: number } | undefined {
+  const turn = turnByPty[ptyId];
+  if (!turn) return undefined;
+  if (turn.state === "working") {
+    const paintedAt = Math.max(lastRawByPty[ptyId] ?? 0, turn.at);
+    if (now - paintedAt >= HOOK_WORK_SILENCE_MS) {
+      delete turnByPty[ptyId];
+      return undefined;
+    }
   }
+  return turn;
+}
+
+/** True when the bytes alone say the tab is working right now: commanded this
+ *  session, painting within the paint window, saying something within the
+ *  text window, and that burst of text sustained past the onset debounce. */
+function bytesSayWorking(ptyId: string, now: number): boolean {
+  const raw = lastRawByPty[ptyId];
+  const ts = lastOutputByPty[ptyId];
+  const onset = onsetByPty[ptyId];
+  return (
+    inputByPty[ptyId] !== undefined &&
+    raw !== undefined &&
+    now - raw < BUSY_WINDOW_MS &&
+    ts !== undefined &&
+    now - ts < TEXT_GAP_MS &&
+    onset !== undefined &&
+    now - onset >= WORK_ONSET_MS
+  );
 }
 
 /** When a PTY last produced output (ms epoch), or undefined if none was seen
@@ -194,16 +326,33 @@ export function lastTabReadAt(ptyId: string): number | undefined {
  *  ONLY thing that retires a decision prompt the user is looking at (looking is
  *  no longer enough — see `attentionFor`), and it covers the case the per-burst
  *  reset in `notePtyOutput` misses: an answer so fast that the agent's next
- *  output lands inside the same burst, leaving the answered menu in the tail. */
-export function noteUserInput(ptyId: string) {
+ *  output lands inside the same burst, leaving the answered menu in the tail.
+ *
+ *  Input also retires a hook verdict it contradicts. Any input answers a
+ *  `decision` (the agent's next hook — a finished tool, or Stop — says what
+ *  came of it; until then the bytes do). An `interrupt` (a bare Escape,
+ *  Ctrl+C) ends a `working` turn that will fire no Stop. Ordinary typing under
+ *  a `working` verdict is the next prompt being queued and changes nothing. */
+export function noteUserInput(ptyId: string, interrupt = false) {
   // Group B #234: a popout's terminal reports to the classifier that lives in
   // the main window — the popout's own maps are never read by anything.
   if (isDetachedWindow()) {
-    void emit(DETACHED_ACTIVITY_EVENT, { ptyId, kind: "input" });
+    void emit(DETACHED_ACTIVITY_EVENT, { ptyId, kind: interrupt ? "interrupt" : "input" });
     return;
   }
   inputByPty[ptyId] = Date.now();
   tailByPty[ptyId] = "";
+  const turn = turnByPty[ptyId];
+  if (turn && (turn.state === "decision" || (interrupt && turn.state === "working"))) {
+    delete turnByPty[ptyId];
+  }
+}
+
+/** True when a keystroke is the user cutting the agent off: a bare Escape (the
+ *  key every agent TUI interrupts on) or Ctrl+C. Arrow keys and other
+ *  ESC-prefixed sequences are not bare, and are not. */
+export function isInterruptInput(data: string): boolean {
+  return data === "\x1b" || data === "\x03";
 }
 
 /**
@@ -324,6 +473,7 @@ function attentionFor(
   tab: TabEntry,
   ptyId: string,
   now: number,
+  turn: { state: AgentTurnState; at: number } | undefined,
 ): AttentionKind | null {
   // Only AI agent tabs raise attention; a shell finishing a build doesn't.
   if (tab.kind !== "agent" && tab.kind !== "local_agent") return null;
@@ -337,12 +487,22 @@ function attentionFor(
   const out = lastOutputByPty[ptyId] ?? 0;
   const bell = bellByPty[ptyId] ?? 0;
   const quiet = now - Math.max(out, bell);
+  // A decision is read from the hook where the agent has one for it (Claude's
+  // permission notice) AND from the screen regardless: Codex has no such hook,
+  // so its approval menu sitting in a quiet tail is still the only sign — even
+  // under a "working" verdict, which its tool-use hook left standing while
+  // the tool waits on the user.
+  if (turn?.state === "decision") return "decision";
   if (quiet >= DECISION_QUIET_MS && tailLooksLikeDecision(ptyId)) {
     return "decision";
   }
   // Past here everything is inferred from silence, which a watched tab's own
   // screen already tells the user better than a lamp could.
   if (lookedAt) return null;
+  // With a hook verdict the question is only whether the finish is unread:
+  // Stop fired after the user last had eyes on the tab. A verdict needs no
+  // commanded-this-session gate — a restored session's replay fires no Stop.
+  if (turn) return turn.state === "done" && turn.at > seen ? "done" : null;
   // The agent has done no work since the user last had eyes on the tab. A
   // repaint, or a bell replayed with one, is not a turn: without a sustained
   // burst after the look there is nothing unread to report.
@@ -671,17 +831,19 @@ export const useActivityStore = create<ActivityStore>((set, get) => ({
         live.add(ptyId);
         const ts = lastOutputByPty[ptyId];
         const onset = onsetByPty[ptyId];
-        // Busy = the tab was commanded at some point this session (see
-        // `noteUserInput` — so restored tabs bursting resume banners on launch
-        // never read as "working"), output is still recent, AND the burst has
-        // been sustained past the onset debounce (so a lone blip never
-        // registers as "working").
-        const tabBusy =
-          inputByPty[ptyId] !== undefined &&
-          ts !== undefined &&
-          now - ts < BUSY_WINDOW_MS &&
-          onset !== undefined &&
-          now - onset >= WORK_ONSET_MS;
+        const turn = turnVerdict(ptyId, now);
+        // Attention before busy: a menu read off a quiet screen outranks a
+        // "working" verdict a tool-use hook left standing (see `attentionFor`),
+        // and `computeStatusScopes` lets working win otherwise.
+        const attn = attentionFor(scope, t, ptyId, now, turn);
+        // Busy = what the tab's own hooks say where they speak; otherwise the
+        // bytes — commanded at some point this session (see `noteUserInput`,
+        // so restored tabs bursting resume banners on launch never read as
+        // "working"), painting and saying something right now, and the text
+        // sustained past the onset debounce (so a lone blip never registers).
+        const tabBusy = turn
+          ? turn.state === "working" && attn !== "decision"
+          : bytesSayWorking(ptyId, now);
         if (tabBusy) {
           nextTab[ptyId] = true;
           scopeBusy = true;
@@ -691,7 +853,23 @@ export const useActivityStore = create<ActivityStore>((set, get) => ({
           if (t.runFile) nextRunFiles.add(t.runFile);
         }
         if ((prevTab[ptyId] ?? false) !== tabBusy) changed = true;
-        if (tabBusy) {
+        if (turn) {
+          // A turn's end is the hook's Stop (or the decision it paused on),
+          // exact to the moment it was received: that is when the tab was last
+          // working and when it last finished. Marked once per verdict.
+          if (
+            (turn.state === "done" || turn.state === "decision") &&
+            agentPromptLeaf(t) &&
+            nextDone[ptyId] !== turn.at
+          ) {
+            if ((nextWorking[ptyId] ?? 0) < turn.at) {
+              if (nextWorking === get().lastWorkingByTab) nextWorking = { ...nextWorking };
+              nextWorking[ptyId] = turn.at;
+            }
+            if (nextDone === get().lastDoneByTab) nextDone = { ...nextDone };
+            nextDone[ptyId] = turn.at;
+          }
+        } else if (tabBusy) {
           busySinceMarkByPty[ptyId] = true;
         } else if (ts !== undefined && inputByPty[ptyId] !== undefined) {
           // Was the burst that just ended work? Either a tick saw it busy, or
@@ -714,7 +892,6 @@ export const useActivityStore = create<ActivityStore>((set, get) => ({
           }
         }
 
-        const attn = attentionFor(scope, t, ptyId, now);
         if (attn) nextAttn[ptyId] = attn;
 
         // ── Usage recap ────────────────────────────────────────────────────

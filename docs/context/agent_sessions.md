@@ -30,6 +30,42 @@ of its own; a mode flag a custom agent's own spec puts on the args outranks it,
 and values outside the known mode set are discarded (the record is hook-parsed
 JSON becoming a CLI argument).
 
+The same `SessionStart` also writes `live_sessions/<key>.src` — the payload's
+`source` (`startup`, `resume`, `clear`, `compact`) — *before* the id, so a
+reader that sees a new id sees what rolled it. The prompt history is that
+reader (`services::agent_prompts::resolve_live_session`): when a prompt is
+archived or recorded, the tab's launch id the frontend sent as `session_id` is
+resolved through `read_live_session_and_source_for` to the live id and stored
+as the row's `session_id`, with the launch id kept as `tab_id`. That is what
+lets the prompt chart show the prompts after a `/clear` as a second session
+card of the same tab, joined to the first by an edge the history draws itself
+(`link_session_roll`: `after` + `/clear` for a clear, `related` for a resume).
+The frontend's `tab.sessionId` stays the launch id throughout; nothing pushes
+the live id into the window, and nothing needs to.
+
+### The turn state (working / decision / done)
+
+The same script serves four more events since 2026-09-15 — `UserPromptSubmit`,
+`PostToolUse`, `Notification` (Claude only; Codex 0.154 has none) and
+`SessionEnd` — and writes a second record, `live_sessions/<key>.turn`, holding
+one word: `working` (a prompt was submitted, or a tool finished — which is also
+how an approval wait ends), `done` (`Stop`, or the idle notice), `decision` (a
+permission or elicitation notice) or `idle` (the session ended). The backend
+(`services::agent_turn`) watches the tree and relays each write as an
+`agent-turn` event keyed by the PTY id `pty_spawn` bound to the tab's uid; the
+frontend's activity store treats that as the authority for the tab's working /
+finished marks and keeps its byte heuristic only for agents that fire no hooks.
+The reason is that no reading of the bytes survives every agent TUI: Codex
+repaints a spinner and its title on a timer whether it works, waits or idles,
+and while it thinks the only text that changes is one digit of its timer a
+second. The nested-CLI guard applies to the turn events too — for Codex, every
+event after `SessionStart` must carry the session the tab already recorded —
+so a `claude -p` or `codex exec` the agent runs from its own shell tool never
+moves the tab's state. `pty_spawn` deletes the record on every spawn, so a tab
+resumed after a crash never starts out "working" from a stale file. Codex's
+new hooks need the same one-time `/hooks` trust as its `SessionStart` one;
+until then a Codex tab stays on the byte heuristic.
+
 For Claude the key is its launch id (`--session-id`); Codex mints its own id so
 the key is a separate per-tab uuid and the backend injects
 `codex resume <live-id>`. **Codex caveat:** user-level Codex hooks need a
