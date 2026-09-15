@@ -66,3 +66,32 @@ export function writeChoice(name: MobileChoice, value: string, storage?: FlagSto
     // See readFlag.
   }
 }
+
+/** Which output view a terminal opens in. **Terminal** until the reader picks
+ * otherwise, then whatever they last chose for that *agent* — keyed by the
+ * agent behind the tab ("Claude Code", "Codex"; shells share one key), since
+ * whether Focus reads a session well is a property of the TUI, not of the
+ * tab: a reader who moved their Claude tab to Focus wants the next Claude tab
+ * there too, and a shell they keep on Terminal stays there. */
+export type TerminalViewChoice = "focus" | "terminal";
+
+function viewKey(agent: string): string {
+  return `${PREFIX}view.${agent.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-") || "agent"}`;
+}
+
+export function readTerminalView(agent: string, storage?: FlagStorage): TerminalViewChoice {
+  try {
+    const stored = (storage ?? localStorage).getItem(viewKey(agent));
+    return stored === "focus" ? "focus" : "terminal";
+  } catch {
+    return "terminal";
+  }
+}
+
+export function writeTerminalView(agent: string, view: TerminalViewChoice, storage?: FlagStorage): void {
+  try {
+    (storage ?? localStorage).setItem(viewKey(agent), view);
+  } catch {
+    // See readFlag.
+  }
+}

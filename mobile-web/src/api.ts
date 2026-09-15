@@ -345,6 +345,37 @@ export async function getAgentStatus(tabId: string, refresh = false): Promise<Ag
   return report;
 }
 
+/** One turn of an agent tab's stored conversation, as the desktop reads it
+ * off the CLI's own transcript (`services::agent_transcript`). */
+export interface TranscriptEntry { kind: "prompt" | "answer"; text: string; at?: string; cut?: boolean }
+export interface SessionTranscript {
+  available: boolean;
+  /** Why not, when unavailable: `unsupported`, `no_session`, `no_transcript`, `read_failed`. */
+  reason?: string;
+  /** Hand back on the next read to be answered `unchanged`. */
+  version?: string;
+  unchanged?: boolean;
+  entries: TranscriptEntry[];
+  /** Earlier turns exist that this answer does not carry. */
+  truncated: boolean;
+}
+
+/** `GET /api/v1/tabs/{id}/transcript` — the Focus view's stored-session feed.
+ * `version` is what the last answer carried: while the transcript file has
+ * not moved the desktop answers `unchanged` and no turns cross the link, which
+ * is what makes polling it while the agent works affordable on cellular. */
+export async function getTranscript(tabId: string, version?: string, limit?: number, signal?: AbortSignal): Promise<SessionTranscript> {
+  const query = new URLSearchParams();
+  if (version) query.set("version", version);
+  if (limit) query.set("limit", String(limit));
+  const suffix = query.size > 0 ? `?${query}` : "";
+  const { transcript } = await api<{ transcript: SessionTranscript }>(
+    `/api/v1/tabs/${encodeURIComponent(tabId)}/transcript${suffix}`,
+    { signal },
+  );
+  return transcript;
+}
+
 /** A file the phone dropped into the tab's project inbox. `reference` is
  * project-relative (`.eldrun/inbox/<file>`) — the one path shape that crosses
  * this boundary, because it carries no host component and is exactly what the

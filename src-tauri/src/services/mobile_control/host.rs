@@ -1423,6 +1423,63 @@ async fn agent_status(
     }
 }
 
+/// `?version=` is the fingerprint the phone last saw; `?limit=` how many of
+/// the newest turns it wants. Anything else is refused.
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct TranscriptQuery {
+    version: Option<String>,
+    limit: Option<usize>,
+}
+
+/// `GET /api/v1/tabs/{tab_id}/transcript` — the stored conversation behind
+/// an agent tab, for the phone's Focus view. The desktop reads the CLI's own
+/// transcript (`services::agent_transcript`) and answers with its prompts and
+/// answers, or with why it cannot (`available: false`); a phone that hands
+/// back the `version` it last saw is answered `unchanged`.
+async fn agent_transcript(
+    State(state): State<HostState>,
+    headers: HeaderMap,
+    Path(tab_id): Path<String>,
+    Query(query): Query<TranscriptQuery>,
+) -> impl IntoResponse {
+    if let Err(error) = authenticate(&headers, &state) {
+        return error;
+    }
+    let (project_id, tmux_session) = match agent_tab_target(&state, &tab_id) {
+        Ok(target) => target,
+        Err(error) => return error,
+    };
+    let desktop_socket = state.config.control_dir.join("desktop-control.sock");
+    let request_id = Base64UrlUnpadded::encode_string(&random_16());
+    match admin::desktop_call(
+        &desktop_socket,
+        &DesktopRequest::AgentTranscript {
+            request_id,
+            project_id,
+            tmux_session,
+            version: query.version,
+            limit: query.limit,
+        },
+    )
+    .await
+    {
+        Ok(DesktopResponse::AgentTranscript { transcript }) => (
+            StatusCode::OK,
+            Json(json!({ "transcript": transcript })),
+        ),
+        Ok(DesktopResponse::Error { code, .. }) => api_error(
+            if code == "tab_not_found" {
+                StatusCode::NOT_FOUND
+            } else {
+                StatusCode::BAD_REQUEST
+            },
+            &code,
+        ),
+        _ => api_error(StatusCode::SERVICE_UNAVAILABLE, "desktop_unavailable"),
+    }
+}
+
 async fn schedule_mutation(
     state: &HostState,
     tab_id: &str,
@@ -2217,6 +2274,7 @@ fn router(state: HostState) -> Router {
             put(schedule_update).delete(schedule_delete),
         )
         .route("/api/v1/tabs/{tab_id}/status", get(agent_status))
+        .route("/api/v1/tabs/{tab_id}/transcript", get(agent_transcript))
         .route("/api/v1/tabs/{tab_id}/terminal", get(terminal))
         // The phone's drop box takes a whole photo; every other body stays at
         // the control-message limit below (the inner layer wins).
@@ -2588,6 +2646,7 @@ mod tests {
         "/api/v1/projects/anything",
         "/api/v1/tabs/anything",
         "/api/v1/tabs/anything/schedules",
+        "/api/v1/tabs/anything/transcript",
         "/api/v1/projects/anything/prompts",
         "/api/v1/tabs/anything/desktop-images",
     ];

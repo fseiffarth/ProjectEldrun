@@ -349,6 +349,19 @@ body.terminal-open { min-height:0; overflow:hidden; }
 .readable-turn.user .readable-line { padding-left:0; text-indent:0; }
 .readable-turn.user .readable-line span { color:inherit !important; background:none !important; opacity:1; }
 .readable-turn.user .readable-blank { height:.45em; }
+/* A Claude answer on screen (`chatTurns`, marker removed) and every turn of
+   the stored session (`TranscriptTurns`): the same chat, the agent's own
+   words. The stored session is prose from a file, not a screen, so it reads
+   in the UI face; an answer keeps its line breaks and wraps at the phone's
+   edge. */
+.readable-lines.transcript { font:400 .9rem/1.5 Inter,ui-sans-serif,system-ui,sans-serif; }
+.transcript-text { margin:0; min-width:0; white-space:pre-wrap; overflow-wrap:break-word; }
+.transcript-cut { display:block; margin-top:4px; color:#9298aa; font-size:.72rem; }
+/* What the screen is drawing right now, under the stored session: shown only
+   while it holds a choice the session is waiting on. */
+.transcript-screen { display:grid; gap:6px; padding:8px 10px; border-left:3px solid #8fb8ff; border-radius:8px; background:#14161e; }
+.transcript-screen small { color:#8fb8ff; font-size:.62rem; text-transform:uppercase; letter-spacing:.05em; }
+.readable-tools button[aria-pressed="true"] { border-color:#6c5ce7; color:#dcd6ff; }
 .readable-notice { margin-bottom:10px; padding:8px 10px; border-left:3px solid #747b90; border-radius:8px; background:#14161e; color:#9298aa; font:400 .78rem/1.45 Inter,ui-sans-serif,system-ui,sans-serif; }
 .readable-earlier { display:block; width:100%; margin-bottom:10px; padding:9px 10px; border:1px solid #34384a; border-radius:9px; background:#151823; color:#9da3b6; font:500 .78rem/1.4 Inter,ui-sans-serif,system-ui,sans-serif; text-align:center; }
 .readable-earlier:active { background:#1c2030; color:#c8cdda; }
@@ -400,6 +413,13 @@ body.terminal-open { min-height:0; overflow:hidden; }
 .composer-chip-lamp.question { background:#ffd36b; box-shadow:0 0 7px #ffd36b; }
 .composer-chip-lamp.done { background:#91e6a9; }
 .composer-spacer { flex:1 0 0; }
+/* The draft row: the textarea and, while there is a draft, a ✕ that empties
+   it — a phone keyboard has no select-all, and a long dictated draft was
+   otherwise deleted a character at a time. */
+.composer-field { display:flex; align-items:flex-start; gap:4px; }
+.composer-field textarea { flex:1 1 auto; min-width:0; }
+.composer-clear { display:grid; place-items:center; flex:0 0 auto; width:32px; height:32px; margin-top:5px; padding:0; border:0; border-radius:50%; background:#2a2e3e; color:#c8cdda; }
+.composer-clear svg { width:14px; height:14px; fill:none; stroke:currentColor; stroke-width:2.2; stroke-linecap:round; }
 .composer-dictate { color:#dcd6ff; background:transparent; }
 .composer-dictate.listening { color:#fff; background:#7a3151; box-shadow:0 0 0 2px rgba(227,107,154,.22); }
 .composer-dictate.listening svg rect { fill:currentColor; stroke:none; }

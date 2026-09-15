@@ -1742,6 +1742,7 @@ pub fn run() {
             commands::agents::dismiss_agent_version,
             commands::agents::agent_tab_model,
             commands::agents::agent_tab_last_prompt,
+            commands::agents::agent_tab_transcript,
             commands::ollama::ollama_is_running,
             commands::ollama::ollama_status,
             commands::ollama::ollama_gpu_status,

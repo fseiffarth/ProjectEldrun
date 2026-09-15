@@ -127,6 +127,10 @@ describe("Eldrun Mobile terminal pipeline", () => {
     terminalState.emitters = [];
     FakeWebSocket.instances = [];
     vi.stubGlobal("WebSocket", FakeWebSocket);
+    // These read the Focus view; the phone opens on Terminal until the
+    // reader chose Focus for the agent, so the stored choice is preset.
+    localStorage.setItem("eldrun.mobile.view.agent", "focus");
+    localStorage.setItem("eldrun.mobile.view.shell", "focus");
     Object.defineProperty(HTMLElement.prototype, "scrollTo", { configurable: true, value: vi.fn() });
   });
 

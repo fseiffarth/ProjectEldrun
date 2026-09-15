@@ -1194,6 +1194,34 @@ pub async fn agent_tab_last_prompt(
     .flatten()
 }
 
+/// The stored conversation of the tab launched as `agent` with launch id
+/// `session_id` — its prompts and answers, read from the CLI's own transcript
+/// (`services::agent_transcript`) for the phone's Focus view. `version` is
+/// the fingerprint the caller last saw; a matching one is answered
+/// `unchanged` without a parse. Always answers: an agent with no readable
+/// transcript comes back `available: false` with the reason, never an error.
+#[tauri::command]
+pub async fn agent_tab_transcript(
+    agent: String,
+    project_id: Option<String>,
+    session_id: String,
+    version: Option<String>,
+    limit: Option<usize>,
+) -> crate::services::agent_transcript::AgentTranscript {
+    use crate::services::agent_transcript::{self, AgentTranscript, DEFAULT_LIMIT};
+    tauri::async_runtime::spawn_blocking(move || {
+        agent_transcript::agent_session_transcript(
+            &agent,
+            project_id.as_deref(),
+            &session_id,
+            version.as_deref(),
+            limit.unwrap_or(DEFAULT_LIMIT),
+        )
+    })
+    .await
+    .unwrap_or_else(|_| AgentTranscript::unavailable("read_failed"))
+}
+
 /// Read `agent`'s own usage panel by running its CLI's print mode once.
 ///
 /// Free in every sense that matters: the run is client-side (Claude's envelope

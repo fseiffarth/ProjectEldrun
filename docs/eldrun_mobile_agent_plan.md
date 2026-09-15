@@ -299,13 +299,51 @@ grouping: the reading view already cuts at `inputFrameStart`. The grouping is
 layout only — the lines keep their keys and colours, Copy copies the transcript
 as printed, and a shell tab has no turns and paints flat.
 
+Each `⏺` message Claude prints is one answer turn, shown without its bullet,
+and a tool call — `⏺ Update(src/App.tsx)` with its `⎿ Updated … with 3
+additions` status rows indented under it — is left out of the layout: on a
+phone the answer is what is wanted, the edit-by-edit status beside it is
+noise. Only that exact shape is dropped, so a permission question drawn under
+a tool call still shows.
+
+**The stored session.** The screen is a poor record of a conversation — the
+pane's scrollback, at the desktop window's width, cut by every redraw — and
+the agent keeps a better one: every prompt and every answer as a record in
+its own transcript (`~/.claude/projects/<cwd>/<id>.jsonl`, a Codex rollout).
+For an agent tab, Focus reads that instead (`GET
+/api/v1/tabs/{id}/transcript`, answered by the desktop's
+`services::agent_transcript` over the same live-id-first resolution the
+Agents view's model tag uses): the prompts and answers laid out as the same
+chat, from the first turn on, with no tool status. It is polled every five
+seconds while in view and a second after the screen last changed, carrying
+the last file fingerprint so an unmoved transcript answers `unchanged` in a
+few bytes; "Show earlier turns" asks for more of the tail. Thinking blocks,
+tool calls and results, attachments and the CLI's notes to itself are never
+read. What the file cannot carry is what the session is drawing *now*, so a
+select prompt on screen is shown under the turns, answered by the key row as
+before, and a **Session / Screen** switch in the corner returns to the screen
+reading. A tab whose agent keeps no readable transcript (a shell, Gemini,
+Codex on a release with no rollout), or whose desktop is closed, reads the
+screen as before. Untested live.
+
+**Which view opens.** The terminal itself, until the reader chooses Focus —
+and then whatever they last chose *for that agent* (`prefs.readTerminalView`,
+keyed by the agent's label; shells share one key), since whether Focus reads
+a session well is a property of the TUI rather than of the tab.
+
 For repeatable visual QA without a live Eldrun or tmux session, run the Mobile
 Vite target and open `/terminal-preview.html?kind=agent` or `?kind=shell`. The
 development-only fixture renders the production `Terminal` component, xterm,
 and styles against representative in-page WebSocket output; production builds
 still have only `mobile-web/index.html` as their entry point.
 It provides touch-friendly Ctrl, Esc, Tab, arrows, Enter, Backspace, and a guarded
-Interrupt key, plus a visible input proxy so mobile keyboards open reliably.
+Interrupt key, plus a visible input proxy so mobile keyboards open reliably. The composer
+shows a ✕ while it holds a draft, which empties it (and the dictation
+transcript with it) in one tap. When the page comes back into view — a phone
+unlocked — the socket is asked to prove itself: one the browser still reports
+open must answer a ping within four seconds or it is closed and reconnected,
+and one that closed while the page was frozen is reconnected at once, so a
+reader is not typing into a dead link that looks connected.
 Agent terminals expose **Dictate** independently of the configured CLI. On
 browsers with on-device Web Speech, the PWA checks for a dictation-quality model
 in the phone's language and offers the browser-managed language-pack install when
@@ -735,6 +773,7 @@ GET    /api/v1/tabs/:tab_id/desktop-images
 POST   /api/v1/tabs/:tab_id/desktop-images                        {image_id}
 GET    /api/v1/tabs/:tab_id/outbox                                {files}
 GET    /api/v1/tabs/:tab_id/outbox/:name[?download=1]
+GET    /api/v1/tabs/:tab_id/transcript[?version=&limit=]          {transcript}
 ```
 
 `/healthz` returns only `{ "ok": true }`. Authenticated responses expose opaque

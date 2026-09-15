@@ -8,6 +8,7 @@ import {
   ApiError,
   api,
   attachDesktopImage,
+  getTranscript,
   listDesktopImages,
   listOutbox,
   MAX_INBOX_FILE,
@@ -15,8 +16,10 @@ import {
   uploadToInbox,
   type DesktopImage,
   type OutboxFile,
+  type SessionTranscript,
   type TabRow,
 } from "../api";
+import { readTerminalView, writeTerminalView, type TerminalViewChoice } from "../prefs";
 import { TERMINAL_PROTOCOL, TERMINAL_SIZE } from "../terminal/protocol";
 import { readableRange, readableScreen, readableText, TRUNCATION_NOTICE, type ReadableLine } from "../terminal/readableScreen";
 import {
@@ -33,7 +36,7 @@ import { inputFrameStart, sessionStatus, shortenPath, type SessionStatus } from 
 import { readSelectPrompt, selectKeys, selectSignature } from "../terminal/selectPrompt";
 import { currentMode, modeChoices, shiftTabKey } from "../terminal/agentModes";
 import { agentInputWrites } from "../terminal/composer";
-import { chatTurns } from "../terminal/chatTurns";
+import { chatTurns, isPromptEcho } from "../terminal/chatTurns";
 import { StatusSheet } from "./StatusSheet";
 import {
   prepareOnDeviceSpeech,
@@ -53,6 +56,24 @@ const READABLE_INTERVAL = 120;
  * `readyState` at OPEN indefinitely, so the socket looked connected and every
  * keystroke was silently buffered into a dead link. */
 const PONG_GRACE = PING_INTERVAL * 2 + 5_000;
+/** How long a pong may take after the page comes back into view. A locked
+ * phone keeps its socket in the OPEN state whether or not the link behind it
+ * survived, so a reader who unlocked and typed was writing into a dead link
+ * for up to PONG_GRACE — the composer looked connected and nothing arrived —
+ * and only leaving the tab and reopening it reconnected. On resume the link
+ * is asked to prove itself within this much, and closed (which reconnects)
+ * if it does not. */
+const RESUME_GRACE = 4_000;
+/** How often Focus re-reads the stored session while it is in view. The read
+ * carries the last fingerprint, so an unchanged transcript costs one small
+ * request and no turns cross the link. */
+const TRANSCRIPT_POLL = 5_000;
+/** How long after the screen last changed the stored session is re-read: the
+ * agent writes an answer to its transcript as it prints it, so a change on
+ * screen is the earliest sign that the file has moved. */
+const TRANSCRIPT_SETTLE = 1_200;
+/** Turns fetched at first, and added per "Show earlier turns" tap. */
+const TRANSCRIPT_STEP = 120;
 
 /** An agent TUI parses one stdin chunk as one key event: a chunk that opens with
  * a control byte is read as that keypress and the remainder is dropped, so
@@ -166,6 +187,14 @@ const OUTBOX_POLL = 8_000;
 
 /** Whether two outbox listings would paint the same strip, so a poll that
  * found nothing new does not re-render every thumbnail. */
+/** Whether two reads of the stored session carry the same turns, so an
+ * unchanged answer does not repaint the view. */
+function sameTranscript(a: SessionTranscript, b: SessionTranscript): boolean {
+  return a.available === b.available && a.truncated === b.truncated && a.version === b.version
+    && a.entries.length === b.entries.length
+    && a.entries.every((entry, index) => entry.kind === b.entries[index].kind && entry.text === b.entries[index].text && entry.cut === b.entries[index].cut);
+}
+
 function sameOutbox(a: OutboxFile[], b: OutboxFile[]) {
   return a.length === b.length && a.every((image, i) => image.name === b[i].name && image.modified === b[i].modified && image.size === b[i].size);
 }
@@ -203,10 +232,32 @@ const ReadableTurns = memo(function ReadableTurns({ lines, chat }: { lines: read
     ? <div key={turn.key} className="readable-turn user" role="group" aria-label="Your prompt">
         {(turn.prompt ?? turn.lines).map((line) => <ReadableRow key={line.key} line={line} />)}
       </div>
-    : <div key={turn.key} className="readable-turn agent">
-        {turn.lines.map((line) => <ReadableRow key={line.key} line={line} />)}
+    : <div key={turn.key} className={turn.answer ? "readable-turn agent answer" : "readable-turn agent"}>
+        {(turn.answer ?? turn.lines).map((line) => <ReadableRow key={line.key} line={line} />)}
       </div>)}</>;
 });
+
+/** The prompts and answers of the stored session (`api.getTranscript`), laid
+ * out the same way as the screen's chat — bubbles on the right for the
+ * reader's own prompts, the agent's answers on the left — from the record the
+ * agent itself keeps, which reaches back past the pane's scrollback and
+ * carries no tool status. `cut` marks text the desktop bounded. */
+const TranscriptTurns = memo(function TranscriptTurns({ entries, cutLabel, promptLabel }: { entries: SessionTranscript["entries"]; cutLabel: string; promptLabel: string }) {
+  return <>{entries.map((entry, index) => entry.kind === "prompt"
+    ? <div key={`${index}:${entry.at ?? ""}`} className="readable-turn user" role="group" aria-label={promptLabel}>
+        <p className="transcript-text">{entry.text}</p>
+        {entry.cut && <small className="transcript-cut">{cutLabel}</small>}
+      </div>
+    : <div key={`${index}:${entry.at ?? ""}`} className="readable-turn agent answer">
+        <p className="transcript-text">{entry.text}</p>
+        {entry.cut && <small className="transcript-cut">{cutLabel}</small>}
+      </div>)}</>;
+});
+
+/** The stored preference key for a tab: the agent behind it, or the shell. */
+function viewAgentOf(tab: TabRow): string {
+  return tab.kind === "agent" ? (tab.agent_label ?? "agent") : "shell";
+}
 
 interface SheetOption {
   key: string;
@@ -285,7 +336,13 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
   const [altScreen, setAltScreen] = useState(false);
   const [ctrl, setCtrl] = useState(false);
   const [sendFailed, setSendFailed] = useState(false);
-  const [view, setView] = useState<"focus" | "terminal">("focus");
+  /** Terminal by default; whatever the reader last chose for this agent
+   * afterwards (`prefs.readTerminalView`). */
+  const [view, setView] = useState<TerminalViewChoice>(() => readTerminalView(viewAgentOf(tab)));
+  const chooseView = (next: TerminalViewChoice) => {
+    setView(next);
+    writeTerminalView(viewAgentOf(tab), next);
+  };
   const [draft, setDraft] = useState("");
   const [lines, setLines] = useState<ReadableLine[]>([]);
   const [clipped, setClipped] = useState(false);
@@ -339,6 +396,16 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
   const [outboxHidden, setOutboxHidden] = useState<Set<string>>(() => new Set());
   /** The picture open full-screen. */
   const [outboxOpen, setOutboxOpen] = useState<OutboxFile | null>(null);
+  /** The stored session behind an agent tab (`getTranscript`): `null` until
+   * the first read answers. Focus reads from it whenever it is available and
+   * the reader has not switched the view to the screen. */
+  const [transcript, setTranscript] = useState<SessionTranscript | null>(null);
+  const [focusSource, setFocusSource] = useState<"session" | "screen">("session");
+  /** Turns asked for; grows with "Show earlier turns". */
+  const [transcriptLimit, setTranscriptLimit] = useState(TRANSCRIPT_STEP);
+  /** Bumped by every change of the screen: the settle timer re-reads the
+   * session after it. */
+  const [screenTick, setScreenTick] = useState(0);
   const fileInput = useRef<HTMLInputElement>(null);
   /** Bumped when the tab changes so a late upload result lands nowhere. */
   const uploadRun = useRef(0);
@@ -364,8 +431,11 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
   const statusRef = useRef<SessionStatus | null>(null);
 
   useEffect(() => {
-    setView("focus");
+    setView(readTerminalView(viewAgentOf(tab)));
     setDraft("");
+    setTranscript(null);
+    setFocusSource("session");
+    setTranscriptLimit(TRANSCRIPT_STEP);
     setLines([]);
     setClipped(false);
     setEarlier({ chunks: [], open: [], dropped: false });
@@ -547,7 +617,10 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
       readableTimer = window.setTimeout(() => {
         readableTimer = 0;
         cancelAnimationFrame(readableFrame);
-        readableFrame = requestAnimationFrame(renderReadable);
+        readableFrame = requestAnimationFrame(() => {
+          renderReadable();
+          setScreenTick((tick) => tick + 1);
+        });
       }, wait);
     };
     refreshReadable.current = updateReadable;
@@ -557,6 +630,9 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     let reconnectTimer: number | undefined;
     let reconnectAttempt = 0;
     let lastPong = 0;
+    /** Pongs received on the current socket — what the resume check compares,
+     * since two timestamps in one millisecond would read as no pong. */
+    let pongs = 0;
     // Returns whether the bytes were handed to an open socket. Callers that
     // confirm something to the user must not claim success on a `false`.
     write.current = (value) => {
@@ -618,6 +694,7 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
         reconnectAttempt = 0;
         connectedRef.current = true;
         lastPong = Date.now();
+        pongs = 0;
         setConnected(true);
         setSendFailed(false);
         // A retryable close (`idle_timeout`) explained itself and then
@@ -693,6 +770,7 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
         }
         if (control.type === "pong") {
           lastPong = Date.now();
+          pongs += 1;
           return;
         }
         if (control.type === "replay") {
@@ -778,6 +856,38 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
       }
       ws.send(JSON.stringify({ type: "ping" }));
     }, PING_INTERVAL);
+    // The page came back into view — a phone unlocked, the app switched back
+    // to. A socket that closed while it was away has its reconnect waiting on
+    // a backoff timer that was frozen with the page: run it now. One the
+    // browser still reports OPEN is asked for a pong within RESUME_GRACE and
+    // closed otherwise, which is what drives the ordinary reconnect; before
+    // this the composer stayed enabled on a dead link until PONG_GRACE ran
+    // out, and typing went nowhere.
+    let resumeTimer = 0;
+    const resume = () => {
+      if (stopped || document.visibilityState !== "visible") return;
+      const current = ws;
+      if (!current || current.readyState === WebSocket.CLOSED) {
+        clearTimeout(reconnectTimer);
+        reconnectAttempt = 0;
+        connect();
+        return;
+      }
+      if (current.readyState !== WebSocket.OPEN) return;
+      const seen = pongs;
+      current.send(JSON.stringify({ type: "ping" }));
+      clearTimeout(resumeTimer);
+      resumeTimer = window.setTimeout(() => {
+        if (stopped || ws !== current || current.readyState !== WebSocket.OPEN) return;
+        if (pongs === seen) {
+          reconnectAttempt = 0;
+          current.close();
+        }
+      }, RESUME_GRACE);
+      updateReadable();
+    };
+    document.addEventListener("visibilitychange", resume);
+    window.addEventListener("pageshow", resume);
     return () => {
       stopped = true;
       connectedRef.current = false;
@@ -791,6 +901,9 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
       trimWatch?.dispose();
       term.dispose();
       clearInterval(ping);
+      clearTimeout(resumeTimer);
+      document.removeEventListener("visibilitychange", resume);
+      window.removeEventListener("pageshow", resume);
       clearTimeout(resizeTimer);
       clearTimeout(readableTimer);
       cancelAnimationFrame(resizeFrame);
@@ -806,6 +919,71 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     };
   }, [tab.id]);
   useEffect(() => { if (view === "focus") refreshReadable.current(); }, [view]);
+  /** Whether Focus is reading the stored session rather than the screen. */
+  const sessionFocus = tab.kind === "agent" && view === "focus" && focusSource === "session";
+  const transcriptVersion = useRef<string | undefined>();
+  const transcriptRequest = useRef<AbortController>();
+  useEffect(() => { transcriptVersion.current = transcript?.version; }, [transcript]);
+  /** Reads the stored session: on open, every TRANSCRIPT_POLL while the page
+   * is visible, and TRANSCRIPT_SETTLE after the screen last changed. A read
+   * that answers `unchanged` keeps what is shown; one that fails keeps it too
+   * and the next read retries. An unavailable session (a shell, an agent
+   * whose transcript is not read, no desktop) hands Focus to the screen. */
+  useEffect(() => {
+    if (tab.kind !== "agent" || view !== "focus") return;
+    let stopped = false;
+    const read = () => {
+      if (stopped || document.visibilityState === "hidden") return;
+      transcriptRequest.current?.abort();
+      const controller = new AbortController();
+      transcriptRequest.current = controller;
+      void getTranscript(tab.id, transcriptVersion.current, transcriptLimit, controller.signal).then(
+        (next) => {
+          if (stopped || controller.signal.aborted) return;
+          // A malformed answer is a failed read: keep what is shown.
+          if (!next || typeof next !== "object" || next.unchanged) return;
+          setTranscript((current) => current && sameTranscript(current, next) ? current : next);
+        },
+        () => {},
+      );
+    };
+    read();
+    const timer = window.setInterval(read, TRANSCRIPT_POLL);
+    document.addEventListener("visibilitychange", read);
+    return () => {
+      stopped = true;
+      transcriptRequest.current?.abort();
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", read);
+    };
+  }, [tab.id, tab.kind, view, transcriptLimit]);
+  useEffect(() => {
+    if (!sessionFocus || screenTick === 0) return;
+    const timer = window.setTimeout(() => {
+      transcriptRequest.current?.abort();
+      const controller = new AbortController();
+      transcriptRequest.current = controller;
+      void getTranscript(tab.id, transcriptVersion.current, transcriptLimit, controller.signal).then(
+        (next) => {
+          if (controller.signal.aborted || !next || typeof next !== "object" || next.unchanged) return;
+          setTranscript((current) => current && sameTranscript(current, next) ? current : next);
+        },
+        () => {},
+      );
+    }, TRANSCRIPT_SETTLE);
+    return () => window.clearTimeout(timer);
+  }, [screenTick, sessionFocus, tab.id, transcriptLimit]);
+  /** The stored session is what Focus paints: available, and not switched
+   * away from. Until the first read answers, the screen is shown, so the view
+   * never opens blank. */
+  const sessionShown = sessionFocus && transcript?.available === true;
+  // A new turn in the stored session scrolls the view to it, as new screen
+  // output does, unless the reader has scrolled up to read.
+  useLayoutEffect(() => {
+    if (!sessionShown || !atBottom) return;
+    const stream = readableHost.current;
+    if (stream) stream.scrollTo({ top: stream.scrollHeight });
+  }, [sessionShown, transcript, atBottom]);
   /** Reads the outbox now and every `OUTBOX_POLL` while the page is visible;
    * coming back to the page reads it at once. A listing that could not be
    * fetched keeps what was shown — the next poll retries. */
@@ -935,6 +1113,15 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     if (!sendAgentText(draft)) return;
     setLastSent(draft);
     setDraft("");
+  };
+  /** The composer's ✕: an empty draft, and an empty dictation transcript to
+   * go with it, so the next spoken words do not pick up after the cleared
+   * ones. */
+  const clearDraft = () => {
+    setDraft("");
+    voiceTranscript.current = "";
+    setVoicePreview("");
+    composerInput.current?.focus();
   };
   /** The facts the session prints below its own input box — the composer
    * chips' labels. Absent fields leave the chip on its generic label. */
@@ -1181,15 +1368,27 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
   /** Agent tabs read as a chat (`ReadableTurns`); a shell's output has no
    * turns to lay out. */
   const chat = tab.kind === "agent";
+  /** The live screen after the last prompt echo — what the session is
+   * drawing right now. Shown under the stored session while it holds a
+   * choice the session is waiting on, which the transcript cannot carry. */
+  const liveTail = useMemo(() => {
+    if (!sessionShown) return [];
+    let start = 0;
+    painted.forEach((line, index) => { if (isPromptEcho(line)) start = index + 1; });
+    return painted.slice(start);
+  }, [sessionShown, painted]);
+  const liveQuestion = useMemo(() => liveTail.length > 0 && readSelectPrompt(liveTail) != null, [liveTail]);
   const copyReadable = async () => {
     try {
-      // Copy exactly what the reading view is showing: the revealed history,
-      // the open chunk, then the live tail.
-      await navigator.clipboard.writeText(readableText([
-        ...visibleChunks.flatMap((chunk) => chunk.lines),
-        ...earlier.open,
-        ...painted,
-      ]));
+      // Copy exactly what the reading view is showing: the stored session's
+      // turns, or the revealed history, the open chunk, then the live tail.
+      await navigator.clipboard.writeText(sessionShown
+        ? (transcript?.entries ?? []).map((entry) => entry.kind === "prompt" ? `> ${entry.text}` : entry.text).join("\n\n")
+        : readableText([
+          ...visibleChunks.flatMap((chunk) => chunk.lines),
+          ...earlier.open,
+          ...painted,
+        ]));
       setCopied(true);
       window.clearTimeout(copiedTimer.current);
       copiedTimer.current = window.setTimeout(() => setCopied(false), 1_500);
@@ -1316,18 +1515,29 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     description: desktopImageDescription(image),
     current: false,
   }));
-  return <main className={`terminal-screen ${tab.kind}-tab`} style={viewportHeight ? { height: viewportHeight } : undefined}><header><button className="back" onClick={back}>‹</button><div className="terminal-title"><h1>{tab.label}</h1><small>{tab.kind === "agent" ? "Agent session" : "Shell session"}</small></div><div className="terminal-view-switch" aria-label="Output view"><button className={view === "focus" ? "selected" : ""} aria-pressed={view === "focus"} onClick={() => setView("focus")}>Focus</button><button className={view === "terminal" ? "selected" : ""} aria-pressed={view === "terminal"} onClick={() => setView("terminal")}>Terminal</button></div><span className={connected ? "lamp" : "lamp off"} /></header>
+  return <main className={`terminal-screen ${tab.kind}-tab`} style={viewportHeight ? { height: viewportHeight } : undefined}><header><button className="back" onClick={back}>‹</button><div className="terminal-title"><h1>{tab.label}</h1><small>{tab.kind === "agent" ? "Agent session" : "Shell session"}</small></div><div className="terminal-view-switch" aria-label="Output view"><button className={view === "focus" ? "selected" : ""} aria-pressed={view === "focus"} onClick={() => chooseView("focus")}>Focus</button><button className={view === "terminal" ? "selected" : ""} aria-pressed={view === "terminal"} onClick={() => chooseView("terminal")}>Terminal</button></div><span className={connected ? "lamp" : "lamp off"} /></header>
     <div className="terminal-body">
       <div ref={host} className={`terminal${view === "focus" ? " focus-source" : ""}`} />
       <div ref={wideHint} className="terminal-wide-hint" aria-hidden="true" />
-      {view === "focus" && altScreen && <div className="alt-screen-notice"><strong>Full-screen program</strong><span>This session is drawing its own screen, which has no scrollback to read. Switch to Terminal to see it.</span><button className="primary" onClick={() => setView("terminal")}>Open Terminal view</button></div>}
+      {view === "focus" && altScreen && <div className="alt-screen-notice"><strong>Full-screen program</strong><span>This session is drawing its own screen, which has no scrollback to read. Switch to Terminal to see it.</span><button className="primary" onClick={() => chooseView("terminal")}>Open Terminal view</button></div>}
       {view === "focus" && !altScreen && <>
         <section ref={readableHost} className="readable-output" aria-label="Session output" aria-live="polite"
           onScroll={(event) => {
             const stream = event.currentTarget;
             setAtBottom(stream.scrollHeight - stream.scrollTop - stream.clientHeight < 120);
           }}>
-          {painted.length === 0 && visibleChunks.length === 0 && earlier.open.length === 0
+          {sessionShown
+            ? (transcript && transcript.entries.length === 0 && !liveQuestion
+              ? <div className="readable-empty"><strong>{t("mobile.transcript.empty")}</strong><span>{t("mobile.transcript.emptyHint")}</span></div>
+              : <div className="readable-lines chat transcript" data-testid="session-transcript">
+                  {transcript?.truncated && <button className="readable-earlier" onClick={() => setTranscriptLimit((limit) => limit + TRANSCRIPT_STEP)}>{t("mobile.transcript.earlier")}</button>}
+                  <TranscriptTurns entries={transcript?.entries ?? []} cutLabel={t("mobile.transcript.cut")} promptLabel={t("mobile.transcript.prompt")} />
+                  {liveQuestion && <div className="transcript-screen" role="group" aria-label={t("mobile.transcript.onScreen")}>
+                    <small>{t("mobile.transcript.onScreen")}</small>
+                    <ReadableTurns lines={liveTail} chat={chat} />
+                  </div>}
+                </div>)
+            : painted.length === 0 && visibleChunks.length === 0 && earlier.open.length === 0
             ? <div className="readable-empty"><strong>Waiting for output</strong><span>The exact terminal is running behind this view.</span></div>
             : <div className={chat ? "readable-lines chat" : "readable-lines"}>
                 {clipped && <div className="readable-notice">{TRUNCATION_NOTICE}</div>}
@@ -1338,8 +1548,9 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
                 <ReadableTurns lines={painted} chat={chat} />
               </div>}
         </section>
-        {lines.length > 0 && <div className="readable-tools">
-          {chat && <small>Chat layout · Untested</small>}
+        {(lines.length > 0 || sessionShown) && <div className="readable-tools">
+          {chat && <small>{sessionShown ? `${t("mobile.focus.session")} · ${t("mobile.focus.untested")}` : "Chat layout · Untested"}</small>}
+          {chat && transcript?.available && <button onClick={() => setFocusSource((source) => source === "session" ? "screen" : "session")} aria-pressed={sessionShown} title={sessionShown ? t("mobile.focus.screenHint") : t("mobile.focus.sessionHint")}>{sessionShown ? t("mobile.focus.screen") : t("mobile.focus.session")}</button>}
           <button onClick={() => void copyReadable()} aria-label="Copy the session text">{copied ? "Copied" : "Copy"}</button>
         </div>}
         {!atBottom && <button className="readable-jump" onClick={jumpToLatest}>Jump to latest ↓</button>}
@@ -1382,15 +1593,18 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
         {status.context && <span className="fact-context">{status.context} context</span>}
       </div>}
       <div className="prompt-composer">
-        <textarea ref={composerInput} value={draft} disabled={!connected} rows={1} aria-label={tab.kind === "agent" ? "Message agent" : "Shell command"} placeholder={connected ? (tab.kind === "agent" ? "Message the agent…" : "Type a command…") : "Reconnecting…"} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => {
-          if (event.key !== "Enter" || event.shiftKey) return;
-          // Enter confirms a candidate inside an IME composition (CJK keyboards,
-          // and 229 is what Android keyboards report mid-composition); that
-          // one belongs to the keyboard, not to the send.
-          if (event.nativeEvent.isComposing || event.keyCode === 229) return;
-          event.preventDefault();
-          submitDraft();
-        }} />
+        <div className="composer-field">
+          <textarea ref={composerInput} value={draft} disabled={!connected} rows={1} aria-label={tab.kind === "agent" ? "Message agent" : "Shell command"} placeholder={connected ? (tab.kind === "agent" ? "Message the agent…" : "Type a command…") : "Reconnecting…"} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => {
+            if (event.key !== "Enter" || event.shiftKey) return;
+            // Enter confirms a candidate inside an IME composition (CJK keyboards,
+            // and 229 is what Android keyboards report mid-composition); that
+            // one belongs to the keyboard, not to the send.
+            if (event.nativeEvent.isComposing || event.keyCode === 229) return;
+            event.preventDefault();
+            submitDraft();
+          }} />
+          {draft && <button className="composer-clear" onClick={clearDraft} aria-label={t("mobile.composer.clear")} title={t("mobile.composer.clear")}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" /></svg></button>}
+        </div>
         <div className="composer-bar">
           {tab.kind === "agent" && <>
             <input ref={fileInput} type="file" multiple hidden aria-hidden="true" tabIndex={-1} data-testid="inbox-file-input" onChange={(event) => { attachFromPhone(event.target.files); event.target.value = ""; }} />

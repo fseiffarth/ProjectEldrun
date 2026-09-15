@@ -66,6 +66,10 @@ describe("Eldrun Mobile readable terminal view", () => {
     terminalState.textarea = undefined;
     FakeWebSocket.instances = [];
     vi.stubGlobal("WebSocket", FakeWebSocket);
+    // These read the Focus view; the phone opens on Terminal until the
+    // reader chose Focus for the agent, so the stored choice is preset.
+    localStorage.setItem("eldrun.mobile.view.agent", "focus");
+    localStorage.setItem("eldrun.mobile.view.shell", "focus");
     Object.defineProperty(HTMLElement.prototype, "scrollTo", { configurable: true, value: vi.fn() });
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: vi.fn().mockResolvedValue(undefined) } });
   });
@@ -109,7 +113,10 @@ describe("Eldrun Mobile readable terminal view", () => {
     const prompt = screen.getByRole("group", { name: "Your prompt" });
     expect(prompt.className).toBe("readable-turn user");
     expect(prompt.textContent).toBe("fix the failing test");
-    expect(screen.getByText("⏺ Reading the test first.").closest(".readable-turn")?.className).toBe("readable-turn agent");
+    // The answer is its own turn, its ⏺ bullet and indent removed from what is shown.
+    const answer = screen.getByText("Reading the test first.").closest(".readable-turn");
+    expect(answer?.className).toBe("readable-turn agent answer");
+    expect(answer?.textContent).toBe("Reading the test first.It fails on the second assertion.");
     expect(screen.getAllByRole("group", { name: "Your prompt" })).toHaveLength(1);
     expect(document.querySelector(".readable-lines")?.className).toBe("readable-lines chat");
 

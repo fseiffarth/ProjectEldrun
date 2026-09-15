@@ -381,7 +381,7 @@ pub fn agent_session_last_prompt(
 /// - Codex: the rollout transcript when this release still writes one, else
 ///   its SQLite thread store through `read_store` — the same fact by the only
 ///   route left since 0.153.4, for the facts that store holds.
-fn read_agent_transcript<T>(
+pub(crate) fn read_agent_transcript<T>(
     cmd: &str,
     project_id: Option<&str>,
     launch_id: &str,
@@ -546,7 +546,7 @@ fn prompt_in_record(line: &str, kind: TranscriptKind) -> Option<String> {
 /// or `isSidechain` are the CLI's own, tool results are the tools', and the
 /// system reminders attached to a prompt ride along as blocks of their own —
 /// all stepped over.
-fn claude_prompt_in_record(value: &serde_json::Value) -> Option<String> {
+pub(crate) fn claude_prompt_in_record(value: &serde_json::Value) -> Option<String> {
     if value.get("type").and_then(|t| t.as_str()) != Some("user") {
         return None;
     }
@@ -604,7 +604,7 @@ fn claude_prompt_text(text: &str) -> Option<String> {
 /// which is also where Codex injects `<environment_context>`, `<user_instructions>`
 /// and the `AGENTS.md` text — those open with a tag or a heading, and are
 /// skipped. Both shapes are read, so either dialect of rollout answers.
-fn codex_prompt_in_record(value: &serde_json::Value) -> Option<String> {
+pub(crate) fn codex_prompt_in_record(value: &serde_json::Value) -> Option<String> {
     let payload = value.get("payload")?;
     let payload_type = payload.get("type").and_then(|t| t.as_str());
     match value.get("type").and_then(|t| t.as_str())? {

@@ -1,5 +1,8 @@
 pub mod agent_prompts;
 pub mod agent_session;
+// The stored conversation behind an agent tab (Claude's session log, Codex's
+// rollout) as the prompt/answer entries the phone's Focus view lays out.
+pub mod agent_transcript;
 pub mod agent_bin;
 pub mod agent_tasks;
 // One agent CLI's own usage panel (Claude's `/usage`), read in print mode
