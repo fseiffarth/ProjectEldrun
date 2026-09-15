@@ -24,7 +24,7 @@ import {
 } from "../../lib/terminalBus";
 import { hpcGuardRefusal } from "../../lib/hpcGuard";
 import { useHpcGuardStore } from "../../stores/hpcGuardPrompt";
-import { CSI_U_SHIFT_TAB, FORCE_SELECTION_MODIFIER, agentMouseDownAction, claimInitialInput, decodeOsc52Clipboard, initialInputForPty, isClaudeCommand, isCodexCommand, isTerminalIdentityResponse, isTerminalReport, stripTerminalQueries } from "../../lib/terminalControl";
+import { CSI_U_SHIFT_TAB, FORCE_SELECTION_MODIFIER, agentMouseDownAction, claimInitialInput, decodeOsc52Clipboard, initialInputForPty, isClaudeCommand, isCodexCommand, isTerminalAutoReply, isTerminalIdentityResponse, isTerminalReport, stripTerminalQueries } from "../../lib/terminalControl";
 import { registerTerminal, unregisterTerminal } from "../../lib/terminalRegistry";
 import { clearPtyInput, writePtyInput } from "../../lib/terminalInput";
 import { registerScheduledAgentInput } from "../../lib/scheduledAgentInput";
@@ -746,8 +746,17 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       // A bare Escape / Ctrl+C is the user cutting the agent off: its hook
       // verdict of "working" would otherwise stand (an interrupted turn fires
       // no Stop) — see noteUserInput.
-      noteUserInput(id, isInterruptInput(data));
-      if (noteInput(id, data) > 0) countSubmit();
+      //
+      // Only a person's keystrokes are stamped. xterm also answers the TUI's
+      // queries and sends focus / mouse reports through this same callback
+      // (`isTerminalAutoReply`); they reach the PTY like anything else, but
+      // stamped as input they read as a prompt the user just submitted, and
+      // a scheduled prompt aimed at a tab that was merely clicked into then
+      // waited for a Stop that no submission was going to bring.
+      if (!isTerminalAutoReply(data)) {
+        noteUserInput(id, isInterruptInput(data));
+        if (noteInput(id, data) > 0) countSubmit();
+      }
       writePtyInput(id, PTY_ENCODER.encode(data)).catch(console.error);
     });
 

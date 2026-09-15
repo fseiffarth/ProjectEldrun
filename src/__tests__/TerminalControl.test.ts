@@ -6,6 +6,7 @@ import {
   clearClaimedInitialInputsForTest,
   decodeOsc52Clipboard,
   initialInputForPty,
+  isTerminalAutoReply,
   isTerminalIdentityResponse,
   isTerminalReport,
   stripTerminalQueries,
@@ -73,6 +74,33 @@ describe("replayed output can no longer answer a query on the user's behalf", ()
     expect(isTerminalReport("\x1b[A")).toBe(false); // arrow up
     expect(isTerminalReport("\x1bOR")).toBe(false); // F3 — SS3, not CSI
     expect(isTerminalReport("\x1b")).toBe(false); // Escape
+  });
+
+  it("tells everything xterm sends by itself from a keystroke", () => {
+    // The replies above, plus the two streams a TUI switches on: focus
+    // reports (a click into or out of the tab) and mouse tracking (a wheel
+    // scroll over an agent pane is a burst of these).
+    expect(isTerminalAutoReply("\x1b[I")).toBe(true);
+    expect(isTerminalAutoReply("\x1b[O")).toBe(true);
+    expect(isTerminalAutoReply("\x1b[<64;12;5M")).toBe(true); // SGR wheel up
+    expect(isTerminalAutoReply("\x1b[<0;12;5m")).toBe(true); // SGR release
+    expect(isTerminalAutoReply("\x1b[M !!")).toBe(true); // X10 press
+    expect(isTerminalAutoReply("\x1b[32;12;5M")).toBe(true); // urxvt
+    expect(isTerminalAutoReply("\x1b[24;1R")).toBe(true); // cursor position
+    expect(isTerminalAutoReply("\x1b[?1;2c")).toBe(true); // DA1
+    expect(isTerminalAutoReply("\x1b]11;rgb:1e1e/1e1e/1e1e\x07")).toBe(true);
+    expect(isTerminalAutoReply("\x1b[I\x1b[24;1R")).toBe(true); // a burst
+    // A person's keys, including the ones that come closest.
+    expect(isTerminalAutoReply("continue the task\r")).toBe(false);
+    expect(isTerminalAutoReply("\r")).toBe(false);
+    expect(isTerminalAutoReply("\x1b")).toBe(false); // bare Escape: an interrupt
+    expect(isTerminalAutoReply("\x03")).toBe(false); // Ctrl+C
+    expect(isTerminalAutoReply("\x1b[A")).toBe(false); // arrow up
+    expect(isTerminalAutoReply("\x1b[1;2A")).toBe(false); // shift+up
+    expect(isTerminalAutoReply("\x1b[Z")).toBe(false); // backtab
+    expect(isTerminalAutoReply("\x1bOR")).toBe(false); // F3
+    expect(isTerminalAutoReply("\x1b[200~pasted\x1b[201~")).toBe(false); // bracketed paste
+    expect(isTerminalAutoReply("\x1b[I typed")).toBe(false); // not the whole chunk
   });
 });
 

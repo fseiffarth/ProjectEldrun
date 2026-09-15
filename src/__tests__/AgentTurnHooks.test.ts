@@ -76,11 +76,40 @@ describe("activity store — hook verdicts", () => {
     expect(agentDeliveryTurn(PTY)).toBeUndefined();
   });
 
-  it("never treats hook-free silence after user input as permission to inject another prompt", () => {
+  it("stops holding delivery on a keystroke the hooks never confirmed as a prompt", () => {
+    // A finished turn, then the user types something and walks away: an
+    // arrow key, a draft left in the composer, an Escape. No UserPromptSubmit
+    // follows, so no Stop ever will — holding on it held forever, which is how
+    // a prompt aimed at an idle tab sat "queued" until it read "missed".
+    noteAgentTurn(PTY, "working");
+    noteAgentTurn(PTY, "done");
+    vi.advanceTimersByTime(5000);
+    expect(agentDeliveryReady(PTY, 3000)).toBe(true);
     noteUserInput(PTY);
-    vi.advanceTimersByTime(60_000);
+    expect(agentDeliveryReady(PTY, 3000)).toBe(false);
+    vi.advanceTimersByTime(19_000);
+    expect(agentDeliveryReady(PTY, 3000)).toBe(false);
+    vi.advanceTimersByTime(2_000);
+    expect(agentDeliveryReady(PTY, 3000)).toBe(true);
+    // A keystroke the hooks DID confirm holds for the whole turn.
+    noteUserInput(PTY);
+    noteAgentTurn(PTY, "working");
+    vi.advanceTimersByTime(5 * 60_000);
+    expect(agentDeliveryReady(PTY, 3000)).toBe(false);
+  });
+
+  it("lets a hook-free tab be delivered to again once a keystroke's grace has passed", () => {
+    // An agent with no hooks (Gemini, Qwen, a custom command) never reports
+    // a Stop, so "wait for the agent's own completion" would mean never again
+    // after the first keystroke. After the grace the bytes decide — the
+    // scheduler's own busy / decision / settle checks.
+    noteUserInput(PTY);
+    vi.advanceTimersByTime(10_000);
     state().recompute();
     expect(agentDeliveryReady(PTY, 3000)).toBe(false);
+    vi.advanceTimersByTime(60_000);
+    state().recompute();
+    expect(agentDeliveryReady(PTY, 3000)).toBe(true);
   });
 
   it("marks working on the agent's word alone, and done the moment it stops", () => {

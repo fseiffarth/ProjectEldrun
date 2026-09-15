@@ -1424,3 +1424,35 @@ unchanged; the new agents are additive.
       (6) A Gemini/Qwen tab (no hooks) still shows working/finished off its bytes.
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work
+    - **Fix (2026-09-15): scheduled prompts to different tabs no longer wait on
+      each other.** Two prompts due at 12:35 on two Claude tabs: the first went
+      at 12:35:01, the second only at 12:37:12, after a hook event happened to
+      land. Cause: `TerminalView` stamped **everything** xterm emits through
+      `onData` as the user's input — including the focus in/out reports, mouse
+      tracking and cursor-position / attribute replies the terminal sends by
+      itself — and the delivery gate (new that morning) reads any input after a
+      Stop as a turn in flight, waiting for a Stop that no submission was going
+      to bring. So a tab that was merely clicked into could not receive a
+      scheduled prompt until its next real turn ended. Now: `isTerminalAutoReply`
+      keeps those out of the stamp (they still reach the PTY); a real keystroke
+      holds delivery only for the 20 s a submission needs to be reported by the
+      hook (`INPUT_SUBMIT_GRACE_MS`), after which an abandoned draft or an arrow
+      key holds nothing; and a tab whose agent fires no hooks (Gemini, Qwen,
+      custom) falls back to its bytes — after a keystroke's grace before a
+      delivery, and after 30 s of quiet (`HOOKLESS_DONE_QUIET_MS`) after one —
+      instead of never being deliverable again. Files: `lib/terminalControl.ts`,
+      `TerminalView.tsx`, `stores/activity.ts`, `AgentScheduleHost.tsx`.
+      Frontend only, hot-reloads; **not live-tested**.
+      - [x] 🤖 Automated test — `AgentScheduleParallelTabs` (two tabs, a
+        stale keystroke, a hook-free second delivery), `AgentTurnHooks` (the
+        grace), `TerminalControl` (`isTerminalAutoReply`).
+      - [ ] 🖐️ Manual test — two Claude tabs, both idle after a finished turn.
+        Click into tab B, then back to A. From the prompt chart drop one draft
+        on each tab at the now line: both prompts land within a tick (15 s),
+        B's without waiting for A's turn to end. Then send a prompt to A, and
+        while A works schedule one for B: B receives it at once. Type half a
+        prompt into an idle tab and leave it: a prompt sent to that tab arrives
+        after ~20 s, not never. In a Gemini tab send two prompts in a row from
+        the chart: the second arrives ~30 s after the first answer goes quiet.
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work

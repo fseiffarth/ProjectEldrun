@@ -244,19 +244,41 @@ export function noteAgentTurn(ptyId: string, state: AgentTurnState) {
   useActivityStore.getState().recompute();
 }
 
+/// How long a keystroke after the agent's Stop is read as "a prompt is going
+/// in" before the hooks have their say. A submission is reported by
+/// `UserPromptSubmit` within a second or two (hook script, file watcher, one
+/// event); a keystroke still unanswered after this long was not one — a draft
+/// typed and left in the composer, an arrow key, an Escape that cleared the
+/// line — and holding scheduled delivery on it any longer held it forever: the
+/// Stop that would release it only follows a turn, and no turn was started.
+const INPUT_SUBMIT_GRACE_MS = 20_000;
+
+/** True while a keystroke newer than `after` is still inside the window in
+ *  which its submission, if it was one, would have been reported. */
+function inputPendingVerdict(ptyId: string, after: number): boolean {
+  const input = inputByPty[ptyId];
+  return input !== undefined && input > after && Date.now() - input < INPUT_SUBMIT_GRACE_MS;
+}
+
 /** The last explicit hook event, even when the display falls back to silence.
- * A stopped session and an interrupted turn are never proof of completion. */
+ * A stopped session and an interrupted turn are never proof of completion.
+ * Fresh input after a Stop reads as the next turn in flight for as long as
+ * the hooks would need to confirm it ({@link INPUT_SUBMIT_GRACE_MS}). */
 export function agentDeliveryTurn(ptyId: string) {
   const turn = deliveryTurns[ptyId];
-  if (turn?.state === "done" && (inputByPty[ptyId] ?? 0) > turn.at) return { ...turn, state: "working" as const };
+  if (turn?.state === "done" && inputPendingVerdict(ptyId, turn.at)) return { ...turn, state: "working" as const };
   return turn;
 }
 
-/** An untouched ready terminal may receive its first prompt. Once there has
- * been input, automation needs the agent's own stable completion event. */
+/** Whether automation may type a prompt into the tab. With a hook verdict on
+ * record, only the agent's own stable completion opens the gate. Without one —
+ * an agent that fires no hooks, or a tab nothing has been asked of yet — the
+ * gate waits out the grace after a keystroke and then leaves the call to the
+ * bytes (the caller's busy / decision / settle checks), since no Stop is ever
+ * going to arrive for such a tab to wait on. */
 export function agentDeliveryReady(ptyId: string, stableMs: number): boolean {
   const turn = agentDeliveryTurn(ptyId);
-  return turn ? turn.state === "done" && Date.now() - turn.at >= stableMs : !inputByPty[ptyId];
+  return turn ? turn.state === "done" && Date.now() - turn.at >= stableMs : !inputPendingVerdict(ptyId, 0);
 }
 
 /** The hook verdict for a PTY, if one stands: absent for a tab with no hooks,
