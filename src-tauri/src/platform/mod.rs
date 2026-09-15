@@ -1,11 +1,13 @@
 //! WorkspaceBackend trait and auto-detect factory.
 //!
-//! Detection order (matching the Python app's backends/__init__.py):
-//!   1. KDE Wayland — WAYLAND_DISPLAY set + XDG_CURRENT_DESKTOP contains "kde"/"plasma"
-//!   2. KDE X11     — XDG_CURRENT_DESKTOP contains "kde"/"plasma" (no WAYLAND_DISPLAY)
-//!   3. Cinnamon X11 — XDG_CURRENT_DESKTOP contains "cinnamon"
-//!   4. GNOME        — XDG_CURRENT_DESKTOP contains "gnome" (stub — null behavior)
-//!   5. Null         — everything else
+//! Detection (`detect_backend`):
+//!   - Windows → `windows`; macOS → `macos` (one backend each, always).
+//!   - Linux, KDE/Plasma in a Wayland session ([`session_is_wayland`]) →
+//!     `kde-wayland`, which reports workspace info but cannot park windows.
+//!   - Linux, KDE/Plasma (or a failed `kde-wayland` connect) → `x11`.
+//!   - Linux, Cinnamon → `x11`.
+//!   - Everything else — GNOME, XFCE, sway, …, or an `x11` connect that failed
+//!     → `null`, which parks nothing. There is no GNOME backend.
 
 use serde::{Deserialize, Serialize};
 
@@ -73,6 +75,15 @@ pub trait WorkspaceBackend: Send + Sync {
     fn supports_embedding(&self) -> bool {
         false
     }
+    /// Whether a project switch actually hides the previous project's app
+    /// windows on this desktop (desktop-parking on X11, SW_HIDE on Windows,
+    /// app hide on macOS). `false` for a backend whose `show_window` /
+    /// `hide_window` are no-ops — null (GNOME, XFCE, …) and KDE Wayland — so
+    /// Settings can say so instead of the switch silently leaving every window
+    /// where it was. Default true: the three parking backends inherit it.
+    fn can_park(&self) -> bool {
+        true
+    }
     /// Called at startup to make Eldrun visible on all desktops (sticky).
     fn make_sticky(&self, eldrun_pid: u32) -> Result<(), String>;
     /// Called when the app exits — restore original desktop configuration.
@@ -122,7 +133,7 @@ pub fn detect_backend() -> Box<dyn WorkspaceBackend> {
         let desktop = std::env::var("XDG_CURRENT_DESKTOP")
             .unwrap_or_default()
             .to_lowercase();
-        let wayland = std::env::var("WAYLAND_DISPLAY").is_ok();
+        let wayland = x11::session_is_wayland();
 
         if wayland && (desktop.contains("kde") || desktop.contains("plasma")) {
             match wayland_kde::KdeWaylandBackend::try_new() {
@@ -157,6 +168,21 @@ pub fn detect_backend() -> Box<dyn WorkspaceBackend> {
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
         Box::new(null::NullBackend)
+    }
+}
+
+/// Whether this process runs in a Wayland session — the ONE predicate every
+/// "not under Wayland" branch asks, callable from code that compiles on every
+/// OS. Linux delegates to [`x11::session_is_wayland`] (a non-empty
+/// `WAYLAND_DISPLAY`); no other OS has a Wayland session.
+pub fn session_is_wayland() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        x11::session_is_wayland()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        false
     }
 }
 
@@ -253,6 +279,12 @@ mod tests {
         let b: Box<dyn WorkspaceBackend> = Box::new(null::NullBackend);
         assert_eq!(b.name(), "null");
         assert!(b.cleanup().is_ok());
+    }
+
+    #[test]
+    fn null_backend_cannot_park() {
+        let b: Box<dyn WorkspaceBackend> = Box::new(null::NullBackend);
+        assert!(!b.can_park());
     }
 
     #[test]
