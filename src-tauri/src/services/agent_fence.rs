@@ -751,8 +751,18 @@ fn sbpl_string(path: &str) -> String {
 ///   files are simply read-only here — an agent that tries to rewrite its own
 ///   `settings.json` gets `EPERM` and carries on, rather than writing into a
 ///   throwaway copy. The hook scripts they point at are read-only in both.
-/// - Network, process spawning and the device tree are left at the platform
-///   default, as bubblewrap leaves them (it unshares only the pid namespace).
+/// - **Devices** fall under the write denial like any other path, except the
+///   handful every ordinary tool writes to: `/dev/null` and `/dev/zero`, the
+///   controlling terminal `/dev/tty` (git and ssh prompt through it),
+///   `/dev/dtracehelper`, and `/dev/fd/*` (process substitution). Other
+///   terminals' `/dev/ttys*` stay denied on purpose — allowing them would let a
+///   fenced agent write into *another* tab's terminal. The agent's own PTY is an
+///   inherited descriptor and needs no path rule.
+/// - Network and process spawning are left at the platform default, as
+///   bubblewrap leaves them (it unshares only the pid namespace).
+#[cfg(any(target_os = "macos", test))]
+const SEATBELT_DEVICE_WRITES: &str = "(allow file-write* (literal \"/dev/null\") (literal \"/dev/zero\") (literal \"/dev/tty\") (literal \"/dev/dtracehelper\") (subpath \"/dev/fd\"))\n";
+
 #[cfg(any(target_os = "macos", test))]
 pub(crate) fn sandbox_exec_profile(inputs: &SeatbeltInputs) -> String {
     let mut p = String::from("(version 1)\n(allow default)\n");
@@ -767,6 +777,7 @@ pub(crate) fn sandbox_exec_profile(inputs: &SeatbeltInputs) -> String {
     }
     // Writes: nothing, then the roots and the agent's own state.
     p.push_str("(deny file-write*)\n");
+    p.push_str(SEATBELT_DEVICE_WRITES);
     for path in inputs.roots.iter().chain(&inputs.writable) {
         p.push_str(&format!("(allow file-write* (subpath {}))\n", sbpl_string(path)));
     }
@@ -1079,6 +1090,16 @@ mod tests {
         // Writes are denied globally, then the root and the agent state come back.
         assert!(pos("(deny file-write*)") < pos("(allow file-write* (subpath \"/Users/a/eldrun/projects/p\"))"));
         assert!(pos("(deny file-write*)") < pos("(allow file-write* (subpath \"/Users/a/.claude\"))"));
+        // The device allowlist comes right after the global deny, before any
+        // protected deny, and never opens other terminals' ttys.
+        let devices = pos("(literal \"/dev/null\")");
+        assert_eq!(devices, pos("(deny file-write*)") + 1);
+        for dev in ["/dev/zero", "/dev/tty\"", "/dev/dtracehelper"] {
+            assert!(lines[devices].contains(dev), "missing {dev}");
+        }
+        assert!(lines[devices].contains("(subpath \"/dev/fd\")"));
+        assert!(devices < pos("(deny file-write* (subpath \"/Users/a/.claude/settings.json\"))"));
+        assert!(!profile.contains("ttys"), "no /dev/ttys* rule");
         // The protected paths are denied LAST so they win over the .claude allow.
         let hook_deny = pos("(deny file-write* (subpath \"/Users/a/.claude/settings.json\"))");
         assert!(hook_deny > pos("(allow file-write* (subpath \"/Users/a/.claude\"))"));
