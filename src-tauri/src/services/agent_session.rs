@@ -588,6 +588,9 @@ fn model_in_record(line: &str, kind: TranscriptKind) -> Option<String> {
     let value: serde_json::Value = serde_json::from_str(line).ok()?;
     let model = match kind {
         TranscriptKind::Claude => {
+            if value.get("type").and_then(|t| t.as_str()) == Some("user") {
+                return claude_model_switch(&value);
+            }
             if value.get("type").and_then(|t| t.as_str()) != Some("assistant") {
                 return None;
             }
@@ -601,6 +604,46 @@ fn model_in_record(line: &str, kind: TranscriptKind) -> Option<String> {
         }
     };
     clean_model_name(model)
+}
+
+/// The model a `/model` in the session switched to, from the confirmation
+/// Claude writes as a user record the moment the picker is answered
+/// (`<local-command-stdout>Set model to `Fable 5.1` and saved as …`). Without
+/// it the tag kept naming the old model until the next answer — a switch made
+/// from the phone's Focus sheet sat stale on every list that shows the tag.
+/// The line names the model by its display name, so it is folded into the
+/// shape an id takes after `shortModelName` (`Opus 4.1` → `opus-4-1`, the pill
+/// `claude-opus-4-1-…` gets); a name that folds to nothing useful (`Default`)
+/// yields `None` and the scan falls back to the last answer.
+fn claude_model_switch(value: &serde_json::Value) -> Option<String> {
+    let content = value.get("message")?.get("content")?.as_str()?;
+    let body = content.trim_start().strip_prefix("<local-command-stdout>")?;
+    let rest = body
+        .strip_prefix("Set model to ")
+        .or_else(|| body.strip_prefix("Kept model as "))?;
+    let name = rest.split(" and saved").next()?.split("</").next()?;
+    let name = crate::services::agent_usage::strip_ansi(name).replace('`', "");
+    // Drop annotations: `Opus 5 (1M context) (default)` is the Opus 5 model.
+    let mut plain = String::new();
+    let mut depth = 0usize;
+    for c in name.chars() {
+        match c {
+            '(' => depth += 1,
+            ')' => depth = depth.saturating_sub(1),
+            _ if depth == 0 => plain.push(c),
+            _ => {}
+        }
+    }
+    let slug = plain
+        .split(|c: char| c.is_whitespace() || c == '.')
+        .filter(|part| !part.is_empty())
+        .map(str::to_lowercase)
+        .collect::<Vec<_>>()
+        .join("-");
+    if slug.is_empty() || slug == "default" {
+        return None;
+    }
+    clean_model_name(&slug)
 }
 
 /// A model name fit to show: trimmed, one line of printable text, bounded, and
@@ -638,6 +681,17 @@ const MAX_PROMPT_CHARS: usize = 300;
 /// Claude user records whose string content opens with one of these are the
 /// CLI talking to itself, not a prompt. `<command-name>` and `<bash-input>`
 /// are handled before this list: they *are* the user's doing.
+///
+/// This is checked *before* [`is_cli_written_block`], and it matches on how
+/// the content *opens*, so a record that merely begins with one of these is
+/// refused whole — a leading block followed by the user's words included. The
+/// order stays that way deliberately: these are whole records in practice (the
+/// local census of 750 transcripts holds none that opens with a block and then
+/// carries a prompt), and the entries the block test cannot read at all — an
+/// unterminated `<stdin>`, the bracketed `[Request interrupted` notice — have
+/// no closing tag to strip back to, so reordering would turn every one of
+/// them into a prompt. The wording, not the ordering, was the thing that was
+/// wrong.
 const CLAUDE_NOT_A_PROMPT: &[&str] = &[
     "<local-command-caveat>",
     "<local-command-stdout>",
@@ -648,6 +702,96 @@ const CLAUDE_NOT_A_PROMPT: &[&str] = &[
     "<stdin>",
     "[Request interrupted",
 ];
+
+/// The tags the CLIs wrap their own blocks in: Claude Code's, as the local
+/// transcript census actually saw them, then the context Codex injects.
+///
+/// This list is the *bound* on the shape test below, and it is the whole point
+/// of it. A shape alone cannot tell a CLI's private block from a user pasting
+/// markup, and it guessed wrong in the direction that costs the user their
+/// words: `<div>hello</div>` and `<p>a paragraph</p>` are prompts, and asking
+/// an agent about markup is ordinary work. Tag *and* shape, or it is the
+/// user's.
+///
+/// `command-name`, `command-args` and `bash-input` are deliberately absent —
+/// those *are* the user's doing, and are read before any of this is asked.
+const CLI_BLOCK_TAGS: &[&str] = &[
+    // Claude Code.
+    "system-reminder",
+    "task-notification",
+    "local-command-stdout",
+    "local-command-stderr",
+    "local-command-caveat",
+    "persisted-output",
+    "tool_use_error",
+    "total_tokens",
+    "bash-stdout",
+    "bash-stderr",
+    "user-prompt-submit-hook",
+    "command-message",
+    "stdin",
+    // Codex rollouts.
+    "environment_context",
+    "user_instructions",
+    "collaboration_mode",
+    "skills_instructions",
+    "permissions",
+    "multi_agent_mode",
+    "multi_agent_role",
+    "plugins_instructions",
+    "model_switch",
+];
+
+/// Whether `text` is one block a CLI wrote to itself rather than something the
+/// user said: it opens with a tag on [`CLI_BLOCK_TAGS`] and closes with that
+/// same tag, with nothing of the user's outside it.
+fn is_cli_written_block(text: &str) -> bool {
+    let text = text.trim();
+    let Some(rest) = text.strip_prefix('<') else {
+        return false;
+    };
+    let Some(end) = rest.find('>') else {
+        return false;
+    };
+    let name = &rest[..end];
+    if !CLI_BLOCK_TAGS.contains(&name) {
+        return false;
+    }
+    text.ends_with(&format!("</{name}>"))
+}
+
+/// The user's words with the blocks the CLI appended behind them removed —
+/// only ever a tag on [`CLI_BLOCK_TAGS`], so a prompt ending in markup
+/// (`fix this:\n<div>…</div>`, `compare <a>one</a> and <a>two</a>`) keeps
+/// every character of it. A reminder attached to a submitted prompt rides at
+/// its *end*
+/// (`fix the tests<system-reminder>…</system-reminder>`); checked only at the
+/// start, the whole block was shown as part of what the user typed. A block
+/// that starts at position 0 is left alone — there is nothing of the user's in
+/// front of it, and whether that record is a prompt at all is the caller's
+/// question.
+fn strip_trailing_blocks(text: &str) -> &str {
+    let mut text = text.trim();
+    loop {
+        let Some(head) = text.strip_suffix('>') else {
+            return text;
+        };
+        let Some(close) = head.rfind("</") else {
+            return text;
+        };
+        let name = &head[close + 2..];
+        if !CLI_BLOCK_TAGS.contains(&name) {
+            return text;
+        }
+        let Some(start) = text.rfind(&format!("<{name}>")) else {
+            return text;
+        };
+        if start == 0 {
+            return text;
+        }
+        text = text[..start].trim();
+    }
+}
 
 /// The prompt a transcript record holds, if it is a prompt at all.
 fn prompt_in_record(line: &str, kind: TranscriptKind) -> Option<String> {
@@ -674,7 +818,17 @@ pub(crate) fn claude_prompt_in_record(value: &serde_json::Value) -> Option<Strin
         return None;
     }
     let flagged = |key: &str| value.get(key).and_then(|v| v.as_bool()) == Some(true);
-    if flagged("isMeta") || flagged("isSidechain") {
+    // `isCompactSummary` and `isVisibleInTranscriptOnly` appear in none of the
+    // local transcripts, but the installed Claude Code binary still carries
+    // `"isCompactSummary":true`, so it can still write one — and a compact
+    // summary arriving as a `user` record would become one enormous bubble
+    // attributed to the reader. One line makes that permanent rather than
+    // true-for-now.
+    if flagged("isMeta")
+        || flagged("isSidechain")
+        || flagged("isCompactSummary")
+        || flagged("isVisibleInTranscriptOnly")
+    {
         return None;
     }
     let content = value.get("message")?.get("content")?;
@@ -693,7 +847,10 @@ pub(crate) fn claude_prompt_in_record(value: &serde_json::Value) -> Option<Strin
                 .iter()
                 .filter(|b| block_type(b) == Some("text"))
                 .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
-                .filter(|t| !CLAUDE_NOT_A_PROMPT.iter().any(|tag| t.trim_start().starts_with(*tag)))
+                .filter(|t| {
+                    !CLAUDE_NOT_A_PROMPT.iter().any(|tag| t.trim_start().starts_with(*tag))
+                        && !is_cli_written_block(t)
+                })
                 .collect::<Vec<_>>()
                 .join("\n")
         }
@@ -716,10 +873,11 @@ fn claude_prompt_text(text: &str) -> Option<String> {
     if let Some(cmd) = between(text, "<bash-input>", "</bash-input>") {
         return Some(format!("! {}", cmd.trim()));
     }
-    if CLAUDE_NOT_A_PROMPT.iter().any(|tag| text.starts_with(*tag)) {
+    if CLAUDE_NOT_A_PROMPT.iter().any(|tag| text.starts_with(*tag)) || is_cli_written_block(text) {
         return None;
     }
-    Some(text.to_string())
+    let text = strip_trailing_blocks(text);
+    (!text.is_empty()).then(|| text.to_string())
 }
 
 /// A Codex rollout record: the `user_message` event is the prompt as typed;
@@ -744,9 +902,13 @@ pub(crate) fn codex_prompt_in_record(value: &serde_json::Value) -> Option<String
                 .iter()
                 .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("input_text"))
                 .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
+                // The instructions Codex injects ride as blocks of their own
+                // beside the words the user typed, exactly as Claude's
+                // reminders do.
+                .filter(|t| !is_cli_written_block(t))
                 .collect::<Vec<_>>()
                 .join("\n");
-            let text = text.trim();
+            let text = strip_trailing_blocks(text.trim());
             if text.is_empty() || text.starts_with('<') || text.starts_with('#') {
                 return None;
             }
@@ -2637,6 +2799,37 @@ mod tests {
     }
 
     #[test]
+    fn a_model_switch_in_the_session_retags_before_the_next_answer() {
+        let dir = tempfile::tempdir().unwrap();
+        let claude = dir.path().join("s.jsonl");
+        let switch = |text: &str| {
+            serde_json::json!({"type": "user", "message": {"role": "user", "content": text}}).to_string()
+        };
+        let answer = "{\"type\":\"assistant\",\"message\":{\"model\":\"claude-opus-5\",\"role\":\"assistant\"}}";
+        let write = |lines: &[String]| std::fs::write(&claude, lines.join("\n") + "\n").unwrap();
+        let read = || last_model_in_transcript(&claude, TranscriptKind::Claude);
+
+        write(&[answer.into(), switch("<local-command-stdout>Set model to `Fable 5.1` and saved as your default for new sessions</local-command-stdout>")]);
+        assert_eq!(read().as_deref(), Some("fable-5-1"));
+        // Older releases bold the name with ANSI instead of backticks.
+        write(&[answer.into(), switch("<local-command-stdout>Set model to \u{1b}[1mSonnet 4.5\u{1b}[22m and saved as your default for new sessions</local-command-stdout>")]);
+        assert_eq!(read().as_deref(), Some("sonnet-4-5"));
+        // Annotations are not part of the model.
+        write(&[answer.into(), switch("<local-command-stdout>Set model to `Opus 5 (1M context) (default)` and saved as your default</local-command-stdout>")]);
+        assert_eq!(read().as_deref(), Some("opus-5"));
+        write(&[answer.into(), switch("<local-command-stdout>Kept model as `Fable 5`</local-command-stdout>")]);
+        assert_eq!(read().as_deref(), Some("fable-5"));
+        // A later answer wins again; a quoted mention in a prompt is not a switch.
+        write(&[switch("<local-command-stdout>Set model to `Fable 5` and saved</local-command-stdout>"), answer.into()]);
+        assert_eq!(read().as_deref(), Some("claude-opus-5"));
+        write(&[answer.into(), switch("why does it say Set model to `Fable 5`?")]);
+        assert_eq!(read().as_deref(), Some("claude-opus-5"));
+        // A name that folds to nothing useful leaves the last answer standing.
+        write(&[answer.into(), switch("<local-command-stdout>Set model to Default</local-command-stdout>")]);
+        assert_eq!(read().as_deref(), Some("claude-opus-5"));
+    }
+
+    #[test]
     fn recent_prompts_carry_their_times_and_take_in_mid_turn_messages() {
         let dir = tempfile::tempdir().unwrap();
         let claude = dir.path().join("s.jsonl");
@@ -2755,6 +2948,81 @@ mod tests {
         let long = clean_prompt_text(&"p".repeat(MAX_PROMPT_CHARS + 50)).unwrap();
         assert_eq!(long.chars().count(), MAX_PROMPT_CHARS + 1);
         assert!(long.ends_with('…'));
+    }
+
+    #[test]
+    fn markup_the_user_pasted_stays_their_prompt() {
+        // Bounded by shape alone, the block test ate all of these — silently,
+        // with no marker, from the bubble and the last-prompt line both.
+        let html = "fix this:\n<div>\n  <span>x</span>\n</div>";
+        assert_eq!(claude_prompt_text(html).as_deref(), Some(html));
+        let xml = "review this xml:\n<config>\n  <name>x</name>\n</config>";
+        assert_eq!(claude_prompt_text(xml).as_deref(), Some(xml));
+        assert_eq!(
+            claude_prompt_text("compare <a>one</a> and <a>two</a>").as_deref(),
+            Some("compare <a>one</a> and <a>two</a>")
+        );
+        // Wholly one element, and still the user's.
+        assert_eq!(claude_prompt_text("<div>hello</div>").as_deref(), Some("<div>hello</div>"));
+        assert_eq!(claude_prompt_text("<p>a paragraph</p>").as_deref(), Some("<p>a paragraph</p>"));
+        // An attribute never was the thing that saved it.
+        assert_eq!(
+            claude_prompt_text("<div class=\"x\">hello</div>").as_deref(),
+            Some("<div class=\"x\">hello</div>")
+        );
+        // The CLI's own tags are still refused, and still stripped off a tail.
+        assert_eq!(claude_prompt_text("<system-reminder>x</system-reminder>"), None);
+        assert_eq!(
+            claude_prompt_text("ship it\n<system-reminder>x</system-reminder>").as_deref(),
+            Some("ship it")
+        );
+    }
+
+    #[test]
+    fn a_compact_summary_is_never_a_prompt() {
+        let summary: serde_json::Value = serde_json::from_str(concat!(
+            "{\"type\":\"user\",\"isCompactSummary\":true,\"message\":{\"role\":\"user\",",
+            "\"content\":\"This session is being continued from a previous conversation.\"}}",
+        ))
+        .unwrap();
+        assert_eq!(claude_prompt_in_record(&summary), None);
+        let transcript_only: serde_json::Value = serde_json::from_str(concat!(
+            "{\"type\":\"user\",\"isVisibleInTranscriptOnly\":true,\"message\":{\"role\":\"user\",",
+            "\"content\":\"a note the CLI left itself\"}}",
+        ))
+        .unwrap();
+        assert_eq!(claude_prompt_in_record(&transcript_only), None);
+    }
+
+    #[test]
+    fn a_block_the_cli_wrote_to_itself_is_never_a_prompt() {
+        // Read by shape, not off a list: none of these tags was ever on the
+        // prefix list, and each one reached the phone inside a bubble.
+        assert_eq!(claude_prompt_text("<tool_use_error>File has not been read yet</tool_use_error>"), None);
+        assert_eq!(claude_prompt_text("<total_tokens>128000</total_tokens>"), None);
+        assert_eq!(claude_prompt_text("<user-prompt-submit-hook>blocked</user-prompt-submit-hook>"), None);
+        assert_eq!(claude_prompt_text("<bash-stderr>fatal: not a repo</bash-stderr>"), None);
+        assert_eq!(claude_prompt_text("  <local-command-stderr>oops</local-command-stderr>  "), None);
+        // A reminder appended behind the words the user typed is cut off them.
+        assert_eq!(
+            claude_prompt_text("fix the tests\n<system-reminder>be careful</system-reminder>").as_deref(),
+            Some("fix the tests")
+        );
+        // Angle brackets somebody typed stay theirs.
+        assert_eq!(claude_prompt_text("<Vec<T>> or a slice?").as_deref(), Some("<Vec<T>> or a slice?"));
+        assert_eq!(claude_prompt_text("what does <T> mean here?").as_deref(), Some("what does <T> mean here?"));
+        // The two tags that are the user's doing are still read first.
+        assert_eq!(claude_prompt_text("<command-name>/clear</command-name>").as_deref(), Some("/clear"));
+        assert_eq!(claude_prompt_text("<bash-input>git status</bash-input>").as_deref(), Some("! git status"));
+
+        // Codex injects its instructions as blocks beside the typed words.
+        let injected: serde_json::Value = serde_json::from_str(concat!(
+            "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[",
+            "{\"type\":\"input_text\",\"text\":\"<user_instructions>be brief</user_instructions>\"},",
+            "{\"type\":\"input_text\",\"text\":\"rename it\"}]}}",
+        ))
+        .unwrap();
+        assert_eq!(codex_prompt_in_record(&injected).as_deref(), Some("rename it"));
     }
 
     #[test]
