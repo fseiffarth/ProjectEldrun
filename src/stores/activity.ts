@@ -191,7 +191,9 @@ export function notePtyOutput(ptyId: string, data = "") {
   // a tab stuck on "working": the quiet never reached DECISION_QUIET_MS, so its
   // tail was never classified and the decision lamp never lit. Its idle dot
   // animation is dropped the same way (see `BRAILLE_CELLS`).
-  if (data && !text.trim()) return;
+  // `/\S/` rather than `!text.trim()`: same whitespace set, but it asks the
+  // question without copying the chunk (this runs on every PTY batch).
+  if (data && !/\S/.test(text)) return;
   const appendTail = () => {
     if (!text) return;
     const tail = (tailByPty[ptyId] ?? "") + text;

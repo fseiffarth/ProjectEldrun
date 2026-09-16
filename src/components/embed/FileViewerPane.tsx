@@ -12,6 +12,7 @@ import {
   type ViewerState,
 } from "../../stores/tabs";
 import { useSettingsStore } from "../../stores/settings";
+import { saverInterval, useQuiesce } from "../../stores/power";
 import { useTexViewPrefStore, texViewScopeKey } from "../../stores/texViewPref";
 import { useExperimental } from "../../lib/experimental";
 import { useProjectsStore } from "../../stores/projects";
@@ -1310,6 +1311,9 @@ export function useEditableFile(path: string, enabled = true) {
   const scope = useFileScope();
   const t = useT();
   const paneVisible = usePaneVisible();
+  // Widens the reload poll below while this window is unfocused (or Energy
+  // Saver is on), the same way every other always-on timer site does.
+  const quiesce = useQuiesce();
   const loadedIdentity = useRef<string | null>(null);
   const identity = JSON.stringify([path, scope]);
   const [content, setContent] = useState<string | null>(null);
@@ -1446,6 +1450,10 @@ export function useEditableFile(path: string, enabled = true) {
   // viewer's poll would otherwise run forever (an SFTP round trip per tick for a
   // remote project). The immediate check on re-show catches whatever changed on
   // disk while the pane was hidden, against the baseline seeded at load time.
+  // While the window is unfocused the poll is widened, not stopped: a viewer
+  // left open on a second screen as a live preview of a file edited in another
+  // app must still follow it. `quiesce` is a dependency, so regaining focus
+  // re-runs the effect — whose immediate `check()` is the catch-up.
   useEffect(() => {
     if (!loaded || !paneVisible) return;
     let cancelled = false;
@@ -1486,9 +1494,9 @@ export function useEditableFile(path: string, enabled = true) {
         .catch(() => {});
     };
     check();
-    const id = setInterval(check, RELOAD_POLL_MS);
+    const id = setInterval(check, saverInterval(RELOAD_POLL_MS, quiesce));
     return () => { cancelled = true; clearInterval(id); };
-  }, [path, scope, loaded, paneVisible, seedFromDisk]);
+  }, [path, scope, loaded, paneVisible, seedFromDisk, quiesce]);
 
   // Banner actions (#43): take the disk version, or keep mine (dismiss banner +
   // adopt current mtime so the next external change re-triggers).

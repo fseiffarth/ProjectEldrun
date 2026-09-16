@@ -36,7 +36,15 @@ vi.mock("../stores/settings", () => {
 import { useProjectsStore } from "../stores/projects";
 import { SidePanel } from "../components/layout/SidePanel";
 
-const mockUseProjectsStore = vi.mocked(useProjectsStore);
+// Selector-aware, like the real zustand hook: the panel reads each field
+// through its own selector, so a mock that returned the whole state for every
+// call handed `projects` the state object itself.
+function mockProjectsState(state: { projects: unknown[]; activeId: string | null }) {
+  const full = { sidePanelFolderByProject: {}, setSidePanelFolder: vi.fn(), rootDir: null, ...state };
+  vi.mocked(useProjectsStore).mockImplementation(((sel?: (s: typeof full) => unknown) =>
+    sel ? sel(full) : full) as unknown as typeof useProjectsStore);
+}
+
 
 const ACTIVE_PROJECT = {
   id: "proj-1",
@@ -105,7 +113,7 @@ describe("git action button bars", () => {
     // the SAME project, so without a reset each one would start seeded from the
     // previous case's counts.
     clearFileViewSnapshots();
-    mockUseProjectsStore.mockReturnValue({ projects: [ACTIVE_PROJECT], activeId: "proj-1" } as ReturnType<typeof useProjectsStore>);
+    mockProjectsState({ projects: [ACTIVE_PROJECT], activeId: "proj-1" });
   });
 
   async function renderOpenPanel() {
@@ -182,7 +190,7 @@ describe("git change tree", () => {
     // the SAME project, so without a reset each one would start seeded from the
     // previous case's counts.
     clearFileViewSnapshots();
-    mockUseProjectsStore.mockReturnValue({ projects: [ACTIVE_PROJECT], activeId: "proj-1" } as ReturnType<typeof useProjectsStore>);
+    mockProjectsState({ projects: [ACTIVE_PROJECT], activeId: "proj-1" });
   });
 
   async function renderOpenPanel() {

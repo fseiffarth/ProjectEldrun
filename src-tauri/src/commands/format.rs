@@ -144,7 +144,12 @@ pub fn formatter_available(lang: String, path: Option<String>) -> bool {
 ///  - `formatter-unavailable:<lang>` when no tool is installed (frontend disables
 ///    the button and shows a hint),
 ///  - the tool's stderr (trimmed) when it exits non-zero (e.g. a syntax error).
-#[tauri::command]
+// `(async)` on a *sync* fn, as for `check_syntax`: the body spawns an external
+// formatter and waits for it (a cold prettier is node startup plus config
+// resolution), which as a plain `#[tauri::command]` froze the whole window for
+// the run. Tauri's blocking pool runs it instead; the body, its error strings
+// and the unit tests calling it directly are unchanged.
+#[tauri::command(async)]
 pub fn format_source(text: String, lang: String, path: Option<String>) -> Result<String, String> {
     let tool = resolve_tool(&lang, path.as_deref())
         .ok_or_else(|| format!("formatter-unavailable:{lang}"))?;
@@ -201,7 +206,12 @@ pub struct SyntaxIssue {
 /// error or `None` when it is well-formed. Whitespace-only input is treated as
 /// valid (an empty buffer isn't an error to surface while typing). Any other
 /// `lang` is unchecked and returns `None`.
-#[tauri::command]
+// `(async)` on a *sync* fn: tauri runs the body on its blocking threadpool
+// instead of the GTK main thread. The body parses an entire editor draft (up
+// to the 8 MiB viewer limit) on every check, and a plain `#[tauri::command]`
+// would freeze the whole window for the length of that parse. Kept a plain fn
+// so the return type (and the unit tests) stay `Option<SyntaxIssue>`.
+#[tauri::command(async)]
 pub fn check_syntax(text: String, lang: String) -> Option<SyntaxIssue> {
     if text.trim().is_empty() {
         return None;

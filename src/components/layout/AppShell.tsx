@@ -43,14 +43,12 @@ import { HpcPipelineWizardHost } from "../projects/HpcPipelineWizard";
 import { BigFolderDialogHost } from "../projects/BigFolderExcludeDialog";
 import { BoxEditorHost } from "../projects/BoxEditorDialog";
 import { BrowserDownloadHost } from "../browser/BrowserDownloadHost";
-import { MailOverlayHost } from "../mail/MailOverlay";
 import { CalendarOverlayHost } from "../calendar/CalendarOverlay";
 import { CalDavSyncHost } from "../calendar/CalDavSyncHost";
 import { AgentContinueHost } from "./AgentContinueHost";
 import { AgentCronHost } from "./AgentCronHost";
 import { AgentScheduleHost } from "./AgentScheduleHost";
 import { CalDavConflictDialog } from "../calendar/CalDavConflictDialog";
-import { TodoOverlayHost } from "../todo/TodoOverlay";
 import { SkillsOverlayHost } from "../skills/SkillsOverlay";
 import { InstallOverlayHost } from "./InstallOverlay";
 import { RootOverlayHost } from "./RootOverlay";
@@ -102,6 +100,8 @@ import { BOX_SCOPE_PREFIX, useBoxesStore } from "../../stores/boxes";
 import { listenSettingsChanged, useSettingsStore } from "../../stores/settings";
 import { ROOT_SCOPE, useTabsStore } from "../../stores/tabs";
 import { useTimerStore } from "../../stores/timer";
+import { useMailStore } from "../../stores/mail";
+import { useTodoStore } from "../../stores/todo";
 import { flushUsage } from "../../stores/usage";
 import { useKeyboard } from "../../hooks/useKeyboard";
 import { useT, useI18nStore, translate, type TranslationKey } from "../../lib/i18n";
@@ -115,6 +115,45 @@ import { noteTerminalOutputChars } from "../../dev/terminalOutputRate";
 const DevPerfHost = import.meta.env.DEV
   ? lazy(() => import("../../dev/DevPerfHost").then((m) => ({ default: m.DevPerfHost })))
   : null;
+
+// Code-split (startup size): mail and the todo board are reached from nowhere
+// but these two overlay hosts, and each host renders null until its store's
+// `overlayOpen` is true. Mounting the lazy host only once that flag is set keeps
+// both panes' module graphs out of every window's startup chunk; the fetch is
+// in-process (the frontend is embedded), and the fallback is `null`, the same
+// nothing a closed host renders. The host still applies its own gate
+// (`mail_client` / `todo_board`), so the flag alone never shows anything, and
+// its first-open work (the Escape listener, `openCard`'s `focusTaskId`) runs on
+// mount exactly as it did on the closed-to-open transition: the pane was never
+// mounted while closed. The stores are eager anyway (the header indicators read
+// them). Calendar and Skills stay static on purpose: `TabPane` imports their
+// panes eagerly, so splitting their hosts would save nothing.
+const MailOverlayHost = lazy(() =>
+  import("../mail/MailOverlay").then((m) => ({ default: m.MailOverlayHost })),
+);
+const TodoOverlayHost = lazy(() =>
+  import("../todo/TodoOverlay").then((m) => ({ default: m.TodoOverlayHost })),
+);
+
+function LazyMailOverlayHost() {
+  const open = useMailStore((s) => s.overlayOpen);
+  if (!open) return null;
+  return (
+    <Suspense fallback={null}>
+      <MailOverlayHost />
+    </Suspense>
+  );
+}
+
+function LazyTodoOverlayHost() {
+  const open = useTodoStore((s) => s.overlayOpen);
+  if (!open) return null;
+  return (
+    <Suspense fallback={null}>
+      <TodoOverlayHost />
+    </Suspense>
+  );
+}
 
 // How long the pointer must rest on the edge rail before the panel reveals
 // itself. The hover-open used to be instant, fired by a mousemove anywhere in
@@ -1311,7 +1350,7 @@ export function AppShell() {
           as an overlay over whatever is on screen. At the shell rather than in
           the header because it covers the window, not the header — and because
           it must survive a project switch, which mail (unlike a tab) ignores. */}
-      <MailOverlayHost />
+      <LazyMailOverlayHost />
       {/* The calendar's twin of the above: the header's 🗓 button opens the
           ordinary CalendarPane as an overlay, at the shell for the same reason —
           it covers the window and must survive a project switch. */}
@@ -1343,7 +1382,7 @@ export function AppShell() {
           three deliberately: all three are `.modal-backdrop` at one z-index and
           nothing makes them mutually exclusive, so DOM order is the tie-break
           and the surface opened most recently should be the one on top. */}
-      <TodoOverlayHost />
+      <LazyTodoOverlayHost />
       {/* The 🧠 menu's Skills Library — the machine-level door into the library
           the project tab hosts. At the shell for the family's reason (it covers
           the window and must survive a project switch), and after the three

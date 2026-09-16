@@ -133,6 +133,10 @@ pub fn classify_fs_event(kind: &EventKind, path: &Path) -> Option<&'static str> 
 #[derive(Default)]
 pub struct Debouncer {
     last: HashMap<PathBuf, Instant>,
+    /// When [`Debouncer::prune`] last actually swept. `Option` because `Instant`
+    /// has no `Default` and this struct derives it (built via `default()` in the
+    /// watcher and every test); `None` means "never swept", so the first call runs.
+    last_prune: Option<Instant>,
 }
 
 impl Debouncer {
@@ -154,10 +158,24 @@ impl Debouncer {
         true
     }
 
-    /// Drop cooldown entries older than the window. Called on each flush so the
-    /// map cannot grow without bound over a long session (a `git checkout` can
-    /// touch thousands of distinct paths).
+    /// Drop cooldown entries older than the window, so the map cannot grow without
+    /// bound over a long session (a `git checkout` can touch thousands of distinct
+    /// paths).
+    ///
+    /// Called after **every filesystem event** by the watcher callback, which owns
+    /// this debouncer outright — not from the 30 s flush loop, which cannot reach
+    /// it without a lock on the per-event path. A full `retain` per event made a
+    /// burst quadratic (N events each walking a map of up to N paths), so the sweep
+    /// runs at most once per [`COOLDOWN`]. That is inert for correctness —
+    /// `should_count` compares timestamps itself and never trusts an entry's mere
+    /// presence — and still bounds the map to roughly two windows of distinct paths.
     pub fn prune(&mut self, now: Instant) {
+        if let Some(last) = self.last_prune {
+            if now.duration_since(last) < COOLDOWN {
+                return;
+            }
+        }
+        self.last_prune = Some(now);
         self.last
             .retain(|_, seen| now.duration_since(*seen) < COOLDOWN);
     }
