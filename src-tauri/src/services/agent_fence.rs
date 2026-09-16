@@ -610,11 +610,25 @@ fn agent_state_mounts(scope_id: &str, roots: &[PathBuf]) -> (Vec<BindMount>, Vec
         &home,
         &live_own.to_string_lossy(),
         &live_root.to_string_lossy(),
+        cfg!(target_os = "linux"),
     );
-    let mut mounts: Vec<BindMount> = home_rw
+    let mut mounts: Vec<BindMount> = Vec::new();
+    // A directory mount lets SQLite replace its WAL/SHM files normally. On
+    // macOS Seatbelt cannot substitute paths, so it continues using the real
+    // host directory under its deny/allow profile instead.
+    #[cfg(target_os = "linux")]
+    mounts.push(BindMount {
+        src: crate::services::sandbox::prepare_codex_state(&home, scope_id)
+            .to_string_lossy()
+            .into_owned(),
+        dst: format!("{home}/.codex"),
+        read_only: false,
+    });
+    mounts.extend(
+        home_rw
         .into_iter()
-        .filter_map(|m| mount_pair(&m, false))
-        .collect();
+        .filter_map(|m| mount_pair(&m, false)),
+    );
     // Hook/statusline scripts and global instruction files: readable, never
     // writable — a write there escapes the fence into an uncontained session.
     mounts.extend(home_ro.into_iter().filter_map(|m| mount_pair(&m, true)));

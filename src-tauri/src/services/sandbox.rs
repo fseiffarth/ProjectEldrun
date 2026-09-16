@@ -888,11 +888,20 @@ pub fn up(
     let (mut rw_mounts, mut ro_mounts) = if strict_trash {
         (Vec::new(), Vec::new())
     } else {
-        agent_home_mounts(
+        let codex_state = prepare_codex_state(&home, project_id);
+        let (mut rw, ro) = agent_home_mounts(
             &home,
             &live_sessions_own.to_string_lossy(),
             &live_sessions.to_string_lossy(),
-        )
+            true,
+        );
+        // Parent first; Docker also sorts nested bind mounts by destination,
+        // but preserving the relationship here keeps the pure argv obvious.
+        rw.insert(
+            0,
+            format!("{}:{home}/.codex", codex_state.to_string_lossy()),
+        );
+        (rw, ro)
     };
     if !strict_trash {
         rw_mounts.extend(
@@ -1671,19 +1680,29 @@ const CLAUDE_UNMOUNTED: &[&str] = &[
 const AGENT_READ_ONLY: &[&str] = &["*.sh", "*.md"];
 
 /// Entries of `~/.codex` that are not mounted. Much shorter than
-/// [`CLAUDE_UNMOUNTED`] on purpose: both places Codex keeps a conversation
-/// **must** stay mounted, because `agent_session::codex_session_exists` reads
-/// them back to decide whether a tab can resume — unmounting either silently
+/// [`CLAUDE_UNMOUNTED`] on purpose: the rollout tree Codex keeps a conversation
+/// in **must** stay mounted, because `agent_session::codex_session_exists`
+/// reads it back to decide whether a tab can resume — unmounting it silently
 /// kills Codex resume in every container:
 ///
-/// - `sessions/`, the rollout logs releases up to 0.153.4 wrote;
-/// - `state_<n>.sqlite` (and its `-wal`/`-shm` siblings), the thread store
-///   0.153.4 writes instead. Nothing names these explicitly — they are simply
-///   entries that no rule excludes, which is the point of keeping this list
-///   short.
+/// - `sessions/`, the rollout logs Codex writes;
+/// - the SQLite thread store is handled separately in a durable per-scope
+///   directory mounted over `~/.codex`, because WAL/SHM files cannot safely be
+///   individual file mounts.
 ///
 /// `config.toml` is the staged-shadow destination (see [`staged_config_mounts`]).
 const CODEX_UNMOUNTED: &[&str] = &["history.jsonl", "config.toml"];
+
+/// Codex's SQLite files must live in the per-scope directory mounted over
+/// `~/.codex`, rather than being mounted one file at a time from the host.
+/// SQLite removes and recreates its `-wal`/`-shm` sidecars; a file bind pins the
+/// old inode, so a fenced tab could write a rollout while its thread index and
+/// paginated history disappeared with the tmpfs home. The next
+/// `codex resume <id>` then found only the rollout and failed in Codex's legacy
+/// `list_turns` path.
+fn is_codex_sqlite_entry(name: &str) -> bool {
+    name.contains(".sqlite")
+}
 
 /// Whether a directory entry name matches one of a pattern list. A pattern
 /// ending in `*` matches by prefix, one starting with `*` by suffix; everything
@@ -1705,7 +1724,11 @@ fn matches_entry(name: &str, patterns: &[&str]) -> bool {
 /// is what makes the exclusion real: an unmounted child is simply not reachable,
 /// and the container cannot create new top-level entries in the host's dir
 /// either. Entries matching [`AGENT_READ_ONLY`] land in the `ro` half.
-fn narrowed_agent_mounts(dir: &str, unmounted: &[&str]) -> (Vec<String>, Vec<String>) {
+fn narrowed_agent_mounts(
+    dir: &str,
+    unmounted: &[&str],
+    codex_state_overlay: bool,
+) -> (Vec<String>, Vec<String>) {
     let base = Path::new(dir);
     if !base.is_dir() {
         return (Vec::new(), Vec::new());
@@ -1716,7 +1739,10 @@ fn narrowed_agent_mounts(dir: &str, unmounted: &[&str]) -> (Vec<String>, Vec<Str
     let mut names: Vec<String> = entries
         .flatten()
         .filter_map(|e| e.file_name().to_str().map(str::to_string))
-        .filter(|n| !matches_entry(n, unmounted))
+        .filter(|n| {
+            !matches_entry(n, unmounted)
+                && !(codex_state_overlay && is_codex_sqlite_entry(n))
+        })
         .collect();
     // Deterministic order so the spec fingerprint doesn't flap with readdir order.
     names.sort();
@@ -1753,13 +1779,18 @@ pub(crate) fn agent_home_mounts(
     home: &str,
     live_sessions_src: &str,
     live_sessions_dst: &str,
+    codex_state_overlay: bool,
 ) -> (Vec<String>, Vec<String>) {
     let (mut rw, mut ro) = (Vec::new(), Vec::new());
     for (dir, unmounted) in [
         (format!("{home}/.claude"), CLAUDE_UNMOUNTED),
         (format!("{home}/.codex"), CODEX_UNMOUNTED),
     ] {
-        let (entry_rw, entry_ro) = narrowed_agent_mounts(&dir, unmounted);
+        let (entry_rw, entry_ro) = narrowed_agent_mounts(
+            &dir,
+            unmounted,
+            codex_state_overlay && dir.ends_with("/.codex"),
+        );
         rw.extend(entry_rw);
         ro.extend(entry_ro);
     }
@@ -1773,6 +1804,92 @@ pub(crate) fn agent_home_mounts(
         }
     }
     (rw, ro)
+}
+
+/// Durable, scope-local top level for Codex's mutable databases. It is outside
+/// `sandbox-stage`: that directory is deliberately cleared at Eldrun startup,
+/// while these files are the session index needed *after* a restart.
+pub(crate) fn codex_state_dir(scope_id: &str) -> PathBuf {
+    storage::state_dir()
+        .join("codex-state")
+        .join(sanitize_key(scope_id))
+}
+
+/// Seed a new scope from the host's resume databases, then return the directory
+/// that should be mounted over `~/.codex`.
+///
+/// `VACUUM INTO` takes a consistent SQLite snapshot including committed WAL
+/// pages. Copying the three files independently while an uncontained Codex is
+/// running can produce a corrupt or incomplete store. Once a scope owns a
+/// database we never refresh it from the host: fenced tabs keep advancing that
+/// private copy, and overwriting it would lose exactly the sessions this mount
+/// exists to preserve.
+pub(crate) fn prepare_codex_state(home: &str, scope_id: &str) -> PathBuf {
+    let target = codex_state_dir(scope_id);
+    prepare_codex_state_in(&Path::new(home).join(".codex"), &target);
+    target
+}
+
+fn prepare_codex_state_in(source: &Path, target: &Path) {
+    use rusqlite::{Connection, OpenFlags};
+    use std::sync::{Mutex, OnceLock};
+
+    // Two restored tabs can reach the first seed together. Serialize the
+    // absent-check/snapshot/rename sequence so neither can replace the other's
+    // just-created scope database.
+    static SEED_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    let _seed_guard = SEED_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    if std::fs::create_dir_all(target).is_err() {
+        return;
+    }
+    // Codex persists config with an atomic rename, which replaces the staged
+    // symlink inside the overlay. Bubblewrap must create that link afresh on
+    // every spawn; Docker mounts the staged file over the same now-empty path.
+    let config = target.join("config.toml");
+    if config.is_dir() {
+        let _ = std::fs::remove_dir_all(&config);
+    } else {
+        let _ = std::fs::remove_file(&config);
+    }
+    let Ok(entries) = std::fs::read_dir(source) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        // Only the two stores required to resume a thread. Logs, queues and
+        // memories are intentionally born scope-local instead of multiplying
+        // tens of megabytes of unrelated host state into every project.
+        if !(name.ends_with(".sqlite")
+            && (name.starts_with("state") || name.starts_with("thread_history")))
+        {
+            continue;
+        }
+        let dest = target.join(name);
+        if dest.exists() {
+            continue;
+        }
+        let tmp = target.join(format!(".{name}.seed-{}", std::process::id()));
+        let _ = std::fs::remove_file(&tmp);
+        let Ok(conn) = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY) else {
+            continue;
+        };
+        // SQLite accepts the destination as a bound filename expression; no
+        // path text is interpolated into SQL.
+        if conn.execute("VACUUM INTO ?1", [tmp.to_string_lossy().as_ref()]).is_ok() {
+            if std::fs::rename(&tmp, &dest).is_err() {
+                let _ = std::fs::remove_file(&tmp);
+            }
+        } else {
+            let _ = std::fs::remove_file(&tmp);
+        }
+    }
 }
 
 /// The Claude credential mount as `(src, dst)` pairs (the same pair shape as
@@ -3399,7 +3516,7 @@ mod tests {
         }
 
         let home_str = home.to_string_lossy().into_owned();
-        let (rw, ro) = agent_home_mounts(&home_str, "/state/ls/p1", "/state/ls");
+        let (rw, ro) = agent_home_mounts(&home_str, "/state/ls/p1", "/state/ls", false);
         let mounted = |set: &[String], name: &str| {
             let want = format!("{home_str}/.claude/{name}:{home_str}/.claude/{name}");
             set.contains(&want)
@@ -3873,7 +3990,7 @@ mod tests {
         std::fs::create_dir_all(claude.join("todos")).unwrap();
 
         let dir = claude.to_string_lossy().into_owned();
-        let (mounts, _) = narrowed_agent_mounts(&dir, CLAUDE_UNMOUNTED);
+        let (mounts, _) = narrowed_agent_mounts(&dir, CLAUDE_UNMOUNTED, false);
 
         // Compare whole mount strings rather than picking the entry name back
         // out of them. `dir` comes from `temp_dir()`, so on Windows it carries a
@@ -3895,13 +4012,77 @@ mod tests {
         assert!(!mounts.iter().any(|m| m.ends_with("/projects")));
         assert!(!mounts.iter().any(|m| m.contains(".credentials.json")));
         // Stable across calls, so the spec fingerprint doesn't flap.
-        assert_eq!(narrowed_agent_mounts(&dir, CLAUDE_UNMOUNTED).0, mounts);
+        assert_eq!(narrowed_agent_mounts(&dir, CLAUDE_UNMOUNTED, false).0, mounts);
         // A dir that isn't there mounts nothing (never auto-created).
         assert_eq!(
-            narrowed_agent_mounts(&base.join("nope").to_string_lossy(), CLAUDE_UNMOUNTED),
+            narrowed_agent_mounts(
+                &base.join("nope").to_string_lossy(),
+                CLAUDE_UNMOUNTED,
+                false,
+            ),
             (Vec::new(), Vec::new())
         );
 
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn codex_overlay_owns_sqlite_families_but_keeps_directory_mounts() {
+        let base = std::env::temp_dir().join(format!("eldrun-codex-mount-{}", std::process::id()));
+        let home = base.join("home");
+        let codex = home.join(".codex");
+        std::fs::create_dir_all(codex.join("sessions")).unwrap();
+        for name in ["state_5.sqlite", "state_5.sqlite-wal", "state_5.sqlite-shm"] {
+            std::fs::write(codex.join(name), b"").unwrap();
+        }
+
+        let home = home.to_string_lossy().into_owned();
+        let (overlay, _) = agent_home_mounts(&home, "/state/live/p", "/state/live", true);
+        let (native, _) = agent_home_mounts(&home, "/state/live/p", "/state/live", false);
+        let pair = |name: &str| format!("{home}/.codex/{name}:{home}/.codex/{name}");
+
+        assert!(overlay.contains(&pair("sessions")));
+        for name in ["state_5.sqlite", "state_5.sqlite-wal", "state_5.sqlite-shm"] {
+            assert!(!overlay.contains(&pair(name)), "{name} must come from the overlay");
+            assert!(native.contains(&pair(name)), "macOS keeps using the host store");
+        }
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn codex_state_seed_includes_committed_wal_pages_and_is_not_refreshed() {
+        let base = std::env::temp_dir().join(format!("eldrun-codex-seed-{}", std::process::id()));
+        let source = base.join("host-codex");
+        let target = base.join("scope-state");
+        std::fs::create_dir_all(&source).unwrap();
+
+        let state = source.join("state_5.sqlite");
+        let conn = rusqlite::Connection::open(&state).unwrap();
+        conn.pragma_update(None, "journal_mode", "WAL").unwrap();
+        conn.pragma_update(None, "wal_autocheckpoint", 0).unwrap();
+        conn.execute("CREATE TABLE threads (id TEXT PRIMARY KEY)", []).unwrap();
+        conn.execute("INSERT INTO threads VALUES ('from-wal')", []).unwrap();
+        // The large unrelated log store is deliberately not cloned per project.
+        rusqlite::Connection::open(source.join("logs_2.sqlite")).unwrap();
+
+        prepare_codex_state_in(&source, &target);
+        let seeded = rusqlite::Connection::open(target.join("state_5.sqlite")).unwrap();
+        assert_eq!(
+            seeded.query_row("SELECT id FROM threads", [], |row| row.get::<_, String>(0)).unwrap(),
+            "from-wal"
+        );
+        assert!(!target.join("logs_2.sqlite").exists());
+
+        // A later host row must not overwrite the scope's independently
+        // advancing store on another spawn.
+        conn.execute("INSERT INTO threads VALUES ('host-later')", []).unwrap();
+        prepare_codex_state_in(&source, &target);
+        assert_eq!(
+            seeded.query_row("SELECT count(*) FROM threads", [], |row| row.get::<_, i64>(0)).unwrap(),
+            1
+        );
+        drop(seeded);
+        drop(conn);
         std::fs::remove_dir_all(&base).ok();
     }
 
@@ -3911,6 +4092,7 @@ mod tests {
             "/home/alice",
             "/state/live_sessions/p1",
             "/state/live_sessions",
+            false,
         );
         // The ONE deliberately non-identical mount: the hook script's baked-in path
         // is served by this project's own slice.

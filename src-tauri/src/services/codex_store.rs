@@ -30,6 +30,25 @@ pub fn state_db() -> Option<PathBuf> {
     state_db_in(&paths::home_dir().join(".codex"))
 }
 
+/// Stores that can own a tab's thread, scope-local first and the host store as
+/// a compatibility fallback. Fenced/containerized Codex uses the first one so
+/// SQLite can manage its WAL files under a writable directory mount; native
+/// Codex sessions continue to use the second.
+pub fn state_dbs(scope_id: Option<&str>) -> Vec<PathBuf> {
+    let mut stores = Vec::new();
+    if let Some(id) = scope_id {
+        if let Some(db) = state_db_in(&crate::services::sandbox::codex_state_dir(id)) {
+            stores.push(db);
+        }
+    }
+    if let Some(host) = state_db() {
+        if !stores.contains(&host) {
+            stores.push(host);
+        }
+    }
+    stores
+}
+
 /// Testable core of [`state_db`] against an explicit `~/.codex`.
 pub(crate) fn state_db_in(dir: &Path) -> Option<PathBuf> {
     let mut best: Option<(u32, PathBuf)> = None;

@@ -115,9 +115,8 @@ folder-trust question came back on every Eldrun restart, since a fresh Codex
 start in an untrusted cwd is exactly what asks it. `codex_session_exists` now
 takes either answer, and `services::codex_store` reads the store (read-only,
 best-effort: a renamed file, table or column yields "no", never an error). The
-store's files are ordinary `~/.codex` entries, so the fence and the container
-mount them by the same per-entry rule the rollout dir got — see
-`CODEX_UNMOUNTED`.
+store needs the SQLite-aware scope mount described below; the rollout directory
+continues through the ordinary per-entry rule.
 
 The *other* half of the repeated question is the fence's config shadow.
 `~/.codex/config.toml` is staged as a per-project throwaway copy so an agent
@@ -127,6 +126,21 @@ recorded there. `staged_config_mounts` now carries those tables — and only
 those — across a restage, so the answer the user gave inside the fence sticks
 while the rest of the file stays the host's, and nothing is ever written back to
 the host.
+
+Codex's SQLite files are different from ordinary agent-state entries. SQLite
+replaces its `-wal`/`-shm` sidecars, so bind-mounting `state_<n>.sqlite` and its
+siblings one file at a time pins old inodes: the rollout JSONL survives through
+the mounted `sessions/` directory, but the thread row and paginated turn store
+can disappear with the fence's tmpfs home. Codex 0.154 then discovers the
+rollout on `codex resume <id>` but fails bootstrap with `list_turns is not
+supported yet`. Linux-fenced and containerized tabs now mount a durable,
+per-scope Codex state directory over `~/.codex`; safe host directories are
+mounted beneath it, while `config.toml` remains shadowed. The state and thread
+history databases are seeded once with consistent SQLite snapshots, and Codex
+can thereafter create/rotate every database and sidecar normally. The directory
+lives under `<state_dir>/codex-state/`, outside the startup-cleared sandbox
+stage. macOS Seatbelt and unfenced native tabs continue to use the host store
+directly because they do not substitute a tmpfs home.
 
 ## Only the tab's own session may move the record
 

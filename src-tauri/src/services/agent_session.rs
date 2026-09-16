@@ -57,9 +57,11 @@ pub fn resolve_agent_session(opts: PtyOptions) -> PtyOptions {
 /// session.
 fn resolve_codex_session(opts: PtyOptions) -> PtyOptions {
     let sessions = paths::home_dir().join(".codex").join("sessions");
-    let store = crate::services::codex_store::state_db();
     let project_id = opts.project_id.clone();
-    resolve_codex_session_impl(opts, &sessions, store.as_deref(), |uid| {
+    let stores = crate::services::codex_store::state_dbs(Some(
+        project_id.as_deref().unwrap_or("root"),
+    ));
+    resolve_codex_session_impl(opts, &sessions, &stores, |uid| {
         read_live_session_for(project_id.as_deref(), uid)
     })
 }
@@ -68,7 +70,7 @@ fn resolve_codex_session(opts: PtyOptions) -> PtyOptions {
 fn resolve_codex_session_impl<F>(
     mut opts: PtyOptions,
     sessions_root: &std::path::Path,
-    store: Option<&std::path::Path>,
+    stores: &[PathBuf],
     live_lookup: F,
 ) -> PtyOptions
 where
@@ -82,7 +84,12 @@ where
     let Some(uid) = opts.env.get("ELDRUN_TAB_UID").cloned() else {
         return opts;
     };
-    if let Some(id) = live_lookup(&uid).filter(|id| codex_session_exists(sessions_root, store, id))
+    if let Some(id) = live_lookup(&uid).filter(|id| {
+        codex_session_log(sessions_root, id).is_some()
+            || stores
+                .iter()
+                .any(|db| crate::services::codex_store::thread_exists(db, id))
+    })
     {
         opts.args = vec!["resume".to_string(), id];
     }
@@ -415,8 +422,9 @@ pub(crate) fn read_agent_transcript<T>(
             codex_session_log(&root, &live)
                 .and_then(|path| read_file(&path, TranscriptKind::Codex))
                 .or_else(|| {
-                    let db = crate::services::codex_store::state_db()?;
-                    read_store(&db, &live)
+                    crate::services::codex_store::state_dbs(Some(project_id.unwrap_or("root")))
+                        .iter()
+                        .find_map(|db| read_store(db, &live))
                 })
         }
         _ => None,
@@ -1962,7 +1970,7 @@ mod tests {
         let mut opts = codex_opts();
         opts.env
             .insert("ELDRUN_TAB_UID".to_string(), "tab-key-123".to_string());
-        let out = resolve_codex_session_impl(opts, &root, None, |uid| {
+        let out = resolve_codex_session_impl(opts, &root, &[], |uid| {
             (uid == "tab-key-123").then(|| live.to_string())
         });
         assert_eq!(out.args, vec!["resume".to_string(), live.to_string()]);
@@ -1976,10 +1984,11 @@ mod tests {
         let mut opts = codex_opts();
         opts.env
             .insert("ELDRUN_TAB_UID".to_string(), "tab-key".to_string());
-        let out = resolve_codex_session_impl(opts, &root, None, |_| None);
+        let out = resolve_codex_session_impl(opts, &root, &[], |_| None);
         assert!(out.args.is_empty());
         // No ELDRUN_TAB_UID at all → cannot track → fresh launch.
-        let out2 = resolve_codex_session_impl(codex_opts(), &root, None, |_| Some("x".to_string()));
+        let out2 =
+            resolve_codex_session_impl(codex_opts(), &root, &[], |_| Some("x".to_string()));
         assert!(out2.args.is_empty());
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -1991,7 +2000,7 @@ mod tests {
         opts.env
             .insert("ELDRUN_TAB_UID".to_string(), "tab-key".to_string());
         // Recorded id has no rollout log → don't pass a bad `resume` arg.
-        let out = resolve_codex_session_impl(opts, &root, None, |_| {
+        let out = resolve_codex_session_impl(opts, &root, &[], |_| {
             Some("ffffffff-1111-2222-3333-444444444444".to_string())
         });
         assert!(out.args.is_empty());
@@ -2028,8 +2037,9 @@ mod tests {
         let mut opts = codex_opts();
         opts.env
             .insert("ELDRUN_TAB_UID".to_string(), "tab-key".to_string());
-        let out =
-            resolve_codex_session_impl(opts, &root, Some(db.as_path()), |_| Some(live.to_string()));
+        let out = resolve_codex_session_impl(opts, &root, std::slice::from_ref(&db), |_| {
+            Some(live.to_string())
+        });
         assert_eq!(out.args, vec!["resume".to_string(), live.to_string()]);
 
         // An id neither store has heard of still starts fresh.
@@ -2037,7 +2047,7 @@ mod tests {
         other
             .env
             .insert("ELDRUN_TAB_UID".to_string(), "tab-key".to_string());
-        let out = resolve_codex_session_impl(other, &root, Some(db.as_path()), |_| {
+        let out = resolve_codex_session_impl(other, &root, std::slice::from_ref(&db), |_| {
             Some("ffffffff-1111-2222-3333-444444444444".to_string())
         });
         assert!(out.args.is_empty());
@@ -2404,7 +2414,7 @@ mod tests {
         opts.cmd = "codex".to_string();
         opts.env
             .insert("ELDRUN_TAB_UID".to_string(), "11111111-1111-4111-8111-111111111111".to_string());
-        let out = resolve_codex_session_impl(opts, &projects, None, |_| None);
+        let out = resolve_codex_session_impl(opts, &projects, &[], |_| None);
         assert_eq!(out.env.get(TAB_AGENT_ENV).map(String::as_str), Some("codex"));
     }
 
@@ -2661,7 +2671,8 @@ mod tests {
         let mut opts = codex_opts();
         opts.env
             .insert("ELDRUN_TAB_UID".to_string(), uid.to_string());
-        let out = resolve_codex_session_impl(opts, &root, None, |u| read_live_session_in(&live_dir, u));
+        let out =
+            resolve_codex_session_impl(opts, &root, &[], |u| read_live_session_in(&live_dir, u));
         assert_eq!(out.args, vec!["resume".to_string(), live.to_string()]);
 
         let _ = std::fs::remove_dir_all(&root);
