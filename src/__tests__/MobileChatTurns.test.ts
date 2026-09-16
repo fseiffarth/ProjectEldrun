@@ -176,7 +176,7 @@ describe("Eldrun Mobile chat turns", () => {
 
   it("reads the ● bullet Claude Code draws on Linux as its message bullet", () => {
     const turns = chatTurns(lines(
-      "❯ why is this shown",
+      "> why is this shown",
       "",
       "● Bash(git status)",
       "  ⎿  clean",
@@ -193,5 +193,154 @@ describe("Eldrun Mobile chat turns", () => {
     expect(turns.map((turn) => turn.role)).toEqual(["user", "agent"]);
     expect(turns[1].answer).toBeUndefined();
     expect(turns[1].lines.map((row) => row.text)).toEqual(["• Sure, this repo is a phone app.", "  It has two screens."]);
+  });
+
+  it("never reads a select dialog's cursor row as somebody's prompt", () => {
+    // `❯` is the highlight cursor `selectPrompt` reads, never an echo — and a
+    // picker row carries no number to be excluded by.
+    expect(isPromptEcho({ text: "❯ Opus 4.1" })).toBe(false);
+    expect(isPromptEcho({ text: "❯ Resume this session" })).toBe(false);
+    expect(chatTurns(lines("Select a model:", "❯ Opus 4.1", "  Sonnet 4.5")).map((turn) => turn.role)).toEqual(["agent"]);
+  });
+
+  it("never reads the empty box's own placeholder as a prompt", () => {
+    expect(isPromptEcho({ text: "> Try \"fix the failing test\"" })).toBe(false);
+    expect(isPromptEcho({ text: "› Type your message or @path/to/file" })).toBe(false);
+    // A prompt that merely opens with the word is still the user's.
+    expect(isPromptEcho({ text: "> try the other branch" })).toBe(true);
+  });
+
+  it("leaves a box the TUI is still drawing out of the bubbles", () => {
+    // A history chunk gets no `inputFrameStart` cut: a frame left behind in
+    // the scrollback reaches the layout whole, draft and footer included.
+    const turns = chatTurns(lines(
+      "> add a clear button",
+      "",
+      "⏺ Done.",
+      "",
+      "> half-typed draft",
+      "  ⏵⏵ accept edits on (shift+tab to cycle)",
+      "  ? for shortcuts",
+    ));
+    expect(turns.map((turn) => turn.role)).toEqual(["user", "agent"]);
+    expect(turns[0].prompt?.map((row) => row.text)).toEqual(["add a clear button"]);
+    const bubbles = turns.filter((turn) => turn.role === "user")
+      .flatMap((turn) => (turn.prompt ?? []).map((row) => row.text)).join("\n");
+    expect(bubbles).not.toContain("half-typed draft");
+    expect(bubbles).not.toContain("accept edits on");
+  });
+
+  it("stops a bubble at the rows under it that no prompt's indent can mean", () => {
+    const turns = chatTurns(lines(
+      "> /model",
+      "  ⎿  Set model to Opus 4.1 and saved as the default",
+      "",
+      "⏺ Switched.",
+    ));
+    expect(turns.map((turn) => turn.role)).toEqual(["user", "agent", "agent"]);
+    expect(turns[0].prompt?.map((row) => row.text)).toEqual(["/model"]);
+    // Codex's result gutter and an indented mode row are the TUI's too.
+    const codex = chatTurns(lines("› run the tests", "  └ 12 passed, 0 failed", "  ⏸ plan mode"));
+    expect(codex.map((turn) => turn.role)).toEqual(["user", "agent"]);
+    expect(codex[0].prompt?.map((row) => row.text)).toEqual(["run the tests"]);
+  });
+
+  it("reads ✨ as an echo only for the CLI that draws one", () => {
+    expect(isPromptEcho({ text: "✨ refactor the parser" }, "Kimi Code")).toBe(true);
+    expect(isPromptEcho({ text: "✨ refactor the parser" })).toBe(false);
+    // The statusline row `MobileStatusLine` keeps verbatim is not a prompt.
+    expect(isPromptEcho({ text: "✨ vibes: immaculate" }, "Claude")).toBe(false);
+    expect(chatTurns(lines("✨ vibes: immaculate"), "Claude").map((turn) => turn.role)).toEqual(["agent"]);
+  });
+
+  // ── The false-negative direction: a bubble must also not LOSE the user's
+  // words. Every case above pins a leak; these pin the mirror of it.
+
+  it("keeps a pasted tree in the bubble instead of handing its rows to the agent", () => {
+    const turns = chatTurns(lines(
+      "> here is the tree, fix the layout:",
+      "  ├── src",
+      "  │   └── app.tsx",
+      "  └── tests",
+      "  that last folder is new",
+    ));
+    expect(turns.map((turn) => turn.role)).toEqual(["user"]);
+    expect(turns[0].prompt?.map((row) => row.text)).toEqual([
+      "here is the tree, fix the layout:",
+      "├── src",
+      "│   └── app.tsx",
+      "└── tests",
+      "that last folder is new",
+    ]);
+    // Codex's own result gutter carries text, not more strokes, and still stops.
+    const codex = chatTurns(lines("› run it", "  └ 12 passed"));
+    expect(codex.map((turn) => turn.role)).toEqual(["user", "agent"]);
+  });
+
+  it("reads a prompt that merely opens with the placeholder's words", () => {
+    expect(isPromptEcho({ text: '> try "npm ci" first' })).toBe(true);
+    expect(isPromptEcho({ text: "> try \u201csmart quotes\u201d here" })).toBe(true);
+    expect(isPromptEcho({ text: "> type your message into the box" })).toBe(true);
+    // The placeholder itself, whole, is still not a prompt.
+    expect(isPromptEcho({ text: '> Try "fix the failing test"' })).toBe(false);
+    expect(isPromptEcho({ text: "› Type your message or @path/to/file" })).toBe(false);
+  });
+
+  it("keeps an unbulleted agent's answer about a key from swallowing the prompt", () => {
+    // Claude is protected by its ⏺; Aider, Goose and a plain Qwen are not.
+    const turns = chatTurns(lines(
+      "> what does shift+tab do?",
+      "",
+      "Shift+Tab cycles the permission mode.",
+    ));
+    expect(turns.map((turn) => turn.role)).toEqual(["user", "agent"]);
+    expect(turns[0].prompt?.map((row) => row.text)).toEqual(["what does shift+tab do?"]);
+    // A row that is only the hint is still the footer.
+    expect(chatTurns(lines("> draft", "Shift+Tab to accept edits")).map((turn) => turn.role)).toEqual(["agent"]);
+  });
+
+  it("leaves a stale Gemini frame in the scrollback out of the bubbles", () => {
+    // Gemini pins no key hint under its box — it pins the columned status row,
+    // and its mode indicator sits above the box where the lookahead cannot see.
+    const turns = chatTurns(lines(
+      "✦ Done.",
+      "> half-typed gemini draft",
+      "~/proj  main  gemini-2.5-pro  25% used",
+    ));
+    expect(turns.some((turn) => turn.role === "user")).toBe(false);
+    // One recognized field is a sentence, not a status row: a real prompt
+    // answered by prose that names a model keeps its bubble.
+    const answered = chatTurns(lines("> which model is this?", "", "You are talking to opus."));
+    expect(answered.map((turn) => turn.role)).toEqual(["user", "agent"]);
+  });
+
+  it("reads a footer that carries the context beside its hint as the footer", () => {
+    // Claude Code prints the hint with the context and cost next to it. Asking
+    // for the hint to be the whole row left this draft — and the footer under
+    // it — in the reader's own bubble, which is the leak this view is about.
+    expect(chatTurns(lines(
+      "> half-typed draft",
+      "  ? for shortcuts · 85% context left",
+    )).some((turn) => turn.role === "user")).toBe(false);
+    expect(chatTurns(lines(
+      "> half-typed draft",
+      "  ? for shortcuts · 85% context left · $0.42",
+    )).some((turn) => turn.role === "user")).toBe(false);
+    // Codex pins its keys in columns instead.
+    expect(chatTurns(lines(
+      "› half-typed draft",
+      "⏎ send   ⇧⏎ newline   ⌃C quit",
+    )).some((turn) => turn.role === "user")).toBe(false);
+  });
+
+  it("keeps a prompt whose answer opens with a path the status line also names", () => {
+    // `classify` reads a branch out of the same segment as the path before it,
+    // so counting *fields* scored this sentence two and handed the prompt to
+    // the agent. A status row is two or more columns, not two fields.
+    const turns = chatTurns(lines("> where am I?", "", "~/eldrun/projects/app (main)"));
+    expect(turns.map((turn) => turn.role)).toEqual(["user", "agent"]);
+    expect(turns[0].prompt?.map((row) => row.text)).toEqual(["where am I?"]);
+    const ran = chatTurns(lines("> what did you run?", "", "Running /usr/bin/foo (again) now"));
+    expect(ran.map((turn) => turn.role)).toEqual(["user", "agent"]);
   });
 });

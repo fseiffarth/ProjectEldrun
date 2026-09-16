@@ -372,6 +372,19 @@ body.terminal-open { min-height:0; overflow:hidden; }
 .readable-tools { position:absolute; right:10px; bottom:12px; display:flex; gap:6px; }
 .readable-tools button { padding:5px 10px; border:1px solid #34384a; border-radius:9px; background:rgba(16,19,27,.86); color:#9da3b6; font-size:.72rem; backdrop-filter:blur(6px); }
 .readable-tools small { align-self:center; padding:3px 8px; border-radius:999px; background:rgba(16,19,27,.86); color:#8fb8ff; font-size:.6rem; text-transform:uppercase; letter-spacing:.05em; backdrop-filter:blur(6px); }
+/* The rows an agent draws under its input box (cwd, model, mode, context…),
+   which Focus otherwise cuts away: swiped in from the left over the bottom of
+   the reading view, above its tools. Inside `.terminal-body`, so it can never
+   cover the composer. Slides by transform + opacity only. */
+.focus-statusline { position:absolute; left:8px; right:8px; bottom:46px; z-index:1; max-height:45%; overflow:auto; overscroll-behavior:contain; -webkit-overflow-scrolling:touch; padding:8px 10px 9px; border:1px solid #383c4d; border-radius:9px; background:#11141c; color:#dfe3ee; font-size:.78rem; animation:focus-statusline-in .16s ease-out; }
+.focus-statusline-head { position:sticky; left:0; display:flex; align-items:center; gap:8px; min-width:0; margin-bottom:6px; }
+.focus-statusline-head strong { flex:1 1 auto; font-weight:650; }
+.focus-statusline-head strong small { margin-left:6px; color:#8fb8ff; font-size:.62rem; text-transform:uppercase; }
+.focus-statusline-head button { flex:0 0 auto; padding:4px 9px; border:0; border-radius:7px; background:rgba(255,255,255,.09); color:inherit; font-size:.8rem; }
+.focus-statusline-row { width:max-content; min-width:100%; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; line-height:1.45; white-space:pre; }
+.focus-statusline-empty { color:#9298aa; }
+@keyframes focus-statusline-in { from { opacity:0; transform:translateX(-14px); } to { opacity:1; transform:none; } }
+@media (prefers-reduced-motion:reduce) { .focus-statusline { animation:none; } }
 .readable-jump { position:absolute; left:50%; bottom:12px; transform:translateX(-50%); padding:8px 14px; border:1px solid #4c5165; border-radius:999px; background:rgba(23,26,36,.94); color:#e7e9f2; font-size:.78rem; box-shadow:0 6px 18px rgba(0,0,0,.35); }
 .terminal-controls { min-height:0; overflow:auto; }
 .last-sent { display:grid; grid-template-columns:auto minmax(0,1fr); gap:8px; align-items:start; margin:6px 7px 0; padding:8px 10px; border-radius:9px; background:#211d35; color:#dcd6ff; font-size:.78rem; }
@@ -565,3 +578,16 @@ body.terminal-open { min-height:0; overflow:hidden; }
 .outbox-text-body { overflow:auto; padding:12px; }
 .outbox-text-body pre { margin:0 0 12px; white-space:pre-wrap; overflow-wrap:anywhere; font-size:.8rem; }
 .outbox-viewer:has(> [role=alert]) { grid-template-rows:auto auto minmax(0,1fr); }
+/* A file the agent sent, as a message of its own in the Focus chat
+   (`OutboxMessage`), on the agent's side: a picture at its own shape up to
+   the bubble width, any other file a card; name, age and size under it in
+   the UI face. The corner the user bubble squares off is mirrored here. */
+.readable-turn.outbox-message { justify-items:start; gap:4px; font:400 .9rem/1.45 Inter,ui-sans-serif,system-ui,sans-serif; }
+.outbox-message-image { display:block; max-width:88%; padding:0; border:1px solid #34384a; border-radius:16px 16px 16px 4px; overflow:hidden; background:#0f131c; }
+.outbox-message-image img { display:block; min-width:96px; min-height:72px; max-width:100%; max-height:60vh; object-fit:contain; }
+.outbox-message-file { display:flex; align-items:center; gap:10px; max-width:88%; min-width:0; padding:10px 12px; border:1px solid #34384a; border-radius:16px 16px 16px 4px; background:#1b2333; color:#d8e2f5; text-align:left; text-decoration:none; font:inherit; }
+.outbox-message-file span { flex:0 0 auto; color:#8fb8ff; font-weight:650; }
+.outbox-message-file strong { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:600; }
+.outbox-message-meta { display:flex; align-items:center; gap:6px; max-width:100%; color:#95a6c8; font-size:.72rem; }
+.outbox-message-meta span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.outbox-message-meta em { flex:0 0 auto; color:#8fb8ff; font-style:normal; font-size:.62rem; text-transform:uppercase; }

@@ -11,13 +11,28 @@
  * Codex — at the left edge, with the lines of a multi-line prompt indented
  * under it. Nothing else the TUIs print starts a line that way: answers open
  * with `⏺`, `•` or `✦` and indent their continuation, tool calls with `⎿`,
- * and a quoted `>` inside an answer sits indented under its bullet. The one
- * look-alike — a select dialog's `❯ 1. Yes` row — is excluded by its number,
- * and the live input box at the bottom of the screen never reaches here:
- * `inputFrameStart` cuts it off first.
+ * and a quoted `>` inside an answer sits indented under its bullet.
  *
- * The second shape is Claude Code's message bullet. Everything Claude prints
- * between two prompts opens with `⏺`: an answer as `⏺ The tests pass.`, and
+ * A bubble must hold what the user typed and **nothing else**, so each
+ * look-alike is excluded, and a doubtful row is dropped from the bubble
+ * rather than shown as the reader's own words:
+ *   - a select dialog's `❯ 1. Yes` row, by its number — and `❯` is not a
+ *     marker here at all, see `PROMPT_ECHO`;
+ *   - the box's own placeholder (`> Try "…"`), which is the empty box, not an
+ *     echo;
+ *   - a box the TUI is still drawing, told by the footer row pinned under it.
+ *     Only the live tail is cut by `inputFrameStart`; a frame left behind in
+ *     the scrollback reaches a history chunk whole;
+ *   - the rows a prompt's indent cannot mean: a tool result's `⎿`/`└` gutter,
+ *     a bullet, a frame stroke, an indented footer. `CONTINUATION` used to
+ *     swallow every indented row under an echo, so `> /model` took the
+ *     `⎿ Set model to …` under it into the bubble.
+ *
+ * The second shape is an agent's message bullet — Claude Code's here, and the
+ * `●`/`✦`/`◆︎` Kimi Code, Gemini CLI and Qwen Code open an answer with, which
+ * earn the same answer layout (their tool calls are not dropped: only Claude
+ * Code's shapes below are known well enough to leave out). Everything Claude
+ * prints between two prompts opens with `⏺`: an answer as `⏺ The tests pass.`, and
  * a tool call as `⏺ Update(src/App.tsx)` — a capitalised tool name and its
  * argument in parentheses — with the call's status rows (`⎿ Updated
  * src/App.tsx with 3 additions`, a read's line count, a command's output)
@@ -36,6 +51,7 @@
  */
 
 import type { ReadableLine, ReadableSpan } from "./readableScreen";
+import { columnCount, statusColumns } from "./statusLine";
 
 export interface ChatTurn {
   /** The key of the turn's first line — stable across frames the same way. */
@@ -53,18 +69,77 @@ export interface ChatTurn {
 
 /** The echoed prompt: the input marker at the left edge (at most one space
  * of frame padding before it), a space, then text. A bare marker is an empty
- * input box, not a prompt. */
-const PROMPT_ECHO = /^ ?[>›❯] (?=\S)/u;
+ * input box, not a prompt.
+ *
+ * `❯` is deliberately not one of the markers. No CLI in the survey echoes a
+ * submitted prompt with it — Claude Code, Gemini CLI, Qwen Code, Aider and
+ * Goose echo `>`, Codex `›`, Kimi Code `✨` — while `❯` *is* the highlight
+ * cursor a select dialog draws (`selectPrompt`'s `OPTION` lists it first), so
+ * reading it as an echo turned every unnumbered picker row — `❯ Opus 4.1`, a
+ * `/resume` entry — into the reader's own words. It stays an input-box marker
+ * in `statusLine`, which asks a different question: where the live frame
+ * begins, not who said something. */
+const PROMPT_ECHO = /^ ?[>›] (?=\S)/u;
+/** Kimi Code echoes with `✨` and draws no `>` at all (read out of its 0.43
+ * bundle). Only for a tab whose label names it: `✨` opens plenty of ordinary
+ * output — a custom statusline row, an answer's flourish — and on any other
+ * session it is not a prompt. */
+const KIMI_ECHO = /^ ?(?:[>›]|✨) (?=\S)/u;
+const KIMI_AGENT = /kimi/iu;
 /** A numbered dialog row (`❯ 1. Yes`) — a question, never a prompt. */
 const OPTION_ROW = /^ ?[>›❯] \d{1,2}[.)] /u;
+/** The hint a CLI draws inside its *empty* input box, in the very column a
+ * submitted prompt's echo sits in: Claude Code's `Try "…"`, the `Type your
+ * message or @path/to/file` of Gemini CLI and Qwen Code. Matched against the
+ * text after the marker, and against the **whole** of it — a prompt that
+ * merely opens with those words is the user's (`try "npm ci" first`, `type
+ * your message into the box`), and eating one costs them their bubble. */
+const PLACEHOLDER =
+  /^\s*(?:try\s+["'“”‘’][^"'“”‘’]*["'“”‘’][?.!]?|type your message or @path\/to\/file)\s*$/iu;
+/** The rows a TUI pins *under* its input box: its mode indicator and its key
+ * hints. The row must be *only* that — anchored at both ends and holding no
+ * sentence punctuation — so neither a tool result that mentions a key
+ * (`… +40 lines (ctrl+o to expand)`) nor an answer *about* one
+ * (`Shift+Tab cycles the permission mode.`) is ever taken for the footer.
+ * An unbulleted agent's first answer row is the one that was demoted. */
+const FOOTER_OPENS =
+  /^\s*(?:[⏵⏸⏎⌃⇧]|\?\s*for shortcuts\b|(?:shift\s*\+\s*tab|esc|ctrl\s*\+\s*\S|alt\s*\+\s*\S)\s+to\s+\S)/iu;
+/** Whether the row is a footer and not a sentence that opens like one.
+ *
+ * The row has to *start* with the hint — a tool result naming a key
+ * (`… +40 lines (ctrl+o to expand)`) never does — and then be either the bare
+ * hint or a columned row. Claude Code prints its hint with the context and
+ * cost beside it (`? for shortcuts · 85% context left · $0.42`), so requiring
+ * the hint to be the whole row put that footer, and the stale draft above it,
+ * in the reader's own bubble; requiring no sentence punctuation dropped it
+ * again over the `.` in `$0.42`. An answer *about* a key is one column and
+ * ends in prose (`Esc to interrupt is the one you want.`), so it stays the
+ * agent's. */
+function isFooterRow(text: string): boolean {
+  if (!FOOTER_OPENS.test(text)) return false;
+  return columnCount(text) >= 2 || !/[.!?]/u.test(text);
+}
+/** A row opening with a glyph the TUI owns: a tool call's result gutter
+ * (Claude Code's `⎿`, Codex's `└ `), a message bullet, a spinner.
+ *
+ * The frame and tree strokes `├ │ ┌ ╭ ╰ ┃` are deliberately *not* here.
+ * Pasting `tree` output into a prompt is routine, and claiming those cut the
+ * prompt at its first `├── src` row and handed the rest to the agent. Codex's
+ * gutter is kept apart from a tree's elbow by what follows it: `└ ` carries
+ * text, `└──` carries more strokes. */
+const STRUCTURE_ROW = /^\s*(?:[⎿⏺●✦◆✻✽]|└(?![─━═]))/u;
 /** Every TUI indents the further lines of a multi-line prompt under the
  * marker; an unindented line is the agent's again. */
 const CONTINUATION = /^\s+\S/u;
 /** Columns the marker and its space occupy — what the indent lines up with. */
 const MARKER_WIDTH = 2;
-/** Claude Code's message bullet at the left edge, opening a message: `⏺`, or
- * `●`, which is what it draws on Linux. */
-const CLAUDE_MESSAGE = /^ ?[⏺●] (?=\S)/u;
+/** An agent's message bullet at the left edge, opening a message: Claude
+ * Code's `⏺`, or the `●` it draws on Linux (Kimi Code's bullet too), Gemini
+ * CLI's `✦`, and Qwen Code's `◆︎` — a `◆` with the text-presentation selector,
+ * which replaced its `✦` by 0.23 (each read out of the published bundle).
+ * Codex's `•` is deliberately not one: it opens tool calls and progress lines
+ * as well as answers, and nothing on the row tells them apart. */
+const AGENT_MESSAGE = /^ ?(?:[⏺●✦]|◆︎?) (?=\S)/u;
 /** A Claude Code tool call: the bullet, then either a capitalised built-in
  * tool name (`Bash`, `Update`, `Web Search`) with its argument in parentheses,
  * or an MCP tool, which Claude Code names `server - tool (MCP)` (`mcp__…
@@ -75,9 +150,39 @@ const CLAUDE_TOOL_CALL = /^ ?[⏺●] (?:[A-Z][A-Za-z]*(?: [A-Z][A-Za-z]*)*\(|(?
  * indented output or continuation row, or a blank between them. */
 const TOOL_ROW = /^(?:\s*⎿|\s{2,}\S|\s*$)/u;
 
-/** Whether `line` is the start of an echoed prompt. */
-export function isPromptEcho(line: { text: string }): boolean {
-  return PROMPT_ECHO.test(line.text) && !OPTION_ROW.test(line.text);
+/** The echo marker this session draws, which is Kimi Code's only for a tab
+ * whose label names it. */
+function echoPattern(agentLabel?: string): RegExp {
+  return agentLabel && KIMI_AGENT.test(agentLabel) ? KIMI_ECHO : PROMPT_ECHO;
+}
+
+/** Whether `line` is the start of an echoed prompt — a row on its own, so a
+ * caller with no surrounding lines (the live-tail scan in `Terminal.tsx`) can
+ * ask too. `chatTurns` adds the guards that need the rows around it. */
+export function isPromptEcho(line: { text: string }, agentLabel?: string): boolean {
+  const marker = echoPattern(agentLabel).exec(line.text);
+  if (!marker || OPTION_ROW.test(line.text)) return false;
+  return !PLACEHOLDER.test(line.text.slice(marker[0].length));
+}
+
+/** Whether the echo at `index` is a box the TUI is still drawing rather than a
+ * prompt somebody submitted: the first non-blank row under it is one the TUI
+ * pins beneath its input box. A real echo is followed by the answer, by the
+ * empty box below it, or by nothing. */
+function isInputBox(lines: readonly { text: string }[], index: number): boolean {
+  for (let row = index + 1; row < lines.length; row += 1) {
+    const text = lines[row].text;
+    if (!text.trim()) continue;
+    // Gemini CLI and Qwen Code pin no key hint under the box — they pin the
+    // columned row `statusLine` reads the chips out of (`~/proj  main
+    // gemini-2.5-pro  25% used`), and their mode indicator sits *above* the
+    // box where this never looks. Two *columns* carrying status means the row
+    // is printed in columns, which an answer's sentence is not — counting
+    // fields instead scored `~/eldrun/projects/app (main)` two on its own and
+    // handed the prompt above it to the agent.
+    return isFooterRow(text) || statusColumns(text) >= 2;
+  }
+  return false;
 }
 
 /** Whether `line` opens a Claude Code tool call, whose block Focus leaves out. */
@@ -139,10 +244,10 @@ function agentTurns(lines: readonly ReadableLine[]): ChatTurn[] {
     if (isToolCall(line)) {
       flushPlain();
       index += 1;
-      while (index < lines.length && !CLAUDE_MESSAGE.test(lines[index].text) && TOOL_ROW.test(lines[index].text)) index += 1;
+      while (index < lines.length && !AGENT_MESSAGE.test(lines[index].text) && TOOL_ROW.test(lines[index].text)) index += 1;
       continue;
     }
-    if (!CLAUDE_MESSAGE.test(line.text)) {
+    if (!AGENT_MESSAGE.test(line.text)) {
       plain.push(line);
       index += 1;
       continue;
@@ -150,12 +255,12 @@ function agentTurns(lines: readonly ReadableLine[]): ChatTurn[] {
     flushPlain();
     const message = [line];
     index += 1;
-    while (index < lines.length && !CLAUDE_MESSAGE.test(lines[index].text)) {
+    while (index < lines.length && !AGENT_MESSAGE.test(lines[index].text)) {
       message.push(lines[index]);
       index += 1;
     }
     const kept = trimBlank(message);
-    turns.push({ key: kept[0].key, role: "agent", lines: kept, answer: unmark(kept, CLAUDE_MESSAGE) });
+    turns.push({ key: kept[0].key, role: "agent", lines: kept, answer: unmark(kept, AGENT_MESSAGE) });
   }
   flushPlain();
   return turns;
@@ -166,7 +271,8 @@ function agentTurns(lines: readonly ReadableLine[]): ChatTurn[] {
  * leaves around a prompt echo are the seam between turns, not content, and
  * are dropped there; blanks inside an agent turn stay its paragraph breaks.
  */
-export function chatTurns(lines: readonly ReadableLine[]): ChatTurn[] {
+export function chatTurns(lines: readonly ReadableLine[], agentLabel?: string): ChatTurn[] {
+  const echo = echoPattern(agentLabel);
   const turns: ChatTurn[] = [];
   let agent: ReadableLine[] = [];
   const flushAgent = () => {
@@ -176,7 +282,7 @@ export function chatTurns(lines: readonly ReadableLine[]): ChatTurn[] {
   let index = 0;
   while (index < lines.length) {
     const line = lines[index];
-    if (!isPromptEcho(line)) {
+    if (!isPromptEcho(line, agentLabel) || isInputBox(lines, index)) {
       agent.push(line);
       index += 1;
       continue;
@@ -184,11 +290,14 @@ export function chatTurns(lines: readonly ReadableLine[]): ChatTurn[] {
     flushAgent();
     const prompt = [line];
     index += 1;
-    while (index < lines.length && CONTINUATION.test(lines[index].text)) {
+    while (index < lines.length
+      && CONTINUATION.test(lines[index].text)
+      && !STRUCTURE_ROW.test(lines[index].text)
+      && !isFooterRow(lines[index].text)) {
       prompt.push(lines[index]);
       index += 1;
     }
-    turns.push({ key: line.key, role: "user", lines: prompt, prompt: unmark(prompt, PROMPT_ECHO) });
+    turns.push({ key: line.key, role: "user", lines: prompt, prompt: unmark(prompt, echo) });
   }
   flushAgent();
   return turns;

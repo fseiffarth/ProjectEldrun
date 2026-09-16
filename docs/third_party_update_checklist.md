@@ -308,8 +308,14 @@ npx vitest run src/__tests__/MobileSelectPrompt.test.ts src/__tests__/MobileMode
 
 **Assumes** `gemini --resume latest` (index or `latest`, not a uuid),
 `gemini -p`; preface `/clear /compact /stats`; footer says `NN% used`
-without the word "context" (mobile `statusLine.ts`); since ~0.5 the approval
-mode is conveyed only as prompt text, so the phone cannot read it.
+without the word "context" (mobile `statusLine.ts`). The approval mode is text
+on the row **above** the input box (`ApprovalModeIndicator`):
+`auto-accept edits Shift+Tab to plan|manual`, `plan Shift+Tab to manual`,
+`YOLO Ctrl+Y`, and in default mode only `Shift+Tab to accept edits` — read by
+`statusLine.ts`, walked by the Gemini family in `agentModes.ts` (YOLO is on
+Ctrl+Y, off the Shift+Tab cycle; its prompt turns `*`). Answers open with `✦ `
+(`chatTurns.ts`). Inline unless `ui.useAlternateBuffer`. Read out of the
+installed 0.56.0 bundle and the 0.60.0 npm bundle (2026-09-15; not live).
 Install via `npm install -g @google/gemini-cli`. The 0.59.0 bundle still
 defines `--resume` (alias `-r`) and renders the `NN% used` footer (read out of
 the package, 2026-09-15; not live).
@@ -324,7 +330,13 @@ the package, 2026-09-15; not live).
 
 **Assumes** `qwen --continue`, `qwen -p`; mode phrases `ask permissions |
 plan | auto-accept | auto | yolo` on the Shift+Tab cycle, and `*` as the
-YOLO input-line marker (mobile `statusLine.ts`). `npm install -g @qwen-code/qwen-code`.
+YOLO input-line marker (mobile `statusLine.ts`, which takes a `*` with a draft
+only beside the word YOLO). Answers open with `◆︎ ` (U+25C6 U+FE0E) since 0.23
+(`chatTurns.ts`). **0.23.4 draws on the alternate screen by default**
+(`ui.useTerminalBuffer`, "Virtualized History"), so Focus hands a Qwen tab to
+Terminal unless `~/.qwen/settings.json` sets `"ui": {"useTerminalBuffer":
+false}` (read out of the 0.23.4 bundle, 2026-09-15; not live).
+`npm install -g @qwen-code/qwen-code`.
 The last-prompt line reads the screen echo, as for Gemini.
 
 ### 1.5 Everyone else
