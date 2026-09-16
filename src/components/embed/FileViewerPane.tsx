@@ -83,7 +83,7 @@ import {
   type BeamerOverlayCommand,
   type RememberedSelection,
 } from "../../lib/viewers/beamer";
-import { internalViewerFor, disabledViewers, relFromAbs, type InternalViewer, type FileEntry } from "../../lib/viewers/fileUtils";
+import { internalViewerFor, disabledViewers, relFromAbs, lineEndingOf, applyLineEnding, type InternalViewer, type FileEntry } from "../../lib/viewers/fileUtils";
 import {
   isPythonPath,
   isPythonMainScript,
@@ -1329,6 +1329,24 @@ export function useEditableFile(path: string, enabled = true) {
   // bump it so they don't trip the watcher.
   const lastMtime = useRef<number | null>(null);
 
+  // The line ending the FILE uses, remembered at load and re-applied at save.
+  //
+  // It has to be remembered, because the draft cannot carry it: the editor is a
+  // `<textarea>` and `onTextChange` reads `el.value`, whose API value the HTML
+  // spec normalizes to LF. So the first keystroke anywhere in a CRLF file
+  // silently rewrote EVERY line ending in the buffer and the save wrote LF
+  // throughout — a one-character edit producing a whole-file diff, in every text
+  // viewer at once (md, tex, yaml, .bib, code). That also broke the promise the
+  // structured viewers are built on: `yaml.ts`, `table.ts` and `bib.ts` each
+  // derive the file's ending from the buffer and splice it back, so on a CRLF
+  // file they wrote CRLF into a buffer that turned LF underneath them and the
+  // result was MIXED endings.
+  //
+  // The buffer is therefore LF by construction — seeded normalized, so every
+  // parser and splice above sees one convention — and the ending is restored on
+  // the way out, at the single place bytes leave this hook.
+  const fileEol = useRef<"\r\n" | "\n">("\n");
+
   // Autosave is ON by default; only an explicit `autosave: false` disables it.
   const autosave = useSettingsStore((s) => s.settings?.autosave !== false);
 
@@ -1337,9 +1355,15 @@ export function useEditableFile(path: string, enabled = true) {
 
   const seedFromDisk = useCallback(
     (text: string) => {
-      reset(text);
-      setBaseline(text);
-      setContent(text);
+      // Record the file's own ending, then hold the buffer in LF (see `fileEol`).
+      // A file with no CRLF at all is LF, which is also the right default for an
+      // empty one. Mixed endings resolve to CRLF, the same "any CRLF ⇒ CRLF" rule
+      // `bib.ts`'s `lineEndingOf` and `table.ts` already follow.
+      fileEol.current = lineEndingOf(text);
+      const lf = applyLineEnding(text, "\n");
+      reset(lf);
+      setBaseline(lf);
+      setContent(lf);
       setExternalChange(false);
     },
     [reset],
@@ -1374,9 +1398,18 @@ export function useEditableFile(path: string, enabled = true) {
   const isDirty = loaded && baseline != null && draft !== baseline;
   const isDirtyRef = useRef(isDirty);
   isDirtyRef.current = isDirty;
+  // The poll's `.then` closes over the render that armed it, so the baseline is
+  // read through a ref — same reason `isDirtyRef` exists beside it.
+  const baselineRef = useRef(baseline);
+  baselineRef.current = baseline;
 
   const saver = useMemo(() => new DraftSaver(async (text) => {
-    await writeFileText(path, text, scope);
+    // The ONE place a text buffer leaves this hook, and therefore the one place
+    // the file's own line ending is restored (see `fileEol`). `\r?\n` rather than
+    // `\n` so this is idempotent: a buffer that still holds CRLF — the seed,
+    // before any keystroke has been through the textarea — is not doubled into
+    // `\r\r\n`.
+    await writeFileText(path, applyLineEnding(text, fileEol.current), scope);
     if (scope && basename(path).toLowerCase() === "remarks.md") {
       const project = useProjectsStore.getState().projects.find((p) => p.id === scope);
       if (project) await useProjectRemarksStore.getState().load(scope, resolveProjectDirectory(project));
@@ -1426,8 +1459,26 @@ export function useEditableFile(path: string, enabled = true) {
             return;
           }
           // Clean buffer → silently re-read + reseed baseline/draft.
+          //
+          // …but NOT when the bytes are the ones already in the buffer. An mtime
+          // advance is not a content change: a latexmk run that rewrote an
+          // identical file, a `touch`, a formatter that made no difference, a
+          // checkout of the same content all land here, and `seedFromDisk`
+          // `reset()`s the history — clearing `past` AND `future`. So an
+          // untouched recompile in the background silently threw away the
+          // reader's whole undo stack, with nothing on screen to say it had
+          // happened. The banner case at least asks; this one never did.
+          //
+          // The comparison is made in BUFFER space, not against the raw bytes:
+          // the draft is LF by construction (see `fileEol`), so a CRLF file read
+          // back from disk would never compare equal and the skip would never
+          // fire on exactly the platform that needs it.
           readFileText(path, scope)
-            .then((text) => { if (!cancelled && !isDirtyRef.current) seedFromDisk(text); })
+            .then((text) => {
+              if (cancelled || isDirtyRef.current) return;
+              if (applyLineEnding(text, "\n") === baselineRef.current) return;
+              seedFromDisk(text);
+            })
             .catch(() => {});
         })
         .catch(() => {});
