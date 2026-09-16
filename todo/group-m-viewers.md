@@ -2229,3 +2229,101 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       CRLF line terminators and git shows one changed line.
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work
+
+842. **Native viewers review: the deferred items.** An eight-agent read-only
+    review of the TeX/Markdown/YAML/PDF viewers on 2026-09-16 produced
+    `docs/native_viewers_review.md`, which holds the findings, the corrected and
+    withdrawn ones, and the per-item plans. Landed from it: the editor's line-
+    ending contract (V-01) and YAML flow-context quoting (V-05). **Still open,
+    each needing a decision rather than a patch:** *V-21* — "Delete all
+    metadata" leaves `/T` (a real name, typed into the card's author field) on
+    every PDF remark, although the button's own wording promises no author;
+    folding it into that action is one i18n rewording, adding a second checkbox
+    would be one intent wearing two switches. *V-22* — coalescing a PDF page-rail
+    drag into one undo entry changes what Ctrl+Z means, and `PageStrip` has two
+    hosts, so the print preview inherits the decision. *V-23* — `links.ts:18-20`
+    states a `Launch`/`GoToR` is never rendered; pdf.js sets `url` from `/F` for
+    both, so either arrives as an ordinary external link when `/F` is `http://…`
+    (no execution hole — the confirm stands — but a false invariant in a
+    security comment). *V-24* — the backend write path, below. *V-25* —
+    `PageStrip` has no keyboard path at all; `TableView` is the sibling to copy.
+    *V-26* — closing a tab with autosave **off** discards the draft, which
+    `ViewerEfficiency.test.ts:37` and `DeckView.tsx:462-470` both state is
+    deliberate; the fix was landed here and **reverted** for that reason, and the
+    three candidates (leave it / flush on close / add the unsaved-work prompt the
+    design currently refuses) are a user's call.
+    - [ ] 🤖 Automated test
+    - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+843. **A PDF is written by two processes with no lock (V-04/V-24).** latexmk
+    writes the PDF in place via `-outdir` — `tex.rs`'s only two `fs::rename`
+    calls are the `.fmt` cache — and repeatedly across one build, while
+    `write_file_bytes_local` (`fs.rs:1659`) is a plain create+truncate+write with
+    no temp file, no rename and no lock. The PDF viewer's remark autosave is a
+    1.2 s `setTimeout` that no user action triggers, its staleness flag cannot
+    become true while the pane is hidden, and the poll is 1500 ms against that
+    1200 ms timer even when visible. So either the engine truncates our bytes
+    (the remark is gone and the panel reported success) or we truncate its
+    half-written file. The **frontend gate** — re-stat immediately before the
+    write instead of trusting a cached flag, which also subsumes the own-write
+    mtime latch and the `stripMeta`-without-materialise hole — is `src/` and
+    hot-reloads. The **class** fix is `src-tauri/`: compile into a scratch
+    out-dir and `fs::rename` the finished PDF into place, plus a compare-and-swap
+    `write_file_text(expectedMtime)`. Backend, so it needs a deliberate restart.
+    - [ ] 🤖 Automated test
+    - [ ] 🖐️ Manual test — open a TeX document's PDF, write a remark, switch tab
+      within a second and recompile: the compile output survives and the remark
+      is either saved or honestly refused.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+845. **Clicking a checkbox in a rendered README can tick a different one.**
+    `markdown.ts`'s list collector has no fence bookkeeping while
+    `toggleTaskCheckbox` (:639) has it, so the two disagree about what a task
+    line is. A fenced block indented inside a list item is folded into the list
+    region (the continuation branch at :609), and its `- [ ]` lines render as
+    real checkboxes; the click handler then addresses the toggler **by DOM
+    ordinal**, so box 0 flips the first *real* task and the last box matches
+    nothing and silently does nothing. Shape: `- item`, a 4-space ```` ``` ````,
+    `- [ ] shown`, the closing fence, `- [ ] real`.
+    Two candidate fixes, and the second is the one to take: (a) give the
+    collector the same fence bookkeeping — resynchronises two structural
+    analyses that will drift again at the next block type; (b) put the source
+    line on the item (`ListItem` gains `line`, set from the collector's loop
+    index), emit it as `data-md-task-line`, and address the line instead of the
+    ordinal — which deletes the second analysis from the addressing path and
+    makes an unaddressable checkbox impossible to draw, the structural form of
+    `yaml.ts`'s "refuse when unsure" rule. Blast radius for (b) is one consumer
+    (`FileViewerPane.tsx:7959`), but it changes a contract stated in
+    `renderList`'s own doc comment ("checkboxes are emitted in document order, so
+    their DOM order is the toggler's index") and threads an index through the
+    collector, `renderList` and `openItem`. **Deliberately not landed with the
+    rest of the 2026-09-16 review** — a rendering-contract change wants its own
+    pass, not the tail of a long one. Files: `lib/viewers/markdown.ts`,
+    `components/embed/FileViewerPane.tsx`. See `docs/native_viewers_review.md`
+    V-07. There is no component test of `MarkdownView` at all today.
+    - [ ] 🤖 Automated test
+    - [ ] 🖐️ Manual test — a README with a fenced block indented inside a list
+      item: every checkbox ticks the line it sits on.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+844. **`npm test` runs the suite roughly twice.** `vitest.config`'s `exclude` is
+    `[...configDefaults.exclude, "target/**"]`, so the run also sweeps every
+    `*.test.ts(x)` under `.claude/worktrees/` — 952 duplicate test files across
+    two live worktrees against 479 in the tree itself (1431 files / 15390 tests
+    observed, where the UI unification plan recorded 957 / 10282 the same day).
+    The wall clock roughly doubles, failures are reported against
+    `.claude/worktrees/…` paths that read like the tree's own, and a stale
+    worktree can fail a run for code nobody is editing. Add `".claude/**"` beside
+    `"target/**"`. Separately, the DOM-timing tests in `YamlViewer.test.tsx`
+    (hover tints, drag reorder) are **flaky under load**: an intermediate run
+    reported 49 failures that a re-run of the identical command on identical code
+    did not reproduce — dangerous because the obvious reading is "my change broke
+    this".
+    - [ ] 🤖 Automated test
+    - [ ] 🖐️ Manual test
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
