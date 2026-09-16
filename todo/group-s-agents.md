@@ -1593,3 +1593,24 @@ unchanged; the new agents are additive.
         the chart: the second arrives ~30 s after the first answer goes quiet.
         - [ ] ✅ Works
         - [ ] ❌ Doesn't work
+    - **Feature (2026-09-16): a background job keeps the tab working.** A Claude
+      turn that ends with a `run_in_background` shell still running (or a Codex
+      exec left open) used to light "finished" while the job ran on.
+      `services::agent_turn` now holds that `done` back as `working` while a tool
+      shell carrying the tab's `ELDRUN_TAB_UID` is alive (read from
+      `/proc/<pid>/environ` — the agent sits under the tmux server, not the PTY),
+      re-sends it every 8 s so the store's 20 s silence rule does not retire it,
+      and sends `done` within ~2 s of the last one exiting. Scheduled prompts wait
+      for it too. Linux only; container and remote agents keep the plain verdict.
+      A job that never ends (a dev server) keeps the tab working for as long as it
+      runs. File: `services/agent_turn.rs`. Backend change, **restart needed; not
+      live-tested**.
+      - [x] 🤖 Automated test — `agent_turn::tests` (`a_live_tool_shell_carrying_the_uid_holds_the_done`,
+        `only_the_agents_own_tool_shells_count_as_background_jobs`, …)
+      - [ ] 🖐️ Manual test — after a restart, in a Claude tab: "run `sleep 60` in
+        the background and stop". The turn ends, yet the tab stays working
+        (ring/bar) for the minute, then shows finished within a few seconds of
+        the sleep ending. A normal turn with no background job still finishes at
+        once. Kill the background shell from Claude early → finished follows.
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
