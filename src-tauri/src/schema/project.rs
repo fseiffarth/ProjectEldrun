@@ -713,14 +713,14 @@ mod tests {
         assert_eq!(h.display_label(), "gpu-2.example");
 
         let labelled: ComputeHost = parse(
-            r#"{"id":"h2","host":"10.0.0.2","remote_path":"/w","label":"gpu-2","shared_fs":true}"#,
+            r#"{"id":"h2","host":"192.0.2.2","remote_path":"/w","label":"gpu-2","shared_fs":true}"#,
         );
         assert_eq!(labelled.display_label(), "gpu-2");
         assert!(labelled.shared_fs);
         let out = json(&labelled);
         assert_eq!(out["label"], "gpu-2", "label is flattened, not nested: {out}");
         assert!(out.get("spec").is_none());
-        assert_eq!(out["host"], "10.0.0.2");
+        assert_eq!(out["host"], "192.0.2.2");
     }
 
     /// A `sandbox` object written before `scope` existed keeps containing every

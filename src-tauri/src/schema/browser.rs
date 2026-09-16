@@ -322,7 +322,7 @@ mod tests {
     #[test]
     fn blocked_navigation_window_label_is_optional_on_the_wire() {
         let attributed = BlockedNavigation {
-            display_url: "http://10.0.0.1/".into(),
+            display_url: "http://192.0.2.1/".into(),
             reason: "private-network".into(),
             window_label: Some("browser-3".into()),
         };
