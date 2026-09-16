@@ -605,6 +605,9 @@ fn open_file_blocking(
 /// process and emits a `script-finished` event (`{ runId, success }`) so the UI
 /// can show a running animation that clears on completion.
 ///
+/// `args` is the per-file argument string set from the ▶ button's right-click
+/// popover — the same raw string the foreground tab appends to its command line.
+///
 /// On Linux/Unix the script is run with `bash <path>`. Windows has no `bash`, so
 /// [`windows_script_command`] picks an interpreter by extension (`.ps1` →
 /// PowerShell, everything else → `cmd /C`, which honours `.bat`/`.cmd` and the
@@ -623,6 +626,7 @@ pub fn run_script_detached(
     cwd: Option<String>,
     run_id: Option<String>,
     project_id: Option<String>,
+    args: Option<String>,
 ) -> Result<(), String> {
     let path = Path::new(&script_path);
     if !path.is_absolute() {
@@ -630,13 +634,9 @@ pub fn run_script_detached(
     }
     crate::commands::fs::confine_project_path(path, project_id.as_deref())?;
     #[cfg(target_os = "windows")]
-    let mut cmd = windows_script_command(&script_path);
+    let mut cmd = windows_script_command(&script_path, args.as_deref());
     #[cfg(not(target_os = "windows"))]
-    let mut cmd = {
-        let mut cmd = Command::new("bash");
-        cmd.arg(&script_path);
-        cmd
-    };
+    let mut cmd = unix_script_command(&script_path, args.as_deref());
     if let Some(dir) = cwd.as_deref().filter(|d| !d.is_empty()) {
         cmd.current_dir(dir);
     }
@@ -1506,8 +1506,13 @@ fn resolve_windows_launch_exec(exec: &str) -> Option<String> {
 /// `.cmd` directly and otherwise opens the file via its shell association. Either
 /// way the returned command spawns a child whose exit status the caller can wait
 /// on for the `script-finished` event.
+///
+/// `args` is the raw argument string from the file tree's ▶ popover, appended
+/// unparsed (`raw_arg`) so the interpreter splits it exactly as it would in the
+/// foreground terminal tab.
 #[cfg(target_os = "windows")]
-fn windows_script_command(script_path: &str) -> Command {
+fn windows_script_command(script_path: &str, args: Option<&str>) -> Command {
+    use std::os::windows::process::CommandExt;
     let is_ps1 = Path::new(script_path)
         .extension()
         .and_then(|ext| ext.to_str())
@@ -1515,7 +1520,7 @@ fn windows_script_command(script_path: &str) -> Command {
     // `command_no_window` sets CREATE_NO_WINDOW so a background "run script"
     // action doesn't pop a transient console window — its output is intentionally
     // not surfaced (callers wanting output open a terminal tab instead).
-    if is_ps1 {
+    let mut cmd = if is_ps1 {
         let mut cmd = crate::paths::command_no_window("powershell");
         cmd.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"]);
         cmd.arg(script_path);
@@ -1524,7 +1529,32 @@ fn windows_script_command(script_path: &str) -> Command {
         let mut cmd = crate::paths::command_no_window("cmd");
         cmd.args(["/C", script_path]);
         cmd
+    };
+    if let Some(extra) = args.map(str::trim).filter(|a| !a.is_empty()) {
+        cmd.raw_arg(extra);
     }
+    cmd
+}
+
+/// Build the [`Command`] that runs `script_path` detached on Unix: `bash <path>`,
+/// or — when the ▶ popover set arguments — `bash -c 'exec bash "$0" <args>' <path>`,
+/// so the raw argument string is word-split, quote-removed and expanded by a shell
+/// exactly as the foreground terminal tab's command line would be. The path rides
+/// as `$0`, never inside the `-c` string, so a path with quotes cannot break it.
+#[cfg(not(target_os = "windows"))]
+fn unix_script_command(script_path: &str, args: Option<&str>) -> Command {
+    let mut cmd = Command::new("bash");
+    match args.map(str::trim).filter(|a| !a.is_empty()) {
+        Some(extra) => {
+            cmd.arg("-c")
+                .arg(format!("exec bash \"$0\" {extra}"))
+                .arg(script_path);
+        }
+        None => {
+            cmd.arg(script_path);
+        }
+    }
+    cmd
 }
 
 #[cfg(target_os = "windows")]
@@ -2880,12 +2910,43 @@ mod tests {
     #[test]
     fn windows_script_command_picks_interpreter_by_extension() {
         // .ps1 → PowerShell; .bat / .cmd / everything else → cmd /C.
-        let ps1 = windows_script_command(r"C:\tmp\build.ps1");
+        let ps1 = windows_script_command(r"C:\tmp\build.ps1", None);
         assert_eq!(ps1.get_program().to_string_lossy(), "powershell");
 
         for script in [r"C:\tmp\build.bat", r"C:\tmp\run.cmd", r"C:\tmp\go.sh"] {
-            let cmd = windows_script_command(script);
+            let cmd = windows_script_command(script, Some("--x 1"));
             assert_eq!(cmd.get_program().to_string_lossy(), "cmd");
         }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn unix_script_command_runs_bare_without_args() {
+        let cmd = unix_script_command("/p/run.sh", Some("   "));
+        assert_eq!(cmd.get_program().to_string_lossy(), "bash");
+        let args: Vec<_> = cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        assert_eq!(args, vec!["/p/run.sh"]);
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn unix_script_command_hands_args_to_a_shell_with_the_path_as_dollar_zero() {
+        let cmd = unix_script_command("/p/it's.sh", Some(" --n 2 \"a b\" "));
+        let args: Vec<_> = cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        assert_eq!(args, vec!["-c", "exec bash \"$0\" --n 2 \"a b\"", "/p/it's.sh"]);
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn unix_script_command_passes_args_through_to_the_script() {
+        let dir = std::env::temp_dir().join(format!("eldrun-args-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("echo args.sh");
+        std::fs::write(&script, "printf '%s|' \"$@\"\n").unwrap();
+        let out = unix_script_command(script.to_str().unwrap(), Some("one \"two three\""))
+            .output()
+            .unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "one|two three|");
     }
 }

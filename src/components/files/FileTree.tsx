@@ -652,9 +652,10 @@ export function FileTree({
   // Same shared, persisted map the open-editor's Run/Debug toolbar reads/writes
   // (`FileViewerPane.tsx`'s `pyArgs`/`setPyArgs`) — keyed by absolute path in
   // global settings, not local component state, so it survives this tree
-  // unmounting (side-panel hide/close) and an Eldrun restart.
-  const pyArgsByPath = useSettingsStore((s) => s.settings?.python_run_args ?? EMPTY_PY_ARGS);
-  const setPyArgs = useCallback((path: string, v: string) => {
+  // unmounting (side-panel hide/close) and an Eldrun restart. Shell scripts
+  // (`.sh` & co.) share the map: it is keyed by path, and the name predates them.
+  const runArgsByPath = useSettingsStore((s) => s.settings?.python_run_args ?? EMPTY_PY_ARGS);
+  const setRunArgs = useCallback((path: string, v: string) => {
     void useSettingsStore.getState().setPythonRunArgs(path, v);
   }, []);
   const [argsPopover, setArgsPopover] = useState<{
@@ -3085,12 +3086,19 @@ export function FileTree({
   function runShellScript(event: React.MouseEvent<HTMLButtonElement>, entry: FileEntry) {
     event.preventDefault();
     event.stopPropagation();
+    launchShell(entry, runArgsByPath[entry.path]);
+  }
+
+  /** Run a shell script with `args` appended to its command line — detached when
+   *  "run in background" is on (the backend's shell parses them), else in a
+   *  foreground terminal tab (the tab's shell does). */
+  function launchShell(entry: FileEntry, args?: string) {
     const remoteForegroundOnly = remoteListing;
     if (runInBackground && !remoteForegroundOnly) {
       // Detached spawn: no tab, no captured output. The activity store tracks
       // the run (and the app-lifetime `script-finished` listener clears it) so
       // the spinner survives side-panel hide/show — see TODO group R #34.
-      runScript(entry.path, projectDir, projectId);
+      runScript(entry.path, projectDir, projectId, args);
       return;
     }
     const interp = shellRunnerFor(entry.extension, PLATFORM) as ScriptShell | null;
@@ -3107,6 +3115,7 @@ export function FileTree({
       runHostPref: projectId
         ? useRunHostPrefStore.getState().byProject[projectId]
         : undefined,
+      args,
     });
     if (!plan) {
       setError(t("fileTree.runFailedOutsideTree", { path: entry.path }));
@@ -3145,7 +3154,14 @@ export function FileTree({
   function runPythonScript(event: React.MouseEvent<HTMLButtonElement>, entry: FileEntry) {
     event.preventDefault();
     event.stopPropagation();
-    launchPython(entry, pyArgsByPath[entry.path]);
+    launchPython(entry, runArgsByPath[entry.path]);
+  }
+
+  /** The ▶ popover's Run: a `.py` row runs through Python, anything else it is
+   *  offered on is a shell script. */
+  function launchWithArgs(entry: FileEntry, args: string) {
+    if (isPythonPath(entry.path)) launchPython(entry, args);
+    else launchShell(entry, args);
   }
 
   /** Open a run terminal for `entry`, appending `args` to the command line (see
@@ -4062,20 +4078,18 @@ export function FileTree({
                   // instead.
                   aria-label={t(isRunning ? "fileTree.runningName" : "fileTree.runName", { name: e.name })}
                   onClick={(ev) => (canPyRun ? runPythonScript(ev, e) : runShellScript(ev, e))}
-                  // Right-click a Python Run button → set arguments (sys.argv). For a
-                  // shell script there's nothing to offer, so just swallow it so it
-                  // doesn't fall through to the row's file context menu.
+                  // Right-click the Run button → set arguments: `sys.argv` for a
+                  // Python script, `$@` for a shell script. Swallowed either way so
+                  // it doesn't fall through to the row's file context menu.
                   onContextMenu={(ev) => {
                     ev.preventDefault();
                     ev.stopPropagation();
-                    if (canPyRun) {
-                      setArgsPopover({
-                        entry: e,
-                        x: ev.clientX,
-                        y: ev.clientY,
-                        draft: pyArgsByPath[e.path] ?? "",
-                      });
-                    }
+                    setArgsPopover({
+                      entry: e,
+                      x: ev.clientX,
+                      y: ev.clientY,
+                      draft: runArgsByPath[e.path] ?? "",
+                    });
                   }}
                   disabled={runLocked}
                 >
@@ -4243,14 +4257,21 @@ export function FileTree({
               aria-label={t("fileTree.runArgsAria", { name: argsPopover.entry.name })}
             >
               <label className="file-run-args-label">
-                {t("fileTree.runArgsLabel", { name: argsPopover.entry.name })}
+                {isPythonPath(argsPopover.entry.path) ? (
+                  t("fileTree.runArgsLabel", { name: argsPopover.entry.name })
+                ) : (
+                  <>
+                    {t("fileTree.runArgsLabelShell", { name: argsPopover.entry.name })}
+                    <UntestedTag />
+                  </>
+                )}
               </label>
               <input
                 ref={argsInputRef}
                 className="file-run-args-input"
                 value={argsPopover.draft}
                 spellCheck={false}
-                placeholder="--epochs 5 data.csv"
+                placeholder={isPythonPath(argsPopover.entry.path) ? "--epochs 5 data.csv" : "--verbose out/"}
                 onChange={(ev) =>
                   setArgsPopover((p) => (p ? { ...p, draft: ev.target.value } : p))
                 }
@@ -4258,8 +4279,8 @@ export function FileTree({
                   if (ev.key === "Enter") {
                     ev.preventDefault();
                     const a = argsPopover.draft.trim();
-                    setPyArgs(argsPopover.entry.path, a);
-                    launchPython(argsPopover.entry, a);
+                    setRunArgs(argsPopover.entry.path, a);
+                    launchWithArgs(argsPopover.entry, a);
                     setArgsPopover(null);
                   } else if (ev.key === "Escape") {
                     ev.preventDefault();
@@ -4273,8 +4294,8 @@ export function FileTree({
                   className="file-run-args-btn"
                   onClick={() => {
                     const a = argsPopover.draft.trim();
-                    setPyArgs(argsPopover.entry.path, a);
-                    launchPython(argsPopover.entry, a);
+                    setRunArgs(argsPopover.entry.path, a);
+                    launchWithArgs(argsPopover.entry, a);
                     setArgsPopover(null);
                   }}
                 >
@@ -4285,7 +4306,7 @@ export function FileTree({
                   className="file-run-args-btn"
                   onClick={() => {
                     const a = argsPopover.draft.trim();
-                    setPyArgs(argsPopover.entry.path, a);
+                    setRunArgs(argsPopover.entry.path, a);
                     setArgsPopover(null);
                   }}
                   title={t("fileTree.rememberArgsTitle")}
@@ -4839,11 +4860,15 @@ export function FileTree({
                 t("fileTree.tooltipOfTotal", { total: fmtSize(dirSizes[tooltip.entry.path]) })}
             </div>
           )}
-          {!tooltip.entry.is_dir && isPythonPath(tooltip.entry.path) && (
-            (isMainScriptCached(pyMainCache, tooltip.entry.path) || pyArgsByPath[tooltip.entry.path])
+          {!tooltip.entry.is_dir && (
+            isPythonPath(tooltip.entry.path)
+              ? (isMainScriptCached(pyMainCache, tooltip.entry.path) || runArgsByPath[tooltip.entry.path])
+              : shellRunnerFor(tooltip.entry.extension, PLATFORM) !== null
           ) && (
             <>
-              {isMainScriptCached(pyMainCache, tooltip.entry.path) && (
+              {(isPythonPath(tooltip.entry.path)
+                ? isMainScriptCached(pyMainCache, tooltip.entry.path)
+                : true) && (
                 <div>
                   <span className="file-tooltip-label">{t("fileTree.tooltipRun")} </span>
                   {t("fileTree.tooltipRunHint")}
@@ -4852,10 +4877,10 @@ export function FileTree({
               {/* Nested under Run, not a top-level "Run args" row — and shown
                   even when the file above lost its Run button (no `__main__`
                   guard), so args set earlier don't just look lost. */}
-              {pyArgsByPath[tooltip.entry.path] && (
+              {runArgsByPath[tooltip.entry.path] && (
                 <div className="file-tooltip-sub">
                   <span className="file-tooltip-label">{t("fileTree.tooltipArgs")} </span>
-                  {pyArgsByPath[tooltip.entry.path]}
+                  {runArgsByPath[tooltip.entry.path]}
                 </div>
               )}
             </>

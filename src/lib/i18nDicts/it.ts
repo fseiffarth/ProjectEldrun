@@ -3919,6 +3919,7 @@ export const dict: Dict = {
   "fileTree.showMoreButton": "mostra altri {more} ({hidden} non mostrati)",
   "fileTree.runArgsAria": "Argomenti di esecuzione per {name}",
   "fileTree.runArgsLabel": "Argomenti (sys.argv) — {name}",
+  "fileTree.runArgsLabelShell": "Argomenti ($@) — {name}",
   "fileTree.runArgsRun": "▶ Esegui",
   "fileTree.rememberArgsTitle": "Ricorda questi argomenti senza eseguire ora",
   "fileTree.excludedFromByteSync": "Escluso dal byte-sync",

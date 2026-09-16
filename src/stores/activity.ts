@@ -741,8 +741,9 @@ interface ActivityStore {
    *  path uses `runningScripts` instead). */
   runningRunFiles: Set<string>;
   /** Spawn a `.sh` script detached and track it so the run button can show a
-   *  spinner until the backend emits `script-finished`. */
-  runScript: (scriptPath: string, cwd: string, projectId?: string | null) => void;
+   *  spinner until the backend emits `script-finished`. `args` is the per-file
+   *  argument string from the ▶ popover, parsed by the backend's shell. */
+  runScript: (scriptPath: string, cwd: string, projectId?: string | null, args?: string) => void;
 }
 
 export const useActivityStore = create<ActivityStore>((set, get) => ({
@@ -800,12 +801,18 @@ export const useActivityStore = create<ActivityStore>((set, get) => ({
     });
   },
 
-  runScript: (scriptPath, cwd, projectId) => {
+  runScript: (scriptPath, cwd, projectId, args) => {
     set((s) => ({ runningScripts: new Set(s.runningScripts).add(scriptPath) }));
     // `projectId` scopes the backend's path confinement (`run_script_detached`) to
     // the owning project rather than whichever one happens to be current — a file
     // tree in a detached popout is not necessarily showing the active project.
-    void invoke("run_script_detached", { scriptPath, cwd, runId: scriptPath, projectId: projectId ?? null })
+    void invoke("run_script_detached", {
+      scriptPath,
+      cwd,
+      runId: scriptPath,
+      projectId: projectId ?? null,
+      args: args?.trim() || null,
+    })
       .catch(() => {
         set((s) => ({ runningScripts: withoutScript(s.runningScripts, scriptPath) }));
       });

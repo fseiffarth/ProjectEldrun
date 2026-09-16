@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { shellScriptRunPlan } from "../lib/shellScriptRun";
+import { shellRunCommand, shellScriptRunPlan } from "../lib/shellScriptRun";
 import type { ProjectEntry } from "../types";
 
 const remoteProject: ProjectEntry = {
@@ -135,5 +135,24 @@ describe("shell script run planning", () => {
         interp: "bash",
       }),
     ).toBeNull();
+  });
+
+  it("appends the run arguments verbatim after the quoted script", () => {
+    const plan = shellScriptRunPlan({
+      project: remoteProject,
+      treeRoot: "/state/demoproj",
+      syncSource: "remote",
+      scriptPath: "/home/alice/demoproj/train.sh",
+      interp: "bash",
+      args: '  --epochs 5 "out dir"  ',
+    });
+
+    expect(plan?.initialInput).toBe(`bash 'train.sh' --epochs 5 "out dir"`);
+  });
+
+  it("leaves the command bare when the arguments are blank", () => {
+    expect(shellRunCommand("bash", "a.sh", "   ")).toBe("bash 'a.sh'");
+    expect(shellRunCommand("powershell", "b.ps1", "-Name x")).toBe("powershell -File 'b.ps1' -Name x");
+    expect(shellRunCommand("cmd", "c.bat", "one")).toBe("cmd /c 'c.bat' one");
   });
 });

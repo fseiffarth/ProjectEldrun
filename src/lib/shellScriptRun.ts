@@ -46,12 +46,21 @@ export function shellRunnerFor(
 }
 
 /** The command line that runs `scriptRel` under `interp`. PowerShell and cmd take
- *  a flag before the path; the POSIX shells take it as a bare argument. */
-export function shellRunCommand(interp: ScriptShell, scriptRel: string): string {
+ *  a flag before the path; the POSIX shells take it as a bare argument.
+ *
+ *  `args` (set from the ▶ button's right-click popover) is appended **verbatim**,
+ *  only trimmed — the Python Run's `buildRunCommand` rule: it is a raw string for
+ *  the tab's own shell to parse, so quotes and `$VARS` work as typed. */
+export function shellRunCommand(interp: ScriptShell, scriptRel: string, args?: string): string {
   const quoted = shellQuote(scriptRel);
-  if (interp === "powershell") return `powershell -File ${quoted}`;
-  if (interp === "cmd") return `cmd /c ${quoted}`;
-  return `${interp} ${quoted}`;
+  const base =
+    interp === "powershell"
+      ? `powershell -File ${quoted}`
+      : interp === "cmd"
+        ? `cmd /c ${quoted}`
+        : `${interp} ${quoted}`;
+  const extra = args?.trim();
+  return extra ? `${base} ${extra}` : base;
 }
 
 export function scriptRelFromRoot(root: string, absPath: string): string | null {
@@ -83,6 +92,8 @@ export function shellScriptRunPlan(opts: {
   interp: ScriptShell;
   /** The project's run-host preference (`useRunHostPrefStore`), if any. */
   runHostPref?: TabLocation;
+  /** Arguments appended to the command line (see `shellRunCommand`). */
+  args?: string;
 }): ShellScriptRunPlan | null {
   const remote = opts.project?.remote;
   const isRemoteProject = !!remote;
@@ -116,7 +127,7 @@ export function shellScriptRunPlan(opts: {
   return {
     cwd,
     scriptRel,
-    initialInput: shellRunCommand(opts.interp, scriptRel),
+    initialInput: shellRunCommand(opts.interp, scriptRel, opts.args),
     location,
   };
 }

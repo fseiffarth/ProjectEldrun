@@ -4077,6 +4077,7 @@ export const en = {
   "fileTree.showMoreButton": "show {more} more ({hidden} not shown)",
   "fileTree.runArgsAria": "Run arguments for {name}",
   "fileTree.runArgsLabel": "Arguments (sys.argv) — {name}",
+  "fileTree.runArgsLabelShell": "Arguments ($@) — {name}",
   "fileTree.runArgsRun": "▶ Run",
   "fileTree.rememberArgsTitle": "Remember these arguments without running now",
   "fileTree.excludedFromByteSync": "Excluded from byte-sync",

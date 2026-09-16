@@ -3924,6 +3924,7 @@ export const dict: Dict = {
   "fileTree.showMoreButton": "{more} weitere anzeigen ({hidden} nicht angezeigt)",
   "fileTree.runArgsAria": "Ausführungsargumente für {name}",
   "fileTree.runArgsLabel": "Argumente (sys.argv) — {name}",
+  "fileTree.runArgsLabelShell": "Argumente ($@) — {name}",
   "fileTree.runArgsRun": "▶ Ausführen",
   "fileTree.rememberArgsTitle": "Diese Argumente merken, ohne jetzt auszuführen",
   "fileTree.excludedFromByteSync": "Von Byte-Sync ausgeschlossen",
