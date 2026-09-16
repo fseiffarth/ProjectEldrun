@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { ApiError, getAgentStatus, type AgentStatusReport, type TabRow } from "../api";
-import { noteParts, parseUsageReport } from "../../../shared/usageReport";
+import { noteParts, parseUsageReport, resolveResetAt } from "../../../shared/usageReport";
 import type { SessionStatus } from "../terminal/statusLine";
 
 /** Wording for the tab's own state, which the desktop classified from the
@@ -20,6 +20,37 @@ function duration(seconds: number): string {
   const minutes = Math.round(seconds / 60);
   if (minutes < 60) return `${minutes}m`;
   return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+}
+
+/** `in 5h 12m` to an instant ahead of `now`; empty once it has passed, which is
+ * a panel read before its own rollover and not worth a negative countdown. */
+function countdown(at: Date, now: Date): string {
+  const minutes = Math.floor((at.getTime() - now.getTime()) / 60_000);
+  if (minutes < 0) return "";
+  if (minutes < 1) return "in <1m";
+  if (minutes < 60) return `in ${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 48) return `in ${hours}h ${minutes % 60}m`;
+  return `in ${Math.floor(hours / 24)}d ${hours % 24}h`;
+}
+
+/**
+ * A window's rollover said exactly: weekday, date and clock in the phone's own
+ * locale and timezone, plus how long is left. The CLI's words name a day or a
+ * clock depending on its release and the window (`Mon 9am`, `6:20pm`,
+ * `Sep 17, 2pm (Europe/Berlin)`) and are written on the desktop's clock, which
+ * need not be the phone's. Placed through `resolveResetAt`, the same reading
+ * auto-continue arms off, so the two cannot disagree; a phrase it cannot place
+ * is shown in the CLI's own words rather than guessed at.
+ */
+export function resetText(phrase: string, now: Date): string {
+  const at = resolveResetAt(phrase, now);
+  if (!at) return `resets ${phrase}`;
+  const when = new Intl.DateTimeFormat(undefined, {
+    weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
+  }).format(at);
+  const left = countdown(at, now);
+  return left ? `resets ${when} · ${left}` : `resets ${when}`;
 }
 
 function plural(count: number, one: string, many = `${one}s`): string {
@@ -107,7 +138,7 @@ export function StatusSheet({ tab, live, onClose }: {
           <div className="usage-bar" role="img" aria-label={`${meter.label}: ${meter.percent}% used`}>
             <span style={{ width: `${meter.percent}%` }} />
           </div>
-          {meter.resets && <small>resets {meter.resets}</small>}
+          {meter.resets && <small title={`resets ${meter.resets}`}>{resetText(meter.resets, new Date())}</small>}
         </div>)}
         {panel?.unparsed && <p className="sheet-note">
           {usage?.label} answered in a shape Eldrun does not recognize. The Terminal view has all of it.

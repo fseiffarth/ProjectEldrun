@@ -360,15 +360,24 @@ export function PdfThumb({
       if (!canvas || !ctx) return;
       canvas.width = Math.max(1, Math.floor(viewport.width));
       canvas.height = Math.max(1, Math.floor(viewport.height));
-      task = p.render({ canvas, canvasContext: ctx, viewport });
-      let painted = false;
+      // `ANNOT_MODE`, like every other render in this viewer. Without it pdf.js
+      // defaults to `ENABLE`, which ignores the `{noView: true}` suppression the
+      // storage carries for a highlight the viewer has taken over — so the rail
+      // painted the file's own copy UNDER ours and showed a marked sentence at
+      // double strength beside a page showing it once.
+      task = p.render({ canvas, canvasContext: ctx, viewport, annotationMode: ANNOT_MODE });
       try {
         await task.promise;
-        painted = true;
       } catch {
         /* superseded by a newer render — ignore */
       }
-      if (painted && !cancelled) {
+      // Hand the page back on EVERY path, not just the painted one. A superseded
+      // render — a fast rail scroll, a recompile swapping the document, `marks`
+      // changing, the rail closing — rejects above, and the old `painted &&`
+      // guard then skipped the cleanup and left that page holding every image it
+      // had decoded. That is the same ~660 MB / 4.7 GB leak the comment below
+      // describes, on the one branch it did not cover.
+      {
         // Hand the page's parse back now that the thumbnail has its pixels. A
         // render decodes every image on the page at full size and caches the
         // bitmaps on the page object until something asks for them back — and
@@ -2695,6 +2704,35 @@ function PdfCanvas({
         redactDpi,
         stripMetadata: stripMeta,
       });
+      // Verify the file's identity HERE, not from the poll's cached flag.
+      //
+      // `staleRef` cannot be trusted at this point and the three ways it fails
+      // are all live: the poll returns early while the pane is hidden, so the
+      // flag can never become true there at all; the poll is 1500 ms against a
+      // 1200 ms autosave timer, so even visible there is a window; and the flag
+      // is read when the timer fires, not when the bytes go out, while `buildPdf`
+      // above takes real time on a large document.
+      //
+      // What is on the other side of that window is not a competing editor but
+      // latexmk: it writes the PDF IN PLACE via `-outdir` (nothing renames it
+      // into position), repeatedly across one build, and the backend's write is a
+      // plain create+truncate with no lock. So the loser of the race is either
+      // the reader's remark — written, reported saved, then truncated away — or
+      // the whole compile, overwritten by bytes built from the pre-compile
+      // document. One stat immediately before the write closes the window to the
+      // syscall gap; the class fix is atomic writes on both sides (see
+      // `todo/group-m-viewers.md` #843).
+      //
+      // A silent save REFUSES when the identity cannot be read at all: an
+      // unattended write must not proceed on "I could not check". An explicit
+      // Save still goes through — the reader asked, and the banner is the report.
+      const seen = await fileMtime(path, scope).catch(() => null);
+      if (seen == null) {
+        if (silent) return;
+      } else if (lastMtime.current != null && seen > lastMtime.current) {
+        setStaleOnDisk(true);
+        return;
+      }
       await writeFileBytes(path, bytes, scope);
       const m = await fileMtime(path, scope).catch(() => null);
       if (m != null) lastMtime.current = m;

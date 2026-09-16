@@ -26,13 +26,43 @@ export interface SessionStatus {
   context?: string;
 }
 
-interface StatusLineLike { text: string }
+export interface StatusLineLike { text: string; frameText?: string }
 
 /** The input prompt after `readableScreen` stripped the box frame: `>`, `›` or
- * `❯`, alone or followed by the draft being typed. `*` is Qwen Code's YOLO
- * prompt prefix — without it a session in YOLO mode has no readable status at
- * all, and a walk that lands there could not be confirmed. */
+ * `❯`, alone or followed by the draft being typed. `*` is the YOLO prompt
+ * prefix of Qwen Code and Gemini CLI — without it a session in YOLO mode has
+ * no readable status at all, and a walk that lands there could not be
+ * confirmed. Always ask through `isInputLine`, which scopes the `*`. */
 const INPUT_LINE = /^\s*[>›❯*](\s|$)/u;
+
+/** A `*` followed by text is also every markdown bullet an agent prints, and a
+ * list at the bottom of a screen whose input box this does not recognize would
+ * be taken for the frame — cutting the answer's last lines out of the chat. */
+const STAR_DRAFT = /^\s*\*\s+\S/u;
+/** Both YOLO prompts come with the word: Qwen Code prints `YOLO mode` under its
+ * box, Gemini CLI `YOLO Ctrl+Y` over it. */
+const YOLO_WORD = /\byolo\b/iu;
+/** Non-blank rows looked through, each way, for that word — enough for a
+ * three-line draft between the `*` and Qwen's footer. */
+const YOLO_REACH = 4;
+
+/** Whether row `index` is an agent's input line. A bare `*` is; a `*` with a
+ * draft after it only where YOLO is written beside the box. */
+function isInputLine(lines: readonly StatusLineLike[], index: number): boolean {
+  const text = lines[index].text;
+  if (!INPUT_LINE.test(text)) return false;
+  if (!STAR_DRAFT.test(text)) return true;
+  for (const step of [-1, 1]) {
+    let seen = 0;
+    for (let row = index + step; row >= 0 && row < lines.length && seen < YOLO_REACH; row += step) {
+      const other = lines[row].text;
+      if (!other.trim()) continue;
+      seen += 1;
+      if (YOLO_WORD.test(other)) return true;
+    }
+  }
+  return false;
+}
 
 /** How far up from the bottom the input line may sit. The box is always the
  * bottom of a live TUI frame; anything higher is quoted output. */
@@ -79,7 +109,8 @@ const PAREN_BRANCH = /\(([^()\s]*[A-Za-z][^()\s]*)\)/u;
 const MARKED_BRANCH = /(?:[⎇]|🌿|\bgit:)\s*([\w./-]+)/u;
 
 function classify(segment: string, status: SessionStatus) {
-  if (!status.context && /context/iu.test(segment)) {
+  // "ctx" is the short label Grok Build and many custom statuslines print.
+  if (!status.context && /context|\bctx\b/iu.test(segment)) {
     const percent = /(\d{1,3}(?:\.\d+)?)\s?%/u.exec(segment);
     if (percent) {
       status.context = `${percent[1]}%`;
@@ -128,6 +159,39 @@ function classify(segment: string, status: SessionStatus) {
   }
 }
 
+/** Gemini CLI's approval mode, drawn on the row *above* its input box — the
+ * status row's `ApprovalModeIndicator`, read out of the 0.56.0 bundle and
+ * unchanged in 0.60.0: the mode word, then the key that leaves it. In its
+ * default mode the row is the hint alone and names no mode, which the Gemini
+ * family reads as its silent default. Whole segments only, so a sentence of
+ * output that happens to start with "plan" is never a mode. */
+const GEMINI_MODE = /^(?:(auto-accept edits|plan) \S+ to (?:plan|manual)|(YOLO) \S+)$/u;
+const GEMINI_DEFAULT_HINT = /^\S+ to accept edits$/u;
+/** Non-blank rows above the input line the indicator may sit in: the next one
+ * up, or a couple further when a narrow window stacks the status row. */
+const ABOVE_REACH = 3;
+
+/** Gemini's indicator above the input line at `inputIndex`: the row it is on,
+ * and the mode it names (`undefined` for the default hint). */
+function geminiIndicatorAbove(
+  lines: readonly StatusLineLike[],
+  inputIndex: number,
+): { row: number; mode?: string } | null {
+  let seen = 0;
+  for (let row = inputIndex - 1; row >= 0 && seen < ABOVE_REACH; row -= 1) {
+    const text = lines[row].text.trim();
+    if (!text) continue;
+    seen += 1;
+    for (const raw of text.split(SEGMENT_SPLIT)) {
+      const segment = raw.trim();
+      const match = GEMINI_MODE.exec(segment);
+      if (match) return { row, mode: match[1] === "auto-accept edits" ? "accept edits" : (match[1] ?? match[2]).toLowerCase() };
+      if (GEMINI_DEFAULT_HINT.test(segment)) return { row };
+    }
+  }
+  return null;
+}
+
 /**
  * The status the session is showing right now, or `null` when the bottom of
  * the screen is not a TUI input frame (mid-scroll output, a full-screen
@@ -136,7 +200,7 @@ function classify(segment: string, status: SessionStatus) {
 export function sessionStatus(lines: readonly StatusLineLike[]): SessionStatus | null {
   let inputIndex = -1;
   for (let index = lines.length - 1; index >= 0 && index >= lines.length - SEARCH_WINDOW; index -= 1) {
-    if (INPUT_LINE.test(lines[index].text)) {
+    if (isInputLine(lines, index)) {
       inputIndex = index;
       break;
     }
@@ -149,6 +213,10 @@ export function sessionStatus(lines: readonly StatusLineLike[]): SessionStatus |
     if (!text) continue;
     read += 1;
     for (const segment of text.split(SEGMENT_SPLIT)) classify(segment.trim(), status);
+  }
+  if (!status.mode) {
+    const mode = geminiIndicatorAbove(lines, inputIndex)?.mode;
+    if (mode) status.mode = mode;
   }
   return status;
 }
@@ -167,8 +235,8 @@ const OPTION_ROW = /^\s*[>›❯*]\s*\d{1,2}[.)]\s/u;
 
 /** The rule an agent draws across the top of its input box, with the project
  * or model name sitting in it (`──────── ProjectEldrun ─`). `readableScreen`
- * already drops a bare rule; this one carries a word, so it survives as far as
- * here — and on a phone it is still decoration, not output. */
+ * drops the strokes but preserves the original in `frameText`, so the input
+ * frame can still be distinguished from an ordinary output line. */
 function labelledRule(text: string) {
   if (!/[─―—]{8,}/u.test(text)) return false;
   const rest = text.replace(/[\s─―—-]+/gu, "");
@@ -193,18 +261,136 @@ export function inputFrameStart(lines: readonly StatusLineLike[]): number {
   let start = -1;
   for (let index = lines.length - 1; index >= 0 && index >= lines.length - SEARCH_WINDOW; index -= 1) {
     const text = lines[index].text;
-    if (!INPUT_LINE.test(text)) continue;
+    if (!isInputLine(lines, index)) continue;
     if (OPTION_ROW.test(text)) return lines.length;
     start = index;
     break;
   }
   if (start < 0) return lines.length;
+  // Gemini CLI draws its mode on a row over the box; it is the frame's too.
+  const indicator = geminiIndicatorAbove(lines, start);
+  if (indicator) start = indicator.row;
   // The box's own top edge and the blank rows the TUI keeps above it belong to
   // the frame; left behind they would trail the output with a rule and a gap.
   while (start > 0) {
-    const above = lines[start - 1].text;
+    const above = lines[start - 1].frameText ?? lines[start - 1].text;
     if (!above.trim() || labelledRule(above)) start -= 1;
     else break;
   }
   return start;
+}
+
+/** Hints the CLIs print under the box: keys and glyphs no draft is made of.
+ * Only asked whether a row ends a draft — never used to drop one. */
+const FOOTER_HINT = /\?\s*for shortcuts|shift\s*\+\s*tab|\besc to\b|\bctrl\s*\+|[⏎⌃⏵⏸]/iu;
+/** A row of frame strokes and nothing else. `readableScreen` has already
+ * dropped these; a caller handing in raw rows still gets the edge skipped. */
+const STROKES_ONLY = /^[\s─-╿▀-▟―—]+$/u;
+
+/**
+ * How many of the fields `sessionStatus` reports one row carries.
+ *
+ * Fields, not columns: one segment can yield *two* of them, because `classify`
+ * reads a branch out of the same segment as the path it follows
+ * (`~/projects/app (main)`). Counting fields to recognize a columned row
+ * therefore scored an ordinary sentence naming a path two, which is why
+ * [`statusColumns`] exists and this is left to the callers that want a plain
+ * "does this row carry any status at all".
+ */
+export function statusFieldCount(text: string): number {
+  const found: SessionStatus = {};
+  for (const segment of text.trim().split(SEGMENT_SPLIT)) classify(segment.trim(), found);
+  return Object.keys(found).length;
+}
+
+/** How many of a row's columns carry a field `sessionStatus` reports.
+ *
+ * This is the question "is this row *columned*" — the path, model and context
+ * a TUI prints under its box — asked so that a sentence of output cannot
+ * answer it. A prompt or an answer is one segment however many fields can be
+ * read out of it (`~/eldrun/projects/app (main)`, `Running /usr/bin/foo
+ * (again) now`); Gemini's under-box row is four (`~/proj  main
+ * gemini-2.5-pro  25% used`). Two or more columns is a status row. */
+export function statusColumns(text: string): number {
+  let columns = 0;
+  const found: SessionStatus = {};
+  for (const segment of text.trim().split(SEGMENT_SPLIT)) {
+    const before = Object.keys(found).length;
+    classify(segment.trim(), found);
+    if (Object.keys(found).length > before) columns += 1;
+  }
+  return columns;
+}
+
+/** How many columns a row is printed in at all, status or not — what tells a
+ * TUI's columned key-hint footer (`⏎ send   ⇧⏎ newline   ⌃C quit`) from a
+ * sentence that opens with the same key. */
+export function columnCount(text: string): number {
+  return text.trim().split(SEGMENT_SPLIT).filter((s) => s.trim() !== "").length;
+}
+
+/** Whether a row reads as a footer rather than as a draft's next line. */
+function readsAsStatus(text: string) {
+  return FOOTER_HINT.test(text) || statusFieldCount(text) > 0;
+}
+
+/**
+ * The status rows an agent TUI draws under its input box, as painted text —
+ * what the Focus view's status strip shows when the reader swipes for it.
+ *
+ * `inputFrameStart` hides the whole bottom frame, and `sessionStatus` only
+ * reports the fields it recognizes, so a custom statusline (a cost, a clock, an
+ * emoji per segment) had no way onto the phone at all. This hands the rows over
+ * verbatim instead: nothing is classified, only *located*, with the scoping
+ * `inputFrameStart` uses — the bottom window, the input line, and the option-row
+ * guard, since rows under a select dialog are its answers, not a status.
+ *
+ * What sits between the input line and the status is skipped. The box's edges
+ * are gone already (`readableScreen` drops a stroke-only row outright and keeps
+ * a labelled one only as `frameText`), so the one thing that still looks like
+ * text is a draft typed on the desktop that runs over several lines. Nothing
+ * marks where it stops but its indent — a continuation sits under the draft's
+ * first character — and that alone is not enough, because Claude Code indents
+ * its footer by the same two columns. So a row ends the draft as soon as it
+ * reads as a footer (a key hint, or a field `sessionStatus` would report), and
+ * a blank row ends it too (Codex pads its composer). The failure left is a
+ * draft line that happens to name a model or a path, which is shown in the
+ * strip — the harmless direction, where hiding a status row would not be.
+ *
+ * Blank rows are dropped entirely: a strip has no use for gaps. No frame, `[]`.
+ */
+export function statusFrameLines(lines: readonly StatusLineLike[]): string[] {
+  let inputIndex = -1;
+  for (let index = lines.length - 1; index >= 0 && index >= lines.length - SEARCH_WINDOW; index -= 1) {
+    const text = lines[index].text;
+    if (!isInputLine(lines, index)) continue;
+    if (OPTION_ROW.test(text)) return [];
+    inputIndex = index;
+    break;
+  }
+  if (inputIndex < 0) return [];
+
+  const input = lines[inputIndex].text;
+  const column = /^\s*[>›❯*]\s*/u.exec(input)?.[0].length ?? 0;
+  let index = inputIndex + 1;
+  if (input.slice(column).trim()) {
+    // Only a draft with text on its first line can have a second one.
+    for (; index < lines.length; index += 1) {
+      const { text, frameText } = lines[index];
+      if (!text.trim() || frameText !== undefined) break;
+      if (text.length - text.trimStart().length < column || readsAsStatus(text)) break;
+    }
+  }
+
+  const rows: string[] = [];
+  for (; index < lines.length; index += 1) {
+    const { text, frameText } = lines[index];
+    const row = text.replace(/\s+$/u, "");
+    if (!row.trim() || STROKES_ONLY.test(row)) continue;
+    // A labelled rule directly under the box is its bottom edge; one further
+    // down is the TUI's own divider, and its label is part of the status.
+    if (rows.length === 0 && frameText !== undefined && labelledRule(frameText)) continue;
+    rows.push(row);
+  }
+  return rows;
 }

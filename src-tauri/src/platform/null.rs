@@ -26,6 +26,10 @@ impl WorkspaceBackend for NullBackend {
         Ok(())
     }
 
+    fn can_park(&self) -> bool {
+        false
+    }
+
     fn make_sticky(&self, _eldrun_pid: u32) -> Result<(), String> {
         Ok(())
     }

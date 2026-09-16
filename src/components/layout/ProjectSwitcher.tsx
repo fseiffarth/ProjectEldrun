@@ -39,7 +39,11 @@ const ADD_MENU_ID = "project-add";
 
 export function ProjectSwitcher({ open = true }: { open?: boolean }) {
   const t = useT();
-  const { projects, setActive, addProject, deactivateProject, reorderProjects } = useProjectsStore();
+  const projects = useProjectsStore((s) => s.projects);
+  const setActive = useProjectsStore((s) => s.setActive);
+  const addProject = useProjectsStore((s) => s.addProject);
+  const deactivateProject = useProjectsStore((s) => s.deactivateProject);
+  const reorderProjects = useProjectsStore((s) => s.reorderProjects);
   const boxes = useBoxesStore((s) => s.boxes);
   const renameBox = useBoxesStore((s) => s.renameBox);
   const deleteBox = useBoxesStore((s) => s.deleteBox);

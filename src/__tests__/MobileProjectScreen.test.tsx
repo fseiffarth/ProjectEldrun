@@ -39,3 +39,25 @@ describe("Mobile project screen — first load", () => {
     expect(await screen.findByText(/Desktop unavailable/)).toBeTruthy();
   });
 });
+
+describe("Mobile project screen — tab order", () => {
+  it("lists a question, then working tabs, then the rest by last finished turn", async () => {
+    const row = (id: string, extra: Record<string, unknown>) => ({ id, label: id, kind: "agent", available: true, viewer_busy: false, ...extra });
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({
+      project: { id: "p", label: "Alpha", status: "active", live_sessions: 5 },
+      desktop_available: true,
+      tabs: [
+        { id: "shell", label: "shell", kind: "shell", available: true, viewer_busy: false },
+        row("old-done", { agent_status: "done", done_at: 1_000 }),
+        row("working", { agent_status: "working", done_at: 500 }),
+        row("new-done", { done_at: 3_000 }),
+        row("asking", { agent_status: "question" }),
+      ],
+      agents: [],
+    }), { status: 200 }));
+    const { container } = render(<Project id="p" back={() => {}} terminal={() => {}} />);
+    await screen.findByText("asking");
+    const order = [...container.querySelectorAll(".tab-card strong")].map((node) => node.textContent);
+    expect(order).toEqual(["asking", "working", "new-done", "old-done", "shell"]);
+  });
+});

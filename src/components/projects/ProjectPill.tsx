@@ -19,7 +19,7 @@ import { useProjectsStore } from "../../stores/projects";
 import { useSettingsStore } from "../../stores/settings";
 import { cmdToKind, isResumableAgentTab, isRestorableTab, useTabsStore } from "../../stores/tabs";
 import { IS_LINUX, IS_WINDOWS } from "../../lib/platform";
-import { runInstallInTab, PROVIDER_CLI_INSTALL, providerAuthLoginCmd } from "../../lib/installCommand";
+import { runInstallInTab, containerBuildShell, PROVIDER_CLI_INSTALL, providerAuthLoginCmd } from "../../lib/installCommand";
 import { PythonInterpreterWindow } from "./PythonInterpreterWindow";
 import { useGitDirtyStore } from "../../stores/gitDirty";
 import { providerName, gitTypeLabel } from "./projectTypeTags";
@@ -49,6 +49,7 @@ import { useT } from "../../lib/i18n";
 import { isTrashProject } from "../../lib/trashProject";
 import { TrashProjectIcon } from "./TrashProjectIcon";
 import {
+  agentFenceInstallCommand,
   agentFenceLabelKey,
   agentFenceReasonKey,
   type AgentFenceStatus,
@@ -1428,7 +1429,7 @@ export function ProjectPill({
         { projectId: project.id },
       );
       if (pf.status === "image_missing" && pf.build_command) {
-        runInstallInTab(t("pill.containerImageTab", { image: pf.image }), pf.build_command, "bash");
+        runInstallInTab(t("pill.containerImageTab", { image: pf.image }), pf.build_command, containerBuildShell());
       } else if (pf.status === "daemon_down") {
         useProjectsStore.setState({
           switchToast: t("pill.dockerNotRunning"),
@@ -2174,16 +2175,14 @@ export function ProjectPill({
                 )}
               <UntestedTag />
             </button>
-            {IS_LINUX && agentFenceStatus?.bwrap_available === false && (
+            {IS_LINUX && agentFenceInstallCommand(agentFenceStatus) && (
                 <button
                   className="untested"
                   onClick={() => {
+                    const command = agentFenceInstallCommand(agentFenceStatus);
                     setContextMenu(null);
-                    runInstallInTab(
-                      t("pill.agentFenceInstall"),
-                      "sudo apt install -y bubblewrap",
-                      "bash",
-                    );
+                    if (!command) return;
+                    runInstallInTab(t("pill.agentFenceInstall"), command, "bash");
                   }}
                 >
                   {t("pill.agentFenceInstall")}

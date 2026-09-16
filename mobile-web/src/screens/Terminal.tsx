@@ -1,6 +1,6 @@
-import { useT } from "../../../src/lib/i18n";
+import { useT, type TranslationKey } from "../../../src/lib/i18n";
 import { OutboxViewer } from "../components/OutboxViewer";
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
@@ -32,23 +32,31 @@ import {
 import { type TerminalEvent } from "../terminal/protocol";
 import { installTerminalTouchScroll } from "../terminal/touchScroll";
 import { installWideOutputHint, type WideOutputHint } from "../terminal/wideOutput";
-import { inputFrameStart, sessionStatus, shortenPath, type SessionStatus } from "../terminal/statusLine";
+import { inputFrameStart, sessionStatus, shortenPath, statusFrameLines, type SessionStatus } from "../terminal/statusLine";
+import { installFocusSwipe } from "../terminal/focusSwipe";
 import { readSelectPrompt, selectKeys, selectSignature } from "../terminal/selectPrompt";
 import { currentMode, modeChoices, shiftTabKey } from "../terminal/agentModes";
 import { agentInputWrites } from "../terminal/composer";
 import { chatTurns, isPromptEcho } from "../terminal/chatTurns";
+import { oldestFirst, placeOutbox, type OutboxPlacement } from "../terminal/outboxTimeline";
 import { StatusSheet } from "./StatusSheet";
 import {
   prepareOnDeviceSpeech,
-  sanitizeVoiceTranscript,
   speechRecognitionConstructor,
   speechRecognitionError,
   speechRecognitionSupported,
-  transcriptsFrom,
+  advanceDictation,
+  DICTATION_START,
+  dictationPreview,
+  readDictation,
+  settleDictation,
+  type DictationProgress,
   type MobileSpeechRecognition,
 } from "../voiceInput";
 
-const VOICE_UNAVAILABLE = "Voice typing is not available in this browser. Use the keyboard microphone instead.";
+/** A line the dictation strip shows: a key, not a sentence, so switching the
+ * language retranslates what is already on screen. */
+type VoiceNote = { key: TranslationKey; language?: string };
 const PING_INTERVAL = 20_000;
 /** Floor between two rebuilds of the reading view. */
 const READABLE_INTERVAL = 120;
@@ -226,10 +234,10 @@ function ReadableRow({ line }: { line: ReadableLine }) {
  * no turns and paints flat. Memoized on the `lines` reference: a frozen
  * history chunk and the open chunk keep theirs, so the per-frame rebuild of
  * the live tail costs nothing for however much history is on screen. */
-const ReadableTurns = memo(function ReadableTurns({ lines, chat }: { lines: readonly ReadableLine[]; chat: boolean }) {
+const ReadableTurns = memo(function ReadableTurns({ lines, chat, agent, promptLabel }: { lines: readonly ReadableLine[]; chat: boolean; agent?: string; promptLabel: string }) {
   if (!chat) return <>{lines.map((line) => <ReadableRow key={line.key} line={line} />)}</>;
-  return <>{chatTurns(lines).map((turn) => turn.role === "user"
-    ? <div key={turn.key} className="readable-turn user" role="group" aria-label="Your prompt">
+  return <>{chatTurns(lines, agent).map((turn) => turn.role === "user"
+    ? <div key={turn.key} className="readable-turn user" role="group" aria-label={promptLabel}>
         {(turn.prompt ?? turn.lines).map((line) => <ReadableRow key={line.key} line={line} />)}
       </div>
     : <div key={turn.key} className={turn.answer ? "readable-turn agent answer" : "readable-turn agent"}>
@@ -242,17 +250,55 @@ const ReadableTurns = memo(function ReadableTurns({ lines, chat }: { lines: read
  * reader's own prompts, the agent's answers on the left — from the record the
  * agent itself keeps, which reaches back past the pane's scrollback and
  * carries no tool status. `cut` marks text the desktop bounded. */
-const TranscriptTurns = memo(function TranscriptTurns({ entries, cutLabel, promptLabel }: { entries: SessionTranscript["entries"]; cutLabel: string; promptLabel: string }) {
-  return <>{entries.map((entry, index) => entry.kind === "prompt"
-    ? <div key={`${index}:${entry.at ?? ""}`} className="readable-turn user" role="group" aria-label={promptLabel}>
-        <p className="transcript-text">{entry.text}</p>
-        {entry.cut && <small className="transcript-cut">{cutLabel}</small>}
-      </div>
-    : <div key={`${index}:${entry.at ?? ""}`} className="readable-turn agent answer">
-        <p className="transcript-text">{entry.text}</p>
-        {entry.cut && <small className="transcript-cut">{cutLabel}</small>}
-      </div>)}</>;
+const TranscriptTurns = memo(function TranscriptTurns({ entries, cutLabel, promptLabel, placement, renderFiles }: {
+  entries: SessionTranscript["entries"];
+  cutLabel: string;
+  promptLabel: string;
+  /** Where the files the agent sent sit between the turns (`placeOutbox`). */
+  placement: OutboxPlacement;
+  renderFiles: (files: readonly OutboxFile[]) => ReactNode;
+}) {
+  return <>{renderFiles(placement.before)}{entries.map((entry, index) => <Fragment key={`${index}:${entry.at ?? ""}`}>
+    {entry.kind === "prompt"
+      ? <div className="readable-turn user" role="group" aria-label={promptLabel}>
+          <p className="transcript-text">{entry.text}</p>
+          {entry.cut && <small className="transcript-cut">{cutLabel}</small>}
+        </div>
+      : <div className="readable-turn agent answer">
+          <p className="transcript-text">{entry.text}</p>
+          {entry.cut && <small className="transcript-cut">{cutLabel}</small>}
+        </div>}
+    {renderFiles(placement.after.get(index) ?? [])}
+  </Fragment>)}</>;
 });
+
+/** One file the agent sent (`eldrun-send`) as a message of its own in the
+ * Focus chat, on the agent's side: a picture shows itself and opens full
+ * screen on a tap, like an image in a messenger; any other file is a card
+ * that opens, or downloads, the way the strip's entry does. Where it sits in
+ * the chat is `outboxTimeline`'s call. */
+function OutboxMessage({ tabId, file, onOpen, onDetails }: { tabId: string; file: OutboxFile; onOpen: (file: OutboxFile) => void; onDetails: (file: OutboxFile) => void }) {
+  const t = useT();
+  const isImage = file.kind.startsWith("image/");
+  const download = !isImage && !file.kind.startsWith("text/") && file.kind !== "application/pdf";
+  const label = t("mobile.outbox.open", { name: file.name });
+  const card = <>
+    <span aria-hidden="true">{file.kind === "application/pdf" ? "PDF" : file.kind.startsWith("text/") ? "≡" : "↓"}</span>
+    <strong>{file.name}</strong>
+  </>;
+  return <div className="readable-turn agent outbox-message" role="group" aria-label={t("mobile.outbox.from")}>
+    {isImage
+      ? <button className="outbox-message-image" onClick={() => onOpen(file)} aria-label={label} title={file.name}><img src={outboxFileUrl(tabId, file.name)} alt="" loading="lazy" decoding="async" /></button>
+      : download
+        ? <a className="outbox-message-file" href={outboxFileUrl(tabId, file.name, true)} download={file.name} aria-label={label}>{card}</a>
+        : <button className="outbox-message-file" onClick={() => onOpen(file)} aria-label={label} title={file.name}>{card}</button>}
+    <small className="outbox-message-meta">
+      <span>{isImage ? `${file.name} · ` : ""}{ageLabel(Math.max(0, Math.floor(Date.now() / 1000) - file.modified))}{!isImage && ` · ${sizeLabel(file.size)}`}</span>
+      <em>{t("mobile.outbox.untested")}</em>
+      {!isImage && <button className="outbox-details" onClick={() => onDetails(file)} aria-label={t("mobile.outbox.actions", { name: file.name })}>⋯</button>}
+    </small>
+  </div>;
+}
 
 /** The stored preference key for a tab: the agent behind it, or the shell. */
 function viewAgentOf(tab: TabRow): string {
@@ -322,7 +368,7 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
   const recognition = useRef<MobileSpeechRecognition>();
   const connectedRef = useRef(false);
   const voiceRequest = useRef(0);
-  const voiceTranscript = useRef("");
+  const voiceProgress = useRef<DictationProgress>(DICTATION_START);
   const copiedTimer = useRef<number>();
   const sendTimers = useRef<number[]>([]);
   /** Whether the attached pane has bracketed paste on right now. xterm tracks
@@ -364,8 +410,8 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
   const [listening, setListening] = useState(false);
   const [preparingVoice, setPreparingVoice] = useState(false);
   const [voicePreview, setVoicePreview] = useState("");
-  const [voiceStatus, setVoiceStatus] = useState("");
-  const [voiceFailure, setVoiceFailure] = useState(() => voiceAvailable ? "" : VOICE_UNAVAILABLE);
+  const [voiceStatus, setVoiceStatus] = useState<VoiceNote | null>(null);
+  const [voiceFailure, setVoiceFailure] = useState<VoiceNote | null>(null);
   /** Whether the model sheet is up. It opens on the tap that sends `/model`,
    * before the session has drawn the picker it lists. */
   const [modelSheet, setModelSheet] = useState(false);
@@ -401,6 +447,10 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
    * the reader has not switched the view to the screen. */
   const [transcript, setTranscript] = useState<SessionTranscript | null>(null);
   const [focusSource, setFocusSource] = useState<"session" | "screen">("session");
+  /** Whether Focus shows the strip with the rows the agent draws under its
+   * input box (cwd, model, mode, context…). A left→right swipe opens it, a
+   * right→left swipe or its ✕ closes it; never persisted. */
+  const [statusStrip, setStatusStrip] = useState(false);
   /** Turns asked for; grows with "Show earlier turns". */
   const [transcriptLimit, setTranscriptLimit] = useState(TRANSCRIPT_STEP);
   /** Bumped by every change of the screen: the settle timer re-reads the
@@ -435,6 +485,7 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     setDraft("");
     setTranscript(null);
     setFocusSource("session");
+    setStatusStrip(false);
     setTranscriptLimit(TRANSCRIPT_STEP);
     setLines([]);
     setClipped(false);
@@ -458,6 +509,15 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     setSwitchFailed("");
     setAnswered("");
     sawPicker.current = false;
+    // Dictation belongs to the tab it was started in. Its recognizer is aborted
+    // by the effect beside `startVoice` with the handlers detached first, so no
+    // `onend` ever arrives to take the old tab's words and "listening" down.
+    voiceProgress.current = DICTATION_START;
+    setVoicePreview("");
+    setVoiceStatus(null);
+    setVoiceFailure(null);
+    setListening(false);
+    setPreparingVoice(false);
     return () => {
       window.clearTimeout(copiedTimer.current);
       sendTimers.current.forEach(window.clearTimeout);
@@ -619,7 +679,11 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
         cancelAnimationFrame(readableFrame);
         readableFrame = requestAnimationFrame(() => {
           renderReadable();
-          setScreenTick((tick) => tick + 1);
+          // The tick's one reader is the session settle read, which only an
+          // agent tab has (`sessionFocus`). On a shell tab in Terminal view
+          // `renderReadable` changes no state, so bumping it anyway re-rendered
+          // this whole screen ~8×/s for as long as a command streamed.
+          if (tab.kind === "agent") setScreenTick((tick) => tick + 1);
         });
       }, wait);
     };
@@ -724,8 +788,8 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
           activeRecognition.onend = null;
           activeRecognition.abort();
           setListening(false);
-          setVoiceStatus("");
-          setVoiceFailure("Voice typing stopped because the terminal disconnected. Reconnect and try again.");
+          setVoiceStatus(null);
+          setVoiceFailure({ key: "mobile.voice.disconnected" });
         }
         // The server attaches to the persisted tmux session again on reconnect,
         // so its screen/history is replayed. Do not clear the local screen: it
@@ -977,13 +1041,14 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
    * away from. Until the first read answers, the screen is shown, so the view
    * never opens blank. */
   const sessionShown = sessionFocus && transcript?.available === true;
-  // A new turn in the stored session scrolls the view to it, as new screen
-  // output does, unless the reader has scrolled up to read.
+  // A new turn in the stored session, or a file the agent sent into the
+  // Focus chat, scrolls the view to it, as new screen output does, unless
+  // the reader has scrolled up to read.
   useLayoutEffect(() => {
-    if (!sessionShown || !atBottom) return;
+    if (!(sessionShown || (view === "focus" && outbox.length > 0)) || !atBottom) return;
     const stream = readableHost.current;
     if (stream) stream.scrollTo({ top: stream.scrollHeight });
-  }, [sessionShown, transcript, atBottom]);
+  }, [sessionShown, transcript, outbox, view, atBottom]);
   /** Reads the outbox now and every `OUTBOX_POLL` while the page is visible;
    * coming back to the page reads it at once. A listing that could not be
    * fetched keeps what was shown — the next poll retries. */
@@ -1024,6 +1089,22 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
   }, [outboxOpen]);
   const outboxShown = useMemo(() => outbox.filter((image) => !outboxHidden.has(image.name)), [outbox, outboxHidden]);
   const hideOutbox = () => setOutboxHidden(new Set(outbox.map((image) => image.name)));
+  /** A PDF opens in the browser's own viewer; a picture or text full-screen here. */
+  const openOutbox = useCallback((file: OutboxFile) => {
+    if (file.kind === "application/pdf") window.open(outboxFileUrl(tab.id, file.name), "_blank", "noopener");
+    else setOutboxOpen(file);
+  }, [tab.id]);
+  /** The files as messages in the Focus chat (`OutboxMessage`). The strip's ✕
+   * does not reach them: a message stays where it was posted. */
+  const renderOutbox = useCallback((files: readonly OutboxFile[]) => files.map((file) => (
+    <OutboxMessage key={`outbox:${file.name}`} tabId={tab.id} file={file} onOpen={openOutbox} onDetails={setOutboxOpen} />
+  )), [tab.id, openOutbox]);
+  const outboxPlacement = useMemo(
+    () => placeOutbox(transcript?.entries ?? [], outbox, transcript?.truncated === true),
+    [transcript, outbox],
+  );
+  /** The screen has no times to place a file by, so the files close its chat. */
+  const screenOutbox = useMemo(() => oldestFirst(outbox), [outbox]);
   /** Chunks above the revealed window stay in memory but out of the DOM — the
    * lazy half of the earlier-output log. */
   const hiddenChunks = Math.max(0, earlier.chunks.length - revealed);
@@ -1099,6 +1180,14 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     clearPending();
     return deliver(agentInputWrites(text, bracketedPaste.current()));
   };
+  /** Once dictated words have left the composer — sent or cleared — "Heard:"
+   * stops quoting them. They stay counted as inserted: a recognizer that is
+   * still listening reads them back, and they must not return to the draft.
+   * Listening itself goes on. */
+  const forgetDictation = () => {
+    voiceProgress.current = settleDictation(voiceProgress.current);
+    setVoicePreview("");
+  };
   const submitDraft = () => {
     if (!connected || !draft.trim()) return;
     // Only confirm what actually left the device. `readyState === OPEN` on a
@@ -1113,14 +1202,12 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     if (!sendAgentText(draft)) return;
     setLastSent(draft);
     setDraft("");
+    forgetDictation();
   };
-  /** The composer's ✕: an empty draft, and an empty dictation transcript to
-   * go with it, so the next spoken words do not pick up after the cleared
-   * ones. */
+  /** The composer's ✕: an empty draft, and the dictation transcript with it. */
   const clearDraft = () => {
     setDraft("");
-    voiceTranscript.current = "";
-    setVoicePreview("");
+    forgetDictation();
     composerInput.current?.focus();
   };
   /** The facts the session prints below its own input box — the composer
@@ -1365,6 +1452,20 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     () => (tab.kind === "agent" ? shown.slice(0, inputFrameStart(shown)) : shown),
     [tab.kind, shown],
   );
+  /** The rows the session draws under its input box — the frame `painted`
+   * cuts away — for the swipe-in status strip. From the same `shown`, so a
+   * frame frozen behind a sheet stays consistent; always the xterm screen,
+   * even while Focus reads the stored session. */
+  const frameStatus = useMemo(() => (tab.kind === "agent" ? statusFrameLines(shown) : []), [tab.kind, shown]);
+  const statusSwipe = tab.kind === "agent" && view === "focus" && !altScreen;
+  useEffect(() => {
+    const stream = readableHost.current;
+    if (!statusSwipe || !stream) return;
+    return installFocusSwipe(stream, {
+      onSwipeRight: () => setStatusStrip(true),
+      onSwipeLeft: () => setStatusStrip(false),
+    });
+  }, [statusSwipe]);
   /** Agent tabs read as a chat (`ReadableTurns`); a shell's output has no
    * turns to lay out. */
   const chat = tab.kind === "agent";
@@ -1374,9 +1475,9 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
   const liveTail = useMemo(() => {
     if (!sessionShown) return [];
     let start = 0;
-    painted.forEach((line, index) => { if (isPromptEcho(line)) start = index + 1; });
+    painted.forEach((line, index) => { if (isPromptEcho(line, agentLabel)) start = index + 1; });
     return painted.slice(start);
-  }, [sessionShown, painted]);
+  }, [sessionShown, painted, agentLabel]);
   const liveQuestion = useMemo(() => liveTail.length > 0 && readSelectPrompt(liveTail) != null, [liveTail]);
   const copyReadable = async () => {
     try {
@@ -1407,25 +1508,25 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     if (!connectedRef.current || recognition.current || preparingVoice) return;
     const Recognition = speechRecognitionConstructor();
     if (!Recognition) {
-      setVoiceFailure(VOICE_UNAVAILABLE);
+      setVoiceFailure({ key: "mobile.voice.unavailable" });
       return;
     }
     const request = voiceRequest.current + 1;
     voiceRequest.current = request;
     const language = navigator.language || "en-US";
     setPreparingVoice(true);
-    setVoiceStatus("Checking for on-device dictation…");
-    setVoiceFailure("");
+    setVoiceStatus({ key: "mobile.voice.checking" });
+    setVoiceFailure(null);
     const mode = await prepareOnDeviceSpeech(Recognition, language);
     if (voiceRequest.current !== request) return;
     setPreparingVoice(false);
     if (!connectedRef.current) {
-      setVoiceStatus("");
-      setVoiceFailure("Voice typing stopped because the terminal disconnected. Reconnect and try again.");
+      setVoiceStatus(null);
+      setVoiceFailure({ key: "mobile.voice.disconnected" });
       return;
     }
     if (mode === "installed") {
-      setVoiceStatus(`On-device ${language} dictation is installed. Tap Dictate again.`);
+      setVoiceStatus({ key: "mobile.voice.installed", language });
       return;
     }
     const next = new Recognition();
@@ -1434,43 +1535,39 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     next.lang = language;
     next.maxAlternatives = 1;
     next.processLocally = mode === "local";
-    voiceTranscript.current = "";
+    voiceProgress.current = DICTATION_START;
     setVoicePreview("");
-    setVoiceFailure("");
+    setVoiceFailure(null);
     next.onstart = () => {
       setListening(true);
-      setVoiceStatus(mode === "local" ? "Listening on this device…" : "Listening with the phone speech service…");
+      setVoiceStatus({ key: mode === "local" ? "mobile.voice.listeningLocal" : "mobile.voice.listeningRemote" });
     };
     next.onresult = (event) => {
-      const parts = transcriptsFrom(event);
-      const final = sanitizeVoiceTranscript(parts.final);
-      const interim = sanitizeVoiceTranscript(parts.interim);
-      if (final) {
-        // Speech is inserted into the current prompt but deliberately not
-        // submitted. The user can review/edit it before pressing Enter.
-        const separator = voiceTranscript.current ? " " : "";
-        setDraft((current) => `${current}${current && !current.endsWith(" ") ? " " : ""}${final}`);
-        voiceTranscript.current = `${voiceTranscript.current}${separator}${final}`;
-      }
-      setVoicePreview(`${voiceTranscript.current}${voiceTranscript.current && interim ? " " : ""}${interim}`);
+      const reading = readDictation(event);
+      const step = advanceDictation(voiceProgress.current, reading.heard);
+      voiceProgress.current = step.progress;
+      // Speech is inserted into the current prompt but deliberately not
+      // submitted. The user can review/edit it before pressing Enter.
+      if (step.insert) setDraft((current) => `${current}${current && !current.endsWith(" ") ? " " : ""}${step.insert}`);
+      setVoicePreview(dictationPreview(step.progress, reading.interim));
     };
     next.onerror = (event) => {
-      setVoiceStatus("");
+      setVoiceStatus(null);
       const message = speechRecognitionError(event.error);
-      if (message) setVoiceFailure(message);
+      if (message) setVoiceFailure({ key: message });
     };
     next.onend = () => {
       if (recognition.current === next) recognition.current = undefined;
       setListening(false);
-      setVoiceStatus("");
+      setVoiceStatus(null);
     };
     recognition.current = next;
     try {
       next.start();
     } catch {
       recognition.current = undefined;
-      setVoiceStatus("");
-      setVoiceFailure("Voice typing could not start. Try again or use the keyboard microphone.");
+      setVoiceStatus(null);
+      setVoiceFailure({ key: "mobile.voice.startFailed" });
     }
   };
   useEffect(() => () => {
@@ -1485,7 +1582,14 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
       active.abort();
     }
   }, [tab.id]);
-  const dictateLabel = listening ? "Stop dictation" : preparingVoice ? "Preparing dictation" : "Dictate";
+  const dictateLabel = t(listening ? "mobile.voice.stop" : preparingVoice ? "mobile.voice.preparing" : "mobile.voice.dictate");
+  const sayVoice = (note: VoiceNote) => t(note.key, note.language ? { language: note.language } : undefined);
+  /** A browser without Web Speech says so from the start: no action clears
+   * that, so it is derived rather than stored beside the failures that do. */
+  const voiceProblem: VoiceNote | null = voiceFailure ?? (voiceAvailable ? null : { key: "mobile.voice.unavailable" });
+  const voiceLine = voiceProblem ? sayVoice(voiceProblem)
+    : voicePreview ? t("mobile.voice.heard", { text: voicePreview })
+    : voiceStatus ? sayVoice(voiceStatus) : "";
   /** What the sheet paints: the live step, or — between the tap and the
    * session's redraw — the answered one, listed but not tappable, so the sheet
    * does not blink empty on the way to the next step. */
@@ -1527,27 +1631,34 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
             setAtBottom(stream.scrollHeight - stream.scrollTop - stream.clientHeight < 120);
           }}>
           {sessionShown
-            ? (transcript && transcript.entries.length === 0 && !liveQuestion
+            ? (transcript && transcript.entries.length === 0 && !liveQuestion && outbox.length === 0
               ? <div className="readable-empty"><strong>{t("mobile.transcript.empty")}</strong><span>{t("mobile.transcript.emptyHint")}</span></div>
               : <div className="readable-lines chat transcript" data-testid="session-transcript">
                   {transcript?.truncated && <button className="readable-earlier" onClick={() => setTranscriptLimit((limit) => limit + TRANSCRIPT_STEP)}>{t("mobile.transcript.earlier")}</button>}
-                  <TranscriptTurns entries={transcript?.entries ?? []} cutLabel={t("mobile.transcript.cut")} promptLabel={t("mobile.transcript.prompt")} />
+                  <TranscriptTurns entries={transcript?.entries ?? []} cutLabel={t("mobile.transcript.cut")} promptLabel={t("mobile.transcript.prompt")} placement={outboxPlacement} renderFiles={renderOutbox} />
                   {liveQuestion && <div className="transcript-screen" role="group" aria-label={t("mobile.transcript.onScreen")}>
                     <small>{t("mobile.transcript.onScreen")}</small>
-                    <ReadableTurns lines={liveTail} chat={chat} />
+                    <ReadableTurns lines={liveTail} chat={chat} agent={agentLabel} promptLabel={t("mobile.transcript.prompt")} />
                   </div>}
                 </div>)
-            : painted.length === 0 && visibleChunks.length === 0 && earlier.open.length === 0
+            : painted.length === 0 && visibleChunks.length === 0 && earlier.open.length === 0 && outbox.length === 0
             ? <div className="readable-empty"><strong>Waiting for output</strong><span>The exact terminal is running behind this view.</span></div>
             : <div className={chat ? "readable-lines chat" : "readable-lines"}>
                 {clipped && <div className="readable-notice">{TRUNCATION_NOTICE}</div>}
                 {hiddenLines > 0 && <button className="readable-earlier" onClick={showEarlier}>Show earlier output ({hiddenLines.toLocaleString()} lines)</button>}
                 {hiddenLines === 0 && earlier.dropped && <div className="readable-notice">{TRUNCATION_NOTICE}</div>}
-                {visibleChunks.map((chunk) => <ReadableTurns key={chunk.id} lines={chunk.lines} chat={chat} />)}
-                <ReadableTurns lines={earlier.open} chat={chat} />
-                <ReadableTurns lines={painted} chat={chat} />
+                {visibleChunks.map((chunk) => <ReadableTurns key={chunk.id} lines={chunk.lines} chat={chat} agent={agentLabel} promptLabel={t("mobile.transcript.prompt")} />)}
+                <ReadableTurns lines={earlier.open} chat={chat} agent={agentLabel} promptLabel={t("mobile.transcript.prompt")} />
+                <ReadableTurns lines={painted} chat={chat} agent={agentLabel} promptLabel={t("mobile.transcript.prompt")} />
+                {renderOutbox(screenOutbox)}
               </div>}
         </section>
+        {statusStrip && statusSwipe && <div className="focus-statusline" role="status" aria-label={t("mobile.focus.statusLine")}>
+          <div className="focus-statusline-head"><strong>{t("mobile.focus.statusLine")} <small>{t("mobile.focus.untested")}</small></strong><button onClick={() => setStatusStrip(false)} aria-label={t("mobile.focus.statusLineHide")}>✕</button></div>
+          {frameStatus.length
+            ? frameStatus.map((row, i) => <div key={i} className="focus-statusline-row">{row}</div>)
+            : <div className="focus-statusline-empty">{t("mobile.focus.statusLineEmpty")}</div>}
+        </div>}
         {(lines.length > 0 || sessionShown) && <div className="readable-tools">
           {chat && <small>{sessionShown ? `${t("mobile.focus.session")} · ${t("mobile.focus.untested")}` : "Chat layout · Untested"}</small>}
           {chat && transcript?.available && <button onClick={() => setFocusSource((source) => source === "session" ? "screen" : "session")} aria-pressed={sessionShown} title={sessionShown ? t("mobile.focus.screenHint") : t("mobile.focus.sessionHint")}>{sessionShown ? t("mobile.focus.screen") : t("mobile.focus.session")}</button>}
@@ -1557,10 +1668,12 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
       </>}
     </div>
     <div className="terminal-controls">
-      {tab.kind === "agent" && (voiceFailure || voicePreview || voiceStatus) && <div className={voiceFailure ? "voice-feedback error" : "voice-feedback"} role={voiceFailure ? "alert" : "status"} aria-live="polite">{voiceFailure || (voicePreview ? `Heard: ${voicePreview}` : voiceStatus)}</div>}
+      {tab.kind === "agent" && voiceLine && <div className={voiceProblem ? "voice-feedback error" : "voice-feedback"} role={voiceProblem ? "alert" : "status"} aria-live="polite">{voiceLine}</div>}
       {stoppedReason && <div className="voice-feedback error" role="alert">{stoppedReason}</div>}
       {sendFailed && !stoppedReason && <div className="voice-feedback error" role="alert">That did not reach the desktop — the connection dropped. It will retry on its own.</div>}
-      {outboxShown.length > 0 && <div className="outbox-strip" role="region" aria-label={t("mobile.outbox.region")}>
+      {/* Focus posts the files into its chat instead (`OutboxMessage`); the
+          strip is for the Terminal view, and a full-screen program's notice. */}
+      {outboxShown.length > 0 && !(view === "focus" && !altScreen) && <div className="outbox-strip" role="region" aria-label={t("mobile.outbox.region")}>
         <div className="outbox-strip-head"><strong>{t("mobile.outbox.from")} <small>{t("mobile.outbox.untested")}</small></strong><span>{t(outboxShown.length === 1 ? "mobile.outbox.countOne" : "mobile.outbox.count", { count: outboxShown.length })}</span><button onClick={hideOutbox} aria-label={t("mobile.outbox.hide")}>✕</button></div>
         <div className="outbox-thumbs">
           {outboxShown.map((file) => {
@@ -1574,10 +1687,7 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
             </>;
             return <div key={file.name} className="outbox-entry">
               {download ? <a className="outbox-file" href={outboxFileUrl(tab.id, file.name, true)} download={file.name} aria-label={label}>{content}</a>
-                : <button className={isImage ? "outbox-thumb" : "outbox-file"} onClick={() => {
-                  if (file.kind === "application/pdf") window.open(outboxFileUrl(tab.id, file.name), "_blank", "noopener");
-                  else setOutboxOpen(file);
-                }} aria-label={label} title={file.name}>{content}</button>}
+                : <button className={isImage ? "outbox-thumb" : "outbox-file"} onClick={() => openOutbox(file)} aria-label={label} title={file.name}>{content}</button>}
               {!isImage && <button className="outbox-details" onClick={() => setOutboxOpen(file)} aria-label={t("mobile.outbox.actions", { name: file.name })}>⋯</button>}
             </div>;
           })}
@@ -1616,7 +1726,7 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
             </div>
           </>}
           {tab.kind !== "agent" && <span className="composer-spacer" />}
-          {tab.kind === "agent" && <button className={`composer-dictate${listening ? " listening" : ""}`} disabled={!connected || !voiceAvailable || preparingVoice} title={voiceAvailable ? "Dictate a message" : "Voice typing is unavailable in this browser; use the keyboard microphone."} aria-label={dictateLabel} aria-pressed={listening} onClick={listening ? stopVoice : () => void startVoice()}>{listening ? <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1" /></svg> : <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M6 11a6 6 0 0 0 12 0M12 17v4M8 21h8" /></svg>}</button>}
+          {tab.kind === "agent" && <button className={`composer-dictate${listening ? " listening" : ""}`} disabled={!connected || !voiceAvailable || preparingVoice} title={t(voiceAvailable ? "mobile.voice.hint" : "mobile.voice.hintUnavailable")} aria-label={dictateLabel} aria-pressed={listening} onClick={listening ? stopVoice : () => void startVoice()}>{listening ? <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1" /></svg> : <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M6 11a6 6 0 0 0 12 0M12 17v4M8 21h8" /></svg>}</button>}
           <button className="send-icon" disabled={!connected || !draft.trim()} onClick={submitDraft} aria-label="Send" title="Send"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 4 16 8-16 8 3-8-3-8Z" /><path d="M7 12h13" /></svg></button>
         </div>
       </div>

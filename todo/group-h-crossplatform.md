@@ -239,6 +239,11 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
       Containers are Unix-only, but `sandbox::sweep_orphans` ran unconditionally
       at startup, spawning `docker --version` (and `docker ps` when Docker
       Desktop exists) for nothing on Windows. Now gated on `cfg!(unix)`.
+      **Superseded 2026-09-16 by 32a:** the premise went stale when the
+      2026-09-03 parity sweep gave containers a Windows path — `up()` has had no
+      OS gate since, so the `cfg!(unix)` guard left crashed-Eldrun containers
+      running. The no-spawn intent is preserved by gating on
+      `binary_on_path("docker")`, which walks PATH without spawning.
       - [x] 🤖 Automated test — compile-covered; behavior is an early return
       - [ ] 🖐️ Manual test — n/a
         - [ ] ✅ Works
@@ -351,6 +356,154 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
       `bytes_out` columns) into the existing `SshLinkSnapshot`. Needs a mac to
       verify nettop's CSV shape/permissions before writing the parser.
 
+32. **OS parity sweep (2026-09-16).** ✅ Code-complete, ⚠️ **none of it
+    verified live** — see `docs/os_parity_sweep_plan.md` for the full merged
+    plan, what was refuted, and what was deferred and why. Every item below
+    passed `cargo test`, clippy, the Windows cross-check (25 → 0 warnings),
+    `npm run build`/`test`/`lint`.
+    - [x] **32a — orphan containers swept on Windows.** The startup sweep
+      skipped Windows on a premise that went stale (see 30o); now gated on
+      `binary_on_path("docker")`.
+      - [x] 🤖 Automated test — `sweep_should_probe`
+      - [ ] 🖐️ Manual test — kill Eldrun from Task Manager with a container up,
+        relaunch, `docker ps` shows no `eldrun-*`
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+    - [x] **32b — image build uses the platform shell and quoting.** The
+      one-click build ran `/bin/bash` on Windows; `default` would have been
+      cmd.exe, which ignores `'…'`. Now PowerShell plus `install_shell_quote`
+      (apostrophes were broken on POSIX too).
+      - [x] 🤖 Automated test — `install_shell_quote` table, `containerBuildShell`
+      - [ ] 🖐️ Manual test — project path with a space and an apostrophe →
+        build image → PowerShell tab, build succeeds
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+    - [x] **32c — copy+delete only on a real cross-device rename.** Any rename
+      error triggered the fallback, so a locked file on Windows could leave a
+      duplicated, half-deleted tree. `paths::is_cross_device` (never compares
+      raw codes across OSes); `move_tree` keeps `|| dst.exists()` so an
+      interrupted archive still resumes.
+      - [x] 🤖 Automated test — predicate per-cfg tests, `move_tree` tempdir resume
+      - [ ] 🖐️ Manual test — Windows: keep a file in a folder open, move the
+        folder — an error, and no duplicate at the destination
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+    - [x] **32d — saved downloads marked as from the internet.** Mail
+      attachments and browser downloads carried no provenance:
+      `web_safety::mark_downloaded` writes `Zone.Identifier` on Windows (only
+      when absent, so an engine-written mark is kept) and
+      `com.apple.quarantine` on macOS. Best-effort, never fatal, no new
+      path-taking command.
+      - [x] 🤖 Automated test — body/xattr value format; `no_command_takes_a_path`
+      - [ ] 🖐️ Manual test — Windows: Explorer shows "Unblock", Office opens it
+        in Protected View. macOS: a saved `.command` triggers Gatekeeper
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+    - [x] **32e — the phone's sidecar finds tmux.** It spawned bare `tmux`
+      without Eldrun's augmented PATH, so a Homebrew tmux was invisible and the
+      phone's tab list came back empty. The attach keeps its `CommandBuilder`
+      with an absolute tmux and no creation flags (they would detach a ConPTY
+      child). Windows now short-circuits and says so in Mobile settings.
+      - [x] 🤖 Automated test — builder PATH assertions in discovery/pty_bridge
+      - [ ] 🖐️ Manual test — macOS with Homebrew tmux: the phone lists
+        terminals. Windows: the settings note appears and the phone lists none
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+    - [x] **32f — fenced macOS agents can write the ordinary device files.**
+      The Seatbelt profile denied all writes and never re-allowed `/dev/null`,
+      so `> /dev/null` failed inside a fenced tab. Allows `/dev/null`, `zero`,
+      `tty`, `dtracehelper`, `/dev/fd` — deliberately **not** `/dev/ttys*`,
+      which would let an agent write into other tabs' terminals.
+      - [x] 🤖 Automated test — profile ordering/content assertions (Linux-run)
+      - [ ] 🖐️ Manual test — a fenced tab runs `git status >/dev/null && echo ok`
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+    - [x] **32g — Docker Desktop / OrbStack CLIs on the macOS PATH**, and the
+      **Tailscale CLI inside the app bundle** for App Store installs.
+      - [x] 🤖 Automated test — `supplemental_path_dirs_for(Macos, …)`,
+        `tailscale_program` with an injected `exists`
+      - [ ] 🖐️ Manual test — per-user Docker Desktop: the container tier is
+        offered. App Store Tailscale with no CLI on PATH: Mobile Serve reads
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+    - [x] **32h — the fence install hint follows the distribution.** The
+      one-click bubblewrap install hardcoded apt, and the fence fails closed, so
+      a non-Debian user had no working path. `package_install_cmd` covers
+      apt/dnf/pacman/zypper and returns `None` (button hidden) otherwise.
+      - [x] 🤖 Automated test — os-release fixture table incl. `ID_LIKE` precedence
+      - [ ] 🖐️ Manual test — Fedora/Arch: the pill's install button runs
+        dnf/pacman; an unknown distribution hides it
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+    - [x] **32i — the presenter's sleep inhibitor dies with Eldrun.** It
+      spawned `systemd-inhibit … sleep infinity` with nothing tying it to
+      Eldrun and no release on exit, so a quit or crash mid-talk kept the
+      machine awake until logout. Now `systemd-inhibit … cat` holding a piped
+      stdin (PDEATHSIG follows the forking *thread*, so it was the wrong tool),
+      plus a release in `RunEvent::Exit`.
+      - [x] 🤖 Automated test — argv builder; a pipe-close test proving the tie
+      - [ ] 🖐️ Manual test — present, `kill -9` Eldrun, then
+        `systemd-inhibit --list` shows no Eldrun row
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+    - [x] **32j — the renderer reload budget is per window.** One process-wide
+      counter meant a crash-looping popout could spend the main window's budget.
+      - [x] 🤖 Automated test — pure budget helper; macOS label map
+      - [ ] 🖐️ Manual test — hard to force; watch crash.log for a popout that
+        loops while the main window still reloads
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+    - [x] **32k — onboarding names the panel key that works here.** The copy
+      hardcoded "Super" where the code already uses F9 (GNOME/KDE); it now asks
+      `livePanelToggleKey()` and waits for the desktop probe.
+      - [x] 🤖 Automated test — extended `SuperKeyOwnership`
+      - [ ] 🖐️ Manual test — GNOME/KDE: How to start and the Feature Guide say
+        F9; Cinnamon still says Super
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+    - [x] **32l — Settings says when the desktop cannot park windows.** A
+      `can_park()` backend capability (default true, null backend false) behind
+      `workspace_capabilities`; the dead `workspace_info` fetch in `HeaderBar`
+      is gone. Carries `UntestedTag`.
+      - [x] 🤖 Automated test — backend capability test; the row renders only
+        when `can_park === false`
+      - [ ] 🖐️ Manual test — GNOME Wayland: Settings → Layout shows the note;
+        Cinnamon or KDE X11 shows none
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+    - [x] **32m — macOS gets an explicit menu, and ⌘W closes a tab.** Tauri's
+      default menu bound ⌘W to Close Window, and a focused terminal swallowed
+      the app's own chord, so ⌘W quit the whole app. The menu now omits Close
+      Window, keeps **Edit** (which is what makes ⌘C/⌘V work in xterm — an
+      explicit handler would double-paste) and routes ⌘Q through the window
+      close so the frontend teardown runs. The keyboard bypass is strictly
+      `IS_MAC && metaKey && !ctrlKey`, so ⌃W still reaches every shell.
+      - [x] 🤖 Automated test — pure menu plan (no CloseWindow, Edit present);
+        vitest for ⌘W vs ⌃W on macOS and Ctrl+W unchanged on Linux
+      - [ ] 🖐️ Manual test — macOS: ⌘W in a focused terminal and in a popout
+        closes the tab; ⌃W deletes a word; ⌘Q quits cleanly; ⌘C/⌘V still work
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+    - [x] **32n — macOS window stays hidden until its placement is restored.**
+      The per-platform config replaced the window array (RFC 7396), dropping
+      `visible: false`, so the window flashed at its default spot on launch.
+      - [x] 🤖 Automated test — a Rust test reading both config files
+      - [ ] 🖐️ Manual test — macOS: no visible flash before the saved placement
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+    - [x] **32o — housekeeping.** One Wayland predicate instead of three
+      disagreeing copies (`Some("")` was read as X11); the deb drops the unused
+      `libappindicator3-1` (universe-only on 26.04) and recommends
+      bubblewrap/tmux/cups-client; the Windows dead-code warnings go 25 → 0 by
+      cfg narrowing, never a blanket `allow`; staged clippy on the macOS CI job;
+      `src-tauri/CLAUDE.md`, `docs/context/agent_authority.md` and `README.md`
+      match the code again.
+      - [x] 🤖 Automated test — covered by the existing suites and both cross-checks
+      - [ ] 🖐️ Manual test — Ubuntu: `dpkg -I` on the CI .deb shows the new
+        Depends/Recommends
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+
 254. **The bare Super key belongs to the desktop, not to the OS.** ✅ Fixed
     2026-09-07, ⚠️ untested live. `useKeyboard` gated its lone Meta/Super panel
     toggle on `PLATFORM === "linux"`, which quietly asserts "on Linux this key
@@ -462,6 +615,31 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
         left out deliberately rather than forgotten — it is the one part that
         reaches the network unasked.
 
+- [~] **31af — Mobile Focus: a swipe shows the agent's status line** (2026-09-15;
+  ✅ code-complete and automated tests passing, ⚠️ untested on a phone — and a
+  rebuild + restart first, since the phone serves the bundle baked into the
+  binary). Focus cuts the agent TUI's bottom frame (31v), and with it the rows
+  drawn under the input box: cwd, branch, model, mode, context %, and any custom
+  statusline, whose free text the composer chips have no shape for. A left→right
+  swipe across the output now opens a strip under it with those rows verbatim
+  (`statusFrameLines` in `mobile-web/src/terminal/statusLine.ts`). A right→left
+  swipe or the strip's ✕ closes it, and a screen with no frame says "No status
+  line on screen". `mobile-web/src/terminal/focusSwipe.ts` listens passively, so
+  scrolling and selection stay native. It counts only a decisively horizontal
+  swipe (≥ 56 px, ≥ 2× the vertical travel, ≤ 700 ms), and ignores one starting
+  within 16 px of a screen edge (Android back), on an input, or inside something
+  that can still scroll sideways. Swipe-only, never persisted. Tested in
+  `src/__tests__/MobileTerminalFocusStatusLine.test.tsx`.
+      - [ ] **Manual QA:** open a Claude agent tab → Focus → swipe right across
+        the output: a strip opens under it showing the status row exactly as
+        the desktop draws it (custom statusline included); swipe left, and
+        separately tap ✕, and it closes; vertical scrolling of the output still
+        works and never opens it; a wide code block still pans sideways instead
+        of opening it; a swipe starting at the screen edge triggers Android's
+        back gesture, not the strip; Terminal view shows no strip
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+
 - [~] **31ae — Every phone section glyph asks for emoji presentation** (2026-09-14;
   ✅ code-complete, tests passing, ⚠️ phone QA pending after a PWA rebuild,
   `1e7f9fb`). The tab bar drew Projects and Calendar in colour but To-do and
@@ -489,6 +667,11 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
   7. `eldrun-send --clear` empties the strip; with the desktop closed, existing
      outbox files still list through the sidecar.
   8. Send text named `.png` and an SVG; both preview as inert text.
+  9. Focus posts each file into the chat as an agent message (2026-09-15,
+     `Untested` pill in its caption): with the stored session shown, a plot
+     sits under the answer that sent it, not at the bottom; on the screen
+     source (Session → Screen) the files close the chat; the strip above the
+     composer shows only in the Terminal view.
   Windows PowerShell and macOS runtime behavior also require platform QA.
 
 - [~] **31ac — "Set up in terminal" opens the install overlay** (2026-09-14;
@@ -528,6 +711,10 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
   `src/__tests__/MobileChatTurns.test.ts` (7 cases) and
   `MobileTerminalReadableView.test.tsx` (2 cases); `/terminal-preview.html`
   shows two exchanges.
+  - [ ] Manual phone QA (2026-09-15): Codex labelled dividers such as
+    `─ Worked for 2m ─────` show only their label in Focus, with no wrapped
+    white rules; input-frame labels remain hidden. Regression coverage in
+    `MobileReadableScreen.test.ts`; live verification pending.
   - [ ] 🖐️ Manual phone QA — open a Claude agent tab in Focus and send a prompt
     from the composer: it appears as a bubble on the right, in the same violet
     as the "Sent" strip, without the `>`; the answer sits on the left as
@@ -535,6 +722,51 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     question's numbered rows stay on the left and answerable; the live input
     box is still not painted; Copy still includes `> `; a Codex tab shows the
     same for `›`; a shell tab shows no bubbles.
+    - [ ] ✅ Works
+    - [ ] ❌ Doesn't work
+  - 2026-09-16 fix: a user bubble sometimes held text the user never typed.
+    Two sources feed the bubbles and both leaked. **Stored session** (the
+    default for Claude/Codex): the not-a-prompt filter was a short start-only
+    prefix list, so `<tool_use_error>` blocks and a `<total_tokens>` block
+    appended *behind* a prompt were shown as the user's words. It is now a
+    bound *plus* a shape — `CLI_BLOCK_TAGS` and "opens and closes with that
+    same tag" — because a shape alone cannot tell a CLI's private block from
+    someone pasting `<div>hello</div>`; `strip_trailing_blocks` cuts only
+    those tags off the end, and `isCompactSummary`/`isVisibleInTranscriptOnly`
+    join `isMeta`/`isSidechain` as never-a-prompt. **Screen reading**: `❯` is
+    no longer an echo marker (no CLI echoes with it — it is the select-dialog
+    cursor, so every `❯ Opus 4.1` and `/resume` row became the reader's
+    words), `✨` counts only for a tab whose label names Kimi, the empty box's
+    own placeholder and a box the TUI is still drawing are not submissions,
+    and a bubble stops at a tool-result gutter or a footer row.
+    The mirror direction — a guard costing the user their own words — turned
+    out to be just as real and is now covered too: a pasted `tree` stays in
+    the bubble (frame strokes are not stop rows), `> try "npm ci" first` is a
+    prompt and not the placeholder, an answer *about* a key no longer
+    swallows the prompt above it, and a columned status row is told from
+    prose by *columns* carrying status rather than fields (`classify` reads a
+    branch out of the same segment as the path, which scored the ordinary
+    sentence `~/eldrun/projects/app (main)` two and handed the prompt to the
+    agent). The same parser feeds the desktop's last-prompt line, so both
+    directions reach the prompt chart too.
+    Gates: 202 mobile tests, 46 `agent_session` + 4 `agent_transcript` Rust
+    tests, clippy clean, `mobile:build` and `vite build` green, lint clean on
+    the changed files. Backend and PWA both changed, so this needs
+    `npm run package:dev` and a relaunch before a phone sees it.
+    Known and deliberately left: a prompt whose *continuation* is itself a
+    columned row (`opus-4.1   ~/a`) still reads as a box; a Codex gutter drawn
+    `└─ ` rather than `└ ` would land in a bubble (not seen in any version);
+    a quoted `│ > … │` inside a plan box is byte-identical to Gemini's framed
+    echo after the frame is stripped, so it cannot be separated without a live
+    capture; and the Kimi `✨` branch hangs off a renamable tab label, which is
+    harmless only because the phone cannot open a Kimi tab today (31ag).
+  - [ ] 🖐️ Manual phone QA — in a Claude and a Codex tab, check the bubbles
+    hold only what was typed: run a slash command (`/model`) and confirm its
+    `⎿` result stays on the left; scroll back to an old screen and confirm no
+    stale draft or `Try "…"` placeholder appears as a bubble; open `/model`
+    and confirm its `❯` rows stay left. Then the mirror: paste a `tree` into a
+    prompt and send it — the whole thing stays in one bubble; send `try "npm
+    ci" first` and `where am I?` and confirm each still appears as yours.
     - [ ] ✅ Works
     - [ ] ❌ Doesn't work
 
@@ -781,6 +1013,8 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
   - **Gemini CLI** — deliberately no family: since ~0.5 the approval mode is
     only prompt colour + aria-label, nothing the readable view can parse, so
     the chip keeps blind-cycling. Its `NN% used` context column is read.
+    *Superseded by 31ag (2026-09-15): the mode is text after all, on the row
+    above the box, and Gemini has a family now.*
   - Vibe/OpenCode are alt-screen TUIs (Focus already hands them to Terminal);
     Aider is a plain REPL. `scripts/backend-stale.sh` now also flags a stale
     *embedded* mobile bundle (mobile-web src newer than mobile-dist, or
@@ -794,6 +1028,36 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     a Gemini tab still blind-cycles but shows its `% used` as context
     - [ ] ✅ Works
     - [ ] ❌ Doesn't work
+
+- [~] **31ag — Mobile Focus beyond Claude Code** (2026-09-15; ✅ code-complete
+  for the screen half, ⚠️ untested live; phone needs a rebuild + restart).
+  A survey of all 26 other agent CLIs, read out of their published bundles
+  (`docs/mobile_focus_cli_survey.md`), and what it changed:
+  - `chatTurns`: Gemini `✦`, Qwen `◆︎` and Kimi Code `●` answers lay out as
+    answers; Kimi Code's `✨` echo is a prompt bubble.
+  - `statusLine`: a `*` input line with a draft counts only beside the word
+    YOLO, so a markdown bullet at the bottom of an unrecognized TUI is no longer
+    cut as the input box; Gemini's approval mode is read from the row *above*
+    its box (and cut with it); `ctx` labels a context figure.
+  - `agentModes`: a Gemini family (default silent / accept edits / plan on
+    Shift+Tab, YOLO on Ctrl+Y) — this supersedes 31l's "no Gemini family".
+  - [ ] 🖐️ Manual test — on the phone, a Gemini tab: answers show without `✦`;
+    the mode chip reads default / accept edits / plan as Shift+Tab cycles on
+    the desktop, and the sheet walks between them; a Claude tab whose answer
+    ends in a `* item` list still shows the list's last rows.
+    - [ ] ✅ Works
+    - [ ] ❌ Doesn't work
+  - [ ] **Follow-ups** (see the survey for each spec):
+    - [ ] Stored-session readers in `agent_transcript.rs` for the full-screen
+      and inline CLIs that keep one: Gemini, Qwen, Kimi Code, Pi, Vibe,
+      OpenCode/Crush/Goose (SQLite), Aider, Copilot, Muse.
+    - [ ] Widen `discovery.rs::resumable`'s list and publish the tab's `cmd`,
+      so families stop depending on a renamable label.
+    - [ ] Live captures, then patterns, for Aider, mini-SWE-agent, Cursor
+      agent, Goose, Grok Build, Kimi Code modes, OpenCode `--mini`, Codex 0.155
+      `↳ Recap:`.
+    - [ ] Registry fixes: Kiro binary is `kiro-cli`; Kimi Code / Pi / Amp
+      packages moved; archived Mentat / GPT Engineer / Plandex / SWE-agent.
 
 - [~] **31n — Mobile Focus: + attaches from the phone; sheets freeze the view**
   (2026-08-31; ✅ Code-complete, ⚠️ needs live QA on a phone — and a rebuild +

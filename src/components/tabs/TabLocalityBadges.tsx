@@ -219,7 +219,7 @@ export function LocalityMenu({
       disabled={opts?.disabled}
       onClick={() => !opts?.disabled && choose(loc)}
     >
-      <span className="tab-new-menu-dot" style={{ color: "var(--accent)" }}>
+      <span className="tab-new-menu-dot tab-new-menu-dot--accent">
         {cur === loc ? "●" : glyph}
       </span>
       {text}
@@ -240,7 +240,7 @@ export function LocalityMenu({
               className="tab-new-menu-item"
               onClick={() => onChangeView("machines")}
             >
-              <span className="tab-new-menu-dot" style={{ color: "var(--accent)" }}>
+              <span className="tab-new-menu-dot tab-new-menu-dot--accent">
                 {onRemoteNow ? "●" : "☁"}
               </span>
               {t("tabLocality.remoteEllipsis")}

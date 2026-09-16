@@ -55,7 +55,11 @@ import {
   type ShortcutAction,
   type ShortcutMap,
 } from "../../lib/shortcuts";
-import { isEditableTarget } from "../../hooks/useKeyboard";
+import {
+  editorMayTakeChord,
+  isEditableTarget,
+  isMacCommandChord,
+} from "../../hooks/useKeyboard";
 import { useDragStore } from "../../stores/drag";
 import { useTabLandStore } from "../../stores/tabLand";
 import { useSettingsStore } from "../../stores/settings";
@@ -486,12 +490,15 @@ export function DetachedCenterPanel({
       }
       // Never steal keys from a focused text field / xterm textarea (same rule
       // the main window applies) — otherwise typing in a terminal would trip the
-      // nav chords.
-      if (isEditableTarget(e.target)) return;
-
+      // nav chords. The one exception is the macOS ⌘W family
+      // (`editorMayTakeChord`), so ⌘W closes a tab from a focused terminal here
+      // too, while ⌃W / Ctrl+W still reach it.
+      const editable = isEditableTarget(e.target);
+      if (editable && !isMacCommandChord(e)) return;
       const overrides = useSettingsStore.getState().settings
         ?.keyboard_shortcuts as ShortcutMap | undefined;
       const is = (action: ShortcutAction) =>
+        (!editable || editorMayTakeChord(action, e)) &&
         chordMatches(resolveChord(action, overrides), e);
       const {
         tree: t,
@@ -1929,14 +1936,14 @@ export function DetachedCenterPanel({
             const next = window.prompt(t("detachedTabs.renamePrompt"), tab.label);
             if (next != null && next.trim() && next !== tab.label) onRename?.(tab.key, next.trim());
           }}>
-            <span className="tab-new-menu-dot" style={{ color: "var(--accent)" }}>✎</span>
+            <span className="tab-new-menu-dot tab-new-menu-dot--accent">✎</span>
             {t("common.rename")}
           </button>
           {(() => {
             const tab = byKey.get(tabMenu.key);
             return tab && (tab.kind === "agent" || tab.kind === "local_agent") ? (
               <button className="tab-new-menu-item" onClick={() => { setScheduleDialogKey(tab.key); setTabMenu(null); }}>
-                <span className="tab-new-menu-dot" style={{ color: "var(--accent)" }}>◷</span>
+                <span className="tab-new-menu-dot tab-new-menu-dot--accent">◷</span>
                 {t("agentSchedule.menu")} <UntestedTag />
               </button>
             ) : null;

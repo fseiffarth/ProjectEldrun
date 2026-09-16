@@ -226,7 +226,13 @@ whose per-group files live in `todo/`.
    CI job repeats it. By hand: `git add -A && scripts/privacy-check.sh`, or
    `scripts/privacy-check.sh <base> <head>` for a range. Never hardcode
    institution or lab hostnames. Commits must use the GitHub `noreply` author
-   email, never the real address.
+   email, never the real address — including merges made on GitHub, which the
+   scan checks too. It also scans file names, commit messages and binaries'
+   strings, and refuses an added or changed binary until its blob id is in
+   `scripts/privacy-reviewed-binaries.txt` (a screenshot shows prompts, session
+   URLs and project names no text scan can read). Private literals that must
+   never ship but cannot be committed as patterns go in the untracked
+   `.git/info/privacy-denylist`, one per line.
 5. Enable the hooks once per clone — this arms the version bump, the privacy
    scan, and the post-commit stale-PWA notice:
    `git config core.hooksPath .githooks`. Pushes are auto-patch-

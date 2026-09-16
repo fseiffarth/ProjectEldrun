@@ -1734,7 +1734,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
               setTabMenu(null);
             }}
           >
-            <span className="tab-new-menu-dot" style={{ color: "var(--accent)" }}>✎</span>
+            <span className="tab-new-menu-dot tab-new-menu-dot--accent">✎</span>
             {t("common.rename")}
           </button>
           {tabs.some((tab) => tab.key === tabMenu.key && canDuplicateTab(tab)) && (
@@ -1742,7 +1742,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
               className="tab-new-menu-item"
               onClick={() => void handleDuplicate(tabMenu.key)}
             >
-              <span className="tab-new-menu-dot" style={{ color: "var(--accent)" }}>⧉</span>
+              <span className="tab-new-menu-dot tab-new-menu-dot--accent">⧉</span>
               {t("tabBar.duplicate")}
               <UntestedTag />
             </button>
@@ -1755,7 +1755,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                 setTabMenu(null);
               }}
             >
-              <span className="tab-new-menu-dot" style={{ color: "var(--accent)" }}>◷</span>
+              <span className="tab-new-menu-dot tab-new-menu-dot--accent">◷</span>
               {t("agentSchedule.menu")}
               <UntestedTag />
             </button>
@@ -1767,7 +1767,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
               setTabMenu(null);
             }}
           >
-            <span className="tab-new-menu-dot" style={{ color: "var(--danger)" }}>×</span>
+            <span className="tab-new-menu-dot tab-new-menu-dot--danger">×</span>
             {t("common.close")}
           </button>
           <button
@@ -1778,7 +1778,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
               setTabMenu(null);
             }}
           >
-            <span className="tab-new-menu-dot" style={{ color: "var(--danger)" }}>×</span>
+            <span className="tab-new-menu-dot tab-new-menu-dot--danger">×</span>
             {t("tabBar.closeOthers")}
           </button>
           <button
@@ -1789,7 +1789,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
               setTabMenu(null);
             }}
           >
-            <span className="tab-new-menu-dot" style={{ color: "var(--danger)" }}>×</span>
+            <span className="tab-new-menu-dot tab-new-menu-dot--danger">×</span>
             {t("tabBar.closeToLeft")}
           </button>
           <button
@@ -1800,7 +1800,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
               setTabMenu(null);
             }}
           >
-            <span className="tab-new-menu-dot" style={{ color: "var(--danger)" }}>×</span>
+            <span className="tab-new-menu-dot tab-new-menu-dot--danger">×</span>
             {t("tabBar.closeToRight")}
           </button>
         </div>,

@@ -276,16 +276,14 @@ export function DownloadsSection({
           ))}
         </div>
         <button
-          className="toolbar-btn"
-          style={{ fontSize: 10, padding: "1px 6px", height: 20 }}
+          className="toolbar-btn toolbar-btn--sm"
           onClick={() => void refresh()}
           title={t("common.refresh")}
         >
           ⟳
         </button>
         <button
-          className="toolbar-btn"
-          style={{ fontSize: 10, padding: "1px 6px", height: 20 }}
+          className="toolbar-btn toolbar-btn--sm"
           onClick={onClose}
           title={t("downloads.hide")}
         >
@@ -336,8 +334,7 @@ export function DownloadsSection({
                 ) : (
                   !isRemote && (
                     <button
-                      className="toolbar-btn dl-copy-btn"
-                      style={{ fontSize: 10, padding: "1px 6px", height: 20 }}
+                      className="toolbar-btn toolbar-btn--sm dl-copy-btn"
                       onClick={(ev) => {
                         ev.stopPropagation();
                         void copyEntry(entry, targetFolder);

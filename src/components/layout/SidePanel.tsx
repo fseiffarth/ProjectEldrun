@@ -169,7 +169,8 @@ export function SidePanel({
   onMouseLeave,
 }: Props) {
   const t = useT();
-  const { projects, activeId } = useProjectsStore();
+  const projects = useProjectsStore((s) => s.projects);
+  const activeId = useProjectsStore((s) => s.activeId);
   const sidePanelFolderByProject = useProjectsStore((s) => s.sidePanelFolderByProject);
   const setSidePanelFolder = useProjectsStore((s) => s.setSidePanelFolder);
   const rootDir = useProjectsStore((s) => s.rootDir);

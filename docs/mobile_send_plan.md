@@ -21,9 +21,12 @@ eldrun-send plots/run12-loss.png
 
 The file lands in the project's `.eldrun/outbox/`. The Focus view polls that
 folder every 8 s while the page is visible (`mobile-web/src/screens/
-Terminal.tsx`, `OUTBOX_POLL`), so within about eight seconds a **From the
-agent** strip appears above the composer with the thumbnail; one tap opens it
-full screen. The same works for a log (`cargo test 2>&1 | eldrun-send -n
+Terminal.tsx`, `OUTBOX_POLL`), so within about eight seconds the picture is
+posted into the Focus chat as a message on the agent's side — placed after the
+stored-session turn written before it (`terminal/outboxTimeline.ts`), or at the
+end of the chat when Focus reads the screen, which carries no times — and one
+tap opens it full screen. The Terminal view shows the same files as a **From
+the agent** strip above the composer. The same works for a log (`cargo test 2>&1 | eldrun-send -n
 tests.log`), a PDF, a CSV: the phone shows what a browser can show and offers
 the rest as a download or a share.
 
@@ -287,16 +290,17 @@ Live QA for the user (a restart first, then the phone on the tailnet):
 
 1. **The §1 round trip.** From the phone's Focus composer on a fenced Claude
    tab: "render a small matplotlib plot and show me the image" → the tab
-   runs `eldrun-send …png` on its own → within ~8 s the **From the agent**
-   strip shows the thumbnail → tap → full screen.
+   runs `eldrun-send …png` on its own → within ~8 s the picture appears in
+   the chat, under the answer that sent it → tap → full screen. Switch to
+   Terminal → the same file is in the **From the agent** strip.
 2. `cargo test 2>&1 | eldrun-send -n tests.log` → a text chip → the sheet
    shows the log.
 3. A PDF from the project → chip → opens in a new tab on the phone.
 4. `cp` a PNG into `.eldrun/outbox/` by hand → still a thumbnail (unchanged).
 5. In a container tab of a containerized project: step 2 again.
 6. A `.zip` → chip → Save downloads it; Share… offers other apps.
-7. `eldrun-send --clear` → the strip empties. With Eldrun closed → the strip
-   still lists what is there.
+7. `eldrun-send --clear` → the chat's file messages and the strip empty. With
+   Eldrun closed → both still list what is there.
 8. A `.txt` renamed to `.png`, and an `.svg` → both listed as **text**, never
    rendered.
 

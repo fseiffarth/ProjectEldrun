@@ -144,8 +144,15 @@ Claude's `/fast` — different thing.
   `<command-name>…<command-args>` reads as `/name args`, `<bash-input>` as
   `! cmd`. A new wrapper tag shows up as a prompt until it is added here.
 - `/usage` in print mode returns a JSON envelope with `result` (panel text),
-  `is_error`, `num_turns: 0`. The panel text itself is parsed on the phone
-  (five-hour / weekly windows, per-model lines) — a re-layout may cost figures.
+  `is_error`, `num_turns: 0` (re-checked live against 2.1.272, 2026-09-15). The
+  panel text is parsed by `shared/usageReport.ts` for the phone's bars, the
+  prompt chart's reset lines and auto-continue (five-hour / weekly windows,
+  per-model lines) — a re-layout may cost figures. `resolveResetAt` places the
+  reset phrase in time: 2.1.272 prints `resets Sep 15, 10:30pm (Europe/Berlin)`
+  (a year only when it is not the current one, the zone always) where earlier
+  builds printed `resets 6:20pm` / `resets Mon 9am`. A shape it does not know
+  resolves to nothing, which silently empties the chart's reset lines and
+  leaves auto-continue unable to arm.
 - Model short names `opus | sonnet | haiku | fable` for the `/model` chips.
 - Preface commands `/clear /compact /context /cost`.
 - Home files: `~/.claude/`, `~/.claude.json` (+ `.bak`, `.backup.N`),
@@ -183,8 +190,10 @@ Claude's `/fast` — different thing.
   the file join the staged shadows instead.
 - Ollama-side: `ollama launch claude --model <m>` is the only way an
   Anthropic-compatible endpoint is stood up for Claude (Ollama ≥ 0.15).
-- Mobile: mode family `default | accept edits | plan | bypass permissions`,
-  `default` draws no mode line; Shift+Tab is the legacy backtab `ESC [ Z`.
+- Mobile: mode family `default | accept edits | plan | auto | bypass
+  permissions` — the cycle's labels `accept edits on`, `plan mode on`, `auto
+  mode on` read out of the 2.1.272 bundle — `default` draws no mode line;
+  Shift+Tab is the legacy backtab `ESC [ Z`.
 
 **Verify**
 
@@ -299,9 +308,17 @@ npx vitest run src/__tests__/MobileSelectPrompt.test.ts src/__tests__/MobileMode
 
 **Assumes** `gemini --resume latest` (index or `latest`, not a uuid),
 `gemini -p`; preface `/clear /compact /stats`; footer says `NN% used`
-without the word "context" (mobile `statusLine.ts`); since ~0.5 the approval
-mode is conveyed only as prompt text, so the phone cannot read it.
-Install via `npm install -g @google/gemini-cli`.
+without the word "context" (mobile `statusLine.ts`). The approval mode is text
+on the row **above** the input box (`ApprovalModeIndicator`):
+`auto-accept edits Shift+Tab to plan|manual`, `plan Shift+Tab to manual`,
+`YOLO Ctrl+Y`, and in default mode only `Shift+Tab to accept edits` — read by
+`statusLine.ts`, walked by the Gemini family in `agentModes.ts` (YOLO is on
+Ctrl+Y, off the Shift+Tab cycle; its prompt turns `*`). Answers open with `✦ `
+(`chatTurns.ts`). Inline unless `ui.useAlternateBuffer`. Read out of the
+installed 0.56.0 bundle and the 0.60.0 npm bundle (2026-09-15; not live).
+Install via `npm install -g @google/gemini-cli`. The 0.59.0 bundle still
+defines `--resume` (alias `-r`) and renders the `NN% used` footer (read out of
+the package, 2026-09-15; not live).
 
 - No transcript is read: the Agents view's last-prompt line comes from the
   prompt echo on the pane's screen (`> …`, parsed by the mobile `chatTurns`),
@@ -313,7 +330,13 @@ Install via `npm install -g @google/gemini-cli`.
 
 **Assumes** `qwen --continue`, `qwen -p`; mode phrases `ask permissions |
 plan | auto-accept | auto | yolo` on the Shift+Tab cycle, and `*` as the
-YOLO input-line marker (mobile `statusLine.ts`). `npm install -g @qwen-code/qwen-code`.
+YOLO input-line marker (mobile `statusLine.ts`, which takes a `*` with a draft
+only beside the word YOLO). Answers open with `◆︎ ` (U+25C6 U+FE0E) since 0.23
+(`chatTurns.ts`). **0.23.4 draws on the alternate screen by default**
+(`ui.useTerminalBuffer`, "Virtualized History"), so Focus hands a Qwen tab to
+Terminal unless `~/.qwen/settings.json` sets `"ui": {"useTerminalBuffer":
+false}` (read out of the 0.23.4 bundle, 2026-09-15; not live).
+`npm install -g @qwen-code/qwen-code`.
 The last-prompt line reads the screen echo, as for Gemini.
 
 ### 1.5 Everyone else
@@ -334,9 +357,13 @@ The last-prompt line reads the screen echo, as for Gemini.
 | Aider | — | refused (no print mode) | `curl … aider.chat/install.sh` (uv) |
 | Kiro, Cline, OpenClaw, OpenHands, Plandex, SWE-agent, mini-SWE-agent, Mentat, gpt-engineer, Qoder | — | — | see `AGENTS` |
 
-Vibe and OpenCode are full-screen (alternate-screen) TUIs; the phone's Focus
-view cannot read them — a release that changes that is an *opportunity*, not a
-break. Droid, OpenClaw and OpenCode are also `LOCAL_DRIVERS` (Ollama-backed
+Vibe, OpenCode and Copilot are full-screen (alternate-screen) TUIs; the phone's
+Focus view cannot read them — a release that changes that is an *opportunity*,
+not a break. Copilot has been alt-screen unconditionally since 1.0.12 (its
+`--alt-screen` flag was removed). Copilot 1.0.81–1.0.82 also offered to restore
+interrupted sessions at startup, a prompt a restored tab would open on; 1.0.83
+turned it off by default. Vibe 2.25.4 still has `-c/--continue` and
+`-p/--prompt` (read out of the wheel, 2026-09-15). Droid, OpenClaw and OpenCode are also `LOCAL_DRIVERS` (Ollama-backed
 tabs via `ollama launch <agent>`).
 
 ---

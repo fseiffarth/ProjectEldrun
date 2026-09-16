@@ -406,6 +406,23 @@ mod tests {
     }
 
     #[test]
+    fn a_bubble_holds_what_the_user_typed_and_nothing_the_cli_appended() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.jsonl");
+        std::fs::write(
+            &path,
+            concat!(
+                "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"<tool_use_error>File has not been read yet</tool_use_error>\"}}\n",
+                "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"what changed?\"},{\"type\":\"text\",\"text\":\"<total_tokens>128000</total_tokens>\"}]}}\n",
+                "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"ship it\\n<system-reminder>be careful</system-reminder>\"}}\n",
+            ),
+        )
+        .unwrap();
+        let read = read_transcript(&path, TranscriptKind::Claude, None, DEFAULT_LIMIT).unwrap();
+        assert_eq!(kinds(&read), vec![("prompt", "what changed?"), ("prompt", "ship it")]);
+    }
+
+    #[test]
     fn long_text_is_cut_and_marked_and_an_unknown_agent_is_unsupported() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("s.jsonl");

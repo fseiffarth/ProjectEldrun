@@ -1,60 +1,98 @@
 # ProjectEldrun — Roadmap
 
-This file captures product direction and sequencing. Concrete implementation
-tasks live in `TODO.md`; current status and validation notes live in
-`STATUS.md`; current behavior and architecture live in `DOCUMENTATION.md`.
+Reviewed **2026-09-15** against **v0.1.68**. This file records direction and
+sequencing; [STATUS.md](STATUS.md) describes the implementation and verification
+limits. Concrete tasks live in [TODO.md](TODO.md) and [`todo/`](todo/).
 
-## Deferred Features
+## Implemented Foundation
 
-- **Agent session resume**: on project restore, detect the most-recent agent
-  session file (`.claude/projects/<encoded-path>/*.jsonl`, codex sessions dir,
-  `.gemini/history/`, vibe `$VIBE_HOME/logs/session/`) and pass `--resume <id>`
-  when spawning the restored agent tab so the conversation continues across
-  Eldrun restarts. Removed (2026-06-07) because detection was unreliable and
-  the `--resume` flag conflicted with fresh-start behavior the user wanted.
-  Also needs multi-tab disambiguation (each tab must track its own session ID,
-  not the project-global most-recent one).
+The Rust/Tauri migration is complete. Project/box desktop contexts, tiling and
+pop-out tabs, agent resume, remote SSH/SFTP with Git lockstep and byte-sync,
+Docker/VM runtimes, mail/calendar/CalDAV, native viewers, and Eldrun Mobile are
+implemented. Windows and macOS have native integration and CI packaging.
 
-## Near Term
+Recent work adds the per-project prompt chart, draft board, scheduling and
+completion-gated chains, CLI-hook activity, model-aware prompt history, Mobile
+Focus transcripts, file sharing to the phone, and print job previews. These are
+part of the current baseline; their remaining work is verification and hardening.
+The agent's permission mode stays under its own CLI's control.
 
-- Live-session QA: terminal resize/exit/paste, project switch, workspace
-  switching (X11 and KDE Wayland), download routing, browser pref editing.
-- Promote `rust_migration` to `main` after QA passes.
-- Harden project context routing: file tree state, active-project download
-  symlink, app defaults, time tracking, and tab layout should reliably follow
-  the active project.
-- Improve coverage for terminal lifecycle, project CRUD, and workspace backends
-  without requiring a live display server.
-- Keep docs split by purpose so generated runtime state does not churn tracked
-  project files.
+## Next: Verify and Stabilize the Existing Workflows
 
-## Core Reliability
+1. **Project and session continuity.** Exercise switching projects and boxes,
+   detached-window parking/redocking, resize/paste/exit, per-tab Claude/Codex
+   resume, continue-latest limits for other CLIs, and remote tmux reconnects.
+   Confirm files, app defaults, and time tracking follow the chosen scope.
+2. **Prompt delivery.** Live-test draft creation and multi-select moves, schedule
+   edits, prefix commands/model choices, closed tabs, missed occurrences, and
+   after-links. Check that decisions and new turns postpone follow-ups and that
+   hook-free agents' idle heuristic behaves predictably. Schedules currently
+   depend on the desktop window being open.
+3. **Connected features.** Validate CalDAV pull/push conflicts against a server,
+   mail encryption and VPN-gated accounts, Mobile pairing/lock/revocation,
+   reconnects after desktop updates, Focus fallback, outbox, and gated writes.
+   Verify the opt-in browser live window's permission and IPC boundaries.
+4. **Hardware-dependent features.** Run the Deck presenter with a second display,
+   printer submission/queue tracking, a real VM boot, and HPC/SLURM workflows on
+   a cluster. Test Windows/macOS integrations and KDE Wayland on real desktops.
 
-- Make standalone open-app handling reliable before extending it. File opens
-  should launch, track, and restore predictably.
-- Tighten workspace-management behavior for X11 and KDE Wayland, including
-  cleanup after normal exits and clear warnings for kill-9 cases.
-- Keep runtime-generated state in `~/.local/share/eldrun/` or project-local
-  `project.json`, not in human-maintained markdown files.
+Track results per item in the existing groups, and remove an `UntestedTag` only
+after user confirmation. See [verification](todo/group-y-verification.md),
+[sessions](todo/group-f-session.md), [remote/HPC](todo/group-g-remote.md),
+[mail](todo/group-j-mail.md), [CalDAV](todo/group-x-caldav.md),
+[presenter](todo/group-v-presenter.md), and
+[Mobile acceptance work](docs/eldrun_mobile_agent_plan.md).
 
-## App and Workspace Integration
+## Reliability and Maintenance
 
-- Keep global apps separate from project-owned apps. Browser, mail, calendar,
-  notes, screenshot, and similar roles should stay visible across workspaces
-  and avoid being assigned to a project.
-- Route common URI schemes from terminal links through the global app launcher.
-- Improve file opening around system MIME defaults, per-project overrides, and
-  the app picker so users can correct defaults without leaving Eldrun.
+- **Runtime and security:** continue PTY/process cleanup, fence/credential
+  boundary checks, durable session metadata, and explicit handling of stale
+  packaged backends/PWA bundles. Keep Git lockstep and byte-sync ownership
+  separate; retain file-backed local-loss notices for destructive background
+  moves. See [runtime](todo/group-i-runtime.md) and
+  [security](todo/group-o-security.md).
+- **Measured responsiveness:** measure UI and remote-probe costs before widening
+  polling or adding visual work. Preserve visible-only viewer/terminal work,
+  panel snapshots, Fast mode, and Energy Saver; examine remaining background
+  sync/lockstep costs. See [performance](todo/group-u-performance.md).
+- **Maintainability:** split the largest viewer, tab-store, and project-command
+  modules in focused changes behind the existing CI gates. Keep desktop and
+  Mobile type-checks, tests, lint/clippy, and the privacy scan mandatory.
+  Broad Rust formatting remains deliberately deferred.
 
-## Platform Direction
+## Product Follow-ups
 
-- Linux X11 is the primary target for launch-or-raise, sticky windows, and
-  full workspace control.
-- KDE Plasma (X11 and Wayland) has a first-class backend. KDE Wayland
-  per-project virtual desktop isolation is implemented; live-session QA is
-  needed before the 0.2.0 version bump.
-- For non-KDE Wayland compositors (Sway, Hyprland, GNOME on Wayland), workspace
-  switching, sticky-window state, launch-or-raise, and app embedding are not
-  implemented — each requires a compositor-specific backend.
-- Windows/macOS builds are experimental shells until native default-app, window,
-  download, and workspace integrations are added.
+- **Prompt Universe — planned, not built.** Add a global cross-project agent/job
+  overlay using the existing project-cloud UI and prompt/activity stores. The
+  current prompt chart remains scoped to one project or box. See the
+  [Prompt Universe plan](docs/prompt_universe_plan.md).
+- **Git hosting:** GitHub and GitLab publishing already ship. A generic remote
+  URL flow and reducing the dependence on provider CLIs remain follow-ups.
+  See [hosting](todo/group-p-hosting.md).
+- **Local agents and models:** finish driver discoverability and restore
+  behavior, and separate the local-runtime interface from Ollama assumptions.
+  The smart/native shell is still research, not an implemented replacement for
+  the PTY. See [local agents](todo/group-s-agents.md) and
+  [smart shell](todo/group-t-shell.md).
+- **Viewers and presenter:** continue the open editing, performance, and
+  presentation work after acceptance checks. Remaining Office formats still
+  open externally. See [viewers](todo/group-m-viewers.md) and
+  [presenter](todo/group-v-presenter.md).
+
+## Longer-Term Direction
+
+- **Eldrun Server — plan only.** Shared calendar/board and project collaboration
+  would use provisioned SSH, CalDAV, and bare Git repositories. Recheck the
+  plan's older prerequisites against current storage/CalDAV code before starting;
+  writable project sharing remains gated on the documented Git trust boundary.
+  See [server tasks](todo/group-z-server.md) and the
+  [server plan](docs/eldrun_server_plan.md).
+- **Broader desktop integration.** Linux X11 remains the reference. Validate the
+  implemented KDE Wayland, Windows, and macOS backends before claiming parity
+  from real use. Other Wayland compositors still need their own backends; macOS
+  app-level parking has platform limits. See [platform work](todo/group-h-crossplatform.md)
+  and [workspace work](todo/group-c-workspace.md).
+- **Complete project context.** Extend the existing terminal/file/app/machine
+  context with richer notes, task metadata, and workflow state. Pluggable
+  compositor backends and an eventual Eldrun-native compositor remain long-term
+  direction, not current delivery commitments. See [VISION.md](docs/VISION.md).

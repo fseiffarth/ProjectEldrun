@@ -25,8 +25,17 @@ pub fn agent_schedule_upsert(
     project_id: String,
     schedule_target_id: String,
     schedule: ScheduledAgentPrompt,
+    // Set by an editor moving or editing a rule it already holds: the target
+    // the rule must still be live on. Omitted (the phone, a plain create), the
+    // write behaves as it always has.
+    expect_existing_on: Option<String>,
 ) -> Result<Vec<ScheduledAgentPrompt>, String> {
-    let result = agent_tasks::upsert(&project_id, &schedule_target_id, schedule)?;
+    let result = agent_tasks::upsert(
+        &project_id,
+        &schedule_target_id,
+        schedule,
+        expect_existing_on.as_deref(),
+    )?;
     changed(&app);
     Ok(result)
 }
@@ -37,8 +46,14 @@ pub fn agent_schedule_delete(
     project_id: String,
     schedule_target_id: String,
     schedule_id: String,
+    expect_undelivered: Option<bool>,
 ) -> Result<(), String> {
-    agent_tasks::delete(&project_id, &schedule_target_id, &schedule_id)?;
+    agent_tasks::delete(
+        &project_id,
+        &schedule_target_id,
+        &schedule_id,
+        expect_undelivered.unwrap_or(false),
+    )?;
     changed(&app);
     Ok(())
 }

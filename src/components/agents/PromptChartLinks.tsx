@@ -124,6 +124,33 @@ export function PromptChartLinks({
     root.addEventListener("contextmenu", onContextMenu);
     return () => root.removeEventListener("contextmenu", onContextMenu);
   }, [cardNodes, rootRef]);
+  // What a resize or a scroll re-measures: always the newest links.
+  const measureRef = useRef<() => void>(() => {});
+  const watched = useRef<{ observer: ResizeObserver; onChange: () => void; nodes: Set<Element>; scrollers: Set<Element> } | null>(null);
+  // The observer and the scroll listeners live as long as the overlay does.
+  // They used to be torn down and rebuilt on every `version` bump — once per
+  // pointer move during a drag — so only the SET they watch is kept in step
+  // (below), never the watchers themselves.
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!root) return;
+    let frame = 0;
+    // A scroll fires far faster than a frame; one measure per frame is enough.
+    const onChange = () => {
+      if (frame) return;
+      frame = requestAnimationFrame(() => { frame = 0; measureRef.current(); });
+    };
+    const observer = new ResizeObserver(onChange);
+    observer.observe(root);
+    const state = { observer, onChange, nodes: new Set<Element>(), scrollers: new Set<Element>() };
+    watched.current = state;
+    return () => {
+      if (frame) cancelAnimationFrame(frame);
+      observer.disconnect();
+      for (const scroller of state.scrollers) scroller.removeEventListener("scroll", onChange);
+      watched.current = null;
+    };
+  }, [rootRef]);
   useEffect(() => {
     const root = rootRef.current;
     if (!root) return;
@@ -144,16 +171,23 @@ export function PromptChartLinks({
         }];
       }));
     };
-    const observer = new ResizeObserver(measure);
-    observer.observe(root);
-    for (const node of cardNodes.current.values()) observer.observe(node);
-    const scrollers = [root.closest(".prompt-chart-tab"), root.querySelector(".agent-prompt-timeline-body"), root.querySelector(".agent-prompt-draft-viewport")];
-    for (const scroller of scrollers) scroller?.addEventListener("scroll", measure, { passive: true });
+    measureRef.current = measure;
+    const state = watched.current;
+    if (state) {
+      // Keep the watched set in step with the registered cards and the
+      // scrollers that exist right now (the timeline and the free canvas
+      // mount and unmount), adding and dropping only what changed.
+      const nodes = new Set<Element>(cardNodes.current.values());
+      for (const node of state.nodes) if (!nodes.has(node)) state.observer.unobserve(node);
+      for (const node of nodes) if (!state.nodes.has(node)) state.observer.observe(node);
+      state.nodes = nodes;
+      const scrollers = new Set([root.closest(".prompt-chart-tab"), root.querySelector(".agent-prompt-timeline-body"), root.querySelector(".agent-prompt-draft-viewport")]
+        .filter((scroller): scroller is Element => !!scroller));
+      for (const scroller of state.scrollers) if (!scrollers.has(scroller)) scroller.removeEventListener("scroll", state.onChange);
+      for (const scroller of scrollers) if (!state.scrollers.has(scroller)) scroller.addEventListener("scroll", state.onChange, { passive: true });
+      state.scrollers = scrollers;
+    }
     measure();
-    return () => {
-      observer.disconnect();
-      for (const scroller of scrollers) scroller?.removeEventListener("scroll", measure);
-    };
   }, [cardNodes, links, rootRef, version]);
   const base = rootRef.current?.getBoundingClientRect();
   return (

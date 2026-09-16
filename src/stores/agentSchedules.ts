@@ -29,16 +29,34 @@ export function scheduleCacheKey(projectId: string, scheduleTargetId: string): s
   return `${projectId}\u0000${scheduleTargetId}`;
 }
 
+/** The backend's refusal of a guarded edit (`expectExistingOn` /
+ *  `expectUndelivered`) whose rule is gone, or was a one-time rule already
+ *  delivered. The rejection is this exact string. */
+export const SCHEDULE_GONE_ERROR = "schedule_gone";
+/** The refusal while a delivery of the rule is claimed and not yet complete. */
+export const SCHEDULE_BUSY_ERROR = "schedule_busy";
+
 interface AgentSchedulesStore {
   byTarget: Record<string, ScheduledAgentPrompt[]>;
   loading: Record<string, boolean>;
   load: (projectId: string, scheduleTargetId: string) => Promise<ScheduledAgentPrompt[]>;
+  /** `expectExistingOn`: the target an edited rule was drawn from — the write
+   *  is refused rather than re-creating a rule the scheduler has delivered or
+   *  is delivering since. Omitted, a plain write (a create, the phone). */
   upsert: (
     projectId: string,
     scheduleTargetId: string,
     schedule: ScheduledAgentPrompt,
+    opts?: { expectExistingOn?: string },
   ) => Promise<ScheduledAgentPrompt[]>;
-  remove: (projectId: string, scheduleTargetId: string, scheduleId: string) => Promise<void>;
+  /** `expectUndelivered`: refuse the same way instead of dropping a rule
+   *  whose delivery already happened or is in flight. */
+  remove: (
+    projectId: string,
+    scheduleTargetId: string,
+    scheduleId: string,
+    opts?: { expectUndelivered?: boolean },
+  ) => Promise<void>;
   refreshLoaded: () => Promise<void>;
 }
 
@@ -61,11 +79,14 @@ export const useAgentSchedulesStore = create<AgentSchedulesStore>((set, get) => 
     }
   },
 
-  upsert: async (projectId, scheduleTargetId, schedule) => {
+  upsert: async (projectId, scheduleTargetId, schedule, opts) => {
+    // The guard key is sent only when set, so every plain write keeps exactly
+    // the shape a backend predating it accepts.
     const schedules = await invoke<ScheduledAgentPrompt[]>("agent_schedule_upsert", {
       projectId,
       scheduleTargetId,
       schedule,
+      ...(opts?.expectExistingOn ? { expectExistingOn: opts.expectExistingOn } : {}),
     });
     const key = scheduleCacheKey(projectId, scheduleTargetId);
     set((state) => ({ byTarget: { ...state.byTarget, [key]: schedules } }));
@@ -73,8 +94,13 @@ export const useAgentSchedulesStore = create<AgentSchedulesStore>((set, get) => 
     return schedules;
   },
 
-  remove: async (projectId, scheduleTargetId, scheduleId) => {
-    await invoke("agent_schedule_delete", { projectId, scheduleTargetId, scheduleId });
+  remove: async (projectId, scheduleTargetId, scheduleId, opts) => {
+    await invoke("agent_schedule_delete", {
+      projectId,
+      scheduleTargetId,
+      scheduleId,
+      ...(opts?.expectUndelivered ? { expectUndelivered: true } : {}),
+    });
     const key = scheduleCacheKey(projectId, scheduleTargetId);
     set((state) => ({
       byTarget: {

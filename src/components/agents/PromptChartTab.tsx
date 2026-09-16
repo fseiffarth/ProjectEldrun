@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from "react";
+import { useCallback, useEffect, useMemo } from "react";
 import { useT } from "../../lib/i18n";
 import { useActivityStore } from "../../stores/activity";
 import { scheduleCacheKey, useAgentSchedulesStore } from "../../stores/agentSchedules";
@@ -40,15 +40,19 @@ export function PromptChartTab({ scope, visible = true }: Props) {
   const schedulesByTarget = useAgentSchedulesStore((state) => state.byTarget);
   const loadSchedules = useAgentSchedulesStore((state) => state.load);
   // The chart reads each column's schedules from the cache and loads none itself
-  // (the Agents view used to fill it); standing alone, the tab fills it.
+  // (the Agents view used to fill it); standing alone, the tab fills it — once
+  // it is shown: a hidden tab has no business reading every tab's schedules.
   useEffect(() => {
+    if (!visible) return;
     for (const tab of agentTabs) if (tab.scheduleTargetId && !schedulesByTarget[scheduleCacheKey(scope, tab.scheduleTargetId)]) void loadSchedules(scope, tab.scheduleTargetId).catch(() => []);
-  }, [agentTabs, loadSchedules, schedulesByTarget, scope]);
-  const stateOf = (tab: TabEntry): string => {
+  }, [agentTabs, loadSchedules, schedulesByTarget, scope, visible]);
+  // Stable across renders the activity maps did not move, so the chart's
+  // target list is not rebuilt on every unrelated re-render.
+  const stateOf = useCallback((tab: TabEntry): string => {
     const ptyId = `${scope}:${tab.key}`;
     const state = attentionByTab[ptyId] === "decision" ? "decision" : busyByTab[ptyId] ? "working" : attentionByTab[ptyId] === "done" ? "done" : "idle";
     return t(`agentPrompts.state.${state}`);
-  };
+  }, [attentionByTab, busyByTab, scope, t]);
   return (
     <div className="prompt-chart-tab" data-testid="prompt-chart-tab">
       <PromptChart scope={scope} active={visible} tabs={agentTabs} stateOf={stateOf} />

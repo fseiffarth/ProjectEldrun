@@ -27,10 +27,20 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           PUSH_BEFORE: ${{ github.event.before }}
           PR_BASE: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.sha }}
-          # $USER/$HOME here are the runner's ("runner", "/home/runner"), not the
-          # developer's, so those two patterns would only match innocuous text.
+          # The PR's own head, not `github.sha`: on a pull_request run that is the
+          # synthetic refs/pull/N/merge commit GitHub creates, authored with the
+          # account's primary (real) address, so the identity check refused every
+          # PR regardless of its contents. A push run has no pull_request and falls
+          # back to github.sha, which is then a real commit — a merge made on
+          # GitHub still gets its identity checked there.
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          # $USER/$HOME/hostname here are the runner's ("runner", "/home/runner"),
+          # not the developer's, so those patterns would only match innocuous text.
           PRIVACY_CHECK_SKIP_IDENTITY: '1'
+          # Private literals the scan must refuse but no committed file may hold
+          # (a real name, personal addresses, institution domains), one per line.
+          # Optional: an unset secret is an empty denylist, and a fork's PR gets none.
+          PRIVACY_CHECK_DENYLIST_TEXT: ${{ secrets.PRIVACY_DENYLIST }}
         run: |
           set -euo pipefail
           empty_tree=4b825dc642cb6eb9a060e54bf8d69288fbee4904
@@ -204,6 +214,8 @@ jobs:
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
 
       - name: Rust cache
         uses: swatinem/rust-cache@v2
@@ -221,6 +233,13 @@ jobs:
 
       - name: Run backend tests
         run: cargo test --manifest-path src-tauri/Cargo.toml
+
+      # Staged gate: the macOS-only arms have never been linted (nothing that
+      # lints on Linux can compile them), so the first runs are expected to
+      # report findings. Fix what it prints, then remove `continue-on-error`.
+      - name: Lint backend (clippy, staged)
+        continue-on-error: true
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 
   package-windows:
     name: package-windows

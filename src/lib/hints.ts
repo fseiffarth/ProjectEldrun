@@ -1,27 +1,22 @@
-import { IS_MAC, IS_WINDOWS } from "./platform";
+import { IS_MAC } from "./platform";
+import { livePanelToggleKey } from "./shortcuts";
 import type { TranslationKey } from "./i18n";
 
-// The panel-toggle key is "Super" on Linux/KDE, "F9" on Windows (the lone Win
-// key belongs to the OS — Start opens on release and can't be suppressed, see
-// useKeyboard), and "Cmd (⌘)" on macOS — keep onboarding copy honest per OS.
-// Single source of truth shared by the Feature Guide, the How-to-start dialog,
-// and the contextual hints so the wording never drifts.
-export const PANEL_TOGGLE_KEY = IS_MAC
-  ? "Cmd (⌘)"
-  : IS_WINDOWS
-    ? "F9"
-    : "Super";
-
-/** How to enter "focus mode" (panels hidden), translated. On Linux a lone
- *  Super toggles the panels; on Windows it's F9 (the Win key is OS-reserved);
- *  on macOS the Meta key is reserved for Cmd shortcuts, so the lone-key toggle
- *  is disabled (see useKeyboard) — there the panels stay reachable via the
- *  cursor-to-edge reveal. F11 always toggles fullscreen. Takes `t` as a
- *  parameter since this is a pure (store-free) helper, not a component. */
+/** How to enter "focus mode" (panels hidden), translated. The key named is the
+ *  one that works on THIS desktop, read live from `livePanelToggleKey` — the
+ *  same answer the key handler and the shortcut sheet use: a lone Super on a
+ *  Linux desktop that leaves that key to the focused window (Cinnamon, XFCE),
+ *  F9 where the shell claims it (GNOME, KDE) and on Windows (the Win key is
+ *  OS-reserved). There used to be a constant here saying "Super" for every
+ *  Linux desktop, which told a GNOME user to press the key that opens the
+ *  overview. On macOS the Meta key is reserved for Cmd shortcuts, so the
+ *  lone-key toggle is disabled (see useKeyboard) — there the panels stay
+ *  reachable via the cursor-to-edge reveal. F11 always toggles fullscreen.
+ *  Takes `t` as a parameter since this is a pure (store-free) helper. */
 export function focusModeTip(t: (key: TranslationKey, params?: Record<string, string | number>) => string): string {
   return IS_MAC
     ? t("onboarding.focusModeTipMac")
-    : t("onboarding.focusModeTipOther", { key: PANEL_TOGGLE_KEY });
+    : t("onboarding.focusModeTipOther", { key: livePanelToggleKey() });
 }
 
 /** One numbered step in the first-run "How to start" instruction. The same copy

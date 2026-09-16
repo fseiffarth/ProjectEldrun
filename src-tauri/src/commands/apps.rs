@@ -1163,7 +1163,7 @@ pub fn embed_capability(
     let os_embeddable = {
         let ws = workspace.lock().unwrap();
         ws.backend.supports_embedding()
-    } && std::env::var("WAYLAND_DISPLAY").is_err();
+    } && !crate::platform::session_is_wayland();
 
     let global_apps = crate::commands::default_apps::get_default_apps()
         .map(|d| d.0)

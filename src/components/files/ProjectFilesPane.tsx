@@ -320,7 +320,7 @@ function BoxRootSection({
     projectDir: treeDir,
     remoteBlocked,
   });
-  const toolbarBtnStyle = { fontSize: 10, padding: "1px 6px", height: 20, marginLeft: 2 } as const;
+  const toolbarBtnStyle = { marginLeft: 2 } as const;
   return (
     <div
       className={`file-root file-root--${variant}${collapsed ? " is-collapsed" : ""}${
@@ -384,7 +384,7 @@ function BoxRootSection({
             </button>
           ))}
           <button
-            className="toolbar-btn"
+            className="toolbar-btn toolbar-btn--sm"
             style={toolbarBtnStyle}
             onClick={() => {
               const sub = rel.replace(/^\/+|\/+$/g, "");
@@ -399,7 +399,7 @@ function BoxRootSection({
           </button>
           {localFile && project && (
             <button
-              className="toolbar-btn"
+              className="toolbar-btn toolbar-btn--sm"
               style={toolbarBtnStyle}
               onClick={() => setShowSettings(true)}
               title={t("projectFilesView.projectSettingsTitle")}
@@ -780,7 +780,7 @@ export function ProjectFilesPane({
             const autoAll = !!syncMap?.[""]?.auto;
             return (
               <button
-                className="toolbar-btn"
+                className="toolbar-btn toolbar-btn--sm"
                 style={{
                   fontSize: 10,
                   padding: "1px 6px",
@@ -808,8 +808,7 @@ export function ProjectFilesPane({
               is how it is re-opened (e.g. once the project is finally connected,
               so the host column can be filled in). */}
           <button
-            className="toolbar-btn"
-            style={{ fontSize: 10, padding: "1px 6px", height: 20 }}
+            className="toolbar-btn toolbar-btn--sm"
             onClick={() => useBigFoldersStore.getState().open(projectId)}
             title={t("projectFilesPane.bigFoldersTitle")}
           >
@@ -835,7 +834,7 @@ export function ProjectFilesPane({
             </span>
           )}
           <button
-            className="toolbar-btn"
+            className="toolbar-btn toolbar-btn--sm"
             style={{
               fontSize: 10,
               padding: "1px 6px",

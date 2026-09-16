@@ -1,11 +1,11 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { MAIL_PAGE_SIZE, unreadTotal, useMailStore } from "../../stores/mail";
 import { useSettingsStore } from "../../stores/settings";
 import { onMailSync, mailAiAllowed } from "../../lib/mail";
 import { useT } from "../../lib/i18n";
 import { Toggle } from "../common/Toggle";
 import { UntestedTag } from "../common/UntestedTag";
-import type { MailAccount, MailHeader, MailPriority } from "../../types/mail";
+import type { MailAccount, MailHeader, MailPriority, MailSort } from "../../types/mail";
 import { MailList } from "./MailList";
 import { MailMessageView } from "./MailMessageView";
 import { MailAccountDialog } from "./MailAccountDialog";
@@ -149,20 +149,48 @@ export function MailPane({ visible }: MailPaneProps) {
   const syncState = selectedAccountId ? sync[selectedAccountId] : undefined;
   const syncing = syncState?.phase === "start" || syncState?.phase === "folder" || syncState?.phase === "headers";
 
-  const toggleFlag = (h: MailHeader) =>
-    void useMailStore.getState().setFlag(h.id, "flagged", !h.flagged);
-  const setPriority = (h: MailHeader, priority: MailPriority | null) =>
-    void useMailStore.getState().setPriority(h.id, priority);
+  // Every `MailList` callback is identity-stable. `MailList` is `memo`ed, and
+  // this pane re-renders on store writes the list never shows (sync phases, a
+  // loading body, an error) — one fresh arrow would re-render all 100 rows on
+  // each. The actions go through `getState()` and act on the row they are
+  // handed, so they close over nothing; `accountLabel` reads `accounts` and is
+  // rebuilt exactly when that changes.
+  const toggleFlag = useCallback(
+    (h: MailHeader) => void useMailStore.getState().setFlag(h.id, "flagged", !h.flagged),
+    [],
+  );
+  const setPriority = useCallback(
+    (h: MailHeader, priority: MailPriority | null) =>
+      void useMailStore.getState().setPriority(h.id, priority),
+    [],
+  );
   // Resolve a row's account to something a person recognizes. Falls back to
   // nothing rather than to the id: an account deleted since the mark was made
   // leaves rows whose `account_id` names no mailbox, and a raw uuid on a row
   // would be worse than a blank line.
-  const accountLabel = (h: MailHeader) => {
-    const account = accounts.find((a) => a.id === h.account_id);
-    return account ? account.label || account.address : undefined;
-  };
-  const toggleSeen = (h: MailHeader) =>
-    void useMailStore.getState().setFlag(h.id, "seen", !h.seen);
+  const accountLabel = useCallback(
+    (h: MailHeader) => {
+      const account = accounts.find((a) => a.id === h.account_id);
+      return account ? account.label || account.address : undefined;
+    },
+    [accounts],
+  );
+  const toggleSeen = useCallback(
+    (h: MailHeader) => void useMailStore.getState().setFlag(h.id, "seen", !h.seen),
+    [],
+  );
+  const selectMessage = useCallback(
+    (id: string) => void useMailStore.getState().selectMessage(id),
+    [],
+  );
+  const setSort = useCallback(
+    (next: MailSort, desc: boolean) => void useMailStore.getState().setSort(next, desc),
+    [],
+  );
+  const loadPage = useCallback(
+    (offset: number) => void useMailStore.getState().loadPage(offset),
+    [],
+  );
 
   // The unread count is the *folder's*, not this page's: the button acts on the
   // whole folder, so counting the 100 rows on screen would understate what the
@@ -576,13 +604,13 @@ export function MailPane({ visible }: MailPaneProps) {
               headers={headers}
               selectedId={selectedMessageId}
               loading={loadingHeaders}
-              onSelect={(id) => void useMailStore.getState().selectMessage(id)}
+              onSelect={selectMessage}
               onToggleFlag={toggleFlag}
               onToggleSeen={toggleSeen}
               onSetPriority={setPriority}
               sort={sort}
               sortDesc={sortDesc}
-              onSort={(next, desc) => void useMailStore.getState().setSort(next, desc)}
+              onSort={setSort}
               // Only in a priority list: there the rail cannot say which mailbox
               // a row came from, and in a folder it already does.
               {...(selectedPriority ? { accountLabel } : {})}
@@ -590,7 +618,7 @@ export function MailPane({ visible }: MailPaneProps) {
               pageSize={MAIL_PAGE_SIZE}
               total={headerTotal}
               scanned={headerScanned}
-              onPage={(offset) => void useMailStore.getState().loadPage(offset)}
+              onPage={loadPage}
             />
             <MailMessageView
               header={selectedHeader}

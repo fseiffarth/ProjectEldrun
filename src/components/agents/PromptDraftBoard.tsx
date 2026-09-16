@@ -7,7 +7,14 @@ import type { ChartDrag } from "./usePromptChartDrag";
 
 interface Point { x: number; y: number }
 interface Layout { free: boolean; positions: Record<string, Point> }
-export interface DraftBoardHandle { place: (id: string, x: number, y: number) => boolean }
+export interface DraftBoardHandle {
+  place: (id: string, x: number, y: number) => boolean;
+  /** Whether cards can be moved at all: in row layout `place` refuses. */
+  free: boolean;
+  /** Open the board's own composer — at the next free spot on the canvas, or
+   *  at the row's end — the one composer the chart's ＋ opens too. */
+  compose: () => void;
+}
 
 /** The composer's size on the free canvas, so the canvas grows to hold it. */
 const COMPOSER_WIDTH = 460;
@@ -52,6 +59,21 @@ export const PromptDraftBoard = forwardRef<DraftBoardHandle, {
     const rect = canvas.current?.getBoundingClientRect();
     return { x: Math.max(0, x - (rect?.left ?? 0)), y: Math.max(0, y - (rect?.top ?? 0)) };
   };
+  /** The first grid spot the composer covers no card at, reading row by row;
+   *  below the lowest card when the canvas is full. */
+  const freeSpot = (): Point => {
+    const boxes = cards.map((card, index) => ({ ...pointOf(card.id, index), ...(sizes[card.id] ?? { width: 168, height: 120 }) }));
+    const clear = (x: number, y: number) => boxes.every((box) =>
+      x + COMPOSER_WIDTH <= box.x || box.x + box.width <= x || y + COMPOSER_HEIGHT <= box.y || box.y + box.height <= y);
+    for (let row = 0; row < 64; row += 1) {
+      for (let column = 0; column < columns; column += 1) {
+        const x = column * 192 + 8;
+        const y = row * 152 + 8;
+        if ((column === 0 || x + COMPOSER_WIDTH <= width) && clear(x, y)) return { x, y };
+      }
+    }
+    return { x: 8, y: Math.max(8, ...boxes.map((box) => box.y + box.height + 8)) };
+  };
   useImperativeHandle(ref, () => ({
     place: (id, x, y) => {
       if (!layout.free) return false;
@@ -59,6 +81,8 @@ export const PromptDraftBoard = forwardRef<DraftBoardHandle, {
       setLayout((value) => ({ ...value, positions: { ...value.positions, [id]: point } }));
       return true;
     },
+    free: layout.free,
+    compose: () => setComposer(layout.free ? freeSpot() : { x: 0, y: 0 }),
   }));
   useEffect(() => {
     try { localStorage.setItem(key, JSON.stringify(layout)); } catch { /* retain it for this session */ }
@@ -139,7 +163,8 @@ export const PromptDraftBoard = forwardRef<DraftBoardHandle, {
         onClick={() => setLayout((value) => ({ free: !value.free, positions: Object.fromEntries(cards.map((card, index) => [card.id, pointOf(card.id, index)])) }))}>
         {t("promptChart.freeLayout")}
       </button>
-      <small>{t("promptChart.draftLayoutHint")} {t("promptChart.draftCreateHint")}</small>
+      {/* "Move cards freely" is true only in free layout; the row does not move them. */}
+      <small>{layout.free ? `${t("promptChart.draftFreeHint")} ` : ""}{t("promptChart.draftLayoutHint")} {t("promptChart.draftCreateHint")}</small>
     </div>
     <small className="agent-prompt-completion-hint">{t("promptChart.completionHint")}</small>
     <div ref={viewport} className={layout.free ? "agent-prompt-draft-viewport" : undefined}>
@@ -149,11 +174,10 @@ export const PromptDraftBoard = forwardRef<DraftBoardHandle, {
           width: Math.max(width, ...points.map((point, index) => point.x + (sizes[cards[index].id]?.width ?? 168) + 32), composer ? composer.x + COMPOSER_WIDTH + 32 : 0),
           height: Math.max(320, ...points.map((point, index) => point.y + (sizes[cards[index].id]?.height ?? 120) + 64), composer ? composer.y + COMPOSER_HEIGHT + 64 : 0),
         } : undefined}>
-        {!layout.free && composerNode}
         {cards.map((card, index) => layout.free
           ? <div key={card.key} data-draft-id={card.id} className="agent-prompt-draft-position" style={{ left: points[index].x, top: points[index].y }}>{renderCard(card)}</div>
           : renderCard(card))}
-        {layout.free && composerNode}
+        {composerNode}
         {cards.length === 0 && !composer && <div className="file-tree-empty">{t("promptChart.noDrafts")}</div>}
       </div>
     </div>

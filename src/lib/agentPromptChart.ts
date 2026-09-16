@@ -39,13 +39,16 @@ export interface PromptChartStrand {
   schedules: ScheduledAgentPrompt[];
 }
 
-/** Whether a sent row belongs to `strand`: by the tab it went to, by the
- *  session (a live tab's launch id, before the tab id was recorded), or by
- *  label for a row written before the tab had either. */
+/** Whether a sent row belongs to `strand`, by the strongest identity the row
+ *  carries and by that one only: the tab it went to when the row names one,
+ *  else the session (a row written before the tab id was recorded — a live
+ *  tab's launch id is its session id too), else the label for a row with
+ *  neither. A fallback, never an OR: default labels repeat ("Claude"), so a
+ *  gone tab's row matched by label would land on whichever live tab shares it. */
 export function rowOnStrand(strand: PromptChartStrand, row: SentAgentPrompt): boolean {
-  return (!!row.tab_id && strand.tabId === row.tab_id)
-    || (!!row.session_id && strand.sessionId === row.session_id)
-    || strand.label === row.tab_label;
+  if (row.tab_id) return strand.tabId === row.tab_id;
+  if (row.session_id) return strand.sessionId === row.session_id;
+  return strand.label === row.tab_label;
 }
 
 export interface PromptChartCard {
@@ -234,9 +237,13 @@ export function occupiedTargets(cards: PromptChartCard[]): Map<string, PromptCha
   return occupied;
 }
 
+/** Round to the nearest `minutes` step of the LOCAL wall clock. The epoch's
+ *  grid is UTC's, so in a :30 or :45 zone an hour snap would land on the half
+ *  or three-quarter hour. */
 export function snapPromptTime(date: Date, minutes = 5): Date {
   const step = minutes * 60_000;
-  return new Date(Math.round(date.getTime() / step) * step);
+  const offset = -date.getTimezoneOffset() * 60_000;
+  return new Date(Math.round((date.getTime() + offset) / step) * step - offset);
 }
 
 export function queueOrderTimes(ids: string[], now: Date): Record<string, string> {

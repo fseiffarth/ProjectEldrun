@@ -3719,3 +3719,38 @@ mod tests {
         drop(listener);
     }
 }
+
+#[cfg(test)]
+mod validator_tests {
+    use super::{valid_calendar_month, valid_mail_id};
+
+    /// The month path segment is exactly `YYYY-MM` with a real month number;
+    /// anything looser would reach the desktop's calendar store unvalidated.
+    #[test]
+    fn a_calendar_month_is_exactly_yyyy_mm_with_a_real_month() {
+        assert!(valid_calendar_month("2026-09"));
+        assert!(valid_calendar_month("2026-01"));
+        assert!(valid_calendar_month("2026-12"));
+        assert!(!valid_calendar_month("2026-00"));
+        assert!(!valid_calendar_month("2026-13"));
+        assert!(!valid_calendar_month("2026-9"));
+        assert!(!valid_calendar_month("2026/09"));
+        assert!(!valid_calendar_month("2026-09-01"));
+        assert!(!valid_calendar_month("202a-09"));
+        assert!(!valid_calendar_month(""));
+        assert!(!valid_calendar_month("２０２６-09"), "fullwidth digits are 3 bytes each");
+    }
+
+    /// A mail id is an opaque handle: bounded, ASCII, and never a path.
+    #[test]
+    fn a_mail_id_is_a_bounded_opaque_ascii_handle() {
+        assert!(valid_mail_id("m_7f3-AbC"));
+        assert!(valid_mail_id(&"a".repeat(128)));
+        assert!(!valid_mail_id(&"a".repeat(129)));
+        assert!(!valid_mail_id(""));
+        assert!(!valid_mail_id("../etc"));
+        assert!(!valid_mail_id("id with space"));
+        assert!(!valid_mail_id("id.json"));
+        assert!(!valid_mail_id("ünïcode"));
+    }
+}

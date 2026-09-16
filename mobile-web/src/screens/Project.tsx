@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { DEFAULT_AGENT_SORT, sortAgentTabs } from "../../../shared/agentSort";
 import { api, type AgentRow, type ProjectDetail, type TabRow, type TabSchedules } from "../api";
 import { CloseSheet } from "./CloseSheet";
 import { PromptsSheet } from "./PromptsSheet";
@@ -37,6 +38,16 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
    *  button sits a thumb-width from the one that opens the terminal, and the
    *  answer is worth reading — closing leaves the session running. */
   const [closeTab, setCloseTab] = useState<TabRow | null>(null);
+  /** The desktop Agents view's default order, by the same shared function: a
+   * tab asking something, then the ones working now, then the rest by their
+   * last finished turn. A shell (or an agent with no turn this session) has no
+   * reading and sinks, keeping the tab bar's order among its kind. */
+  const tabs = useMemo(() => sortAgentTabs(detail?.tabs ?? [], DEFAULT_AGENT_SORT, (tab) => ({
+    decision: tab.agent_status === "question",
+    working: tab.agent_status === "working",
+    workingAt: tab.working_at,
+    doneAt: tab.done_at,
+  })), [detail?.tabs]);
   const pendingKeys = useRef(new Map<string, string>());
   const inFlight = useRef(false);
   const load = useCallback(() => {
@@ -98,7 +109,7 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
         "Desktop unavailable" notice that vanished a moment later. */}
     {detail && !detail.desktop_available && <p className="notice">Desktop unavailable — existing sessions can still be opened, but activating a project and creating tabs require Eldrun.</p>}
     {error && <p className="error">{error}</p>}
-    <section className="cards">{detail?.tabs.map((tab) => <div className="tab-card" key={tab.id}>
+    <section className="cards">{tabs.map((tab) => <div className="tab-card" key={tab.id}>
       <button className="card" disabled={!tab.available} onClick={() => terminal(tab)}><span><strong>{tab.label}</strong><small>{tab.kind}{tab.agent_model ? ` · ${tab.agent_model}` : ""}{tab.viewer_busy ? " · open elsewhere" : tab.available ? " · live" : " · gone"}</small></span><span className="card-trailing">{tab.agent_status && <small className={`agent-status ${tab.agent_status}`}>{tab.agent_status}</small>}<span>›</span></span></button>
       {/* Scheduling lives out here beside the tab, not inside the session:
           reaching a schedule must not mean attaching a terminal, and this is

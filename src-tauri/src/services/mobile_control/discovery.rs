@@ -326,9 +326,28 @@ fn mobile_local(project: &ProjectRecord) -> bool {
         && !enabled(&project.vm)
 }
 
+/// `tmux ls` through Eldrun's effective PATH, the one the desktop's own tmux
+/// spawns use (`services::tmux_local`). A headless sidecar (launchd/systemd
+/// user service) inherits a bare PATH, so a bare `tmux` misses Homebrew's on a
+/// Mac, or picks `/usr/bin/tmux` against a server a `~/.local/bin/tmux` started
+/// — and tmux refuses a client of another protocol version.
+fn tmux_ls_command(format: &str) -> Command {
+    let mut command = crate::paths::command_no_window("tmux");
+    command.args(["ls", "-F", format]);
+    command
+}
+
 fn live_tmux() -> HashMap<String, LiveTmux> {
-    let format = "#{session_name}\t#{session_activity}\t#{pane_current_path}";
-    let Ok(out) = Command::new("tmux").args(["ls", "-F", format]).output() else {
+    // Windows has no tmux, and local tabs there are never wrapped in one
+    // (`CenterPanel` disables local persistence on Windows), so there is nothing
+    // to list — and a spawn per catalog read would only ever fail. The desktop's
+    // Mobile settings say so rather than leaving an empty terminal list to explain
+    // itself.
+    if cfg!(target_os = "windows") {
+        return HashMap::new();
+    }
+    let format ="#{session_name}\t#{session_activity}\t#{pane_current_path}";
+    let Ok(out) = tmux_ls_command(format).output() else {
         return HashMap::new();
     };
     if !out.status.success() {
@@ -525,6 +544,18 @@ fn resolve_scope(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tmux_ls_runs_through_eldrun_path() {
+        let command = tmux_ls_command("#{session_name}");
+        let path = command
+            .get_envs()
+            .find(|(key, _)| *key == "PATH")
+            .and_then(|(_, value)| value)
+            .expect("PATH is set on the tmux ls spawn");
+        let first = std::env::split_paths(path).next().expect("non-empty PATH");
+        assert_eq!(first, crate::paths::extra_path_dirs()[0]);
+    }
 
     #[test]
     fn opaque_ids_are_domain_separated_and_stable() {

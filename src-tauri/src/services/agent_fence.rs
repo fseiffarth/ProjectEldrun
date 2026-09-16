@@ -21,7 +21,90 @@ use crate::schema::projects::{ProjectEntry, ProjectsList};
 use crate::terminal::PtyOptions;
 use crate::{paths, storage};
 
-pub const INSTALL_HINT: &str = "sudo apt install bubblewrap";
+/// A package the fence may ask the user to install. Only bubblewrap for now: it
+/// is the one missing tool that makes Eldrun fail closed.
+#[cfg(any(target_os = "linux", test))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstallPkg {
+    Bubblewrap,
+}
+
+/// The distribution's own install command for `pkg`, chosen from an
+/// `os-release` file: its `ID` first, then each `ID_LIKE` entry in order.
+/// `None` for a distribution this does not recognize — the pill runs this
+/// command with one click, and another package manager's command is worse than
+/// no button.
+#[cfg(any(target_os = "linux", test))]
+pub fn package_install_cmd(os_release: &str, pkg: InstallPkg) -> Option<String> {
+    let field = |key: &str| {
+        os_release.lines().find_map(|line| {
+            let (k, v) = line.split_once('=')?;
+            (k.trim() == key)
+                .then(|| v.trim().trim_matches(|c| c == '"' || c == '\'').to_ascii_lowercase())
+        })
+    };
+    let mut ids: Vec<String> = field("ID").into_iter().collect();
+    if let Some(like) = field("ID_LIKE") {
+        ids.extend(like.split_whitespace().map(str::to_string));
+    }
+    let package = match pkg {
+        InstallPkg::Bubblewrap => "bubblewrap",
+    };
+    ids.iter().find_map(|id| {
+        let manager = match id.as_str() {
+            "debian" | "ubuntu" | "linuxmint" | "pop" | "elementary" | "raspbian" | "kali"
+            | "zorin" | "neon" => "sudo apt install -y",
+            "fedora" | "rhel" | "centos" | "rocky" | "almalinux" | "nobara" => {
+                "sudo dnf install -y"
+            }
+            "arch" | "manjaro" | "endeavouros" | "cachyos" => "sudo pacman -S --needed",
+            "suse" | "sles" => "sudo zypper install -y",
+            other if other.starts_with("opensuse") => "sudo zypper install -y",
+            _ => return None,
+        };
+        Some(format!("{manager} {package}"))
+    })
+}
+
+/// The install command for the fence tool on this machine, or `None` when there
+/// is nothing honest to offer: not Linux (macOS ships `sandbox-exec`, Windows
+/// has no fence), or a distribution [`package_install_cmd`] does not know.
+pub fn fence_install_cmd() -> Option<String> {
+    #[cfg(target_os = "linux")]
+    {
+        static CMD: OnceLock<Option<String>> = OnceLock::new();
+        CMD.get_or_init(|| {
+            let release = std::fs::read_to_string("/etc/os-release")
+                .or_else(|_| std::fs::read_to_string("/usr/lib/os-release"))
+                .unwrap_or_default();
+            package_install_cmd(&release, InstallPkg::Bubblewrap)
+        })
+        .clone()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
+    }
+}
+
+/// The spawn refusal when the fence tool is missing — one wording for both
+/// places that refuse (`pty_spawn`'s decision and the bubblewrap wrapper).
+pub fn fence_unavailable_message() -> String {
+    let tool = fence_tool_name();
+    if cfg!(target_os = "macos") {
+        return format!(
+            "Agent fence: {tool} is unavailable on this Mac, so this agent was not started. Turn the Agent fence off for this project."
+        );
+    }
+    match fence_install_cmd() {
+        Some(cmd) => format!(
+            "Agent fence: {tool} is unavailable, so this agent was not started. Install it with `{cmd}`, or turn the Agent fence off for this project."
+        ),
+        None => format!(
+            "Agent fence: {tool} is unavailable, so this agent was not started. Install the {tool} package with your distribution's package manager, or turn the Agent fence off for this project."
+        ),
+    }
+}
 
 /// The sandboxing tool this OS's fence is built on, for messages.
 pub fn fence_tool_name() -> &'static str {
@@ -45,9 +128,15 @@ pub fn platform_fenceable() -> bool {
 pub enum FenceDecision {
     Fenced { roots: Vec<PathBuf> },
     NotApplicable { reason: &'static str },
-    Unavailable { install_hint: &'static str },
+    /// The fence tool is missing or unusable. The install advice is not carried
+    /// here: it depends on the distribution, and [`fence_unavailable_message`]
+    /// reads it, which keeps this decision pure.
+    Unavailable,
 }
 
+// The mount/symlink planners below feed the bubblewrap fence (Linux) and the
+// Seatbelt profile inputs (macOS, `sandbox_exec_inputs`); Windows has no fence.
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct BindMount {
     pub src: String,
@@ -56,6 +145,7 @@ pub(crate) struct BindMount {
 }
 
 /// A symlink created inside the fence, pointing at a staged shadow copy.
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct FenceSymlink {
     pub target: String,
@@ -75,6 +165,7 @@ pub(crate) struct FenceSymlink {
 /// writer: an in-place rewrite still lands in the throwaway copy, and a rename
 /// simply replaces the symlink with a plain file in the home tmpfs. Neither
 /// reaches the host original, which is the whole point of the shadow.
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
 pub(crate) const STAGE_MOUNT: &str = "/run/eldrun-agent-config";
 
 #[derive(Debug, Clone, Serialize)]
@@ -83,6 +174,9 @@ pub struct AgentFenceStatus {
     pub reason: String,
     pub roots: Vec<String>,
     pub bwrap_available: bool,
+    /// The one-click install for the missing fence tool on this distribution;
+    /// `None` when the tool works or there is no command worth running.
+    pub install_cmd: Option<String>,
 }
 
 /// Default read-only host paths made visible inside the otherwise-empty home.
@@ -131,9 +225,7 @@ pub fn decide(
         return FenceDecision::NotApplicable { reason: "off" };
     }
     if !tool_ok {
-        return FenceDecision::Unavailable {
-            install_hint: INSTALL_HINT,
-        };
+        return FenceDecision::Unavailable;
     }
     FenceDecision::Fenced { roots }
 }
@@ -308,6 +400,7 @@ pub fn configured_read_only_paths() -> Vec<String> {
 /// Pure over the filesystem: it reads links but never mounts anything, and a
 /// command that cannot be found on the host yields nothing — bubblewrap then
 /// reports the same not-found error the shell would.
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
 pub(crate) fn command_bind_paths(
     cmd: &str,
     path_dirs: &[PathBuf],
@@ -356,6 +449,7 @@ pub(crate) fn command_bind_paths(
 
 /// Collapse `.` and `..` without touching the filesystem, so a relative link
 /// target like `../share/claude/versions/2.1.251` yields a clean mount path.
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
 fn normalize_lexically(path: &Path) -> PathBuf {
     use std::path::Component;
     let mut out = PathBuf::new();
@@ -390,6 +484,7 @@ fn normalize_lexically(path: &Path) -> PathBuf {
 /// that can update its own CLI can also replace it, and that binary is the one
 /// the user runs everywhere. Pure over the filesystem, like
 /// [`command_bind_paths`].
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
 pub(crate) fn updatable_install_dirs(
     cmd: &str,
     path_dirs: &[PathBuf],
@@ -480,6 +575,7 @@ pub fn bwrap_available() -> bool {
     }
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
 fn mount_pair(pair: &str, read_only: bool) -> Option<BindMount> {
     let (src, dst) = pair.split_once(':')?;
     Some(BindMount {
@@ -491,6 +587,7 @@ fn mount_pair(pair: &str, read_only: bool) -> Option<BindMount> {
 
 /// Turn a `(staged copy, real path)` pair into the symlink that puts the copy
 /// at the real path — see [`STAGE_MOUNT`] for why it is a link, not a mount.
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
 fn staged_symlink(src: &str, dst: &str) -> Option<FenceSymlink> {
     let leaf = Path::new(src).file_name()?.to_string_lossy().into_owned();
     Some(FenceSymlink {
@@ -499,6 +596,7 @@ fn staged_symlink(src: &str, dst: &str) -> Option<FenceSymlink> {
     })
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
 fn agent_state_mounts(scope_id: &str, roots: &[PathBuf]) -> (Vec<BindMount>, Vec<FenceSymlink>) {
     let home = paths::home_dir_string();
     let state_dir = storage::state_dir();
@@ -512,11 +610,25 @@ fn agent_state_mounts(scope_id: &str, roots: &[PathBuf]) -> (Vec<BindMount>, Vec
         &home,
         &live_own.to_string_lossy(),
         &live_root.to_string_lossy(),
+        cfg!(target_os = "linux"),
     );
-    let mut mounts: Vec<BindMount> = home_rw
+    let mut mounts: Vec<BindMount> = Vec::new();
+    // A directory mount lets SQLite replace its WAL/SHM files normally. On
+    // macOS Seatbelt cannot substitute paths, so it continues using the real
+    // host directory under its deny/allow profile instead.
+    #[cfg(target_os = "linux")]
+    mounts.push(BindMount {
+        src: crate::services::sandbox::prepare_codex_state(&home, scope_id)
+            .to_string_lossy()
+            .into_owned(),
+        dst: format!("{home}/.codex"),
+        read_only: false,
+    });
+    mounts.extend(
+        home_rw
         .into_iter()
-        .filter_map(|m| mount_pair(&m, false))
-        .collect();
+        .filter_map(|m| mount_pair(&m, false)),
+    );
     // Hook/statusline scripts and global instruction files: readable, never
     // writable — a write there escapes the fence into an uncontained session.
     mounts.extend(home_ro.into_iter().filter_map(|m| mount_pair(&m, true)));
@@ -582,6 +694,7 @@ fn agent_state_mounts(scope_id: &str, roots: &[PathBuf]) -> (Vec<BindMount>, Vec
 /// ones: the empty home hides secrets, selected state/config is restored, and
 /// project/box roots finally become read-write.  `symlinks` come last of the
 /// filesystem setup, after the mount that holds what they point at.
+#[cfg(any(target_os = "linux", test))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn bwrap_args(
     home: &str,
@@ -658,9 +771,7 @@ pub fn wrap_pty_options_bwrap(
     scope_id: &str,
 ) -> Result<(), String> {
     if !bwrap_available() {
-        return Err(format!(
-            "Agent fence: bubblewrap is unavailable, so this agent was not started. Install it with `{INSTALL_HINT}`, or turn the Agent fence off for this project."
-        ));
+        return Err(fence_unavailable_message());
     }
     let (mut mounts, symlinks) = agent_state_mounts(scope_id, roots);
     let mut extra_ro = configured_read_only_paths();
@@ -751,8 +862,18 @@ fn sbpl_string(path: &str) -> String {
 ///   files are simply read-only here — an agent that tries to rewrite its own
 ///   `settings.json` gets `EPERM` and carries on, rather than writing into a
 ///   throwaway copy. The hook scripts they point at are read-only in both.
-/// - Network, process spawning and the device tree are left at the platform
-///   default, as bubblewrap leaves them (it unshares only the pid namespace).
+/// - **Devices** fall under the write denial like any other path, except the
+///   handful every ordinary tool writes to: `/dev/null` and `/dev/zero`, the
+///   controlling terminal `/dev/tty` (git and ssh prompt through it),
+///   `/dev/dtracehelper`, and `/dev/fd/*` (process substitution). Other
+///   terminals' `/dev/ttys*` stay denied on purpose — allowing them would let a
+///   fenced agent write into *another* tab's terminal. The agent's own PTY is an
+///   inherited descriptor and needs no path rule.
+/// - Network and process spawning are left at the platform default, as
+///   bubblewrap leaves them (it unshares only the pid namespace).
+#[cfg(any(target_os = "macos", test))]
+const SEATBELT_DEVICE_WRITES: &str = "(allow file-write* (literal \"/dev/null\") (literal \"/dev/zero\") (literal \"/dev/tty\") (literal \"/dev/dtracehelper\") (subpath \"/dev/fd\"))\n";
+
 #[cfg(any(target_os = "macos", test))]
 pub(crate) fn sandbox_exec_profile(inputs: &SeatbeltInputs) -> String {
     let mut p = String::from("(version 1)\n(allow default)\n");
@@ -767,6 +888,7 @@ pub(crate) fn sandbox_exec_profile(inputs: &SeatbeltInputs) -> String {
     }
     // Writes: nothing, then the roots and the agent's own state.
     p.push_str("(deny file-write*)\n");
+    p.push_str(SEATBELT_DEVICE_WRITES);
     for path in inputs.roots.iter().chain(&inputs.writable) {
         p.push_str(&format!("(allow file-write* (subpath {}))\n", sbpl_string(path)));
     }
@@ -959,12 +1081,14 @@ pub fn status_for_scope(scope_id: &str) -> AgentFenceStatus {
         .map(|r| r.iter().map(|p| p.to_string_lossy().into_owned()).collect())
         .unwrap_or_default();
     let available = bwrap_available();
+    let install_cmd = if available { None } else { fence_install_cmd() };
     let Some(roots) = roots else {
         return AgentFenceStatus {
             enforced: false,
             reason: "unknown project or box".to_string(),
             roots: root_strings,
             bwrap_available: available,
+            install_cmd,
         };
     };
     let decision = decide(
@@ -981,13 +1105,14 @@ pub fn status_for_scope(scope_id: &str) -> AgentFenceStatus {
             (false, platform_reason().to_string())
         }
         FenceDecision::NotApplicable { reason } => (false, reason.to_string()),
-        FenceDecision::Unavailable { .. } => (false, format!("{} unavailable", fence_tool_name())),
+        FenceDecision::Unavailable => (false, format!("{} unavailable", fence_tool_name())),
     };
     AgentFenceStatus {
         enforced,
         reason,
         roots: root_strings,
         bwrap_available: available,
+        install_cmd,
     }
 }
 
@@ -1079,12 +1204,52 @@ mod tests {
         // Writes are denied globally, then the root and the agent state come back.
         assert!(pos("(deny file-write*)") < pos("(allow file-write* (subpath \"/Users/a/eldrun/projects/p\"))"));
         assert!(pos("(deny file-write*)") < pos("(allow file-write* (subpath \"/Users/a/.claude\"))"));
+        // The device allowlist comes right after the global deny, before any
+        // protected deny, and never opens other terminals' ttys.
+        let devices = pos("(literal \"/dev/null\")");
+        assert_eq!(devices, pos("(deny file-write*)") + 1);
+        for dev in ["/dev/zero", "/dev/tty\"", "/dev/dtracehelper"] {
+            assert!(lines[devices].contains(dev), "missing {dev}");
+        }
+        assert!(lines[devices].contains("(subpath \"/dev/fd\")"));
+        assert!(devices < pos("(deny file-write* (subpath \"/Users/a/.claude/settings.json\"))"));
+        assert!(!profile.contains("ttys"), "no /dev/ttys* rule");
         // The protected paths are denied LAST so they win over the .claude allow.
         let hook_deny = pos("(deny file-write* (subpath \"/Users/a/.claude/settings.json\"))");
         assert!(hook_deny > pos("(allow file-write* (subpath \"/Users/a/.claude\"))"));
         assert_eq!(lines.last().unwrap(), &"(deny file-write* (subpath \"/Users/a/.local/share/eldrun/hooks\"))");
         // Quoting: a path with a quote or backslash stays one Scheme string.
         assert_eq!(sbpl_string("/a/b\"c\\d"), "\"/a/b\\\"c\\\\d\"");
+    }
+
+    #[test]
+    fn fence_install_command_follows_the_distribution() {
+        let cmd = |release: &str| package_install_cmd(release, InstallPkg::Bubblewrap);
+        assert_eq!(
+            cmd("NAME=\"Ubuntu\"\nID=ubuntu\nID_LIKE=debian\n").as_deref(),
+            Some("sudo apt install -y bubblewrap")
+        );
+        assert_eq!(cmd("ID=debian\n").as_deref(), Some("sudo apt install -y bubblewrap"));
+        assert_eq!(cmd("ID=fedora\n").as_deref(), Some("sudo dnf install -y bubblewrap"));
+        assert_eq!(cmd("ID=arch\n").as_deref(), Some("sudo pacman -S --needed bubblewrap"));
+        assert_eq!(
+            cmd("ID=\"opensuse-tumbleweed\"\nID_LIKE=\"opensuse suse\"\n").as_deref(),
+            Some("sudo zypper install -y bubblewrap")
+        );
+        // An unrecognized ID falls through to ID_LIKE, in its order.
+        assert_eq!(
+            cmd("ID=\"someforge\"\nID_LIKE=\"rhel fedora\"\n").as_deref(),
+            Some("sudo dnf install -y bubblewrap")
+        );
+        // ID wins over ID_LIKE.
+        assert_eq!(
+            cmd("ID=ubuntu\nID_LIKE=\"arch\"\n").as_deref(),
+            Some("sudo apt install -y bubblewrap")
+        );
+        // Unknown distributions and an empty file offer nothing to run.
+        assert_eq!(cmd("ID=nixos\n"), None);
+        assert_eq!(cmd("ID=gentoo\n"), None);
+        assert_eq!(cmd(""), None);
     }
 
     #[test]
@@ -1128,7 +1293,7 @@ mod tests {
         );
         assert!(matches!(
             decide(&opts("claude"), roots.clone(), false, true, true, false),
-            FenceDecision::Unavailable { .. }
+            FenceDecision::Unavailable
         ));
         let mut custom = opts("my-agent-wrapper");
         custom.agent = true;

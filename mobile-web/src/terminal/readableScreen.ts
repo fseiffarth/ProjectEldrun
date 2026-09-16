@@ -26,6 +26,8 @@ export interface ReadableLine {
   key: string;
   text: string;
   spans: ReadableSpan[];
+  /** Original labelled rule, for detecting the input frame after stripping it. */
+  frameText?: string;
 }
 
 export interface ReadableScreen {
@@ -150,6 +152,12 @@ const BORDER_ONLY = /^[\s─-╿▀-▟―—]+$/u;
 /** A leading/trailing frame edge around real content on the same row. */
 const LEFT_EDGE = /^\s*[│┃┆┇┊┋]\s?/u;
 const RIGHT_EDGE = /\s*[│┃┆┇┊┋]\s*$/u;
+/** Labelled horizontal rules (e.g. `─ Worked for 2m ─────`). Keeping their
+ * desktop-width strokes makes one divider wrap into many bright phone rows.
+ * Require strokes on both sides; ordinary dashes in prose/code stay intact. */
+const LABELLED_RULE = /^\s*[╭┌┏╔]?[─━═]+\s+\S.*?\s+[─━═]+[╮┐┓╗]?\s*$/u;
+const RULE_LEFT = /^\s*[╭┌┏╔]?[─━═]+\s+/u;
+const RULE_RIGHT = /\s+[─━═]+[╮┐┓╗]?\s*$/u;
 
 /** Drops `count` characters from the front of a span run, in place. */
 function trimSpansLeft(spans: ReadableSpan[], count: number) {
@@ -243,6 +251,53 @@ function undecorate(spans: ReadableSpan[]): ReadableSpan[] | "blank" | "border" 
   return spans.length ? spans : "blank";
 }
 
+/** A rule that runs to the end of its row, with a gutter of blanks before it —
+ * the edge of a panel drawn beside the conversation rather than across it. */
+const SIDE_RULE = /(?:^|\s{2})[─━]{12,}$/u;
+/** A rule starting left of this is the screen's own, not a side panel's. */
+const MIN_SIDE_COLUMN = 24;
+
+/**
+ * Cuts a side panel off the rows it shares with the conversation, in place.
+ * Claude Code can draw a diff view to the right of its transcript in the same
+ * terminal rows; read whole, each such row was a line of the answer glued to a
+ * line of the diff, and the chat layout put the diff into the prompt bubble
+ * beside it. The panel is found by its own rules — at least two that start at
+ * the same column and run to the end of the row — and cut from the block of
+ * rows around them that keep a blank gutter before that column, so the input
+ * frame and a full-width row printed before the panel opened stay whole.
+ * Columns are counted in characters: a wide glyph left of the panel shifts
+ * that row's cut by one.
+ */
+function cutSidePanel(rows: ReadableSpan[][]) {
+  const texts = rows.map((spans) => spanText(spans).replace(/\s+$/u, ""));
+  const byColumn = new Map<number, number[]>();
+  texts.forEach((text, index) => {
+    const match = SIDE_RULE.exec(text);
+    if (!match) return;
+    const column = match.index + match[0].length - match[0].trimStart().length;
+    if (column >= MIN_SIDE_COLUMN) byColumn.set(column, [...(byColumn.get(column) ?? []), index]);
+  });
+  let column = -1;
+  let ruleRows: number[] = [];
+  byColumn.forEach((indexes, candidate) => {
+    if (indexes.length >= 2 && indexes.length > ruleRows.length) {
+      column = candidate;
+      ruleRows = indexes;
+    }
+  });
+  if (column < 0) return;
+  const gutter = (text: string) => text.length <= column - 2 || text.slice(column - 2, column) === "  ";
+  let top = ruleRows[0];
+  while (top > 0 && gutter(texts[top - 1])) top -= 1;
+  let bottom = ruleRows[ruleRows.length - 1];
+  while (bottom < texts.length - 1 && gutter(texts[bottom + 1])) bottom += 1;
+  for (let index = top; index <= bottom; index += 1) {
+    const width = spanText(rows[index]).length;
+    if (width > column) trimSpansRight(rows[index], width - column);
+  }
+}
+
 function capLine(line: ReadableLine): ReadableLine {
   if (line.text.length <= MAX_LINE) return line;
   const spans = line.spans.slice();
@@ -272,13 +327,16 @@ export function readableRange(
   afterText?: string,
 ): ReadableLine[] {
   const joined: ReadableLine[] = [];
-
+  const physical: { row: number; wrapped: boolean; spans: ReadableSpan[] }[] = [];
   for (let row = first; row < end; row += 1) {
     const bufferLine = buffer.getLine(row);
-    if (!bufferLine) continue;
-    const spans = rowSpans(bufferLine);
+    if (bufferLine) physical.push({ row, wrapped: bufferLine.isWrapped === true, spans: rowSpans(bufferLine) });
+  }
+  cutSidePanel(physical.map((entry) => entry.spans));
+
+  for (const { row, wrapped, spans } of physical) {
     const previous = joined[joined.length - 1];
-    if (bufferLine.isWrapped && previous) {
+    if (wrapped && previous) {
       // A wrapped continuation belongs to the line above it: join first, and
       // let the trim and the frame stripping run over the completed line.
       spans.forEach((span) => pushSpan(previous.spans, span));
@@ -302,7 +360,14 @@ export function readableRange(
       }
       continue;
     }
-    lines.push(capLine({ key: line.key, text: spanText(spans), spans }));
+    const text = spanText(spans);
+    if (LABELLED_RULE.test(text)) {
+      trimSpansRight(spans, RULE_RIGHT.exec(text)![0].length);
+      trimSpansLeft(spans, RULE_LEFT.exec(text)![0].length);
+      lines.push(capLine({ key: line.key, text: spanText(spans), spans, frameText: text }));
+    } else {
+      lines.push(capLine({ key: line.key, text, spans }));
+    }
   }
   return lines;
 }

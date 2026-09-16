@@ -1,0 +1,11 @@
+# Binaries a person has opened and confirmed publish nothing private.
+#
+# `scripts/privacy-check.sh` scans the printable strings of every added or
+# changed binary, but it cannot read pixels — and a screenshot is where a
+# shell prompt's user@host, a live session URL, an account plan, a mail
+# address or a private project name ends up. So every added or changed binary
+# must be listed here by its blob id before it can be pushed.
+#
+# One entry per line: `<blob id> <path> — <what was checked>`. A blob id pins
+# the exact bytes, so an edited image needs a fresh look and a fresh line.
+# Get it with `git hash-object <file>` (or read it from the scan's report).

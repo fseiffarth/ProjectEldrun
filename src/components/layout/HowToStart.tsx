@@ -1,6 +1,8 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { HOW_TO_START_STEPS, focusModeTip } from "../../lib/hints";
 import { useT } from "../../lib/i18n";
+import { PLATFORM } from "../../lib/platform";
+import { probeSuperKeyOwnership } from "../../lib/superKey";
 
 /**
  * The first-run "How to start" instruction: a single scannable modal shown once
@@ -11,6 +13,22 @@ import { useT } from "../../lib/i18n";
  */
 export function HowToStart({ onClose }: { onClose: () => void }) {
   const t = useT();
+  // On Linux the panel key depends on the desktop (Super, or F9 where the shell
+  // owns Super), and that answer is a backend probe. This dialog opens on the
+  // fresh-install path, possibly before the probe `useKeyboard` fired has
+  // landed — so the tip waits for the answer rather than naming Super to a
+  // GNOME user and correcting itself a moment later.
+  const [keyKnown, setKeyKnown] = useState(PLATFORM !== "linux");
+  useEffect(() => {
+    if (PLATFORM !== "linux") return;
+    let live = true;
+    void probeSuperKeyOwnership().then(() => {
+      if (live) setKeyKnown(true);
+    });
+    return () => {
+      live = false;
+    };
+  }, []);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
@@ -46,7 +64,9 @@ export function HowToStart({ onClose }: { onClose: () => void }) {
               <div>
                 <div className="how-to-start-step-title">{t(step.titleKey)}</div>
                 {/* Only step4's key has a {tip} placeholder; t() ignores unused params. */}
-                <div className="settings-help">{t(step.bodyKey, { tip: focusModeTip(t) })}</div>
+                <div className="settings-help">
+                  {t(step.bodyKey, { tip: keyKnown ? focusModeTip(t) : "" })}
+                </div>
               </div>
             </li>
           ))}

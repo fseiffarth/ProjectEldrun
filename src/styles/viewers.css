@@ -1038,10 +1038,6 @@
   opacity: 0.7;
 }
 
-.yaml-grip-empty {
-  cursor: var(--cur-default, default);
-}
-
 .yaml-row-dragging {
   opacity: 0.45;
   /* The dragged row keeps the action-hover accent for the whole gesture, so the
@@ -1602,17 +1598,6 @@
   flex: 1 1 auto;
 }
 
-/* The centred top card (or root card list): a readable column that doesn't sprawl
-   the full width of a wide pane. */
-.yaml-card-root {
-  max-width: 1040px;
-  margin: 0 auto;
-}
-
-.yaml-card-root + .yaml-card-root {
-  margin-top: 12px;
-}
-
 .yaml-card {
   border: 1px solid var(--border-color);
   border-radius: var(--radius);
@@ -1620,15 +1605,8 @@
   overflow: hidden;
 }
 
-/* Depth-tinted left edge, so a subcard reads as nested inside its parent at a glance
-   (the guide-line colours cycle by depth, like the tree's indent guides). */
-.yaml-card-d0 { border-left: 2px solid var(--yaml-guide-0, var(--accent)); }
-.yaml-card-d1 { border-left: 2px solid var(--yaml-guide-1, var(--accent)); }
-.yaml-card-d2 { border-left: 2px solid var(--yaml-guide-2, var(--accent)); }
-.yaml-card-d3 { border-left: 2px solid var(--yaml-guide-3, var(--accent)); }
-.yaml-card-d4 { border-left: 2px solid var(--yaml-guide-0, var(--accent)); }
-.yaml-card-d5 { border-left: 2px solid var(--yaml-guide-1, var(--accent)); }
-/* The guide-line colours (mirrors .yaml-tree's), so subcard edges match the tree. */
+/* The guide-line colours (mirrors .yaml-tree's), so the drill's nesting rails
+   match the tree — read by `.yaml-level + .yaml-level` below. */
 .yaml-cards {
   --yaml-guide-0: color-mix(in srgb, var(--accent) 55%, transparent);
   --yaml-guide-1: color-mix(in srgb, #a887e8 55%, transparent);
@@ -1663,12 +1641,6 @@
   text-align: left;
 }
 
-.yaml-card-caret {
-  flex: none;
-  width: 12px;
-  color: var(--text-muted);
-}
-
 .yaml-card-title {
   color: var(--text-primary);
   font-weight: 600;
@@ -1696,10 +1668,6 @@
 .yaml-card-field:hover .yaml-card-field-del,
 .yaml-card-field-del:focus-visible {
   opacity: 1;
-}
-
-.yaml-card-body {
-  padding: 4px 4px 6px;
 }
 
 .yaml-card-fields {
@@ -1757,28 +1725,6 @@
   display: block;
   padding: 2px 4px;
   max-width: 100%;
-}
-
-/* Subcards laid out in COLUMNS below the parent's fields — a responsive auto-fill
-   grid, so a list of records becomes a wall of cards and a heterogeneous set wraps. */
-.yaml-subcards {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-  gap: 8px;
-  align-items: start;
-  margin-top: 6px;
-}
-
-/* At the very top, a root list's cards get a touch more room to breathe. */
-.yaml-subcards-root {
-  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-  gap: 10px;
-  margin-top: 0;
-}
-
-/* A bare-scalar list item card: value only, no fields grid. */
-.yaml-card-scalar .yaml-card-body {
-  padding: 4px;
 }
 
 .yaml-card-add {
@@ -4079,7 +4025,7 @@
   border-color: var(--accent);
 }
 .file-viewer-beamer-field input.is-invalid {
-  border-color: var(--danger, #c33);
+  border-color: var(--danger);
 }
 .file-viewer-beamer-field input[type="checkbox"] {
   margin: 0;
@@ -5341,7 +5287,7 @@
   font-weight: 600;
   color: var(--bg-main);
   background: var(--danger);
-  border-radius: 999px;
+  border-radius: var(--radius-full);
 }
 
 .file-viewer-tex-log-line {
@@ -5389,7 +5335,10 @@
   gap: 2px;
 }
 
-.file-viewer-tex-error-jump {
+/* One row treatment for both logs; only the hovers differ (a warning row can be
+   disabled, an error row never is), so those stay apart below. */
+.file-viewer-tex-error-jump,
+.file-viewer-tex-warn-jump {
   display: flex;
   align-items: baseline;
   gap: 8px;
@@ -5498,7 +5447,7 @@
   font-weight: 600;
   color: var(--bg-main);
   background: var(--warning);
-  border-radius: 999px;
+  border-radius: var(--radius-full);
 }
 
 .file-viewer-tex-warn-caret {
@@ -5514,22 +5463,6 @@
   display: flex;
   flex-direction: column;
   gap: 2px;
-}
-
-.file-viewer-tex-warn-jump {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  flex: 1;
-  min-width: 0;
-  text-align: left;
-  background: transparent;
-  border: 1px solid transparent;
-  border-radius: var(--radius-sm);
-  padding: 2px 6px;
-  cursor: var(--cur-pointer, pointer);
-  color: var(--text-primary);
-  font-size: 11px;
 }
 
 .file-viewer-tex-warn-jump:disabled {
@@ -5665,7 +5598,7 @@
 .file-viewer-tex-compl-local {
   flex-shrink: 0;
   padding: 0 5px;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   font-size: 9px;
   text-transform: uppercase;
   letter-spacing: 0.04em;

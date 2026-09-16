@@ -124,10 +124,69 @@ describe("PromptChart timeline selection", () => {
     expect(cardOf("Early task").querySelector(".agent-prompt-card-expanded")).toBeNull();
 
     await drag(cardOf("Early task"), { x: 750, y: 180 });
+    // Each move edits a rule that must still be where it was drawn from.
     expect(calls("agent_schedule_upsert")).toEqual([
-      expect.objectContaining({ schedule: expect.objectContaining({ id: "early", rule: { type: "once", at: "2026-09-04T18:00" } }) }),
-      expect.objectContaining({ schedule: expect.objectContaining({ id: "later", rule: { type: "once", at: "2026-09-04T18:30" } }) }),
+      expect.objectContaining({ expectExistingOn: "t", schedule: expect.objectContaining({ id: "early", rule: { type: "once", at: "2026-09-04T18:00" } }) }),
+      expect.objectContaining({ expectExistingOn: "t", schedule: expect.objectContaining({ id: "later", rule: { type: "once", at: "2026-09-04T18:30" } }) }),
     ]);
+  });
+
+  it("refuses a selection dropped on the past body, and sends it from the now band", async () => {
+    await act(async () => { render(<PromptChart scope="p" active tabs={[tab]} />); });
+    layout();
+    fireEvent.click(cardOf("Early task"), { ctrlKey: true });
+    fireEvent.click(cardOf("Later task"), { ctrlKey: true });
+
+    fireEvent.pointerDown(cardOf("Early task"), { button: 0, pointerId: 1, clientX: 10, clientY: 10 });
+    fireEvent.pointerMove(window, { pointerId: 1, clientX: 10, clientY: 20 });
+    fireEvent.pointerMove(window, { pointerId: 1, clientX: 120, clientY: 250 });
+    const badge = document.querySelector(".agent-prompt-timeline-ghost .agent-prompt-timeline-badge")!;
+    expect(badge.textContent).toBe("A selection is sent only from the now band");
+    expect(badge.classList.contains("is-blocked")).toBe(true);
+    // A refused selection does not light the band it is told to use.
+    expect(screen.getByTestId("prompt-timeline-now-band").classList.contains("is-drop-over")).toBe(false);
+    await act(async () => { fireEvent.pointerUp(window, { pointerId: 1, clientX: 120, clientY: 250 }); });
+    for (const write of ["agent_schedule_upsert", "agent_schedule_delete", "agent_prompt_archive"]) expect(calls(write)).toHaveLength(0);
+    expect(screen.getByTestId("prompt-chart-error").textContent).toContain("A selection is sent only from the now band");
+
+    await drag(cardOf("Early task"), { x: 500, y: 200 });
+    expect(calls("agent_schedule_delete")).toEqual([
+      expect.objectContaining({ scheduleId: "early", expectUndelivered: true }),
+      expect.objectContaining({ scheduleId: "later", expectUndelivered: true }),
+    ]);
+    expect(calls("agent_schedule_upsert").map((args) => (args as { schedule: { id: string } }).schedule.id)).toEqual(["early", "later"]);
+  });
+
+  it("says which card would land in the past when a selection is dropped on a future minute", async () => {
+    await act(async () => { render(<PromptChart scope="p" active tabs={[tab]} />); });
+    layout();
+    fireEvent.click(cardOf("Early task"), { ctrlKey: true });
+    fireEvent.click(cardOf("Later task"), { ctrlKey: true });
+    // Later task (13:02) to about 12:20 would put Early task (12:32) before now.
+    fireEvent.pointerDown(cardOf("Later task"), { button: 0, pointerId: 1, clientX: 10, clientY: 10 });
+    fireEvent.pointerMove(window, { pointerId: 1, clientX: 10, clientY: 20 });
+    fireEvent.pointerMove(window, { pointerId: 1, clientX: 515, clientY: 250 });
+    const badge = document.querySelector(".agent-prompt-timeline-indicator .agent-prompt-timeline-badge")!;
+    expect(badge.textContent).toContain("A card in the selection would land in the past");
+    expect(badge.textContent).not.toContain("now band");
+    await act(async () => { fireEvent.pointerUp(window, { pointerId: 1, clientX: 515, clientY: 250 }); });
+    for (const write of ["agent_schedule_upsert", "agent_schedule_delete", "agent_prompt_archive"]) expect(calls(write)).toHaveLength(0);
+    expect(screen.getByTestId("prompt-chart-error").textContent).toContain("A card in the selection would land in the past");
+  });
+
+  it("writes nothing when the pressed rule is gone from the store by the release", async () => {
+    await act(async () => { render(<PromptChart scope="p" active tabs={[tab]} />); });
+    layout();
+    fireEvent.pointerDown(cardOf("Early task"), { button: 0, pointerId: 1, clientX: 10, clientY: 10 });
+    fireEvent.pointerMove(window, { pointerId: 1, clientX: 10, clientY: 20 });
+    fireEvent.pointerMove(window, { pointerId: 1, clientX: 750, clientY: 180 });
+    // The scheduler delivered and retired it while it was in the air.
+    const key = scheduleCacheKey("p", "t");
+    act(() => useAgentSchedulesStore.setState((state) => ({ byTarget: { [key]: state.byTarget[key].filter((rule) => rule.id !== "early") } })));
+    await act(async () => { fireEvent.pointerUp(window, { pointerId: 1, clientX: 750, clientY: 180 }); });
+    expect(calls("agent_schedule_upsert")).toHaveLength(0);
+    expect(calls("agent_schedule_delete")).toHaveLength(0);
+    expect(screen.getByTestId("prompt-chart-error").textContent).toContain("changed while it was being carried");
   });
 
   it("selects with a rubber band over the lanes, and a click or Escape clears it", async () => {

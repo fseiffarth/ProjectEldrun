@@ -443,3 +443,117 @@ mod tests {
         drop(listener);
     }
 }
+
+#[cfg(test)]
+mod frame_tests {
+    use super::*;
+
+    /// A frame is a big-endian u32 length followed by that many JSON bytes;
+    /// what one side writes the other reads back unchanged.
+    #[tokio::test]
+    async fn frames_round_trip_through_a_length_prefix() {
+        let mut wire: Vec<u8> = Vec::new();
+        write_frame(&mut wire, &AdminRequest::Revoke { device_id: "d1".into() })
+            .await
+            .unwrap();
+        let body = serde_json::to_vec(&AdminRequest::Revoke { device_id: "d1".into() }).unwrap();
+        assert_eq!(&wire[..4], (body.len() as u32).to_be_bytes());
+        assert_eq!(&wire[4..], &body[..]);
+        let mut reader: &[u8] = &wire;
+        let back: AdminRequest = read_frame(&mut reader).await.unwrap();
+        assert!(matches!(back, AdminRequest::Revoke { device_id } if device_id == "d1"));
+        assert!(reader.is_empty(), "nothing left over after one frame");
+    }
+
+    /// An oversized message is refused before a single byte goes out — a
+    /// partial length prefix would desynchronize the peer.
+    #[tokio::test]
+    async fn an_oversized_frame_is_refused_before_anything_is_written() {
+        let mut wire: Vec<u8> = Vec::new();
+        let huge = "x".repeat(MAX_CONTROL_MESSAGE + 1);
+        let err = write_frame(&mut wire, &huge).await.unwrap_err();
+        assert_eq!(err, "control message too large");
+        assert!(wire.is_empty());
+        let fits = "x".repeat(MAX_CONTROL_MESSAGE - 16);
+        write_frame(&mut wire, &fits).await.unwrap();
+        assert_eq!(wire.len(), 4 + MAX_CONTROL_MESSAGE - 16 + 2);
+    }
+
+    /// The reader trusts no length: zero and anything above the cap are
+    /// rejected without allocating for the body, and a body shorter than its
+    /// prefix is an error rather than a hang or a partial parse.
+    #[tokio::test]
+    async fn the_reader_rejects_bad_lengths_and_truncated_bodies() {
+        let mut zero: &[u8] = &0u32.to_be_bytes();
+        let err = read_frame::<AdminRequest>(&mut zero).await.unwrap_err();
+        assert_eq!(err, "invalid control message length");
+
+        let mut too_big: &[u8] = &u32::MAX.to_be_bytes();
+        let err = read_frame::<AdminRequest>(&mut too_big).await.unwrap_err();
+        assert_eq!(err, "invalid control message length");
+
+        let mut short = 10u32.to_be_bytes().to_vec();
+        short.extend_from_slice(b"\"ab");
+        let mut short: &[u8] = &short;
+        assert!(read_frame::<String>(&mut short).await.is_err());
+
+        let mut not_json = 2u32.to_be_bytes().to_vec();
+        not_json.extend_from_slice(b"{]");
+        let mut not_json: &[u8] = &not_json;
+        assert!(read_frame::<AdminRequest>(&mut not_json).await.is_err());
+    }
+
+    /// The admin plane's mapping, transport aside: status reports the port and
+    /// version, an unknown device is an error not a silent no-op, forget-all
+    /// and shutdown answer `Ok`, and shutdown actually flips the watch.
+    #[test]
+    fn admin_requests_map_to_their_responses() {
+        let dir = tempfile::tempdir().unwrap();
+        let auth = AuthStore::open(&dir.path().join("mobile-control"), "https://desk.example".into())
+            .expect("auth store");
+        let auth = Arc::new(Mutex::new(auth));
+        let (shutdown, watch) = tokio::sync::watch::channel(false);
+        let respond =
+            |request| admin_response(request, &auth, 8443, Some("https://desk.example".into()), &shutdown);
+
+        match respond(Ok(AdminRequest::Status)) {
+            AdminResponse::Host { running, port, origin, version } => {
+                assert!(running);
+                assert_eq!(port, 8443);
+                assert_eq!(origin.as_deref(), Some("https://desk.example"));
+                assert_eq!(version.as_deref(), Some(env!("CARGO_PKG_VERSION")));
+            }
+            other => panic!("status answered {other:?}"),
+        }
+        assert!(matches!(respond(Ok(AdminRequest::Devices)), AdminResponse::Devices { devices } if devices.is_empty()));
+        assert!(matches!(
+            respond(Ok(AdminRequest::Revoke { device_id: "nope".into() })),
+            AdminResponse::Error { message } if message == "unknown device"
+        ));
+        assert!(matches!(
+            respond(Ok(AdminRequest::PairingCode)),
+            AdminResponse::PairingCode { code, expires_at } if code.len() == 8 && expires_at > 0
+        ));
+        assert!(matches!(respond(Ok(AdminRequest::ForgetAll)), AdminResponse::Ok));
+        assert!(matches!(
+            respond(Err("control message timed out".into())),
+            AdminResponse::Error { message } if message == "control message timed out"
+        ));
+        assert!(!*watch.borrow());
+        assert!(matches!(respond(Ok(AdminRequest::Shutdown)), AdminResponse::Ok));
+        assert!(*watch.borrow());
+    }
+
+    /// A host that is not running — socket refused or already gone — reaches
+    /// the menu as the sentence, and any other failure keeps its own text.
+    #[cfg(unix)]
+    #[test]
+    fn a_stopped_host_reads_as_not_running_and_other_errors_keep_their_text() {
+        use std::io::{Error, ErrorKind};
+        assert_eq!(connect_error(Error::from(ErrorKind::ConnectionRefused)), NOT_RUNNING_ERROR);
+        assert_eq!(connect_error(Error::from(ErrorKind::NotFound)), NOT_RUNNING_ERROR);
+        let denied = connect_error(Error::new(ErrorKind::PermissionDenied, "socket is 0600"));
+        assert_ne!(denied, NOT_RUNNING_ERROR);
+        assert!(denied.contains("0600"));
+    }
+}

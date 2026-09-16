@@ -529,21 +529,6 @@
 .local-model-status-dot.loaded { background-color: var(--success); }
 
 /* ── Local-model menu: live "loaded in memory" status line ───────────────── */
-.local-model-loaded {
-  padding: 4px 10px 6px;
-  border-bottom: 1px solid var(--control-border);
-  margin-bottom: 2px;
-}
-.local-model-loaded-idle {
-  font-size: 11px;
-  color: var(--text-secondary);
-}
-.local-model-loaded-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
 .local-model-loaded-name {
   font-size: 12px;
   color: var(--text-primary);
@@ -1057,7 +1042,7 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   background: var(--warning);
   /* `--warning` is light in some themes and dark in others; near-black reads on both. */
   color: #1c1300;
@@ -1232,33 +1217,6 @@
   gap: 8px;
   min-height: 26px;
   padding: 0 10px 6px 25px;
-}
-/* The two badge cells. They are plain layout boxes and carry no pill styling
-   of their own — an empty one must occupy its column silently, not paint a
-   bare chip-shaped stripe on every row whose model has nothing to say there.
-   The pill look belongs to the badge inside (below). */
-.local-model-param-slot,
-.local-model-notools-slot {
-  display: flex;
-  align-items: center;
-  min-width: 0;
-}
-.local-model-param-slot > span,
-.local-model-notools-slot > span {
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  font-size: 10px;
-  line-height: 1;
-  padding: 2px 5px;
-  border-radius: var(--radius-sm);
-  background: var(--control-bg);
-  color: var(--text-secondary);
-  white-space: nowrap;
-}
-.local-model-notools-slot > span.local-model-notools-chip {
-  background: color-mix(in srgb, var(--warning) 20%, transparent);
-  color: var(--warning);
 }
 .local-model-load-bar {
   margin: 2px 12px 4px;
@@ -2236,8 +2194,7 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.vpn-indicator-holders,
-.vpn-indicator-untracked {
+.vpn-indicator-holders {
   font-size: 11px;
   line-height: 1.4;
   color: var(--text-secondary);

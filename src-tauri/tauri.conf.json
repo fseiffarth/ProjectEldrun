@@ -1,6 +1,6 @@
 {
   "productName": "Eldrun",
-  "version": "0.1.68",
+  "version": "0.1.70",
   "identifier": "io.github.fseiffarth.eldrun",
   "build": {
     "frontendDist": "../dist",
@@ -47,8 +47,12 @@
       "deb": {
         "depends": [
           "libwebkit2gtk-4.1-0",
-          "libgtk-3-0",
-          "libappindicator3-1"
+          "libgtk-3-0"
+        ],
+        "recommends": [
+          "bubblewrap",
+          "tmux",
+          "cups-client"
         ]
       }
     },

@@ -43,6 +43,7 @@ use std::process::Command;
 
 use serde_json::Value;
 
+use crate::commands::git::run_off_thread;
 use crate::commands::projects::{normalize_git_type, sanitize_name};
 use crate::schema::project::Project;
 use crate::schema::projects::ProjectsList;
@@ -323,8 +324,26 @@ fn origin_site(project: &Project, project_id: &str) -> Result<PublishSite, Strin
 /// this machine's provider login) or `"remote"` (the host's own login). Returns
 /// the CLI's stdout (typically the new repository URL) on success, or the
 /// trimmed stderr on failure.
+///
+/// Every command in this module is an `async` wrapper over a sync `*_blocking`
+/// body run through [`run_off_thread`] (the same pattern as `commands::git`):
+/// the bodies spawn `git`/`gh`/`glab` or ssh and block on them, and a sync
+/// Tauri command runs on the main thread, so a slow push or an unreachable host
+/// froze the whole window for its duration.
 #[tauri::command]
-pub fn publish_project(
+pub async fn publish_project(
+    project_id: String,
+    provider: Option<String>,
+    visibility: String,
+    publish_from: Option<String>,
+) -> Result<String, String> {
+    run_off_thread(move || {
+        publish_project_blocking(project_id, provider, visibility, publish_from)
+    })
+    .await
+}
+
+fn publish_project_blocking(
     project_id: String,
     provider: Option<String>,
     visibility: String,
@@ -429,8 +448,16 @@ pub fn publish_project(
 /// Local projects only. A work-remote project's `origin` may legitimately live on
 /// its host, and asking would be an ssh round trip, so those answer `true` —
 /// "nothing here contradicts the label".
+///
+/// Off-thread even though it is a local `git remote get-url`: the pill calls it
+/// on every right-click of a published project, and a fork+wait on the main
+/// thread there is a visible hitch before the context menu opens.
 #[tauri::command]
-pub fn project_has_origin(project_id: String) -> Result<bool, String> {
+pub async fn project_has_origin(project_id: String) -> Result<bool, String> {
+    run_off_thread(move || project_has_origin_blocking(project_id)).await
+}
+
+fn project_has_origin_blocking(project_id: String) -> Result<bool, String> {
     let (entry_index, list) = find_entry(&project_id)?;
     let local_file = list[entry_index].local_file.clone();
     let project: Project =
@@ -450,7 +477,11 @@ pub fn project_has_origin(project_id: String) -> Result<bool, String> {
 /// the GitHub/GitLab repo is left intact — only the local tree is detached from
 /// it. Re-publishing later re-creates or re-attaches a remote.
 #[tauri::command]
-pub fn unpublish_project(project_id: String) -> Result<(), String> {
+pub async fn unpublish_project(project_id: String) -> Result<(), String> {
+    run_off_thread(move || unpublish_project_blocking(project_id)).await
+}
+
+fn unpublish_project_blocking(project_id: String) -> Result<(), String> {
     let (idx, list) = find_entry(&project_id)?;
     let local_file = list[idx].local_file.clone();
     let project: Project =
@@ -519,7 +550,17 @@ pub fn unpublish_project(project_id: String) -> Result<(), String> {
 /// Runs locally, or over ssh on the work-remote host for a remote project
 /// (relying on that host's provider auth, exactly like `publish_project`).
 #[tauri::command]
-pub fn set_project_visibility(project_id: String, visibility: String) -> Result<String, String> {
+pub async fn set_project_visibility(
+    project_id: String,
+    visibility: String,
+) -> Result<String, String> {
+    run_off_thread(move || set_project_visibility_blocking(project_id, visibility)).await
+}
+
+fn set_project_visibility_blocking(
+    project_id: String,
+    visibility: String,
+) -> Result<String, String> {
     let visibility = match visibility.trim() {
         "public" => "public",
         "private" => "private",
@@ -591,7 +632,19 @@ pub fn set_project_visibility(project_id: String, visibility: String) -> Result<
 /// and pushes. Records the new `git_provider` + `git_type` (via the reused
 /// `publish_project`). Returns the create CLI's stdout (new repo URL).
 #[tauri::command]
-pub fn switch_project_provider(
+pub async fn switch_project_provider(
+    project_id: String,
+    provider: Option<String>,
+    visibility: String,
+    publish_from: Option<String>,
+) -> Result<String, String> {
+    run_off_thread(move || {
+        switch_project_provider_blocking(project_id, provider, visibility, publish_from)
+    })
+    .await
+}
+
+fn switch_project_provider_blocking(
     project_id: String,
     provider: Option<String>,
     visibility: String,
@@ -631,8 +684,10 @@ pub fn switch_project_provider(
     rename_origin_aside(origin_site(&project, &project_id)?, &project)?;
 
     // Delegate the create+wire+push+persist to the normal publish path, now
-    // targeting the new provider.
-    publish_project(
+    // targeting the new provider. This must call the sync `_blocking` body, not
+    // the `publish_project` command: we are already inside `run_off_thread`'s
+    // closure, a non-async context that cannot `.await` the async wrapper.
+    publish_project_blocking(
         project_id,
         Some(new_provider.as_str().to_string()),
         visibility,

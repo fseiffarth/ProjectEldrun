@@ -553,17 +553,8 @@ pub async fn pty_spawn(
                 )?;
                 fenced_registration = Some((opts.id.clone(), scope_id));
             }
-            crate::services::agent_fence::FenceDecision::Unavailable { install_hint } => {
-                let tool = crate::services::agent_fence::fence_tool_name();
-                return Err(if cfg!(target_os = "macos") {
-                    format!(
-                        "Agent fence: {tool} is unavailable on this Mac, so this agent was not started. Turn the Agent fence off for this project."
-                    )
-                } else {
-                    format!(
-                        "Agent fence: {tool} is unavailable, so this agent was not started. Install it with `{install_hint}`, or turn the Agent fence off for this project."
-                    )
-                });
+            crate::services::agent_fence::FenceDecision::Unavailable => {
+                return Err(crate::services::agent_fence::fence_unavailable_message());
             }
             _ => {}
         }

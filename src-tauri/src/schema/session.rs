@@ -88,3 +88,109 @@ pub struct ProjectState {
     #[serde(flatten)]
     pub extra: HashMap<String, Value>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn json<T: serde::Serialize>(value: &T) -> Value {
+        serde_json::to_value(value).expect("serialize")
+    }
+
+    /// The panel was renamed: `rightPanelFolder` from an older `filetabs.json`
+    /// still reads, only `sidePanelFolder` is ever written, and the old key
+    /// does not linger in `extra` beside the new one.
+    #[test]
+    fn file_tab_session_reads_the_legacy_right_panel_key_and_writes_the_new_one() {
+        let legacy: FileTabSession =
+            serde_json::from_str(r#"{"fileTabs":[],"rightPanelFolder":"src/lib"}"#).unwrap();
+        assert_eq!(legacy.side_panel_folder.as_deref(), Some("src/lib"));
+        assert!(legacy.extra.is_empty(), "alias must not also land in extra");
+        let out = json(&legacy);
+        assert_eq!(out["sidePanelFolder"], "src/lib");
+        assert!(out.get("rightPanelFolder").is_none());
+
+        let current: FileTabSession =
+            serde_json::from_str(r#"{"fileTabs":[{"path":"a.rs"}],"sidePanelFolder":"docs"}"#)
+                .unwrap();
+        assert_eq!(current.side_panel_folder.as_deref(), Some("docs"));
+        assert_eq!(current.file_tabs.len(), 1);
+        let none = FileTabSession::default();
+        assert!(json(&none).get("sidePanelFolder").is_none(), "absent, not null");
+    }
+
+    /// A `terminals.json` written before `activeTabIndex`, `tabGroups` or
+    /// `openApps` existed loads with defaults, and writing back adds no null
+    /// keys — the file stays readable by an older build.
+    #[test]
+    fn terminal_session_defaults_for_a_legacy_file_and_omits_absent_optionals() {
+        let legacy: TerminalSession = serde_json::from_str(r#"{"tabLayout":[]}"#).unwrap();
+        assert_eq!(legacy.active_tab_index, 0);
+        assert!(legacy.tab_groups.is_none());
+        assert!(legacy.open_apps.is_none());
+        let out = json(&legacy);
+        assert_eq!(out["activeTabIndex"], 0);
+        for key in ["tabGroups", "openTabSessions", "openApps"] {
+            assert!(out.get(key).is_none(), "{key} should be absent: {out}");
+        }
+        assert!(out.get("tab_layout").is_none(), "wire keys are camelCase");
+    }
+
+    /// `openApps` and the opaque trees round-trip in full, and unknown keys
+    /// ride through `extra`.
+    #[test]
+    fn terminal_session_round_trips_open_apps_and_unknown_keys() {
+        let raw = r#"{
+            "tabLayout":[{"key":"t","label":"sh","cmd":"bash","cwd":"/p","location":"local"}],
+            "activeTabIndex":1,
+            "tabGroups":{"kind":"group","tabs":["t"]},
+            "openTabSessions":["u1"],
+            "openApps":[{"exec":"code","mode":"standalone","pid":42}],
+            "futureKey":{"x":1}
+        }"#;
+        let s: TerminalSession = serde_json::from_str(raw).unwrap();
+        assert_eq!(s.active_tab_index, 1);
+        assert_eq!(s.tab_layout[0].extra["location"], "local");
+        let apps = s.open_apps.as_ref().unwrap();
+        assert_eq!(apps[0].pid, Some(42));
+        assert_eq!(s.extra["futureKey"]["x"], 1);
+        let back: TerminalSession = serde_json::from_value(json(&s)).unwrap();
+        assert_eq!(back.open_apps.unwrap()[0].mode.as_deref(), Some("standalone"));
+        assert_eq!(back.tab_groups.unwrap()["tabs"][0], "t");
+        assert_eq!(back.extra["futureKey"]["x"], 1);
+    }
+
+    /// `.eldrun/state.json` is camelCase and omits `savedAt` when unknown.
+    #[test]
+    fn project_state_is_camel_case_and_omits_an_absent_timestamp() {
+        let state = ProjectState {
+            project_id: "p1".into(),
+            project_dir: "/tmp/p1".into(),
+            saved_at: None,
+            extra: HashMap::new(),
+        };
+        let out = json(&state);
+        assert_eq!(out["projectId"], "p1");
+        assert_eq!(out["projectDir"], "/tmp/p1");
+        assert!(out.get("savedAt").is_none());
+        assert!(out.get("project_id").is_none());
+        let back: ProjectState =
+            serde_json::from_str(r#"{"projectId":"p","projectDir":"/d","savedAt":"2026-01-01T00:00:00+00:00"}"#)
+                .unwrap();
+        assert_eq!(back.saved_at.as_deref(), Some("2026-01-01T00:00:00+00:00"));
+    }
+
+    /// The window and layout sessions default to empty and keep foreign keys.
+    #[test]
+    fn window_and_layout_sessions_default_empty_and_keep_foreign_keys() {
+        let w: WindowSession =
+            serde_json::from_str(r#"{"projectWindowIds":["0x1"],"legacyIds":[1]}"#).unwrap();
+        assert_eq!(w.project_window_ids, vec!["0x1"]);
+        assert_eq!(w.extra["legacyIds"][0], 1);
+        assert_eq!(json(&WindowSession::default())["projectWindowIds"], serde_json::json!([]));
+
+        let l: LayoutSession = serde_json::from_str("{}").unwrap();
+        assert!(l.active_layout_metadata.is_none());
+        assert_eq!(json(&l), serde_json::json!({}));
+    }
+}

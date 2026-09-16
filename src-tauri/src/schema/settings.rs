@@ -990,3 +990,135 @@ mod tests {
         assert!(off.extra.is_empty());
     }
 }
+
+#[cfg(test)]
+mod default_rule_tests {
+    use super::*;
+
+    /// The "default ON, only an explicit false opts out" trio: tmux for local
+    /// tabs, headless connections, and remote control. An older
+    /// `settings.json` without the keys keeps today's behaviour.
+    #[test]
+    fn default_on_switches_read_absent_as_on_and_only_explicit_false_as_off() {
+        let absent = Settings::default();
+        assert!(absent.persist_local_sessions());
+        assert!(absent.connections_headless());
+        assert!(absent.agent_remote_control());
+        assert!(absent.daily_stats_recap());
+        assert_eq!(absent.color_scheme(), "fancy_dark");
+
+        let off: Settings = serde_json::from_str(
+            r#"{"persist_local_sessions":false,"connections_headless":false,
+                "agent_remote_control":false,"daily_stats_recap":false,"color_scheme":"soft_dark"}"#,
+        )
+        .unwrap();
+        assert!(!off.persist_local_sessions());
+        assert!(!off.connections_headless());
+        assert!(!off.agent_remote_control());
+        assert!(!off.daily_stats_recap());
+        assert_eq!(off.color_scheme(), "soft_dark");
+        assert!(off.extra.is_empty(), "{:?}", off.extra.keys().collect::<Vec<_>>());
+    }
+
+    /// Live pages are the one browser surface that stays off in debug mode:
+    /// unset means off everywhere, unlike the flag that enables the browser.
+    #[test]
+    fn browser_live_pages_stay_off_even_in_debug_mode() {
+        let debug = Settings {
+            debug: Some(true),
+            ..Default::default()
+        };
+        assert!(debug.web_browser());
+        assert!(!debug.browser_live_pages());
+        let on = Settings {
+            browser_live_pages: Some(true),
+            ..Default::default()
+        };
+        assert!(on.browser_live_pages());
+    }
+
+    /// `window_state` written before `maximized` existed reads as not
+    /// maximized, and there is no `fullscreen` key to strand the window with.
+    #[test]
+    fn window_state_defaults_maximized_off_and_has_no_fullscreen_key() {
+        let w: WindowState = serde_json::from_str(r#"{"x":10,"y":20,"w":800,"h":600}"#).unwrap();
+        assert!(!w.maximized);
+        let out = serde_json::to_value(w).unwrap();
+        assert!(out.get("fullscreen").is_none());
+        assert_eq!(out["maximized"], false);
+        let s: Settings =
+            serde_json::from_str(r#"{"window_state":{"x":0,"y":0,"w":1,"h":1,"maximized":true}}"#)
+                .unwrap();
+        assert!(s.window_state.unwrap().maximized);
+    }
+
+    /// A chord writes only the modifiers that are on, and reads a missing
+    /// modifier as off — the JSON stays compact and older files load.
+    #[test]
+    fn chords_write_only_the_modifiers_that_are_on() {
+        let c: ChordDescriptor = serde_json::from_str(r#"{"key":"k","ctrl":true}"#).unwrap();
+        assert!(c.ctrl && !c.shift && !c.alt && !c.meta);
+        assert_eq!(
+            serde_json::to_value(&c).unwrap(),
+            serde_json::json!({"key":"k","ctrl":true})
+        );
+        let plain = ChordDescriptor {
+            key: "F9".into(),
+            ..Default::default()
+        };
+        assert_eq!(serde_json::to_value(&plain).unwrap(), serde_json::json!({"key":"F9"}));
+    }
+
+    /// The per-type viewer prefs and the alert sources are all tri-state and
+    /// write nothing by default — so a fresh install's file carries neither a
+    /// spurious `false` (alerts: absent means ON) nor a spurious `true`.
+    #[test]
+    fn viewer_prefs_and_alert_sources_write_nothing_by_default() {
+        assert_eq!(serde_json::to_value(ViewerPref::default()).unwrap(), serde_json::json!({}));
+        assert_eq!(serde_json::to_value(AlertSources::default()).unwrap(), serde_json::json!({}));
+        let src: AlertSources = serde_json::from_str(r#"{"mail":false}"#).unwrap();
+        assert_eq!(src.mail, Some(false));
+        assert!(src.events.is_none() && src.tasks.is_none());
+        let pref: ViewerPref =
+            serde_json::from_str(r#"{"autocomplete":true,"font_size":14.5,"hover_preview":false}"#)
+                .unwrap();
+        assert_eq!(pref.font_size, Some(14.5));
+        assert_eq!(pref.hover_preview, Some(false));
+        assert!(pref.spell_check.is_none());
+    }
+
+    /// The Mobile host block is off by default, loads from `{}`, and writes
+    /// its mail gates only when they have been set.
+    #[test]
+    fn mobile_host_settings_default_off_and_omit_unset_gates() {
+        let m: EldrunMobileHostSettings = serde_json::from_str("{}").unwrap();
+        assert!(!m.enabled);
+        assert!(m.mail_actions.is_none() && m.mail_reply.is_none());
+        assert_eq!(
+            serde_json::to_value(&m).unwrap(),
+            serde_json::json!({"enabled": false})
+        );
+        let s: Settings = serde_json::from_str(
+            r#"{"eldrun_mobile_host":{"enabled":true,"port":8443,"mail_reply":true}}"#,
+        )
+        .unwrap();
+        let host = s.eldrun_mobile_host.unwrap();
+        assert_eq!(host.port, Some(8443));
+        assert_eq!(host.mail_reply, Some(true));
+        assert!(host.mail_actions.is_none(), "reply and actions are independent");
+    }
+
+    /// `global_apps` entries keep foreign keys through `extra`, and a settings
+    /// file with keys this build does not know round-trips them untouched.
+    #[test]
+    fn unknown_settings_keys_survive_a_round_trip() {
+        let raw = r#"{"global_apps":{"code":{"exec":"code","visible":true,"icon":"vscode"}},
+                      "some_future_setting":{"a":[1,2]}}"#;
+        let s: Settings = serde_json::from_str(raw).unwrap();
+        assert_eq!(s.global_apps.as_ref().unwrap()["code"].extra["icon"], "vscode");
+        assert_eq!(s.extra["some_future_setting"]["a"][1], 2);
+        let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!(back.extra["some_future_setting"]["a"][1], 2);
+        assert_eq!(back.global_apps.unwrap()["code"].extra["icon"], "vscode");
+    }
+}

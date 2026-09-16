@@ -24,7 +24,7 @@ import {
 } from "../../lib/terminalBus";
 import { hpcGuardRefusal } from "../../lib/hpcGuard";
 import { useHpcGuardStore } from "../../stores/hpcGuardPrompt";
-import { CSI_U_SHIFT_TAB, FORCE_SELECTION_MODIFIER, agentMouseDownAction, claimInitialInput, decodeOsc52Clipboard, initialInputForPty, isClaudeCommand, isCodexCommand, isTerminalAutoReply, isTerminalIdentityResponse, isTerminalReport, stripTerminalQueries } from "../../lib/terminalControl";
+import { CSI_U_SHIFT_TAB, FORCE_SELECTION_MODIFIER, SILENT_START_MS, agentMouseDownAction, claimInitialInput, decodeOsc52Clipboard, initialInputForPty, isClaudeCommand, isCodexCommand, isTerminalAutoReply, isTerminalIdentityResponse, isTerminalReport, silentStartNotice, stripTerminalQueries, terminalProgramLabel, type SilentStartNotice } from "../../lib/terminalControl";
 import { registerTerminal, unregisterTerminal } from "../../lib/terminalRegistry";
 import { clearPtyInput, writePtyInput } from "../../lib/terminalInput";
 import { registerScheduledAgentInput } from "../../lib/scheduledAgentInput";
@@ -364,6 +364,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
   const initialInputPending = useRef(false);
   const initialEnterTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const openWatchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const silentStartTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const firstOutputAt = useRef<number | null>(null);
   const scheduledReady = useRef(false);
   const terminalReadySeen = useRef(false);
@@ -393,6 +394,14 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
     const lines = text.split("\n").length;
     return lines > 1 ? t("terminal.copiedLines", { n: lines }) : t("terminal.copiedChars", { n: text.length });
   };
+  // What a tab still blank SILENT_START_MS after its launch says (see the timer
+  // armed beside the spawn below); a ref for the same reason as the two above.
+  const silentStartTextRef = useRef<(kind: SilentStartNotice, program: string) => string>(() => "");
+  silentStartTextRef.current = (kind, program) =>
+    t(kind === "pending" ? "terminal.silentStartPending" : "terminal.silentStartNoOutput", {
+      program: program || t("terminal.silentStartShell"),
+      s: SILENT_START_MS / 1000,
+    });
 
   const focusedRef = useRef(focused);
   visibleRef.current = visible;
@@ -1051,7 +1060,12 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       }
     });
 
+    // How far this lifecycle's launch got, for the silent-start notice below.
+    let spawnState: "pending" | "spawned" | "failed" = "pending";
+    let exited = false;
+
     unlistenExit.current = onTerminalExit(id, () => {
+      exited = true;
       writeTerm("\r\n\x1b[33m[process exited]\x1b[0m\r\n");
     });
 
@@ -1132,7 +1146,11 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
         });
       try {
         await spawn();
+        spawnState = "spawned";
       } catch (e) {
+        // Every branch below either prints why or asks the user first, so a
+        // silent-start notice would only talk over it.
+        spawnState = "failed";
         if (cancelled) return;
         // **The HPC tag's refusal, made actionable** (G.24). `pty_spawn` dials the
         // host before wrapping a remote tab, and on a machine tagged HPC it
@@ -1188,6 +1206,31 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
     queueMicrotask(() => {
       if (!cancelled) void setupAndSpawn();
     });
+
+    // A launch that never completes leaves the pane blank with nothing to say
+    // why — the output-router handshake or `pty_spawn` itself simply never
+    // resolves, and on a light theme the pane is plain white (a "+ OpenCode" tab,
+    // 2026-09-15, whose program never started). So a tab that owns its launch
+    // and has shown nothing after SILENT_START_MS says which of the two it is.
+    // Attach-only views spawn nothing and are excluded. Output is judged by this
+    // view's own stream, and — once the spawn is through, so a previous
+    // occupant's stamp cannot count — by the activity digests a hidden pane gets
+    // instead of a stream. Fires once.
+    if (!attachOnly) {
+      silentStartTimer.current = setTimeout(() => {
+        silentStartTimer.current = null;
+        if (cancelled) return;
+        const notice = silentStartNotice({
+          spawn: spawnState,
+          sawOutput:
+            firstOutputAt.current !== null ||
+            (spawnState === "spawned" && lastPtyOutputAt(id) !== undefined),
+          exited,
+        });
+        if (!notice) return;
+        writeTerm(`\r\n\x1b[33m[${silentStartTextRef.current(notice, terminalProgramLabel(cmd))}]\x1b[0m\r\n`);
+      }, SILENT_START_MS);
+    }
 
     // Resize observer — handles container-level resizes (e.g. panel open/close)
     // and the hidden→visible transition (display:none→flex changes the box from
@@ -1300,6 +1343,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       if (scheduledSettleTimer.current) clearTimeout(scheduledSettleTimer.current);
       unregisterScheduled?.();
       if (openWatchTimer.current) clearTimeout(openWatchTimer.current);
+      if (silentStartTimer.current) clearTimeout(silentStartTimer.current);
       if (selectionCopyTimer) clearTimeout(selectionCopyTimer);
       oscHandler.dispose();
       window.removeEventListener("resize", doFit);

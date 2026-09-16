@@ -74,3 +74,53 @@ pub struct SkillDetail {
     pub files: Vec<String>,
     pub has_scripts: bool,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The scope choice is tagged by `kind`, and `Personal` carries nothing: a
+    /// caller that tries to smuggle a `dir` along with it still gets the
+    /// home-resolved scope, never a directory of its choosing.
+    #[test]
+    fn skill_target_is_kind_tagged_and_personal_cannot_be_aimed() {
+        let project: SkillTarget =
+            serde_json::from_str(r#"{"kind":"project","dir":"/work/p"}"#).unwrap();
+        assert!(matches!(project, SkillTarget::Project { ref dir } if dir == "/work/p"));
+        assert_eq!(
+            serde_json::to_value(&SkillTarget::Personal).unwrap(),
+            serde_json::json!({"kind":"personal"})
+        );
+        let personal: SkillTarget =
+            serde_json::from_str(r#"{"kind":"personal","dir":"/etc"}"#).unwrap();
+        assert!(matches!(personal, SkillTarget::Personal));
+        assert!(serde_json::from_str::<SkillTarget>(r#"{"kind":"project"}"#).is_err());
+        assert!(serde_json::from_str::<SkillTarget>(r#"{"kind":"Personal"}"#).is_err());
+    }
+
+    /// The wire shapes are snake_case, matching the frontend's typed wrappers.
+    #[test]
+    fn catalog_and_detail_shapes_are_snake_case() {
+        let entry = SkillCatalogEntry {
+            name: "pdf".into(),
+            description: "PDF tools".into(),
+            source_id: "anthropics".into(),
+            rel_path: "skills/pdf".into(),
+            has_scripts: true,
+        };
+        let out = serde_json::to_value(&entry).unwrap();
+        assert_eq!(out["source_id"], "anthropics");
+        assert_eq!(out["rel_path"], "skills/pdf");
+        assert_eq!(out["has_scripts"], true);
+        let source: SkillSource = serde_json::from_str(
+            r#"{"id":"s","label":"Anthropic","url":"https://github.com/anthropics/skills"}"#,
+        )
+        .unwrap();
+        assert_eq!(source.label, "Anthropic");
+        let detail: SkillDetail = serde_json::from_value(serde_json::json!({
+            "name":"n","description":"d","body":"# hi","files":["scripts/run.sh"],"has_scripts":true
+        }))
+        .unwrap();
+        assert_eq!(detail.files, vec!["scripts/run.sh"]);
+    }
+}

@@ -55,6 +55,10 @@ export function trackWindowMove(): void {
     if (shown) setMoving(false);
   };
   const onMoved = () => {
+    // A report that lands after `finish` ran (release before the listener
+    // promise resolved, so it is still live) must not re-arm the hide: `finish`
+    // is spent and would never clear it.
+    if (done) return;
     if (!shown) {
       shown = true;
       setMoving(true);
