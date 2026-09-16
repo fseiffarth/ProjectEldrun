@@ -1074,7 +1074,12 @@ fn git_in(dir: &Path, args: &[&str]) -> String {
 /// Inspect an archived remote project's mirror for commits that were never synced
 /// to its host, so the UI can warn before an irreversible permanent delete.
 /// Non-remote projects (and those without a mirror repo) report nothing to lose.
-#[tauri::command]
+// `(async)` on a sync fn: tauri runs the body on its blocking pool rather than
+// the main thread. It forks 3 + one `rev-list --count` per branch against the
+// mirror, which as a plain command stalled the window while the archive list's
+// delete warning loaded. Read-only and self-contained (no State/AppHandle), so
+// nothing depends on it running on the main thread; the body is unchanged.
+#[tauri::command(async)]
 pub fn archived_mirror_unsynced(project_id: String) -> Result<UnsyncedReport, String> {
     validate_project_id(&project_id)?;
     let none = UnsyncedReport {
@@ -1512,7 +1517,12 @@ fn write_project_sandbox_spec(project_id: &str, spec: &SandboxSpec) -> Result<()
 /// the image exist? For a missing image the report carries the shell command
 /// that provides it, so the frontend can run it in a fresh terminal tab
 /// (one-click, per house convention) instead of telling the user to do it.
-#[tauri::command]
+// `(async)` on a sync fn: the three docker probes (`docker --version`,
+// `docker info`, `docker image inspect`) run on tauri's blocking pool instead of
+// the main thread — `docker info` against a wedged daemon hangs rather than
+// failing, and froze the whole window with it. The probes themselves stay
+// unbounded, exactly as before; only the thread they block moved.
+#[tauri::command(async)]
 pub fn sandbox_preflight(project_id: String) -> crate::services::sandbox::PreflightReport {
     crate::services::sandbox::preflight_report(&project_id)
 }

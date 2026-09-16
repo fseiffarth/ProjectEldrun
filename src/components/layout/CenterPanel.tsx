@@ -119,7 +119,15 @@ function CenterPanelImpl() {
   // WebView2 can keep the frame aligned with the cursor during the OS move loop.
   const windowMoving = useWindowMoveStore((s) => s.moving);
 
-  const { projects, activeId } = useProjectsStore();
+  // Two field selectors, not the whole store: a bare `useProjectsStore()`
+  // re-rendered this panel on every projects-store write, switch/connection
+  // toasts included, none of which it reads. Deliberately NOT one object
+  // selector (`(s) => ({ projects, activeId })`): that returns a fresh object
+  // per call, which zustand 5 without `useShallow` rejects ("getSnapshot should
+  // be cached") or loops on. `projects` is replaced by reference on change and
+  // `activeId` is a string|null, so plain selectors compare correctly.
+  const projects = useProjectsStore((s) => s.projects);
+  const activeId = useProjectsStore((s) => s.activeId);
   // Bumped on every pill click, even one re-selecting the already-active
   // project. It is what lets the restore effect below leave a box scope when
   // the user clicks the project they were in before opening the box —

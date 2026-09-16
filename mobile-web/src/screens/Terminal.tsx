@@ -679,7 +679,11 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
         cancelAnimationFrame(readableFrame);
         readableFrame = requestAnimationFrame(() => {
           renderReadable();
-          setScreenTick((tick) => tick + 1);
+          // The tick's one reader is the session settle read, which only an
+          // agent tab has (`sessionFocus`). On a shell tab in Terminal view
+          // `renderReadable` changes no state, so bumping it anyway re-rendered
+          // this whole screen ~8×/s for as long as a command streamed.
+          if (tab.kind === "agent") setScreenTick((tick) => tick + 1);
         });
       }, wait);
     };

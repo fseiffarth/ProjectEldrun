@@ -445,6 +445,16 @@ pub async fn git_status(project_dir: String) -> Result<GitStatus, String> {
 }
 
 fn git_status_blocking(project_dir: String) -> Result<GitStatus, String> {
+    git_status_probe(project_dir, true)
+}
+
+/// `probe_remote: false` skips the `git remote` spawn and reports
+/// `has_remote: false`. Only `git_dirty_probe` passes it: that path is the
+/// switcher's 12 s per-project poll, and its sole consumer (`stores/gitDirty.ts`
+/// → `gitDirtyState`) reads the counts and `is_repo`, never `has_remote` — so the
+/// second process (an SSH round trip on a remote project) bought nothing. The
+/// `git_status` command keeps the full answer for anything that does read it.
+fn git_status_probe(project_dir: String, probe_remote: bool) -> Result<GitStatus, String> {
     let target = remote_target_for_dir(&project_dir);
     if local_non_repo(target.as_ref(), &project_dir) {
         return Ok(GitStatus {
@@ -480,9 +490,10 @@ fn git_status_blocking(project_dir: String) -> Result<GitStatus, String> {
         }
     }
 
-    let has_remote = run_git(target.as_ref(), &project_dir, &["remote"])
-        .map(|o| !o.stdout.is_empty())
-        .unwrap_or(false);
+    let has_remote = probe_remote
+        && run_git(target.as_ref(), &project_dir, &["remote"])
+            .map(|o| !o.stdout.is_empty())
+            .unwrap_or(false);
 
     Ok(GitStatus {
         staged,
@@ -510,7 +521,8 @@ pub struct GitDirtyProbe {
 #[tauri::command]
 pub async fn git_dirty_probe(project_dir: String) -> Result<GitDirtyProbe, String> {
     run_off_thread(move || {
-        let status = git_status_blocking(project_dir.clone())?;
+        // `has_remote` is not read by the dot (see `git_status_probe`); skip it.
+        let status = git_status_probe(project_dir.clone(), false)?;
         let clean = status.is_repo
             && status.staged == 0
             && status.unstaged == 0
@@ -2499,8 +2511,16 @@ pub struct DetectedOrigin {
 /// already rides on `git_type`. Used to decorate pill/side-panel hovers for
 /// repos pushed to a host — including ones published outside Eldrun's own
 /// Publish flow (the sole writer of the `remote-*` `git_type`).
+///
+/// Offloaded via [`run_off_thread`]: the body forks one `git remote get-url`
+/// per local project, and as a sync command that whole loop ran on the main
+/// thread, stalling the window for N process spawns on every call.
 #[tauri::command]
-pub fn detect_git_providers() -> Result<HashMap<String, DetectedOrigin>, String> {
+pub async fn detect_git_providers() -> Result<HashMap<String, DetectedOrigin>, String> {
+    run_off_thread(detect_git_providers_blocking).await
+}
+
+fn detect_git_providers_blocking() -> Result<HashMap<String, DetectedOrigin>, String> {
     use serde_json::Value;
 
     let path = crate::storage::state_dir().join("projects.json");

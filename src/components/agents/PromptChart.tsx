@@ -160,7 +160,11 @@ export function PromptChart({ scope, active, tabs, stateOf }: Props) {
   // The model pill beside each tab, by composed PTY id — worn by the tab's
   // cards as a `model:` tag.
   const modelByTab = useAgentModelsStore((state) => state.byTab);
-  const schedules = useAgentSchedulesStore();
+  // The two actions only — never the whole store. `load` writes `loading` twice
+  // around every `byTarget` write, and `refreshLoaded` fans that across every
+  // loaded target on each `agent-schedules-changed`; none of it is read here.
+  const upsertSchedule = useAgentSchedulesStore((state) => state.upsert);
+  const removeSchedule = useAgentSchedulesStore((state) => state.remove);
   const [now, setNow] = useState(() => new Date());
   const [view, setView] = useState<TimelineView>("day");
   const [anchor, setAnchor] = useState(() => todayStr());
@@ -420,7 +424,7 @@ export function PromptChart({ scope, active, tabs, stateOf }: Props) {
     } else {
       // A one-time rule is taken back only if it has not gone out meanwhile —
       // otherwise the re-queue below would deliver it a second time.
-      if (card.schedule && card.targetId) await schedules.remove(scope, card.targetId, card.schedule.id, { expectUndelivered: true });
+      if (card.schedule && card.targetId) await removeSchedule(scope, card.targetId, card.schedule.id, { expectUndelivered: true });
       await queuePromptForTab(scope, tab.scheduleTargetId!, card.message, {
         id: card.id,
         preface: card.schedule?.preface ?? card.history?.preface,
@@ -452,8 +456,8 @@ export function PromptChart({ scope, active, tabs, stateOf }: Props) {
     const rule = at ? { type: "once" as const, at: localOccurrenceKey(at) } : card.schedule.rule;
     if (targetId === card.targetId && !at) return;
     if (targetId !== card.targetId && occupiedIds.has(targetId)) throw new Error(occupiedError(targetId));
-    await schedules.upsert(scope, targetId, { ...card.schedule, last: undefined, rule }, card.targetId ? { expectExistingOn: card.targetId } : undefined);
-    if (card.targetId && targetId !== card.targetId) await schedules.remove(scope, card.targetId, card.schedule.id);
+    await upsertSchedule(scope, targetId, { ...card.schedule, last: undefined, rule }, card.targetId ? { expectExistingOn: card.targetId } : undefined);
+    if (card.targetId && targetId !== card.targetId) await removeSchedule(scope, card.targetId, card.schedule.id);
   };
   /** Whether an earlier move to `at` comes too close to `nowMs`: within one
    *  step of now the rule is simply due — a send nobody asked for. The one
@@ -482,7 +486,7 @@ export function PromptChart({ scope, active, tabs, stateOf }: Props) {
     for (const write of queueReorderWrites(cards, card, step, now)) {
       const schedule = cards.find((item) => item.targetId === card.targetId && item.schedule?.id === write.id)?.schedule;
       if (!schedule) continue;
-      await schedules.upsert(scope, card.targetId, {
+      await upsertSchedule(scope, card.targetId, {
         ...schedule,
         last: undefined,
         rule: { type: "once", at: write.at },
@@ -493,7 +497,7 @@ export function PromptChart({ scope, active, tabs, stateOf }: Props) {
     await upsertPrompt(scope, { id: crypto.randomUUID(), message: card.message, tags: card.tags });
   };
   const remove = async (card: PromptChartCard) => {
-    if (card.schedule && card.targetId) await schedules.remove(scope, card.targetId, card.schedule.id);
+    if (card.schedule && card.targetId) await removeSchedule(scope, card.targetId, card.schedule.id);
     if (card.prompt) await removePrompt(scope, card.prompt.id);
     if (card.history && card.state === "sent") await clearHistory(scope, card.history.id);
   };
@@ -516,7 +520,7 @@ export function PromptChart({ scope, active, tabs, stateOf }: Props) {
   };
   const unschedule = async (card: PromptChartCard) => {
     if (!card.prompt) await upsertPrompt(scope, { id: crypto.randomUUID(), message: card.message, tags: card.tags });
-    if (card.schedule && card.targetId) await schedules.remove(scope, card.targetId, card.schedule.id);
+    if (card.schedule && card.targetId) await removeSchedule(scope, card.targetId, card.schedule.id);
     // A prompt taken off the axis leaves its sequence: an edge left behind
     // would chain it again, or point at a rule that no longer exists.
     for (const link of links.filter((item) => item.from === card.id || item.to === card.id)) {
@@ -525,7 +529,7 @@ export function PromptChart({ scope, active, tabs, stateOf }: Props) {
   };
   const save = async (card: PromptChartCard, message: string, tags: string[]) => {
     if (card.prompt) await upsertPrompt(scope, { id: card.prompt.id, message, tags });
-    if (card.schedule && card.targetId) await schedules.upsert(scope, card.targetId, { ...card.schedule, message }, { expectExistingOn: card.targetId });
+    if (card.schedule && card.targetId) await upsertSchedule(scope, card.targetId, { ...card.schedule, message }, { expectExistingOn: card.targetId });
   };
   /** The agent picker on a card: what "aim this at that tab" writes per state. */
   const setAgent = async (card: PromptChartCard, targetId: string) => {
@@ -606,7 +610,7 @@ export function PromptChart({ scope, active, tabs, stateOf }: Props) {
       const at = localWallClock(drop.at);
       if (at) await retime(card, at, drop.targetId, false);
     } else if (drop.type === "schedule") {
-      await schedules.upsert(scope, drop.targetId, { id: card.id, enabled: true, message: card.message, rule: { type: "once", at: drop.at } });
+      await upsertSchedule(scope, drop.targetId, { id: card.id, enabled: true, message: card.message, rule: { type: "once", at: drop.at } });
     } else if (drop.type === "unschedule") {
       await unschedule(card);
     }
