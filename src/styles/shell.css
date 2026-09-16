@@ -354,14 +354,6 @@ select option {
    title bar. Nothing sizes it here any more — each host does. */
 
 /* ── Version / debug / conn-type ─────────────────────────────────────── */
-.app-version-stack {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 1px;
-  line-height: 1;
-}
-
 /* The release label lives at the bottom of the docked file viewer rather than
    competing with project controls in the top frame. */
 .side-panel-frame-footer {

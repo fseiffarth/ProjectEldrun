@@ -1182,7 +1182,7 @@
   width: 64px;
   height: 16px;
   box-sizing: border-box;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   font-size: var(--text-xs);
   line-height: 1;
   letter-spacing: 0.02em;

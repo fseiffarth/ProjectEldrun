@@ -118,10 +118,7 @@ export function SqliteView({
             {t("sqliteView.loadingDatabase")}
           </div>
         ) : tables.length === 0 ? (
-          <div
-            className="file-viewer-empty"
-            style={{ padding: "1rem", color: "var(--text-secondary, #8b949e)" }}
-          >
+          <div style={{ padding: "1rem", color: "var(--text-secondary, #8b949e)" }}>
             {t("sqliteView.noTables")}
           </div>
         ) : (

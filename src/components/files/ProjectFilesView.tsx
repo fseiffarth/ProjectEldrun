@@ -1509,8 +1509,8 @@ export function ProjectFilesView({
         {(["files", "git", "windows", "agents"] as View[]).map((v) => (
           <button
             key={v}
-            className={`toolbar-btn${view === v ? " active" : ""}${v === "git" && gitPendingColor ? " toolbar-btn--flagged" : ""}`}
-            style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: v === "files" ? 0 : 2 }}
+            className={`toolbar-btn toolbar-btn--sm${view === v ? " active" : ""}${v === "git" && gitPendingColor ? " toolbar-btn--flagged" : ""}`}
+            style={{ marginLeft: v === "files" ? 0 : 2 }}
             aria-pressed={view === v}
             onClick={() => setView(v)}
           >
@@ -1540,8 +1540,8 @@ export function ProjectFilesView({
             first shows up at all. */}
         {!activeBox && project?.remote && projectId && (
           <button
-            className={`toolbar-btn side-panel-orange-btn${view === "orange" ? " active" : ""}`}
-            style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: 2 }}
+            className={`toolbar-btn toolbar-btn--sm side-panel-orange-btn${view === "orange" ? " active" : ""}`}
+            style={{ marginLeft: 2 }}
             aria-pressed={view === "orange"}
             onClick={() => setView(view === "orange" ? "files" : "orange")}
             title={t("projectFilesView.divergedFilesTitle", {
@@ -1560,8 +1560,8 @@ export function ProjectFilesView({
             click from being reattached. */}
         {!activeBox && project?.remote && projectId && (
           <button
-            className={`toolbar-btn side-panel-orange-btn${view === "sessions" ? " active" : ""}`}
-            style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: 2 }}
+            className={`toolbar-btn toolbar-btn--sm side-panel-orange-btn${view === "sessions" ? " active" : ""}`}
+            style={{ marginLeft: 2 }}
             aria-pressed={view === "sessions"}
             onClick={() => setView(view === "sessions" ? "files" : "sessions")}
             title={t("projectFilesView.persistentSessionsTitle", { count: sessionRows.length })}
@@ -1573,8 +1573,8 @@ export function ProjectFilesView({
             toggle never appears off-cluster. Badged with the live queue count. */}
         {!activeBox && slurmSupported && projectId && (
           <button
-            className={`toolbar-btn side-panel-orange-btn${view === "jobs" ? " active" : ""}`}
-            style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: 2 }}
+            className={`toolbar-btn toolbar-btn--sm side-panel-orange-btn${view === "jobs" ? " active" : ""}`}
+            style={{ marginLeft: 2 }}
             aria-pressed={view === "jobs"}
             onClick={() => setView(view === "jobs" ? "files" : "jobs")}
             title={t("projectFilesView.slurmJobsTitle", { count: jobRows.length })}
@@ -1584,8 +1584,8 @@ export function ProjectFilesView({
         )}
         {!activeBox && remarksEnabled && projectId && (
           <button
-            className={`toolbar-btn side-panel-orange-btn${view === "remarks" ? " active" : ""}`}
-            style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: 2 }}
+            className={`toolbar-btn toolbar-btn--sm side-panel-orange-btn${view === "remarks" ? " active" : ""}`}
+            style={{ marginLeft: 2 }}
             aria-pressed={view === "remarks"}
             onClick={() => setView(view === "remarks" ? "files" : "remarks")}
             title={t("projectRemarks.view")}
@@ -1599,8 +1599,8 @@ export function ProjectFilesView({
             Same chrome as every other toolbar button — see `toolbar-btn`. */}
         {view === "files" && (
           <button
-            className={`toolbar-btn${searchOpen ? " active" : ""}`}
-            style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: 2 }}
+            className={`toolbar-btn toolbar-btn--sm${searchOpen ? " active" : ""}`}
+            style={{ marginLeft: 2 }}
             aria-pressed={searchOpen}
             aria-expanded={searchOpen}
             onClick={() => setSearchOpen((v) => !v)}
@@ -1612,8 +1612,8 @@ export function ProjectFilesView({
         )}
         {view === "files" && (
           <button
-            className="toolbar-btn"
-            style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: 2 }}
+            className="toolbar-btn toolbar-btn--sm"
+            style={{ marginLeft: 2 }}
             onClick={() => setRefreshNonce((n) => n + 1)}
             title={t("fileTree.refreshTitle")}
             aria-label={t("common.refresh")}
@@ -1623,8 +1623,8 @@ export function ProjectFilesView({
         )}
         {importDrop.canImport && (
           <button
-            className="toolbar-btn"
-            style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: 2 }}
+            className="toolbar-btn toolbar-btn--sm"
+            style={{ marginLeft: 2 }}
             onClick={(e) => {
               const r = e.currentTarget.getBoundingClientRect();
               setImportMenu({ x: r.left, y: r.bottom + 2 });
@@ -1660,8 +1660,8 @@ export function ProjectFilesView({
         )}
         {projectDir && (
           <button
-            className="toolbar-btn"
-            style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: 2 }}
+            className="toolbar-btn toolbar-btn--sm"
+            style={{ marginLeft: 2 }}
             onClick={openInOsBrowser}
             title={t("projectFilesView.openInFileManagerTitle")}
           >
@@ -1670,8 +1670,8 @@ export function ProjectFilesView({
         )}
         {!activeBox && projectDir && (
           <button
-            className={`toolbar-btn${showDownloads ? " active" : ""}`}
-            style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: 2 }}
+            className={`toolbar-btn toolbar-btn--sm${showDownloads ? " active" : ""}`}
+            style={{ marginLeft: 2 }}
             aria-pressed={showDownloads}
             onClick={() => {
               setShowDownloads((v) => !v);
@@ -1691,8 +1691,8 @@ export function ProjectFilesView({
             The group itself stays below the tree — only its switch moved. */}
         {projectId && (
           <button
-            className="toolbar-btn"
-            style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: 2 }}
+            className="toolbar-btn toolbar-btn--sm"
+            style={{ marginLeft: 2 }}
             onClick={() => setShowSettings(true)}
             title={t("projectFilesView.projectSettingsTitle")}
           >

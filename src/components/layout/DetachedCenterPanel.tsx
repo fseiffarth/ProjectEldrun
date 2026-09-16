@@ -1929,14 +1929,14 @@ export function DetachedCenterPanel({
             const next = window.prompt(t("detachedTabs.renamePrompt"), tab.label);
             if (next != null && next.trim() && next !== tab.label) onRename?.(tab.key, next.trim());
           }}>
-            <span className="tab-new-menu-dot" style={{ color: "var(--accent)" }}>✎</span>
+            <span className="tab-new-menu-dot tab-new-menu-dot--accent">✎</span>
             {t("common.rename")}
           </button>
           {(() => {
             const tab = byKey.get(tabMenu.key);
             return tab && (tab.kind === "agent" || tab.kind === "local_agent") ? (
               <button className="tab-new-menu-item" onClick={() => { setScheduleDialogKey(tab.key); setTabMenu(null); }}>
-                <span className="tab-new-menu-dot" style={{ color: "var(--accent)" }}>◷</span>
+                <span className="tab-new-menu-dot tab-new-menu-dot--accent">◷</span>
                 {t("agentSchedule.menu")} <UntestedTag />
               </button>
             ) : null;

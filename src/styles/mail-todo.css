@@ -16,7 +16,14 @@
    dialogs are portaled to <body>, which carries no color, so without it they
    would inherit black. */
 
-.mail-pane {
+/* The pane shell four surfaces share: Mail here, and Browser / Print / Skills
+   in browser-print-tex.css, which imports after this file. Each of the four
+   keeps its own layout rules; only this full-height column on the panel ground
+   is common, and it was written out four times identically. */
+.mail-pane,
+.browser-pane,
+.print-pane,
+.skills-pane {
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -111,7 +118,7 @@ svg.alerts-toggle-icon {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   background: var(--danger);
   color: #fff;
   font-size: var(--text-xs);
@@ -818,7 +825,7 @@ column reflows under the pointer that is about to click. */
   align-items: center;
   gap: 3px;
   padding: 1px 5px;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   font-size: 10px;
   line-height: 1.5;
   background: var(--control-hover-bg);
@@ -867,7 +874,7 @@ column reflows under the pointer that is about to click. */
 .todo-card-steps-bar {
   flex: 1;
   height: 3px;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   background: var(--border-subtle);
   overflow: hidden;
 }
@@ -1452,8 +1459,7 @@ handle — it swallows the pointer before the card ever sees it. */
   line-height: 1.5;
 }
 
-.mail-error-strip,
-.mail-note-strip {
+.mail-error-strip {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -1465,11 +1471,7 @@ handle — it swallows the pointer before the card ever sees it. */
   background: color-mix(in srgb, var(--danger) 14%, transparent);
   color: var(--text-primary);
 }
-.mail-note-strip {
-  background: color-mix(in srgb, var(--accent) 14%, transparent);
-}
-.mail-error-strip span,
-.mail-note-strip span {
+.mail-error-strip span {
   flex: 1;
   word-break: break-word;
 }
@@ -1558,7 +1560,7 @@ handle — it swallows the pointer before the card ever sees it. */
   min-height: 26px;
   padding: 3px 11px;
   border: 1px solid var(--border-color);
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   background: var(--bg-input);
   color: var(--text-primary);
   font-size: 12px;
@@ -2284,7 +2286,7 @@ handle — it swallows the pointer before the card ever sees it. */
   padding: 2px 8px;
   font-size: 11px;
   line-height: 1.4;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   border: 1px solid var(--border-subtle);
   background: transparent;
   color: var(--text-secondary);

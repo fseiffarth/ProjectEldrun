@@ -367,16 +367,15 @@ export function AlertsSection({ onClose }: AlertsSectionProps) {
           </button>
         )}
         <button
-          className="toolbar-btn"
-          style={{ fontSize: 10, padding: "1px 6px", height: 20, marginLeft: "auto" }}
+          className="toolbar-btn toolbar-btn--sm"
+          style={{ marginLeft: "auto" }}
           onClick={refresh}
           title={t("filesAlerts.refresh")}
         >
           ⟳
         </button>
         <button
-          className="toolbar-btn"
-          style={{ fontSize: 10, padding: "1px 6px", height: 20 }}
+          className="toolbar-btn toolbar-btn--sm"
           onClick={onClose}
           title={t("filesAlerts.hide")}
         >

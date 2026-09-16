@@ -126,7 +126,7 @@ html, body, #root {
   width: 148px;
   height: 2px;
   overflow: hidden;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   background: color-mix(in srgb, var(--border-color, #33415e) 80%, transparent);
 }
 

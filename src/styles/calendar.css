@@ -1527,7 +1527,7 @@
   color: var(--text-secondary);
   background: var(--control-bg);
   border: 1px solid var(--control-border);
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   cursor: var(--cur-pointer, pointer);
 }
 
