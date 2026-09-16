@@ -710,10 +710,15 @@ fn entry_is_remote(entry: &ProjectEntry) -> bool {
 }
 
 /// Move a directory tree from `src` to `dst`, creating `dst`'s parent. Tries a
-/// fast `rename` first and falls back to recursive copy + remove when that fails
-/// (e.g. a cross-filesystem move). No-op when `src` does not exist. `src` is
-/// only removed after the whole copy succeeded, so a failed fallback leaves the
-/// source intact and the move retryable.
+/// fast `rename` first and falls back to recursive copy + remove in exactly two
+/// cases: a cross-filesystem move, and a `dst` that already exists. The second is
+/// deliberate — `archive_project` resumes an interrupted archive *into* the
+/// partial destination it left, and `rename` onto a non-empty directory fails
+/// with `ENOTEMPTY` (Linux) or its per-OS twin, not with a cross-device error.
+/// Any other rename failure (a file held open, a permission refusal) is returned
+/// as it is rather than papered over with a copy. No-op when `src` does not
+/// exist. `src` is only removed after the whole copy succeeded, so a failed
+/// fallback leaves the source intact and the move retryable.
 fn move_tree(src: &Path, dst: &Path) -> Result<(), String> {
     if !src.exists() {
         return Ok(());
@@ -721,8 +726,10 @@ fn move_tree(src: &Path, dst: &Path) -> Result<(), String> {
     if let Some(parent) = dst.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-    if fs::rename(src, dst).is_ok() {
-        return Ok(());
+    match fs::rename(src, dst) {
+        Ok(()) => return Ok(()),
+        Err(e) if crate::paths::is_cross_device(&e) || dst.exists() => {}
+        Err(e) => return Err(format!("could not move {}: {e}", src.display())),
     }
     copy_tree_core(src, dst, true)?;
     fs::remove_dir_all(src).map_err(|e| e.to_string())?;
@@ -2336,11 +2343,17 @@ pub fn move_remote_mirror_blocking(
 
     let old = crate::services::remote_sync::mirror_dir(&project_id);
     if old.exists() && old != new_root {
-        // A plain rename fails across drives/filesystems (EXDEV on Unix). Fall
-        // back to copy-then-remove so a cross-volume move still works.
-        if fs::rename(&old, &new_root).is_err() {
-            copy_dir_all(&old, &new_root)?;
-            fs::remove_dir_all(&old).map_err(|e| e.to_string())?;
+        // A plain rename fails across drives/filesystems. Fall back to
+        // copy-then-remove for that case only; `new_root` is a free name, so any
+        // other failure (a file held open, a permission refusal) is reported
+        // rather than turned into a duplicate tree.
+        match fs::rename(&old, &new_root) {
+            Ok(()) => {}
+            Err(e) if crate::paths::is_cross_device(&e) => {
+                copy_dir_all(&old, &new_root)?;
+                fs::remove_dir_all(&old).map_err(|e| e.to_string())?;
+            }
+            Err(e) => return Err(format!("could not move the mirror: {e}")),
         }
     } else {
         fs::create_dir_all(&new_root).map_err(|e| e.to_string())?;
@@ -3648,11 +3661,16 @@ pub fn import_project_blocking(req: ImportProjectRequest) -> Result<ProjectEntry
             } else {
                 fs::create_dir_all(projects_root()).map_err(|e| e.to_string())?;
                 // A plain rename fails across drives/filesystems (EXDEV on Unix,
-                // ERROR_NOT_SAME_DEVICE / os error 17 on Windows). Fall back to
-                // copy-then-remove so a cross-volume import still moves.
-                if fs::rename(&source, &dest).is_err() {
-                    copy_dir_all(&source, &dest)?;
-                    fs::remove_dir_all(&source).map_err(|e| e.to_string())?;
+                // ERROR_NOT_SAME_DEVICE on Windows). Fall back to copy-then-remove
+                // for that case only; `dest` was checked absent above, so any other
+                // failure is reported rather than turned into a duplicate tree.
+                match fs::rename(&source, &dest) {
+                    Ok(()) => {}
+                    Err(e) if crate::paths::is_cross_device(&e) => {
+                        copy_dir_all(&source, &dest)?;
+                        fs::remove_dir_all(&source).map_err(|e| e.to_string())?;
+                    }
+                    Err(e) => return Err(format!("could not move the folder: {e}")),
                 }
             }
             dest
@@ -4279,6 +4297,56 @@ fn chrono_now() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An interrupted archive leaves a partial destination, and a retry must
+    /// resume *into* it. `rename` onto a non-empty directory fails with
+    /// `ENOTEMPTY`, not a cross-device error, so `move_tree` keeps copying when
+    /// the destination already exists.
+    #[test]
+    fn move_tree_resumes_into_a_partial_destination() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        std::fs::create_dir_all(src.join("sub")).unwrap();
+        std::fs::write(src.join("a.txt"), b"new-a").unwrap();
+        std::fs::write(src.join("sub/b.txt"), b"new-b").unwrap();
+
+        let dst = tmp.path().join("archive").join("dir");
+        std::fs::create_dir_all(&dst).unwrap();
+        std::fs::write(dst.join("a.txt"), b"partial").unwrap();
+
+        move_tree(&src, &dst).unwrap();
+
+        assert!(!src.exists(), "the source is removed once the copy completed");
+        assert_eq!(std::fs::read(dst.join("a.txt")).unwrap(), b"new-a");
+        assert_eq!(std::fs::read(dst.join("sub/b.txt")).unwrap(), b"new-b");
+    }
+
+    /// A rename refused for any reason other than a cross-device move, with no
+    /// destination in the way, is reported — never answered with a full copy
+    /// that then cannot remove its source.
+    #[cfg(unix)]
+    #[test]
+    fn move_tree_surfaces_a_non_cross_device_rename_error() {
+        use std::os::unix::fs::PermissionsExt;
+        if unsafe { libc::geteuid() } == 0 {
+            // Root ignores the directory permission this test relies on.
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let locked = tmp.path().join("locked");
+        let src = locked.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("a.txt"), b"x").unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+        let dst = tmp.path().join("dst");
+        let result = move_tree(&src, &dst);
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert!(result.is_err(), "EACCES must surface: {result:?}");
+        assert!(!dst.exists(), "no copy was made");
+        assert!(src.join("a.txt").exists(), "the source is untouched");
+    }
 
     /// #23 D3. `copy_dir_all` skipped `.git` only when `is_dir()`, so in a linked
     /// worktree the one-line `.git` FILE (`gitdir: <main>/.git/worktrees/<name>`)

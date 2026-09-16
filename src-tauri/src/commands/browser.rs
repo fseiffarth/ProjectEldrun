@@ -647,6 +647,9 @@ pub async fn browser_download_decide(
             let _ = std::fs::remove_file(&staged);
         }
         let _ = std::fs::remove_dir_all(&dir);
+        // Mark-of-the-Web / quarantine where the engine has not already left
+        // one. Best-effort; never fails the save.
+        web_safety::mark_downloaded(&target);
         Ok::<_, String>(())
     })
     .await

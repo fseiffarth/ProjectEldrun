@@ -37,6 +37,7 @@ import {
   chordLabel,
   findConflicts,
   isFixedChord,
+  livePanelToggleKey,
   resolveChord,
   type ShortcutAction,
   type ShortcutDef,
@@ -53,7 +54,7 @@ import { Dropdown } from "../common/Dropdown";
 import { PasswordInput } from "../common/PasswordInput";
 import { useT, LANGUAGES, type Language, type TranslationKey } from "../../lib/i18n";
 import { useUse24h } from "../../lib/timeFormat";
-import { IS_MAC, IS_WINDOWS } from "../../lib/platform";
+import { IS_MAC, IS_WINDOWS, PLATFORM } from "../../lib/platform";
 import { useHintsStore } from "../../stores/hints";
 import { canConnectVpnSilently } from "../../lib/vpnConnect";
 import { setVpnAutoConnect, vpnUsernameFor } from "../../lib/vpnAutoConnect";
@@ -70,15 +71,57 @@ import {
   ToggleRow,
 } from "./settingsUi";
 
-// The workspace-layout help text. On Linux a lone Super toggles the panels; on
-// Windows it's F9 (the lone Win key is OS-reserved — Start opens on release, see
-// useKeyboard); on macOS the Meta key is reserved for Cmd shortcuts, so the
-// lone-key toggle is disabled — there the panels stay reachable via the
-// cursor-to-edge reveal. Keep the copy honest per OS.
+// The workspace-layout help text. The key is the one that works here, from
+// `livePanelToggleKey`: a lone Super on a Linux desktop that leaves it to the
+// window, F9 where the shell claims Super (GNOME, KDE) and on Windows (the lone
+// Win key is OS-reserved — Start opens on release, see useKeyboard). On macOS
+// the Meta key is reserved for Cmd shortcuts, so the lone-key toggle is
+// disabled — there the panels stay reachable via the cursor-to-edge reveal.
 function workspaceLayoutIntro(t: ReturnType<typeof useT>): string {
   return IS_MAC
     ? t("help.workspaceLayout.introMac")
-    : t("help.workspaceLayout.introOther", { key: IS_WINDOWS ? "F9" : "Super" });
+    : t("help.workspaceLayout.introOther", { key: livePanelToggleKey() });
+}
+
+/** What `workspace_capabilities` answers (backend `commands::workspace`). */
+interface WorkspaceCapabilities {
+  backend: string;
+  can_park: boolean;
+}
+
+/**
+ * One sentence in Layout, Linux only: this desktop cannot hide other apps'
+ * windows on a project switch. Project switching promises to swap the apps
+ * with the project, and on GNOME, XFCE or KDE Wayland (the `null` and
+ * `kde-wayland` backends) it silently leaves every window where it was — the
+ * user should read that here rather than conclude the feature is broken.
+ * Renders nothing until the backend answers, when it can park, and when the
+ * command is missing (a backend older than this frontend). Not on Windows or
+ * macOS, whose backends always park.
+ */
+export function WorkspaceParkingNote() {
+  const t = useT();
+  const [caps, setCaps] = useState<WorkspaceCapabilities | null>(null);
+  useEffect(() => {
+    if (PLATFORM !== "linux") return;
+    let live = true;
+    invoke<WorkspaceCapabilities>("workspace_capabilities")
+      .then((c) => {
+        if (live && c && typeof c.can_park === "boolean") setCaps(c);
+      })
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, []);
+  if (!caps || caps.can_park) return null;
+  return (
+    <SettingsCard>
+      <p className="settings-help">
+        {t("settings.workspaceNoParking")} <UntestedTag />
+      </p>
+    </SettingsCard>
+  );
 }
 
 /** Every sub-panel takes the same two: `onBack` returns to the main panel,
@@ -1362,6 +1405,7 @@ export function SettingsDialog({
                 </>
               }
             />
+            <WorkspaceParkingNote />
             <SettingRow
               label={t("settings.windowZoom")}
               control={

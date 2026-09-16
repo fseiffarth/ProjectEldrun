@@ -409,6 +409,7 @@ pub fn parse_lpq_titles(out: &str) -> HashMap<u32, (String, String)> {
 /// Join the two CUPS readings: titles and the active/held state come from
 /// `lpq`, everything else from `lpstat`. A job `lpq` never mentioned keeps its
 /// id as a title, so no row is blank.
+#[cfg(any(not(target_os = "windows"), test))]
 fn merge_cups_jobs(
     mut jobs: Vec<PrintJob>,
     titles: &HashMap<u32, (String, String)>,

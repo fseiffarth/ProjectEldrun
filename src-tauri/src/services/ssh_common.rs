@@ -1015,6 +1015,7 @@ impl Drop for Askpass {
 /// after `ap-`: this is the sole input to a delete, and a name that does not
 /// parse must fall through to "leave it alone" instead of being attributed to a
 /// pid that happens to be dead.
+#[cfg(any(unix, test))]
 fn askpass_owner_pid(name: &str) -> Option<u32> {
     let rest = name.strip_prefix("ap-")?;
     let (pid, seq) = rest.split_once('-')?;

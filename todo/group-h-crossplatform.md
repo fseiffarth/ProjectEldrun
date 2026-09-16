@@ -239,6 +239,11 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
       Containers are Unix-only, but `sandbox::sweep_orphans` ran unconditionally
       at startup, spawning `docker --version` (and `docker ps` when Docker
       Desktop exists) for nothing on Windows. Now gated on `cfg!(unix)`.
+      **Superseded 2026-09-16 by 32a:** the premise went stale when the
+      2026-09-03 parity sweep gave containers a Windows path — `up()` has had no
+      OS gate since, so the `cfg!(unix)` guard left crashed-Eldrun containers
+      running. The no-spawn intent is preserved by gating on
+      `binary_on_path("docker")`, which walks PATH without spawning.
       - [x] 🤖 Automated test — compile-covered; behavior is an early return
       - [ ] 🖐️ Manual test — n/a
         - [ ] ✅ Works
@@ -350,6 +355,154 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
       `nettop -P -x -L 1 -p <master-pid>` and parse its CSV (`bytes_in`/
       `bytes_out` columns) into the existing `SshLinkSnapshot`. Needs a mac to
       verify nettop's CSV shape/permissions before writing the parser.
+
+32. **OS parity sweep (2026-09-16).** ✅ Code-complete, ⚠️ **none of it
+    verified live** — see `docs/os_parity_sweep_plan.md` for the full merged
+    plan, what was refuted, and what was deferred and why. Every item below
+    passed `cargo test`, clippy, the Windows cross-check (25 → 0 warnings),
+    `npm run build`/`test`/`lint`.
+    - [x] **32a — orphan containers swept on Windows.** The startup sweep
+      skipped Windows on a premise that went stale (see 30o); now gated on
+      `binary_on_path("docker")`.
+      - [x] 🤖 Automated test — `sweep_should_probe`
+      - [ ] 🖐️ Manual test — kill Eldrun from Task Manager with a container up,
+        relaunch, `docker ps` shows no `eldrun-*`
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+    - [x] **32b — image build uses the platform shell and quoting.** The
+      one-click build ran `/bin/bash` on Windows; `default` would have been
+      cmd.exe, which ignores `'…'`. Now PowerShell plus `install_shell_quote`
+      (apostrophes were broken on POSIX too).
+      - [x] 🤖 Automated test — `install_shell_quote` table, `containerBuildShell`
+      - [ ] 🖐️ Manual test — project path with a space and an apostrophe →
+        build image → PowerShell tab, build succeeds
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+    - [x] **32c — copy+delete only on a real cross-device rename.** Any rename
+      error triggered the fallback, so a locked file on Windows could leave a
+      duplicated, half-deleted tree. `paths::is_cross_device` (never compares
+      raw codes across OSes); `move_tree` keeps `|| dst.exists()` so an
+      interrupted archive still resumes.
+      - [x] 🤖 Automated test — predicate per-cfg tests, `move_tree` tempdir resume
+      - [ ] 🖐️ Manual test — Windows: keep a file in a folder open, move the
+        folder — an error, and no duplicate at the destination
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+    - [x] **32d — saved downloads marked as from the internet.** Mail
+      attachments and browser downloads carried no provenance:
+      `web_safety::mark_downloaded` writes `Zone.Identifier` on Windows (only
+      when absent, so an engine-written mark is kept) and
+      `com.apple.quarantine` on macOS. Best-effort, never fatal, no new
+      path-taking command.
+      - [x] 🤖 Automated test — body/xattr value format; `no_command_takes_a_path`
+      - [ ] 🖐️ Manual test — Windows: Explorer shows "Unblock", Office opens it
+        in Protected View. macOS: a saved `.command` triggers Gatekeeper
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+    - [x] **32e — the phone's sidecar finds tmux.** It spawned bare `tmux`
+      without Eldrun's augmented PATH, so a Homebrew tmux was invisible and the
+      phone's tab list came back empty. The attach keeps its `CommandBuilder`
+      with an absolute tmux and no creation flags (they would detach a ConPTY
+      child). Windows now short-circuits and says so in Mobile settings.
+      - [x] 🤖 Automated test — builder PATH assertions in discovery/pty_bridge
+      - [ ] 🖐️ Manual test — macOS with Homebrew tmux: the phone lists
+        terminals. Windows: the settings note appears and the phone lists none
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+    - [x] **32f — fenced macOS agents can write the ordinary device files.**
+      The Seatbelt profile denied all writes and never re-allowed `/dev/null`,
+      so `> /dev/null` failed inside a fenced tab. Allows `/dev/null`, `zero`,
+      `tty`, `dtracehelper`, `/dev/fd` — deliberately **not** `/dev/ttys*`,
+      which would let an agent write into other tabs' terminals.
+      - [x] 🤖 Automated test — profile ordering/content assertions (Linux-run)
+      - [ ] 🖐️ Manual test — a fenced tab runs `git status >/dev/null && echo ok`
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+    - [x] **32g — Docker Desktop / OrbStack CLIs on the macOS PATH**, and the
+      **Tailscale CLI inside the app bundle** for App Store installs.
+      - [x] 🤖 Automated test — `supplemental_path_dirs_for(Macos, …)`,
+        `tailscale_program` with an injected `exists`
+      - [ ] 🖐️ Manual test — per-user Docker Desktop: the container tier is
+        offered. App Store Tailscale with no CLI on PATH: Mobile Serve reads
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+    - [x] **32h — the fence install hint follows the distribution.** The
+      one-click bubblewrap install hardcoded apt, and the fence fails closed, so
+      a non-Debian user had no working path. `package_install_cmd` covers
+      apt/dnf/pacman/zypper and returns `None` (button hidden) otherwise.
+      - [x] 🤖 Automated test — os-release fixture table incl. `ID_LIKE` precedence
+      - [ ] 🖐️ Manual test — Fedora/Arch: the pill's install button runs
+        dnf/pacman; an unknown distribution hides it
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+    - [x] **32i — the presenter's sleep inhibitor dies with Eldrun.** It
+      spawned `systemd-inhibit … sleep infinity` with nothing tying it to
+      Eldrun and no release on exit, so a quit or crash mid-talk kept the
+      machine awake until logout. Now `systemd-inhibit … cat` holding a piped
+      stdin (PDEATHSIG follows the forking *thread*, so it was the wrong tool),
+      plus a release in `RunEvent::Exit`.
+      - [x] 🤖 Automated test — argv builder; a pipe-close test proving the tie
+      - [ ] 🖐️ Manual test — present, `kill -9` Eldrun, then
+        `systemd-inhibit --list` shows no Eldrun row
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+    - [x] **32j — the renderer reload budget is per window.** One process-wide
+      counter meant a crash-looping popout could spend the main window's budget.
+      - [x] 🤖 Automated test — pure budget helper; macOS label map
+      - [ ] 🖐️ Manual test — hard to force; watch crash.log for a popout that
+        loops while the main window still reloads
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+    - [x] **32k — onboarding names the panel key that works here.** The copy
+      hardcoded "Super" where the code already uses F9 (GNOME/KDE); it now asks
+      `livePanelToggleKey()` and waits for the desktop probe.
+      - [x] 🤖 Automated test — extended `SuperKeyOwnership`
+      - [ ] 🖐️ Manual test — GNOME/KDE: How to start and the Feature Guide say
+        F9; Cinnamon still says Super
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+    - [x] **32l — Settings says when the desktop cannot park windows.** A
+      `can_park()` backend capability (default true, null backend false) behind
+      `workspace_capabilities`; the dead `workspace_info` fetch in `HeaderBar`
+      is gone. Carries `UntestedTag`.
+      - [x] 🤖 Automated test — backend capability test; the row renders only
+        when `can_park === false`
+      - [ ] 🖐️ Manual test — GNOME Wayland: Settings → Layout shows the note;
+        Cinnamon or KDE X11 shows none
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+    - [x] **32m — macOS gets an explicit menu, and ⌘W closes a tab.** Tauri's
+      default menu bound ⌘W to Close Window, and a focused terminal swallowed
+      the app's own chord, so ⌘W quit the whole app. The menu now omits Close
+      Window, keeps **Edit** (which is what makes ⌘C/⌘V work in xterm — an
+      explicit handler would double-paste) and routes ⌘Q through the window
+      close so the frontend teardown runs. The keyboard bypass is strictly
+      `IS_MAC && metaKey && !ctrlKey`, so ⌃W still reaches every shell.
+      - [x] 🤖 Automated test — pure menu plan (no CloseWindow, Edit present);
+        vitest for ⌘W vs ⌃W on macOS and Ctrl+W unchanged on Linux
+      - [ ] 🖐️ Manual test — macOS: ⌘W in a focused terminal and in a popout
+        closes the tab; ⌃W deletes a word; ⌘Q quits cleanly; ⌘C/⌘V still work
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+    - [x] **32n — macOS window stays hidden until its placement is restored.**
+      The per-platform config replaced the window array (RFC 7396), dropping
+      `visible: false`, so the window flashed at its default spot on launch.
+      - [x] 🤖 Automated test — a Rust test reading both config files
+      - [ ] 🖐️ Manual test — macOS: no visible flash before the saved placement
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+    - [x] **32o — housekeeping.** One Wayland predicate instead of three
+      disagreeing copies (`Some("")` was read as X11); the deb drops the unused
+      `libappindicator3-1` (universe-only on 26.04) and recommends
+      bubblewrap/tmux/cups-client; the Windows dead-code warnings go 25 → 0 by
+      cfg narrowing, never a blanket `allow`; staged clippy on the macOS CI job;
+      `src-tauri/CLAUDE.md`, `docs/context/agent_authority.md` and `README.md`
+      match the code again.
+      - [x] 🤖 Automated test — covered by the existing suites and both cross-checks
+      - [ ] 🖐️ Manual test — Ubuntu: `dpkg -I` on the CI .deb shows the new
+        Depends/Recommends
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
 
 254. **The bare Super key belongs to the desktop, not to the OS.** ✅ Fixed
     2026-09-07, ⚠️ untested live. `useKeyboard` gated its lone Meta/Super panel

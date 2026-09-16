@@ -71,6 +71,14 @@ export function installShellCommand(shellKind: InstallShellKind): string {
   return "";
 }
 
+/** The shell a container image build (`sandbox_preflight`'s `build_command`)
+ *  runs in. The backend quotes the Dockerfile directory as `'…'` for exactly
+ *  these two shells; the Windows default shell is cmd.exe, which does not treat
+ *  `'` as a quote, so it must never be `"default"`. */
+export function containerBuildShell(windows: boolean = IS_WINDOWS): InstallShellKind {
+  return windows ? "powershell" : "bash";
+}
+
 export function runInstallInTab(
   label: string,
   command: string,

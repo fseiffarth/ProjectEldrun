@@ -210,6 +210,7 @@ fn tmux_supports_session_env() -> bool {
 /// output is treated as *not* supporting it: emitting an unknown flag would make
 /// every persistent tab fail to start, while the `export` fallback keeps the
 /// case that matters (an agent tab) working.
+#[cfg(any(unix, test))]
 fn version_supports_session_env(v_output: &str) -> bool {
     let rest = v_output.trim();
     let rest = rest.strip_prefix("tmux").unwrap_or(rest).trim();
