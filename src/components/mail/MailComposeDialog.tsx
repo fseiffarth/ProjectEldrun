@@ -134,8 +134,15 @@ export function MailComposeDialog({
   // End-to-end signing/encryption. **Both default off**, per message, and never
   // remembered — a sticky "encrypt" that silently turned itself off once would
   // be worse than one that always has to be chosen.
+  //
+  // The one exception is a reply or forward that quotes a message which arrived
+  // **encrypted**: that starts ticked, because the quote is the decrypted
+  // plaintext. Unticked, it would go out in the clear to whoever the reply is
+  // addressed to — and a captured ciphertext resent under an attacker's From is
+  // decrypted like any other, so "whoever" can be the attacker.
+  const quotesDecrypted = mode !== "new" && source?.body?.crypto?.decrypted === true;
   const [sign, setSign] = useState(false);
-  const [encrypt, setEncrypt] = useState(false);
+  const [encrypt, setEncrypt] = useState(quotesDecrypted);
   const [pgpReady, setPgpReady] = useState(false);
   const [missingKeys, setMissingKeys] = useState<string[]>([]);
 
@@ -473,6 +480,9 @@ export function MailComposeDialog({
               </label>
               {encrypt && (
                 <p className="mail-note">{t("mail.crypto.encryptSubjectVisible")}</p>
+              )}
+              {quotesDecrypted && !encrypt && (
+                <div className="mail-warning-strip">{t("mail.crypto.quotesDecrypted")}</div>
               )}
               {/* Named, before the click. The send would refuse anyway — the
                   backend never downgrades to plaintext — but a refusal after the

@@ -606,7 +606,10 @@ fn one_addr(a: &mail_parser::Addr<'_>) -> MailAddress {
         .filter(|s| !s.trim().is_empty());
     MailAddress {
         name,
-        address: a.address.as_deref().unwrap_or_default().to_string(),
+        // Controls out of the address too: an RLO inside a quoted local part
+        // reorders the address the UI shows "unconditionally", which is the one
+        // field meant to be trustworthy when the name is not.
+        address: strip_controls(a.address.as_deref().unwrap_or_default()),
     }
 }
 
@@ -1098,7 +1101,9 @@ async fn imap_login(server: &MailServer, password: &Password) -> Result<ImapSess
     // a lockout rather than a prompt.
     let session = tokio::time::timeout(
         COMMAND_TIMEOUT,
-        client.login(server.user.clone(), password.expose().to_string()),
+        // Borrowed, not copied: `login` takes `AsRef<str>`, and an owned
+        // `String` here was a copy of the password that nothing zeroized.
+        client.login(server.user.clone(), password.expose()),
     )
     .await
     .map_err(|_| MailError::Timeout { op: "IMAP login" })?
@@ -1133,6 +1138,27 @@ const POOL_MAX_IDLE: Duration = Duration::from_secs(300);
 /// Below it, the probe is skipped: a burst of flag toggles should not pay a
 /// round trip each to re-ask a question answered a second ago.
 const POOL_PROBE_AFTER: Duration = Duration::from_secs(30);
+
+/// The next item of an IMAP response stream, or a timeout once `deadline` has
+/// passed.
+///
+/// `async-imap` hands the stream back as soon as the command is *sent*, so a
+/// `timeout` around the call bounds nothing a server does afterwards. Every
+/// response is read here, under the same deadline the command started with — a
+/// total, not an idle timer, so a server trickling one byte a minute cannot hold
+/// a sync (and the account's polling behind it) open forever either.
+async fn next_before<S>(
+    stream: &mut S,
+    deadline: tokio::time::Instant,
+    op: &'static str,
+) -> Result<Option<S::Item>, MailError>
+where
+    S: futures_util::Stream + Unpin,
+{
+    tokio::time::timeout_at(deadline, stream.next())
+        .await
+        .map_err(|_| MailError::Timeout { op })
+}
 
 /// A stale socket must fail *fast*. `COMMAND_TIMEOUT` is 60 s, which is the
 /// right budget for a real command and an absurd one for a liveness check whose
@@ -1457,12 +1483,13 @@ impl MailEngine for InProcessEngine {
         let out: Result<Vec<FetchedFolder>, MailError> = async {
             let mut out = Vec::new();
             {
+                let deadline = tokio::time::Instant::now() + COMMAND_TIMEOUT;
                 let mut stream =
-                    tokio::time::timeout(COMMAND_TIMEOUT, session.list(Some(""), Some("*")))
+                    tokio::time::timeout_at(deadline, session.list(Some(""), Some("*")))
                         .await
                         .map_err(|_| MailError::Timeout { op: "IMAP LIST" })?
                         .map_err(classify_imap_error)?;
-                while let Some(name) = stream.next().await {
+                while let Some(name) = next_before(&mut stream, deadline, "IMAP LIST").await? {
                     let name = name.map_err(classify_imap_error)?;
                     let path = name.name().to_string();
                     // Split on the wire form, then decode **only** the leaf for
@@ -1526,11 +1553,12 @@ impl MailEngine for InProcessEngine {
                 // read on the server (and cannot be used to tell a sender that a
                 // message was opened).
                 let query = "(UID FLAGS RFC822.SIZE BODY.PEEK[HEADER])";
-                let mut stream = tokio::time::timeout(FETCH_TIMEOUT, session.fetch(set, query))
+                let deadline = tokio::time::Instant::now() + FETCH_TIMEOUT;
+                let mut stream = tokio::time::timeout_at(deadline, session.fetch(set, query))
                     .await
                     .map_err(|_| MailError::Timeout { op: "IMAP FETCH" })?
                     .map_err(classify_imap_error)?;
-                while let Some(item) = stream.next().await {
+                while let Some(item) = next_before(&mut stream, deadline, "IMAP FETCH").await? {
                     let item = item.map_err(classify_imap_error)?;
                     let Some(uid) = item.uid else { continue };
                     let raw = item.header().unwrap_or(b"");
@@ -1567,16 +1595,42 @@ impl MailEngine for InProcessEngine {
         let out: Result<Vec<u8>, MailError> = async {
             session.ensure_selected(folder_path).await?;
 
+            let deadline = tokio::time::Instant::now() + FETCH_TIMEOUT;
+
+            // The declared size first, so an oversized message is refused before
+            // its literal is read: the IMAP client buffers a literal whole (up to
+            // 512 MiB) before `MAX_MESSAGE_BYTES` below could see it. A server
+            // that lies here is still caught by that check and the deadline.
+            {
+                let mut stream = tokio::time::timeout_at(
+                    deadline,
+                    session.uid_fetch(uid.to_string(), "RFC822.SIZE"),
+                )
+                .await
+                .map_err(|_| MailError::Timeout { op: "IMAP FETCH" })?
+                .map_err(classify_imap_error)?;
+                while let Some(item) = next_before(&mut stream, deadline, "IMAP FETCH").await? {
+                    let item = item.map_err(classify_imap_error)?;
+                    if let Some(size) = item.size {
+                        if size as usize > MAX_MESSAGE_BYTES {
+                            return Err(MailError::TooLarge {
+                                bytes: size as usize,
+                            });
+                        }
+                    }
+                }
+            }
+
             let mut bytes: Vec<u8> = Vec::new();
             {
-                let mut stream = tokio::time::timeout(
-                    FETCH_TIMEOUT,
+                let mut stream = tokio::time::timeout_at(
+                    deadline,
                     session.uid_fetch(uid.to_string(), "BODY.PEEK[]"),
                 )
                 .await
                 .map_err(|_| MailError::Timeout { op: "IMAP FETCH" })?
                 .map_err(classify_imap_error)?;
-                while let Some(item) = stream.next().await {
+                while let Some(item) = next_before(&mut stream, deadline, "IMAP FETCH").await? {
                     let item = item.map_err(classify_imap_error)?;
                     if let Some(body) = item.body() {
                         if body.len() > MAX_MESSAGE_BYTES {
@@ -1610,14 +1664,15 @@ impl MailEngine for InProcessEngine {
             session.ensure_selected(folder_path).await?;
             let op = if value { "+FLAGS" } else { "-FLAGS" };
             {
-                let mut stream = tokio::time::timeout(
-                    COMMAND_TIMEOUT,
+                let deadline = tokio::time::Instant::now() + COMMAND_TIMEOUT;
+                let mut stream = tokio::time::timeout_at(
+                    deadline,
                     session.uid_store(uid.to_string(), format!("{op} ({flag})")),
                 )
                 .await
                 .map_err(|_| MailError::Timeout { op: "IMAP STORE" })?
                 .map_err(classify_imap_error)?;
-                while stream.next().await.is_some() {}
+                while next_before(&mut stream, deadline, "IMAP STORE").await?.is_some() {}
             }
             Ok(())
         }
@@ -1648,14 +1703,15 @@ impl MailEngine for InProcessEngine {
             // is called on. Range compression usually collapses it to a handful of
             // bytes anyway — the chunking is the guarantee, not the optimization.
             for chunk in uid_set_chunks(uids, MAX_UID_SET_CHARS) {
-                let mut stream = tokio::time::timeout(
-                    COMMAND_TIMEOUT,
+                let deadline = tokio::time::Instant::now() + COMMAND_TIMEOUT;
+                let mut stream = tokio::time::timeout_at(
+                    deadline,
                     session.uid_store(chunk, format!("{op} ({flag})")),
                 )
                 .await
                 .map_err(|_| MailError::Timeout { op: "IMAP STORE" })?
                 .map_err(classify_imap_error)?;
-                while stream.next().await.is_some() {}
+                while next_before(&mut stream, deadline, "IMAP STORE").await?.is_some() {}
             }
             Ok(())
         }
@@ -1762,7 +1818,14 @@ async fn smtp_connect(
         // Implicit TLS. Note there is deliberately no certificate-bypass call
         // anywhere in this file — a source-scanning test asserts that.
         .implicit_tls(true)
+        // Not the machine's hostname, which `mail-send` would otherwise put in
+        // EHLO and providers copy into `Received:` — telling every recipient
+        // what this computer is called, across every account. An address
+        // literal is what RFC 5321 §4.1.4 allows when there is no name to give.
+        .helo_host("[127.0.0.1]")
         .timeout(SMTP_TIMEOUT)
+        // `mail-send` owns its credentials as a plain `String`, so this one copy
+        // cannot be zeroized from here; it lives as long as the connection.
         .credentials((server.user.clone(), password.expose().to_string()));
     tokio::time::timeout(SMTP_TIMEOUT, builder.connect())
         .await
@@ -1798,13 +1861,46 @@ pub fn reject_header_injection(value: &str) -> Result<&str, MailError> {
 }
 
 /// A recipient address that is one address and nothing else.
+///
+/// Strict on purpose, because the result is spliced into `RCPT TO:<…>`: a `>`
+/// closes the path and whatever follows is read as ESMTP parameters (`NOTIFY=`,
+/// `ORCPT=`), and reply-all copies addresses out of a received — attacker-written
+/// — message. So: a dot-atom local part (no quoted forms, no backslash), one `@`,
+/// and a hostname of letters, digits and hyphens. Non-ASCII is allowed in both
+/// halves for internationalized addresses; controls and whitespace never are.
 pub fn validate_recipient(addr: &str) -> Result<String, MailError> {
     let a = addr.trim();
     reject_header_injection(a)?;
-    if a.is_empty() || !a.contains('@') || a.contains(',') || a.contains(';') || a.contains(' ') {
-        return Err(MailError::Protocol(format!(
-            "'{a}' is not a single e-mail address"
-        )));
+    let bad = || MailError::Protocol(format!("'{a}' is not a single e-mail address"));
+    let (local, domain) = a.split_once('@').ok_or_else(bad)?;
+    const ATEXT_SPECIALS: &str = "!#$%&'*+-/=?^_`{|}~";
+    let local_ok = !local.is_empty()
+        && local.len() <= 64
+        && !local.starts_with('.')
+        && !local.ends_with('.')
+        && !local.contains("..")
+        && local.chars().all(|c| {
+            c.is_ascii_alphanumeric()
+                || c == '.'
+                || ATEXT_SPECIALS.contains(c)
+                || (!c.is_ascii()
+                    && !c.is_control()
+                    && !c.is_whitespace()
+                    && !crate::services::web_safety::is_format_char(c))
+        });
+    let domain_ok = domain.len() <= 253
+        && domain.split('.').count() >= 1
+        && domain.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label.chars().all(|c| {
+                    c.is_ascii_alphanumeric() || c == '-' || (!c.is_ascii() && c.is_alphanumeric())
+                })
+        });
+    if !local_ok || !domain_ok {
+        return Err(bad());
     }
     Ok(a.to_string())
 }
@@ -1819,6 +1915,24 @@ pub struct OutboundAttachment {
     pub filename: String,
     pub mime: String,
     pub bytes: Vec<u8>,
+}
+
+/// A fresh `Message-ID` for an outgoing message: random, at the sender's own
+/// domain.
+///
+/// Set explicitly because `mail-builder`'s default is `<random@hostname>`, which
+/// stamps the machine's name on every message and links mail sent from
+/// different accounts to one computer.
+fn outgoing_message_id(from_addr: &str) -> String {
+    use rand::RngCore;
+    let mut id = [0u8; 16];
+    rand::thread_rng().fill_bytes(&mut id);
+    let domain = from_addr
+        .rsplit_once('@')
+        .map(|(_, d)| d.to_ascii_lowercase())
+        .unwrap_or_else(|| "localhost".into());
+    let random: String = id.iter().map(|b| format!("{b:02x}")).collect();
+    format!("{random}@{domain}")
 }
 
 /// Build the RFC 5322 bytes of an outgoing plain-text message.
@@ -1862,7 +1976,10 @@ pub fn build_outgoing(
     if !cc.is_empty() {
         builder = builder.cc(cc.clone());
     }
-    builder = builder.subject(subject).text_body(body_text.to_string());
+    builder = builder
+        .message_id(outgoing_message_id(&from_addr))
+        .subject(subject)
+        .text_body(body_text.to_string());
     if let Some(irt) = in_reply_to {
         builder = builder.in_reply_to(reject_header_injection(irt)?.to_string());
     }
@@ -2704,6 +2821,65 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, MailError::Protocol(_)));
+    }
+
+    #[test]
+    fn a_sent_message_id_names_the_sender_domain_not_this_machine() {
+        let bytes = build_outgoing(
+            None,
+            "me@Example.com",
+            &["you@example.org".into()],
+            &[],
+            &[],
+            "hi",
+            "body",
+            None,
+            &[],
+            &[],
+        )
+        .unwrap();
+        let text = String::from_utf8_lossy(&bytes);
+        let line = text
+            .lines()
+            .find(|l| l.to_ascii_lowercase().starts_with("message-id:"))
+            .expect("a Message-ID header");
+        assert!(line.trim_end().ends_with("@example.com>"), "{line}");
+        if let Ok(host) = gethostname_for_test() {
+            assert!(!line.contains(&host), "{line}");
+        }
+    }
+
+    fn gethostname_for_test() -> Result<String, ()> {
+        std::fs::read_to_string("/etc/hostname")
+            .map(|h| h.trim().to_string())
+            .ok()
+            .filter(|h| h.len() > 3)
+            .ok_or(())
+    }
+
+    /// The address lands in `RCPT TO:<…>` verbatim, so anything that could end
+    /// the path or add a parameter is refused before a message is built.
+    #[test]
+    fn a_recipient_must_be_a_plain_address() {
+        for good in ["a@example.com", "first.last+tag@sub.example.org", "jörg@exämple.de"] {
+            assert!(validate_recipient(good).is_ok(), "{good}");
+        }
+        for bad in [
+            "a@example.com> NOTIFY=NEVER",
+            "\"a>b\"@example.com",
+            "a\tb@example.com",
+            "a@b@example.com",
+            "<a@example.com>",
+            ".a@example.com",
+            "a..b@example.com",
+            "a@-example.com",
+            "a@example..com",
+            "a@",
+            "@example.com",
+            "a\u{202E}b@example.com",
+        ] {
+            assert!(validate_recipient(bad).is_err(), "{bad:?} must be refused");
+        }
     }
 
     /// Bcc is an envelope concept. Writing it as a header would disclose every

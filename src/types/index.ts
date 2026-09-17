@@ -148,6 +148,9 @@ export interface Settings {
     serve_origin?: string;
     /** A paired phone may mark read/unread and star. Unset is off. */
     mail_actions?: boolean;
+    /** A paired phone may read mail at all. Unset is ON (what pairing always
+     * meant); an explicit false hides accounts, folders and bodies. */
+    mail_read?: boolean;
     /** A paired phone may send a plain-text reply whose recipient the desktop
      * derives from the original. Unset is off; independent of `mail_actions`. */
     mail_reply?: boolean;

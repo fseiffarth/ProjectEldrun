@@ -37,6 +37,7 @@ function replyBytes(text: string) {
 /** A refusal the phone can explain, or the raw code when it cannot. */
 function writeError(reason: unknown) {
   const code = reason instanceof ApiError ? reason.code : String(reason);
+  if (code === "mail_read_disabled") return "Mail on the phone is switched off in Eldrun → Settings → Eldrun Mobile.";
   if (code === "mail_actions_disabled") return "Switched off in Eldrun → Settings → Eldrun Mobile → Mail from the phone.";
   if (code === "mail_reply_disabled") return "Replies from the phone are switched off in Eldrun → Settings → Eldrun Mobile.";
   if (code === "desktop_unavailable") return "Eldrun is not running on the desktop.";
@@ -69,7 +70,9 @@ export function Mail() {
       setAccounts(mail.accounts); setFolder(null); setMessage(null);
       setWrites({ actions: mail.actions === true, reply: mail.reply === true });
     } catch (reason) {
-      setError(`Desktop mail unavailable: ${String(reason)}`);
+      setError(reason instanceof ApiError && reason.code === "mail_read_disabled"
+        ? writeError(reason)
+        : `Desktop mail unavailable: ${String(reason)}`);
     } finally { setBusy(false); }
   }, []);
 

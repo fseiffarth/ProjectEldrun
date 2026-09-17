@@ -331,6 +331,8 @@ export const dict: Dict = {
 
   "mobile.title": "Eldrun Mobile",
   "mobile.mailWrites": "Courrier depuis le téléphone",
+  "mobile.mailRead": "Lire le courrier sur le téléphone",
+  "mobile.mailReadHelp": "Un téléphone appairé peut lister vos comptes et dossiers de courrier et ouvrir les messages. Désactivé, la vue courrier du téléphone est entièrement refusée, marquage et réponse compris.",
   "mobile.mailActions": "Marquer comme lu et étoiler depuis le téléphone",
   "mobile.mailActionsHelp": "Un téléphone appairé peut marquer un message comme lu ou non lu et poser ou retirer son étoile. Le bureau applique le drapeau via sa propre session de courrier et répond avec la liste actualisée. Supprimer et déplacer restent sur le bureau, où ils peuvent être annulés.",
   "mobile.mailReply": "Répondre depuis le téléphone",
@@ -4299,6 +4301,7 @@ export const dict: Dict = {
   "mail.crypto.signThis": "Signer ce message",
   "mail.crypto.encryptThis": "Chiffrer ce message",
   "mail.crypto.encryptSubjectVisible": "L'objet et les destinataires restent lisibles : le chiffrement couvre le corps du message et ses pièces jointes.",
+  "mail.crypto.quotesDecrypted": "Ce message cite un message reçu chiffré. Envoyé sans chiffrement, le texte cité circule en clair.",
   "mail.crypto.missingKeys": "Aucune clé pour {who}. L'envoi sera refusé plutôt qu'effectué en clair.",
   "mail.keys.title": "Clés OpenPGP",
   "mail.keys.intro": "Les clés vous permettent de signer vos messages, pour que le destinataire sache qu'ils viennent de vous, et de lire les messages qui vous sont envoyés chiffrés. Aucune autorité ne se tient derrière une clé OpenPGP : la seule chose qui la relie à une personne, c'est que vous en vérifiiez l'empreinte directement avec elle.",

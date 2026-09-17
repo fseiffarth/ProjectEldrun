@@ -114,6 +114,11 @@ pub struct MailStore {
     /// turned encryption on looks like, and it is the path every test below
     /// exercises.
     keys: Option<Arc<MailKeys>>,
+    /// Set once a sealed store's migration is known complete. From then on a
+    /// non-empty `TEXT` value in a sealed column is not "not migrated yet" but a
+    /// value this store never wrote — plaintext planted by whoever could write
+    /// `mail.db` — and reads as damaged instead of rendering unauthenticated.
+    refuse_plaintext: bool,
     /// Held only by [`MailStore::open_ephemeral`], and only so it is deleted
     /// when the store is dropped.
     _scratch: Option<tempfile::TempDir>,
@@ -153,19 +158,55 @@ impl MailStore {
             dir: dir.to_path_buf(),
             conn: Mutex::new(conn),
             keys,
+            refuse_plaintext: false,
             _scratch: None,
         };
         store.migrate()?;
+        let was_marked = store.keys.is_some() && store.marked_encrypted()?;
         let sealed = store.seal_existing()?;
         // Between the sealing pass and the vacuum, deliberately. The pass is
         // what strands a digest — it seals a value and leaves the key column
         // beside it untouched — and the vacuum is what stops the old cleartext
         // key from surviving in the freelist of the file that replaces it.
         let rekeyed = store.rekey_digest_columns()? > 0;
-        if sealed || rekeyed {
+        // A store that was never marked done also gets the vacuum when this
+        // pass found nothing left to seal: that is the store whose previous
+        // sealing pass completed and then died before its vacuum.
+        if sealed || rekeyed || (store.keys.is_some() && !was_marked) {
             store.vacuum_into_place()?;
         }
+        if store.keys.is_some() && !was_marked {
+            store.mark_encrypted()?;
+        }
+        if store.keys.is_some() {
+            store.seal_late_columns()?;
+            store.refuse_plaintext = true;
+        }
         Ok(store)
+    }
+
+    /// Whether the database in `dir` says it was sealed, read without keys.
+    ///
+    /// A missing key file cannot be told apart from "never encrypted" by the
+    /// key file alone, and treating a sealed store as new is what used to mint
+    /// a fresh key over it — overwriting the keychain entry that was the only way
+    /// back once `key.json` was restored from a backup.
+    pub fn is_marked_encrypted(dir: &Path) -> bool {
+        let db = dir.join("mail.db");
+        if !db.exists() {
+            return false;
+        }
+        let Ok(conn) = Connection::open_with_flags(&db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+        else {
+            return false;
+        };
+        conn.query_row(
+            "SELECT value FROM meta WHERE key = ?1",
+            params![META_ENCRYPTED],
+            |r| r.get::<_, String>(0),
+        )
+        .map(|v| v == "1")
+        .unwrap_or(false)
     }
 
     /// A store that lives and dies with the process.
@@ -194,6 +235,7 @@ impl MailStore {
             dir: scratch.path().to_path_buf(),
             conn: Mutex::new(conn),
             keys: Some(keys),
+            refuse_plaintext: false,
             _scratch: Some(scratch),
         };
         store.migrate()?;
@@ -270,6 +312,14 @@ impl MailStore {
         use rusqlite::types::ValueRef;
         Ok(match r.get_ref(idx)? {
             ValueRef::Null => Some(String::new()),
+            // Empty (and the `'[]'`/`'{}'` JSON defaults) are column defaults,
+            // not content. Anything else in plain text inside a completed sealed
+            // store was not written by us.
+            ValueRef::Text(t)
+                if self.refuse_plaintext && !matches!(t, b"" | b"[]" | b"{}") =>
+            {
+                None
+            }
             ValueRef::Text(t) => Some(String::from_utf8_lossy(t).into_owned()),
             ValueRef::Blob(b) => match &self.keys {
                 Some(k) => mail_crypt::open(
@@ -283,6 +333,7 @@ impl MailStore {
                 // and is now being opened without them. Nothing to do but say so.
                 None => None,
             },
+            _ if self.refuse_plaintext => None,
             other => Some(other.as_str().unwrap_or_default().to_string()),
         })
     }
@@ -1609,6 +1660,62 @@ impl MailStore {
             .map_err(|e| e.to_string())
     }
 
+    /// Drop everything cached for one message — its attachment rows, its body
+    /// cache row — and every blob that leaves unreferenced.
+    ///
+    /// For a message that turned out to be end-to-end encrypted: a store written
+    /// before `mail_body` stopped persisting decrypted attachments holds their
+    /// plaintext under the at-rest key only, which is the collapse
+    /// `docs/context/mail_encryption.md` forbids. Opening it again removes it.
+    pub fn forget_message_content(&self, message_id: &str) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|_| "mail store is poisoned")?;
+        conn.execute(
+            "DELETE FROM attachments WHERE message_id = ?1",
+            params![message_id],
+        )
+        .map_err(|e| e.to_string())?;
+        conn.execute(
+            "DELETE FROM bodies_cache WHERE message_id = ?1",
+            params![message_id],
+        )
+        .map_err(|e| e.to_string())?;
+        self.prune_blobs_locked(&conn)
+    }
+
+    /// Remove every blob file no `attachments.blob` or `bodies_cache.raw_blob`
+    /// names. Content addressing dedupes, so a blob is only garbage once the
+    /// *last* row naming it is gone — a per-row delete would break another
+    /// message carrying the same PDF.
+    fn prune_blobs_locked(&self, conn: &Connection) -> Result<(), String> {
+        let dir = self.blobs_dir();
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            return Ok(());
+        };
+        let mut live = std::collections::HashSet::new();
+        let mut stmt = conn
+            .prepare(
+                "SELECT blob FROM attachments
+                 UNION SELECT raw_blob FROM bodies_cache WHERE raw_blob IS NOT NULL",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| r.get::<_, String>(0))
+            .map_err(|e| e.to_string())?;
+        for row in rows {
+            live.insert(row.map_err(|e| e.to_string())?);
+        }
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            // Only files shaped like a blob id: anything else in the directory
+            // is not ours to delete.
+            let is_blob = name.len() == 64 && name.bytes().all(|b| b.is_ascii_hexdigit());
+            if is_blob && !live.contains(&name) {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+        Ok(())
+    }
+
     /// One attachment's metadata plus the blob digest holding its bytes.
     pub fn attachment(
         &self,
@@ -1888,6 +1995,11 @@ impl MailStore {
                 "malformed",
                 "rfc_message_id",
                 "authres_json",
+                // A model's reason quotes the message, so it is sealed on write;
+                // leaving it off this list left every reason written before
+                // encryption was turned on in the clear, permanently.
+                "priority_source",
+                "priority_reason",
             ],
         )?;
         changed += self.seal_table(
@@ -1913,14 +2025,70 @@ impl MailStore {
         changed += self.seal_table("mail_remote_allow", &["addr_key"], None, &["address"])?;
         changed += self.reseal_blobs()?;
         changed += self.reseal_outbox()?;
+        // Not marked done here. The flag is what makes the next open skip this
+        // pass — and with it the vacuum — so setting it before the vacuum had
+        // run meant a crash or a full disk in between left the old plaintext in
+        // the freelist for good. `open_with_keys` marks it once the vacuum is in.
+        Ok(changed > 0)
+    }
 
+    fn marked_encrypted(&self) -> Result<bool, String> {
+        let conn = self.conn.lock().map_err(|_| "mail store is poisoned")?;
+        conn.query_row(
+            "SELECT value FROM meta WHERE key = ?1",
+            params![META_ENCRYPTED],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()
+        .map(|v| v.as_deref() == Some("1"))
+        .map_err(|e| e.to_string())
+    }
+
+    /// Columns that were sealed on write but missing from `seal_existing`'s list
+    /// when a store was first migrated. That pass never runs again once a store
+    /// is marked, so these get their own one-time pass, recorded under its own
+    /// meta key.
+    fn seal_late_columns(&mut self) -> Result<(), String> {
+        const LATE: &str = "sealed_priority_columns";
+        {
+            let conn = self.conn.lock().map_err(|_| "mail store is poisoned")?;
+            let done: Option<String> = conn
+                .query_row("SELECT value FROM meta WHERE key = ?1", params![LATE], |r| {
+                    r.get(0)
+                })
+                .optional()
+                .map_err(|e| e.to_string())?;
+            if done.as_deref() == Some("1") {
+                return Ok(());
+            }
+        }
+        let changed = self.seal_table(
+            "messages",
+            &["id"],
+            Some("account_id"),
+            &["priority_source", "priority_reason"],
+        )?;
+        if changed > 0 {
+            self.vacuum_into_place()?;
+        }
+        let conn = self.conn.lock().map_err(|_| "mail store is poisoned")?;
+        conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES (?1, '1')",
+            params![LATE],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// Record that sealing (and the vacuum after it) finished.
+    fn mark_encrypted(&self) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|_| "mail store is poisoned")?;
         conn.execute(
             "INSERT OR REPLACE INTO meta (key, value) VALUES (?1, '1')",
             params![META_ENCRYPTED],
         )
         .map_err(|e| e.to_string())?;
-        Ok(changed > 0)
+        Ok(())
     }
 
     /// Seal every still-cleartext value in `columns` of `table`.
@@ -2144,7 +2312,13 @@ impl MailStore {
             let Ok(bytes) = std::fs::read(&path) else {
                 continue;
             };
-            if mail_crypt::looks_sealed(&bytes) {
+            // Sealed means "opens under this key and its own name", not "starts
+            // with the envelope magic": an attachment crafted to begin with
+            // `ELMC\x01` would otherwise stay plaintext under its bare SHA-256
+            // name — exactly the confirmation oracle the keyed names remove.
+            if mail_crypt::looks_sealed(&bytes)
+                && mail_crypt::open(&keys.blob, &mail_crypt::blob_aad(&old_id), &bytes).is_ok()
+            {
                 continue;
             }
             let new_id = mail_crypt::blob_id(&keys.addr, &bytes);
@@ -2273,7 +2447,14 @@ impl MailStore {
             params![account_id],
         )
         .map_err(|e| e.to_string())?;
-        Ok(())
+        // "Blobs included", which the doc comment always promised: the rows
+        // naming them are gone, so the files would otherwise outlive the account.
+        self.prune_blobs_locked(&conn)?;
+        // And the rows themselves: a `DELETE` only moves pages to the freelist,
+        // where a plain store's subjects and bodies stay readable in `mail.db`.
+        // Drafts are deliberately kept — they are unsent work, not cached mail,
+        // and the confirmation only promises the latter.
+        conn.execute_batch("VACUUM").map_err(|e| e.to_string())
     }
 }
 
@@ -2845,6 +3026,34 @@ mod tests {
             store.cached_body("m1", 2).unwrap().is_none(),
             "a sanitizer bump must invalidate the cache"
         );
+    }
+
+    #[test]
+    fn forgetting_a_message_removes_only_blobs_nothing_else_names() {
+        let (dir, store) = store();
+        let shared = store.put_blob(b"same pdf").unwrap();
+        let own = store.put_blob(b"only m1").unwrap();
+        let meta = |part: &str| MailAttachmentMeta {
+            part_id: part.into(),
+            filename: "a.pdf".into(),
+            mime: "application/pdf".into(),
+            size: 8,
+            inline: false,
+            type_mismatch: None,
+        };
+        store.put_attachment("m1", &meta("2"), &shared).unwrap();
+        store.put_attachment("m1", &meta("3"), &own).unwrap();
+        store.put_attachment("m2", &meta("2"), &shared).unwrap();
+        store
+            .cache_body("m1", 1, Some("<p>x</p>"), None, "[]", 0, false, None)
+            .unwrap();
+
+        store.forget_message_content("m1").unwrap();
+
+        assert!(store.attachments("m1").unwrap().is_empty());
+        assert!(store.cached_body("m1", 1).unwrap().is_none());
+        assert!(!dir.path().join("blobs").join(&own).exists());
+        assert_eq!(store.get_blob(&shared).unwrap(), b"same pdf", "m2 still names it");
     }
 
     #[test]
@@ -3882,6 +4091,34 @@ mod tests {
                     assert!(!contains(&bytes, b"left in the clear"));
                 }
             }
+        }
+
+        /// The AAD stops a sealed value moving between rows, but a plain `TEXT`
+        /// value was accepted as-is — so anyone able to write `mail.db` could
+        /// put words in a subject without a "damaged" marker.
+        #[test]
+        fn plaintext_planted_in_a_sealed_store_reads_as_damaged() {
+            let dir = tempfile::tempdir().unwrap();
+            let f = folder("a1", "INBOX");
+            let h = header(&f, 1, "genuine", "2026-07-01T09:00:00Z");
+            {
+                let store = MailStore::open_with_keys(dir.path(), Some(keys(1))).unwrap();
+                store.upsert_folder(&f).unwrap();
+                store.upsert_header(&h).unwrap();
+                let conn = store.conn.lock().unwrap();
+                conn.execute(
+                    "UPDATE messages SET subject = 'planted' WHERE id = ?1",
+                    params![h.id],
+                )
+                .unwrap();
+            }
+            let store = MailStore::open_with_keys(dir.path(), Some(keys(1))).unwrap();
+            let back = store.header(&h.id).unwrap().unwrap();
+            assert_ne!(back.subject, "planted");
+            assert!(back
+                .malformed_headers
+                .unwrap_or_default()
+                .contains(&MALFORMED_SEALED.to_string()));
         }
 
         #[test]

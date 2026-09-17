@@ -206,17 +206,19 @@ pub fn detect(msg: &mail_parser::Message<'_>) -> Option<CryptoKind> {
 
     // MIME shapes first: they are unambiguous, and an inline-armored body inside
     // an encrypted wrapper must be reported as the wrapper.
-    for part in msg.parts.iter() {
-        let ctype = part.content_type();
-        let (main, sub) = match ctype {
-            Some(c) => (
-                c.ctype().to_ascii_lowercase(),
-                c.subtype().unwrap_or_default().to_ascii_lowercase(),
-            ),
-            None => continue,
-        };
+    //
+    // **The root part only.** A signed or encrypted node nested anywhere else
+    // sits beside content it does not cover: `multipart/mixed[attacker html,
+    // <Alice's genuine signed part>]` would otherwise show "verified" over the
+    // attacker's HTML, and a captured ciphertext wrapped the same way would be
+    // decrypted and shown under the attacker's From. A nested one is ordinary
+    // mail with an attachment, which is exactly what it is to the reader.
+    let root = msg.root_part();
+    if let Some(ctype) = root.content_type() {
+        let main = ctype.ctype().to_ascii_lowercase();
+        let sub = ctype.subtype().unwrap_or_default().to_ascii_lowercase();
         let protocol = ctype
-            .and_then(|c| c.attribute("protocol"))
+            .attribute("protocol")
             .unwrap_or_default()
             .to_ascii_lowercase();
 
@@ -233,7 +235,7 @@ pub fn detect(msg: &mail_parser::Message<'_>) -> Option<CryptoKind> {
         }
         if main == "application" && (sub == "pkcs7-mime" || sub == "x-pkcs7-mime") {
             let smime_type = ctype
-                .and_then(|c| c.attribute("smime-type"))
+                .attribute("smime-type")
                 .unwrap_or_default()
                 .to_ascii_lowercase();
             // An unrecognized `smime-type` is treated as enveloped rather than
@@ -247,12 +249,17 @@ pub fn detect(msg: &mail_parser::Message<'_>) -> Option<CryptoKind> {
         }
     }
 
-    // Then the pre-MIME forms, which are just armor sitting in a text body.
-    let text = msg
-        .text_body
-        .first()
-        .and_then(|id| msg.part(*id))
-        .and_then(|p| p.text_contents())?;
+    // Then the pre-MIME forms, which are just armor sitting in a text body —
+    // and only when that body is the **one** thing the message displays. With a
+    // second body part beside it, decrypting the armor would render the
+    // plaintext inside someone else's message, the same splice as above.
+    let [only] = msg.text_body.as_slice() else {
+        return None;
+    };
+    if msg.html_body.as_slice() != [*only] {
+        return None;
+    }
+    let text = msg.part(*only).and_then(|p| p.text_contents())?;
     detect_inline(text)
 }
 
@@ -487,6 +494,53 @@ mod tests {
              --b--\r\n"
         );
         assert_eq!(detect(&parse(&enc)), Some(CryptoKind::PgpEncrypted));
+    }
+
+    /// A signed or encrypted node that is not the root covers only itself, so
+    /// it must not lend the whole message a verdict or be decrypted into it.
+    #[test]
+    fn a_nested_crypto_part_does_not_speak_for_the_message() {
+        let spliced_signed = format!(
+            "{HEAD}Content-Type: multipart/mixed; boundary=m\r\n\r\n--m\r\n\
+             Content-Type: text/html\r\n\r\n<b>pay here</b>\r\n--m\r\n\
+             Content-Type: multipart/signed; protocol=\"application/pgp-signature\"; \
+             boundary=b\r\n\r\n--b\r\nContent-Type: text/plain\r\n\r\nhi\r\n\
+             --b\r\nContent-Type: application/pgp-signature\r\n\r\nsig\r\n--b--\r\n--m--\r\n"
+        );
+        assert_eq!(detect(&parse(&spliced_signed)), None);
+
+        let spliced_enc = format!(
+            "{HEAD}Content-Type: multipart/mixed; boundary=m\r\n\r\n--m\r\n\
+             Content-Type: text/plain\r\n\r\nsee below\r\n--m\r\n\
+             Content-Type: multipart/encrypted; protocol=\"application/pgp-encrypted\"; \
+             boundary=b\r\n\r\n--b\r\nContent-Type: application/pgp-encrypted\r\n\r\nVersion: 1\r\n\
+             --b\r\nContent-Type: application/octet-stream\r\n\r\nblob\r\n--b--\r\n--m--\r\n"
+        );
+        assert_eq!(detect(&parse(&spliced_enc)), None);
+    }
+
+    #[test]
+    fn inline_armor_counts_only_as_the_sole_body() {
+        let alone = format!("{HEAD}\r\n-----BEGIN PGP MESSAGE-----\r\nx\r\n");
+        assert_eq!(detect(&parse(&alone)), Some(CryptoKind::PgpInlineEncrypted));
+
+        let with_attachment = format!(
+            "{HEAD}Content-Type: multipart/mixed; boundary=m\r\n\r\n--m\r\n\
+             Content-Type: text/plain\r\n\r\n-----BEGIN PGP MESSAGE-----\r\nx\r\n--m\r\n\
+             Content-Type: application/pdf\r\nContent-Disposition: attachment; filename=a.pdf\r\n\r\n\
+             %PDF\r\n--m--\r\n"
+        );
+        assert_eq!(
+            detect(&parse(&with_attachment)),
+            Some(CryptoKind::PgpInlineEncrypted)
+        );
+
+        let beside_html = format!(
+            "{HEAD}Content-Type: multipart/mixed; boundary=m\r\n\r\n--m\r\n\
+             Content-Type: text/html\r\n\r\n<b>reply to this</b>\r\n--m\r\n\
+             Content-Type: text/plain\r\n\r\n-----BEGIN PGP MESSAGE-----\r\nx\r\n--m--\r\n"
+        );
+        assert_eq!(detect(&parse(&beside_html)), None);
     }
 
     // ── The chrome rule ─────────────────────────────────────────────────────

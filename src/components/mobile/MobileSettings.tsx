@@ -245,13 +245,15 @@ export function MobileSettings() {
    * read by the desktop bridge alone — the sidecar never sees mail settings.
    * They ride on the stored host settings untouched otherwise, so flipping one
    * never re-verifies Serve or restarts the host. */
-  const setMailGate = async (gate: "mail_actions" | "mail_reply", on: boolean) => {
+  const setMailGate = async (gate: "mail_read" | "mail_actions" | "mail_reply", on: boolean) => {
     setError(null);
     try {
       await updateSettings({
         eldrun_mobile_host: {
           ...(stored ?? { enabled: false }),
-          [gate]: on || undefined,
+          // `mail_read` defaults on, so only its "off" is stored; the writes
+          // default off, so only their "on" is.
+          [gate]: gate === "mail_read" ? (on ? undefined : false) : on || undefined,
         },
       });
     } catch (reason) {
@@ -282,6 +284,7 @@ export function MobileSettings() {
           display_name: displayName.trim() || "Workstation",
           port: parsedPort || 8742,
           serve_origin: origin.trim() || undefined,
+          mail_read: stored?.mail_read,
           mail_actions: stored?.mail_actions,
           mail_reply: stored?.mail_reply,
         },
@@ -358,6 +361,7 @@ export function MobileSettings() {
           display_name: detected.display_name,
           port: detected.port,
           serve_origin: detected.origin,
+          mail_read: stored?.mail_read,
           mail_actions: stored?.mail_actions,
           mail_reply: stored?.mail_reply,
         },
@@ -404,6 +408,7 @@ export function MobileSettings() {
           display_name: displayName.trim() || "Workstation",
           port: Number(port) || 8742,
           serve_origin: origin.trim() || undefined,
+          mail_read: stored?.mail_read,
           mail_actions: stored?.mail_actions,
           mail_reply: stored?.mail_reply,
         },
@@ -580,6 +585,13 @@ export function MobileSettings() {
       {error && <div className="project-dialog-error">{error}</div>}
 
       <div className="settings-subheader">{t("mobile.mailWrites")}</div>
+      <ToggleRow
+        label={<>{t("mobile.mailRead")} <UntestedTag /></>}
+        checked={stored?.mail_read !== false}
+        disabled={busy}
+        onChange={(event) => void setMailGate("mail_read", event.target.checked)}
+      />
+      <p className="settings-help">{t("mobile.mailReadHelp")}</p>
       <ToggleRow
         label={<>{t("mobile.mailActions")} <UntestedTag /></>}
         checked={stored?.mail_actions ?? false}

@@ -330,6 +330,8 @@ export const dict: Dict = {
 
   "mobile.title": "Eldrun Mobile",
   "mobile.mailWrites": "Correo desde el teléfono",
+  "mobile.mailRead": "Leer el correo en el teléfono",
+  "mobile.mailReadHelp": "Un teléfono emparejado puede listar tus cuentas y carpetas de correo y abrir mensajes. Desactivado, la vista de correo del teléfono se rechaza por completo, incluidos marcar y responder.",
   "mobile.mailActions": "Marcar como leído y destacar desde el teléfono",
   "mobile.mailActionsHelp": "Un teléfono emparejado puede marcar un mensaje como leído o no leído y poner o quitar su estrella. El escritorio aplica la marca a través de su propia sesión de correo y responde con la lista actualizada. Eliminar y mover se quedan en el escritorio, donde se pueden deshacer.",
   "mobile.mailReply": "Responder desde el teléfono",
@@ -4297,6 +4299,7 @@ export const dict: Dict = {
   "mail.crypto.signThis": "Firmar este mensaje",
   "mail.crypto.encryptThis": "Cifrar este mensaje",
   "mail.crypto.encryptSubjectVisible": "El asunto y los destinatarios siguen siendo legibles: el cifrado cubre el cuerpo del mensaje y sus adjuntos.",
+  "mail.crypto.quotesDecrypted": "Este mensaje cita uno que llegó cifrado. Enviado sin cifrar, el texto citado viaja en claro.",
   "mail.crypto.missingKeys": "No hay clave para {who}. El envío se rechazará en lugar de enviarse sin cifrar.",
   "mail.keys.title": "Claves OpenPGP",
   "mail.keys.intro": "Las claves te permiten firmar mensajes para que quien los reciba sepa que son tuyos, y leer los mensajes que te envían cifrados. Detrás de una clave OpenPGP no hay ninguna autoridad: lo único que la vincula a una persona es que tú compruebes su huella directamente con ella.",

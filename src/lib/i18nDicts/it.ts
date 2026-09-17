@@ -330,6 +330,8 @@ export const dict: Dict = {
 
   "mobile.title": "Eldrun Mobile",
   "mobile.mailWrites": "Posta dal telefono",
+  "mobile.mailRead": "Leggere la posta sul telefono",
+  "mobile.mailReadHelp": "Un telefono abbinato può elencare i tuoi account e le cartelle di posta e aprire i messaggi. Disattivato, la vista posta del telefono viene rifiutata del tutto, compresi segnare e rispondere.",
   "mobile.mailActions": "Segnare come letto e mettere la stella dal telefono",
   "mobile.mailActionsHelp": "Un telefono abbinato può segnare un messaggio come letto o non letto e mettere o togliere la stella. Il desktop applica il flag tramite la propria sessione di posta e risponde con l'elenco aggiornato. Eliminare e spostare restano sul desktop, dove si possono annullare.",
   "mobile.mailReply": "Rispondere dal telefono",
@@ -4297,6 +4299,7 @@ export const dict: Dict = {
   "mail.crypto.signThis": "Firma questo messaggio",
   "mail.crypto.encryptThis": "Cifra questo messaggio",
   "mail.crypto.encryptSubjectVisible": "L'oggetto e i destinatari restano leggibili: la cifratura copre il corpo del messaggio e i suoi allegati.",
+  "mail.crypto.quotesDecrypted": "Questo messaggio cita un messaggio arrivato cifrato. Inviato senza cifratura, il testo citato viaggia in chiaro.",
   "mail.crypto.missingKeys": "Nessuna chiave per {who}. L'invio verrà rifiutato invece di partire in chiaro.",
   "mail.keys.title": "Chiavi OpenPGP",
   "mail.keys.intro": "Le chiavi ti permettono di firmare i messaggi, così chi li riceve capisce che sono tuoi, e di leggere i messaggi inviati a te cifrati. Dietro una chiave OpenPGP non c'è alcuna autorità: l'unica cosa che la lega a una persona è che tu ne verifichi l'impronta direttamente con lei.",

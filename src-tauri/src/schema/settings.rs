@@ -45,6 +45,11 @@ pub struct EldrunMobileHostSettings {
     /// Read by the desktop bridge only; the sidecar never sees mail settings.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mail_actions: Option<bool>,
+    /// May a paired phone read mail at all — accounts, folders, message bodies?
+    /// Unset is **on**, which is what pairing meant before the switch existed;
+    /// `false` turns the whole mail view off. Read by the desktop bridge only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mail_read: Option<bool>,
     /// May a paired phone send a plain-text reply to a message it is reading?
     /// Default off, and independent of `mail_actions`: a flag write and an
     /// outbound mail are different risks and are switched separately.

@@ -400,7 +400,9 @@ export function MailIndicator() {
               </>
             )}
             {accounts.map((a) => {
-              const name = a.label || a.address;
+              // The local Display name first, as the accounts badge does:
+              // `label` is the name sent in `From:`, often the same on every account.
+              const name = a.display_name || a.label || a.address;
               const count = unreadTotal(foldersByAccount[a.id]);
               return (
                 <button

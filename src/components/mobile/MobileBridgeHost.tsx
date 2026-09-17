@@ -1182,6 +1182,19 @@ function mailWriteGates() {
   return { actions: host?.mail_actions === true, reply: host?.mail_reply === true };
 }
 
+/** Reading is a switch of its own, above both writes. Unlike them it defaults
+ * ON — unset is what pairing has always allowed — so turning it off is an
+ * explicit `false`. Off, every mail request is refused here, writes included. */
+function mailReadAllowed() {
+  return useSettingsStore.getState().settings?.eldrun_mobile_host?.mail_read !== false;
+}
+
+const MAIL_READ_DISABLED: DesktopResponse = {
+  status: "error",
+  code: "mail_read_disabled",
+  message: "Mail on the phone is switched off in Eldrun",
+};
+
 async function configuredMailAccounts() {
   return (await mailAccountsList()).slice(0, 12);
 }
@@ -1473,11 +1486,11 @@ async function handleRequest(
     case "calendar": return { status: "calendar", calendar: await calendarSnapshot(request.month) };
     case "calendar_mutate": return calendarMutate(request.month, request.action);
     case "todo_mutate": return todoMutate(request.action);
-    case "mail_overview": return mailOverview();
-    case "mail_folder": return mailFolderPage(request.folder_id, request.offset);
-    case "mail_message": return mailMessage(request.folder_id, request.message_id, request.offset);
-    case "mail_mark": return mailMark(request.folder_id, request.message_id, request.offset, request.action);
-    case "mail_reply": return mailReply(request.folder_id, request.message_id, request.offset, request.body, t);
+    case "mail_overview": return mailReadAllowed() ? mailOverview() : MAIL_READ_DISABLED;
+    case "mail_folder": return mailReadAllowed() ? mailFolderPage(request.folder_id, request.offset) : MAIL_READ_DISABLED;
+    case "mail_message": return mailReadAllowed() ? mailMessage(request.folder_id, request.message_id, request.offset) : MAIL_READ_DISABLED;
+    case "mail_mark": return mailReadAllowed() ? mailMark(request.folder_id, request.message_id, request.offset, request.action) : MAIL_READ_DISABLED;
+    case "mail_reply": return mailReadAllowed() ? mailReply(request.folder_id, request.message_id, request.offset, request.body, t) : MAIL_READ_DISABLED;
     case "rename_tab": return renameAgentTab(request.project_id, request.tmux_session, request.label);
     case "close_tab": return closeMobileTab(request.project_id, request.tmux_session);
     case "schedules": return schedulesFor(request.project_id, request.tmux_session);

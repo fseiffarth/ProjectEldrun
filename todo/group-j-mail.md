@@ -483,3 +483,217 @@ sanitizer (`services/web_safety.rs`); neither has been runtime-verified.*
       really a PDF previews as one; clicking on a rendered page does nothing.
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work
+
+### Mail security audit — 2026-09-17 (#847–#858)
+
+*A read-only, four-reviewer audit of the mail client (rendering, IPC/filesystem,
+network/credentials, storage/crypto) whose findings each reviewer
+cross-checked against the code. **Fixed 2026-09-17 (✅ Done · 🧪 untested
+live)** except where an item says otherwise — `cargo test`, clippy,
+`npm run build` and vitest green; nothing was run in a live Eldrun, and every
+backend part needs a rebuild + restart. Line numbers below are the audit's,
+as of `504bc19`. Everything the audit found **done
+well** — Rust-side sanitizing with no surviving `href`, `sandbox=""` frame, no
+remote loads, implicit-TLS-only with platform verification, path-free async
+commands, the attachment-name sanitizer, XChaCha20-Poly1305 + Argon2id, legacy
+no-MDC OpenPGP refused — is deliberately not re-listed here.*
+
+847. **🔴 High — partial-signature spoofing and nested-ciphertext decryption.**
+    `mail_crypto::detect` (`mail_crypto.rs:209-225`), `mail_pgp::signed_part_bytes`
+    (`:810`) and `encrypted_part_bytes` (`:848`) take the *first*
+    `multipart/signed` / `multipart/encrypted` anywhere in `msg.parts`, while
+    `apply_crypto` (`commands/mail.rs:463-494`) renders the **whole** message.
+    `multipart/mixed[attacker text/html, <Alice's genuine signed part>]` with
+    `From: alice` shows "Signature: verified" over the attacker's unsigned HTML.
+    The same nesting wraps a captured ciphertext: it auto-decrypts under the
+    attacker's From/Subject, and a reply quotes the plaintext back in the clear
+    (`MailComposeDialog.tsx:70`). Fix: only treat the *root* (or the root's sole
+    rendered child) as signed/encrypted; anything else is "partially signed" with
+    no positive chrome, and never auto-decrypt a nested part.
+    - **Fixed:** `detect`, `signed_part_bytes` and `encrypted_part_bytes` read the
+      root part only; inline armor counts only as the message's sole body; a
+      reply/forward quoting decrypted mail starts with Encrypt ticked and warns
+      when unticked (`mail.crypto.quotesDecrypted`); decrypt recursion capped at
+      two layers.
+    - [x] 🤖 Automated test — `a_nested_crypto_part_does_not_speak_for_the_message`,
+      `inline_armor_counts_only_as_the_sole_body`.
+    - [ ] 🖐️ Manual test — a `multipart/mixed` wrapping a genuinely signed mail shows
+      no signature chrome; replying to a decrypted mail has Encrypt ticked.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+848. **🔴 High — "Save to project" writes through symlinks.**
+    `commands/mail.rs:3244-3280`: `create_dir_all(<project>/eldrun-emails)` accepts
+    a symlinked dir, `unique_in_dir` checks `Path::exists()` (false for a dangling
+    link), then a plain `fs::write` follows it. A cloned repo committing
+    `eldrun-emails -> ~/.config/autostart` (or the project root / `~/.claude/`)
+    plus a mailed `x.desktop` / `CLAUDE.md` is code execution on the user's
+    click. **A fenced agent can plant the link itself** (the project is a
+    read-write bind), so the unfenced Eldrun process writes outside the fence —
+    a fence escape. The companion `ensure_generated_dir_ignored`
+    (`commands/projects.rs:2681-2702`) appends through a symlinked `.gitignore`.
+    Fix: refuse a symlinked `eldrun-emails`/`.gitignore` (`symlink_metadata`),
+    `OpenOptions::create_new` + `O_NOFOLLOW`, canonical parent must stay under
+    the project root. Also: on a remote project `project_directory` is the local
+    state dir, so the file lands there instead of on the host (`:3243`).
+    - **Fixed:** `emails_dir_in` refuses a non-directory/symlinked
+      `eldrun-emails` and checks its canonical parent; files are written
+      `create_new` + `O_NOFOLLOW` (`write_unique_in_dir`); agent instruction
+      names (`CLAUDE.md`, `AGENTS.md`, …) get an `attachment-` prefix;
+      `ensure_generated_dir_ignored` refuses a symlinked `.gitignore`; remote
+      projects are refused (and the button hidden). **Not done:** the same
+      pattern in `commands/screenshot.rs` (`eldrun-screenshots/`).
+    - [x] 🤖 Automated test — `the_emails_folder_must_be_a_real_folder_inside_the_project`,
+      `a_save_never_follows_or_clobbers_what_is_already_there`,
+      `agent_instruction_names_are_defused`,
+      `ensure_generated_dir_ignored_never_writes_through_a_symlink`.
+    - [ ] 🖐️ Manual test — save an attachment to a local project; with
+      `eldrun-emails` replaced by a symlink the save is refused.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+849. **🔴 High — decrypted OpenPGP attachments are persisted.**
+    `commands/mail.rs:2086-2091` `put_blob`/`put_attachment`s every attachment of
+    the *decrypted* inner message before the `if !decrypted` guard (`:2102`),
+    which only skips the raw blob and body cache. `docs/context/mail_encryption.md`
+    promises decrypted plaintext never reaches a blob; on an unencrypted store
+    it is written in the clear (`mail_store.rs:612-617`). Fix: move the loop
+    under the guard (keep attachments of decrypted mail in memory only).
+    - **Fixed:** no blob/row for a decrypted message's attachments; opening one
+      forgets leftovers (`forget_message_content`, refcounted blob prune); save
+      and preview re-fetch and re-decrypt via `load_attachment`.
+    - [x] 🤖 Automated test — `forgetting_a_message_removes_only_blobs_nothing_else_names`.
+    - [ ] 🖐️ Manual test — an encrypted mail with a PDF: preview and save work, and
+      no new file appears under `mail/blobs/`.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+850. **🟠 Medium — a stalling IMAP server hangs sync for good.**
+    `mail_engine.rs:1458/1526/1569/1610/1648`: `timeout()` wraps only
+    `session.fetch(..)`, which in async-imap 0.11 returns once the command is
+    *sent*; the `while let Some(item) = stream.next().await` drain is untimed and
+    the socket has no read timeout. Cancel is checked only between steps
+    (`commands/mail.rs:1758`) and `MailIndicator.tsx:171` skips an account still
+    syncing, so polling stops until restart. async-imap also buffers a literal
+    up to 512 MiB before `MAX_MESSAGE_BYTES` is checked — check `RFC822.SIZE`
+    first. Fix: time the whole drain (per-item idle timeout).
+    - **Fixed:** every response drain runs under `next_before` with the command's
+      total deadline; `body` checks `RFC822.SIZE` before `BODY.PEEK[]`. No
+      automated test (needs a stalling IMAP server).
+
+851. **🟡 Low — session password follows an IMAP/SMTP host edit.**
+    `resolve_password` (`commands/mail.rs:869-885`) looks up the in-memory
+    session secret by `account.id`; `mail_account_upsert` (`:975-1017`) keeps it
+    on a blank password field, so a typo'd/lookalike host (valid cert) receives
+    the real password, and "remember" writes it under the new host's keychain
+    key (`:1004`). Keychain-only secrets don't follow. Fix: drop the session
+    secret when host/port/user change.
+    - **Fixed:** the session password is dropped when the IMAP/SMTP user, host or
+      port changes and no new password was typed.
+
+852. **🟡 Low — link host display and phishing flags.**
+    - `web_safety.rs:217` `host_of` / `:192` `has_userinfo` don't split on `\`:
+      `https://evil.example\@bank.example/` is labelled **bank.example** in
+      `LinkConfirmDialog` (`MailMessageView.tsx:464`) while browsers open
+      evil.example. The mismatch strip still fires, but its wording ("text names
+      a different site") is wrong for this case. Fix: `url::Url::parse().host_str()`.
+    - `host_in_text` (`:260`) checks only the first word of link text; a quoted
+      `data-lid="0"` in text can misalign link-text lookup
+      (`mail_sanitize.rs:725-744`). Locate links from the anchor only.
+    - `idna_display` (`:226`) shows punycode as Unicode with no confusable
+      check; show the ASCII form beside it when they differ.
+    - Bidi controls are stripped from display names but not from the address
+      part (`mail_engine.rs:609`).
+    - **Fixed:** http(s) hosts/userinfo parsed with `url::Url`; `hosts_in_text`
+      checks every word (with a suffix filter against `e.g.`/`report.pdf`);
+      IDN hosts shown as `unicode (xn--…)`; `data-lid` found only inside tags;
+      addresses stripped of controls. `SANITIZER_VERSION` → 3. **Not done:** the
+      mismatch strip's wording for the userinfo case.
+    - [x] 🤖 Automated test — four new `mail_sanitize` tests.
+
+853. **🟡 Low — the machine hostname leaks in every sent mail.**
+    `mail-builder` default `gethostname` feature makes `Message-ID`
+    `<rand@hostname>` (builder at `mail_engine.rs:1851` sets none), and
+    `mail-send` EHLOs with `gethostname()` (`:1757-1763`, no `helo_host`). Fix:
+    set `.message_id()` with the account address's domain and `.helo_host(..)`.
+    - **Fixed:** `outgoing_message_id` (random @ sender domain) and
+      `helo_host("[127.0.0.1]")`.
+    - [x] 🤖 Automated test — `a_sent_message_id_names_the_sender_domain_not_this_machine`.
+
+854. **🟡 Low — at-rest key and store lifecycle gaps.**
+    - `mail_encryption_reset` (`commands/mail.rs:1195-1220`) mints a new master
+      key but leaves `pgp.json` (sealed private keys; no secret export exists)
+      and `filters.json.enc` unreadable, and deletes `accounts.json.enc` despite
+      the "accounts.json deliberately survives" comment. Warn/export first.
+    - A missing `key.json` with `mail_encrypt_store == Some(true)` →
+      `open_unencrypted_or_enable` (`:336-356`) overwrites the keychain KEK,
+      killing recovery from a backed-up `key.json`. Refuse instead.
+    - `seal_existing` commits `META_ENCRYPTED=1` (`mail_store.rs:1918-1922`)
+      before `vacuum_into_place`; a crash/disk-full leaves plaintext in free
+      pages forever. Set the flag after the vacuum.
+    - `priority_source`/`priority_reason` are missing from the `seal_existing`
+      column list (`:1883-1891`).
+    - `open_text` (`:261-290`) accepts plaintext TEXT in an encrypted store
+      without a "damaged" marker (needs local write access).
+    - `reseal_blobs` (`:~2140`) trusts `looks_sealed` for `ELMC\x01`-prefixed
+      attachments; Argon2 `m_cost` is read unbounded from `key.json`; a
+      passphrase change doesn't rotate the master key; `delete_account_mail`
+      leaves blobs/drafts/outbox and runs no vacuum.
+    - **Fixed:** reset carries accounts, filters and the PGP keyring across to the
+      new key when unlocked, and moves the sealed files + `key.json` into
+      `pre-reset-<unix>/` when locked; a missing `key.json` beside sealed data
+      opens the memory-only store with a note instead of re-keying; the
+      encrypted mark is set after the vacuum; priority columns sealed (plus a
+      one-time pass for already-marked stores); plaintext in a completed sealed
+      store reads as damaged; blobs re-sealed unless they actually open; Argon2
+      parameters bounded; account delete prunes blobs and `VACUUM`s.
+      **Not done:** a passphrase change still does not rotate the master key;
+      drafts/outbox of a removed account are kept on purpose.
+    - [x] 🤖 Automated test — `plaintext_planted_in_a_sealed_store_reads_as_damaged`.
+
+855. **🟡 Low — crypto chrome vanishes on reopen.** A body-cache hit returns
+    `crypto: None` (`commands/mail.rs:2024`), but signed-only and
+    failed-to-decrypt mail *is* cached, so "does not check out" / "no key" /
+    "encrypted, locked" disappear on the second open. Cache the crypto verdict
+    with the body (or don't cache those).
+    - **Fixed:** only bodies with no crypto verdict are cached (version bump drops
+      the old copies).
+
+856. **🟡 Low — recipient addresses reach `RCPT TO` loosely validated.**
+    `validate_recipient` (`mail_engine.rs:1798`) / `one_addr` (`:597`) let `<`,
+    `>`, tab and other controls through; reply-all copies them from a received
+    message into Cc. Accept a strict RFC 5321 address only.
+    - **Fixed:** strict dot-atom local part, hostname domain, no format chars.
+    - [x] 🤖 Automated test — `a_recipient_must_be_a_plain_address`.
+
+857. **🟡 Low (latent) — `mail_move` uses the first id's account/folder for all
+    UIDs** (`commands/mail.rs:2872-2890`), moving unrelated mail that shares UID
+    numbers when ids span folders/accounts. No component calls `mailMove`
+    (`src/lib/mail.ts:209`) yet. Group by (account, folder) or refuse mixed sets.
+    - **Fixed:** refused unless every id shares the first one's account and folder,
+      and the destination is in the same account.
+
+858. **⚪ Info / hardening.**
+    - No app ACL manifest in `build.rs`, so any *local-origin* webview can call
+      every `mail_*` command (tauri 2.11 `webview/mod.rs:1823`); remote origins
+      are blocked. `capabilities/browser.json`'s "resolves to no command" is
+      wrong for app commands — correct the description, consider an app manifest.
+    - Eldrun Mobile reads mail with pairing as the only gate
+      (`mobile_control/host.rs:981-1060`); writes have `mail_actions`/`mail_reply`,
+      reading has no switch of its own.
+    - Fenced agents can't see `state_dir()/mail` on Linux/macOS, except when
+      `ELDRUN_STATE_DIR` sits outside `$HOME` (read-only `/` bind); Windows is
+      unfenced. `eldrun-emails/` is always agent-readable.
+    - Password copies escape `Password`: frontend `String`,
+      `expose().to_string()` into async-imap/mail-send (`mail_engine.rs:1107`,
+      `:1762`), `session_secret` returns `String`.
+    - decrypt → `apply_crypto` recursion has no depth limit.
+    - No revocation checking on Linux (`rustls-platform-verifier`);
+      `require_vpn` checks a tunnel is up, not that mail routes through it.
+    - **Fixed:** `browser.json`'s description corrected (no app manifest added);
+      new phone switch `mail_read` (default on) gates every phone mail request;
+      the fence tmpfs-hides `<state_dir>/mail` when the state dir is outside
+      `$HOME` (Linux); IMAP login borrows the password, IPC/session copies are
+      `Zeroizing`; decrypt depth capped. **Not done:** an app ACL manifest,
+      revocation checking, VPN route verification, macOS fence equivalent,
+      and `mail-send`'s owned credential copy.

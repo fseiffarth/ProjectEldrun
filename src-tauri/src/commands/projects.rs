@@ -2694,9 +2694,20 @@ pub fn ensure_generated_dir_ignored(dir: &Path, folder: &str) -> std::io::Result
     }
     let pattern = format!("{folder}/");
     let path = dir.join(".gitignore");
-    if !path.exists() {
-        fs::write(&path, format!("{pattern}\n"))?;
-        return Ok(true);
+    // A project tree is attacker-controlled (AGENTS.md), and a committed
+    // `.gitignore -> ~/.bashrc` would otherwise have this append a line to
+    // whatever file the link names. Only a real file, or no file, is ours to
+    // touch.
+    match fs::symlink_metadata(&path) {
+        Ok(meta) if !meta.file_type().is_file() => {
+            return Err(std::io::Error::other(".gitignore is not a regular file"));
+        }
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            write_no_follow(&path, format!("{pattern}\n").as_bytes(), true)?;
+            return Ok(true);
+        }
+        Err(e) => return Err(e),
     }
     let existing = fs::read_to_string(&path)?;
     if existing.lines().any(|line| line.trim() == pattern) {
@@ -2708,8 +2719,28 @@ pub fn ensure_generated_dir_ignored(dir: &Path, folder: &str) -> std::io::Result
     }
     updated.push_str(&pattern);
     updated.push('\n');
-    fs::write(&path, updated)?;
+    write_no_follow(&path, updated.as_bytes(), false)?;
     Ok(true)
+}
+
+/// Write `bytes` to `path` without following a symlink at the final component:
+/// `create_new` refuses anything already there (a dangling link included), and
+/// otherwise `O_NOFOLLOW` refuses a link swapped in after the caller's check.
+pub fn write_no_follow(path: &Path, bytes: &[u8], create_new: bool) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut options = fs::OpenOptions::new();
+    options.write(true);
+    if create_new {
+        options.create_new(true);
+    } else {
+        options.truncate(true);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    options.open(path)?.write_all(bytes)
 }
 
 /// Result of repairing one project's scaffold — which pieces were actually
@@ -5068,6 +5099,24 @@ mod tests {
 
     /// No `.gitignore` at all: saving a shot writes the one pattern it needs and
     /// does not quietly scaffold the rest of the project around it.
+    #[cfg(unix)]
+    #[test]
+    fn ensure_generated_dir_ignored_never_writes_through_a_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let victim = dir.path().join("victim");
+        fs::write(&victim, "precious\n").unwrap();
+        std::os::unix::fs::symlink(&victim, dir.path().join(".gitignore")).unwrap();
+        assert!(ensure_generated_dir_ignored(dir.path(), EMAILS_DIR).is_err());
+        assert_eq!(fs::read_to_string(&victim).unwrap(), "precious\n");
+
+        // Dangling: `exists()` says no, and a plain write would create the target.
+        let dir = tempfile::tempdir().unwrap();
+        let elsewhere = dir.path().join("elsewhere");
+        std::os::unix::fs::symlink(&elsewhere, dir.path().join(".gitignore")).unwrap();
+        assert!(ensure_generated_dir_ignored(dir.path(), EMAILS_DIR).is_err());
+        assert!(!elsewhere.exists());
+    }
+
     #[test]
     fn ensure_generated_dir_ignored_creates_a_minimal_file() {
         let dir = tempfile::tempdir().unwrap();

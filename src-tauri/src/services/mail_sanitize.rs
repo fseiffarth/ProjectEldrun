@@ -48,8 +48,12 @@ use crate::schema::mail::MailLink;
 /// pre-fix artifact keeps being served. Version 2 is the pair of
 /// `mail_engine` fixes — the UTF-7 charset gate missing the two labels
 /// `mail-parser` actually decodes, and `text/plain` bodies being handed to the
-/// HTML renderer — neither of which touches the allowlists below.
-pub const SANITIZER_VERSION: u32 = 2;
+/// HTML renderer — neither of which touches the allowlists below. Version 3 is
+/// the link table: hosts parsed the way a browser parses them (`\\` is `/`),
+/// every host the link text names checked, punycode shown in both forms, and
+/// `data-lid` found only inside tags — plus bodies with a crypto verdict no
+/// longer cached, which drops the old verdict-less copies.
+pub const SANITIZER_VERSION: u32 = 3;
 
 /// Largest HTML body handed to the sanitizer. Over this the message is refused
 /// with a typed error rather than parsed (plan B §3.6).
@@ -723,23 +727,56 @@ fn truncate_elements(html: &str, max: usize) -> String {
 /// HTML mail. `data-lid` is minted here and is in no input allowlist, so it can
 /// only be ours; the closing quote is required so `"1"` cannot match `"12"`.
 fn lid_positions(html: &str) -> HashMap<u32, usize> {
-    const NEEDLE: &str = "data-lid=\"";
+    const NEEDLE: &[u8] = b"data-lid=\"";
+    let bytes = html.as_bytes();
     let mut out: HashMap<u32, usize> = HashMap::new();
-    let mut base = 0usize;
-    while let Some(hit) = html[base..].find(NEEDLE) {
-        let digits_at = base + hit + NEEDLE.len();
-        let rest = &html[digits_at..];
-        let end = rest
-            .bytes()
-            .position(|b| !b.is_ascii_digit())
-            .unwrap_or(rest.len());
-        // `data-lid=""` or a non-numeric value is not one of ours.
-        if end > 0 && rest.as_bytes().get(end) == Some(&b'"') {
-            if let Ok(lid) = rest[..end].parse::<u32>() {
-                out.entry(lid).or_insert(digits_at + end + 1);
+    // Only **inside a tag, outside a quoted value**. html5ever escapes `<` and
+    // `>` in text but not `"`, so a literal `data-lid="0"` hidden in a message's
+    // text (a `display:none` span before the real link) used to be found first
+    // and read the link text from the wrong place — an empty text, and the
+    // mismatch flag quietly off. Attribute values escape `"`, so tracking quotes
+    // is enough to stay out of them too.
+    let (mut in_tag, mut quote) = (false, None::<u8>);
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let b = bytes[i];
+        match (in_tag, quote) {
+            (false, _) => {
+                if b == b'<' {
+                    in_tag = true;
+                }
+            }
+            (true, Some(q)) => {
+                if b == q {
+                    quote = None;
+                }
+            }
+            (true, None) => {
+                if b == b'>' {
+                    in_tag = false;
+                } else if b == b'"' || b == b'\'' {
+                    quote = Some(b);
+                } else if bytes[i..].starts_with(NEEDLE) && i > 0 && bytes[i - 1].is_ascii_whitespace() {
+                    let digits_at = i + NEEDLE.len();
+                    let rest = &html[digits_at..];
+                    let end = rest
+                        .bytes()
+                        .position(|b| !b.is_ascii_digit())
+                        .unwrap_or(rest.len());
+                    // `data-lid=""` or a non-numeric value is not one of ours.
+                    if end > 0 && rest.as_bytes().get(end) == Some(&b'"') {
+                        if let Ok(lid) = rest[..end].parse::<u32>() {
+                            out.entry(lid).or_insert(digits_at + end + 1);
+                        }
+                    }
+                    // Inside the value now: its closing quote must close it.
+                    quote = Some(b'"');
+                    i = digits_at;
+                    continue;
+                }
             }
         }
-        base = digits_at;
+        i += 1;
     }
     out
 }
@@ -795,10 +832,18 @@ fn truncate_chars(s: &str, max: usize) -> String {
 pub fn link_info(lid: u32, href: &str, display_text: &str) -> MailLink {
     let scheme = scheme_of(href);
     let host = host_of(href);
+    // An internationalized host is shown in both forms. Unicode alone is how
+    // `xn--pypal-4ve.com` reads as "pаypal.com" (a Cyrillic а) with nothing to
+    // tell the two apart; the ASCII form beside it is what differs visibly.
     let display_host = if host.is_empty() {
         scheme.clone()
     } else {
-        idna_display(&host)
+        let unicode = idna_display(&host);
+        if unicode == host {
+            unicode
+        } else {
+            format!("{unicode} ({host})")
+        }
     };
 
     let scheme_warning = if WEB_SCHEMES.contains(&scheme.as_str()) {
@@ -813,11 +858,11 @@ pub fn link_info(lid: u32, href: &str, display_text: &str) -> MailLink {
     // "the host is the part after the last @" confusion, so it always counts
     // as a mismatch whatever the text says.
     let userinfo = has_userinfo(href);
-    let text_host = host_in_text(display_text);
+    let link_site = registrable(&host);
     let mismatch = userinfo
-        || text_host
-            .map(|t| registrable(&t) != registrable(&host))
-            .unwrap_or(false);
+        || hosts_in_text(display_text)
+            .iter()
+            .any(|t| registrable(t) != link_site);
 
     MailLink {
         lid,
@@ -836,7 +881,7 @@ pub fn link_info(lid: u32, href: &str, display_text: &str) -> MailLink {
 // host is this really on". They are re-exported here so every existing mail call
 // site — and the whole test table below — is unchanged.
 pub use crate::services::web_safety::{
-    has_userinfo, host_in_text, host_of, idna_display, is_format_char, registrable,
+    has_userinfo, host_in_text, host_of, hosts_in_text, idna_display, is_format_char, registrable,
     sanitize_attachment_name, scheme_of, SafeName, FORMAT_CHARS, MAX_NAME_BYTES, RESERVED_NAMES,
 };
 
@@ -1211,6 +1256,38 @@ mod tests {
     }
 
     #[test]
+    fn a_backslash_link_is_labelled_with_the_host_a_browser_visits() {
+        // A browser reads `\\` as `/`: this goes to evil.example, path
+        // `/@bank.example/login`, and that is the host the user is shown.
+        let link = link_info(0, "https://evil.example\\@bank.example/login", "Your bank");
+        assert_eq!(link.display_host, "evil.example");
+        // …and the text claiming the other site still flags it.
+        assert!(link_info(0, "https://evil.example\\@bank.example/login", "bank.example").mismatch);
+    }
+
+    #[test]
+    fn any_host_the_link_text_names_counts_not_only_the_first_word() {
+        assert!(link_info(0, "https://evil.example/", "Sign in to paypal.com").mismatch);
+        assert!(!link_info(0, "https://www.paypal.com/", "Sign in to paypal.com").mismatch);
+        // Ordinary prose with dots in it is not a claimed site.
+        assert!(!link_info(0, "https://shop.example/", "Download report.pdf, e.g. 3.14").mismatch);
+    }
+
+    #[test]
+    fn an_internationalized_host_is_shown_in_both_forms() {
+        let link = link_info(0, "https://xn--pypal-4ve.com/", "pay");
+        assert!(link.display_host.contains("xn--pypal-4ve.com"), "{}", link.display_host);
+        assert_ne!(link.display_host, "xn--pypal-4ve.com");
+    }
+
+    #[test]
+    fn a_data_lid_spelled_out_in_text_is_not_a_link_marker() {
+        let html = r#"<p>data-lid="0" decoy</p><a style="x" data-lid="0">real text</a>"#;
+        let at = lid_positions(html)[&0];
+        assert_eq!(anchor_text_at(html, at), "real text");
+    }
+
+    #[test]
     fn userinfo_in_the_url_is_always_a_mismatch() {
         let out =
             sanitize_message_html("<a href=\"https://bank.example@evil.example/login\">go</a>")
@@ -1439,7 +1516,10 @@ mod tests {
         // Bumped to 2 for the two `mail_engine` body-pipeline fixes (UTF-7
         // label coverage, `text/plain` never offered as HTML) — the cache
         // stores their output, so without a bump a body parsed under the old
-        // rules would keep being served.
-        assert_eq!(SANITIZER_VERSION, 2);
+        // rules would keep being served. Bumped to 3 for the link table
+        // (browser-parsed hosts, every host in the text, both IDN forms,
+        // `data-lid` only inside tags) and crypto-bearing bodies leaving the
+        // cache.
+        assert_eq!(SANITIZER_VERSION, 3);
     }
 }

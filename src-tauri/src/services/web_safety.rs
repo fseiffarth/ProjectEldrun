@@ -186,11 +186,28 @@ pub fn scheme_of(url: &str) -> String {
 }
 
 pub fn has_userinfo(url: &str) -> bool {
+    if let Some(parsed) = parse_special(url) {
+        return !parsed.username().is_empty() || parsed.password().is_some();
+    }
     let Some(rest) = after_authority_marker(url) else {
         return false;
     };
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    let authority = rest.split(['/', '\\', '?', '#']).next().unwrap_or_default();
     authority.contains('@')
+}
+
+/// An http(s) URL parsed the way a browser will parse it, or `None`.
+///
+/// The WHATWG parser is the ground truth for where such a link *goes*, and a
+/// hand-rolled split disagrees with it exactly where phishing lives: a browser
+/// reads `\` as `/` in these schemes, so `https://evil.example\@bank.example/`
+/// is a request to evil.example that a split on `/?#` labels "bank.example".
+fn parse_special(url: &str) -> Option<url::Url> {
+    let scheme = scheme_of(url);
+    if scheme != "http" && scheme != "https" {
+        return None;
+    }
+    url::Url::parse(url.trim()).ok()
 }
 
 fn after_authority_marker(url: &str) -> Option<&str> {
@@ -211,10 +228,17 @@ pub fn host_of(url: &str) -> String {
             .unwrap_or_default()
             .to_ascii_lowercase();
     }
+    if let Some(parsed) = parse_special(url) {
+        return parsed
+            .host_str()
+            .unwrap_or_default()
+            .trim_matches(['[', ']'])
+            .to_ascii_lowercase();
+    }
     let Some(rest) = after_authority_marker(url) else {
         return String::new();
     };
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    let authority = rest.split(['/', '\\', '?', '#']).next().unwrap_or_default();
     let host = authority.rsplit('@').next().unwrap_or_default();
     let host = host.split(':').next().unwrap_or_default();
     host.trim_matches(['[', ']']).to_ascii_lowercase()
@@ -247,29 +271,68 @@ pub fn registrable(host: &str) -> String {
     labels[labels.len() - 2..].join(".")
 }
 
-/// A hostname claimed by an anchor's visible text, if it claims one.
+/// Every hostname an anchor's visible text claims, in order.
+///
+/// **Every** word, not the first: "Sign in to paypal.com" names a host as its
+/// fourth word, and a check that stopped at "Sign" let that text point anywhere
+/// without a flag. Surrounding punctuation is peeled first so "(paypal.com)" and
+/// "paypal.com." still count.
+pub fn hosts_in_text(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for word in text.split_whitespace() {
+        let word = word.trim_matches(|c: char| {
+            matches!(c, '(' | ')' | '[' | ']' | '<' | '>' | '"' | '\'' | ',' | ';' | ':' | '!' | '?')
+        });
+        if word.contains("://") {
+            let h = host_of(word);
+            if !h.is_empty() {
+                out.push(h);
+            }
+            continue;
+        }
+        let Some(candidate) = word.split(['/', '\\', '?', '#']).next() else {
+            continue;
+        };
+        let candidate = candidate.trim_end_matches('.').to_ascii_lowercase();
+        if candidate.contains('.')
+            && candidate.split('.').filter(|l| !l.is_empty()).count() >= 2
+            && candidate
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-')
+            && looks_like_host_suffix(&candidate)
+        {
+            out.push(candidate);
+        }
+    }
+    out
+}
+
+/// Whether a dotted word ends the way a hostname does — so scanning every word
+/// of a link's text does not read "e.g.", "3.14" or "report.pdf" as a site the
+/// text names, which would put a phishing flag on ordinary links.
+fn looks_like_host_suffix(candidate: &str) -> bool {
+    /// File extensions that are not TLDs anyone links to. `.zip` and `.mov`
+    /// are left out on purpose: they *are* TLDs, and phishing uses both.
+    const FILE_EXTENSIONS: &[&str] = &[
+        "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "csv", "png", "jpg", "jpeg",
+        "gif", "svg", "htm", "html", "php", "asp", "aspx", "jsp", "exe", "tar", "gz", "ics", "eml",
+    ];
+    let labels: Vec<&str> = candidate.split('.').collect();
+    if labels.iter().any(|l| l.is_empty()) {
+        return false;
+    }
+    // A dotted-quad IPv4 address is a host.
+    if labels.len() == 4 && labels.iter().all(|l| l.len() <= 3 && l.bytes().all(|b| b.is_ascii_digit())) {
+        return true;
+    }
+    let tld = labels.last().copied().unwrap_or_default();
+    (tld.starts_with("xn--") || (tld.len() >= 2 && tld.bytes().all(|b| b.is_ascii_alphabetic())))
+        && !FILE_EXTENSIONS.contains(&tld)
+}
+
+/// The first hostname an anchor's visible text claims, if it claims one.
 pub fn host_in_text(text: &str) -> Option<String> {
-    let t = text.trim();
-    if t.is_empty() {
-        return None;
-    }
-    if t.contains("://") {
-        let h = host_of(t);
-        return if h.is_empty() { None } else { Some(h) };
-    }
-    let first = t.split_whitespace().next()?;
-    let candidate = first.split(['/', '?', '#']).next()?.to_ascii_lowercase();
-    if candidate.contains('.')
-        && candidate.split('.').filter(|l| !l.is_empty()).count() >= 2
-        && candidate
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-')
-        && !candidate.ends_with('.')
-    {
-        Some(candidate)
-    } else {
-        None
-    }
+    hosts_in_text(text).into_iter().next()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

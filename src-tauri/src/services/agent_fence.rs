@@ -755,6 +755,26 @@ pub(crate) fn bwrap_args(
     args
 }
 
+/// State directories holding private data that the `$HOME` tmpfs does not hide,
+/// because `ELDRUN_STATE_DIR` put them somewhere else.
+///
+/// The fence hides the user's data by shadowing `$HOME`, and the default state
+/// dir lives there. Moved outside it, the mail store (`mail/`: the database,
+/// attachments, and on an unencrypted store everything in the clear) would sit
+/// under the read-only `/` bind, readable by every fenced agent.
+#[cfg(any(target_os = "linux", test))]
+pub(crate) fn private_state_outside_home(home: &Path, state_dir: &Path) -> Vec<String> {
+    if state_dir.starts_with(home) {
+        return Vec::new();
+    }
+    ["mail"]
+        .iter()
+        .map(|name| state_dir.join(name))
+        .filter(|dir| dir.is_dir())
+        .map(|dir| dir.to_string_lossy().into_owned())
+        .collect()
+}
+
 /// Rewrite a local agent spawn into its outer bubblewrap boundary.
 ///
 /// The agent's argv passes through untouched. Codex in particular gets no
@@ -793,7 +813,7 @@ pub fn wrap_pty_options_bwrap(
         dst: dir,
         read_only: false,
     }));
-    let args = bwrap_args(
+    let mut args = bwrap_args(
         &paths::home_dir_string(),
         &opts.cwd,
         &opts.cmd,
@@ -803,6 +823,19 @@ pub fn wrap_pty_options_bwrap(
         &mounts,
         &symlinks,
     );
+    // Right after the home tmpfs, before any bind that could need to show
+    // through it.
+    let home = paths::home_dir_string();
+    if let Some(i) = args
+        .windows(2)
+        .position(|w| w[0] == "--tmpfs" && w[1] == home)
+    {
+        let hidden = private_state_outside_home(&paths::home_dir(), &storage::state_dir());
+        for (n, dir) in hidden.into_iter().enumerate() {
+            let at = i + 2 + 2 * n;
+            args.splice(at..at, ["--tmpfs".to_string(), dir]);
+        }
+    }
     opts.cmd = "bwrap".to_string();
     opts.args = args;
     opts.env
@@ -1192,6 +1225,21 @@ mod tests {
     use super::*;
     use crate::schema::boxes::ProjectBox;
     use serde_json::{json, Value};
+
+    #[test]
+    fn a_state_dir_outside_home_has_its_mail_store_hidden() {
+        let home = tempfile::tempdir().unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        std::fs::create_dir(elsewhere.path().join("mail")).unwrap();
+        assert_eq!(
+            private_state_outside_home(home.path(), elsewhere.path()),
+            vec![elsewhere.path().join("mail").to_string_lossy().into_owned()]
+        );
+        // Under home the home tmpfs already covers it.
+        let inside = home.path().join(".local/share/eldrun");
+        std::fs::create_dir_all(inside.join("mail")).unwrap();
+        assert!(private_state_outside_home(home.path(), &inside).is_empty());
+    }
 
     fn project(id: &str, dir: &str) -> ProjectEntry {
         let mut extra = HashMap::new();

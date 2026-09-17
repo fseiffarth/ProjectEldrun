@@ -546,8 +546,10 @@ function MailAttachments({
   const [confirm, setConfirm] = useState<MailAttachmentMeta | null>(null);
   // Mail is a global surface with no project of its own, so "the project" is the
   // active one; its opaque id — never its path — is what crosses to the backend.
+  // A remote project's tree lives on its host, so the backend refuses a save
+  // "into" it — and it is not offered here either.
   const activeProject = useProjectsStore(
-    (s) => s.projects.find((p) => p.id === s.activeId) ?? null,
+    (s) => s.projects.find((p) => p.id === s.activeId && !p.remote) ?? null,
   );
 
   if (attachments.length === 0) return null;

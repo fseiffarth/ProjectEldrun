@@ -332,6 +332,8 @@ export const dict: Dict = {
 
   "mobile.title": "Eldrun Mobile",
   "mobile.mailWrites": "Mail vom Telefon",
+  "mobile.mailRead": "Mail auf dem Telefon lesen",
+  "mobile.mailReadHelp": "Ein gekoppeltes Telefon darf deine Mailkonten und Ordner auflisten und Nachrichten öffnen. Ausgeschaltet wird die Mail-Ansicht des Telefons vollständig abgelehnt — Markieren und Antworten eingeschlossen.",
   "mobile.mailActions": "Vom Telefon als gelesen markieren und markieren",
   "mobile.mailActionsHelp": "Ein gekoppeltes Telefon darf eine Nachricht als gelesen oder ungelesen markieren und den Stern setzen oder entfernen. Der Desktop setzt das Flag über seine eigene Mail-Sitzung und antwortet mit der aktualisierten Liste. Löschen und Verschieben bleiben auf dem Desktop, wo sie rückgängig gemacht werden können.",
   "mobile.mailReply": "Vom Telefon antworten",
@@ -4302,6 +4304,7 @@ export const dict: Dict = {
   "mail.crypto.signThis": "Diese Nachricht signieren",
   "mail.crypto.encryptThis": "Diese Nachricht verschlüsseln",
   "mail.crypto.encryptSubjectVisible": "Betreffzeile und Empfänger bleiben lesbar — verschlüsselt werden der Nachrichtentext und die Anhänge.",
+  "mail.crypto.quotesDecrypted": "Diese Nachricht zitiert eine verschlüsselt empfangene Nachricht. Ohne Verschlüsselung geht der zitierte Text im Klartext hinaus.",
   "mail.crypto.missingKeys": "Kein Schlüssel für {who}. Das Senden wird abgelehnt, statt unverschlüsselt zu verschicken.",
   "mail.keys.title": "OpenPGP-Schlüssel",
   "mail.keys.intro": "Mit Schlüsseln kannst du Nachrichten signieren, damit Empfänger erkennen, dass sie von dir stammen, und verschlüsselt an dich gesendete Nachrichten lesen. Hinter einem OpenPGP-Schlüssel steht keine Instanz: Das Einzige, was ihn an eine Person bindet, ist dein direkter Abgleich des Fingerabdrucks mit ihr.",
