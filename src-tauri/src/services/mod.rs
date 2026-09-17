@@ -105,6 +105,11 @@ pub mod vm_proxy;
 // used by BOTH the mail client and the in-app browser. `mail_sanitize`
 // re-exports what it used to own.
 pub mod web_safety;
+// The WebKitGTK accessibility (AT-SPI) opt-out: WebKit 2.48's ATSPI text
+// handler aborts the whole web process on an out-of-range offset, which a
+// continuously rewriting UI hands it routinely. Installed before the first
+// webview, stripped from spawned children.
+pub mod webkit_a11y;
 pub mod window_service;
 pub mod window_state;
 pub mod worker_sync;

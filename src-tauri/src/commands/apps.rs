@@ -338,6 +338,12 @@ fn launch_command(exec: &str, args: &[String], file: Option<&str>) -> Command {
 
     let (program, leading_args) = split_exec_command(exec);
     let mut cmd = crate::paths::command_for_program(Path::new(program));
+    // Same reason as the terminal spawn: Eldrun's AT-SPI opt-out covers Eldrun's
+    // own window, not the app the user is launching (`services::webkit_a11y`).
+    #[cfg(target_os = "linux")]
+    if crate::services::webkit_a11y::installed() {
+        cmd.env_remove(crate::services::webkit_a11y::BUS_ADDRESS_VAR);
+    }
     cmd.args(leading_args);
     cmd.args(args);
     if let Some(file) = file {

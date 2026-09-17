@@ -1003,6 +1003,14 @@ pub fn run() {
         std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
     }
 
+    // WebKit's AT-SPI bridge aborts the web process on a stale text offset, and
+    // Eldrun's constantly rewriting UI produces those by the second whenever a
+    // screen reader is attached (2026-09-17: two renderer SIGABRTs, both taking
+    // the window's tabs with them). Opt out before the first webview is built;
+    // `ELDRUN_ENABLE_A11Y=1` keeps the bridge. See `services::webkit_a11y`.
+    #[cfg(target_os = "linux")]
+    services::webkit_a11y::install();
+
     // Before the logger appends this run's `=== STARTED … ===` line, so the cap
     // is enforced against what previous runs left rather than a moment later.
     services::state_gc::cap_crash_log();

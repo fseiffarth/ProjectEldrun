@@ -867,3 +867,36 @@ screen is not.*
       (compare `grep Threads /proc/<renderer pid>/status` before and after).
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work
+
+859. **A screen reader killed the renderer: Eldrun opts out of WebKit's AT-SPI
+    bridge.** Clicking the Downloads section's `→` (file a download into the
+    project) blanked the window twice on 2026-09-17 and copied nothing. The
+    copy path was never the problem: the apport core shows `WebKitWebProcess`
+    aborting in WebKit 2.48's `org.a11y.atspi.Text` handler — it remaps the
+    requested offset through a table whose bounds check is a `CRASH()`, not a
+    clamp, so an offset that went stale between an assistive client's cache and
+    its query takes the whole renderer down. Eldrun is the worst case for it
+    (terminals, lamps and trees rewrite text continuously), GNOME's Orca was
+    running — it binds Super+Alt+S, and it crash-loops against the same bridge —
+    and the same path's `g_utf8_substring: assertion 'end_pos >= start_pos'`
+    criticals had been in `eldrun-dev.log` for days. `services::webkit_a11y`
+    now exports `WEBKIT_A11Y_BUS_ADDRESS` empty at the top of `run()`, before
+    the first webview exists; `ELDRUN_ENABLE_A11Y=1` hands the bridge back, and
+    an address the environment already carries always wins. The variable is
+    process-wide, so `terminal::build_command` and `commands::apps::
+    launch_command` strip it again when Eldrun was the one that set it — no
+    *other* WebKitGTK app launched from a tab loses its own accessibility.
+    Files: `services/webkit_a11y.rs`, `lib.rs`, `terminal/mod.rs`,
+    `commands/apps.rs`. Implemented 2026-09-17, **not live-verified; needs a
+    backend rebuild and a relaunch.**
+    - [x] 🤖 Automated test — `webkit_a11y` (install precedence: inherited
+      address wins, opt-in wins, an off-looking opt-in is not an opt-in)
+    - [ ] 🖐️ Manual test — turn the screen reader on (Super+Alt+S, or
+      `systemctl --user start orca`), then work the UI that crashed before:
+      open the side panel's Downloads section and click `→` on a file. The file
+      lands in the project and the window stays up. Confirm the bridge is
+      really off — `tr '\0' '\n' < /proc/<eldrun pid>/environ | grep A11Y`
+      prints `WEBKIT_A11Y_BUS_ADDRESS=` — and that a GUI app launched from a
+      terminal tab does *not* inherit it.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work

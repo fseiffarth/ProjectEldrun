@@ -1340,6 +1340,13 @@ fn build_command(opts: &PtyOptions) -> CommandBuilder {
     {
         cmd.env_remove("GIO_LAUNCHED_DESKTOP_FILE");
         cmd.env_remove("GIO_LAUNCHED_DESKTOP_FILE_PID");
+        // Eldrun's own AT-SPI opt-out is about Eldrun's window (see
+        // `services::webkit_a11y`); inherited, it would silently strip
+        // accessibility from any other WebKitGTK app a tab launches. Dropped
+        // only when Eldrun set it — an address the user exported stays.
+        if crate::services::webkit_a11y::installed() {
+            cmd.env_remove(crate::services::webkit_a11y::BUS_ADDRESS_VAR);
+        }
     }
 
     cmd
