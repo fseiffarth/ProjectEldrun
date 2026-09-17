@@ -914,3 +914,32 @@
   color: var(--accent);
   border-color: var(--accent);
 }
+/* The root layout's tree fills the pane region the way a project's fills the
+   center panel; panes are positioned over each group body by RootOverlay. */
+.root-overlay-layout {
+  position: absolute;
+  inset: 0;
+}
+.root-overlay-layout > .subwindow,
+.root-overlay-layout > .split {
+  position: absolute;
+  inset: 0;
+}
+/* Split, the focused subwindow's bar carries the accent underline — the
+   console has no FocusFrameOverlay of its own. Flat inset line, no blur. */
+.root-overlay-group.focused > .tab-bar {
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+/* During a tab drag the panes stop taking the pointer, as CenterPanel's do. */
+.root-overlay.dragging .pane-layer,
+.root-overlay.dragging .center-pane {
+  pointer-events: none;
+}
+/* Where a tab dropped on a strip lands. */
+.root-overlay-strip-marker {
+  position: fixed;
+  z-index: 9998;
+  width: 2px;
+  background: var(--accent);
+  pointer-events: none;
+}

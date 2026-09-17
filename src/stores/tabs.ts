@@ -1011,8 +1011,12 @@ interface TabsStore {
 
   // focus / activation
   focusGroup: (groupId: string) => void;
+  /** `focusGroup` for any scope — the root console arranges the root scope's
+   *  subwindows while a project is the active scope. */
+  focusGroupInScope: (scope: string, groupId: string) => void;
   setActive: (key: string) => void; // activate tab + focus its group
   setGroupActive: (groupId: string, key: string) => void;
+  setGroupActiveInScope: (scope: string, groupId: string, key: string) => void;
   // `setActive` for a scope that is not necessarily the current one: activate the
   // tab within its subwindow and focus that subwindow in THAT scope's own tree,
   // so a caller can aim a click at a project before switching to it (the project
@@ -1159,6 +1163,10 @@ interface TabsStore {
   reorderInGroup: (groupId: string, from: number, to: number) => void;
   moveTab: (key: string, targetGroupId: string, index?: number) => void;
   splitWithTab: (key: string, targetGroupId: string, edge: DropEdge) => void;
+  // The same two moves on a named scope (the root console arranges the root
+  // scope while a project is active). The current-scope pair delegates here.
+  moveTabInScope: (scope: string, key: string, targetGroupId: string, index?: number) => void;
+  splitWithTabInScope: (scope: string, key: string, targetGroupId: string, edge: DropEdge) => void;
   // Create a brand-new tab in a fresh group split off the target at `edge`
   // (or, for "center", added into the target group). Used by file drops from the
   // side panel to spawn a new subwindow holding the file directly. Returns the
@@ -1169,12 +1177,14 @@ interface TabsStore {
     edge: DropEdge,
   ) => TabEntry | null;
   resizeSplit: (splitId: string, dividerIndex: number, fraction: number) => void;
+  resizeSplitInScope: (scope: string, splitId: string, dividerIndex: number, fraction: number) => void;
   // Merge two adjacent subwindows into one (double-click the divider between
   // them): append every tab of `sourceGroupId` onto `targetGroupId`, then let
   // `writeScope`'s collapse pass drop the emptied source and unwrap the split.
   // PTYs are preserved (tabs move, not close); the survivor keeps its activeKey.
   // No-op if either group is missing or they are the same group.
   mergeGroups: (targetGroupId: string, sourceGroupId: string) => void;
+  mergeGroupsInScope: (scope: string, targetGroupId: string, sourceGroupId: string) => void;
 
   // Per-subwindow right file viewer: open/close a group's docked file-viewer
   // column, and persist its width. Both write the flag onto the group NODE
@@ -2041,13 +2051,18 @@ function writeScope(
   };
 }
 
+/** Convenience accessor for a scope's mutable state. */
+function scopeState(s: TabsStore, scope: string) {
+  return {
+    tabs: s.tabsByScope[scope] ?? [],
+    layout: s.layoutByScope[scope] ?? null,
+    focusedGroupId: s.focusedGroupByScope[scope] ?? null,
+  };
+}
+
 /** Convenience accessor for the current scope's mutable state. */
 function currentScopeState(s: TabsStore) {
-  return {
-    tabs: s.tabsByScope[s.scope] ?? [],
-    layout: s.layoutByScope[s.scope] ?? null,
-    focusedGroupId: s.focusedGroupByScope[s.scope] ?? null,
-  };
+  return scopeState(s, s.scope);
 }
 
 // ── Tree (de)serialization ──────────────────────────────────────────────────
@@ -2234,11 +2249,13 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     });
   },
 
-  focusGroup: (groupId) => {
+  focusGroup: (groupId) => get().focusGroupInScope(get().scope, groupId),
+
+  focusGroupInScope: (scope, groupId) => {
     set((s) => {
-      const { tabs, layout } = currentScopeState(s);
+      const { tabs, layout } = scopeState(s, scope);
       if (!findGroup(layout, groupId)) return {};
-      return writeScope(s, s.scope, tabs, layout, groupId);
+      return writeScope(s, scope, tabs, layout, groupId);
     });
   },
 
@@ -2263,13 +2280,15 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     });
   },
 
-  setGroupActive: (groupId, key) => {
+  setGroupActive: (groupId, key) => get().setGroupActiveInScope(get().scope, groupId, key),
+
+  setGroupActiveInScope: (scope, groupId, key) => {
     set((s) => {
-      const { tabs, layout } = currentScopeState(s);
+      const { tabs, layout } = scopeState(s, scope);
       const group = findGroup(layout, groupId);
       if (!group || !group.tabKeys.includes(key) || !layout) return {};
       const next = mapGroup(layout, groupId, (g) => ({ ...g, activeKey: key }));
-      return writeScope(s, s.scope, tabs, next, groupId);
+      return writeScope(s, scope, tabs, next, groupId);
     });
   },
 
@@ -2937,9 +2956,12 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     });
   },
 
-  moveTab: (key, targetGroupId, index) => {
+  moveTab: (key, targetGroupId, index) =>
+    get().moveTabInScope(get().scope, key, targetGroupId, index),
+
+  moveTabInScope: (scope, key, targetGroupId, index) => {
     set((s) => {
-      const { tabs, layout } = currentScopeState(s);
+      const { tabs, layout } = scopeState(s, scope);
       if (!layout) return {};
       const source = findGroupOfTab(layout, key);
       const target = findGroup(layout, targetGroupId);
@@ -2957,7 +2979,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
           tabKeys.splice(to, 0, moved);
           return { ...g, tabKeys, activeKey: key };
         });
-        return writeScope(s, s.scope, tabs, next, targetGroupId);
+        return writeScope(s, scope, tabs, next, targetGroupId);
       }
 
       // Remove from source, then insert into target.
@@ -2974,13 +2996,16 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
         return { ...g, tabKeys, activeKey: key };
       });
       // Source may have emptied → collapse handles it; focus the target.
-      return writeScope(s, s.scope, tabs, next, targetGroupId);
+      return writeScope(s, scope, tabs, next, targetGroupId);
     });
   },
 
-  mergeGroups: (targetGroupId, sourceGroupId) => {
+  mergeGroups: (targetGroupId, sourceGroupId) =>
+    get().mergeGroupsInScope(get().scope, targetGroupId, sourceGroupId),
+
+  mergeGroupsInScope: (scope, targetGroupId, sourceGroupId) => {
     set((s) => {
-      const { tabs, layout } = currentScopeState(s);
+      const { tabs, layout } = scopeState(s, scope);
       if (!layout || targetGroupId === sourceGroupId) return {};
       const target = findGroup(layout, targetGroupId);
       const source = findGroup(layout, sourceGroupId);
@@ -2998,17 +3023,20 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
         tabKeys: [],
         activeKey: null,
       }));
-      return writeScope(s, s.scope, tabs, next, targetGroupId);
+      return writeScope(s, scope, tabs, next, targetGroupId);
     });
   },
 
-  splitWithTab: (key, targetGroupId, edge) => {
+  splitWithTab: (key, targetGroupId, edge) =>
+    get().splitWithTabInScope(get().scope, key, targetGroupId, edge),
+
+  splitWithTabInScope: (scope, key, targetGroupId, edge) => {
     if (edge === "center") {
-      get().moveTab(key, targetGroupId);
+      get().moveTabInScope(scope, key, targetGroupId);
       return;
     }
     set((s) => {
-      const { tabs, layout } = currentScopeState(s);
+      const { tabs, layout } = scopeState(s, scope);
       if (!layout) return {};
       const source = findGroupOfTab(layout, key);
       const target = findGroup(layout, targetGroupId);
@@ -3048,7 +3076,7 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
       const next = insertAdjacent(cleaned, targetGroupId, newGroup, dir, before);
 
       // Focus the freshly-split-off group.
-      return writeScope(s, s.scope, tabs, next, newGroup.id);
+      return writeScope(s, scope, tabs, next, newGroup.id);
     });
   },
 
@@ -3103,12 +3131,15 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     return created ? entry : null;
   },
 
-  resizeSplit: (splitId, dividerIndex, fraction) => {
+  resizeSplit: (splitId, dividerIndex, fraction) =>
+    get().resizeSplitInScope(get().scope, splitId, dividerIndex, fraction),
+
+  resizeSplitInScope: (scope, splitId, dividerIndex, fraction) => {
     set((s) => {
-      const { tabs, layout, focusedGroupId } = currentScopeState(s);
+      const { tabs, layout, focusedGroupId } = scopeState(s, scope);
       if (!layout) return {};
       const next = applyResize(layout, splitId, dividerIndex, fraction);
-      return writeScope(s, s.scope, tabs, next, focusedGroupId);
+      return writeScope(s, scope, tabs, next, focusedGroupId);
     });
   },
 

@@ -25,22 +25,21 @@ import { ROOT_SCOPE, hydrateScopeFromDisk, useTabsStore } from "./tabs";
  */
 interface RootOverlayState {
   open: boolean;
-  /** The root tab shown in the overlay; null = the scope's own active tab. */
-  activeKey: string | null;
+  /** Open the console; with a `key`, bring that root tab to the front of its
+   *  subwindow. Which tab each subwindow shows is the root LAYOUT's, so it is
+   *  the same answer the scope persists. */
   show: (key?: string) => void;
   close: () => void;
-  setActiveKey: (key: string | null) => void;
 }
 
 export const useRootOverlayStore = create<RootOverlayState>((set) => ({
   open: false,
-  activeKey: null,
   show: (key) => {
     void ensureRootScopeHydrated();
-    set((s) => ({ open: true, activeKey: key ?? s.activeKey }));
+    if (key) useTabsStore.getState().revealTabInScope(ROOT_SCOPE, key);
+    set({ open: true });
   },
   close: () => set({ open: false }),
-  setActiveKey: (activeKey) => set({ activeKey }),
 }));
 
 export function toggleRootConsole(): void {

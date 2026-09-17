@@ -19,6 +19,13 @@ keep-alive pane layer, and the overlay's panes are attach-only views of them.
 This is the same arrangement popouts and `InstallOverlay` use, so closing the
 overlay ends nothing.
 
+The overlay renders the root layout as stored, splits included. Dragging a tab
+onto another subwindow's strip or a body's edge rearranges it as in a project,
+through the tab store's `…InScope` actions. The ordinary layout actions only
+write the *active* scope, and root is not the active one while the overlay
+floats over a project. The drag keeps its state local rather than in
+`stores/drag`, because that store puts `CenterPanel` into drag mode underneath.
+
 Two jobs moved into the overlay's always-mounted host because root no longer
 becomes the active scope:
 

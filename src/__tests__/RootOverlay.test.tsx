@@ -42,7 +42,7 @@ vi.mock("../components/tabs/NewTabMenu", () => ({
   ),
 }));
 
-import { useTabsStore } from "../stores/tabs";
+import { allGroups, useTabsStore } from "../stores/tabs";
 import { useProjectsStore } from "../stores/projects";
 import { useCalendarStore } from "../stores/calendar";
 import { toggleRootConsole, useRootOverlayStore } from "../stores/rootOverlay";
@@ -68,7 +68,7 @@ beforeEach(() => {
     focusedGroupByScope: {},
   });
   useProjectsStore.setState({ rootDir: "/r", activeId: "p1" });
-  useRootOverlayStore.setState({ open: false, activeKey: null });
+  useRootOverlayStore.setState({ open: false });
   useCalendarStore.setState({ events: [], tasks: [] });
 });
 
@@ -121,7 +121,10 @@ describe("RootOverlayHost", () => {
     await act(async () => useRootOverlayStore.getState().show());
 
     fireEvent.mouseDown(screen.getByText("Claude"));
-    expect(useRootOverlayStore.getState().activeKey).toBe(a.key);
+    const [group] = allGroups(useTabsStore.getState().layoutByScope.root ?? null);
+    expect(group.activeKey).toBe(a.key);
+    // The project on screen keeps its own scope.
+    expect(useTabsStore.getState().scope).toBe("p1");
 
     const closeButtons = screen.getAllByTitle("Close tab");
     fireEvent.click(closeButtons[1]);
@@ -147,6 +150,24 @@ describe("RootOverlayHost", () => {
     fireEvent.keyDown(window, { key: "Escape" });
     expect(useRootOverlayStore.getState().open).toBe(false);
     expect(useProjectsStore.getState().activeId).toBe("p1");
+  });
+
+  it("renders a split root layout as one subwindow per group, each pane over its own group", async () => {
+    const { a, b } = seedRootTabs();
+    const store = useTabsStore.getState();
+    const [group] = allGroups(store.layoutByScope.root ?? null);
+    store.splitWithTabInScope("root", a.key, group.id, "right");
+    render(<RootOverlayHost />);
+    await act(async () => useRootOverlayStore.getState().show());
+
+    const groups = allGroups(useTabsStore.getState().layoutByScope.root ?? null);
+    expect(groups).toHaveLength(2);
+    expect(document.querySelectorAll(".root-overlay-group")).toHaveLength(2);
+    // Both tabs are the active one of their own subwindow, so both are shown.
+    const latest = new Map(paneProps.map((p) => [(p.tab as { key: string }).key, p]));
+    expect(latest.get(a.key)?.visible).toBe(true);
+    expect(latest.get(b.key)?.visible).toBe(true);
+    expect(useTabsStore.getState().scope).toBe("p1");
   });
 
   it("merges a row a root agent wrote over MCP and announces it for CalDAV — while closed", async () => {
