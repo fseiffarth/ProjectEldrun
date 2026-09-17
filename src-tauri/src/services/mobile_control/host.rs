@@ -36,9 +36,9 @@ use super::{
         TERMINAL_PROTOCOL,
     },
     pty_bridge::{self, TerminalRegistry},
+    live_pwa, MOBILE_ASSETS,
 };
 
-include!(concat!(env!("OUT_DIR"), "/mobile_assets.rs"));
 
 const MOBILE_PERMISSIONS_POLICY: &str =
     "camera=(), microphone=(self), on-device-speech-recognition=(self), geolocation=(), payment=(), usb=()";
@@ -2180,28 +2180,44 @@ async fn index() -> Response<Body> {
 
 fn asset_response(path: &str) -> Response<Body> {
     let requested = if path == "/" { "/index.html" } else { path };
-    let direct = MOBILE_ASSETS.iter().find(|(name, _, _)| *name == requested);
+    // A dev build may have a newer bundle published beside it than the one it
+    // was compiled with (`live_pwa`). It answers everything or nothing — the
+    // two bundles are never mixed, because each names its own hashed entry.
+    match live_pwa::current() {
+        Some(live) => serve_asset(requested, |name| live.get(name)),
+        None => serve_asset(requested, |name| {
+            MOBILE_ASSETS
+                .iter()
+                .find(|(asset, _, _)| *asset == name)
+                .map(|(_, bytes, mime)| (bytes::Bytes::from_static(bytes), *mime))
+        }),
+    }
+}
+
+/// The serving rules, over whichever bundle is in play.
+fn serve_asset<F>(requested: &str, lookup: F) -> Response<Body>
+where
+    F: Fn(&str) -> Option<(bytes::Bytes, &'static str)>,
+{
     // The SPA fallback must not cover hashed build output. Serving index.html
     // for `/assets/index-OLD.js` — with a one-year `immutable` header chosen
     // from the *requested* path — poisoned the service worker's cache with HTML
     // stored under a JavaScript URL after every upgrade.
-    let hit = match direct {
-        Some(hit) => Some(hit),
+    let hit = match lookup(requested) {
+        Some(found) => Some((requested, found)),
         // The SPA fallback covers app routes only. A miss under `/assets/` or
         // `/api/` must be a plain 404: serving the shell for an unknown
         // endpoint turned a removed or mistyped route into a 200 full of HTML
         // that the client then tried to parse as JSON.
         None if requested.starts_with("/assets/") || requested.starts_with("/api/") => None,
-        None => MOBILE_ASSETS
-            .iter()
-            .find(|(name, _, _)| *name == "/index.html"),
+        None => lookup("/index.html").map(|found| ("/index.html", found)),
     };
-    let Some((name, bytes, mime)) = hit else {
+    let Some((name, (bytes, mime))) = hit else {
         return StatusCode::NOT_FOUND.into_response();
     };
     Response::builder()
         .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, *mime)
+        .header(header::CONTENT_TYPE, mime)
         .header(
             header::CACHE_CONTROL,
             // Keyed off what is actually being served, not what was asked for.
@@ -2211,7 +2227,7 @@ fn asset_response(path: &str) -> Response<Body> {
                 "no-cache"
             },
         )
-        .body(Body::from(bytes::Bytes::from_static(bytes)))
+        .body(Body::from(bytes))
         .unwrap()
 }
 

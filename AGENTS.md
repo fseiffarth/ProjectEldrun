@@ -49,6 +49,19 @@ change was not run live.
   window says so. `beforeDevCommand` re-bundles it on every dev start, and a
   `post-commit` hook reports the seam when it drifts anyway; `npm run
   mobile:bundle` rebuilds it without the type-check, `mobile:build` with.
+  **A commit now reaches the phone without a relaunch** (2026-09-17):
+  `package-dev.sh` publishes the bundle it just built into `target/mobile-pwa/`
+  with a `.stamp`, and `services::mobile_control::live_pwa` serves that in place
+  of the embedded copy, so a pull-to-refresh is the whole update path. In
+  `--head` mode it publishes *before* cargo starts — the bundle takes two
+  seconds, the compile takes two minutes. It is opt-in at compile time
+  (`ELDRUN_MOBILE_LIVE_DIR`, set only by `package-dev.sh` and the hot-reload
+  launcher, so a released binary reads nothing off the disk), never serves an
+  overlay older than the bundle compiled in, and refuses a bundle missing its
+  shell or its stamped entry rather than mixing two. The overlay carries the
+  PWA, **not** the sidecar's HTTP API: a mobile feature whose backend half is
+  not in the running window will render and then fail its request, which
+  `backend:stale` reports rather than hides.
 - Double-starts are blocked by `scripts/guard-single-instance.sh` (wired into
   the launcher and the `pretauri:dev` hook). It also refuses when port 1420 is
   held by an orphaned vite — a second `tauri dev` would otherwise attach to the

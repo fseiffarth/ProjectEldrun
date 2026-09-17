@@ -1593,4 +1593,39 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
   - [ ] ✅ Works
   - [ ] ❌ Doesn't work
 
+- [~] **31ah — The phone's PWA updates on commit, without a relaunch** (2026-09-17;
+  ✅ code-complete, automated tests passing and the publish→load contract smoke-tested
+  end-to-end, ⚠️ not verified on a phone — and the first pickup costs exactly one
+  relaunch, since the overlay support is itself compiled in). The bundle is baked
+  into the binary (`build.rs` embeds `mobile-dist/`) and the running window keeps
+  its old inode across an install, so freezing a commit never reached the phone
+  until the user relaunched: on 2026-09-17 the sidecar was serving
+  `index-BxC6mmm7.js` while the installed binary held `index-B6ra4vC5.js` and the
+  tree held a third.
+  - `scripts/package-dev.sh` now publishes the bundle it just built into
+    `target/mobile-pwa/` with a `.stamp` (`built`, `commit`, `entry`), and
+    `services::mobile_control::live_pwa` serves that instead of the embedded copy.
+    In `--head` mode it publishes **before** cargo starts, so a commit reaches the
+    phone in seconds rather than after the two-minute compile. Written under
+    `target/` rather than `$HOME` on purpose: commits come from agent tabs, where
+    `agent_fence` replaces `$HOME` with a tmpfs that dies with the tab — the same
+    trap that made the binary install silently evaporate (2026-09-04).
+  - Three guards: opt-in at compile time (`ELDRUN_MOBILE_LIVE_DIR`, set only by
+    `package-dev.sh` and `start-eldrun-tauri-hotreload.sh`, so a released binary
+    has no overlay path at all); never backwards (an overlay older than
+    `MOBILE_ASSETS_BUILT_AT` is refused, so a stale branch cannot shadow a fresh
+    binary); all-or-nothing (a bundle missing its shell or its stamped entry is
+    refused whole, since mixing two bundles is a white screen).
+  - **Open:** the overlay carries the PWA, not the sidecar's HTTP API. A mobile
+    feature whose backend half is not in the running window will now *render* and
+    then fail its request, where before it simply was not there. `backend:stale`
+    reports that gap ("THE PHONE IS AHEAD OF THE RUNNING BACKEND") rather than
+    hiding it, and a relaunch is the same remedy as before.
+  - [ ] 🖐️ Manual phone QA — commit anything touching `mobile-web/`, wait for the
+    post-commit freeze, pull-to-refresh on the phone and confirm the build stamp
+    in the UI moved without the desktop being relaunched; then confirm
+    `npm run backend:stale` names the published bundle.
+  - [ ] ✅ Works
+  - [ ] ❌ Doesn't work
+
 ---
