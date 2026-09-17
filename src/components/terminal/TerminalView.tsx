@@ -933,12 +933,18 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
         return false;
       }
       if (!e.ctrlKey || !e.shiftKey) return true;
+      // preventDefault on both chords: returning false only stops xterm, not the
+      // webview. WebKitGTK binds Ctrl+Shift+V to its own paste command, whose
+      // native `paste` event lands on xterm's textarea and pastes a second copy
+      // next to pasteClipboard's (the "pastes twice" report).
       if (e.code === "KeyC") {
+        e.preventDefault();
         const sel = term.getSelection();
         if (sel) copyToClipboard(sel);
         return false;
       }
       if (e.code === "KeyV") {
+        e.preventDefault();
         pasteClipboard();
         return false;
       }
