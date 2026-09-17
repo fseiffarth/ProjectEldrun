@@ -810,6 +810,13 @@ impl Settings {
         self.experimental(self.python_run_debug)
     }
 
+    /// Whether the experimental mail client is on — the one gate its overlay
+    /// host asks (`src/components/mail/MailOverlay.tsx`). Read by the root
+    /// console's `mail_open` tool so it can refuse instead of opening nothing.
+    pub fn mail_client(&self) -> bool {
+        self.experimental(self.mail_client)
+    }
+
     /// Whether the experimental native presenter ("deck") is offered — the
     /// `*.eldeck.json` viewer and its fullscreen presenter. Off outside debug mode
     /// while the surface is still moving.

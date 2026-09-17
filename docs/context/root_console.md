@@ -86,6 +86,36 @@ the row it wrote. The overlay host merges the row into the calendar store and
 announces it through `notifyCalendarWrite`, so a CalDAV-backed calendar pushes
 it exactly as it would a dialog edit.
 
+**The board's tools are the board's gestures.** `todo_add`, `todo_update`,
+`todo_complete`, `todo_reopen`, `todo_move` and `todo_delete` go through the
+same task CRUD and the same `move_tasks_at` a drag uses, so the rank algebra and
+the done↔column coupling stay in one place. A move can reindex a whole column,
+so one call may emit several rows. Rows whose only change is `column`/`rank`
+carry `local: true` and are merged without a CalDAV push, which is what a drag
+on the board does too — no server stores those fields. A delete is permanent
+and its tool description says so; the row rides along so the CalDAV copy can
+still be addressed.
+
+**Showing is not writing.** `mail_open`, `calendar_open` and `todo_open` put the
+header's overlays on screen — "show me my mail", "open the board on that card".
+They travel as their own event, `root-mcp-open`, because there is no row to
+merge and nothing for CalDAV. Two details:
+
+- **The backend reads the overlay's settings gate first** (`mail_client`,
+  `calendar_global_app`, `todo_board`). Each overlay host applies that gate on
+  its own, so an ungated call would report success and show nothing.
+- **The console closes.** It is a modal mounted after the other three, so it
+  would sit on top of the overlay it was asked for. Closing it ends nothing, and
+  Ctrl+Shift+R brings it back.
+
+**Tools say what they do, not whether to ask.** Each tool carries MCP
+annotations: the `*_list` and `*_open` tools are `readOnlyHint` (an overlay
+writes no store and closes with Escape), and the deletes and
+`todo_update` are `destructiveHint`. Codex asks before any tool not marked
+read-only, so reads now go through without a prompt and writes still ask.
+Eldrun never passes `default_tools_approval_mode`: approval is the CLI's own,
+like its permission mode.
+
 **Failure is safe.** If the listener cannot bind, or the OS has no entropy,
 root agents are ordinary agents. The ⚿ badge in the overlay says which case
 you are in.

@@ -284,7 +284,12 @@ correctness/UX work atop the same layout model #42 detaches.*
     over whatever project is open, and nothing about the project on screen
     moves. Agents opened there, and nowhere else, get Eldrun's MCP tools:
     `projects_list`, `calendar_list`, `calendar_add_event` (1 h by default),
-    `calendar_delete_event`, `todo_list`, `todo_add` and `todo_complete`. The
+    `calendar_delete_event`, and the whole to-do board — `todo_list`,
+    `todo_add`, `todo_update`, `todo_complete`, `todo_reopen`, `todo_move`
+    (column + position, through the drag's own `move_tasks_at`) and
+    `todo_delete` — plus `mail_open`, `calendar_open` and `todo_open` (optionally
+    on one card), which show the header's overlays and refuse while that
+    overlay's setting is off. The
     tools are served on loopback with a per-run token that only a root-scope
     agent spawn is given. The root console is never in Eldrun Mobile's catalog
     and its Claude tabs get no `--remote-control`. Design:
@@ -306,6 +311,14 @@ correctness/UX work atop the same layout model #42 detaches.*
       - Open Claude with **+**: `/mcp` lists `eldrun`; "add a calendar entry
         tomorrow at 14:00, 1 h, Review" puts the event in the header's 🗓 at
         once. With CalDAV write turned on, the event also reaches the server.
+      - With the to-do board open beside the console: "put a card 'Ship' on
+        the board for project X", "move it to Doing", "rename it", "mark it
+        done", "reopen it", "delete it" — each shows on the board at once,
+        with no reload.
+      - "Show me my mail" / "open the calendar" / "open the board on that
+        card": the console closes and the overlay appears (the card's editor
+        for the last one). With that overlay's setting off, the agent is told
+        so and nothing opens.
       - Claude in a project tab: `/mcp` lists no `eldrun`.
       - Codex in the root console: `/mcp` lists `eldrun`.
       - The phone's project list never shows the root console.

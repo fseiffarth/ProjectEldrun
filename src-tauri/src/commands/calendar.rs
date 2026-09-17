@@ -175,7 +175,7 @@ pub(crate) fn update_task_at(path: &Path, task: CalendarTask) -> Result<Calendar
     normalized_task(&data, &id)
 }
 
-fn delete_task_at(path: &Path, id: &str) -> Result<(), String> {
+pub(crate) fn delete_task_at(path: &Path, id: &str) -> Result<(), String> {
     let _guard = lock_calendar();
     let mut data = read_data(path)?;
     let before = data.tasks.len();
@@ -239,7 +239,7 @@ fn column_order(data: &CalendarData, column: &str, exclude: &str) -> Vec<(String
 /// which is a superset of `moves` whenever a reindex fired or the done coupling
 /// completed a card. The frontend merges those into its store rather than
 /// reloading the whole calendar.
-fn move_tasks_at(path: &Path, moves: Vec<TaskPlacement>) -> Result<Vec<CalendarTask>, String> {
+pub(crate) fn move_tasks_at(path: &Path, moves: Vec<TaskPlacement>) -> Result<Vec<CalendarTask>, String> {
     let _guard = lock_calendar();
     let mut data = read_data(path)?;
     // The first drag is what creates the board — a *read* deliberately never

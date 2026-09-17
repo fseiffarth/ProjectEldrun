@@ -6,6 +6,8 @@ import { useRootOverlayStore } from "../../stores/rootOverlay";
 import { useProjectsStore } from "../../stores/projects";
 import { useActivityStore } from "../../stores/activity";
 import { useCalendarStore } from "../../stores/calendar";
+import { useMailStore } from "../../stores/mail";
+import { useTodoStore } from "../../stores/todo";
 import { useSettingsStore } from "../../stores/settings";
 import {
   DEFAULT_MIN_SUBWINDOW_PX,
@@ -33,9 +35,20 @@ import { dragPreviewLayout } from "../tabs/dragPreview";
 import { StarIcon } from "./StarIcon";
 
 /** What the backend's `root-mcp-changed` event carries (`services::root_mcp::Change`). */
-type RootMcpChange =
+type RootMcpChange = (
   | { kind: "event"; op: "upsert" | "delete"; row: CalendarEvent }
-  | { kind: "task"; op: "upsert" | "delete"; row: CalendarTask };
+  | { kind: "task"; op: "upsert" | "delete"; row: CalendarTask }
+) & {
+  /** Board-only fields changed (a move's column/rank): merge, push nothing. */
+  local?: boolean;
+};
+
+/** What `root-mcp-open` carries (`services::root_mcp::OverlayOpen`). */
+interface RootMcpOpen {
+  overlay: "mail" | "calendar" | "todo";
+  /** `todo_open` with a card: the board opens on it. */
+  task_id?: string;
+}
 
 interface RootMcpStatus {
   running: boolean;
@@ -123,7 +136,31 @@ export function RootOverlayHost() {
           ? { tasks: s.tasks.filter((task) => task.id !== payload.row.id) }
           : { tasks: upsert(s.tasks, payload.row) };
       });
+      // A root agent's first board move is what seeds the columns (a read
+      // never does), so a card naming a column the store has not seen means the
+      // board just came into existence — re-read, as `moveTasks` does.
+      if (payload.kind === "task" && payload.op === "upsert" && payload.row.column) {
+        const { taskColumns, reload } = useCalendarStore.getState();
+        if (!taskColumns.some((c) => c.id === payload.row.column)) void reload().catch(() => {});
+      }
+      if (payload.local) return;
       void notifyCalendarWrite(payload).catch(() => {});
+    });
+    return () => {
+      void unlisten.then((stop) => stop());
+    };
+  }, []);
+
+  useEffect(() => {
+    // A root agent's `*_open` tool. The backend already checked the overlay's
+    // settings gate, so this only has to show it — and get out of its way: the
+    // console is a modal mounted after the other three, so it would sit on top.
+    const unlisten = listen<RootMcpOpen>("root-mcp-open", ({ payload }) => {
+      useRootOverlayStore.getState().close();
+      if (payload.overlay === "mail") useMailStore.getState().openOverlay();
+      else if (payload.overlay === "calendar") useCalendarStore.getState().openOverlay();
+      else if (payload.task_id) useTodoStore.getState().openCard(payload.task_id);
+      else useTodoStore.getState().openOverlay();
     });
     return () => {
       void unlisten.then((stop) => stop());

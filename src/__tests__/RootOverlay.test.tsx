@@ -45,6 +45,8 @@ vi.mock("../components/tabs/NewTabMenu", () => ({
 import { allGroups, useTabsStore } from "../stores/tabs";
 import { useProjectsStore } from "../stores/projects";
 import { useCalendarStore } from "../stores/calendar";
+import { useMailStore } from "../stores/mail";
+import { useTodoStore } from "../stores/todo";
 import { toggleRootConsole, useRootOverlayStore } from "../stores/rootOverlay";
 import { setCalendarWriteHandler } from "../lib/calendarWriteHook";
 import { RootOverlayHost } from "../components/layout/RootOverlay";
@@ -184,5 +186,50 @@ describe("RootOverlayHost", () => {
     await act(async () => listeners.get("root-mcp-changed")?.({ payload: { kind: "event", op: "delete", row } }));
     expect(useCalendarStore.getState().events).toHaveLength(0);
     uninstall();
+  });
+
+  it("merges a board card a root agent wrote, deletes it, and pushes no board-only move", async () => {
+    const announced: unknown[] = [];
+    const uninstall = setCalendarWriteHandler(async (event) => {
+      announced.push(event);
+    });
+    useCalendarStore.setState({
+      taskColumns: [{ id: "col-doing", name: "Doing", position: 0 }],
+    } as never);
+    render(<RootOverlayHost />);
+    const row = { id: "t1", calendar_id: "default", title: "Ship", priority: 0, percent: 0, column: "col-doing" };
+    await act(async () => listeners.get("root-mcp-changed")?.({ payload: { kind: "task", op: "upsert", row, local: false } }));
+    expect(useCalendarStore.getState().tasks.map((t) => t.id)).toEqual(["t1"]);
+    expect(announced).toHaveLength(1);
+
+    // A move's rank/column rows are Eldrun's own: merged, never announced.
+    await act(async () =>
+      listeners.get("root-mcp-changed")?.({ payload: { kind: "task", op: "upsert", row: { ...row, rank: 2048 }, local: true } }),
+    );
+    expect(useCalendarStore.getState().tasks[0].rank).toBe(2048);
+    expect(announced).toHaveLength(1);
+
+    await act(async () => listeners.get("root-mcp-changed")?.({ payload: { kind: "task", op: "delete", row, local: false } }));
+    expect(useCalendarStore.getState().tasks).toHaveLength(0);
+    expect(announced).toHaveLength(2);
+    uninstall();
+  });
+
+  it("shows the overlay a root agent asked for and steps out of its way", async () => {
+    render(<RootOverlayHost />);
+    const open = async (payload: unknown) => {
+      useRootOverlayStore.setState({ open: true });
+      await act(async () => listeners.get("root-mcp-open")?.({ payload }));
+      expect(useRootOverlayStore.getState().open).toBe(false);
+    };
+    await open({ overlay: "mail" });
+    expect(useMailStore.getState().overlayOpen).toBe(true);
+    await open({ overlay: "calendar" });
+    expect(useCalendarStore.getState().overlayOpen).toBe(true);
+    await open({ overlay: "todo", task_id: "t9" });
+    expect(useTodoStore.getState()).toMatchObject({ overlayOpen: true, focusTaskId: "t9" });
+    useMailStore.setState({ overlayOpen: false });
+    useCalendarStore.setState({ overlayOpen: false });
+    useTodoStore.getState().closeOverlay();
   });
 });

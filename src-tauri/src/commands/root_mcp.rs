@@ -24,6 +24,8 @@ use crate::storage;
 /// The window's cue that a root agent wrote a calendar row. Payload:
 /// `services::root_mcp::Change`.
 const CHANGED_EVENT: &str = "root-mcp-changed";
+/// The window's cue to show an overlay. Payload: `services::root_mcp::OverlayOpen`.
+const OPEN_EVENT: &str = "root-mcp-open";
 
 #[derive(Clone)]
 struct ServerState {
@@ -53,14 +55,22 @@ async fn handle(State(state): State<ServerState>, headers: HeaderMap, body: Stri
     let outcome = tokio::task::spawn_blocking(move || {
         let calendar = crate::commands::calendar::calendar_path();
         let projects = storage::state_dir().join("projects.json");
-        root_mcp::handle_message(&Stores { calendar: &calendar, projects: &projects }, &message)
+        let settings = storage::state_dir().join("settings.json");
+        root_mcp::handle_message(
+            &Stores { calendar: &calendar, projects: &projects, settings: &settings },
+            &message,
+        )
     })
     .await;
-    let Ok((reply, change)) = outcome else {
+    let Ok((reply, effects)) = outcome else {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
-    if let Some(change) = change {
+    // One event per row: a board move can reindex a whole column.
+    for change in effects.changes {
         let _ = state.app.emit(CHANGED_EVENT, change);
+    }
+    if let Some(open) = effects.open {
+        let _ = state.app.emit(OPEN_EVENT, open);
     }
     match reply {
         Some(reply) => Json(reply).into_response(),
