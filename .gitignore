@@ -10,6 +10,8 @@ __pycache__/
 dist/
 mobile-dist/
 build/
+# tsc's incremental build cache (npm run build writes it beside the config).
+tsconfig.tsbuildinfo
 .DS_Store
 *.log
 
