@@ -529,7 +529,18 @@ fn command_search_dirs(opts: &PtyOptions) -> Vec<PathBuf> {
     std::env::split_paths(&path).collect()
 }
 
-/// Probe the actual unprivileged sandbox operation once, rather than merely
+/// Cache successful probes only: installing/unblocking the tool must let the
+/// next tab start without restarting Eldrun. Serialize probes across callers.
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
+fn probe_until_available(cache: &Mutex<bool>, probe: impl FnOnce() -> bool) -> bool {
+    let mut available = cache.lock().unwrap_or_else(|e| e.into_inner());
+    if !*available {
+        *available = probe();
+    }
+    *available
+}
+
+/// Probe the actual unprivileged sandbox operation, rather than merely
 /// checking that a binary named `bwrap` exists. On macOS the probe is the
 /// equivalent `sandbox-exec` no-op profile (the tool ships with the OS, but a
 /// managed Mac can have it policy-blocked). The name is kept for the frontend's
@@ -541,8 +552,8 @@ pub fn bwrap_available() -> bool {
     }
     #[cfg(target_os = "macos")]
     {
-        static AVAILABLE: OnceLock<bool> = OnceLock::new();
-        *AVAILABLE.get_or_init(|| {
+        static AVAILABLE: Mutex<bool> = Mutex::new(false);
+        probe_until_available(&AVAILABLE, || {
             crate::paths::command_no_window("/usr/bin/sandbox-exec")
                 .args(["-p", "(version 1)(allow default)", "/usr/bin/true"])
                 .output()
@@ -552,8 +563,8 @@ pub fn bwrap_available() -> bool {
     }
     #[cfg(target_os = "linux")]
     {
-        static AVAILABLE: OnceLock<bool> = OnceLock::new();
-        *AVAILABLE.get_or_init(|| {
+        static AVAILABLE: Mutex<bool> = Mutex::new(false);
+        probe_until_available(&AVAILABLE, || {
             crate::paths::command_no_window("bwrap")
                 .args([
                     "--ro-bind",
@@ -690,6 +701,138 @@ fn agent_state_mounts(scope_id: &str, roots: &[PathBuf]) -> (Vec<BindMount>, Vec
     (mounts, symlinks)
 }
 
+/// Executable/instruction content must not be writable in the host's Codex
+/// home. Auth, session rollouts and the resume databases are deliberately not
+/// in this list. Linux substitutes writable copies; Seatbelt denies writes.
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
+const CODEX_PRIVATE_CONTENT: &[&str] = &["skills", "plugins", "shell_snapshots"];
+
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
+fn codex_content_paths(home: &Path) -> Vec<String> {
+    let paths = CODEX_PRIVATE_CONTENT.iter().flat_map(|name| {
+        let path = home.join(".codex").join(name);
+        let canonical = path.canonicalize().ok();
+        std::iter::once(path).chain(canonical)
+    });
+    dedupe_paths(paths).into_iter().map(|p| p.to_string_lossy().into_owned()).collect()
+}
+
+/// Copy into a fresh destination, never one already writable by an agent.
+/// Internal links are relocated within the copy (including directory cycles);
+/// external links are materialized so they cannot write back into host content.
+#[cfg(any(target_os = "linux", all(unix, test)))]
+fn copy_private_content(src: &Path, dst: &Path) -> std::io::Result<()> {
+    fn copy(src: &Path, dst: &Path, source_root: &Path, dest_root: &Path, ancestors: &mut Vec<PathBuf>) -> std::io::Result<()> {
+        let canonical = match src.canonicalize() {
+            Ok(path) => path,
+            // A dangling optional plugin link must not prevent agent startup.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound
+                && src.symlink_metadata()?.file_type().is_symlink() => return Ok(()),
+            Err(e) => return Err(e),
+        };
+        #[cfg(unix)]
+        if dst != dest_root && src.symlink_metadata()?.file_type().is_symlink() {
+            if let Ok(relative) = canonical.strip_prefix(source_root) {
+                let target = dest_root.join(relative);
+                let parent = dst.parent().unwrap();
+                let common = parent.components().zip(target.components()).take_while(|(a, b)| a == b).count();
+                let mut link = PathBuf::new();
+                for _ in parent.components().skip(common) {
+                    link.push("..");
+                }
+                link.extend(target.components().skip(common));
+                if link.as_os_str().is_empty() { link.push("."); }
+                return std::os::unix::fs::symlink(link, dst);
+            }
+        }
+        if ancestors.contains(&canonical) || ancestors.len() >= 64 {
+            return Err(std::io::Error::other("external cycle or excessive depth in Codex content"));
+        }
+        let metadata = std::fs::metadata(&canonical)?;
+        if metadata.is_dir() {
+            ancestors.push(canonical.clone());
+            std::fs::create_dir_all(dst)?;
+            for entry in std::fs::read_dir(&canonical)? {
+                let entry = entry?;
+                copy(&entry.path(), &dst.join(entry.file_name()), source_root, dest_root, ancestors)?;
+            }
+            ancestors.pop();
+        } else if metadata.is_file() {
+            std::fs::copy(&canonical, dst)?;
+        }
+        Ok(())
+    }
+    copy(src, dst, &src.canonicalize()?, dst, &mut Vec::new())
+}
+
+/// Fresh per-spawn shadows keep startup writes and plugin/skill updates local.
+/// Snapshots are regenerated by Codex; never copy another session's shell env.
+/// Staging is discarded by Eldrun's existing startup stage cleanup.
+#[cfg(any(target_os = "linux", all(unix, test)))]
+fn private_codex_content(home: &Path, stage: &Path) -> Result<(tempfile::TempDir, Vec<BindMount>), String> {
+    let shadow = tempfile::Builder::new().prefix("codex-content-").tempdir_in(stage)
+        .map_err(|e| format!("Agent fence: create Codex content shadows: {e}"))?;
+    let mut mounts = Vec::new();
+    for name in CODEX_PRIVATE_CONTENT {
+        let source = home.join(".codex").join(name);
+        let dest = shadow.path().join(name);
+        if *name != "shell_snapshots" && source.exists() {
+            copy_private_content(&source, &dest)
+                .map_err(|e| format!("Agent fence: copy Codex {name}: {e}"))?;
+        } else {
+            std::fs::create_dir_all(&dest)
+                .map_err(|e| format!("Agent fence: create Codex {name}: {e}"))?;
+        }
+        mounts.push(BindMount {
+            src: dest.to_string_lossy().into_owned(),
+            dst: source.to_string_lossy().into_owned(),
+            read_only: false,
+        });
+    }
+    Ok((shadow, mounts))
+}
+
+/// Both Cargo credential spellings, including an explicit CARGO_HOME and
+/// canonical aliases. Read-only toolchain mounts must not disclose tokens.
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
+fn cargo_credential_paths(home: &Path, cargo_home: Option<&Path>, cwd: &Path, allow_credentials: bool) -> Vec<String> {
+    if allow_credentials {
+        return Vec::new();
+    }
+    let mut homes = vec![home.join(".cargo")];
+    if let Some(path) = cargo_home {
+        homes.push(if path.is_absolute() { path.to_owned() } else { cwd.join(path) });
+    }
+    let mut paths = Vec::new();
+    for home in homes {
+        for name in ["credentials", "credentials.toml"] {
+            let path = home.join(name);
+            paths.push(path.clone());
+            if let Ok(canonical) = path.canonicalize() {
+                paths.push(canonical);
+            }
+        }
+    }
+    dedupe_paths(paths).into_iter().map(|p| p.to_string_lossy().into_owned()).collect()
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn hidden_cargo_credentials(opts: &PtyOptions) -> Vec<String> {
+    let cargo_home = opts.env.get("CARGO_HOME").map(PathBuf::from)
+        .or_else(|| std::env::var_os("CARGO_HOME").map(PathBuf::from));
+    cargo_credential_paths(&paths::home_dir(), cargo_home.as_deref(), Path::new(&opts.cwd),
+        settings().agent_fence_cargo_credentials.unwrap_or(false))
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn mask_cargo_credentials(args: &mut Vec<String>, hidden: Vec<String>) {
+    let separator = args.iter().position(|arg| arg == "--").unwrap();
+    let masks = hidden.into_iter()
+        .filter(|p| Path::new(p).is_file())
+        .flat_map(|path| ["--ro-bind".to_string(), "/dev/null".to_string(), path]);
+    args.splice(separator..separator, masks);
+}
+
 /// Pure bubblewrap argv builder.  Later mounts intentionally shadow earlier
 /// ones: the empty home hides secrets, selected state/config is restored, and
 /// project/box roots finally become read-write.  `symlinks` come last of the
@@ -789,11 +932,17 @@ pub fn wrap_pty_options_bwrap(
     opts: &mut PtyOptions,
     roots: &[PathBuf],
     scope_id: &str,
-) -> Result<(), String> {
+) -> Result<tempfile::TempDir, String> {
     if !bwrap_available() {
         return Err(fence_unavailable_message());
     }
     let (mut mounts, symlinks) = agent_state_mounts(scope_id, roots);
+    let protected = codex_content_paths(&paths::home_dir());
+    mounts.retain(|m| !protected.contains(&m.dst));
+    let (content_shadow, content_mounts) = private_codex_content(
+        &paths::home_dir(), &crate::services::sandbox::stage_dir(scope_id),
+    )?;
+    mounts.extend(content_mounts);
     let mut extra_ro = configured_read_only_paths();
     let search_dirs = command_search_dirs(opts);
     // The agent's own install, read-write so it can update itself. These go
@@ -823,6 +972,9 @@ pub fn wrap_pty_options_bwrap(
         &mounts,
         &symlinks,
     );
+    // Final masks follow every allowlist/project bind, so none re-exposes a
+    // token. Missing files need no mask (their parent is read-only/hidden).
+    mask_cargo_credentials(&mut args, hidden_cargo_credentials(opts));
     // Right after the home tmpfs, before any bind that could need to show
     // through it.
     let home = paths::home_dir_string();
@@ -840,7 +992,9 @@ pub fn wrap_pty_options_bwrap(
     opts.args = args;
     opts.env
         .insert("ELDRUN_AGENT_FENCE".to_string(), "1".to_string());
-    Ok(())
+    // The caller keeps the sources until tab teardown, or drops them on a
+    // failed spawn. No accumulation of plugin copies between closed tabs.
+    Ok(content_shadow)
 }
 
 /// Everything the macOS profile needs to know, resolved by
@@ -861,6 +1015,8 @@ pub(crate) struct SeatbeltInputs {
     /// Paths that must never be written even though a broader allow covers
     /// them: the agents' hook-registration files and the hook scripts.
     pub protected: Vec<String>,
+    /// Final read/write denials, after all broad toolchain/root grants.
+    pub hidden: Vec<String>,
 }
 
 /// Quote a path for the Seatbelt profile language: a Scheme string literal.
@@ -932,6 +1088,9 @@ pub(crate) fn sandbox_exec_profile(inputs: &SeatbeltInputs) -> String {
             sbpl_string(path)
         ));
     }
+    for path in &inputs.hidden {
+        p.push_str(&format!("(deny file-read* file-write* (subpath {}))\n", sbpl_string(path)));
+    }
     p
 }
 
@@ -968,6 +1127,7 @@ fn sandbox_exec_inputs(opts: &PtyOptions, roots: &[PathBuf], scope_id: &str) -> 
     }
     protected.push(state_dir.join("hooks").to_string_lossy().into_owned());
     protected.push(crate::services::agent_bin::bin_dir().to_string_lossy().into_owned());
+    protected.extend(codex_content_paths(&paths::home_dir()));
     // Claude's identity/onboarding file: readable and writable so a fenced tab
     // is not a fresh install (see `staged_claude_json_mounts` for why Linux
     // stages a filtered copy instead — Seatbelt cannot substitute a file).
@@ -1006,6 +1166,7 @@ fn sandbox_exec_inputs(opts: &PtyOptions, roots: &[PathBuf], scope_id: &str) -> 
         writable,
         readable,
         protected,
+        hidden: hidden_cargo_credentials(opts),
     }
 }
 
@@ -1199,24 +1360,33 @@ pub fn claude_config_staged(scope_id: Option<&str>, sandbox: bool, local_only: b
     )
 }
 
-fn fenced_tabs() -> &'static Mutex<HashMap<String, String>> {
-    static TABS: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+struct FencedTab {
+    scope_id: String,
+    // Dropped after transcript harvest at teardown.
+    _content_shadow: Option<tempfile::TempDir>,
+}
+
+fn fenced_tabs() -> &'static Mutex<HashMap<String, FencedTab>> {
+    static TABS: OnceLock<Mutex<HashMap<String, FencedTab>>> = OnceLock::new();
     TABS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-pub fn register_tab(tab_id: &str, scope_id: &str) {
+pub fn register_tab(tab_id: &str, scope_id: &str, content_shadow: Option<tempfile::TempDir>) {
     if let Some(old) = fenced_tabs()
         .lock()
         .unwrap()
-        .insert(tab_id.to_string(), scope_id.to_string())
+        .insert(tab_id.to_string(), FencedTab {
+            scope_id: scope_id.to_string(),
+            _content_shadow: content_shadow,
+        })
     {
-        crate::services::sandbox::harvest_project_transcripts(&old);
+        crate::services::sandbox::harvest_project_transcripts(&old.scope_id);
     }
 }
 
 pub fn on_tab_gone(tab_id: &str) {
-    if let Some(scope_id) = fenced_tabs().lock().unwrap().remove(tab_id) {
-        crate::services::sandbox::harvest_project_transcripts(&scope_id);
+    if let Some(tab) = fenced_tabs().lock().unwrap().remove(tab_id) {
+        crate::services::sandbox::harvest_project_transcripts(&tab.scope_id);
     }
 }
 
@@ -1225,6 +1395,137 @@ mod tests {
     use super::*;
     use crate::schema::boxes::ProjectBox;
     use serde_json::{json, Value};
+
+    #[test]
+    fn an_unavailable_tool_is_retried_and_success_is_cached() {
+        let cache = Mutex::new(false);
+        assert!(!probe_until_available(&cache, || false));
+        assert!(probe_until_available(&cache, || true));
+        assert!(probe_until_available(&cache, || panic!("successful probe must be cached")));
+    }
+
+    #[test]
+    fn cargo_tokens_are_masked_after_root_grants_and_opt_in_removes_masks() {
+        let home = tempfile::tempdir().unwrap();
+        let cargo = home.path().join(".cargo");
+        std::fs::create_dir(&cargo).unwrap();
+        for name in ["credentials", "credentials.toml"] {
+            std::fs::write(cargo.join(name), "fixture registry token").unwrap();
+        }
+        let hidden = cargo_credential_paths(home.path(), Some(Path::new("custom-cargo")), home.path(), false);
+        assert!(hidden.contains(&home.path().join("custom-cargo/credentials.toml").to_string_lossy().into_owned()));
+        let mut args = bwrap_args("/home/u", "/p", "codex", &[], &[home.path().to_owned()], &[], &[], &[]);
+        mask_cargo_credentials(&mut args, hidden.clone());
+        let grant = args.iter().position(|a| a == "--bind-try").unwrap();
+        for name in ["credentials", "credentials.toml"] {
+            let path = cargo.join(name).to_string_lossy().into_owned();
+            let mask = args.iter().position(|a| a == &path).unwrap();
+            assert!(mask > grant);
+            assert_eq!(&args[mask - 2..mask], &["--ro-bind", "/dev/null"]);
+            assert_eq!(std::fs::read_to_string(cargo.join(name)).unwrap(), "fixture registry token");
+        }
+        assert!(cargo_credential_paths(home.path(), Some(&cargo), home.path(), true).is_empty());
+        let profile = sandbox_exec_profile(&SeatbeltInputs {
+            home: home.path().to_string_lossy().into_owned(),
+            readable: vec![cargo.to_string_lossy().into_owned()],
+            hidden,
+            ..Default::default()
+        });
+        assert!(profile.rfind("(deny file-read* file-write*").unwrap() > profile.rfind("(allow file-read*").unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cargo_masks_include_symlink_targets() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir(home.path().join(".cargo")).unwrap();
+        let target = home.path().join("registry-secret");
+        std::fs::write(&target, "fixture").unwrap();
+        std::os::unix::fs::symlink(&target, home.path().join(".cargo/credentials.toml")).unwrap();
+        let paths = cargo_credential_paths(home.path(), None, home.path(), false);
+        assert!(paths.contains(&target.canonicalize().unwrap().to_string_lossy().into_owned()));
+    }
+
+    #[test]
+    fn seatbelt_protects_codex_content_after_broad_home_grants() {
+        let paths = codex_content_paths(Path::new("/Users/fixture"));
+        let profile = sandbox_exec_profile(&SeatbeltInputs {
+            home: "/Users/fixture".into(),
+            writable: vec!["/Users/fixture/.codex".into()],
+            protected: paths.clone(),
+            ..Default::default()
+        });
+        let grant = profile.find("(allow file-write* (subpath \"/Users/fixture/.codex\"))").unwrap();
+        for path in paths {
+            let deny = format!("(deny file-write* (subpath {}))", sbpl_string(&path));
+            assert!(profile.find(&deny).unwrap() > grant);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn codex_content_shadows_are_writable_without_changing_login_or_resume_mounts() {
+        let home = tempfile::tempdir().unwrap();
+        let stage = tempfile::tempdir().unwrap();
+        let codex = home.path().join(".codex");
+        for dir in ["skills/example", "plugins/example", "shell_snapshots", "sessions"] {
+            std::fs::create_dir_all(codex.join(dir)).unwrap();
+        }
+        for file in ["skills/example/SKILL.md", "plugins/example/tool.sh", "shell_snapshots/host.sh", "auth.json", "sessions/resume.jsonl"] {
+            std::fs::write(codex.join(file), "host fixture").unwrap();
+        }
+        let (shadow, mounts) = private_codex_content(home.path(), stage.path()).unwrap();
+        for file in ["skills/example/SKILL.md", "plugins/example/tool.sh"] {
+            std::fs::write(shadow.path().join(file), "tab change").unwrap();
+            assert_eq!(std::fs::read_to_string(codex.join(file)).unwrap(), "host fixture");
+        }
+        assert!(!shadow.path().join("shell_snapshots/host.sh").exists());
+        std::fs::write(shadow.path().join("shell_snapshots/tab.sh"), "tab snapshot").unwrap();
+        assert!(!codex.join("shell_snapshots/tab.sh").exists());
+        let (rw, _) = crate::services::sandbox::agent_home_mounts(
+            &home.path().to_string_lossy(), "/live/own", "/live", true,
+        );
+        for name in ["auth.json", "sessions"] {
+            let path = codex.join(name).to_string_lossy().into_owned();
+            assert!(rw.contains(&format!("{path}:{path}")));
+            assert!(!mounts.iter().any(|m| m.dst == path));
+        }
+        // Another new tab receives fresh host content, never a previous tab's edits.
+        let (next, _) = private_codex_content(home.path(), stage.path()).unwrap();
+        assert_eq!(std::fs::read_to_string(next.path().join("skills/example/SKILL.md")).unwrap(), "host fixture");
+        let path = shadow.path().to_owned();
+        drop(shadow);
+        assert!(!path.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn private_content_relocates_internal_links_and_materializes_external_links() {
+        let source = tempfile::tempdir().unwrap();
+        let dest = tempfile::tempdir().unwrap();
+        let script = source.path().join("tool.sh");
+        std::fs::write(&script, "host script").unwrap();
+        std::os::unix::fs::symlink(&script, source.path().join("linked.sh")).unwrap();
+        std::os::unix::fs::symlink(source.path(), source.path().join("loop")).unwrap();
+        let external = tempfile::tempdir().unwrap();
+        std::fs::write(external.path().join("external.sh"), "external script").unwrap();
+        std::os::unix::fs::symlink(external.path().join("external.sh"), source.path().join("external.sh")).unwrap();
+        std::os::unix::fs::symlink("missing-optional", source.path().join("dangling")).unwrap();
+        copy_private_content(source.path(), &dest.path().join("copy")).unwrap();
+        let copy = dest.path().join("copy/linked.sh");
+        assert!(copy.canonicalize().unwrap().starts_with(dest.path()));
+        assert!(dest.path().join("copy/loop").canonicalize().unwrap().starts_with(dest.path()));
+        std::fs::write(copy, "private edit").unwrap();
+        assert_eq!(std::fs::read_to_string(script).unwrap(), "host script");
+        let external_copy = dest.path().join("copy/external.sh");
+        assert!(!external_copy.symlink_metadata().unwrap().file_type().is_symlink());
+        std::fs::write(external_copy, "private external edit").unwrap();
+        assert_eq!(std::fs::read_to_string(external.path().join("external.sh")).unwrap(), "external script");
+        let alias = dest.path().join("source-link");
+        std::os::unix::fs::symlink(source.path(), &alias).unwrap();
+        copy_private_content(&alias, &dest.path().join("linked-root-copy")).unwrap();
+        assert!(dest.path().join("linked-root-copy/tool.sh").is_file());
+    }
 
     #[test]
     fn a_state_dir_outside_home_has_its_mail_store_hidden() {
@@ -1285,6 +1586,7 @@ mod tests {
                 "/Users/a/.claude/settings.json".into(),
                 "/Users/a/.local/share/eldrun/hooks".into(),
             ],
+            hidden: Vec::new(),
         };
         let profile = sandbox_exec_profile(&inputs);
         let lines: Vec<&str> = profile.lines().collect();

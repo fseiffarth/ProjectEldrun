@@ -476,12 +476,14 @@ export interface Settings {
    *  so the running session can be monitored/steered from the Claude app/web. Only
    *  Claude supports this flag; other agents ignore the setting. */
   agent_remote_control?: boolean;
-  /** Default-on filesystem fence for local agent tabs. Linux uses bubblewrap;
-   * remote-host and non-Linux tabs report that it is not enforced. */
+  /** Default-on filesystem fence: bubblewrap on Linux, Seatbelt on macOS.
+   * Remote-host and Windows tabs are not fenced. Applies on spawn. */
   agent_fence?: boolean;
   /** Extra host toolchain/config paths exposed read-only inside the fence.
    * Unset uses the backend defaults; an explicit empty list exposes none. */
   agent_fence_paths?: string[];
+  /** Opt-in access to Cargo registry credential files in exposed toolchains. */
+  agent_fence_cargo_credentials?: boolean;
   /** When true (the default), the usage recap opens by itself on the first launch
    *  of each day. Turning it off stops the popup, not the counting — the recap
    *  stays reachable from Settings. */

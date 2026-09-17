@@ -542,6 +542,10 @@ pub async fn pty_spawn(
     // tmux server on the host while the command *inside* its session is
     // fenced.  A missing/blocked fence tool fails closed.
     let mut fenced_registration: Option<(String, String)> = None;
+    #[cfg(target_os = "linux")]
+    let mut fenced_content_shadow = None;
+    #[cfg(not(target_os = "linux"))]
+    let fenced_content_shadow = None;
     if let Some(roots) = fence_roots.as_deref() {
         let decision = crate::services::agent_fence::decide(
             &opts,
@@ -560,7 +564,11 @@ pub async fn pty_spawn(
                     .clone()
                     .unwrap_or_else(|| "root".to_string());
                 #[cfg(target_os = "linux")]
-                crate::services::agent_fence::wrap_pty_options_bwrap(&mut opts, roots, &scope_id)?;
+                {
+                    fenced_content_shadow = Some(crate::services::agent_fence::wrap_pty_options_bwrap(
+                        &mut opts, roots, &scope_id,
+                    )?);
+                }
                 #[cfg(target_os = "macos")]
                 crate::services::agent_fence::wrap_pty_options_sandbox_exec(
                     &mut opts, roots, &scope_id,
@@ -609,7 +617,7 @@ pub async fn pty_spawn(
             claim.keep();
         }
         if let Some((tab_id, scope_id)) = fenced_registration {
-            crate::services::agent_fence::register_tab(&tab_id, &scope_id);
+            crate::services::agent_fence::register_tab(&tab_id, &scope_id, fenced_content_shadow);
         }
     }
     result

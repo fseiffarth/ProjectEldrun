@@ -21,6 +21,7 @@ describe("agent fence project-pill states", () => {
       "pill.agentFenceReasonBwrap",
     );
     expect(agentFenceReasonKey("enforced")).toBeNull();
+    expect(agentFenceReasonKey("sandbox-exec unavailable")).toBe("pill.agentFenceReasonSeatbelt");
   });
 });
 

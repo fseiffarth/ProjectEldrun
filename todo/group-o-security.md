@@ -636,3 +636,20 @@ intent. What is left is listed here.
       - [ ] ❌ Doesn't work
 
 ---
+
+157. **Agent fence compatibility-preserving hardening (implemented · untested live).**
+    Retry failed tool probes; label status as prospective spawn policy and fix
+    macOS/shared-state wording. Hide Cargo registry credential files by default
+    with an explicit Settings opt-in. Give Linux Codex tabs private writable
+    skills/plugins and fresh shell snapshots; macOS protects the shared content
+    read-only. Preserve shared login credentials, token refresh, session stores,
+    resume databases and native CLI updates.
+    - [x] Automated regression coverage: probe recovery, Cargo mask ordering and
+      opt-in, symlink aliases, independent writable content copies, unchanged
+      login/resume mount selection, and existing credential/database tests.
+    - [ ] Manual: after a deliberate backend restart, open multiple agent tabs
+      without logging in again; verify token refresh and resume after relaunch.
+    - [ ] Manual: skills/plugins load, shell tools run, native CLI updates work;
+      verify macOS startup and skill/plugin update behavior.
+    - [ ] Manual: install missing bubblewrap, then open a tab without restarting;
+      confirm Cargo publish credentials require the opt-in for a new tab.

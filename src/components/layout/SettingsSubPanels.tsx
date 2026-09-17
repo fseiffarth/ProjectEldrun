@@ -713,6 +713,15 @@ function AgentFenceCard() {
       </label>
       <p className="settings-help">{t("settings.agentFenceHelp")}</p>
       <p className="settings-help">{t("settings.agentFenceLimits")}</p>
+      <p className="settings-help">{t("settings.agentFenceSharedState")}</p>
+      <label className="settings-toggle-card-row">
+        <span>{t("settings.agentFenceCargoCredentials")} <UntestedTag /></span>
+        <Toggle
+          checked={settings?.agent_fence_cargo_credentials ?? false}
+          onChange={(e) => void updateSettings({ agent_fence_cargo_credentials: e.target.checked })}
+        />
+      </label>
+      <p className="settings-help">{t("settings.agentFenceCargoCredentialsHelp")}</p>
       <label className="settings-help" htmlFor="agent-fence-paths">
         {t("settings.agentFencePaths")}
       </label>

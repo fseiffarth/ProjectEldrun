@@ -329,6 +329,10 @@ pub struct Settings {
     /// [`DEFAULT_AGENT_FENCE_PATHS`]; an explicit empty list exposes none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_fence_paths: Option<Vec<String>>,
+    /// Permit reading Cargo registry credential files through exposed toolchain
+    /// paths. Default false; independent of agent login and resume credentials.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_fence_cargo_credentials: Option<bool>,
     /// Prefix chips offered by the side panel's per-tab agent composer, keyed by
     /// agent command (`claude`, `codex`, …). Each entry is one of that CLI's own
     /// slash commands, submitted ahead of the prompt. Unset falls back to the
@@ -986,6 +990,10 @@ mod tests {
     fn agent_fence_defaults_on_with_documented_paths_and_preserves_empty_override() {
         let defaults = Settings::default();
         assert!(defaults.agent_fence());
+        assert!(!defaults.agent_fence_cargo_credentials.unwrap_or(false));
+        let publishing: Settings = serde_json::from_str(r#"{"agent_fence_cargo_credentials":true}"#).unwrap();
+        assert_eq!(publishing.agent_fence_cargo_credentials, Some(true));
+        assert_eq!(serde_json::to_value(&publishing).unwrap()["agent_fence_cargo_credentials"], true);
         assert_eq!(
             defaults.agent_fence_paths(),
             super::DEFAULT_AGENT_FENCE_PATHS

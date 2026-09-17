@@ -1,6 +1,7 @@
 /** Pure frontend helpers for the agent-fence settings and project-pill states. */
 
 export interface AgentFenceStatus {
+  /** Prospective spawn policy, not an inspection of already-running tabs. */
   enforced: boolean;
   reason: string;
   roots: string[];
@@ -62,6 +63,7 @@ export type AgentFenceReasonKey =
   | "pill.agentFenceReasonContainer"
   | "pill.agentFenceReasonOff"
   | "pill.agentFenceReasonBwrap"
+  | "pill.agentFenceReasonSeatbelt"
   | "pill.agentFenceReasonUnknown";
 
 export function agentFenceReasonKey(reason: string): AgentFenceReasonKey | null {
@@ -73,6 +75,7 @@ export function agentFenceReasonKey(reason: string): AgentFenceReasonKey | null 
     container: "pill.agentFenceReasonContainer",
     off: "pill.agentFenceReasonOff",
     "bubblewrap unavailable": "pill.agentFenceReasonBwrap",
+    "sandbox-exec unavailable": "pill.agentFenceReasonSeatbelt",
     "unknown project or box": "pill.agentFenceReasonUnknown",
   };
   return keys[reason] ?? null;

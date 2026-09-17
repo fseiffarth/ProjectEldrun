@@ -153,6 +153,31 @@ who prefers Landlock for now can opt in through their own `~/.codex/config.toml`
 `[sandbox_workspace_write] exclude_slash_tmp = true`) and live with the
 warning until upstream removes the backend.
 
+The fence-tool probe caches success, but retries failure on the next request.
+Installing bubblewrap therefore allows the next tab to start without restarting
+Eldrun. The project menu reports the policy for **new spawns**, not an inspection
+of already-running tabs; existing tabs retain their original mounts/profile.
+
+Cargo toolchains remain readable, but `credentials` and `credentials.toml` under
+`~/.cargo` and an inherited or tab-specific `CARGO_HOME` are hidden by default.
+Linux masks existing files after all root/toolchain mounts; macOS adds final
+read/write denials, including canonical aliases. The global
+`agent_fence_cargo_credentials` opt-in restores the prior visibility through
+allowed paths when publishing needs registry tokens. It does not filter
+inherited environment variables or touch agent login credentials.
+
+Codex's `skills`, `plugins`, and `shell_snapshots` no longer expose writable host
+content to fenced tabs. Linux seeds fresh **per-tab writable copies** of skills
+and plugins, relocating internal links and copying external targets independently, and starts shell snapshots empty so Codex can regenerate them normally.
+These copies are temporary: changes are private to that tab. Shared `auth.json`,
+session rollouts, the durable per-scope databases, credential refresh, and native
+CLI self-updates retain their existing paths. macOS cannot redirect these
+folders and instead denies writes to the shared executable content; skill/plugin
+updates there need live verification. This does not turn the fence into project
+confidentiality: other Claude transcripts remain readable, Codex's rollout store
+remains shared, and readable host trees outside the hidden directories can still
+be visible.
+
 The boundary is filesystem-only: network access is shared. A nested bubblewrap
 cannot run under the outer boundary on Linux systems with the
 `bwrap-userns-restrict` AppArmor profile, so Claude Code's own bubblewrap sandbox
