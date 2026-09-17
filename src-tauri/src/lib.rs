@@ -1516,6 +1516,7 @@ pub fn run() {
             commands::mail::mail_flag,
             commands::mail::mail_mark_folder_read,
             commands::mail::mail_move,
+            commands::mail::mail_purge,
             // Priority marks (Important / Urgent). The only mail commands that
             // touch no network at all: the lists span every account, and no IMAP
             // folder can hold two accounts' mail, so the mark is a local column

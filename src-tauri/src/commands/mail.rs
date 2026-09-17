@@ -3014,6 +3014,41 @@ pub async fn mail_ai_classify_apply(
     Ok(report)
 }
 
+/// Resolve a batch of message ids to the one account and folder they all live
+/// in, plus their UIDs.
+///
+/// Shared by `mail_move` and `mail_purge` because both address the server as one
+/// selected mailbox and one UID set, and both would otherwise act on *unrelated*
+/// mail: a UID means something only inside its own mailbox, so ids from two
+/// folders are two sets of numbers pointing at whatever happens to carry them in
+/// whichever folder got selected. `verb` only words the refusal.
+fn resolve_uid_batch(
+    store: &MailStore,
+    ids: &[String],
+    verb: &str,
+) -> Result<(MailAccount, MailFolder, Vec<u32>), String> {
+    let first = store
+        .header(&ids[0])?
+        .ok_or_else(|| "message is not in the local index".to_string())?;
+    let folder = store
+        .folder(&first.folder_id)?
+        .ok_or_else(|| "the source folder is not in the local index".to_string())?;
+    let account = account_by_id(&accounts_path(), &first.account_id)?;
+    let mut uids = Vec::new();
+    for id in ids {
+        let h = store
+            .header(id)?
+            .ok_or_else(|| "message is not in the local index".to_string())?;
+        if h.account_id != first.account_id || h.folder_id != first.folder_id {
+            return Err(format!(
+                "messages from different folders cannot be {verb} in one step"
+            ));
+        }
+        uids.push(h.uid);
+    }
+    Ok((account, folder, uids))
+}
+
 #[tauri::command]
 pub async fn mail_move(
     message_ids: Vec<String>,
@@ -3027,39 +3062,20 @@ pub async fn mail_move(
     let rt2 = rt.clone();
     let ids = message_ids.clone();
     let dest = dest_folder_id.clone();
-    let (account, source_path, dest_path, uids, store) = tokio::task::spawn_blocking(move || {
-        let store = store_of(&rt2)?;
-        let first = store
-            .header(&ids[0])?
-            .ok_or_else(|| "message is not in the local index".to_string())?;
-        let source = store
-            .folder(&first.folder_id)?
-            .ok_or_else(|| "the source folder is not in the local index".to_string())?;
-        let target = store
-            .folder(&dest)?
-            .ok_or_else(|| "the destination folder is not in the local index".to_string())?;
-        // One IMAP `UID MOVE` runs against one selected folder, so every id has
-        // to live in the first one's account and folder. A UID only means
-        // something inside its own mailbox: mixing folders used to move whatever
-        // unrelated messages happened to carry those numbers in the first folder.
-        if target.account_id != first.account_id {
-            return Err("messages can only be moved within their own account".into());
-        }
-        let account = account_by_id(&accounts_path(), &first.account_id)?;
-        let mut uids = Vec::new();
-        for id in &ids {
-            let h = store
-                .header(id)?
-                .ok_or_else(|| "message is not in the local index".to_string())?;
-            if h.account_id != first.account_id || h.folder_id != first.folder_id {
-                return Err("messages from different folders cannot be moved in one step".into());
+    let (account, source_id, source_path, dest_path, uids, store) =
+        tokio::task::spawn_blocking(move || {
+            let store = store_of(&rt2)?;
+            let (account, source, uids) = resolve_uid_batch(&store, &ids, "moved")?;
+            let target = store
+                .folder(&dest)?
+                .ok_or_else(|| "the destination folder is not in the local index".to_string())?;
+            if target.account_id != account.id {
+                return Err("messages can only be moved within their own account".into());
             }
-            uids.push(h.uid);
-        }
-        Ok::<_, String>((account, source.path, target.path, uids, store))
-    })
-    .await
-    .map_err(|e| e.to_string())??;
+            Ok::<_, String>((account, source.id, source.path, target.path, uids, store))
+        })
+        .await
+        .map_err(|e| e.to_string())??;
 
     let Some(pw) = resolve_password(&rt, &account, MailProto::Imap) else {
         return Err(no_password_message());
@@ -3069,9 +3085,62 @@ pub async fn mail_move(
         .await
         .map_err(String::from)?;
 
-    tokio::task::spawn_blocking(move || store.move_messages(&message_ids, &dest_folder_id))
+    tokio::task::spawn_blocking(move || {
+        store.move_messages(&message_ids, &dest_folder_id)?;
+        // Both folders' counters, because the rail's unread badge is read from
+        // them: without this a mail moved out of the inbox — which is what a
+        // delete-to-Trash is — kept being counted there until the next sync.
+        store.refresh_counts(&source_id)?;
+        store.refresh_counts(&dest_folder_id)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Delete messages **off the server** — `\Deleted` + `UID EXPUNGE` — and then
+/// out of the local index.
+///
+/// The other half of deleting. A delete normally *moves* to the account's Trash
+/// (`mail_move`, recoverable, no new command needed); this is the path for the
+/// two cases where there is nowhere left to move to: emptying the Trash itself,
+/// and an account whose server offers no Trash folder at all. There is no undo,
+/// so the caller asks first — and the server is asked *before* the index, so a
+/// refused expunge leaves rows for mail that is still in the mailbox rather than
+/// the other way round.
+#[tauri::command]
+pub async fn mail_purge(
+    message_ids: Vec<String>,
+    state: State<'_, MailState>,
+) -> Result<u32, String> {
+    if message_ids.is_empty() {
+        return Ok(0);
+    }
+    let rt = state.inner().clone();
+    let rt2 = rt.clone();
+    let ids = message_ids.clone();
+    let (account, folder_id, folder_path, uids, store) = tokio::task::spawn_blocking(move || {
+        let store = store_of(&rt2)?;
+        let (account, folder, uids) = resolve_uid_batch(&store, &ids, "deleted")?;
+        Ok::<_, String>((account, folder.id, folder.path, uids, store))
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+
+    let Some(pw) = resolve_password(&rt, &account, MailProto::Imap) else {
+        return Err(no_password_message());
+    };
+    InProcessEngine
+        .purge_messages(&account, &pw, &folder_path, &uids)
         .await
-        .map_err(|e| e.to_string())?
+        .map_err(String::from)?;
+
+    tokio::task::spawn_blocking(move || {
+        let removed = store.delete_messages(&message_ids)?;
+        store.refresh_counts(&folder_id)?;
+        Ok::<_, String>(removed)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 // ── Commands: drafts and sending ────────────────────────────────────────────
@@ -3851,6 +3920,7 @@ mod tests {
             "mail_body",
             "mail_flag",
             "mail_move",
+            "mail_purge",
             "mail_draft_save",
             "mail_draft_send",
             "mail_attach_pick",

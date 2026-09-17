@@ -1838,6 +1838,40 @@ handle — it swallows the pointer before the card ever sees it. */
 .mail-row.selected {
   background: color-mix(in srgb, var(--accent) 20%, transparent);
 }
+/* Ticked for a bulk action — a weaker wash than the open message's, plus an
+   accent edge, because the two states are independent: the row being read is
+   usually also ticked, and one of the two marks has to survive the overlap. The
+   edge is inset rather than a border, which would move the row's text by a
+   pixel as it is picked. */
+.mail-row.checked {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.mail-row.selected.checked {
+  background: color-mix(in srgb, var(--accent) 24%, transparent);
+}
+/* "N messages selected" — only ever on screen while more than one row is
+   ticked, so it costs the list nothing in the ordinary case. */
+.mail-list-selection {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: color-mix(in srgb, var(--accent) 12%, var(--bg-panel));
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+.mail-selection-clear {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  font-size: 11px;
+  color: var(--accent);
+  cursor: var(--cur-pointer, pointer);
+  text-decoration: underline;
+}
 .mail-row.unread .mail-row-subject,
 .mail-row.unread .mail-row-from {
   font-weight: 700;

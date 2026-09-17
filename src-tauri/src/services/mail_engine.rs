@@ -236,6 +236,12 @@ const SMTP_TIMEOUT: Duration = Duration::from_secs(300);
 /// trip is nothing next to a command a server answers with `BAD`.
 const MAX_UID_SET_CHARS: usize = 1000;
 
+/// Why a permanent delete was refused. Named rather than inlined so the one
+/// sentence the user reads is in the same place as the rule it describes —
+/// `MailEngine::purge_messages` carries the reasoning.
+pub const NO_UIDPLUS: &str = "this server does not support deleting a single message permanently \
+                              (no UIDPLUS); move the message to Trash instead";
+
 /// Split a sorted-ish UID list into IMAP UID sets no longer than `max_chars`,
 /// collapsing runs into `a:b` ranges.
 ///
@@ -987,6 +993,25 @@ pub trait MailEngine: Send + Sync {
         folder_path: &str,
         uids: &[u32],
         dest_path: &str,
+    ) -> Result<(), MailError>;
+    /// Delete messages off the server: `\Deleted`, then `UID EXPUNGE`.
+    ///
+    /// The *irreversible* half of deleting, reached only where a move to Trash
+    /// is not available — emptying the Trash itself, or an account with no Trash
+    /// folder at all. Everything else deletes by moving, which is recoverable.
+    ///
+    /// **UIDPLUS or nothing.** A plain `EXPUNGE` removes every message in the
+    /// mailbox carrying `\Deleted`, including ones another client flagged and has
+    /// not expunged yet — so on a server without RFC 4315 this refuses rather
+    /// than deleting mail nobody in this window asked about. RFC 4315 is
+    /// twenty years old and near-universal; a refusal names the reason, and a
+    /// move to Trash still works there.
+    async fn purge_messages(
+        &self,
+        account: &MailAccount,
+        password: &Password,
+        folder_path: &str,
+        uids: &[u32],
     ) -> Result<(), MailError>;
     async fn send(
         &self,
@@ -1745,6 +1770,68 @@ impl MailEngine for InProcessEngine {
                     .await
                     .map_err(|_| MailError::Timeout { op: "IMAP MOVE" })?
                     .map_err(classify_imap_error)?;
+            }
+            Ok(())
+        }
+        .await;
+        session.finish(out)
+    }
+
+    async fn purge_messages(
+        &self,
+        account: &MailAccount,
+        password: &Password,
+        folder_path: &str,
+        uids: &[u32],
+    ) -> Result<(), MailError> {
+        vpn_gate(account)?;
+        if uids.is_empty() {
+            return Ok(());
+        }
+        let mut session = acquire(&account.imap, password, Acquire::Pooled).await?;
+        let out: Result<(), MailError> = async {
+            // Asked **before** anything is flagged: a `\Deleted` set on a server
+            // that cannot then expunge by UID is not a no-op — it hides the
+            // message in most clients and hands the next plain EXPUNGE from
+            // anywhere a mail the user never agreed to lose.
+            let capabilities = tokio::time::timeout(COMMAND_TIMEOUT, session.capabilities())
+                .await
+                .map_err(|_| MailError::Timeout { op: "IMAP CAPABILITY" })?
+                .map_err(classify_imap_error)?;
+            if !capabilities.has_str("UIDPLUS") {
+                return Err(MailError::Protocol(NO_UIDPLUS.into()));
+            }
+            session.ensure_selected(folder_path).await?;
+            // Chunked for `move_messages`' reason, and flag-then-expunge per
+            // chunk rather than flagging everything first: the two commands
+            // address the same UID set, so a chunk that fails leaves the
+            // messages after it untouched instead of flagged-but-present.
+            for chunk in uid_set_chunks(uids, MAX_UID_SET_CHARS) {
+                {
+                    let deadline = tokio::time::Instant::now() + COMMAND_TIMEOUT;
+                    let mut stream = tokio::time::timeout_at(
+                        deadline,
+                        session.uid_store(chunk.clone(), "+FLAGS (\\Deleted)"),
+                    )
+                    .await
+                    .map_err(|_| MailError::Timeout { op: "IMAP STORE" })?
+                    .map_err(classify_imap_error)?;
+                    while next_before(&mut stream, deadline, "IMAP STORE").await?.is_some() {}
+                }
+                let deadline = tokio::time::Instant::now() + COMMAND_TIMEOUT;
+                // Boxed because the expunge stream is not `Unpin` (its parser
+                // holds a future, unlike STORE's), and `next_before` polls a
+                // stream it borrows.
+                let mut stream = Box::pin(
+                    tokio::time::timeout_at(deadline, session.uid_expunge(chunk))
+                        .await
+                        .map_err(|_| MailError::Timeout { op: "IMAP UID EXPUNGE" })?
+                        .map_err(classify_imap_error)?,
+                );
+                while next_before(&mut stream, deadline, "IMAP UID EXPUNGE")
+                    .await?
+                    .is_some()
+                {}
             }
             Ok(())
         }

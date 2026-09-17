@@ -4610,6 +4610,17 @@ export const en = {
   "mail.markedUrgent": "Filed under Urgent",
   "mail.priorityIsLocal": "Stays in its folder — the list is kept on this computer only.",
   "mail.messageGone": "That message is no longer in the local index.",
+  // Mail — selecting several rows, and deleting.
+  "mail.selectedCount": "{count} messages selected",
+  "mail.clearSelection": "Clear the selection",
+  "mail.selectHint": "Ctrl-click to pick more, Shift-click for a range",
+  "mail.moveToTrash": "Move to Trash",
+  "mail.deleteForever": "Delete permanently",
+  "mail.deleteGoesToTrash": "Moved to this account's Trash folder, on the server — recoverable from there.",
+  "mail.deleteIsForever": "Removed from the server. There is no Trash folder to fall back on, so this cannot be undone.",
+  "mail.confirmDeleteForever": "Delete {count} messages from the server for good?\n\nThere is no Trash folder to move them to, so this cannot be undone.",
+  "mail.deleteMixed": "Delete {count} messages",
+  "mail.deleteMixedNote": "Some go to Trash; {count} have no Trash folder and are deleted for good.",
   "mail.zoneAllAccounts": "All accounts",
   "mail.zoneThisAccount": "Per account",
   // Mail — keyword filters (words that file arriving mail into Important/Urgent).

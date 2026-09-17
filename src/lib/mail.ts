@@ -219,6 +219,68 @@ export function mailMove(messageIds: string[], destFolderId: string): Promise<vo
   return invoke("mail_move", { messageIds, destFolderId });
 }
 
+/**
+ * Delete messages **off the server** — `\Deleted` + `UID EXPUNGE` — and out of
+ * the local index. Resolves with how many rows the index lost.
+ *
+ * The irreversible half of deleting, and deliberately not the *whole* of it:
+ * ordinary deleting moves to the account's Trash (`mailMove`, which the server
+ * can undo for the user), and this is the path only where there is nowhere left
+ * to move to — the Trash folder itself, or an account whose server offers none.
+ * `planMailDelete` is what decides which of the two a given set of rows needs.
+ */
+export function mailPurge(messageIds: string[]): Promise<number> {
+  return invoke<number>("mail_purge", { messageIds });
+}
+
+/** One folder's worth of a delete: the rows, and where they are going. */
+export interface MailDeleteGroup {
+  accountId: string;
+  folderId: string;
+  messageIds: string[];
+  /** The Trash folder to move into, or `null` when the delete is permanent. */
+  trashFolderId: string | null;
+}
+
+/**
+ * Work out how a set of rows has to be deleted — pure, so the confirmation the
+ * user reads and the commands that run are computed from one function rather
+ * than two that can disagree about which mail is about to be destroyed.
+ *
+ * Grouped **per folder**, because that is what the server takes: `mail_move` and
+ * `mail_purge` both select one mailbox and address one UID set, and a UID means
+ * nothing outside its own folder. A cross-account Important list is exactly the
+ * case that makes this more than bookkeeping — one delete there can be four
+ * groups across two accounts, two of them permanent.
+ *
+ * A message already *in* its account's Trash has nowhere left to go and is
+ * deleted for good; so is one whose account has no Trash folder at all.
+ * Everything else moves — including mail in Junk, which is a classification and
+ * not a deletion, so emptying the spam folder stays as recoverable as any other
+ * delete.
+ */
+export function planMailDelete(
+  headers: { id: string; account_id: string; folder_id: string }[],
+  foldersByAccount: Record<string, MailFolder[] | undefined>,
+): MailDeleteGroup[] {
+  const groups = new Map<string, MailDeleteGroup>();
+  for (const h of headers) {
+    const folders = foldersByAccount[h.account_id] ?? [];
+    const trash = folders.find((f) => f.kind === "trash");
+    // An unknown Trash folder, or a row already in it: nowhere left to move to.
+    const trashFolderId = trash && trash.id !== h.folder_id ? trash.id : null;
+    const group = groups.get(h.folder_id) ?? {
+      accountId: h.account_id,
+      folderId: h.folder_id,
+      messageIds: [],
+      trashFolderId,
+    };
+    group.messageIds.push(h.id);
+    groups.set(h.folder_id, group);
+  }
+  return [...groups.values()];
+}
+
 // ── Priority marks (Important / Urgent) ──────────────────────────────────────
 //
 // The only four wrappers here that reach no network in either direction, and

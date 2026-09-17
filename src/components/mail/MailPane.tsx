@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
 import { MAIL_PAGE_SIZE, unreadTotal, useMailStore } from "../../stores/mail";
 import { useSettingsStore } from "../../stores/settings";
-import { onMailSync, mailAiAllowed } from "../../lib/mail";
+import { onMailSync, mailAiAllowed, planMailDelete } from "../../lib/mail";
 import { useT } from "../../lib/i18n";
 import { Toggle } from "../common/Toggle";
 import { UntestedTag } from "../common/UntestedTag";
+import { useDialogs } from "../common/PromptDialogs";
 import type { MailAccount, MailHeader, MailPriority, MailSort } from "../../types/mail";
-import { MailList } from "./MailList";
+import { MailList, type MailCheckMode } from "./MailList";
 import { MailMessageView } from "./MailMessageView";
 import { MailAccountDialog } from "./MailAccountDialog";
 import { MailComposeDialog, type ComposeMode } from "./MailComposeDialog";
@@ -47,6 +48,10 @@ export interface MailPaneProps {
 
 export function MailPane({ visible }: MailPaneProps) {
   const t = useT();
+  // The app's own confirm, not `window.confirm`: WebKitGTK draws that as an
+  // origin-titled browser alert, and the one question here worth asking is the
+  // irreversible delete — the last place to show a system box.
+  const { confirmAction, dialogs } = useDialogs();
   const settings = useSettingsStore((s) => s.settings);
   const updateSettings = useSettingsStore((s) => s.updateSettings);
 
@@ -58,6 +63,7 @@ export function MailPane({ visible }: MailPaneProps) {
   const selectedPriority = useMailStore((s) => s.selectedPriority);
   const priorityCounts = useMailStore((s) => s.priorityCounts);
   const selectedMessageId = useMailStore((s) => s.selectedMessageId);
+  const checkedIds = useMailStore((s) => s.checkedIds);
   const headers = useMailStore((s) => s.headers);
   const headerTotal = useMailStore((s) => s.headerTotal);
   const headerScanned = useMailStore((s) => s.headerScanned);
@@ -184,6 +190,79 @@ export function MailPane({ visible }: MailPaneProps) {
     (id: string) => void useMailStore.getState().selectMessage(id),
     [],
   );
+  const checkRow = useCallback((h: MailHeader, mode: MailCheckMode, order: string[]) => {
+    const store = useMailStore.getState();
+    if (mode === "toggle") store.toggleChecked(h.id);
+    else if (mode === "range") store.checkRange(h.id, order);
+    else store.checkOnly(h.id);
+  }, []);
+  const clearChecks = useCallback(() => useMailStore.getState().clearChecked(), []);
+  // Read (locally) the folders of every account these rows come from. A folder
+  // list is what tells a delete where to go, and in a cross-account priority
+  // list only the *selected* account's has been read — so without this the plan
+  // would call another account's mail unrecoverable.
+  const ensureFoldersFor = useCallback(async (rows: MailHeader[]) => {
+    for (const accountId of new Set(rows.map((h) => h.account_id))) {
+      if (!useMailStore.getState().foldersByAccount[accountId]) {
+        await useMailStore.getState().loadFolders(accountId, false);
+      }
+    }
+  }, []);
+  // How a delete of these rows would split. The list needs it to word its menu;
+  // the store recomputes it from the same function when the delete runs, rather
+  // than being handed this answer — one pure function, two callers, so the
+  // sentence the user reads and the commands that go out cannot disagree.
+  const deletePlan = useCallback((rows: MailHeader[]) => {
+    const folders = useMailStore.getState().foldersByAccount;
+    let trashed = 0;
+    let purged = 0;
+    for (const group of planMailDelete(rows, folders)) {
+      if (group.trashFolderId) trashed += group.messageIds.length;
+      else purged += group.messageIds.length;
+    }
+    return { trashed, purged };
+  }, []);
+  // The confirmation is here and not in the store, because only the permanent
+  // half needs one: a move to Trash is undone on the server by dragging the
+  // message back, so asking about it would make the answer meaningless on the
+  // one delete that actually destroys something.
+  const deleteRows = useCallback(
+    (rows: MailHeader[]) => {
+      if (rows.length === 0) return;
+      const run = async () => {
+        // Every account's folders in hand before the question: a cross-account list can hold
+        // rows from an account whose folders were never read, and the plan would
+        // then find no Trash folder and ask about a permanent delete that is in
+        // fact a move. A local read, so it costs no socket.
+        await ensureFoldersFor(rows);
+        const purged = planMailDelete(rows, useMailStore.getState().foldersByAccount)
+          .filter((g) => !g.trashFolderId)
+          .reduce((n, g) => n + g.messageIds.length, 0);
+        if (
+          purged > 0 &&
+          !(await confirmAction({
+            title: t("mail.deleteForever"),
+            body: t("mail.confirmDeleteForever", { count: purged }),
+            confirmLabel: t("mail.deleteForever"),
+            danger: true,
+          }))
+        ) {
+          return;
+        }
+        await useMailStore.getState().deleteMessages(rows.map((h) => h.id));
+      };
+      void run();
+    },
+    [confirmAction, ensureFoldersFor, t],
+  );
+  // The same read, ahead of any click, so the *menu's* wording is right too —
+  // it is drawn synchronously and cannot await anything. Only ever fires for an
+  // account whose folders have never been read (a cross-account priority list),
+  // and each read is local.
+  useEffect(() => {
+    if (visible === false) return;
+    void ensureFoldersFor(headers);
+  }, [visible, headers, foldersByAccount, ensureFoldersFor]);
   const setSort = useCallback(
     (next: MailSort, desc: boolean) => void useMailStore.getState().setSort(next, desc),
     [],
@@ -618,8 +697,13 @@ export function MailPane({ visible }: MailPaneProps) {
             <MailList
               headers={headers}
               selectedId={selectedMessageId}
+              checkedIds={checkedIds}
               loading={loadingHeaders}
               onSelect={selectMessage}
+              onCheck={checkRow}
+              onClearChecks={clearChecks}
+              onDelete={deleteRows}
+              deletePlan={deletePlan}
               onToggleFlag={toggleFlag}
               onToggleSeen={toggleSeen}
               onSetPriority={setPriority}
@@ -711,6 +795,7 @@ export function MailPane({ visible }: MailPaneProps) {
           onClose={() => setCompose(null)}
         />
       )}
+      {dialogs}
     </div>
   );
 }

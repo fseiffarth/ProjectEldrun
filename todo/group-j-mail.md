@@ -697,3 +697,46 @@ no-MDC OpenPGP refused — is deliberately not re-listed here.*
       `Zeroizing`; decrypt depth capped. **Not done:** an app ACL manifest,
       revocation checking, VPN route verification, macOS fence equivalent,
       and `mail-send`'s owned credential copy.
+
+859. **Deleting mail, and picking several messages at once** (user, 2026-09-17).
+    ✅ Implemented · 🧪 Awaiting live QA. The header list had no delete at all
+    and no way to act on more than one message, and its right-click *opened* the
+    row it was invoked on — which marks it read and fetches its body for someone
+    who was only reaching for a menu.
+    - Right-click no longer opens a message: it **ticks** the row instead, which
+      keeps the old guarantee (the menu cannot act on mail other than the one it
+      names) without the side effects. A row already in the selection is left
+      alone, so a right-click inside a set of ten does not throw nine away.
+    - Ctrl-click adds a row, Shift-click takes a range, and every menu action —
+      both priority marks, the unmark, and the delete — applies to the whole set;
+      the menu's caption names the count in place of a subject. The ticks live in
+      `stores/mail`'s `checkedIds` and are cleared by `loadPage`, since a folder
+      change, a re-sort, a search keystroke or a pager step leave ids naming mail
+      that is off screen.
+    - **Delete is a move to Trash wherever there is one** (`mail_move`,
+      recoverable on the server) and only otherwise permanent. `planMailDelete`
+      (`src/lib/mail.ts`, pure) groups the rows per folder — one command selects
+      one mailbox, and a cross-account priority list can be four groups across
+      two accounts — and both the confirmation and the commands are computed from
+      it, so the sentence the user reads and the delete that runs cannot
+      disagree. The permanent half is confirmed (`useDialogs`, danger zone in the
+      menu) and names how many messages it covers; Junk still moves to Trash,
+      spam being a classification rather than a delete.
+    - The permanent path is the new `mail_purge` command: `\Deleted` +
+      **`UID EXPUNGE`**, and **UIDPLUS or a refusal** — a plain `EXPUNGE` removes
+      every `\Deleted` message in the mailbox, including ones another client
+      flagged and has not expunged, so a server without RFC 4315 is told to move
+      the mail to Trash instead. The server is asked before the index, so a
+      refused expunge leaves rows for mail that is still in the mailbox rather
+      than the other way round.
+    - `mail_move` now refreshes both folders' counters as well: a mail moved out
+      of the inbox — which a delete-to-Trash is — was still counted there by the
+      rail's unread badge until the next sync.
+    - [x] 🤖 Automated tests — `MailDelete.test.ts` (the plan, the ticks,
+      `deleteMessages`' grouping), `MailListSelect.test.tsx` (right-click opens
+      nothing, modified clicks, the menu's wording and target),
+      `mail_store::deleting_a_message_takes_its_row_body_and_attachments`.
+    - **Live QA:** delete from the inbox → the message is in the server's Trash
+      and off the rail's unread count; delete *in* Trash → the red-fenced
+      confirm, then gone from the server; Ctrl/Shift-click a few rows → one
+      delete moves all of them; right-click an unread row → it stays unread.

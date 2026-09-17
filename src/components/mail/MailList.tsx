@@ -25,19 +25,66 @@ import type { MailHeader, MailPriority, MailSort } from "../../types/mail";
  * marked, because the backend refused to silently pick one of the values and the
  * UI must not undo that by showing the first.
  *
- * **Right-click files a message into Important or Urgent.** The menu is the only
- * way in, deliberately: marking is not a per-row button because there are two
- * marks plus an unmark, and three glyphs on every row would cost more attention
- * than the feature is worth on the rows nobody is filing. The menu is portaled to
- * `<body>` and positioned at the cursor — the pattern `ProjectFilesView`'s type-tag
- * menu uses — because this list scrolls and clips, and an in-flow menu on the last
- * visible row would open inside the overflow.
+ * **Right-click files a message into Important or Urgent, or deletes it.** The
+ * menu is the only way in, deliberately: marking is not a per-row button because
+ * there are two marks plus an unmark, and three glyphs on every row would cost
+ * more attention than the feature is worth on the rows nobody is filing. The menu
+ * is portaled to `<body>` and positioned at the cursor — the pattern
+ * `ProjectFilesView`'s type-tag menu uses — because this list scrolls and clips,
+ * and an in-flow menu on the last visible row would open inside the overflow.
+ *
+ * **Right-clicking does not open the message.** It used to, so that the menu and
+ * the message pane could not disagree about which mail was about to be filed —
+ * but opening a message marks it read, downloads its body and (for the row the
+ * user was only reaching for a menu on) undoes the one thing the unread pile is
+ * for. The menu names what it will act on instead, and the right-clicked row is
+ * *ticked* rather than opened, which is the same guarantee without the side
+ * effects.
+ *
+ * **Several rows can be picked at once** — Ctrl-click to add one, Shift-click for
+ * a range — and every menu action then applies to the whole set. The ticks are
+ * the store's (`checkedIds`), not this component's, because the actions and the
+ * confirmation that precedes a permanent delete live outside the list; what is
+ * kept here is the *order* the rows are in, since only the rendered list knows
+ * what a range covers.
  */
+/** How a click adds to the tick marks — see `MailListProps.onCheck`. */
+export type MailCheckMode = "only" | "toggle" | "range";
+
 export interface MailListProps {
   headers: MailHeader[];
   selectedId: string | null;
+  /** The rows ticked for a bulk action (`stores/mail`'s `checkedIds`). */
+  checkedIds: string[];
   loading: boolean;
   onSelect: (id: string) => void;
+  /**
+   * A row was picked for the bulk selection. `only` replaces the set (a plain
+   * click, and a right-click on a row outside it), `toggle` adds or removes one
+   * (Ctrl-click), `range` stretches from the anchor (Shift-click).
+   *
+   * `order` is the ids of the rows as rendered, which is what makes a range
+   * meaningful: the store holds no order of its own — the backend does the
+   * sorting — so the only honest answer to "everything between these two" comes
+   * from the list that drew them.
+   */
+  onCheck: (header: MailHeader, mode: MailCheckMode, order: string[]) => void;
+  onClearChecks: () => void;
+  /**
+   * Delete these messages. The list neither confirms nor decides where they go:
+   * a delete is a move to Trash for some rows and permanent for others
+   * (`planMailDelete`), and the sentence the user has to read before the
+   * irreversible half belongs with the code that knows which is which.
+   */
+  onDelete: (headers: MailHeader[]) => void;
+  /**
+   * How a delete of these rows would split: how many move to a Trash folder and
+   * how many leave the server for good. Only the caller can answer it — it needs
+   * every account's folder list — and the menu needs the answer to *word* the
+   * action, since "Move to Trash" and "Delete permanently" are not the same
+   * promise and one right-click can cover both.
+   */
+  deletePlan: (headers: MailHeader[]) => { trashed: number; purged: number };
   onToggleFlag: (header: MailHeader) => void;
   /** Read ⇄ unread for one message. Opening a message already marks it read, so
    *  in practice this is the *un*-read direction: the way to put something back
@@ -80,18 +127,31 @@ export interface MailListProps {
   onPage: (offset: number) => void;
 }
 
-/** Where the context menu is, and which message it is about. */
+/** Where the context menu is, and which messages it is about. */
 interface RowMenu {
   x: number;
   y: number;
+  /** The row it was opened on — what the menu is *labelled* by. */
   header: MailHeader;
+  /**
+   * Every row it acts on: the whole ticked set when the right-clicked row was
+   * part of it, otherwise just that row. Frozen at open time on purpose — the
+   * menu must act on the set the label described, not on whatever the ticks
+   * became while it was open.
+   */
+  targets: MailHeader[];
 }
 
 function MailListImpl({
   headers,
   selectedId,
+  checkedIds,
   loading,
   onSelect,
+  onCheck,
+  onClearChecks,
+  onDelete,
+  deletePlan,
   onToggleFlag,
   onToggleSeen,
   onSetPriority,
@@ -110,10 +170,20 @@ function MailListImpl({
   const use24h = useUse24h();
   const hasPaging = total > pageSize;
   const [menu, setMenu] = useState<RowMenu | null>(null);
+  const checked = new Set(checkedIds);
+  const order = headers.map((h) => h.id);
+  /** How many of the ticked rows are on this page — the only ones an action can
+   *  reach, and `loadPage` clears the set precisely so the two agree. */
+  const checkedHere = headers.filter((h) => checked.has(h.id));
+
+  /** The rows an action invoked on `header` is about: the ticked set when it is
+   *  one of them, otherwise that row alone. */
+  const targetsFor = (header: MailHeader) =>
+    checked.has(header.id) && checkedHere.length > 1 ? checkedHere : [header];
 
   const file = (priority: MailPriority | null) => {
     if (!menu) return;
-    onSetPriority(menu.header, priority);
+    for (const header of menu.targets) onSetPriority(header, priority);
     setMenu(null);
   };
 
@@ -200,29 +270,76 @@ function MailListImpl({
       {!loading && headers.length === 0 && (
         <div className="mail-empty">{t("mail.noMessages")}</div>
       )}
+      {/* Only once more than one row is ticked: a single tick is what an
+          ordinary click already leaves behind, and a strip appearing on every
+          click would push the list down on each one. It says the count rather
+          than naming anything, because that is the number the menu's actions
+          are about. */}
+      {checkedHere.length > 1 && (
+        <div className="mail-list-selection">
+          <span>
+            {t("mail.selectedCount", { count: checkedHere.length })}
+            {/* The gesture's one visible surface, so the pill goes here rather
+                than on every row. */}
+            <UntestedTag />
+          </span>
+          <button type="button" className="mail-selection-clear" onClick={onClearChecks}>
+            {t("mail.clearSelection")}
+          </button>
+        </div>
+      )}
       <div className="mail-list-rows">
         {headers.map((h) => (
           <div
             key={h.id}
-            className={`mail-row${h.id === selectedId ? " selected" : ""}${h.seen ? "" : " unread"}`}
+            className={`mail-row${h.id === selectedId ? " selected" : ""}${
+              checked.has(h.id) ? " checked" : ""
+            }${h.seen ? "" : " unread"}`}
             role="button"
             tabIndex={0}
-            onClick={() => onSelect(h.id)}
+            title={t("mail.selectHint")}
+            onClick={(e) => {
+              // A modified click picks rows and deliberately opens nothing:
+              // building a selection of ten messages must not fetch ten bodies
+              // and mark ten of them read on the way. `preventDefault` because
+              // Shift-click is also the browser's own text-range gesture.
+              if (e.shiftKey) {
+                e.preventDefault();
+                onCheck(h, "range", order);
+                return;
+              }
+              if (e.ctrlKey || e.metaKey) {
+                e.preventDefault();
+                onCheck(h, "toggle", order);
+                return;
+              }
+              // A plain click is both: open this message, and make it the whole
+              // selection — so the ticks never survive as an invisible set that
+              // the next right-click would act on.
+              onCheck(h, "only", order);
+              onSelect(h.id);
+            }}
             onKeyDown={(e) => {
               if (e.key === "Enter" || e.key === " ") {
                 e.preventDefault();
+                onCheck(h, "only", order);
                 onSelect(h.id);
+                return;
+              }
+              if (e.key === "Delete") {
+                e.preventDefault();
+                onDelete(targetsFor(h));
               }
             }}
             onContextMenu={(e) => {
               e.preventDefault();
               e.stopPropagation();
-              // Select as well as open the menu. Right-clicking a row you are
-              // not looking at and having the menu act on it while the message
-              // pane still shows the previous one is how the wrong mail gets
-              // filed; the menu names the subject for the same reason.
-              onSelect(h.id);
-              setMenu({ x: e.clientX, y: e.clientY, header: h });
+              // Tick the row rather than open it (see the module header), and
+              // only when it is not already part of the selection — otherwise a
+              // right-click inside a set of ten would throw nine of them away
+              // and act on the one under the cursor.
+              if (!checked.has(h.id)) onCheck(h, "only", order);
+              setMenu({ x: e.clientX, y: e.clientY, header: h, targets: targetsFor(h) });
             }}
           >
             <div className="mail-row-top">
@@ -351,15 +468,21 @@ function MailListImpl({
                     subject is printed — a menu label is as attacker-reachable as
                     a row is. */}
                 <div className="context-menu-group-label mail-menu-subject">
-                  {stripFormatControls(menu.header.subject) || t("mail.noSubject")}
+                  {menu.targets.length > 1
+                    ? t("mail.selectedCount", { count: menu.targets.length })
+                    : stripFormatControls(menu.header.subject) || t("mail.noSubject")}
                 </div>
                 {/* Both marks are always offered, including the one the message
                     already carries — as a *disabled* row rather than a hidden
                     one, so the menu's shape does not shift under the cursor and
                     the current state is legible from the menu itself. */}
+                {/* `every`/`some` over the targets rather than the row under the
+                    cursor: with ten rows ticked, "already Important" is only
+                    true — and the row only useless — when it holds for all of
+                    them. */}
                 <button
                   className="untested"
-                  disabled={menu.header.priority === "important"}
+                  disabled={menu.targets.every((h) => h.priority === "important")}
                   onClick={() => file("important")}
                 >
                   {t("mail.moveToImportant")}
@@ -367,13 +490,13 @@ function MailListImpl({
                 </button>
                 <button
                   className="untested"
-                  disabled={menu.header.priority === "urgent"}
+                  disabled={menu.targets.every((h) => h.priority === "urgent")}
                   onClick={() => file("urgent")}
                 >
                   {t("mail.moveToUrgent")}
                   <UntestedTag />
                 </button>
-                {menu.header.priority && (
+                {menu.targets.some((h) => h.priority) && (
                   <button className="untested" onClick={() => file(null)}>
                     {t("mail.removeFromPriority")}
                     <UntestedTag />
@@ -387,6 +510,51 @@ function MailListImpl({
                     moved. */}
                 <div className="context-menu-note">{t("mail.priorityIsLocal")}</div>
               </div>
+              {/* Its own group, below the divider: everything above files a
+                  message and leaves it where it is, while this one moves it off
+                  the folder — or off the server. */}
+              {(() => {
+                const plan = deletePlan(menu.targets);
+                const mixed = plan.trashed > 0 && plan.purged > 0;
+                return (
+                  // The red fence is the app's treatment for a destructive
+                  // action and is used here for exactly the case that is one:
+                  // a delete that cannot be taken back. A move to Trash is
+                  // recoverable on the server, so it stays an ordinary group —
+                  // the colour means something only while it is not on every
+                  // delete.
+                  <div
+                    className={
+                      plan.purged > 0 ? "context-menu-danger-zone" : "context-menu-group"
+                    }
+                  >
+                    <button
+                      className="untested"
+                      onClick={() => {
+                        onDelete(menu.targets);
+                        setMenu(null);
+                      }}
+                    >
+                      {mixed
+                        ? t("mail.deleteMixed", { count: menu.targets.length })
+                        : plan.purged > 0
+                          ? t("mail.deleteForever")
+                          : t("mail.moveToTrash")}
+                      <UntestedTag />
+                    </button>
+                    {/* Where the mail goes, said before the click rather than
+                        afterwards: "delete" means two different things here and
+                        only one of them can be taken back. */}
+                    <div className="context-menu-note">
+                      {mixed
+                        ? t("mail.deleteMixedNote", { count: plan.purged })
+                        : plan.purged > 0
+                          ? t("mail.deleteIsForever")
+                          : t("mail.deleteGoesToTrash")}
+                    </div>
+                  </div>
+                );
+              })()}
           </ContextMenuPortal>
         )}
     </div>

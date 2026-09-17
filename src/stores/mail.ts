@@ -7,12 +7,15 @@ import {
   mailFolders,
   mailHeaders,
   mailMarkFolderRead,
+  mailMove,
   mailPriorityClear,
   mailPriorityCounts,
   mailPriorityPage,
   mailPrioritySet,
+  mailPurge,
   mailSync,
   mailSyncCancel,
+  planMailDelete,
 } from "../lib/mail";
 import { translate, useI18nStore } from "../lib/i18n";
 import type {
@@ -87,6 +90,23 @@ interface MailStore {
   selectedAccountId: string | null;
   selectedFolderId: string | null;
   selectedMessageId: string | null;
+  /**
+   * The rows ticked for a bulk action — Ctrl-click and Shift-click in the list.
+   *
+   * Distinct from `selectedMessageId`, which is the *open* message, because the
+   * two answer different questions: one message is being read, any number can be
+   * filed or deleted at once. Every action still works with the set empty, in
+   * which case it is about the row it was invoked on — a menu that does nothing
+   * until something is ticked would make right-click useless for one message.
+   *
+   * It belongs to the **page**: `loadPage` clears it, because a folder change, a
+   * re-sort, a search keystroke or a pager step all leave ids that name mail the
+   * user can no longer see, and a bulk delete aimed at rows off screen is the
+   * one mistake this feature can make.
+   */
+  checkedIds: string[];
+  /** The row a Shift-click measures its range from. */
+  anchorId: string | null;
   /**
    * The priority list currently on screen, or `null` when an ordinary folder is.
    *
@@ -213,6 +233,26 @@ interface MailStore {
   loadPage: (offset: number) => Promise<void>;
 
   selectMessage: (messageId: string | null) => Promise<void>;
+  /** Tick exactly this row and nothing else, and anchor a later range on it. */
+  checkOnly: (messageId: string) => void;
+  /** Ctrl-click: add or remove one row, leaving the rest of the set alone. */
+  toggleChecked: (messageId: string) => void;
+  /** Shift-click: tick every row between the anchor and this one, in the order
+   *  the list is showing — which is why it takes that order rather than reading
+   *  `headers`: the rows on screen are the rows a range may cover. */
+  checkRange: (messageId: string, order: string[]) => void;
+  clearChecked: () => void;
+  /**
+   * Delete messages — into each account's Trash where there is one, off the
+   * server where there is not (`planMailDelete`).
+   *
+   * The caller confirms the permanent half **first**: this reaches a server the
+   * moment it is called and there is no undo for the purge branch. Grouped per
+   * folder because that is what the commands take, and a group that fails lands
+   * in `error` without stopping the others — one account being unreachable is no
+   * reason to leave the other's mail undeleted.
+   */
+  deleteMessages: (messageIds: string[]) => Promise<void>;
   /** Re-fetch the open body with remote references resolved (explicit click). */
   setFlag: (messageId: string, flag: MailFlag, value: boolean) => Promise<void>;
   /** Mark every unread message in a folder read, locally and on the server.
@@ -266,6 +306,8 @@ export const useMailStore = create<MailStore>((set, get) => ({
   selectedAccountId: null,
   selectedFolderId: null,
   selectedMessageId: null,
+  checkedIds: [],
+  anchorId: null,
   selectedPriority: null,
   priorityCounts: { important: 0, urgent: 0, important_unread: 0, urgent_unread: 0 },
 
@@ -559,6 +601,11 @@ export const useMailStore = create<MailStore>((set, get) => ({
     if (token !== pageToken) return;
     set({
       loadingHeaders: false,
+      // The tick marks go with the page they were made on — see `checkedIds`.
+      // Cleared even when the read failed: whatever is on screen afterwards is
+      // no longer the list the user was ticking.
+      checkedIds: [],
+      anchorId: null,
       ...(page
         ? {
             headers: page.items,
@@ -589,6 +636,71 @@ export const useMailStore = create<MailStore>((set, get) => ({
     // is not worth a banner, but the list must not lie about it either.
     const header = get().headers.find((h) => h.id === messageId);
     if (header && !header.seen) await get().setFlag(messageId, "seen", true);
+  },
+
+  checkOnly: (messageId) => set({ checkedIds: [messageId], anchorId: messageId }),
+
+  toggleChecked: (messageId) =>
+    set((s) => ({
+      checkedIds: s.checkedIds.includes(messageId)
+        ? s.checkedIds.filter((id) => id !== messageId)
+        : [...s.checkedIds, messageId],
+      // The anchor follows the last row touched either way, so a Ctrl-click
+      // followed by a Shift-click reads as one gesture.
+      anchorId: messageId,
+    })),
+
+  checkRange: (messageId, order) => {
+    const { anchorId } = get();
+    const from = anchorId ? order.indexOf(anchorId) : -1;
+    const to = order.indexOf(messageId);
+    // No anchor, or an anchor that scrolled out of the page: the range has no
+    // other end, so this is an ordinary click rather than nothing at all.
+    if (from < 0 || to < 0) {
+      get().checkOnly(messageId);
+      return;
+    }
+    const span = order.slice(Math.min(from, to), Math.max(from, to) + 1);
+    // The anchor is deliberately *not* moved: a run of Shift-clicks stretches
+    // and shrinks one range from where it started, as every list does.
+    set({ checkedIds: span });
+  },
+
+  clearChecked: () => set({ checkedIds: [], anchorId: null }),
+
+  deleteMessages: async (messageIds) => {
+    if (messageIds.length === 0) return;
+    const wanted = new Set(messageIds);
+    const targets = get().headers.filter((h) => wanted.has(h.id));
+    if (targets.length === 0) return;
+    // A cross-account list can hold rows from an account whose folders were
+    // never read — a local read, so this costs no socket, but without it the
+    // plan would find no Trash folder and call the delete permanent.
+    const accountIds = [...new Set(targets.map((h) => h.account_id))];
+    for (const accountId of accountIds) {
+      if (!get().foldersByAccount[accountId]) await get().loadFolders(accountId, false);
+    }
+    for (const group of planMailDelete(targets, get().foldersByAccount)) {
+      await (group.trashFolderId
+        ? mailMove(group.messageIds, group.trashFolderId)
+        : mailPurge(group.messageIds)
+      ).catch((err) => set({ error: reason(err) }));
+    }
+    // The open message may be one of the ones just deleted, and a body left on
+    // screen over a row that no longer exists is the worst of both.
+    if (get().selectedMessageId && wanted.has(get().selectedMessageId as string)) {
+      set({ selectedMessageId: null, body: null });
+    }
+    // Rail badges, then the marked-mail badges (a deleted message leaves its
+    // priority list too), then the page — which also clears the tick marks.
+    for (const accountId of accountIds) await get().loadFolders(accountId, false);
+    await get().refreshPriorityCounts();
+    await get().loadPage(get().headerOffset);
+    // Deleting the whole of the last page leaves the pager past the end, which
+    // reads as an empty folder. Step back one page instead.
+    if (get().headers.length === 0 && get().headerOffset > 0) {
+      await get().loadPage(Math.max(0, get().headerOffset - MAIL_PAGE_SIZE));
+    }
   },
 
   setFlag: async (messageId, flag, value) => {

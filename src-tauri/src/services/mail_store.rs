@@ -1471,6 +1471,43 @@ impl MailStore {
         Ok(())
     }
 
+    /// Drop messages from the index for good — the row, its cached body, its
+    /// attachment rows, and every blob no other message still names.
+    ///
+    /// The counterpart of `move_messages` for a delete the server has already
+    /// carried out, and it is deliberately the *second* half of that pair: the
+    /// caller expunges first and calls this once the server agreed, so a refused
+    /// delete never leaves the index missing mail that is still in the mailbox.
+    ///
+    /// **Not `VACUUM`ed**, unlike `delete_account_mail`. A `DELETE` only moves
+    /// pages to the freelist, where a plain store's subject stays readable — but
+    /// that is `forget_message_content`'s standing trade too, and rewriting a
+    /// multi-gigabyte database to delete one mail would make the ordinary case
+    /// unusable. A sealed store has nothing readable there to begin with.
+    pub fn delete_messages(&self, message_ids: &[String]) -> Result<u32, String> {
+        let mut conn = self.conn.lock().map_err(|_| "mail store is poisoned")?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let mut removed = 0u32;
+        for id in message_ids {
+            tx.execute(
+                "DELETE FROM attachments WHERE message_id = ?1",
+                params![id],
+            )
+            .map_err(|e| e.to_string())?;
+            tx.execute(
+                "DELETE FROM bodies_cache WHERE message_id = ?1",
+                params![id],
+            )
+            .map_err(|e| e.to_string())?;
+            removed += tx
+                .execute("DELETE FROM messages WHERE id = ?1", params![id])
+                .map_err(|e| e.to_string())? as u32;
+        }
+        tx.commit().map_err(|e| e.to_string())?;
+        self.prune_blobs_locked(&conn)?;
+        Ok(removed)
+    }
+
     // ── Bodies ──────────────────────────────────────────────────────────────
 
     /// A cached sanitized body, **only** when it was produced by the current
@@ -3026,6 +3063,73 @@ mod tests {
                 .unwrap()
                 .total,
             1
+        );
+    }
+
+    #[test]
+    fn deleting_a_message_takes_its_row_body_and_attachments() {
+        let (dir, store) = store();
+        let inbox = folder("a1", "INBOX");
+        store.upsert_folder(&inbox).unwrap();
+        let gone = header(&inbox, 1, "gone", "2026-07-01T09:00:00Z");
+        let kept = header(&inbox, 2, "kept", "2026-07-01T10:00:00Z");
+        store.upsert_header(&gone).unwrap();
+        store.upsert_header(&kept).unwrap();
+        let shared = store.put_blob(b"same pdf").unwrap();
+        let own = store.put_blob(b"only the doomed one").unwrap();
+        let meta = |part: &str| MailAttachmentMeta {
+            part_id: part.into(),
+            filename: "a.pdf".into(),
+            mime: "application/pdf".into(),
+            size: 8,
+            inline: false,
+            type_mismatch: None,
+        };
+        store.put_attachment(&gone.id, &meta("2"), &shared).unwrap();
+        store.put_attachment(&gone.id, &meta("3"), &own).unwrap();
+        store.put_attachment(&kept.id, &meta("2"), &shared).unwrap();
+        store
+            .cache_body(&gone.id, 1, Some("<p>x</p>"), None, "[]", 0, false, None)
+            .unwrap();
+
+        assert_eq!(
+            store.delete_messages(std::slice::from_ref(&gone.id)).unwrap(),
+            1
+        );
+
+        assert!(store.header(&gone.id).unwrap().is_none());
+        assert!(store.cached_body(&gone.id, 1).unwrap().is_none());
+        assert!(store.attachments(&gone.id).unwrap().is_empty());
+        // The blob only it named is gone; the one the other message still names
+        // survives — `prune_blobs_locked`'s rule, which a per-row delete would
+        // have broken.
+        assert!(!dir.path().join("blobs").join(&own).exists());
+        assert_eq!(store.get_blob(&shared).unwrap(), b"same pdf");
+        assert!(store.header(&kept.id).unwrap().is_some());
+    }
+
+    #[test]
+    fn deleting_reports_what_was_actually_in_the_index() {
+        let (_d, store) = store();
+        let inbox = folder("a1", "INBOX");
+        store.upsert_folder(&inbox).unwrap();
+        let h = header(&inbox, 1, "x", "2026-07-01T09:00:00Z");
+        store.upsert_header(&h).unwrap();
+
+        // A message the index no longer holds is not an error — the server may
+        // well have accepted the expunge — but it must not be counted either.
+        assert_eq!(
+            store
+                .delete_messages(&[h.id.clone(), "a1|INBOX|999".to_string()])
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            store
+                .headers_page(&inbox.id, 0, 10, None, MailSort::Date, true, false)
+                .unwrap()
+                .total,
+            0
         );
     }
 
