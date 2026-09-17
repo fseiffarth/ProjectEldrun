@@ -4,9 +4,12 @@ import { classifyUnavailable, describeUnavailable, type UnavailableReason } from
 import { readFlag, writeFlag } from "../prefs";
 import { Activity } from "./Activity";
 import { SECTION_GLYPH } from "../glyphs";
+import { formatBuildStamp } from "../buildInfo";
 // Kept in lockstep with the desktop and mobile-host package versions by the
 // release bump, so the phone always reports the build it is running.
 import { version as APP_VERSION } from "../../../package.json";
+
+const BUILD_STAMP = formatBuildStamp();
 
 const ALERT_ICON: Record<MobileAlertItem["kind"], string> = {
   mail: SECTION_GLYPH.mail,
@@ -188,7 +191,7 @@ export function Home({ open, openTab, todo, mail }: {
       </div>
       {/* The global views used to live here as a header rail; they are tabs of
           their own now, so the bar at the bottom of every screen carries them. */}
-      <div className="mobile-build"><small>Eldrun Mobile v{APP_VERSION}</small><span className={offline ? "lamp off" : "lamp"} /></div>
+      <div className="mobile-build"><small title="Bundle build time">Eldrun Mobile v{APP_VERSION}{BUILD_STAMP && ` · ${BUILD_STAMP}`}</small><span className={offline ? "lamp off" : "lamp"} /></div>
     </header>
     <div className="projects-row">
       <h1>{view === "agents" ? "Agents" : "Projects"}</h1>
