@@ -1116,6 +1116,56 @@ pub fn status_for_scope(scope_id: &str) -> AgentFenceStatus {
     }
 }
 
+/// Whether a Claude tab spawned with these options reads the staged, filtered
+/// `.claude.json` copy instead of the host file — the question
+/// `sandbox::claude_folder_trusted` needs answered, because Eldrun's recorded
+/// trust reaches Claude only through that copy. Mirrors `pty_spawn`: the same
+/// spawn-authority resolution, then containerized (always staged) or the Linux
+/// fence (macOS Seatbelt cannot substitute a file, so a fenced tab there uses
+/// the host file).
+pub fn claude_config_staged(scope_id: Option<&str>, sandbox: bool, local_only: bool) -> bool {
+    let mut opts = PtyOptions {
+        id: "claude-trust-probe".to_string(),
+        cmd: "claude".to_string(),
+        args: Vec::new(),
+        env: HashMap::new(),
+        cwd: String::new(),
+        cols: 80,
+        rows: 24,
+        local_only,
+        sandbox,
+        agent: true,
+        project_id: scope_id.map(str::to_string),
+        remote_host_id: None,
+        tmux_session: None,
+        tmux_attach: None,
+        host_bound_uid: None,
+    };
+    crate::services::sandbox::enforce_spawn_authority(&mut opts);
+    let remote_run = !opts.local_only
+        && scope_id.is_some_and(|id| crate::services::remote::remote_target_for(id).is_some());
+    if opts.sandbox && !opts.local_only {
+        return true;
+    }
+    if !cfg!(target_os = "linux") {
+        return false;
+    }
+    let Some(roots) = roots_for_scope(scope_id, opts.local_only) else {
+        return false;
+    };
+    matches!(
+        decide(
+            &opts,
+            roots,
+            remote_run,
+            policy_enabled(scope_id),
+            platform_fenceable(),
+            bwrap_available(),
+        ),
+        FenceDecision::Fenced { .. }
+    )
+}
+
 fn fenced_tabs() -> &'static Mutex<HashMap<String, String>> {
     static TABS: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
     TABS.get_or_init(|| Mutex::new(HashMap::new()))

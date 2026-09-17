@@ -106,6 +106,34 @@ export function initialInputForPty(input: string, kind: TabKind): string {
   return kind === "shell" ? `\x15${input}` : input;
 }
 
+/** Whether terminal text shows an agent CLI's folder-trust question. Wording
+ *  as found in the installed CLIs (2026-09-17):
+ *  - Claude 2.1.274: "Trust this directory?" / "Yes, I trust this folder" /
+ *    "No, exit" — the cursor starts on `No, exit`, so an Enter kills the tab;
+ *    older builds asked "Is this a project you created or one you trust?".
+ *  - Codex 0.154: "Do you trust the contents of this directory?"
+ *  - Gemini (and its Qwen fork): "Do you trust the files in this folder?" /
+ *    "Trust folder (…)" / "Don't trust".
+ *  Whatever the default row, the answer is the user's: nothing may be
+ *  auto-typed at a screen that asks it. */
+export function showsAgentTrustDialog(text: string): boolean {
+  return /one you trust|trust this (?:folder|directory)|trust the (?:files|contents) (?:in|of) this (?:folder|directory)/i.test(
+    text.replace(/\s+/g, " "),
+  );
+}
+
+/** The last `maxLines` lines of an xterm buffer as plain text. */
+export function bufferTail(
+  buffer: { length: number; getLine(i: number): { translateToString(trim?: boolean): string } | null | undefined },
+  maxLines = 60,
+): string {
+  const lines: string[] = [];
+  for (let i = Math.max(0, buffer.length - maxLines); i < buffer.length; i++) {
+    lines.push(buffer.getLine(i)?.translateToString(true) ?? "");
+  }
+  return lines.join("\n");
+}
+
 /** Claim the right to auto-submit `input` for `ptyId`. React dev remounts,
  *  duplicate panes, or duplicate ready events must not type the same run command
  *  twice into one shell. */

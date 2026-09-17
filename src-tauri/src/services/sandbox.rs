@@ -2676,35 +2676,46 @@ fn apply_trust_paths(value: &mut serde_json::Value, trusted: &[String], roots: &
 }
 
 /// Whether Claude will skip its trust dialog in `cwd`: the host `~/.claude.json`
-/// already records the answer, or Eldrun recorded one the user gave inside a
-/// fenced/contained tab. Read-only.
+/// already records the answer, or — only when `staged` — Eldrun recorded one
+/// the user gave inside a fenced/contained tab. Read-only.
 ///
 /// The caller is the frontend's auto-`/rename`, which must not type a blind
 /// Enter into a launch that is about to ask a question — the default answer is
 /// `No, exit`.
-pub fn claude_folder_trusted(cwd: &str) -> bool {
+///
+/// `staged` says whether the spawn will read the staged `.claude.json` copy
+/// (fenced or containerized) rather than the host file. Eldrun's recorded trust
+/// reaches Claude only through that copy ([`apply_recorded_trust`]); an
+/// unfenced tab reads the host file, which never gets it. Counting the record
+/// there is how turning a project's fence off killed every new Claude tab: the
+/// folder had only ever been trusted inside the fence, the probe said
+/// "trusted", the dialog came up anyway, and the rename's Enter answered it.
+pub fn claude_folder_trusted(cwd: &str, staged: bool) -> bool {
     let home = paths::home_dir();
-    for candidate in [
+    let host_trusted = [
         home.join(".claude.json"),
         home.join(".claude").join(".claude.json"),
-    ] {
-        let Ok(bytes) = std::fs::read(&candidate) else {
-            continue;
-        };
-        let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
-            continue;
-        };
-        if value
-            .get("projects")
-            .and_then(|projects| projects.get(cwd))
-            .and_then(|entry| entry.get("hasTrustDialogAccepted"))
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false)
-        {
-            return true;
-        }
-    }
-    read_agent_trust().claude.iter().any(|path| path == cwd)
+    ]
+    .iter()
+    .filter_map(|candidate| std::fs::read(candidate).ok())
+    .filter_map(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+    .any(|value| trust_accepted_for(&value, cwd));
+    let recorded = if staged {
+        read_agent_trust().claude
+    } else {
+        Vec::new()
+    };
+    host_trusted || recorded.iter().any(|path| path == cwd)
+}
+
+/// Pure core of the host-file half of [`claude_folder_trusted`].
+fn trust_accepted_for(value: &serde_json::Value, cwd: &str) -> bool {
+    value
+        .get("projects")
+        .and_then(|projects| projects.get(cwd))
+        .and_then(|entry| entry.get("hasTrustDialogAccepted"))
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
 }
 
 /// Placeholder content for a shadowed agent-config file the host does not have
@@ -2789,6 +2800,20 @@ fn host_uid_gid() -> (u32, u32) {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn host_trust_is_read_per_exact_folder() {
+        let value = serde_json::json!({"projects": {
+            "/p/a": {"hasTrustDialogAccepted": true},
+            "/p/b": {"hasTrustDialogAccepted": false},
+            "/p/c": {}
+        }});
+        assert!(trust_accepted_for(&value, "/p/a"));
+        assert!(!trust_accepted_for(&value, "/p/b"));
+        assert!(!trust_accepted_for(&value, "/p/c"));
+        assert!(!trust_accepted_for(&value, "/p/missing"));
+        assert!(!trust_accepted_for(&serde_json::json!({}), "/p/a"));
+    }
     use super::*;
 
     #[test]

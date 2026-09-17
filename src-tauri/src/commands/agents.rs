@@ -1514,9 +1514,21 @@ pub async fn dismiss_agent_version(agent: String, version: String) -> Result<(),
 /// prompt history and grows into the megabytes, and this is asked once per new
 /// Claude tab — parsing it inline would jank the window at launch.
 #[tauri::command]
-pub async fn claude_folder_trusted(cwd: String) -> bool {
+pub async fn claude_folder_trusted(
+    cwd: String,
+    project_id: Option<String>,
+    sandbox: Option<bool>,
+    local_only: Option<bool>,
+) -> bool {
     tauri::async_runtime::spawn_blocking(move || {
-        crate::services::sandbox::claude_folder_trusted(&cwd)
+        // Recorded trust counts only for a spawn that reads the staged copy it
+        // is applied to; an unfenced tab reads the host file alone.
+        let staged = crate::services::agent_fence::claude_config_staged(
+            project_id.as_deref(),
+            sandbox.unwrap_or(false),
+            local_only.unwrap_or(false),
+        );
+        crate::services::sandbox::claude_folder_trusted(&cwd, staged)
     })
     .await
     .unwrap_or(false)

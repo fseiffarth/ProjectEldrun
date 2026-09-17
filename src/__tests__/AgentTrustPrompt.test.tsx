@@ -29,6 +29,9 @@ const { invoke } = vi.hoisted(() => ({
 vi.mock("@tauri-apps/api/core", () => ({ invoke: (...a: unknown[]) => invoke(...a) }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn().mockResolvedValue(() => {}) }));
 
+// What the mocked xterm's active buffer shows — one line per entry.
+const { screen } = vi.hoisted(() => ({ screen: { lines: [] as string[] } }));
+
 // The PTY event bus, captured so the test can fire `terminal-ready` and a first
 // output chunk the way the backend would.
 const { bus } = vi.hoisted(() => ({
@@ -62,7 +65,15 @@ vi.mock("@xterm/xterm", () => ({
     onBell() {}
     onTitleChange() {}
     onSelectionChange() {}
-    buffer = { active: { length: 0, getLine: () => null } };
+    buffer = {
+      active: {
+        get length() { return screen.lines.length; },
+        getLine: (i: number) =>
+          i < screen.lines.length
+            ? { translateToString: () => screen.lines[i] }
+            : null,
+      },
+    };
     attachCustomKeyEventHandler() {}
     getSelection() { return ""; }
     focus() {}
@@ -106,6 +117,7 @@ describe("auto-typed initial input vs. Claude's trust dialog", () => {
     bus.ready.clear();
     bus.output.clear();
     clearClaimedInitialInputsForTest();
+    screen.lines = [];
     vi.useFakeTimers();
   });
   afterEach(() => {
@@ -134,7 +146,12 @@ describe("auto-typed initial input vs. Claude's trust dialog", () => {
     await launch(id);
 
     const probe = invoke.mock.calls.find((c) => c[0] === "claude_folder_trusted");
-    expect(probe?.[1]).toEqual({ cwd: "/home/u/eldrun/boxes/new-box" });
+    expect(probe?.[1]).toEqual({
+      cwd: "/home/u/eldrun/boxes/new-box",
+      projectId: null,
+      sandbox: false,
+      localOnly: false,
+    });
     // Neither the rename text nor — the fatal half — the Enter that would have
     // confirmed `No, exit`.
     expect(writes()).toHaveLength(0);
@@ -161,6 +178,118 @@ describe("auto-typed initial input vs. Claude's trust dialog", () => {
     await launch(id);
 
     // The text, then the Enter as its own write.
+    expect(writes().length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("passes the tab's scope, so the backend knows which trust store the spawn reads", async () => {
+    // Trust Eldrun recorded inside the fence lives only in the fence's staged
+    // `.claude.json`; an unfenced tab reads the host file. Turning a project's
+    // fence off made the probe answer "trusted" from the record while the
+    // unfenced Claude asked anyway — and the rename's Enter said `No, exit`.
+    invoke.mockImplementation((cmd: unknown) =>
+      Promise.resolve(cmd === "claude_folder_trusted" ? false : undefined),
+    );
+    const id = "p9:t1";
+    await act(async () => {
+      render(
+        <TerminalView
+          id={id}
+          cmd="claude"
+          cwd="/home/u/eldrun/projects/audio"
+          kind="agent"
+          projectId="p9"
+          initialInput="/rename Audio"
+          visible
+          focused
+        />,
+      );
+    });
+    await launch(id);
+
+    const probe = invoke.mock.calls.find((c) => c[0] === "claude_folder_trusted");
+    expect(probe?.[1]).toEqual({
+      cwd: "/home/u/eldrun/projects/audio",
+      projectId: "p9",
+      sandbox: false,
+      localOnly: false,
+    });
+    expect(writes()).toHaveLength(0);
+  });
+
+  it("types nothing while the trust dialog is on screen, even if the probe says trusted", async () => {
+    invoke.mockImplementation((cmd: unknown) =>
+      Promise.resolve(cmd === "claude_folder_trusted" ? true : undefined),
+    );
+    screen.lines = [
+      " Accessing workspace:",
+      " Quick safety check: Is this a project you created or one you trust?",
+      " ❯ 1. Yes, I trust this folder",
+      "   2. No, exit",
+    ];
+    const id = "p9:t2";
+    await act(async () => {
+      render(
+        <TerminalView
+          id={id}
+          cmd="claude"
+          cwd="/home/u/eldrun/projects/audio"
+          kind="agent"
+          initialInput="/rename Audio"
+          visible
+          focused
+        />,
+      );
+    });
+    await launch(id);
+
+    expect(writes()).toHaveLength(0);
+  });
+
+  it.each([
+    ["codex", ["> You are in /home/u/eldrun/projects/new", "  Do you trust the contents of this directory? Working with untrusted", "  contents comes with higher risk of prompt injection.", "› 1. Yes, continue", "  2. No, quit"]],
+    ["gemini", [" Do you trust the files in this folder?", " ● 1. Trust folder (new)", "   2. Trust parent folder (projects)", "   3. Don't trust"]],
+  ])("types nothing into a %s tab showing its trust question", async (cmd, lines) => {
+    screen.lines = lines;
+    const id = `p9:${cmd}`;
+    await act(async () => {
+      render(
+        <TerminalView
+          id={id}
+          cmd={cmd}
+          cwd="/home/u/eldrun/projects/new"
+          kind="agent"
+          initialInput="Read .eldrun/scaffold-fill.md and complete the task."
+          visible
+          focused
+        />,
+      );
+    });
+    await launch(id);
+
+    expect(writes()).toHaveLength(0);
+    // The backend probe reads Claude's config only; other CLIs are judged by
+    // their screen alone.
+    expect(invoke.mock.calls.some((c) => c[0] === "claude_folder_trusted")).toBe(false);
+  });
+
+  it("still types into a non-Claude agent that asks nothing", async () => {
+    screen.lines = [" >_ OpenAI Codex", " To get started, describe a task"];
+    const id = "p9:codex-ok";
+    await act(async () => {
+      render(
+        <TerminalView
+          id={id}
+          cmd="codex"
+          cwd="/home/u/eldrun/projects/p"
+          kind="agent"
+          initialInput="/hooks"
+          visible
+          focused
+        />,
+      );
+    });
+    await launch(id);
+
     expect(writes().length).toBeGreaterThanOrEqual(2);
   });
 

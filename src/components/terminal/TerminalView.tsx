@@ -24,7 +24,7 @@ import {
 } from "../../lib/terminalBus";
 import { hpcGuardRefusal } from "../../lib/hpcGuard";
 import { useHpcGuardStore } from "../../stores/hpcGuardPrompt";
-import { CSI_U_SHIFT_TAB, FORCE_SELECTION_MODIFIER, SILENT_START_MS, agentMouseDownAction, claimInitialInput, decodeOsc52Clipboard, initialInputForPty, isClaudeCommand, isCodexCommand, isTerminalAutoReply, isTerminalIdentityResponse, isTerminalReport, silentStartNotice, stripTerminalQueries, terminalProgramLabel, type SilentStartNotice } from "../../lib/terminalControl";
+import { CSI_U_SHIFT_TAB, FORCE_SELECTION_MODIFIER, SILENT_START_MS, agentMouseDownAction, bufferTail, claimInitialInput, decodeOsc52Clipboard, initialInputForPty, isClaudeCommand, isCodexCommand, isTerminalAutoReply, isTerminalIdentityResponse, isTerminalReport, showsAgentTrustDialog, silentStartNotice, stripTerminalQueries, terminalProgramLabel, type SilentStartNotice } from "../../lib/terminalControl";
 import { registerTerminal, unregisterTerminal } from "../../lib/terminalRegistry";
 import { clearPtyInput, writePtyInput } from "../../lib/terminalInput";
 import { registerScheduledAgentInput } from "../../lib/scheduledAgentInput";
@@ -1017,6 +1017,20 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
             initialEnterTimer.current = setTimeout(typeWhenReady, 100);
             return;
           }
+          // Last look before typing, for every agent: a CLI asking whether to
+          // trust the folder must be answered by the user, never by our Enter
+          // (Claude's default is `No, exit`; Codex's and Gemini's default is to
+          // trust). For Claude it also backs up the backend probe below, which
+          // can be wrong (a stale backend, a trust store the spawn does not read).
+          const active = termRef.current?.buffer?.active;
+          if (
+            kind === "agent" &&
+            active &&
+            showsAgentTrustDialog(bufferTail(active))
+          ) {
+            initialInputPending.current = false;
+            return;
+          }
           // Typed on the user's behalf — they triggered the flow that
           // opened this tab with a command, so its work counts as asked-for.
           noteUserInput(id);
@@ -1042,7 +1056,15 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
         const submittableTab = async (): Promise<boolean> => {
           if (!isClaudeCommand(cmd)) return true;
           try {
-            return await invoke<boolean>("claude_folder_trusted", { cwd });
+            // The scope decides which `.claude.json` the spawn reads — the
+            // fence's staged copy carries trust Eldrun recorded, the host
+            // file does not — so the probe needs it, not just the folder.
+            return await invoke<boolean>("claude_folder_trusted", {
+              cwd,
+              projectId: projectId ?? null,
+              sandbox,
+              localOnly,
+            });
           } catch {
             // An older backend does not expose the probe — preserve the
             // previous behavior rather than silently dropping the rename.
