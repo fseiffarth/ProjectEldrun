@@ -3950,6 +3950,7 @@
   font-size: 10px;
 }
 .file-viewer-tex-options-toggle,
+.file-viewer-tex-outdir-browse,
 .file-viewer-tex-preview-toggle,
 .file-viewer-tex-beamer-toggle,
 .file-viewer-tex-open-pdf,
@@ -3965,6 +3966,7 @@
 }
 .file-viewer-tex-options-toggle.active,
 .file-viewer-tex-options-toggle:hover,
+.file-viewer-tex-outdir-browse:hover,
 .file-viewer-tex-preview-toggle.active,
 .file-viewer-tex-preview-toggle:hover,
 .file-viewer-tex-beamer-toggle.active,

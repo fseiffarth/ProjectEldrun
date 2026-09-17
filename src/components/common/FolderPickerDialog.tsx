@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { sanitizeName } from "../projects/scaffold";
 import { useT } from "../../lib/i18n";
+import { isPathWithin } from "../../lib/paths";
 
 /** One subdirectory row, mirroring the Rust `DirEntry` (commands::fs). */
 interface DirEntry {
@@ -21,6 +22,12 @@ interface Props {
   /** Directory to open the browser at (defaults to home when empty/omitted). */
   initialPath?: string;
   title: string;
+  /**
+   * Keep the browse inside this directory: ⬆ stops at it, and a folder that
+   * resolves outside it (a symlink out of the tree) is refused rather than
+   * entered. Omit for an unbounded browse.
+   */
+  boundPath?: string;
   /** Label for the confirm button (e.g. "Move here"). */
   confirmLabel: string;
   /**
@@ -46,25 +53,49 @@ interface Props {
  * return the current directory. Follows the app modal convention (portal +
  * `.modal-backdrop` + a settings-style dialog).
  */
-export function FolderPickerDialog({ initialPath, title, confirmLabel, nameLabel, nameInitial, onConfirm, onClose }: Props) {
+export function FolderPickerDialog({ initialPath, boundPath, title, confirmLabel, nameLabel, nameInitial, onConfirm, onClose }: Props) {
   const t = useT();
   const [listing, setListing] = useState<DirListing | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [name, setName] = useState(nameInitial ?? "");
 
-  const load = useCallback((path: string) => {
+  // The bound as `list_dirs` spells it (canonicalized), so listings — which
+  // come back canonicalized too — compare against the same form.
+  const [bound, setBound] = useState<string | null>(null);
+
+  const load = useCallback((path: string, within: string | null) => {
     setLoading(true);
     setError(null);
     invoke<DirListing>("list_dirs", { path })
-      .then((res) => setListing(res))
+      .then((res) => {
+        if (within && !isPathWithin(res.path, within)) {
+          setError(t("folderPicker.outsideBound", { path: within }));
+          return;
+        }
+        setListing(res);
+      })
       .catch((e) => setError(String(e)))
       .finally(() => setLoading(false));
-  }, []);
+  }, [t]);
 
   useEffect(() => {
-    load(initialPath?.trim() || "");
-  }, [load, initialPath]);
+    const start = initialPath?.trim() || "";
+    if (!boundPath?.trim()) {
+      setBound(null);
+      load(start, null);
+      return;
+    }
+    let cancelled = false;
+    invoke<DirListing>("list_dirs", { path: boundPath })
+      .then((res) => {
+        if (cancelled) return;
+        setBound(res.path);
+        load(start || res.path, res.path);
+      })
+      .catch((e) => { if (!cancelled) setError(String(e)); });
+    return () => { cancelled = true; };
+  }, [load, initialPath, boundPath]);
 
   useEffect(() => {
     setName(nameInitial ?? "");
@@ -95,8 +126,8 @@ export function FolderPickerDialog({ initialPath, title, confirmLabel, nameLabel
         <div className="folder-picker-nav">
           <button
             type="button"
-            disabled={!listing?.parent}
-            onClick={() => listing?.parent && load(listing.parent)}
+            disabled={!listing?.parent || (bound !== null && !isPathWithin(listing.parent, bound))}
+            onClick={() => listing?.parent && load(listing.parent, bound)}
             title={t("folderPicker.upOneFolder")}
           >
             ⬆ {t("folderPicker.up")}
@@ -117,7 +148,7 @@ export function FolderPickerDialog({ initialPath, title, confirmLabel, nameLabel
                 key={entry.path}
                 type="button"
                 className="folder-picker-item"
-                onClick={() => load(entry.path)}
+                onClick={() => load(entry.path, bound)}
                 title={entry.path}
               >
                 <span className="folder-picker-icon">📁</span>
@@ -149,7 +180,7 @@ export function FolderPickerDialog({ initialPath, title, confirmLabel, nameLabel
           <button
             type="button"
             className="primary"
-            disabled={!cur}
+            disabled={!cur || (bound !== null && (!listing || !isPathWithin(listing.path, bound)))}
             onClick={() => onConfirm(cur, nameLabel !== undefined ? name : undefined)}
           >
             {confirmLabel}

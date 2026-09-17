@@ -117,6 +117,7 @@ import {
 } from "../../lib/slurm";
 import { FileDropContext } from "../files/fileDropContext";
 import { UntestedTag } from "../common/UntestedTag";
+import { FolderPickerDialog } from "../common/FolderPickerDialog";
 import { fetchRemoteImage, hostsLabel, remoteImageHosts } from "../../lib/remoteImages";
 import { AddRemarkDialog } from "../files/AddRemarkDialog";
 import { FileSourceSwitch } from "../files/ProjectFilesPane";
@@ -127,6 +128,7 @@ import {
   isPathWithin,
   normalizePath,
   resolvePath,
+  relativePathFrom,
   relativePathWithin,
   toFileUri,
 } from "../../lib/paths";
@@ -9342,6 +9344,32 @@ function TexView({
   // Directory the build runs in — error paths in the log are relative to it.
   const rootDir = dirname(root) || "/";
 
+  // The output-folder picker browses the project this document belongs to,
+  // opening at the main file's folder. A relative out-dir resolves against that
+  // folder in `compile_tex`, so the pick is stored relative to it (`..` included)
+  // and survives the project moving. Outside any project — or a main file that
+  // is not under the project's local tree — the bound is the main file's folder.
+  const [outDirPickerOpen, setOutDirPickerOpen] = useState(false);
+  const outDirBound = useMemo(() => {
+    const project = scope ? useProjectsStore.getState().projects.find((p) => p.id === scope) : undefined;
+    const projectDir = localMirrorRootFor(project) ?? (project ? resolveProjectDirectory(project) : null);
+    return projectDir && isPathWithin(rootDir, projectDir) ? projectDir : rootDir;
+  }, [scope, rootDir]);
+  const pickOutDir = useCallback(
+    async (dir: string) => {
+      setOutDirPickerOpen(false);
+      // The picker hands back `list_dirs`' canonical spelling; measure from the
+      // main folder's canonical spelling too, or a symlinked project path would
+      // climb out to `/` and back down.
+      const base = await invoke<{ path: string }>("list_dirs", { path: rootDir })
+        .then((l) => l.path)
+        .catch(() => rootDir);
+      const rel = relativePathFrom(base, dir);
+      patchOpts({ outDir: rel === null ? dir : rel === "." ? "" : rel });
+    },
+    [rootDir, patchOpts],
+  );
+
   // ── #tex-hover-preview ────────────────────────────────────────────────────
   // Hovering a formula typesets it. The compile itself is `lib/viewers/texPreview`;
   // what lives here is the two things only this viewer knows — WHICH preamble the
@@ -9856,6 +9884,15 @@ function TexView({
               placeholder={t("fileViewer.outputFolderPlaceholder")}
               onChange={(e) => patchOpts({ outDir: e.target.value })}
             />
+            <button
+              type="button"
+              className="file-viewer-tex-outdir-browse"
+              onClick={() => setOutDirPickerOpen(true)}
+              title={t("fileViewer.outputFolderBrowseTitle")}
+            >
+              {t("fileViewer.outputFolderBrowse")}
+            </button>
+            <UntestedTag />
           </label>
           <label className="file-viewer-tex-option">
             <span>{t("fileViewer.extraFlagsLabel")}</span>
@@ -9870,6 +9907,16 @@ function TexView({
             {t("fileViewer.shellEscapeNotePre")} <code>\write18</code> {t("fileViewer.shellEscapeNotePost")}
           </p>
         </div>
+      )}
+      {outDirPickerOpen && (
+        <FolderPickerDialog
+          initialPath={rootDir}
+          boundPath={outDirBound}
+          title={t("fileViewer.outputFolderPickerTitle", { name: rootName })}
+          confirmLabel={t("fileViewer.outputFolderPickerConfirm")}
+          onConfirm={(dir) => void pickOutDir(dir)}
+          onClose={() => setOutDirPickerOpen(false)}
+        />
       )}
       {externalChange && <ExternalChangeBanner onReload={reloadFromDisk} onKeep={keepMine} />}
       {createRef && (

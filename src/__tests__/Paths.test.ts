@@ -8,6 +8,7 @@ import {
   toFileUri,
   fromFileUri,
   isPathWithin,
+  relativePathFrom,
 } from "../lib/paths";
 
 // The helpers must accept BOTH separator styles: absolute paths reach the UI with
@@ -110,5 +111,22 @@ describe("toFileUri / fromFileUri round-trip", () => {
     const path = "\\\\server\\share\\folder\\a b.png";
     expect(toFileUri(path)).toBe("file://server/share/folder/a%20b.png");
     expect(fromFileUri(toFileUri(path))).toBe(path);
+  });
+});
+
+describe("relativePathFrom", () => {
+  it("descends, climbs, and names the directory itself", () => {
+    expect(relativePathFrom("/p/doc", "/p/doc/build")).toBe("build");
+    expect(relativePathFrom("/p/doc", "/p/out/pdf")).toBe("../out/pdf");
+    expect(relativePathFrom("/p/doc/", "/p/doc")).toBe(".");
+  });
+
+  it("does not match a sibling that merely shares a prefix", () => {
+    expect(relativePathFrom("/p/doc", "/p/docs")).toBe("../docs");
+  });
+
+  it("compares Windows paths case-insensitively and refuses across drives", () => {
+    expect(relativePathFrom("C:\\P\\doc", "c:\\p\\build")).toBe("../build");
+    expect(relativePathFrom("C:\\p", "D:\\p")).toBeNull();
   });
 });
