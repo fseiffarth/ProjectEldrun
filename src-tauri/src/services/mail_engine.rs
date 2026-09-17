@@ -1139,11 +1139,14 @@ const POOL_PROBE_AFTER: Duration = Duration::from_secs(30);
 /// failure path is simply "log in again".
 const POOL_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// How many idle sessions one account may keep. Two covers the only real
-/// concurrency here (a background check while the user opens a message) without
-/// spending a provider's per-account connection budget — Gmail's is 15 — on
-/// sockets nobody is reading.
-const POOL_MAX_PER_KEY: usize = 2;
+/// How many idle sessions one account may keep. One: university and institute
+/// IMAP servers ask clients to cache at most a single connection (Thunderbird's
+/// "Maximum number of server connections to cache" = 1), and a mail client that
+/// holds a second socket open for the rare overlap of a background check and an
+/// opened message spends a shared server's budget on a connection nobody reads.
+/// That overlap still works — the second lease simply closes when it is done
+/// instead of being pooled.
+const POOL_MAX_PER_KEY: usize = 1;
 
 /// The pool's identity for a server: everything that decides *who is
 /// authenticated*. A changed host, port or user is a different connection, and

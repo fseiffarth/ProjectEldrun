@@ -643,6 +643,8 @@ export function MailPane({ visible }: MailPaneProps) {
             // the whole feature is switched on; otherwise there is nothing to set.
             const isNew = accountDialog.account === null;
             setAccountDialog(null);
+            // Saved settings are what a paused background check waits for.
+            useMailStore.getState().clearSyncState(id);
             void useMailStore
               .getState()
               .reloadAccounts(id)

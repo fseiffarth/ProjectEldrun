@@ -4370,6 +4370,7 @@ export const dict: Dict = {
   "mail.indicator": "Mail",
   "mail.indicatorNew": "{count} neu",
   "mail.indicatorFailed": "die letzte Prüfung schlug fehl: {reason}",
+  "mail.indicatorAuthPaused": "automatische Prüfungen pausieren, bis das Konto gespeichert oder von Hand geprüft wird",
   "mail.overlayTitle": "Mail",
   "mail.menuAria": "E-Mail-Konten und Listen",
   "mail.menuOpenAccount": "{name} öffnen",

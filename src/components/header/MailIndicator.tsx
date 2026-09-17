@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useRef } from "react";
-import { inboxUnread, unreadTotal, useMailStore } from "../../stores/mail";
+import {
+  backgroundCheckBlocked,
+  inboxUnread,
+  isAuthRejection,
+  unreadTotal,
+  useMailStore,
+} from "../../stores/mail";
 import { useSettingsStore } from "../../stores/settings";
 import { useExperimental } from "../../lib/experimental";
 import { DEFAULT_MAIL_CHECK_MIN, onMailNew } from "../../lib/mail";
@@ -160,7 +166,8 @@ export function MailIndicator() {
 
   // The opt-in poll. `checkMail` is serialized per account by the backend's own
   // cancel/sync state, but a slow server plus a short interval could still stack
-  // requests, so each tick skips an account that is already mid-sync.
+  // requests, so each tick skips an account that is already mid-sync — and one
+  // whose last login was rejected, until the password is edited.
   useEffect(() => {
     if (!live || intervalMin <= 0) return;
     const tick = () => {
@@ -170,8 +177,7 @@ export function MailIndicator() {
       const up = vpnTunnelUp();
       for (const account of accounts) {
         if (!vpnGateAllows(account, up)) continue;
-        const phase = sync[account.id]?.phase;
-        if (phase === "start" || phase === "folder" || phase === "headers") continue;
+        if (backgroundCheckBlocked(sync[account.id])) continue;
         void useMailStore.getState().checkMail(account.id, null);
       }
     };
@@ -189,8 +195,7 @@ export function MailIndicator() {
     const { accounts, sync } = useMailStore.getState();
     for (const account of accounts) {
       if (!account.require_vpn) continue;
-      const phase = sync[account.id]?.phase;
-      if (phase === "start" || phase === "folder" || phase === "headers") continue;
+      if (backgroundCheckBlocked(sync[account.id])) continue;
       void useMailStore.getState().checkMail(account.id, null);
     }
   }, [tunnelUp, live, intervalMin]);
@@ -229,6 +234,7 @@ export function MailIndicator() {
   if (unread > 0) parts.push(t("mail.unreadBadge", { count: unread }));
   if (newCount > 0) parts.push(t("mail.indicatorNew", { count: newCount }));
   if (checkError) parts.push(t("mail.indicatorFailed", { reason: checkError }));
+  if (checkError && isAuthRejection(checkError)) parts.push(t("mail.indicatorAuthPaused"));
   // Said in the tooltip because the pane's strip is not open when it matters:
   // a VPN-only account that has not been checked is quiet by design, and the
   // reading should say so rather than pass as a mailbox with nothing in it.

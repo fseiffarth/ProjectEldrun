@@ -217,6 +217,9 @@ interface MailStore {
   /** THE network action. Never called from a launch, restore or render path. */
   checkMail: (accountId: string, folderId?: string | null) => Promise<void>;
   cancelCheck: (accountId: string) => Promise<void>;
+  /** Forget an account's last sync outcome — after its settings are saved, so a
+   *  rejected login stops pausing the background check (`backgroundCheckBlocked`). */
+  clearSyncState: (accountId: string) => void;
 }
 
 /** A rejected invoke's message, as a string the UI can show. */
@@ -655,7 +658,40 @@ export const useMailStore = create<MailStore>((set, get) => ({
     await mailSyncCancel(accountId).catch((err) => set({ error: reason(err) }));
     set((s) => ({ sync: { ...s.sync, [accountId]: { phase: "done" } } }));
   },
+
+  clearSyncState: (accountId) => {
+    set((s) => {
+      if (!(accountId in s.sync)) return s;
+      const sync = { ...s.sync };
+      delete sync[accountId];
+      return { sync };
+    });
+  },
 }));
+
+/**
+ * Whether a sync error is the server refusing the credentials. Matched on the
+ * backend's `MailError::AuthFailed` text (`services/mail_engine.rs`), which
+ * `MailAutoCheck.test.ts` pins — the error crosses IPC as a display string.
+ */
+export function isAuthRejection(error: string | undefined): boolean {
+  return !!error && error.toLowerCase().includes("rejected the username or password");
+}
+
+/**
+ * Whether an unattended check (the interval tick, the VPN catch-up) must skip
+ * this account: a check is already running, or the last one was a rejected
+ * login. The backend never retries a login within one action, but a poll every
+ * few minutes against a stale password is a retry loop all the same — and mail
+ * servers answer repeated failed logins from one IP with a temporary block. The
+ * pause lasts until the user checks by hand (one attempt, their call) or saves
+ * the account (`clearSyncState`).
+ */
+export function backgroundCheckBlocked(state: MailSyncState | undefined): boolean {
+  if (!state) return false;
+  if (state.phase === "start" || state.phase === "folder" || state.phase === "headers") return true;
+  return state.phase === "error" && isAuthRejection(state.error);
+}
 
 /** Total unread across an account's folders, for the rail's badge. */
 export function unreadTotal(folders: MailFolder[] | undefined): number {

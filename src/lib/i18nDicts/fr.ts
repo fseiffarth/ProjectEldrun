@@ -4367,6 +4367,7 @@ export const dict: Dict = {
   "mail.indicator": "Courrier",
   "mail.indicatorNew": "{count} nouveaux",
   "mail.indicatorFailed": "la dernière relève a échoué : {reason}",
+  "mail.indicatorAuthPaused": "les relèves automatiques sont en pause jusqu’à l’enregistrement du compte ou une relève manuelle",
   "mail.overlayTitle": "Courrier",
   "mail.menuAria": "Comptes et listes de courrier",
   "mail.menuOpenAccount": "Ouvrir {name}",

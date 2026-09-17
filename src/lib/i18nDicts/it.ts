@@ -4365,6 +4365,7 @@ export const dict: Dict = {
   "mail.indicator": "Posta",
   "mail.indicatorNew": "{count} nuovi",
   "mail.indicatorFailed": "l'ultimo controllo non è riuscito: {reason}",
+  "mail.indicatorAuthPaused": "i controlli automatici sono in pausa finché l'account non viene salvato o controllato a mano",
   "mail.overlayTitle": "Posta",
   "mail.menuAria": "Account e elenchi di posta",
   "mail.menuOpenAccount": "Apri {name}",

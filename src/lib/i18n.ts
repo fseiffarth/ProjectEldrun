@@ -4546,6 +4546,7 @@ export const en = {
   "mail.indicator": "Mail",
   "mail.indicatorNew": "{count} new",
   "mail.indicatorFailed": "the last check failed: {reason}",
+  "mail.indicatorAuthPaused": "automatic checks are paused until the account is saved or checked by hand",
   "mail.overlayTitle": "Mail",
   "mail.menuAria": "Mail accounts and lists",
   "mail.menuOpenAccount": "Open {name}",
