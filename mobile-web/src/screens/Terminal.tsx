@@ -109,6 +109,11 @@ const PHONE_SCROLLBACK = 10_000;
 const TAIL_MARGIN = 8;
 /** Frozen history chunks each "Show earlier output" tap reveals (×400 lines). */
 const REVEAL_CHUNKS = 2;
+/** How far from its own bottom a scroller still counts as showing the newest
+ * output. Terminal view needs only the rounding slack of one fractional cell
+ * height; the reading view re-wraps, so it keeps the wider window a reader's
+ * own scroll already uses there. */
+const NEWEST_SLACK = 4;
 
 /** How long the model sheet waits for the session to draw the picker `/model`
  * opens. Past it the sheet steps aside: the dialog — or the reason there is
@@ -404,6 +409,20 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
    * the text the reader was looking at (WebKit has no overflow-anchor). */
   const revealAnchor = useRef<{ height: number; top: number }>();
   const [atBottom, setAtBottom] = useState(true);
+  /** `atBottom`, readable from a callback that must not resubscribe to see it
+   * change — the reading view's resize observer below. */
+  const atBottomRef = useRef(true);
+  const followReadable = (value: boolean) => {
+    atBottomRef.current = value;
+    setAtBottom(value);
+  };
+  /** Whether Terminal view is panned to the newest rows. Kept from the box's
+   * own scroll events rather than measured when it is wanted: a resize is the
+   * moment the answer is needed and the moment it is already gone, because
+   * shrinking the box raises its maximum scroll offset without moving
+   * `scrollTop` — the bottom slides under the composer and the box reads as
+   * scrolled up ever after. */
+  const atNewest = useRef(true);
   const [lastSent, setLastSent] = useState("");
   const [copied, setCopied] = useState(false);
   const [voiceAvailable] = useState(() => speechRecognitionSupported());
@@ -491,7 +510,8 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     setClipped(false);
     setEarlier({ chunks: [], open: [], dropped: false });
     setRevealed(1);
-    setAtBottom(true);
+    followReadable(true);
+    atNewest.current = true;
     setLastSent("");
     setCopied(false);
     setStoppedReason("");
@@ -664,7 +684,7 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
         cancelAnimationFrame(readableScrollFrame);
         readableScrollFrame = requestAnimationFrame(() => {
           stream.scrollTo({ top: stream.scrollHeight });
-          setAtBottom(true);
+          followReadable(true);
         });
       }
     };
@@ -721,6 +741,7 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
       anchorFrame = requestAnimationFrame(() => {
         const box = host.current;
         if (box) box.scrollTop = box.scrollHeight;
+        atNewest.current = true;
         wide?.sync();
       });
     };
@@ -740,9 +761,12 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
         const rows = Math.min(TERMINAL_SIZE.maxRows, Math.max(TERMINAL_SIZE.minRows, term.rows));
         if (cols !== term.cols || rows !== term.rows) term.resize(cols, rows);
       }
-      // Only a changed row count moves the view: a reader panned up into the
-      // screen keeps their place through an unrelated resize.
-      if (term.rows !== rows) anchorNewest();
+      // A changed row count moves the view, and so does a box that was showing
+      // the newest rows before this resize — the keyboard opening and the
+      // composer growing both shrink it, and without this the live prompt and
+      // the newest output slide under the composer and stay there. A reader
+      // panned up into the screen keeps their place through either.
+      if (term.rows !== rows || atNewest.current) anchorNewest();
       wide?.sync();
       if (ws?.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
@@ -875,6 +899,14 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     }
     const terminalHost = host.current;
     const removeTouchScroll = installTerminalTouchScroll(terminalHost, term);
+    // Both the drag handler and `anchorNewest` scroll the box, and both arrive
+    // here. `NEWEST_SLACK` absorbs the sub-pixel cell height that leaves a
+    // fitted screen a fraction short of its own scroll extent.
+    const followNewest = () => {
+      atNewest.current =
+        terminalHost.scrollHeight - terminalHost.scrollTop - terminalHost.clientHeight <= NEWEST_SLACK;
+    };
+    terminalHost.addEventListener("scroll", followNewest, { passive: true });
     // A fresh session starts at column one, whatever the previous tab was
     // panned to.
     terminalHost.scrollLeft = 0;
@@ -978,11 +1010,34 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
       window.removeEventListener("resize", resize);
       window.visualViewport?.removeEventListener("resize", resize);
       resizeObserver?.disconnect();
+      terminalHost.removeEventListener("scroll", followNewest);
       removeTouchScroll();
       wide?.dispose();
     };
   }, [tab.id]);
   useEffect(() => { if (view === "focus") refreshReadable.current(); }, [view]);
+  // The reading view has the problem Terminal view's box has: the keyboard
+  // opening, or the composer growing under a long draft, shrinks it without
+  // moving its scroll offset, so the newest turn slides under the composer.
+  // There it also stops following output, because the follow test is the
+  // distance to the bottom the shrink just opened up — nothing came back until
+  // the reader found "Jump to latest". Put it back on the newest whenever it
+  // was there before the resize.
+  useEffect(() => {
+    const stream = readableHost.current;
+    if (!stream || typeof ResizeObserver === "undefined") return;
+    let frame = 0;
+    const observer = new ResizeObserver(() => {
+      if (!atBottomRef.current) return;
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => stream.scrollTo({ top: stream.scrollHeight }));
+    });
+    observer.observe(stream);
+    return () => {
+      cancelAnimationFrame(frame);
+      observer.disconnect();
+    };
+  }, [view, altScreen]);
   /** Whether Focus is reading the stored session rather than the screen. */
   const sessionFocus = tab.kind === "agent" && view === "focus" && focusSource === "session";
   const transcriptVersion = useRef<string | undefined>();
@@ -1501,7 +1556,7 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     const stream = readableHost.current;
     if (!stream) return;
     stream.scrollTo({ top: stream.scrollHeight, behavior: "smooth" });
-    setAtBottom(true);
+    followReadable(true);
   };
   const stopVoice = () => recognition.current?.stop();
   const startVoice = async () => {
@@ -1628,7 +1683,7 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
         <section ref={readableHost} className="readable-output" aria-label="Session output" aria-live="polite"
           onScroll={(event) => {
             const stream = event.currentTarget;
-            setAtBottom(stream.scrollHeight - stream.scrollTop - stream.clientHeight < 120);
+            followReadable(stream.scrollHeight - stream.scrollTop - stream.clientHeight < 120);
           }}>
           {sessionShown
             ? (transcript && transcript.entries.length === 0 && !liveQuestion && outbox.length === 0
