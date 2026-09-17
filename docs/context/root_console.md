@@ -36,6 +36,29 @@ write the *active* scope, and root is not the active one while the overlay
 floats over a project. The drag keeps its state local rather than in
 `stores/drag`, because that store puts `CenterPanel` into drag mode underneath.
 
+It is a window, not a dialog, so it behaves like one. The title bar is the move
+handle (a press on a tab or a control keeps its own meaning), eight grips on the
+edges and corners resize it, and ⤢ fills the window — as does a double-click on
+the bar. The frame lives in `stores/rootOverlay`, in localStorage rather than
+`settings.json`: where a window sits on one desk is not a preference worth
+syncing. It is re-clamped against the window it actually opens in, so a console
+sized on an external display is still reachable on the laptop panel, and an edge
+dragged past the minimum pins the opposite edge instead of pushing the console
+across the screen. An untouched console keeps the size the stylesheet gives it.
+
+Every subwindow also docks the **file viewer** on its right edge, through the
+same ◫ a project's subwindows carry — the shared `SubwindowFilesSidebar`, i.e.
+the `ProjectFilesView` the side panel and the Files (Project) tab render, so
+there is no fourth copy of the viewer. It is rooted at `~/eldrun/root`, the
+folder that belongs to no project: the console had a terminal on it and no way
+to see what was in it but `ls`. The state is the group node's own
+(`filesOpen`/`filesWidth`/`filesFolder`), so it persists with the root layout
+under `sessions/root/` — but it is written through `setGroupFiles*InScope`,
+because root is not the active scope while the console floats and the plain
+actions would have filed the console's file column onto the project on screen.
+Unsplit, the ◫ sits in the console's title bar and the control cluster reserves
+the column's width the way `TabBar` does; split, each subwindow carries its own.
+
 Two jobs moved into the overlay's always-mounted host because root no longer
 becomes the active scope:
 

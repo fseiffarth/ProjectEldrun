@@ -2,7 +2,14 @@ import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, use
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { useRootOverlayStore } from "../../stores/rootOverlay";
+import {
+  clampRootOverlayFrame,
+  filledRootOverlayFrame,
+  rootOverlayFrameDrag,
+  useRootOverlayStore,
+  type RootOverlayDragMode,
+  type RootOverlayFrame,
+} from "../../stores/rootOverlay";
 import { useProjectsStore } from "../../stores/projects";
 import { useActivityStore } from "../../stores/activity";
 import { useCalendarStore } from "../../stores/calendar";
@@ -22,6 +29,11 @@ import {
   type LayoutNode,
   type TabEntry,
 } from "../../stores/tabs";
+import {
+  clampFilesWidth,
+  DEFAULT_GROUP_FILES_WIDTH,
+  SubwindowFilesSidebar,
+} from "../files/SubwindowFilesSidebar";
 import { notifyCalendarWrite } from "../../lib/calendarWriteHook";
 import { bindDragRelease, dragPlatform } from "../../lib/dragPlatform";
 import type { CalendarEvent, CalendarTask } from "../../types";
@@ -88,6 +100,31 @@ interface OverlayDrag {
 const DRAG_THRESHOLD_PX = 5;
 
 const NO_TABS: TabEntry[] = [];
+
+/** The eight resize grips, in the order they are drawn (edges, then corners). */
+const FRAME_GRIPS: RootOverlayDragMode[] = ["n", "s", "e", "w", "ne", "nw", "se", "sw"];
+
+/**
+ * A press on the title bar that must NOT start a window move: the controls have
+ * their own jobs, and a tab's own press is the tab drag.
+ */
+const BAR_NO_DRAG = ".tab, button, .root-overlay-rights, .untested-tag";
+
+/** A group node's docked-file-viewer fields (`GroupNode`'s own three). */
+type GroupFiles = Pick<
+  Extract<LayoutNode, { type: "group" }>,
+  "filesOpen" | "filesWidth" | "filesFolder"
+>;
+
+/**
+ * The width a tab bar's control cluster reserves for the column docked under it,
+ * so the ◫/× sit above the viewer and the scrolling strip stops at the pane's
+ * edge — `TabBar`'s `filesReserveWidth`, applied to the console's own bars.
+ */
+function filesReserveStyle(files: GroupFiles | undefined): React.CSSProperties | undefined {
+  if (!files?.filesOpen) return undefined;
+  return { width: clampFilesWidth(files.filesWidth ?? DEFAULT_GROUP_FILES_WIDTH) };
+}
 
 /**
  * The **root console** (see `stores/rootOverlay` for why it is an overlay): one
@@ -185,6 +222,18 @@ export function RootOverlayHost() {
  *
  * With a single subwindow its strip sits in the console's own title bar; once
  * the layout is split every subwindow carries its own bar.
+ *
+ * Three things a floating window needs and this one lacked. Every subwindow
+ * docks the **file viewer** on its right edge through the same ◫ a project's
+ * subwindows carry (`SubwindowFilesSidebar` → `ProjectFilesTab`, so no fourth
+ * copy of the viewer), rooted at `~/eldrun/root` — the folder that belongs to no
+ * project and until now could only be read with `ls` from inside the console.
+ * The state is the group node's own (`filesOpen`/`filesWidth`/`filesFolder`),
+ * written through the `…InScope` actions because root is not the active scope.
+ * The console also **moves** (drag the title bar) and **resizes** (eight grips),
+ * with the frame remembered per machine in `stores/rootOverlay`; ⤢ fills the
+ * window and ⤡ comes back. The frame is re-clamped against the window it opens
+ * in, so a console sized on an external display is still reachable without one.
  */
 function RootOverlay() {
   const t = useT();
@@ -192,6 +241,9 @@ function RootOverlay() {
   const layout = useTabsStore((s) => s.layoutByScope[ROOT_SCOPE] ?? null);
   const storedFocus = useTabsStore((s) => s.focusedGroupByScope[ROOT_SCOPE] ?? null);
   const close = useRootOverlayStore((s) => s.close);
+  const storedFrame = useRootOverlayStore((s) => s.frame);
+  const filled = useRootOverlayStore((s) => s.filled);
+  const toggleFilled = useRootOverlayStore((s) => s.toggleFilled);
   const rootDir = useProjectsStore((s) => s.rootDir) ?? "";
   const [addMenu, setAddMenu] = useState<{ x: number; y: number; groupId: string | null } | null>(
     null,
@@ -200,7 +252,16 @@ function RootOverlay() {
   const [status, setStatus] = useState<RootMcpStatus | null>(null);
   const [drag, setDrag] = useState<OverlayDrag | null>(null);
   const [groupRects, setGroupRects] = useState<Record<string, Rect>>({});
+  // The frame while a move/resize drag is in flight — local, so a gesture costs
+  // no store write per pointer move (the docked file column's own bargain).
+  const [liveFrame, setLiveFrame] = useState<RootOverlayFrame | null>(null);
+  const [framing, setFraming] = useState(false);
+  const [viewport, setViewport] = useState(() => ({
+    w: typeof window === "undefined" ? 0 : window.innerWidth,
+    h: typeof window === "undefined" ? 0 : window.innerHeight,
+  }));
   const regionRef = useRef<HTMLDivElement>(null);
+  const frameRef = useRef<HTMLDivElement>(null);
   const bodyRefs = useRef(new Map<string, HTMLDivElement>());
   const stripRefs = useRef(new Map<string, HTMLDivElement>());
 
@@ -232,13 +293,88 @@ function RootOverlay() {
       // Escape inside a pane is the pane's (an agent TUI's cancel key); the
       // toggle chord closes from there. A menu or a drag of ours goes first.
       if (regionRef.current && e.target instanceof Node && regionRef.current.contains(e.target)) return;
-      if (addMenu || manageAgents || dragging) return;
+      if (addMenu || manageAgents || dragging || framing) return;
       e.stopPropagation();
       close();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [close, addMenu, manageAgents, dragging]);
+  }, [close, addMenu, manageAgents, dragging, framing]);
+
+  // ── The console's own frame ─────────────────────────────────────────────
+  // A remembered frame is re-clamped against the window it actually opens in,
+  // so a console sized on an external display is still reachable on the laptop.
+  useEffect(() => {
+    const onResize = () => setViewport({ w: window.innerWidth, h: window.innerHeight });
+    onResize();
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  const frame =
+    liveFrame ??
+    (filled
+      ? filledRootOverlayFrame(viewport.w, viewport.h)
+      : storedFrame
+        ? clampRootOverlayFrame(storedFrame, viewport.w, viewport.h)
+        : null);
+
+  /**
+   * Move or resize the console. The release is bound synchronously inside
+   * pointerdown (WebKitGTK delivers the terminal event only to listeners that
+   * existed before the gesture began — the tab drag's rule), and the start rect
+   * is the element's OWN, so a drag on a console still wearing the stylesheet's
+   * default size takes over from it seamlessly.
+   */
+  const beginFrameDrag = useCallback((e: React.PointerEvent, mode: RootOverlayDragMode) => {
+    if (e.button !== 0) return;
+    const el = frameRef.current;
+    if (!el) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const r = el.getBoundingClientRect();
+    const start: RootOverlayFrame = { x: r.left, y: r.top, width: r.width, height: r.height };
+    const sx = e.clientX;
+    const sy = e.clientY;
+    let latest = start;
+    let moved = false;
+    const onMove = (ev: PointerEvent) => {
+      // A press on the bar is usually a click on the bar; only a travelled one
+      // is a move. A grip has no other meaning, so it takes the first pixel.
+      if (!moved && mode === "move" && Math.hypot(ev.clientX - sx, ev.clientY - sy) < DRAG_THRESHOLD_PX) return;
+      moved = true;
+      latest = rootOverlayFrameDrag(
+        start,
+        mode,
+        ev.clientX - sx,
+        ev.clientY - sy,
+        window.innerWidth,
+        window.innerHeight,
+      );
+      setLiveFrame(latest);
+    };
+    const teardown = () => {
+      window.removeEventListener("pointermove", onMove);
+      setLiveFrame(null);
+      setFraming(false);
+    };
+    setFraming(true);
+    bindDragRelease({
+      onCommit: () => {
+        const committed = moved ? latest : null;
+        teardown();
+        if (committed) useRootOverlayStore.getState().setFrame(committed);
+      },
+      onAbort: teardown,
+    });
+    window.addEventListener("pointermove", onMove);
+  }, []);
+
+  const onBarPointerDown = (e: React.PointerEvent) => {
+    const el = e.target as HTMLElement | null;
+    if (el?.closest(BAR_NO_DRAG)) return;
+    beginFrameDrag(e, "move");
+  };
 
   // ── Measurement ─────────────────────────────────────────────────────────
   const measure = useCallback(() => {
@@ -428,7 +564,27 @@ function RootOverlay() {
   }, [groups]);
   const tabByKey = useMemo(() => new Map(tabs.map((tab) => [tab.key, tab])), [tabs]);
 
-  const stripFor = (groupId: string, tabKeys: string[], activeKey: string | null) => (
+  /** The ◫ toggle of one subwindow's docked file viewer, addressed to ROOT. */
+  const filesToggle = (groupId: string, open: boolean) => (
+    <button
+      className={`subwindow-files-toggle${open ? " open" : ""}`}
+      title={open ? t("tabBar.filesToggleOpenTitle") : t("tabBar.filesToggleClosedTitle")}
+      onMouseDown={(e) => e.stopPropagation()}
+      onClick={(e) => {
+        e.stopPropagation();
+        useTabsStore.getState().setGroupFilesInScope(ROOT_SCOPE, groupId, !open);
+      }}
+    >
+      ◫
+    </button>
+  );
+
+  const stripFor = (
+    groupId: string,
+    tabKeys: string[],
+    activeKey: string | null,
+    files?: GroupFiles,
+  ) => (
     <>
       <GroupStrip
         groupId={groupId}
@@ -447,12 +603,44 @@ function RootOverlay() {
           +
         </button>
       </div>
+      {/* Split, every subwindow carries its own bar and therefore its own ◫;
+          unsplit, the toggle sits in the console's title bar beside the ×. */}
+      {split && groupId !== EMPTY_GROUP_ID && (
+        <div className="tab-controls" style={filesReserveStyle(files)}>
+          {filesToggle(groupId, !!files?.filesOpen)}
+        </div>
+      )}
     </>
   );
 
+  /** The docked file column of one subwindow — the SAME component the center
+   *  panel's subwindows dock (`ProjectFilesTab` under it), rooted at
+   *  `~/eldrun/root`: the folder that belongs to no project. */
+  const filesColumn = (group: GroupFiles & { id: string }) => (
+    <SubwindowFilesSidebar
+      scope={ROOT_SCOPE}
+      cwd={rootDir}
+      viewerId={`group:${group.id}`}
+      width={group.filesWidth}
+      onWidthChange={(w) =>
+        useTabsStore.getState().setGroupFilesWidthInScope(ROOT_SCOPE, group.id, w)
+      }
+      folder={group.filesFolder}
+      onFolderChange={(f) =>
+        useTabsStore.getState().setGroupFilesFolderInScope(ROOT_SCOPE, group.id, f)
+      }
+      onHide={() => useTabsStore.getState().setGroupFilesInScope(ROOT_SCOPE, group.id, false)}
+      canOpenTabs
+    />
+  );
+
   const sole = soleGroupId ? (allGroups(layout)[0] ?? null) : null;
+  const soleFiles = !split && !!sole?.filesOpen;
   const previewRect =
     drag?.overGroup && drag.edge ? groupRects[drag.overGroup] : undefined;
+  const frameStyle: React.CSSProperties | undefined = frame
+    ? { position: "fixed", left: frame.x, top: frame.y, width: frame.width, height: frame.height, margin: 0 }
+    : undefined;
 
   return (
     <div
@@ -462,17 +650,47 @@ function RootOverlay() {
       }}
     >
       <div
-        className={`root-overlay subwindow focused${drag ? " dragging" : ""}${split ? " split-layout" : ""}`}
+        ref={frameRef}
+        className={`root-overlay subwindow focused${drag ? " dragging" : ""}${
+          split ? " split-layout" : ""
+        }${framing ? " framing" : ""}`}
+        style={frameStyle}
         role="dialog"
         aria-modal="true"
         aria-label={t("rootConsole.title")}
       >
-        <div className="tab-bar root-overlay-bar">
-          <div className="root-overlay-mark" title={t("rootConsole.title")}>
+        {/* Resize grips, one per edge and corner. Withheld while the console
+            fills the window — there is nothing to drag them into. */}
+        {!filled &&
+          FRAME_GRIPS.map((mode) => (
+            <div
+              key={mode}
+              className={`root-overlay-grip grip-${mode}`}
+              title={t("rootConsole.resizeHint")}
+              onPointerDown={(e) => beginFrameDrag(e, mode)}
+            />
+          ))}
+        {/* The title bar is also the move handle (and double-click fills the
+            window): a floating subwindow you cannot put somewhere else is a
+            dialog, and this one holds terminals. A press on a tab or a control
+            keeps its own meaning — see BAR_NO_DRAG. */}
+        <div
+          className="tab-bar root-overlay-bar"
+          onPointerDown={onBarPointerDown}
+          onDoubleClick={(e) => {
+            if ((e.target as HTMLElement | null)?.closest(BAR_NO_DRAG)) return;
+            toggleFilled();
+          }}
+        >
+          <div className="root-overlay-mark" title={t("rootConsole.moveHint")}>
             <StarIcon />
           </div>
-          {soleGroupId && stripFor(soleGroupId, sole?.tabKeys ?? [], sole?.activeKey ?? null)}
-          <div className="tab-controls root-overlay-controls">
+          {soleGroupId &&
+            stripFor(soleGroupId, sole?.tabKeys ?? [], sole?.activeKey ?? null)}
+          <div
+            className="tab-controls root-overlay-controls"
+            style={soleFiles ? filesReserveStyle(sole ?? undefined) : undefined}
+          >
             <span
               className={`root-overlay-rights${status?.running ? " on" : ""}`}
               title={`${agentsWithTools}${
@@ -482,6 +700,16 @@ function RootOverlay() {
               {t("rootConsole.rightsBadge")}
             </span>
             <UntestedTag />
+            {!split && soleGroupId && soleGroupId !== EMPTY_GROUP_ID && (
+              filesToggle(soleGroupId, !!sole?.filesOpen)
+            )}
+            <button
+              className="subwindow-hide"
+              title={filled ? t("rootConsole.restore") : t("rootConsole.fill")}
+              onClick={toggleFilled}
+            >
+              {filled ? "⤡" : "⤢"}
+            </button>
             <button className="subwindow-hide" title={t("common.close")} onClick={close}>
               ×
             </button>
@@ -506,6 +734,7 @@ function RootOverlay() {
                     registerBody={registerBody}
                     onResized={measure}
                     stripFor={stripFor}
+                    filesColumn={filesColumn}
                   />
                 </div>
                 <div className="pane-layer">
@@ -550,6 +779,11 @@ function RootOverlay() {
               </>
             )}
           </div>
+          {/* Unsplit, the sole subwindow's docked file column sits here, BESIDE
+              the measured pane region (the `Subwindow` arrangement) — so the
+              region shrinks and the flat pane layer, sized to its rect, never
+              paints over the viewer. Split, each subwindow docks its own. */}
+          {soleFiles && sole && filesColumn(sole)}
         </div>
       </div>
       {drag &&
@@ -682,7 +916,13 @@ interface TreeProps {
   focusedGroup: string | null;
   registerBody: (id: string) => (el: HTMLDivElement | null) => void;
   onResized: () => void;
-  stripFor: (groupId: string, tabKeys: string[], activeKey: string | null) => React.ReactNode;
+  stripFor: (
+    groupId: string,
+    tabKeys: string[],
+    activeKey: string | null,
+    files?: GroupFiles,
+  ) => React.ReactNode;
+  filesColumn: (group: GroupFiles & { id: string }) => React.ReactNode;
 }
 
 function OverlayTree(props: TreeProps) {
@@ -699,11 +939,12 @@ function OverlayTree(props: TreeProps) {
         if (props.focusedGroup !== node.id) useTabsStore.getState().focusGroupInScope(ROOT_SCOPE, node.id);
       }}
     >
-      <div className="tab-bar">{props.stripFor(node.id, node.tabKeys, node.activeKey)}</div>
+      <div className="tab-bar">{props.stripFor(node.id, node.tabKeys, node.activeKey, node)}</div>
       <div className="subwindow-body">
         <div className="subwindow-pane-region">
           <div className="subwindow-pane-slot" ref={props.registerBody(node.id)} />
         </div>
+        {node.filesOpen && props.filesColumn(node)}
       </div>
     </div>
   );

@@ -874,6 +874,11 @@
   padding-top: 7vh;
 }
 .root-overlay {
+  /* The size it opens at. A move or a resize replaces all four of these with an
+     inline `position: fixed` frame (stores/rootOverlay), so this stays what an
+     untouched console is. `position: relative` is what the resize grips below
+     hang off before that happens. */
+  position: relative;
   width: min(1180px, 88vw);
   height: min(78vh, 900px);
   color: var(--text-primary);
@@ -881,8 +886,75 @@
   border-radius: var(--radius-lg, 10px);
   box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
 }
+/* The title bar doubles as the move handle; its tabs and buttons keep their own
+   pointer (the same set RootOverlay's BAR_NO_DRAG leaves alone). */
 .root-overlay-bar {
   flex: 0 0 auto;
+  cursor: var(--cur-grab, grab);
+}
+.root-overlay-bar button {
+  cursor: var(--cur-pointer, pointer);
+}
+.root-overlay.framing,
+.root-overlay.framing .root-overlay-bar {
+  /* A drag must not select the bar's text on the way past. */
+  user-select: none;
+}
+/* Resize grips: one per edge, one per corner, inside the frame so they never
+   widen the console's own box. Above the tab bar and the pane layer, which are
+   what they would otherwise be swallowed by. */
+.root-overlay-grip {
+  position: absolute;
+  z-index: 30;
+}
+.grip-n,
+.grip-s {
+  left: 12px;
+  right: 12px;
+  height: 5px;
+  cursor: var(--cur-ns-resize, ns-resize);
+}
+.grip-e,
+.grip-w {
+  top: 12px;
+  bottom: 12px;
+  width: 5px;
+  cursor: var(--cur-ew-resize, ew-resize);
+}
+.grip-ne,
+.grip-nw,
+.grip-se,
+.grip-sw {
+  width: 14px;
+  height: 14px;
+}
+.grip-nw,
+.grip-se {
+  cursor: nwse-resize;
+}
+.grip-ne,
+.grip-sw {
+  cursor: nesw-resize;
+}
+.grip-n,
+.grip-ne,
+.grip-nw {
+  top: 0;
+}
+.grip-s,
+.grip-se,
+.grip-sw {
+  bottom: 0;
+}
+.grip-e,
+.grip-ne,
+.grip-se {
+  right: 0;
+}
+.grip-w,
+.grip-nw,
+.grip-sw {
+  left: 0;
 }
 .root-overlay-mark {
   display: flex;

@@ -6608,6 +6608,10 @@ export const en = {
   "rootConsole.rightsOff":
     "Eldrun's tools are not running — agents opened here are ordinary agents until Eldrun is restarted.",
   "rootConsole.noPhone": "The root console is never offered to Eldrun Mobile or to Claude's remote control.",
+  "rootConsole.moveHint": "Drag the bar to move the console · double-click to fill the window",
+  "rootConsole.resizeHint": "Drag to resize the console",
+  "rootConsole.fill": "Fill the window",
+  "rootConsole.restore": "Back to the previous size",
   "rootConsole.emptyTitle": "The root console is empty",
   "rootConsole.emptyHint":
     "Press + to open an agent or a shell here. It belongs to no project, so it stays one keystroke away from all of them.",

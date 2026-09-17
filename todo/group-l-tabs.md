@@ -324,3 +324,50 @@ correctness/UX work atop the same layout model #42 detaches.*
       - The phone's project list never shows the root console.
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work
+
+2314. **The root console as a window: a docked file viewer, move, resize.** ✅
+    Implemented · 🧪 Awaiting live QA. Three things the console lacked because
+    it was built as a dialog and is used as a window (2026-09-17). **The file
+    viewer** docks on every subwindow's right edge through the same ◫ a
+    project's subwindows carry — the shared `SubwindowFilesSidebar` →
+    `ProjectFilesTab` → `ProjectFilesView`, so no fourth copy of the viewer —
+    rooted at `~/eldrun/root`, the folder that belongs to no project and could
+    until now only be read with `ls` from inside the console. Its state is the
+    group node's own three fields (`filesOpen`/`filesWidth`/`filesFolder`),
+    written through new `setGroupFiles*InScope` actions, because root is not the
+    active scope while the console floats over a project and the plain actions
+    would have filed the console's file column onto the project on screen.
+    Unsplit, the ◫ sits in the console's title bar beside the ×, and the control
+    cluster reserves the column's width the way `TabBar` does; split, every
+    subwindow carries its own ◫ and its own column. **Move** is a drag of the
+    title bar (a press on a tab or a control keeps its own meaning), **resize**
+    is eight grips on the edges and corners, and ⤢ fills the window with ⤡ back
+    — double-clicking the bar does the same. The frame is remembered per machine
+    in localStorage (`stores/rootOverlay`, the `fileSourcePref`/`texViewPref`
+    convention, never `settings.json`: where a window sits on one desk is not a
+    preference worth syncing) and re-clamped against the window it actually
+    opens in, so a console sized on an external display is still reachable
+    without one; an edge dragged past the minimum pins the opposite edge instead
+    of pushing the console across the screen.
+    *Files: `src/components/layout/RootOverlay.tsx`, `src/stores/rootOverlay.ts`,
+    `src/stores/tabs.ts`, `src/styles/subwindows.css`, `src/lib/i18n.ts` (+ the
+    four dictionaries), `docs/context/root_console.md`.*
+    - [x] 🤖 Automated test — `src/__tests__/RootOverlay.test.tsx` (the ◫ writes
+      the ROOT group node and never the project's, the column's scope/cwd/viewer
+      id, one column per split subwindow, fill/restore, and the pure frame
+      helpers: clamping into a smaller window, move, corner resize, the pinned
+      far edge).
+    - [ ] 🖐️ Manual test (frontend only — hot-reloads)
+      - Ctrl+Shift+R, then ◫: a file tree of `~/eldrun/root` docks on the right;
+        drag its left edge to resize it, double-click that edge to close it.
+        Close and reopen the console — the column, its width and its browsed
+        folder are still there; the project on screen never grew one.
+      - Split the console (drag a tab onto a body edge): each subwindow has its
+        own ◫ and its own column.
+      - Drag the title bar's empty space to move the console; drag each edge and
+        corner to resize it; ⤢ fills the window and ⤡ comes back; a
+        double-click on the bar toggles the same. A press on a tab still drags
+        the tab, and a press on ⚿/×/+ still does its own job.
+      - Relaunch: the console opens where it was left, at the size it was left.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work

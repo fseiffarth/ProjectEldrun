@@ -1196,6 +1196,13 @@ interface TabsStore {
   // Persist the folder the group's docked viewer last browsed to (see
   // GroupNode.filesFolder). Same node-write path as the flag/width.
   setGroupFilesFolder: (groupId: string, folder: string) => void;
+  // The same three writes addressed to a NAMED scope — what the root console
+  // needs, since root is not the active scope while it floats over a project
+  // (the plain actions above write `s.scope` and would file the console's file
+  // viewer onto the project on screen).
+  setGroupFilesInScope: (scope: string, groupId: string, open: boolean) => void;
+  setGroupFilesWidthInScope: (scope: string, groupId: string, width: number) => void;
+  setGroupFilesFolderInScope: (scope: string, groupId: string, folder: string) => void;
 
   // #42: detach / re-attach a subwindow (group) to/from its own OS window.
   // `detachGroup` removes the group from the in-window tree, records it in
@@ -3143,33 +3150,39 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
     });
   },
 
-  setGroupFiles: (groupId, open) => {
+  setGroupFiles: (groupId, open) => get().setGroupFilesInScope(get().scope, groupId, open),
+
+  setGroupFilesInScope: (scope, groupId, open) => {
     set((s) => {
-      const { tabs, layout, focusedGroupId } = currentScopeState(s);
+      const { tabs, layout, focusedGroupId } = scopeState(s, scope);
       if (!layout || !findGroup(layout, groupId)) return {};
       const next = mapGroup(layout, groupId, (g) => ({ ...g, filesOpen: open }));
-      return writeScope(s, s.scope, tabs, next, focusedGroupId);
+      return writeScope(s, scope, tabs, next, focusedGroupId);
     });
   },
 
-  setGroupFilesWidth: (groupId, width) => {
+  setGroupFilesWidth: (groupId, width) => get().setGroupFilesWidthInScope(get().scope, groupId, width),
+
+  setGroupFilesWidthInScope: (scope, groupId, width) => {
     set((s) => {
-      const { tabs, layout, focusedGroupId } = currentScopeState(s);
+      const { tabs, layout, focusedGroupId } = scopeState(s, scope);
       if (!layout || !findGroup(layout, groupId)) return {};
       const next = mapGroup(layout, groupId, (g) => ({ ...g, filesWidth: width }));
-      return writeScope(s, s.scope, tabs, next, focusedGroupId);
+      return writeScope(s, scope, tabs, next, focusedGroupId);
     });
   },
 
-  setGroupFilesFolder: (groupId, folder) => {
+  setGroupFilesFolder: (groupId, folder) => get().setGroupFilesFolderInScope(get().scope, groupId, folder),
+
+  setGroupFilesFolderInScope: (scope, groupId, folder) => {
     set((s) => {
-      const { tabs, layout, focusedGroupId } = currentScopeState(s);
+      const { tabs, layout, focusedGroupId } = scopeState(s, scope);
       const g = layout && findGroup(layout, groupId);
       // No-op when unchanged, so re-listing the same folder doesn't churn the
       // layout and wake the saveLayout debounce for nothing (mirrors setTabFolder).
       if (!g || (g.filesFolder ?? "") === folder) return {};
       const next = mapGroup(layout, groupId, (grp) => ({ ...grp, filesFolder: folder }));
-      return writeScope(s, s.scope, tabs, next, focusedGroupId);
+      return writeScope(s, scope, tabs, next, focusedGroupId);
     });
   },
 

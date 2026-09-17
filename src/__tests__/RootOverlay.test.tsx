@@ -32,6 +32,15 @@ vi.mock("../components/tabs/TabPane", () => ({
     return null;
   },
 }));
+// The docked file column is the shared ProjectFilesTab host (a whole viewer);
+// what this suite is about is WHICH scope's group node the console writes.
+vi.mock("../components/files/SubwindowFilesSidebar", () => ({
+  DEFAULT_GROUP_FILES_WIDTH: 300,
+  clampFilesWidth: (w: number) => w,
+  SubwindowFilesSidebar: (props: { scope: string; cwd: string; viewerId?: string }) => (
+    <div data-testid="root-files" data-scope={props.scope} data-cwd={props.cwd} data-viewer={props.viewerId} />
+  ),
+}));
 vi.mock("../components/tabs/NewTabMenu", () => ({
   NewTabMenu: (props: { scope: string; onPick: (spec: Record<string, unknown>) => void }) => (
     <button
@@ -47,7 +56,15 @@ import { useProjectsStore } from "../stores/projects";
 import { useCalendarStore } from "../stores/calendar";
 import { useMailStore } from "../stores/mail";
 import { useTodoStore } from "../stores/todo";
-import { toggleRootConsole, useRootOverlayStore } from "../stores/rootOverlay";
+import {
+  clampRootOverlayFrame,
+  filledRootOverlayFrame,
+  rootOverlayFrameDrag,
+  toggleRootConsole,
+  useRootOverlayStore,
+  MIN_ROOT_OVERLAY_HEIGHT,
+  MIN_ROOT_OVERLAY_WIDTH,
+} from "../stores/rootOverlay";
 import { setCalendarWriteHandler } from "../lib/calendarWriteHook";
 import { RootOverlayHost } from "../components/layout/RootOverlay";
 import { SHORTCUT_DEFS, chordMatches, resolveChord } from "../lib/shortcuts";
@@ -70,7 +87,7 @@ beforeEach(() => {
     focusedGroupByScope: {},
   });
   useProjectsStore.setState({ rootDir: "/r", activeId: "p1" });
-  useRootOverlayStore.setState({ open: false });
+  useRootOverlayStore.setState({ open: false, frame: null, filled: false });
   useCalendarStore.setState({ events: [], tasks: [] });
 });
 
@@ -231,5 +248,106 @@ describe("RootOverlayHost", () => {
     useMailStore.setState({ overlayOpen: false });
     useCalendarStore.setState({ overlayOpen: false });
     useTodoStore.getState().closeOverlay();
+  });
+});
+
+describe("the console's docked file viewer", () => {
+  it("◫ opens a column on the ROOT group node, rooted at the root folder", async () => {
+    seedRootTabs();
+    render(<RootOverlayHost />);
+    await act(async () => useRootOverlayStore.getState().show());
+    expect(screen.queryByTestId("root-files")).toBeNull();
+
+    fireEvent.click(screen.getByTitle("Open a file viewer in this subwindow"));
+    const [group] = allGroups(useTabsStore.getState().layoutByScope.root ?? null);
+    expect(group.filesOpen).toBe(true);
+    // The project on screen is untouched — root is not the active scope.
+    expect(useTabsStore.getState().scope).toBe("p1");
+    expect(useTabsStore.getState().layoutByScope.p1 ?? null).toBeNull();
+
+    const column = screen.getByTestId("root-files");
+    expect(column.getAttribute("data-scope")).toBe("root");
+    expect(column.getAttribute("data-cwd")).toBe("/r");
+    expect(column.getAttribute("data-viewer")).toBe(`group:${group.id}`);
+
+    fireEvent.click(screen.getByTitle("Close this subwindow's file viewer"));
+    expect(allGroups(useTabsStore.getState().layoutByScope.root ?? null)[0].filesOpen).toBe(false);
+  });
+
+  it("gives each subwindow of a split root layout its own column", async () => {
+    const { a } = seedRootTabs();
+    const store = useTabsStore.getState();
+    const [group] = allGroups(store.layoutByScope.root ?? null);
+    store.splitWithTabInScope("root", a.key, group.id, "right");
+    const [g1, g2] = allGroups(useTabsStore.getState().layoutByScope.root ?? null);
+    store.setGroupFilesInScope("root", g2.id, true);
+
+    render(<RootOverlayHost />);
+    await act(async () => useRootOverlayStore.getState().show());
+    const columns = screen.getAllByTestId("root-files");
+    expect(columns).toHaveLength(1);
+    expect(columns[0].getAttribute("data-viewer")).toBe(`group:${g2.id}`);
+    // Both subwindows carry their own ◫ — one open, one closed.
+    expect(screen.getAllByTitle("Open a file viewer in this subwindow")).toHaveLength(1);
+    expect(screen.getAllByTitle("Close this subwindow's file viewer")).toHaveLength(1);
+    expect(g1.id).not.toBe(g2.id);
+  });
+});
+
+describe("the console's frame", () => {
+  it("fills the window and comes back, remembering nothing else", async () => {
+    seedRootTabs();
+    render(<RootOverlayHost />);
+    await act(async () => useRootOverlayStore.getState().show());
+    fireEvent.click(screen.getByTitle("Fill the window"));
+    expect(useRootOverlayStore.getState().filled).toBe(true);
+    fireEvent.click(screen.getByTitle("Back to the previous size"));
+    expect(useRootOverlayStore.getState()).toMatchObject({ filled: false, frame: null });
+  });
+
+  it("clamps a remembered frame into the window it actually opens in", () => {
+    // Sized on a wide external display, opened on a laptop panel.
+    expect(clampRootOverlayFrame({ x: 2400, y: 1300, width: 1600, height: 900 }, 1280, 800)).toEqual({
+      x: 0,
+      y: 0,
+      width: 1280,
+      height: 800,
+    });
+    // A window smaller than the minimum still yields a usable console at 0,0.
+    expect(clampRootOverlayFrame({ x: 10, y: 10, width: 300, height: 100 }, 320, 200)).toEqual({
+      x: 0,
+      y: 0,
+      width: MIN_ROOT_OVERLAY_WIDTH,
+      height: MIN_ROOT_OVERLAY_HEIGHT,
+    });
+    expect(filledRootOverlayFrame(1000, 600)).toEqual({ x: 16, y: 16, width: 968, height: 568 });
+  });
+
+  it("moves, resizes, and pins the far edge past the minimum", () => {
+    const start = { x: 100, y: 100, width: 800, height: 500 };
+    expect(rootOverlayFrameDrag(start, "move", 40, -30, 1920, 1080)).toEqual({
+      x: 140,
+      y: 70,
+      width: 800,
+      height: 500,
+    });
+    // A south-east corner grows both axes; a north-west one moves the origin.
+    expect(rootOverlayFrameDrag(start, "se", 60, 40, 1920, 1080)).toEqual({
+      x: 100,
+      y: 100,
+      width: 860,
+      height: 540,
+    });
+    expect(rootOverlayFrameDrag(start, "nw", 50, 20, 1920, 1080)).toEqual({
+      x: 150,
+      y: 120,
+      width: 750,
+      height: 480,
+    });
+    // The left edge dragged far right stops at the minimum with the RIGHT edge
+    // where it was — it must not start pushing the console across the screen.
+    const pinned = rootOverlayFrameDrag(start, "w", 700, 0, 1920, 1080);
+    expect(pinned.width).toBe(MIN_ROOT_OVERLAY_WIDTH);
+    expect(pinned.x + pinned.width).toBe(start.x + start.width);
   });
 });
