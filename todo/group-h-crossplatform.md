@@ -1075,6 +1075,10 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     composer (oversized files never leave the phone; failures name the reason).
     The write is defensive (`inbox.rs`): sanitized + stamped name,
     `create_new`, inbox must canonicalize below the project root.
+  - **+ → "From the gallery"** (2026-09-17): the same drop behind a second
+    hidden input with `accept="image/*,video/*"`. A bare file input lands in
+    the file browser on many Android phones; a media `accept` is what opens
+    the photo picker (iOS: the library). Same 24 MiB limit, same `@` reference.
   - **Frozen reading view**: while the model or mode sheet is up, the Focus
     pane keeps the frame it held when the sheet opened; the `/model` picker
     and the Shift+Tab status redraws are still *read* from the live screen
@@ -1086,6 +1090,9 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     and Claude reads the image; pick a >24 MB video → refused without upload;
     + → A project file inserts a bare `@`. Open the Model sheet → the picker
     text does not appear behind the sheet; close it → the view resumes
+    - [ ] ✅ Works
+  - [ ] 🖐️ Manual test — on the phone: + → From the gallery opens the photo
+    picker (not the file browser); pick two photos → both land in the draft
     - [ ] ✅ Works
     - [ ] ❌ Doesn't work
 

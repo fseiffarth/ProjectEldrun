@@ -476,6 +476,10 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
    * session after it. */
   const [screenTick, setScreenTick] = useState(0);
   const fileInput = useRef<HTMLInputElement>(null);
+  /** The same drop, restricted to pictures and videos: an `accept` of media
+   * types is what makes Android open the photo picker (and iOS the library)
+   * instead of the file browser a bare file input lands in. */
+  const galleryInput = useRef<HTMLInputElement>(null);
   /** Bumped when the tab changes so a late upload result lands nowhere. */
   const uploadRun = useRef(0);
   const uploadSeq = useRef(0);
@@ -1493,6 +1497,8 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     setAddSheet(false);
     if (key === "phone") {
       fileInput.current?.click();
+    } else if (key === "gallery") {
+      galleryInput.current?.click();
     } else if (key === "desktop") {
       openDesktopSheet();
     } else {
@@ -1665,6 +1671,7 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
   const failedMode = modes.find((choice) => choice.value === switchFailed);
   const addOptions: SheetOption[] = [
     { key: "phone", label: "From this phone", description: "A photo, screenshot or file — saved to the project's inbox and referenced in the message", current: false },
+    { key: "gallery", label: "From the gallery", description: "Photos and videos from this phone's gallery — saved to the project's inbox and referenced in the message", current: false },
     { key: "desktop", label: "From the desktop", description: "The desktop's clipboard image or a recent screenshot or picture — copied to the project's inbox and referenced in the message", current: false },
     { key: "project", label: "A project file (@)", description: "Type a path after the @ for the agent to read", current: false },
   ];
@@ -1773,7 +1780,8 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
         <div className="composer-bar">
           {tab.kind === "agent" && <>
             <input ref={fileInput} type="file" multiple hidden aria-hidden="true" tabIndex={-1} data-testid="inbox-file-input" onChange={(event) => { attachFromPhone(event.target.files); event.target.value = ""; }} />
-            <button className="composer-add" disabled={!connected} onClick={() => setAddSheet(true)} aria-label="Add to the message" aria-haspopup="dialog" aria-expanded={addSheet} title="Add a photo or file from this phone, an image from the desktop, or a project file (@)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg></button>
+            <input ref={galleryInput} type="file" accept="image/*,video/*" multiple hidden aria-hidden="true" tabIndex={-1} data-testid="inbox-gallery-input" onChange={(event) => { attachFromPhone(event.target.files); event.target.value = ""; }} />
+            <button className="composer-add" disabled={!connected} onClick={() => setAddSheet(true)} aria-label="Add to the message" aria-haspopup="dialog" aria-expanded={addSheet} title="Add a photo or file from this phone, pictures from its gallery, an image from the desktop, or a project file (@)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg></button>
             <div className="composer-chips">
               <button className="composer-chip" disabled={!connected} onClick={selectModel} aria-haspopup="dialog" aria-expanded={modelSheet} title="Choose the model (/model)"><span className="composer-chip-label">{status?.model ?? "Model"}</span></button>
               <button className="composer-chip" disabled={!connected} onClick={openModeSheet} aria-haspopup={modes.length > 0 ? "dialog" : undefined} aria-expanded={modes.length > 0 ? modeSheet : undefined} title={modes.length > 0 ? "Choose the permission mode" : "Switch mode (Shift+Tab)"}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2 4.5 13.5H11L10 22l8.5-11.5H12L13 2Z" /></svg><span className="composer-chip-label">{status?.mode ?? activeMode ?? "Mode"}</span></button>

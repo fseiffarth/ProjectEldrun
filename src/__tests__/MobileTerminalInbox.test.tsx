@@ -128,6 +128,32 @@ describe("Eldrun Mobile composer + and the frozen reading view", () => {
     expect(fileInput().multiple).toBe(true);
   });
 
+  it("offers the gallery as its own entry: a media-only picker over the same inbox drop", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(201, {
+      attachment: { name: "20260917-120000-IMG_0099.jpg", reference: ".eldrun/inbox/20260917-120000-IMG_0099.jpg", size: 3 },
+    }));
+    vi.stubGlobal("fetch", routeOutbox(fetchMock));
+    render(<Terminal tab={TAB} back={() => {}} />);
+    await act(async () => {});
+    const gallery = screen.getByTestId("inbox-gallery-input") as HTMLInputElement;
+    const click = vi.spyOn(gallery, "click").mockImplementation(() => {});
+
+    fireEvent.click(screen.getByRole("button", { name: "Add to the message" }));
+    fireEvent.click(screen.getByRole("button", { name: /From the gallery/ }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(click).toHaveBeenCalledTimes(1);
+    // The media `accept` is what opens the photo picker rather than the file browser.
+    expect(gallery.accept).toBe("image/*,video/*");
+    expect(gallery.multiple).toBe(true);
+    expect(fileInput().accept).toBe("");
+
+    Object.defineProperty(gallery, "files", { configurable: true, value: [new File(["abc"], "IMG_0099.jpg", { type: "image/jpeg" })] });
+    fireEvent.change(gallery);
+    await settle(0);
+    expect((fetchMock.mock.calls[0] as [string])[0]).toBe("/api/v1/tabs/tab-7/inbox?name=IMG_0099.jpg");
+    expect(composer().value).toContain("@.eldrun/inbox/20260917-120000-IMG_0099.jpg");
+  });
+
   it("sends a picked file into the project inbox and writes the desktop's reference into the draft", async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse(201, {
       attachment: { name: "20260831-120000-IMG_0042.jpg", reference: ".eldrun/inbox/20260831-120000-IMG_0042.jpg", size: 3 },
