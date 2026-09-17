@@ -39,6 +39,11 @@ interface Props {
   /** Initial value for the optional name field. */
   nameInitial?: string;
   /**
+   * Offer a "New folder" action that creates a sub-folder of the browsed
+   * directory (local fs, confined to it via `create_dir`) and enters it.
+   */
+  allowCreateFolder?: boolean;
+  /**
    * Called with the currently-browsed directory when the user confirms. When a
    * name field is shown (`nameLabel`), the entered folder name is passed too.
    */
@@ -53,12 +58,16 @@ interface Props {
  * return the current directory. Follows the app modal convention (portal +
  * `.modal-backdrop` + a settings-style dialog).
  */
-export function FolderPickerDialog({ initialPath, boundPath, title, confirmLabel, nameLabel, nameInitial, onConfirm, onClose }: Props) {
+export function FolderPickerDialog({ initialPath, boundPath, title, confirmLabel, nameLabel, nameInitial, allowCreateFolder, onConfirm, onClose }: Props) {
   const t = useT();
   const [listing, setListing] = useState<DirListing | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [name, setName] = useState(nameInitial ?? "");
+  // Inline "New folder" row: null = closed, a string = the name being typed.
+  const [newFolder, setNewFolder] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
 
   // The bound as `list_dirs` spells it (canonicalized), so listings — which
   // come back canonicalized too — compare against the same form.
@@ -101,16 +110,41 @@ export function FolderPickerDialog({ initialPath, boundPath, title, confirmLabel
     setName(nameInitial ?? "");
   }, [nameInitial]);
 
-  // Escape closes, mirroring the app's other modals.
+  // Escape closes, mirroring the app's other modals — an open "New folder"
+  // row first.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key !== "Escape") return;
+      if (newFolder !== null) {
+        setNewFolder(null);
+        setCreateError(null);
+      } else {
+        onClose();
+      }
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  }, [onClose, newFolder]);
 
   const cur = listing?.path ?? initialPath ?? "";
+
+  const newFolderName = newFolder?.trim() ?? "";
+  // One path segment only: the create is relative to the browsed folder, and
+  // the backend's confinement would refuse anything climbing out anyway.
+  const newFolderInvalid = newFolderName === "." || newFolderName === ".." || /[/\\]/.test(newFolderName);
+  const createFolder = () => {
+    if (!listing || !newFolderName || newFolderInvalid || creating) return;
+    setCreating(true);
+    setCreateError(null);
+    invoke("create_dir", { projectDir: listing.path, relPath: newFolderName })
+      .then(() => {
+        setNewFolder(null);
+        const sep = listing.path.includes("\\") && !listing.path.includes("/") ? "\\" : "/";
+        load(listing.path.replace(/[/\\]+$/, "") + sep + newFolderName, bound);
+      })
+      .catch((e) => setCreateError(String(e)))
+      .finally(() => setCreating(false));
+  };
 
   return createPortal(
     <div className="modal-backdrop" onMouseDown={onClose}>
@@ -133,7 +167,50 @@ export function FolderPickerDialog({ initialPath, boundPath, title, confirmLabel
             ⬆ {t("folderPicker.up")}
           </button>
           <span className="folder-picker-cur" title={cur}>{cur || "…"}</span>
+          {allowCreateFolder && (
+            <button
+              type="button"
+              disabled={!listing || newFolder !== null}
+              onClick={() => { setNewFolder(""); setCreateError(null); }}
+              title={t("folderPicker.newFolderTitle")}
+            >
+              ＋ {t("folderPicker.newFolder")}
+            </button>
+          )}
         </div>
+
+        {newFolder !== null && (
+          <div className="folder-picker-name-row">
+            <div className="folder-picker-name-label folder-picker-new-folder">
+              <input
+                type="text"
+                value={newFolder}
+                autoFocus
+                spellCheck={false}
+                placeholder={t("folderPicker.newFolderPlaceholder")}
+                aria-label={t("folderPicker.newFolder")}
+                onChange={(e) => setNewFolder(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); createFolder(); } }}
+              />
+              <button
+                type="button"
+                className="primary"
+                disabled={!newFolderName || newFolderInvalid || creating}
+                onClick={createFolder}
+              >
+                {t("folderPicker.create")}
+              </button>
+              <button type="button" onClick={() => { setNewFolder(null); setCreateError(null); }}>
+                {t("common.cancel")}
+              </button>
+            </div>
+            {(newFolderInvalid || createError) && (
+              <span className="settings-help folder-picker-error folder-picker-name-preview">
+                {newFolderInvalid ? t("folderPicker.newFolderInvalid") : createError}
+              </span>
+            )}
+          </div>
+        )}
 
         <div className="folder-picker-list">
           {error ? (

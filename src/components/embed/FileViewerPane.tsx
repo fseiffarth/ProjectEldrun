@@ -9922,6 +9922,7 @@ function TexView({
           boundPath={outDirBound}
           title={t("fileViewer.outputFolderPickerTitle", { name: rootName })}
           confirmLabel={t("fileViewer.outputFolderPickerConfirm")}
+          allowCreateFolder
           onConfirm={(dir) => void pickOutDir(dir)}
           onClose={() => setOutDirPickerOpen(false)}
         />
