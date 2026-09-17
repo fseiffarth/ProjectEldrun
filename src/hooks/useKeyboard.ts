@@ -11,6 +11,7 @@ import {
   projectStations,
   useKeyboardSteeringStore,
 } from "../stores/keyboardSteering";
+import { toggleRootConsole } from "../stores/rootOverlay";
 import {
   chordMatches,
   isLoneModifier,
@@ -148,6 +149,16 @@ export function useKeyboard({ onTogglePanels }: KeyboardOptions) {
         e.stopPropagation();
         if (steering.active) steering.exit();
         else steering.enter();
+        return;
+      }
+      // The root console toggles from anywhere, a focused terminal included —
+      // and from inside steering mode, which it leaves (two modes owning the
+      // keyboard at once is one too many).
+      if (chordMatches(resolveChord("rootConsole", overrides), e)) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (steering.active) steering.exit();
+        toggleRootConsole();
         return;
       }
       if (!steering.active) return;

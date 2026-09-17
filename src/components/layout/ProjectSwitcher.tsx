@@ -17,6 +17,7 @@ import { usePillSelectionStore } from "../../stores/pillSelection";
 import { useHeaderHoverMenuStore } from "../../stores/headerHoverMenu";
 import { TRASH_PROJECT_ID } from "../../lib/trashProject";
 import { ROOT_SCOPE, useTabsStore } from "../../stores/tabs";
+import { useRootOverlayStore } from "../../stores/rootOverlay";
 import { useGitDirtyStore } from "../../stores/gitDirty";
 import { projectStations, useKeyboardSteeringStore } from "../../stores/keyboardSteering";
 import { useQuiesce, saverInterval } from "../../stores/power";
@@ -288,10 +289,12 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
   // strip left filtered by a box nobody is in would be a strip that had quietly
   // dropped most of the projects. Each also clears the multi-selection, exactly
   // as a plain pill activation does.
+  // Root is no longer a place to switch to: it opens as the root console over
+  // whatever is on screen (`stores/rootOverlay`), so picking it costs neither
+  // the project in scope nor the slice. With no project open the root scope is
+  // still what the center shows — the overlay simply floats over it.
   const selectRoot = () => {
-    usePillSelectionStore.getState().clear();
-    setBoxFilter(null);
-    void setActive(null);
+    useRootOverlayStore.getState().show();
   };
   const selectTrash = () => {
     if (!trashProject) return;

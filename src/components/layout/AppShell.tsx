@@ -53,6 +53,7 @@ import { CalDavConflictDialog } from "../calendar/CalDavConflictDialog";
 import { TodoOverlayHost } from "../todo/TodoOverlay";
 import { SkillsOverlayHost } from "../skills/SkillsOverlay";
 import { InstallOverlayHost } from "./InstallOverlay";
+import { RootOverlayHost } from "./RootOverlay";
 import { LocalLossDialog } from "../common/LocalLossDialog";
 import {
   RailAgentsIcon,
@@ -1355,6 +1356,13 @@ export function AppShell() {
           install was started from; closing it leaves the install running in the
           root terminal. */}
       <InstallOverlayHost />
+      {/* The root console (Ctrl+Shift+R): the root scope as a floating subwindow
+          instead of a scope to switch to. BEFORE the install overlay's siblings
+          below but after the overlay family, so a login or install parked in a
+          root tab and the dialog that started it stack in the order they were
+          opened. Its host also persists the root scope and merges the rows a
+          root agent wrote through Eldrun's MCP tools — both while closed. */}
+      <RootOverlayHost />
       {/* The shortcut cheat sheet (F1, `?` in steering mode, or the ⚙ menu) —
           after the overlay family above so the sheet, openable from the
           keyboard while any of them is up, lands on top (same z-index, DOM

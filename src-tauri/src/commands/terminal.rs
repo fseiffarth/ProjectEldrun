@@ -396,6 +396,16 @@ pub async fn pty_spawn(
         crate::services::agent_fence::add_box_root_args(&mut opts, roots, &own);
     }
 
+    // The root console's extra rights (`services::root_mcp`): a LOCAL agent in
+    // the ROOT scope — and no other spawn — is handed the MCP endpoint and its
+    // per-run token. Decided here from the same `project_id` that picks the
+    // fence roots above, while `cmd`/`args` still describe the agent itself, so
+    // the config rides into the bubblewrap argv unchanged.
+    let root_agent = crate::services::root_mcp::is_root_agent(&opts, agent_spawn);
+    if root_agent {
+        crate::services::root_mcp::apply_to_spawn(&mut opts);
+    }
+
     // The agent's hooks report its turn state under its tab uid; bind that uid
     // to this PTY so the report reaches the tab's own marks, and drop any
     // record a previous run of the same tab left behind (see agent_turn).
@@ -452,7 +462,11 @@ pub async fn pty_spawn(
     // session resolution but before ssh/docker wrapping — so it rides into the
     // wrapped command for remote/sandboxed tabs too. Guarded against
     // duplicates so a re-spawn never stacks the flag.
+    // Never for the root console: `--remote-control` is what puts a session in
+    // the Claude phone app, and the root scope's rights must not be reachable
+    // from a phone by any route (it is absent from Eldrun Mobile's catalog too).
     if opts.cmd == "claude"
+        && !root_agent
         && resolve_agent_remote_control(opts.project_id.as_deref())
         && !opts.args.iter().any(|a| a == "--remote-control")
     {

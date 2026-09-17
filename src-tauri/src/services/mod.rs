@@ -74,6 +74,7 @@ pub mod remote_credentials;
 pub mod remote_sync;
 pub mod remote_usage;
 pub mod restore_service;
+pub mod root_mcp;
 // The project container bind-mounts host paths straight into a Linux container
 // and maps the host uid/gid, so it is Unix-only today *at runtime*: Windows
 // refuses at the `pty_spawn` call site (and `up_for_project` no-ops) rather

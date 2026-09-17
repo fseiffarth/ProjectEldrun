@@ -6578,6 +6578,17 @@ export const en = {
   "shortcut.closeTab": "Close active tab",
   "shortcut.closeAllTabs": "Close all tabs in project",
   "shortcut.steeringMode": "Enter keyboard steering mode",
+  "shortcut.rootConsole": "Open / close the root console",
+  "rootConsole.title": "Root console",
+  "rootConsole.rightsBadge": "⚿ Eldrun tools",
+  "rootConsole.rightsOn":
+    "Agents opened here get Eldrun's own tools (MCP): your projects, calendar and to-do board. No project's agents do.",
+  "rootConsole.rightsOff":
+    "Eldrun's tools are not running — agents opened here are ordinary agents until Eldrun is restarted.",
+  "rootConsole.noPhone": "The root console is never offered to Eldrun Mobile or to Claude's remote control.",
+  "rootConsole.emptyTitle": "The root console is empty",
+  "rootConsole.emptyHint":
+    "Press + to open an agent or a shell here. It belongs to no project, so it stays one keystroke away from all of them.",
   "shortcut.cycleProjectBack": "Cycle to previous project",
   "shortcut.shortcutHelp": "Open shortcut help",
   "shortcut.texUp": "TeX workspace: up to the parent document",

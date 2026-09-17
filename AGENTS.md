@@ -135,6 +135,7 @@ area you're touching; never read speculatively.
 | `hpc_careful_mode.md` | What probes stop collecting on a login node; host classification. |
 | `mail_encryption.md` | The sealed local store and the OpenPGP track: what each protects. |
 | `caldav.md` | Why a sync merges by resource URL instead of replacing. |
+| `root_console.md` | Root scope as a Ctrl+Shift+R overlay; the root-only MCP tools and their token boundary. |
 
 Longer-lived plans and matrices live in `docs/` — e.g.
 `multi_host_remote_plan.md`, `git_lockstep_case_matrix.md`,

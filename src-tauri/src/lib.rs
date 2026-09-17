@@ -1096,6 +1096,9 @@ pub fn run() {
             // than waiting for the next login. Off the main thread, bounded,
             // and a no-op when Mobile is off or the host is already up.
             commands::mobile_control::start_host_on_launch();
+            // The root console's MCP endpoint (`services::root_mcp`): loopback,
+            // token minted here per run, handed only to root-scope agent tabs.
+            commands::root_mcp::start(_app.handle().clone());
             // A SIGTERM/SIGINT (the dev launcher's Ctrl+C, a `kill`, a session
             // logout) used to end the process with none of the teardown the
             // window's × runs: PTY subtrees, local tmux sessions, the Mobile
@@ -1403,6 +1406,7 @@ pub fn run() {
             commands::projects::load_tab_session,
             commands::projects::adopt_folder_tab_layout,
             commands::projects::root_work_dir,
+            commands::root_mcp::root_mcp_status,
             commands::projects::projects_root_dir,
             commands::projects::remote_mirror_root_dir,
             commands::projects::open_in_file_manager,

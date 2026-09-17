@@ -45,7 +45,7 @@ pub(crate) fn calendar_path() -> PathBuf {
 
 /// Read the store, migrating a legacy file in the process. A missing file is an
 /// empty calendar, not an error.
-fn read_data(path: &Path) -> Result<CalendarData, String> {
+pub(crate) fn read_data(path: &Path) -> Result<CalendarData, String> {
     if !path.exists() {
         return Ok(CalendarData::default());
     }
@@ -90,7 +90,7 @@ fn calendar_ids(data: &CalendarData) -> HashSet<&str> {
 
 /// Insert `event`, minting an id and defaulting its calendar. The caller's `id`
 /// is ignored — the store owns identity.
-fn create_event_at(path: &Path, mut event: CalendarEvent) -> Result<CalendarEvent, String> {
+pub(crate) fn create_event_at(path: &Path, mut event: CalendarEvent) -> Result<CalendarEvent, String> {
     let _guard = lock_calendar();
     let mut data = read_data(path)?;
     event.id = fresh_id(&event_ids(&data));
@@ -118,7 +118,7 @@ fn update_event_at(path: &Path, event: CalendarEvent) -> Result<CalendarEvent, S
     Ok(event)
 }
 
-fn delete_event_at(path: &Path, id: &str) -> Result<(), String> {
+pub(crate) fn delete_event_at(path: &Path, id: &str) -> Result<(), String> {
     let _guard = lock_calendar();
     let mut data = read_data(path)?;
     let before = data.events.len();
@@ -146,7 +146,7 @@ fn normalized_task(data: &CalendarData, id: &str) -> Result<CalendarTask, String
         .ok_or_else(|| format!("task '{id}' vanished during normalize"))
 }
 
-fn create_task_at(path: &Path, mut task: CalendarTask) -> Result<CalendarTask, String> {
+pub(crate) fn create_task_at(path: &Path, mut task: CalendarTask) -> Result<CalendarTask, String> {
     let _guard = lock_calendar();
     let mut data = read_data(path)?;
     task.id = fresh_id(&task_ids(&data));
@@ -160,7 +160,7 @@ fn create_task_at(path: &Path, mut task: CalendarTask) -> Result<CalendarTask, S
     normalized_task(&data, &id)
 }
 
-fn update_task_at(path: &Path, task: CalendarTask) -> Result<CalendarTask, String> {
+pub(crate) fn update_task_at(path: &Path, task: CalendarTask) -> Result<CalendarTask, String> {
     let _guard = lock_calendar();
     let mut data = read_data(path)?;
     let id = task.id.clone();

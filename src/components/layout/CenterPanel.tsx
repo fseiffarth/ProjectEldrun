@@ -20,6 +20,7 @@ import { pickEdge, previewInset } from "../tabs/dragGeometry";
 import { dragPreviewLayout } from "../tabs/dragPreview";
 import {
   BLOB_TAB_CMD,
+  ROOT_SCOPE,
   DEFAULT_MIN_SUBWINDOW_PX,
   EMPTY_GROUP_ID,
   allGroups,
@@ -35,6 +36,7 @@ import {
   type LayoutNode,
 } from "../../stores/tabs";
 import { useSettingsStore } from "../../stores/settings";
+import { useRootOverlayStore } from "../../stores/rootOverlay";
 import { useDragStore } from "../../stores/drag";
 import { useSubwindowNavStore } from "../../stores/subwindowNav";
 import { useKeyboardSteeringStore } from "../../stores/keyboardSteering";
@@ -87,6 +89,7 @@ function CenterPanelImpl() {
   const scope = useTabsStore((s) => s.scope);
   const focusedGroupId = useTabsStore((s) => s.focusedGroupId);
   const windowFocused = useWindowFocused();
+  const rootConsoleOpen = useRootOverlayStore((st) => st.open);
   const layout = useTabsStore((s) => s.layout);
   const layoutByScope = useTabsStore((s) => s.layoutByScope);
   const setScope = useTabsStore((s) => s.setScope);
@@ -1036,6 +1039,11 @@ function CenterPanelImpl() {
           // While a group is fullscreen, only that group's active pane shows.
           const visible =
             isCurrentScope &&
+            // The root console shows the root scope's tabs itself (attach-only
+            // views of these panes). With no project open the root scope is
+            // also what THIS panel shows, and two visible views of one PTY
+            // would take turns resizing it — so the panel's copy stands down.
+            !(rootConsoleOpen && scopeKey === ROOT_SCOPE) &&
             groupId != null &&
             activeKeyOfGroup.get(groupId) === tab.key &&
             (!fsActive || groupId === fullscreenGroupId);
@@ -1214,7 +1222,9 @@ function CenterPanelImpl() {
                 tab={tab}
                 scope={scopeKey}
                 visible={visible}
-                focused={visible && windowFocused && groupId === focusedGroupId}
+                // The root console owns the keyboard while it is up; flipping
+                // this back on close is what returns focus to the pane under it.
+                focused={visible && windowFocused && !rootConsoleOpen && groupId === focusedGroupId}
                 groupId={groupId}
                 onConnect={getConnect(scopeKey)}
                 holdRemoteTerminal={holdRemoteTerminal}

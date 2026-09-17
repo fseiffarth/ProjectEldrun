@@ -266,6 +266,11 @@ pub fn opaque_control_id(state_dir: &Path, domain: &str, value: &str) -> Result<
     Ok(key_id(&key, domain, &[value]))
 }
 
+/// The root scope's id, or anything that maps onto its session directory.
+fn is_root_scope_id(id: &str) -> bool {
+    project_key(id) == "root"
+}
+
 fn project_key(id: &str) -> String {
     let out: String = id
         .chars()
@@ -382,6 +387,13 @@ impl Catalog {
         let mut sources = Vec::new();
         for project in &projects {
             if !project.eldrun_mobile_access || !mobile_local(project) {
+                continue;
+            }
+            // The root console is never the phone's (`services::root_mcp`): its
+            // agents hold rights no project agent has. It is not a project, so
+            // it cannot be listed honestly — this refuses a hand-edited record
+            // that borrows its session directory by taking its id.
+            if is_root_scope_id(&project.id) {
                 continue;
             }
             let Some(root_raw) = project.directory.as_deref() else {
@@ -637,6 +649,49 @@ mod tests {
         let b = catalog.projects.iter().find(|p| p.raw_id == "p-b").expect("B");
         assert_eq!(a.tabs.len(), 1, "the healthy project keeps its tabs");
         assert!(b.tabs.is_empty(), "the corrupt one has none, and is still listed");
+    }
+
+    /// The root console never reaches the phone — not even through a
+    /// `projects.json` record hand-edited to take the root scope's id (and with
+    /// it `sessions/root/`, the root console's own tab layout).
+    #[test]
+    fn the_root_scope_is_never_in_the_catalog() {
+        let dir = tempfile::tempdir().expect("state dir");
+        let state = dir.path();
+        let root = state.join("root");
+        fs::create_dir_all(&root).expect("root dir");
+        fs::write(
+            state.join("projects.json"),
+            serde_json::to_vec(&serde_json::json!([{
+                "id": "root",
+                "name": "Root",
+                "status": "active",
+                "directory": root.to_string_lossy(),
+                "eldrun_mobile_access": true,
+            }]))
+            .expect("projects"),
+        )
+        .expect("write projects");
+        fs::create_dir_all(state.join("sessions").join("root")).expect("session dir");
+        fs::write(
+            state.join("sessions").join("root").join("terminals.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "tabLayout": [{
+                    "label": "Claude",
+                    "cmd": "claude",
+                    "cwd": root.to_string_lossy(),
+                    "kind": "agent",
+                    "tmuxSession": "eldrun-root--agent-123456789",
+                }]
+            }))
+            .expect("session"),
+        )
+        .expect("write session");
+
+        let catalog = Catalog::load(state, &[7; 32]).expect("catalog");
+        assert!(catalog.projects.is_empty());
+        assert!(is_root_scope_id("root"));
+        assert!(!is_root_scope_id("rooted"));
     }
 
     /// A mobile-enabled box is a scope of its own (#31aa): listed as `kind:

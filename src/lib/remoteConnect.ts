@@ -1,3 +1,4 @@
+import { useRootOverlayStore } from "../stores/rootOverlay";
 import { invoke } from "@tauri-apps/api/core";
 import { useTabsStore } from "../stores/tabs";
 import { useProjectsStore } from "../stores/projects";
@@ -113,4 +114,8 @@ export function openConnectionInRoot(opts: {
   // Surface it without stealing the active project: a transient toast (auto-clears
   // in AppShell) tells the user the connection is waiting in the root terminal.
   useProjectsStore.setState({ switchToast: `${label} — authenticate in root terminal` });
+  // …and put the prompt in front of them: the root console floats over the
+  // project, so a login that needs a password no longer waits behind a scope
+  // switch the user has to go and make.
+  useRootOverlayStore.getState().show(tab.key);
 }

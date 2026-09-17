@@ -40,6 +40,7 @@ pub mod project_runtime;
 pub mod projects;
 pub mod python;
 pub mod remote;
+pub mod root_mcp;
 pub mod screenshot;
 pub mod search;
 pub mod settings;

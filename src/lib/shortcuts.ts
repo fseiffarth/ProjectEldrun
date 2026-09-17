@@ -48,6 +48,7 @@ export type ShortcutAction =
   | "steeringMode"
   | "cycleProjectBack"
   | "shortcutHelp"
+  | "rootConsole"
   | "texUp"
   | "texBack"
   | "texCompile";
@@ -182,6 +183,19 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
     labelKey: "shortcut.shortcutHelp",
     group: "steering",
     default: { key: "F1" },
+    untested: true,
+  },
+  // The root console (`layout/RootOverlay`): the cross-project management
+  // overlay that replaced switching to the root scope. Handled in the same
+  // capture-phase listener as the steering chord, for the same reason — it has
+  // to work FROM a focused terminal, which is where the hands are. Ctrl+Shift+R
+  // is no terminal chord (readline's reverse search is plain Ctrl+R) and the
+  // handler's preventDefault keeps WebKit's hard-reload off it.
+  {
+    action: "rootConsole",
+    labelKey: "shortcut.rootConsole",
+    group: "navigation",
+    default: { key: "r", ctrl: true, shift: true },
     untested: true,
   },
   // The TeX workspace's two navigation steps (#tex-structure-up). Unlike every

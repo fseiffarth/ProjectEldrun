@@ -268,3 +268,38 @@ correctness/UX work atop the same layout model #42 detaches.*
       - [ ] ❌ Doesn't work
 
 ---
+
+846. **Root console: the root terminal as a Ctrl+Shift+R overlay with Eldrun's own tools.**
+    ✅ Implemented · 🧪 Awaiting live QA. The root scope is no longer a place
+    you switch to: Ctrl+Shift+R (rebindable, `rootConsole`), the scope chip's
+    Root entry and a root-terminal login all open it as one floating subwindow
+    over whatever project is open, and nothing about the project on screen
+    moves. Agents opened there, and nowhere else, get Eldrun's MCP tools:
+    `projects_list`, `calendar_list`, `calendar_add_event` (1 h by default),
+    `calendar_delete_event`, `todo_list`, `todo_add` and `todo_complete`. The
+    tools are served on loopback with a per-run token that only a root-scope
+    agent spawn is given. The root console is never in Eldrun Mobile's catalog
+    and its Claude tabs get no `--remote-control`. Design:
+    `docs/context/root_console.md`.
+    *Files: `src-tauri/src/services/root_mcp.rs`,
+    `src-tauri/src/commands/root_mcp.rs`, `commands/terminal.rs`,
+    `commands/calendar.rs`, `services/mobile_control/discovery.rs`, `lib.rs`;
+    `src/components/layout/RootOverlay.tsx`, `src/stores/rootOverlay.ts`,
+    `CenterPanel.tsx`, `AppShell.tsx`, `ProjectSwitcher.tsx`,
+    `src/lib/remoteConnect.ts`, `src/lib/shortcuts.ts`, `src/hooks/useKeyboard.ts`,
+    `src/styles/subwindows.css`, `src/lib/i18n.ts` (+ the four dictionaries).*
+    - [x] 🤖 Automated test — `services::root_mcp` (spawn wiring per CLI,
+      bearer check, every tool incl. the 1 h default and bad input),
+      `discovery::the_root_scope_is_never_in_the_catalog`,
+      `src/__tests__/RootOverlay.test.tsx`.
+    - [ ] 🖐️ Manual test (needs a restart: backend change)
+      - Ctrl+Shift+R from a focused project terminal opens the console and
+        pressing it again closes it; the project stays where it was.
+      - Open Claude with **+**: `/mcp` lists `eldrun`; "add a calendar entry
+        tomorrow at 14:00, 1 h, Review" puts the event in the header's 🗓 at
+        once. With CalDAV write turned on, the event also reaches the server.
+      - Claude in a project tab: `/mcp` lists no `eldrun`.
+      - Codex in the root console: `/mcp` lists `eldrun`.
+      - The phone's project list never shows the root console.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
