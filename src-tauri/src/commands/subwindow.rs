@@ -741,13 +741,12 @@ pub fn desktop_coordinates_supported() -> bool {
 /// Whether the detached window registered under `registry_id` is the front-most
 /// window at the current pointer location. The frontend calls this on a file
 /// drop that lands over a popout's bounds: if the popout is occluded (behind the
-/// main window or another app) it is NOT at front, so the drop must open a new
-/// window instead of merging into a window the user can't see (#42).
+/// main window or another app) it is NOT at front, so the caller keeps its local
+/// drop target instead of merging into a window the user can't see (#42).
 ///
-/// Defaults to `true` (allow the merge) when the popout has no resolved native
-/// window id or on platforms without an occlusion probe (currently everything
-/// but Linux/X11 and Windows), so a missing occlusion signal never suppresses a
-/// legit dock.
+/// Unknown identity or stacking order cannot authorize a dock. In particular,
+/// XWayland can expose desktop geometry while our native-id lookup is disabled
+/// for the Wayland session; assuming that popout is on top steals local drops.
 #[tauri::command]
 pub fn detached_window_frontmost(
     win_registry: State<'_, WindowRegistryState>,
@@ -760,7 +759,7 @@ pub fn detached_window_frontmost(
         .get(&registry_id)
         .and_then(|w| w.window_id);
     match wid {
-        None => true,
+        None => false,
         Some(wid) => {
             #[cfg(target_os = "linux")]
             {
@@ -786,7 +785,7 @@ pub fn detached_window_frontmost(
             #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
             {
                 let _ = wid;
-                true
+                false
             }
         }
     }

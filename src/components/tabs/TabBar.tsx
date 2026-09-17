@@ -960,7 +960,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
         overDetached &&
         (await invoke<boolean>("detached_window_frontmost", {
           registryId: overDetached.label,
-        }).catch(() => true));
+        }).catch(() => false));
       if (overDetached && overFrontDetached && phys) {
         // Dock into the SPECIFIC pane under the cursor (a body edge splits, a bar
         // merges) — resolved synchronously at the release coords, so no stale

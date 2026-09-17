@@ -56,6 +56,7 @@ import { CenterPanel } from "../components/layout/CenterPanel";
 import { useTabsStore, type GroupNode, type SplitNode } from "../stores/tabs";
 import { useDragStore } from "../stores/drag";
 import { useProjectsStore } from "../stores/projects";
+import * as coords from "../lib/coords";
 
 // Panel geometry the stubs project onto. Body sits below a 28px tab bar.
 const PANEL = { left: 0, top: 0, width: 800, height: 600 };
@@ -218,6 +219,36 @@ describe("CenterPanel — pointer drag → edge split (integration)", () => {
     pointer("pointermove", RIGHT_X, BODY_Y, window);
     pointer("pointerup", RIGHT_X, BODY_Y, window);
     await flush();
+    expectSplitRight(a.key, b.key);
+    expect(dock).not.toHaveBeenCalled();
+  });
+
+  it.each(["occluded", "unavailable"])("keeps a visible split when popout stacking is %s", async (visibility) => {
+    const { a, b, container } = await mountSeeded();
+    const { invoke } = await import("@tauri-apps/api/core");
+    vi.mocked(invoke).mockImplementation((cmd) => {
+      if (cmd === "detached_window_frontmost" && visibility === "unavailable") {
+        return Promise.reject(new Error("stacking unavailable"));
+      }
+      return Promise.resolve(false) as never;
+    });
+    vi.spyOn(coords, "desktopCursor").mockResolvedValue({ x: RIGHT_X, y: BODY_Y });
+    vi.spyOn(coords, "snapshotFrame").mockResolvedValue({
+      innerPhys: { x: 0, y: 0 }, outerPhys: { x: 0, y: 0 },
+      outerSize: { w: 800, h: 600 }, scale: 1,
+    });
+    useTabsStore.setState({ detachedGroupsByScope: { p: [{
+      id: "pop", label: "pop",
+      subtree: { type: "group", id: "pop", tabKeys: [], activeKey: null },
+    }] } });
+    const dock = vi.spyOn(useTabsStore.getState(), "dockTabIntoDetached");
+    pointer("pointerdown", 150, 14, container.querySelectorAll(".tab")[1]);
+    pointer("pointermove", 160, 24, window);
+    await flush();
+    pointer("pointermove", RIGHT_X, BODY_Y, window);
+    pointer("pointerup", RIGHT_X, BODY_Y, window);
+    await flush();
+    expect(invoke).toHaveBeenCalledWith("detached_window_frontmost", { registryId: "pop" });
     expectSplitRight(a.key, b.key);
     expect(dock).not.toHaveBeenCalled();
   });

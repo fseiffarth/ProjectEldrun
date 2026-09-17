@@ -34,19 +34,18 @@ const tree: GroupNode = { type: "group", id: "g", tabKeys: ["a", "b"], activeKey
 
 function mount(layout: LayoutNode = tree) {
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
-    const el = this;
     let left = 0, top = 0, width = 800, height = 600;
-    if (el.classList.contains("subwindow-pane-region")) { top = 28; height = 572; }
-    if (el.classList.contains("tab-bar")) height = 28;
-    if (el.classList.contains("tab")) {
-      left = Array.from(el.parentElement!.children).filter((c) => c.classList.contains("tab")).indexOf(el) * 100;
+    if (this.classList.contains("subwindow-pane-region")) { top = 28; height = 572; }
+    if (this.classList.contains("tab-bar")) height = 28;
+    if (this.classList.contains("tab")) {
+      left = Array.from(this.parentElement!.children).filter((c) => c.classList.contains("tab")).indexOf(this) * 100;
       width = 100; height = 28;
     }
     if (layout.type === "split") {
-      const group = el.closest(".subwindow");
+      const group = this.closest(".subwindow");
       const right = group?.querySelector('[data-group-id="right"]');
       left += right ? 400 : 0;
-      if (!el.classList.contains("tab")) width = 400;
+      if (!this.classList.contains("tab")) width = 400;
     }
     return { left, top, width, height, right: left + width, bottom: top + height, x: left, y: top, toJSON() {} };
   });

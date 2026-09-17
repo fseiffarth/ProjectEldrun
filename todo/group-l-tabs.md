@@ -54,6 +54,10 @@ correctness/UX work atop the same layout model #42 detaches.*
       to another window. Covered by `DragDropSplit` and `DetachedTabDrag` tests;
       desktop-coordinate dragging between OS windows remains unavailable on native
       Wayland (use the existing dock controls).
+    - [ ] Restore a detached window to its previous monitor on native Wayland
+      after both project switching and app restart (reported on a non-KDE
+      desktop). The tab-drag fix does not solve placement: GTK's global positions
+      are unavailable, and hiding/showing leaves placement to the compositor.
     - [x] 🤖 Automated test — `SubwindowDetach`, `DetachedSync`, `DetachedHost`,
       `TerminalAttachOnly` (frontend) + `window_service` detached-labels selector
       (backend). tsc clean; 30 #42 frontend tests pass; cargo 373 pass.
