@@ -69,8 +69,10 @@ change was not run live.
 - **Every commit re-freezes it by itself** (user, 2026-09-03): the `post-commit`
   hook queues `scripts/package-dev-auto.sh`, which builds detached (the commit
   never waits), nice'd/`SCHED_IDLE` so it does not fight the window it serves,
-  and coalescing — a commit landing mid-build queues one more pass instead of a
-  second build, so a rebase costs one or two and ends on the *last* commit.
+  and coalescing — each pass first waits until no commit has landed for 30 s
+  (`ELDRUN_DEV_BUILD_SETTLE`), and a commit landing mid-build queues one more
+  pass instead of a second build, so a commit series or a rebase costs one
+  build and ends on the *last* commit.
   **It freezes the commit, not the tree** (user, 2026-09-14): `package-dev.sh
   --head` checks `HEAD` out into the detached worktree `target/freeze-tree`
   (node_modules symlinked, cargo target dir shared) and builds there, so the
