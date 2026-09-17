@@ -938,6 +938,7 @@ impl MailStore {
         query: Option<&str>,
         sort: MailSort,
         desc: bool,
+        unread_only: bool,
     ) -> Result<MailHeaderPage, String> {
         self.page(
             "folder_id = ?1 AND deleted = 0",
@@ -947,6 +948,7 @@ impl MailStore {
             query,
             sort,
             desc,
+            unread_only,
         )
     }
 
@@ -983,9 +985,14 @@ impl MailStore {
         query: Option<&str>,
         sort: MailSort,
         desc: bool,
+        unread_only: bool,
     ) -> Result<MailHeaderPage, String> {
         let conn = self.conn.lock().map_err(|_| "mail store is poisoned")?;
         let limit = limit.clamp(1, 500);
+        // A second fixed literal, never caller text. `seen` is a plain column
+        // in a sealed store too, so the filter runs in SQL on both paths and
+        // the pager counts only what it would show.
+        let unread = if unread_only { " AND seen = 0" } else { "" };
         let needle = query.map(str::trim).filter(|q| !q.is_empty());
 
         // ── Encrypted + a query: decrypt-on-scan ────────────────────────────
@@ -994,7 +1001,7 @@ impl MailStore {
                 let needle = needle.to_lowercase();
                 let mut stmt = conn
                     .prepare(&format!(
-                        "SELECT {} FROM messages WHERE {scope_where} ORDER BY {}",
+                        "SELECT {} FROM messages WHERE {scope_where}{unread} ORDER BY {}",
                         Self::HEADER_COLUMNS,
                         Self::order_clause(sort, desc),
                     ))
@@ -1043,14 +1050,14 @@ impl MailStore {
             // a sync bug rather than an encoding one.
             let total: u32 = conn
                 .query_row(
-                    &format!("SELECT COUNT(*) FROM messages WHERE {scope_where}"),
+                    &format!("SELECT COUNT(*) FROM messages WHERE {scope_where}{unread}"),
                     params![scope_param],
                     |r| r.get(0),
                 )
                 .map_err(|e| e.to_string())?;
             let mut stmt = conn
                 .prepare(&format!(
-                    "SELECT {} FROM messages WHERE {scope_where} ORDER BY {} LIMIT ?2 OFFSET ?3",
+                    "SELECT {} FROM messages WHERE {scope_where}{unread} ORDER BY {} LIMIT ?2 OFFSET ?3",
                     Self::HEADER_COLUMNS,
                     Self::order_clause(sort, desc),
                 ))
@@ -1079,7 +1086,7 @@ impl MailStore {
 
         let total: u32 = conn
             .query_row(
-                &format!("SELECT COUNT(*) FROM messages WHERE {scope_where} {filter}"),
+                &format!("SELECT COUNT(*) FROM messages WHERE {scope_where}{unread} {filter}"),
                 params![scope_param, pattern],
                 |r| r.get(0),
             )
@@ -1087,7 +1094,7 @@ impl MailStore {
 
         let mut stmt = conn
             .prepare(&format!(
-                "SELECT {} FROM messages WHERE {scope_where} {filter} ORDER BY {} LIMIT ?3 OFFSET ?4",
+                "SELECT {} FROM messages WHERE {scope_where}{unread} {filter} ORDER BY {} LIMIT ?3 OFFSET ?4",
                 Self::HEADER_COLUMNS,
                 Self::order_clause(sort, desc),
             ))
@@ -1375,6 +1382,7 @@ impl MailStore {
         query: Option<&str>,
         sort: MailSort,
         desc: bool,
+        unread_only: bool,
     ) -> Result<MailHeaderPage, String> {
         self.page(
             "priority = ?1 AND deleted = 0",
@@ -1384,6 +1392,7 @@ impl MailStore {
             query,
             sort,
             desc,
+            unread_only,
         )
     }
 
@@ -2822,14 +2831,14 @@ mod tests {
             store.upsert_header(&h).unwrap();
         }
         let page = store
-            .headers_page(&f.id, 0, 10, None, MailSort::Date, true)
+            .headers_page(&f.id, 0, 10, None, MailSort::Date, true, false)
             .unwrap();
         assert_eq!(page.total, 25);
         assert_eq!(page.items.len(), 10);
         assert_eq!(page.items[0].uid, 25, "newest first");
 
         let page2 = store
-            .headers_page(&f.id, 20, 10, None, MailSort::Date, true)
+            .headers_page(&f.id, 20, 10, None, MailSort::Date, true, false)
             .unwrap();
         assert_eq!(page2.items.len(), 5, "the last page is short");
         assert_eq!(page2.items[0].uid, 5);
@@ -2862,7 +2871,7 @@ mod tests {
         }
 
         for sort in [MailSort::Flagged, MailSort::Attachments, MailSort::Size] {
-            let page = store.headers_page(&f.id, 0, 10, None, sort, true).unwrap();
+            let page = store.headers_page(&f.id, 0, 10, None, sort, true, false).unwrap();
             assert_eq!(
                 page.items[0].uid, 1,
                 "{sort:?} must put the marked mail first"
@@ -2875,10 +2884,41 @@ mod tests {
         }
 
         let asc = store
-            .headers_page(&f.id, 0, 10, None, MailSort::Size, false)
+            .headers_page(&f.id, 0, 10, None, MailSort::Size, false, false)
             .unwrap();
         assert_eq!(asc.items[0].uid, 5, "smallest first, newest of the ties");
         assert_eq!(asc.items[4].uid, 1, "the big one goes last");
+    }
+
+    /// Unread-only is a filter over the folder, not over the page: the total
+    /// shrinks with it, and it composes with a query.
+    #[test]
+    fn unread_only_filters_the_folder_and_its_count() {
+        let (_d, store) = store();
+        let f = folder("a1", "INBOX");
+        store.upsert_folder(&f).unwrap();
+        for uid in 1..=6u32 {
+            let mut h = header(
+                &f,
+                uid,
+                if uid % 2 == 0 { "invoice" } else { "note" },
+                &format!("2026-07-{:02}T09:00:00Z", uid),
+            );
+            h.seen = uid > 2;
+            store.upsert_header(&h).unwrap();
+        }
+        let unread = store
+            .headers_page(&f.id, 0, 10, None, MailSort::Date, true, true)
+            .unwrap();
+        assert_eq!(unread.total, 2);
+        assert!(unread.items.iter().all(|h| !h.seen));
+        assert_eq!(unread.items[0].uid, 2, "still newest first");
+
+        let hit = store
+            .headers_page(&f.id, 0, 10, Some("invoice"), MailSort::Date, true, true)
+            .unwrap();
+        assert_eq!(hit.total, 1);
+        assert_eq!(hit.items[0].uid, 2);
     }
 
     #[test]
@@ -2894,7 +2934,7 @@ mod tests {
             .unwrap();
 
         let hits = store
-            .headers_page(&f.id, 0, 10, Some("invoi"), MailSort::Date, true)
+            .headers_page(&f.id, 0, 10, Some("invoi"), MailSort::Date, true, false)
             .unwrap();
         assert_eq!(hits.total, 1);
         assert_eq!(hits.items[0].subject, "invoice");
@@ -2908,12 +2948,13 @@ mod tests {
                 Some("'; DROP TABLE messages; --"),
                 MailSort::Date,
                 true,
+                false,
             )
             .unwrap();
         assert_eq!(hostile.total, 0);
         assert_eq!(
             store
-                .headers_page(&f.id, 0, 10, None, MailSort::Date, true)
+                .headers_page(&f.id, 0, 10, None, MailSort::Date, true, false)
                 .unwrap()
                 .total,
             2,
@@ -2952,7 +2993,7 @@ mod tests {
         store.set_flag(&h.id, MailFlag::Deleted, true).unwrap();
         assert_eq!(
             store
-                .headers_page(&f.id, 0, 10, None, MailSort::Date, true)
+                .headers_page(&f.id, 0, 10, None, MailSort::Date, true, false)
                 .unwrap()
                 .total,
             0
@@ -2974,14 +3015,14 @@ mod tests {
             .unwrap();
         assert_eq!(
             store
-                .headers_page(&inbox.id, 0, 10, None, MailSort::Date, true)
+                .headers_page(&inbox.id, 0, 10, None, MailSort::Date, true, false)
                 .unwrap()
                 .total,
             0
         );
         assert_eq!(
             store
-                .headers_page(&archive.id, 0, 10, None, MailSort::Date, true)
+                .headers_page(&archive.id, 0, 10, None, MailSort::Date, true, false)
                 .unwrap()
                 .total,
             1
@@ -3194,7 +3235,7 @@ mod tests {
         assert!(store.get_blob(&blob).is_err(), "blobs are gone");
         assert_eq!(
             store
-                .headers_page(&f.id, 0, 10, None, MailSort::Date, true)
+                .headers_page(&f.id, 0, 10, None, MailSort::Date, true, false)
                 .unwrap()
                 .total,
             1,
@@ -3221,7 +3262,7 @@ mod tests {
         assert_eq!(store.folders("a2").unwrap().len(), 1);
         assert_eq!(
             store
-                .headers_page(&b.id, 0, 10, None, MailSort::Date, true)
+                .headers_page(&b.id, 0, 10, None, MailSort::Date, true, false)
                 .unwrap()
                 .total,
             1
@@ -3303,7 +3344,7 @@ mod tests {
             .unwrap();
 
         let page = store
-            .priority_page(MailPriority::Important, 0, 10, None, MailSort::Date, true)
+            .priority_page(MailPriority::Important, 0, 10, None, MailSort::Date, true, false)
             .unwrap();
         assert_eq!(page.total, 2);
         let accounts: Vec<&str> = page.items.iter().map(|h| h.account_id.as_str()).collect();
@@ -3376,10 +3417,10 @@ mod tests {
             .unwrap();
 
         let important = store
-            .priority_page(MailPriority::Important, 0, 10, None, MailSort::Date, true)
+            .priority_page(MailPriority::Important, 0, 10, None, MailSort::Date, true, false)
             .unwrap();
         let urgent = store
-            .priority_page(MailPriority::Urgent, 0, 10, None, MailSort::Date, true)
+            .priority_page(MailPriority::Urgent, 0, 10, None, MailSort::Date, true, false)
             .unwrap();
         assert_eq!(important.total, 1);
         assert_eq!(urgent.total, 1);
@@ -3405,6 +3446,7 @@ mod tests {
                 Some("account one"),
                 MailSort::Date,
                 true,
+                false,
             )
             .unwrap();
         assert_eq!(hit.total, 1);
@@ -3412,7 +3454,7 @@ mod tests {
 
         // `total` is the whole list, not the page — that is what the pager reads.
         let first = store
-            .priority_page(MailPriority::Important, 0, 1, None, MailSort::Date, true)
+            .priority_page(MailPriority::Important, 0, 1, None, MailSort::Date, true, false)
             .unwrap();
         assert_eq!(first.total, 2);
         assert_eq!(first.items.len(), 1);
@@ -3504,7 +3546,7 @@ mod tests {
 
         assert_eq!(
             store
-                .priority_page(MailPriority::Urgent, 0, 10, None, MailSort::Date, true)
+                .priority_page(MailPriority::Urgent, 0, 10, None, MailSort::Date, true, false)
                 .unwrap()
                 .total,
             0
@@ -3857,6 +3899,27 @@ mod tests {
         }
 
         #[test]
+        fn unread_only_filters_a_sealed_store_on_both_paths() {
+            let (_d, store) = sealed_store();
+            let f = folder("a1", "INBOX");
+            store.upsert_folder(&f).unwrap();
+            for (uid, seen) in [(1u32, false), (2, true), (3, false)] {
+                let mut h = header(&f, uid, "invoice", &format!("2026-07-0{uid}T09:00:00Z"));
+                h.seen = seen;
+                store.upsert_header(&h).unwrap();
+            }
+            let plain = store
+                .headers_page(&f.id, 0, 10, None, MailSort::Date, true, true)
+                .unwrap();
+            assert_eq!(plain.total, 2);
+            let scanned = store
+                .headers_page(&f.id, 0, 10, Some("invoice"), MailSort::Date, true, true)
+                .unwrap();
+            assert_eq!(scanned.total, 2);
+            assert!(scanned.items.iter().all(|h| !h.seen));
+        }
+
+        #[test]
         fn search_works_over_ciphertext_and_reports_when_it_stopped_early() {
             let (_d, store) = sealed_store();
             let f = folder("a1", "INBOX");
@@ -3869,7 +3932,7 @@ mod tests {
                 .unwrap();
 
             let hits = store
-                .headers_page(&f.id, 0, 10, Some("INVOI"), MailSort::Date, true)
+                .headers_page(&f.id, 0, 10, Some("INVOI"), MailSort::Date, true, false)
                 .unwrap();
             assert_eq!(hits.total, 1, "case-insensitive, like the LIKE it replaces");
             assert_eq!(hits.items[0].subject, "invoice 42");
@@ -3880,7 +3943,7 @@ mod tests {
 
             // No query: no scan at all, and the count is the real one.
             let all = store
-                .headers_page(&f.id, 0, 10, None, MailSort::Date, true)
+                .headers_page(&f.id, 0, 10, None, MailSort::Date, true, false)
                 .unwrap();
             assert_eq!(all.total, 2);
             assert_eq!(all.items[0].uid, 2, "still newest first");
@@ -3890,7 +3953,7 @@ mod tests {
                 .upsert_header(&header(&f, 3, "invoice 43", "2026-07-03T09:00:00Z"))
                 .unwrap();
             let page = store
-                .headers_page(&f.id, 1, 10, Some("invoice"), MailSort::Date, true)
+                .headers_page(&f.id, 1, 10, Some("invoice"), MailSort::Date, true, false)
                 .unwrap();
             assert_eq!(page.total, 2);
             assert_eq!(page.items.len(), 1);
@@ -3916,7 +3979,7 @@ mod tests {
                     .unwrap();
             }
             let full = store
-                .headers_page(&f.id, 0, 5, Some("needle"), MailSort::Date, true)
+                .headers_page(&f.id, 0, 5, Some("needle"), MailSort::Date, true, false)
                 .unwrap();
             assert_eq!(full.total, 20);
             assert!(
@@ -3944,6 +4007,7 @@ mod tests {
                     Some("budget"),
                     MailSort::Date,
                     true,
+                    false,
                 )
                 .unwrap();
             assert_eq!(hit.total, 1);
@@ -3955,6 +4019,7 @@ mod tests {
                     Some("nothing"),
                     MailSort::Date,
                     true,
+                    false,
                 )
                 .unwrap();
             assert_eq!(miss.total, 0);
@@ -4136,7 +4201,7 @@ mod tests {
             assert_eq!(store.folders("a1").unwrap().len(), 1);
             assert_eq!(
                 store
-                    .headers_page(&f.id, 0, 10, None, MailSort::Date, true)
+                    .headers_page(&f.id, 0, 10, None, MailSort::Date, true, false)
                     .unwrap()
                     .total,
                 1

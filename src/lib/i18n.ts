@@ -4458,6 +4458,8 @@ export const en = {
   "mail.loading": "Loading…",
   "mail.selectMessage": "Select a message to read it.",
   "mail.searchPlaceholder": "Search this folder…",
+  "mail.unreadOnly": "Unread",
+  "mail.unreadOnlyTitle": "Show only unread messages",
   "mail.crypto.titlePgp": "OpenPGP",
   "mail.crypto.titleSmime": "S/MIME",
   "mail.crypto.signedOnly": "Signed by the sender",

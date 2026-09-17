@@ -2102,6 +2102,7 @@ pub async fn mail_headers(
     query: Option<String>,
     sort: Option<MailSort>,
     desc: Option<bool>,
+    unread_only: Option<bool>,
     state: State<'_, MailState>,
 ) -> Result<MailHeaderPage, String> {
     let rt = state.inner().clone();
@@ -2114,6 +2115,7 @@ pub async fn mail_headers(
             query.as_deref(),
             sort.unwrap_or_default(),
             desc.unwrap_or(true),
+            unread_only.unwrap_or(false),
         )?;
         serve_auth_state(&mut page.items);
         Ok(page)
@@ -2460,6 +2462,7 @@ pub async fn mail_priority_page(
     query: Option<String>,
     sort: Option<MailSort>,
     desc: Option<bool>,
+    unread_only: Option<bool>,
     state: State<'_, MailState>,
 ) -> Result<MailHeaderPage, String> {
     let rt = state.inner().clone();
@@ -2472,6 +2475,7 @@ pub async fn mail_priority_page(
             query.as_deref(),
             sort.unwrap_or_default(),
             desc.unwrap_or(true),
+            unread_only.unwrap_or(false),
         )?;
         serve_auth_state(&mut page.items);
         Ok(page)

@@ -1,5 +1,5 @@
 import { memo, useState } from "react";
-import { formatAddress, formatMailDate, formatSize, stripFormatControls } from "../../lib/mail";
+import { formatAddress, formatMailListDate, formatSize, stripFormatControls } from "../../lib/mail";
 import { ContextMenuPortal } from "../common/ContextMenuPortal";
 import { useI18nStore, useT } from "../../lib/i18n";
 import { useUse24h } from "../../lib/timeFormat";
@@ -271,7 +271,7 @@ function MailListImpl({
                   appears with its sort would move every other column sideways
                   on the click that selected it. */}
               <span className="mail-row-size">{formatSize(h.size)}</span>
-              <span className="mail-row-date">{formatMailDate(h.date, lang, use24h)}</span>
+              <span className="mail-row-date">{formatMailListDate(h.date, lang, use24h)}</span>
             </div>
             <div className="mail-row-subject">
               {/* The mark is shown on the row wherever the row is — in its own

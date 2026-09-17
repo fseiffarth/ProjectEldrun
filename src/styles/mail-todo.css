@@ -1752,7 +1752,7 @@ handle — it swallows the pointer before the card ever sees it. */
      "columns" would be a staircase. Fixed tracks (plus one `1fr` that resolves
      identically because every row is the same width) are what actually make
      them line up, header included. */
-  --mail-cols: 16px 14px 16px minmax(0, 1fr) 54px 78px;
+  --mail-cols: 16px 14px 16px minmax(0, 1fr) 54px 118px;
   --mail-col-gap: 6px;
   /* Where the sender column starts — the three glyph cells plus their gaps.
      The subject/preview lines are indented by exactly this, so they hang under

@@ -116,6 +116,10 @@ interface MailStore {
    *  `setSort` for why that is not an implementation detail. */
   sort: MailSort;
   sortDesc: boolean;
+  /** Only unread messages. A filter over the folder, applied by the backend
+   *  for `sort`'s reason: on a paged list, filtering the page would hide the
+   *  unread mail that sits on page three. */
+  unreadOnly: boolean;
 
   body: MailBody | null;
   /** This body was fetched with remote references resolved (an explicit click). */
@@ -205,6 +209,7 @@ interface MailStore {
    * a re-sort that kept the page number would land somewhere arbitrary.
    */
   setSort: (sort: MailSort, desc: boolean) => Promise<void>;
+  setUnreadOnly: (unreadOnly: boolean) => Promise<void>;
   loadPage: (offset: number) => Promise<void>;
 
   selectMessage: (messageId: string | null) => Promise<void>;
@@ -270,6 +275,7 @@ export const useMailStore = create<MailStore>((set, get) => ({
   query: "",
   sort: "date",
   sortDesc: true,
+  unreadOnly: false,
 
   body: null,
 
@@ -505,8 +511,13 @@ export const useMailStore = create<MailStore>((set, get) => ({
     await get().loadPage(0);
   },
 
+  setUnreadOnly: async (unreadOnly) => {
+    set({ unreadOnly, headerOffset: 0 });
+    await get().loadPage(0);
+  },
+
   loadPage: async (offset) => {
-    const { selectedFolderId, selectedPriority, query, sort, sortDesc } = get();
+    const { selectedFolderId, selectedPriority, query, sort, sortDesc, unreadOnly } = get();
     if (!selectedFolderId && !selectedPriority) {
       pageToken += 1;
       set({ headers: [], headerTotal: 0, headerScanned: undefined, loadingHeaders: false });
@@ -520,7 +531,15 @@ export const useMailStore = create<MailStore>((set, get) => ({
     // the list's sort headers — stays one code path that does not know which it
     // is showing.
     const page = await (selectedPriority
-      ? mailPriorityPage(selectedPriority, offset, MAIL_PAGE_SIZE, query.trim() || null, sort, sortDesc)
+      ? mailPriorityPage(
+          selectedPriority,
+          offset,
+          MAIL_PAGE_SIZE,
+          query.trim() || null,
+          sort,
+          sortDesc,
+          unreadOnly,
+        )
       : mailHeaders(
           selectedFolderId as string,
           offset,
@@ -528,6 +547,7 @@ export const useMailStore = create<MailStore>((set, get) => ({
           query.trim() || null,
           sort,
           sortDesc,
+          unreadOnly,
         )
     ).catch((err) => {
       set({ error: reason(err) });

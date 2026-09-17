@@ -65,6 +65,7 @@ export function MailPane({ visible }: MailPaneProps) {
   const query = useMailStore((s) => s.query);
   const sort = useMailStore((s) => s.sort);
   const sortDesc = useMailStore((s) => s.sortDesc);
+  const unreadOnly = useMailStore((s) => s.unreadOnly);
   const body = useMailStore((s) => s.body);
   const loadingHeaders = useMailStore((s) => s.loadingHeaders);
   const loadingBody = useMailStore((s) => s.loadingBody);
@@ -508,6 +509,20 @@ export function MailPane({ visible }: MailPaneProps) {
             read off the thing being ordered rather than off a dropdown at the
             other end of the toolbar. What stays this pane's job is passing the
             store's `sort`/`sortDesc` down and handing the answer back. */}
+        {/* Beside the search because it is the same kind of thing — it narrows
+            the list — and like the search it is the store's, so it survives a
+            folder switch instead of silently resetting. */}
+        <button
+          type="button"
+          className={`settings-btn${unreadOnly ? " primary" : ""}`}
+          aria-pressed={unreadOnly}
+          title={t("mail.unreadOnlyTitle")}
+          disabled={!selectedFolderId && !selectedPriority}
+          onClick={() => void useMailStore.getState().setUnreadOnly(!unreadOnly)}
+        >
+          {t("mail.unreadOnly")}
+        </button>
+        <UntestedTag />
         <input
           className="mail-input mail-search"
           type="search"

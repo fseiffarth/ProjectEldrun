@@ -175,8 +175,17 @@ export function mailHeaders(
   query: string | null,
   sort: MailSort = "date",
   desc = true,
+  unreadOnly = false,
 ): Promise<MailHeaderPage> {
-  return invoke<MailHeaderPage>("mail_headers", { folderId, offset, limit, query, sort, desc });
+  return invoke<MailHeaderPage>("mail_headers", {
+    folderId,
+    offset,
+    limit,
+    query,
+    sort,
+    desc,
+    unreadOnly,
+  });
 }
 
 /**
@@ -240,6 +249,7 @@ export function mailPriorityPage(
   query: string | null,
   sort: MailSort = "date",
   desc = true,
+  unreadOnly = false,
 ): Promise<MailHeaderPage> {
   return invoke<MailHeaderPage>("mail_priority_page", {
     priority,
@@ -248,6 +258,7 @@ export function mailPriorityPage(
     query,
     sort,
     desc,
+    unreadOnly,
   });
 }
 
@@ -950,6 +961,35 @@ export function formatMailDate(iso: string, locale?: string, use24h?: boolean): 
         ...(use24h === undefined ? {} : { hour12: !use24h }),
       })
     : d.toLocaleDateString(locale, { year: "numeric", month: "short", day: "numeric" });
+}
+
+/**
+ * The list's date column: like `formatMailDate`, but an older message keeps its
+ * arrival time (`hh:mm`) beside the day, so two mails from the same day are
+ * told apart without opening them. The year is dropped inside the current one,
+ * which is what buys the time its room in a fixed-width column.
+ */
+export function formatMailListDate(iso: string, locale?: string, use24h?: boolean): string {
+  const ms = Date.parse(iso);
+  if (Number.isNaN(ms)) return iso;
+  const d = new Date(ms);
+  const today = new Date();
+  const time: Intl.DateTimeFormatOptions = {
+    hour: "2-digit",
+    minute: "2-digit",
+    ...(use24h === undefined ? {} : { hour12: !use24h }),
+  };
+  const sameDay =
+    d.getFullYear() === today.getFullYear() &&
+    d.getMonth() === today.getMonth() &&
+    d.getDate() === today.getDate();
+  if (sameDay) return d.toLocaleTimeString(locale, time);
+  return d.toLocaleString(locale, {
+    ...(d.getFullYear() === today.getFullYear() ? {} : { year: "numeric" }),
+    month: "short",
+    day: "numeric",
+    ...time,
+  });
 }
 
 /** Only `http`/`https` may ever be handed to `open_external_url` (which refuses
