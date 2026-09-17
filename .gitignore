@@ -50,3 +50,7 @@ src-tauri/WixTools/
 
 # Machine-list exports (contain real hostnames)
 eldrun-machines.json
+eldrun-screenshots/
+eldrun-emails/
+screenshots/
+emails/
