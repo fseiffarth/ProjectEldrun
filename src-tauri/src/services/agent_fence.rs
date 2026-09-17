@@ -607,6 +607,38 @@ fn staged_symlink(src: &str, dst: &str) -> Option<FenceSymlink> {
     })
 }
 
+/// The local-model tabs' own state: `<state_dir>/vibe_local`, where
+/// `commands::ollama::prepare_local_agent` writes one `VIBE_HOME` per model
+/// (`config.toml` naming the Ollama provider and the active model, `logs/`,
+/// `.env`).
+///
+/// Unmounted it is hidden like everything else under the `$HOME` tmpfs, and a
+/// fenced Mistral/vibe tab found no config at all: it fell back to vibe's cloud
+/// default and opened asking for `MISTRAL_API_KEY` — "the local model doesn't
+/// work", on every fenced scope, most visibly the root console, which has no
+/// per-project fence override to turn off.
+///
+/// The **whole directory**, not the spawn's own `VIBE_HOME`: that value comes
+/// from the renderer, and a read-write mount is never built from something the
+/// renderer names. It holds no credential of the user's — Eldrun writes these
+/// files itself, pointing at the local Ollama server.
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
+pub(crate) fn local_model_mounts(state_dir: &Path) -> Vec<BindMount> {
+    let dir = state_dir.join("vibe_local");
+    if !dir.is_dir() {
+        // Nothing has prepared a local-model home yet. Mounting a directory
+        // that does not exist fails the spawn, and a tab that never drives one
+        // loses nothing by its absence.
+        return Vec::new();
+    }
+    let path = dir.to_string_lossy().into_owned();
+    vec![BindMount {
+        src: path.clone(),
+        dst: path,
+        read_only: false,
+    }]
+}
+
 #[cfg(any(target_os = "linux", target_os = "macos", test))]
 fn agent_state_mounts(scope_id: &str, roots: &[PathBuf]) -> (Vec<BindMount>, Vec<FenceSymlink>) {
     let home = paths::home_dir_string();
@@ -694,6 +726,7 @@ fn agent_state_mounts(scope_id: &str, roots: &[PathBuf]) -> (Vec<BindMount>, Vec
             .into_iter()
             .filter_map(|m| mount_pair(&m, true)),
     );
+    mounts.extend(local_model_mounts(&state_dir));
     let bin = crate::services::agent_bin::bin_dir();
     let _ = std::fs::create_dir_all(&bin);
     let bin = bin.to_string_lossy().into_owned();
@@ -1955,6 +1988,33 @@ mod tests {
         // bubblewrap applies mounts in order; the later read-write bind of the
         // same path is the one the agent sees.
         assert!(rw > ro, "{out:?}");
+    }
+
+    #[test]
+    fn the_local_model_home_is_mounted_read_write_when_one_exists() {
+        let state = tempfile::tempdir().unwrap();
+        // Nothing prepared yet: no mount, and no directory created either.
+        assert!(local_model_mounts(state.path()).is_empty());
+        assert!(!state.path().join("vibe_local").exists());
+
+        std::fs::create_dir_all(state.path().join("vibe_local/gemma4-e4b")).unwrap();
+        let mounts = local_model_mounts(state.path());
+        let dir = state
+            .path()
+            .join("vibe_local")
+            .to_string_lossy()
+            .into_owned();
+        // Identical src/dst — `VIBE_HOME` names this absolute path — and
+        // writable, since vibe keeps its session logs and cache beside the
+        // config Eldrun writes.
+        assert_eq!(
+            mounts,
+            vec![BindMount {
+                src: dir.clone(),
+                dst: dir,
+                read_only: false,
+            }]
+        );
     }
 
     #[test]
