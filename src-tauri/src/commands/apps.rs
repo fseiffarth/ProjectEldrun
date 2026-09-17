@@ -97,6 +97,8 @@ pub struct WindowRegistry {
     /// (see [`DetachedBounds`]). Written just before a switch-away hides the
     /// popout; read just after switch-back re-shows it, to restore its monitor.
     pub detached_bounds: HashMap<String, DetachedBounds>,
+    /// Wayland popouts parked without unmapping their compositor-owned surfaces.
+    pub detached_parking: crate::services::window_state::DetachedParking,
 }
 
 pub type WindowRegistryState = Arc<Mutex<WindowRegistry>>;

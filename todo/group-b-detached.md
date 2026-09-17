@@ -1,5 +1,16 @@
 ## Group B — Detached Windows: Parity & Cross-Window Correctness
 
+- [ ] **GNOME Wayland monitor retention (2026-09-17): live verification.**
+  Scope switches now minimize popouts and present their existing surfaces on
+  return. Hiding destroyed GTK's Wayland toplevel and lost GNOME's monitor
+  placement; desktop coordinates cannot restore it. Parking requests are
+  tracked independently of GTK's unreliable minimized flag, including renderer
+  polling/streaming and bounds-save gating. Minimized popouts may remain in
+  GNOME's overview/window switcher. After a backend restart, place two popouts
+  on different monitors, switch projects and back repeatedly, then try root/box
+  scopes and unplugging a monitor while parked. Check placement, size, focus,
+  and that every popout returns. Not run live.
+
 *Created 2026-09-01 from a two-agent code audit (one agent for feature parity
 inside a popout, one for every cross-window action), each finding then
 spot-checked by hand against the tree.*

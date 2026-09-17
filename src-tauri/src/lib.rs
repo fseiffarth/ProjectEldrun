@@ -1804,6 +1804,7 @@ pub fn run() {
             commands::subwindow::desktop_coordinates_supported,
             commands::subwindow::snap_detached_window,
             commands::subwindow::sync_detached_scope,
+            commands::subwindow::detached_window_is_parked,
             // The deck presenter's audience window (M#90)
             commands::presenter::open_presenter_window,
             commands::presenter::close_presenter_window,

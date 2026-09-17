@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRendererWatchdog } from "../../lib/rendererWatchdog";
 import { emit, listen } from "@tauri-apps/api/event";
+import { detachedWindowVisible } from "../../lib/detachedVisibility";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   useSettingsStore,
@@ -445,8 +446,7 @@ export function DetachedApp({ param }: Props) {
       // whatever geometry the WM used while the window was off screen. Persisting
       // that would move the popout on the next launch, so a flush is only taken
       // while the window is actually visible.
-      void win
-        .isVisible()
+      void detachedWindowVisible(win)
         .then((visible) => {
           if (!visible || cancelled || !pos || !size) return;
           void emit(DETACHED_BOUNDS, {
@@ -487,15 +487,16 @@ export function DetachedApp({ param }: Props) {
   // or minimised), so the panes below can stop streaming and polling for a
   // window nobody can see. Polled rather than event-driven: a Tauri-side
   // `hide()` raises no window event the renderer can hear, and the check is one
-  // cheap IPC call on the same cadence a hidden pane would otherwise cost far
-  // more than.
+  // cheap IPC check on the same cadence a hidden pane would otherwise cost far
+  // more than. Include Eldrun's parking state: Wayland does not reliably expose
+  // minimization, and a parked surface deliberately remains mapped there.
   useEffect(() => {
     const win = getCurrentWindow();
     let cancelled = false;
     const check = () => {
-      Promise.all([win.isVisible(), win.isMinimized()])
-        .then(([visible, minimized]) => {
-          if (!cancelled) setWindowVisible(visible && !minimized);
+      detachedWindowVisible(win)
+        .then((visible) => {
+          if (!cancelled) setWindowVisible(visible);
         })
         .catch(() => {});
     };

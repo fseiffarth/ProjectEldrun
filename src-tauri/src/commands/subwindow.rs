@@ -115,6 +115,7 @@ pub fn release_detached_entry(reg: &mut WindowRegistry, label: &str) -> Option<u
     // Drop any captured switch-back geometry too, so a docked/closed label never
     // leaves a stale bounds entry a reused label could later pick up (#42).
     reg.detached_bounds.remove(label);
+    reg.detached_parking.forget(label);
     reg.windows.remove(label).and_then(|w| w.window_id)
 }
 
@@ -475,7 +476,7 @@ pub fn snap_detached_to_screen(app: &AppHandle, label: &str) -> bool {
 /// `Option` through (a root popout registers under `"root"`, never `None`).
 pub const ROOT_SCOPE: &str = "root";
 
-/// Park the given popouts: remember where each one is, then hide it (#42).
+/// Park the given popouts, preserving their monitor (#42).
 ///
 /// Backend-independent. On X11 it complements the desktop-park in
 /// `project_runtime::switch`; on Wayland/KDE/null (where desktop-parking is a
@@ -489,6 +490,8 @@ pub const ROOT_SCOPE: &str = "root";
 /// popout lands on the wrong screen. An ALREADY-hidden popout is skipped for the
 /// capture: its on-screen geometry while invisible is whatever the WM left it,
 /// and recording that would overwrite the good rect taken when it was parked.
+/// On Wayland hiding destroys the native toplevel and its placement. Minimize
+/// instead, keeping GNOME's monitor/position attached to the same surface.
 pub fn hide_detached_windows(
     app: &AppHandle,
     win_registry: &WindowRegistryState,
@@ -498,6 +501,14 @@ pub fn hide_detached_windows(
         let Some(win) = app.get_webview_window(label) else {
             continue;
         };
+        if !window_positions_readable() {
+            let changed = win_registry
+                .lock().unwrap().detached_parking.transition(label, false);
+            if changed && win.minimize().is_err() {
+                win_registry.lock().unwrap().detached_parking.forget(label);
+            }
+            continue;
+        }
         if win.is_visible().unwrap_or(false) {
             if let (Ok(pos), Ok(size)) = (win.outer_position(), win.inner_size()) {
                 win_registry.lock().unwrap().detached_bounds.insert(
@@ -517,8 +528,9 @@ pub fn hide_detached_windows(
 
 /// Un-park the given popouts, back onto the screen they were parked from (#42).
 ///
-/// Mirrors [`hide_detached_windows`]. `unminimize()` first in case a backend
-/// minimized rather than hid them; the remembered rect is then validated against
+/// Wayland presents the existing surface; other backends use `unminimize()`
+/// first in case a backend minimized rather than hid them. The remembered rect
+/// is then validated against
 /// the currently-connected monitors, so an unplugged display can't strand a
 /// popout off-screen.
 pub fn show_detached_windows(
@@ -526,21 +538,32 @@ pub fn show_detached_windows(
     win_registry: &WindowRegistryState,
     labels: &[String],
 ) {
+    let main = app.get_webview_window(crate::services::window_service::MAIN_WINDOW_LABEL);
+    let restore_main_focus = !window_positions_readable()
+        && main.as_ref().is_some_and(|win| win.is_focused().unwrap_or(false));
+    let mut presented = false;
     for label in labels {
         let Some(win) = app.get_webview_window(label) else {
             continue;
         };
-        let _ = win.unminimize();
-        let _ = win.show();
-        // Under Wayland the rect captured at hide time is (0,0,w,h) — the
-        // position half is unreadable (`window_positions_readable`) and the
-        // compositor keeps a hidden toplevel's placement itself, so re-applying
-        // it could only do harm: a (0,0) rect that does not fit the PRIMARY
-        // monitor gets "fitted" to it, shrinking a popout that lives on a bigger
-        // secondary display. Leave the compositor's own restore alone.
         if !window_positions_readable() {
+            let changed = win_registry
+                .lock().unwrap().detached_parking.transition(label, true);
+            if changed {
+                // GTK deiconify/show alone cannot undo a Wayland minimize.
+                // Tauri's set_focus uses gtk_window_present_with_time, asking
+                // GNOME to activate the existing surface without recreating it.
+                if win.set_focus().is_ok() {
+                    presented = true;
+                } else {
+                    win_registry
+                        .lock().unwrap().detached_parking.transition(label, false);
+                }
+            }
             continue;
         }
+        let _ = win.unminimize();
+        let _ = win.show();
         // Put the popout back where it was before it was parked: the show()
         // above lets the WM move it (often onto the wrong monitor), so re-apply
         // the geometry captured at hide time. Size before position so a resize
@@ -578,6 +601,11 @@ pub fn show_detached_windows(
             }
         }
     }
+    if presented && restore_main_focus {
+        if let Some(main) = main {
+            let _ = main.set_focus();
+        }
+    }
 }
 
 /// Bring every live popout in line with the scope the main window is showing:
@@ -607,6 +635,17 @@ pub fn sync_detached_scope(
     scope: String,
 ) {
     sync_detached_visibility(&app, &win_registry, &scope);
+}
+
+/// GTK cannot reliably report minimization on Wayland. The renderer uses our
+/// scope parking state as well, so inactive popouts stop polling/streaming.
+#[tauri::command]
+pub fn detached_window_is_parked(
+    window: tauri::WebviewWindow,
+    win_registry: State<'_, WindowRegistryState>,
+) -> bool {
+    win_registry
+        .lock().unwrap().detached_parking.is_parked(window.label())
 }
 
 /// Double-clicking a popout's title bar snaps it onto the screen it is on
@@ -950,11 +989,13 @@ mod tests {
         let mut reg = WindowRegistry::default();
         let label = "detached-p1-g-1";
         reserve_detached_seq(&mut reg, label);
+        reg.detached_parking.transition(label, false);
         reg.windows
             .insert(label.to_string(), tracked(label, Some(42)));
         assert_eq!(release_detached_entry(&mut reg, label), Some(42));
         assert!(reg.detached_seqs.is_empty());
         assert!(reg.windows.is_empty());
+        assert!(!reg.detached_parking.is_parked(label));
         // Second release (and a never-registered label): no-op, no id.
         assert_eq!(release_detached_entry(&mut reg, label), None);
         assert_eq!(release_detached_entry(&mut reg, "detached-p1-g-9"), None);
