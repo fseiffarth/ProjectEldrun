@@ -674,13 +674,14 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
      composer shows only in the Terminal view.
   Windows PowerShell and macOS runtime behavior also require platform QA.
 
-- [~] **31ac — "Set up in terminal" opens the install overlay** (2026-09-14;
+- [~] **31ac — "Set up in terminal" opens in the root console** (2026-09-14;
   ✅ code-complete, tests passing, ⚠️ live QA pending). The Tailscale Serve
   guide's button switched the whole window to the root scope and opened a tab
   there, unlike every other one-click install. It now goes through
-  `runInstallInTab`: the root tab still owns the PTY, and the centered install
-  overlay mirrors it right over Settings; closing the overlay leaves the
-  command running in the root terminal with the usual toast. The confirmation
+  `runInstallInTab`: the root tab still owns the PTY, and the root console
+  floats over Settings with that tab in front (2026-09-17 — the separate
+  install overlay was merged into the console); closing it leaves the command
+  running in its root tab. The confirmation
   before running stays.
       - [ ] **Manual QA:** Settings → Mobile → open "Set up Tailscale Serve" →
         *Set up in terminal* → confirm. Expect the overlay terminal over

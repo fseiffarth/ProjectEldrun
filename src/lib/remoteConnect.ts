@@ -1,4 +1,4 @@
-import { useRootOverlayStore } from "../stores/rootOverlay";
+import { openTabInRootConsole } from "../stores/rootOverlay";
 import { invoke } from "@tauri-apps/api/core";
 import { useTabsStore } from "../stores/tabs";
 import { useProjectsStore } from "../stores/projects";
@@ -103,19 +103,25 @@ export function openConnectionInRoot(opts: {
   const { label, command, dedupeKey } = opts;
   if (dedupeKey != null && connectionStillOpen(dedupeKey)) return;
   const rootDir = useProjectsStore.getState().rootDir ?? "";
-  const tab = useTabsStore.getState().addTabToScope("root", {
-    label,
-    cmd: "", // empty → backend default_shell()
-    cwd: rootDir, // empty resolves to ~/eldrun/root on the backend
-    kind: "shell",
-    initialInput: command,
-  });
-  if (dedupeKey != null) openedConnections.set(dedupeKey, tab.key);
+  // Claimed before the tab exists: root may have to be restored first, and a
+  // second request landing in that gap must not open a second login.
+  if (dedupeKey != null) openedConnections.set(dedupeKey, null);
   // Surface it without stealing the active project: a transient toast (auto-clears
   // in AppShell) tells the user the connection is waiting in the root terminal.
   useProjectsStore.setState({ switchToast: `${label} — authenticate in root terminal` });
   // …and put the prompt in front of them: the root console floats over the
   // project, so a login that needs a password no longer waits behind a scope
   // switch the user has to go and make.
-  useRootOverlayStore.getState().show(tab.key);
+  openTabInRootConsole(
+    {
+      label,
+      cmd: "", // empty → backend default_shell()
+      cwd: rootDir, // empty resolves to ~/eldrun/root on the backend
+      kind: "shell",
+      initialInput: command,
+    },
+    (tab) => {
+      if (dedupeKey != null) openedConnections.set(dedupeKey, tab.key);
+    },
+  );
 }

@@ -300,8 +300,8 @@ export function MobileSettings() {
   };
 
   // Same one-click shape as every other install-via-command flow: the command
-  // runs in a root terminal tab, watched through the centered install overlay
-  // right here in Settings — never a scope switch away from the panel.
+  // runs in a root terminal tab, watched in the root console floating over
+  // Settings — never a scope switch away from the panel.
   const setUpInTerminal = () => {
     const command = `tailscale serve --bg http://127.0.0.1:${guidePort}`;
     if (!window.confirm(tr("mobile.setUpConfirm", { command }))) return;

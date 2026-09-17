@@ -16,8 +16,18 @@ scope chip's Root entry and every "log in in the root terminal" flow open
 The scope itself is unchanged. Its tabs still live in `tabsByScope.root` and
 persist under `sessions/root/`. Their PTYs are still owned by `CenterPanel`'s
 keep-alive pane layer, and the overlay's panes are attach-only views of them.
-This is the same arrangement popouts and `InstallOverlay` use, so closing the
-overlay ends nothing.
+This is the same arrangement popouts use, so closing the overlay ends nothing.
+
+It is the only overlay onto the root terminal. One-click installs
+(`runInstallInTab`) used to float a second one, `InstallOverlay`: a single
+attach-only terminal on the install's root tab. That made two dialogs over one
+scope, and the smaller one could show only the tab it was opened for. An install
+now opens its tab in the console through `openTabInRootConsole`, the same door
+a parked login (`openConnectionInRoot`) takes. That door restores the root
+scope *before* adding the tab. A tab added to a root never opened this session
+creates the scope key, which reads as "hydrated", so the restore would be
+skipped and the host's persist would write the lone new tab over the saved root
+layout.
 
 The overlay renders the root layout as stored, splits included. Dragging a tab
 onto another subwindow's strip or a body's edge rearranges it as in a project,

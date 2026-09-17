@@ -3442,38 +3442,6 @@ label.settings-toggle-card-row {
   flex: 0 0 auto;
 }
 
-/* ── Install overlay ──────────────────────────────────────────────────────
-   The one-click install's centered terminal (`InstallOverlayHost`), on the
-   shared `.project-dialog.dialog-framed` chrome. Sized its own way rather than
-   riding the mail/calendar/board trio's shared box: those are whole panes and
-   claim most of the window; this is one terminal watching one command, and a
-   near-fullscreen black rectangle would read as a mode switch rather than a
-   progress window. */
-.install-overlay {
-  width: min(860px, calc(100vw - 48px));
-  height: min(640px, calc(100vh - 96px));
-  display: flex;
-  flex-direction: column;
-}
-.install-overlay-hint {
-  margin: 0;
-  padding: 6px 16px 8px;
-  font-size: 12px;
-  color: var(--text-secondary);
-}
-/* Definite, clipped box for the embedded xterm — same reason as
-   `.dialog-connect-terminal-host`: xterm refuses to open into a zero-height
-   element, and the terminal scrolls itself. */
-.install-overlay-body {
-  position: relative;
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  margin: 0 10px 10px;
-  border-radius: var(--radius-sm);
-  overflow: hidden;
-}
-
 /* "Paste username / password" above a login terminal (see CredentialPasteBar):
    small, secondary buttons — the login itself happens in the terminal below, this
    only saves retyping a credential the keychain already holds. */

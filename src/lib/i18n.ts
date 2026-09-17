@@ -2851,10 +2851,6 @@ export const en = {
     "No login detected after two minutes. Finish signing in in the terminal, then press the button again.",
   "remoteMachines.dropConnectFailed":
     "The machine was added, but connecting it failed: {error} — use its Connect button below to retry.",
-  // ── Install overlay (one-click installs' centered terminal) ────────────────
-  "installOverlay.hint":
-    "Runs in the root terminal — closing this window keeps the install running there.",
-  "installOverlay.continuesToast": "{label} — still running in the root terminal",
   // ── Machines (header "Global machines" menu) ───────────────────────────────
   // The only remote-login surface that had no translation at all, while the
   // `TerminalSignInToggle` inside its own add-form did — one row of a form

@@ -27,8 +27,8 @@ export const BOX_SCOPE_PREFIX = "box:";
  * no tab key at all (a bare, colon-less id, or a lone `box:<id>` scope).
  *
  * The scope grammar is "an id, or `box:<id>`", so the cut is at the first colon
- * *after* the box prefix. Ids that are not tabs (a dialog's login/VPN terminal,
- * the install overlay) still split somewhere harmless: their callers look the
+ * *after* the box prefix. Ids that are not tabs (a dialog's login/VPN terminal)
+ * still split somewhere harmless: their callers look the
  * result up in per-scope maps that never hold them.
  */
 export function splitPtyId(ptyId: string): { scope: string; key: string } | null {

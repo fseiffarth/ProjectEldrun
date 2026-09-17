@@ -2720,9 +2720,6 @@ export const dict: Dict = {
   "autoConnect.hpcTitle": "Diese Maschine ist als HPC-Cluster-Login-Knoten markiert, daher verbindet sich Eldrun nie von sich aus mit ihr. Entferne die Markierung, um dies zu aktivieren.",
   "remoteLogin.pollGaveUp": "Nach zwei Minuten wurde keine Anmeldung erkannt. Schließe die Anmeldung im Terminal ab und drücke dann erneut den Button.",
   "remoteMachines.dropConnectFailed": "Die Maschine wurde hinzugefügt, aber das Verbinden ist fehlgeschlagen: {error} — nutze den Verbinden-Button unten, um es erneut zu versuchen.",
-  "installOverlay.hint":
-    "Läuft im Root-Terminal — beim Schließen dieses Fensters läuft die Installation dort weiter.",
-  "installOverlay.continuesToast": "{label} — läuft weiter im Root-Terminal",
   "machines.label": "Maschinen",
   "machines.ariaLabel": "Globale Maschinen — klicken, um die Liste zu öffnen",
   "machines.triggerTitle": "Globale Worker-Maschinen — verbinde eine und füge sie dann über ihre Zeile zu einem beliebigen Projekt hinzu. Das Öffnen dieser Liste prüft jede Maschine, was eine echte SSH-Anmeldung ist, daher öffnet sie sich per Klick und nie beim Hovern.",

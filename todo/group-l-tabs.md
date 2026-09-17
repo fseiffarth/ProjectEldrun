@@ -183,23 +183,27 @@ correctness/UX work atop the same layout model #42 detaches.*
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work
 
-215. **Live-QA the install overlay terminal.** ✅ Implemented · 🧪 Awaiting live
-    QA. Every one-click install (`runInstallInTab`: Ollama/agent CLI installs,
-    the LaTeX/MiKTeX prompt, `gh`/`glab` install + auth login, custom-agent
-    install commands) now also opens a centered overlay terminal attached to
-    the same root-scope PTY, replacing the open-time toast. Verify: the
-    overlay shows the install live and accepts input (a sudo password);
-    closing it (×, backdrop, Escape outside the terminal) leaves the install
-    running in the root tab and raises the "still running in the root
-    terminal" toast; the root tab shows the full output when opened later
-    (client buffer + backend replay); closing the root tab while the overlay
-    is up takes the overlay down silently; Escape typed into the terminal does
-    NOT close the overlay.
-    *Files: `src/lib/installCommand.ts`, `src/stores/installOverlay.ts`,
-    `src/components/layout/InstallOverlay.tsx`, `src/components/layout/AppShell.tsx`,
-    `src/styles/settings-chrome.css`.*
-    - [x] 🤖 Automated test — `src/__tests__/InstallOverlay.test.tsx` (tab+PTY
-      wiring, attach-only props, close hand-off toast, dead-tab silent close).
+215. **Live-QA one-click installs in the root console.** ✅ Implemented · 🧪
+    Awaiting live QA. Every one-click install (`runInstallInTab`: Ollama/agent
+    CLI installs, the LaTeX/MiKTeX prompt, `gh`/`glab` install + auth login,
+    custom-agent install commands) opens its root tab **in the root console**
+    (2026-09-17). It used to float its own centered overlay terminal
+    (`InstallOverlay`) on the same PTY — a second overlay onto the root
+    terminal beside the console; the two are merged, the install overlay, its
+    store, CSS and strings are gone. Verify: the console opens over the dialog
+    the install was started from, with the install's tab in front, live and
+    accepting input (a sudo password); closing it (×, backdrop, Escape outside
+    a pane, Ctrl+Shift+R) leaves the install running and reopening shows the
+    full output; Escape typed into the terminal does NOT close the console;
+    after a relaunch, an install started BEFORE the console was first opened
+    keeps the saved root tabs (root is restored before the tab is added) —
+    same for a login parked by `openConnectionInRoot`.
+    *Files: `src/lib/installCommand.ts`, `src/lib/remoteConnect.ts`,
+    `src/stores/rootOverlay.ts` (`openTabInRootConsole`),
+    `src/components/layout/AppShell.tsx`.*
+    - [x] 🤖 Automated test — `src/__tests__/InstallInRootConsole.test.tsx`
+      (tab in front + console open, project untouched, restore-before-add,
+      no second login mid-restore).
     - [ ] 🖐️ Manual test
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work

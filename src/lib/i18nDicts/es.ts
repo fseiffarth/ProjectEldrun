@@ -2715,9 +2715,6 @@ export const dict: Dict = {
   "autoConnect.hpcTitle": "Esta máquina está etiquetada como nodo de inicio de sesión de un clúster HPC, así que Eldrun nunca se conecta a ella por sí sola. Quita la etiqueta para activar esto.",
   "remoteLogin.pollGaveUp": "No se detectó ningún inicio de sesión después de dos minutos. Termina de iniciar sesión en la terminal y luego vuelve a pulsar el botón.",
   "remoteMachines.dropConnectFailed": "La máquina se añadió, pero la conexión falló: {error} — usa su botón Conectar de abajo para reintentarlo.",
-  "installOverlay.hint":
-    "Se ejecuta en la terminal raíz — al cerrar esta ventana la instalación sigue ejecutándose allí.",
-  "installOverlay.continuesToast": "{label} — sigue ejecutándose en la terminal raíz",
   "machines.label": "Máquinas",
   "machines.ariaLabel": "Máquinas globales — haz clic para abrir la lista",
   "machines.triggerTitle": "Máquinas de trabajo globales — conecta una y luego añádela a cualquier proyecto desde su fila. Abrir esta lista comprueba cada máquina, lo cual es un inicio de sesión SSH real, así que se abre con un clic y nunca al pasar el ratón por encima.",

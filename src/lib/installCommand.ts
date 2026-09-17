@@ -1,6 +1,5 @@
-import { useTabsStore } from "../stores/tabs";
 import { useProjectsStore } from "../stores/projects";
-import { useInstallOverlayStore } from "../stores/installOverlay";
+import { openTabInRootConsole } from "../stores/rootOverlay";
 import { IS_WINDOWS, IS_MAC } from "./platform";
 
 /** A supported git-hosting provider, as chosen in the fork-import dropdown and
@@ -54,12 +53,11 @@ export function providerAuthLoginCmd(provider: GitHostProvider): string {
  *
  * The tab opens in the **root** scope (installs are machine-global, not project
  * scoped). The active project is deliberately left unchanged — switching scope
- * from a settings click would be jarring. Instead the install is surfaced as a
- * centered **overlay terminal** (`InstallOverlayHost`, driven by
- * `stores/installOverlay`) attached to the same PTY, so the user watches the
- * install — and answers its prompts — right where they clicked; closing the
- * overlay leaves the install running in the root terminal, and the toast saying
- * so is raised at that close, not here.
+ * from a settings click would be jarring. Instead the install is surfaced in the
+ * **root console** (`layout/RootOverlay`), which floats over whatever is open
+ * with the install's tab in front, so the user watches the install — and answers
+ * its prompts — right where they clicked. The console's panes are attach-only
+ * views, so closing it leaves the install running in its root tab.
  */
 export type InstallShellKind = "bash" | "powershell" | "default";
 
@@ -85,14 +83,11 @@ export function runInstallInTab(
   shellKind: InstallShellKind,
 ): void {
   const rootDir = useProjectsStore.getState().rootDir ?? "";
-  const tab = useTabsStore.getState().addTabToScope("root", {
+  openTabInRootConsole({
     label,
     cmd: installShellCommand(shellKind),
     cwd: rootDir, // empty resolves to ~/eldrun/root on the backend
     kind: "shell",
     initialInput: command,
   });
-  // PTY ids are scope-qualified (see TabPane) — the overlay attaches to the
-  // root pane's PTY, it never spawns one of its own.
-  useInstallOverlayStore.getState().open(`root:${tab.key}`, label);
 }
