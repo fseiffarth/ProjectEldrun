@@ -1803,8 +1803,52 @@ pub(crate) fn agent_home_mounts(
             rw.push(format!("{cand}:{cand}"));
         }
     }
+    // OpenCode keeps every session in `~/.local/share/opencode/opencode.db`
+    // (plus `auth.json`) and its last model/prompt history under
+    // `~/.local/state/opencode`. Unmounted, a fenced tab wrote its conversation
+    // into the throwaway home and the restore's `opencode --continue` found no
+    // session to continue. Whole directories, for the same reason as Codex's
+    // store: SQLite replaces its `-wal`/`-shm` sidecars. The config dir is
+    // readable only — plugins and MCP commands declared there run in the host's
+    // uncontained OpenCode — and the cache (downloaded binaries) stays out.
+    for (rel, writable) in [
+        (".local/share/opencode", true),
+        (".local/state/opencode", true),
+        (".config/opencode", false),
+    ] {
+        let dir = format!("{home}/{rel}");
+        if Path::new(&dir).is_dir() {
+            if writable { &mut rw } else { &mut ro }.push(format!("{dir}:{dir}"));
+        }
+    }
+    // The other "continue last session" agents: only the session store their
+    // continue flag reads is mounted, so a restored tab finds its conversation.
+    // The rest of each home stays unmounted, exactly as before — hooks, tools and
+    // MCP configs live beside these, and read-only copies of config the CLI
+    // rewrites at startup would trade a lost session for a failed launch.
+    for rel in CONTINUE_AGENT_SESSION_STORES {
+        let path = format!("{home}/{rel}");
+        if Path::new(&path).is_dir() {
+            rw.push(format!("{path}:{path}"));
+        }
+    }
     (rw, ro)
 }
+
+/// Session stores of the agents `RESUMABLE_AGENTS` (frontend) relaunches with a
+/// "continue the most recent session" flag, relative to `$HOME`. Antigravity is
+/// absent because it keeps its conversations under `~/.gemini`, mounted above.
+const CONTINUE_AGENT_SESSION_STORES: &[&str] = &[
+    // Qwen Code ≥0.24: `projects/<cwd>/chats/*.jsonl`; older releases, `tmp/`.
+    ".qwen/projects",
+    ".qwen/tmp",
+    // GitHub Copilot CLI: `session-state/<id>/events.jsonl`.
+    ".copilot/session-state",
+    // Cursor Agent: `chats/<cwd hash>/<chat id>/`.
+    ".cursor/chats",
+    // Mistral Vibe: `logs/session/` (under `$VIBE_HOME`, default `~/.vibe`).
+    ".vibe/logs",
+];
 
 /// Durable, scope-local top level for Codex's mutable databases. It is outside
 /// `sandbox-stage`: that directory is deliberately cleared at Eldrun startup,
@@ -3518,6 +3562,85 @@ mod tests {
         let mut weird = serde_json::json!([1, 2]);
         apply_claude_prefs(&mut weird, &recorded);
         assert_eq!(weird, serde_json::json!([1, 2]));
+    }
+
+    #[test]
+    fn agent_home_mounts_carry_opencode_sessions_and_read_only_its_config() {
+        let base = std::env::temp_dir().join(format!("eldrun-sbx-oc-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let home = base.join("home");
+        let home_str = home.to_string_lossy().into_owned();
+        let pair = |rel: &str| format!("{home_str}/{rel}:{home_str}/{rel}");
+
+        // Never used OpenCode: nothing mounted, nothing created.
+        std::fs::create_dir_all(&home).unwrap();
+        let (rw, ro) = agent_home_mounts(&home_str, "/state/ls/p1", "/state/ls", false);
+        assert!(!rw.iter().chain(&ro).any(|m| m.contains("opencode")));
+        assert!(!home.join(".local/share/opencode").exists());
+
+        for rel in [
+            ".local/share/opencode",
+            ".local/state/opencode",
+            ".config/opencode",
+            ".cache/opencode",
+        ] {
+            std::fs::create_dir_all(format!("{home_str}/{rel}")).unwrap();
+        }
+        let (rw, ro) = agent_home_mounts(&home_str, "/state/ls/p1", "/state/ls", false);
+        // The session store `opencode --continue` reads must be writable.
+        assert!(rw.contains(&pair(".local/share/opencode")));
+        assert!(rw.contains(&pair(".local/state/opencode")));
+        // Config: readable, never writable (plugins/MCP run in the host's CLI).
+        assert!(ro.contains(&pair(".config/opencode")));
+        assert!(!rw.contains(&pair(".config/opencode")));
+        // Cache holds downloaded binaries: not mounted at all.
+        assert!(!rw.iter().chain(&ro).any(|m| m.contains(".cache/opencode")));
+
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn agent_home_mounts_carry_only_the_continue_agents_session_stores() {
+        let base = std::env::temp_dir().join(format!("eldrun-sbx-cont-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let home = base.join("home");
+        let home_str = home.to_string_lossy().into_owned();
+        let stores = [
+            ".qwen/projects",
+            ".qwen/tmp",
+            ".copilot/session-state",
+            ".cursor/chats",
+            ".vibe/logs",
+        ];
+        // Their neighbours: hooks, tools, MCP and permission config.
+        let neighbours = [
+            ".qwen/settings.json",
+            ".copilot/mcp-config.json",
+            ".cursor/cli-config.json",
+            ".vibe/hooks.toml",
+        ];
+        for rel in stores {
+            std::fs::create_dir_all(format!("{home_str}/{rel}")).unwrap();
+        }
+        for rel in neighbours {
+            std::fs::write(format!("{home_str}/{rel}"), b"x").unwrap();
+        }
+
+        let (rw, ro) = agent_home_mounts(&home_str, "/state/ls/p1", "/state/ls", false);
+        for rel in stores {
+            assert!(
+                rw.contains(&format!("{home_str}/{rel}:{home_str}/{rel}")),
+                "{rel} must be writable"
+            );
+        }
+        for rel in neighbours {
+            assert!(
+                !rw.iter().chain(&ro).any(|m| m.contains(rel)),
+                "{rel} must stay unmounted"
+            );
+        }
+
+        std::fs::remove_dir_all(&base).ok();
     }
 
     #[test]

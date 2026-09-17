@@ -347,7 +347,7 @@ The last-prompt line reads the screen echo, as for Gemini.
 | OpenCode | `--continue` | `run` | `curl … opencode.ai/install` / `npm i -g opencode-ai` |
 | Copilot | `--continue` | `-p` | `npm i -g @github/copilot` |
 | Cursor agent | `--continue` | `-p` | `curl … cursor.com/install` |
-| Grok | `--session latest` | `-p` | `npm i -g @vibe-kit/grok-cli` |
+| Grok | — (0.0.34 keeps no sessions; `--session` is an unknown option) | `-p` | `npm i -g @vibe-kit/grok-cli` |
 | Antigravity (`agy`) | `--continue` | — | `curl … antigravity.google/cli/install.sh` |
 | Kimi | — | `-p` | `curl … code.kimi.com/install.sh` |
 | Pi | — | `-p` | `npm i -g @mariozechner/pi-coding-agent` |
@@ -356,6 +356,13 @@ The last-prompt line reads the screen echo, as for Gemini.
 | Crush | — | `run` | `npm i -g @charmland/crush` |
 | Aider | — | refused (no print mode) | `curl … aider.chat/install.sh` (uv) |
 | Kiro, Cline, OpenClaw, OpenHands, Plandex, SWE-agent, mini-SWE-agent, Mentat, gpt-engineer, Qoder | — | — | see `AGENTS` |
+
+A fenced tab resumes only if its session store is mounted into the fence:
+`sandbox::agent_home_mounts` lists each continue-last agent's store (OpenCode
+`~/.local/share/opencode`, Qwen `~/.qwen/projects`, Copilot
+`~/.copilot/session-state`, Cursor `~/.cursor/chats`, Vibe `~/.vibe/logs`;
+Antigravity rides on `~/.gemini`). A CLI that moves its store breaks resume
+silently — re-check the path on update.
 
 Vibe, OpenCode and Copilot are full-screen (alternate-screen) TUIs; the phone's
 Focus view cannot read them — a release that changes that is an *opportunity*,
