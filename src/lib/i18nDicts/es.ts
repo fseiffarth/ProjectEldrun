@@ -4367,6 +4367,8 @@ export const dict: Dict = {
   "mail.pageRange": "{from}–{to} de {total}",
   "mail.dismissError": "Descartar",
   "mail.unreadBadge": "{count} sin leer",
+  "mail.unreadOnly": "No leídos",
+  "mail.unreadOnlyTitle": "Mostrar solo los mensajes no leídos",
   "mail.indicator": "Correo",
   "mail.indicatorNew": "{count} nuevos",
   "mail.indicatorFailed": "la última comprobación falló: {reason}",
