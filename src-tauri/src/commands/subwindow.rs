@@ -722,6 +722,22 @@ pub fn attach_subwindow(
     Ok(())
 }
 
+/// Desktop coordinates are unavailable on native Wayland: tao reports a dummy
+/// (0, 0) cursor there. Query GDK's actual backend, so XWayland still works.
+/// This synchronous command runs on the main thread, as GTK requires.
+#[tauri::command]
+pub fn desktop_coordinates_supported() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        use gtk::prelude::*;
+        gtk::gdk::Display::default().is_some_and(|display| display.backend().is_x11())
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        true
+    }
+}
+
 /// Whether the detached window registered under `registry_id` is the front-most
 /// window at the current pointer location. The frontend calls this on a file
 /// drop that lands over a popout's bounds: if the popout is occluded (behind the

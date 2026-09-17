@@ -17,6 +17,9 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
+// This suite models a desktop with real global geometry (X11/Windows/macOS).
+vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(() => Promise.resolve(true)) }));
+
 // ── Tauri mocks ──────────────────────────────────────────────────────────────
 /** Every event emitted by the code under test, in order. */
 const emitted: { event: string; payload: unknown }[] = [];

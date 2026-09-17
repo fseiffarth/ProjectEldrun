@@ -974,7 +974,16 @@ export function DetachedCenterPanel({
     // our client px for the local per-tab hit-test. Snapshotted up front.
     let popoutFrame: WindowFrame | null = null;
     let pollId: number | null = null;
-    let unbindRelease: (() => void) | null = null;
+    let streamStarted = false;
+    let lastClient = { x: args.clientX ?? 0, y: args.clientY ?? 0 };
+    // Local previews and drops use DOM coordinates, even if the compositor
+    // cannot expose a desktop cursor/window origin (native Wayland).
+    const onLocalMove = (ev: PointerEvent) => {
+      lastClient = { x: ev.clientX, y: ev.clientY };
+      if (tabKey == null) return;
+      useDragStore.getState().move(lastClient.x, lastClient.y);
+      resolveLocalTarget(lastClient.x, lastClient.y);
+    };
 
     // Per-tab drags show a local ghost immediately (no frame needed): clone the
     // dragged pane and seed the popout's own drag store synchronously on press.
@@ -1010,6 +1019,8 @@ export function DetachedCenterPanel({
         previewW,
         previewH,
       });
+      resolveLocalTarget(lastClient.x, lastClient.y);
+      window.addEventListener("pointermove", onLocalMove);
     }
 
     const startPoll = () => {
@@ -1094,6 +1105,7 @@ export function DetachedCenterPanel({
             grab = null;
           }
         }
+        streamStarted = true;
         void emit(DETACHED_DRAG_START, {
           scope,
           // Cross-window protocol identifies the popout RECORD, not the inner group.
@@ -1112,7 +1124,7 @@ export function DetachedCenterPanel({
       if (done) return;
       done = true;
       if (pollId != null) window.clearInterval(pollId);
-      unbindRelease?.();
+      window.removeEventListener("pointermove", onLocalMove);
       try {
         capEl?.releasePointerCapture(pointerId);
       } catch {
@@ -1137,12 +1149,23 @@ export function DetachedCenterPanel({
           )
           .catch(() => {});
       }
-      void emit(DETACHED_DRAG_END, {
+      const end = {
         cancelled,
         cursorPhysX: last.x,
         cursorPhysY: last.y,
         shift,
-      } satisfies DetachedDragEnd);
+      } satisfies DetachedDragEnd;
+      if (streamStarted) {
+        void emit(DETACHED_DRAG_END, end);
+      } else if (!cancelled && shift && tabKey != null) {
+        // Shift is an explicit new-window request, even without desktop geometry.
+        // Send the host that request only on release; never stream fake positions
+        // during a local Wayland drag. The compositor chooses the new placement.
+        void emit(DETACHED_DRAG_START, {
+          scope, groupId: popoutId, label: dragLabel, tabKey,
+          cursorPhysX: 0, cursorPhysY: 0,
+        } satisfies DetachedDragStart).then(() => emit(DETACHED_DRAG_END, end));
+      }
     };
     const release = (shift = false) => {
       // Shift ALWAYS means "pop into its own window" (unified with the main-window
@@ -1152,8 +1175,8 @@ export function DetachedCenterPanel({
       // lone-tab popout the host refuses (it's already its own window) → a clean
       // no-op, never the previous local-split + Shift-bail hang. Without Shift, a
       // release over THIS popout is still committed locally (reorder/split).
-      if (!shift && tabKey != null && sourceGroup && popoutFrame) {
-        const c = physToClient(popoutFrame, last);
+      if (!shift && tabKey != null && sourceGroup) {
+        const c = popoutFrame ? physToClient(popoutFrame, last) : lastClient;
         const handledLocally = handleLocalTabRelease(tabKey, c.x, c.y);
         finish(handledLocally, shift);
         return;
@@ -1173,13 +1196,8 @@ export function DetachedCenterPanel({
       }
       finish(false, shift);
     };
-    // bindDragRelease applies the engine-correct policy (WebKitGTK: pointercancel
-    // commits; Win/mac: pointercancel aborts) + a blur backstop. Bound synchronously
-    // so the terminal event is captured from the start of the gesture.
-    unbindRelease = bindDragRelease({
-      onCommit: (shift) => release(shift),
-      onAbort: () => finish(true),
-    });
+    // The caller binds release at pointerdown, before WebKitGTK's implicit grab.
+    return { release, abort: () => finish(true) };
   };
 
   // Grab a group's bar grip → MOVE the whole popout window natively (option B:
@@ -1366,18 +1384,17 @@ export function DetachedCenterPanel({
   // is poll-driven inside beginDockDrag. The press's client coords seed the gesture.
   const onTabPointerDown = (e: React.PointerEvent, group: GroupNode, tab: TabEntry) => {
     if (e.button !== 0) return;
+    e.preventDefault();
     e.stopPropagation();
     onActivate(tab.key);
     const startX = e.clientX;
     const startY = e.clientY;
-    let armed = false;
+    let gesture: ReturnType<typeof beginDockDrag> | undefined;
     const onMove = (ev: PointerEvent) => {
-      if (armed) return;
+      if (gesture) return;
       if (Math.hypot(ev.clientX - startX, ev.clientY - startY) < 5) return;
-      armed = true;
       window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", onUp);
-      beginDockDrag({
+      gesture = beginDockDrag({
         pointerId: ev.pointerId,
         clientX: ev.clientX,
         clientY: ev.clientY,
@@ -1388,12 +1405,17 @@ export function DetachedCenterPanel({
         moveWindow: false,
       });
     };
-    const onUp = () => {
-      window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", onUp);
-    };
     window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", onUp);
+    bindDragRelease({
+      onCommit: (shift) => {
+        window.removeEventListener("pointermove", onMove);
+        gesture?.release(shift);
+      },
+      onAbort: () => {
+        window.removeEventListener("pointermove", onMove);
+        gesture?.abort();
+      },
+    });
   };
 
   // Render one group: its tab bar + a pane layer holding every tab (active shown).

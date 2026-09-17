@@ -14,7 +14,16 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { act, render, cleanup } from "@testing-library/react";
 
-vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(() => Promise.resolve(undefined)) }));
+vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(() => Promise.resolve(false)) }));
+
+vi.mock("@tauri-apps/api/webviewWindow", () => ({
+  WebviewWindow: { getByLabel: vi.fn(() => Promise.resolve({
+    innerPosition: () => Promise.resolve({ x: 0, y: 0 }),
+    outerPosition: () => Promise.resolve({ x: 0, y: 0 }),
+    outerSize: () => Promise.resolve({ width: 800, height: 600 }),
+    scaleFactor: () => Promise.resolve(1),
+  })) },
+}));
 
 // CenterPanel installs detached-drag listeners and reads the window origin on
 // mount; none of that is exercised here, so stub the Tauri window/event APIs.
@@ -70,6 +79,7 @@ function seedTwoTabs() {
     layout: null,
     focusedGroupId: null,
     activeKey: null,
+    detachedGroupsByScope: {},
   });
   useTabsStore.getState().setScope("p");
   const a = useTabsStore.getState().addTab({ label: "a", cmd: "bash", cwd: "/p", kind: "shell" });
@@ -189,6 +199,27 @@ describe("CenterPanel — pointer drag → edge split (integration)", () => {
     await flush();
 
     expectSplitRight(a.key, b.key);
+  });
+
+  it("Wayland dummy coordinates never route a visible split into an existing popout", async () => {
+    const { a, b, container } = await mountSeeded();
+    const { invoke } = await import("@tauri-apps/api/core");
+    vi.mocked(invoke).mockImplementation((cmd) => Promise.resolve(
+      cmd === "detached_window_frontmost" ? true : false,
+    ) as never);
+    useTabsStore.setState({ detachedGroupsByScope: { p: [{
+      id: "pop", label: "pop",
+      subtree: { type: "group", id: "pop", tabKeys: [], activeKey: null },
+    }] } });
+    const dock = vi.spyOn(useTabsStore.getState(), "dockTabIntoDetached");
+    pointer("pointerdown", 150, 14, container.querySelectorAll(".tab")[1]);
+    pointer("pointermove", 160, 24, window);
+    await flush();
+    pointer("pointermove", RIGHT_X, BODY_Y, window);
+    pointer("pointerup", RIGHT_X, BODY_Y, window);
+    await flush();
+    expectSplitRight(a.key, b.key);
+    expect(dock).not.toHaveBeenCalled();
   });
 
   it("UP re-resolves to a tab bar: release still splits (uses last edge target)", async () => {

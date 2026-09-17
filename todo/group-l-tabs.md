@@ -48,6 +48,12 @@ correctness/UX work atop the same layout model #42 detaches.*
     `src-tauri/src/commands/subwindow.rs`, `platform/x11.rs` / `platform/mod.rs`,
     `services/window_service.rs` / `services/project_runtime.rs`, `lib.rs`,
     `tauri.conf.json`, `capabilities/default.json`.*
+    - [ ] Verify tab split, merge and reorder in the main window and inside a
+      detached window on native Wayland and X11. Local gestures now use DOM
+      coordinates; native Wayland's dummy desktop cursor must never route a drop
+      to another window. Covered by `DragDropSplit` and `DetachedTabDrag` tests;
+      desktop-coordinate dragging between OS windows remains unavailable on native
+      Wayland (use the existing dock controls).
     - [x] 🤖 Automated test — `SubwindowDetach`, `DetachedSync`, `DetachedHost`,
       `TerminalAttachOnly` (frontend) + `window_service` detached-labels selector
       (backend). tsc clean; 30 #42 frontend tests pass; cargo 373 pass.

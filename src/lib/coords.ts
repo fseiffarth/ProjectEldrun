@@ -3,7 +3,7 @@
  *
  * THE CANONICAL SPACE IS PHYSICAL DESKTOP PIXELS. Five of the six Tauri geometry
  * primitives the drag pipeline uses (`cursorPosition`, `outerPosition`,
- * `outerSize`, `innerPosition`, `setPosition`) are ALREADY physical and live in
+ * `outerSize`, `innerPosition`, `setPosition`) are physical and live in
  * one global desktop frame, so we standardise on physical and ELIMINATE the only
  * platform-divergent quantity — DOM `screenX/screenY`, whose units differ between
  * WebKitGTK (Linux), WebView2 (Windows), and WKWebView (macOS) under DPI scaling.
@@ -15,9 +15,28 @@
  * → its-own-client px AT THE LEAF, dividing by ITS OWN scale, the only DPI-correct
  * place to divide. At the common `scaleFactor == 1` (e.g. the dev Linux box)
  * physical == logical, so adopting physical changes nothing observable there.
+ * Native Wayland exposes no desktop coordinates; the capability guard below
+ * refuses its dummy readings. Local tab gestures must use DOM client coordinates.
  */
 import { cursorPosition, getCurrentWindow } from "@tauri-apps/api/window";
 import type { Window } from "@tauri-apps/api/window";
+import { invoke } from "@tauri-apps/api/core";
+import { IS_LINUX } from "./platform";
+
+// A native Wayland window has no global origin, and tao's cursorPosition returns
+// a successful dummy (0, 0). Never feed those values into cross-window hit tests.
+// Older backends cannot answer: keep local dragging available and decline global
+// geometry on Linux until the user deliberately restarts into the updated binary.
+let coordinateSupport: Promise<boolean> | undefined;
+export function desktopCoordinatesSupported(): Promise<boolean> {
+  return coordinateSupport ??= IS_LINUX
+    ? invoke<boolean>("desktop_coordinates_supported").then((supported) => supported === true).catch(() => false)
+    : Promise.resolve(true);
+}
+
+async function requireDesktopCoordinates() {
+  if (!(await desktopCoordinatesSupported())) throw new Error("Desktop coordinates unavailable");
+}
 
 /** A point in physical desktop px (the canonical cross-window space). */
 export interface PhysPoint {
@@ -55,6 +74,7 @@ export interface WindowFrame {
  * Defaults to the current window.
  */
 export async function snapshotFrame(win: Window = getCurrentWindow()): Promise<WindowFrame> {
+  await requireDesktopCoordinates();
   const [inner, outer, size, scale] = await Promise.all([
     win.innerPosition(),
     win.outerPosition(),
@@ -95,6 +115,7 @@ export const pointInOuter = (f: WindowFrame, p: PhysPoint): boolean =>
 /** The OS cursor in physical desktop px (`cursorPosition` is already physical and
  *  is the proven cross-platform position source for the dock-back path). */
 export const desktopCursor = async (): Promise<PhysPoint> => {
+  await requireDesktopCoordinates();
   const p = await cursorPosition();
   return { x: p.x, y: p.y };
 };
@@ -114,7 +135,7 @@ export function startCursorPoll(onTick: (p: PhysPoint) => void): () => void {
   const id = window.setInterval(() => {
     if (inFlight) return;
     inFlight = true;
-    void cursorPosition()
+    void desktopCursor()
       .then((p) => {
         if (!stopped) onTick({ x: p.x, y: p.y });
       })
