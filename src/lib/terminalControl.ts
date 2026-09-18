@@ -249,6 +249,15 @@ export function isClaudeCommand(cmd: string | null | undefined): boolean {
   return leaf.replace(/\.(exe|cmd|bat)$/i, "").toLowerCase() === "claude";
 }
 
+/** The session name a Claude tab's `/rename <name>` initial input sets, handed
+ *  to `pty_spawn` so a CLI that takes `--name` gets it at launch instead of as
+ *  a line typed a few seconds in. `null` for anything else. */
+export function claudeLaunchName(cmd: string | null | undefined, initialInput: string | null | undefined): string | null {
+  if (!isClaudeCommand(cmd) || !initialInput) return null;
+  const match = /^\/rename\s+(\S.*)$/.exec(initialInput.trim());
+  return match ? match[1].trim() : null;
+}
+
 /**
  * What a primary-button `mousedown` inside an AGENT pane means.
  *

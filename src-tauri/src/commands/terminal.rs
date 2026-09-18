@@ -57,6 +57,32 @@ fn agent_remote_control_effective(
         .unwrap_or(global_default)
 }
 
+/// What `pty_spawn` tells the tab it launched.
+#[derive(Debug, Clone, Copy, Default, serde::Serialize)]
+pub struct PtySpawned {
+    /// The session name rode in on the launch argv (Claude's `--name`), so the
+    /// tab must not also type its `/rename` line.
+    pub named: bool,
+}
+
+/// Append Claude's `--name=<name>` to a launch argv, unless there is no name
+/// or the argv already names the session. Returns whether the argv now does.
+///
+/// The `=` form, so a name that starts with `-` is still read as the value.
+/// Argv, never a shell line: this is only applied to a spawn that runs the
+/// host's own binary, after the ssh/docker wrap has had its turn.
+fn append_claude_name(args: &mut Vec<String>, name: Option<&str>) -> bool {
+    let named = |a: &String| a == "-n" || a == "--name" || a.starts_with("--name=");
+    if args.iter().any(named) {
+        return true;
+    }
+    let Some(name) = name.map(str::trim).filter(|n| !n.is_empty()) else {
+        return false;
+    };
+    args.push(format!("--name={name}"));
+    true
+}
+
 /// Whether `cwd` sits inside `allowed`, compared component-wise (`Path::starts_with`)
 /// so a sibling directory sharing a prefix (`…/proj2` vs `…/proj`) is never
 /// mistaken for nesting. O#149's hard gate: mirrors `services::sandbox::cwd_is_within`
@@ -160,6 +186,28 @@ mod tests {
         assert!(!cwd_within("/etc", Path::new("/home/u/proj")));
     }
 
+    #[test]
+    fn claude_name_rides_the_argv_once() {
+        let mut args = vec!["--session-id".to_string(), "u".to_string()];
+        assert!(append_claude_name(&mut args, Some(" Proj (feature) ")));
+        assert_eq!(args.last().map(String::as_str), Some("--name=Proj (feature)"));
+        // A respawn with the name already there does not stack a second one.
+        assert!(append_claude_name(&mut args, Some("Other")));
+        assert_eq!(args.iter().filter(|a| a.starts_with("--name")).count(), 1);
+        // A leading dash stays the flag's value.
+        let mut dashed = Vec::new();
+        assert!(append_claude_name(&mut dashed, Some("-x")));
+        assert_eq!(dashed, vec!["--name=-x".to_string()]);
+    }
+
+    #[test]
+    fn no_name_no_flag() {
+        let mut args = Vec::new();
+        assert!(!append_claude_name(&mut args, None));
+        assert!(!append_claude_name(&mut args, Some("   ")));
+        assert!(args.is_empty());
+    }
+
     fn entry(id: &str, remote_control: Option<bool>) -> ProjectEntry {
         let mut extra = HashMap::new();
         if let Some(v) = remote_control {
@@ -208,7 +256,8 @@ pub async fn pty_spawn(
     registry: State<'_, RegistryState>,
     pool: State<'_, crate::services::remote::RemotePoolState>,
     mut opts: PtyOptions,
-) -> Result<(), String> {
+    session_name: Option<String>,
+) -> Result<PtySpawned, String> {
     // Resolve empty cwd to Eldrun's root workspace directory.
     if opts.cwd.is_empty() {
         let root_dir = storage::root_work_dir();
@@ -555,6 +604,18 @@ pub async fn pty_spawn(
         crate::services::ssh_exec::wrap_pty_options(&mut opts)?;
     }
 
+    // The tab's session name (the Remote Control title too), set at launch with
+    // Claude's `--name` rather than a `/rename` line typed a few seconds in —
+    // which is what anything the user typed meanwhile ran into. Only a spawn
+    // still running `claude` here reaches this, i.e. the host's own binary
+    // (fenced or not), the one whose version Eldrun has read; a container or
+    // remote host has its own, and an older one exits on the unknown option.
+    // Those, and a host CLI that is too old or not read yet, keep the typed line.
+    let named = opts.cmd == "claude"
+        && session_name.is_some()
+        && crate::commands::agents::claude_takes_name_flag()
+        && append_claude_name(&mut opts.args, session_name.as_deref());
+
     // Apply the outer fence boundary (bubblewrap on Linux, sandbox-exec on
     // macOS) after docker/ssh selection but before local tmux.  This keeps the
     // tmux server on the host while the command *inside* its session is
@@ -638,7 +699,7 @@ pub async fn pty_spawn(
             crate::services::agent_fence::register_tab(&tab_id, &scope_id, fenced_content_shadow);
         }
     }
-    result
+    result.map(|()| PtySpawned { named })
 }
 
 /// Honest per-scope fence status for the project-pill menu.  This performs no

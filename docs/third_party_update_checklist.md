@@ -148,6 +148,9 @@ Claude's `/fast` — different thing.
 - Flags: `--session-id <uuid>`, `--resume <uuid>`, `--permission-mode <mode>`,
   `--dangerously-skip-permissions` (detected, never added),
   `--remote-control` (added by default, setting `agent_remote_control`),
+  `--name=<project>` (host binary only, gated on the probed version ≥
+  `CLAUDE_NAME_FLAG_SINCE` = 2.1.76; below that, or in a container/remote, the
+  tab types `/rename <project>` instead),
   `-p <prompt>`, `-p "/usage" --output-format json`.
 - Permission modes are exactly `default | plan | acceptEdits | auto | dontAsk |
   bypassPermissions` (`is_permission_mode`); anything else is dropped.
@@ -232,7 +235,7 @@ Claude's `/fast` — different thing.
 
 ```sh
 claude --version
-claude --help | grep -E 'session-id|resume|permission-mode|remote-control|output-format'
+claude --help | grep -E 'session-id|resume|permission-mode|remote-control|output-format|--name'
 claude -p "/usage" --output-format json | head -c 600
 grep -A4 SessionStart ~/.claude/settings.json
 stat -c '%i %a' ~/.claude/.credentials.json   # note the inode, then after a refresh: a new one

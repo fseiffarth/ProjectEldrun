@@ -1532,6 +1532,33 @@ pub async fn agent_versions(
         .collect()
 }
 
+/// Whether the host's `claude` takes `--name` at launch, from the version store
+/// alone — a tab spawn never waits on a probe. A missing or day-old entry is
+/// refreshed in the background (one probe at a time, however many tabs a
+/// relaunch restores at once), so it is the *next* Claude tab that benefits;
+/// until then this answers from what the store holds, or no.
+pub(crate) fn claude_takes_name_flag() -> bool {
+    use crate::services::agent_versions as versions;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static PROBING: AtomicBool = AtomicBool::new(false);
+
+    let store = versions::load();
+    let seen = store.get("claude");
+    let stale = !seen.is_some_and(|seen| versions::fresh(seen, versions::PROBE_TTL));
+    if stale && !PROBING.swap(true, Ordering::SeqCst) {
+        if let Some(spec) = find_spec("claude").filter(|spec| spec_is_installed(spec)) {
+            tauri::async_runtime::spawn(async move {
+                let result = probe_agent_version(spec).await;
+                versions::remember(spec.id, result);
+                PROBING.store(false, Ordering::SeqCst);
+            });
+        } else {
+            PROBING.store(false, Ordering::SeqCst);
+        }
+    }
+    versions::claude_takes_name_flag(seen)
+}
+
 /// Stop reminding the user that `agent`'s installed version has moved past what
 /// Eldrun was verified against.
 ///

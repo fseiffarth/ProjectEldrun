@@ -24,7 +24,7 @@ import {
 } from "../../lib/terminalBus";
 import { hpcGuardRefusal } from "../../lib/hpcGuard";
 import { useHpcGuardStore } from "../../stores/hpcGuardPrompt";
-import { CSI_U_SHIFT_TAB, FORCE_SELECTION_MODIFIER, SILENT_START_MS, agentMouseDownAction, bufferTail, claimInitialInput, decodeOsc52Clipboard, initialInputForPty, isClaudeCommand, isCodexCommand, isTerminalAutoReply, isTerminalIdentityResponse, isTerminalReport, showsAgentTrustDialog, silentStartNotice, stripTerminalQueries, terminalProgramLabel, type SilentStartNotice } from "../../lib/terminalControl";
+import { CSI_U_SHIFT_TAB, FORCE_SELECTION_MODIFIER, SILENT_START_MS, agentMouseDownAction, bufferTail, claimInitialInput, decodeOsc52Clipboard, initialInputForPty, claudeLaunchName, isClaudeCommand, isCodexCommand, isTerminalAutoReply, isTerminalIdentityResponse, isTerminalReport, showsAgentTrustDialog, silentStartNotice, stripTerminalQueries, terminalProgramLabel, type SilentStartNotice } from "../../lib/terminalControl";
 import { registerTerminal, unregisterTerminal } from "../../lib/terminalRegistry";
 import { clearPtyInput, writePtyInput } from "../../lib/terminalInput";
 import { registerScheduledAgentInput } from "../../lib/scheduledAgentInput";
@@ -334,6 +334,13 @@ const MAX_FONT_SIZE = 32;
  *  into it. Shared by the local arming and the digest-backed fallback below so
  *  a hidden pane is held to the same cushion as a visible one. */
 const SCHEDULED_SETTLE_MS = 1200;
+/** How long after an agent tab's auto-typed line is submitted the keystrokes
+ *  held back meanwhile are replayed — a beat for the TUI to clear its box. */
+const HELD_INPUT_FLUSH_MS = 300;
+/** Longest an agent tab holds the user's keystrokes back waiting to type its
+ *  launch line (boot wait is capped at 5 s after ready; this covers a slow
+ *  spawn too). Past it the hold lifts and what was held is dropped. */
+const HOLD_INPUT_MAX_MS = 15000;
 
 function clampFontSize(n: number): number {
   return Math.max(MIN_FONT_SIZE, Math.min(MAX_FONT_SIZE, Math.round(n)));
@@ -728,6 +735,56 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
         })
       : undefined;
 
+    /** A keystroke (or paste) of the user's, on its way to the PTY. */
+    const forwardInput = (data: string) => {
+      // A bare Escape / Ctrl+C is the user cutting the agent off: its hook
+      // verdict of "working" would otherwise stand (an interrupted turn fires
+      // no Stop) — see noteUserInput.
+      //
+      // Only a person's keystrokes are stamped. xterm also answers the TUI's
+      // queries and sends focus / mouse reports through this same callback
+      // (`isTerminalAutoReply`); they reach the PTY like anything else, but
+      // stamped as input they read as a prompt the user just submitted, and
+      // a scheduled prompt aimed at a tab that was merely clicked into then
+      // waited for a Stop that no submission was going to bring.
+      if (!isTerminalAutoReply(data)) {
+        noteUserInput(id, isInterruptInput(data));
+        if (noteInput(id, data) > 0) countSubmit();
+      }
+      writePtyInput(id, PTY_ENCODER.encode(data)).catch(console.error);
+    };
+
+    // An agent tab's auto-typed line (Claude's `/rename <project>`, which also
+    // names the Remote Control session) is typed a second or more after launch,
+    // once the TUI has booted. Anything the user typed in that window landed in
+    // the same input box and the two ran together — `/rename Projhello`. So the
+    // user's keystrokes are held until that line has been submitted and then
+    // replayed in order; the program's own terminal replies (DA, cursor
+    // position, focus) still pass straight through, since its boot waits on them.
+    // A launch that types nothing after all (trust dialog, already claimed)
+    // DROPS what was held: flushed into Claude's trust dialog, an Enter would
+    // answer `No, exit`. `HOLD_INPUT_MAX_MS` bounds the hold for a spawn that
+    // never reports ready, so the pane can never lock the keyboard for good.
+    //
+    // A Claude whose version takes `--name` never gets the line typed at all:
+    // `pty_spawn` puts the name on the launch argv and answers `named`, and the
+    // hold lifts the moment it does. Only a Claude Eldrun cannot vouch for (a
+    // container's or a remote host's, an old or not-yet-probed host CLI) is
+    // still typed at. `launchNamed` is null until the spawn has answered.
+    const launchName = attachOnly ? null : claudeLaunchName(cmd, initialInput);
+    let launchNamed: boolean | null = launchName ? null : false;
+    let holdingInput = !attachOnly && !!initialInput && (kind === "agent" || kind === "local_agent");
+    const heldInput: string[] = [];
+    let holdInputTimer: ReturnType<typeof setTimeout> | null = null;
+    const releaseHeldInput = (flush: boolean) => {
+      if (!holdingInput) return;
+      holdingInput = false;
+      if (holdInputTimer) clearTimeout(holdInputTimer);
+      const held = heldInput.splice(0);
+      if (flush && !cancelled) for (const data of held) forwardInput(data);
+    };
+    if (holdingInput) holdInputTimer = setTimeout(() => releaseHeldInput(false), HOLD_INPUT_MAX_MS);
+
     // Wire keyboard input → PTY write. The input stamp is what licenses this
     // tab's later output to show as "working"/"done" (see noteUserInput).
     //
@@ -752,21 +809,11 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       if (initialInputPending.current && data && !data.startsWith("\x1b")) {
         initialInputPending.current = false;
       }
-      // A bare Escape / Ctrl+C is the user cutting the agent off: its hook
-      // verdict of "working" would otherwise stand (an interrupted turn fires
-      // no Stop) — see noteUserInput.
-      //
-      // Only a person's keystrokes are stamped. xterm also answers the TUI's
-      // queries and sends focus / mouse reports through this same callback
-      // (`isTerminalAutoReply`); they reach the PTY like anything else, but
-      // stamped as input they read as a prompt the user just submitted, and
-      // a scheduled prompt aimed at a tab that was merely clicked into then
-      // waited for a Stop that no submission was going to bring.
-      if (!isTerminalAutoReply(data)) {
-        noteUserInput(id, isInterruptInput(data));
-        if (noteInput(id, data) > 0) countSubmit();
+      if (holdingInput && !isTerminalAutoReply(data)) {
+        heldInput.push(data); // replayed once the auto-typed line is in (above)
+        return;
       }
-      writePtyInput(id, PTY_ENCODER.encode(data)).catch(console.error);
+      forwardInput(data);
     });
 
     // A terminal bell means the agent wants to be looked at NOW, so it shortcuts
@@ -998,6 +1045,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
         if (!claimInitialInput(id, initialInput)) {
           initialInputSent.current = true;
           initialInputPending.current = false;
+          releaseHeldInput(false);
           return;
         }
         initialInputSent.current = true;
@@ -1018,10 +1066,14 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
           const elapsed = Date.now() - scheduledAt;
           const firstOut = firstOutputAt.current;
           const ready =
-            firstOut !== null && Date.now() - firstOut >= READY_CUSHION_MS;
+            launchNamed !== null && firstOut !== null && Date.now() - firstOut >= READY_CUSHION_MS;
           if (!ready && elapsed < MAX_WAIT_MS) {
             initialEnterTimer.current = setTimeout(typeWhenReady, 100);
             return;
+          }
+          if (launchNamed) {
+            initialInputPending.current = false;
+            return; // named at launch — nothing to type
           }
           // Last look before typing, for every agent: a CLI asking whether to
           // trust the folder must be answered by the user, never by our Enter
@@ -1035,6 +1087,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
             showsAgentTrustDialog(bufferTail(active))
           ) {
             initialInputPending.current = false;
+            releaseHeldInput(false);
             return;
           }
           // Typed on the user's behalf — they triggered the flow that
@@ -1047,6 +1100,9 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
           initialEnterTimer.current = setTimeout(() => {
             initialInputPending.current = false;
             writePtyInput(id, new Uint8Array([0x0d])).catch(console.error);
+            // What the user typed meanwhile goes into the prompt the submitted
+            // line leaves behind, not onto its end.
+            initialEnterTimer.current = setTimeout(() => releaseHeldInput(true), HELD_INPUT_FLUSH_MS);
           }, 200);
         };
 
@@ -1081,6 +1137,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
           if (cancelled) return;
           if (!submittable) {
             initialInputPending.current = false;
+            releaseHeldInput(false);
             return;
           }
           typeWhenReady();
@@ -1168,10 +1225,15 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       // about the previous occupant of this id, so a reopened project's resume
       // replay can't ride an old input stamp into a "working"/"done" glow.
       notePtySpawn(id);
-      const spawn = () =>
-        invoke("pty_spawn", {
+      const spawn = async () => {
+        const spawned = await invoke<{ named?: boolean } | null>("pty_spawn", {
           opts: { id, cmd, args, env, cwd, cols: term.cols, rows: term.rows, local_only: localOnly, sandbox, agent: kind === "agent" || kind === "local_agent", project_id: projectId ?? null, remote_host_id: remoteHostId ?? null, tmux_session: tmuxSession ?? null, tmux_attach: tmuxAttach ?? null, host_bound_uid: hostBoundUid ?? null },
+          sessionName: launchName,
         });
+        // An older backend answers nothing: `named` absent types the line as before.
+        launchNamed = spawned?.named === true;
+        if (launchNamed) releaseHeldInput(true);
+      };
       try {
         await spawn();
         spawnState = "spawned";
@@ -1368,6 +1430,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       cancelled = true;
       clearPtyInput(id);
       if (initialEnterTimer.current) clearTimeout(initialEnterTimer.current);
+      if (holdInputTimer) clearTimeout(holdInputTimer);
       if (scheduledSettleTimer.current) clearTimeout(scheduledSettleTimer.current);
       unregisterScheduled?.();
       if (openWatchTimer.current) clearTimeout(openWatchTimer.current);
