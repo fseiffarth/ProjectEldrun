@@ -676,20 +676,49 @@ intent. What is left is listed here.
     `docs/threat_model.md` tiers 0 and 3.
     - [ ] 🤖 Automated test — pointer-file repo with a `filter.*.clean` driver:
       `hardened_git_command_in` + `status`/`diff` must not execute it.
+    - **Read-only `.git` mounts — implemented 2026-09-18 (🧪 untested live).**
+      `services::git_guard::guard_paths` names the control files (`config`,
+      `config.worktree`, `hooks`, `commondir`, `.git` pointer files, incl. every
+      `.eldrun/worktrees/*`); the fence binds them `--ro-bind` after the root
+      grant and binds `.git` onto itself (a mount point can't be renamed away);
+      containers get the same as `:ro` volumes, outside the fingerprint so a new
+      file can't recreate the container under live tabs. Verified with real
+      bubblewrap: commit/branch/stash/gc work; writing config or hooks,
+      rewriting a worktree pointer or its `commondir`, and renaming `.git` all
+      fail. **Residual**: the agent can still *create* `commondir` in a main
+      `.git` (verified to redirect config/hooks for plain git) or `git init`
+      a new repo — a read-only bind can't cover a file that doesn't exist yet.
+    - [x] 🤖 Automated test — `git_guard` tests (plain repo, Eldrun worktree,
+      hostile pointer, repo outside the roots, no repo) and
+      `git_control_files_are_rebound_read_only_after_the_root_grant`.
     - [ ] 🖐️ Manual test — fenced agent tab: `echo x > .git/hooks/post-checkout`
-      must fail.
+      must fail, and `git commit` must still work.
+    - [ ] 🖐️ Manual test — container project: the same two checks inside a
+      container tab (docker nests the `:ro` binds; not run live).
 
-159. **Freeze the JS prototype for the IPC bridge (hardening).** Set
-    `app.security.freezePrototype: true` in `tauri.conf.json` so a
-    prototype-pollution bug in any bundled library cannot hijack the IPC
-    bridge. Not a vulnerability today (no known script-execution path, CSP
-    blocks inline/eval); check viewers and libraries still run after flipping it.
-    - [ ] 🖐️ Manual test — smoke every viewer, terminal, mail and the deck
-      presenter with the flag on.
+159. **Freeze the JS prototype for the IPC bridge (DONE ✅ · 🧪 untested
+    live).** Not via `app.security.freezePrototype`: Tauri injects that into
+    every webview, the in-app browser's live pages included, and a bare
+    `Object.freeze(Object.prototype)` breaks pdf-lib — under it 9 test files
+    fail (PDF notes/redaction/save, deck export: `PDFHeader.prototype.toString
+    = …`, the "override mistake"). `lib/hardenPrototype.ts` first turns each
+    method into an accessor whose setter defines an own property on the target
+    (SES-style override taming), then freezes; `main.tsx` calls it before
+    bootstrap. The whole suite passes under it.
+    - [x] 🤖 Automated test — `HardenPrototype.test.ts`, plus a one-off full
+      suite run with the hardened prototype (513/513 files).
+    - [ ] 🖐️ Manual test — after a reload, smoke the PDF viewer (add a note,
+      save), deck export, mail, terminal, markdown with Mermaid/KaTeX.
 
 160. **Sign release artifacts the updater installs.** `services::app_update`
     pins asset URLs to this repo's GitHub releases but checks no signature or
     checksum, so a compromised GitHub account or CI run ships code straight
     to every user who clicks Install. Sign in CI (minisign or the Tauri
     updater key) and verify before `install` runs the staged file.
+    - **Blocked on the key (2026-09-18).** Planned shape, no new crates: CI
+      signs each asset with `openssl dgst -sha256 -sign` (ECDSA P-256, key in
+      the `RELEASE_SIGNING_KEY` secret) and uploads `<asset>.sig`; the updater
+      hashes while downloading and verifies with the `p256` crate against a
+      public key compiled in, refusing an unsigned or mismatched file. The
+      maintainer generates the key pair; only the public half enters the repo.
     - [ ] 🤖 Automated test — a tampered staged file is refused.

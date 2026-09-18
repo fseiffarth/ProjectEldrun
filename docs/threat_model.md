@@ -79,7 +79,7 @@ pasted mail) can run commands as you.
 |---|---|---|---|
 | **Unfenced agent tab** | Anything your user can. | None beyond the CLI's own permission prompts. | ⚠️ yours |
 | **Fenced agent** (`services::agent_fence`, bubblewrap) | Only what's mounted. | Hides the host (ps/systemctl see nothing); fails closed if bubblewrap is missing; credential files pinned/hidden (#155–#157). | ✅ |
-| Fenced agent / **project container** — **planting in `.git/`** | Writes `.git/hooks/*`, `.git/config`, or swaps `.git` for a pointer file. The *next unsandboxed git* — Eldrun's poll, lockstep, your Commit/Push/Checkout, or your own terminal — runs it **on the host**. Publicly known as the sandbox "trust handoff" (Cursor, Pillar Security 2026). | Config filters/diff drivers stripped for a normal `.git/` (#151). Not covered: hooks, `core.sshCommand`/`credential.helper` on push, the pointer-file layout, lockstep. Neither fence nor container mounts `.git/hooks`/`config` read-only. | ❌ #158 |
+| Fenced agent / **project container** — **planting in `.git/`** | Writes `.git/hooks/*`, `.git/config`, or swaps `.git` for a pointer file. The *next unsandboxed git* — Eldrun's poll, lockstep, your Commit/Push/Checkout, or your own terminal — runs it **on the host**. Publicly known as the sandbox "trust handoff" (Cursor, Pillar Security 2026). | Fence and containers re-mount the repo's git control files read-only over the rw project — `.git/config`, `config.worktree`, `hooks/`, a worktree's `commondir`, and `.git` pointer files — and pin `.git` onto itself so it can't be renamed and replaced by a pointer (`services::git_guard`). Commit, branch, stash and gc still work; `git config` on the repo and installing hooks don't. Verified under real bubblewrap, incl. an agent inside an Eldrun worktree; containers not run live. Residual: a git dir must stay writable for lock files, so the agent can still *create* a `commondir` in a main `.git` (redirects config and hooks — verified) or `git init` a new repo. Eldrun's own git follows `commondir` when sanitizing; a plain `git` in your terminal does not. | ⚠️ #158 |
 | **VM project** | Code runs in a VM; network is slirp `restrict=on` + allowlisting proxy. | Exfiltration is still possible *to the allowed AI endpoints* (inside a prompt) — stated in the UI. | ⚠️ |
 | **Root console + Eldrun MCP** | Read project list, git/sync status, calendar, to-dos, usage; **create/edit/delete** calendar events and to-dos. No mail, no shell *through MCP* (the agent's own shell still applies). | Token-gated, loopback only. | ⚠️ bounded |
 | **Local completion** (Copilot, Ollama) | Suggests text. | Nothing is applied until you accept it. | ✅ |
@@ -107,8 +107,11 @@ access to an unlocked machine.
 
 ## Hardening backlog (not vulnerabilities today)
 
-- `app.security.freezePrototype` is not set — a cheap guard against
-  prototype-pollution hijacking of the IPC bridge (#159).
+- `Object.prototype` is frozen in Eldrun's own windows (#159, done
+  2026-09-18) by `lib/hardenPrototype.ts`, not Tauri's `freezePrototype`: that
+  flag also freezes browsed pages, and a bare freeze breaks pdf-lib (the
+  "override mistake" — measured: 9 test files fail under it, 0 under the
+  override-safe version).
 - `mobile_control` mutex locks recover from poisoning (done 2026-09-18), so a
   panicking handler can't lock the phone out.
 
@@ -132,7 +135,7 @@ access to an unlocked machine.
 - **Tauri attack surface** (Bishop Fox) — unfrozen prototypes, wildcard
   capabilities, asset-protocol scope, open navigation. Eldrun: capabilities
   scoped per webview, no asset protocol, navigation gated for browser windows,
-  prototype not frozen (#159).
+  prototype frozen from the app bundle (#159).
 
 Sources: [OWASP Top 10 for Agentic Applications 2026](https://genai.owasp.org/resource/owasp-top-10-for-agentic-applications-for-2026/) ·
 [IDEsaster — 30+ flaws in AI coding tools](https://thehackernews.com/2025/12/researchers-uncover-30-flaws-in-ai.html) ·

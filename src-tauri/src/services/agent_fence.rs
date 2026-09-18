@@ -866,6 +866,25 @@ fn mask_cargo_credentials(args: &mut Vec<String>, hidden: Vec<String>) {
     args.splice(separator..separator, masks);
 }
 
+/// Re-mount the repo's git control files over the read-write roots (#158):
+/// each pinned `.git` onto itself first (a mount point cannot be renamed away
+/// and replaced by a `gitdir:` pointer), then the control files read-only, so
+/// the agent can commit but cannot plant a hook or a `core.fsmonitor` for the
+/// next unsandboxed git to run. Placed before `--`, after every root bind.
+#[cfg(any(target_os = "linux", test))]
+fn guard_git_control(args: &mut Vec<String>, guard: crate::services::git_guard::GuardPaths) {
+    let separator = args.iter().position(|arg| arg == "--").unwrap();
+    let path = |p: std::path::PathBuf| p.to_string_lossy().into_owned();
+    let pins = guard.pinned.into_iter().map(path).flat_map(|p| ["--bind".to_string(), p.clone(), p]);
+    let read_only = guard
+        .read_only
+        .into_iter()
+        .map(path)
+        .flat_map(|p| ["--ro-bind".to_string(), p.clone(), p]);
+    let binds: Vec<String> = pins.chain(read_only).collect();
+    args.splice(separator..separator, binds);
+}
+
 /// Pure bubblewrap argv builder.  Later mounts intentionally shadow earlier
 /// ones: the empty home hides secrets, selected state/config is restored, and
 /// project/box roots finally become read-write.  `symlinks` come last of the
@@ -1008,6 +1027,10 @@ pub fn wrap_pty_options_bwrap(
     // Final masks follow every allowlist/project bind, so none re-exposes a
     // token. Missing files need no mask (their parent is read-only/hidden).
     mask_cargo_credentials(&mut args, hidden_cargo_credentials(opts));
+    guard_git_control(
+        &mut args,
+        crate::services::git_guard::guard_paths(roots, Some(Path::new(&opts.cwd))),
+    );
     // Right after the home tmpfs, before any bind that could need to show
     // through it.
     let home = paths::home_dir_string();
@@ -1435,6 +1458,33 @@ mod tests {
         assert!(!probe_until_available(&cache, || false));
         assert!(probe_until_available(&cache, || true));
         assert!(probe_until_available(&cache, || panic!("successful probe must be cached")));
+    }
+
+    /// #158: the pin and the read-only control binds land after the root's
+    /// read-write grant (bubblewrap applies mounts in argv order, later wins)
+    /// and before `--`, pin first so the read-only binds sit inside it.
+    #[test]
+    fn git_control_files_are_rebound_read_only_after_the_root_grant() {
+        let mut args = bwrap_args("/home/u", "/p", "claude", &[], &[PathBuf::from("/p")], &[], &[], &[]);
+        guard_git_control(
+            &mut args,
+            crate::services::git_guard::GuardPaths {
+                pinned: vec![PathBuf::from("/p/.git")],
+                read_only: vec![PathBuf::from("/p/.git/config"), PathBuf::from("/p/.git/hooks")],
+            },
+        );
+        let at = |flag: &str, path: &str| {
+            args.windows(3)
+                .position(|w| w[0] == flag && w[1] == path && w[2] == path)
+                .unwrap_or_else(|| panic!("{flag} {path} missing: {args:?}"))
+        };
+        let grant = at("--bind-try", "/p");
+        let pin = at("--bind", "/p/.git");
+        let config = at("--ro-bind", "/p/.git/config");
+        let hooks = at("--ro-bind", "/p/.git/hooks");
+        let separator = args.iter().position(|a| a == "--").unwrap();
+        assert!(grant < pin && pin < config && config < hooks && hooks < separator);
+        assert_eq!(args[separator + 1], "claude");
     }
 
     #[test]

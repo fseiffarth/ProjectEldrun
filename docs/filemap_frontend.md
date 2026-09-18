@@ -246,6 +246,7 @@ stores stay at the top. No `index.ts` barrels (`docs/src_restructure_plan.md`).
 | `lib/viewers/python.ts` | Python editor intelligence (#87), pure: breakpoints snap to executable lines and remap on edit; go-to-definition is a lexical import-graph walk (only followable names underlined). |
 | `lib/browser.ts` | Typed invoke surface for the browser (`browser_*`); no component invokes directly (`BrowserTripwire.test.ts`), no wrapper takes a path. `READER_FRAME_CSP` is `MAIL_FRAME_CSP` imported. |
 | `lib/linkTarget.ts` | Pure URI routing table (#33) + address-bar commit rule. URLs Eldrun itself starts go external; URLs from untrusted content open in reader mode, never live in one click. |
+| `lib/hardenPrototype.ts` | Freezes `Object.prototype` from `main.tsx` before bootstrap (#159), methods turned into override-safe accessors first — a bare freeze (Tauri's `freezePrototype`) breaks pdf-lib and would also hit browsed pages. |
 | `lib/mail.ts` | Typed invoke surface for mail (`mail_*`); no wrapper takes a path (the sandbox boundary). Also `buildMessageSrcdoc`, `MAIL_FRAME_CSP`, `bodyLooksUnsafe` tripwire, `Authentication-Results` display rules. |
 | `lib/remote/hpc/slurm.ts` | SLURM glue for HPC projects: pure `#SBATCH` parse/splice helpers (splice, never re-serialize) + tab glue (log window, submit). |
 | `lib/spellDictionaries.ts` | Dictionary picker's pure half: Hunspell stem → BCP 47, names via `Intl.DisplayNames`, default choice, installed/downloadable split. |

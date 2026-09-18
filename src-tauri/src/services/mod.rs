@@ -54,6 +54,8 @@ pub mod codex_bind;
 pub mod codex_store;
 pub mod copilot;
 pub mod git_credentials;
+// The `.git` control files a sandbox keeps its occupant from writing (#158).
+pub mod git_guard;
 // The default branch (`main`) for repositories Eldrun creates, and the
 // unpublished-`master` rename that runs just before a publish.
 pub mod git_init;

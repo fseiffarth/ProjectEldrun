@@ -960,8 +960,27 @@ pub fn up(
             &claude_projects_stage(project_id),
         )
     };
-    let rw_mounts: Vec<String> = rw_mounts.into_iter().chain(tx_rw).collect();
-    let ro_mounts: Vec<String> = ro_mounts.into_iter().chain(tx_ro).collect();
+    // The repo's git control files, re-mounted over the rw project (#158): a
+    // contained agent can commit, but cannot plant a hook or `core.fsmonitor`
+    // for the host's next git, nor swap `.git` for a `gitdir:` pointer. Kept out
+    // of the fingerprint like the transcript mounts: which of them exist
+    // changes as the agent works, and a mismatch would recreate the container
+    // under its live tabs.
+    let guard = crate::services::git_guard::guard_paths(&[PathBuf::from(project_dir)], None);
+    let identical = |p: PathBuf| {
+        let p = p.to_string_lossy().into_owned();
+        format!("{p}:{p}")
+    };
+    let rw_mounts: Vec<String> = rw_mounts
+        .into_iter()
+        .chain(tx_rw)
+        .chain(guard.pinned.into_iter().map(identical))
+        .collect();
+    let ro_mounts: Vec<String> = ro_mounts
+        .into_iter()
+        .chain(tx_ro)
+        .chain(guard.read_only.into_iter().map(identical))
+        .collect();
 
     match up_decision(&probe_container(&name), &fingerprint) {
         UpAction::UseExisting => {
