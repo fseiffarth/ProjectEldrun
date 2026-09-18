@@ -49,6 +49,7 @@ use crate::schema::project::Project;
 use crate::schema::projects::ProjectsList;
 use crate::services::git_peer::SyncStatus;
 use crate::services::ssh_common::{ssh_base_args, validate_arg};
+use crate::services::ssh_exec::shell_quote;
 use crate::storage;
 
 /// A supported git-hosting provider. Also used by `commands::git_fork`, which
@@ -1005,12 +1006,6 @@ fn friendly_publish_error(provider: Provider, raw: &str) -> String {
         );
     }
     raw.trim().to_string()
-}
-
-/// Single-quote a string for safe embedding in a remote `/bin/sh` command,
-/// escaping any embedded single quotes.
-fn shell_quote(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "'\\''"))
 }
 
 #[cfg(test)]

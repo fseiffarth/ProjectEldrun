@@ -21,7 +21,7 @@
 
 use std::collections::HashMap;
 
-use crate::services::ssh_exec::{is_valid_env_key, TMUX_HISTORY_LINES};
+use crate::services::ssh_exec::{is_valid_env_key, shell_quote, TMUX_HISTORY_LINES};
 use crate::terminal::PtyOptions;
 
 /// Prefix reserved for tmux sessions Eldrun creates on the local machine.
@@ -146,23 +146,6 @@ pub fn kill_eldrun_sessions() -> Result<(), String> {
 /// such as `train` or `work`.
 pub fn is_eldrun_local_tmux_session(session: &str) -> bool {
     session.starts_with(ELDRUN_LOCAL_TMUX_PREFIX)
-}
-
-/// Single-quote `s` for a POSIX shell (mirrors `ssh_exec::shell_quote`). Used only
-/// to fold a command tab's `cmd`+`args` into the single command string tmux hands
-/// to `sh -c`.
-fn shell_quote(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 2);
-    out.push('\'');
-    for ch in s.chars() {
-        if ch == '\'' {
-            out.push_str("'\\''");
-        } else {
-            out.push(ch);
-        }
-    }
-    out.push('\'');
-    out
 }
 
 /// The tab variables worth putting in a session's environment, sorted so the

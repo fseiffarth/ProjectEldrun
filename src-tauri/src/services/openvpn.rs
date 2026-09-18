@@ -53,6 +53,7 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 
 use crate::services::ssh_common::validate_arg;
+use crate::services::ssh_exec::shell_quote;
 use crate::storage;
 
 /// OpenVPN prints this once the tunnel is fully up.
@@ -410,23 +411,6 @@ fn display_name(file_name: &str) -> String {
         .rsplit_once("__")
         .map(|(_, n)| n.to_string())
         .unwrap_or_else(|| file_name.to_string())
-}
-
-/// Single-quote `s` for a POSIX shell so a config path with spaces or
-/// metacharacters stays a single inert argument when the built command is typed
-/// into a terminal. Embedded single quotes become `'\''`.
-fn shell_quote(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 2);
-    out.push('\'');
-    for ch in s.chars() {
-        if ch == '\'' {
-            out.push_str("'\\''");
-        } else {
-            out.push(ch);
-        }
-    }
-    out.push('\'');
-    out
 }
 
 /// Build a ready-to-run shell command string that brings up the OpenVPN tunnel
