@@ -52,6 +52,14 @@
 
 import type { ReadableLine, ReadableSpan } from "./readableScreen";
 import { columnCount, statusColumns } from "./statusLine";
+import {
+  isOpenCodeBanner,
+  isOpenCodeTab,
+  isOpenCodeToolRow,
+  joinOpenCodeWraps,
+  openCodeBlockEnd,
+  openCodeTurnFooter,
+} from "./openCodeMini";
 
 export interface ChatTurn {
   /** The key of the turn's first line — stable across frames the same way. */
@@ -271,8 +279,20 @@ function agentTurns(lines: readonly ReadableLine[]): ChatTurn[] {
  * leaves around a prompt echo are the seam between turns, not content, and
  * are dropped there; blanks inside an agent turn stay its paragraph breaks.
  */
-export function chatTurns(lines: readonly ReadableLine[], agentLabel?: string): ChatTurn[] {
+export function chatTurns(
+  original: readonly ReadableLine[],
+  agentLabel?: string,
+  columns = 0,
+): ChatTurn[] {
   const echo = echoPattern(agentLabel);
+  // OpenCode's minimal interface wraps its own rows at the pane width, with no
+  // marker and no indent on the continuation, so a block is held together by
+  // the blank row that ends it rather than by an indent (`openCodeMini.ts`).
+  // With the pane's width in hand its wrapping is undone first, so the phone
+  // re-wraps at its own — everything below then sees whole logical lines, the
+  // way `readableScreen` hands them over for every other CLI.
+  const mini = isOpenCodeTab(agentLabel);
+  const lines = mini ? joinOpenCodeWraps(original, columns) : original;
   const turns: ChatTurn[] = [];
   let agent: ReadableLine[] = [];
   const flushAgent = () => {
@@ -282,6 +302,29 @@ export function chatTurns(lines: readonly ReadableLine[], agentLabel?: string): 
   let index = 0;
   while (index < lines.length) {
     const line = lines[index];
+    if (mini) {
+      // A blank left where a dropped block stood is not a paragraph break the
+      // session drew; `readableScreen` collapsed the ones it printed, and this
+      // collapses the ones the drops below open.
+      if (!line.text.trim() && (agent.length === 0 || agent[agent.length - 1].text === "")) {
+        index += 1;
+        continue;
+      }
+      // The start-up banner and the `▣ Build · model · 6.2s` a turn ends with
+      // are the TUI talking about itself; the model and the agent they name
+      // reach the reader as the composer's chips (`statusLine`).
+      if (isOpenCodeBanner(line.text) || openCodeTurnFooter(line.text) !== null) {
+        index += 1;
+        continue;
+      }
+      // A tool call and its wrapped rows, left out the way Claude Code's are.
+      // The bash tool is not one of these: it prints `$ cmd` and the output
+      // under it, which is the session's own words and stays.
+      if (isOpenCodeToolRow(line.text)) {
+        index = openCodeBlockEnd(lines, index);
+        continue;
+      }
+    }
     if (!isPromptEcho(line, agentLabel) || isInputBox(lines, index)) {
       agent.push(line);
       index += 1;
@@ -290,12 +333,20 @@ export function chatTurns(lines: readonly ReadableLine[], agentLabel?: string): 
     flushAgent();
     const prompt = [line];
     index += 1;
-    while (index < lines.length
-      && CONTINUATION.test(lines[index].text)
-      && !STRUCTURE_ROW.test(lines[index].text)
-      && !isFooterRow(lines[index].text)) {
-      prompt.push(lines[index]);
-      index += 1;
+    if (mini) {
+      const end = openCodeBlockEnd(lines, index - 1);
+      while (index < end) {
+        prompt.push(lines[index]);
+        index += 1;
+      }
+    } else {
+      while (index < lines.length
+        && CONTINUATION.test(lines[index].text)
+        && !STRUCTURE_ROW.test(lines[index].text)
+        && !isFooterRow(lines[index].text)) {
+        prompt.push(lines[index]);
+        index += 1;
+      }
     }
     turns.push({ key: line.key, role: "user", lines: prompt, prompt: unmark(prompt, echo) });
   }

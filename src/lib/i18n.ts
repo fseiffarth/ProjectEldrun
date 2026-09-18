@@ -87,6 +87,8 @@ export const en = {
   "mobile.focus.statusLine": "Status line",
   "mobile.focus.statusLineHide": "Hide status line",
   "mobile.focus.statusLineEmpty": "No status line on screen",
+  "mobile.focus.modeFixed": "OpenCode settles its agent when the session starts — nothing on the phone switches it. Start the tab with `opencode --mini --agent plan` for the other one.",
+  "mobile.focus.openCodeMini": "OpenCode has a readable mode: start the tab with `opencode --mini` and Focus can show this session as a chat.",
   "mobile.transcript.earlier": "Show earlier turns",
   "mobile.transcript.truncated": "Earlier turns are not shown.",
   "mobile.transcript.cut": "Cut here — the full text is in the session.",

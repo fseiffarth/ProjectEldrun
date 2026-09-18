@@ -1676,3 +1676,73 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
   - [ ] ❌ Doesn't work
 
 ---
+
+- [~] **31aj — Mobile Focus reads an OpenCode session** (2026-09-18; ✅
+  code-complete, automated tests passing, ⚠️ not verified on a phone). Plain
+  `opencode` is a full-screen TUI and Focus hands it to the Terminal view; its
+  **minimal interface** (`opencode --mini`) writes scrollback instead, and Focus
+  rendered that as a wall: every tool call in full, the start-up banner, the
+  turn footer, and OpenCode's own live status row painted into the
+  conversation — while the composer's model, mode and status chips stayed
+  empty, because a mini frame has no `>` input box for `statusLine` to anchor
+  on. Everything below was read off captures of a real 1.18.31 session replayed
+  through the phone's own emulator at 60/80/100 columns, not out of the bundle;
+  `mobile-web/src/terminal/openCodeMini.ts` holds the shapes and the reasoning
+  for each.
+  - **The frame** is found by its status row (` BUILD   223.0K (21%) · ctrl+p
+    cmd`), the last non-blank row of every mini frame, scoped to a tab whose
+    label names OpenCode — the same tie-break `agentModes` uses, and the only
+    thing that tells a bare ` BUILD` from a line of output. The box above it
+    (blanks, and its `Ask anything…` placeholder) goes with it; a draft typed on
+    the desktop stays in the reading view, the harmless direction.
+  - **The chips**: the agent in capitals is the mode, `223.0K (21%)` the
+    context, and the model comes from the turn footer `▣ Build · Muse Spark 1.3
+    Free · 6.2s` — the one place a mini session prints its display name — or
+    from the `model <id>` notice the status row shows right after a switch.
+  - **The turns**: the banner, the turn footer and each tool call (`→ ✱ ◈ %
+    ✗`, `# … Task`) are dropped the way Claude Code's tool calls are; the bash
+    tool's `$ cmd` and its output stay, being the session's own words. OpenCode
+    **wraps its own rows**, so a block is held together by the blank row that
+    ends it rather than by an indent — that is what keeps a wrapped prompt in
+    one bubble and drops a wrapped `✱ Grep …` whole instead of stranding its
+    tail as the agent's first answer line.
+  - **Its wrapping is undone** with the pane's own column count, so the phone
+    re-wraps at its width — what `readableScreen` does for every other CLI by
+    rejoining the rows xterm wrapped. A break is only undone when the wrap
+    explains it (the row ran into the last column, or the next word would not
+    have fitted), and the seam is read the same way: a space the wrap kept
+    comes back, a long token broken at its own `/`, `-` or `.` is rejoined with
+    nothing between.
+  - **Mode is a readout.** `opencode --mini` binds no key that switches its
+    agent — Tab, Shift+Tab and the leader keybinds belong to the full-screen
+    TUI and do nothing in mini, and its ctrl+p palette offers "Switch model"
+    and "Variant cycle" only (verified against 1.18.31). The family is marked
+    `fixed`: the sheet lists Build and Plan with the current one marked and says
+    the agent is settled at `--agent` time, and the chip presses nothing.
+  - **Model works.** Mini has no `/model` — sending one would submit the word to
+    the model as a prompt, a turn nobody asked for — so the chip opens
+    OpenCode's own picker through the palette (ctrl+p, `model`, Enter) and the
+    sheet lists the rows it drew. A tap answers by typing into the picker's
+    search field (ctrl+u, the row's label, Enter), which is how a person uses
+    it; tapping one of its group headings narrows the list, which the sheet
+    reads as the next step. Verified end-to-end against a live session locally,
+    never on a phone.
+  - The alt-screen notice now names `--mini` for an OpenCode tab, which is the
+    only way into any of this.
+  - [ ] 🖐️ Manual phone QA — start a tab with `opencode --mini`, ask it
+    something that uses tools, and confirm: the chat shows prompts and answers
+    with no tool rows, no banner and no ` BUILD` row; paragraphs re-wrap to the
+    phone rather than breaking at the pane's width, with URLs and paths intact;
+    the mode chip reads Build and its sheet explains it cannot switch; the model
+    chip opens OpenCode's picker and a tap changes the model (the next turn's
+    footer names the new one); the status chips show the context percentage; a
+    left→right swipe shows the ` BUILD …` status row; a plain `opencode` tab
+    still offers the Terminal view with the `--mini` hint.
+  - [ ] ✅ Works
+  - [ ] ❌ Doesn't work
+  - [ ] **Follow-ups**: model *variants* (ctrl+t, OpenCode's reasoning-effort
+    equivalent) have no chip yet; a stored-session reader for
+    `~/.local/share/opencode/opencode.db` would give Focus a history that
+    reaches past the pane's scrollback (see the survey).
+
+---

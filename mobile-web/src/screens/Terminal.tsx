@@ -35,7 +35,13 @@ import { installWideOutputHint, type WideOutputHint } from "../terminal/wideOutp
 import { inputFrameStart, sessionStatus, shortenPath, statusFrameLines, type SessionStatus } from "../terminal/statusLine";
 import { installFocusSwipe } from "../terminal/focusSwipe";
 import { readSelectPrompt, selectKeys, selectSignature } from "../terminal/selectPrompt";
-import { currentMode, modeChoices, shiftTabKey } from "../terminal/agentModes";
+import {
+  isOpenCodeTab,
+  openCodePickKeys,
+  readOpenCodePicker,
+  OPENCODE_MODEL_KEYS,
+} from "../terminal/openCodeMini";
+import { currentMode, modeChoices, modeFixed, shiftTabKey } from "../terminal/agentModes";
 import { agentInputWrites } from "../terminal/composer";
 import { chatTurns, isPromptEcho } from "../terminal/chatTurns";
 import { oldestFirst, placeOutbox, type OutboxPlacement } from "../terminal/outboxTimeline";
@@ -239,9 +245,16 @@ function ReadableRow({ line }: { line: ReadableLine }) {
  * no turns and paints flat. Memoized on the `lines` reference: a frozen
  * history chunk and the open chunk keep theirs, so the per-frame rebuild of
  * the live tail costs nothing for however much history is on screen. */
-const ReadableTurns = memo(function ReadableTurns({ lines, chat, agent, promptLabel }: { lines: readonly ReadableLine[]; chat: boolean; agent?: string; promptLabel: string }) {
+const ReadableTurns = memo(function ReadableTurns({ lines, chat, agent, promptLabel, columns = 0 }: {
+  lines: readonly ReadableLine[];
+  chat: boolean;
+  agent?: string;
+  promptLabel: string;
+  /** The pane's width, for a CLI that wrapped its own rows against it. */
+  columns?: number;
+}) {
   if (!chat) return <>{lines.map((line) => <ReadableRow key={line.key} line={line} />)}</>;
-  return <>{chatTurns(lines, agent).map((turn) => turn.role === "user"
+  return <>{chatTurns(lines, agent, columns).map((turn) => turn.role === "user"
     ? <div key={turn.key} className="readable-turn user" role="group" aria-label={promptLabel}>
         {(turn.prompt ?? turn.lines).map((line) => <ReadableRow key={line.key} line={line} />)}
       </div>
@@ -491,6 +504,12 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
   const [frozenLines, setFrozenLines] = useState<ReadableLine[] | null>(null);
   const linesRef = useRef<ReadableLine[]>([]);
   linesRef.current = lines;
+  /** The pane's width in columns, as the session sees it. A CLI that wraps its
+   * own output — OpenCode does — wrapped it against exactly this, which is
+   * what lets the reading view put those rows back together and re-wrap them
+   * at the phone's width. Carried in a ref: it changes with the pane, not with
+   * the frame, and every reader of it re-runs on `lines` anyway. */
+  const paneColumns = useRef(0);
   /** The mode a Shift+Tab walk is currently trying to reach. */
   const [switching, setSwitching] = useState("");
   /** A mode the walk went a full cycle without reaching. */
@@ -643,6 +662,7 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     const renderReadable = () => {
       const buffer = term.buffer?.active;
       if (!buffer) return;
+      paneColumns.current = term.cols;
       const stream = readableHost.current;
       // The reading view is unmounted in Terminal view. A shell tab has no
       // other reader of these lines, so re-reading the screen there is pure
@@ -1269,14 +1289,27 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     forgetDictation();
     composerInput.current?.focus();
   };
+  /** The tab's own name for its agent, which is what every family rule is
+   * scoped by: the mode tables, the prompt echo Kimi Code draws, and the whole
+   * of OpenCode's mini interface, whose frame has no marker to be found by. */
+  const agentLabel = tab.agent_label ?? tab.label;
+  const openCode = tab.kind === "agent" && isOpenCodeTab(agentLabel);
   /** The facts the session prints below its own input box — the composer
    * chips' labels. Absent fields leave the chip on its generic label. */
-  const status = useMemo(() => (tab.kind === "agent" ? sessionStatus(lines) : null), [tab.kind, lines]);
+  const status = useMemo(
+    () => (tab.kind === "agent" ? sessionStatus(lines, agentLabel) : null),
+    [tab.kind, lines, agentLabel],
+  );
   // The mode walk reads the status between two presses, outside React's render.
   useEffect(() => { statusRef.current = status; }, [status]);
-  /** The picker `/model` opened, read off the screen while the sheet is up — a
-   * list of the session's own rows, not a list of models Eldrun believes in. */
-  const picker = useMemo(() => (modelSheet ? readSelectPrompt(lines) : null), [modelSheet, lines]);
+  /** The picker the model chip opened, read off the screen while the sheet is
+   * up — a list of the session's own rows, not a list of models Eldrun
+   * believes in. OpenCode's is not the numbered dialog the others draw, so it
+   * is read by its own shape (`openCodeMini`). */
+  const picker = useMemo(
+    () => (modelSheet ? (openCode ? readOpenCodePicker(lines) : readSelectPrompt(lines)) : null),
+    [modelSheet, openCode, lines],
+  );
   /** The step the sheet is showing: the picker on screen, unless it is the one
    * a tap just answered and the session has not redrawn yet. */
   const pickerStep = picker && selectSignature(picker) === answered ? null : picker;
@@ -1318,22 +1351,39 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
   }, [modelSheet, picker, pickerStep, answered]);
   /** `/model` opens the agent's own picker in the session; the sheet lists the
    * rows it drew, and a tap answers it with the same keys the arrow row sends —
-   * so nothing here decides what the models are. */
+   * so nothing here decides what the models are.
+   *
+   * OpenCode mini has no `/model`: the words would be submitted to the model
+   * as a prompt, which is a turn the reader never asked for. Its picker lives
+   * behind the command palette, so the chip presses the keys that open it
+   * there (`OPENCODE_MODEL_KEYS`) instead of typing a command. */
   const selectModel = () => {
     if (modelSheet) return;
     sawPicker.current = false;
     setAnswered("");
-    if (!sendAgentText("/model")) return;
+    if (openCode) {
+      clearPending();
+      if (!deliver(OPENCODE_MODEL_KEYS)) return;
+    } else if (!sendAgentText("/model")) return;
     setModelSheet(true);
   };
   /** Answers the step on screen. The sheet does not close on the tap: `/model`
    * is one step in Claude Code and two in Codex, which asks for a reasoning
    * level next, and which it is, is the session's answer to give — the sheet
-   * lists whatever it draws next, and closes when it draws nothing. */
+   * lists whatever it draws next, and closes when it draws nothing.
+   *
+   * OpenCode's picker is answered by typing into its search field rather than
+   * by walking a highlight this cannot see (`openCodePickKeys`); tapping one of
+   * its group headings narrows the list, which the sheet reads as the next
+   * step. */
   const chooseModel = (key: string) => {
     if (!pickerStep) return;
     clearPending();
-    if (!deliver(selectKeys(pickerStep.current, Number(key)))) return;
+    const picked = pickerStep.options.find((option) => option.index === Number(key));
+    const writes = openCode
+      ? (picked ? openCodePickKeys(picked.label) : [])
+      : selectKeys(pickerStep.current, Number(key));
+    if (writes.length === 0 || !deliver(writes)) return;
     setAnswered(selectSignature(pickerStep));
   };
   const closeModelSheet = () => {
@@ -1343,11 +1393,6 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     setModelSheet(false);
     setAnswered("");
   };
-  /** The modes this session has, decided by the mode it is showing with the
-   * tab's agent label as the tie-break (and, for a family whose default mode
-   * draws no text at all, as the way in). Empty for a session no family
-   * claims — the chip then keeps cycling, as before. */
-  const agentLabel = tab.agent_label ?? tab.label;
   /** Shift+Tab — the mode cycle Claude Code, Codex and Qwen Code all bind,
    * encoded the way this family's TUI reads it (`shiftTabKey`). The chip label
    * follows the status line the TUI redraws, so the feedback is real. */
@@ -1360,10 +1405,18 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
   const lamp = tab.agent_status === "done" ? "idle" : tab.agent_status ?? "idle";
   const shiftTab = shiftTabKey(agentLabel);
   const cycleMode = () => press(shiftTab);
+  /** The modes this session has, decided by the mode it is showing with the
+   * tab's agent label as the tie-break (and, for a family whose default mode
+   * draws no text at all, as the way in). Empty for a session no family
+   * claims — the chip then keeps cycling, as before. */
   const modes = useMemo(() => modeChoices(status?.mode, agentLabel), [status?.mode, agentLabel]);
   const activeMode = currentMode(modes, status?.mode, status != null);
+  /** A family whose mode no key here can change (OpenCode's mini interface).
+   * The sheet lists its modes as a readout: nothing is pressed, and the chip
+   * never cycles into a session that ignores the key. */
+  const fixedMode = modeFixed(agentLabel);
   const openModeSheet = () => {
-    if (modes.length === 0) {
+    if (modes.length === 0 && !fixedMode) {
       cycleMode();
       return;
     }
@@ -1376,7 +1429,7 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
    * it back to where it started — which is also what leaves a mode the session
    * does not offer with nothing changed. */
   const applyMode = async (value: string) => {
-    if (switching || !connected) return;
+    if (switching || !connected || fixedMode) return;
     const start = statusRef.current?.mode;
     if (currentMode(modes, start, statusRef.current != null) === value) {
       setModeSheet(false);
@@ -1510,14 +1563,17 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
    * composer and its chips already are. */
   const shown = frozenLines ?? lines;
   const painted = useMemo(
-    () => (tab.kind === "agent" ? shown.slice(0, inputFrameStart(shown)) : shown),
-    [tab.kind, shown],
+    () => (tab.kind === "agent" ? shown.slice(0, inputFrameStart(shown, agentLabel)) : shown),
+    [tab.kind, shown, agentLabel],
   );
   /** The rows the session draws under its input box — the frame `painted`
    * cuts away — for the swipe-in status strip. From the same `shown`, so a
    * frame frozen behind a sheet stays consistent; always the xterm screen,
    * even while Focus reads the stored session. */
-  const frameStatus = useMemo(() => (tab.kind === "agent" ? statusFrameLines(shown) : []), [tab.kind, shown]);
+  const frameStatus = useMemo(
+    () => (tab.kind === "agent" ? statusFrameLines(shown, agentLabel) : []),
+    [tab.kind, shown, agentLabel],
+  );
   const statusSwipe = tab.kind === "agent" && view === "focus" && !altScreen;
   useEffect(() => {
     const stream = readableHost.current;
@@ -1685,7 +1741,7 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     <div className="terminal-body">
       <div ref={host} className={`terminal${view === "focus" ? " focus-source" : ""}`} />
       <div ref={wideHint} className="terminal-wide-hint" aria-hidden="true" />
-      {view === "focus" && altScreen && <div className="alt-screen-notice"><strong>Full-screen program</strong><span>This session is drawing its own screen, which has no scrollback to read. Switch to Terminal to see it.</span><button className="primary" onClick={() => chooseView("terminal")}>Open Terminal view</button></div>}
+      {view === "focus" && altScreen && <div className="alt-screen-notice"><strong>Full-screen program</strong><span>This session is drawing its own screen, which has no scrollback to read. Switch to Terminal to see it.</span>{openCode && <span>{t("mobile.focus.openCodeMini")}</span>}<button className="primary" onClick={() => chooseView("terminal")}>Open Terminal view</button></div>}
       {view === "focus" && !altScreen && <>
         <section ref={readableHost} className="readable-output" aria-label="Session output" aria-live="polite"
           onScroll={(event) => {
@@ -1700,7 +1756,7 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
                   <TranscriptTurns entries={transcript?.entries ?? []} cutLabel={t("mobile.transcript.cut")} promptLabel={t("mobile.transcript.prompt")} placement={outboxPlacement} renderFiles={renderOutbox} />
                   {liveQuestion && <div className="transcript-screen" role="group" aria-label={t("mobile.transcript.onScreen")}>
                     <small>{t("mobile.transcript.onScreen")}</small>
-                    <ReadableTurns lines={liveTail} chat={chat} agent={agentLabel} promptLabel={t("mobile.transcript.prompt")} />
+                    <ReadableTurns lines={liveTail} chat={chat} agent={agentLabel} promptLabel={t("mobile.transcript.prompt")} columns={paneColumns.current} />
                   </div>}
                 </div>)
             : painted.length === 0 && visibleChunks.length === 0 && earlier.open.length === 0 && outbox.length === 0
@@ -1709,9 +1765,9 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
                 {clipped && <div className="readable-notice">{TRUNCATION_NOTICE}</div>}
                 {hiddenLines > 0 && <button className="readable-earlier" onClick={showEarlier}>Show earlier output ({hiddenLines.toLocaleString()} lines)</button>}
                 {hiddenLines === 0 && earlier.dropped && <div className="readable-notice">{TRUNCATION_NOTICE}</div>}
-                {visibleChunks.map((chunk) => <ReadableTurns key={chunk.id} lines={chunk.lines} chat={chat} agent={agentLabel} promptLabel={t("mobile.transcript.prompt")} />)}
-                <ReadableTurns lines={earlier.open} chat={chat} agent={agentLabel} promptLabel={t("mobile.transcript.prompt")} />
-                <ReadableTurns lines={painted} chat={chat} agent={agentLabel} promptLabel={t("mobile.transcript.prompt")} />
+                {visibleChunks.map((chunk) => <ReadableTurns key={chunk.id} lines={chunk.lines} chat={chat} agent={agentLabel} promptLabel={t("mobile.transcript.prompt")} columns={paneColumns.current} />)}
+                <ReadableTurns lines={earlier.open} chat={chat} agent={agentLabel} promptLabel={t("mobile.transcript.prompt")} columns={paneColumns.current} />
+                <ReadableTurns lines={painted} chat={chat} agent={agentLabel} promptLabel={t("mobile.transcript.prompt")} columns={paneColumns.current} />
                 {renderOutbox(screenOutbox)}
               </div>}
         </section>
@@ -1832,10 +1888,10 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
       title="Permission mode"
       note={failedMode
         ? { text: `This session did not switch to ${failedMode.label}; it is back in the mode it was in.`, error: true }
-        : undefined}
+        : fixedMode ? { text: t("mobile.focus.modeFixed") } : undefined}
       options={modeOptions}
-      waiting="This session reports no mode."
-      busy={switching !== ""}
+      waiting={fixedMode ? t("mobile.focus.modeFixed") : "This session reports no mode."}
+      busy={switching !== "" || fixedMode}
       onPick={(key) => void applyMode(key)}
       onClose={() => { if (!switching) setModeSheet(false); }}
     />}

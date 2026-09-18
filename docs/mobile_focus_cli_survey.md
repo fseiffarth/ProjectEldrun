@@ -41,7 +41,7 @@ publishing it on `PublicTab` would let the phone match on the command instead.
 | Grok (`grok`) | xAI Grok Build 1.0.32; `@vibe-kit/grok-cli` 0.0.34 (stale) | Grok Build: alt screen in plain tmux; `--minimal` / `--no-alt-screen` inline | none | launch flag, then a capture |
 | Kiro (`kiro`) | `kiro-cli` 2.21.4 — the binary is **`kiro-cli`** | inline | glyphs U; `NN% context used` | `data.sqlite3` `conversations_v2` |
 | Mistral Vibe (`vibe`) | 2.25.4 | alt screen (Textual) | none | `messages.jsonl` reader |
-| OpenCode (`opencode`) | 1.18.31 | alt screen; **`--mini` writes scrollback** | none unless `--mini` | SQLite `opencode.db` |
+| OpenCode (`opencode`) | 1.18.31 | alt screen; **`--mini` writes scrollback** | `--mini` **is read** (2026-09-18): echo `›`, tools dropped, chips | SQLite `opencode.db` |
 | Crush (`crush`) | 0.94.2 | alt screen, always | none | SQLite `.crush/crush.db` |
 | Kimi Code (`kimi`) | `@moonshot-ai/kimi-code` 0.43.1 | inline | **echo `✨`, answers `●`** | `wire.jsonl` reader |
 | Pi (`pi`) | `@earendil-works/pi-coding-agent` 0.85.1 | inline | echo is a background box with no glyph | session JSONL tree; `--session-id` |
@@ -84,6 +84,47 @@ publishing it on `PublicTab` would let the phone match on the command instead.
 - `agentModes`: a Gemini family — `default` (silent), `accept edits`, `plan`
   on Shift+Tab, `yolo` on Ctrl+Y.
 
+### OpenCode's minimal interface (2026-09-18)
+
+`opencode --mini` is the first family read from something other than an input
+box: it draws none. `mobile-web/src/terminal/openCodeMini.ts` holds every shape
+below, each read off captures of a live 1.18.31 session replayed through the
+phone's own emulator at 60/80/100 columns — the first entry in this survey that
+is not source-only. All of it is scoped to a tab whose label names OpenCode.
+
+- **The frame** is its status row, ` BUILD  223.0K (21%) · ctrl+p cmd`, always
+  the last non-blank row: the agent in capitals, then a notice slot (`model
+  union-alpha`, `no variants available`, the `■⬝⬝⬝ esc interrupt` progress
+  while it works), the tokens used and the key hint. The input box above it —
+  blank rows, or the `Ask anything…` placeholder — is cut with it.
+- **The chips**: mode is that agent name; context is the `(21%)`; the model
+  comes from the turn footer `▣ Build · Muse Spark 1.3 Free · 6.2s`, the only
+  place a mini session prints a display name, or from the status row's notice
+  right after a switch.
+- **Dropped**: the banner `█▀▀█  OpenCode`, the turn footer, and tool calls
+  (`→` read/edit/list/bash/skill, `✱` glob and grep, `◈` web search, `%
+  WebFetch`, `✗` refused, `# … Task`). Kept: the bash tool's `$ cmd` and its
+  output, and `Thinking:` rows.
+- **It wraps its own rows**, so nothing marks a continuation: a block runs from
+  its marker row to the next blank row, and the wrapping is undone against the
+  pane's column count so the phone re-wraps at its own width. A break is only
+  undone when the wrap explains it, and the seam is read from what the wrap did
+  with the space (kept past the hanging indent → space; a long token broken at
+  `/`, `-` or `.` → nothing).
+- **No key switches its agent**: `agent.cycle`/`agent.cycle.reverse` (Tab,
+  Shift+Tab) and the `<leader>` binds belong to the full-screen TUI and do
+  nothing in mini, whose ctrl+p palette offers "Switch model" and "Variant
+  cycle" only. The family is `fixed` — the sheet is a readout, and the agent is
+  chosen at `--agent` time.
+- **No `/model`** either: the slash commands are `/editor /exit /init /new
+  /review /skills`, so `/model` would be submitted as a prompt. The chip opens
+  the picker through the palette (ctrl+p, `model`, Enter) and a tap answers it
+  by typing (ctrl+u, the row's label, Enter) — its highlight is drawn in colour
+  alone, which is deliberately not read.
+- Still open: model **variants** (ctrl+t) are OpenCode's reasoning-effort
+  equivalent and have no chip; the SQLite reader below would give Focus a
+  history reaching past the pane's scrollback.
+
 ## Screen shapes not handled yet
 
 Each needs a live capture before a pattern is written.
@@ -106,8 +147,6 @@ Each needs a live capture before a pattern is written.
   (yolo) / `Never Ask` (auto); Shift+Tab toggles plan only.
 - **Codex 0.155** — the recap divider becomes `  ↳ Recap: …` with a hanging
   indent; a streaming answer may end mid-sentence on the last row.
-- **OpenCode `--mini`** — echo `› …`, turn end `▣ <agent> · <model> · <time>`,
-  tool rows `→ ← ⚙`; its footer is a live area below scrollback.
 - **Pi** — a prompt is a background-coloured box wrapped in OSC 133 `A`/`B`
   zone markers; only those (or the background colour) mark a user turn.
 - **Qwen Code on the alt screen** — the Focus notice could name the

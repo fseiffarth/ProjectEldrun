@@ -364,9 +364,23 @@ A fenced tab resumes only if its session store is mounted into the fence:
 Antigravity rides on `~/.gemini`). A CLI that moves its store breaks resume
 silently — re-check the path on update.
 
-Vibe, OpenCode and Copilot are full-screen (alternate-screen) TUIs; the phone's
-Focus view cannot read them — a release that changes that is an *opportunity*,
-not a break. Copilot has been alt-screen unconditionally since 1.0.12 (its
+**OpenCode's minimal interface** is read by the phone since 2026-09-18
+(`mobile-web/src/terminal/openCodeMini.ts`, verified against 1.18.31 by live
+capture). It assumes, of `opencode --mini`: the status row ` BUILD  223.0K
+(21%) · ctrl+p cmd` as the last row of every frame (agent in capitals, a notice
+slot, tokens used); the turn footer `▣ Build · <model> · 6.2s`; the tool glyphs
+`→ ✱ ◈ % ✗` and `# … Task`; the banner `█▀▀█  OpenCode`; the box hint `Ask
+anything…`; that it wraps its own rows at the pane width; that **no key
+switches its agent** in mini (Tab/Shift+Tab and `<leader>` are the full TUI's);
+that there is **no `/model`** (`/editor /exit /init /new /review /skills` only)
+and the picker opens with ctrl+p → `model` → Enter, filters on typed text and
+clears with ctrl+u. A release that changes any of those degrades the phone's
+Focus view for OpenCode; a release that adds an agent switch to mini would let
+the `fixed` flag in `agentModes.ts` be dropped.
+
+Vibe and Copilot are full-screen (alternate-screen) TUIs, as plain `opencode`
+is; the phone's Focus view cannot read them — a release that changes that is an
+*opportunity*, not a break. Copilot has been alt-screen unconditionally since 1.0.12 (its
 `--alt-screen` flag was removed). Copilot 1.0.81–1.0.82 also offered to restore
 interrupted sessions at startup, a prompt a restored tab would open on; 1.0.83
 turned it off by default. Vibe 2.25.4 still has `-c/--continue` and

@@ -11,7 +11,19 @@
  * prompt, and only reports a field that positively matched a known shape —
  * an unmatched field stays absent and the chip falls back to a generic label.
  * Nothing here injects keystrokes; the chips' actions are the caller's.
+ *
+ * One family is read from a different place entirely: OpenCode's minimal
+ * interface draws no input box marker at all, only a status row with the
+ * agent's name on it, so it is found by that row and by the tab's label rather
+ * than by the box above it (`openCodeMini.ts`, and `openCodeFrame` below).
  */
+
+import {
+  isOpenCodeTab,
+  isOpenCodePlaceholder,
+  openCodeStatusRow,
+  openCodeTurnFooter,
+} from "./openCodeMini";
 
 export interface SessionStatus {
   /** Working directory, as printed (`~/…` or absolute). */
@@ -193,11 +205,62 @@ function geminiIndicatorAbove(
 }
 
 /**
+ * OpenCode's live area (`opencode --mini`), for a tab whose label names it:
+ * where the frame starts and what its status row says.
+ *
+ * The anchor is the status row — the agent's name in capitals — which OpenCode
+ * keeps as the last non-blank row of every frame it draws. Above it sits the
+ * input box: blank rows, or the box's own placeholder, or a draft typed on the
+ * desktop. Only the first two are taken into the frame; a draft is left in the
+ * reading view, the harmless direction, because the rows it occupies are
+ * otherwise indistinguishable from the answer above them.
+ *
+ * The model is not on that row (except for the moment after a switch, when
+ * OpenCode prints it as a notice), so it comes from the last turn footer
+ * above the frame — `▣ Build · Muse Spark 1.3 Free · 6.2s`, the only place a
+ * mini session prints the model's display name at all.
+ */
+function openCodeFrame(
+  lines: readonly StatusLineLike[],
+  agentLabel?: string,
+): { start: number; status: SessionStatus } | null {
+  if (!isOpenCodeTab(agentLabel)) return null;
+  let index = lines.length - 1;
+  while (index >= 0 && !lines[index].text.trim()) index -= 1;
+  if (index < 0 || index < lines.length - SEARCH_WINDOW) return null;
+  const row = openCodeStatusRow(lines[index].text);
+  if (!row) return null;
+  let start = index;
+  while (start > 0) {
+    const above = lines[start - 1].text;
+    if (!above.trim() || isOpenCodePlaceholder(above)) start -= 1;
+    else break;
+  }
+  const status: SessionStatus = { mode: row.mode };
+  if (row.context) status.context = row.context;
+  if (row.model) status.model = row.model;
+  if (!status.model) {
+    for (let above = start - 1; above >= 0; above -= 1) {
+      const footer = openCodeTurnFooter(lines[above].text);
+      if (!footer) continue;
+      if (footer.model) status.model = footer.model;
+      break;
+    }
+  }
+  return { start, status };
+}
+
+/**
  * The status the session is showing right now, or `null` when the bottom of
  * the screen is not a TUI input frame (mid-scroll output, a full-screen
  * dialog, a shell).
  */
-export function sessionStatus(lines: readonly StatusLineLike[]): SessionStatus | null {
+export function sessionStatus(
+  lines: readonly StatusLineLike[],
+  agentLabel?: string,
+): SessionStatus | null {
+  const mini = openCodeFrame(lines, agentLabel);
+  if (mini) return mini.status;
   let inputIndex = -1;
   for (let index = lines.length - 1; index >= 0 && index >= lines.length - SEARCH_WINDOW; index -= 1) {
     if (isInputLine(lines, index)) {
@@ -257,7 +320,12 @@ function labelledRule(text: string) {
  * with the same marker as the input line, and hiding a question the session is
  * waiting on would be the one unrecoverable mistake here.
  */
-export function inputFrameStart(lines: readonly StatusLineLike[]): number {
+export function inputFrameStart(
+  lines: readonly StatusLineLike[],
+  agentLabel?: string,
+): number {
+  const mini = openCodeFrame(lines, agentLabel);
+  if (mini) return mini.start;
   let start = -1;
   for (let index = lines.length - 1; index >= 0 && index >= lines.length - SEARCH_WINDOW; index -= 1) {
     const text = lines[index].text;
@@ -359,7 +427,18 @@ function readsAsStatus(text: string) {
  *
  * Blank rows are dropped entirely: a strip has no use for gaps. No frame, `[]`.
  */
-export function statusFrameLines(lines: readonly StatusLineLike[]): string[] {
+export function statusFrameLines(
+  lines: readonly StatusLineLike[],
+  agentLabel?: string,
+): string[] {
+  const mini = openCodeFrame(lines, agentLabel);
+  if (mini) {
+    // The frame is the box and the one status row under it; the box's blanks
+    // and its placeholder are not a status.
+    return lines.slice(mini.start)
+      .map((line) => line.text.replace(/\s+$/u, ""))
+      .filter((text) => text.trim() !== "" && !isOpenCodePlaceholder(text));
+  }
   let inputIndex = -1;
   for (let index = lines.length - 1; index >= 0 && index >= lines.length - SEARCH_WINDOW; index -= 1) {
     const text = lines[index].text;

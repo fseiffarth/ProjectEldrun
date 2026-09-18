@@ -18,11 +18,19 @@
  * prints *nothing* while in its default mode, so for a tab whose label names
  * such a family, an input frame with no mode text is itself the readout.
  *
+ * One family is listed but cannot be *walked*: OpenCode's minimal interface
+ * has no key that changes its agent, so its entry is marked `fixed` and the
+ * caller shows the list as a readout instead of a switch. A family that binds
+ * nothing must not be offered a cycle — the chip would have pressed a key into
+ * a session that ignores it and then reported a failed switch.
+ *
  * Deliberately absent:
- *   - Vibe / OpenCode / Copilot / Crush / Cline — full-screen
- *     (alternate-screen) TUIs; the Focus view already hands those to the
- *     Terminal view. Copilot has drawn one unconditionally since 1.0.12, and
- *     Qwen Code does too by default since `ui.useTerminalBuffer` (0.23).
+ *   - Vibe / Copilot / Crush / Cline — full-screen (alternate-screen) TUIs;
+ *     the Focus view already hands those to the Terminal view. Copilot has
+ *     drawn one unconditionally since 1.0.12, and Qwen Code does too by
+ *     default since `ui.useTerminalBuffer` (0.23). Plain `opencode` is one of
+ *     them; only `opencode --mini` writes scrollback, and only that is what
+ *     the OpenCode family below reads.
  *   - Agents whose mode is not on Shift+Tab: Amp (Ctrl+S), Goose and
  *     mini-SWE-agent (a slash command each), Aider (the prompt prefix is the
  *     mode). A walk of Shift+Tab presses would never reach one of theirs.
@@ -51,6 +59,9 @@ interface ModeFamily {
   /** Matches the tab's agent label ("Claude", "Qwen", …). */
   agent: RegExp;
   choices: ModeChoice[];
+  /** The session's mode cannot be changed from here: no key this can press
+   * switches it. The caller lists the modes as a readout and never walks. */
+  fixed?: boolean;
 }
 
 /** Claude Code: the Shift+Tab cycle — `accept edits on`, `plan mode on`, `auto
@@ -126,7 +137,31 @@ const GEMINI: ModeFamily = {
   ],
 };
 
-const FAMILIES = [CLAUDE, CODEX, QWEN, GEMINI];
+/** OpenCode: what it calls the *agent* — `build` and `plan` are the two
+ * primary ones it ships, and a project can add more — is what the phone's mode
+ * chip shows, read out of the capitals in its status row (` BUILD  …`).
+ *
+ * `fixed`, because `opencode --mini` binds no key that switches it: its
+ * `agent.cycle`/`agent.cycle.reverse` (Tab and Shift+Tab) and its leader
+ * keybinds belong to the full-screen TUI, and pressing any of them in a mini
+ * session does nothing at all — verified against 1.18.31, whose command
+ * palette (ctrl+p, the only commands mini has) offers "Switch model" and
+ * "Variant cycle" and no agent switch. The agent a mini session runs as is the
+ * one it started with (`opencode --mini --agent plan`).
+ *
+ * Both are `labelled`: "plan" is Claude Code's, Codex's, Qwen's and Gemini's
+ * word too, and "build" would otherwise be claimed for any session whose
+ * status line happens to say it. */
+const OPENCODE: ModeFamily = {
+  agent: /open\s*code/iu,
+  fixed: true,
+  choices: [
+    { value: "build", label: "Build", description: "Reads, edits and runs — OpenCode's default agent", labelled: true },
+    { value: "plan", label: "Plan", description: "Researches and plans; changes nothing", labelled: true },
+  ],
+};
+
+const FAMILIES = [CLAUDE, CODEX, QWEN, GEMINI, OPENCODE];
 
 function claims(choice: ModeChoice, mode: string) {
   return choice.value === mode || (choice.aliases?.includes(mode) ?? false);
@@ -161,6 +196,14 @@ export function modeChoices(mode?: string, agentLabel?: string): ModeChoice[] {
     return claimants.includes(labelled) ? labelled.choices : [];
   }
   return claimants[0].choices;
+}
+
+/** Whether this tab's family has a mode the phone cannot change — OpenCode's
+ * mini interface, whose agent is settled when the session starts. The caller
+ * shows the list as a readout and presses nothing. */
+export function modeFixed(agentLabel?: string): boolean {
+  if (!agentLabel) return false;
+  return FAMILIES.some((family) => family.fixed && family.agent.test(agentLabel));
 }
 
 /** Which listed choice the session is in right now, by value or alias.

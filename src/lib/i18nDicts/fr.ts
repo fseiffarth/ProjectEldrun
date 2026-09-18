@@ -40,6 +40,8 @@ export const dict: Dict = {
   "mobile.focus.statusLine": "Ligne d'état",
   "mobile.focus.statusLineHide": "Masquer la ligne d'état",
   "mobile.focus.statusLineEmpty": "Aucune ligne d'état à l'écran",
+  "mobile.focus.modeFixed": "OpenCode fixe son agent au démarrage de la session ; rien sur le téléphone ne le change. Lancez l'onglet avec `opencode --mini --agent plan` pour l'autre.",
+  "mobile.focus.openCodeMini": "OpenCode a un mode lisible : lancez l'onglet avec `opencode --mini` et Focus pourra afficher cette session comme une conversation.",
   "mobile.transcript.earlier": "Afficher les tours précédents",
   "mobile.transcript.truncated": "Les tours précédents ne sont pas affichés.",
   "mobile.transcript.cut": "Coupé ici — le texte complet est dans la session.",
