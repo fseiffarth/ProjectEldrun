@@ -336,6 +336,13 @@ pub struct Settings {
     /// since a root agent gets the root MCP tools no project agent has.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root_agents: Option<Vec<String>>,
+    /// Agent CLI binaries given the root MCP tools in the root console, set by
+    /// the 🧠 menu's "MCP" chips (Root = may run there, MCP = runs there *with*
+    /// the tools). Unset falls back to `root_agents`: before the chip was a
+    /// switch, every root agent got the tools. Read at spawn by
+    /// `services::root_mcp`, which sees only the binary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_mcp_agents: Option<Vec<String>>,
     /// Local model names switched off for the root console by the 🧠 menu's
     /// "Root" chips. Opt-out: unset means every local model is offered there.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -858,6 +865,15 @@ impl Settings {
     /// Whether the root console's MCP tools are served. On unless switched off.
     pub fn root_mcp(&self) -> bool {
         self.root_mcp.unwrap_or(true)
+    }
+
+    /// The agent CLIs [`Self::root_mcp_agents`] names, with its `root_agents`
+    /// fallback applied.
+    pub fn root_mcp_agent_list(&self) -> Vec<String> {
+        self.root_mcp_agents
+            .clone()
+            .or_else(|| self.root_agents.clone())
+            .unwrap_or_default()
     }
 
     /// Whether the root MCP tools are kept to local-model tabs. Off unless set.

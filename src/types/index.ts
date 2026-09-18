@@ -364,6 +364,10 @@ export interface Settings {
    *  🧠 menu's "Root" chips. Opt-in: unset or empty offers none there (root
    *  agents get the root MCP tools). */
   root_agents?: string[];
+  /** Agent CLI binaries given the root MCP tools in the root console, set by
+   *  the 🧠 menu's "MCP" chips (Root = may run there, MCP = runs there with the
+   *  tools). Unset falls back to `root_agents`. Read at spawn by the backend. */
+  root_mcp_agents?: string[];
   /** Local (Ollama) model names switched OFF for the root console by the 🧠
    *  menu's "Root" chips. Opt-out: unset means every model is offered there. */
   root_excluded_models?: string[];

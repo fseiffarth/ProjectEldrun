@@ -97,10 +97,15 @@ and one reply out).
   wears the Models & agents menu's opt-in "MCP" chip
   (`settings.ollama_mcp_models`). Every other agent gets `ELDRUN_ROOT_MCP_URL`
   and `ELDRUN_ROOT_MCP_TOKEN` only. `root_mcp::WIRED_CLIS` lists the CLIs that
-  are named the server (Claude, Codex); `root_mcp_status` carries it, and the
-  menu shows it as a read-only "MCP" chip on each CLI row, lit when that CLI is
-  offered in the root console and the Settings switches don't withhold the
-  tools. So
+  are named the server (Claude, Codex); `root_mcp_status` carries it.
+- **Root and MCP are two chips.** Root lets an agent or model run in the root
+  console; MCP runs it there *with* the tools, so switching MCP on switches
+  Root on and Root off takes MCP with it. A root tab without MCP gets nothing
+  at all — no server, no token, no env pair. Cloud CLIs are opted in by
+  binary (`settings.root_mcp_agents`, the only name the spawn sees); unset
+  falls back to `root_agents`, because before the chip was a switch every
+  root agent got the tools. An unwired CLI's chip is dimmed and can't be
+  switched on. So
   no agent carries the token in its argv. This is what keeps it off disk, too:
   a fenced argv is past tmux's message limit, and `tmux_local` then writes the
   whole command line into a launcher script under the state dir. On a tmux

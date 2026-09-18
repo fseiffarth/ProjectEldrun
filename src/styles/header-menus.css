@@ -832,22 +832,9 @@
   color: var(--accent);
   font-weight: 600;
 }
-/* A CLI's "MCP" chip reports rather than toggles (Root and Settings decide), so
-   it keeps the chip's shape but none of its affordance: no pointer, no hover.
-   A CLI Eldrun cannot hand the server to at all is dimmed further — "off" and
-   "impossible" should not look alike. */
-.local-model-role-chip-readout {
-  cursor: var(--cur-default, default);
-}
-.local-model-role-chip-readout:hover {
-  border-color: var(--control-border);
-  color: var(--text-secondary);
-}
-.local-model-role-chip-readout.on:hover {
-  border-color: var(--accent);
-  color: var(--accent);
-}
-.local-model-role-chip-readout.unwired {
+/* A CLI Eldrun cannot hand the MCP server to at all is dimmed further than an
+   off chip — "off" and "impossible" should not look alike. */
+.local-model-role-chip.local-model-role-chip-unwired {
   opacity: 0.5;
   border-style: dashed;
 }
