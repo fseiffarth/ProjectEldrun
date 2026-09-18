@@ -141,7 +141,7 @@ export type JobState = "working" | "needs-decision" | "finished" | "idle"
 
 export interface UniverseJob {
   id: string; kind: JobKind; state: JobState; label: string;
-  scope: string; tabKey?: string;          // → lib/tabJump's jumpToTab(scope, key)
+  scope: string; tabKey?: string;          // → lib/shortcuts/tabJump's jumpToTab(scope, key)
   agent?: string; model?: string; at: Date | null; card?: PromptChartCard;
 }
 

@@ -24,7 +24,7 @@ import {
   isLoneModifier,
   normalizeKey,
   resolveChord,
-} from "../lib/shortcuts";
+} from "../lib/shortcuts/shortcuts";
 
 describe("#62 shortcut helpers", () => {
   it("round-trips a KeyboardEvent to a chord and back to a matcher", () => {

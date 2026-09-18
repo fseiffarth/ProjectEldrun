@@ -2205,7 +2205,7 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       tab, since `closeTab` closes that one and naming the chord on any other
       would advertise a key that closes a different tab than the one under the
       pointer.
-    - *Files: `src/lib/shortcutHint.ts` (new), `src/lib/shortcuts.ts`,
+    - *Files: `src/lib/shortcuts/shortcutHint.ts` (new), `src/lib/shortcuts/shortcuts.ts`,
       `src/components/embed/FileViewerPane.tsx`,
       `src/components/tabs/TabBar.tsx`, `src/lib/i18n.ts` (+ the four
       dictionaries).* Frontend only, hot-reloads.

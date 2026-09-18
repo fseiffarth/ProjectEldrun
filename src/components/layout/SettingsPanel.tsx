@@ -43,7 +43,7 @@ import {
   type ShortcutAction,
   type ShortcutDef,
   type ShortcutMap,
-} from "../../lib/shortcuts";
+} from "../../lib/shortcuts/shortcuts";
 import {
   AgentsPanel,
   FileTypeSettings,

@@ -67,7 +67,7 @@ import {
 } from "../stores/rootOverlay";
 import { setCalendarWriteHandler } from "../lib/calendar/calendarWriteHook";
 import { RootOverlayHost } from "../components/layout/RootOverlay";
-import { SHORTCUT_DEFS, chordMatches, resolveChord } from "../lib/shortcuts";
+import { SHORTCUT_DEFS, chordMatches, resolveChord } from "../lib/shortcuts/shortcuts";
 
 function seedRootTabs() {
   const tabs = useTabsStore.getState();

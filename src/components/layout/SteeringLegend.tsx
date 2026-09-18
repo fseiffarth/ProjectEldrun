@@ -1,6 +1,6 @@
 import { createPortal } from "react-dom";
 import { useKeyboardSteeringStore } from "../../stores/keyboardSteering";
-import { STEERING_KEYS } from "../../lib/shortcuts";
+import { STEERING_KEYS } from "../../lib/shortcuts/shortcuts";
 import { useT } from "../../lib/i18n";
 
 /**

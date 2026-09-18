@@ -1,5 +1,5 @@
 /**
- * `lib/tabJump`: showing the tab a surface points at. Reveal first (so the
+ * `lib/shortcuts/tabJump`: showing the tab a surface points at. Reveal first (so the
  * scope's own layout already has the tab up when the scope arrives), then bring
  * the scope up through the right store — a box via the boxes store, a project
  * or the root via the projects store — and cost nothing for a scope already up.
@@ -11,7 +11,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(() => Promise.resolve()) }));
 
-import { jumpToTab, openPromptChartTab } from "../lib/tabJump";
+import { jumpToTab, openPromptChartTab } from "../lib/shortcuts/tabJump";
 import { translate, useI18nStore } from "../lib/i18n";
 import { useBoxesStore } from "../stores/boxes";
 import { useProjectsStore } from "../stores/projects";

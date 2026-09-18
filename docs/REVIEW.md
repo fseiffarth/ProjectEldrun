@@ -236,7 +236,7 @@ files), 13 Zustand stores, `hooks/`, `lib/`, `types/`, with 59 Vitest suites.
    Unlisted-but-important: `components/header/*` (6 files), `DetachedApp.tsx`,
    `GlobalAppMenu.tsx`, `BoxPill.tsx`, 9 of 13 stores (`detached`, `drag`,
    `boxes`, `activity`, `linkRouting`, `pdfSync`, …), `crashReporter.ts`,
-   `lib/shortcuts.ts`; backend `commands/{boxes,crash,debug,downloads,github,
+   `lib/shortcuts/shortcuts.ts`; backend `commands/{boxes,crash,debug,downloads,github,
    openvpn,subwindow}.rs`, `services/{agent_session,openvpn,remote_agents,
    restore_service,ssh_exec}.rs`. Real onboarding friction.
 3. **`stores/projects.ts` couples switching to tab/timer/VPN state** via direct

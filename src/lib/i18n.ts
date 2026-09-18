@@ -633,7 +633,7 @@ export const en = {
   "shortcuts.conflict": "Also bound to: {actions}",
   "shortcuts.fixedConflict": "{chord} is reserved by a fixed key and will not fire",
 
-  // Keyboard steering mode — the fixed in-mode keys (lib/shortcuts
+  // Keyboard steering mode — the fixed in-mode keys (lib/shortcuts/shortcuts
   // STEERING_KEYS) rendered by the legend overlay, cheat sheet and lessons.
   "steering.legendTitle": "Steering",
   "steering.jump.label": "Jump to project",
@@ -657,7 +657,7 @@ export const en = {
   "steering.exit.desc": "Leave steering mode.",
 
   // Shortcut cheat sheet (ShortcutHelpOverlay) — section titles come from
-  // lib/shortcuts SHORTCUT_GROUPS, fixed-key rows from FIXED_KEYS.
+  // lib/shortcuts/shortcuts SHORTCUT_GROUPS, fixed-key rows from FIXED_KEYS.
   "shortcutHelp.title": "Keyboard Shortcuts",
   "shortcutHelp.customized": "customized",
   "shortcutHelp.group.navigation": "Navigation",

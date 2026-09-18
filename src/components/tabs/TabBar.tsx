@@ -65,7 +65,7 @@ import { registerHostBoundTab } from "../../lib/hostBound";
 import { useActivityStore } from "../../stores/activity";
 import { UntestedTag } from "../common/UntestedTag";
 import { useT } from "../../lib/i18n";
-import { useChordHint } from "../../lib/shortcutHint";
+import { useChordHint } from "../../lib/shortcuts/shortcutHint";
 import { TRASH_PROJECT_ID } from "../../lib/trashProject";
 import { AgentScheduleDialog } from "../agents/AgentScheduleDialog";
 import { scheduleCacheKey, useAgentSchedulesStore } from "../../stores/agents/agentSchedules";

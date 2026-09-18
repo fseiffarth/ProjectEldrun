@@ -234,8 +234,8 @@ import {
   type TexSnippetRange,
   compileWasNoop,
 } from "../../lib/viewers/tex";
-import { chordLabel, chordMatches, resolveChord, type ShortcutMap } from "../../lib/shortcuts";
-import { useChordHint, useShortcutOverrides } from "../../lib/shortcutHint";
+import { chordLabel, chordMatches, resolveChord, type ShortcutMap } from "../../lib/shortcuts/shortcuts";
+import { useChordHint, useShortcutOverrides } from "../../lib/shortcuts/shortcutHint";
 import {
   renderTexPreview,
   cachedTexPreview,

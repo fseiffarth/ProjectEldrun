@@ -36,7 +36,7 @@ import { localOccurrenceKey, localWallClock } from "../../lib/agents/agentSchedu
 import { tagCounts } from "../../lib/agents/prompt/tags";
 import { formatLongDate, monthName, toDateStr, todayStr } from "../../lib/calendar/calendarTime";
 import { useI18nStore, useT } from "../../lib/i18n";
-import { jumpToTab } from "../../lib/tabJump";
+import { jumpToTab } from "../../lib/shortcuts/tabJump";
 import {
   queuePromptForTab,
   sendCollectedPrompt,

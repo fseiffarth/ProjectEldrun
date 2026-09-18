@@ -218,7 +218,7 @@ only when breaking it does damage. The *why* goes in code comments or
 | `vpnStatus.ts` | Machine-level OpenVPN state keyed by config path; holder refcount (`releaseVpn`) and `markVpn*` helpers. |
 | `hooks/useKeyboard.ts` | Global keyboard-shortcut hook. |
 | `hooks/useListReorder.ts` + `lib/listReorder.ts` | The shared drag-a-row-into-place gesture for `{ id }[]` lists. Pointer events (not HTML5 DnD); the grip takes pointer capture. |
-| `lib/shortcuts.ts` | Shortcut definitions, chord parsing/resolution. |
+| `lib/shortcuts/shortcuts.ts` | Shortcut definitions, chord parsing/resolution. |
 | `lib/agents/codexHooks.ts` | Codex hook-trust state + the one-click "open Codex on `/hooks`" fix. |
 | `lib/remote/vpn/vpnConnect.ts` | Silent-connect gate: ask `vpn_can_connect_silently` before connecting (pkexec prompts before OpenVPN validates). Store-free. |
 | `lib/remote/vpn/vpnAutoConnect.ts` | "Connect on launch" per `.ovpn` (`settings.vpn_auto_connect`), never prompts. Also `openVpnLoginInTerminal` + `pollVpnUp`, the one non-headless VPN login. |

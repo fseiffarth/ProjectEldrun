@@ -87,7 +87,7 @@ pub fn workspace_switch(
 /// The frontend binds the bare Super key to the panel toggle, and must not do
 /// so where the shell answers that key itself (GNOME's overview, KDE's
 /// launcher) — see `platform::desktop_claims_super`. Read once at startup and
-/// cached in `src/lib/superKey.ts`; the environment cannot change under a
+/// cached in `src/lib/shortcuts/superKey.ts`; the environment cannot change under a
 /// running session.
 #[tauri::command]
 pub fn desktop_owns_super_key() -> bool {

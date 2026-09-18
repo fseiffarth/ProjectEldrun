@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import { useActivityStore, type StatusTab, type TabStatusCounts } from "../../stores/activity";
 import { useTabsStore } from "../../stores/tabs";
-import { jumpToTab } from "../../lib/tabJump";
+import { jumpToTab } from "../../lib/shortcuts/tabJump";
 import { useT, type TranslationKey } from "../../lib/i18n";
 
 /** Most status bars the strip will draw. A scope with more busy tabs than this

@@ -613,7 +613,7 @@ keeps global `~/.vibe/config.toml` untouched.
 | `Escape` | Close dialogs. |
 | `Enter` | Confirm create/import dialogs; activate a unique search result. |
 
-Beyond these, a **rebindable** set lives in `src/lib/shortcuts.ts` and is edited
+Beyond these, a **rebindable** set lives in `src/lib/shortcuts/shortcuts.ts` and is edited
 in Settings → Shortcuts, persisted as `settings.keyboard_shortcuts` overrides:
 toggle subwindow fullscreen, cycle to the next project, previous/next tab in a
 subwindow, cycle the focused subwindow up/down, cycle tabs, hide the focused

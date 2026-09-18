@@ -25,7 +25,7 @@ import {
 import { applyFastModeAttribute, useFastMode } from "../../lib/agents/fastMode";
 import { useOllamaAutoloadOnLaunch } from "../../stores/agents/ollamaAutoload";
 import { useRendererWatchdog } from "../../lib/window/rendererWatchdog";
-import { livePanelToggleKey } from "../../lib/shortcuts";
+import { livePanelToggleKey } from "../../lib/shortcuts/shortcuts";
 import { CenterPanel } from "./CenterPanel";
 import { HeaderBar } from "./HeaderBar";
 import { SidePanel } from "./SidePanel";

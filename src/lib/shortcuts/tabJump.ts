@@ -1,8 +1,8 @@
-import { useBoxesStore, BOX_SCOPE_PREFIX } from "../stores/boxes";
-import { useProjectsStore } from "../stores/projects";
-import { translate, useI18nStore } from "./i18n";
-import { PROMPTCHART_TAB_CMD, ROOT_SCOPE, useTabsStore } from "../stores/tabs";
-import { resolveProjectDirectory } from "../types";
+import { useBoxesStore, BOX_SCOPE_PREFIX } from "../../stores/boxes";
+import { useProjectsStore } from "../../stores/projects";
+import { translate, useI18nStore } from "../i18n";
+import { PROMPTCHART_TAB_CMD, ROOT_SCOPE, useTabsStore } from "../../stores/tabs";
+import { resolveProjectDirectory } from "../../types";
 
 /**
  * Show the tab a surface is pointing at: make it the visible tab of its

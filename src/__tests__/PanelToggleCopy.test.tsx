@@ -13,8 +13,8 @@ import { render, cleanup, act } from "@testing-library/react";
 const invoke = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({ invoke: (...a: unknown[]) => invoke(...a) }));
 
-import { focusModeTip } from "../lib/hints";
-import { probeSuperKeyOwnership, resetSuperKeyOwnership } from "../lib/superKey";
+import { focusModeTip } from "../lib/shortcuts/hints";
+import { probeSuperKeyOwnership, resetSuperKeyOwnership } from "../lib/shortcuts/superKey";
 import { HowToStart } from "../components/layout/HowToStart";
 
 const t = (key: string, params?: Record<string, string | number>) =>
@@ -69,7 +69,7 @@ describe("panel-toggle copy", () => {
       PLATFORM: "windows",
     }));
     try {
-      const hints = await import("../lib/hints");
+      const hints = await import("../lib/shortcuts/hints");
       expect(hints.focusModeTip(t)).toBe("onboarding.focusModeTipOther:F9");
     } finally {
       vi.doUnmock("../lib/platform");

@@ -3,7 +3,7 @@ import { AGENT_SORTS, DEFAULT_AGENT_SORT, isAgentSort, sortAgentTabs, type Agent
 import { relativeToNow, scheduleStatus, scheduleSummary, type ScheduledAgentPrompt } from "../../lib/agents/agentSchedule";
 import { agentModelsFor, buildPreface, prefaceCommandsFor } from "../../lib/agents/agentPrefaces";
 import { useI18nStore, useT } from "../../lib/i18n";
-import { jumpToTab, openPromptChartTab } from "../../lib/tabJump";
+import { jumpToTab, openPromptChartTab } from "../../lib/shortcuts/tabJump";
 import { useActivityStore } from "../../stores/activity";
 import { continueKey, useAgentContinueStore } from "../../stores/agents/agentContinue";
 import { useAgentModelsStore } from "../../stores/agents/agentModels";

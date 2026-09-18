@@ -16,9 +16,9 @@
  * keyboard steering mode: those aren't chords and aren't rebindable, but every
  * surface that explains them (legend overlay, help, lessons) renders from it.
  */
-import { IS_MAC, PLATFORM } from "./platform";
+import { IS_MAC, PLATFORM } from "../platform";
 import { desktopOwnsSuperKey } from "./superKey";
-import type { TranslationKey } from "./i18n";
+import type { TranslationKey } from "../i18n";
 
 /** A serializable key chord. `key` is a `KeyboardEvent.key` value, normalized:
  *  single letters are lower-cased, named keys ("Tab", "Enter", "ArrowLeft")
@@ -428,7 +428,7 @@ export interface FixedKeyDef {
  * Linux desktop that does not answer it itself (macOS uses Cmd as the chord
  * modifier, Windows gives the Win key to the OS, GNOME and KDE take it for
  * their overview/launcher) — and F9 everywhere else. That one is a getter
- * because the desktop is a backend answer; see lib/superKey.ts. The zoom
+ * because the desktop is a backend answer; see lib/shortcuts/superKey.ts. The zoom
  * chords ride the primary modifier (⌘ on macOS).
  */
 /** The key that toggles the panels on THIS desktop right now: the bare Super
@@ -447,7 +447,7 @@ export const FIXED_KEYS: FixedKeyDef[] = [
   },
   {
     // A getter, not a value: unlike the OS, the desktop is a backend answer
-    // that arrives just after module load (see lib/superKey.ts), and the sheet
+    // that arrives just after module load (see lib/shortcuts/superKey.ts), and the sheet
     // must not advertise a Super key the shell has already taken. Reading it
     // here keeps every consumer of FIXED_KEYS unchanged.
     get keys(): string {

@@ -93,7 +93,7 @@
         installed as the *precise* path (it disambiguates two Codex tabs in one
         cwd, and rebinds on `/clear` instantly); `codex_hook_state` detects the
         trust gate and the UI offers a one-click "open Codex on `/hooks`" fix
-        (`lib/agents/codexHooks.ts`, `lib/hints.ts`, `SettingsSubPanels.tsx`).
+        (`lib/agents/codexHooks.ts`, `lib/shortcuts/hints.ts`, `SettingsSubPanels.tsx`).
         Remaining: **remote (ssh) Codex tabs are out of scope** — their rollouts
         live on the far host, so the binder skips them; making them work means
         running the rollout scan over `ssh_exec`.

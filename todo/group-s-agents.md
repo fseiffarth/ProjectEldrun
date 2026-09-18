@@ -953,7 +953,7 @@ unchanged; the new agents are additive.
     row's other actions for when a hover is not discoverable enough. Both take
     the same jump the project pill's status bars take — `revealTabInScope`
     first, so the tab is already the visible one when the scope arrives —
-    extracted from `PillStatusBars` into `lib/tabJump.ts` so the two surfaces
+    extracted from `PillStatusBars` into `lib/shortcuts/tabJump.ts` so the two surfaces
     cannot drift into two answers to the same question; the shared helper also
     covers a box scope and falls back to `setActive` in a popout, where the
     layout lives in another window.
@@ -966,7 +966,7 @@ unchanged; the new agents are additive.
     around the tab are one statement. Precedence matches `TabBar` and the pill
     bars: decision over working over done.
     Frontend only: `components/agents/AgentSchedulesView.tsx`,
-    `components/projects/PillStatusBars.tsx`, new `lib/tabJump.ts`,
+    `components/projects/PillStatusBars.tsx`, new `lib/shortcuts/tabJump.ts`,
     `styles/projects-tabs.css`, three new strings in `lib/i18n.ts` + the four
     dictionaries. Implemented 2026-09-02, **not live-tested**.
     - [x] 🤖 Automated test — `AgentSchedulesView` (all four states and their

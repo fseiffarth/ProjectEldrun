@@ -1,5 +1,5 @@
 /**
- * Tooltip shortcut hints (`lib/shortcutHint`): the hint says the chord the user
+ * Tooltip shortcut hints (`lib/shortcuts/shortcutHint`): the hint says the chord the user
  * actually has — the built-in default while settings are unloaded, the rebound
  * chord once they carry one — and a fixed editor chord passed as a descriptor
  * is rendered through the same platform labeller and the one i18n key.
@@ -8,7 +8,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { renderHook } from "@testing-library/react";
 import { act } from "react";
 
-import { useChordHint, useShortcutOverrides } from "../lib/shortcutHint";
+import { useChordHint, useShortcutOverrides } from "../lib/shortcuts/shortcutHint";
 import { useI18nStore } from "../lib/i18n";
 import { useSettingsStore } from "../stores/settings";
 

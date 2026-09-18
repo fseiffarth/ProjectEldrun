@@ -48,7 +48,7 @@ only `src-tauri/` changes need a rebuild/restart.
 | SSH remote projects (sshfs mount, remote PTY) | | | | #28/#28b |
 | OpenVPN tunnels for VPN-gated hosts | | | | `VpnPasswordPrompt`, `services/openvpn.rs` |
 | README default tab; tab inline rename + scope bind | | | | |
-| Keyboard shortcuts (rebindable) | | | | `lib/shortcuts.ts`, #62 |
+| Keyboard shortcuts (rebindable) | | | | `lib/shortcuts/shortcuts.ts`, #62 |
 | Autosave / font-size / per-type viewer prefs | | | | |
 | Viewer link routing | | | | `stores/linkRouting` |
 | WebKitGTK crash reporter | | | | `crashReporter.ts`, `commands/crash.rs` |

@@ -9,7 +9,7 @@ resumable plan: [`docs/i18n_translation_plan.md`](../docs/i18n_translation_plan.
     hardcoded English text, which is what the user saw as "language settings
     only changing half of the descriptions". Every component under
     `src/components/` is now wired, plus the content-data files that hold
-    real UI prose outside any component (`src/lib/hints.ts`'s contextual
+    real UI prose outside any component (`src/lib/shortcuts/hints.ts`'s contextual
     hints + first-run steps, `tour.ts`'s guided-tour steps, `lessons.ts`'s 23
     task lessons/~130 steps) — those needed a `titleKey`/`bodyKey`
     (`TranslationKey`) restructuring instead of a direct `useT()` call, same

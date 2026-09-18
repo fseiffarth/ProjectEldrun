@@ -26,12 +26,12 @@ vi.mock("@tauri-apps/api/window", () => ({
 }));
 
 import { SUPER_RELEASE_SETTLE_MS, useKeyboard } from "../hooks/useKeyboard";
-import { FIXED_KEYS } from "../lib/shortcuts";
+import { FIXED_KEYS } from "../lib/shortcuts/shortcuts";
 import {
   desktopOwnsSuperKey,
   probeSuperKeyOwnership,
   resetSuperKeyOwnership,
-} from "../lib/superKey";
+} from "../lib/shortcuts/superKey";
 
 let toggles = 0;
 

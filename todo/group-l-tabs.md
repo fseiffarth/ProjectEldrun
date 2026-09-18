@@ -173,7 +173,7 @@ correctness/UX work atop the same layout model #42 detaches.*
     colliding chords, Reset all, the new Ctrl+Shift+← cycle-back), and the
     "Steer with the keyboard" lesson (basics tier — its enter-mode task must
     complete when the legend appears).
-    *Files: `src/lib/shortcuts.ts`, `src/hooks/useKeyboard.ts`,
+    *Files: `src/lib/shortcuts/shortcuts.ts`, `src/hooks/useKeyboard.ts`,
     `src/stores/keyboardSteering.ts`, `src/components/layout/SteeringLegend.tsx`
     / `ShortcutHelpOverlay.tsx`, `src/lib/lessons.ts`.*
     - [x] 🤖 Automated test — `src/__tests__/Shortcuts.test.ts` (chord helpers,
@@ -299,7 +299,7 @@ correctness/UX work atop the same layout model #42 detaches.*
     `commands/calendar.rs`, `services/mobile_control/discovery.rs`, `lib.rs`;
     `src/components/layout/RootOverlay.tsx`, `src/stores/rootOverlay.ts`,
     `CenterPanel.tsx`, `AppShell.tsx`, `ProjectSwitcher.tsx`,
-    `src/lib/remoteConnect.ts`, `src/lib/shortcuts.ts`, `src/hooks/useKeyboard.ts`,
+    `src/lib/remoteConnect.ts`, `src/lib/shortcuts/shortcuts.ts`, `src/hooks/useKeyboard.ts`,
     `src/styles/subwindows.css`, `src/lib/i18n.ts` (+ the four dictionaries).*
     - [x] 🤖 Automated test — `services::root_mcp` (spawn wiring per CLI,
       bearer check, every tool incl. the 1 h default and bad input),

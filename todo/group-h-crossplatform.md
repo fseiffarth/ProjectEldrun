@@ -521,7 +521,7 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     GNOME, KDE/Plasma and Unity claim it; Cinnamon, XFCE, sway and unknown
     desktops do not), read once per session through
     `commands::workspace::desktop_owns_super_key` and cached in
-    `src/lib/superKey.ts`. F9 stays the toggle everywhere, and `FIXED_KEYS`
+    `src/lib/shortcuts/superKey.ts`. F9 stays the toggle everywhere, and `FIXED_KEYS`
     advertises whichever key is actually live. A probe that cannot be answered
     keeps the binding: `src/` hot-reloads while `src-tauri/` does not, so a
     window running ahead of its backend must not lose the key on the desktops

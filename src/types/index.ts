@@ -80,7 +80,7 @@ export interface ViewerPref {
 
 /**
  * A serializable keyboard chord (Group L / #62). Mirrors the Rust `ChordDescriptor`
- * and `src/lib/shortcuts.ts`'s `ChordDescriptor`. `key` is a normalized
+ * and `src/lib/shortcuts/shortcuts.ts`'s `ChordDescriptor`. `key` is a normalized
  * `KeyboardEvent.key`; modifier flags default to false when absent.
  */
 export interface KeyboardChord {
@@ -673,7 +673,7 @@ export interface Settings {
   global_apps?: Record<string, GlobalAppEntry>;
   /**
    * User overrides for the rebindable navigation chords (Group L / #62), keyed
-   * by `ShortcutAction` id (see `src/lib/shortcuts.ts`). Any action absent here
+   * by `ShortcutAction` id (see `src/lib/shortcuts/shortcuts.ts`). Any action absent here
    * falls back to its built-in default; an empty/missing map preserves the
    * original hard-coded behaviour.
    */
@@ -685,7 +685,7 @@ export interface Settings {
   /** True once the first-run "How to start" welcome has been shown/dismissed, so
    *  it never re-opens automatically. Re-openable manually from Settings. */
   onboarding_seen?: boolean;
-  /** Ids of contextual hints (see `src/lib/hints.ts`) the user has seen/dismissed
+  /** Ids of contextual hints (see `src/lib/shortcuts/hints.ts`) the user has seen/dismissed
    *  or implicitly acted on, so each surfaces at most once. */
   hints_seen?: string[];
   /** Master switch for the contextual hint system; default ON when unset. */

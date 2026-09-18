@@ -1,6 +1,6 @@
-import { IS_MAC } from "./platform";
+import { IS_MAC } from "../platform";
 import { livePanelToggleKey } from "./shortcuts";
-import type { TranslationKey } from "./i18n";
+import type { TranslationKey } from "../i18n";
 
 /** How to enter "focus mode" (panels hidden), translated. The key named is the
  *  one that works on THIS desktop, read live from `livePanelToggleKey` — the

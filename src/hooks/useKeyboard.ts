@@ -2,7 +2,7 @@ import { useEffect } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { PLATFORM } from "../lib/window/dragPlatform";
 import { IS_MAC } from "../lib/platform";
-import { desktopOwnsSuperKey, probeSuperKeyOwnership } from "../lib/superKey";
+import { desktopOwnsSuperKey, probeSuperKeyOwnership } from "../lib/shortcuts/superKey";
 import { allGroups, findGroup, useTabsStore } from "../stores/tabs";
 import { useProjectsStore } from "../stores/projects";
 import { useSettingsStore, stepZoom } from "../stores/settings";
@@ -18,7 +18,7 @@ import {
   resolveChord,
   type ShortcutAction,
   type ShortcutMap,
-} from "../lib/shortcuts";
+} from "../lib/shortcuts/shortcuts";
 
 interface KeyboardOptions {
   onTogglePanels: () => void;
@@ -76,7 +76,7 @@ export function isEditableTarget(target: EventTarget | null): boolean {
  * shadowed; we only `preventDefault` when we actually act, and never while a
  * text field (e.g. an inline tab rename) is focused.
  *
- * The navigation chords are user-rebindable (see `src/lib/shortcuts.ts` and the
+ * The navigation chords are user-rebindable (see `src/lib/shortcuts/shortcuts.ts` and the
  * "Keyboard Shortcuts" settings panel); the defaults below are applied when
  * `settings.keyboard_shortcuts` has no override for an action. F11 (OS
  * fullscreen), Super/F9 (panels — Super on Linux, F9 on Windows where the lone

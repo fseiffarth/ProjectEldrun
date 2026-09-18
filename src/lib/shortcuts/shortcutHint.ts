@@ -14,8 +14,8 @@
  * still platform-resolved.
  */
 import { useCallback } from "react";
-import { useSettingsStore } from "../stores/settings";
-import { useT } from "./i18n";
+import { useSettingsStore } from "../../stores/settings";
+import { useT } from "../i18n";
 import {
   chordLabel,
   resolveChord,

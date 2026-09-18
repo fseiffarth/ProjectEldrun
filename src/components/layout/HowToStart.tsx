@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
-import { HOW_TO_START_STEPS, focusModeTip } from "../../lib/hints";
+import { HOW_TO_START_STEPS, focusModeTip } from "../../lib/shortcuts/hints";
 import { useT } from "../../lib/i18n";
 import { PLATFORM } from "../../lib/platform";
-import { probeSuperKeyOwnership } from "../../lib/superKey";
+import { probeSuperKeyOwnership } from "../../lib/shortcuts/superKey";
 
 /**
  * The first-run "How to start" instruction: a single scannable modal shown once

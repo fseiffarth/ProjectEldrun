@@ -56,7 +56,7 @@ import {
   resolveChord,
   type ShortcutAction,
   type ShortcutMap,
-} from "../../lib/shortcuts";
+} from "../../lib/shortcuts/shortcuts";
 import {
   editorMayTakeChord,
   isEditableTarget,
