@@ -42,6 +42,7 @@ import { UntestedTag } from "../common/UntestedTag";
 import { CustomAgentDialog } from "../tabs/CustomAgentDialog";
 import { NewTabMenu } from "../tabs/NewTabMenu";
 import { TabPane } from "../tabs/TabPane";
+import { TabStatusMark } from "../tabs/TabLocalityBadges";
 import { pickEdge, previewInset } from "../tabs/dragGeometry";
 import { dragPreviewLayout } from "../tabs/dragPreview";
 import { StarIcon } from "./StarIcon";
@@ -913,6 +914,7 @@ function GroupStrip({
               useTabsStore.getState().setGroupActiveInScope(ROOT_SCOPE, groupId, tab.key);
             }}
           >
+            <TabStatusMark stateClass={stateClass} />
             <span className="tab-label">{tab.label}</span>
             <button
               className="tab-close"

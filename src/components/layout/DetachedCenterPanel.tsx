@@ -82,6 +82,7 @@ import { useActivityStore } from "../../stores/activity";
 import type { DetachedRemoteInfo } from "../../stores/detached";
 import {
   TabSourceBadge,
+  TabStatusMark,
   TabTexLinkBadge,
   TabLocalityBadge,
   LocalityMenu,
@@ -1585,6 +1586,7 @@ export function DetachedCenterPanel({
                       : undefined
                   }
                 >
+                  <TabStatusMark stateClass={stateClass} />
                   <span className="tab-label">{tab.label}</span>
                   {(tab.kind === "agent" || tab.kind === "local_agent") && tab.scheduleTargetId && (() => {
                     const enabled = (schedulesByTarget[scheduleCacheKey(scope, tab.scheduleTargetId)] ?? [])

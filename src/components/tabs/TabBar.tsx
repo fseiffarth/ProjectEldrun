@@ -46,6 +46,7 @@ import { TabHoverCard } from "./TabHoverCard";
 import { useFastMode } from "../../lib/fastMode";
 import {
   TabSourceBadge,
+  TabStatusMark,
   TabTexLinkBadge,
   TabLocalityBadge,
   LocalityMenu,
@@ -1276,6 +1277,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                 : undefined
             }
           >
+            <TabStatusMark stateClass={stateClass} />
             {editing ? (
               <input
                 className="tab-label-edit"

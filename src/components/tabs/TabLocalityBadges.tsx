@@ -345,3 +345,33 @@ export function RunHostPicker({
     </>
   );
 }
+
+/** The status glyph leading a tab's label, in its ring's colour: ▶ working,
+ *  ? waiting on a decision, ✓ finished unseen. The ring alone left the three
+ *  states to be told apart by colour and stroke; the glyph names them. Takes the
+ *  strip's already-resolved state class so every strip marks exactly the tabs
+ *  its ring marks. */
+export function TabStatusMark({ stateClass }: { stateClass: string }) {
+  const t = useT();
+  const state = stateClass.includes("working")
+    ? "working"
+    : stateClass.includes("needs-decision")
+      ? "decision"
+      : stateClass.includes("finished")
+        ? "done"
+        : null;
+  if (!state) return null;
+  const glyph = state === "working" ? "▶" : state === "decision" ? "?" : "✓";
+  const label = t(
+    state === "working"
+      ? "tabBar.statusWorking"
+      : state === "decision"
+        ? "tabBar.statusDecision"
+        : "tabBar.statusDone",
+  );
+  return (
+    <span className={`tab-status-mark ${state}`} title={label} aria-label={label}>
+      {glyph}
+    </span>
+  );
+}
