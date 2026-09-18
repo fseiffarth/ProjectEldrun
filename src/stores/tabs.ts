@@ -4969,6 +4969,7 @@ const AGENT_CMDS = new Set([
   "grok",
   "qwen",
   "openclaw",
+  "droid",
 ]);
 
 export function cmdToKind(cmd: string): TabKind {
@@ -5073,6 +5074,9 @@ export const RESUMABLE_AGENTS: Record<string, (id: string) => string[]> = {
   // of the current directory. Its `--resume <id>` wants Grok's own session id,
   // which a launch cannot supply, so it is continue-last like the others.
   grok: () => ["--continue"],
+  // Droid: `--resume` with no id loads the most recent session of the
+  // current directory (its `~/.factory/sessions` are filed by cwd).
+  droid: () => ["--resume"],
   // Gemini's `--resume` takes "latest" (or an index), not a uuid, so it can only
   // continue the project's most-recent session — not the specific one its launch
   // `--session-id <uuid>` minted. That makes it continue-last like the others.

@@ -675,8 +675,8 @@ current integration state.
 | **Gemini** (`gemini`) | Continues the latest conversation in the directory. | Core tab use confirmed; restore remains less precise than Claude/Codex. |
 | **Vibe** (`vibe`) | Continues the latest saved session. | Pending. |
 | **Ollama via Vibe** | Isolated per-model `VIBE_HOME`; continue-latest where a resumable tab is available. | Partial. |
-| **Qwen, OpenCode, Copilot, Cursor, Grok, Antigravity** | CLI-specific continue-latest flags. | Pending. |
-| **Kiro, Cline, Aider, OpenClaw, Goose, Pi, Plandex, SWE-agent, Mini SWE-agent, Crush, Amp, Kimi, Qoder, Muse Code** | Launch support; no built-in tab restore path. | Pending. |
+| **Qwen, OpenCode, Copilot, Cursor, Grok, Antigravity, Droid** | CLI-specific continue-latest flags. | Pending. |
+| **Kiro, Cline, Aider, OpenClaw, Goose, Pi, Plandex, SWE-agent, Mini SWE-agent, Crush, Amp, Kimi, Qoder, Muse Code, Auggie, Kilo Code, Continue.dev, Junie, CodeBuddy** | Launch support; no built-in tab restore path. | Pending. |
 | **Custom agents** | Optional resume arguments supplied by the user. | Depends on the command. |
 | **Shell** | Respawns an ordinary shell or reattaches its tmux session where configured. | Core tab use confirmed. |
 

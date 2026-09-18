@@ -1614,3 +1614,37 @@ unchanged; the new agents are additive.
         once. Kill the background shell from Claude early → finished follows.
         - [ ] ✅ Works
         - [ ] ❌ Doesn't work
+
+    - **Feature (2026-09-18): six CLIs joined the registry, four rows were
+      corrected, three were retired.** Added Droid (Factory), Auggie (Augment),
+      Kilo Code, Continue.dev (`cn`), JetBrains Junie and CodeBuddy (Tencent);
+      fixed the `grok` row (it installed the third-party `@vibe-kit/grok-cli`,
+      not xAI's own Grok Build), Kiro's executable (`kiro-cli`), Kimi's
+      installer path and Amp's npm package; retired Mentat, gpt-engineer and
+      the OpenHands CLI, all archived or unmaintained upstream. Files:
+      `commands/agents.rs`, `components/tabs/newTabItems.ts`,
+      `stores/tabs.ts`, `services/sandbox.rs`,
+      `services/mobile_control/discovery.rs`, `lib/usageMetrics.ts`. Backend
+      change, **restart needed; nothing was run live** — every flag, package
+      name and install path was read from the vendor's own installer, docs or
+      changelog.
+      - [x] 🤖 Automated test — `commands::agents::tests`
+        (`expanded_agent_registry_keeps_official_commands_and_binaries`,
+        `every_warmup_recipe_names_a_registry_agent_and_puts_the_message_last`),
+        `src/__tests__/CustomAgents.test.ts`
+      - [ ] 🖐️ Manual test — Settings → Agents lists the six new cards and no
+        longer lists Mentat/GPT Engineer/OpenHands; an installed Kiro finally
+        reports as installed; installing Grok yields `grok --version` 1.0.x
+        (xAI), not 0.0.34. Open a Droid tab, send a prompt, restart Eldrun: the
+        tab comes back on `droid --resume` with its conversation.
+        - [ ] ✅ Works
+        - [ ] ❌ Doesn't work
+      - [ ] **Open follow-ups.** The five launch-only newcomers have verified
+        `--continue`/`--resume` flags but unmapped session stores — wiring one
+        means finding its store, mounting it in
+        `sandbox::CONTINUE_AGENT_SESSION_STORES` and only then adding it to
+        `RESUMABLE_AGENTS`, or a restored tab exits on "no conversation to
+        continue". None of the six is in `services::remote_agents::RECIPES`
+        (no auto-install on a remote spawn) or in the phone's Focus parsers
+        (`docs/mobile_focus_cli_survey.md`), and only Droid passes the mobile
+        `discovery::resumable` gate.

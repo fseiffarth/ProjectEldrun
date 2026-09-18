@@ -39,10 +39,20 @@ tool does that; the **Verify** steps say how without needing a window.
 
 The registry in `src-tauri/src/commands/agents.rs` (`AGENTS`) is the one list of
 installable agents: Claude, Codex, Antigravity, Gemini, Kiro, Cline, Vibe,
-Aider, OpenCode, Cursor, Copilot, Grok, Qwen, OpenClaw, Goose, Pi, Plandex,
-SWE-agent, mini-SWE-agent, Crush, Amp, Kimi, Qoder, Muse. Everything below
-applies per agent; the agent-specific sections that follow list what is
-*additionally* coupled.
+Aider, OpenCode, Cursor, Copilot, Droid, Grok, Qwen, OpenClaw, Auggie, Kilo
+Code, Continue.dev, Junie, CodeBuddy, Goose, Pi, Plandex, SWE-agent,
+mini-SWE-agent, Crush, Amp, Kimi, Qoder, Muse. Everything below applies per
+agent; the agent-specific sections that follow list what is *additionally*
+coupled.
+
+**Added 2026-09-18.** Droid (Factory), Auggie (Augment), Kilo Code, Continue.dev
+(`cn`), Junie (JetBrains) and CodeBuddy (Tencent). Droid was already half here —
+a `LOCAL_DRIVERS` row in `commands/ollama.rs`, a name in `sandbox.rs` and
+`terminal_service.rs` — so it could be driven by a local Ollama model while
+being uninstallable and unlaunchable as itself. Only Droid resumes
+(`--resume`, cwd-scoped, `~/.factory/sessions` mounted in the fence); the other
+five launch only, because a `--continue` whose session store the fence does not
+map exits on "no conversation to continue" and takes the restored tab with it.
 
 **Retired, 2026-09-18.** Mentat (repo archived), gpt-engineer (archived
 2026-04-22, and pinned below Python 3.13) and the OpenHands CLI (upstream says

@@ -338,6 +338,7 @@ fn resumable(tab: &SavedTab) -> bool {
         "gemini",
         "agy",
         "vibe",
+        "droid",
     ];
     tab.session_id.is_some()
         && (BUILTIN.contains(&tab.cmd.as_str())

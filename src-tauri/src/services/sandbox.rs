@@ -1850,6 +1850,8 @@ const CONTINUE_AGENT_SESSION_STORES: &[&str] = &[
     ".vibe/logs",
     // Grok Build: `sessions/<working dir>/`.
     ".grok/sessions",
+    // Droid: `sessions/<uuid>.{jsonl,settings.json}`, filed by working dir.
+    ".factory/sessions",
 ];
 
 /// Durable, scope-local top level for Codex's mutable databases. It is outside
