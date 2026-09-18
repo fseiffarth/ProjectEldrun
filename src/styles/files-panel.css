@@ -952,6 +952,10 @@
   border-color: var(--status-working);
   background: color-mix(in srgb, var(--status-working) 12%, var(--bg-main));
 }
+.hidden-sw-chip.working.shell {
+  border-color: var(--status-shell-working);
+  background: color-mix(in srgb, var(--status-shell-working) 12%, var(--bg-main));
+}
 .hidden-sw-chip.needs-decision {
   border-color: var(--status-decision);
   background: color-mix(in srgb, var(--status-decision) 12%, var(--bg-main));

@@ -588,11 +588,14 @@ export interface StatusTab {
   /** The tab's key within its scope (not the composed PTY id). */
   key: string;
   state: "working" | "needs-decision" | "finished";
+  /** A working SHELL tab — running a command, not an agent working a turn. The
+   *  bar paints it in its own colour (`--status-shell-working`). */
+  shell?: boolean;
 }
 
 function sameTabs(a: StatusTab[], b: StatusTab[]): boolean {
   if (a.length !== b.length) return false;
-  return a.every((t, i) => t.key === b[i].key && t.state === b[i].state);
+  return a.every((t, i) => t.key === b[i].key && t.state === b[i].state && t.shell === b[i].shell);
 }
 
 /** True when two per-tab status maps hold the same tabs in the same states.
@@ -652,7 +655,9 @@ function computeStatusScopes(
       const ptyId = `${scope}:${t.key}`;
       if (isPtyTabKind(t.kind) && busyByTab[ptyId]) {
         tally.working++;
-        working.push({ key: t.key, state: "working" });
+        working.push(
+          t.kind === "shell" ? { key: t.key, state: "working", shell: true } : { key: t.key, state: "working" },
+        );
       } else if (attentionByTab[ptyId] === "decision") {
         tally.decision++;
         decision.push({ key: t.key, state: "needs-decision" });

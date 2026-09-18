@@ -156,6 +156,7 @@ export const THEME_TOKEN_GROUPS: readonly ThemeTokenGroup[] = [
       { name: "--danger" },
       { name: "--info" },
       { name: "--status-working" },
+      { name: "--status-shell-working" },
       { name: "--status-decision" },
       { name: "--status-done" },
     ],

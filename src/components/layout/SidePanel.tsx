@@ -346,11 +346,13 @@ export function SidePanel({
                     {keys.map((k, ki) => {
                       const label = scopeTabs?.find((t) => t.key === k)?.label ?? k;
                       const status = tabStatuses[ki];
+                      const shell =
+                        status === "working" && scopeTabs?.find((t) => t.key === k)?.kind === "shell";
                       return (
                         <button
                           key={k}
                           type="button"
-                          className={`hidden-sw-chip${status ? ` ${status}` : ""}`}
+                          className={`hidden-sw-chip${status ? ` ${status}` : ""}${shell ? " shell" : ""}`}
                           title={t("sidePanel.restoreFocusedOn", { label })}
                           onClick={() => unhideGroup(h.id, { activeKey: k })}
                         >

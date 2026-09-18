@@ -1532,7 +1532,9 @@ export function DetachedCenterPanel({
                 : null;
             const attn = !isActive || rawAttn === "decision" ? rawAttn : null;
             const stateClass = working
-              ? " working"
+              ? tab.kind === "shell"
+                ? " working shell"
+                : " working"
               : attn === "decision"
                 ? " needs-decision"
                 : attn === "done"

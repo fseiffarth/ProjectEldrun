@@ -695,6 +695,27 @@ describe("activity store per-scope status counts (pill status bars)", () => {
     ]);
   });
 
+  it("marks a working shell tab apart from a working agent", () => {
+    // A busy build and a busy agent are painted in different colours, so the
+    // bar has to know which one it is drawing.
+    const { tabsByScope } = useTabsStore.getState();
+    useTabsStore.setState({
+      tabsByScope: {
+        ...tabsByScope,
+        "proj-a": [
+          ...tabsByScope["proj-a"],
+          { key: "shell-1", label: "s1", cmd: "", cwd: "/a", kind: "shell" },
+        ],
+      },
+    });
+    sustainAll(["proj-a:agent-1", "proj-a:shell-1"]);
+    useActivityStore.getState().recompute();
+    expect(useActivityStore.getState().statusTabsByScope["proj-a"]).toEqual([
+      { key: "agent-1", state: "working" },
+      { key: "shell-1", state: "working", shell: true },
+    ]);
+  });
+
   it("drops a scope from the per-tab map with its counts", () => {
     sustainOutput("proj-a:agent-1");
     useActivityStore.getState().recompute();

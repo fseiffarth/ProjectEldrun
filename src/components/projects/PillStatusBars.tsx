@@ -56,6 +56,8 @@ export interface StatusBarItem {
   /** The tab's key within its scope (not the composed PTY id). */
   key: string;
   state: StatusTab["state"];
+  /** A working shell tab rather than an agent — its own colour and tooltip. */
+  shell?: boolean;
   /** What the bar's tooltip calls the tab (a multi-scope strip puts the scope's
    *  own name in front, or every bar would read as an unattributed tab name). */
   label: string;
@@ -98,16 +100,19 @@ function StatusStrip({
       title={statusBarTitle(tallyItems(items), t)}
     >
       {items.slice(0, MAX_STATUS_BARS).map((item) => {
-        const label = t(BAR_TITLE_KEY[item.state], { tab: item.label });
+        const label = t(item.shell ? "pill.statusTabRunning" : BAR_TITLE_KEY[item.state], {
+          tab: item.label,
+        });
         const key = `${item.scope}:${item.key}`;
+        const cls = `pill-status-bar ${item.state}${item.shell ? " shell" : ""}`;
         if (!interactive) {
-          return <span key={key} className={`pill-status-bar ${item.state} static`} aria-hidden />;
+          return <span key={key} className={`${cls} static`} aria-hidden />;
         }
         return (
           <button
             type="button"
             key={key}
-            className={`pill-status-bar ${item.state}`}
+            className={cls}
             title={`${label} · ${t("pill.statusTabJump")}`}
             aria-label={label}
             // The pill itself starts a reorder drag on pointerdown and switches
@@ -137,7 +142,13 @@ function itemsForScope(
   if (!statusTabs?.length) return [];
   return statusTabs.map((st) => {
     const label = tabs?.find((tab) => tab.key === st.key)?.label ?? "";
-    return { scope, key: st.key, state: st.state, label: prefix ? `${prefix} · ${label}` : label };
+    return {
+      scope,
+      key: st.key,
+      state: st.state,
+      ...(st.shell ? { shell: true } : {}),
+      label: prefix ? `${prefix} · ${label}` : label,
+    };
   });
 }
 

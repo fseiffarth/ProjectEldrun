@@ -1247,6 +1247,10 @@
   --tab-status-color: var(--status-working);
   --tab-status-stroke: dotted;
 }
+/* A shell tab running a command rather than an agent working a turn. */
+.tab.working.shell {
+  --tab-status-color: var(--status-shell-working);
+}
 .tab.needs-decision { --tab-status-color: var(--status-decision); }
 .tab.finished { --tab-status-color: var(--status-done); }
 
@@ -1355,12 +1359,17 @@
 .pill-status-bar.working {
   background-image: radial-gradient(
     circle,
-    var(--status-working) 1.75px,
+    var(--pill-status-dot, var(--status-working)) 1.75px,
     transparent 2px
   );
   background-size: 6px 100%;
   background-position: center;
   background-repeat: repeat-x;
+}
+
+/* A shell tab running a command, not an agent (see `.tab.working.shell`). */
+.pill-status-bar.working.shell {
+  --pill-status-dot: var(--status-shell-working);
 }
 
 .pill-status-bar.needs-decision {
