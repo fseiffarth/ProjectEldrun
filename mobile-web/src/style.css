@@ -60,6 +60,22 @@ nav button,.keys button { flex:1; }
 .tab-color-chip.is-current { border-color:#7c6cff; background:#3b326e; }
 .tab-color-chip-dot { flex:0 0 auto; width:16px; height:16px; border-radius:50%; }
 .tab-color-chip-dot.none { border:1px solid #6f7488; background:transparent; }
+/* #264 — manual tab order. The grip sits beside the card's own button rather
+   than on it: a press anywhere else on the card opens the session, and the two
+   must not be the same gesture. `touch-action:none` is what keeps the drag from
+   being read as a page scroll on a phone, and the captured pointer is what
+   keeps it once it has started. */
+.tab-card-head { display:flex; align-items:stretch; min-width:0; }
+.tab-card-head .card { flex:1 1 auto; min-width:0; }
+.tab-card-grip { flex:0 0 auto; width:44px; padding:0; border:0; border-left:1px solid #2d3040; border-radius:0 11px 0 0; background:transparent; color:#6f7488; font-size:1.05rem; touch-action:none; cursor:grab; }
+.tab-card-grip:active { cursor:grabbing; color:#d3d6e4; }
+.tab-card.dragging { opacity:.65; }
+/* The slot the dropped card would land in, drawn on the card it lands beside.
+   An outline rather than a moved card: the list itself does not rearrange until
+   the finger lifts, so the line is the whole preview. */
+.tab-card.drop-before { box-shadow:inset 0 3px 0 0 #7c6cff; }
+.tab-card.drop-after { box-shadow:inset 0 -3px 0 0 #7c6cff; }
+.reorder-hint { margin:-4px 0 12px; color:#9aa0b4; font-size:.84rem; }
 .tab-card-foot { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:8px; padding:0 16px 14px; }
 .tab-card-when { min-width:0; flex:1 1 auto; }
 .tab-card-actions { display:flex; flex:0 0 auto; gap:8px; }

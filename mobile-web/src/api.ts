@@ -296,6 +296,23 @@ export function setTabColor(tabId: string, color: string | null): Promise<{ tab?
   return api(`/api/v1/tabs/${encodeURIComponent(tabId)}/color`, { method: "PUT", body: JSON.stringify({ color }) });
 }
 
+/** Which side of the anchor tab a dragged row lands on — the desktop's own
+ * `reorderTabInScope` vocabulary, so both surfaces mean one thing by a drop. */
+export type TabPlace = "before" | "after";
+
+/** `PUT /api/v1/tabs/{id}/order` — move one tab next to another inside the same
+ * project, the phone's half of the desktop Agents view's drag reorder. Both
+ * tabs are named by their opaque ids; the answer is the project's tab ids in
+ * the order the desktop now holds them, which is what the list reconciles
+ * against after having rearranged itself on the drop. A bridge call, so it
+ * needs desktop Eldrun open. */
+export function reorderTab(tabId: string, anchorId: string, place: TabPlace): Promise<{ tabs?: string[] }> {
+  return api(`/api/v1/tabs/${encodeURIComponent(tabId)}/order`, {
+    method: "PUT",
+    body: JSON.stringify({ anchor: anchorId, place }),
+  });
+}
+
 /** `DELETE /api/v1/tabs/{id}` — close one tab, agent or shell. Closing is the
  * desktop's own ×: the tab leaves the Eldrun window, and the session behind it
  * keeps running and stays reattachable from the desktop's Sessions view. Like

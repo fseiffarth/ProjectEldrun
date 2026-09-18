@@ -30,6 +30,17 @@ pub const TAB_COLORS: [&str; 8] = [
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UnknownTabColor;
 
+/// Which side of the anchor tab a reordered tab lands on. A side rather than
+/// an index: the phone lists a scope's tabs in whatever order it is sorting by
+/// and never sees the layout groups underneath, so "before that one" is the
+/// only instruction it can give that means the same thing on both screens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TabPlace {
+    Before,
+    After,
+}
+
 /// A phone-supplied tab colour, resolved to what may be stored: `Ok(Some(id))`
 /// for a palette colour, `Ok(None)` for "clear it" (a `null` or empty body
 /// field), and an error for anything else. Unknown ids are refused rather than
@@ -646,6 +657,19 @@ pub enum DesktopRequest {
         #[serde(default)]
         color: Option<String>,
     },
+    /// Move one tab — agent or shell — next to another inside the same scope,
+    /// as the desktop Agents view's own drag reorder does. Both tabs are named
+    /// by the `project_id` + `tmux_session` pair every other tab request uses,
+    /// so what crosses is two tmux names and a side, never an index into a
+    /// layout the phone cannot see. The order this permutes is the one the
+    /// catalog publishes and the "native" sort reads.
+    ReorderTab {
+        request_id: String,
+        project_id: String,
+        tmux_session: String,
+        anchor_tmux_session: String,
+        place: TabPlace,
+    },
     /// Close one tab — agent or shell — exactly as the desktop's own × does:
     /// non-destructively. The tab leaves the desktop's layout and its viewer
     /// dies; the tmux session behind it keeps running and stays reattachable
@@ -755,6 +779,7 @@ impl DesktopRequest {
             | Self::ScheduleMutate { request_id, .. }
             | Self::RenameTab { request_id, .. }
             | Self::ColorTab { request_id, .. }
+            | Self::ReorderTab { request_id, .. }
             | Self::CloseTab { request_id, .. }
             | Self::Prompts { request_id, .. }
             | Self::PromptMutate { request_id, .. }
@@ -1016,6 +1041,11 @@ pub enum DesktopResponse {
         #[serde(default)]
         color: Option<String>,
     },
+    /// Acknowledges a [`DesktopRequest::ReorderTab`]. Carries nothing: the
+    /// desktop has already persisted its layout by the time it answers, so the
+    /// order the phone reconciles against is the one the route reads back out
+    /// of the catalog — the same authority every other tab row comes from.
+    Reordered,
     /// Acknowledges a [`DesktopRequest::CloseTab`]. Carries nothing: the tab is
     /// simply gone from the desktop's layout, and the phone drops the row it
     /// just closed rather than waiting for the catalog to agree.

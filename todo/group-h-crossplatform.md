@@ -1746,3 +1746,50 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
     reaches past the pane's scrollback (see the survey).
 
 ---
+
+- [~] **31ak — Arrange a project's tabs by hand from the phone** (2026-09-18; ✅
+  code-complete, automated tests passing, ⚠️ not verified on a phone). The
+  phone could sort its agent tabs (last working, last done, arrival) and could
+  not *place* them: the flat Agents list had the picker, a project screen had no
+  control at all, and neither had a way to say "this one belongs above that
+  one". A project's tab list now carries the same three-way picker, with the
+  arrival order named **Manual (tab order)** — because on this screen that order
+  IS the desktop's tab bar — and under it every card grows a **⠿ grip** that
+  drags it into place.
+  - The order it writes is the desktop's own, not a phone-local preference. A
+    drop is `PUT /api/v1/tabs/{id}/order` with the anchor tab's opaque id and a
+    side, which the sidecar turns into `DesktopRequest::ReorderTab`; the bridge
+    runs `reorderTabInScope` — the same store action the desktop Agents view's
+    drag calls, so the flat scope order and, where both tabs share a layout
+    group, the tab bar itself move together — then persists the scope's layout
+    before answering, because the route reads the new order back out of the
+    catalog's own session file.
+  - Offered under the manual order alone. The other two are computed from what
+    the agents did, so a dropped row would spring back the next time one of them
+    worked; the desktop's drag follows the same rule.
+  - Both tabs cross as opaque ids and must resolve to one scope
+    (`tab_scope_mismatch`): two projects have two layouts and no shared order a
+    move could be expressed in. A tab dropped on itself is refused before any
+    desktop call.
+  - The list rearranges on the drop and reconciles with the order the desktop
+    answers with; a refusal puts the row back and says to open desktop Eldrun.
+    The 5 s poll is paused across the write, or a reply carrying the pre-drop
+    order would yank the card back for a second.
+  - The grip's arrow keys move a tab one place, since a drag is reachable by
+    neither a keyboard nor a screen reader, and the page scrolls itself when the
+    finger reaches either edge — a list of ten tabs is taller than the phone.
+  - The cross-project **Agents** list is deliberately untouched: its rows span
+    projects, so there is no one tab bar for a manual order to be written into.
+  - Needs a rebuild **and** a desktop restart: the sidecar, the bridge and the
+    PWA all changed.
+  - [ ] 🖐️ Manual phone QA — open a project with three or more tabs, pick
+    **Manual (tab order)**, drag a card to the top and confirm the Eldrun
+    window's tab bar moved with it; confirm the order survives a pull-to-refresh
+    and a relaunch; drag a card past the bottom of the screen and confirm the
+    page scrolls under the finger; switch to **Last working** and confirm the
+    grips disappear; close desktop Eldrun and confirm a drag reports "Open
+    desktop Eldrun to rearrange tabs" and puts the card back.
+  - [ ] ✅ Works
+  - [ ] ❌ Doesn't work
+
+---

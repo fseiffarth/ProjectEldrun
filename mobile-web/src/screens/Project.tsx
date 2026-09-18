@@ -1,13 +1,33 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { DEFAULT_AGENT_SORT, sortAgentTabs } from "../../../shared/agentSort";
+import { AGENT_SORTS, DEFAULT_AGENT_SORT, isAgentSort, sortAgentTabs, type AgentSort } from "../../../shared/agentSort";
 import { promptClock, promptLines } from "../agentPrompts";
-import { api, type AgentRow, type ProjectDetail, type TabRow, type TabSchedules } from "../api";
+import { ApiError, api, reorderTab, type AgentRow, type ProjectDetail, type TabPlace, type TabRow, type TabSchedules } from "../api";
+import { readChoice, writeChoice } from "../prefs";
+import { applyServerOrder, dropSlot, placeBeside, type RowBox } from "../tabReorder";
 import { CloseSheet } from "./CloseSheet";
 import { ColorSheet } from "./ColorSheet";
 import { PromptsSheet } from "./PromptsSheet";
 import { RenameSheet } from "./RenameSheet";
 import { ScheduleSheet } from "./ScheduleSheet";
 import { tabColorCss } from "../tabColors";
+
+/** The orders this list offers, in the words this screen can use for them. The
+ * cross-project Agents list calls `native` "Status", because there the arrival
+ * order is the sidecar's status ranking; here it is the desktop's own tab
+ * order, which is the thing a reader arranges by hand — so here it is
+ * "Manual", and it is the only order a drag can be dropped into. */
+const SORT_LABEL: Record<AgentSort, string> = {
+  lastWorking: "Last working",
+  lastDone: "Last done",
+  native: "Manual (tab order)",
+};
+
+/** How close to the top or bottom edge a dragged row must come before the
+ * screen starts scrolling under it, and how far it scrolls per frame. Without
+ * this a list longer than the screen could only be rearranged within the part
+ * of it the finger could reach. */
+const EDGE_MARGIN = 84;
+const EDGE_STEP = 12;
 
 /** The line under an agent tab, in the words the desktop's Agents view uses:
  * how many prompts are scheduled and when the first one fires. The desktop
@@ -71,20 +91,32 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
    *  button sits a thumb-width from the one that opens the terminal, and the
    *  answer is worth reading — closing leaves the session running. */
   const [closeTab, setCloseTab] = useState<TabRow | null>(null);
-  /** The desktop Agents view's default order, by the same shared function: a
-   * tab asking something, then the ones working now, then the rest by their
-   * last finished turn. A shell (or an agent with no turn this session) has no
+  /** The reader's order for this project's tabs, kept on the phone. The
+   * default is the desktop Agents view's, by the same shared function: a tab
+   * asking something, then the ones working now, then the rest by their last
+   * finished turn. A shell (or an agent with no turn this session) has no
    * reading and sinks, keeping the tab bar's order among its kind. */
-  const tabs = useMemo(() => sortAgentTabs(detail?.tabs ?? [], DEFAULT_AGENT_SORT, (tab) => ({
+  const [sort, setSort] = useState<AgentSort>(() => readChoice("projectTabsSort", isAgentSort, DEFAULT_AGENT_SORT));
+  const chooseSort = (next: AgentSort) => { setSort(next); writeChoice("projectTabsSort", next); };
+  const tabs = useMemo(() => sortAgentTabs(detail?.tabs ?? [], sort, (tab) => ({
     decision: tab.agent_status === "question",
     working: tab.agent_status === "working",
     workingAt: tab.working_at,
     doneAt: tab.done_at,
-  })), [detail?.tabs]);
+  })), [detail?.tabs, sort]);
+  /** Rearranging by hand is offered under the manual order alone. The other two
+   * are computed from what the agents did, so a dropped row would spring back
+   * the next time one of them worked — the same rule the desktop's own drag
+   * follows. */
+  const canReorder = sort === "native" && tabs.length > 1;
   const pendingKeys = useRef(new Map<string, string>());
   const inFlight = useRef(false);
+  /** A move the desktop has not answered yet. The poll is paused across it: the
+   * list is already showing where the row was dropped, and a reply carrying the
+   * pre-drop order would yank it back for a second. */
+  const moving = useRef(false);
   const load = useCallback(() => {
-    if (inFlight.current) return Promise.resolve();
+    if (inFlight.current || moving.current) return Promise.resolve();
     inFlight.current = true;
     return api<ProjectDetail>(`/api/v1/projects/${encodeURIComponent(id)}`)
       .then((next) => { setDetail(next); setError(""); })
@@ -128,6 +160,94 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
     setCloseTab(null);
     setDetail((prev) => prev ? { ...prev, tabs: prev.tabs.filter((row) => row.id !== id) } : prev);
   };
+  /** The cards' rectangles, in the order they are listed — what a drop position
+   * is read off. Taken at the moment it is needed rather than kept, because the
+   * page scrolls under the finger while the drag is running. */
+  const rowRefs = useRef(new Map<string, HTMLDivElement>());
+  const rowBoxes = (): RowBox[] => tabs.flatMap((tab) => {
+    const rect = rowRefs.current.get(tab.id)?.getBoundingClientRect();
+    return rect ? [{ id: tab.id, top: rect.top, bottom: rect.bottom }] : [];
+  });
+  /** The row under the finger and the slot it would land in, for the moved
+   *  card's own styling and the line drawn on the card it is being dropped
+   *  beside. */
+  const [drag, setDrag] = useState<{ key: string; slot: { anchor: string; place: TabPlace } | null } | null>(null);
+
+  /** Move one tab beside another and tell the desktop, which owns the layout
+   *  this order is. The list is rearranged first — a drop that waits for a
+   *  round trip before it moves anything reads as a dropped gesture — and then
+   *  reconciled with the order the desktop answers with; a refused move puts
+   *  the row back where it was and says why. */
+  const commitMove = async (key: string, anchorId: string, place: TabPlace) => {
+    const before = (detail?.tabs ?? []).map((row) => row.id);
+    setDetail((prev) => prev ? { ...prev, tabs: placeBeside(prev.tabs, (row) => row.id, key, anchorId, place) } : prev);
+    moving.current = true;
+    setError("");
+    try {
+      const answer = await reorderTab(key, anchorId, place);
+      setDetail((prev) => prev ? { ...prev, tabs: applyServerOrder(prev.tabs, (row) => row.id, answer.tabs ?? []) } : prev);
+    } catch (cause) {
+      setDetail((prev) => prev ? { ...prev, tabs: applyServerOrder(prev.tabs, (row) => row.id, before) } : prev);
+      setError(cause instanceof ApiError && (cause.status === 503 || cause.code === "desktop_unavailable")
+        ? "Open desktop Eldrun to rearrange tabs."
+        : "The tab could not be moved.");
+    } finally {
+      moving.current = false;
+    }
+  };
+
+  /** Drag one card by its grip. Pointer-driven and captured to the grip, so the
+   *  gesture cannot be stolen by the page's own scrolling (the grip also sets
+   *  `touch-action:none`), and the page scrolls itself when the finger reaches
+   *  either edge — a list of ten tabs is taller than the phone. */
+  const startDrag = (event: React.PointerEvent<HTMLButtonElement>, key: string) => {
+    if (!canReorder || (event.pointerType === "mouse" && event.button !== 0)) return;
+    event.preventDefault();
+    const handle = event.currentTarget;
+    handle.setPointerCapture(event.pointerId);
+    let pointerY = event.clientY;
+    let slot = dropSlot(rowBoxes(), key, pointerY);
+    let frame = 0;
+    const track = () => { slot = dropSlot(rowBoxes(), key, pointerY); setDrag({ key, slot }); };
+    const edgeScroll = () => {
+      frame = 0;
+      const dy = pointerY < EDGE_MARGIN ? -EDGE_STEP : pointerY > window.innerHeight - EDGE_MARGIN ? EDGE_STEP : 0;
+      if (!dy) return;
+      window.scrollBy(0, dy);
+      track();
+      frame = requestAnimationFrame(edgeScroll);
+    };
+    const onMove = (move: PointerEvent) => {
+      pointerY = move.clientY;
+      track();
+      if (!frame) edgeScroll();
+    };
+    const finish = (commit: boolean) => {
+      handle.removeEventListener("pointermove", onMove);
+      handle.removeEventListener("pointerup", onUp);
+      handle.removeEventListener("pointercancel", onCancel);
+      if (frame) cancelAnimationFrame(frame);
+      setDrag(null);
+      if (commit && slot) void commitMove(key, slot.anchor, slot.place);
+    };
+    const onUp = () => finish(true);
+    const onCancel = () => finish(false);
+    handle.addEventListener("pointermove", onMove);
+    handle.addEventListener("pointerup", onUp);
+    handle.addEventListener("pointercancel", onCancel);
+    setDrag({ key, slot });
+  };
+
+  /** The same move, one step at a time, from the grip's arrow keys — a drag is
+   *  not reachable by a keyboard or a screen reader, and this list is also read
+   *  on a tablet with one attached. */
+  const nudge = (key: string, delta: -1 | 1) => {
+    const index = tabs.findIndex((row) => row.id === key);
+    const target = tabs[index + delta];
+    if (index < 0 || !target) return;
+    void commitMove(key, target.id, delta < 0 ? "before" : "after");
+  };
+
   const activate = async () => {
     setActivating(true); setError("");
     try {
@@ -142,9 +262,21 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
         "Desktop unavailable" notice that vanished a moment later. */}
     {detail && !detail.desktop_available && <p className="notice">Desktop unavailable — existing sessions can still be opened, but activating a project and creating tabs require Eldrun.</p>}
     {error && <p className="error">{error}</p>}
+    {/* The same three orders the desktop Agents view offers, remembered per
+        phone. "Manual" is this screen's name for the arrival order, because
+        here that order is the desktop's own tab order — the one a drag writes
+        into. */}
+    {tabs.length > 1 && <label className="activity-sort">
+      <span>Sort</span>
+      <select aria-label="Sort tabs" value={sort} onChange={(event) => { if (isAgentSort(event.target.value)) chooseSort(event.target.value); }}>
+        {AGENT_SORTS.map((value) => <option key={value} value={value}>{SORT_LABEL[value]}</option>)}
+      </select>
+    </label>}
+    {canReorder && <p className="reorder-hint">Drag <span aria-hidden="true">⠿</span> to arrange — this is the desktop's own tab order, so the Eldrun window follows. <span className="untested">Untested</span></p>}
     <section className="cards">{tabs.map((tab) => <div
-      className={`tab-card${tabColorCss(tab.color) ? " has-tab-color" : ""}`}
+      className={`tab-card${tabColorCss(tab.color) ? " has-tab-color" : ""}${drag?.key === tab.id ? " dragging" : ""}${drag?.slot?.anchor === tab.id ? ` drop-${drag.slot.place}` : ""}`}
       key={tab.id}
+      ref={(node) => { if (node) rowRefs.current.set(tab.id, node); else rowRefs.current.delete(tab.id); }}
       // The desktop marks a coloured tab with its bottom rule; a phone card has
       // no such edge to spend, so the colour becomes the card's left border —
       // the same "which of these five is which" job, in the shape this surface
@@ -152,7 +284,23 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
       // two surfaces show one colour rather than two readings of a name.
       style={tabColorCss(tab.color) ? { ["--tab-color" as string]: tabColorCss(tab.color) } : undefined}
     >
+      <div className="tab-card-head">
       <button className="card" disabled={!tab.available} onClick={() => terminal(tab)}><span><strong>{tab.label}</strong><small>{tab.kind}{tab.agent_model ? ` · ${tab.agent_model}` : ""}{tab.viewer_busy ? " · open elsewhere" : tab.available ? " · live" : " · gone"}</small></span><span className="card-trailing">{tab.agent_status && <small className={`agent-status ${tab.agent_status}`}>{tab.agent_status}</small>}<span>›</span></span></button>
+      {/* The grip, under the manual order only. It is also the keyboard's way
+          in: the arrows move the tab one place, which a drag cannot be asked
+          for without a finger. */}
+      {canReorder && <button
+        className="tab-card-grip"
+        aria-label={`Move ${tab.label}`}
+        title="Drag to move this tab, or use the arrow keys"
+        onPointerDown={(event) => startDrag(event, tab.id)}
+        onKeyDown={(event) => {
+          if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+          event.preventDefault();
+          nudge(tab.id, event.key === "ArrowUp" ? -1 : 1);
+        }}
+      ><span aria-hidden="true">⠿</span></button>}
+      </div>
       {tab.kind === "agent" && <PromptLines tab={tab} />}
       {/* Scheduling lives out here beside the tab, not inside the session:
           reaching a schedule must not mean attaching a terminal, and this is

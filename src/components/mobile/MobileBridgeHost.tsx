@@ -199,6 +199,7 @@ type DesktopRequest =
   | { type: "schedule_mutate"; request_id: string; project_id: string; tmux_session: string; action: ScheduleMutation }
   | { type: "rename_tab"; request_id: string; project_id: string; tmux_session: string; label: string }
   | { type: "color_tab"; request_id: string; project_id: string; tmux_session: string; color?: string | null }
+  | { type: "reorder_tab"; request_id: string; project_id: string; tmux_session: string; anchor_tmux_session: string; place: "before" | "after" }
   | { type: "close_tab"; request_id: string; project_id: string; tmux_session: string }
   | { type: "prompts"; request_id: string; project_id: string }
   | { type: "prompt_mutate"; request_id: string; project_id: string; action: PromptMutation }
@@ -220,6 +221,7 @@ type DesktopResponse =
   | { status: "schedules"; schedules: ScheduledAgentPrompt[]; time_zone: string; next_runs: Record<string, string> }
   | { status: "renamed"; label: string }
   | { status: "colored"; color?: string | null }
+  | { status: "reordered" }
   | { status: "closed" }
   | { status: "prompts"; prompts: ProjectAgentPrompt[] }
   | { status: "agent_status"; report: MobileAgentStatus }
@@ -649,6 +651,36 @@ async function colorMobileTab(
   useTabsStore.getState().setTabColorInScope(scope.id, tab.key, next);
   await persistScopeLayout(scope.id);
   return { status: "colored", color: next ?? null };
+}
+
+/** Move one tab next to another from the phone, the same permutation the
+ * desktop Agents view's own drag performs (`reorderTabInScope`): the flat
+ * scope order — which is what the catalog publishes and the phone lists — and,
+ * when both tabs share a layout group, that group's tab bar too.
+ *
+ * The scope is restored first for the reason the close does it: the phone can
+ * be looking at a project this desktop session has not opened, and its rows
+ * come from the saved session file rather than from the store. The layout is
+ * persisted before answering, so the route's read-back is the new order. */
+async function reorderMobileTab(
+  projectId: string,
+  tmuxSession: string,
+  anchorTmuxSession: string,
+  place: "before" | "after",
+): Promise<DesktopResponse> {
+  const scope = mobileScope(projectId);
+  if (!scope) {
+    return { status: "error", code: "project_ineligible", message: "Project is not enabled for Mobile access" };
+  }
+  if (scope.project) await restoreProjectScope(scope.project).catch(() => {});
+  const tab = mobileTargetTab(scope.id, tmuxSession);
+  const anchor = mobileTargetTab(scope.id, anchorTmuxSession);
+  if (!tab || !anchor) return { status: "error", code: "tab_not_found", message: "Tab is unavailable" };
+  // A tab dropped on itself is where it already is; the store no-ops on it, and
+  // answering "reordered" keeps the phone reconciling against the real order.
+  useTabsStore.getState().reorderTabInScope(scope.id, tab.key, anchor.key, place);
+  await persistScopeLayout(scope.id);
+  return { status: "reordered" };
 }
 
 function scheduleTarget(projectId: string, tmuxSession: string): string | null {
@@ -1582,6 +1614,7 @@ async function handleRequest(
     case "rename_tab": return renameAgentTab(request.project_id, request.tmux_session, request.label);
     case "close_tab": return closeMobileTab(request.project_id, request.tmux_session);
     case "color_tab": return colorMobileTab(request.project_id, request.tmux_session, request.color);
+    case "reorder_tab": return reorderMobileTab(request.project_id, request.tmux_session, request.anchor_tmux_session, request.place);
     case "schedules": return schedulesFor(request.project_id, request.tmux_session);
     case "schedule_mutate": return mutateSchedule(request.project_id, request.tmux_session, request.action);
     case "prompts": return promptsFor(request.project_id);
@@ -1632,7 +1665,7 @@ export function MobileBridgeHost() {
           }).catch(() => {});
         }
       };
-      if (request.type === "create" || request.type === "activate" || request.type === "rename_tab" || request.type === "close_tab" || request.type === "color_tab" || request.type === "todo_mutate" || request.type === "alert_resolve" || request.type === "calendar_mutate" || request.type === "schedule_mutate" || request.type === "prompt_mutate" || request.type === "mail_mark" || request.type === "mail_reply") {
+      if (request.type === "create" || request.type === "activate" || request.type === "rename_tab" || request.type === "close_tab" || request.type === "color_tab" || request.type === "reorder_tab" || request.type === "todo_mutate" || request.type === "alert_resolve" || request.type === "calendar_mutate" || request.type === "schedule_mutate" || request.type === "prompt_mutate" || request.type === "mail_mark" || request.type === "mail_reply") {
         mutationQueue = mutationQueue.then(run, run);
       } else {
         void run();

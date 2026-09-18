@@ -32,7 +32,7 @@ use super::{
     protocol::{
         clean_tab_color, CalendarAction, CreateTabRequest, DesktopRequest, DesktopResponse,
         MailMarkAction, MobilePromptInput, MobileScheduleInput, PromptMutation, ScheduleMutation,
-        TodoAction, MAX_CONTROL_MESSAGE, MAX_INPUT_FRAME, MAX_MAIL_REPLY_BYTES,
+        TabPlace, TodoAction, MAX_CONTROL_MESSAGE, MAX_INPUT_FRAME, MAX_MAIL_REPLY_BYTES,
         MAX_TAB_LABEL, TERMINAL_PROTOCOL,
     },
     pty_bridge::{self, TerminalRegistry},
@@ -1351,6 +1351,90 @@ async fn color_tab(
     }
 }
 
+/// `PUT /api/v1/tabs/{id}/order` — move one tab next to another, the phone's
+/// half of the desktop Agents view's drag reorder (#264). Both tabs are named
+/// by opaque id and must live in the same scope: the order being permuted is
+/// one scope's tab layout, and a tab cannot be dropped into a project it is not
+/// in. The desktop owns that layout, so this is a bridge call like the rename
+/// and the colour above it, and the answer is the scope's new order read back
+/// out of the catalog — the phone rearranged its list on the drop, and this is
+/// what it reconciles against.
+async fn order_tab(
+    State(state): State<HostState>,
+    headers: HeaderMap,
+    Path(tab_id): Path<String>,
+    body: Bytes,
+) -> impl IntoResponse {
+    if let Err(error) = authenticate(&headers, &state) {
+        return error;
+    }
+    if !exact_origin(&headers, &state) {
+        return api_error(StatusCode::FORBIDDEN, "invalid_origin");
+    }
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct OrderBody {
+        anchor: String,
+        place: TabPlace,
+    }
+    let Ok(request) = serde_json::from_slice::<OrderBody>(&body) else {
+        return api_error(StatusCode::BAD_REQUEST, "invalid_request");
+    };
+    if request.anchor == tab_id {
+        return api_error(StatusCode::BAD_REQUEST, "invalid_anchor");
+    }
+    let (project_id, tmux_session) = match tab_target(&state, &tab_id, false) {
+        Ok(target) => target,
+        Err(error) => return error,
+    };
+    let (anchor_project, anchor_tmux) = match tab_target(&state, &request.anchor, false) {
+        Ok(target) => target,
+        Err(error) => return error,
+    };
+    // Two scopes have two layouts and no shared order to express a move in.
+    if anchor_project != project_id {
+        return api_error(StatusCode::BAD_REQUEST, "tab_scope_mismatch");
+    }
+    let desktop_socket = state.config.control_dir.join("desktop-control.sock");
+    let request_id = Base64UrlUnpadded::encode_string(&random_16());
+    match admin::desktop_call(
+        &desktop_socket,
+        &DesktopRequest::ReorderTab {
+            request_id,
+            project_id,
+            tmux_session,
+            anchor_tmux_session: anchor_tmux,
+            place: request.place,
+        },
+    )
+    .await
+    {
+        Ok(DesktopResponse::Reordered) => {
+            // The desktop persists before it answers, so a fresh read is the new
+            // order; a catalog that somehow has not caught up answers with what
+            // it has rather than failing a write that did happen, exactly as the
+            // colour route does.
+            let tabs: Vec<String> = catalog_fresh(&state)
+                .ok()
+                .and_then(|next| {
+                    next.tab(&tab_id)
+                        .map(|(project, _)| project.tabs.iter().map(|t| t.public.id.clone()).collect())
+                })
+                .unwrap_or_default();
+            (StatusCode::OK, Json(json!({ "tabs": tabs })))
+        }
+        Ok(DesktopResponse::Error { code, .. }) => api_error(
+            match code.as_str() {
+                "desktop_unavailable" => StatusCode::SERVICE_UNAVAILABLE,
+                "tab_not_found" => StatusCode::NOT_FOUND,
+                _ => StatusCode::BAD_REQUEST,
+            },
+            &code,
+        ),
+        _ => api_error(StatusCode::SERVICE_UNAVAILABLE, "desktop_unavailable"),
+    }
+}
+
 /// `DELETE /api/v1/tabs/{id}` — close one tab from the phone, agent or shell.
 /// The desktop owns the tab layout, so this is a bridge call, and it closes the
 /// way the desktop's own × does: the tab leaves the Eldrun window while the
@@ -2398,6 +2482,7 @@ fn router(state: HostState) -> Router {
             get(tab).put(rename_tab).delete(close_tab),
         )
         .route("/api/v1/tabs/{tab_id}/color", put(color_tab))
+        .route("/api/v1/tabs/{tab_id}/order", put(order_tab))
         .route(
             "/api/v1/tabs/{tab_id}/schedules",
             get(schedules).post(schedule_create),
@@ -3112,6 +3197,79 @@ mod tests {
             )
             .await;
         assert_eq!(status, StatusCode::NOT_FOUND, "answered: {body}");
+    }
+
+    #[tokio::test]
+    async fn moving_a_tab_names_both_rows_by_id_and_needs_the_desktop_bridge() {
+        // The box fixture, for its two tabs: a move is the one tab route that
+        // takes a second row, and both must resolve to the same scope.
+        let host = Fixture::with_box();
+        let cookie = host.pair_device(&signing_key(31)).await.0;
+        let (_, _, projects_body) = host.send(get_as("/api/v1/projects", &cookie)).await;
+        let project_id = json(&projects_body)["projects"][0]["id"]
+            .as_str()
+            .expect("opaque box id")
+            .to_string();
+        let (_, _, project_body) = host
+            .send(get_as(&format!("/api/v1/projects/{project_id}"), &cookie))
+            .await;
+        let tabs = json(&project_body)["tabs"].clone();
+        let tab_id = tabs[0]["id"].as_str().expect("opaque tab id").to_string();
+        let anchor_id = tabs[1]["id"].as_str().expect("opaque tab id").to_string();
+
+        let move_to = |origin: &'static str, cookie: Option<&str>, anchor: &str, place: &str| {
+            let mut request = Request::builder()
+                .method("PUT")
+                .uri(format!("/api/v1/tabs/{tab_id}/order"))
+                .header(header::ORIGIN, origin)
+                .header(header::CONTENT_TYPE, "application/json");
+            if let Some(cookie) = cookie {
+                request = request.header(header::COOKIE, cookie_pair(cookie));
+            }
+            request
+                .body(Body::from(
+                    serde_json::to_vec(&serde_json::json!({ "anchor": anchor, "place": place }))
+                        .expect("body"),
+                ))
+                .expect("request")
+        };
+
+        // Authentication, then origin, before either row is resolved.
+        let (status, _, body) = host.send(move_to(ORIGIN, None, &anchor_id, "after")).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "answered: {body}");
+        let (status, _, body) = host
+            .send(move_to("https://evil.example", Some(&cookie), &anchor_id, "after"))
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "answered: {body}");
+
+        // A side this build does not know, and a tab dropped on itself, are
+        // both refused before any desktop call.
+        let (status, _, body) = host
+            .send(move_to(ORIGIN, Some(&cookie), &anchor_id, "above"))
+            .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "answered: {body}");
+        assert_eq!(json(&body)["error"], "invalid_request");
+        let (status, _, body) = host.send(move_to(ORIGIN, Some(&cookie), &tab_id, "after")).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "answered: {body}");
+        assert_eq!(json(&body)["error"], "invalid_anchor");
+
+        // An anchor that is not a tab is a 404, not a move against a guess.
+        let (status, _, body) = host
+            .send(move_to(ORIGIN, Some(&cookie), "not-a-tab", "before"))
+            .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "answered: {body}");
+        assert_eq!(json(&body)["error"], "tab_not_found");
+
+        // A well-formed move with no desktop window is unavailable rather than
+        // refused, and says nothing about the raw ids or the tmux names.
+        let (status, _, body) = host
+            .send(move_to(ORIGIN, Some(&cookie), &anchor_id, "before"))
+            .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "answered: {body}");
+        assert_eq!(json(&body)["error"], "desktop_unavailable");
+        assert!(!body.contains(RAW_BOX));
+        assert!(!body.contains(RAW_PROJECT));
+        assert!(!body.contains("eldrun-"));
     }
 
     #[tokio::test]
