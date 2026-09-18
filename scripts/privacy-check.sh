@@ -310,6 +310,11 @@ scrub_args=(
   # knows (`git_token` is not `api_key`). The trailing `\b` is what keeps it
   # narrow: a real `ghp_testAbC123…` continues into the word and still reports.
   -e 's/\b(glpat-|ghp_|sk-)(test|dummy|fake|placeholder|redacted|changeme|sample)\b//gI'
+  # A gitleaks fingerprint (`.gitleaksignore`): `<commit sha>:<path>:<rule
+  # id>:<line>` and nothing else on the line. Its rule id names what it found
+  # (`generic-api-key:`), which reads as a credential keyword, but the shape
+  # holds only a hash, a path, a rule name and a number — never the value.
+  -e 's/^[0-9a-f]{40}:[^[:space:]:]+:[a-z0-9-]+:[0-9]+$//'
 )
 
 # Last resort for a line that is genuinely fine but that no general rule can
@@ -405,6 +410,12 @@ self_test() {
   hits=""
   scan_text "self-test" "loopback 127.0.0.1 and a@example.com, by a@users.noreply.github.com"
   [ -z "$hits" ] || die_tool "self-test: a benign fixture line was reported: $hits"
+  hits=""
+  scan_text "self-test" "$(printf '%040d' 0):src/a.rs:generic-api-key:12"
+  [ -z "$hits" ] || die_tool "self-test: a gitleaks fingerprint was reported: $hits"
+  hits=""
+  scan_text "self-test" "$(printf '%040d' 0):src/a.rs:generic-api-key:12 api_key=$token"
+  [ -n "$hits" ] || die_tool "self-test: a fingerprint-led line hid a token"
   hits=""
   scan_text "self-test" "noreply is not a pass for $token"
   [ -n "$hits" ] || die_tool "self-test: the word noreply hid a token on its line"
