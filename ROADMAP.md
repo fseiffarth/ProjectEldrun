@@ -79,6 +79,93 @@ after user confirmation. See [verification](todo/group-y-verification.md),
   open externally. See [viewers](todo/group-m-viewers.md) and
   [presenter](todo/group-v-presenter.md).
 
+## Spare-Capacity Backlog
+
+A lookup for weeks with agent budget left over: self-contained improvements
+that are worth doing but gate nothing above. Pick from the top of a group;
+each entry names where the work lives. Add new groups below as they come up.
+
+### Text viewer autocomplete (#45, `FileViewerPane.tsx` + `commands/ollama.rs`)
+
+Today: a debounced (600 ms) ghost from whichever Ollama model is loaded, via
+`/api/chat` with a BEFORE/AFTER prompt, Sentence/Block/Scope modes, hand-picked
+reference files, and Tab / → / Esc to accept, walk, or dismiss.
+
+1. **Bound the window sent.** `requestCompletion` sends the whole draft on
+   either side of the caret on every pause; a long `.tex` file costs a full
+   prompt evaluation each time. Send a caret-centred window (e.g. ~4 k chars
+   before, ~1 k after, cut on line boundaries) so latency stops scaling with
+   file size.
+2. **Native fill-in-the-middle for FIM models.** Coder models (qwen2.5-coder,
+   codegemma, starcoder2, deepseek-coder) complete far better through
+   `/api/generate` with `suffix` than through a chat instruction. Detect
+   insert capability per model and keep the chat path as the fallback.
+   This removes most of the need for `clean_completion`'s preamble and fence
+   stripping.
+3. **Cancel for real.** Aborting only drops the result. The blocking
+   `ollama_http` call still runs to its `num_predict` cap, so fast typing
+   queues stale generations inside Ollama. Close the socket on abort, or move
+   the request to a cancellable task.
+4. **Stream into the ghost.** Show tokens as they arrive instead of after the
+   full reply. This matters most for Block and Scope modes (256+ tokens).
+5. **Type-through keeps the ghost.** Any keystroke dismisses the suggestion,
+   and the next one comes 600 ms later. If the typed characters match the
+   start of the ghost, consume them and keep the rest.
+6. **Drop the per-request model lookup.** Every trigger first calls
+   `list_ollama_models_detailed`. Cache the loaded set briefly, or refresh it
+   when the 🧠 menu changes it.
+7. **Automatic context.** Beyond the manual picker: the files open in other
+   tabs, files the current one imports or `\input`s, and for LaTeX the
+   document's `\label` / bib keys. Keep it capped by the existing
+   `MAX_CONTEXT_*` budget.
+8. **Prose awareness.** For Markdown/LaTeX/plain text, tell the model to keep
+   the document's own language, so a German paragraph is not continued in
+   English. Add a stop at a line or sentence end in Sentence mode.
+9. **Smaller wins.** Accept one line at a time (next to →'s word walk). Cycle
+   2–3 candidates. A cache keyed on the prefix tail, so undo/redo and
+   re-visiting a caret do not re-query. Local-only accept/dismiss counters
+   (`usage_stats`) to judge which mode and model are worth it.
+
+### Mail AI (Group Q #203–#208, `services/mail_ai.rs`, `MailAi*.tsx`)
+
+Today: loopback-only Ollama; on-demand summary, event and to-do extraction,
+draft-from-notes in the composer, and subject/sender/preview triage into
+Important/Urgent at sync. All of it is per-account opt-in and untested live.
+Every idea below has to keep the Group Q invariants: loopback only, nothing
+decrypted persisted, review before create, and a model verdict never shown as
+a filter hit.
+
+1. **Live QA first.** Run the five checks in `todo/group-q-mail-ai.md` and
+   remove the tags. Most of the items below tune prompts, and that only makes
+   sense against real mail.
+2. **Thread-aware summary.** Summarize the whole conversation (the thread the
+   message belongs to), not the one message, and lead with the open question
+   or request addressed to the user.
+3. **Suggested replies.** From the open message, offer 2–3 one-line reply
+   intents ("accept", "decline politely", "ask for the agenda") that feed the
+   existing *Draft from notes* path. The same rule holds: it fills the
+   composer, never sends.
+4. **Reply in the sender's language.** Detect the original's language and draft
+   in it by default. Add tone presets (formal / friendly / short) and a
+   per-account signature and name for the draft.
+5. **Rewrite a selection in the composer.** Shorten, make it more formal, fix
+   grammar. Reuse the grammar role's model and the editor's
+   `GRAMMAR_SYSTEM`-style JSON so it is one mechanism, not two.
+6. **Triage quality.** Add a per-account "who matters" hint (VIP senders or
+   domains) to the classify prompt. Let the user correct a verdict
+   ("not urgent"), and keep recent corrections as few-shot examples. Show the
+   `priority_reason` inline in the list, not only in the message.
+7. **Deadline and action digest.** A local "needs a reply / has a deadline"
+   view across the inbox, built from the same extraction prompts. It feeds the
+   daily recap and the to-do board's intake column with review before create.
+8. **Multiple events and attachments.** Extract more than one event per mail
+   (conference programmes, schedules), and read `.ics` attachments directly
+   instead of asking the model. Summarize a PDF attachment's text with the
+   same ephemeral rule.
+9. **Search by meaning.** Local embeddings of subject+preview (an
+   embedding-role model is already a refusal case here, so the role split
+   exists). They must live inside the sealed store, never as plaintext.
+
 ## Longer-Term Direction
 
 - **Eldrun Server — plan only.** Shared calendar/board and project collaboration
