@@ -185,11 +185,15 @@ removed two: the root console's MCP token no longer reaches the tmux launcher
 script on disk, and a fenced agent's tmux pane drains the terminal's input
 queue before handing it to the unfenced login shell.
 
-1. **Dependency audit in CI.** Nothing checks advisories today. Add
-   `cargo audit` (or `cargo deny`) and `npm audit --omit=dev` as a
-   non-blocking job first, then make it blocking. This matters most for the
-   parsers facing untrusted input: ammonia/html5ever, the MIME/IMAP stack,
-   pdf.js.
+1. **Dependency audit in CI — done 2026-09-18.** `.github/workflows/security.yml`
+   runs `cargo audit` and `npm audit --omit=dev` on every push/PR and weekly,
+   as a blocking job, beside CodeQL (JS/TS, Rust, Actions → Security tab) and
+   a full-history gitleaks scan (`.gitleaksignore` holds triaged false
+   positives). The first findings (h2, rustls, quick-xml via
+   calamine/plist/xcb/wayland-scanner, dompurify, mermaid) were cleared when
+   it landed. This matters
+   most for the parsers facing untrusted input: ammonia/html5ever, the
+   MIME/IMAP stack, pdf.js.
 2. **Fence escape suite.** Make the probe run by hand in the last pass a
    script: run the real `bwrap_args` output and assert that from inside,
    `~/.ssh`, the keyring, `/run/user/<uid>` (D-Bus, X authority), other

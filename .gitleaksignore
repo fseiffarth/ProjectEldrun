@@ -1,0 +1,30 @@
+# gitleaks findings triaged as not-a-secret (read by .github/workflows/security.yml).
+# One fingerprint per line: <commit>:<file>:<rule>:<line>. Add an entry only
+# after looking at the line, and group it under a comment saying why it is safe.
+# A real leak is never ignored here: rotate it, then rewrite or accept history.
+
+# docs/mail_encryption_plan_b.md: PKCS#12 algorithm names in prose
+647efd0421f2fbff904e85601a4cfae446bf4a1c:docs/mail_encryption_plan_b.md:generic-api-key:439
+# scripts/privacy-check.sh: the scanner's own pattern list
+5ddeaec0e86f3a91f3bc775efe946ff2d3b1059c:scripts/privacy-check.sh:generic-api-key:145
+# src-tauri/src/services/mail_store.rs: test asserting an IMAP folder name ("INBOX/Personnel")
+c428ed80ea1ff8faa81b72a2da9cf5caac10620d:src-tauri/src/services/mail_store.rs:generic-api-key:3425
+c428ed80ea1ff8faa81b72a2da9cf5caac10620d:src-tauri/src/services/mail_store.rs:generic-api-key:3441
+de2bb12562f18507b4bfcaf544078a4057912c18:src-tauri/src/services/mail_store.rs:generic-api-key:3926
+# src-tauri/src/services/mobile_control/host.rs: test fixture idempotency_key "0123456789abcdef"
+bcc365a42430739a4581897421ecf6c5de48cb56:src-tauri/src/services/mobile_control/host.rs:generic-api-key:1323
+bcc365a42430739a4581897421ecf6c5de48cb56:src-tauri/src/services/mobile_control/host.rs:generic-api-key:1396
+bcc365a42430739a4581897421ecf6c5de48cb56:src-tauri/src/services/mobile_control/host.rs:generic-api-key:1657
+bcc365a42430739a4581897421ecf6c5de48cb56:src-tauri/src/services/mobile_control/host.rs:generic-api-key:1668
+# src-tauri/src/services/openvpn.rs: test fixture: fake encrypted-key header with "base64==" body
+b9c4584fbcba4e241ff402ce7b3ff21a06baed2e:src-tauri/src/services/openvpn.rs:private-key:1862
+b9c4584fbcba4e241ff402ce7b3ff21a06baed2e:src-tauri/src/services/openvpn.rs:private-key:1873
+b9c4584fbcba4e241ff402ce7b3ff21a06baed2e:src-tauri/src/services/openvpn.rs:private-key:1886
+b9c4584fbcba4e241ff402ce7b3ff21a06baed2e:src-tauri/src/services/openvpn.rs:private-key:1906
+# src-tauri/src/services/ssh_common.rs: test fixture: ssh-keygen header line only, body truncated — not a usable key
+b74a3124594fd0376a2c699cfed9b910a929edde:src-tauri/src/services/ssh_common.rs:private-key:1955
+b74a3124594fd0376a2c699cfed9b910a929edde:src-tauri/src/services/ssh_common.rs:private-key:1958
+b74a3124594fd0376a2c699cfed9b910a929edde:src-tauri/src/services/ssh_common.rs:private-key:1976
+b74a3124594fd0376a2c699cfed9b910a929edde:src-tauri/src/services/ssh_common.rs:private-key:1985
+# tests/test_remote_repo.py: test fixture token "ghp_secret123"
+8eb58b5cea1411a5a5748d2c54585a78a859dfb3:tests/test_remote_repo.py:generic-api-key:329

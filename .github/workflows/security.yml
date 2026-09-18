@@ -1,0 +1,121 @@
+name: security
+
+# Security scans (ROADMAP "Security pass"): dependency advisories, SAST and a
+# second secret scanner beside scripts/privacy-check.sh. Its own workflow rather
+# than jobs in ci-cd.yml so it can also run on a schedule: advisories and new
+# CodeQL queries arrive against code that has not changed, and a cron on
+# ci-cd.yml would rebuild every package to learn nothing new.
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 5 * * 1'   # Mondays, 05:17 UTC
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  dependencies:
+    name: dependencies
+    runs-on: ubuntu-24.04
+    # Blocking: a new advisory fails the run. Fix it by updating the crate or
+    # package; if no fix exists, ignore it below with a reason, as for `rsa`.
+    # The weekly schedule means this can go red with no code change.
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+
+      # Reads the committed workspace Cargo.lock at the repo root; no build, no
+      # system packages. Unmaintained/unsound/yanked crates print as warnings
+      # and do not fail.
+      #
+      # Ignored, each with its reason — add one only with a comment like these:
+      # - RUSTSEC-2023-0071 `rsa` Marvin timing oracle: `pgp` pulls `rsa` in
+      #   unconditionally and no patched version exists. Mitigated by defaulting
+      #   key generation to Curve25519; see the note on `pgp` in Cargo.toml.
+      - name: Audit Rust dependencies
+        run: cargo audit --ignore RUSTSEC-2023-0071
+
+      # --omit=dev: only what ships in the bundle. Vite, vitest and eslint never
+      # reach a user, so their advisories are noise here.
+      # `!cancelled()` so a Rust finding still leaves the npm report in the log.
+      - name: Audit npm dependencies
+        if: ${{ !cancelled() }}
+        run: npm audit --omit=dev
+
+  # SAST. Findings land in the repo's Security → Code scanning tab, not in the
+  # job result: analyze succeeds whatever it finds, so this never blocks a push.
+  # build-mode none: all three extract from source, so the job needs neither
+  # the WebKitGTK packages nor a cargo build.
+  codeql:
+    name: codeql (${{ matrix.language }})
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      security-events: write   # upload results to code scanning
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        # `actions` scans these workflow files themselves (injection via
+        # untrusted event fields, over-broad tokens).
+        language: [javascript-typescript, rust, actions]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+          queries: security-extended
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: /language:${{ matrix.language }}
+
+  # gitleaks over the whole history, next to privacy-check.sh (which scans only
+  # the pushed range, for this repo's own private literals). The two overlap on
+  # purpose: gitleaks knows far more issuer token formats. Blocking: history is
+  # clean once .gitleaksignore's triaged false positives are applied, so a
+  # failure here is a new finding to look at.
+  secrets:
+    name: secrets (gitleaks)
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # scan every commit, not just the tip
+
+      # The release binary, not gitleaks-action: the action needs a paid
+      # license key on organization accounts. Checksum pinned to the version.
+      - name: Install gitleaks
+        env:
+          GITLEAKS_VERSION: 8.30.1
+          GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+        run: |
+          set -euo pipefail
+          tarball="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -sSfL -o "$RUNNER_TEMP/$tarball" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/$tarball"
+          echo "$GITLEAKS_SHA256  $RUNNER_TEMP/$tarball" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP" gitleaks
+
+      # --redact keeps a real hit's value out of the public job log.
+      - name: Scan history for secrets
+        run: '"$RUNNER_TEMP/gitleaks" git . --redact --no-banner --verbose'
