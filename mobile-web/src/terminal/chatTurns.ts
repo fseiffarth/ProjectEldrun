@@ -237,6 +237,11 @@ function trimBlank(lines: ReadableLine[]): ReadableLine[] {
  * The agent's lines between two prompts as turns: one per `⏺` message, with
  * each tool call and its rows left out. Lines before the first bullet — a
  * spinner, a status line, another TUI's whole output — are one plain turn.
+ *
+ * A message is a bubble of its own and stays one: the next thing the agent
+ * writes is the next bubble, never more text in one already shown. Each turn
+ * is keyed by its first row, so a bubble keeps its identity while the agent
+ * goes on below it.
  */
 function agentTurns(lines: readonly ReadableLine[]): ChatTurn[] {
   const turns: ChatTurn[] = [];
@@ -263,7 +268,13 @@ function agentTurns(lines: readonly ReadableLine[]): ChatTurn[] {
     flushPlain();
     const message = [line];
     index += 1;
-    while (index < lines.length && !AGENT_MESSAGE.test(lines[index].text)) {
+    // A message's own rows sit indented under its marker. The first row at
+    // the left edge — the spinner, a status row, a question the session asks —
+    // is the TUI's and not the message's: taken in, a ticking spinner changed
+    // a bubble already shown every second.
+    while (index < lines.length
+      && !AGENT_MESSAGE.test(lines[index].text)
+      && (lines[index].text === "" || CONTINUATION.test(lines[index].text))) {
       message.push(lines[index]);
       index += 1;
     }

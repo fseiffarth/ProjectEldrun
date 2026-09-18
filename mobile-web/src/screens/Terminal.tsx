@@ -45,6 +45,7 @@ import {
 import { currentMode, modeChoices, modeFixed, shiftTabKey } from "../terminal/agentModes";
 import { agentInputWrites } from "../terminal/composer";
 import { chatTurns, isPromptEcho } from "../terminal/chatTurns";
+import { transcriptTurns } from "../terminal/transcriptTurns";
 import { oldestFirst, placeOutbox, type OutboxPlacement } from "../terminal/outboxTimeline";
 import { resetText, StatusSheet } from "./StatusSheet";
 import { limitMeters, parseUsageReport, type LimitMeters } from "../../../shared/usageReport";
@@ -237,14 +238,14 @@ function desktopImageDescription(image: DesktopImage) {
 
 /** One logical line of the session, with the colours the program actually
  * emitted. Style is never inferred from the text — see `readableScreen`. */
-function ReadableRow({ line }: { line: ReadableLine }) {
+const ReadableRow = memo(function ReadableRow({ line }: { line: ReadableLine }) {
   if (line.spans.length === 0) return <div className="readable-blank" aria-hidden="true" />;
   return <div className="readable-line">{line.spans.map((span, index) => (
     span.className || span.color || span.background
       ? <span key={index} className={span.className} style={{ color: span.color, background: span.background }}>{span.text}</span>
       : <span key={index}>{span.text}</span>
   ))}</div>;
-}
+});
 
 /** A block of session lines. On an agent tab they read as a chat: the
  * agent's turns on the left as printed, each prompt the user submitted as a
@@ -283,17 +284,19 @@ const TranscriptTurns = memo(function TranscriptTurns({ entries, cutLabel, promp
   placement: OutboxPlacement;
   renderFiles: (files: readonly OutboxFile[]) => ReactNode;
 }) {
-  return <>{renderFiles(placement.before)}{entries.map((entry, index) => <Fragment key={`${index}:${entry.at ?? ""}`}>
-    {entry.kind === "prompt"
+  // One bubble per record, keyed by its time (`transcriptTurns`).
+  const turns = useMemo(() => transcriptTurns(entries), [entries]);
+  return <>{renderFiles(placement.before)}{turns.map((turn) => <Fragment key={turn.key}>
+    {turn.kind === "prompt"
       ? <div className="readable-turn user" role="group" aria-label={promptLabel}>
-          <p className="transcript-text">{entry.text}</p>
-          {entry.cut && <small className="transcript-cut">{cutLabel}</small>}
+          <p className="transcript-text">{turn.text}</p>
+          {turn.cut && <small className="transcript-cut">{cutLabel}</small>}
         </div>
       : <div className="readable-turn agent answer">
-          <p className="transcript-text">{entry.text}</p>
-          {entry.cut && <small className="transcript-cut">{cutLabel}</small>}
+          <p className="transcript-text">{turn.text}</p>
+          {turn.cut && <small className="transcript-cut">{cutLabel}</small>}
         </div>}
-    {renderFiles(placement.after.get(index) ?? [])}
+    {renderFiles(placement.after.get(turn.index) ?? [])}
   </Fragment>)}</>;
 });
 
@@ -347,6 +350,17 @@ interface SheetOption {
  * session's status line says it has — and reports taps back. No parsing, no
  * keystrokes.
  */
+/** Why an agent tab's stored session is not shown, for the dimmed toggle. */
+function noSessionReason(transcript: SessionTranscript | null): TranslationKey {
+  if (!transcript) return "mobile.focus.sessionLoading";
+  switch (transcript.reason) {
+    case "unsupported": return "mobile.focus.sessionUnsupported";
+    case "no_session": return "mobile.focus.sessionNoId";
+    case "no_transcript": return "mobile.focus.sessionMissing";
+    default: return "mobile.focus.sessionUnreadable";
+  }
+}
+
 function OptionSheet({ title, note, options, waiting, busy, onPick, onClose }: {
   title: string;
   note?: { text: string; error?: boolean };
@@ -490,6 +504,9 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
    * the reader has not switched the view to the screen. */
   const [transcript, setTranscript] = useState<SessionTranscript | null>(null);
   const [focusSource, setFocusSource] = useState<"session" | "screen">("session");
+  /** Whether the tools row says why the Session toggle is dimmed. A phone
+   * shows no tooltip, so the reason is spelled out on a tap instead. */
+  const [sessionWhy, setSessionWhy] = useState(false);
   /** Whether Focus shows the strip with the rows the agent draws under its
    * input box (cwd, model, mode, context…). A left→right swipe opens it, a
    * right→left swipe or its ✕ closes it; never persisted. */
@@ -538,6 +555,7 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     setDraft("");
     setTranscript(null);
     setFocusSource("session");
+    setSessionWhy(false);
     setStatusStrip(false);
     setTranscriptLimit(TRANSCRIPT_STEP);
     setLines([]);
@@ -1641,17 +1659,19 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     return painted.slice(start);
   }, [sessionShown, painted, agentLabel]);
   const liveQuestion = useMemo(() => liveTail.length > 0 && readSelectPrompt(liveTail) != null, [liveTail]);
+  /** The screen's lines as the reading view shows them: the revealed history,
+   * the open chunk, then the live tail. */
+  const screenStream = useMemo(
+    () => [...visibleChunks.flatMap((chunk) => chunk.lines), ...earlier.open, ...painted],
+    [visibleChunks, earlier.open, painted],
+  );
   const copyReadable = async () => {
     try {
       // Copy exactly what the reading view is showing: the stored session's
       // turns, or the revealed history, the open chunk, then the live tail.
       await navigator.clipboard.writeText(sessionShown
         ? (transcript?.entries ?? []).map((entry) => entry.kind === "prompt" ? `> ${entry.text}` : entry.text).join("\n\n")
-        : readableText([
-          ...visibleChunks.flatMap((chunk) => chunk.lines),
-          ...earlier.open,
-          ...painted,
-        ]));
+        : readableText(screenStream));
       setCopied(true);
       window.clearTimeout(copiedTimer.current);
       copiedTimer.current = window.setTimeout(() => setCopied(false), 1_500);
@@ -1810,9 +1830,18 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
                 {clipped && <div className="readable-notice">{TRUNCATION_NOTICE}</div>}
                 {hiddenLines > 0 && <button className="readable-earlier" onClick={showEarlier}>Show earlier output ({hiddenLines.toLocaleString()} lines)</button>}
                 {hiddenLines === 0 && earlier.dropped && <div className="readable-notice">{TRUNCATION_NOTICE}</div>}
-                {visibleChunks.map((chunk) => <ReadableTurns key={chunk.id} lines={chunk.lines} chat={chat} agent={agentLabel} promptLabel={t("mobile.transcript.prompt")} columns={paneColumns.current} />)}
-                <ReadableTurns lines={earlier.open} chat={chat} agent={agentLabel} promptLabel={t("mobile.transcript.prompt")} columns={paneColumns.current} />
-                <ReadableTurns lines={painted} chat={chat} agent={agentLabel} promptLabel={t("mobile.transcript.prompt")} columns={paneColumns.current} />
+                {/* An agent's output is laid out as ONE stream: grouped piece by
+                    piece, a turn that ran from the history into the live
+                    screen was cut in two where they met — and that seam moved
+                    every time rows scrolled into the history. A shell has no
+                    turns, so it keeps the memoized chunks. */}
+                {chat
+                  ? <ReadableTurns lines={screenStream} chat agent={agentLabel} promptLabel={t("mobile.transcript.prompt")} columns={paneColumns.current} />
+                  : <>
+                    {visibleChunks.map((chunk) => <ReadableTurns key={chunk.id} lines={chunk.lines} chat={false} promptLabel={t("mobile.transcript.prompt")} />)}
+                    <ReadableTurns lines={earlier.open} chat={false} promptLabel={t("mobile.transcript.prompt")} />
+                    <ReadableTurns lines={painted} chat={false} promptLabel={t("mobile.transcript.prompt")} />
+                  </>}
                 {renderOutbox(screenOutbox)}
               </div>}
         </section>
@@ -1823,8 +1852,14 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
             : <div className="focus-statusline-empty">{t("mobile.focus.statusLineEmpty")}</div>}
         </div>}
         {(lines.length > 0 || sessionShown) && <div className="readable-tools">
-          {chat && <small>{sessionShown ? `${t("mobile.focus.session")} · ${t("mobile.focus.untested")}` : "Chat layout · Untested"}</small>}
-          {chat && transcript?.available && <button onClick={() => setFocusSource((source) => source === "session" ? "screen" : "session")} aria-pressed={sessionShown} title={sessionShown ? t("mobile.focus.screenHint") : t("mobile.focus.sessionHint")}>{sessionShown ? t("mobile.focus.screen") : t("mobile.focus.session")}</button>}
+          {chat && <small>{sessionShown ? `${t("mobile.focus.session")} · ${t("mobile.focus.untested")}` : sessionWhy && !transcript?.available ? t(noSessionReason(transcript)) : "Chat layout · Untested"}</small>}
+          {/* On every agent tab, so the choice is where the reader looks for
+              it; dimmed when the stored session cannot be read (an agent
+              whose transcript Eldrun does not read, no session id yet), and a
+              tap then says which rather than doing nothing. */}
+          {chat && (transcript?.available
+            ? <button onClick={() => setFocusSource((source) => source === "session" ? "screen" : "session")} aria-pressed={sessionShown} title={sessionShown ? t("mobile.focus.screenHint") : t("mobile.focus.sessionHint")}>{sessionShown ? t("mobile.focus.screen") : t("mobile.focus.session")}</button>
+            : <button className="unavailable" aria-disabled="true" aria-expanded={sessionWhy} title={t(noSessionReason(transcript))} onClick={() => setSessionWhy((shown) => !shown)}>{t("mobile.focus.session")}</button>)}
           <button onClick={() => void copyReadable()} aria-label="Copy the session text">{copied ? "Copied" : "Copy"}</button>
         </div>}
         {!atBottom && <button className="readable-jump" onClick={jumpToLatest}>Jump to latest ↓</button>}

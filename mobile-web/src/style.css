@@ -78,8 +78,8 @@ nav button,.keys button { flex:1; }
 .reorder-hint { margin:-4px 0 12px; color:#9aa0b4; font-size:.84rem; }
 .tab-card-foot { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:8px; padding:0 16px 14px; }
 .tab-card-when { min-width:0; flex:1 1 auto; }
-.tab-card-actions { display:flex; flex:0 0 auto; gap:8px; }
-.card-action { padding:8px 12px; background:rgba(56,60,80,.8); font-size:.9rem; }
+.tab-card-actions { display:flex; flex:1 1 auto; flex-wrap:wrap; justify-content:flex-end; gap:8px; min-width:0; }
+.card-action { padding:8px 12px; background:rgba(56,60,80,.8); font-size:.9rem; white-space:nowrap; }
 .card-action.accent { background:#3b326e; border-color:#7c6cff; }
 /* The same pill the sheets' headings wear (`.option-sheet h2 small`), as a
    class, for the places that mark an unverified feature outside a heading. */
@@ -417,6 +417,7 @@ body.terminal-open { min-height:0; overflow:hidden; }
 .transcript-screen { display:grid; gap:6px; padding:8px 10px; border-left:3px solid #8fb8ff; border-radius:8px; background:#14161e; }
 .transcript-screen small { color:#8fb8ff; font-size:.62rem; text-transform:uppercase; letter-spacing:.05em; }
 .readable-tools button[aria-pressed="true"] { border-color:#6c5ce7; color:#dcd6ff; }
+.readable-tools button.unavailable { opacity:.55; }
 .readable-notice { margin-bottom:10px; padding:8px 10px; border-left:3px solid #747b90; border-radius:8px; background:#14161e; color:#9298aa; font:400 .78rem/1.45 Inter,ui-sans-serif,system-ui,sans-serif; }
 .readable-earlier { display:block; width:100%; margin-bottom:10px; padding:9px 10px; border:1px solid #34384a; border-radius:9px; background:#151823; color:#9da3b6; font:500 .78rem/1.4 Inter,ui-sans-serif,system-ui,sans-serif; text-align:center; }
 .readable-earlier:active { background:#1c2030; color:#c8cdda; }

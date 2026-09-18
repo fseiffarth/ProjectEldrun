@@ -157,7 +157,13 @@ describe("Eldrun Mobile Focus reads the stored session", () => {
     await act(async () => { await new Promise((resolve) => window.setTimeout(resolve, 200)); });
     expect(screen.queryByTestId("session-transcript")).toBeNull();
     expect(screen.getByText("Hi there.").closest(".readable-turn")?.className).toBe("readable-turn agent answer");
-    expect(screen.queryByRole("button", { name: "Session" })).toBeNull();
+    // The toggle is still there, dimmed; a tap says why instead of switching.
+    const dimmed = screen.getByRole("button", { name: "Session" });
+    expect(dimmed.getAttribute("aria-disabled")).toBe("true");
+    expect(screen.queryByText("No session id for this tab yet")).toBeNull();
+    fireEvent.click(dimmed);
+    screen.getByText("No session id for this tab yet");
+    expect(screen.queryByTestId("session-transcript")).toBeNull();
 
     stored = STORED;
     act(() => { document.dispatchEvent(new Event("visibilitychange")); });

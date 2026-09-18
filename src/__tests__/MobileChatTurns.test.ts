@@ -76,6 +76,29 @@ describe("Eldrun Mobile chat turns", () => {
     expect(turns.map((turn) => turn.role)).toEqual(["agent"]);
   });
 
+  it("never changes a message's bubble as the agent goes on: the next message is the next bubble", () => {
+    // The rows keep their keys from frame to frame, as the screen's do.
+    const head = lines("> fix the failing test", "", "⏺ Reading the test first.");
+    const frame = (...more: string[]) => chatTurns([...head, ...lines(...more)]);
+    const before = frame("", "✻ Thinking… (3s · esc to interrupt)");
+    const after = frame(
+      "",
+      "⏺ Read(src/app.test.ts)",
+      "  ⎿  Read 40 lines",
+      "",
+      "⏺ The assertion compares the wrong field.",
+      "",
+      "✻ Thinking… (9s · esc to interrupt)",
+    );
+    const first = (turns: ReturnType<typeof chatTurns>) => turns.find((turn) => turn.key === head[2].key);
+    expect(first(before)?.answer?.map((row) => row.text)).toEqual(["Reading the test first."]);
+    expect(first(after)?.answer?.map((row) => row.text)).toEqual(["Reading the test first."]);
+    expect(after.filter((turn) => turn.answer).map((turn) => turn.answer?.map((row) => row.text))).toEqual([
+      ["Reading the test first."],
+      ["The assertion compares the wrong field."],
+    ]);
+  });
+
   it("drops the blank seam around a prompt but keeps paragraph breaks inside a turn", () => {
     const turns = chatTurns(lines(
       "⏺ First paragraph.",
@@ -222,8 +245,11 @@ describe("Eldrun Mobile chat turns", () => {
       "  ⏵⏵ accept edits on (shift+tab to cycle)",
       "  ? for shortcuts",
     ));
-    expect(turns.map((turn) => turn.role)).toEqual(["user", "agent"]);
+    expect(turns.map((turn) => turn.role)).toEqual(["user", "agent", "agent"]);
     expect(turns[0].prompt?.map((row) => row.text)).toEqual(["add a clear button"]);
+    // The answer's bubble holds the answer; the frame stays plain rows under it.
+    expect(turns[1].answer?.map((row) => row.text)).toEqual(["Done."]);
+    expect(turns[2].answer).toBeUndefined();
     const bubbles = turns.filter((turn) => turn.role === "user")
       .flatMap((turn) => (turn.prompt ?? []).map((row) => row.text)).join("\n");
     expect(bubbles).not.toContain("half-typed draft");
