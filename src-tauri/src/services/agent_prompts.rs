@@ -31,7 +31,7 @@ pub const MAX_HISTORY_PER_PROJECT: usize = 200;
 const MAX_TAB_LABEL_BYTES: usize = 256;
 const MAX_AGENT_BYTES: usize = 256;
 /// Tags are labels, not sentences: a handful per prompt, each a short token.
-/// The frontend's `lib/agentPromptTags` normalizes the same way and truncates
+/// The frontend's `lib/agents/prompt/tags` normalizes the same way and truncates
 /// at 32 characters, so the byte cap here is the guard, not the editor.
 pub const MAX_TAGS_PER_PROMPT: usize = 16;
 pub const MAX_TAG_BYTES: usize = 64;
@@ -596,7 +596,7 @@ fn is_session_roll_link(id: &str) -> bool {
     id.starts_with("roll:")
 }
 
-/// Whether an edge may be written, as `lib/agentPromptLinks`' `afterLinkRefusal`
+/// Whether an edge may be written, as `lib/agents/prompt/links`' `afterLinkRefusal`
 /// decides it: only `after` edges are judged, the edge's own id is skipped so
 /// an existing edge can be re-saved, and the history's `roll:` edges are
 /// exempt on both sides. Those are written by [`link_session_roll`], which

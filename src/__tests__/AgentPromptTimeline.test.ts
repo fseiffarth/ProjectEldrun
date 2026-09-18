@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildPromptChart, type PromptChartCard, type PromptChartStrand } from "../lib/agentPromptChart";
+import { buildPromptChart, type PromptChartCard, type PromptChartStrand } from "../lib/agents/prompt/chart";
 import {
   dayClusters,
   formatTimelineInstant,
@@ -20,7 +20,7 @@ import {
   zoomTimelineView,
   hourAnchor,
   type TimelineRects,
-} from "../lib/agentPromptTimeline";
+} from "../lib/agents/prompt/timeline";
 
 const now = new Date(2026, 8, 4, 12, 2, 0);
 const strand: PromptChartStrand = {

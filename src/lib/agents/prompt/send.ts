@@ -16,7 +16,7 @@ import {
   normalizedScheduleMessage,
   type ScheduleRule,
   type ScheduledAgentPrompt,
-} from "./agentSchedule";
+} from "../../agentSchedule";
 
 export function sendNowRule(now: Date): ScheduleRule {
   return { type: "once", at: localOccurrenceKey(now) };

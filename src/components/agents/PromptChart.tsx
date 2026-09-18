@@ -10,10 +10,10 @@ import {
   type PromptChartFilter,
   type PromptChartStrand,
   type PromptChartWindow,
-} from "../../lib/agentPromptChart";
+} from "../../lib/agents/prompt/chart";
 import { agentModelsFor, prefaceCommandsFor } from "../../lib/agentPrefaces";
-import { afterLinkRefusal } from "../../lib/agentPromptLinks";
-import { agentItemFor, newAgentTabForDraft, promptChartNewTabAgent } from "../../lib/agentPromptNewTab";
+import { afterLinkRefusal } from "../../lib/agents/prompt/links";
+import { agentItemFor, newAgentTabForDraft, promptChartNewTabAgent } from "../../lib/agents/prompt/newTab";
 import { useUse24h } from "../../lib/timeFormat";
 import {
   formatTimelineInstant,
@@ -31,9 +31,9 @@ import {
   type SessionSpan,
   type TimelineView,
   type TimelineZone,
-} from "../../lib/agentPromptTimeline";
+} from "../../lib/agents/prompt/timeline";
 import { localOccurrenceKey, localWallClock } from "../../lib/agentSchedule";
-import { tagCounts } from "../../lib/agentPromptTags";
+import { tagCounts } from "../../lib/agents/prompt/tags";
 import { formatLongDate, monthName, toDateStr, todayStr } from "../../lib/calendar/calendarTime";
 import { useI18nStore, useT } from "../../lib/i18n";
 import { jumpToTab } from "../../lib/tabJump";
@@ -65,7 +65,7 @@ import { PromptTimeline } from "./PromptTimeline";
 import { usePromptChartDrag } from "./usePromptChartDrag";
 import { usePromptChartUsage } from "./usePromptChartUsage";
 import { PromptDraftBoard, type DraftBoardHandle } from "./PromptDraftBoard";
-import { draftSequence } from "../../lib/agentPromptDrafts";
+import { draftSequence } from "../../lib/agents/prompt/drafts";
 import { AGENT_ITEMS, EMPTY_CUSTOM_AGENTS } from "../tabs/newTabItems";
 import { useAddTabMenuData } from "../tabs/useAddTabMenuData";
 
@@ -192,7 +192,7 @@ export function PromptChart({ scope, active, tabs, stateOf }: Props) {
   const [multi, setMulti] = useState<ReadonlySet<string>>(() => new Set());
   const prefaceOverrides = useSettingsStore((s) => s.settings?.agent_preface_commands);
   // What a draft's "New agent tab" opens: the chart's own agent and model
-  // picks, one pair for every chart (`lib/agentPromptNewTab`).
+  // picks, one pair for every chart (`lib/agents/prompt/newTab`).
   const newTabAgent = useSettingsStore((s) => promptChartNewTabAgent(s.settings));
   const newTabModel = useSettingsStore((s) => s.settings?.prompt_chart_model?.trim() ?? "");
   const modelOverrides = useSettingsStore((s) => s.settings?.agent_models);

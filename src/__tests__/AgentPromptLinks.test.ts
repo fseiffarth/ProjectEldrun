@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { afterLinkRefusal, edgeCommandChoices, nextAfter, prunePromptLinks, toggleEdgeCommand } from "../lib/agentPromptLinks";
+import { afterLinkRefusal, edgeCommandChoices, nextAfter, prunePromptLinks, toggleEdgeCommand } from "../lib/agents/prompt/links";
 
 const links = [
   { id: "l1", from: "source", to: "target", kind: "after" as const, target: "tab-1" },

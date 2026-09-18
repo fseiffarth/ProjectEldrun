@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(() => Promise.resolve([])) }));
 
 import { PromptCard } from "../components/agents/PromptCard";
-import type { PromptChartCard } from "../lib/agentPromptChart";
+import type { PromptChartCard } from "../lib/agents/prompt/chart";
 
 const draft = {
   id: "d",

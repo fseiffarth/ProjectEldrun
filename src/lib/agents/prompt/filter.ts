@@ -12,8 +12,8 @@
  * holds the filter state and this decides what it means, so the meaning is what
  * gets unit-tested rather than a rendered list.
  */
-import type { SentAgentPrompt } from "../stores/agentPrompts";
-import { matchesTagsOrText } from "./agentPromptTags";
+import type { SentAgentPrompt } from "../../../stores/agentPrompts";
+import { matchesTagsOrText } from "./tags";
 
 /** The time windows the picker offers, in the order it offers them. */
 export const SENT_WINDOWS = ["any", "hour", "today", "week", "month"] as const;

@@ -6,7 +6,7 @@ import {
   prefaceCommandsFor,
   splitPreface,
 } from "../../lib/agentPrefaces";
-import { isFinishedOneTime } from "../../lib/agentPromptSend";
+import { isFinishedOneTime } from "../../lib/agents/prompt/send";
 import {
   desktopTimeZone,
   normalizedSchedulePreface,

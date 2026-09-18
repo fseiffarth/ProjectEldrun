@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { create } from "zustand";
-import { buildSendNowSchedule, schedulesToPruneForSend } from "../lib/agentPromptSend";
+import { buildSendNowSchedule, schedulesToPruneForSend } from "../lib/agents/prompt/send";
 import { useAgentSchedulesStore } from "./agentSchedules";
 
 /**
@@ -14,7 +14,7 @@ export interface ProjectAgentPrompt {
   message: string;
   created_at: string;
   updated_at: string;
-  /** Lowercase tokens the library is searched by (`lib/agentPromptTags`). */
+  /** Lowercase tokens the library is searched by (`lib/agents/prompt/tags`). */
   tags?: string[];
   /** The agent tab (`scheduleTargetId`) the prompt chart aims this draft at.
    *  Advisory until the draft is sent or scheduled; absent when unaimed. */
@@ -273,7 +273,7 @@ export const useAgentPromptsStore = create<AgentPromptsStore>((set, get) => ({
 
 /**
  * Aim a message at one agent tab now: a one-time schedule at the current
- * minute (see `lib/agentPromptSend`). Finished one-time schedules are pruned
+ * minute (see `lib/agents/prompt/send`). Finished one-time schedules are pruned
  * first when the tab is at its cap; the count is returned so the caller can say
  * so. The scheduler host hears the change event and delivers at the next idle
  * point.

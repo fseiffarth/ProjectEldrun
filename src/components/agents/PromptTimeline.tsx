@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties, type PointerE
 import { formatTime, weekdayLabel } from "../../lib/calendar/calendarTime";
 import { useI18nStore, useT } from "../../lib/i18n";
 import { useUse24h } from "../../lib/timeFormat";
-import type { PromptChartCard } from "../../lib/agentPromptChart";
+import type { PromptChartCard } from "../../lib/agents/prompt/chart";
 import type { UsageResetMark } from "../../lib/agentUsageResets";
 import {
   TIMELINE_CARD_WIDTH,
@@ -20,7 +20,7 @@ import {
   timelineX,
   type SessionSpan,
   type TimelineWindow,
-} from "../../lib/agentPromptTimeline";
+} from "../../lib/agents/prompt/timeline";
 import type { ChartDrag } from "./usePromptChartDrag";
 
 interface Props {

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { edgeCommandChoices, toggleEdgeCommand } from "../../lib/agentPromptLinks";
+import { edgeCommandChoices, toggleEdgeCommand } from "../../lib/agents/prompt/links";
 import { useT } from "../../lib/i18n";
 import type { PromptLink } from "../../stores/agentPrompts";
 import { ContextMenuPortal } from "../common/ContextMenuPortal";

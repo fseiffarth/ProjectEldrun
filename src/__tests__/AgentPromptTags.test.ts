@@ -13,7 +13,7 @@ import {
   normalizeTag,
   parseTags,
   tagCounts,
-} from "../lib/agentPromptTags";
+} from "../lib/agents/prompt/tags";
 import type { ProjectAgentPrompt } from "../stores/agentPrompts";
 
 function prompt(id: string, message: string, tags?: string[]): ProjectAgentPrompt {

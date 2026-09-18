@@ -15,7 +15,7 @@ import {
   sanitizePrefaceCommand,
   splitPreface,
 } from "../lib/agentPrefaces";
-import { buildSendNowSchedule } from "../lib/agentPromptSend";
+import { buildSendNowSchedule } from "../lib/agents/prompt/send";
 
 describe("preface command sanitizing", () => {
   it("mirrors the backend's rules", () => {

@@ -740,7 +740,7 @@ unchanged; the new agents are additive.
       foot says `Showing n of m`, and Clear (which still deletes *everything*)
       says so in its tooltip.
     Frontend: `components/agents/AgentSchedulesView.tsx`, `lib/listReorder.ts`,
-    `lib/agentPromptFilter.ts`, `hooks/useListReorder.ts` (moved),
+    `lib/agents/prompt/filter.ts`, `hooks/useListReorder.ts` (moved),
     `stores/agentPrompts.ts`, `styles/projects-tabs.css`.
     Backend: `services/agent_prompts.rs`, `commands/agent_prompts.rs` — so the
     reorder command needs a restart before the drag can persist.
@@ -763,7 +763,7 @@ unchanged; the new agents are additive.
     - **Tags.** A collected prompt carries short lowercase tokens
       (`refactor, tests, paper`) typed as one line beside the text, in the add
       form and in the row editor. Stored on the row (`ProjectAgentPrompt.tags`),
-      normalized identically on both sides (`lib/agentPromptTags` ↔
+      normalized identically on both sides (`lib/agents/prompt/tags` ↔
       `services::agent_prompts::normalize_tag`: trimmed, `#` stripped,
       lowercase, inner whitespace folded to `-`), capped at 16 per prompt. The
       phone edits text only and its `tags: None` **keeps** a prompt's tags; an
@@ -794,8 +794,8 @@ unchanged; the new agents are additive.
       button that sets the text filter — "which prompts touched this file" in
       one click. A delivered row without files yet says so.
     Frontend: `components/agents/AgentSchedulesView.tsx`,
-    `components/layout/AgentScheduleHost.tsx`, `lib/agentPromptTags.ts` (new),
-    `lib/agentPromptFilter.ts`, `stores/agentPrompts.ts`,
+    `components/layout/AgentScheduleHost.tsx`, `lib/agents/prompt/tags.ts` (new),
+    `lib/agents/prompt/filter.ts`, `stores/agentPrompts.ts`,
     `styles/projects-tabs.css`, `lib/i18n.ts` + the four dictionaries.
     Backend: `services/prompt_blame.rs` (new), `services/agent_prompts.rs`,
     `schema/agent_prompts.rs`, `commands/agent_prompts.rs`, `lib.rs` — so tags
@@ -829,7 +829,7 @@ unchanged; the new agents are additive.
     - **A new Scheduled prompts section** between the library and Sent prompts.
       A prompt with a live rule leaves the library and reads here with what it
       is waiting for (which tabs carry it, when it next fires). The link is
-      still `lib/agentPromptScheduled`'s key — the prompt's own text — so
+      still `lib/agents/prompt/scheduled`'s key — the prompt's own text — so
       deleting the rule brings the prompt back to the library rather than
       needing anything kept in step.
     - **A one-time delivery retires the prompt.** `AgentScheduleHost`'s retire
@@ -1191,7 +1191,7 @@ unchanged; the new agents are additive.
       live rule is not offered to a draft — picker, timeline drop, Send and
       Schedule all point at linking After it instead; a rule keeps its own tab;
       the ◷ Schedules dialog only warns. `occupiedTargets` in
-      `lib/agentPromptChart`; plan §12.
+      `lib/agents/prompt/chart`; plan §12.
       - [ ] 🖐️ Manual test — with a rule on the Claude tab, a draft's picker
         must list only the other tabs; drop the draft on the timeline and it
         lands on a free tab; aim a draft at the Claude tab first (before the
@@ -1372,14 +1372,14 @@ unchanged; the new agents are additive.
     captured `/command` output, Codex's injected context — and reading a slash
     command as `/model opus` and a `!` line with its `!`. Re-read when a tab
     turns busy (a prompt was just submitted) and when it finishes. A prompt that
-    *changed* at a turn's start was typed, and `lib/agentPromptAdopt` records it
+    *changed* at a turn's start was typed, and `lib/agents/prompt/adopt` records it
     on the prompt history as delivered to that tab — the row the chart draws a
     sent card from — unless the tab's newest history row already says it, so a
     composer or scheduled send is never recorded twice; the first read of a tab
     is a baseline, never a record. An agent whose transcript Eldrun cannot read
     (Gemini, Qwen, Codex 0.153.4 whose thread store keeps no messages, a custom
     command) gets the prompt echoed on the pane's own screen instead
-    (`lib/agentPromptEcho` over `lib/terminalRegistry`, parsed by the phone's
+    (`lib/agents/prompt/echo` over `lib/terminalRegistry`, parsed by the phone's
     own `readableScreen`/`inputFrameStart`/`chatTurns`, so a draft still being
     typed is never taken for a prompt). Built 2026-09-07, **not live-tested**; the Rust side is uncompiled on
     the GNOME host (no toolchain) — CI compiles it.

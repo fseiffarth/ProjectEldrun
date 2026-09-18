@@ -1,4 +1,4 @@
-import { splitPreface } from "./agentPrefaces";
+import { splitPreface } from "../../agentPrefaces";
 
 export interface PromptAutoTagInput {
   message: string;

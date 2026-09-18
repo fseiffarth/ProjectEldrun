@@ -1,4 +1,4 @@
-import { PROMPT_CHART_WINDOWS, type PromptChartFilter, type PromptChartWindow } from "../../lib/agentPromptChart";
+import { PROMPT_CHART_WINDOWS, type PromptChartFilter, type PromptChartWindow } from "../../lib/agents/prompt/chart";
 import { useT } from "../../lib/i18n";
 import { Dropdown } from "../common/Dropdown";
 

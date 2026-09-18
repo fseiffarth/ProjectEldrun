@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { PromptChartCard } from "../lib/agentPromptChart";
-import { timelineGroupDrop, timelineGroupMovable, timelineWindow } from "../lib/agentPromptTimeline";
+import type { PromptChartCard } from "../lib/agents/prompt/chart";
+import { timelineGroupDrop, timelineGroupMovable, timelineWindow } from "../lib/agents/prompt/timeline";
 
 const now = new Date(2026, 8, 4, 12, 2, 0);
 const win = timelineWindow("day", "2026-09-04", 1);

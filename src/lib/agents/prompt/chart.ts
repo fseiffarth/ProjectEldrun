@@ -4,16 +4,16 @@ import {
   nextScheduleOccurrence,
   scheduleStatus,
   type ScheduledAgentPrompt,
-} from "./agentSchedule";
-import { promptOfSchedule } from "./agentPromptScheduled";
-import { shortModelName } from "./agentModel";
-import { agentPromptAutoTags } from "./agentPromptAutoTags";
-import { matchesTagsOrText } from "./agentPromptTags";
+} from "../../agentSchedule";
+import { promptOfSchedule } from "./scheduled";
+import { shortModelName } from "../../agentModel";
+import { agentPromptAutoTags } from "./autoTags";
+import { matchesTagsOrText } from "./tags";
 import type {
   ProjectAgentPrompt,
   PromptLink,
   SentAgentPrompt,
-} from "../stores/agentPrompts";
+} from "../../../stores/agentPrompts";
 
 export type PromptCardState = "draft" | "scheduled" | "queued" | "sent" | "chained";
 

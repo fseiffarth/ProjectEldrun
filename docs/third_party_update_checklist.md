@@ -82,7 +82,7 @@ Build, not the third-party `@vibe-kit/grok-cli` it used to.
   last session" flags used on relaunch/restore.
 - `src/lib/agentPrefaces.ts` — default slash commands offered per agent
   (`/clear`, `/compact`, `/new`, `/status`, …) and `DEFAULT_AGENT_MODELS`.
-- `src/lib/agentPrompt.ts` — `looksLikeDecisionPrompt`: the regexes that turn a
+- `src/lib/agents/prompt/prompt.ts` — `looksLikeDecisionPrompt`: the regexes that turn a
   tab's output tail into the "needs a decision" lamp (pointer glyphs, numbered
   choices, yes/no pairs). Every agent's approval prompt has to keep matching.
 - `mobile-web/src/terminal/{agentModes,statusLine,selectPrompt,readableScreen}.ts`
@@ -255,7 +255,7 @@ aliases, and anything about where or how credentials are stored.
 `register_codex_hook`, `codex_hook_state`), `services/codex_bind.rs`,
 `src/lib/codexHooks.ts`, `commands/ollama.rs` (`non_thinking_args`,
 `write_local_catalog`), `mobile-web/src/terminal/agentModes.ts`,
-`src/lib/agentPrompt.ts` + `src/stores/activity.ts` (the decision lamp).
+`src/lib/agents/prompt/prompt.ts` + `src/stores/activity.ts` (the decision lamp).
 
 **Assumes**
 

@@ -1,5 +1,5 @@
-import type { PromptChartCard } from "./agentPromptChart";
-import type { PromptLink } from "../stores/agentPrompts";
+import type { PromptChartCard } from "./chart";
+import type { PromptLink } from "../../../stores/agentPrompts";
 
 /** Resolve the whole draft sequence from any member. Only one incoming
  * dependency per card is supported by the delivery runtime. Cycles and joins

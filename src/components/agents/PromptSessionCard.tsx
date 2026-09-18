@@ -2,8 +2,8 @@ import { useState, type PointerEvent as ReactPointerEvent } from "react";
 import { toDateStr } from "../../lib/calendar/calendarTime";
 import { useI18nStore, useT } from "../../lib/i18n";
 import { useUse24h } from "../../lib/timeFormat";
-import type { PromptChartCard } from "../../lib/agentPromptChart";
-import { formatTimelineInstant } from "../../lib/agentPromptTimeline";
+import type { PromptChartCard } from "../../lib/agents/prompt/chart";
+import { formatTimelineInstant } from "../../lib/agents/prompt/timeline";
 import { CARD_OWN_KEYS } from "./PromptCard";
 
 interface Props {

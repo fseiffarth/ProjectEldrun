@@ -1,10 +1,10 @@
 import { useEffect, useState, type PointerEvent as ReactPointerEvent } from "react";
-import { formatTags, parseTags } from "../../lib/agentPromptTags";
+import { formatTags, parseTags } from "../../lib/agents/prompt/tags";
 import { useI18nStore, useT } from "../../lib/i18n";
 import { useUse24h } from "../../lib/timeFormat";
 import { localWallClock } from "../../lib/agentSchedule";
-import type { PromptChartCard } from "../../lib/agentPromptChart";
-import { formatTimelineInstant } from "../../lib/agentPromptTimeline";
+import type { PromptChartCard } from "../../lib/agents/prompt/chart";
+import { formatTimelineInstant } from "../../lib/agents/prompt/timeline";
 import type { PromptLink } from "../../stores/agentPrompts";
 import { Dropdown } from "../common/Dropdown";
 import { MarkdownPromptField } from "../common/MarkdownPromptField";
@@ -51,7 +51,7 @@ interface Props {
    *  prompt: the picker no longer lists it, and the card says why. */
   targetBlocked?: string;
   /** For a draft: the picker's first, default choice — a new agent tab
-   *  running the chart's agent (`lib/agentPromptNewTab`). Its value is the
+   *  running the chart's agent (`lib/agents/prompt/newTab`). Its value is the
    *  empty target, so an unaimed draft selects it, and Send opens the tab. */
   newTabLabel?: string;
   register?: (node: HTMLElement | null) => void;

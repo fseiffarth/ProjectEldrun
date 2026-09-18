@@ -1,6 +1,6 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
-import type { PromptChartCard } from "../../lib/agentPromptChart";
-import { parseTags } from "../../lib/agentPromptTags";
+import type { PromptChartCard } from "../../lib/agents/prompt/chart";
+import { parseTags } from "../../lib/agents/prompt/tags";
 import { useT } from "../../lib/i18n";
 import { MarkdownPromptField } from "../common/MarkdownPromptField";
 import type { ChartDrag } from "./usePromptChartDrag";

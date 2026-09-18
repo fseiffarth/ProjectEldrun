@@ -11,7 +11,7 @@ import {
   isSentFilterActive,
   sentAgents,
   sentTags,
-} from "../lib/agentPromptFilter";
+} from "../lib/agents/prompt/filter";
 import { dropSlot, reorderedIds } from "../lib/listReorder";
 import type { SentAgentPrompt } from "../stores/agentPrompts";
 

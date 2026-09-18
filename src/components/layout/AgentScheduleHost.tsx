@@ -1,9 +1,9 @@
 import { useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { deliveryRecordId, isFinishedOneTime } from "../../lib/agentPromptSend";
-import { promptOfSchedule } from "../../lib/agentPromptScheduled";
-import { nextAfter } from "../../lib/agentPromptLinks";
+import { deliveryRecordId, isFinishedOneTime } from "../../lib/agents/prompt/send";
+import { promptOfSchedule } from "../../lib/agents/prompt/scheduled";
+import { nextAfter } from "../../lib/agents/prompt/links";
 import {
   scheduleVerdict,
   sortSchedules,

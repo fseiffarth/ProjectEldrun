@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { agentItemFor, newAgentTabForDraft, promptChartNewTabAgent } from "../lib/agentPromptNewTab";
+import { agentItemFor, newAgentTabForDraft, promptChartNewTabAgent } from "../lib/agents/prompt/newTab";
 
 const t = (key: string) => key;
 

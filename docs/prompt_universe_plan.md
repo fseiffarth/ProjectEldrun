@@ -155,7 +155,7 @@ export function buildUniverse(input: UniverseInput): UniverseScope[];
 export function universeJobMatches(job: UniverseJob, filter: UniverseFilter): boolean;
 ```
 
-The card half **delegates to `buildPromptChart`** (`src/lib/agentPromptChart.ts`),
+The card half **delegates to `buildPromptChart`** (`src/lib/agents/prompt/chart.ts`),
 once per scope, with the strands that module already builds — a second derivation
 of what "queued" means would be a second answer to one question. Reuse
 `isPromptTargetTab` (exported by `PromptChartTab.tsx`) as the agent-tab predicate,

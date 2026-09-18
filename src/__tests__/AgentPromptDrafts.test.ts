@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { buildPromptChart } from "../lib/agentPromptChart";
-import { draftSequence } from "../lib/agentPromptDrafts";
-import { timelineItems, timelineWindow } from "../lib/agentPromptTimeline";
+import { buildPromptChart } from "../lib/agents/prompt/chart";
+import { draftSequence } from "../lib/agents/prompt/drafts";
+import { timelineItems, timelineWindow } from "../lib/agents/prompt/timeline";
 import type { PromptLink } from "../stores/agentPrompts";
 
 const now = new Date(2026, 8, 15, 10);

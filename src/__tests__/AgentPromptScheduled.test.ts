@@ -4,7 +4,7 @@
  * and stop saying it the moment the rule stops being one.
  */
 import { describe, expect, it } from "vitest";
-import { promptScheduleKey, scheduledPromptMarks } from "../lib/agentPromptScheduled";
+import { promptScheduleKey, scheduledPromptMarks } from "../lib/agents/prompt/scheduled";
 import type { ScheduledAgentPrompt } from "../lib/agentSchedule";
 
 const now = new Date("2026-09-02T10:00:00");

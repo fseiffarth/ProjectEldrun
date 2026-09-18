@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import { create } from "zustand";
-import { looksLikeDecisionPromptStripped, stripAnsi } from "../lib/agentPrompt";
+import { looksLikeDecisionPromptStripped, stripAnsi } from "../lib/agents/prompt/prompt";
 import { METRIC, agentPromptLeaf } from "../lib/usageMetrics";
 import { splitPtyId } from "../lib/ptyId";
 import { allGroups, isPtyTabKind, useTabsStore } from "./tabs";

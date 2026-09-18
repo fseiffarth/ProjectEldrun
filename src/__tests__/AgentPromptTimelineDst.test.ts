@@ -11,7 +11,7 @@
  * only there — the suite is skipped, with a warning saying why.
  */
 import { afterAll, describe, expect, it } from "vitest";
-import { shiftAnchor, timelineTicks, timelineWindow } from "../lib/agentPromptTimeline";
+import { shiftAnchor, timelineTicks, timelineWindow } from "../lib/agents/prompt/timeline";
 
 // The app's tsconfig carries no Node types; the test runner is Node all the same.
 const { process } = globalThis as unknown as {

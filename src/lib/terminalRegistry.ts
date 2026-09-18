@@ -2,7 +2,7 @@ import type { Terminal } from "@xterm/xterm";
 
 /**
  * The live xterm behind each terminal pane, by composed PTY id — so a store
- * can read what a tab has on screen (`lib/agentPromptEcho`) without the pane
+ * can read what a tab has on screen (`lib/agents/prompt/echo`) without the pane
  * handing its terminal around. `TerminalView` registers the terminal the
  * moment it owns one and retires it with the same teardown that clears its
  * own refs, so an entry here is a live terminal or nothing. Per window: a

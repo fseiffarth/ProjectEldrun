@@ -1,6 +1,6 @@
-import { useAgentPromptsStore, type SentAgentPrompt } from "../stores/agentPrompts";
-import { isSessionCommand } from "./agentPromptChart";
-import type { TabEntry } from "../stores/tabs";
+import { useAgentPromptsStore, type SentAgentPrompt } from "../../../stores/agentPrompts";
+import { isSessionCommand } from "./chart";
+import type { TabEntry } from "../../../stores/tabs";
 
 /**
  * Prompts typed straight into an agent's terminal, adopted into the prompt
@@ -135,7 +135,7 @@ export async function adoptTranscriptPrompts(scope: string, tab: TabEntry, promp
 
 /** Record `prompt` as delivered to `tab` unless it is already the tab's
  * newest history row, or a session command (`/rename …`, `/model …`, any
- * bare `/command` — `lib/agentPromptChart.isSessionCommand`). Never throws: a prompt the
+ * bare `/command` — `lib/agents/prompt/chart.isSessionCommand`). Never throws: a prompt the
  * history cannot take is still shown in the Agents view. */
 export async function adoptTypedPrompt(scope: string, tab: TabEntry, prompt: string): Promise<void> {
   if (isSessionCommand(prompt)) return;

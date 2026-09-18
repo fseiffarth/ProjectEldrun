@@ -1,13 +1,13 @@
 import { useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { bindDragRelease, dragPlatform } from "../../lib/dragPlatform";
-import type { PromptChartCard } from "../../lib/agentPromptChart";
+import type { PromptChartCard } from "../../lib/agents/prompt/chart";
 import {
   timelineHitZone,
   type TimelineRect,
   type TimelineRects,
   type TimelineWindow,
   type TimelineZone,
-} from "../../lib/agentPromptTimeline";
+} from "../../lib/agents/prompt/timeline";
 
 /** How far the pointer must travel before a press becomes a drag. */
 export const PROMPT_DRAG_THRESHOLD = 5;

@@ -24,7 +24,7 @@ it has a `session_id` **and** its command is one of `claude codex qwen opencode
 copilot cursor-agent grok gemini agy vibe` (or it carries its own resume args).
 Aider, Goose, Crush, Kimi, Pi, Amp, mini and the rest never appear on the phone
 until that gate widens. The screen parsers still serve the desktop's
-last-prompt line (`src/lib/agentPromptEcho.ts`) for every agent.
+last-prompt line (`src/lib/agents/prompt/echo.ts`) for every agent.
 
 Families in `agentModes` are matched on `agent_label`, which is the tab's
 **label** — renamable by the user. `SavedTab.cmd` is already read by discovery;

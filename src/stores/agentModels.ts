@@ -1,8 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { create } from "zustand";
 import { shortModelName } from "../lib/agentModel";
-import { adoptTranscriptPrompts, adoptTypedPrompt, type TranscriptPrompt } from "../lib/agentPromptAdopt";
-import { lastPromptEcho } from "../lib/agentPromptEcho";
+import { adoptTranscriptPrompts, adoptTypedPrompt, type TranscriptPrompt } from "../lib/agents/prompt/adopt";
+import { lastPromptEcho } from "../lib/agents/prompt/echo";
 import { terminalFor } from "../lib/terminalRegistry";
 import { splitPtyId } from "../lib/ptyId";
 import { useActivityStore } from "./activity";
@@ -21,14 +21,14 @@ import { useTabsStore, type TabEntry } from "./tabs";
  * submitted), so the transcript is the one honest source for both. An agent
  * whose transcript Eldrun cannot read (Gemini, Qwen, Codex on a release that
  * keeps no messages) falls back to the prompt echoed on the pane's own screen
- * (`lib/agentPromptEcho`) — the same parse the phone's Focus chat does. They
+ * (`lib/agents/prompt/echo`) — the same parse the phone's Focus chat does. They
  * are re-read whenever a tab starts a turn (the activity store's `busyByTab` edge
  * — a prompt was just submitted) and whenever it finishes one (`lastDoneByTab`
  * — the only moment the model can change), and on demand from the views that
  * show them, throttled so a 30-second tick and a 5-second phone poll cost one
  * tail read between them. A prompt that *changed* at a turn's start was
  * submitted by a route Eldrun did not see — typed into the terminal — and is
- * adopted into the prompt history (`lib/agentPromptAdopt`), which is what the
+ * adopted into the prompt history (`lib/agents/prompt/adopt`), which is what the
  * prompt chart draws; one Eldrun sent itself is already there and is not
  * recorded twice.
  */

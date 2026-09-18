@@ -430,7 +430,7 @@ function projectAgentPrompts(projectId: string): AgentTabPrompts[] {
     const ptyId = `${projectId}:${tab.key}`;
     const recent = models.recentByTab[ptyId] ?? [];
     // With no readable transcript the store still knows the last prompt off the
-    // pane's own screen (`lib/agentPromptEcho`); it carries no time, and a row
+    // pane's own screen (`lib/agents/prompt/echo`); it carries no time, and a row
     // without one is honest about that rather than inventing the read's.
     const fallback = models.promptByTab[ptyId];
     const prompts: AgentTabPrompt[] = recent.length

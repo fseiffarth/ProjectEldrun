@@ -6,7 +6,7 @@ import {
   rowOnStrand,
   snapPromptTime,
   type PromptChartStrand,
-} from "../lib/agentPromptChart";
+} from "../lib/agents/prompt/chart";
 import type { SentAgentPrompt } from "../stores/agentPrompts";
 
 const now = new Date(2026, 8, 4, 12, 2, 0);

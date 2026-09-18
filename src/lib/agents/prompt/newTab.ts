@@ -1,8 +1,8 @@
-import { buildPreface } from "./agentPrefaces";
-import type { TabEntry } from "../stores/tabs";
-import type { CustomAgent, Settings } from "../types";
-import { AGENT_ITEMS, buildStaticTabSpec, customAgentToItem, type StaticMenuItem } from "../components/tabs/newTabItems";
-import type { TranslationKey } from "./i18n";
+import { buildPreface } from "../../agentPrefaces";
+import type { TabEntry } from "../../../stores/tabs";
+import type { CustomAgent, Settings } from "../../../types";
+import { AGENT_ITEMS, buildStaticTabSpec, customAgentToItem, type StaticMenuItem } from "../../../components/tabs/newTabItems";
+import type { TranslationKey } from "../../i18n";
 
 /**
  * A prompt-chart draft with no tab of its own goes to a NEW agent tab. The

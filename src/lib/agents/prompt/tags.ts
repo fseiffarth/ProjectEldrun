@@ -8,10 +8,10 @@
  * runs on both sides (`services::agent_prompts::normalize_tag`), so what the
  * editor shows is what the file stores.
  *
- * Pure, like `lib/agentPromptFilter`: the view holds the filter state and this
+ * Pure, like `lib/agents/prompt/filter`: the view holds the filter state and this
  * decides what it means.
  */
-import type { ProjectAgentPrompt } from "../stores/agentPrompts";
+import type { ProjectAgentPrompt } from "../../../stores/agentPrompts";
 
 /** Mirrors the backend's caps: 16 tags per prompt, and a tag is a token. */
 export const MAX_TAGS = 16;

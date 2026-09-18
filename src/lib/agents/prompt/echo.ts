@@ -1,7 +1,7 @@
-import { chatTurns } from "../../mobile-web/src/terminal/chatTurns";
-import { readableScreen, readableText, type ReadableBufferLike } from "../../mobile-web/src/terminal/readableScreen";
-import { inputFrameStart } from "../../mobile-web/src/terminal/statusLine";
-import { foldPrompt } from "./agentPromptAdopt";
+import { chatTurns } from "../../../../mobile-web/src/terminal/chatTurns";
+import { readableScreen, readableText, type ReadableBufferLike } from "../../../../mobile-web/src/terminal/readableScreen";
+import { inputFrameStart } from "../../../../mobile-web/src/terminal/statusLine";
+import { foldPrompt } from "./adopt";
 
 /**
  * The last prompt echoed on an agent tab's screen — the fallback for an

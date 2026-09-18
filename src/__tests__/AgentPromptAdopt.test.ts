@@ -4,8 +4,8 @@ import { invoke } from "@tauri-apps/api/core";
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(() => Promise.resolve([])) }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(() => Promise.resolve(() => {})), emit: vi.fn(() => Promise.resolve()) }));
 
-import { alreadyRecorded, foldPrompt, promptsToAdopt } from "../lib/agentPromptAdopt";
-import { isSessionCommand } from "../lib/agentPromptChart";
+import { alreadyRecorded, foldPrompt, promptsToAdopt } from "../lib/agents/prompt/adopt";
+import { isSessionCommand } from "../lib/agents/prompt/chart";
 import { useActivityStore } from "../stores/activity";
 import { useAgentModelsStore } from "../stores/agentModels";
 import { useAgentPromptsStore, type SentAgentPrompt } from "../stores/agentPrompts";

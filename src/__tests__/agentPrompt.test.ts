@@ -5,7 +5,7 @@
  * available for a tab whose pane has never been opened.
  */
 import { describe, it, expect } from "vitest";
-import { looksLikeDecisionPrompt, stripAnsi } from "../lib/agentPrompt";
+import { looksLikeDecisionPrompt, stripAnsi } from "../lib/agents/prompt/prompt";
 
 describe("looksLikeDecisionPrompt", () => {
   it("detects a pointer + numbered choice (Claude/Codex approval menu)", () => {
