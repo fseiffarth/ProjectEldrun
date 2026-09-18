@@ -1784,7 +1784,7 @@ dependencies = [
 
 [[package]]
 name = "eldrun"
-version = "0.1.73"
+version = "0.1.74"
 dependencies = [
  "ammonia",
  "arboard",
