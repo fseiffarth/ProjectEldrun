@@ -198,12 +198,16 @@ role, so a reader must never take `user` alone for a prompt.
 
 ## Registry and checklist drift found
 
-- Kiro's binary is `kiro-cli`, not `kiro`.
-- Kimi's install script installs the deprecated Python kimi-cli; Kimi Code is
-  `code.kimi.com/kimi-code/install.sh` (still `kimi`). Kimi has `-c` / `-S`.
+Fixed in the registry on 2026-09-18 — Kiro's binary (`kiro-cli`), Kimi's
+installer (`code.kimi.com/kimi-code/install.sh`), Amp's package
+(`@ampcode/cli`) and the `grok` row, which installed the third-party
+`@vibe-kit/grok-cli` rather than xAI's own Grok Build. Mentat, GPT Engineer and
+the OpenHands CLI were retired the same day.
+
+Still open:
+
 - Pi moved to `@earendil-works/pi-coding-agent`; it has `-c`, `--session`,
   `--session-id`. Crush has `-C` / `-s`.
-- Amp's npm package is now `@ampcode/cli`.
-- Two CLIs install as `grok`; both use `~/.grok`.
-- Mentat, GPT Engineer and Plandex are archived or wound down; SWE-agent is
-  batch-only; OpenHands CLI says it is no longer maintained.
+- Kimi has `-c` / `-S`; neither is wired as a resume flag.
+- Plandex's cloud wound down (the OSS repo still moves); SWE-agent is
+  batch-only, so it is a terminal command rather than a chat tab.

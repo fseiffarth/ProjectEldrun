@@ -676,7 +676,7 @@ current integration state.
 | **Vibe** (`vibe`) | Continues the latest saved session. | Pending. |
 | **Ollama via Vibe** | Isolated per-model `VIBE_HOME`; continue-latest where a resumable tab is available. | Partial. |
 | **Qwen, OpenCode, Copilot, Cursor, Grok, Antigravity** | CLI-specific continue-latest flags. | Pending. |
-| **Kiro, Cline, Aider, OpenClaw, Goose, OpenHands, Pi, Plandex, SWE-agent, Mini SWE-agent, Mentat, GPT Engineer, Crush, Amp, Kimi, Qoder, Muse Code** | Launch support; no built-in tab restore path. | Pending. |
+| **Kiro, Cline, Aider, OpenClaw, Goose, Pi, Plandex, SWE-agent, Mini SWE-agent, Crush, Amp, Kimi, Qoder, Muse Code** | Launch support; no built-in tab restore path. | Pending. |
 | **Custom agents** | Optional resume arguments supplied by the user. | Depends on the command. |
 | **Shell** | Respawns an ordinary shell or reattaches its tmux session where configured. | Core tab use confirmed. |
 

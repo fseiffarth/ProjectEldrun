@@ -39,10 +39,26 @@ tool does that; the **Verify** steps say how without needing a window.
 
 The registry in `src-tauri/src/commands/agents.rs` (`AGENTS`) is the one list of
 installable agents: Claude, Codex, Antigravity, Gemini, Kiro, Cline, Vibe,
-Aider, OpenCode, Cursor, Copilot, Grok, Qwen, OpenClaw, Goose, OpenHands, Pi,
-Plandex, SWE-agent, mini-SWE-agent, Mentat, gpt-engineer, Crush, Amp, Kimi,
-Qoder. Everything below applies per agent; the agent-specific sections that
-follow list what is *additionally* coupled.
+Aider, OpenCode, Cursor, Copilot, Grok, Qwen, OpenClaw, Goose, Pi, Plandex,
+SWE-agent, mini-SWE-agent, Crush, Amp, Kimi, Qoder, Muse. Everything below
+applies per agent; the agent-specific sections that follow list what is
+*additionally* coupled.
+
+**Retired, 2026-09-18.** Mentat (repo archived), gpt-engineer (archived
+2026-04-22, and pinned below Python 3.13) and the OpenHands CLI (upstream says
+it is no longer actively maintained and points at Agent Canvas, a self-hosted
+platform rather than a terminal agent) left the registry. Their metric leaves
+stay in `src/lib/usageMetrics.ts`, which is a decode table for counters already
+written, not a roster. Two more are on watch: Plandex's cloud wound down in
+Oct 2025 (the OSS repo still moves), and Gemini CLI stopped serving free,
+AI Pro and AI Ultra accounts on 2026-06-18 — it still works on a paid API key
+or Code Assist Standard/Enterprise, and Antigravity (`agy`) is Google's
+successor, already in the registry.
+
+**Two names that are not the obvious one.** Kiro installs as `kiro-cli` (it is
+the renamed Amazon Q Developer CLI, so no separate `q` row is needed), and two
+different CLIs install as `grok` — the registry now installs xAI's own Grok
+Build, not the third-party `@vibe-kit/grok-cli` it used to.
 
 **Where**
 

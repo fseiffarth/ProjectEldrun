@@ -5043,7 +5043,7 @@ export function isPtyTabKind(kind: TabKind): boolean {
  *
  *  - id-based: Claude (`--resume <id>`) and Codex (`codex resume`, args injected
  *    by the backend) resume a *specific* captured session.
- *  - cwd "continue last": Qwen, OpenCode, Copilot, Cursor, Gemini,
+ *  - cwd "continue last": Qwen, OpenCode, Copilot, Cursor, Gemini, Grok,
  *    Google Antigravity and Mistral/vibe have no caller-supplied launch id, so
  *    Eldrun re-launches with their "continue the most recent session" flag.
  *    Because each agent tab
@@ -5068,8 +5068,11 @@ export const RESUMABLE_AGENTS: Record<string, (id: string) => string[]> = {
   opencode: () => ["--continue"],
   copilot: () => ["--continue"],
   "cursor-agent": () => ["--continue"],
-  // Grok is absent: `@vibe-kit/grok-cli` (0.0.34) saves no conversation and
-  // rejects `--session`, so a "resumed" tab exited on "unknown option".
+  // Grok Build (xAI's own CLI, which replaced the third-party `grok-cli` this
+  // registry used to install): `-c/--continue` takes the most recent session
+  // of the current directory. Its `--resume <id>` wants Grok's own session id,
+  // which a launch cannot supply, so it is continue-last like the others.
+  grok: () => ["--continue"],
   // Gemini's `--resume` takes "latest" (or an index), not a uuid, so it can only
   // continue the project's most-recent session — not the specific one its launch
   // `--session-id <uuid>` minted. That makes it continue-last like the others.

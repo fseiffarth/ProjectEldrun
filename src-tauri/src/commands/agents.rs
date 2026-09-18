@@ -1,7 +1,7 @@
 //! Agent-CLI management: detect and install the AI coding-agent command-line
 //! tools Eldrun can launch as agent tabs. The registry covers the major hosted,
 //! open-source, and provider-agnostic terminal agents (Claude, Codex, Gemini,
-//! Kiro, Cline, Goose, OpenHands, Pi, and more).
+//! Kiro, Cline, Goose, Pi, and more).
 //!
 //! This mirrors the local-model install flow in `commands::ollama` (see
 //! `install_vibe`), but is registry-driven so the set of agents lives in one
@@ -120,10 +120,15 @@ const AGENTS: &[AgentSpec] = &[
     AgentSpec {
         id: "kiro",
         label: "Kiro",
-        bin: "kiro",
+        // `kiro-cli`, not `kiro`: this installer is the renamed Amazon Q
+        // Developer CLI and it keeps that executable name (the `q`/`q chat`
+        // entry points still work too). Probing `kiro` reported every
+        // installed Kiro as missing, and launched a tab on a command that is
+        // not there.
+        bin: "kiro-cli",
         install_cmd: "curl -fsSL https://cli.kiro.dev/install | bash",
         install_cmd_windows: None,
-        extra_paths: &[".local/bin/kiro"],
+        extra_paths: &[".local/bin/kiro-cli"],
         docs: "https://kiro.dev/docs/cli/installation/",
     },
     AgentSpec {
@@ -193,10 +198,14 @@ const AGENTS: &[AgentSpec] = &[
         id: "grok",
         label: "Grok",
         bin: "grok",
-        install_cmd: "npm install -g @vibe-kit/grok-cli",
-        install_cmd_windows: Some("npm install -g @vibe-kit/grok-cli"),
-        extra_paths: &[".local/bin/grok"],
-        docs: "https://github.com/superagent-ai/grok-cli",
+        // xAI's own Grok Build, not `@xai-official/grok` — the third-party
+        // client this row used to install. Both install as `grok`, which is
+        // what made the wrong one invisible: a stale 0.0.34 that keeps no
+        // conversation, where the vendor CLI has shipped 1.0.x since Aug 2026.
+        install_cmd: "curl -fsSL https://x.ai/cli/install.sh | bash",
+        install_cmd_windows: Some("npm install -g @xai-official/grok"),
+        extra_paths: &[".grok/bin/grok"],
+        docs: "https://docs.x.ai/build/overview",
     },
     AgentSpec {
         id: "qwen",
@@ -224,15 +233,6 @@ const AGENTS: &[AgentSpec] = &[
         install_cmd_windows: None,
         extra_paths: &[".local/bin/goose"],
         docs: "https://github.com/aaif-goose/goose",
-    },
-    AgentSpec {
-        id: "openhands",
-        label: "OpenHands",
-        bin: "openhands",
-        install_cmd: "curl -fsSL https://install.openhands.dev/install.sh | sh",
-        install_cmd_windows: None,
-        extra_paths: &[".local/bin/openhands"],
-        docs: "https://docs.openhands.dev/openhands/usage/cli/installation",
     },
     AgentSpec {
         id: "pi",
@@ -271,24 +271,6 @@ const AGENTS: &[AgentSpec] = &[
         docs: "https://mini-swe-agent.com/latest/quickstart/",
     },
     AgentSpec {
-        id: "mentat",
-        label: "Mentat",
-        bin: "mentat",
-        install_cmd: "pip install mentat",
-        install_cmd_windows: Some("pip install mentat"),
-        extra_paths: &[".local/bin/mentat"],
-        docs: "https://github.com/biobootloader/mentat",
-    },
-    AgentSpec {
-        id: "gpt-engineer",
-        label: "GPT Engineer",
-        bin: "gpte",
-        install_cmd: "pip install gpt-engineer",
-        install_cmd_windows: Some("pip install gpt-engineer"),
-        extra_paths: &[".local/bin/gpte"],
-        docs: "https://github.com/AntonOsika/gpt-engineer",
-    },
-    AgentSpec {
         id: "crush",
         label: "Crush",
         bin: "crush",
@@ -301,8 +283,8 @@ const AGENTS: &[AgentSpec] = &[
         id: "amp",
         label: "Amp",
         bin: "amp",
-        install_cmd: "npm install -g @sourcegraph/amp",
-        install_cmd_windows: Some("npm install -g @sourcegraph/amp"),
+        install_cmd: "npm install -g @ampcode/cli",
+        install_cmd_windows: Some("npm install -g @ampcode/cli"),
         extra_paths: &[],
         docs: "https://ampcode.com/",
     },
@@ -310,10 +292,14 @@ const AGENTS: &[AgentSpec] = &[
         id: "kimi",
         label: "Kimi Code",
         bin: "kimi",
-        install_cmd: "curl -LsSf https://code.kimi.com/install.sh | bash",
-        install_cmd_windows: Some("Invoke-RestMethod https://code.kimi.com/install.ps1 | Invoke-Expression"),
-        extra_paths: &[".local/bin/kimi"],
-        docs: "https://github.com/MoonshotAI/kimi-cli",
+        // `/kimi-code/`, not the bare host path: that one serves the
+        // deprecated Python `kimi-cli` (whose own installer renames it to
+        // `kimi-legacy` when Kimi Code lands beside it). Both put `kimi` in
+        // `~/.kimi-code/bin`.
+        install_cmd: "curl -LsSf https://code.kimi.com/kimi-code/install.sh | bash",
+        install_cmd_windows: Some("Invoke-RestMethod https://code.kimi.com/kimi-code/install.ps1 | Invoke-Expression"),
+        extra_paths: &[".kimi-code/bin/kimi", ".local/bin/kimi"],
+        docs: "https://code.kimi.com/kimi-code",
     },
     AgentSpec {
         id: "qoder",
@@ -1627,25 +1613,19 @@ mod tests {
         let expected = [
             (
                 "kiro",
-                "kiro",
+                "kiro-cli",
                 "curl -fsSL https://cli.kiro.dev/install | bash",
             ),
             ("cline", "cline", "npm install -g cline"),
             ("goose", "goose", "https://github.com/aaif-goose/goose/"),
-            (
-                "openhands",
-                "openhands",
-                "https://install.openhands.dev/install.sh",
-            ),
             ("pi", "pi", "npm install -g @mariozechner/pi-coding-agent"),
             ("plandex", "plandex", "https://plandex.ai/install.sh"),
             ("swe-agent", "sweagent", "pip install swe-agent"),
             ("mini-swe-agent", "mini", "pip install mini-swe-agent"),
-            ("mentat", "mentat", "pip install mentat"),
-            ("gpt-engineer", "gpte", "pip install gpt-engineer"),
             ("crush", "crush", "npm install -g @charmland/crush"),
-            ("amp", "amp", "npm install -g @sourcegraph/amp"),
-            ("kimi", "kimi", "https://code.kimi.com/install.sh"),
+            ("amp", "amp", "npm install -g @ampcode/cli"),
+            ("grok", "grok", "https://x.ai/cli/install.sh"),
+            ("kimi", "kimi", "https://code.kimi.com/kimi-code/install.sh"),
             ("qoder", "qoder", "https://qoder.com/install"),
             ("muse", "muse", "https://dev.meta.ai/install.sh"),
         ];
@@ -1731,19 +1711,19 @@ mod tests {
     #[test]
     fn sudo_variant_only_covers_plain_npm_commands() {
         assert_eq!(
-            sudo_variant("npm install -g @vibe-kit/grok-cli"),
+            sudo_variant("npm install -g @xai-official/grok"),
             if cfg!(windows) {
                 String::new()
             } else {
-                "sudo npm install -g @vibe-kit/grok-cli".to_string()
+                "sudo npm install -g @xai-official/grok".to_string()
             }
         );
         assert_eq!(
-            sudo_variant("npm uninstall -g @vibe-kit/grok-cli"),
+            sudo_variant("npm uninstall -g @xai-official/grok"),
             if cfg!(windows) {
                 String::new()
             } else {
-                "sudo npm uninstall -g @vibe-kit/grok-cli".to_string()
+                "sudo npm uninstall -g @xai-official/grok".to_string()
             }
         );
         // A curl/irm/pip installer targets the user's own home directory —

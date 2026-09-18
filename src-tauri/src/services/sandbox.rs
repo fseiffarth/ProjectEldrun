@@ -1848,6 +1848,8 @@ const CONTINUE_AGENT_SESSION_STORES: &[&str] = &[
     ".cursor/chats",
     // Mistral Vibe: `logs/session/` (under `$VIBE_HOME`, default `~/.vibe`).
     ".vibe/logs",
+    // Grok Build: `sessions/<working dir>/`.
+    ".grok/sessions",
 ];
 
 /// Durable, scope-local top level for Codex's mutable databases. It is outside

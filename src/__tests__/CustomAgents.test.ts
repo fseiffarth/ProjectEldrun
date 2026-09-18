@@ -135,9 +135,8 @@ describe("expanded built-in agents", () => {
   it("offers each newly managed agent under its executable name", () => {
     const cmds = new Set(AGENT_ITEMS.map((item) => item.cmd));
     expect([
-      "kiro", "cline", "goose", "openhands", "pi", "plandex", "sweagent",
-      "mini", "mentat", "gpte", "crush", "amp", "kimi", "qoder",
-      "muse",
+      "kiro-cli", "cline", "goose", "pi", "plandex", "sweagent",
+      "mini", "crush", "amp", "kimi", "qoder", "muse",
     ].every((cmd) => cmds.has(cmd))).toBe(true);
   });
 });

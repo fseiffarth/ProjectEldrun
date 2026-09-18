@@ -96,6 +96,9 @@ const AGENT_LABELS: Record<string, string> = {
   gemini: "Google Gemini",
   agy: "Google Antigravity",
   vibe: "Mistral",
+  // Kiro's executable was renamed `kiro-cli`; the old leaf stays so
+  // counters written before the rename still decode.
+  "kiro-cli": "Kiro",
   kiro: "Kiro",
   cline: "Cline",
   aider: "Aider",
