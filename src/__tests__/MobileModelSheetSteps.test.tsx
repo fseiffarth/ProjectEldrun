@@ -185,4 +185,26 @@ describe("Eldrun Mobile — a multi-step /model picker", () => {
     await settle(900);
     expect(screen.queryByRole("dialog")).toBeNull();
   });
+
+  it("sends /clear from the empty field's button only once the phone confirms", async () => {
+    const confirm = vi.fn(() => false);
+    vi.stubGlobal("confirm", confirm);
+    render(<Terminal tab={{ id: "tab", label: "Codex", kind: "agent", available: true, viewer_busy: false }} back={() => {}} />);
+    await act(async () => {});
+
+    expect(screen.getByRole("button", { name: "Clear the conversation (/clear)" })).toBeTruthy();
+    // A draft takes the slot back for its own ✕.
+    fireEvent.change(screen.getByRole("textbox", { name: "Message agent" }), { target: { value: "hi" } });
+    expect(screen.queryByRole("button", { name: "Clear the conversation (/clear)" })).toBeNull();
+    fireEvent.change(screen.getByRole("textbox", { name: "Message agent" }), { target: { value: "" } });
+    fireEvent.click(screen.getByRole("button", { name: "Clear the conversation (/clear)" }));
+    expect(confirm).toHaveBeenCalledTimes(1);
+    await settle(300);
+    expect(FakeWebSocket.sent.join("")).not.toContain("/clear");
+
+    confirm.mockReturnValue(true);
+    fireEvent.click(screen.getByRole("button", { name: "Clear the conversation (/clear)" }));
+    await settle(300);
+    expect(FakeWebSocket.sent.join("")).toContain("/clear");
+  });
 });

@@ -60,6 +60,8 @@ export const en = {
   "mobile.outbox.from": "From the agent",
   "mobile.outbox.untested": "Untested",
   "mobile.composer.clear": "Clear the message",
+  "mobile.composer.clearChat": "Clear the conversation (/clear)",
+  "mobile.composer.clearChatConfirm": "Start a fresh conversation? This sends /clear, and the agent forgets this chat. (Untested)",
   "mobile.voice.dictate": "Dictate",
   "mobile.voice.stop": "Stop dictation",
   "mobile.voice.preparing": "Preparing dictation",

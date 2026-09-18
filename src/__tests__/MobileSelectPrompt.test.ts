@@ -108,6 +108,63 @@ describe("Eldrun Mobile select dialog", () => {
     expect(selectSignature(walked!)).toBe(selectSignature(levels!));
   });
 
+  it("keeps reading rows past a note wrapped at phone width", () => {
+    // codex-cli 0.155.0 at 70 columns: sol's note fits, astra's wraps, and the
+    // wrapped line used to end the list after the second row.
+    const codex = readSelectPrompt(lines(
+      "Select Model and Effort",
+      "Access legacy models by running codex -m <model_name> or in your c",
+      "",
+      "  1. gpt-5.6-sol (default)  Latest frontier agentic coding model.",
+      "\u203a 2. gpt-6-astra (current)  Our most capable model for complex,",
+      "                            demanding work.",
+      "  3. gpt-5.6-terra          Balanced agentic coding model for",
+      "                            everyday work.",
+      "  4. gpt-5.6-luna           Fast and affordable agentic coding",
+      "                            model.",
+      "  5. gpt-5.5                Proven previous-generation model for",
+      "                            coding and general work.",
+      "",
+      "Press enter to confirm or esc to go back",
+    ));
+    expect(codex?.options.map((option) => option.label)).toEqual([
+      "gpt-5.6-sol (default)",
+      "gpt-6-astra (current)",
+      "gpt-5.6-terra",
+      "gpt-5.6-luna",
+      "gpt-5.5",
+    ]);
+    expect(codex?.current).toBe(1);
+    expect(codex?.title).toBe("Select Model and Effort");
+    expect(codex?.options[1].description).toBe("Our most capable model for complex, demanding work.");
+    // Claude Code 50 columns wide wraps every note, the same way.
+    const claude = readSelectPrompt(lines(
+      "   Select model",
+      "   Switch between Claude models.",
+      "",
+      "     1. Default (recommended)  Opus 5 with 1M",
+      "                               context",
+      "   \u276f 2. Fable \u2714                Fable 5.1 · Most",
+      "                               capable",
+      "     3. Haiku                  Haiku 4.5 ·",
+      "                               Fastest",
+    ));
+    expect(claude?.options).toHaveLength(3);
+    expect(claude?.current).toBe(1);
+    expect(claude?.options[2].description).toBe("Haiku 4.5 · Fastest");
+  });
+
+  it("ends the run at text shallower than the note's column", () => {
+    const prompt = readSelectPrompt(lines(
+      "  1. Opus    Big",
+      "\u276f 2. Sonnet  Mid",
+      "  some output",
+      "  3. Haiku   Small",
+    ));
+    expect(prompt?.options).toHaveLength(2);
+    expect(prompt?.options[1].description).toBe("Mid");
+  });
+
   it("leaves a dialog untitled rather than titling it with the output above it", () => {
     const prompt = readSelectPrompt(lines(
       "I read the three files and they agree on the shape of the fix,",
