@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { invoke } from "@tauri-apps/api/core";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
@@ -56,6 +56,9 @@ describe("DevBuildIndicator", () => {
   });
 
   afterEach(() => {
+    // Unmount first: a poll firing between a reset mock and RTL's own cleanup
+    // gets `undefined` back instead of a promise.
+    cleanup();
     invokeMock.mockReset();
   });
 
@@ -80,7 +83,7 @@ describe("DevBuildIndicator", () => {
     // take more than the default second to render, and a second or two more
     // on the clock.
     expect(await screen.findByText(/^Compiling 1:\d\d$/, undefined, { timeout: 5000 })).toBeTruthy();
-    expect(useHeaderStatusStore.getState().reports.devBuild?.tone).toBe("attention");
+    await waitFor(() => expect(useHeaderStatusStore.getState().reports.devBuild?.tone).toBe("attention"));
     expect(screen.getByLabelText("Dev build: Building 30ed347: Compiling")).toBeTruthy();
   });
 
@@ -88,13 +91,13 @@ describe("DevBuildIndicator", () => {
     answer({ ...idle, failed: { commit: "abc1234", status: "1", when: "2026-09-18T10:00:00+02:00" } });
     render(<DevBuildIndicator />);
     expect(await screen.findByText("failed", undefined, { timeout: 5000 })).toBeTruthy();
-    expect(useHeaderStatusStore.getState().reports.devBuild?.tone).toBe("alert");
+    await waitFor(() => expect(useHeaderStatusStore.getState().reports.devBuild?.tone).toBe("alert"));
   });
 
   it("is a quiet member when the snapshot is current", async () => {
     answer(idle);
     render(<DevBuildIndicator />);
     await screen.findByLabelText("Dev build: Up to date (99e2c74)", undefined, { timeout: 5000 });
-    expect(useHeaderStatusStore.getState().reports.devBuild?.tone).toBe("ok");
+    await waitFor(() => expect(useHeaderStatusStore.getState().reports.devBuild?.tone).toBe("ok"));
   });
 });
