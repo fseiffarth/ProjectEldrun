@@ -68,7 +68,7 @@ export function AgendaView({ occurrences, calendars, use24h, onOpen, emptyLabel 
                   "cal-agenda-row" +
                   (occ.status === "cancelled" ? " cal-block-cancelled" : "")
                 }
-                onDoubleClick={() => onOpen(occ)}
+                onClick={() => onOpen(occ)}
               >
                 <span className="cal-agenda-swatch" style={{ color }}>●</span>
                 <span className="cal-agenda-time">

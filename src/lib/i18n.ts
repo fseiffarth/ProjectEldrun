@@ -6238,7 +6238,7 @@ export const en = {
   "lessons.calendarLesson.dragCreateTitle": "Drag to create and adjust",
   "lessons.calendarLesson.dragCreateBody": "In a Day/Week grid, drag across the hours to create an event, then drag its body to move it or its edge to resize. A now-line marks the current time. Everything is direct manipulation — no dialog needed to block out time.",
   "lessons.calendarLesson.eventEditorTitle": "Repeats, reminders, categories",
-  "lessons.calendarLesson.eventEditorBody": "Double-click an event for the editor: set a recurrence rule, add reminders (which fire an OS notification and an in-app popup you can snooze), and tag it with a category color. Editing a repeating event asks whether you mean this occurrence or all of them.",
+  "lessons.calendarLesson.eventEditorBody": "Click an event for the editor: set a recurrence rule, add reminders (which fire an OS notification and an in-app popup you can snooze), and tag it with a category color. Editing a repeating event asks whether you mean this occurrence or all of them.",
   "lessons.calendarLesson.caldavTitle": "Sync a calendar from a server",
   "lessons.calendarLesson.caldavBody": "The sidebar's 🔐 CalDAV button adds an account on a server you log in to, and pulls its calendars in on a schedule you set. Sending your own changes back is off until you tick \"Send my changes to this server\" — until then that account is read-only here, and nothing is silently held back. For a read-only link somebody shared with you, use Subscribe instead and paste the .ics feed URL.",
   "lessons.calendarLesson.icsTitle": "Import & export .ics",

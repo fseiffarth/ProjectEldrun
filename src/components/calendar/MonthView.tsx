@@ -245,11 +245,11 @@ export function MonthView({
                       onClick={(e) => {
                         e.stopPropagation();
                         onSelect(datePart(occ.start));
-                      }}
-                      onDoubleClick={(e) => {
-                        e.stopPropagation();
                         onOpen(occ);
                       }}
+                      // Keep a habitual double-click off the cell underneath,
+                      // which would open a *new* event on this day.
+                      onDoubleClick={(e) => e.stopPropagation()}
                       title={`${occ.title}${occ.location ? ` — ${occ.location}` : ""}`}
                     >
                       {!spanning ? <span className="cal-month-bar-dot">●</span> : null}

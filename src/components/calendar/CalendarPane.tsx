@@ -770,7 +770,7 @@ function AllDayBar({
                 <div
                   key={`${o.eventId}:${o.occurrenceStart}`}
                   className="cal-allday-chip"
-                  onDoubleClick={(e) => {
+                  onClick={(e) => {
                     e.stopPropagation();
                     onOpen(o);
                   }}

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type {
   Alarm,
@@ -165,6 +165,9 @@ function initialForm(
   };
 }
 
+/** How long after opening a backdrop press is still the tail of a double-click. */
+const DOUBLE_CLICK_GRACE_MS = 500;
+
 /**
  * The event editor.
  *
@@ -200,6 +203,11 @@ export function EventDialog({
   const creating = target.event === null;
   const recurring = !!target.event?.rrule;
 
+  /** When the dialog opened. A single click opens an event now, so a habitual
+   *  double-click lands its second press on the backdrop — which must not
+   *  close the dialog it just opened. */
+  const openedAt = useRef(performance.now());
+
   // Re-seed on the TARGET only. The other two are seeds, not inputs: settings
   // load after the pane mounts (and a background CalDAV sync can add a calendar),
   // so listing them here re-ran `initialForm` over a form somebody was typing in
@@ -209,6 +217,7 @@ export function EventDialog({
     setScopeAsk(null);
     setError(null);
     setEndTouched(false);
+    openedAt.current = performance.now();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [target]);
 
@@ -365,7 +374,12 @@ export function EventDialog({
     });
 
   return createPortal(
-    <div className="modal-backdrop" onMouseDown={onClose}>
+    <div
+      className="modal-backdrop"
+      onMouseDown={() => {
+        if (performance.now() - openedAt.current > DOUBLE_CLICK_GRACE_MS) onClose();
+      }}
+    >
       <div
         className="settings-dialog cal-event-dialog"
         onMouseDown={(e) => e.stopPropagation()}
