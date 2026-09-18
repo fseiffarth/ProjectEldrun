@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef } from "react";
 import {
+  accountInboxUnread,
   backgroundCheckBlocked,
   inboxUnread,
   isAuthRejection,
-  unreadTotal,
   useMailStore,
 } from "../../stores/mail";
 import { useSettingsStore } from "../../stores/settings";
@@ -403,7 +403,10 @@ export function MailIndicator() {
               // The local Display name first, as the accounts badge does:
               // `label` is the name sent in `From:`, often the same on every account.
               const name = a.display_name || a.label || a.address;
-              const count = unreadTotal(foldersByAccount[a.id]);
+              // Inbox only, as the button's dot counts: the row opens the
+              // inbox, and rows summing to a different number than the dot
+              // above them read as one of the two being wrong.
+              const count = accountInboxUnread(foldersByAccount[a.id]);
               return (
                 <button
                   key={a.id}

@@ -1847,6 +1847,9 @@ async fn sync_inner(
                 total: f.total,
             };
             store2.upsert_folder(&folder)?;
+            // LIST carries no counts, so the upsert just wrote zeros; a folder
+            // this sync does not fetch keeps what its index and last sync say.
+            store2.refresh_counts(&folder.id)?;
             out.push(folder);
         }
         Ok::<_, String>(out)
@@ -1908,10 +1911,12 @@ async fn sync_inner(
                 error: None,
             },
         );
-        let headers = InProcessEngine
+        let fetched = InProcessEngine
             .headers(&account, &pw, &folder.path, SYNC_HEADER_LIMIT)
             .await
             .map_err(String::from)?;
+        let (server_total, server_unread) = (fetched.exists, fetched.unseen);
+        let headers = fetched.headers;
 
         let store3 = store.clone();
         let folder2 = folder.clone();
@@ -2029,6 +2034,7 @@ async fn sync_inner(
                         }
                     }
                 }
+                store3.set_server_counts(&folder2.id, server_total, server_unread)?;
                 store3.refresh_counts(&folder2.id)?;
                 Ok::<_, String>((added, filed, candidates))
             })
@@ -2370,20 +2376,29 @@ pub async fn mail_mark_folder_read(
     let id = folder_id.clone();
     // The UIDs are read *before* the local flip: afterwards there is nothing
     // unread left to find and the operation would silently become local-only.
-    let (account, folder, uids, store) = tokio::task::spawn_blocking(move || {
+    // Unread mail older than the index has no local UID to name, so a folder
+    // holding some is marked on the server by range instead — everything
+    // through the newest indexed UID, which leaves mail that arrived after the
+    // list the user was looking at unread.
+    let (account, folder, uids, through, store) = tokio::task::spawn_blocking(move || {
         let store = store_of(&rt2)?;
         let folder = store
             .folder(&id)?
             .ok_or_else(|| format!("folder '{id}' is not in the local index"))?;
         let account = account_by_id(&accounts_path(), &folder.account_id)?;
         let uids = store.unseen_uids(&id)?;
-        Ok::<_, String>((account, folder, uids, store))
+        let through = if store.unindexed_unread(&id)? > 0 {
+            store.folder_max_uid(&id)?
+        } else {
+            None
+        };
+        Ok::<_, String>((account, folder, uids, through, store))
     })
     .await
     .map_err(|e| e.to_string())??;
 
     // Nothing unread is not an error and must not cost a login.
-    if uids.is_empty() {
+    if uids.is_empty() && through.is_none() {
         return Ok(0);
     }
 
@@ -2399,6 +2414,13 @@ pub async fn mail_mark_folder_read(
     let Some(pw) = resolve_password(&rt, &account, MailProto::Imap) else {
         return Err(no_password_message());
     };
+    if let Some(max_uid) = through {
+        return InProcessEngine
+            .mark_seen_through(&account, &pw, &folder.path, max_uid)
+            .await
+            .map(|()| changed)
+            .map_err(String::from);
+    }
     InProcessEngine
         // Via the enum, never the literal: one spelling of `\Seen` in the
         // codebase, and it is the one the per-message path already uses.

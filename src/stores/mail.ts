@@ -848,10 +848,16 @@ export function unreadTotal(folders: MailFolder[] | undefined): number {
  */
 export function inboxUnread(byAccount: Record<string, MailFolder[]>): number {
   let sum = 0;
-  for (const folders of Object.values(byAccount)) {
-    for (const f of folders ?? []) {
-      if (f.kind === "inbox") sum += f.unread || 0;
-    }
+  for (const folders of Object.values(byAccount)) sum += accountInboxUnread(folders);
+  return sum;
+}
+
+/** One account's share of `inboxUnread` — the header menu's account rows, so
+ *  the rows add up to the button's dot rather than to a different number. */
+export function accountInboxUnread(folders: MailFolder[] | undefined): number {
+  let sum = 0;
+  for (const f of folders ?? []) {
+    if (f.kind === "inbox") sum += f.unread || 0;
   }
   return sum;
 }

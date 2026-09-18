@@ -399,6 +399,10 @@ impl MailStore {
                 kind       TEXT NOT NULL,
                 unread     INTEGER NOT NULL DEFAULT 0,
                 total      INTEGER NOT NULL DEFAULT 0,
+                -- What the server reported beyond the local index at the last
+                -- sync; `refresh_counts` adds these to the local counts.
+                unread_unindexed INTEGER NOT NULL DEFAULT 0,
+                total_unindexed  INTEGER NOT NULL DEFAULT 0,
                 UNIQUE (account_id, path_key)
             );
             CREATE TABLE IF NOT EXISTS messages (
@@ -623,6 +627,16 @@ impl MailStore {
             conn.execute_batch("DROP TABLE mail_remote_allow_v1;")
                 .map_err(|e| e.to_string())?;
         }
+        // Additive, and after the v1 → v2 folders rebuild above, whose new table
+        // does not carry them: a duplicate-column error just means they are there.
+        let _ = conn.execute(
+            "ALTER TABLE folders ADD COLUMN unread_unindexed INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE folders ADD COLUMN total_unindexed INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
         // Rows written before `upsert_header` normalized `date` to UTC still
         // carry the sender's offset and sort out of order (see there). Only mail
         // a sync fetches again would be rewritten, so they are converted here.
@@ -808,18 +822,68 @@ impl MailStore {
         .map_err(|e| e.to_string())
     }
 
-    /// Recompute a folder's counters from the rows actually stored.
+    /// Recompute a folder's counters from the rows actually stored, plus what
+    /// the last sync found on the server beyond them
+    /// ([`MailStore::set_server_counts`]).
+    ///
+    /// A sync indexes only a folder's newest headers, so the rows alone
+    /// undercount any mailbox with unread mail older than that tail — the header
+    /// badge read "the unread among the newest 100–200" rather than the unread.
+    /// Local rows still carry every change made here (a read, a move) at once;
+    /// the server's remainder only moves when a sync next measures it.
     pub fn refresh_counts(&self, folder_id: &str) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|_| "mail store is poisoned")?;
         conn.execute(
             "UPDATE folders SET
-               total  = (SELECT COUNT(*) FROM messages WHERE folder_id = ?1),
-               unread = (SELECT COUNT(*) FROM messages WHERE folder_id = ?1 AND seen = 0)
+               total  = total_unindexed
+                        + (SELECT COUNT(*) FROM messages WHERE folder_id = ?1),
+               unread = unread_unindexed
+                        + (SELECT COUNT(*) FROM messages WHERE folder_id = ?1 AND seen = 0)
              WHERE id = ?1",
             params![folder_id],
         )
         .map_err(|e| e.to_string())?;
         Ok(())
+    }
+
+    /// Record the server's own counts for a folder a sync just fetched the
+    /// newest headers of — call it after those headers are stored. What the
+    /// index lacks is kept as the difference, never below zero: rows the server
+    /// has since expunged, or read elsewhere past the tail, make the index
+    /// overshoot, and an overshoot is not a negative remainder.
+    pub fn set_server_counts(
+        &self,
+        folder_id: &str,
+        server_total: u32,
+        server_unread: u32,
+    ) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|_| "mail store is poisoned")?;
+        conn.execute(
+            "UPDATE folders SET
+               total_unindexed  = MAX(0, ?2
+                 - (SELECT COUNT(*) FROM messages WHERE folder_id = ?1)),
+               unread_unindexed = MAX(0, ?3
+                 - (SELECT COUNT(*) FROM messages WHERE folder_id = ?1 AND seen = 0))
+             WHERE id = ?1",
+            params![folder_id, server_total, server_unread],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// Unread mail the server has in this folder that the index holds no row
+    /// for, as of the last sync.
+    pub fn unindexed_unread(&self, folder_id: &str) -> Result<u32, String> {
+        let conn = self.conn.lock().map_err(|_| "mail store is poisoned")?;
+        let n: Option<i64> = conn
+            .query_row(
+                "SELECT unread_unindexed FROM folders WHERE id = ?1",
+                params![folder_id],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        Ok(n.unwrap_or(0) as u32)
     }
 
     // ── Headers ─────────────────────────────────────────────────────────────
@@ -1246,6 +1310,13 @@ impl MailStore {
                 params![folder_id],
             )
             .map_err(|e| e.to_string())?;
+        // The unread beyond the index goes too: the command marks it on the
+        // server through the newest indexed UID (`mark_seen_through`).
+        conn.execute(
+            "UPDATE folders SET unread_unindexed = 0 WHERE id = ?1",
+            params![folder_id],
+        )
+        .map_err(|e| e.to_string())?;
         Ok(changed as u32)
     }
 
@@ -3085,6 +3156,48 @@ mod tests {
         assert!(store.header(&h.id).unwrap().unwrap().flagged);
         store.set_flag(&h.id, MailFlag::Seen, false).unwrap();
         assert!(!store.header(&h.id).unwrap().unwrap().seen);
+    }
+
+    #[test]
+    fn counts_include_the_unread_mail_older_than_the_index() {
+        // A sync indexes only a folder's newest headers; the server's counts are
+        // what the badges must say, and local reads still move them at once.
+        let (_d, store) = store();
+        let f = folder("a1", "INBOX");
+        store.upsert_folder(&f).unwrap();
+        let a = header(&f, 1, "a", "2026-07-01T09:00:00Z");
+        store.upsert_header(&a).unwrap();
+        store
+            .upsert_header(&header(&f, 2, "b", "2026-07-02T09:00:00Z"))
+            .unwrap();
+        // The server holds 500 messages, 300 unread; two are in the index.
+        store.set_server_counts(&f.id, 500, 300).unwrap();
+        store.refresh_counts(&f.id).unwrap();
+        let row = store.folder(&f.id).unwrap().unwrap();
+        assert_eq!((row.total, row.unread), (500, 300));
+        assert_eq!(store.unindexed_unread(&f.id).unwrap(), 298);
+
+        store.set_flag(&a.id, MailFlag::Seen, true).unwrap();
+        store.refresh_counts(&f.id).unwrap();
+        assert_eq!(store.folder(&f.id).unwrap().unwrap().unread, 299);
+
+        // A re-listed folder (LIST carries no counts) keeps them after a refresh.
+        store.upsert_folder(&f).unwrap();
+        store.refresh_counts(&f.id).unwrap();
+        assert_eq!(store.folder(&f.id).unwrap().unwrap().unread, 299);
+
+        // An index that overshoots the server is not a negative remainder.
+        store.set_server_counts(&f.id, 1, 0).unwrap();
+        store.refresh_counts(&f.id).unwrap();
+        let row = store.folder(&f.id).unwrap().unwrap();
+        assert_eq!((row.total, row.unread), (2, 1));
+
+        // "Mark all read" clears the remainder with the rows.
+        store.set_server_counts(&f.id, 500, 300).unwrap();
+        store.mark_folder_seen(&f.id).unwrap();
+        store.refresh_counts(&f.id).unwrap();
+        assert_eq!(store.folder(&f.id).unwrap().unwrap().unread, 0);
+        assert_eq!(store.unindexed_unread(&f.id).unwrap(), 0);
     }
 
     #[test]

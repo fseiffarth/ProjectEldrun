@@ -927,6 +927,19 @@ pub struct FetchedHeader {
     pub headers: ParsedHeaders,
 }
 
+/// One sync's read of a folder: its newest headers, and the server's own
+/// counts for the whole mailbox. The headers are only the tail a sync is
+/// bounded to; the counts are what the folder's badges must report, or a
+/// mailbox with 300 unread would read as however many of them are in the tail.
+#[derive(Debug, Clone, Default)]
+pub struct FetchedHeaders {
+    pub headers: Vec<FetchedHeader>,
+    /// `EXISTS` from the SELECT.
+    pub exists: u32,
+    /// How many messages `SEARCH UNSEEN` matched.
+    pub unseen: u32,
+}
+
 /// One folder as the server describes it.
 #[derive(Debug, Clone)]
 pub struct FetchedFolder {
@@ -956,7 +969,7 @@ pub trait MailEngine: Send + Sync {
         password: &Password,
         folder_path: &str,
         limit: u32,
-    ) -> Result<Vec<FetchedHeader>, MailError>;
+    ) -> Result<FetchedHeaders, MailError>;
     async fn body(
         &self,
         account: &MailAccount,
@@ -985,6 +998,17 @@ pub trait MailEngine: Send + Sync {
         uids: &[u32],
         flag: &str,
         value: bool,
+    ) -> Result<(), MailError>;
+    /// `\Seen` on every message up to and including `max_uid` — "mark all read"
+    /// for a folder whose unread mail reaches past the local index, where
+    /// there are no local UIDs to name. Bounded by `max_uid` so mail that
+    /// arrived after the list the user was looking at stays unread.
+    async fn mark_seen_through(
+        &self,
+        account: &MailAccount,
+        password: &Password,
+        folder_path: &str,
+        max_uid: u32,
     ) -> Result<(), MailError>;
     async fn move_messages(
         &self,
@@ -1557,14 +1581,27 @@ impl MailEngine for InProcessEngine {
         password: &Password,
         folder_path: &str,
         limit: u32,
-    ) -> Result<Vec<FetchedHeader>, MailError> {
+    ) -> Result<FetchedHeaders, MailError> {
         vpn_gate(account)?;
         let mut session = acquire(&account.imap, password, Acquire::Pooled).await?;
-        let out: Result<Vec<FetchedHeader>, MailError> = async {
+        let out: Result<FetchedHeaders, MailError> = async {
             // `select_now`, never the cached `ensure_selected`: this is the one
             // caller that reads the mailbox's own `EXISTS` off the response, and
             // paging from a cached count would silently page from a stale one.
             let mailbox = session.select_now(folder_path).await?;
+            // The unread count of the whole mailbox, not of the tail fetched
+            // below. SELECT's own `UNSEEN` is the first unseen sequence number,
+            // not a count, so it is a SEARCH — a list of numbers, a few kB even
+            // for a mailbox with thousands unread.
+            let unseen = if mailbox.exists > 0 {
+                tokio::time::timeout(COMMAND_TIMEOUT, session.search("UNSEEN"))
+                    .await
+                    .map_err(|_| MailError::Timeout { op: "IMAP SEARCH" })?
+                    .map_err(classify_imap_error)?
+                    .len() as u32
+            } else {
+                0
+            };
 
             let mut out = Vec::new();
             if mailbox.exists > 0 {
@@ -1602,7 +1639,11 @@ impl MailEngine for InProcessEngine {
                     });
                 }
             }
-            Ok(out)
+            Ok(FetchedHeaders {
+                headers: out,
+                exists: mailbox.exists,
+                unseen,
+            })
         }
         .await;
         session.finish(out)
@@ -1738,6 +1779,36 @@ impl MailEngine for InProcessEngine {
                 .map_err(classify_imap_error)?;
                 while next_before(&mut stream, deadline, "IMAP STORE").await?.is_some() {}
             }
+            Ok(())
+        }
+        .await;
+        session.finish(out)
+    }
+
+    async fn mark_seen_through(
+        &self,
+        account: &MailAccount,
+        password: &Password,
+        folder_path: &str,
+        max_uid: u32,
+    ) -> Result<(), MailError> {
+        vpn_gate(account)?;
+        if max_uid == 0 {
+            return Ok(());
+        }
+        let mut session = acquire(&account.imap, password, Acquire::Pooled).await?;
+        let out: Result<(), MailError> = async {
+            session.ensure_selected(folder_path).await?;
+            let flag = crate::schema::mail::MailFlag::Seen.imap_flag();
+            let deadline = tokio::time::Instant::now() + COMMAND_TIMEOUT;
+            let mut stream = tokio::time::timeout_at(
+                deadline,
+                session.uid_store(format!("1:{max_uid}"), format!("+FLAGS ({flag})")),
+            )
+            .await
+            .map_err(|_| MailError::Timeout { op: "IMAP STORE" })?
+            .map_err(classify_imap_error)?;
+            while next_before(&mut stream, deadline, "IMAP STORE").await?.is_some() {}
             Ok(())
         }
         .await;
