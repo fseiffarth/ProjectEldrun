@@ -959,6 +959,15 @@ export function SettingsDialog({
               onChange={(e) => void updateSettings({ root_mcp: e.target.checked })}
               help={t("settings.rootMcpHelp")}
             />
+            {/* Subordinate to the switch above. Read per spawn and per request
+                too: on, the endpoint refuses the cloud agents already running. */}
+            <ToggleCard
+              label={<>{t("settings.rootMcpLocalOnly")} <UntestedTag /></>}
+              checked={settings?.root_mcp_local_only ?? false}
+              disabled={!(settings?.root_mcp ?? true)}
+              onChange={(e) => void updateSettings({ root_mcp_local_only: e.target.checked })}
+              help={t("settings.rootMcpLocalOnlyHelp")}
+            />
 
             {/* Eldrun Mobile runs its host sidecar on every desktop (systemd
                 user unit, launchd agent, or the Windows Run key), so the

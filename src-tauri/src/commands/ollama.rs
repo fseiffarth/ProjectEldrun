@@ -3631,6 +3631,8 @@ pub struct LocalAgentPrep {
 /// - `active_model = "{alias}"` so vibe selects the correct model even when
 ///   the `VIBE_ACTIVE_MODEL` env var is shadowed by the global `~/.vibe/config.toml`.
 /// - `enabled_tools = ["__no_tools__"]` to disable tool calls for local models.
+///   A root-console tab whose model wears the 🧠 menu's "MCP" chip gets the
+///   root MCP tools back through Vibe's env layer (`services::root_mcp`).
 /// - A single provider + model block for this Ollama model.
 ///
 /// Each Ollama tab gets its own VIBE_HOME subdirectory so there is no shared

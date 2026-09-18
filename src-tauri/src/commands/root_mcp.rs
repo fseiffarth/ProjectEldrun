@@ -31,6 +31,7 @@ const OPEN_EVENT: &str = "root-mcp-open";
 struct ServerState {
     app: AppHandle,
     token: String,
+    local_token: String,
 }
 
 async fn handle(State(state): State<ServerState>, headers: HeaderMap, body: String) -> Response {
@@ -41,9 +42,9 @@ async fn handle(State(state): State<ServerState>, headers: HeaderMap, body: Stri
         return StatusCode::FORBIDDEN.into_response();
     }
     let presented = headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok());
-    if !root_mcp::authorized(presented, &state.token) {
+    let Some(caller) = root_mcp::caller(presented, &state.token, &state.local_token) else {
         return StatusCode::UNAUTHORIZED.into_response();
-    }
+    };
     let Ok(message) = serde_json::from_str::<Value>(&body) else {
         return StatusCode::BAD_REQUEST.into_response();
     };
@@ -57,10 +58,10 @@ async fn handle(State(state): State<ServerState>, headers: HeaderMap, body: Stri
         let calendar = crate::commands::calendar::calendar_path();
         let projects = state.join("projects.json");
         let settings = state.join("settings.json");
-        // The global switch, read per request: an agent spawned while the
-        // tools were on still holds the token, and "off" has to mean off for
-        // it too, without closing its tab.
-        if !root_mcp::enabled_in(&settings) {
+        // The switches, read per request: an agent spawned while the tools
+        // were on (or not yet local-only) still holds its token, and "off" has
+        // to mean off for it too, without closing its tab.
+        if !root_mcp::serves(&settings, caller) {
             return None;
         }
         Some(root_mcp::handle_message(
@@ -101,7 +102,7 @@ async fn handle(State(state): State<ServerState>, headers: HeaderMap, body: Stri
 /// failure leaves root agents exactly as capable as any other agent, which is
 /// the safe direction to fail in.
 pub fn start(app: AppHandle) {
-    let Some(token) = root_mcp::mint_token() else {
+    let (Some(token), Some(local_token)) = (root_mcp::mint_token(), root_mcp::mint_token()) else {
         eprintln!("[root-mcp] no OS entropy; the root console's tools stay off");
         return;
     };
@@ -114,10 +115,14 @@ pub fn start(app: AppHandle) {
             }
         };
         let Ok(addr) = listener.local_addr() else { return };
-        root_mcp::set_runtime(Runtime { port: addr.port(), token: token.clone() });
+        root_mcp::set_runtime(Runtime {
+            port: addr.port(),
+            token: token.clone(),
+            local_token: local_token.clone(),
+        });
         let router = Router::new()
             .route("/mcp", post(handle))
-            .with_state(ServerState { app, token });
+            .with_state(ServerState { app, token, local_token });
         if let Err(error) = axum::serve(listener, router).await {
             eprintln!("[root-mcp] server stopped: {error}");
         }
@@ -132,6 +137,9 @@ pub struct RootMcpStatus {
     /// and the endpoint refuses the ones that already hold the token.
     pub enabled: bool,
     pub tools: Vec<&'static str>,
+    /// Agent CLIs that can call the tools (`root_mcp::WIRED_CLIS`); the rest
+    /// get the endpoint's env pair and nothing that uses it.
+    pub wired_clis: &'static [&'static str],
 }
 
 /// What the overlay's rights badge shows. Deliberately carries neither the port
@@ -142,5 +150,6 @@ pub fn root_mcp_status() -> RootMcpStatus {
         running: root_mcp::runtime().is_some(),
         enabled: root_mcp::enabled(),
         tools: root_mcp::tool_names(),
+        wired_clis: root_mcp::WIRED_CLIS,
     }
 }

@@ -63,6 +63,20 @@ const PROTOCOL_VERSION: &str = "2025-03-26";
 pub struct Runtime {
     pub port: u16,
     pub token: String,
+    /// The token a **local-model** tab is handed instead of [`Self::token`].
+    /// Two secrets rather than one so the endpoint can tell the callers apart:
+    /// `Settings::root_mcp_local_only` has to refuse a cloud agent that was
+    /// spawned, and given its token, before the switch was flipped.
+    pub local_token: String,
+}
+
+/// Who a presented bearer token belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Caller {
+    /// Any root agent CLI (Claude, Codex, …).
+    Agent,
+    /// A local-model (Mistral Vibe on Ollama) tab.
+    LocalModel,
 }
 
 static RUNTIME: OnceLock<Runtime> = OnceLock::new();
@@ -88,6 +102,18 @@ pub fn endpoint_url(port: u16) -> String {
     format!("http://127.0.0.1:{port}/mcp")
 }
 
+/// Which caller `header` authenticates as, if any. Both comparisons always
+/// run, so the answer's timing does not say which token came close.
+pub fn caller(header: Option<&str>, token: &str, local_token: &str) -> Option<Caller> {
+    let agent = authorized(header, token);
+    let local = authorized(header, local_token);
+    match (agent, local) {
+        (true, _) => Some(Caller::Agent),
+        (_, true) => Some(Caller::LocalModel),
+        _ => None,
+    }
+}
+
 /// Constant-time bearer check. `header` is the raw `Authorization` value.
 pub fn authorized(header: Option<&str>, token: &str) -> bool {
     use subtle::ConstantTimeEq;
@@ -109,6 +135,14 @@ fn basename(cmd: &str) -> &str {
     cmd.rsplit(['/', '\\']).next().unwrap_or(cmd)
 }
 
+/// The cloud agent CLIs [`apply_to_spawn_with`] names the server to on their
+/// command line — the ones that can actually *call* the tools. Every other
+/// root agent gets the env pair only. The Models & agents menu's read-only
+/// "MCP" chip reads this (via `root_mcp_status`), so a CLI wired below must be
+/// listed here; the `every_wired_cli_is_named_the_server` test holds the two
+/// together.
+pub const WIRED_CLIS: &[&str] = &["claude", "codex"];
+
 /// Hand a root agent the endpoint. Pure over `runtime` so it is testable.
 ///
 /// The CLI is told about the server on its **own command line**, never through
@@ -124,13 +158,47 @@ fn basename(cmd: &str) -> &str {
 ///   `tmux_local` moves the whole command line into a launcher script on disk.
 /// - **Codex**: `-c mcp_servers.eldrun.…` overrides, first in argv so they
 ///   precede a `resume <id>` subcommand. The token is named, not inlined.
+/// - **Vibe** (a local-model tab): `VIBE_MCP_SERVERS` / `VIBE_ENABLED_TOOLS`,
+///   Vibe's own env layer, which outranks the per-model `config.toml`. Only
+///   for a model in `tool_models` (the 🧠 menu's "MCP" chips): the rest keep
+///   `prepare_local_agent`'s tools-off config, which is what lets a
+///   completion-only model run at all. The tools are narrowed to this
+///   server's, so a small model gets a short tool list and no shell. The
+///   token is named (`api_key_env`), not inlined.
 /// - Every other agent gets the env pair only, until its CLI has a
 ///   per-invocation way to name a server.
-pub fn apply_to_spawn_with(opts: &mut PtyOptions, runtime: &Runtime) {
+///
+/// `local_only` (`Settings::root_mcp_local_only`) hands a cloud agent nothing
+/// at all. A local-model tab always gets [`Runtime::local_token`], never the
+/// agents' token, so the endpoint can keep serving it while refusing them.
+pub fn apply_to_spawn_with(
+    opts: &mut PtyOptions,
+    runtime: &Runtime,
+    tool_models: &[String],
+    local_only: bool,
+) {
+    let local = is_local_model(opts);
+    if local_only && !local {
+        return;
+    }
     let url = endpoint_url(runtime.port);
-    opts.env.insert(TOKEN_ENV.to_string(), runtime.token.clone());
+    let token = if local { &runtime.local_token } else { &runtime.token };
+    opts.env.insert(TOKEN_ENV.to_string(), token.clone());
     opts.env.insert(URL_ENV.to_string(), url.clone());
     match basename(&opts.cmd) {
+        "vibe" if local_model_has_tools(opts, tool_models) => {
+            let servers = json!([{
+                "name": SERVER_NAME,
+                "transport": "http",
+                "url": url,
+                "api_key_env": TOKEN_ENV,
+            }]);
+            opts.env.insert("VIBE_MCP_SERVERS".to_string(), servers.to_string());
+            opts.env.insert(
+                "VIBE_ENABLED_TOOLS".to_string(),
+                json!([format!("{SERVER_NAME}_*")]).to_string(),
+            );
+        }
         "claude" if !opts.args.iter().any(|a| a == "--mcp-config") => {
             let config = json!({
                 "mcpServers": {
@@ -157,12 +225,45 @@ pub fn apply_to_spawn_with(opts: &mut PtyOptions, runtime: &Runtime) {
     }
 }
 
+/// Whether this spawn is a local-model tab: Vibe, pointed at an Ollama model
+/// by the env pair `NewTabMenu` sets. A bare `vibe` is Mistral's cloud CLI.
+fn is_local_model(opts: &PtyOptions) -> bool {
+    basename(&opts.cmd) == "vibe"
+        && (opts.env.contains_key("ELDRUN_LOCAL_MODEL") || opts.env.contains_key("VIBE_ACTIVE_MODEL"))
+}
+
+/// Whether a Vibe tab's local model wears the "MCP" chip. The tab names its
+/// model twice (`NewTabMenu`): `ELDRUN_LOCAL_MODEL` raw, `VIBE_ACTIVE_MODEL`
+/// as the alias `prepare_local_agent` wrote — and a restored tab may carry
+/// only the alias (`CenterPanel` re-hydrates just that pair).
+fn local_model_has_tools(opts: &PtyOptions, tool_models: &[String]) -> bool {
+    let raw = opts.env.get("ELDRUN_LOCAL_MODEL");
+    let alias = opts.env.get("VIBE_ACTIVE_MODEL");
+    tool_models.iter().any(|m| {
+        raw.is_some_and(|r| r == m) || alias.is_some_and(|a| *a == m.replace(':', "-"))
+    })
+}
+
 /// The global switch (`Settings::root_mcp`), read per use so flipping it needs
 /// no restart. A missing or unreadable file is a fresh install: on.
 pub fn enabled_in(settings: &Path) -> bool {
     crate::storage::read_json::<crate::schema::Settings>(settings)
         .map(|settings| settings.root_mcp())
         .unwrap_or(true)
+}
+
+/// `Settings::root_mcp_local_only`, read per use like [`enabled_in`]. A missing
+/// or unreadable file is a fresh install: every root agent gets the tools.
+pub fn local_only_in(settings: &Path) -> bool {
+    crate::storage::read_json::<crate::schema::Settings>(settings)
+        .map(|settings| settings.root_mcp_local_only())
+        .unwrap_or(false)
+}
+
+/// Whether the endpoint serves `caller` right now: the global switch, then the
+/// local-only one. Read per request so neither needs a tab closed.
+pub fn serves(settings: &Path, caller: Caller) -> bool {
+    enabled_in(settings) && (caller == Caller::LocalModel || !local_only_in(settings))
 }
 
 /// [`enabled_in`] against the live `settings.json`.
@@ -173,9 +274,18 @@ pub fn enabled() -> bool {
 /// [`apply_to_spawn_with`] against the live listener; a no-op while none is up
 /// or while the tools are switched off.
 pub fn apply_to_spawn(opts: &mut PtyOptions) {
-    if let Some(runtime) = runtime().filter(|_| enabled()) {
-        apply_to_spawn_with(opts, runtime);
+    let Some(runtime) = runtime() else { return };
+    let settings = crate::storage::read_json::<crate::schema::Settings>(
+        &crate::storage::state_dir().join("settings.json"),
+    )
+    .ok();
+    // Same reading as `enabled_in`: a missing or unreadable file is on.
+    if settings.as_ref().is_some_and(|s| !s.root_mcp()) {
+        return;
     }
+    let local_only = settings.as_ref().is_some_and(|s| s.root_mcp_local_only());
+    let tool_models = settings.and_then(|s| s.ollama_mcp_models).unwrap_or_default();
+    apply_to_spawn_with(opts, runtime, &tool_models, local_only);
 }
 
 // ── Tools ───────────────────────────────────────────────────────────────────
@@ -1828,7 +1938,7 @@ mod tests {
     }
 
     fn rt() -> Runtime {
-        Runtime { port: 4321, token: "tok".into() }
+        Runtime { port: 4321, token: "tok".into(), local_token: "loc".into() }
     }
 
     /// The global switch: absent (and a missing file) means on, and only a
@@ -1912,7 +2022,7 @@ mod tests {
     #[test]
     fn claude_gets_an_inline_config_last_in_argv() {
         let mut o = opts("claude", &["--resume", "abc"], None);
-        apply_to_spawn_with(&mut o, &rt());
+        apply_to_spawn_with(&mut o, &rt(), &[], false);
         assert_eq!(&o.args[..2], ["--resume", "abc"]);
         assert_eq!(o.args[2], "--mcp-config");
         let cfg: Value = serde_json::from_str(&o.args[3]).unwrap();
@@ -1922,14 +2032,27 @@ mod tests {
         assert_eq!(o.env[TOKEN_ENV], "tok");
         assert!(!o.args.iter().any(|a| a.contains("Bearer tok")), "the token is never in Claude's argv");
         // A respawn that re-runs the wiring must not stack the flag.
-        apply_to_spawn_with(&mut o, &rt());
+        apply_to_spawn_with(&mut o, &rt(), &[], false);
         assert_eq!(o.args.iter().filter(|a| *a == "--mcp-config").count(), 1);
+    }
+
+    #[test]
+    fn every_wired_cli_is_named_the_server() {
+        for cli in WIRED_CLIS {
+            let mut o = opts(cli, &[], None);
+            apply_to_spawn_with(&mut o, &rt(), &[], false);
+            assert!(!o.args.is_empty(), "{cli} is listed as wired but gets no server");
+        }
+        // An unlisted CLI gets the env pair only — which is what the chip says.
+        let mut o = opts("gemini", &[], None);
+        apply_to_spawn_with(&mut o, &rt(), &[], false);
+        assert!(o.args.is_empty() && o.env.contains_key(TOKEN_ENV));
     }
 
     #[test]
     fn codex_overrides_precede_the_resume_subcommand_and_name_the_token() {
         let mut o = opts("/usr/bin/codex", &["resume", "abc"], None);
-        apply_to_spawn_with(&mut o, &rt());
+        apply_to_spawn_with(&mut o, &rt(), &[], false);
         assert_eq!(o.args[0], "-c");
         assert_eq!(o.args[1], "mcp_servers.eldrun.url=\"http://127.0.0.1:4321/mcp\"");
         assert_eq!(o.args[3], "mcp_servers.eldrun.bearer_token_env_var=\"ELDRUN_ROOT_MCP_TOKEN\"");
@@ -1938,9 +2061,82 @@ mod tests {
     }
 
     #[test]
+    fn vibe_gets_the_server_only_for_a_model_wearing_the_mcp_chip() {
+        let tagged = vec!["gemma4:e4b".to_string()];
+        let vibe = |env: &[(&str, &str)]| {
+            let mut o = opts("vibe", &[], None);
+            for (k, v) in env {
+                o.env.insert(k.to_string(), v.to_string());
+            }
+            o
+        };
+
+        let mut o = vibe(&[("ELDRUN_LOCAL_MODEL", "gemma4:e4b"), ("VIBE_ACTIVE_MODEL", "gemma4-e4b")]);
+        apply_to_spawn_with(&mut o, &rt(), &tagged, false);
+        let servers: Value = serde_json::from_str(&o.env["VIBE_MCP_SERVERS"]).unwrap();
+        assert_eq!(servers[0]["name"], "eldrun");
+        assert_eq!(servers[0]["url"], "http://127.0.0.1:4321/mcp");
+        assert_eq!(servers[0]["api_key_env"], TOKEN_ENV);
+        assert_eq!(o.env["VIBE_ENABLED_TOOLS"], r#"["eldrun_*"]"#);
+        assert!(!o.env["VIBE_MCP_SERVERS"].contains("tok"), "the token is named, never inlined");
+        assert!(o.args.is_empty());
+
+        // A restored tab carries only the alias.
+        let mut o = vibe(&[("VIBE_ACTIVE_MODEL", "gemma4-e4b")]);
+        apply_to_spawn_with(&mut o, &rt(), &tagged, false);
+        assert!(o.env.contains_key("VIBE_MCP_SERVERS"));
+
+        // Untagged model: tools stay off, the env pair only.
+        let mut o = vibe(&[("ELDRUN_LOCAL_MODEL", "llama3:latest"), ("VIBE_ACTIVE_MODEL", "llama3-latest")]);
+        apply_to_spawn_with(&mut o, &rt(), &tagged, false);
+        assert!(!o.env.contains_key("VIBE_MCP_SERVERS"));
+        assert!(!o.env.contains_key("VIBE_ENABLED_TOOLS"));
+        assert_eq!(o.env[URL_ENV], "http://127.0.0.1:4321/mcp");
+    }
+
+    #[test]
+    fn local_only_hands_cloud_agents_nothing_and_local_models_their_own_token() {
+        for cmd in ["claude", "codex", "gemini", "vibe"] {
+            let mut o = opts(cmd, &[], None);
+            apply_to_spawn_with(&mut o, &rt(), &[], true);
+            assert!(o.args.is_empty(), "{cmd}");
+            assert!(!o.env.contains_key(TOKEN_ENV), "{cmd}");
+            assert!(!o.env.contains_key(URL_ENV), "{cmd}");
+        }
+        let tagged = vec!["gemma4:e4b".to_string()];
+        let mut o = opts("vibe", &[], None);
+        o.env.insert("ELDRUN_LOCAL_MODEL".into(), "gemma4:e4b".into());
+        apply_to_spawn_with(&mut o, &rt(), &tagged, true);
+        assert!(o.env.contains_key("VIBE_MCP_SERVERS"));
+        assert_eq!(o.env[TOKEN_ENV], "loc");
+        // The local token is the local tab's with the switch off too, so
+        // flipping it on later keeps that tab served.
+        let mut o = opts("vibe", &[], None);
+        o.env.insert("ELDRUN_LOCAL_MODEL".into(), "gemma4:e4b".into());
+        apply_to_spawn_with(&mut o, &rt(), &tagged, false);
+        assert_eq!(o.env[TOKEN_ENV], "loc");
+    }
+
+    #[test]
+    fn the_endpoint_tells_callers_apart_and_local_only_refuses_agents() {
+        assert_eq!(caller(Some("Bearer tok"), "tok", "loc"), Some(Caller::Agent));
+        assert_eq!(caller(Some("Bearer loc"), "tok", "loc"), Some(Caller::LocalModel));
+        assert_eq!(caller(Some("Bearer nope"), "tok", "loc"), None);
+        assert_eq!(caller(None, "tok", "loc"), None);
+
+        let fx = Fixture::new();
+        assert!(serves(&fx.settings, Caller::Agent), "absent means every root agent");
+        fx.write_state("settings.json", json!({ "root_mcp_local_only": true }));
+        assert!(!serves(&fx.settings, Caller::Agent));
+        assert!(serves(&fx.settings, Caller::LocalModel));
+        fx.write_state("settings.json", json!({ "root_mcp": false, "root_mcp_local_only": true }));
+        assert!(!serves(&fx.settings, Caller::LocalModel), "the global switch outranks it");
+    }
+
+    #[test]
     fn other_agents_get_the_env_pair_only() {
         let mut o = opts("gemini", &[], None);
-        apply_to_spawn_with(&mut o, &rt());
+        apply_to_spawn_with(&mut o, &rt(), &[], false);
         assert!(o.args.is_empty());
         assert_eq!(o.env[URL_ENV], "http://127.0.0.1:4321/mcp");
     }

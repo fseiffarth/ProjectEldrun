@@ -156,6 +156,13 @@ pub struct Settings {
     /// token, so the switch takes effect without closing a tab.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root_mcp: Option<bool>,
+    /// Root console: serve the MCP tools to **local-model tabs only**. Absent
+    /// means off (every root agent gets them). On, a cloud agent CLI spawned
+    /// from then on is handed no endpoint and the endpoint refuses the ones
+    /// already running — what the user's calendar and board hold then never
+    /// reaches a hosted model through these tools. Subordinate to `root_mcp`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_mcp_local_only: Option<bool>,
     /// Side panel: the opt-in **Alerts** group in the file viewer — urgent
     /// mail, the calendar entries about to start, and the to-do cards whose due
     /// date is here or past, in one time-ordered strip.
@@ -333,6 +340,12 @@ pub struct Settings {
     /// "Root" chips. Opt-out: unset means every local model is offered there.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root_excluded_models: Option<Vec<String>>,
+    /// Local model names given the root MCP tools by the 🧠 menu's "MCP" chips.
+    /// Opt-in: a local-model (Mistral Vibe) tab otherwise runs with tools off
+    /// (`enabled_tools = ["__no_tools__"]`), which is what keeps a
+    /// completion-only model working. Read at spawn by `services::root_mcp`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ollama_mcp_models: Option<Vec<String>>,
     /// When true (the default), running a `.sh` from the side panel spawns it
     /// as a detached background process instead of opening a terminal tab.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -845,6 +858,11 @@ impl Settings {
     /// Whether the root console's MCP tools are served. On unless switched off.
     pub fn root_mcp(&self) -> bool {
         self.root_mcp.unwrap_or(true)
+    }
+
+    /// Whether the root MCP tools are kept to local-model tabs. Off unless set.
+    pub fn root_mcp_local_only(&self) -> bool {
+        self.root_mcp_local_only.unwrap_or(false)
     }
 
     /// Whether the experimental native presenter ("deck") is offered — the

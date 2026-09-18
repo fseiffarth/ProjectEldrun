@@ -378,6 +378,10 @@ export function LocalModelMenu() {
   // Installed agent CLIs (from list_agents), shown in the Agents section so the
   // ones already available are visible without opening "Manage agents".
   const [agents, setAgents] = useState<AgentInfo[]>([]);
+  // The agent CLIs the root MCP server is actually named to at launch
+  // (`root_mcp_status`); null until read — and on a backend that predates the
+  // field, which then shows no MCP chips rather than guessing.
+  const [wiredClis, setWiredClis] = useState<string[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Models currently being loaded into memory, keyed by name (from the global
@@ -574,6 +578,9 @@ export function LocalModelMenu() {
     invoke<AgentInfo[]>("list_agents")
       .then((all) => setAgents(all.filter((a) => a.installed)))
       .catch(() => {});
+    invoke<{ wired_clis?: string[] }>("root_mcp_status")
+      .then((status) => setWiredClis(status.wired_clis ?? null))
+      .catch(() => setWiredClis(null));
   };
 
   const reveal = () => {
@@ -806,6 +813,25 @@ export function LocalModelMenu() {
       : [...rootAgentIds, a.id];
     void updateSettings({ root_agents: next });
   };
+  // A CLI's "MCP" chip is a readout, not a switch: Root decides whether the
+  // root console offers the agent, and the tools follow — but only a CLI the
+  // backend names the server to (`WIRED_CLIS`) can call them, and the two
+  // Settings switches can withhold them from every cloud agent at once.
+  const mcpOn = settings?.root_mcp !== false;
+  const mcpLocalOnly = settings?.root_mcp_local_only === true;
+  const agentMcp = (a: AgentInfo, inRoot: boolean) => {
+    const wired = !!wiredClis && (wiredClis.includes(a.bin) || wiredClis.includes(a.id));
+    const titleKey: TranslationKey = !wired
+      ? "localModel.agentMcpNotWiredTitle"
+      : !mcpOn
+        ? "localModel.agentMcpOffTitle"
+        : mcpLocalOnly
+          ? "localModel.agentMcpLocalOnlyTitle"
+          : !inRoot
+            ? "localModel.agentMcpNotRootTitle"
+            : "localModel.agentMcpOnTitle";
+    return { wired, gets: wired && mcpOn && !mcpLocalOnly && inRoot, titleKey };
+  };
 
   const scheduleClose = () => {
     if (closeTimer.current !== null) window.clearTimeout(closeTimer.current);
@@ -885,6 +911,17 @@ export function LocalModelMenu() {
       ? rootOffModels.filter((m) => m !== model)
       : [...rootOffModels, model];
     void updateSettings({ root_excluded_models: next });
+  };
+  // Tools for a local model are opt-in, per model: without the chip a Vibe tab
+  // runs with tools off, which is what lets a completion-only model answer at
+  // all. With it, a root-console tab gets the root MCP tools (and only those) —
+  // wired at spawn by the backend, so it applies to tabs opened afterwards.
+  const mcpModels = settings?.ollama_mcp_models ?? [];
+  const toggleMcpModel = (model: string) => {
+    const next = mcpModels.includes(model)
+      ? mcpModels.filter((m) => m !== model)
+      : [...mcpModels, model];
+    void updateSettings({ ollama_mcp_models: next });
   };
 
   // Putting the models back after an upgrade (`stores/ollamaUpgrade`). Reported
@@ -1106,6 +1143,7 @@ export function LocalModelMenu() {
             const isDefault = a.id === defaultAgentCmd;
             const isCompact = compactAgentIds.includes(a.id) || compactAgentIds.includes(a.bin);
             const inRoot = rootAgentIds.includes(a.id) || rootAgentIds.includes(a.bin);
+            const mcp = agentMcp(a, inRoot);
             return (
               <div key={a.id} className="local-model-agent-row" title={t("localModel.agentInstalled", { label: a.label })}>
                 {/* Green lamp mirrors a loaded model: this agent CLI is installed. */}
@@ -1149,6 +1187,16 @@ export function LocalModelMenu() {
                   >
                     {t("localModel.rootChip")}
                   </button>
+                  {wiredClis && (
+                    <span
+                      className={`local-model-role-chip local-model-role-chip-readout${
+                        mcp.gets ? " on" : ""
+                      }${mcp.wired ? "" : " unwired"}`}
+                      title={t(mcp.titleKey, { label: a.label })}
+                    >
+                      {t("localModel.mcpChip")}
+                    </span>
+                  )}
                   <UntestedTag />
                 </div>
               </div>
@@ -1495,6 +1543,25 @@ export function LocalModelMenu() {
                         onClick={() => toggleRootModel(m.name)}
                       >
                         {t("localModel.rootChip")}
+                      </button>
+                      <button
+                        type="button"
+                        className={`local-model-role-chip${
+                          mcpModels.includes(m.name) ? " on" : ""
+                        }`}
+                        title={t(
+                          lacksTools(m)
+                            ? "localModel.mcpNoToolsTitle"
+                            : mcpModels.includes(m.name)
+                              ? "localModel.isMcpModelTitle"
+                              : "localModel.setMcpModelTitle",
+                          { name: m.name },
+                        )}
+                        aria-pressed={mcpModels.includes(m.name)}
+                        disabled={lacksTools(m) && !mcpModels.includes(m.name)}
+                        onClick={() => toggleMcpModel(m.name)}
+                      >
+                        {t("localModel.mcpChip")}
                       </button>
                       <UntestedTag />
                       {/* The row's own two verbs, grouped and right-aligned: the

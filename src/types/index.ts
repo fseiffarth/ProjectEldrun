@@ -249,6 +249,9 @@ export interface Settings {
    *  (`services::root_mcp`). **Default true** — absent means on. Off hands new
    *  root agents no endpoint and refuses the ones already holding the token. */
   root_mcp?: boolean;
+  /** Root console: serve the MCP tools to local-model tabs only. Absent means
+   *  off. On, cloud agent CLIs get no endpoint and running ones are refused. */
+  root_mcp_local_only?: boolean;
   /** Side panel: the **Alerts** group in the file viewer — urgent mail, the
    *  calendar entries about to start, and the to-do cards whose due date is here
    *  or past, merged into one time-ordered strip. **Default true.**
@@ -364,6 +367,10 @@ export interface Settings {
   /** Local (Ollama) model names switched OFF for the root console by the 🧠
    *  menu's "Root" chips. Opt-out: unset means every model is offered there. */
   root_excluded_models?: string[];
+  /** Local (Ollama) model names given the root MCP tools by the 🧠 menu's
+   *  "MCP" chips. Opt-in: other local-model tabs run with tools off. Read at
+   *  spawn by the backend (`services::root_mcp`). */
+  ollama_mcp_models?: string[];
   /** Prefix chips per agent command for the side panel's agent composer; unset
    *  falls back to `lib/agentPrefaces`' defaults, `[]` means none. */
   agent_preface_commands?: Record<string, string[]>;

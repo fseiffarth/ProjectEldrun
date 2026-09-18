@@ -565,11 +565,12 @@ function RootOverlay() {
   // in Settings at once; `running` is the listener's and only a restart moves it.
   const toolsEnabled = useSettingsStore((s) => s.settings?.root_mcp ?? true);
   const updateSettings = useSettingsStore((s) => s.updateSettings);
+  const localOnly = useSettingsStore((s) => s.settings?.root_mcp_local_only ?? false);
   const toolsOn = toolsEnabled && !!status?.running;
   const agentsWithTools = !toolsEnabled
     ? t("rootConsole.rightsDisabled")
     : status?.running
-      ? t("rootConsole.rightsOn")
+      ? t(localOnly ? "rootConsole.rightsLocalOnly" : "rootConsole.rightsOn")
       : t("rootConsole.rightsOff");
   const groupOfKey = useMemo(() => {
     const map = new Map<string, { groupId: string; active: boolean }>();

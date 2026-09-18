@@ -90,8 +90,17 @@ and one reply out).
   Eldrun does not write another application's config, and a flag dies with the
   tab. Claude gets an inline `--mcp-config` whose header reads
   `Bearer ${ELDRUN_ROOT_MCP_TOKEN}`, which Claude expands from its environment.
-  Codex gets `-c mcp_servers.eldrun.url=…` plus `bearer_token_env_var`. Every
-  other agent gets `ELDRUN_ROOT_MCP_URL` and `ELDRUN_ROOT_MCP_TOKEN` only. So
+  Codex gets `-c mcp_servers.eldrun.url=…` plus `bearer_token_env_var`. Vibe
+  (a local-model tab) gets `VIBE_MCP_SERVERS` (naming the token via
+  `api_key_env`) and `VIBE_ENABLED_TOOLS=["eldrun_*"]` — its env layer outranks
+  the per-model `config.toml` that turns tools off — but only when the model
+  wears the Models & agents menu's opt-in "MCP" chip
+  (`settings.ollama_mcp_models`). Every other agent gets `ELDRUN_ROOT_MCP_URL`
+  and `ELDRUN_ROOT_MCP_TOKEN` only. `root_mcp::WIRED_CLIS` lists the CLIs that
+  are named the server (Claude, Codex); `root_mcp_status` carries it, and the
+  menu shows it as a read-only "MCP" chip on each CLI row, lit when that CLI is
+  offered in the root console and the Settings switches don't withhold the
+  tools. So
   no agent carries the token in its argv. This is what keeps it off disk, too:
   a fenced argv is past tmux's message limit, and `tmux_local` then writes the
   whole command line into a launcher script under the state dir. On a tmux
@@ -205,6 +214,16 @@ sits after the bearer check, so an unauthenticated caller learns nothing from
 it. The listener itself stays bound; rebinding would mint a port the running
 agents were never told about, and turning the tools back on would not reach
 them. Settings and the console's ⚿ badge are two doors onto that one key.
+
+**A second switch keeps the tools local.** `root_mcp_local_only` (absent means
+off; Settings, under the main switch) serves local-model tabs only, so the
+calendar and board never reach a hosted model through these tools. It closes
+both halves the same way, which is why there are two tokens: a local-model tab
+(Vibe carrying `ELDRUN_LOCAL_MODEL`/`VIBE_ACTIVE_MODEL`) is always handed
+`Runtime::local_token`, every other root agent `token`. On, a cloud agent is
+handed nothing at spawn and the endpoint answers `503` to the agents' token;
+local tabs opened before the flip keep working. A model still needs its "MCP"
+chip to get tools at all.
 
 **Failure is safe.** If the listener cannot bind, or the OS has no entropy,
 root agents are ordinary agents. The ⚿ badge in the overlay says which case
