@@ -15,8 +15,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import * as pdfjs from "pdfjs-dist";
 import type { PDFDocumentProxy } from "pdfjs-dist";
-import { usePdfSyncStore } from "../../../stores/pdfSync";
-import { useScrollSync } from "../../../stores/scrollSync";
+import { usePdfSyncStore } from "../../../stores/viewers/pdfSync";
+import { useScrollSync } from "../../../stores/viewers/scrollSync";
 import {
   useFileScope,
   usePaneVisible,

@@ -1280,9 +1280,9 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
 100. **Markdown viewer: cross-file `#fragment` navigation.** ✅ Implemented ·
     A preview link like `docs/guide.md#setup` now opens the target *and*
     scrolls its preview to the heading. The click posts the fragment to
-    `stores/mdAnchor` keyed by the target's absolute path (`openLinkedFile`
+    `stores/viewers/mdAnchor` keyed by the target's absolute path (`openLinkedFile`
     may re-activate an existing tab, so a prop cannot carry it — the same
-    shape as `stores/editorJump` for SyncTeX line targets); the target's
+    shape as `stores/viewers/editorJump` for SyncTeX line targets); the target's
     `MarkdownView` consumes it once its preview is rendered. Fragment→id
     matching (`matchAnchorId` in `lib/viewers/markdown.ts`) tries the decoded
     fragment verbatim, then its slugified form (a link written as the
@@ -2225,14 +2225,14 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     tab's.** Implemented 2026-09-10, not yet verified live. Both toggles wrote
     to the tab's `ViewerState`, so every `.tex` of a deck had to be told
     "beamer" on its own and a fresh tab of the same document opened without
-    the bar. Now one row per project (`stores/texViewPref`, localStorage keyed
+    the bar. Now one row per project (`stores/viewers/texViewPref`, localStorage keyed
     by project id, `"root"` for the root scope, capped at 200 rows like
     `fileSourcePref`), read live by every TeX pane of the project — center,
     workspace, popout — and surviving a project switch and a relaunch. Absent
     means the old default: beamer follows the document, the preview follows
     `viewer_prefs.tex`. The per-tab `texBeamer`/`texHoverPreview` rows in old
     sessions are ignored.
-    - *Files: `src/stores/texViewPref.ts` (new),
+    - *Files: `src/stores/viewers/texViewPref.ts` (new),
       `src/components/embed/FileViewerPane.tsx`, `src/stores/tabs.ts`.*
       Frontend only, hot-reloads.
     - [x] 🤖 Automated test — `src/__tests__/TexViewPref.test.ts` (merge,

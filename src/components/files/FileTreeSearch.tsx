@@ -18,7 +18,7 @@
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { useEditorJumpStore } from "../../stores/editorJump";
+import { useEditorJumpStore } from "../../stores/viewers/editorJump";
 import { useSettingsStore } from "../../stores/settings";
 import { basename, resolvePath } from "../../lib/paths";
 import { disabledViewers, fileIcon, folderIcon, type FileEntry } from "../../lib/viewers/fileUtils";

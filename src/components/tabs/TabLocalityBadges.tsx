@@ -9,7 +9,7 @@ import {
   type TabEntry,
   type TabLocation,
 } from "../../stores/tabs";
-import { useFileSourcesStore } from "../../stores/fileSources";
+import { useFileSourcesStore } from "../../stores/viewers/fileSources";
 import { useRunHostPrefStore } from "../../stores/runHostPref";
 import { UntestedTag } from "../common/UntestedTag";
 import { ContextMenuPortal } from "../common/ContextMenuPortal";
@@ -99,7 +99,7 @@ export function TabSourceBadge({ tabKey }: { tabKey: string }) {
  *
  * Renders nothing when the partner is not open, so an ordinary PDF tab and a
  * `.tex` with no build are untouched. `partner` is computed by the host from the
- * tab list it owns (`lib/texPdfLink`'s `texPdfPartner`), keeping this leaf pure
+ * tab list it owns (`lib/viewers/texPdfLink`'s `texPdfPartner`), keeping this leaf pure
  * and usable from both the main-window bar and a popout's strip.
  */
 export function TabTexLinkBadge({

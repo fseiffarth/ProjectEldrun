@@ -1,12 +1,12 @@
 /**
- * The two cross-tree presentation facts (`stores/presentation`). Counters, not
+ * The two cross-tree presentation facts (`stores/viewers/presentation`). Counters, not
  * booleans: a main window and a popout can each arm a tool or present a deck,
  * and whichever unmounts second must not clear the other's state. The floor at
  * zero keeps an unbalanced disarm from leaving a negative count that the next
  * arm cannot bring back above zero.
  */
 import { beforeEach, describe, expect, it } from "vitest";
-import { isToolArmed, usePresentationStore } from "../stores/presentation";
+import { isToolArmed, usePresentationStore } from "../stores/viewers/presentation";
 
 beforeEach(() => {
   usePresentationStore.setState({ armed: 0, presenting: 0 });

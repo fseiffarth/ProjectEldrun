@@ -3,7 +3,7 @@
  * across relaunches (localStorage) and shared by every TeX pane of a project.
  */
 import { describe, it, expect, beforeEach } from "vitest";
-import { useTexViewPrefStore, texViewScopeKey } from "../stores/texViewPref";
+import { useTexViewPrefStore, texViewScopeKey } from "../stores/viewers/texViewPref";
 
 const KEY = "eldrun.texViewByProject";
 

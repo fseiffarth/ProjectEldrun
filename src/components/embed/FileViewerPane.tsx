@@ -20,7 +20,7 @@ import {
 } from "../../stores/tabs";
 import { useSettingsStore } from "../../stores/settings";
 import { saverInterval, useQuiesce } from "../../stores/power";
-import { useTexViewPrefStore, texViewScopeKey } from "../../stores/texViewPref";
+import { useTexViewPrefStore, texViewScopeKey } from "../../stores/viewers/texViewPref";
 import { useExperimental } from "../../lib/experimental";
 import { useProjectsStore } from "../../stores/projects";
 import { useRemoteStatusStore } from "../../stores/remoteStatus";
@@ -32,18 +32,18 @@ import {
   hasMountedEditor,
   registerEditor,
   unregisterEditor,
-} from "../../stores/editorJump";
-import { usePdfSyncStore } from "../../stores/pdfSync";
-import { useScrollSync } from "../../stores/scrollSync";
+} from "../../stores/viewers/editorJump";
+import { usePdfSyncStore } from "../../stores/viewers/pdfSync";
+import { useScrollSync } from "../../stores/viewers/scrollSync";
 import { parseDetachedParam } from "../../stores/detached";
 import { Dropdown } from "../common/Dropdown";
 import { PrinterIcon } from "../common/PrinterIcon";
 import { SaveIcon } from "../common/SaveIcon";
 import { CompareView } from "./CompareView";
 import { PresentationOverlay } from "./PresentationOverlay";
-import { usePresentationStore } from "../../stores/presentation";
+import { usePresentationStore } from "../../stores/viewers/presentation";
 import { matchAnchorId, renderMarkdown, splitLineHint, toggleTaskCheckbox } from "../../lib/viewers/markdown";
-import { useMdAnchorStore } from "../../stores/mdAnchor";
+import { useMdAnchorStore } from "../../stores/viewers/mdAnchor";
 import { useProjectRemarksStore } from "../../stores/projectRemarks";
 import { MdGraphView } from "./MdGraphView";
 import {
@@ -150,7 +150,7 @@ import {
 } from "../../types";
 import { useSyncStore } from "../../stores/sync";
 import { ContextFilePicker } from "./ContextFilePicker";
-import { useFileSourcesStore } from "../../stores/fileSources";
+import { useFileSourcesStore } from "../../stores/viewers/fileSources";
 import {
   FileScopeContext,
   useFileScope,
@@ -250,7 +250,7 @@ import {
   registerTexWorkspace,
   unregisterTexCompile,
   unregisterTexWorkspace,
-} from "../../stores/texCenter";
+} from "../../stores/viewers/texCenter";
 import { YamlTree } from "./YamlTree";
 import { YamlGrid } from "./YamlGrid";
 import { BibCards } from "./BibCards";
@@ -394,7 +394,7 @@ interface Props {
    *  tab of every backgrounded project keeps paying it forever. */
   visible?: boolean;
   /** The subwindow (group) id hosting this pane, for proportional scroll-linking
-   *  between two side-by-side viewer subwindows (see stores/scrollSync). Null/
+   *  between two side-by-side viewer subwindows (see stores/viewers/scrollSync). Null/
    *  absent when the pane isn't in a syncable group; the sync hooks then no-op. */
   groupId?: string | null;
 }
@@ -436,7 +436,7 @@ export function FileViewerPane({ viewer, path, projectId, tabKey, visible = true
   const deckOn = useExperimental("deck_presenter");
 
   // A talk in progress withdraws this pane's marker/laser overlay — see the note
-  // at the render below, and `stores/presentation` for why it is a store.
+  // at the render below, and `stores/viewers/presentation` for why it is a store.
   const presenting = usePresentationStore((s) => s.presenting > 0);
 
   // Resolve whether these bytes are remote-native (host SFTP) or the local
@@ -6101,7 +6101,7 @@ function useTabAiPrefs(tabKey: string | undefined, type: InternalViewer): TabAiP
 
 /** The hover preview's on/off (#tex-hover-preview): the PROJECT's, not the
  *  tab's — one click holds for every TeX pane of the project, across a project
- *  switch and a relaunch (`stores/texViewPref`). Seeded from the per-type
+ *  switch and a relaunch (`stores/viewers/texViewPref`). Seeded from the per-type
  *  `viewer_prefs.tex` default while no click has been made.
  *
  *  Unlike autocomplete and grammar it defaults **ON** (absent ⇒ on), and the
@@ -8012,7 +8012,7 @@ function MarkdownView({
     return () => { cancelled = true; };
   }, [html, mode, visible, remoteAllowed, remoteImages, t]);
 
-  // Cross-file `#fragment` navigation (stores/mdAnchor): when a followed link
+  // Cross-file `#fragment` navigation (stores/viewers/mdAnchor): when a followed link
   // into this document carried a fragment, scroll the rendered preview to that
   // heading once the preview exists — covering both a freshly opened tab (the
   // request outlives the mount) and an already-open one (`openLinkedFile`

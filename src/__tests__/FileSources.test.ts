@@ -1,12 +1,12 @@
 /**
- * The per-tab file-source badge store (`stores/fileSources`). Pinned: a repeat
+ * The per-tab file-source badge store (`stores/viewers/fileSources`). Pinned: a repeat
  * publish of the same source is an identity no-op (the tab strip subscribes to
  * the map, so a fresh object per viewer render would re-render every tab),
  * clearing an unknown key changes nothing, and the two maps are independent —
  * dropping a tab's switch controls leaves its badge.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { useFileSourcesStore } from "../stores/fileSources";
+import { useFileSourcesStore } from "../stores/viewers/fileSources";
 
 beforeEach(() => {
   useFileSourcesStore.setState({ byTab: {}, controlsByTab: {} });

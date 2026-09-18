@@ -1525,7 +1525,7 @@
 .tab-source.clickable.disabled { cursor: var(--cur-default, default); opacity: 0.45; }
 .tab-source.clickable.disabled:hover { background-color: transparent; }
 
-/* TeX ⇄ PDF coupling mark (lib/texPdfLink): a compiled PDF tab and the `.tex`
+/* TeX ⇄ PDF coupling mark (lib/viewers/texPdfLink): a compiled PDF tab and the `.tex`
    tab that produces it each carry this badge, pointing at the other half. Same
    16px badge box as the locality/source badges — a coupled pair is one more fact
    about the tab, not a new kind of chrome — but in the accent hue, since it

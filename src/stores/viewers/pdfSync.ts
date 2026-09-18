@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { emit, listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import type { SyncRect, CaretPhrase } from "../lib/viewers/tex";
+import type { SyncRect, CaretPhrase } from "../../lib/viewers/tex";
 
 /**
  * Cross-tab "reveal + highlight this PDF box" channel for SyncTeX forward

@@ -402,7 +402,7 @@ export interface ViewerState {
   grammarCheck?: boolean;
   spellCheck?: boolean;
   // The TeX editor's hover-preview and beamer switches are NOT here: they are
-  // the project's, in `stores/texViewPref` (a tab of a deck is not where "this
+  // the project's, in `stores/viewers/texViewPref` (a tab of a deck is not where "this
   // is a deck" belongs). Old sessions may still carry `texHoverPreview` /
   // `texBeamer` rows; they are ignored.
   // Debug breakpoints (#py), as 1-based line numbers into the file. Persisted per

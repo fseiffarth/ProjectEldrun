@@ -719,7 +719,7 @@ src-tauri/Cargo.toml -- gpustat slurm`.
 
 ## 11. TeX toolchain
 
-**Where** `commands/tex.rs`, `commands/synctex.rs`, `src/lib/texPdfLink.ts`,
+**Where** `commands/tex.rs`, `commands/synctex.rs`, `src/lib/viewers/texPdfLink.ts`,
 `src/lib/viewers/*`, `docs/context` (none) — see `src-tauri/CLAUDE.md`.
 
 **Assumes** `latexmk` argv per engine (pdflatex/xelatex/lualatex, shell-escape

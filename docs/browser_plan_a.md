@@ -241,7 +241,7 @@ incremented by:
    layer during a window move — a native view is not DOM, so it must be told).
 4. The right-panel overlay while it overlaps the pane's rect (`RightPanel` slides
    *over* the center panel).
-5. A presenter/fullscreen overlay (`stores/presentation.ts`'s counters).
+5. A presenter/fullscreen overlay (`stores/viewers/presentation.ts`'s counters).
 
 This store is the single place that knowledge lives, so a new overlay adds one
 `suppress()`/`release()` pair rather than a new class of "the page is covering my

@@ -26,14 +26,14 @@ import {
   hasTexCompiler,
   registerTexCompile,
   unregisterTexCompile,
-} from "../stores/texCenter";
+} from "../stores/viewers/texCenter";
 import {
   useEditorJumpStore,
   hasMountedEditor,
   registerEditor,
   unregisterEditor,
-} from "../stores/editorJump";
-import { usePdfSyncStore } from "../stores/pdfSync";
+} from "../stores/viewers/editorJump";
+import { usePdfSyncStore } from "../stores/viewers/pdfSync";
 
 describe("SyncTeX coordinate math", () => {
   it("pdfPointToBigPoints divides the in-rect offset by scale", () => {

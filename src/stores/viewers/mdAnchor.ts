@@ -6,7 +6,7 @@ import { create } from "zustand";
  * A markdown link may carry a fragment (`docs/guide.md#setup`). The click opens
  * the target file through `openLinkedFile`, which either mounts a fresh
  * `MarkdownView` or re-activates one that is already open — so the fragment
- * cannot ride as a prop. Mirroring `stores/editorJump` (SyncTeX's identical
+ * cannot ride as a prop. Mirroring `stores/viewers/editorJump` (SyncTeX's identical
  * problem for line targets), the clicking side posts the fragment here keyed by
  * the target's absolute path, and the `MarkdownView` for that path consumes it
  * once its preview is rendered. A `nonce` makes a repeat click on the same link

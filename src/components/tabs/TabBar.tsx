@@ -53,7 +53,7 @@ import {
   tabLocation,
   type LocalityMenuState,
 } from "./TabLocalityBadges";
-import { texPdfPartner, useTexPdfCandidates } from "../../lib/texPdfLink";
+import { texPdfPartner, useTexPdfCandidates } from "../../lib/viewers/texPdfLink";
 import { useClampToViewport } from "../../hooks/useClampToViewport";
 import { startCursorPoll, desktopCursor, type PhysPoint } from "../../lib/window/coords";
 import { bindDragRelease, dragPlatform } from "../../lib/window/dragPlatform";
@@ -158,7 +158,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
   // pair very often straddles two subwindows (the workspace here, its compiled
   // PDF beside it), so the search runs over the scope rather than this group —
   // behind a shallow guard that keeps the bar's subscription narrow (see
-  // lib/texPdfLink).
+  // lib/viewers/texPdfLink).
   const texPdfTabs = useTexPdfCandidates();
   // The 3D project-blob tab is a root-scope feature, offered only once at least
   // one project exists (it has nothing to show otherwise).
@@ -1331,7 +1331,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
             {/* TeX ⇄ PDF coupling mark: this tab's other half (the compiled PDF,
                 or the LaTeX source that produces it) when that tab is open —
                 click to jump to it. Derived from the paths, so it needs nothing
-                persisted on the tab; see lib/texPdfLink. */}
+                persisted on the tab; see lib/viewers/texPdfLink. */}
             <TabTexLinkBadge
               partner={texPdfPartner(texPdfTabs, tab)}
               onFocus={setActive}

@@ -41,7 +41,7 @@ import { useDragStore } from "../../stores/drag/drag";
 import { useSubwindowNavStore } from "../../stores/subwindowNav";
 import { useKeyboardSteeringStore } from "../../stores/keyboardSteering";
 import { useWindowFocused } from "../../hooks/useWindowFocused";
-import { useScrollSyncStore } from "../../stores/scrollSync";
+import { useScrollSyncStore } from "../../stores/viewers/scrollSync";
 import { useWindowMoveStore } from "../../stores/drag/windowMove";
 import { useDetachAnimStore } from "../../stores/drag/detachAnim";
 import { useTabLandStore } from "../../stores/drag/tabLand";
@@ -1528,7 +1528,7 @@ export function DragGhost() {
 /**
  * The scroll-link toggle that sits on the divider between two side-by-side
  * viewer subwindows. When enabled, scrolling one subwindow proportionally
- * scrolls the other (see stores/scrollSync). Subscribes narrowly to its own
+ * scrolls the other (see stores/viewers/scrollSync). Subscribes narrowly to its own
  * linked state so unrelated link changes don't re-render it. Stops pointer/click
  * propagation so toggling never starts a divider resize drag.
  */
