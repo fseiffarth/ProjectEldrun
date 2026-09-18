@@ -655,7 +655,16 @@ intent. What is left is listed here.
       confirm Cargo publish credentials require the opt-in for a new tab.
 
 158. **A `.git` *file* skips the repo-config sanitizer — and nothing sandboxed
-    is kept out of `.git/` (OPEN ❌).** `sanitize_repo_git_config` reads only
+    is kept out of `.git/` (sanitizer part FIXED; read-only `.git` mounts
+    implemented, `services::git_guard` — both not live-verified).** Fixed:
+    `commands::git::repo_config_files`
+    resolves the git dir like git's discovery without running git in the repo
+    (walk up to the nearest `.git`, one `gitdir:` hop, `commondir`,
+    `config.worktree`), and `HARDENED_CONFIG` pins
+    `safe.bareRepository=explicit` against a bare-layout folder.
+    `GIT_ATTR_SOURCE`=empty tree was rejected: with `core.autocrlf` unset an
+    `eol=crlf` repo then shows every file modified.
+    Original report: `sanitize_repo_git_config` reads only
     `<project>/.git/config` and returns early when that is not a file, so a
     project whose `.git` is a pointer (`gitdir: .notgit`) keeps any
     `filter.*`/`diff.*` driver in the redirected config. Reproduced 2026-09-18
@@ -674,8 +683,10 @@ intent. What is left is listed here.
     `.git/config` and `config.worktree` read-only in the agent fence and
     project containers, which is what closes hooks too (#151 residual). See
     `docs/threat_model.md` tiers 0 and 3.
-    - [ ] 🤖 Automated test — pointer-file repo with a `filter.*.clean` driver:
-      `hardened_git_command_in` + `status`/`diff` must not execute it.
+    - [x] 🤖 Automated test — pointer-file repo with a `filter.*.clean` driver:
+      `hardened_git_command_in` + `status`/`diff` must not execute it
+      (`commands::git` tests: gitdir pointer, linked worktree + `config.worktree`,
+      project below the repo root, implicit bare layout).
     - **Read-only `.git` mounts — implemented 2026-09-18 (🧪 untested live).**
       `services::git_guard::guard_paths` names the control files (`config`,
       `config.worktree`, `hooks`, `commondir`, `.git` pointer files, incl. every

@@ -54,12 +54,22 @@ use crate::services::remote::{remote_target_for_dir, RemoteTarget};
 /// - `protocol.ext.allow=never` — an `ext::<command>` remote URL runs a shell
 ///   command, and git's default (`user`) permits exactly the direct invocations
 ///   Eldrun makes. Eldrun never legitimately uses `ext::`.
+/// - `safe.bareRepository=explicit` — a folder laid out as a bare repository
+///   (`HEAD`, `objects/`, `refs/`, `config`) is otherwise *itself* the git dir to
+///   implicit discovery, and its `config` can name a `core.worktree` and filter
+///   drivers the `.git`-based strip never sees (#158). Eldrun never runs git in
+///   a bare repo by discovery. Honoured only from protected config, which
+///   includes `-c`; an older git ignores the unknown key.
 ///
 /// Deliberately **not** here: `diff.external=`. An empty value does not disable an
 /// external differ, it makes git try to exec the empty string and die
 /// ("external diff died") — verified, and it would break diff for every user. The
 /// working form is the per-command `--no-ext-diff` below.
-const HARDENED_CONFIG: &[&str] = &["core.fsmonitor=false", "protocol.ext.allow=never"];
+const HARDENED_CONFIG: &[&str] = &[
+    "core.fsmonitor=false",
+    "protocol.ext.allow=never",
+    "safe.bareRepository=explicit",
+];
 
 /// Subcommands that accept `--no-ext-diff` / `--no-textconv`, the two flags that
 /// stop a repo-configured `diff.external` / `diff.<driver>.textconv` program from
@@ -267,12 +277,58 @@ fn is_denylisted_config_key(key: &str) -> bool {
 /// itself invoke a filter or hook, so this cannot be the very thing it exists
 /// to prevent.
 fn sanitize_repo_git_config(project_dir: &Path) {
-    // `config.worktree` too: a repo that sets `extensions.worktreeConfig` makes
-    // git read it as a second repo-scope file, which would otherwise be a way
-    // around the strip.
-    for name in ["config", "config.worktree"] {
-        sanitize_git_config_file(&project_dir.join(".git").join(name));
+    for config in repo_config_files(project_dir) {
+        sanitize_git_config_file(&config);
     }
+}
+
+/// Every repo-scope config file git reads for a command run in `project_dir`,
+/// found the way git's own discovery finds them but **without running git in
+/// the repo** (that would be the very call this guards; #158):
+///
+/// - the nearest `.git` walking up from `project_dir` — a project folder can sit
+///   below its repo's root, and git walks up too;
+/// - a `.git` *file* is a pointer (`gitdir: <path>`, relative to its folder):
+///   linked worktrees, submodules, `--separate-git-dir`, and a hostile
+///   `gitdir: .notgit`. Followed exactly one hop, as git does;
+/// - a git dir with a `commondir` (a linked worktree's) shares the common dir's
+///   `config`;
+/// - `config.worktree` beside each: `extensions.worktreeConfig` makes git read
+///   it as a second repo-scope file.
+///
+/// A folder that is itself a git dir (bare layout) is not found here — the
+/// `safe.bareRepository=explicit` pin in [`HARDENED_CONFIG`] refuses it instead.
+fn repo_config_files(project_dir: &Path) -> Vec<PathBuf> {
+    let Some(git_dir) = discover_git_dir(project_dir) else {
+        return Vec::new();
+    };
+    let mut dirs = vec![git_dir.clone()];
+    if let Ok(common) = std::fs::read_to_string(git_dir.join("commondir")) {
+        let common = common.trim();
+        if !common.is_empty() {
+            dirs.push(git_dir.join(common)); // an absolute path replaces the base
+        }
+    }
+    dirs.iter()
+        .flat_map(|d| [d.join("config"), d.join("config.worktree")])
+        .collect()
+}
+
+/// The git dir for `project_dir`: the nearest ancestor's `.git` directory, or
+/// the target of the nearest `.git` pointer file.
+fn discover_git_dir(project_dir: &Path) -> Option<PathBuf> {
+    for dir in project_dir.ancestors() {
+        let dot_git = dir.join(".git");
+        if dot_git.is_dir() {
+            return Some(dot_git);
+        }
+        if dot_git.is_file() {
+            let text = std::fs::read_to_string(&dot_git).ok()?;
+            let target = text.lines().find_map(|l| l.strip_prefix("gitdir:"))?.trim();
+            return (!target.is_empty()).then(|| dir.join(target));
+        }
+    }
+    None
 }
 
 fn sanitize_git_config_file(config_path: &Path) {
@@ -2699,15 +2755,17 @@ mod tests {
         // `-c k=v` pairs must precede the subcommand, or git parses them as its
         // arguments instead of its own options.
         assert_eq!(
-            &args[..4],
+            &args[..6],
             &[
                 "-c",
                 "core.fsmonitor=false",
                 "-c",
-                "protocol.ext.allow=never"
+                "protocol.ext.allow=never",
+                "-c",
+                "safe.bareRepository=explicit"
             ]
         );
-        assert_eq!(&args[4..], &["status", "--porcelain"]);
+        assert_eq!(&args[6..], &["status", "--porcelain"]);
         // A subcommand that takes no diff-driver flags gets none.
         assert!(!args.iter().any(|a| a == "--no-ext-diff"));
     }
@@ -2729,7 +2787,7 @@ mod tests {
         // Owned args (the `Vec<String>` call sites) go through the same builder.
         let owned = vec!["log".to_string(), "--numstat".to_string()];
         assert_eq!(
-            hardened_git_args(&owned)[4..],
+            hardened_git_args(&owned)[HARDENED_CONFIG.len() * 2..],
             ["log", "--no-ext-diff", "--no-textconv", "--numstat"]
         );
         // No subcommand at all is just the pinned config (no panic, no stray flag).
@@ -3391,6 +3449,8 @@ filename note.txt
                 "-c",
                 "protocol.ext.allow=never",
                 "-c",
+                "safe.bareRepository=explicit",
+                "-c",
                 "core.hooksPath=",
                 "worktree",
                 "add",
@@ -3427,7 +3487,8 @@ filename note.txt
         assert_eq!(
             cmd,
             "cd '/scratch/proj' && git '-c' 'core.fsmonitor=false' '-c' 'protocol.ext.allow=never' \
-             '-c' 'core.hooksPath=' 'worktree' 'add' '/s/p/.eldrun/worktrees/a b' 'feat'"
+             '-c' 'safe.bareRepository=explicit' '-c' 'core.hooksPath=' 'worktree' 'add' \
+             '/s/p/.eldrun/worktrees/a b' 'feat'"
         );
     }
 
@@ -3905,5 +3966,170 @@ filename note.txt
         assert_eq!(helpers.len(), 1);
         assert!(helpers[0].starts_with("credential.https://github.com.helper=!"));
         assert!(!args.iter().any(|a| a.starts_with("credential.helper=!")), "unscoped helper");
+    }
+
+    /// #158 fixture: a clean-filter payload bound to `*.txt` by an in-tree
+    /// `.gitattributes`, plus the marker it leaves. The driver itself is planted
+    /// by each test wherever the layout under test makes git read it from.
+    #[cfg(unix)]
+    fn filter_payload(root: &Path) -> (PathBuf, String) {
+        use std::os::unix::fs::PermissionsExt;
+        let marker = root.join("executed");
+        let payload = root.join("payload.sh");
+        fs::write(&payload, format!("#!/bin/sh\ntouch '{}'\ncat\n", marker.display()))
+            .expect("write");
+        fs::set_permissions(&payload, fs::Permissions::from_mode(0o755)).expect("chmod");
+        (marker, payload.to_string_lossy().into_owned())
+    }
+
+    #[cfg(unix)]
+    fn plain_git(dir: &Path, args: &[&str]) -> std::process::Output {
+        crate::paths::command_no_window("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .expect("git")
+    }
+
+    /// Commit a tracked `f.txt` under the filter binding, then make a same-size
+    /// edit so the next status/diff has to re-read (and so re-filter) it.
+    #[cfg(unix)]
+    fn tracked_txt_with_pending_edit(worktree: &Path) {
+        fs::write(worktree.join(".gitattributes"), "*.txt filter=x\n").expect("attrs");
+        fs::write(worktree.join("f.txt"), "a\n").expect("write");
+        plain_git(worktree, &["add", ".gitattributes", "f.txt"]);
+        plain_git(
+            worktree,
+            &["-c", "user.name=T", "-c", "user.email=t@example.com", "commit", "-qm", "init"],
+        );
+        fs::write(worktree.join("f.txt"), "b\n").expect("edit");
+    }
+
+    /// Both directions for one layout: plain git in `run_dir` runs the planted
+    /// filter (else the setup is stale and the test vacuous), `run_git` does not.
+    #[cfg(unix)]
+    fn assert_filter_contained(run_dir: &Path, worktree: &Path, marker: &Path, layout: &str) {
+        plain_git(run_dir, &["diff"]);
+        assert!(marker.exists(), "{layout}: setup is stale — plain git did not run the filter");
+        fs::remove_file(marker).expect("clear marker");
+        fs::write(worktree.join("f.txt"), "c\n").expect("edit again");
+
+        let dir = run_dir.to_str().expect("utf-8 path");
+        run_git(None, dir, &["status", "--porcelain"]).expect("hardened status");
+        assert!(!marker.exists(), "{layout}: clean filter ran through run_git status");
+        run_git(None, dir, &["diff"]).expect("hardened diff");
+        assert!(!marker.exists(), "{layout}: clean filter ran through run_git diff");
+    }
+
+    /// #158: `.git` as a pointer file (`gitdir: .notgit`) — the sanitizer used
+    /// to open `<project>/.git/config`, find no file, and strip nothing.
+    #[cfg(unix)]
+    #[test]
+    fn a_gitdir_pointer_file_does_not_skip_the_config_strip() {
+        if !git_available() {
+            eprintln!("git not on PATH — skipping a_gitdir_pointer_file_does_not_skip_the_config_strip");
+            return;
+        }
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path().join("proj");
+        fs::create_dir(&dir).expect("mkdir");
+        init_repo(&dir);
+        fs::rename(dir.join(".git"), dir.join(".notgit")).expect("move git dir");
+        fs::write(dir.join(".git"), "gitdir: .notgit\n").expect("pointer");
+        tracked_txt_with_pending_edit(&dir);
+        let (marker, payload) = filter_payload(tmp.path());
+        plain_git(&dir, &["config", "filter.x.clean", &payload]);
+        assert!(
+            fs::read_to_string(dir.join(".notgit/config")).unwrap().contains("payload.sh"),
+            "the driver must live in the redirected config"
+        );
+        assert_filter_contained(&dir, &dir, &marker, "gitdir pointer");
+    }
+
+    /// #158: a linked worktree — Eldrun's own agent worktrees. Its `.git`
+    /// points at `<common>/worktrees/<name>`, whose `commondir` names the shared
+    /// config; with `extensions.worktreeConfig` it also reads `config.worktree`.
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_worktrees_common_and_worktree_config_are_stripped() {
+        if !git_available() {
+            eprintln!("git not on PATH — skipping a_linked_worktrees_common_and_worktree_config_are_stripped");
+            return;
+        }
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let main = tmp.path().join("main");
+        fs::create_dir(&main).expect("mkdir");
+        init_repo(&main);
+        tracked_txt_with_pending_edit(&main);
+        plain_git(&main, &["checkout", "-q", "--", "f.txt"]);
+        let wt = tmp.path().join("wt");
+        let out = plain_git(&main, &["worktree", "add", "-q", wt.to_str().unwrap()]);
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        assert!(wt.join(".git").is_file());
+        fs::write(wt.join("f.txt"), "b\n").expect("edit");
+
+        let (marker, payload) = filter_payload(tmp.path());
+        plain_git(&main, &["config", "extensions.worktreeConfig", "true"]);
+        plain_git(&wt, &["config", "--worktree", "filter.x.clean", &payload]);
+        assert_filter_contained(&wt, &wt, &marker, "linked worktree, config.worktree");
+
+        // The shared (common-dir) config, reached through `commondir`.
+        plain_git(&main, &["config", "filter.x.clean", &payload]);
+        fs::write(wt.join("f.txt"), "d\n").expect("edit");
+        assert_filter_contained(&wt, &wt, &marker, "linked worktree, common config");
+    }
+
+    /// #158: a project folder inside a larger repo — git discovers the repo by
+    /// walking up, so the sanitizer has to find the same `.git` git will.
+    #[cfg(unix)]
+    #[test]
+    fn a_project_below_the_repo_root_is_stripped_too() {
+        if !git_available() {
+            eprintln!("git not on PATH — skipping a_project_below_the_repo_root_is_stripped_too");
+            return;
+        }
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let repo = tmp.path().join("repo");
+        let sub = repo.join("sub");
+        fs::create_dir_all(&sub).expect("mkdir");
+        init_repo(&repo);
+        tracked_txt_with_pending_edit(&repo);
+        let (marker, payload) = filter_payload(tmp.path());
+        plain_git(&repo, &["config", "filter.x.clean", &payload]);
+        assert_filter_contained(&sub, &repo, &marker, "project below the repo root");
+    }
+
+    /// A folder laid out as a bare repository (`HEAD`, `objects/`, `refs/`,
+    /// `config`) is itself a git dir to implicit discovery, and its `config` can
+    /// name a `core.worktree`. `safe.bareRepository=explicit` refuses that.
+    #[cfg(unix)]
+    #[test]
+    fn an_implicit_bare_repo_layout_is_refused() {
+        if !git_available() {
+            eprintln!("git not on PATH — skipping an_implicit_bare_repo_layout_is_refused");
+            return;
+        }
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let work = tmp.path().join("work");
+        fs::create_dir(&work).expect("mkdir");
+        init_repo(&work);
+        tracked_txt_with_pending_edit(&work);
+        let (marker, payload) = filter_payload(tmp.path());
+        // The folder the user adds: the git dir itself, pointing its worktree
+        // back at the files.
+        let project = tmp.path().join("project");
+        fs::rename(work.join(".git"), &project).expect("move git dir");
+        plain_git(&project, &["config", "core.bare", "false"]);
+        plain_git(&project, &["config", "core.worktree", work.to_str().unwrap()]);
+        plain_git(&project, &["config", "filter.x.clean", &payload]);
+
+        plain_git(&project, &["diff"]);
+        assert!(marker.exists(), "setup is stale — plain git did not treat the folder as a repo");
+        fs::remove_file(&marker).expect("clear marker");
+        fs::write(work.join("f.txt"), "c\n").expect("edit again");
+        let dir = project.to_str().unwrap();
+        let _ = run_git(None, dir, &["status", "--porcelain"]);
+        let _ = run_git(None, dir, &["diff"]);
+        assert!(!marker.exists(), "implicit bare repo: clean filter ran through run_git");
     }
 }
