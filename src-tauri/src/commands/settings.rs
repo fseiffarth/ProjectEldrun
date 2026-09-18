@@ -37,7 +37,10 @@ fn seed_default_global_apps(settings: &mut Settings) {
 #[tauri::command]
 pub fn save_settings(settings: Settings) -> Result<(), String> {
     let path = storage::state_dir().join("settings.json");
-    storage::write_json_atomic(&path, &settings).map_err(|e| e.to_string())
+    let previous: Settings = storage::read_json(&path).unwrap_or_default();
+    storage::write_json_atomic(&path, &settings).map_err(|e| e.to_string())?;
+    invalidate_copilot(&previous, &settings);
+    Ok(())
 }
 
 /// Atomically merge a frontend settings patch against the latest file.
@@ -51,11 +54,24 @@ pub fn save_settings(settings: Settings) -> Result<(), String> {
 #[tauri::command]
 pub fn patch_settings(patch: Map<String, Value>) -> Result<Settings, String> {
     let path = storage::state_dir().join("settings.json");
-    storage::patch_json(&path, Settings::default(), |settings| {
+    let mut previous = None;
+    let saved = storage::patch_json(&path, Settings::default(), |settings| {
         seed_default_global_apps(settings);
+        previous = Some(settings.clone());
         merge_settings_patch(settings, patch)?;
         Ok(settings.clone())
-    })
+    })?;
+    if let Some(previous) = previous { invalidate_copilot(&previous, &saved); }
+    Ok(saved)
+}
+
+fn invalidate_copilot(previous: &Settings, next: &Settings) {
+    if previous.code_completion_provider != next.code_completion_provider
+        || previous.completion_project_policies != next.completion_project_policies
+        || previous.copilot_completion.unwrap_or(previous.debug.unwrap_or(false))
+            != next.copilot_completion.unwrap_or(next.debug.unwrap_or(false)) {
+        crate::services::copilot::session::sessions().stop_all_now();
+    }
 }
 
 fn merge_settings_patch(settings: &mut Settings, patch: Map<String, Value>) -> Result<(), String> {

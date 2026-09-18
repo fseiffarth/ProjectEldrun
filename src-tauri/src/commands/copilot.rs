@@ -7,6 +7,7 @@ use crate::services::copilot::documents::Position;
 use crate::services::copilot::policy::{self, PolicyError};
 use crate::services::copilot::session::{sessions, CompletionRequest, DeviceCode, Session};
 use crate::services::copilot::process;
+use crate::services::copilot::requests;
 use crate::services::remote;
 use crate::storage;
 use serde_json::{json, Value};
@@ -44,7 +45,14 @@ fn authorize(project_id: &str) -> Result<PathBuf, String> {
 /// A refusal is also a revocation: whatever was running for the project stops.
 async fn session(project_id: &str) -> Result<(Arc<Session>, PathBuf), String> {
     match authorize(project_id) {
-        Ok(root) => Ok((sessions().get_or_start(project_id, &root).await?, root)),
+        Ok(root) => {
+            let session = sessions().get_or_start(project_id, &root).await?;
+            if authorize(project_id).as_ref() != Ok(&root) {
+                sessions().stop(project_id).await;
+                return Err("copilot_no_consent".into());
+            }
+            Ok((session, root))
+        },
         Err(error) => {
             sessions().stop(project_id).await;
             Err(error)
@@ -59,6 +67,16 @@ fn editor_key(window: &tauri::Window, editor: &str) -> Result<String, String> {
         return Err("copilot_document_limit".into());
     }
     Ok(format!("{}:{editor}", window.label()))
+}
+
+fn request_owner(project_id: &str, editor: &str) -> String {
+    json!([project_id, editor]).to_string()
+}
+
+#[tauri::command]
+pub fn copilot_prepare(window: tauri::Window, project_id: String, editor: String) -> Result<String, String> {
+    authorize(&project_id)?;
+    requests::reserve(request_owner(&project_id, &editor_key(&window, &editor)?))
 }
 
 #[tauri::command]
@@ -114,6 +132,7 @@ pub async fn copilot_complete(
     project_id: String,
     path: String,
     editor: String,
+    request_id: String,
     version: u64,
     text: String,
     language: String,
@@ -123,27 +142,43 @@ pub async fn copilot_complete(
     insert_spaces: bool,
 ) -> Result<Vec<Value>, String> {
     let editor = editor_key(&window, &editor)?;
-    let (session, root) = session(&project_id).await?;
+    let mut lease = requests::start(&request_owner(&project_id, &editor), &request_id)?;
+    // Detached: a keystroke cancels this request, never the server launch
+    // behind it. Dropping the launch would kill the starting server, and three
+    // of those spend the project's restart budget.
+    let launch = tokio::spawn({
+        let project_id = project_id.clone();
+        async move { session(&project_id).await }
+    });
+    let (session, root) = tokio::select! {
+        biased;
+        _ = requests::cancelled(&mut lease.signal) => return Err("copilot_cancelled".into()),
+        result = launch => result.map_err(|_| "copilot_server_closed")??,
+    };
+    // Consent may have changed while initialization was waiting on the server.
+    if authorize(&project_id).as_ref() != Ok(&root) {
+        sessions().stop(&project_id).await;
+        return Err("copilot_no_consent".into());
+    }
     let file = policy::authorize_document(&root, Path::new(&path)).map_err(policy_code)?;
     let uri = url::Url::from_file_path(&file).map_err(|_| "copilot_invalid_path")?;
-    session.complete(CompletionRequest {
+    session.complete_cancellable(CompletionRequest {
         uri: uri.as_str(), editor: &editor, client_version: version, text: &text, language: &language,
         position, automatic, tab_size: tab_size.clamp(1, 16), insert_spaces,
-    }).await
+    }, lease.signal.clone()).await
 }
 
 #[tauri::command]
-pub async fn copilot_cancel(window: tauri::Window, project_id: String, editor: String) -> Result<(), String> {
+pub async fn copilot_cancel(window: tauri::Window, project_id: String, editor: String, request_id: String) -> Result<(), String> {
     let editor = editor_key(&window, &editor)?;
-    if let Some(session) = sessions().existing(&project_id).await {
-        session.cancel(&editor).await;
-    }
+    requests::cancel(&request_owner(&project_id, &editor), &request_id);
     Ok(())
 }
 
 #[tauri::command]
 pub async fn copilot_close_editor(window: tauri::Window, project_id: String, editor: String) -> Result<(), String> {
     let editor = editor_key(&window, &editor)?;
+    requests::cancel_owner(&request_owner(&project_id, &editor));
     if let Some(session) = sessions().existing(&project_id).await {
         session.close_editor(&editor).await;
     }
@@ -183,7 +218,15 @@ pub async fn copilot_account(project_id: String) -> Result<Value, String> {
         return Ok(json!({"running": false}));
     };
     let account = session.account().await.ok();
-    Ok(json!({"running": true, "status": session.status(), "account": account}))
+    Ok(json!({"running": true, "status": session.status(), "account": account, "messages": session.account_messages()}))
+}
+
+#[tauri::command]
+pub async fn copilot_message_action(project_id: String, message_id: u64, action: Option<usize>) -> Result<(), String> {
+    match sessions().existing(&project_id).await {
+        Some(session) => session.answer_message(message_id, action).await,
+        None => Ok(()),
+    }
 }
 
 #[tauri::command]
@@ -198,10 +241,13 @@ pub async fn copilot_finish_sign_in(project_id: String) -> Result<(), String> {
 
 #[tauri::command]
 pub async fn copilot_sign_out(project_id: String) -> Result<(), String> {
-    match sessions().existing(&project_id).await {
+    let result = match sessions().existing(&project_id).await {
         Some(session) => session.sign_out().await,
         None => Ok(()),
-    }
+    };
+    // Even an offline sign-out releases credentials, cached offers and work.
+    sessions().stop(&project_id).await;
+    result
 }
 
 #[tauri::command]

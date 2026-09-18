@@ -359,7 +359,7 @@ export function StatsRecap({ onClose, initialAnchorMs, showAutoToggle }: Props) 
               {[...autocomplete].map(([identity, counts]) => {
                 const dot = identity.indexOf(".");
                 const mode = identity.slice(0, dot);
-                const modeLabel = mode === "scope" ? t("projectSettings.scope") : mode === "block" ? t("projectSettings.block") : t("projectSettings.sentence");
+                const modeLabel = mode === "copilot" ? t("settings.copilotProviderCopilot") : mode === "scope" ? t("projectSettings.scope") : mode === "block" ? t("projectSettings.block") : t("projectSettings.sentence");
                 return <Metric key={identity}
                   label={t("stats.autocomplete", { mode: modeLabel, model: identity.slice(dot + 1) })}
                   value={t("stats.autocompleteOutcomes", counts)} />;

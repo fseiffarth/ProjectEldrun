@@ -3015,8 +3015,9 @@ function CodeEditor({
   const acVisible = usePaneVisible();
   const acCache = useRef(new CompletionCache());
   const acCandidate = useRef(0);
+  const acCandidates = useRef<CompletionCandidate[]>([]);
   const acDismissed = useRef<{ draft: string; caret: number } | null>(null);
-  const acOutcome = useRef<{ model: string; mode: AutocompleteMode } | null>(null);
+  const acOutcome = useRef<{ model: string; mode: AutocompleteMode | "copilot" } | null>(null);
   const acEndpoint = useSettingsStore((s) => JSON.stringify([
     s.settings?.ollama_host, s.settings?.ollama_allow_remote_host,
   ]));
@@ -3188,7 +3189,7 @@ function CodeEditor({
   );
   // Hidden pane, other file, other provider, unmount: the server forgets the
   // document. The next request after a show re-opens it with current content.
-  useEffect(() => () => acFeedback?.close(), [acFeedback, path, acVisible]);
+  useEffect(() => () => acFeedback?.close(), [acFeedback, path, acVisible, autocomplete?.enabled]);
   const highlighted = useMemo(
     () => (loaded ? highlight(draft, lang) : null),
     [loaded, draft, lang],
@@ -3622,6 +3623,7 @@ function CodeEditor({
   const edit = useCallback(
     (next: string, via?: string) => {
       if (next !== draftRef.current) {
+        acCandidates.current = [];
         acAbort.current?.abort();
         acAbort.current = null;
         setAcStatus(null);
@@ -4393,6 +4395,7 @@ function CodeEditor({
   }, [gotoLine?.nonce, loaded]);
 
   const dismissSuggestion = useCallback(() => {
+    acCandidates.current = [];
     const el = textareaRef.current;
     if (el) acDismissed.current = { draft: draftRef.current, caret: el.selectionStart };
     recordAcOutcome(false);
@@ -4413,6 +4416,7 @@ function CodeEditor({
     acAbort.current?.abort();
     acAbort.current = null;
     setAcStatus(null);
+    acCandidates.current = [];
     if (draft !== lastEditRef.current) {
       recordAcOutcome(false);
       setSuggestion(null);
@@ -4433,6 +4437,7 @@ function CodeEditor({
     const { prefix } = completionWindow(snapshot, caret);
     if (auto && prefix.replace(/\s+/g, "").length < 3) return;
     recordAcOutcome(false);
+    acCandidates.current = [];
     acCandidate.current = opts?.candidate ?? 0;
     const candidate = acCandidate.current;
     acAbort.current?.abort();
@@ -4444,8 +4449,9 @@ function CodeEditor({
       if (ctl.signal.aborted || acDocumentVersion.current !== version || draftRef.current !== snapshot ||
           el.selectionStart !== caret || el.selectionEnd !== caret) return;
       // Copilot returns its alternatives at once; Alt+[/] walks that list.
-      const item = candidates[acCopilot ? candidate % candidates.length : 0];
-      acOutcome.current = item ? { model: item.model ?? item.provider, mode: item.mode ?? mode } : null;
+      if (acCopilot) acCandidates.current = candidates;
+      const item = candidates[0];
+      acOutcome.current = item ? { model: `${item.provider}/${item.model ?? item.provider}`, mode: acCopilot ? "copilot" : item.mode ?? mode } : null;
       setSuggestion(item ? { text: item.text, at: item.at, candidate: item } : null);
       if (item) setAcStatus(null);
     };
@@ -4802,7 +4808,16 @@ function CodeEditor({
     if (suggestion) {
       if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && ["[", "]"].includes(e.key)) {
         e.preventDefault();
-        void requestCompletion({ candidate: (acCandidate.current + (e.key === "]" ? 1 : 2)) % 3 });
+        if (acCopilot) {
+          const items = acCandidates.current;
+          if (items.length > 1 && items[0].version === acDocumentVersion.current) {
+            recordAcOutcome(false);
+            acCandidate.current = (acCandidate.current + (e.key === "]" ? 1 : items.length - 1)) % items.length;
+            const item = items[acCandidate.current];
+            acOutcome.current = { model: `${item.provider}/${item.model ?? item.provider}`, mode: "copilot" };
+            setSuggestion({ text: item.text, at: item.at, candidate: item });
+          }
+        } else void requestCompletion({ candidate: (acCandidate.current + (e.key === "]" ? 1 : 2)) % 3 });
         return;
       }
       if (e.key === "ArrowRight" && e.altKey && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
@@ -6321,9 +6336,13 @@ function useLocalModelLoaded(): boolean {
  * viewer header next to the font/undo/save controls. Hidden entirely while no
  * local model is loaded into memory, since neither feature can run then.
  */
-function EditorAiControls({ ai }: { ai: TabAiPrefs }) {
+function EditorAiControls({ ai, path }: { ai: TabAiPrefs; path: string }) {
   const t = useT();
   const modelLoaded = useLocalModelLoaded();
+  const scope = useFileScope();
+  const enabled = useExperimental("copilot_completion");
+  const remote = useProjectsStore((s) => !!s.projects.find((p) => p.id === scope)?.remote);
+  const copilot = useSettingsStore((s) => copilotServes(s.settings, enabled, scope, remote, languageForPath(path)));
   return (
     <div className="file-viewer-ai-controls" role="group" aria-label={t("fileViewer.aiAssistGroup")}>
       {/* Dictionary spelling needs no model, so it is offered regardless —
@@ -6342,7 +6361,7 @@ function EditorAiControls({ ai }: { ai: TabAiPrefs }) {
         {t("fileViewer.spellingLabel")}
       </button>
       {ai.spelling && <SpellLanguageSelect />}
-      {modelLoaded && (
+      {(modelLoaded || copilot) && (
         <>
           <button
             type="button"
@@ -6350,14 +6369,14 @@ function EditorAiControls({ ai }: { ai: TabAiPrefs }) {
             onClick={ai.toggleAutocomplete}
             aria-pressed={ai.autocomplete}
             title={
-              ai.autocomplete
+              copilot ? t("fileViewer.copilotToggleHint") : ai.autocomplete
                 ? t("fileViewer.autocompleteOnHint")
                 : t("fileViewer.autocompleteOffHint")
             }
           >
             {t("fileViewer.autocompleteLabel")} <UntestedTag />
           </button>
-          {ai.autocomplete && (
+          {ai.autocomplete && !copilot && (
             <Dropdown
               className="file-viewer-ai-mode"
               value={ai.mode}
@@ -6370,7 +6389,7 @@ function EditorAiControls({ ai }: { ai: TabAiPrefs }) {
               ]}
             />
           )}
-          <button
+          {modelLoaded && <button
             type="button"
             className={`file-viewer-ai-btn${ai.grammar ? " active" : ""}`}
             onClick={ai.toggleGrammar}
@@ -6382,7 +6401,7 @@ function EditorAiControls({ ai }: { ai: TabAiPrefs }) {
             }
           >
             {t("fileViewer.grammarLabel")}
-          </button>
+          </button>}
         </>
       )}
     </div>
@@ -7667,7 +7686,7 @@ function TextView({
             onInteractive={onSlurmInteractive}
           />
         )}
-        {showEditor && <EditorAiControls ai={ai} />}
+        {showEditor && <EditorAiControls ai={ai} path={path} />}
         {showEditor && fmt.enabled && (
           <FormatButton available={fmt.available} busy={fmt.busy} run={() => void fmt.run()} />
         )}
@@ -8186,7 +8205,7 @@ function MarkdownView({
         </div>
         {mode === "edit" && <MarkdownToolbar api={editorApi} />}
         <FontSizeControls fontSize={font.fontSize} inc={font.inc} dec={font.dec} reset={font.reset} />
-        {mode === "edit" && <EditorAiControls ai={ai} />}
+        {mode === "edit" && <EditorAiControls ai={ai} path={path} />}
         {mode === "edit" && fmt.enabled && (
           <FormatButton available={fmt.available} busy={fmt.busy} run={() => void fmt.run()} />
         )}
@@ -9777,7 +9796,7 @@ function TexView({
       <div className="file-viewer">
         <ViewerHeader onOpenExternally={onOpenExternally}>
           <FontSizeControls fontSize={font.fontSize} inc={font.inc} dec={font.dec} reset={font.reset} />
-          <EditorAiControls ai={ai} />
+          <EditorAiControls ai={ai} path={path} />
           <CompareButton active={compareOpen} toggle={() => setCompareOpen((v) => !v)} />
           <UndoRedoButtons undo={undo} redo={redo} canUndo={canUndo} canRedo={canRedo} />
           <SaveButton isDirty={isDirty} saving={saving} save={() => void save()} />
@@ -9962,7 +9981,7 @@ function TexView({
           {counting ? t("fileViewer.wordCountBusy") : t("fileViewer.wordCountBtn")}
         </button>
         <FontSizeControls fontSize={font.fontSize} inc={font.inc} dec={font.dec} reset={font.reset} />
-        <EditorAiControls ai={ai} />
+        <EditorAiControls ai={ai} path={path} />
         <CompareButton active={compareOpen} toggle={() => setCompareOpen((v) => !v)} />
         <UndoRedoButtons undo={undo} redo={redo} canUndo={canUndo} canRedo={canRedo} />
         <SaveButton isDirty={isDirty} saving={saving} save={() => void save()} />

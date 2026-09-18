@@ -5354,6 +5354,7 @@ export const en = {
   "fileViewer.noSuggestion": "No suggestion",
   "fileViewer.autocompleteStatus": "Autocomplete · {mode}…",
   "fileViewer.copilotStatus": "Copilot…",
+  "fileViewer.copilotToggleHint": "Toggle GitHub Copilot autocomplete for this code editor (Ctrl+Space)",
   "fileViewer.copilotControls": "Tab: accept · →: word · Alt+→: line · Alt+[/]: next candidate · Esc: dismiss",
   "fileViewer.copilotNotSignedIn": "Copilot is not signed in for this project — Settings → Experimental.",
   "fileViewer.copilotNotInstalled": "The Copilot language server is not installed — Settings → Experimental.",

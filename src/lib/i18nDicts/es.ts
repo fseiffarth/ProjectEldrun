@@ -5169,6 +5169,7 @@ export const dict: Dict = {
   "fileViewer.autocompleteStatus": "Autocompletado · {mode}…",
   "fileViewer.copilotStatus": "Copilot…",
   "fileViewer.copilotControls": "Tab: aceptar · →: palabra · Alt+→: línea · Alt+[/]: siguiente candidato · Esc: descartar",
+  "fileViewer.copilotToggleHint": "Activar o desactivar el autocompletado de GitHub Copilot en este editor de código (Ctrl+Espacio)",
   "fileViewer.copilotNotSignedIn": "Copilot no tiene sesión iniciada para este proyecto — Ajustes → Experimental.",
   "fileViewer.copilotNotInstalled": "El servidor de lenguaje de Copilot no está instalado — Ajustes → Experimental.",
   "fileViewer.copilotFailed": "Falló el autocompletado de Copilot.",

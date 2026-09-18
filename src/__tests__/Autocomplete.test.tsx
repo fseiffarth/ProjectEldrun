@@ -47,11 +47,15 @@ const SOURCE = "def foo():\n    ";
 
 // The settings the mocked store returns — toggled per test via this ref.
 let autocompleteOn = false;
+let copilotOn = false;
 vi.mock("../stores/settings", () => ({
   useSettingsStore: (sel: (s: unknown) => unknown) =>
     sel({
       settings: {
         autosave: false,
+        copilot_completion: copilotOn,
+        code_completion_provider: copilotOn ? "copilot" : "ollama",
+        completion_project_policies: { proj: { directory: "/p", copilot: copilotOn, local_only: false } },
         viewer_prefs: { text: { autocomplete: autocompleteOn } },
       },
     }),
@@ -88,8 +92,38 @@ async function renderTextView(path = "/p/foo.py") {
 
 describe("local autocomplete (#45)", () => {
   beforeEach(() => {
+    copilotOn = false;
     vi.clearAllMocks();
     setup();
+  });
+
+  it("offers Copilot without a local model and cycles the actual returned items without another request", async () => {
+    autocompleteOn = true;
+    copilotOn = true;
+    const original = mockInvoke.getMockImplementation()!;
+    mockInvoke.mockImplementation((cmd: string, args: unknown) => {
+      if (cmd === "list_ollama_models_detailed") return Promise.resolve([]);
+      if (cmd === "copilot_prepare") return Promise.resolve("reservation");
+      if (cmd === "copilot_complete") return Promise.resolve([
+        { id: "session:1:0", insertText: "return first" },
+        { id: "session:1:1", insertText: "return second" },
+      ]);
+      return original(cmd, args);
+    });
+    await renderTextView();
+    const el = await screen.findByRole("textbox") as HTMLTextAreaElement;
+    await waitFor(() => expect(el.value).toBe(SOURCE));
+    expect(screen.getByRole("button", { name: /Autocomplete/ })).toBeTruthy();
+    expect(screen.queryByText("Sentence")).toBeNull();
+    el.selectionStart = el.selectionEnd = SOURCE.length;
+    await act(async () => { fireEvent.keyDown(el, { key: " ", ctrlKey: true }); });
+    expect(screen.getByText("return first")).toBeTruthy();
+    for (const text of ["return second", "return first"]) {
+      await act(async () => { fireEvent.keyDown(el, { key: "]", altKey: true }); });
+      expect(screen.getByText(text)).toBeTruthy();
+    }
+    expect(mockInvoke.mock.calls.filter(([cmd]) => cmd === "copilot_complete")).toHaveLength(1);
+    expect(mockInvoke.mock.calls.some(([cmd]) => cmd === "complete_text")).toBe(false);
   });
 
   it("cycles three candidates on demand and reuses both caches when revisiting", async () => {
@@ -113,7 +147,7 @@ describe("local autocomplete (#45)", () => {
     await act(async () => { fireEvent.keyDown(el, { key: " ", ctrlKey: true }); });
     expect(screen.getByText("choice0")).toBeTruthy();
     expect(mockInvoke.mock.calls.filter(([cmd]) => cmd === "complete_text")).toHaveLength(3);
-    expect(mockBump).toHaveBeenCalledWith("proj", "autocomplete.dismiss.sentence.llama3.2:3b");
+    expect(mockBump).toHaveBeenCalledWith("proj", "autocomplete.dismiss.sentence.ollama/llama3.2:3b");
   });
 
   it("accepts a line with Alt+Right and counts partial acceptance only once", async () => {
@@ -131,7 +165,7 @@ describe("local autocomplete (#45)", () => {
     await act(async () => { fireEvent.keyDown(el, { key: "Tab" }); });
     expect(el.value).toBe(SOURCE + "first\nsecond\nthird");
     expect(mockBump).toHaveBeenCalledTimes(1);
-    expect(mockBump).toHaveBeenCalledWith("proj", "autocomplete.accept.sentence.llama3.2:3b");
+    expect(mockBump).toHaveBeenCalledWith("proj", "autocomplete.accept.sentence.ollama/llama3.2:3b");
   });
 
   it("automatically includes imports and refreshes context before reusing a completion", async () => {

@@ -39,8 +39,21 @@ describe("copilotServes", () => {
 });
 
 describe("CopilotCompletionProvider", () => {
+  it("cancels a reservation that arrives after abort without sending document content", async () => {
+    let reserve!: (id: string) => void;
+    invoke.mockImplementation((command: string) => command === "copilot_prepare"
+      ? new Promise((done) => { reserve = done; }) : Promise.resolve());
+    const ctl = new AbortController();
+    const pending = provider().complete(doc("private text"), ctl.signal, vi.fn());
+    const rejected = expect(pending).rejects.toThrow();
+    ctl.abort();
+    reserve("late-reservation");
+    await rejected;
+    expect(invoke).toHaveBeenCalledWith("copilot_cancel", { projectId: "one", editor: "e", requestId: "late-reservation" });
+    expect(invoke.mock.calls.some(([command]) => command === "copilot_complete")).toBe(false);
+  });
   it("sends the document with a UTF-16 position and keeps only representable candidates", async () => {
-    invoke.mockResolvedValueOnce([
+    invoke.mockResolvedValueOnce("reservation").mockResolvedValueOnce([
       { id: "9:0", insertText: "const a = 1;", range: { start: { line: 1, character: 0 }, end: { line: 1, character: 6 } } },
       { id: "9:1", insertText: "let b", range: { start: { line: 1, character: 0 }, end: { line: 1, character: 6 } } },
       { id: "9:2", insertText: " = 2", range: null },
@@ -57,12 +70,13 @@ describe("CopilotCompletionProvider", () => {
   it("cancels the backend request on abort and publishes nothing afterwards", async () => {
     let resolve!: (items: unknown[]) => void;
     invoke.mockImplementation((command: string) => command === "copilot_complete"
-      ? new Promise((done) => { resolve = done; }) : Promise.resolve());
+      ? new Promise((done) => { resolve = done; }) : Promise.resolve("reservation"));
     const ctl = new AbortController();
     const publish = vi.fn();
     const pending = provider().complete(doc("const "), ctl.signal, publish);
+    await Promise.resolve();
     ctl.abort();
-    expect(invoke).toHaveBeenCalledWith("copilot_cancel", { projectId: "one", editor: "e" });
+    expect(invoke).toHaveBeenCalledWith("copilot_cancel", { projectId: "one", editor: "e", requestId: "reservation" });
     resolve([{ id: "1:0", insertText: "late" }]);
     await expect(pending).rejects.toThrow();
     expect(publish).not.toHaveBeenCalled();
@@ -71,7 +85,7 @@ describe("CopilotCompletionProvider", () => {
 
 describe("CopilotFeedback", () => {
   it("reports shown once, partial acceptance cumulatively and full acceptance once", async () => {
-    invoke.mockResolvedValueOnce([{ id: "4:0", insertText: "foo bar" }]);
+    invoke.mockResolvedValueOnce("reservation").mockResolvedValueOnce([{ id: "4:0", insertText: "foo bar" }]);
     const [candidate] = await provider().complete(doc("x "), new AbortController().signal, () => {});
     invoke.mockClear();
     const feedback = new CopilotFeedback("one", "e");

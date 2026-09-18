@@ -39,6 +39,11 @@ pub struct DeviceCode {
     pub verification_uri: String,
 }
 
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountMessage { pub id: u64, pub message: String, pub actions: Vec<String> }
+struct MessageRequest { public: AccountMessage, rpc_id: Value, actions: Vec<Value> }
+
 pub struct CompletionRequest<'a> {
     pub uri: &'a str,
     pub editor: &'a str,
@@ -89,16 +94,26 @@ struct Offer {
     editor: String,
     ticket: DocumentTicket,
     item: Value,
+    shown: bool,
+    accepted_length: u32,
+    accepted: bool,
 }
 
 pub struct Session {
+    id: u64,
     rpc: Arc<RpcClient>,
     root: PathBuf,
     documents: AsyncMutex<Documents>,
     inflight: Mutex<HashMap<String, u64>>,
     offers: Mutex<HashMap<String, Offer>>,
     status: Arc<Mutex<Status>>,
+    messages: Arc<Mutex<VecDeque<MessageRequest>>>,
     pending_sign_in: Mutex<Option<Value>>,
+    /// `checkStatus` answer and the status generation it was read under. The
+    /// settings card polls; only a status change or a sign-in step asks again.
+    account: Mutex<Option<(u64, Value)>>,
+    account_generation: Arc<std::sync::atomic::AtomicU64>,
+    browser_sign_in: Arc<std::sync::atomic::AtomicBool>,
     process: Option<ManagedProcess>,
     events: tokio::task::JoinHandle<()>,
 }
@@ -114,15 +129,25 @@ impl Session {
         R: AsyncRead + Unpin + Send + 'static,
         W: AsyncWrite + Unpin + Send + 'static,
     {
+        static NEXT_SESSION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let session_id = NEXT_SESSION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let (rpc, mut receive) = RpcClient::connect(reader, writer);
         let rpc = Arc::new(rpc);
         let status = Arc::new(Mutex::new(Status::default()));
+        let messages = Arc::new(Mutex::new(VecDeque::<MessageRequest>::new()));
+        let browser_sign_in = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let browser_request = browser_sign_in.clone();
+        let server_messages = messages.clone();
+        let account_generation = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let account_changed = account_generation.clone();
         let (replies, seen) = (rpc.clone(), status.clone());
         let events = tokio::spawn(async move {
+            static NEXT_MESSAGE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
             while let Some(message) = receive.recv().await {
                 let method = message.get("method").and_then(Value::as_str).unwrap_or("");
                 let params = message.get("params");
                 if method == "didChangeStatus" {
+                    account_changed.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
                     let text = |key: &str| params.and_then(|p| p.get(key)).and_then(Value::as_str);
                     *seen.lock().unwrap() = Status {
                         kind: text("kind").unwrap_or("").chars().take(32).collect(),
@@ -130,14 +155,36 @@ impl Session {
                     };
                 }
                 // The server blocks on its own requests. Answer every one, and
-                // grant nothing: no editor settings, no opening documents.
+                // grant no editor settings or document access. The device URL
+                // is already handled by the caller before finishing sign-in.
                 if let Some(id) = message.get("id").cloned() {
+                    if method == "window/showMessageRequest" {
+                        let params = params.unwrap_or(&Value::Null);
+                        let actions: Vec<Value> = params.get("actions").and_then(Value::as_array)
+                            .into_iter().flatten().filter(|a| a.get("title").and_then(Value::as_str).is_some())
+                            .take(8).cloned().collect();
+                        let public = AccountMessage { id: NEXT_MESSAGE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+                            message: params.get("message").and_then(Value::as_str).unwrap_or("").chars().take(2000).collect(),
+                            actions: actions.iter().map(|a| a["title"].as_str().unwrap().chars().take(200).collect()).collect() };
+                        let evicted = {
+                            let mut queue = server_messages.lock().unwrap();
+                            let evicted = if queue.len() >= 16 { queue.pop_front() } else { None };
+                            queue.push_back(MessageRequest { public, rpc_id: id, actions });
+                            evicted
+                        };
+                        if let Some(evicted) = evicted { let _ = replies.reply(evicted.rpc_id, Value::Null).await; }
+                        continue;
+                    }
                     let result = match method {
                         "workspace/configuration" => {
                             let items = params.and_then(|p| p.get("items")).and_then(Value::as_array);
                             json!(vec![Value::Null; items.map_or(0, Vec::len)])
                         }
-                        "window/showDocument" => json!({"success": false}),
+                        "window/showDocument" => json!({"success":
+                            params.and_then(|p| p.get("uri")).and_then(Value::as_str)
+                                == Some("https://github.com/login/device")
+                            && browser_request.swap(false, std::sync::atomic::Ordering::AcqRel)
+                        }),
                         _ => Value::Null,
                     };
                     if replies.reply(id, result).await.is_err() {
@@ -147,29 +194,40 @@ impl Session {
             }
         });
         let session = Self {
+            id: session_id,
             rpc,
             root: root.to_owned(),
             documents: AsyncMutex::default(),
             inflight: Mutex::default(),
             offers: Mutex::default(),
             status,
+            messages,
             pending_sign_in: Mutex::default(),
+            account: Mutex::default(),
+            account_generation,
+            browser_sign_in,
             process,
             events,
         };
         let uri = url::Url::from_directory_path(root).map_err(|_| "copilot_invalid_project")?;
         let version = env!("CARGO_PKG_VERSION");
-        session
+        let initialized = session
             .request("initialize", json!({
-                "processId": std::process::id(),
+                // The server has its own PID namespace. A host PID is not a
+                // client there and makes LSP's parent monitor terminate it.
+                // The pipe and ManagedProcess own lifetime instead.
+                "processId": null,
                 "workspaceFolders": [{"uri": uri.as_str(), "name": "project"}],
-                "capabilities": {"workspace": {"workspaceFolders": true}},
+                "capabilities": {"workspace": {"workspaceFolders": true}, "window":{"showDocument":{"support":true}}},
                 "initializationOptions": {
                     "editorInfo": {"name": "Eldrun", "version": version},
                     "editorPluginInfo": {"name": "Eldrun autocomplete", "version": version},
                 },
             }), INITIALIZE_TIMEOUT)
             .await?;
+        if initialized.pointer("/serverInfo/version").and_then(Value::as_str) != Some(super::process::SERVER_VERSION) {
+            return Err("copilot_version_mismatch".into());
+        }
         session.notify("initialized", json!({})).await?;
         session
             .notify("workspace/didChangeConfiguration", json!({
@@ -203,13 +261,25 @@ impl Session {
     /// Returns `{id, insertText, range}` per candidate. The untouched server
     /// item stays here, keyed by that id, for shown/accepted feedback.
     pub async fn complete(&self, request: CompletionRequest<'_>) -> Result<Vec<Value>, String> {
+        let (_sender, signal) = tokio::sync::watch::channel(false);
+        self.complete_cancellable(request, signal).await
+    }
+
+    pub async fn complete_cancellable(&self, request: CompletionRequest<'_>, mut signal: tokio::sync::watch::Receiver<bool>) -> Result<Vec<Value>, String> {
         if !position_in(request.text, request.position) {
             return Err("copilot_invalid_position".into());
         }
         let (ticket, id) = {
             // Hold the lock across the writes: two editors' notifications must
             // reach the server in the order their versions were allocated.
-            let mut documents = self.documents.lock().await;
+            let mut documents = tokio::select! {
+                biased;
+                _ = super::requests::cancelled(&mut signal) => return Err("copilot_cancelled".into()),
+                documents = self.documents.lock() => documents,
+            };
+            // Only the wait for the lock is cancellable. Abandoning the writes
+            // would leave `Documents` ahead of the server, or tear a frame and
+            // close the connection along with its RAM-only sign-in.
             let (ticket, notifications) = documents.synchronize(
                 request.uri, request.editor, request.client_version, request.text, request.language)?;
             for (method, params) in notifications {
@@ -217,17 +287,33 @@ impl Session {
             }
             (ticket, self.rpc.next_id())
         };
+        if super::requests::is_cancelled(&signal) {
+            return Err("copilot_cancelled".into());
+        }
         let previous = self.inflight.lock().unwrap().insert(request.editor.to_owned(), id);
         if let Some(previous) = previous {
             let _ = self.rpc.cancel(previous).await;
         }
         self.offers.lock().unwrap().retain(|_, offer| offer.editor != request.editor);
-        let reply = self.rpc.request(id, "textDocument/inlineCompletion", json!({
+        let params = json!({
             "textDocument": {"uri": ticket.uri, "version": ticket.server_version},
             "position": request.position,
             "context": {"triggerKind": if request.automatic { 2 } else { 1 }},
             "formattingOptions": {"tabSize": request.tab_size, "insertSpaces": request.insert_spaces},
-        }), COMPLETION_TIMEOUT).await;
+        });
+        // The request is polled first so it is registered and written before a
+        // cancellation can name it, and it is never dropped: a frame abandoned
+        // mid-write closes the connection. `cancel` resolves it instead.
+        let pending = self.rpc.request(id, "textDocument/inlineCompletion", params, COMPLETION_TIMEOUT);
+        tokio::pin!(pending);
+        let reply = tokio::select! {
+            biased;
+            reply = &mut pending => reply,
+            _ = super::requests::cancelled(&mut signal) => {
+                let (_, reply) = tokio::join!(self.rpc.cancel(id), &mut pending);
+                reply.and(Err(RpcError::Cancelled))
+            }
+        };
         {
             let mut inflight = self.inflight.lock().unwrap();
             if inflight.get(request.editor) == Some(&id) {
@@ -242,9 +328,10 @@ impl Session {
         let mut offers = self.offers.lock().unwrap();
         Ok(items.into_iter().take(MAX_ITEMS).enumerate().filter_map(|(index, item)| {
             let text = item.get("insertText")?.as_str()?.to_owned();
-            let candidate = format!("{id}:{index}");
+            let candidate = format!("{}:{id}:{index}", self.id);
             let result = json!({"id": candidate, "insertText": text, "range": item.get("range")});
-            offers.insert(candidate, Offer { editor: request.editor.to_owned(), ticket: ticket.clone(), item });
+            offers.insert(candidate, Offer { editor: request.editor.to_owned(), ticket: ticket.clone(), item,
+                shown: false, accepted_length: 0, accepted: false });
             Some(result)
         }).collect())
     }
@@ -277,6 +364,12 @@ impl Session {
 
     pub async fn shown(&self, editor: &str, candidate: &str) -> Result<(), String> {
         let Some(item) = self.offered(editor, candidate).await else { return Ok(()); };
+        {
+            let mut offers = self.offers.lock().unwrap();
+            let Some(offer) = offers.get_mut(candidate) else { return Ok(()); };
+            if offer.shown || offer.accepted { return Ok(()); }
+            offer.shown = true;
+        }
         self.notify("textDocument/didShowCompletion", json!({"item": item})).await
     }
 
@@ -284,6 +377,18 @@ impl Session {
     /// `None` is the full acceptance, reported once through the item's command.
     pub async fn accepted(&self, editor: &str, candidate: &str, accepted_length: Option<u32>) -> Result<(), String> {
         let Some(item) = self.offered(editor, candidate).await else { return Ok(()); };
+        {
+            let mut offers = self.offers.lock().unwrap();
+            let Some(offer) = offers.get_mut(candidate) else { return Ok(()); };
+            if offer.accepted { return Ok(()); }
+            if let Some(length) = accepted_length {
+                let text = item.get("insertText").and_then(Value::as_str).unwrap_or("");
+                let mut boundary = 0;
+                let valid = length == 0 || text.chars().any(|ch| { boundary += ch.len_utf16() as u32; boundary == length });
+                if length <= offer.accepted_length || !valid { return Ok(()); }
+                offer.accepted_length = length;
+            } else { offer.accepted = true; }
+        }
         if let Some(accepted_length) = accepted_length {
             return self.notify("textDocument/didPartiallyAcceptCompletion",
                 json!({"item": item, "acceptedLength": accepted_length})).await;
@@ -296,18 +401,37 @@ impl Session {
     }
 
     pub async fn account(&self) -> Result<Value, String> {
+        let generation = self.account_generation.load(std::sync::atomic::Ordering::Acquire);
+        if let Some((_, account)) = self.account.lock().unwrap().as_ref().filter(|(seen, _)| *seen == generation) {
+            return Ok(account.clone());
+        }
         let reply = self.request("checkStatus", json!({}), ACCOUNT_TIMEOUT).await?;
-        Ok(json!({"status": reply.get("status"), "user": reply.get("user")}))
+        let account = json!({"status": reply.get("status"), "user": reply.get("user")});
+        // Filed under the generation it was asked in: a change that raced the
+        // reply makes the next poll ask again.
+        *self.account.lock().unwrap() = Some((generation, account.clone()));
+        Ok(account)
+    }
+
+    fn account_changed(&self) {
+        self.account_generation.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
     }
 
     /// Step one of the device flow. The finishing command stays in the backend.
     pub async fn sign_in(&self) -> Result<Option<DeviceCode>, String> {
+        self.browser_sign_in.store(false, std::sync::atomic::Ordering::Release);
+        *self.pending_sign_in.lock().unwrap() = None;
         let reply = self.request("signIn", json!({}), ACCOUNT_TIMEOUT).await?;
         let text = |key: &str| reply.get(key).and_then(Value::as_str).map(str::to_owned);
-        let (Some(user_code), Some(verification_uri)) = (text("userCode"), text("verificationUri")) else {
-            return Ok(None); // already signed in
+        let Some(user_code) = text("userCode") else {
+            return if matches!(reply.get("status").and_then(Value::as_str), Some("OK" | "AlreadySignedIn")) {
+                Ok(None)
+            } else { Err("copilot_server_error".into()) };
         };
-        if !verification_uri.starts_with("https://github.com/") {
+        // Upstream's documented response need not contain verificationUri.
+        let verification_uri = text("verificationUri").unwrap_or_else(|| "https://github.com/login/device".into());
+        if verification_uri != "https://github.com/login/device" || user_code.len() > 64 || user_code.is_empty()
+            || reply.pointer("/command/command").and_then(Value::as_str) != Some("github.copilot.finishDeviceFlow") {
             return Err("copilot_server_error".into());
         }
         *self.pending_sign_in.lock().unwrap() = reply.get("command").cloned();
@@ -317,13 +441,33 @@ impl Session {
     /// Step two: resolves once the user approved the code in their browser.
     pub async fn finish_sign_in(&self) -> Result<(), String> {
         let command = self.pending_sign_in.lock().unwrap().take().ok_or("copilot_no_sign_in")?;
-        self.request("workspace/executeCommand", json!({
+        self.browser_sign_in.store(true, std::sync::atomic::Ordering::Release);
+        let result = self.request("workspace/executeCommand", json!({
             "command": command.get("command"), "arguments": command.get("arguments"),
-        }), SIGN_IN_TIMEOUT).await.map(|_| ())
+        }), SIGN_IN_TIMEOUT).await.map(|_| ());
+        self.browser_sign_in.store(false, std::sync::atomic::Ordering::Release);
+        self.account_changed();
+        result
     }
 
     pub async fn sign_out(&self) -> Result<(), String> {
-        self.request("signOut", json!({}), ACCOUNT_TIMEOUT).await.map(|_| ())
+        let result = self.request("signOut", json!({}), ACCOUNT_TIMEOUT).await.map(|_| ());
+        self.account_changed();
+        result
+    }
+
+    pub fn account_messages(&self) -> Vec<AccountMessage> {
+        self.messages.lock().unwrap().iter().map(|message| message.public.clone()).collect()
+    }
+
+    pub async fn answer_message(&self, id: u64, action: Option<usize>) -> Result<(), String> {
+        let message = {
+            let mut messages = self.messages.lock().unwrap();
+            let Some(index) = messages.iter().position(|m| m.public.id == id) else { return Ok(()); };
+            messages.remove(index).unwrap()
+        };
+        let result = action.and_then(|index| message.actions.get(index)).cloned().unwrap_or(Value::Null);
+        self.rpc.reply(message.rpc_id, result).await.map_err(error_code)
     }
 
     pub fn stop(&self) {
@@ -343,10 +487,22 @@ impl Drop for Session {
 
 /// Project id → running session. Revoked consent and app exit stop processes
 /// here; a server that keeps dying is not restarted forever.
-#[derive(Default)]
 pub struct Sessions {
-    entries: AsyncMutex<HashMap<String, Arc<Session>>>,
+    entries: Mutex<HashMap<String, Arc<Session>>>,
     starts: Mutex<HashMap<String, VecDeque<Instant>>>,
+    launching: AsyncMutex<()>,
+    invalidated: tokio::sync::watch::Sender<Invalidations>,
+}
+
+/// One project's revocation must not cancel another project's launch.
+#[derive(Default)]
+struct Invalidations { all: u64, projects: HashMap<String, u64> }
+
+impl Default for Sessions {
+    fn default() -> Self {
+        let (invalidated, _) = tokio::sync::watch::channel(Invalidations::default());
+        Self { entries: Mutex::default(), starts: Mutex::default(), launching: AsyncMutex::default(), invalidated }
+    }
 }
 
 pub fn sessions() -> &'static Sessions {
@@ -368,39 +524,87 @@ impl Sessions {
         true
     }
 
+    fn epoch(&self, project_id: &str) -> (u64, u64) {
+        let seen = self.invalidated.borrow();
+        (seen.all, seen.projects.get(project_id).copied().unwrap_or(0))
+    }
+
+    /// Resolves once this project, or everything, was stopped after `epoch`.
+    async fn invalidated_since(&self, changes: &mut tokio::sync::watch::Receiver<Invalidations>, project_id: &str, epoch: (u64, u64)) {
+        while changes.changed().await.is_ok() && self.epoch(project_id) == epoch {}
+    }
+
+    fn running(&self, project_id: &str, root: &Path) -> Option<Arc<Session>> {
+        let mut entries = self.entries.lock().unwrap();
+        let session = entries.get(project_id)?;
+        if session.alive() && session.root() == root {
+            return Some(session.clone());
+        }
+        session.stop();
+        entries.remove(project_id);
+        None
+    }
+
     /// `root` is the directory `policy::authorize_project` just returned.
     pub async fn get_or_start(&self, project_id: &str, root: &Path) -> Result<Arc<Session>, String> {
-        let mut entries = self.entries.lock().await;
-        if let Some(session) = entries.get(project_id) {
-            if session.alive() && session.root() == root {
-                return Ok(session.clone());
-            }
-            session.stop();
-            entries.remove(project_id);
+        // A running project never queues behind another project's launch.
+        if let Some(session) = self.running(project_id, root) {
+            return Ok(session);
+        }
+        let mut changes = self.invalidated.subscribe();
+        let epoch = self.epoch(project_id);
+        let _launch = tokio::select! {
+            biased;
+            _ = self.invalidated_since(&mut changes, project_id, epoch) => return Err("copilot_cancelled".into()),
+            guard = self.launching.lock() => guard,
+        };
+        if let Some(session) = self.running(project_id, root) {
+            return Ok(session);
         }
         if !self.allow_start(project_id, Instant::now()) {
             return Err("copilot_restart_limit".into());
         }
         let (process, output, input) = ManagedProcess::launch(root)?;
-        let session = Arc::new(Session::start(output, input, Some(process), root).await?);
+        let session = tokio::select! {
+            biased;
+            _ = self.invalidated_since(&mut changes, project_id, epoch) => return Err("copilot_cancelled".into()),
+            session = Session::start(output, input, Some(process), root) => Arc::new(session?),
+        };
+        // The settings command may invalidate just as initialization finishes.
+        let mut entries = self.entries.lock().unwrap();
+        if self.epoch(project_id) != epoch {
+            session.stop();
+            return Err("copilot_cancelled".into());
+        }
         entries.insert(project_id.to_owned(), session.clone());
         Ok(session)
     }
 
     pub async fn existing(&self, project_id: &str) -> Option<Arc<Session>> {
-        self.entries.lock().await.get(project_id).cloned()
+        self.entries.lock().unwrap().get(project_id).cloned()
     }
 
     /// Consent withdrawn, provider changed, project closed or made remote.
     pub async fn stop(&self, project_id: &str) {
-        if let Some(session) = self.entries.lock().await.remove(project_id) {
+        let mut entries = self.entries.lock().unwrap();
+        self.invalidated.send_modify(|seen| *seen.projects.entry(project_id.to_owned()).or_default() += 1);
+        if let Some(session) = entries.remove(project_id) {
             session.stop();
         }
         self.starts.lock().unwrap().remove(project_id);
     }
 
     pub async fn stop_all(&self) {
-        for (_, session) in self.entries.lock().await.drain() {
+        self.stop_all_now();
+    }
+
+    /// Called synchronously after a settings commit. No initialization lock or
+    /// server reply can delay revocation; pending launches are cancelled too.
+    pub fn stop_all_now(&self) {
+        let mut entries = self.entries.lock().unwrap();
+        self.invalidated.send_modify(|seen| seen.all += 1);
+        super::requests::cancel_all();
+        for (_, session) in entries.drain() {
             session.stop();
         }
     }
@@ -439,8 +643,9 @@ mod tests {
         let root = std::env::temp_dir();
         let start = tokio::spawn(async move { Session::start(read, write, None, &root).await });
         let initialize = server.expect("initialize").await;
+        assert_eq!(initialize["params"]["processId"], Value::Null);
         assert!(initialize["params"]["workspaceFolders"][0]["uri"].as_str().unwrap().starts_with("file:///"));
-        server.result(&initialize["id"], json!({"capabilities": {}})).await;
+        server.result(&initialize["id"], json!({"capabilities": {}, "serverInfo":{"version":super::super::process::SERVER_VERSION}})).await;
         server.expect("initialized").await;
         server.expect("workspace/didChangeConfiguration").await;
         (Arc::new(start.await.unwrap().unwrap()), server)
@@ -544,13 +749,16 @@ mod tests {
         let worker = session.clone();
         let work = tokio::spawn(async move { worker.sign_in().await });
         let call = server.expect("signIn").await;
-        server.result(&call["id"], json!({"userCode":"AB-12", "verificationUri":"https://github.com/login/device",
-            "command":{"command":"finish", "arguments":[]}})).await;
+        server.result(&call["id"], json!({"userCode":"AB-12",
+            "command":{"command":"github.copilot.finishDeviceFlow", "arguments":[]}})).await;
         assert_eq!(work.await.unwrap().unwrap().unwrap().user_code, "AB-12");
         let worker = session.clone();
         let work = tokio::spawn(async move { worker.finish_sign_in().await });
         let call = server.expect("workspace/executeCommand").await;
-        assert_eq!(call["params"]["command"], "finish");
+        assert_eq!(call["params"]["command"], "github.copilot.finishDeviceFlow");
+        write_frame(&mut server.write, &json!({"jsonrpc":"2.0", "id":"browser", "method":"window/showDocument",
+            "params":{"uri":"https://github.com/login/device", "external":true}})).await.unwrap();
+        assert_eq!(server.next().await["result"], json!({"success":true}));
         server.result(&call["id"], json!({"status":"OK"})).await;
         work.await.unwrap().unwrap();
 
@@ -577,6 +785,65 @@ mod tests {
         assert!(!session.alive());
     }
 
+    #[tokio::test]
+    async fn cancellation_while_waiting_to_sync_never_sends_a_document() {
+        let (session, mut server) = connected().await;
+        let guard = session.documents.lock().await;
+        let (cancel, signal) = tokio::sync::watch::channel(false);
+        let worker = session.clone();
+        let work = tokio::spawn(async move { worker.complete_cancellable(request("window:1", 1, "private"), signal).await });
+        drop(cancel);
+        assert_eq!(work.await.unwrap(), Err("copilot_cancelled".into()));
+        drop(guard);
+        assert!(tokio::time::timeout(Duration::from_millis(20), server.next()).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn policy_invalidation_cancels_inflight_work_and_clears_sessions_immediately() {
+        let (session, mut server) = connected().await;
+        let registry = Sessions::default();
+        registry.entries.lock().unwrap().insert("project".into(), session.clone());
+        let worker = session.clone();
+        let work = tokio::spawn(async move { worker.complete(request("window:1", 1, "private")).await });
+        server.expect("textDocument/didOpen").await;
+        server.expect("textDocument/didFocus").await;
+        server.expect("textDocument/inlineCompletion").await;
+        registry.stop_all_now();
+        assert!(!session.alive());
+        assert!(registry.existing("project").await.is_none());
+        assert_eq!(work.await.unwrap(), Err("copilot_server_closed".into()));
+    }
+
+    #[tokio::test]
+    async fn billing_message_waits_for_the_users_chosen_action() {
+        let (session, mut server) = connected().await;
+        write_frame(&mut server.write, &json!({"jsonrpc":"2.0", "id":"billing", "method":"window/showMessageRequest",
+            "params":{"message":"Quota reached", "actions":[{"title":"Manage plan", "opaque":17}]}})).await.unwrap();
+        // A later request confirms the event loop has processed the billing one.
+        write_frame(&mut server.write, &json!({"jsonrpc":"2.0", "id":"barrier", "method":"unknown/request"})).await.unwrap();
+        assert_eq!(server.next().await["id"], "barrier");
+        let messages = session.account_messages();
+        assert_eq!(messages[0].message, "Quota reached");
+        assert_eq!(messages[0].actions, vec!["Manage plan"]);
+        session.answer_message(messages[0].id, Some(0)).await.unwrap();
+        let answer = server.next().await;
+        assert_eq!(answer["id"], "billing");
+        assert_eq!(answer["result"], json!({"title":"Manage plan","opaque":17}));
+        assert!(session.account_messages().is_empty());
+    }
+
+    #[tokio::test]
+    async fn wrong_server_version_fails_before_opening_any_document() {
+        let (client, server) = duplex(4096);
+        let (read, write) = split(client);
+        let (read_server, write_server) = split(server);
+        let mut server = Server { read: BufReader::new(read_server), write: write_server };
+        let work = tokio::spawn(async move { Session::start(read, write, None, &std::env::temp_dir()).await });
+        let initialize = server.expect("initialize").await;
+        server.result(&initialize["id"], json!({"serverInfo":{"version":"0.0.1"}})).await;
+        assert!(matches!(work.await.unwrap(), Err(error) if error == "copilot_version_mismatch"));
+    }
+
     /// The real pinned server inside the real fence; needs an installation:
     /// `ELDRUN_COPILOT_INSTALL=/dir cargo test --lib copilot -- --ignored`.
     #[cfg(target_os = "linux")]
@@ -599,6 +866,58 @@ mod tests {
         assert_eq!(result, Err("copilot_not_signed_in".into()));
         session.stop();
         assert!(!session.alive());
+    }
+
+    #[tokio::test]
+    async fn polling_the_account_asks_the_server_only_after_a_status_change() {
+        let (session, mut server) = connected().await;
+        let worker = session.clone();
+        let work = tokio::spawn(async move { worker.account().await });
+        let call = server.expect("checkStatus").await;
+        server.result(&call["id"], json!({"status":"OK", "user":"octo"})).await;
+        assert_eq!(work.await.unwrap().unwrap()["user"], "octo");
+        assert_eq!(session.account().await.unwrap()["user"], "octo"); // no second call
+        write_frame(&mut server.write, &json!({"jsonrpc":"2.0", "method":"didChangeStatus",
+            "params":{"kind":"Error"}})).await.unwrap();
+        write_frame(&mut server.write, &json!({"jsonrpc":"2.0", "id":"barrier", "method":"unknown/request"})).await.unwrap();
+        assert_eq!(server.next().await["id"], "barrier");
+        let worker = session.clone();
+        let work = tokio::spawn(async move { worker.account().await });
+        let call = server.expect("checkStatus").await;
+        server.result(&call["id"], json!({"status":"NotSignedIn"})).await;
+        assert_eq!(work.await.unwrap().unwrap()["status"], "NotSignedIn");
+    }
+
+    #[tokio::test]
+    async fn stopping_one_project_leaves_another_projects_launch_alone() {
+        let sessions = Sessions::default();
+        let mut changes = sessions.invalidated.subscribe();
+        let epoch = sessions.epoch("two");
+        sessions.stop("one").await;
+        let wait = sessions.invalidated_since(&mut changes, "two", epoch);
+        tokio::pin!(wait);
+        assert!(tokio::time::timeout(Duration::from_millis(20), &mut wait).await.is_err());
+        sessions.stop("two").await;
+        tokio::time::timeout(Duration::from_millis(100), &mut wait).await.unwrap();
+        let mut changes = sessions.invalidated.subscribe();
+        let epoch = sessions.epoch("one");
+        sessions.stop_all_now();
+        tokio::time::timeout(Duration::from_millis(100), sessions.invalidated_since(&mut changes, "one", epoch)).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cancellation_resolves_the_request_without_abandoning_its_frame() {
+        let (session, mut server) = connected().await;
+        let (cancel, signal) = tokio::sync::watch::channel(false);
+        let worker = session.clone();
+        let work = tokio::spawn(async move { worker.complete_cancellable(request("window:1", 1, "a"), signal).await });
+        server.expect("textDocument/didOpen").await;
+        server.expect("textDocument/didFocus").await;
+        let call = server.expect("textDocument/inlineCompletion").await;
+        drop(cancel);
+        assert_eq!(server.expect("$/cancelRequest").await["params"]["id"], call["id"]);
+        assert_eq!(work.await.unwrap(), Err("copilot_cancelled".into()));
+        assert!(session.alive());
     }
 
     #[test]

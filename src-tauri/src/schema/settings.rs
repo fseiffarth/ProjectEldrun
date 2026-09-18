@@ -60,7 +60,7 @@ pub struct EldrunMobileHostSettings {
 /// Cloud completion authority lives in Eldrun's settings, never project.json.
 /// Bind consent to a directory as well as the id so moving/repointing a project
 /// cannot silently authorize a different tree. Unknown fields round-trip.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct CompletionProjectPolicy {
     pub directory: String,
     #[serde(default)]

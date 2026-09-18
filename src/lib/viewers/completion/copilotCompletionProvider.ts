@@ -35,12 +35,17 @@ export class CopilotCompletionProvider implements CompletionProvider {
     const position = offsetToPosition(document.text, document.caret);
     if (!position) return [];
     const { projectId, editor, automatic, tabSize, insertSpaces } = this.options;
-    const cancel = () => void invoke("copilot_cancel", { projectId, editor }).catch(() => {});
+    let requestId: string | undefined;
+    const cancel = () => {
+      if (requestId) void invoke("copilot_cancel", { projectId, editor, requestId }).catch(() => {});
+    };
     signal.addEventListener("abort", cancel, { once: true });
     try {
       signal.throwIfAborted();
+      requestId = await invoke<string>("copilot_prepare", { projectId, editor });
+      if (signal.aborted) { cancel(); signal.throwIfAborted(); }
       const items = await invoke<ServerCandidate[]>("copilot_complete", {
-        projectId, path: document.path, editor, version: document.version, text: document.text,
+        projectId, requestId, path: document.path, editor, version: document.version, text: document.text,
         language: document.language, position, automatic, tabSize, insertSpaces,
       });
       signal.throwIfAborted();

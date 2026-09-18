@@ -4,3 +4,4 @@ pub mod rpc;
 pub mod process;
 pub mod documents;
 pub mod session;
+pub mod requests;
