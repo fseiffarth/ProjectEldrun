@@ -24,7 +24,7 @@ import {
 } from "../../lib/terminalBus";
 import { hpcGuardRefusal } from "../../lib/hpcGuard";
 import { useHpcGuardStore } from "../../stores/hpcGuardPrompt";
-import { CSI_U_SHIFT_TAB, FORCE_SELECTION_MODIFIER, SILENT_START_MS, agentMouseDownAction, bufferTail, claimInitialInput, decodeOsc52Clipboard, initialInputForPty, claudeLaunchName, isClaudeCommand, isCodexCommand, isTerminalAutoReply, isTerminalIdentityResponse, isTerminalReport, showsAgentTrustDialog, silentStartNotice, stripTerminalQueries, terminalProgramLabel, type SilentStartNotice } from "../../lib/terminalControl";
+import { CSI_U_SHIFT_TAB, FORCE_SELECTION_MODIFIER, SILENT_START_MS, agentMouseDownAction, bufferTail, claimInitialInput, decodeOsc52Clipboard, initialInputForPty, claudeLaunchName, isClaudeCommand, isCodexCommand, isTerminalAutoReply, isTerminalIdentityResponse, isTerminalReport, showsAgentTrustDialog, silentStartNotice, stripTerminalQueries, suppressNativeContextMenu, terminalProgramLabel, type SilentStartNotice } from "../../lib/terminalControl";
 import { registerTerminal, unregisterTerminal } from "../../lib/terminalRegistry";
 import { clearPtyInput, writePtyInput } from "../../lib/terminalInput";
 import { registerScheduledAgentInput } from "../../lib/scheduledAgentInput";
@@ -1418,6 +1418,14 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
     // usual way to grab the last line) releases there, and its copy should not
     // wait out the debounce either.
     const onDocMouseUp = () => flushSelectionCopy();
+    // Every pane, not just agent ones: whichever program grabbed the mouse owns
+    // the right-click (see `suppressNativeContextMenu`). The element is captured
+    // here so the cleanup detaches from the node it attached to.
+    const contextMenuTarget = containerRef.current;
+    const onContextMenu = (e: MouseEvent) => {
+      if (suppressNativeContextMenu(e, term.modes.mouseTrackingMode !== "none")) e.preventDefault();
+    };
+    contextMenuTarget?.addEventListener("contextmenu", onContextMenu);
 
     if (zoomable) {
       containerRef.current?.addEventListener("wheel", onWheel, { passive: false });
@@ -1438,6 +1446,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       if (selectionCopyTimer) clearTimeout(selectionCopyTimer);
       oscHandler.dispose();
       window.removeEventListener("resize", doFit);
+      contextMenuTarget?.removeEventListener("contextmenu", onContextMenu);
       if (zoomable) {
         containerRef.current?.removeEventListener("wheel", onWheel);
         containerRef.current?.removeEventListener("mousedown", onMouseDownCapture, true);

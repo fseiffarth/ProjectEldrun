@@ -312,6 +312,20 @@ export function agentMouseDownAction(
  */
 export const FORCE_SELECTION_MODIFIER: "altKey" | "shiftKey" = IS_MAC ? "altKey" : "shiftKey";
 
+/**
+ * Whether a right-click's `contextmenu` should be cancelled so the webview's
+ * native menu does not open. Yes while the program has grabbed the mouse: the
+ * press was already reported to it, and the click is its to answer. Claude
+ * Code's full-screen TUI answers a right-click on Linux/Windows by reading the
+ * clipboard and pasting it itself, so a native menu opened over the same click
+ * offered a Paste that put the text in a second time (the "right-click, Paste
+ * pastes twice" report). Shift reaches the native menu anyway, as it does in
+ * GNOME Terminal and every other terminal that hands the mouse to the program.
+ */
+export function suppressNativeContextMenu(ev: { shiftKey: boolean }, mouseGrabbed: boolean): boolean {
+  return mouseGrabbed && !ev.shiftKey;
+}
+
 /** How long a freshly spawned tab may stay silent before it says so. */
 export const SILENT_START_MS = 10_000;
 
