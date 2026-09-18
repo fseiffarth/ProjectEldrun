@@ -13,6 +13,7 @@ import {
   buildStaticTabSpec,
   customAgentToItem,
   enabledInstalledAgentBins,
+  rootAllowedAgentBins,
   installedAgentBins,
 } from "../components/tabs/newTabItems";
 import { isResumableAgentTab } from "../stores/tabs";
@@ -128,6 +129,28 @@ describe("Google Antigravity built-in", () => {
     expect(spec.kind).toBe("agent");
     expect(spec.sessionId).toBeTruthy();
     expect(isResumableAgentTab(spec)).toBe(true);
+  });
+});
+
+describe("rootAllowedAgentBins", () => {
+  const agents = [
+    { id: "claude", bin: "claude", installed: true },
+    { id: "antigravity", bin: "agy", installed: true },
+    { id: "codex", bin: "codex", installed: true },
+  ];
+  const enabled = new Set(["claude", "agy", "codex"]);
+
+  it("offers no agent in the root console until one is switched on", () => {
+    expect([...rootAllowedAgentBins(enabled, agents, undefined)]).toEqual([]);
+    expect([...rootAllowedAgentBins(enabled, agents, [])]).toEqual([]);
+  });
+
+  it("maps registry ids to executable names and never re-adds a disabled agent", () => {
+    expect([...rootAllowedAgentBins(enabled, agents, ["antigravity", "codex"])]).toEqual([
+      "agy",
+      "codex",
+    ]);
+    expect([...rootAllowedAgentBins(new Set(["claude"]), agents, ["codex"])]).toEqual([]);
   });
 });
 

@@ -8,10 +8,12 @@ import {
   DEFAULT_COMPACT_AGENT_IDS,
   EMPTY_CUSTOM_AGENTS,
   enabledInstalledAgentBins,
+  rootAllowedAgentBins,
   type BuiltInAgentStatus,
 } from "./newTabItems";
 import { listLocalDrivers, type LocalDriverInfo } from "../../lib/localDrivers";
 import { AGENT_REGISTRY_CHANGED_EVENT } from "../../lib/agentRegistry";
+import { ROOT_SCOPE } from "../../stores/tabs";
 
 /** The data behind an add-tab ("+") menu — see {@link useAddTabMenuData}. */
 export interface AddTabMenuData {
@@ -20,6 +22,10 @@ export interface AddTabMenuData {
    *  `ollama_model`. The menu offers ONE "Local Model" entry that launches it,
    *  rather than listing every installed model. */
   localModel: string | undefined;
+  /** Root scope only: the "tabs" model the user switched off for the root
+   *  console (its 🧠 "Root" chip). `localModel` is then `undefined`, and the
+   *  menus say why instead of "no local model set". */
+  localModelOffInRoot: string | undefined;
   /** Coding agents that can drive the active local model besides Mistral/vibe
    *  (Claude Code, Codex, OpenCode, Droid via `ollama launch` or a direct
    *  fallback). Re-probed whenever the active model changes: these are all
@@ -33,7 +39,9 @@ export interface AddTabMenuData {
    *  in "Manage Agents" — the set every tab-choice consumer (Agents group,
    *  Mistral/vibe local-model driver) should use. `null` until the probe
    *  resolves, so the Agents list renders nothing (not a flash of the full
-   *  list) until we know. Re-probed after Manage Agents changes the registry. */
+   *  list) until we know. Re-probed after Manage Agents changes the registry.
+   *  In the root scope, further narrowed to the agents whose 🧠 "Root" chip is
+   *  on (`rootAllowedAgentBins`). */
   enabledAgents: Set<string> | null;
   /** Installed agent bins the user marked "compact" (icon-only row). */
   compactAgentBins: Set<string>;
@@ -61,9 +69,17 @@ export interface AddTabMenuData {
  * block was maintained verbatim in both).
  */
 export function useAddTabMenuData(scope: string): AddTabMenuData {
-  const localModel = useSettingsStore(
+  const isRoot = scope === ROOT_SCOPE;
+  const tabsModel = useSettingsStore(
     (s) => s.settings?.ollama_roles?.tabs ?? s.settings?.ollama_model,
   );
+  // Local models are in the root console unless switched off there — the
+  // opposite default to agents, since a local model reaches nothing beyond
+  // this machine.
+  const rootOffModels = useSettingsStore((s) => s.settings?.root_excluded_models);
+  const localModelOffInRoot =
+    isRoot && tabsModel && rootOffModels?.includes(tabsModel) ? tabsModel : undefined;
+  const localModel = localModelOffInRoot ? undefined : tabsModel;
   const [localDrivers, setLocalDrivers] = useState<LocalDriverInfo[]>([]);
   const refreshLocalDrivers = useCallback(() => {
     void listLocalDrivers(localModel)
@@ -96,10 +112,12 @@ export function useAddTabMenuData(scope: string): AddTabMenuData {
   const compactAgentIds = useSettingsStore(
     (s) => s.settings?.compact_tab_agents ?? DEFAULT_COMPACT_AGENT_IDS,
   );
+  const rootAgentIds = useSettingsStore((s) => s.settings?.root_agents);
   const enabledAgents = useMemo(() => {
     if (!agentStatuses) return null;
-    return enabledInstalledAgentBins(agentStatuses, disabledAgents);
-  }, [agentStatuses, disabledAgents]);
+    const enabled = enabledInstalledAgentBins(agentStatuses, disabledAgents);
+    return isRoot ? rootAllowedAgentBins(enabled, agentStatuses, rootAgentIds) : enabled;
+  }, [agentStatuses, disabledAgents, isRoot, rootAgentIds]);
   const compactAgentBins = useMemo(() => {
     if (!agentStatuses) return new Set<string>();
     const compactIds = new Set(compactAgentIds);
@@ -135,6 +153,7 @@ export function useAddTabMenuData(scope: string): AddTabMenuData {
 
   return {
     localModel,
+    localModelOffInRoot,
     localDrivers,
     enabledAgents,
     compactAgentBins,

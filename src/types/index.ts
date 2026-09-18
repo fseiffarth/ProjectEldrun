@@ -357,6 +357,13 @@ export interface Settings {
    *  the familiar Claude/Codex/Gemini quick picks; an empty array is a deliberate
    *  choice to show agents only after searching. */
   compact_tab_agents?: string[];
+  /** Built-in agent registry ids the root console's + menus offer, set by the
+   *  🧠 menu's "Root" chips. Opt-in: unset or empty offers none there (root
+   *  agents get the root MCP tools). */
+  root_agents?: string[];
+  /** Local (Ollama) model names switched OFF for the root console by the 🧠
+   *  menu's "Root" chips. Opt-out: unset means every model is offered there. */
+  root_excluded_models?: string[];
   /** Prefix chips per agent command for the side panel's agent composer; unset
    *  falls back to `lib/agentPrefaces`' defaults, `[]` means none. */
   agent_preface_commands?: Record<string, string[]>;

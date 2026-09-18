@@ -791,6 +791,17 @@ export function LocalModelMenu() {
       : [...compactAgentIds, id];
     void updateSettings({ compact_tab_agents: next });
   };
+  // Which agents the root console offers. Opt-in, default none: a root agent
+  // gets the root MCP tools (calendar, board, project list) no project agent
+  // has. Read by `useAddTabMenuData` for the root scope's + menus.
+  const rootAgentIds = settings?.root_agents ?? [];
+  const toggleRootAgent = (a: AgentInfo) => {
+    const on = rootAgentIds.includes(a.id) || rootAgentIds.includes(a.bin);
+    const next = on
+      ? rootAgentIds.filter((id) => id !== a.id && id !== a.bin)
+      : [...rootAgentIds, a.id];
+    void updateSettings({ root_agents: next });
+  };
 
   const scheduleClose = () => {
     if (closeTimer.current !== null) window.clearTimeout(closeTimer.current);
@@ -860,6 +871,16 @@ export function LocalModelMenu() {
     if (next[role] === model) delete next[role];
     else next[role] = model;
     void updateSettings({ ollama_roles: next });
+  };
+  // Local models are in the root console by default (the opposite of agents:
+  // a local model reaches nothing beyond this machine), so what is stored is
+  // the models switched OFF there.
+  const rootOffModels = settings?.root_excluded_models ?? [];
+  const toggleRootModel = (model: string) => {
+    const next = rootOffModels.includes(model)
+      ? rootOffModels.filter((m) => m !== model)
+      : [...rootOffModels, model];
+    void updateSettings({ root_excluded_models: next });
   };
 
   // Putting the models back after an upgrade (`stores/ollamaUpgrade`). Reported
@@ -1080,6 +1101,7 @@ export function LocalModelMenu() {
           {agents.map((a) => {
             const isDefault = a.id === defaultAgentCmd;
             const isCompact = compactAgentIds.includes(a.id) || compactAgentIds.includes(a.bin);
+            const inRoot = rootAgentIds.includes(a.id) || rootAgentIds.includes(a.bin);
             return (
               <div key={a.id} className="local-model-agent-row" title={t("localModel.agentInstalled", { label: a.label })}>
                 {/* Green lamp mirrors a loaded model: this agent CLI is installed. */}
@@ -1111,6 +1133,19 @@ export function LocalModelMenu() {
                   >
                     {t("localModel.compactAgent")}
                   </button>
+                  <button
+                    type="button"
+                    className={`local-model-role-chip${inRoot ? " on" : ""}`}
+                    title={t(
+                      inRoot ? "localModel.isRootAgentTitle" : "localModel.setRootAgentTitle",
+                      { label: a.label },
+                    )}
+                    aria-pressed={inRoot}
+                    onClick={() => toggleRootAgent(a)}
+                  >
+                    {t("localModel.rootChip")}
+                  </button>
+                  <UntestedTag />
                 </div>
               </div>
             );
@@ -1441,6 +1476,23 @@ export function LocalModelMenu() {
                           </button>
                         );
                       })}
+                      <button
+                        type="button"
+                        className={`local-model-role-chip${
+                          rootOffModels.includes(m.name) ? "" : " on"
+                        }`}
+                        title={t(
+                          rootOffModels.includes(m.name)
+                            ? "localModel.setRootModelTitle"
+                            : "localModel.isRootModelTitle",
+                          { name: m.name },
+                        )}
+                        aria-pressed={!rootOffModels.includes(m.name)}
+                        onClick={() => toggleRootModel(m.name)}
+                      >
+                        {t("localModel.rootChip")}
+                      </button>
+                      <UntestedTag />
                       {/* The row's own two verbs, grouped and right-aligned: the
                           task tags above are a wrapping set, these are a column. */}
                       <div className="local-model-row-actions">

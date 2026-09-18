@@ -241,6 +241,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
   // one implementation with the popout's NewTabMenu, so the two cannot drift.
   const {
     localModel,
+    localModelOffInRoot,
     localDrivers,
     enabledAgents,
     compactAgentBins,
@@ -1575,11 +1576,13 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
                 // Two causes, two sentences — see NewTabMenu: an empty list
                 // because the model can't drive tool-calling agents must not
                 // read as "you have no agents installed".
-                hint: !localModel
-                  ? t("newTabMenu.noLocalModelHint")
-                  : localDrivers.some((d) => d.needs_tools_unsupported)
-                    ? t("newTabMenu.localModelNoToolsHint", { model: localModel })
-                    : t("newTabMenu.noLocalAgentHint"),
+                hint: localModelOffInRoot
+                  ? t("newTabMenu.localModelOffInRootHint", { model: localModelOffInRoot })
+                  : !localModel
+                    ? t("newTabMenu.noLocalModelHint")
+                    : localDrivers.some((d) => d.needs_tools_unsupported)
+                      ? t("newTabMenu.localModelNoToolsHint", { model: localModel })
+                      : t("newTabMenu.noLocalAgentHint"),
               }] : []),
               ...(!trashScope ? [{
                 label: t("newTabMenu.groupShell"),

@@ -323,6 +323,15 @@ pub struct Settings {
     /// list intentionally leaves every agent behind the menu's search field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compact_tab_agents: Option<Vec<String>>,
+    /// Built-in agent registry ids offered in the root console's + menus, set
+    /// by the 🧠 menu's "Root" chips. Opt-in: unset or empty offers none there,
+    /// since a root agent gets the root MCP tools no project agent has.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_agents: Option<Vec<String>>,
+    /// Local model names switched off for the root console by the 🧠 menu's
+    /// "Root" chips. Opt-out: unset means every local model is offered there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_excluded_models: Option<Vec<String>>,
     /// When true (the default), running a `.sh` from the side panel spawns it
     /// as a detached background process instead of opening a terminal tab.
     #[serde(skip_serializing_if = "Option::is_none")]

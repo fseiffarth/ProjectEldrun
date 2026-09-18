@@ -211,6 +211,22 @@ export function enabledInstalledAgentBins(
   return new Set([...installedAgentBins(agents)].filter((bin) => !disabled.has(bin)));
 }
 
+/** The root console's agents are opt-in: a root agent gets the root MCP tools
+ * (calendar, board, project list) no project agent has, so only the built-ins
+ * the user switched on with the 🧠 menu's "Root" chip are offered there. Unset
+ * means none. Ids and executable names both match, as for the compact list. */
+export function rootAllowedAgentBins(
+  enabled: ReadonlySet<string>,
+  agents: readonly (BuiltInAgentStatus & { id: string })[],
+  rootIds: readonly string[] | undefined,
+): Set<string> {
+  const allowed = new Set(rootIds ?? []);
+  for (const agent of agents) {
+    if (allowed.has(agent.id)) allowed.add(agent.bin);
+  }
+  return new Set([...enabled].filter((bin) => allowed.has(bin)));
+}
+
 /** Adapt a persisted {@link CustomAgent} into a menu item so it launches through
  *  the same `buildStaticTabSpec` path as the built-in agents. */
 export function customAgentToItem(ca: CustomAgent): StaticMenuItem {

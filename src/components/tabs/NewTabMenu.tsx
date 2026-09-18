@@ -72,6 +72,7 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
   // hook — one implementation with TabBar's "+" menu, so the two cannot drift.
   const {
     localModel,
+    localModelOffInRoot,
     localDrivers,
     enabledAgents,
     compactAgentBins,
@@ -302,11 +303,13 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
             // no agent is installed, or the model can't drive the ones that
             // are. Without the second, withholding the entries would read as a
             // bug — the agent is right there in the Agents group above.
-            hint: !localModel
-              ? t("newTabMenu.noLocalModelHint")
-              : localDrivers.some((d) => d.needs_tools_unsupported)
-                ? t("newTabMenu.localModelNoToolsHint", { model: localModel })
-                : t("newTabMenu.noLocalAgentHint"),
+            hint: localModelOffInRoot
+              ? t("newTabMenu.localModelOffInRootHint", { model: localModelOffInRoot })
+              : !localModel
+                ? t("newTabMenu.noLocalModelHint")
+                : localDrivers.some((d) => d.needs_tools_unsupported)
+                  ? t("newTabMenu.localModelNoToolsHint", { model: localModel })
+                  : t("newTabMenu.noLocalAgentHint"),
           },
           {
             label: t("newTabMenu.groupShell"),
