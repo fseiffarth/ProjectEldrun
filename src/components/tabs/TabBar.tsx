@@ -36,6 +36,8 @@ import {
   type StaticMenuItem,
 } from "./newTabItems";
 import { AddTabMenuList } from "./AddTabMenuList";
+import { TabColorPicker } from "./TabColorPicker";
+import { tabColorCss } from "../../lib/tabColors";
 import { useAddTabMenuData } from "./useAddTabMenuData";
 import { useAgentWorktreePicker } from "./agentWorktrees";
 import { CustomAgentDialog } from "./CustomAgentDialog";
@@ -171,6 +173,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
   // group-scoped `setGroupActive`.
   const setActive = useTabsStore((s) => s.setActive);
   const renameTab = useTabsStore((s) => s.renameTab);
+  const setTabColor = useTabsStore((s) => s.setTabColor);
   const addTab = useTabsStore((s) => s.addTab);
   const duplicateTab = useTabsStore((s) => s.duplicateTab);
   const ensureTab = useTabsStore((s) => s.ensureTab);
@@ -1223,7 +1226,14 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
         // so the top stripe reads as the tab-group colour consistently — plain
         // themes draw the rail above, fancy themes move it below. Inactive tabs
         // keep a transparent stripe slot; hover/active tint it with this colour.
-        const style = { "--tab-accent": TAB_ACCENT[tab.kind] } as React.CSSProperties;
+        // A user-set colour (#264) REPLACES the kind colour in the same slot, so
+        // every treatment already keyed off `--tab-accent` (the active tab's
+        // bottom rule, and a fancy theme's rail below it) follows it without a
+        // second code path. `has-tab-color` is what makes it visible on an
+        // INACTIVE tab too: colouring tabs is for telling them apart at a
+        // glance, and a mark only the current tab carries would say nothing.
+        const userColor = tabColorCss(tab.color);
+        const style = { "--tab-accent": userColor ?? TAB_ACCENT[tab.kind] } as React.CSSProperties;
         const editing = editingKey === tab.key;
         // A tab freshly dropped into this bar plays the drop-in landing once.
         const landing = !isDragging && landedKey === tab.key;
@@ -1231,7 +1241,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
           <Fragment key={tab.key}>
           {showMarkerBefore && dropPlaceholder}
           <div
-            className={`tab ${isActive ? "active" : ""}${stateClass}${isDragging ? " dragging" : ""}${editing ? " editing" : ""}${landing ? " landing" : ""}`}
+            className={`tab ${isActive ? "active" : ""}${stateClass}${userColor ? " has-tab-color" : ""}${isDragging ? " dragging" : ""}${editing ? " editing" : ""}${landing ? " landing" : ""}`}
             style={style}
             data-tab-index={index}
             data-kind={tab.kind}
@@ -1737,6 +1747,13 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
             <span className="tab-new-menu-dot tab-new-menu-dot--accent">✎</span>
             {t("common.rename")}
           </button>
+          {/* The picker keeps the menu OPEN after a pick: the tab recolours behind
+              it, so trying a second hue is one more click rather than another
+              right-click. Every other row here is a one-shot action and closes. */}
+          <TabColorPicker
+            current={tabs.find((tab) => tab.key === tabMenu.key)?.color}
+            onPick={(color) => setTabColor(tabMenu.key, color)}
+          />
           {tabs.some((tab) => tab.key === tabMenu.key && canDuplicateTab(tab)) && (
             <button
               className="tab-new-menu-item"

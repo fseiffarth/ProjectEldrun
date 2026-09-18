@@ -29,6 +29,7 @@ import {
   DETACHED_REQUEST_SEED,
   DETACHED_ZOOM,
   applyEditToSubtree,
+  applyColorToTabs,
   applyRenameToTabs,
   applyLocationToTabs,
   detachedSeedEvent,
@@ -644,6 +645,10 @@ export function DetachedApp({ param }: Props) {
     setGroup((g) => (g ? applyEditToSubtree(g, edit) : g));
     if (edit.kind === "rename") {
       setTabs((ts) => applyRenameToTabs(ts, edit.key, edit.label));
+    } else if (edit.kind === "setColor") {
+      // Optimistic, like the two beside it: the picker stays open after a pick,
+      // so the tab has to recolour under it rather than on the re-seed.
+      setTabs((ts) => applyColorToTabs(ts, edit.key, edit.color));
     } else if (edit.kind === "setLocation") {
       // Optimistic: flip the badge now; the main window respawns the pane on the
       // new host and re-derives the same payload.
@@ -865,6 +870,7 @@ export function DetachedApp({ param }: Props) {
       onSetLocation={(key, location) => pushEdit({ kind: "setLocation", key, location })}
       onReorder={(tabKeys) => pushEdit({ kind: "reorder", tabKeys })}
       onRename={(key, label) => pushEdit({ kind: "rename", key, label })}
+      onSetColor={(key, color) => pushEdit({ kind: "setColor", key, color })}
       onSplit={(key, targetGroupId, edge) => {
         // Mint the new pane's ids HERE and ship them, so the main store names
         // the pane as this window does (see `mintDetachedSplitIds`). The ids

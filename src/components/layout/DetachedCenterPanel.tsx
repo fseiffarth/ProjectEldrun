@@ -48,6 +48,8 @@ import { TRASH_PROJECT_ID } from "../../lib/trashProject";
 import { TabDropPlaceholder } from "../tabs/TabDropPlaceholder";
 import { NewTabMenu } from "../tabs/NewTabMenu";
 import { CustomAgentDialog } from "../tabs/CustomAgentDialog";
+import { TabColorPicker } from "../tabs/TabColorPicker";
+import { tabColorCss, type TabColor } from "../../lib/tabColors";
 import { pickEdge } from "../tabs/dragGeometry";
 import {
   chordMatches,
@@ -280,6 +282,10 @@ interface Props {
   /** Rename a tab (right-click on the strip) — the `rename` edit, which existed
    *  from the start with nothing emitting it (#239). */
   onRename?: (key: string, label: string) => void;
+  /** Paint a tab with a palette colour, or clear it (#264) — the `setColor`
+   *  edit. Streamed like the rename above rather than applied here: the colour
+   *  lives on the tab payload the MAIN window owns and persists. */
+  onSetColor?: (key: string, color: TabColor | undefined) => void;
   /** Split `key` into a new pane at `edge` of `targetGroupId`, inside the popout
    *  (a tab dragged onto a group BODY's edge). */
   onSplit: (key: string, targetGroupId: string, edge: DropEdge) => void;
@@ -324,6 +330,7 @@ export function DetachedCenterPanel({
   onSetLocation,
   onReorder,
   onRename,
+  onSetColor,
   onSplit,
   onResize,
   onMove,
@@ -336,6 +343,29 @@ export function DetachedCenterPanel({
   const [agentDialogOpen, setAgentDialogOpen] = useState(false);
   const [scheduleDialogKey, setScheduleDialogKey] = useState<string | null>(null);
   const [tabMenu, setTabMenu] = useState<{ key: string; x: number; y: number } | null>(null);
+  const tabMenuRef = useRef<HTMLDivElement>(null);
+  // Dismiss this strip's tab context menu on an outside click or Escape, the way
+  // the main window's `TabBar` does. It used to close only when one of its rows
+  // fired, which was survivable while every row was a one-shot action; the
+  // colour picker (#264) deliberately stays open after a pick, so a menu opened
+  // and left alone needs a way out that is not "pick something".
+  useEffect(() => {
+    if (!tabMenu) return;
+    const onDown = (event: MouseEvent) => {
+      if (tabMenuRef.current?.contains(event.target as Node)) return;
+      setTabMenu(null);
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setTabMenu(null);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [tabMenu]);
+
   const schedulesByTarget = useAgentSchedulesStore((state) => state.byTarget);
   // Tab hover card anchor (the hovered tab's bottom-centre), mirroring the main
   // window's TabBar — the popout has its own tab strip, so it renders its own.
@@ -1512,7 +1542,14 @@ export function DetachedCenterPanel({
               <Fragment key={tab.key}>
                 {showMarkerBefore && dropPlaceholder}
                 <div
-                  className={`tab ${isActive ? "active" : ""}${stateClass}${isDragging ? " dragging" : ""}${landing ? " landing" : ""}`}
+                  className={`tab ${isActive ? "active" : ""}${stateClass}${tabColorCss(tab.color) ? " has-tab-color" : ""}${isDragging ? " dragging" : ""}${landing ? " landing" : ""}`}
+                  // A user colour (#264) fills the same `--tab-accent` slot the
+                  // main window's strip uses, so one CSS rule colours the tab
+                  // in either window. This strip sets no kind colour of its own,
+                  // so an uncoloured tab is left on the variable's fallback.
+                  style={tabColorCss(tab.color)
+                    ? ({ "--tab-accent": tabColorCss(tab.color) } as React.CSSProperties)
+                    : undefined}
                   onPointerDown={(e) => onTabPointerDown(e, group, tab)}
                   onContextMenu={(e) => {
                     e.preventDefault();
@@ -1950,7 +1987,7 @@ export function DetachedCenterPanel({
         <CustomAgentDialog onClose={() => setAgentDialogOpen(false)} />
       )}
       {tabMenu && createPortal(
-        <div className="tab-new-menu" style={{ position: "fixed", left: tabMenu.x, top: tabMenu.y }}>
+        <div className="tab-new-menu" ref={tabMenuRef} style={{ position: "fixed", left: tabMenu.x, top: tabMenu.y }}>
           <button className="tab-new-menu-item" onClick={() => {
             const tab = byKey.get(tabMenu.key);
             setTabMenu(null);
@@ -1961,6 +1998,12 @@ export function DetachedCenterPanel({
             <span className="tab-new-menu-dot tab-new-menu-dot--accent">✎</span>
             {t("common.rename")}
           </button>
+          {onSetColor && (
+            <TabColorPicker
+              current={byKey.get(tabMenu.key)?.color}
+              onPick={(color) => onSetColor(tabMenu.key, color)}
+            />
+          )}
           {(() => {
             const tab = byKey.get(tabMenu.key);
             return tab && (tab.kind === "agent" || tab.kind === "local_agent") ? (

@@ -49,6 +49,7 @@ import { bumpUsage } from "./usage";
 import { useRemoteMachinesStore } from "./remoteMachines";
 import { useBigFoldersStore } from "./bigFolders";
 import type { ProjectBox, ProjectEntry } from "../types";
+import { isTabColor, type TabColor } from "../lib/tabColors";
 
 /** Parsed `?detached=<scope>:<groupId>` query. */
 export interface DetachedParam {
@@ -411,6 +412,10 @@ export function buildSeed(
 export type DetachedEdit =
   | { kind: "activate"; key: string }
   | { kind: "rename"; key: string; label: string }
+  // A tab colour picked in the popout's own right-click menu (#264). The colour
+  // lives on the tab payload the MAIN window persists, so the popout forwards it
+  // the way it forwards a rename.
+  | { kind: "setColor"; key: string; color: TabColor | undefined }
   | { kind: "close"; key: string }
   | { kind: "reorder"; tabKeys: string[] }
   // Multi-host: change WHERE a locatable tab runs (local mirror / primary / a
@@ -588,6 +593,7 @@ export function applyEditToSubtree(
       // and waits for the main window's re-seed (with the real, keyed tab).
       return subtree;
     case "rename":
+    case "setColor":
     case "setViewerState":
     case "setTmuxName":
     case "setFolder":
@@ -609,6 +615,19 @@ export function applyRenameToTabs(
   const next = label.trim();
   if (!next) return tabs;
   return tabs.map((t) => (t.key === key ? { ...t, label: next } : t));
+}
+
+/** Apply a `setColor` edit to a tab payload list (#264). Popout-side optimistic
+ *  update, so the tab recolours under the open picker instead of a beat later,
+ *  when the main window's re-seed lands. An id outside the palette clears the
+ *  colour rather than reaching CSS. Pure. */
+export function applyColorToTabs(
+  tabs: TabEntry[],
+  key: string,
+  color: TabColor | undefined,
+): TabEntry[] {
+  const next = isTabColor(color) ? color : undefined;
+  return tabs.map((t) => (t.key === key && t.color !== next ? { ...t, color: next } : t));
 }
 
 /** Apply a `setLocation` edit to a tab payload list (popout-side optimistic

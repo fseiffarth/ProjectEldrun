@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { restoredAgentCwd } from "../lib/agentWorktrees";
+import { isTabColor, type TabColor } from "../lib/tabColors";
 import { create } from "zustand";
 import { useShallow } from "zustand/react/shallow";
 import type { InternalViewer } from "../lib/viewers/fileUtils";
@@ -662,6 +663,16 @@ export interface TabEntry {
   // grant itself is a file in the state dir; this is only the index into it, which
   // is why a planted value buys nothing.
   hostBoundUid?: string;
+  // A user-chosen colour from the closed palette in `lib/tabColors.ts` (#264):
+  // set by the tab's right-click menu on the desktop, or the Colour sheet on the
+  // phone. Absent (the default) leaves the tab on its KIND colour — `TAB_ACCENT`
+  // — which is why this is stored as "no colour" rather than as the kind's hue:
+  // re-theming, or a kind gaining a new accent, must still move an uncoloured
+  // tab. Persisted, because a colour a user assigned to group their tabs is
+  // worthless if it does not survive the relaunch that reopens them; and copied
+  // verbatim by `duplicateSpec`, since a colour DESCRIBES a tab rather than
+  // identifying it.
+  color?: TabColor;
   // Idempotency key of the request that created this tab, for the callers that
   // create one without a click behind them: a Mobile create (a keyed hash — it
   // contains no client token) whose timed-out retry must resolve to this exact
@@ -772,6 +783,10 @@ export type DropEdge = "left" | "right" | "top" | "bottom" | "center";
 export type DetachedEditPayload =
   | { kind: "activate"; key: string }
   | { kind: "rename"; key: string; label: string }
+  // A tab colour picked in a popout's own right-click menu (#264). Forwarded
+  // like the rename beside it rather than applied locally: a popout's store
+  // holds no tabs, and the colour lives on the payload the MAIN window persists.
+  | { kind: "setColor"; key: string; color: TabColor | undefined }
   // Multi-host: change where a locatable tab runs; applied to the payload here so
   // the main window's flat pane layer (which owns the popout's PTY) respawns it.
   | { kind: "setLocation"; key: string; location: TabLocation }
@@ -863,6 +878,8 @@ export interface SavedTabEntry {
   autoContinue?: boolean;
   // Persisted host-bound marker id (see TabEntry.hostBoundUid, #150).
   hostBoundUid?: string;
+  // Persisted user-chosen tab colour (see TabEntry.color).
+  color?: TabColor;
   mobileRequestHash?: string;
 }
 
@@ -914,6 +931,7 @@ export function toSavedTabEntry(t: TabEntry): SavedTabEntry {
     mobileRequestHash: t.mobileRequestHash,
     ephemeral: t.ephemeral,
     autoContinue: t.autoContinue,
+    color: t.color,
   };
 }
 
@@ -1063,6 +1081,14 @@ interface TabsStore {
   // loud. Falls through to `renameTab` when they are the same, keeping the
   // detached-popout forwarding path intact.
   renameTabInScope: (scope: string, key: string, label: string) => void;
+  // Paint one tab of the ACTIVE scope with a palette colour, or clear it with
+  // `undefined` (see TabEntry.color). Forwards to the main window from a popout
+  // exactly as `renameTab` does.
+  setTabColor: (key: string, color: TabColor | undefined) => void;
+  // The same, aimed at a named scope — what the phone's Colour sheet goes
+  // through, since the project it is looking at need not be the one the window
+  // is showing. Falls through to `setTabColor` when they are the same scope.
+  setTabColorInScope: (scope: string, key: string, color: TabColor | undefined) => void;
   // Turn auto-continue on or off for ONE agent tab in `scope` (see
   // TabEntry.autoContinue). Scoped like the rename above, because the Agents
   // view is rendered for a scope that need not be the active one.
@@ -2453,6 +2479,45 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
         s,
         scope,
         tabs.map((t) => (t.key === key ? { ...t, label: nextLabel } : t)),
+        s.layoutByScope[scope] ?? null,
+        s.focusedGroupByScope[scope] ?? null,
+      );
+    });
+  },
+
+  setTabColor: (key, color) => {
+    const next = isTabColor(color) ? color : undefined;
+    const ctx = getDetachedWindowContext();
+    if (ctx) {
+      ctx.pushEdit({ kind: "setColor", key, color: next });
+      return;
+    }
+    set((s) => {
+      const { tabs, layout, focusedGroupId } = currentScopeState(s);
+      if (!tabs.some((t) => t.key === key && t.color !== next)) return {};
+      return writeScope(
+        s,
+        s.scope,
+        tabs.map((t) => (t.key === key ? { ...t, color: next } : t)),
+        layout,
+        focusedGroupId,
+      );
+    });
+  },
+
+  setTabColorInScope: (scope, key, color) => {
+    if (scope === get().scope) {
+      get().setTabColor(key, color);
+      return;
+    }
+    const next = isTabColor(color) ? color : undefined;
+    set((s) => {
+      const tabs = s.tabsByScope[scope];
+      if (!tabs?.some((t) => t.key === key && t.color !== next)) return {};
+      return writeScope(
+        s,
+        scope,
+        tabs.map((t) => (t.key === key ? { ...t, color: next } : t)),
         s.layoutByScope[scope] ?? null,
         s.focusedGroupByScope[scope] ?? null,
       );
@@ -3893,6 +3958,17 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
           }
           break;
         }
+        case "setColor": {
+          // Validated here as well as at the picker: this edit arrives over the
+          // popout channel, and an unknown id must not reach `--tab-accent`.
+          const color = isTabColor(edit.color) ? edit.color : undefined;
+          if (nextTabs) {
+            nextTabs = nextTabs.map((t) =>
+              t.key === edit.key && t.color !== color ? { ...t, color } : t,
+            );
+          }
+          break;
+        }
         case "setLocation": {
           // Locality lives on the payload; the popout's pane is owned by THIS
           // (main) window's flat pane layer, so updating it here respawns that
@@ -4573,6 +4649,10 @@ export const useTabsStore = create<TabsStore>((set, get) => ({
         // so after a relaunch. Only the switch comes back: `AgentContinueHost`
         // re-reads the CLI's usage panel and arms a fresh window.
         autoContinue: t.autoContinue,
+        // The user's tab colour. Validated against the palette on the way in
+        // rather than trusted: this layout is a file on disk, and an id that is
+        // not in `TAB_COLORS` would reach `--tab-accent` as raw CSS.
+        color: isTabColor(t.color) ? t.color : undefined,
       };
     });
 

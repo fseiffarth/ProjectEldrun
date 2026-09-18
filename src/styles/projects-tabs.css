@@ -1138,6 +1138,21 @@
   color: var(--text-primary);
 }
 
+/* #264 — a tab the user has COLOURED shows its rule whether or not it is the
+   current tab. The stripe slot is transparent on an inactive tab by design (the
+   melt), but a colour assigned to group tabs has to be readable across the whole
+   bar, so a coloured tab spends that slot: dimmed, so the active tab's own
+   full-strength line still reads as foremost among several coloured siblings.
+   `--tab-accent` is the user's hue here (TabBar substitutes it for the kind
+   colour), so this rule needs no second source. */
+.tab.has-tab-color:not(.active) {
+  border-bottom-color: color-mix(in srgb, var(--tab-accent) 52%, transparent);
+}
+
+.tab.has-tab-color:not(.active):hover {
+  border-bottom-color: color-mix(in srgb, var(--tab-accent) 78%, transparent);
+}
+
 .tab.active {
   /* No background tint, no lift, no size change — same melt as every tab. The
      current tab is marked by the bottom border recoloured to its accent (its
@@ -2065,6 +2080,54 @@
      dimmed, disabled entry. */
   color: var(--accent);
   user-select: none;
+}
+
+/* #264 — the tab context menu's colour row: the palette as a swatch grid under
+   the canonical accent group label, so a colour is one click like every other
+   row in the menu rather than a drill-in. Sized to wrap at the menu's own
+   min-width (nine chips over two lines) instead of widening the menu, which
+   would have pushed the close rows out of thumb reach of the cursor. */
+.tab-color-swatches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 3px 10px 5px;
+  max-width: 172px;
+}
+
+.tab-color-swatch {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  flex: 0 0 auto;
+  border: 1px solid var(--border-color);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1;
+  cursor: var(--cur-pointer, pointer);
+  /* The ring below is drawn with box-shadow; keep the transition off the shadow
+     itself (a blurred, animated shadow is the one thing WebKitGTK renders in
+     software — see AGENTS.md) and on the cheap properties only. */
+  transition: border-color var(--transition), transform var(--transition);
+}
+
+.tab-color-swatch:hover {
+  transform: scale(1.12);
+  border-color: var(--text-primary);
+}
+
+/* The colour this tab currently carries. A ring rather than a checkmark: a tick
+   drawn over a hue is unreadable on the light chips and invisible on the dark
+   ones, while the ring sits outside the swatch and works on all nine. */
+.tab-color-swatch.is-current {
+  border-color: var(--text-primary);
+  box-shadow: 0 0 0 2px var(--bg-elevated), 0 0 0 3px var(--text-primary);
+}
+
+.tab-color-swatch--none {
+  background: var(--control-bg);
 }
 
 .tab-new-menu-hint {
