@@ -406,6 +406,24 @@ pub async fn pty_spawn(
         crate::services::root_mcp::apply_to_spawn(&mut opts);
     }
 
+    // A local OpenCode is offered exactly the models Ollama has loaded (see
+    // `commands::ollama::opencode_loaded_models_config`) — handed over as an
+    // inline config, never written into OpenCode's own. A remote run's OpenCode
+    // talks to the far host's Ollama, and an inline config the user set wins.
+    const OPENCODE_INLINE: &str = "OPENCODE_CONFIG_CONTENT";
+    if !remote_agent_run
+        && !opts.env.contains_key(OPENCODE_INLINE)
+        && std::env::var_os(OPENCODE_INLINE).is_none()
+    {
+        if let Some(requested) = crate::commands::ollama::opencode_spawn_model(&opts.cmd, &opts.args) {
+            if let Some(cfg) =
+                crate::commands::ollama::opencode_loaded_models_config(requested.as_deref())
+            {
+                opts.env.insert(OPENCODE_INLINE.into(), cfg);
+            }
+        }
+    }
+
     // The agent's hooks report its turn state under its tab uid; bind that uid
     // to this PTY so the report reaches the tab's own marks, and drop any
     // record a previous run of the same tab left behind (see agent_turn).

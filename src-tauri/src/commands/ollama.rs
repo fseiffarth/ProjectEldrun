@@ -3819,8 +3819,13 @@ const LOCAL_DRIVERS: &[LocalDriver] = &[
         id: "opencode",
         label: "OpenCode",
         bin: "opencode",
-        launch_sub: Some("opencode"),
-        // OpenCode's built-in `ollama` provider; `--model ollama/<model>` selects it.
+        // Never `ollama launch`: it sets its own `OPENCODE_CONFIG_CONTENT`
+        // (clobbering the loaded-models list `pty_spawn` hands every OpenCode —
+        // see `opencode_loaded_models_config`) and appends each launched model
+        // to the user's opencode.jsonc for good.
+        launch_sub: None,
+        // The `ollama` provider — named by the user's config or by the inline
+        // one `pty_spawn` injects; `--model ollama/<model>` selects it.
         fallback: Some(("opencode", &["--model", "ollama/{model}"])),
         needs_tools: true,
         non_thinking_args: None,
@@ -3894,6 +3899,98 @@ fn non_thinking_override(driver: &LocalDriver, thinking: Option<bool>) -> &[&'st
         (Some(args), Some(false)) => args,
         _ => &[],
     }
+}
+
+// ── OpenCode: the loaded Ollama models, handed over at launch ─────────────────
+//
+// OpenCode's `ollama` provider lists whatever models its config names — a list
+// that goes stale the moment another model is loaded (`ollama launch opencode`
+// appends to it and never prunes). Eldrun never edits OpenCode's config, so an
+// OpenCode spawn gets `OPENCODE_CONFIG_CONTENT` instead: an inline config
+// OpenCode deep-merges over the user's own, naming the models resident in
+// Ollama right now and whitelisting only those.
+
+/// The model an OpenCode spawn asks for, or `None` when `cmd`/`args` do not
+/// start OpenCode at all. The inner `Option` is the requested **Ollama** model
+/// — `opencode --model ollama/<m>` (the direct fallback) or `ollama launch
+/// opencode --model <m>` — which is whitelisted even when not loaded yet, since
+/// Ollama loads it on the first request and hiding it would kill the tab.
+pub(crate) fn opencode_spawn_model(cmd: &str, args: &[String]) -> Option<Option<String>> {
+    let bin = std::path::Path::new(cmd)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(cmd);
+    let via_launch = match bin {
+        "opencode" => false,
+        "ollama" if args.first().map(String::as_str) == Some("launch")
+            && args.get(1).map(String::as_str) == Some("opencode") =>
+        {
+            true
+        }
+        _ => return None,
+    };
+    let model = args.iter().enumerate().find_map(|(i, a)| {
+        a.strip_prefix("--model=")
+            .map(str::to_string)
+            .or_else(|| (a == "--model" || a == "-m").then(|| args.get(i + 1).cloned()).flatten())
+    });
+    Some(model.and_then(|m| {
+        if via_launch {
+            Some(m)
+        } else {
+            m.strip_prefix("ollama/").map(str::to_string)
+        }
+    }))
+}
+
+/// Model names from an `/api/ps` body, or `None` when the body is not one.
+fn loaded_model_names(ps_body: &str) -> Option<Vec<String>> {
+    let v = serde_json::from_str::<serde_json::Value>(ps_body).ok()?;
+    Some(
+        v["models"]
+            .as_array()?
+            .iter()
+            .filter_map(|m| m["name"].as_str().or_else(|| m["model"].as_str()))
+            .map(str::to_string)
+            .collect(),
+    )
+}
+
+/// The inline OpenCode config: the `ollama` provider pointed at `addr`, carrying
+/// `loaded` (plus `requested`) as its models and whitelisting exactly those, so
+/// models the user's config names but Ollama has not loaded drop out of the
+/// picker. An empty list is kept deliberately: nothing loaded means no Ollama
+/// models to offer. Pure + tested.
+fn opencode_ollama_config(addr: &str, loaded: &[String], requested: Option<&str>) -> String {
+    let mut names: Vec<&str> = loaded.iter().map(String::as_str).collect();
+    if let Some(r) = requested.filter(|r| !r.is_empty() && !names.contains(r)) {
+        names.push(r);
+    }
+    let models: serde_json::Map<String, serde_json::Value> = names
+        .iter()
+        .map(|n| (n.to_string(), serde_json::json!({ "name": n })))
+        .collect();
+    serde_json::json!({
+        "provider": {
+            "ollama": {
+                "npm": "@ai-sdk/openai-compatible",
+                "name": "Ollama (local)",
+                "options": { "baseURL": format!("http://{addr}/v1") },
+                "models": models,
+                "whitelist": names,
+            }
+        }
+    })
+    .to_string()
+}
+
+/// `OPENCODE_CONFIG_CONTENT` for an OpenCode spawn asking for `requested`, or
+/// `None` when Ollama cannot be asked — an unreachable server leaves the user's
+/// own config alone rather than emptying its model list on a guess.
+pub(crate) fn opencode_loaded_models_config(requested: Option<&str>) -> Option<String> {
+    let loaded = loaded_model_names(&ollama_http("GET", "/api/ps", None).ok()?)?;
+    let addr = ollama_addr().ok()?;
+    Some(opencode_ollama_config(&addr, &loaded, requested))
 }
 
 /// One local-model driver plus whether Eldrun currently has a way to launch it.
@@ -4667,6 +4764,67 @@ mod tests {
         let spec = fallback_spec(d, "llama3.2", &[]).expect("opencode has a fallback");
         assert_eq!(spec.cmd, "opencode");
         assert_eq!(spec.args, vec!["--model", "ollama/llama3.2"]);
+        // Direct only: `ollama launch` would override the injected model list.
+        assert!(d.launch_sub.is_none());
+    }
+
+    fn argv(a: &[&str]) -> Vec<String> {
+        a.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn opencode_spawn_model_recognises_every_opencode_launch_shape() {
+        assert_eq!(opencode_spawn_model("opencode", &[]), Some(None));
+        assert_eq!(
+            opencode_spawn_model("/home/u/.opencode/bin/opencode", &argv(&["--model", "ollama/qwen3:8b"])),
+            Some(Some("qwen3:8b".into()))
+        );
+        assert_eq!(
+            opencode_spawn_model("opencode", &argv(&["--model=ollama/qwen3:8b"])),
+            Some(Some("qwen3:8b".into()))
+        );
+        // Another provider's model is not an Ollama request.
+        assert_eq!(
+            opencode_spawn_model("opencode", &argv(&["-m", "anthropic/claude"])),
+            Some(None)
+        );
+        assert_eq!(
+            opencode_spawn_model("ollama", &argv(&["launch", "opencode", "--model", "qwen3:8b"])),
+            Some(Some("qwen3:8b".into()))
+        );
+        assert_eq!(opencode_spawn_model("ollama", &argv(&["launch", "codex"])), None);
+        assert_eq!(opencode_spawn_model("codex", &[]), None);
+    }
+
+    #[test]
+    fn loaded_model_names_reads_api_ps() {
+        let body = r#"{"models":[{"name":"nemotron:30b","model":"nemotron:30b"},{"model":"qwen3:8b"}]}"#;
+        assert_eq!(
+            loaded_model_names(body),
+            Some(vec!["nemotron:30b".to_string(), "qwen3:8b".to_string()])
+        );
+        assert_eq!(loaded_model_names(r#"{"models":[]}"#), Some(vec![]));
+        assert_eq!(loaded_model_names("garbage"), None);
+    }
+
+    #[test]
+    fn opencode_config_whitelists_the_loaded_models_plus_the_requested_one() {
+        let cfg: serde_json::Value = serde_json::from_str(&opencode_ollama_config(
+            "127.0.0.1:11434",
+            &["nemotron:30b".to_string()],
+            Some("qwen3:8b"),
+        ))
+        .unwrap();
+        let p = &cfg["provider"]["ollama"];
+        assert_eq!(p["options"]["baseURL"], "http://127.0.0.1:11434/v1");
+        assert_eq!(p["whitelist"], serde_json::json!(["nemotron:30b", "qwen3:8b"]));
+        assert_eq!(p["models"]["nemotron:30b"]["name"], "nemotron:30b");
+        assert!(p["models"]["qwen3:8b"].is_object());
+
+        // Nothing loaded: an empty whitelist, so stale config models drop out.
+        let cfg: serde_json::Value =
+            serde_json::from_str(&opencode_ollama_config("h:1", &[], None)).unwrap();
+        assert_eq!(cfg["provider"]["ollama"]["whitelist"], serde_json::json!([]));
     }
 
     #[test]
