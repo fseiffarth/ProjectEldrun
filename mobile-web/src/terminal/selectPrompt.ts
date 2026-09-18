@@ -45,9 +45,8 @@ export interface SelectPrompt {
 interface SelectLineLike { text: string }
 
 /** How far up from the bottom a dialog may sit. Below it the TUI still draws
- * its footer ("Esc to cancel") and, in Codex, the input box — and at phone
- * width each row's note wraps over several lines. */
-const SEARCH_WINDOW = 80;
+ * its footer ("Esc to cancel") and, in Codex, the input box. */
+const SEARCH_WINDOW = 40;
 /** A single numbered row is a sentence about a list, not a list. */
 const MIN_OPTIONS = 2;
 /** Longer than any picker either CLI draws; a longer run is not one. */
@@ -68,26 +67,7 @@ const MAX_DESCRIPTION = 200;
 const HEADING_BLOCK = 3;
 const MAX_TITLE = 60;
 
-interface ReadRow {
-  marked: boolean;
-  option: Omit<SelectOption, "index">;
-  /** Screen column the row's note starts at, when it has one. */
-  descriptionColumn?: number;
-}
-
-/** At phone width both CLIs wrap a row's note onto the lines below it, each
- * indented to the note's own column:
- *
- *     1. gpt-5.6-sol (default)  Latest frontier
- *                               agentic coding model.
- *
- * A line that is not a row and starts at or past that column continues the
- * row above; anything shallower is ordinary text and ends the run. */
-function readContinuation(text: string, column: number | undefined): string | null {
-  if (column === undefined) return null;
-  const indent = text.length - text.trimStart().length;
-  return indent >= column ? text.trim() : null;
-}
+interface ReadRow { marked: boolean; option: Omit<SelectOption, "index"> }
 
 /** The dialog's heading, read upwards from its first row: past the blank the
  * TUI leaves under the heading, then the contiguous block above it, of which
@@ -116,7 +96,6 @@ function readRow(text: string): ReadRow | null {
   const label = columns[0].trim();
   if (!label) return null;
   const description = columns.slice(1).join(" · ").trim();
-  const split = description ? COLUMN_SPLIT.exec(rest) : null;
   return {
     marked: marker !== undefined,
     option: {
@@ -124,7 +103,6 @@ function readRow(text: string): ReadRow | null {
       label: label.slice(0, MAX_LABEL),
       description: description ? description.slice(0, MAX_DESCRIPTION) : undefined,
     },
-    descriptionColumn: split ? text.length - rest.length + split.index + split[0].length : undefined,
   };
 }
 
@@ -134,9 +112,8 @@ function readRow(text: string): ReadRow | null {
  */
 export function readSelectPrompt(lines: readonly SelectLineLike[]): SelectPrompt | null {
   const first = Math.max(0, lines.length - SEARCH_WINDOW);
-  type Run = { start: number; options: SelectOption[]; marked: number[]; column?: number };
-  const runs: Run[] = [];
-  let run: Run | undefined;
+  const runs: { start: number; options: SelectOption[]; marked: number[] }[] = [];
+  let run: { start: number; options: SelectOption[]; marked: number[] } | undefined;
 
   for (let index = first; index < lines.length; index += 1) {
     const text = lines[index].text;
@@ -148,12 +125,6 @@ export function readSelectPrompt(lines: readonly SelectLineLike[]): SelectPrompt
     }
     const row = readRow(text);
     if (!row) {
-      const more = run ? readContinuation(text, run.column) : null;
-      const last = run?.options[run.options.length - 1];
-      if (more && last?.description) {
-        last.description = `${last.description} ${more}`.slice(0, MAX_DESCRIPTION);
-        continue;
-      }
       run = undefined;
       continue;
     }
@@ -169,7 +140,6 @@ export function readSelectPrompt(lines: readonly SelectLineLike[]): SelectPrompt
     if (!run) continue;
     if (row.marked) run.marked.push(run.options.length);
     run.options.push({ index: run.options.length, ...row.option });
-    run.column = row.descriptionColumn;
   }
 
   // The live dialog is the lowest one on screen; an earlier, scrolled-past

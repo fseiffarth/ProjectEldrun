@@ -77,7 +77,8 @@ describe("Eldrun Mobile Focus shows the pictures the agent left in the project's
     render(<Terminal tab={TAB} back={() => {}} />);
     await settle();
 
-    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual(["/api/v1/tabs/tab-7/outbox"]);
+    // The facts row's usage read (`/status`) is not this test's concern.
+    expect(fetchMock.mock.calls.map(([url]) => url).filter((url) => !url.endsWith("/status"))).toEqual(["/api/v1/tabs/tab-7/outbox"]);
     const strip = screen.getByRole("region", { name: "Files from the agent" });
     expect(strip.textContent).toContain("From the agent");
     expect(strip.textContent).toContain("2 files");

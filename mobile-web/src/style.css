@@ -447,7 +447,8 @@ body.terminal-open { min-height:0; overflow:hidden; }
 .last-sent p { margin:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; unicode-bidi:plaintext; }
 .session-facts { display:flex; align-items:center; gap:10px; margin:6px 14px 0; color:#8b90a5; font-size:.72rem; font-family:ui-monospace,SFMono-Regular,monospace; white-space:nowrap; overflow:hidden; }
 .session-facts .fact-path { flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; }
-.session-facts .fact-branch,.session-facts .fact-context { flex:0 0 auto; }
+.session-facts .fact-branch,.session-facts .fact-context,.session-facts .fact-limit { flex:0 0 auto; }
+.session-facts .fact-limit.high { color:#f0a35e; }
 .prompt-composer { display:flex; flex-direction:column; gap:2px; margin:7px 7px 2px; padding:6px 8px 8px 12px; border:1px solid #454a60; border-radius:16px; background:#171a24; box-shadow:0 6px 20px rgba(0,0,0,.18); }
 .prompt-composer:focus-within { border-color:#8c7df4; box-shadow:0 0 0 2px rgba(120,104,217,.4),0 6px 20px rgba(0,0,0,.18); }
 .prompt-composer textarea { width:100%; min-height:42px; max-height:116px; resize:none; border:0; padding:8px 0; appearance:none; -webkit-appearance:none; background-color:#171a24 !important; color:#fff !important; -webkit-text-fill-color:#fff; caret-color:#fff; line-height:1.35; }
@@ -487,7 +488,7 @@ body.terminal-open { min-height:0; overflow:hidden; }
 .composer-field { display:flex; align-items:flex-start; gap:4px; }
 .composer-field textarea { flex:1 1 auto; min-width:0; }
 .composer-clear { display:grid; place-items:center; flex:0 0 auto; width:32px; height:32px; margin-top:5px; padding:0; border:0; border-radius:50%; background:#2a2e3e; color:#c8cdda; }
-.composer-clear svg { width:14px; height:14px; fill:none; stroke:currentColor; stroke-width:2.2; stroke-linecap:round; stroke-linejoin:round; }
+.composer-clear svg { width:14px; height:14px; fill:none; stroke:currentColor; stroke-width:2.2; stroke-linecap:round; }
 .composer-dictate { color:#dcd6ff; background:transparent; }
 .composer-dictate.listening { color:#fff; background:#7a3151; box-shadow:0 0 0 2px rgba(227,107,154,.22); }
 .composer-dictate.listening svg rect { fill:currentColor; stroke:none; }

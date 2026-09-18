@@ -68,15 +68,17 @@ function jsonResponse(status: number, body: unknown) {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 }
 
-/** The outbox poll and the stored-session read the screen runs on mount
- * answer empty here and stay out of the counted calls — these tests are
- * about the inbox. */
+/** The outbox poll, the stored-session read and the usage read the screen
+ * runs on mount answer empty here and stay out of the counted calls — these
+ * tests are about the inbox. */
 function routeOutbox(inner: (url: string, init?: RequestInit) => Promise<Response>) {
   return (url: string, init?: RequestInit) => url.endsWith("/outbox")
     ? Promise.resolve(jsonResponse(200, { images: [] }))
     : url.includes("/transcript")
       ? Promise.resolve(jsonResponse(200, { transcript: { available: false, reason: "no_session", entries: [], truncated: false } }))
-      : inner(url, init);
+      : url.endsWith("/status")
+        ? Promise.resolve(jsonResponse(503, { error: "desktop_unavailable" }))
+        : inner(url, init);
 }
 
 const fileInput = () => screen.getByTestId("inbox-file-input") as HTMLInputElement;

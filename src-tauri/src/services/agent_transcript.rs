@@ -9,7 +9,9 @@
 //! timestamp, from the first turn on. This module turns that file into the
 //! entries the phone lays out as a chat, resolved the same way the model tag
 //! and the last-prompt line are ([`agent_session::read_agent_transcript`]):
-//! the tab's own session, the live id (after a `/clear`) first.
+//! the tab's own session, the live id (after a `/clear`) first — and, unlike
+//! those, never the launch id's file once a live id is recorded, since after
+//! a `/clear` that is the conversation the reader just cleared.
 //!
 //! What is read is deliberately narrow: the prompts the user submitted and
 //! the text the agent answered with. Tool calls and their results, thinking
@@ -109,21 +111,41 @@ pub fn agent_session_transcript(
     limit: usize,
 ) -> AgentTranscript {
     let limit = limit.clamp(1, MAX_LIMIT);
-    agent_session::read_agent_transcript(
+    agent_session::read_agent_transcript_from(
         cmd,
         project_id,
         launch_id,
+        // Never the launch id's file once a live id is recorded: after a
+        // `/clear` that file is the cleared conversation.
+        false,
         |path, kind| read_transcript(path, kind, version, limit),
         // Codex's thread store keeps no messages (only a thread's first one),
         // so a release that writes no rollout has no conversation to read.
         |_, _| None,
     )
+    .or_else(|| (cmd == "claude").then(|| fresh_claude_session(project_id, launch_id)).flatten())
     .unwrap_or_else(|| {
         AgentTranscript::unavailable(if matches!(cmd, "claude" | "codex") {
             "no_transcript"
         } else {
             "unsupported"
         })
+    })
+}
+
+/// A Claude session the hook has recorded but Claude has not written yet —
+/// right after a `/clear`, or a launch before its first turn: available and
+/// empty, so the phone shows a fresh chat rather than the screen or the
+/// conversation before it.
+fn fresh_claude_session(project_id: Option<&str>, launch_id: &str) -> Option<AgentTranscript> {
+    if !agent_session::is_uuid_shaped(launch_id) {
+        return None;
+    }
+    let live = agent_session::read_live_session_for(project_id, launch_id)?;
+    Some(AgentTranscript {
+        available: true,
+        version: Some(format!("new:{live}")),
+        ..Default::default()
     })
 }
 

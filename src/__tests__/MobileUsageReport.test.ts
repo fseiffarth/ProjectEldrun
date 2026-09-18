@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { noteParts, parseUsageReport } from "../../shared/usageReport";
+import { limitMeters, noteParts, parseUsageReport } from "../../shared/usageReport";
 
 /** The panel a real `claude -p "/usage" --output-format json` run returns, as
  * `services::agent_usage` hands it over. */
@@ -79,5 +79,16 @@ describe("Eldrun Mobile agent usage panel", () => {
 
   it("survives an empty panel without throwing", () => {
     expect(parseUsageReport("")).toEqual({ meters: [], notes: [], unparsed: true });
+  });
+
+  it("picks the session window and the all-models week for the facts row", () => {
+    const { session, week } = limitMeters(parseUsageReport(CLAUDE_PANEL));
+    expect(session).toEqual({ label: "Current session", percent: 71, resets: "6:20pm" });
+    expect(week?.label).toBe("Current week (all models)");
+  });
+
+  it("falls back to the only weekly line, and names nothing it cannot find", () => {
+    expect(limitMeters(parseUsageReport("Current week (Fable): 12% used")).week?.percent).toBe(12);
+    expect(limitMeters(parseUsageReport("Last 24h: 41 requests"))).toEqual({ session: undefined, week: undefined });
   });
 });

@@ -398,6 +398,23 @@ pub(crate) fn read_agent_transcript<T>(
     read_file: impl Fn(&std::path::Path, TranscriptKind) -> Option<T>,
     read_store: impl Fn(&std::path::Path, &str) -> Option<T>,
 ) -> Option<T> {
+    read_agent_transcript_from(cmd, project_id, launch_id, true, read_file, read_store)
+}
+
+/// [`read_agent_transcript`], choosing whether a Claude tab whose live id has
+/// no file yet falls back to the launch id's. The facts read off a transcript
+/// (model, last prompt) want that fallback; the conversation itself must not
+/// take it — right after a `/clear` the hook has recorded the new id but
+/// Claude writes its file only with the first turn, and the launch id's file
+/// is the conversation that was just cleared.
+pub(crate) fn read_agent_transcript_from<T>(
+    cmd: &str,
+    project_id: Option<&str>,
+    launch_id: &str,
+    fall_back_to_launch: bool,
+    read_file: impl Fn(&std::path::Path, TranscriptKind) -> Option<T>,
+    read_store: impl Fn(&std::path::Path, &str) -> Option<T>,
+) -> Option<T> {
     if !is_uuid_shaped(launch_id) {
         return None;
     }
@@ -408,7 +425,8 @@ pub(crate) fn read_agent_transcript<T>(
             if let Some(pid) = project_id {
                 roots.push(crate::services::sandbox::claude_projects_stage(pid));
             }
-            let ids = [live, Some(launch_id.to_string())];
+            let launch = (fall_back_to_launch || live.is_none()).then(|| launch_id.to_string());
+            let ids = [live, launch];
             ids.iter().flatten().find_map(|id| {
                 roots
                     .iter()

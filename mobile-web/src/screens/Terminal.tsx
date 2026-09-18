@@ -8,6 +8,7 @@ import {
   ApiError,
   api,
   attachDesktopImage,
+  getAgentStatus,
   getTranscript,
   listDesktopImages,
   listOutbox,
@@ -45,7 +46,8 @@ import { currentMode, modeChoices, modeFixed, shiftTabKey } from "../terminal/ag
 import { agentInputWrites } from "../terminal/composer";
 import { chatTurns, isPromptEcho } from "../terminal/chatTurns";
 import { oldestFirst, placeOutbox, type OutboxPlacement } from "../terminal/outboxTimeline";
-import { StatusSheet } from "./StatusSheet";
+import { resetText, StatusSheet } from "./StatusSheet";
+import { limitMeters, parseUsageReport, type LimitMeters } from "../../../shared/usageReport";
 import {
   prepareOnDeviceSpeech,
   speechRecognitionConstructor,
@@ -203,6 +205,11 @@ function sizeLabel(size: number) {
  * directory listing on the sidecar, no desktop round trip, and skipped while
  * the page is hidden. */
 const OUTBOX_POLL = 8_000;
+
+/** How often an agent tab re-reads its CLI's usage panel for the facts row's
+ * 5h/week figures. The desktop answers from a 60 s cache and otherwise runs
+ * the CLI once (`services::agent_usage`), so this stays well above that. */
+const LIMITS_POLL = 120_000;
 
 /** Whether two outbox listings would paint the same strip, so a poll that
  * found nothing new does not re-render every thumbnail. */
@@ -456,6 +463,10 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
   /** The status chip's sheet: the session's state and the CLI's own usage
    * panel. Opening it asks the desktop, which may run the CLI once. */
   const [statusSheet, setStatusSheet] = useState(false);
+  /** The account's session (5h) and weekly windows, read off the same usage
+   * panel the status sheet shows — the facts row prints them beside the
+   * context figure. Empty until a read answers or for a CLI without one. */
+  const [limits, setLimits] = useState<LimitMeters>({});
   /** The composer's **+**: a phone file into the project inbox, an image
    * already on the desktop, or an `@`. */
   const [addSheet, setAddSheet] = useState(false);
@@ -544,6 +555,7 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     setModelSheet(false);
     setModeSheet(false);
     setStatusSheet(false);
+    setLimits({});
     setAddSheet(false);
     setDesktopSheet(false);
     setUploads([]);
@@ -1160,6 +1172,39 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
       document.removeEventListener("visibilitychange", poll);
     };
   }, [tab.id]);
+  /** Reads the usage panel now and every `LIMITS_POLL` while the page is
+   * visible. A CLI with no usage readout stops the polling; a failed read keeps
+   * what was shown — the next poll retries. */
+  useEffect(() => {
+    if (tab.kind !== "agent") return;
+    let stopped = false;
+    let last = 0;
+    const poll = () => {
+      if (stopped || document.visibilityState === "hidden") return;
+      if (Date.now() - last < LIMITS_POLL / 2) return;
+      last = Date.now();
+      void getAgentStatus(tab.id).then(
+        (report) => {
+          // A malformed answer is a failed read: keep what is shown.
+          if (stopped || !report?.usage) return;
+          if (report.usage.supported === false) {
+            stopped = true;
+            return;
+          }
+          if (report.usage.raw) setLimits(limitMeters(parseUsageReport(report.usage.raw)));
+        },
+        () => {},
+      );
+    };
+    poll();
+    const timer = window.setInterval(poll, LIMITS_POLL);
+    document.addEventListener("visibilitychange", poll);
+    return () => {
+      stopped = true;
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", poll);
+    };
+  }, [tab.id, tab.kind]);
   useEffect(() => {
     if (!outboxOpen) return;
     const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") setOutboxOpen(null); };
@@ -1282,12 +1327,6 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     setLastSent(draft);
     setDraft("");
     forgetDictation();
-  };
-  /** The field's /clear button: the fresh conversation typing `/clear` gives, asked
-   * first because the agent forgets the chat. The draft is left alone. */
-  const clearConversation = () => {
-    if (!window.confirm(t("mobile.composer.clearChatConfirm"))) return;
-    sendAgentText("/clear");
   };
   /** The composer's ✕: an empty draft, and the dictation transcript with it. */
   const clearDraft = () => {
@@ -1821,10 +1860,12 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
       {uploads.map((upload) => upload.failure
         ? <div key={upload.id} className="inbox-upload error" role="alert"><strong>{upload.name}</strong><span>{upload.failure}</span><button onClick={() => dismissUpload(upload.id)} aria-label={`Dismiss ${upload.name}`}>✕</button></div>
         : <div key={upload.id} className="inbox-upload" role="status"><strong>{upload.name}</strong><span>{upload.source === "desktop" ? "Copying from the desktop…" : "Sending to the project inbox…"}</span></div>)}
-      {status && (status.path || status.branch || status.context) && <div className="session-facts" title={status.path}>
-        {status.path && <span className="fact-path">{shortenPath(status.path)}</span>}
-        {status.branch && <span className="fact-branch">⎇ {status.branch}</span>}
-        {status.context && <span className="fact-context">{status.context} context</span>}
+      {(status?.path || status?.branch || status?.context || limits.session || limits.week) && <div className="session-facts" title={status?.path}>
+        {status?.path && <span className="fact-path">{shortenPath(status.path)}</span>}
+        {status?.branch && <span className="fact-branch">⎇ {status.branch}</span>}
+        {status?.context && <span className="fact-context">{status.context} context</span>}
+        {limits.session && <span className={`fact-limit${limits.session.percent >= 90 ? " high" : ""}`} title={limits.session.resets ? resetText(limits.session.resets, new Date()) : undefined}>{t("mobile.facts.session", { percent: Math.round(limits.session.percent) })}</span>}
+        {limits.week && <span className={`fact-limit${limits.week.percent >= 90 ? " high" : ""}`} title={limits.week.resets ? resetText(limits.week.resets, new Date()) : undefined}>{t("mobile.facts.week", { percent: Math.round(limits.week.percent) })}</span>}
       </div>}
       <div className="prompt-composer">
         <div className="composer-field">
@@ -1837,11 +1878,7 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
             event.preventDefault();
             submitDraft();
           }} />
-          {/* One slot: with a draft it empties the draft; empty, an agent tab's
-              field offers /clear there instead, which costs the chip row nothing. */}
-          {draft
-            ? <button className="composer-clear" onClick={clearDraft} aria-label={t("mobile.composer.clear")} title={t("mobile.composer.clear")}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" /></svg></button>
-            : tab.kind === "agent" && <button className="composer-clear" disabled={!connected} onClick={clearConversation} aria-label={t("mobile.composer.clearChat")} title={t("mobile.composer.clearChat")}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v11H9l-5 4V5Z" /><path d="m10 8.5 4 4M14 8.5l-4 4" /></svg></button>}
+          {draft && <button className="composer-clear" onClick={clearDraft} aria-label={t("mobile.composer.clear")} title={t("mobile.composer.clear")}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" /></svg></button>}
         </div>
         <div className="composer-bar">
           {tab.kind === "agent" && <>
@@ -1905,7 +1942,7 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
       onPick={(key) => void applyMode(key)}
       onClose={() => { if (!switching) setModeSheet(false); }}
     />}
-    {statusSheet && <StatusSheet tab={tab} live={status} onClose={() => setStatusSheet(false)} />}
+    {statusSheet && <StatusSheet tab={tab} live={status} onLimits={setLimits} onClose={() => setStatusSheet(false)} />}
     {outboxOpen && <OutboxViewer key={`${tab.id}/${outboxOpen.name}`} tabId={tab.id} file={outboxOpen} onClose={() => setOutboxOpen(null)} />}
 
   </main>;

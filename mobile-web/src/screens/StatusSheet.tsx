@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { ApiError, getAgentStatus, type AgentStatusReport, type TabRow } from "../api";
-import { noteParts, parseUsageReport, resolveResetAt } from "../../../shared/usageReport";
+import { limitMeters, noteParts, parseUsageReport, resolveResetAt, type LimitMeters } from "../../../shared/usageReport";
 import type { SessionStatus } from "../terminal/statusLine";
 
 /** Wording for the tab's own state, which the desktop classified from the
@@ -71,9 +71,12 @@ function plural(count: number, one: string, many = `${one}s`): string {
  * (model, mode, context) — free, and about *this* tab, where the quota panel is
  * about the whole account.
  */
-export function StatusSheet({ tab, live, onClose }: {
+export function StatusSheet({ tab, live, onLimits, onClose }: {
   tab: TabRow;
   live: SessionStatus | null;
+  /** Hands a fresh panel's 5h/week windows to the facts row, so a Refresh
+   * here updates it without waiting for its own poll. */
+  onLimits?: (limits: LimitMeters) => void;
   onClose: () => void;
 }) {
   const [view, setView] = useState<"formatted" | "terminal">("formatted");
@@ -85,7 +88,9 @@ export function StatusSheet({ tab, live, onClose }: {
     setBusy(true);
     setError("");
     try {
-      setReport(await getAgentStatus(tab.id, refresh));
+      const next = await getAgentStatus(tab.id, refresh);
+      setReport(next);
+      if (next.usage.raw) onLimits?.(limitMeters(parseUsageReport(next.usage.raw)));
     } catch (cause) {
       setError(cause instanceof ApiError && (cause.status === 503 || cause.code === "desktop_unavailable")
         ? "Open desktop Eldrun to read this session's status."
@@ -95,7 +100,7 @@ export function StatusSheet({ tab, live, onClose }: {
     } finally {
       setBusy(false);
     }
-  }, [tab.id]);
+  }, [tab.id, onLimits]);
 
   useEffect(() => { void load(false); }, [load]);
 
