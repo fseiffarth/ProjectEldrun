@@ -25,7 +25,7 @@ use super::{
     admin,
     auth::AuthStore,
     config::{verify_tailscale_serve, HostConfig},
-    discovery::{Catalog, CatalogCache, PublicTab, TabSchedules},
+    discovery::{Catalog, CatalogCache, PublicTab, TabPrompt, TabSchedules},
     inbox,
     outbox,
     limits,
@@ -39,6 +39,13 @@ use super::{
     live_pwa, MOBILE_ASSETS,
 };
 
+
+/// Most prompts one agent tab publishes to the phone, and the most characters
+/// of each. The phone's project overview draws every one of them under every
+/// agent card on a 5s poll, so this is a list to read at a glance, not a
+/// transcript — the Focus view is where the whole conversation lives.
+const MAX_TAB_PROMPTS: usize = 5;
+const MAX_TAB_PROMPT_CHARS: usize = 240;
 
 const MOBILE_PERMISSIONS_POLICY: &str =
     "camera=(), microphone=(self), on-device-speech-recognition=(self), geolocation=(), payment=(), usb=()";
@@ -382,14 +389,14 @@ async fn activity(State(state): State<HostState>, headers: HeaderMap) -> impl In
     };
     let desktop_socket = state.config.control_dir.join("desktop-control.sock");
     let request_id = Base64UrlUnpadded::encode_string(&random_16());
-    let (desktop_available, statuses) = match admin::desktop_call(
+    let (desktop_available, statuses, prompts) = match admin::desktop_call(
         &desktop_socket,
         &DesktopRequest::Activity { request_id },
     )
     .await
     {
-        Ok(DesktopResponse::Activity { statuses }) => (true, statuses),
-        _ => (false, vec![]),
+        Ok(DesktopResponse::Activity { statuses, prompts }) => (true, statuses, prompts),
+        _ => (false, vec![], vec![]),
     };
     // Tmux session names are unique across the whole server, so one map covers
     // every project's tabs.
@@ -397,6 +404,7 @@ async fn activity(State(state): State<HostState>, headers: HeaderMap) -> impl In
         .into_iter()
         .map(|status| (status.tmux_session.clone(), status))
         .collect::<HashMap<_, _>>();
+    let mut prompts = prompt_rows(prompts);
     let mut rows = Vec::new();
     for project in &catalog_snapshot.projects {
         for resolved in &project.tabs {
@@ -412,6 +420,7 @@ async fn activity(State(state): State<HostState>, headers: HeaderMap) -> impl In
             tab.working_at = status.working_at;
             tab.done_at = status.done_at;
             tab.viewer_busy = state.terminal_registry.is_busy(&resolved.tmux_name);
+            tab.prompts = prompts.remove(&resolved.tmux_name).unwrap_or_default();
             rows.push(ActivityRow {
                 tab,
                 project_id: project.public.id.clone(),
@@ -463,7 +472,7 @@ async fn project(
     // and on Windows the nominal path is never a file, so it was never told.
     // A closed desktop refuses the connect at once, on both.
     let request_id = Base64UrlUnpadded::encode_string(&random_16());
-    let (desktop_available, agents, statuses, schedules) = match admin::desktop_call(
+    let (desktop_available, agents, statuses, schedules, prompts) = match admin::desktop_call(
         &desktop_socket,
         &DesktopRequest::Catalog {
             request_id,
@@ -476,8 +485,9 @@ async fn project(
             agents,
             statuses,
             schedules,
-        }) => (true, agents, statuses, schedules),
-        _ => (false, vec![], vec![], vec![]),
+            prompts,
+        }) => (true, agents, statuses, schedules, prompts),
+        _ => (false, vec![], vec![], vec![], vec![]),
     };
     let statuses = statuses
         .into_iter()
@@ -496,6 +506,7 @@ async fn project(
             )
         })
         .collect::<HashMap<_, _>>();
+    let mut prompts = prompt_rows(prompts);
     for (tab, resolved) in tabs.iter_mut().zip(&project.tabs) {
         if tab.kind == "agent" {
             if let Some(status) = statuses.get(&resolved.tmux_name) {
@@ -505,6 +516,9 @@ async fn project(
                 tab.done_at = status.done_at;
             }
             tab.schedules = schedules.remove(&resolved.tmux_name);
+            // Published whether or not the tab has a status: a quiet session's
+            // last prompt is the reading its card exists to carry.
+            tab.prompts = prompts.remove(&resolved.tmux_name).unwrap_or_default();
         }
     }
     (
@@ -513,6 +527,32 @@ async fn project(
             json!({ "project": project.public, "tabs": tabs, "desktop_available": desktop_available, "agents": agents }),
         ),
     )
+}
+
+/// The desktop's per-tab prompt rows, keyed by tmux name and bounded again on
+/// the way out. The desktop already caps both the count and the length, but
+/// this is the browser boundary and the far side is somebody else's build: the
+/// caps are re-applied here so a desktop one version ahead cannot widen what
+/// reaches the phone.
+fn prompt_rows(rows: Vec<super::protocol::AgentTabPrompts>) -> HashMap<String, Vec<TabPrompt>> {
+    rows.into_iter()
+        .map(|row| {
+            let prompts = row
+                .prompts
+                .into_iter()
+                .rev()
+                .take(MAX_TAB_PROMPTS)
+                .map(|prompt| TabPrompt {
+                    text: prompt.text.chars().take(MAX_TAB_PROMPT_CHARS).collect(),
+                    at: prompt.at,
+                })
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
+            (row.tmux_session, prompts)
+        })
+        .collect()
 }
 
 fn random_16() -> [u8; 16] {
@@ -2666,6 +2706,45 @@ mod tests {
         "/api/v1/projects/anything/prompts",
         "/api/v1/tabs/anything/desktop-images",
     ];
+
+    /// The desktop bounds the tail before it sends one; this bounds it again at
+    /// the browser boundary, and keeps the newest end — a card that dropped the
+    /// last prompt to keep the first five would show a session's morning.
+    #[test]
+    fn a_tab_publishes_the_newest_prompts_of_its_tail_and_no_more() {
+        use crate::services::mobile_control::protocol::{AgentTabPrompt, AgentTabPrompts};
+        let rows = prompt_rows(vec![AgentTabPrompts {
+            tmux_session: "eldrun-p_paper--agent-123456789".into(),
+            prompts: (0..12)
+                .map(|n| AgentTabPrompt {
+                    text: format!("prompt {n}"),
+                    at: Some(format!("2026-09-17T08:{n:02}:00Z")),
+                })
+                .collect(),
+        }]);
+        let prompts = &rows["eldrun-p_paper--agent-123456789"];
+        assert_eq!(prompts.len(), MAX_TAB_PROMPTS);
+        // Oldest first, ending on the newest the desktop sent.
+        assert_eq!(prompts[0].text, "prompt 7");
+        assert_eq!(prompts[MAX_TAB_PROMPTS - 1].text, "prompt 11");
+    }
+
+    #[test]
+    fn a_long_prompt_is_cut_before_it_reaches_the_phone() {
+        use crate::services::mobile_control::protocol::{AgentTabPrompt, AgentTabPrompts};
+        let rows = prompt_rows(vec![AgentTabPrompts {
+            tmux_session: "eldrun-p_paper--agent-123456789".into(),
+            prompts: vec![AgentTabPrompt {
+                // Multi-byte on purpose: the cut counts characters, so a byte
+                // slice here would panic mid-character.
+                text: "ä".repeat(MAX_TAB_PROMPT_CHARS + 40),
+                at: None,
+            }],
+        }]);
+        let prompts = &rows["eldrun-p_paper--agent-123456789"];
+        assert_eq!(prompts[0].text.chars().count(), MAX_TAB_PROMPT_CHARS);
+        assert!(prompts[0].at.is_none());
+    }
 
     #[test]
     fn mobile_policy_allows_only_same_origin_microphone_capture() {

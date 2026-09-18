@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { AGENT_SORTS, DEFAULT_AGENT_SORT, isAgentSort, sortAgentTabs, type AgentSort } from "../../../shared/agentSort";
+import { lastPrompt } from "../agentPrompts";
 import { getActivity, type ActivityTab } from "../api";
 import { classifyUnavailable, describeUnavailable, type UnavailableReason } from "../connection";
 import { readChoice, writeChoice } from "../prefs";
@@ -131,13 +132,18 @@ export function Activity({ open, onConnection }: {
     </label>}
     <section className="cards">{sorted.map((tab) => {
       const when = timing(tab, sort, now);
+      // The one line that says what a session is *about*. A flat cross-project
+      // list is read to decide which tab to open, and "claude 2 · Paper ·
+      // worked 3m ago" says everything about that except the thing it was
+      // asked. Two lines at most, then ellipsized — the card stays a card.
+      const asked = lastPrompt(tab);
       return <button
         className="card"
         key={tab.id}
         disabled={!tab.available}
         onClick={() => open(tab.project_id, tab)}
       >
-        <span><strong>{tab.label}</strong><small>{tab.project_label}{tab.agent_model ? ` · ${tab.agent_model}` : ""}{when ? ` · ${when}` : ""}{tab.viewer_busy ? " · open elsewhere" : tab.available ? "" : " · gone"}</small></span>
+        <span><strong>{tab.label}</strong><small>{tab.project_label}{tab.agent_model ? ` · ${tab.agent_model}` : ""}{when ? ` · ${when}` : ""}{tab.viewer_busy ? " · open elsewhere" : tab.available ? "" : " · gone"}</small>{asked && <small className="activity-prompt" title={asked.text}>{asked.text}</small>}</span>
         <span className="card-trailing">{tab.agent_status && <small className={`agent-status ${tab.agent_status}`}>{tab.agent_status}</small>}<span>›</span></span>
       </button>;
     })}</section>

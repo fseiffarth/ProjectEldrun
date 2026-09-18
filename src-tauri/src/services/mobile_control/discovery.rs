@@ -113,6 +113,16 @@ pub struct TabSchedules {
     pub next: Option<String>,
 }
 
+/// One prompt an agent tab was given, as the desktop read it off the agent's
+/// own transcript. `at` is the record's ISO instant; the phone formats it in
+/// its own zone, and a record that carried none arrives without one.
+#[derive(Debug, Clone, Serialize)]
+pub struct TabPrompt {
+    pub text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub at: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct PublicTab {
     pub id: String,
@@ -139,6 +149,13 @@ pub struct PublicTab {
     /// Absent for a shell tab and while the desktop is closed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub schedules: Option<TabSchedules>,
+    /// The newest prompts this agent tab was given, oldest first, as the
+    /// desktop read them off the agent's transcript. Unlike `agent_status` this
+    /// is published for a quiet tab as well: "what was this session last asked"
+    /// is the line the phone's lists are opened for, and a session nobody has
+    /// prompted in an hour is exactly the one whose answer is worth showing.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub prompts: Vec<TabPrompt>,
     pub available: bool,
     pub viewer_busy: bool,
     pub last_activity: Option<u64>,
@@ -526,6 +543,7 @@ fn resolve_scope(
             working_at: None,
             done_at: None,
             schedules: None,
+            prompts: Vec::new(),
             available: live_row.is_some(),
             viewer_busy: false,
             last_activity: live_row.map(|r| r.activity),

@@ -63,6 +63,8 @@ interface AgentInfo { bin: string; installed: boolean }
 interface CatalogAgent { id: string; label: string; modes: string[] }
 interface AgentTabStatus { tmux_session: string; status: "working" | "question" | "done"; model?: string; working_at?: number; done_at?: number }
 interface AgentTabSchedules { tmux_session: string; total: number; enabled: number; next?: string }
+interface AgentTabPrompt { text: string; at?: string }
+interface AgentTabPrompts { tmux_session: string; prompts: AgentTabPrompt[] }
 interface CreateRequest {
   project_id: string;
   kind: "shell" | "agent";
@@ -205,8 +207,8 @@ type DesktopRequest =
   | { type: "desktop_images"; request_id: string; project_id: string }
   | { type: "attach_desktop_image"; request_id: string; project_id: string; image_id: string };
 type DesktopResponse =
-| { status: "catalog"; agents: CatalogAgent[]; statuses: AgentTabStatus[]; schedules: AgentTabSchedules[] }
-  | { status: "activity"; statuses: AgentTabStatus[] }
+| { status: "catalog"; agents: CatalogAgent[]; statuses: AgentTabStatus[]; schedules: AgentTabSchedules[]; prompts: AgentTabPrompts[] }
+  | { status: "activity"; statuses: AgentTabStatus[]; prompts: AgentTabPrompts[] }
   | { status: "activated" }
   | { status: "created"; tmux_session: string }
   | { status: "todo"; board: TodoBoard }
@@ -395,6 +397,56 @@ function projectAgentStatuses(projectId: string): AgentTabStatus[] {
  * alike — for its flat activity list. */
 function allAgentStatuses(): AgentTabStatus[] {
   return allMobileScopes().flatMap((scope) => projectAgentStatuses(scope.id));
+}
+
+/** How many prompts of an agent tab's tail ride with an answer, and how much of
+ * each. Both are re-applied at the browser boundary by the sidecar; these are
+ * what makes the desktop send a readable list rather than a transcript. */
+const MOBILE_PROMPT_TAIL = 5;
+const MOBILE_PROMPT_CHARS = 240;
+
+/**
+ * What each agent tab of a scope was last asked — the tail the model tag is
+ * read with, published so the phone's lists can say it without opening the
+ * session.
+ *
+ * Every agent tab is answered for, not only the ones with a status: a session
+ * nobody has prompted since this morning is exactly the one whose last prompt
+ * is worth reading, and `projectAgentStatuses` drops it before it ever reaches
+ * its own refresh. The store's 10s floor is what keeps a 5s poll honest — one
+ * tail read per tab between two polls, the same read the Agents view here
+ * already pays for.
+ */
+function projectAgentPrompts(projectId: string): AgentTabPrompts[] {
+  const models = useAgentModelsStore.getState();
+  return (useTabsStore.getState().tabsByScope[projectId] ?? []).flatMap((tab) => {
+    if (tab.kind !== "agent" || !tab.tmuxSession) return [];
+    void models.refresh(projectId, tab);
+    const ptyId = `${projectId}:${tab.key}`;
+    const recent = models.recentByTab[ptyId] ?? [];
+    // With no readable transcript the store still knows the last prompt off the
+    // pane's own screen (`lib/agentPromptEcho`); it carries no time, and a row
+    // without one is honest about that rather than inventing the read's.
+    const fallback = models.promptByTab[ptyId];
+    const prompts: AgentTabPrompt[] = recent.length
+      ? recent.slice(-MOBILE_PROMPT_TAIL).map((prompt) => ({
+        text: prompt.text.slice(0, MOBILE_PROMPT_CHARS),
+        at: prompt.at,
+      }))
+      : fallback
+        ? [{ text: fallback.slice(0, MOBILE_PROMPT_CHARS) }]
+        : [];
+    return prompts.length ? [{ tmux_session: tab.tmuxSession, prompts }] : [];
+  });
+}
+
+function agentPrompts(projectId?: string): AgentTabPrompts[] {
+  const scope = mobileScope(projectId);
+  return scope ? projectAgentPrompts(scope.id) : [];
+}
+
+function allAgentPrompts(): AgentTabPrompts[] {
+  return allMobileScopes().flatMap((scope) => projectAgentPrompts(scope.id));
 }
 
 /** Each agent tab's scheduled-prompt summary, computed here against the desktop
@@ -1476,8 +1528,9 @@ async function handleRequest(
       agents: (await agentChoices()).map((entry) => entry.public),
       statuses: agentStatuses(request.project_id),
       schedules: await agentScheduleSummaries(request.project_id),
+      prompts: agentPrompts(request.project_id),
     };
-    case "activity": return { status: "activity", statuses: allAgentStatuses() };
+    case "activity": return { status: "activity", statuses: allAgentStatuses(), prompts: allAgentPrompts() };
     case "activate": return activate(request.project_id);
     case "create": return create(request.request, t);
     case "todo": return { status: "todo", board: await todoSnapshot() };

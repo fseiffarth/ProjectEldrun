@@ -798,6 +798,28 @@ pub struct AgentTabSchedules {
     pub next: Option<String>,
 }
 
+/// One prompt an agent tab was given, read off the agent's own transcript by
+/// the desktop (`agent_session::agent_session_recent_prompts`) — typed into the
+/// terminal, pasted, sent from the phone or delivered by a schedule alike.
+/// `at` is the transcript record's own ISO instant, absent when it carried none.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentTabPrompt {
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<String>,
+}
+
+/// One agent tab's newest prompts, newest last, bounded by the desktop before
+/// they are sent. Another internal desktop-control row keyed by tmux name, like
+/// `AgentTabStatus` and `AgentTabSchedules`: the sidecar folds it onto the
+/// opaque public tab, and unlike a status it is published for a quiet tab too —
+/// what a session was last asked is what the phone's list is read for.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentTabPrompts {
+    pub tmux_session: String,
+    pub prompts: Vec<AgentTabPrompt>,
+}
+
 /// What one agent CLI answered when asked about its own quota.
 ///
 /// The panel text travels **as the CLI printed it** and is parsed by the
@@ -902,6 +924,11 @@ pub enum DesktopResponse {
         /// field still answers a catalog request.
         #[serde(default)]
         schedules: Vec<AgentTabSchedules>,
+        /// Per-tab recent prompts, same shape again. Defaulted like the two
+        /// above, so an older desktop answers a catalog request with none and
+        /// the phone's cards simply carry no prompt line.
+        #[serde(default)]
+        prompts: Vec<AgentTabPrompts>,
     },
     /// Answer to [`DesktopRequest::Activity`]: the agent tabs of every eligible
     /// project that are working, waiting on a decision, or done. Keyed by tmux
@@ -910,6 +937,10 @@ pub enum DesktopResponse {
     Activity {
         #[serde(default)]
         statuses: Vec<AgentTabStatus>,
+        /// The same per-tab prompt rows the catalog carries, for the tabs this
+        /// answer lists.
+        #[serde(default)]
+        prompts: Vec<AgentTabPrompts>,
     },
     Activated,
     Created {
@@ -1044,7 +1075,8 @@ impl TerminalEvent {
 #[cfg(test)]
 mod tests {
     use super::{
-        AgentTabSchedules, AgentTabStatus, DesktopRequest, DesktopResponse, MobileAlertItem,
+        AgentTabPrompt, AgentTabPrompts, AgentTabSchedules, AgentTabStatus, DesktopRequest,
+        DesktopResponse, MobileAlertItem,
         MobileAlertsSnapshot,
         MobileMailView, MobilePromptInput, MobileScheduleInput, PromptMutation, ScheduleMutation,
     };
@@ -1074,6 +1106,13 @@ mod tests {
                 enabled: 2,
                 next: Some("2026-09-03T09:00".into()),
             }],
+            prompts: vec![AgentTabPrompts {
+                tmux_session: "eldrun-project-0--agent-123456789".into(),
+                prompts: vec![AgentTabPrompt {
+                    text: "fix the failing tests".into(),
+                    at: Some("2026-09-17T08:12:00Z".into()),
+                }],
+            }],
         };
         let response_json = serde_json::to_value(response).expect("serialize catalog response");
         assert_eq!(response_json["statuses"][0]["status"], "question");
@@ -1082,6 +1121,16 @@ mod tests {
         assert!(response_json["statuses"][0].get("done_at").is_none());
         assert_eq!(response_json["schedules"][0]["enabled"], 2);
         assert_eq!(response_json["schedules"][0]["next"], "2026-09-03T09:00");
+        // The prompt rows are keyed the same way and carry no id of their own:
+        // the sidecar is what turns the tmux name into the phone's tab id.
+        assert_eq!(
+            response_json["prompts"][0]["tmux_session"],
+            "eldrun-project-0--agent-123456789"
+        );
+        assert_eq!(
+            response_json["prompts"][0]["prompts"][0]["text"],
+            "fix the failing tests"
+        );
     }
 
     /// A desktop one build ahead of this sidecar must cost the phone the field

@@ -47,6 +47,24 @@ nav button,.keys button { flex:1; }
 .tab-card-actions { display:flex; flex:0 0 auto; gap:8px; }
 .card-action { padding:8px 12px; background:rgba(56,60,80,.8); font-size:.9rem; }
 .card-action.accent { background:#3b326e; border-color:#7c6cff; }
+/* The same pill the sheets' headings wear (`.option-sheet h2 small`), as a
+   class, for the places that mark an unverified feature outside a heading. */
+.untested { margin-left:6px; color:#8fb8ff; font-size:.62rem; text-transform:uppercase; }
+/* What each agent session was last asked, between the card and its foot. Always
+   drawn, never behind a disclosure: it is what tells two "claude" tabs apart.
+   The newest prompt wraps to three lines, the ones behind it are one each, so a
+   card's height is bounded whatever the prompts were. */
+.tab-card-prompts { display:grid; gap:4px; padding:0 16px 12px; min-width:0; }
+.tab-card-prompts-label { font-size:.72rem; text-transform:uppercase; letter-spacing:.06em; color:#6f7488; }
+.tab-card-prompt { display:flex; gap:8px; margin:0; min-width:0; color:#9498aa; font-size:.86rem; }
+.tab-card-prompt.latest { color:#d3d6e4; }
+.tab-card-prompt.empty { color:#6f7488; font-style:italic; }
+.tab-card-prompt-when { flex:0 0 auto; color:#6f7488; font-variant-numeric:tabular-nums; }
+.tab-card-prompt-text { min-width:0; overflow:hidden; display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:1; overflow-wrap:anywhere; }
+.tab-card-prompt.latest .tab-card-prompt-text { -webkit-line-clamp:3; }
+/* The same reading on the flat Agents list, where a row is one tap tall: two
+   lines, then ellipsis. */
+.activity-prompt { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; overflow:hidden; color:#b6bacb; overflow-wrap:anywhere; }
 .agent-status { padding:4px 8px; border:1px solid currentColor; border-radius:0; font-weight:700; text-transform:capitalize; }
 .agent-status.working { color:#6fe29c; background:#173827; }
 .agent-status.question { color:#ffd36b; background:#493b1d; }

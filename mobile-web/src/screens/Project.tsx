@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DEFAULT_AGENT_SORT, sortAgentTabs } from "../../../shared/agentSort";
+import { promptClock, promptLines } from "../agentPrompts";
 import { api, type AgentRow, type ProjectDetail, type TabRow, type TabSchedules } from "../api";
 import { CloseSheet } from "./CloseSheet";
 import { PromptsSheet } from "./PromptsSheet";
@@ -18,6 +19,32 @@ function scheduleLine(schedules: TabSchedules | undefined): string {
   // Desktop-local wall clock, year trimmed: the sheet below spells out the
   // time zone this belongs to.
   return `${count} · ${schedules.next ? `next ${schedules.next.slice(5).replace("T", " ")}` : "no next run"}`;
+}
+
+/**
+ * What this session was last asked, on the card itself.
+ *
+ * Always open, and never a disclosure: the question a project screen is opened
+ * with is "which of these five tabs is the one I set on the docs" — a label
+ * like "claude 3" cannot answer it, and an expander answers it one tap at a
+ * time. The newest prompt leads and is given room to wrap; the ones behind it
+ * are one line each, enough to recognize a session by its recent history
+ * without turning the card into a transcript (the Focus view is that).
+ */
+function PromptLines({ tab }: { tab: TabRow }) {
+  const lines = promptLines(tab);
+  return <div className="tab-card-prompts">
+    <small className="tab-card-prompts-label">Last prompts <span className="untested">Untested</span></small>
+    {lines.length === 0
+      ? <p className="tab-card-prompt empty">Nothing read from this session's transcript yet.</p>
+      : lines.map((prompt, index) => {
+        const when = promptClock(prompt.at);
+        return <p className={index === 0 ? "tab-card-prompt latest" : "tab-card-prompt"} key={`${prompt.at ?? ""}-${index}`}>
+          {when && <span className="tab-card-prompt-when">{when}</span>}
+          <span className="tab-card-prompt-text">{prompt.text}</span>
+        </p>;
+      })}
+  </div>;
 }
 
 export function Project({ id, back, terminal }: { id: string; back: () => void; terminal: (tab: TabRow) => void }) {
@@ -111,6 +138,7 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
     {error && <p className="error">{error}</p>}
     <section className="cards">{tabs.map((tab) => <div className="tab-card" key={tab.id}>
       <button className="card" disabled={!tab.available} onClick={() => terminal(tab)}><span><strong>{tab.label}</strong><small>{tab.kind}{tab.agent_model ? ` · ${tab.agent_model}` : ""}{tab.viewer_busy ? " · open elsewhere" : tab.available ? " · live" : " · gone"}</small></span><span className="card-trailing">{tab.agent_status && <small className={`agent-status ${tab.agent_status}`}>{tab.agent_status}</small>}<span>›</span></span></button>
+      {tab.kind === "agent" && <PromptLines tab={tab} />}
       {/* Scheduling lives out here beside the tab, not inside the session:
           reaching a schedule must not mean attaching a terminal, and this is
           the same place — and the same summary line — the desktop puts it. */}

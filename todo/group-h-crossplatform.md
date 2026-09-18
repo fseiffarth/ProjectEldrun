@@ -1635,4 +1635,44 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
   - [ ] ✅ Works
   - [ ] ❌ Doesn't work
 
+- [~] **31ai — The phone says what each session was last asked** (2026-09-18;
+  ✅ code-complete, automated tests passing, ⚠️ not verified on a phone). Every
+  agent tab on the phone is called "Claude", and until now the only reading that
+  told two of them apart was a status word. A session's card in a project now
+  carries its **last prompts, always open** — the newest first and given room to
+  wrap, up to four older ones on one line each — and a row in the flat Agents
+  list carries the last one under its label. No disclosure control: an expander
+  answers "which tab did I set on the docs" one tap at a time, which is the work
+  the line exists to save.
+  - The reading is the desktop's own and costs no new read. `stores/agentModels`
+    already tails each agent's transcript for the model pill and the Agents
+    view's "last prompt:" line (`agent_tab_recent_prompts` →
+    `agent_session_recent_prompts`), so the tail is simply kept
+    (`recentByTab`) instead of being reduced to its last entry, and rides the
+    catalog/activity answer as `AgentTabPrompts` the way the schedule summary
+    rides it. However a prompt was submitted — typed into the TUI, pasted, sent
+    from the phone, delivered by a schedule — the transcript has it.
+  - Published for a **quiet** tab too, which is the one asymmetry with the status
+    rows beside it: `projectAgentStatuses` drops an idle tab before its own
+    refresh (right for the Agents list, which deliberately lists nothing quiet),
+    and the session nobody has prompted since this morning is exactly the one
+    whose last prompt is worth reading. A prompt line is not a claim that
+    anything is running.
+  - Bounded twice — the desktop sends at most 5 prompts of 240 characters, and
+    the sidecar re-applies both at the browser boundary, since the far side is
+    someone else's build. Timestamps are the transcript's own ISO instants,
+    formatted in the **phone's** zone rather than sliced like the desktop-local
+    schedule string.
+  - Needs a rebuild **and** a desktop restart: the sidecar, the bridge and the
+    PWA all changed.
+  - [ ] 🖐️ Manual phone QA — open a project with two agent tabs, confirm each
+    card lists its own recent prompts newest-first with the last one legible;
+    type a prompt straight into a tab on the desktop and confirm it appears on
+    the phone within a poll; leave a tab idle for an hour and confirm its card
+    still shows what it was asked; check the Agents list carries the last prompt
+    under each row; check an agent with no readable transcript (Gemini/Qwen)
+    shows its screen-echoed line rather than an empty block.
+  - [ ] ✅ Works
+  - [ ] ❌ Doesn't work
+
 ---

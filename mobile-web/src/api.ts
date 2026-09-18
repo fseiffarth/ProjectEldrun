@@ -11,7 +11,13 @@ export interface TabSchedules { total: number; enabled: number; next?: string }
  * desktop; `working_at`/`done_at` are desktop wall-clock ms of the tab's last
  * working output and last finished turn. All three are the desktop's own
  * readings and absent while it is closed or before the tab has done either. */
-export interface TabRow { id: string; label: string; kind: "shell" | "agent"; agent_label?: string; agent_status?: AgentStatus; agent_model?: string; working_at?: number; done_at?: number; schedules?: TabSchedules; available: boolean; viewer_busy: boolean; last_activity?: number }
+/** One prompt an agent tab was given, as the desktop read it off the agent's
+ * own transcript — typed into the terminal, pasted, sent from here or by a
+ * schedule alike. `at` is the transcript record's ISO instant, which the phone
+ * formats in its own zone; a record that carried none arrives without one, and
+ * so does the one line a transcript-less agent leaves on its own screen. */
+export interface TabPrompt { text: string; at?: string }
+export interface TabRow { id: string; label: string; kind: "shell" | "agent"; agent_label?: string; agent_status?: AgentStatus; agent_model?: string; working_at?: number; done_at?: number; schedules?: TabSchedules; prompts?: TabPrompt[]; available: boolean; viewer_busy: boolean; last_activity?: number }
 export interface AgentRow { id: string; label: string; modes: ("plan" | "auto")[] }
 /** One agent tab in the cross-project activity list: an ordinary tab row plus
  * the project it lives in, because that list is flat and a tab label on its own

@@ -35,6 +35,12 @@ import { useTabsStore, type TabEntry } from "./tabs";
 const REFRESH_FLOOR_MS = 10_000;
 const askedAt: Record<string, number> = {};
 
+/** The floor is module state, so resetting the store between two tests still
+ * leaves the next read of a tab refused. */
+export function clearAgentModelFloorForTest(): void {
+  for (const key of Object.keys(askedAt)) delete askedAt[key];
+}
+
 interface AgentModelsStore {
   /** Composed PTY id → display label (`lib/agentModel.shortModelName`). Absent
    *  when the transcript names no model yet or the agent keeps none. */
@@ -43,6 +49,14 @@ interface AgentModelsStore {
    *  however it was submitted. Absent when the transcript holds none Eldrun
    *  can read. */
   promptByTab: Record<string, string>;
+  /** Composed PTY id → the same tail the prompt above is the end of, oldest
+   *  first, each with the transcript's own time. The phone's project overview
+   *  draws the whole list under an agent card, so it is kept rather than
+   *  reduced to its last entry — and it comes from the read that already
+   *  happens, not a second one. Absent for an agent whose transcript Eldrun
+   *  cannot read: the screen-echo fallback yields one line with no time, which
+   *  belongs in `promptByTab` alone. */
+  recentByTab: Record<string, TranscriptPrompt[]>;
   /** Re-read one tab's model and last prompt. `force` skips the throttle (a
    *  turn just started or ended); `turnStarted` says the read is the one at a
    *  turn's start, where a changed prompt is a typed one to adopt. */
@@ -53,9 +67,20 @@ export function isModelTaggedTab(tab: TabEntry): boolean {
   return (tab.kind === "agent" || tab.kind === "local_agent") && !!tab.sessionId;
 }
 
+/** Prompts only ever arrive at the end of the tail (and fall off its front),
+ * so length plus the newest entry settles whether a read brought news. */
+function sameRecent(a: TranscriptPrompt[] | undefined, b: TranscriptPrompt[] | undefined): boolean {
+  if (a === b) return true;
+  if (!a || !b || a.length !== b.length) return false;
+  const left = a[a.length - 1];
+  const right = b[b.length - 1];
+  return !left || !right || (left.text === right.text && left.at === right.at);
+}
+
 export const useAgentModelsStore = create<AgentModelsStore>((set, get) => ({
   byTab: {},
   promptByTab: {},
+  recentByTab: {},
   refresh: async (scope, tab, force = false, turnStarted = false) => {
     if (!isModelTaggedTab(tab)) return;
     const ptyId = `${scope}:${tab.key}`;
@@ -90,7 +115,16 @@ export const useAgentModelsStore = create<AgentModelsStore>((set, get) => ({
     // messages sent mid-turn and the first prompt after a launch included.
     if (timed?.length && !isDetachedWindow()) void adoptTranscriptPrompts(scope, tab, timed);
     const known = get().promptByTab[ptyId];
-    if ((get().byTab[ptyId] ?? "") === label && (known ?? "") === text) return;
+    const knownRecent = get().recentByTab[ptyId];
+    // A backend predating the recent-prompts read (`timed === null`) leaves the
+    // list as it stands rather than clearing it: it has nothing to say about
+    // the tail, and an empty list would be read as "nothing was ever asked".
+    const nextRecent = timed ?? knownRecent;
+    if (
+      (get().byTab[ptyId] ?? "") === label
+      && (known ?? "") === text
+      && sameRecent(knownRecent, nextRecent)
+    ) return;
     // Without them, a prompt this store had never read (first read of a
     // restored tab) is a baseline, not news: only a change from a known one
     // is a submission.
@@ -102,7 +136,10 @@ export const useAgentModelsStore = create<AgentModelsStore>((set, get) => ({
       const promptByTab = { ...state.promptByTab };
       if (text) promptByTab[ptyId] = text;
       else delete promptByTab[ptyId];
-      return { byTab, promptByTab };
+      const recentByTab = { ...state.recentByTab };
+      if (nextRecent?.length) recentByTab[ptyId] = nextRecent;
+      else delete recentByTab[ptyId];
+      return { byTab, promptByTab, recentByTab };
     });
   },
 }));
