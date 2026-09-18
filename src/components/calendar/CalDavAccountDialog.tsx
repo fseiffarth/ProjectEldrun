@@ -303,7 +303,7 @@ export function CalDavAccountDialog({
             <span className="caldav-field-hint">{t("caldav.syncIntervalHint")}</span>
           </label>
 
-          {/* The VPN gate (`lib/vpnGate.ts`), the mail dialog's row. */}
+          {/* The VPN gate (`lib/remote/vpn/vpnGate.ts`), the mail dialog's row. */}
           <label className="caldav-field caldav-field-check">
             <span className="caldav-check-row">
               <input

@@ -29,7 +29,7 @@ import { useProjectsStore } from "../stores/projects";
 import { useConnectDialogStore } from "../stores/connectDialog";
 import { useRemoteStatusStore } from "../stores/remoteStatus";
 import { useSettingsStore } from "../stores/settings";
-import { useVpnStatusStore } from "../stores/vpnStatus";
+import { useVpnStatusStore } from "../stores/remote/vpn/vpnStatus";
 import type { ProjectEntry } from "../types";
 
 const invokeMock = vi.mocked(invoke);

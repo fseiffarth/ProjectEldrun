@@ -17,7 +17,7 @@ With **`connections_headless` off** the promise is kept differently, because it
 cannot be kept that way at all: Eldrun persists no passwords in that mode, so the
 eligibility gate above can never pass and auto-connect used to reject every project
 and do nothing, silently. There, "auto-connect" means what it means for a tunnel
-armed in the header (`lib/vpnAutoConnect`): the connect command opens in the **root
+armed in the header (`lib/remote/vpn/vpnAutoConnect`): the connect command opens in the **root
 terminal** for the user to authenticate, and the pool then rides the ControlMaster
 that login leaves behind (`autoConnectInteractive` → `pollRootLoginReady`, the
 store-side twin of the Connect dialog's `pollSshReady`). No *modal* is raised on

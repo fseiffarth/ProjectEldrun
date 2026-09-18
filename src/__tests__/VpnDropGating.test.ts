@@ -20,7 +20,7 @@ import { invoke } from "@tauri-apps/api/core";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(() => Promise.resolve()) }));
 
-import { useVpnStatusStore, markVpnConnected, disconnectVpnTunnel } from "../stores/vpnStatus";
+import { useVpnStatusStore, markVpnConnected, disconnectVpnTunnel } from "../stores/remote/vpn/vpnStatus";
 import { useRemoteStatusStore } from "../stores/remoteStatus";
 
 const invokeMock = vi.mocked(invoke);

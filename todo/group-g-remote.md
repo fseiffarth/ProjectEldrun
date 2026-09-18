@@ -956,7 +956,7 @@ container) — as opposed to the git **push** axis (#21/#22).*
 84. ✅ **The header VPN indicator is a machine-level VPN control.** The tunnel reroutes
     the whole OS, so it gets a surface that does not hang off a project:
     `components/header/VpnIndicator.tsx`, always present in the header (dim when no
-    tunnel is up), backed by `stores/vpnStatus.ts` (config-keyed state + holder
+    tunnel is up), backed by `stores/remote/vpn/vpnStatus.ts` (config-keyed state + holder
     refcount, seeded from the new `openvpn_active` command and re-seated on window
     focus, so a tunnel that outlived a reload or a previous run still shows).
     It lists every stored `.ovpn`, brings one **up** as well as down (a VPN is a thing
@@ -1290,7 +1290,7 @@ deliberately did **not** do, in priority order:
   > the toggle, which brings the tri-state, the 4 s bound and the
   > **Unlock keyring** banner with it; the password field's "(not stored)" is
   > withheld when the store was unreadable, since that is a claim about a
-  > keychain nobody could read. Unticking stays **inert** — `stores/vpnPrompt`
+  > keychain nobody could read. Unticking stays **inert** — `stores/remote/vpn/vpnPrompt`
   > already sends `remember ? true : null`, never `false` — so deleting a VPN
   > credential remains an explicit act in the header's VPN menu. The box is
   > seeded once per prompt behind a ref, so a later `applyOutcome`/`refresh`

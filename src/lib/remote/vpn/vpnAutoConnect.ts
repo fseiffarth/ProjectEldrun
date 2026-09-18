@@ -1,16 +1,16 @@
 import { invoke } from "@tauri-apps/api/core";
-import { useProjectsStore } from "../stores/projects";
-import { useSettingsStore } from "../stores/settings";
+import { useProjectsStore } from "../../../stores/projects";
+import { useSettingsStore } from "../../../stores/settings";
 import {
   markVpnConnected,
   markVpnConnecting,
   markVpnError,
   useVpnStatusStore,
-} from "../stores/vpnStatus";
+} from "../../../stores/remote/vpn/vpnStatus";
 import { canConnectVpnSilently, connectVpnSilently } from "./vpnConnect";
-import { keyringState } from "./keyring";
-import { openConnectionInRoot } from "./remoteConnect";
-import { translate, useI18nStore } from "./i18n";
+import { keyringState } from "../../keyring";
+import { openConnectionInRoot } from "../../remoteConnect";
+import { translate, useI18nStore } from "../../i18n";
 
 /**
  * "Connect this tunnel on launch" — the machine-level twin of a project's
@@ -29,7 +29,7 @@ import { translate, useI18nStore } from "./i18n";
  *     degrades to leaving the tunnel down, never to ambushing the user with a modal
  *     during startup.
  *  2. **It never elevates twice.** `pkexec` raises its polkit dialog before OpenVPN
- *     validates anything, so a doomed attempt is not free (see `lib/vpnConnect`).
+ *     validates anything, so a doomed attempt is not free (see `lib/remote/vpn/vpnConnect`).
  *
  * Non-headless mode is the deliberate exception to (1): with `connections_headless`
  * off, Eldrun handles no passwords at all, so "connect on launch" can only mean
@@ -182,7 +182,7 @@ export async function autoConnectVpnOnLaunch(): Promise<void> {
  * for it: the `connections_headless: false` paths (activation, auto-connect, the
  * header menu) which *always* go this way, and the headless paths that fall back to
  * it **per connect** when their own login failed (the modal's "Log in in terminal",
- * see `stores/vpnPrompt`'s `useTerminal`). That fallback is deliberately a *local*
+ * see `stores/remote/vpn/vpnPrompt`'s `useTerminal`). That fallback is deliberately a *local*
  * switch — one tunnel, one click — and never writes the global setting: a mode is
  * how the user wants Eldrun to behave, not something a failed handshake gets to
  * decide for them.

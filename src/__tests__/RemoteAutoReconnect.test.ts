@@ -22,7 +22,7 @@ async function fresh(opts: { machinesEnabled?: boolean; loaded?: boolean; gmLoad
   vi.resetModules();
   const { useSettingsStore } = await import("../stores/settings");
   const { useGlobalMachinesStore } = await import("../stores/globalMachines");
-  const { useVpnStatusStore } = await import("../stores/vpnStatus");
+  const { useVpnStatusStore } = await import("../stores/remote/vpn/vpnStatus");
   const projects = await import("../stores/projects");
   const retry = vi.mocked(projects.retryAutoConnectAfterVpn);
   const load = vi.fn(async () => {

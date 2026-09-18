@@ -1,4 +1,4 @@
-import { useVpnStatusStore } from "../stores/vpnStatus";
+import { useVpnStatusStore } from "../stores/remote/vpn/vpnStatus";
 import { useGlobalMachinesStore } from "../stores/globalMachines";
 import { useSettingsStore, whenSettingsLoaded } from "../stores/settings";
 import { retryAutoConnectAfterVpn } from "../stores/projects";

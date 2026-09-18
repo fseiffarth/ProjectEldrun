@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
-import { useRemoteStatusStore, type ConnState } from "./remoteStatus";
+import { useRemoteStatusStore, type ConnState } from "../../remoteStatus";
 
 /**
  * Live state of the machine's OpenVPN tunnels, keyed by **config path**.
@@ -37,7 +37,7 @@ interface VpnStatusStore {
   /**
    * True once `refresh` has heard from the backend at all. Until then an empty
    * `byConfig` means "not asked yet", not "no tunnel" — and the VPN-gated
-   * schedulers (`lib/vpnGate.ts`) need the difference: a tunnel that was up all
+   * schedulers (`lib/remote/vpn/vpnGate.ts`) need the difference: a tunnel that was up all
    * along, first *seen* a second after launch, must not read as one that just
    * came up, or a restored window would open a socket by existing.
    */

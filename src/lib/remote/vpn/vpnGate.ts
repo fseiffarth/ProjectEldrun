@@ -1,5 +1,5 @@
-import { useVpnStatusStore } from "../stores/vpnStatus";
-import type { ConnState } from "../stores/remoteStatus";
+import { useVpnStatusStore } from "../../../stores/remote/vpn/vpnStatus";
+import type { ConnState } from "../../../stores/remoteStatus";
 
 /**
  * The VPN gate for network accounts — mail and CalDAV accounts flagged
@@ -41,7 +41,7 @@ export function vpnTunnelUp(): boolean {
  * store has reconciled against the backend, `null` before. The `null` is what
  * lets a scheduler tell "a tunnel just came up" (`false → true`, worth a
  * catch-up check) from "the store just found out a tunnel was up all along"
- * (`null → true`, which must open nothing — see `stores/vpnStatus`'s
+ * (`null → true`, which must open nothing — see `stores/remote/vpn/vpnStatus`'s
  * `reconciled`).
  */
 export function useVpnTunnelUp(): boolean | null {

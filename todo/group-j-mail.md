@@ -449,7 +449,7 @@ sanitizer (`services/web_safety.rs`); neither has been runtime-verified.*
     a flag write and a send all refuse with the one shared sentence
     (`services::openvpn::VPN_GATE_REFUSAL`). Known limit, stated in the hint:
     only tunnels started from Eldrun count. Design note in
-    `docs/context/openvpn.md`; helper in `src/lib/vpnGate.ts`.
+    `docs/context/openvpn.md`; helper in `src/lib/remote/vpn/vpnGate.ts`.
     - [x] 🤖 Automated test — `VpnGate.test.ts` (the three-valued hook, the
       rising edge), `openvpn::tests` (the gate's truth table),
       `mail_engine::tests` (the shared sentence), `schema::mail` round-trip.

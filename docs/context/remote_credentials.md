@@ -74,7 +74,7 @@ Referenced from `AGENTS.md`.
   channels, **default off**, which swaps the password fields for the same embedded
   login terminal `connections_headless: false` uses — the server asks its own
   questions, the user answers them, Eldrun still never sees a secret. The VPN password
-  modal has the same escape hatch as a button (`stores/vpnPrompt`'s
+  modal has the same escape hatch as a button (`stores/remote/vpn/vpnPrompt`'s
   `handoffToTerminal`), since it has no fields to swap. Four rules make it safe:
   it is **per connect** and never writes `connections_headless`; it is **not offered on
   Windows**, which has no ControlMaster for a terminal login to leave behind (the

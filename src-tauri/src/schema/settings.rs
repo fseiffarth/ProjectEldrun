@@ -610,7 +610,7 @@ pub struct Settings {
     /// One config, not a list: a tunnel reroutes the whole machine, so arming two
     /// would be arming them to fight over the routing. The frontend re-checks at
     /// launch that the connect can still be made without a prompt and stays down if
-    /// it can't (see `lib/vpnAutoConnect.ts`); the backend only round-trips this.
+    /// it can't (see `lib/remote/vpn/vpnAutoConnect.ts`); the backend only round-trips this.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vpn_auto_connect: Option<String>,
     /// The `.ovpn` configs the user asked Eldrun to **remember the credentials of**

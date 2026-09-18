@@ -319,7 +319,7 @@ pub async fn openvpn_status(config: String) -> Result<bool, String> {
 
 /// Every config whose tunnel is up right now, regardless of which project asked
 /// for it. A tunnel reroutes the whole machine, so the frontend tracks it as a
-/// machine-level object (`stores/vpnStatus.ts`) rather than a per-project one; this
+/// machine-level object (`stores/remote/vpn/vpnStatus.ts`) rather than a per-project one; this
 /// is how that store seats itself on launch and re-seats after a renderer reload,
 /// where the tunnel outlives the window that started it.
 #[tauri::command]

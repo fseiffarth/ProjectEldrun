@@ -63,7 +63,7 @@ export interface MailAccount {
   /** **VPN-only, default false.** While set, the backend opens no socket to
    *  this account unless an OpenVPN tunnel Eldrun knows about is up, and the
    *  header's interval check skips it quietly instead of failing — then checks
-   *  it the moment a tunnel comes up (`lib/vpnGate.ts`). */
+   *  it the moment a tunnel comes up (`lib/remote/vpn/vpnGate.ts`). */
   require_vpn?: boolean;
   /**
    * The `authserv-id` this account's receiving server writes into

@@ -355,7 +355,7 @@ export function MailAccountDialog({
               onChange={(e) => patch({ check_interval_min: Number(e.target.value) || 0 })}
             />
           </label>
-          {/* The VPN gate (`lib/vpnGate.ts`). Its hint names the limit — only a
+          {/* The VPN gate (`lib/remote/vpn/vpnGate.ts`). Its hint names the limit — only a
               tunnel Eldrun started counts — because the failure mode of the
               switch is silent: an account gated on a VPN Eldrun cannot see
               simply never syncs, and nothing else would say why. */}

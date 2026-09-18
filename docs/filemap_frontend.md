@@ -220,9 +220,9 @@ only when breaking it does damage. The *why* goes in code comments or
 | `hooks/useListReorder.ts` + `lib/listReorder.ts` | The shared drag-a-row-into-place gesture for `{ id }[]` lists. Pointer events (not HTML5 DnD); the grip takes pointer capture. |
 | `lib/shortcuts.ts` | Shortcut definitions, chord parsing/resolution. |
 | `lib/codexHooks.ts` | Codex hook-trust state + the one-click "open Codex on `/hooks`" fix. |
-| `lib/vpnConnect.ts` | Silent-connect gate: ask `vpn_can_connect_silently` before connecting (pkexec prompts before OpenVPN validates). Store-free. |
-| `lib/vpnAutoConnect.ts` | "Connect on launch" per `.ovpn` (`settings.vpn_auto_connect`), never prompts. Also `openVpnLoginInTerminal` + `pollVpnUp`, the one non-headless VPN login. |
-| `lib/vpnGate.ts` | VPN gate for mail/CalDAV accounts flagged `require_vpn`: scheduler skips while no tunnel is up. `useVpnTunnelUp` is tri-state (`null` before first reconcile). Enforcement is backend (`services::openvpn::account_gate`). |
+| `lib/remote/vpn/vpnConnect.ts` | Silent-connect gate: ask `vpn_can_connect_silently` before connecting (pkexec prompts before OpenVPN validates). Store-free. |
+| `lib/remote/vpn/vpnAutoConnect.ts` | "Connect on launch" per `.ovpn` (`settings.vpn_auto_connect`), never prompts. Also `openVpnLoginInTerminal` + `pollVpnUp`, the one non-headless VPN login. |
+| `lib/remote/vpn/vpnGate.ts` | VPN gate for mail/CalDAV accounts flagged `require_vpn`: scheduler skips while no tunnel is up. `useVpnTunnelUp` is tri-state (`null` before first reconcile). Enforcement is backend (`services::openvpn::account_gate`). |
 | `lib/i18n.ts` | The i18n module: every UI string for `en/de/es/fr/it`. English holds every key; others fall back. Non-English dicts code-split into `lib/i18nDicts/*.ts`. |
 | `lib/machineSync.ts` | Keeps a global machine and the project host it also is in step, bridged only by SSH target (`sameTarget`: host case-insensitive, default port 22). |
 | `lib/viewers/autocomplete.ts` | Caret-window bounds, type-through, line acceptance, bounded model/completion caches and the code/prose model pick (`ollama_roles.autocomplete{,_prose}`) for native editors. |

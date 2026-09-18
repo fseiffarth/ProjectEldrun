@@ -58,8 +58,8 @@ const backend = (opts: { build?: "ok" | "fail" } = {}) => {
 async function graph() {
   vi.resetModules();
   const [prompt, vpnStatus, tabs, settings] = await Promise.all([
-    import("../stores/vpnPrompt"),
-    import("../stores/vpnStatus"),
+    import("../stores/remote/vpn/vpnPrompt"),
+    import("../stores/remote/vpn/vpnStatus"),
     import("../stores/tabs"),
     import("../stores/settings"),
   ]);

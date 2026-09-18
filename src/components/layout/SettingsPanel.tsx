@@ -57,8 +57,8 @@ import { useT, LANGUAGES, type Language, type TranslationKey } from "../../lib/i
 import { useUse24h } from "../../lib/timeFormat";
 import { IS_MAC, IS_WINDOWS, PLATFORM } from "../../lib/platform";
 import { useHintsStore } from "../../stores/hints";
-import { canConnectVpnSilently } from "../../lib/vpnConnect";
-import { setVpnAutoConnect, vpnUsernameFor } from "../../lib/vpnAutoConnect";
+import { canConnectVpnSilently } from "../../lib/remote/vpn/vpnConnect";
+import { setVpnAutoConnect, vpnUsernameFor } from "../../lib/remote/vpn/vpnAutoConnect";
 import type { StoredVpnConfig } from "../../types";
 import { MobileSettings } from "../mobile/MobileSettings";
 import { UpdatesPanel } from "./UpdatesPanel";
@@ -438,7 +438,7 @@ function GitHostingSettings({ onBack, onClose }: SubPanelProps) {
 
 /**
  * Same setting the header's VPN menu arms per config (`settings.vpn_auto_connect`,
- * see `lib/vpnAutoConnect.ts`) — surfaced here too since the header menu only shows
+ * see `lib/remote/vpn/vpnAutoConnect.ts`) — surfaced here too since the header menu only shows
  * up once a tunnel exists, which makes this opt-in easy to miss.
  */
 function VpnAutoConnectSettings({ onBack, onClose }: SubPanelProps) {

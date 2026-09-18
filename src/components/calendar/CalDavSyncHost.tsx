@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import { installCalDavPush, useCalDavStore } from "../../stores/caldav";
 import { DEFAULT_CALDAV_SYNC_MIN } from "../../lib/caldav";
-import { useVpnTunnelUp, vpnGateAllows, vpnTunnelUp } from "../../lib/vpnGate";
+import { useVpnTunnelUp, vpnGateAllows, vpnTunnelUp } from "../../lib/remote/vpn/vpnGate";
 
 /** How often the scheduler wakes up. Each account is still synced on its own
  *  interval; this is only the granularity at which "is it due yet" is asked. */
@@ -32,7 +32,7 @@ const TICK_MS = 60_000;
  * against an unchanged collection is one small `PROPFIND`, not a re-download of
  * the calendar.
  *
- * A **VPN-only account** (`require_vpn`, `lib/vpnGate.ts`) is never due while no
+ * A **VPN-only account** (`require_vpn`, `lib/remote/vpn/vpnGate.ts`) is never due while no
  * tunnel is up, and is made due at once — and synced on the spot — when one
  * comes up. Same rising-edge rule as `MailIndicator`: only a reconciled
  * `false → true` counts, so the store first learning of a tunnel at launch does

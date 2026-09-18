@@ -18,7 +18,7 @@ import { invoke } from "@tauri-apps/api/core";
  * no, go straight to the password modal — one prompt, one elevation.
  *
  * These are deliberately free of store imports so `stores/projects` can use them
- * without closing an import cycle; the callers own the lamps (see `stores/vpnStatus`).
+ * without closing an import cycle; the callers own the lamps (see `stores/remote/vpn/vpnStatus`).
  */
 
 /**

@@ -1,8 +1,8 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
-import { useProjectsStore } from "./projects";
+import { useProjectsStore } from "../../projects";
 import { markVpnConnected, useVpnStatusStore } from "./vpnStatus";
-import { openVpnLoginInTerminal } from "../lib/vpnAutoConnect";
+import { openVpnLoginInTerminal } from "../../../lib/remote/vpn/vpnAutoConnect";
 
 /**
  * Mediates the activation-time OpenVPN connection. By default the VPN password

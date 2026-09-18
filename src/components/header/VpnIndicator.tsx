@@ -6,9 +6,9 @@ import { Toggle } from "../common/Toggle";
 import { UntestedTag } from "../common/UntestedTag";
 import { useProjectsStore } from "../../stores/projects";
 import { useSettingsStore } from "../../stores/settings";
-import { isVpnTerminalHandoff, useVpnPromptStore } from "../../stores/vpnPrompt";
-import { anyVpnLive, disconnectVpnTunnel, useVpnStatusStore } from "../../stores/vpnStatus";
-import { canConnectVpnSilently, connectVpnSilently } from "../../lib/vpnConnect";
+import { isVpnTerminalHandoff, useVpnPromptStore } from "../../stores/remote/vpn/vpnPrompt";
+import { anyVpnLive, disconnectVpnTunnel, useVpnStatusStore } from "../../stores/remote/vpn/vpnStatus";
+import { canConnectVpnSilently, connectVpnSilently } from "../../lib/remote/vpn/vpnConnect";
 import {
   fileOf,
   isVpnCredentialSaved,
@@ -17,7 +17,7 @@ import {
   setVpnCredentialSaved,
   syncVpnCredentialSaved,
   vpnUsernameFor,
-} from "../../lib/vpnAutoConnect";
+} from "../../lib/remote/vpn/vpnAutoConnect";
 import { keyringState, unlockKeyring, type KeyringState } from "../../lib/keyring";
 import type { StoredVpnConfig } from "../../types";
 import { useT } from "../../lib/i18n";
@@ -141,7 +141,7 @@ export function VpnIndicator() {
   // never look again — the indicator stayed green over a tunnel that had been dead
   // for minutes. That is not just a stale lamp: `refresh` is what detects the drop
   // and gates the SSH/SFTP probes belonging to the projects riding it (see
-  // `stores/vpnStatus`'s `onTunnelDropped`), so until something reconciles, every
+  // `stores/remote/vpn/vpnStatus`'s `onTunnelDropped`), so until something reconciles, every
   // one of those probes blocks ~45 s against a peer that will never answer. This
   // indicator is always mounted in the header, so it is the one place that poll is
   // guaranteed to run. It is a local IPC call against an in-memory registry, so a

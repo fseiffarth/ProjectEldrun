@@ -9,7 +9,7 @@ import {
 import { useSettingsStore } from "../../stores/settings";
 import { useExperimental } from "../../lib/experimental";
 import { DEFAULT_MAIL_CHECK_MIN, onMailNew } from "../../lib/mail";
-import { useVpnTunnelUp, vpnGateAllows, vpnTunnelUp } from "../../lib/vpnGate";
+import { useVpnTunnelUp, vpnGateAllows, vpnTunnelUp } from "../../lib/remote/vpn/vpnGate";
 import { useT } from "../../lib/i18n";
 import { useHeaderHoverMenuStore } from "../../stores/headerHoverMenu";
 
@@ -61,7 +61,7 @@ const MENU_ID = "mail";
  * The first tick is a whole interval away on purpose: checking at mount would be
  * checking at launch, and a restored window must not open a socket by existing.
  *
- * **A VPN-only account** (`require_vpn`, `lib/vpnGate.ts`) is skipped by the
+ * **A VPN-only account** (`require_vpn`, `lib/remote/vpn/vpnGate.ts`) is skipped by the
  * tick while no tunnel is up — no request, no error, no red button for a server
  * that was never going to answer — and checked the moment a tunnel comes up,
  * since that is when the mail it has been missing becomes reachable. That

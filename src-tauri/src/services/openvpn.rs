@@ -622,7 +622,7 @@ pub fn openvpn_args(
         // rather than leaking out the physical default route. That is the right
         // trade for a VPN, and it is only safe now that the tunnel no longer
         // gives up permanently (above) and that a tunnel dying is *detected*
-        // rather than left showing a green lamp (`stores/vpnStatus`'s drop
+        // rather than left showing a green lamp (`stores/remote/vpn/vpnStatus`'s drop
         // reconcile).
         "--persist-tun".to_string(),
         // Readiness is detected by watching OpenVPN's output for READY_MARKER,

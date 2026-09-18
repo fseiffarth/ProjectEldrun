@@ -19,7 +19,7 @@ import { useRemoteReconnect } from "./useRemoteReconnect";
 import { useConnectDialogStore } from "../../stores/connectDialog";
 import { useProjectsStore, disconnectRemote } from "../../stores/projects";
 import { useSettingsStore } from "../../stores/settings";
-import { useVpnSectionVisible } from "../../stores/vpnStatus";
+import { useVpnSectionVisible } from "../../stores/remote/vpn/vpnStatus";
 import { VpnTunnelUpNotice } from "../common/VpnTunnelUpNotice";
 import { formatRemoteTarget, resolveLocalMirror, type ProjectEntry } from "../../types";
 import { useT } from "../../lib/i18n";

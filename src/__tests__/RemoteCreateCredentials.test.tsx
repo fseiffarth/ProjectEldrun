@@ -29,7 +29,7 @@ import { ExtendToRemoteDialog } from "../components/projects/ExtendToRemoteDialo
 import { useProjectsStore } from "../stores/projects";
 import { useRemoteStatusStore } from "../stores/remoteStatus";
 import { useSettingsStore } from "../stores/settings";
-import { useVpnStatusStore } from "../stores/vpnStatus";
+import { useVpnStatusStore } from "../stores/remote/vpn/vpnStatus";
 import type { ProjectEntry } from "../types";
 
 const invokeMock = vi.mocked(invoke);

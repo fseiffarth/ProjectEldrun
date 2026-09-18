@@ -26,7 +26,7 @@ import { useConnectDialogStore } from "../stores/connectDialog";
 import { useRemoteStatusStore } from "../stores/remoteStatus";
 import { useSettingsStore } from "../stores/settings";
 import { useTabsStore } from "../stores/tabs";
-import { useVpnStatusStore } from "../stores/vpnStatus";
+import { useVpnStatusStore } from "../stores/remote/vpn/vpnStatus";
 import { forgetConnection } from "../lib/remoteConnect";
 import type { ProjectEntry, RemoteSpec, Settings, SshProbe } from "../types";
 

@@ -1,5 +1,5 @@
 /**
- * The silent OpenVPN connect pair (`lib/vpnConnect`). `pkexec` prompts before
+ * The silent OpenVPN connect pair (`lib/remote/vpn/vpnConnect`). `pkexec` prompts before
  * OpenVPN has read the config, so a connect that was always going to fail
  * still costs a system password dialog — hence a "can this be silent?" ask
  * first, which never throws, and a connect whose `remember: null` is
@@ -11,7 +11,7 @@ import { invoke } from "@tauri-apps/api/core";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(() => Promise.resolve()) }));
 
-import { canConnectVpnSilently, connectVpnSilently } from "../lib/vpnConnect";
+import { canConnectVpnSilently, connectVpnSilently } from "../lib/remote/vpn/vpnConnect";
 
 const invokeMock = vi.mocked(invoke);
 

@@ -22,7 +22,7 @@ import {
   markVpnConnecting,
   markVpnError,
   releaseVpn,
-} from "../../stores/vpnStatus";
+} from "../../stores/remote/vpn/vpnStatus";
 import type { LogLine } from "../common/ConnectionLog";
 import { withHostKeyConfirm } from "../../lib/hostKey";
 

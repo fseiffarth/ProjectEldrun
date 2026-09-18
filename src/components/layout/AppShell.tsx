@@ -79,7 +79,7 @@ import {
   silentReconnectDeadHost,
 } from "../../stores/projects";
 import { useRemoteStatusStore } from "../../stores/remoteStatus";
-import { disconnectAllTunnelsOnQuit } from "../../stores/vpnStatus";
+import { disconnectAllTunnelsOnQuit } from "../../stores/remote/vpn/vpnStatus";
 import {
   closeOrphanedPopouts,
   listenDetachedHost,
@@ -87,7 +87,7 @@ import {
 } from "../../stores/detached";
 import { listenPdfReveal } from "../../stores/pdfSync";
 import { listenSyncProgress } from "../../stores/sync";
-import { autoConnectVpnOnLaunch } from "../../lib/vpnAutoConnect";
+import { autoConnectVpnOnLaunch } from "../../lib/remote/vpn/vpnAutoConnect";
 import { initRemoteAutoReconnect } from "../../lib/remoteAutoReconnect";
 import { initExperimentalSweep } from "../../lib/experimentalSweep";
 import { initMachineSync } from "../../lib/machineSync";

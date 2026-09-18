@@ -38,7 +38,7 @@ import { useTimerStore } from "./timer";
 import { useSettingsStore, whenSettingsLoaded } from "./settings";
 import { mayAutoTouch, targetOfSpec } from "../lib/hpcHost";
 import { PRIMARY_HOST, useRemoteStatusStore } from "./remoteStatus";
-import { markVpnConnected, markVpnConnecting, markVpnError, releaseVpn } from "./vpnStatus";
+import { markVpnConnected, markVpnConnecting, markVpnError, releaseVpn } from "./remote/vpn/vpnStatus";
 import { useConnectDialogStore } from "./connectDialog";
 import { connectionStillOpen, openConnectionInRoot } from "../lib/remoteConnect";
 import { describeScaffoldRepair, type ProjectScaffoldRepair } from "../components/projects/scaffold";
@@ -138,7 +138,7 @@ function autoConnectIneligible(scope: string, sshArgs: SshArgs, state: SavedPass
   // (`lib/keyring.ts`), so `saved: false` alone would tell a user whose password is
   // sitting on the ring to go save it again — the one instruction that cannot help.
   // Same split, and deliberately the same wording, as the machine-wide VPN twin in
-  // `lib/vpnAutoConnect`: one feature, one explanation.
+  // `lib/remote/vpn/vpnAutoConnect`: one feature, one explanation.
   const lang = useI18nStore.getState().lang;
   const reason = translate(
     lang,
@@ -169,7 +169,7 @@ async function savedPasswordState(sshArgs: SshArgs): Promise<SavedPasswordState>
  * to re-check and `remote_has_saved_password` is always false — so the headless
  * eligibility gate (a saved password, or a `key_auth` host) rejected *every* project
  * and auto-connect silently did nothing at all. This is the same substitution the
- * machine-wide VPN toggle already makes (`lib/vpnAutoConnect`): "connect on launch"
+ * machine-wide VPN toggle already makes (`lib/remote/vpn/vpnAutoConnect`): "connect on launch"
  * means *the connect command is waiting in the root terminal*, where the user types
  * the password into a visible shell, rather than a connect Eldrun completes by itself.
  *
