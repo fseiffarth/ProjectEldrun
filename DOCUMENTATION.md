@@ -1363,7 +1363,7 @@ Ollama integration test skips itself when no local server or model is available.
   2.52.3 was faster but produced flicker, missing PDF images, and a renderer
   crash.
 - A native scrollbar's shape is unreachable from CSS on WebKitGTK, so Eldrun
-  hides the engine's bar and draws its own (`lib/customScrollbar.ts`).
+  hides the engine's bar and draws its own (`lib/theme/customScrollbar.ts`).
 
 ## Practical Development Notes
 

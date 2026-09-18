@@ -115,7 +115,7 @@ only when breaking it does damage. The *why* goes in code comments or
 | `header/VpnIndicator.tsx` | Machine-wide OpenVPN control: always present, lists stored `.ovpn`s, connects/disconnects a tunnel with or without a project behind it, names its holders, and arms one to connect on launch. |
 | `header/WindowControls.tsx` | Minimize/maximize/close window buttons. |
 | `tabs/TabBar.tsx` | Per-subwindow tab strip (add/rename/close, pointer-based DnD). |
-| `tabs/TabColorPicker.tsx` + `lib/tabColors.ts` | Tab user colour (#264): closed 8-hue palette (the calendar's); the id, not the hex, is persisted and crosses to the phone (`protocol::clean_tab_color`). |
+| `tabs/TabColorPicker.tsx` + `lib/theme/tabColors.ts` | Tab user colour (#264): closed 8-hue palette (the calendar's); the id, not the hex, is persisted and crosses to the phone (`protocol::clean_tab_color`). |
 | `tabs/agentWorktrees.ts` + `lib/agents/agentWorktrees.ts` | Agent tab in a linked worktree (#23): `useAgentWorktreePicker` asks before spawning an agent only when a linked worktree exists (local `git_worktree_list`); worktree = cwd, branch in label. Local projects only. |
 | `tabs/Subwindow.tsx` | A single tiled subwindow (tab group). Its body is a row: the measured pane region + (when the group's `filesOpen` is set) the docked per-subwindow file viewer. |
 | `tabs/commitDrop.ts` / `tabs/commitFileDrop.ts` | Apply a tab/file drag-drop into the layout tree. |
@@ -249,11 +249,11 @@ only when breaking it does damage. The *why* goes in code comments or
 | `lib/window/printing.ts` | Typed invoke surface for the print manager (`print_*`): queues only, no wrapper takes a path; `printSnapshot` resolves rather than rejects. |
 | `lib/terminal/pythonRun.ts` | Run/Debug a Python file by opening a terminal tab (inherits remote/container locality); debug = pdb with gutter breakpoints. Interpreter asked of backend (`python_interpreter_for`). |
 | `lib/agents/fastMode.ts` | Fast mode (`Settings.fast_mode`): the list of withdrawn costly display aids lives in this module's header (folder sizes, pill git dots, …). |
-| `lib/themeTokens.ts` | Theme Customizer allow-list of overridable CSS color tokens (grouped; ids are i18n keys). `normalizeThemeVars` is the gate; `THEME_COLOR_RE` accepts `#rrggbb` and `#rrggbbaa`. |
-| `lib/cursorPacks.ts` | Custom cursors (`Settings.ui_cursor`): three packs drawn at runtime to PNG on canvas in theme colors (WebKit has no SVG cursors). |
+| `lib/theme/themeTokens.ts` | Theme Customizer allow-list of overridable CSS color tokens (grouped; ids are i18n keys). `normalizeThemeVars` is the gate; `THEME_COLOR_RE` accepts `#rrggbb` and `#rrggbbaa`. |
+| `lib/theme/cursorPacks.ts` | Custom cursors (`Settings.ui_cursor`): three packs drawn at runtime to PNG on canvas in theme colors (WebKit has no SVG cursors). |
 | `lib/experimental.ts` | Experimental-flag gate: off for users, on in debug mode (unset falls back to `settings.debug`). Read via `useExperimental`, never `settings.<flag> ?? false`. Also `EXPERIMENTAL_TAB_KINDS`/`withdrawnTabKinds`. |
 | `lib/experimentalSweep.ts` | Closes tabs of a switched-off tab-owning experiment in every loaded scope (`closeTabsOfKinds`); installed once per window, re-run on settings change. Popouts sweep their own. |
-| `lib/customScrollbar.ts` | App-drawn scrollbars: WebKitGTK lacks `::-webkit-scrollbar` and only honours `scrollbar-width/color`, so the native bar is hidden and a thumb is painted. |
+| `lib/theme/customScrollbar.ts` | App-drawn scrollbars: WebKitGTK lacks `::-webkit-scrollbar` and only honours `scrollbar-width/color`, so the native bar is hidden and a thumb is painted. |
 | `lib/terminal/tmuxSession.ts` | Persistent tmux sessions (#85): `newTmuxSessionName(scope, kind)` mints the stable `eldrun-<scope>--<kind>-<uuid>` persisted as `TabEntry.tmuxSession` (PTY ids aren't stable); `sessionKindFromName` inverts it. |
 | `lib/hostBound.ts` | Host-bound marker for local-model tabs in containerized projects (#150): uid minted once, registered via `register_host_bound_tab`, persisted as `TabEntry.hostBoundUid`. |
 | `lib/agents/agentFence.ts` | Pure frontend contract for the agent fence: the settings allowlist defaults/parser and project-pill inherit/on/off + backend-status reason keys. `AgentFence.test.ts` keeps its default paths aligned with the Rust schema. Enforcement and root authority remain backend-only in `services::agent_fence`. |

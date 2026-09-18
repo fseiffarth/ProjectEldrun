@@ -1,7 +1,7 @@
 /**
  * The tab-colour palette, phone side (#264).
  *
- * A deliberate mirror of `src/lib/tabColors.ts`, not an import: `mobile-web/`
+ * A deliberate mirror of `src/lib/theme/tabColors.ts`, not an import: `mobile-web/`
  * is its own bundle with its own tsconfig and ships to a browser, and the two
  * halves share their contract over the wire (a palette id, validated against
  * `protocol::TAB_COLORS` by the sidecar) rather than through a module. What

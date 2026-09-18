@@ -618,7 +618,7 @@ svg.alerts-toggle-icon {
      like Archived routinely sits off screen and the board has to SHOW that.
      This once forced a classic native bar, because WebKitGTK's own is an
      invisible overlay that appears only on hover. The app's thumbs replaced
-     both: `lib/customScrollbar.ts` paints this scroller's horizontal thumb
+     both: `lib/theme/customScrollbar.ts` paints this scroller's horizontal thumb
      whenever it overflows and keeps it visible, so the affordance is back
      without a native bar to double up with. */
 }

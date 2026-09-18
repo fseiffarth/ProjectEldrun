@@ -39,7 +39,7 @@ import { PasswordInput } from "../common/PasswordInput";
 import { FolderPickerDialog } from "../common/FolderPickerDialog";
 import { RemoteConnMenu } from "../header/RemoteConnMenu";
 import { VmSettingsDialog } from "./VmSettingsDialog";
-import { categoryColor, primaryCategoryColor, projectCategories } from "../../lib/categoryColor";
+import { categoryColor, primaryCategoryColor, projectCategories } from "../../lib/theme/categoryColor";
 import { usePillDragStore } from "../../stores/pillDrag";
 import { usePillSelectionStore } from "../../stores/pillSelection";
 import { useBoxEditorStore } from "../../stores/boxEditor";

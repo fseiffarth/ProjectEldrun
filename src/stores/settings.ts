@@ -12,13 +12,13 @@ import {
 } from "../types";
 import { applyLanguage, type Language } from "../lib/i18n";
 import { mergeVerdicts, verdictsUnchanged, type PyMainCache } from "../lib/terminal/pythonMainCache";
-import { THEME_COLOR_RE, THEME_VAR_NAMES } from "../lib/themeTokens";
+import { THEME_COLOR_RE, THEME_VAR_NAMES } from "../lib/theme/themeTokens";
 import {
   buildCursorVars,
   CURSOR_VAR_NAMES,
   normalizeCursorPack,
   type CursorPack,
-} from "../lib/cursorPacks";
+} from "../lib/theme/cursorPacks";
 
 /** Each Tauri window is its own JS runtime with its own copy of this store, so
  *  a theme change made in one (normally the main window's Settings dialog)
@@ -206,7 +206,7 @@ export function applyAccent(accent: string | null | undefined) {
 }
 
 /** Keep only what may safely reach the root style: a catalog token name
- *  (`lib/themeTokens`) holding a `#rrggbb`/`#rrggbbaa` color. `ui_theme_vars`
+ *  (`lib/theme/themeTokens`) holding a `#rrggbb`/`#rrggbbaa` color. `ui_theme_vars`
  *  is written as INLINE CUSTOM PROPERTIES, so an unvalidated pair from a
  *  hand-edited settings.json would be an arbitrary-CSS-variable write; and an
  *  invalid *value* is worse than none, since every rule reading that token

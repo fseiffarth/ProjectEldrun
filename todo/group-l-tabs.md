@@ -455,7 +455,7 @@ correctness/UX work atop the same layout model #42 detaches.*
     look-alike `claude` tabs had one mark to tell them apart — the label — and
     the tab's *kind* colour, which is the same for all five. A tab now carries
     an optional colour from a closed palette of eight hues
-    (`src/lib/tabColors.ts`, the calendar sidebar's own eight, so the app has
+    (`src/lib/theme/tabColors.ts`, the calendar sidebar's own eight, so the app has
     one palette rather than two): **right-click a tab → Colour**, a swatch grid
     under the menu's accent group label, with a leading ⃠ chip that clears it.
     The colour substitutes for the kind colour in the same `--tab-accent` slot,
@@ -489,7 +489,7 @@ correctness/UX work atop the same layout model #42 detaches.*
     at, that project may not be open in the window at all, and `CenterPanel`
     persists only the active scope — so without the write the catalog (read out
     of that same session file) would keep publishing the old colour.
-    *Files: `src/lib/tabColors.ts`,
+    *Files: `src/lib/theme/tabColors.ts`,
     `src/components/tabs/TabColorPicker.tsx`, `src/components/tabs/TabBar.tsx`,
     `src/components/layout/{DetachedCenterPanel,DetachedApp}.tsx`,
     `src/stores/{tabs,detached}.ts`, `src/styles/projects-tabs.css`,

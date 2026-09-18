@@ -37,7 +37,7 @@ import {
 } from "./newTabItems";
 import { AddTabMenuList } from "./AddTabMenuList";
 import { TabColorPicker } from "./TabColorPicker";
-import { tabColorCss } from "../../lib/tabColors";
+import { tabColorCss } from "../../lib/theme/tabColors";
 import { useAddTabMenuData } from "./useAddTabMenuData";
 import { useAgentWorktreePicker } from "./agentWorktrees";
 import { CustomAgentDialog } from "./CustomAgentDialog";

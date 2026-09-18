@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { restoredAgentCwd } from "../lib/agents/agentWorktrees";
-import { isTabColor, type TabColor } from "../lib/tabColors";
+import { isTabColor, type TabColor } from "../lib/theme/tabColors";
 import { create } from "zustand";
 import { useShallow } from "zustand/react/shallow";
 import type { InternalViewer } from "../lib/viewers/fileUtils";
@@ -663,7 +663,7 @@ export interface TabEntry {
   // grant itself is a file in the state dir; this is only the index into it, which
   // is why a planted value buys nothing.
   hostBoundUid?: string;
-  // A user-chosen colour from the closed palette in `lib/tabColors.ts` (#264):
+  // A user-chosen colour from the closed palette in `lib/theme/tabColors.ts` (#264):
   // set by the tab's right-click menu on the desktop, or the Colour sheet on the
   // phone. Absent (the default) leaves the tab on its KIND colour — `TAB_ACCENT`
   // — which is why this is stored as "no colour" rather than as the kind's hue:

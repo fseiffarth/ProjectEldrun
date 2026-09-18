@@ -669,7 +669,7 @@
   --z-modal-elevated: 110;
   --z-menu-catcher: 999;
   --z-menu: 1000;
-  /* The custom scrollbar layer (lib/customScrollbar): above menus and dialogs,
+  /* The custom scrollbar layer (lib/theme/customScrollbar): above menus and dialogs,
      whose own scrolling lists need their thumbs, but below the project/tab
      hover cards (9999) and tooltips — a bar is chrome of the panel under a
      popup and must not paint through it. */

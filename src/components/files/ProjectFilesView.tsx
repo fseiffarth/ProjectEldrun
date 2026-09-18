@@ -15,7 +15,7 @@ import { ProjectFilesSettingsDialog, useProjectFileFilters } from "./ProjectFile
 import { useImportDrop } from "./importDrop";
 import { logoutRemote, useProjectsStore } from "../../stores/projects";
 import { isTrashProject } from "../../lib/trashProject";
-import { GIT_STATE_COLOR } from "../../lib/gitColors";
+import { GIT_STATE_COLOR } from "../../lib/theme/gitColors";
 import { ContextMenuPortal } from "../common/ContextMenuPortal";
 import { useSyncStore, amberPaths, localNewPaths } from "../../stores/sync";
 import { confirmSyncTransfer } from "../../stores/syncConfirm";

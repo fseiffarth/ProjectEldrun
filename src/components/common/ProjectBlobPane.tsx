@@ -7,7 +7,7 @@ import { useWindowsStore } from "../../stores/windows";
 import { resolveProjectDirectory, type ProjectBox, type ProjectEntry } from "../../types";
 import { ActivityCalendar } from "../projects/ActivityCalendar";
 import { CategoryEditor } from "../projects/CategoryEditor";
-import { categoryColor, primaryCategoryColor, projectCategories } from "../../lib/categoryColor";
+import { categoryColor, primaryCategoryColor, projectCategories } from "../../lib/theme/categoryColor";
 import { quiesceActive } from "../../stores/power";
 import {
   type FileEntry,

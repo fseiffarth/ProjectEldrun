@@ -1984,7 +1984,7 @@
   gap: 1px;
 }
 /* …and a gutter on the right for the thumb to sit in. The app's scrollbars are
-   OVERLAY thumbs painted over the container's last 8px (`lib/customScrollbar.ts`
+   OVERLAY thumbs painted over the container's last 8px (`lib/theme/customScrollbar.ts`
    — the engine's own bar is hidden everywhere, so nothing reserves space the way
    a classic scrollbar would), which in a menu means the thumb lands directly on
    the row content: a model name, a machine's lamp cluster, a chip at the end of

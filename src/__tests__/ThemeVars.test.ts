@@ -1,6 +1,6 @@
 /**
  * The Theme Customizer's contract with the document (`stores/settings`'s
- * `normalizeThemeVars`/`applyThemeVars`, `lib/themeTokens`).
+ * `normalizeThemeVars`/`applyThemeVars`, `lib/theme/themeTokens`).
  *
  * The rules worth pinning are the ones whose failure is silent. A token name
  * outside the catalog must never reach the root style (`ui_theme_vars` is
@@ -39,7 +39,7 @@ import {
   THEME_TOKENS,
   THEME_VAR_NAMES,
   themeTokenExampleKey,
-} from "../lib/themeTokens";
+} from "../lib/theme/themeTokens";
 import { en } from "../lib/i18n";
 import {
   cssColorToHex,

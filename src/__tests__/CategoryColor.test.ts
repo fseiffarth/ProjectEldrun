@@ -1,5 +1,5 @@
 /**
- * Deterministic project-category colours (`lib/categoryColor`). The same tag
+ * Deterministic project-category colours (`lib/theme/categoryColor`). The same tag
  * must read as the same colour everywhere, whatever its spelling, and the
  * label set must be cleaned the same way before persisting and when offering
  * toggle chips.
@@ -12,7 +12,7 @@ import {
   normalizeCategory,
   primaryCategoryColor,
   projectCategories,
-} from "../lib/categoryColor";
+} from "../lib/theme/categoryColor";
 
 describe("normalizeCategory / cleanCategories", () => {
   it("trims and collapses inner whitespace", () => {

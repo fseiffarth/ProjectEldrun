@@ -1032,7 +1032,7 @@
 
    It is a SIBLING of `.dialog-scroll`, never a child, and that is the whole
    point: the app paints its own overlay scrollbar thumb over a container's
-   right edge (`lib/customScrollbar.ts`), spanning the scroll box's full height
+   right edge (`lib/theme/customScrollbar.ts`), spanning the scroll box's full height
    — so a header inside the scroll had the thumb running up over the accent
    band and across the ✕ in the corner. Outside it, the thumb starts beneath
    the header, which is the same split `.menu-scroll-region` makes for the

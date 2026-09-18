@@ -160,7 +160,7 @@ once per scope, with the strands that module already builds — a second derivat
 of what "queued" means would be a second answer to one question. Reuse
 `isPromptTargetTab` (exported by `PromptChartTab.tsx`) as the agent-tab predicate,
 and the activity precedence every other surface reads: **decision > working > done
-> idle**. Colours come from `src/lib/categoryColor.ts` (`primaryCategoryColor`,
+> idle**. Colours come from `src/lib/theme/categoryColor.ts` (`primaryCategoryColor`,
 `projectCategories`) — the same colours the blob tab and the pills already give a
 project.
 

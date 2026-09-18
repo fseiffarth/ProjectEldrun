@@ -250,7 +250,7 @@ screen is not.*
       riding the backend's `extra` catch-all — **no Rust field, so no backend
       restart**. Cross-theme like the accent and applied *after* it, so a
       hand-picked `--accent-hover` beats the one derived from the accent.
-    - Safety: `lib/themeTokens` is an allow-list and
+    - Safety: `lib/theme/themeTokens` is an allow-list and
       `stores/settings.normalizeThemeVars` the gate — these values are written
       as inline custom properties, so an unvalidated pair from a hand-edited
       settings.json would be an arbitrary-CSS write. `--accent` is rejected
@@ -798,7 +798,7 @@ screen is not.*
     (accent body, contrast outline, soft halo), **Pixel** (the same shapes on a
     16-pixel grid, upscaled with smoothing off) and **Ink** (monochrome, text
     colour on the window's own ground); unset is the system cursors.
-    - **The art is drawn at runtime, not shipped.** `lib/cursorPacks.ts`
+    - **The art is drawn at runtime, not shipped.** `lib/theme/cursorPacks.ts`
       rasterises twelve shapes (arrow, hand, I-beam, open hand, fist, move, the
       two resize axes and their `col`/`row` twins, crosshair, deny) onto a
       canvas and emits `data:image/png` URLs, so the pointer takes the live

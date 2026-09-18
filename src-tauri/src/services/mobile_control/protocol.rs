@@ -15,7 +15,7 @@ pub const TERMINAL_PROTOCOL: &str = "eldrun-terminal.v1";
 pub const MAX_TAB_LABEL: usize = 120;
 
 /// The closed palette a tab colour comes from (#264), mirroring
-/// `src/lib/tabColors.ts` and `mobile-web/src/tabColors.ts` — both surfaces
+/// `src/lib/theme/tabColors.ts` and `mobile-web/src/tabColors.ts` — both surfaces
 /// resolve these ids to the same hex, and the sidecar validates against the
 /// list rather than accepting a colour.
 ///

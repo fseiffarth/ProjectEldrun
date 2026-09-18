@@ -21,7 +21,7 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(() => Promise.resolve([])
 
 import { toSavedTabEntry, useTabsStore, type SavedTabEntry, type TabEntry } from "../stores/tabs";
 import { applyColorToTabs } from "../stores/detached";
-import { TAB_COLORS, isTabColor, tabColorCss } from "../lib/tabColors";
+import { TAB_COLORS, isTabColor, tabColorCss } from "../lib/theme/tabColors";
 import { TabBar } from "../components/tabs/TabBar";
 import { allGroups } from "../stores/tabs";
 import { useDragStore } from "../stores/drag";

@@ -2,7 +2,7 @@
  * Tests for git status color bars:
  * - STATUS_COLOR mapping (untracked/modified=danger, staged=warning,
  *   unpushed=success, ignored=muted — theme TOKENS, never hardcoded hexes,
- *   so the light themes' own palettes apply; see lib/gitColors)
+ *   so the light themes' own palettes apply; see lib/theme/gitColors)
  * - SidePanel git action buttons have correct color bars
  * - Hovering a button shows the relevant staged/unpushed list
  */

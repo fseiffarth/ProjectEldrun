@@ -1,7 +1,7 @@
 import type { LinkOpenTarget } from "./browser";
 import type { PyMainVerdict } from "../lib/terminal/pythonMainCache";
 import type { AgentCron } from "../lib/agents/agentCron";
-import type { CursorPack } from "../lib/cursorPacks";
+import type { CursorPack } from "../lib/theme/cursorPacks";
 import type { TranslationKey } from "../lib/i18n";
 
 export interface GlobalAppEntry {
@@ -187,7 +187,7 @@ export interface Settings {
   /** Corner style override: `"square"` or `"rounded"`; unset = the active
    *  theme's own radius tokens. Applied by `stores/settings.applyCorners`. */
   ui_corners?: CornerStyle;
-  /** Custom mouse-cursor pack (`lib/cursorPacks`); unset = the system cursors.
+  /** Custom mouse-cursor pack (`lib/theme/cursorPacks`); unset = the system cursors.
    *  Applied by `stores/settings.applyCursor`, which draws the art from the
    *  LIVE theme — so the pointer follows the theme, the custom accent and the
    *  Theme Customizer's token overrides rather than being a fixed asset.
@@ -200,7 +200,7 @@ export interface Settings {
    *  (`ollama_models_path` clears itself the same way). */
   ui_cursor?: CursorPack | null;
   /** Per-token color overrides from the Theme Customizer, keyed by CSS custom
-   *  property (`{"--bg-panel": "#101820"}`). Only the `lib/themeTokens` catalog
+   *  property (`{"--bg-panel": "#101820"}`). Only the `lib/theme/themeTokens` catalog
    *  names, holding `#rrggbb`/`#rrggbbaa`, are honoured — see
    *  `stores/settings.normalizeThemeVars`, which is what stands between a
    *  hand-edited settings.json and an arbitrary inline-CSS write. Cross-theme

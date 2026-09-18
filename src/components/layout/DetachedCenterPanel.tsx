@@ -49,7 +49,7 @@ import { TabDropPlaceholder } from "../tabs/TabDropPlaceholder";
 import { NewTabMenu } from "../tabs/NewTabMenu";
 import { CustomAgentDialog } from "../tabs/CustomAgentDialog";
 import { TabColorPicker } from "../tabs/TabColorPicker";
-import { tabColorCss, type TabColor } from "../../lib/tabColors";
+import { tabColorCss, type TabColor } from "../../lib/theme/tabColors";
 import { pickEdge } from "../tabs/dragGeometry";
 import {
   chordMatches,

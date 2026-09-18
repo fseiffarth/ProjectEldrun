@@ -1,4 +1,4 @@
-import { TAB_COLORS, TAB_COLOR_IDS, type TabColor } from "../../lib/tabColors";
+import { TAB_COLORS, TAB_COLOR_IDS, type TabColor } from "../../lib/theme/tabColors";
 import { useT } from "../../lib/i18n";
 import { UntestedTag } from "../common/UntestedTag";
 

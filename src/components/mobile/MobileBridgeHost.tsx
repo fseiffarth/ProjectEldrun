@@ -15,7 +15,7 @@ import { useAgentModelsStore } from "../../stores/agents/agentModels";
 import { persistScopeLayout } from "../../stores/agents/agentSchedules";
 import { sendCollectedPrompt, useAgentPromptsStore, type ProjectAgentPrompt } from "../../stores/agents/agentPrompts";
 import { isTrashProject } from "../../lib/trashProject";
-import { isTabColor } from "../../lib/tabColors";
+import { isTabColor } from "../../lib/theme/tabColors";
 import type { AgentUsageReport } from "../../lib/agents/agentUsage";
 import { METRIC, agentLabel, agentPromptLeaf, sub } from "../../lib/usageMetrics";
 import { dayKey } from "../../lib/usageRollup";

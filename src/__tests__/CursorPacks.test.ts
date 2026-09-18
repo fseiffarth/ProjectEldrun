@@ -1,5 +1,5 @@
 /**
- * The custom mouse-cursor packs (`lib/cursorPacks` + `stores/settings.applyCursor`).
+ * The custom mouse-cursor packs (`lib/theme/cursorPacks` + `stores/settings.applyCursor`).
  *
  * The rules worth pinning:
  *  - an unknown pack id means OFF, never half-applied — the value picks a
@@ -31,7 +31,7 @@ import {
   CURSOR_SPECS,
   CURSOR_VAR_NAMES,
   normalizeCursorPack,
-} from "../lib/cursorPacks";
+} from "../lib/theme/cursorPacks";
 import { applyCursor } from "../stores/settings";
 import { readAppStylesheet } from "./cssCorpus";
 

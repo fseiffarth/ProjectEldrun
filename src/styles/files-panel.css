@@ -1215,7 +1215,7 @@
 }
 
 /* The colored state dot inside a git action button (add/commit/push). The
-   color comes from lib/gitColors' GIT_STATE_COLOR via inline style; only the
+   color comes from lib/theme/gitColors' GIT_STATE_COLOR via inline style; only the
    geometry lives here so the four buttons cannot drift. */
 .git-step-dot {
   width: 6px;

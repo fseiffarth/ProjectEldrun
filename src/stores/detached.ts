@@ -49,7 +49,7 @@ import { bumpUsage } from "./usage";
 import { useRemoteMachinesStore } from "./remoteMachines";
 import { useBigFoldersStore } from "./bigFolders";
 import type { ProjectBox, ProjectEntry } from "../types";
-import { isTabColor, type TabColor } from "../lib/tabColors";
+import { isTabColor, type TabColor } from "../lib/theme/tabColors";
 
 /** Parsed `?detached=<scope>:<groupId>` query. */
 export interface DetachedParam {

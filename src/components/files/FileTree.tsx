@@ -22,7 +22,7 @@ import {
 import { bindDragRelease, dragPlatform, PLATFORM } from "../../lib/window/dragPlatform";
 import { useSettingsStore } from "../../stores/settings";
 import { useExperimental } from "../../lib/experimental";
-import { GIT_STATE_COLOR } from "../../lib/gitColors";
+import { GIT_STATE_COLOR } from "../../lib/theme/gitColors";
 import { createDeckFile } from "../../lib/viewers/deck/create";
 import { useProjectsStore } from "../../stores/projects";
 import { useRemoteStatusStore } from "../../stores/remoteStatus";
