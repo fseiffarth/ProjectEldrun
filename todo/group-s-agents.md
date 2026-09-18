@@ -1320,8 +1320,8 @@ unchanged; the new agents are additive.
         the same with their star and actions. Move the role onto a toggle
         element (the card head, or a visually hidden button) on both surfaces
         together, so they do not drift; keyboard access already works.
-      - Pending doc: update the `src/CLAUDE.md` prompt-chart and
-        `PromptDraftBoard` rows once the other session's `src/CLAUDE.md` WIP
+      - Pending doc: update the `docs/filemap_frontend.md` prompt-chart and
+        `PromptDraftBoard` rows once the other session's file-map WIP
         has landed (the rows still say bottom port → top port, and that
         cycles and joins are refused only at schedule time).
 

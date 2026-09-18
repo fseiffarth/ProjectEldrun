@@ -846,7 +846,7 @@ and the host-aware variants, never inferred from path conventions.
 ## Architecture
 
 The tree below lists only load-bearing entries; the directory listing is the
-source of truth. `src/CLAUDE.md` and `src-tauri/CLAUDE.md` are the maintained
+source of truth. `docs/filemap_frontend.md` and `docs/filemap_backend.md` are the maintained
 file maps.
 
 ```text

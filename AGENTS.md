@@ -1,397 +1,139 @@
 # ProjectEldrun — Agents
 
-Canonical instructions for every AI coding agent working in this repository.
-The agent-specific files are pointers to this one — write guidance **here** so
-every agent reads the same text instead of separate copies drifting apart.
-
-## Project
-
-Eldrun is a Tauri 2 + React + TypeScript desktop workspace for AI-assisted
-development. Around the core — a root control terminal, per-project terminal
-and agent tabs, a project switcher, file tree and viewers, app launching, time
-tracking, and best-effort X11/KDE workspace integration — it has grown an
-embedded mail client, a calendar/CalDAV + to-do board, an in-app browser, an
-Agent Skills library, printing, a deck presenter, TeX/PDF workspaces, and
-Ollama/GPU/SLURM monitoring. An opt-in companion PWA (`mobile-web/`) reaches
-the same agent tabs from a phone through a loopback sidecar.
-
-The product thesis is project-scoped desktop context: opening a project should
-swap the relevant terminals, files, apps, default-app behavior, and time
-tracking together.
+Canonical instructions for every AI coding agent here; `CLAUDE.md` and
+`GEMINI.md` `@import` this file. Write guidance **here**. Keep it to rules an
+agent would otherwise get wrong — no overviews, no history (that goes in
+`docs/context/`). Eldrun is a Tauri 2 + React/TS desktop workspace (`src/`
+frontend, `src-tauri/` Rust backend, `mobile-web/` phone PWA).
 
 ## Running
 
-**Agents must never start Eldrun** (user, 2026-07-29) — not via
-`./start-eldrun-tauri-hotreload.sh`, not via `npm run tauri:dev`, not
-backgrounded, not "just to check one thing". **Never stop an instance you did
-not start**, either: a running window holds the user's open tabs and live
-terminals. The app's lifecycle is the user's alone.
+- **Never start or stop Eldrun** — no launcher script, `tauri:dev`, or
+  `package:dev` launch, not even "to check one thing"; a running window holds
+  the user's live tabs. To verify live, give the user exact steps to click
+  through; otherwise report the gates and say plainly it was not run live.
+- `src/` hot-reloads into the running window. `src-tauri/` does not, by design
+  (`--no-watch`): after backend edits run **`npm run backend:stale`** and
+  report its result. Never restart the app to apply them.
+- The phone PWA is baked into the binary; `npm run mobile:bundle` rebuilds it.
+  A mobile feature whose backend half isn't in the running window will render
+  and then fail — `backend:stale` says so.
+- Each commit queues a background frozen dev build (`post-commit` hook); leave
+  it alone. `scripts/package-dev-auto.sh --status` reports it. Mechanics:
+  `docs/context/dev_builds.md`.
 
-To verify something live, ask the user to launch Eldrun (or use a window they
-already have open) and report back, or hand them the exact steps to click
-through. Otherwise report the automated gates only, and say plainly that the
-change was not run live.
+## Gates
 
-- `src/` changes hot-reload into a running window — don't ask for a restart.
-- `src-tauri/` changes do not: `tauri dev` runs with `--no-watch`, because its
-  Rust watcher rebuilds *and relaunches the window* on any backend write,
-  taking the user's open tabs with it. Backend edits accumulate harmlessly
-  until the user restarts deliberately. `tauri:dev:watch` is the opt-in
-  escape hatch.
-- The cost is a backend fix that compiles and is silently not in the window.
-  **Run `npm run backend:stale` after backend edits and report the result**;
-  never restart the app to apply them. It knows every shape Eldrun runs in
-  (hot-reload, frozen `package:dev`, packaged, AppImage), and it asks the
-  running Mobile sidecar over loopback which PWA bundle it is actually serving
-  — mtimes are a proxy, that answer is not.
-- The phone's PWA is embedded into the binary too (`build.rs` bakes
-  `mobile-dist/` in), so it goes stale on its own schedule and nothing in the
-  window says so. `beforeDevCommand` re-bundles it on every dev start, and a
-  `post-commit` hook reports the seam when it drifts anyway; `npm run
-  mobile:bundle` rebuilds it without the type-check, `mobile:build` with.
-  **A commit now reaches the phone without a relaunch** (2026-09-17):
-  `package-dev.sh` publishes the bundle it just built into `target/mobile-pwa/`
-  with a `.stamp`, and `services::mobile_control::live_pwa` serves that in place
-  of the embedded copy, so a pull-to-refresh is the whole update path. In
-  `--head` mode it publishes *before* cargo starts — the bundle takes two
-  seconds, the compile takes two minutes. It is opt-in at compile time
-  (`ELDRUN_MOBILE_LIVE_DIR`, set only by `package-dev.sh` and the hot-reload
-  launcher, so a released binary reads nothing off the disk), never serves an
-  overlay older than the bundle compiled in, and refuses a bundle missing its
-  shell or its stamped entry rather than mixing two. The overlay carries the
-  PWA, **not** the sidecar's HTTP API: a mobile feature whose backend half is
-  not in the running window will render and then fail its request, which
-  `backend:stale` reports rather than hides.
-- Double-starts are blocked by `scripts/guard-single-instance.sh` (wired into
-  the launcher and the `pretauri:dev` hook). It also refuses when port 1420 is
-  held by an orphaned vite — a second `tauri dev` would otherwise attach to the
-  *first* session's dev server and silently render its stale module graph.
-- Dogfooding: `./start-eldrun-dev-sandbox.sh` runs the same dev server with
-  `ELDRUN_STATE_DIR`/`ELDRUN_HOME` redirected under
-  `~/.local/share/eldrun-dev/`, so a disposable dev window coexists with a
-  packaged daily-driver Eldrun (`npm run package`) without sharing any state —
-  sessions live in the packaged build, out of HMR's reach. Still one dev
-  session at a time (port 1420), and still launched by the user only.
-- `npm run package:dev` freezes the *current working tree* as a release binary
-  behind the "Eldrun (dev)" desktop entry (`start-eldrun-dev-build.sh`, binary
-  at `~/.local/share/eldrun/eldrun-dev`). No hot reload: the user works and
-  spots bugs in it, then checks fixes in the hot-reload window. Both use the
-  real state, so **only one runs at a time** — each launcher refuses with a
-  desktop notification while the other is up. Re-run it to move the frozen
-  window to a newer snapshot.
-- **Every commit re-freezes it by itself** (user, 2026-09-03): the `post-commit`
-  hook queues `scripts/package-dev-auto.sh`, which builds detached (the commit
-  never waits), nice'd/`SCHED_IDLE` so it does not fight the window it serves,
-  and coalescing — each pass first waits until no commit has landed for 30 s
-  (`ELDRUN_DEV_BUILD_SETTLE`), and a commit landing mid-build queues one more
-  pass instead of a second build, so a commit series or a rebase costs one
-  build and ends on the *last* commit.
-  **It freezes the commit, not the tree** (user, 2026-09-14): `package-dev.sh
-  --head` checks `HEAD` out into the detached worktree `target/freeze-tree`
-  (node_modules symlinked, cargo target dir shared) and builds there, so the
-  frozen binary is exactly one commit — never "+local" with someone else's
-  dirty edits swept in, and never failed by an `npm run build` that rewrites
-  `dist/` mid-compile. `npm run package:dev` by hand still freezes the live
-  tree, as the explicit way to try an uncommitted change. It
-  installs and notifies; it never launches or stops anything, and a running
-  frozen window keeps its old inode until the user relaunches it. **From an
-  agent tab it builds and stops there** (2026-09-04): `services::agent_fence`
-  gives an agent a tmpfs `$HOME`, so the install wrote 75 MB into a directory
-  that died with the tab and the notification had no session bus to reach —
-  every commit reporting success while the desktop icon stayed two days behind.
-  The build is real (`target/` is inside the bound project), so
-  `start-eldrun-dev-build.sh` adopts `target/release/eldrun` at launch instead,
-  in the user's own session, trusting the `.frozen` record `package-dev.sh`
-  leaves beside a binary that passed `scripts/assert-embedded-frontend.sh` —
-  not a re-run of that check, since `dist/` moves on with every gate an agent
-  runs and a launch-time re-check refused four days of good builds
-  (2026-09-14). The launcher notifies either way: what it adopted, or why not.
-  **A failed pass does not end the queue** (2026-09-15): a commit that landed
-  mid-build is a different tree — usually the one that fixes it, since a
-  change split over two commits compiles only as a pair — so the loop goes on
-  to it instead of leaving it "queued" for good. A failure is written to
-  `~/.local/share/eldrun/package-dev-auto.failed` (commit, status, when),
-  which `--status`, `npm run backend:stale` and the launcher all read: the
-  launcher compares the installed snapshot's recorded commit (`.frozen`, now
-  kept beside the installed binary) with `HEAD` and notifies how many commits
-  behind it is opening, and why — the hook's own failure notice never
-  arrives from an agent tab.
-  It declines in CI and from a linked worktree (freezing an agent's tree over
-  the user's binary is exactly the surprise to avoid). Off with `git config
-  eldrun.autoDevBuild false`, or `ELDRUN_NO_AUTO_DEV_BUILD=1` for one commit;
-  `scripts/package-dev-auto.sh --status` says what it is doing and
-  `~/.local/share/eldrun/package-dev-auto.log` holds the last build's output.
+Run before calling work done; all are CI gates and all sit at zero warnings:
 
-## Docs
+```
+npm run build        # the ONLY type-check (tsc + both bundles); vitest/eslint don't type-check
+npm test
+cargo test --manifest-path src-tauri/Cargo.toml
+npm run lint
+cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+```
 
-`src/CLAUDE.md` (frontend) and `src-tauri/CLAUDE.md` (backend) are the file
-maps — read the relevant one before editing unfamiliar code. Both list only
-load-bearing files; the tree is the source of truth. `CLAUDE.md` and
-`GEMINI.md` are thin pointers that `@AGENTS.md`-import this file.
+CI clippy is latest stable; a stale local toolchain can pass what CI fails.
+`cargo fmt` is not enforced. Without the RTK hook, keep output short:
+`cargo test -q`, `npm test -- --reporter=dot`, `npm run build 2>&1 | tail -40`. `git diff --check` for whitespace. If a gate's
+tool is unavailable, say so — never skip silently.
 
-Each `docs/context/*.md` holds one subsystem's design rationale — *why* it
-works that way, not discoverable from the code. Open only the one matching the
-area you're touching; never read speculatively.
+## Git & privacy (public repo)
 
-| Doc | Covers |
-|-----|--------|
-| `usage_stats.md` | Local-only rolling counters behind the daily recap. |
-| `remote_projects.md` | SSH/SFTP-native, mount-free remote projects (no sshfs). |
-| `git_sync.md` | Git lockstep + byte-sync: the two transports keeping a mirror in step. |
-| `remote_credentials.md` | Locked keychain, password-persistence opt-in, SSH_ASKPASS, host keys. |
-| `remote_autoconnect.md` | When a remote project connects itself; headless vs. not; VPN probing. |
-| `openvpn.md` | Machine-wide tunnel lifecycle, connect-on-launch, single-polkit teardown. |
-| `agent_sessions.md` | Resumable Claude/Codex tabs surviving relaunch via the SessionStart hook. |
-| `multi_host_remote.md` | Worker/compute hosts: push-only sync, read-only files, pull-outputs. |
-| `tmux_sessions.md` | Shell/script tabs surviving SSH drops and crashes; Sessions view. |
-| `docker_containers.md` | Per-project session container: toggle semantics, lifecycle. |
-| `vm_projects.md` | The VM trust tier: no shared fs, inverse sync posture, egress knob. |
-| `agent_authority.md` | How sandbox and tab location compose; why the permission mode is the agent's own. |
-| `hpc_careful_mode.md` | What probes stop collecting on a login node; host classification. |
-| `mail_encryption.md` | The sealed local store and the OpenPGP track: what each protects. |
-| `caldav.md` | Why a sync merges by resource URL instead of replacing. |
-| `root_console.md` | Root scope as a Ctrl+Shift+R overlay; the root-only MCP tools and their token boundary. |
+- Work on `develop`; `main` is reached by PR.
+- Before any push: `scripts/privacy-check.sh` must pass (the pre-push hook and
+  CI run it; hooks need `git config core.hooksPath .githooks` once per clone).
+  Never hardcode institution/lab hostnames. Author email must be the GitHub
+  `noreply` one. New/changed binaries need their blob id in
+  `scripts/privacy-reviewed-binaries.txt`. Private literals that must never
+  ship go in the untracked `.git/info/privacy-denylist`.
+- Pushes auto-bump the patch version; don't bump by hand.
+- Don't rewrite unrelated docs, generated state, `dist/`, `target/`, or backups.
 
-Longer-lived plans and matrices live in `docs/` — e.g.
-`multi_host_remote_plan.md`, `git_lockstep_case_matrix.md`,
-`eldrun_mobile_agent_plan.md`. `docs/remote_sync_guide.md` is the step-by-step
-*how it works* for remote-project syncing (byte-sync + git lockstep: colours,
-menu items, pass order, symptom → fix); read it before touching either engine.
-`docs/competitive_landscape.md` holds the positioning-vs-positioning read on
-overlapping tools.
-`docs/third_party_update_checklist.md` lists every flag, path, and output
-format Eldrun assumes of the tools it wraps (agent CLIs, Ollama, Tailscale,
-tmux, Docker, QEMU, bwrap, OpenVPN, SSH, SLURM, TeX, mail/CalDAV servers,
-desktop shells) — walk the matching section when one of them updates. Project docs:
-`README.md`, `DOCUMENTATION.md`, `ROADMAP.md`, `STATUS.md`, and `TODO.md` —
-whose per-group files live in `todo/`.
+## Where to look
 
-## Architecture
-
-- Frontend: React 18 + TypeScript + Vite + Tailwind, Zustand stores, xterm.js
-  (fit/webgl/canvas/web-links addons) under `src/`.
-- Backend: Rust + Tauri v2 under `src-tauri/`, with `portable-pty` for PTYs and
-  `zbus` (DBus) / `xcb` (X11) for desktop integration.
-- `commands/` expose Tauri command handlers; `services/` hold reusable runtime
-  logic; `schema/` mirrors persisted JSON.
-- The backend keeps a registry of live PTYs the frontend reconnects to by id —
-  that is what lets tabs survive a reload. Tabs are scoped either to "root" or
-  to a specific project id.
-- Workspace integration lives in `src-tauri/src/platform/`: `x11.rs`
-  (EWMH/NetWM, also the Cinnamon/Muffin path), `wayland_kde.rs` (KWin scripting
-  over DBus), `windows.rs`, `macos.rs`. Best-effort; unsupported desktops fall
-  back to `null.rs`.
-- Activating a project switches the workspace (where supported) and restores
-  that project's terminal tabs and open apps together.
-- The phone PWA is a separate bundle under `mobile-web/`; `npm run build`
-  builds it too, so a type error there fails the ordinary build.
-
-## Persistence
-
-- Managed projects: `~/eldrun/projects/<sanitized-name>/`; root terminal:
-  `~/eldrun/root/`.
-- Global state in `~/.local/share/eldrun/`: `projects.json`, `settings.json`,
-  `boxes.json`, `default_apps.json`, `calendar.json`, `global_machines.json`,
-  `time_log.json`, `agent_trust.json`, and `usage_stats.json`, alongside
-  per-subsystem directories (`mail/`, `browser/`, `sessions/`, `vm/`,
-  `remote-projects/`, …).
-- **Session state lives outside the project tree**: tab layout and `open_apps`
-  are stored per project id in `<state_dir>/sessions/<id>/terminals.json`. The
-  copy inside a project folder is legacy/export-only and is adopted only on an
-  explicit request — and `open_apps` is *never* adopted, since a folder-supplied
-  list of host commands to launch is exactly what the move guarded against.
-  Treat any in-project control file as attacker-controlled.
-- `project.json` still holds project identity, remote specs, runtime/container
-  settings, and per-project file-viewer settings.
-- Usage stats are local-only rolling hour/day counters behind the daily recap.
-  Do not mix them with time (`time_summary.json`), network bytes
-  (`net_usage.json`), or git stats, which come from their own sources.
-- New/imported projects get `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`,
-  `.claude/settings.json`, `.gitignore`, `TODO.md`, `ROADMAP.md`, `STATUS.md`,
-  `README.md` when missing. `AGENTS.md` is the canonical one. A scaffold repair
-  upgrades an agent doc still holding its untouched pre-`AGENTS.md` stub, and
-  never touches anything else.
-- Box agent docs contain generated link blocks between
-  `<!-- eldrun:box-links:start -->` and `<!-- eldrun:box-links:end -->`;
-  preserve user edits outside those blocks.
-- Add a TODO to the matching group file in `todo/`; create a group only if none
-  fits, or merge groups when the item spans areas tracked together.
-- Preserve Python-era JSON shapes where the Rust schema already supports them;
-  existing user state must round-trip cleanly.
-- Avoid unrelated rewrites in docs, generated state, built assets, project
-  metadata, `dist/`, `target/`, and backup files.
-
-## Dev workflow
-
-1. Edit `src/` (frontend) or `src-tauri/src/` (backend).
-2. `npm run build` (tsc + both bundles), `npm test`, and
-   `cargo test --manifest-path src-tauri/Cargo.toml`. All three run in CI on
-   all three platforms. `npm test` and ESLint do **not** type-check — only
-   `npm run build` does, so a type error in `src/` or `mobile-web/` surfaces
-   there and nowhere else.
-3. `npm run lint` and `cargo clippy --manifest-path src-tauri/Cargo.toml
-   --all-targets -- -D warnings`. Both are CI gates, both are at zero — keep
-   them there. `cargo fmt` is deliberately not enforced.
-
-   A green *local* clippy is not a green *CI* clippy: CI lints with today's
-   stable while yours is whenever it was last `rustup update`d, and each release
-   adds lints. Either update, or lint against CI's version with
-   `cargo +<ver> clippy …`. `cargo clippy --version` says what you ran.
-4. **Before every push** — this repo is public — the privacy/secret scan must
-   pass. `.githooks/pre-push` runs it over the outgoing commits and a `privacy`
-   CI job repeats it. By hand: `git add -A && scripts/privacy-check.sh`, or
-   `scripts/privacy-check.sh <base> <head>` for a range. Never hardcode
-   institution or lab hostnames. Commits must use the GitHub `noreply` author
-   email, never the real address — including merges made on GitHub, which the
-   scan checks too. It also scans file names, commit messages and binaries'
-   strings, and refuses an added or changed binary until its blob id is in
-   `scripts/privacy-reviewed-binaries.txt` (a screenshot shows prompts, session
-   URLs and project names no text scan can read). Private literals that must
-   never ship but cannot be committed as patterns go in the untracked
-   `.git/info/privacy-denylist`, one per line.
-5. Enable the hooks once per clone — this arms the version bump, the privacy
-   scan, and the post-commit stale-PWA notice:
-   `git config core.hooksPath .githooks`. Pushes are auto-patch-
-   bumped and packaged by CI (`scripts/bump-version.sh` takes `minor|major`).
-   Releases are manual: push a `v*` tag. `npm run package` builds the same
-   artifact locally, installing the AppImage outside the checkout.
-
-`main` is the stable default branch; ongoing work lands on `develop` and
-reaches `main` by PR. `git diff --check` catches whitespace damage. If a tool a
-change needs is unavailable, say so plainly instead of skipping the gate
-silently.
+- File maps: `docs/filemap_frontend.md`, `docs/filemap_backend.md` — **grep
+  them for the file you're touching; never read them whole.** Adding or
+  reshaping a load-bearing file? Update its row, one line. Never add a nested
+  `CLAUDE.md`/`AGENTS.md`: agents auto-load those. Why a file is the way it
+  is: grep `docs/filemap_rationale/` (frozen, verify against code).
+- Design rationale, one file per subsystem in `docs/context/` — open only the
+  one you're touching: agent_authority, agent_sessions, caldav, dev_builds,
+  docker_containers, git_sync, hpc_careful_mode, mail_encryption,
+  multi_host_remote, openvpn, project_boxes, remote_autoconnect,
+  remote_credentials, remote_projects, root_console, tmux_sessions,
+  usage_stats, vm_projects.
+- Before touching byte-sync or git lockstep: `docs/remote_sync_guide.md`.
+- Updating a wrapped third-party tool: `docs/third_party_update_checklist.md`.
+- New TODOs go in the matching `todo/<group>.md`.
+- `todo/*.md`, `DOCUMENTATION.md` and `README.md` run 50–160 KB each: find the
+  spot with `rg -n`, then read or edit only that range. Never read one whole.
 
 ## Conventions
 
-- Prefer small, focused changes matching the existing React/TypeScript and
-  Rust/Tauri style. Use `rg` for code search; where the RTK hook/instructions
-  apply, shell commands are proxied through `rtk` automatically.
-- All user-facing strings go through `src/lib/i18n.ts` (`useT()`), the one
-  place every language lives. English is the source of truth and holds every
-  key; `de`/`es`/`fr`/`it` fall back to it. Never hardcode display text.
-- Prefer local component state and existing Zustand stores over new global
-  state.
-- Keep Tauri command payload names compatible with the frontend's camelCase
-  keys.
-- Keep service modules `AppHandle`-free and unit-testable where that is the
-  established boundary.
-- Tag new, not-yet-live-verified features with the `UntestedTag` pill; remove
-  it only when the user says that item is tested.
+- Match surrounding style; small focused changes; `rg` for search.
+- All user-facing strings via `src/lib/i18n.ts` (`useT()`); English holds
+  every key. Never hardcode display text.
+- Tag new, not-live-verified features with the `UntestedTag` pill; remove it
+  only when the user says that item is tested.
+- Prefer local state and existing Zustand stores over new global state.
+- Tauri command payloads use the frontend's camelCase keys.
+- Keep `services/` modules `AppHandle`-free and unit-testable.
+- Persisted JSON must round-trip existing user state (Python-era shapes too).
+- Install flows are one-click open-a-tab-and-run, never copy-it-yourself.
+- Box agent docs: edit only outside the
+  `<!-- eldrun:box-links:start/end -->` generated blocks.
+- Eldrun never edits another app's paths or config (the agent-session hooks
+  are the one exception).
 
-## Remote, sync, and runtime model
+## Invariants
 
-Four trust tiers share one code path: local, containerized, remote SSH, and VM.
-A VM project *is* a remote project — it boots, exposes SSH on a forwarded
-loopback port, and from there is an ordinary `RemoteSpec` with `vm: true`.
+Security / data loss:
+- Anything inside a project folder is attacker-controlled. Session state
+  (tabs, `open_apps`) lives in `<state_dir>/sessions/<id>/`; `open_apps` is
+  never adopted from a project folder.
+- Passwords are never persisted by default (opt-in → OS keychain, keyed by
+  host/config target, not project id).
+- Remote/VPN auto-connect must never prompt; never `pkexec` a connect that
+  can't succeed silently.
+- Destructive background git/sync moves record through `services::local_loss`.
+- `services::agent_fence` fails closed: missing/unusable bubblewrap never
+  falls back to launching unfenced.
+- `services::mobile_control`: raw project ids, paths, commands, tmux targets
+  never cross the browser API.
+- Terminal `kill`/`kill_all` reap the whole child subtree.
 
-- Remote SSH projects are mount-free: tabs run on the host over SSH, files go
-  over SFTP, git runs on the host, all through pooled ControlMaster/SFTP
-  sessions in `services::remote`, the source of truth for host-aware resolution.
-- Remoteness is explicit — use `remote_target_for{,_dir}` and the host-aware
-  variants. Never infer it from path conventions.
-- A remote project's `remote` is the primary host; extra `compute_hosts` are
-  workers, each with its own pool entry, lamp, and tab locality (`host:<id>`).
-- `services::worker_sync` is push-only, tracked-files-only code fan-out via git
-  bundle/reset — never `git clean`, never the bidirectional divergence path.
-  Shared-filesystem workers (the default in the add-machine UI) see the primary
-  folder at their own `remote_path`: no git init/reset/fan-out, tabs just `cd`.
-- `services::git_peer` owns lockstep, which moves git-tracked commits/refs
-  semantically via bundles; byte-sync owns everything else and moves raw bytes.
-  Keep the `drop_tracked` split intact so the two never race for one file.
-  With lockstep on, a saved edit to a tracked file reaches the peer only after
-  it is committed — do not "fix" this back into continuous byte mirroring.
-- Byte-sync is opt-in per path from the explicit manifest and does not read
-  `.gitignore`; preview and confirm before pulling big host trees.
-- Local-loss warnings are file-backed, not events. Destructive background git or
-  sync moves must record through `services::local_loss` so losses survive a
-  relaunch.
-- Passwords are never persisted by default. Saved SSH/OpenVPN credentials are
-  keyed by host/config target, not project id; a blank password can mean "use
-  the saved credential".
-- Remote and VPN auto-connect must never prompt — check the silent-connect
-  predicates first. Never elevate for a connect that cannot succeed silently:
-  `pkexec` prompts before OpenVPN validates config or credentials.
-- OpenVPN tunnels are machine-wide. The header `VpnIndicator` owns visibility
-  and lifecycle; project UI must not imply the tunnel is project-scoped.
-- Containerized projects use one session-lived Docker container per local
-  project, bind-mounting the project at the identical absolute path. File
-  viewers, git, and usage watchers keep reading host bytes. Local-only, and
-  hidden or refused on unsupported platforms. `services::sandbox` owns the
-  lifecycle; tab close must reap in-container processes via the existing
-  wrapper/pidfile mechanism.
-- `hpc_hosts` is user-set and gates *background behavior* (scans, sync and
-  lockstep loops, auto-connect, login-node runs); `careful_hosts` gates how
-  much is read. The tag outranks careful mode.
-- Eldrun must never manipulate another application's paths or config. The
-  agent-session hooks are the one deliberate exception.
+Remote & sync:
+- Remoteness is explicit (`remote_target_for{,_dir}` and host-aware variants);
+  never infer it from paths. `services::remote` is the source of truth.
+- `worker_sync` is push-only, tracked files only — never `git clean`.
+- Lockstep (`git_peer`) owns tracked files, byte-sync owns the rest; keep the
+  `drop_tracked` split. A tracked edit reaches the peer only once committed —
+  don't "fix" that into continuous mirroring.
+- Byte-sync is opt-in per path and ignores `.gitignore`; preview before
+  pulling big trees.
+- OpenVPN is machine-wide; `VpnIndicator` owns it — no project-scoped UI.
+- Containers: one session container per local project, project mounted at the
+  same absolute path; `services::sandbox` owns lifecycle.
+- `hpc_hosts` gates background behaviour and outranks `careful_hosts`.
 
-## Tabs, agents, and restore
+Agents:
+- An agent's permission mode is its own CLI's. Eldrun injects no mode flag and
+  has no mode toggle; `agent_session` only re-applies the mode Claude's hook
+  recorded on `--resume`. Don't grow that into a mode Eldrun chooses.
 
-- Shell and files tabs restore on relaunch. Claude and Codex agent tabs with a
-  `sessionId` are resumable and restored; Gemini and Vibe restore is more
-  limited unless the code says otherwise.
-- Eldrun installs Claude/Codex session hooks and also has hook-free Codex
-  binding. Codex user hooks may need one-time trust via `/hooks`.
-- Agent authority has two axes Eldrun owns: project container sandbox and tab
-  location (local/primary/worker).
-- **An agent's permission mode is the agent's own, set through its own CLI.**
-  Eldrun launches the plain command and injects no mode flag — there is no
-  Plan/Auto toggle, and nothing persists a per-tab mode. The one thing that
-  carries a mode across a respawn is `services::agent_session`, which re-applies
-  the mode Claude's own hook recorded onto the `--resume` line; that preserves
-  what the user set in-session and must not grow into a mode Eldrun chooses.
-- Terminal `kill`/`kill_all` must reap the child process subtree, not just the
-  shell leader.
-- To show the user a file on their phone (Eldrun Mobile), run
-  `eldrun-send <file>` in a local or container tab (24 MiB per file), or pipe
-  stdin with `command | eldrun-send -n tests.log`. The phone's Focus view lists
-  the scope's `.eldrun/outbox/`: images, PDFs and text preview; other files
-  download or share. `eldrun-send --clear` empties it. Manual copies still
-  work. Nothing is copied there on an agent's behalf; remote SSH is deferred.
-
-## Frontend notes
-
-- The right panel and the Files (Project) tab share `ProjectFilesView`; keep
-  viewer features in the shared component so the surfaces do not drift.
-  `ProjectFilesPane` owns tree/sort/source mechanics; hosts own only identity,
-  active state, browsed folder, and chrome slots.
-- Remote/SFTP/git probes must be gated when disconnected; a synchronous Tauri
-  command against a dead session can freeze the window.
-- Work in a hidden pane must be gated (`PaneVisibleContext`) and caught up on
-  show — mtime polls, animation loops, and terminal streaming all cost real
-  time while invisible, and on a remote project each poll is an SFTP round trip.
-- Never animate a blurred box-shadow: WebKitGTK renders it in software with
-  DMABUF off. Use a static-shadow pseudo-element and animate opacity.
-- File viewer parsers (YAML, table editing) are text-preserving views. Keep
-  edits surgical so comments, delimiters, quoting, and line endings survive.
-- GPU UI reports whole-device memory and optional `gpustat` sensors, not just
-  Ollama model memory. Omit missing readings; never render fake zeroes.
-- Python Run/Debug opens a terminal tab and asks the backend for interpreter
-  precedence. Do not duplicate interpreter ranking in the frontend.
-- Experimental features use `useExperimental`; unset flags fall back to debug
-  mode.
-- Any install-via-command flow (Ollama models, agents, LaTeX) is a one-click
-  open-a-tab-and-run, never a copy-it-yourself instruction.
-- Menus and dialogs share one canonical scheme (accent header + divider,
-  `--text-primary`, `--bg-panel` chrome). Portaled dialogs must set an explicit
-  color — `body` has none, so they inherit black.
-
-## Backend notes
-
-- `services::agent_fence` owns the default-on agent fence for local agents:
-  bubblewrap on Linux, a `sandbox-exec` Seatbelt profile on macOS (which can
-  deny but not shadow, so the hook-registration files are read-only there),
-  and honestly unfenced on Windows. Writable roots derive from
-  `box_allowed_roots`, and a missing/unusable
-  bubblewrap fails closed rather than silently launching on the host.
-- Remote GPU snapshots are parsed through the same local `gpustat` parsers so
-  host readings match local ones field-for-field.
-- `services::openvpn` tracks both headless tunnels and interactive terminal
-  tunnels armed with Eldrun-owned pid files.
-- `services::mobile_control` is the AppHandle-free Eldrun Mobile sidecar core;
-  raw project ids, paths, commands, and tmux targets never cross the browser
-  API.
-
-Keys: `F11` fullscreen; `F9` toggles panels while Eldrun is focused, as does
-a bare `Super` on a desktop that does not claim that key itself (GNOME, KDE
-and Windows do — see `platform::desktop_claims_super`).
+Frontend:
+- Gate remote/SFTP/git probes on connected — a sync command against a dead
+  session can freeze the window.
+- Gate work in hidden panes (`PaneVisibleContext`) and catch up on show.
+- Never animate a blurred `box-shadow` (WebKitGTK software path); use a static
+  shadow pseudo-element and animate opacity.
+- Viewer features go in the shared `ProjectFilesView`, not one host.
+- YAML/table viewers edit surgically: comments, quoting, line endings survive.
+- Never render a missing sensor reading as zero; omit it.
+- Python interpreter precedence comes from the backend; don't re-rank.
+- Experimental features use `useExperimental`.
+- Menus/dialogs use the one shared scheme; portaled dialogs set an explicit
+  `color` (`body` has none → black text).
+- To show the user a file on their phone: `eldrun-send <file>`.

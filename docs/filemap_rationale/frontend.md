@@ -1,8 +1,9 @@
-# ProjectEldrun — Frontend File Map (`src/`)
+# ProjectEldrun — Frontend File Map — rationale archive (`src/`)
 
-Only the load-bearing files are listed; the tree is the source of truth. See
-the root `AGENTS.md` for project-wide context (running, persistence, dev
-workflow); see `src-tauri/CLAUDE.md` for the backend file map.
+Frozen snapshot (2026-09-18) of the long-form rows that `docs/filemap_frontend.md`
+once carried: the incidents, measurements and rejected alternatives behind each
+file. **Not maintained** — grep it for *why* something is the way it is, and
+verify against the code. New rationale goes in code comments or `docs/context/`.
 
 **Entry & shell**
 
