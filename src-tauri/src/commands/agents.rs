@@ -229,9 +229,17 @@ const AGENTS: &[AgentSpec] = &[
         id: "openclaw",
         label: "OpenClaw",
         bin: "openclaw",
-        install_cmd: "npm install -g openclaw",
-        install_cmd_windows: Some("npm install -g openclaw"),
-        extra_paths: &[".local/bin/openclaw"],
+        // OpenClaw's own local-prefix installer, not `npm install -g openclaw`:
+        // the package demands Node >=24.16, newer than most distro Node, and a
+        // system-wide npm prefix is root-owned (EACCES). This one fetches a
+        // private Node 24 and installs both under `~/.openclaw` — no root, no
+        // onboarding prompt, nothing added to shell rc files.
+        install_cmd: "curl -fsSL --proto '=https' --tlsv1.2 https://openclaw.ai/install-cli.sh | bash",
+        // The Windows installer onboards interactively unless told not to.
+        install_cmd_windows: Some(
+            "$env:OPENCLAW_NO_ONBOARD='1'; irm https://openclaw.ai/install.ps1 | iex",
+        ),
+        extra_paths: &[".openclaw/bin/openclaw", ".local/bin/openclaw"],
         docs: "https://docs.openclaw.ai",
     },
     AgentSpec {
@@ -579,12 +587,63 @@ pub async fn agent_is_installed(id: String) -> bool {
     find_spec(&id).map(spec_is_installed).unwrap_or(false)
 }
 
-/// True when Node.js' `npm` is reachable on `PATH`. Most agent CLIs install via
-/// `npm install -g …`, so the Manage Agents panel uses this to decide whether to
-/// surface its "install Node/npm first" helper.
+/// The oldest Node.js major the Manage Agents panel accepts without nudging:
+/// the current LTS line. Agent CLIs track it closely — OpenClaw requires
+/// 24.16+, and npm dependencies they pull in already reject Node 22 point
+/// releases — so an older Node installs them with `EBADENGINE` warnings and
+/// then fails at runtime. Raise this when a new line becomes LTS.
+const NODE_MIN_MAJOR: u32 = 24;
+
+/// What the Manage Agents Node helper needs to know about the host's Node.js.
+#[derive(serde::Serialize)]
+pub struct NodeRuntimeStatus {
+    /// `npm` is reachable on Eldrun's PATH.
+    npm: bool,
+    /// `node --version` (e.g. `v22.22.1`), or `None` when Node is absent or
+    /// didn't answer.
+    version: Option<String>,
+    min_major: u32,
+    /// Node answered with a version below `min_major`.
+    too_old: bool,
+}
+
+/// Probe the host's Node.js for the Manage Agents panel. Most agent CLIs
+/// install via `npm install -g …`, so a missing npm or a Node below
+/// [`NODE_MIN_MAJOR`] surfaces the "install Node first" helper.
 #[tauri::command]
-pub async fn npm_is_installed() -> bool {
-    crate::paths::binary_on_path("npm")
+pub async fn node_runtime_status() -> NodeRuntimeStatus {
+    tauri::async_runtime::spawn_blocking(|| {
+        let version = crate::paths::command_no_window("node")
+            .arg("--version")
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .filter(|v| !v.is_empty());
+        node_runtime_status_from(crate::paths::binary_on_path("npm"), version)
+    })
+    .await
+    .unwrap_or(NodeRuntimeStatus {
+        npm: true,
+        version: None,
+        min_major: NODE_MIN_MAJOR,
+        too_old: false,
+    })
+}
+
+/// Pure half of [`node_runtime_status`]. An unparseable version is never
+/// "too old": the helper nudges only on a reading it understood.
+fn node_runtime_status_from(npm: bool, version: Option<String>) -> NodeRuntimeStatus {
+    let too_old = version
+        .as_deref()
+        .and_then(crate::paths::parse_node_version)
+        .is_some_and(|(major, _, _)| major < NODE_MIN_MAJOR);
+    NodeRuntimeStatus {
+        npm,
+        version,
+        min_major: NODE_MIN_MAJOR,
+        too_old,
+    }
 }
 
 /// Probe arbitrary commands (user-defined custom agents, which aren't in the
@@ -1802,6 +1861,18 @@ mod tests {
         let claude = find_spec("claude").expect("claude in registry");
         assert!(should_retry_npm_install(gemini, collision));
         assert!(!should_retry_npm_install(claude, collision));
+    }
+
+    #[test]
+    fn node_below_the_lts_floor_is_too_old() {
+        let status = |v: Option<&str>| node_runtime_status_from(true, v.map(str::to_string));
+        assert!(status(Some("v22.22.1")).too_old);
+        assert!(!status(Some(&format!("v{NODE_MIN_MAJOR}.0.0"))).too_old);
+        assert!(!status(Some("v26.1.0")).too_old);
+        // Absent or unreadable: nothing to say about the version.
+        assert!(!status(None).too_old);
+        assert!(!status(Some("garbage")).too_old);
+        assert_eq!(status(None).min_major, NODE_MIN_MAJOR);
     }
 
     #[test]

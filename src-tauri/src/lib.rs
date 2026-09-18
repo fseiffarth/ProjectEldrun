@@ -1913,7 +1913,7 @@ pub fn run() {
             commands::ollama::install_vibe,
             commands::ollama::vibe_install_strategy,
             commands::agents::agent_is_installed,
-            commands::agents::npm_is_installed,
+            commands::agents::node_runtime_status,
             commands::agents::probe_binaries,
             commands::agents::list_agents,
             commands::agents::codex_hook_status,

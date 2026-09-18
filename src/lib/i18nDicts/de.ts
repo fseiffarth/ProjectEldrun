@@ -878,6 +878,11 @@ export const dict: Dict = {
     ", und nutze dann die im Fußbereich genannte Prüf-/Vertrauenstaste; achte darauf, dass die Zeile am Ende eingeschaltet ist.",
   "agents.openInCodex": "In Codex öffnen",
   "agents.nodeNotDetected": "nicht erkannt",
+  "agents.nodeTooOld": "{version} — älter als Node.js {min}",
+  "agents.nodeTooOldHelpPre":
+    "Agenten-CLIs verlangen zunehmend Node.js {min} oder neuer (OpenClaw und die npm-Pakete, die mehrere andere mitbringen). Installiere einmalig die aktuelle LTS-Version (ohne Administratorrechte) in einem",
+  "agents.nodeTooOldHelpPost":
+    "Terminal-Tab und klicke dann auf Erneut prüfen — Eldrun nutzt das neue Node ab dann für Agent-Installationen:",
   "agents.nodeHelpPre": "Die meisten Agenten-CLIs installieren mit",
   "agents.nodeHelpMid": ", das mit Node.js kommt. Installiere es einmal (keine Administratorrechte nötig) in einem",
   "agents.nodeHelpPost": "Terminal-Tab und installiere danach deine Agenten unten:",

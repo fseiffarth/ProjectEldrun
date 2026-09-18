@@ -967,6 +967,11 @@ export const en = {
   "agents.nodeHelpPre": "Most agent CLIs install with",
   "agents.nodeHelpMid": ", which ships with Node.js. Install it once (no administrator rights needed) in a",
   "agents.nodeHelpPost": "terminal tab, then install your agents below:",
+  "agents.nodeTooOld": "{version} — older than Node.js {min}",
+  "agents.nodeTooOldHelpPre":
+    "Agent CLIs increasingly require Node.js {min} or newer (OpenClaw, and the npm packages several others pull in). Install the current LTS once (no administrator rights needed) in a",
+  "agents.nodeTooOldHelpPost":
+    "terminal tab, then press Re-check — Eldrun uses the new Node for agent installs from then on:",
   "agents.nodeManualPre": "Prefer a manual install? See",
   "agents.nodeDownloads": "the Node.js downloads",
 

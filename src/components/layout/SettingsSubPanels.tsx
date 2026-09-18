@@ -752,34 +752,60 @@ function AgentFenceCard() {
   );
 }
 
+/** Backend `NodeRuntimeStatus` (`node_runtime_status`). */
+interface NodeRuntimeStatus {
+  npm: boolean;
+  /** `node --version`, e.g. `v22.22.1`; null when Node is absent. */
+  version: string | null;
+  min_major: number;
+  too_old: boolean;
+}
+
 /**
  * "Install Node/npm first" helper for the Manage Agents panel. Most agent CLIs
- * install through `npm`, so when `npm` isn't on the host's PATH this points the
- * user at the one-click, no-admin Node install for their OS (and stays hidden
- * once npm is detected). Follows Eldrun's install-via-terminal-tab policy.
+ * install through `npm`, so when `npm` isn't on the host's PATH — or the Node
+ * that is there is older than the current LTS the CLIs require — this points
+ * the user at the one-click, no-admin Node install for their OS (and stays
+ * hidden once a current Node is detected). Follows Eldrun's
+ * install-via-terminal-tab policy.
  */
 function NodeRuntimeNotice() {
   const t = useT();
-  // null = still probing; true/false = npm present or not.
-  const [hasNpm, setHasNpm] = useState<boolean | null>(null);
+  // null = still probing.
+  const [status, setStatus] = useState<NodeRuntimeStatus | null>(null);
   const recheck = () =>
-    invoke<boolean>("npm_is_installed").then(setHasNpm).catch(() => setHasNpm(true));
+    invoke<NodeRuntimeStatus>("node_runtime_status")
+      .then(setStatus)
+      .catch(() => setStatus(null));
   useEffect(() => void recheck(), []);
 
-  // While probing, or once npm is present, there is nothing to nudge about.
-  if (hasNpm !== false) return null;
+  // While probing, or once a current npm is present, there is nothing to nudge about.
+  if (!status || (status.npm && !status.too_old)) return null;
+  const tooOld = status.npm && status.too_old;
 
   const { command, shellKey, shellKind } = NODE_INSTALL[PLATFORM];
   return (
     <div className="ollama-vibe-section agent-list-entry">
       <div className="settings-subheader">
         Node.js / npm{" "}
-        <span className="ollama-status-text">{t("agents.nodeNotDetected")}</span>
+        <span className="ollama-status-text">
+          {tooOld
+            ? t("agents.nodeTooOld", { version: status.version ?? "", min: status.min_major })
+            : t("agents.nodeNotDetected")}
+        </span>
+        {tooOld && <UntestedTag />}
       </div>
-      <p className="settings-help">
-        {t("agents.nodeHelpPre")} <code>npm</code> {t("agents.nodeHelpMid")}{" "}
-        <strong>{t(shellKey)}</strong> {t("agents.nodeHelpPost")}
-      </p>
+      {tooOld ? (
+        <p className="settings-help">
+          {t("agents.nodeTooOldHelpPre", { min: status.min_major })}{" "}
+          <strong>{t(shellKey)}</strong> {t("agents.nodeTooOldHelpPost")}
+        </p>
+      ) : (
+        <p className="settings-help">
+          {t("agents.nodeHelpPre")} <code>npm</code> {t("agents.nodeHelpMid")}{" "}
+          <strong>{t(shellKey)}</strong> {t("agents.nodeHelpPost")}
+        </p>
+      )}
       <div className="ollama-install-cmd-row">
         <code className="ollama-install-cmd">{command}</code>
         <button

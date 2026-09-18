@@ -117,6 +117,9 @@ fn supplemental_path_dirs_for(
         home.join(".local").join("bin"),
         home.join(".cargo").join("bin"),
         home.join(".opencode").join("bin"),
+        // OpenClaw's installer puts only its `openclaw` wrapper here (the
+        // private Node it bundles lives under `tools/`), so nothing is shadowed.
+        home.join(".openclaw").join("bin"),
     ];
     match os {
         OsKind::Macos => {
@@ -197,7 +200,82 @@ pub fn extra_path_dirs() -> Vec<PathBuf> {
         std::env::var_os("APPDATA").as_deref(),
         std::env::var_os("ProgramFiles").as_deref(),
     ));
+    if OsKind::current() != OsKind::Windows {
+        dirs.extend(nvm_default_node_bin());
+    }
     dirs
+}
+
+/// `v24.19.0` / `24.19.0` → `(24, 19, 0)`; a missing minor/patch reads as 0.
+pub fn parse_node_version(raw: &str) -> Option<(u32, u32, u32)> {
+    let mut parts = raw.trim().trim_start_matches('v').splitn(3, '.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next().map_or(Some(0), |p| p.parse().ok())?;
+    let patch = parts.next().map_or(Some(0), |p| p.parse().ok())?;
+    Some((major, minor, patch))
+}
+
+/// The `bin` dir of nvm's default Node, the one an interactive shell gets once
+/// `nvm.sh` runs from its rc file. Eldrun's own processes never source that, so
+/// without this a Node installed through nvm (the Manage Agents Node helper's
+/// route) stays invisible to agent installs and to the helper's recheck, which
+/// would keep finding an older system Node instead.
+fn nvm_default_node_bin() -> Option<PathBuf> {
+    let nvm_dir = std::env::var_os("NVM_DIR")
+        .filter(|d| !d.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home_dir().join(".nvm"));
+    let versions = nvm_dir.join("versions").join("node");
+    let installed: Vec<String> = std::fs::read_dir(&versions)
+        .ok()?
+        .filter_map(|e| e.ok()?.file_name().into_string().ok())
+        .collect();
+    let read_alias = |name: &str| {
+        std::fs::read_to_string(nvm_dir.join("alias").join(name))
+            .ok()
+            .map(|s| s.trim().to_string())
+    };
+    let version = resolve_nvm_version(read_alias("default").as_deref(), &read_alias, &installed)?;
+    Some(versions.join(version).join("bin"))
+}
+
+/// Which installed nvm version (`v24.19.0` dir name) the `default` alias means.
+/// Aliases chain through nvm's alias files (`lts/*` → `lts/jod` → `v22.22.2`);
+/// a version prefix (`24`, `v24.19`) takes the newest install it matches. With
+/// no default, or one that resolves to nothing installed, the newest install
+/// wins — what `nvm.sh` activates when a lone `nvm install --lts` set no alias.
+fn resolve_nvm_version(
+    default: Option<&str>,
+    read_alias: &impl Fn(&str) -> Option<String>,
+    installed: &[String],
+) -> Option<String> {
+    let newest_matching = |prefix: Option<&str>| {
+        installed
+            .iter()
+            .filter(|v| {
+                prefix.is_none_or(|p| {
+                    let p = p.trim_start_matches('v');
+                    let v = v.trim_start_matches('v');
+                    v == p || v.starts_with(&format!("{p}."))
+                })
+            })
+            .filter_map(|v| Some((parse_node_version(v)?, v)))
+            .max_by_key(|(parsed, _)| *parsed)
+            .map(|(_, v)| v.clone())
+    };
+    let mut alias = default.map(str::to_string);
+    for _ in 0..8 {
+        let Some(current) = alias.take() else { break };
+        // The user pointed nvm back at the OS Node on purpose; add nothing.
+        if current == "system" {
+            return None;
+        }
+        if parse_node_version(&current).is_some() {
+            return newest_matching(Some(&current)).or_else(|| newest_matching(None));
+        }
+        alias = read_alias(&current);
+    }
+    newest_matching(None)
 }
 
 /// Prepend [`extra_path_dirs`] to `cmd`'s PATH env.
@@ -564,12 +642,48 @@ mod tests {
     }
 
     #[test]
+    fn parse_node_version_reads_node_and_nvm_spellings() {
+        assert_eq!(parse_node_version("v22.22.1\n"), Some((22, 22, 1)));
+        assert_eq!(parse_node_version("24.19.0"), Some((24, 19, 0)));
+        assert_eq!(parse_node_version("24"), Some((24, 0, 0)));
+        assert_eq!(parse_node_version("lts/*"), None);
+        assert_eq!(parse_node_version("node"), None);
+    }
+
+    #[test]
+    fn nvm_default_alias_resolution() {
+        let installed: Vec<String> = ["v20.11.0", "v22.22.2", "v24.9.0", "v24.19.0"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let aliases = |name: &str| match name {
+            "lts/*" => Some("lts/jod".to_string()),
+            "lts/jod" => Some("v22.22.2".to_string()),
+            _ => None,
+        };
+        let pick = |default: Option<&str>| resolve_nvm_version(default, &aliases, &installed);
+        // A major prefix takes the newest install of that line (numerically).
+        assert_eq!(pick(Some("24")).as_deref(), Some("v24.19.0"));
+        assert_eq!(pick(Some("v20.11.0")).as_deref(), Some("v20.11.0"));
+        // Aliases chain through nvm's alias files.
+        assert_eq!(pick(Some("lts/*")).as_deref(), Some("v22.22.2"));
+        // No alias, or one naming nothing installed → the newest install.
+        assert_eq!(pick(None).as_deref(), Some("v24.19.0"));
+        assert_eq!(pick(Some("node")).as_deref(), Some("v24.19.0"));
+        assert_eq!(pick(Some("18")).as_deref(), Some("v24.19.0"));
+        // `system` means the OS Node: nvm contributes nothing.
+        assert_eq!(pick(Some("system")), None);
+        assert_eq!(resolve_nvm_version(None, &aliases, &[]), None);
+    }
+
+    #[test]
     fn supplemental_paths_cover_all_supported_os_families() {
         let home = Path::new("/home/alice");
         let unix = supplemental_path_dirs_for(OsKind::Unix, home, None, None, None);
         assert!(unix.contains(&home.join(".local/bin")));
         assert!(unix.contains(&home.join(".cargo/bin")));
         assert!(unix.contains(&home.join(".opencode/bin")));
+        assert!(unix.contains(&home.join(".openclaw/bin")));
 
         let mac = supplemental_path_dirs_for(OsKind::Macos, home, None, None, None);
         assert!(mac.contains(&PathBuf::from("/opt/homebrew/bin")));

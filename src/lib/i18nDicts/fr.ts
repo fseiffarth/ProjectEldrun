@@ -876,6 +876,11 @@ export const dict: Dict = {
     ", puis utilisez la touche d'examen/confiance indiquée en pied de page, et vérifiez que la ligne finit activée.",
   "agents.openInCodex": "Ouvrir dans Codex",
   "agents.nodeNotDetected": "non détecté",
+  "agents.nodeTooOld": "{version} — antérieur à Node.js {min}",
+  "agents.nodeTooOldHelpPre":
+    "Les CLI d’agents exigent de plus en plus Node.js {min} ou plus récent (OpenClaw, et les paquets npm qu’embarquent plusieurs autres). Installez une fois la LTS actuelle (sans droits administrateur) dans un onglet de terminal",
+  "agents.nodeTooOldHelpPost":
+    ", puis cliquez sur Revérifier — Eldrun utilise ensuite ce nouveau Node pour installer les agents :",
   "agents.nodeHelpPre": "La plupart des CLI d'agents s'installent avec",
   "agents.nodeHelpMid": ", fourni avec Node.js. Installez-le une fois (aucun droit administrateur requis) dans un onglet terminal",
   "agents.nodeHelpPost": ", puis installez vos agents ci-dessous :",
