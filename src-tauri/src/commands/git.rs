@@ -1140,7 +1140,7 @@ fn git_unpushed_commits_blocking(project_dir: String) -> Result<Vec<String>, Str
 /// git won't call an http helper. Shared by push, publish and clone.
 pub(crate) fn scoped_token_config(origins: &[String], username: &str) -> Vec<String> {
     let helper = format!(
-        "!f() {{ test \"$1\" = get && echo username={username} && echo \"password=$ELDRUN_GIT_TOKEN\"; }}; f"
+        "!f() {{ test \"$1\" = get && echo username={username} && echo \"password=$ELDRUN_GIT_TOKEN\"; }}; f" // privacy-check: ok — an env-var NAME; the token is read at runtime, never written here
     );
     let mut args = vec!["-c".to_string(), "credential.helper=".to_string()];
     for origin in origins {
