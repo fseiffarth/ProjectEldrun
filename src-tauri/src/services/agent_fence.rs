@@ -1446,7 +1446,9 @@ mod tests {
             std::fs::write(cargo.join(name), "fixture registry token").unwrap();
         }
         let hidden = cargo_credential_paths(home.path(), Some(Path::new("custom-cargo")), home.path(), false);
-        assert!(hidden.contains(&home.path().join("custom-cargo/credentials.toml").to_string_lossy().into_owned()));
+        // Joined per component: a literal "custom-cargo/credentials.toml" keeps its `/`
+        // on Windows, where the function under test produces a `\` path.
+        assert!(hidden.contains(&home.path().join("custom-cargo").join("credentials.toml").to_string_lossy().into_owned()));
         let mut args = bwrap_args("/home/u", "/p", "codex", &[], &[home.path().to_owned()], &[], &[], &[]);
         mask_cargo_credentials(&mut args, hidden.clone());
         let grant = args.iter().position(|a| a == "--bind-try").unwrap();
@@ -1546,8 +1548,11 @@ mod tests {
         std::os::unix::fs::symlink("missing-optional", source.path().join("dangling")).unwrap();
         copy_private_content(source.path(), &dest.path().join("copy")).unwrap();
         let copy = dest.path().join("copy/linked.sh");
-        assert!(copy.canonicalize().unwrap().starts_with(dest.path()));
-        assert!(dest.path().join("copy/loop").canonicalize().unwrap().starts_with(dest.path()));
+        // Compared canonical-to-canonical: macOS temp dirs live under `/var`, a
+        // symlink to `/private/var`, so a resolved path never starts with the raw one.
+        let dest_root = dest.path().canonicalize().unwrap();
+        assert!(copy.canonicalize().unwrap().starts_with(&dest_root));
+        assert!(dest.path().join("copy/loop").canonicalize().unwrap().starts_with(&dest_root));
         std::fs::write(copy, "private edit").unwrap();
         assert_eq!(std::fs::read_to_string(script).unwrap(), "host script");
         let external_copy = dest.path().join("copy/external.sh");
