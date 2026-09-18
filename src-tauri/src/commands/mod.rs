@@ -13,6 +13,7 @@ pub mod crash;
 pub mod credentials;
 pub mod debug;
 pub mod default_apps;
+pub mod exec_trust;
 pub mod disk_usage;
 pub mod format;
 pub mod fs;

@@ -1632,13 +1632,14 @@ fn parse_porcelain(text: &str) -> GitSnapshot {
 /// read that refreshes the index takes `index.lock`, and a background reader
 /// doing that is half of the root git-status loop.
 fn git_snapshot(dir: &Path) -> Result<Option<GitSnapshot>, String> {
-    let out = crate::paths::command_no_window("git")
-        .env("GIT_OPTIONAL_LOCKS", "0")
-        .arg("-C")
-        .arg(dir)
-        .args(["status", "--porcelain=v1", "--branch"])
-        .output()
-        .map_err(|e| format!("running git: {e}"))?;
+    // Hardened: `status` is exactly what fires a repo-configured `core.fsmonitor`.
+    let out = crate::commands::git::hardened_git_command_in(
+        dir,
+        &["status", "--porcelain=v1", "--branch"],
+    )
+    .env("GIT_OPTIONAL_LOCKS", "0")
+    .output()
+    .map_err(|e| format!("running git: {e}"))?;
     if !out.status.success() {
         return Ok(None);
     }

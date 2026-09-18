@@ -43,6 +43,7 @@ import { HpcPipelineWizardHost } from "../projects/HpcPipelineWizard";
 import { BigFolderDialogHost } from "../projects/BigFolderExcludeDialog";
 import { BoxEditorHost } from "../projects/BoxEditorDialog";
 import { BrowserDownloadHost } from "../browser/BrowserDownloadHost";
+import { ExecTrustHost } from "../common/ExecTrustHost";
 import { CalendarOverlayHost } from "../calendar/CalendarOverlay";
 import { CalDavSyncHost } from "../calendar/CalDavSyncHost";
 import { AgentContinueHost } from "./AgentContinueHost";
@@ -1345,6 +1346,9 @@ export function AppShell() {
           tab. It also owns the browser event listeners, so a download raised by a
           live-page window is answerable even when no browser tab is open. */}
       <BrowserDownloadHost />
+      {/* The ask-once "run this project's hooks / latexmkrc / prettier?" prompt
+          (services::exec_trust), raised by a gated commit/push/build/format. */}
+      <ExecTrustHost />
       {/* Mail as a global app: the header's ✉ button opens the ordinary MailPane
           as an overlay over whatever is on screen. At the shell rather than in
           the header because it covers the window, not the header — and because

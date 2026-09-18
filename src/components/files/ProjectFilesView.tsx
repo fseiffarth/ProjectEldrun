@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
+import { invokeTrusted } from "../../lib/execTrust";
 import { GitHistory } from "./GitHistory";
 import { GitChangeTree, type ChangeScope } from "./GitChangeTree";
 import { AlertsSection } from "./AlertsSection";
@@ -1241,7 +1242,7 @@ export function ProjectFilesView({
     setGitBusy(true);
     setGitError(null);
     try {
-      await invoke("git_commit", { projectDir: effectiveGitRoot, message: commitMsg });
+      await invokeTrusted("git_commit", { projectDir: effectiveGitRoot, message: commitMsg });
       setCommitMsg(null);
       refreshGit(effectiveGitRoot);
     } catch (e) {
@@ -1258,7 +1259,7 @@ export function ProjectFilesView({
     try {
       // On a nested repo, push to its own configured remote (no project id →
       // plain `git push`), not the project's GitHub/GitLab provider flow.
-      await invoke("git_push", {
+      await invokeTrusted("git_push", {
         projectDir: effectiveGitRoot,
         projectId: onNestedRepo ? null : projectId ?? null,
       });

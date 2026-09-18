@@ -3,6 +3,7 @@ import { DraftSaver } from "./draftSaver";
 import { lineStarts, indexedLine } from "./lineIndex";
 import { Suspense, createContext, lazy, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { invokeTrusted } from "../../lib/execTrust";
 import { CompletionCache, completionLineLength, completionWindow, typeThrough, type CompletionGhost } from "../../lib/viewers/completion/autocomplete";
 import { OllamaCompletionProvider } from "../../lib/viewers/completion/ollamaCompletionProvider";
 import { CopilotCompletionProvider, CopilotFeedback, copilotServes } from "../../lib/viewers/completion/copilotCompletionProvider";
@@ -5774,7 +5775,7 @@ function useFormatter(path: string, draft: string, setDraft: (v: string) => void
     if (!lang) return;
     setBusy(true);
     try {
-      const out = await invoke<string>("format_source", { text, lang, path });
+      const out = await invokeTrusted<string>("format_source", { text, lang, path });
       if (out !== text) setDraft(out);
     } catch (e) {
       const msg = String(e);
@@ -9613,7 +9614,7 @@ function TexView({
       // #54: pass the compiler options. The backend filters extra_flags so none
       // can ever enable shell-escape (compile_args_never_enable_shell_escape).
       const flags = extraFlags.trim().split(/\s+/).filter(Boolean);
-      const res = await invoke<TexCompileResult>("compile_tex", {
+      const res = await invokeTrusted<TexCompileResult>("compile_tex", {
         path: target,
         engine: engine || null,
         outDir: outDir.trim() || null,

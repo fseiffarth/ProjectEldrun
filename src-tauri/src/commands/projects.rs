@@ -2976,20 +2976,19 @@ pub fn scaffold_project(dir: &Path, with_git: bool) -> std::io::Result<()> {
 /// git can't resolve one (fresh machine, no global `user.name`/`user.email`) so the
 /// commit never silently fails for lack of a committer and leaves HEAD unborn.
 fn git_scaffold_commit(dir: &Path) {
-    let _ = crate::paths::command_no_window("git")
-        .args(["add", "-A"])
-        .current_dir(dir)
-        .output();
+    // Hardened, hooks off: "extend to remote" seeds this commit in an existing
+    // local repo, whose `.git/config` and hooks a fenced agent may have written.
+    use crate::commands::git::hookless_git_command_in;
+    let _ = hookless_git_command_in(dir, &["add", "-A"]).output();
     const MSG: &str = "Initial Eldrun scaffold";
-    let committed = crate::paths::command_no_window("git")
-        .args(["commit", "-m", MSG])
-        .current_dir(dir)
+    let committed = hookless_git_command_in(dir, &["commit", "-m", MSG])
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false);
     if !committed {
-        let _ = crate::paths::command_no_window("git")
-            .args([
+        let _ = hookless_git_command_in(
+            dir,
+            &[
                 "-c",
                 "user.name=Eldrun",
                 "-c",
@@ -2997,9 +2996,9 @@ fn git_scaffold_commit(dir: &Path) {
                 "commit",
                 "-m",
                 MSG,
-            ])
-            .current_dir(dir)
-            .output();
+            ],
+        )
+        .output();
     }
 }
 

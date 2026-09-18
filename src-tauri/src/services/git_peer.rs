@@ -244,9 +244,10 @@ impl Peer {
     /// byte-identically for both, exactly like `commands::git::run_git`).
     pub fn run(&self, args: &[&str]) -> Result<Output, String> {
         match self {
-            Peer::Local(dir) => crate::paths::command_no_window("git")
-                .args(args)
-                .current_dir(dir)
+            // Hardened, hooks off: lockstep runs `status`/`checkout`/`merge`/
+            // `commit` in the background, in a tree a fenced agent can write — its
+            // `.git/config` and `.git/hooks/` included.
+            Peer::Local(dir) => crate::commands::git::hookless_git_command_in(dir, args)
                 .output()
                 .map_err(|e| e.to_string()),
             Peer::Remote(spec) => {

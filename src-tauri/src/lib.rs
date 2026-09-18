@@ -1801,6 +1801,7 @@ pub fn run() {
             commands::apps::embed_capability,
             commands::apps::get_project_default_apps,
             commands::apps::set_project_default_apps,
+            commands::exec_trust::exec_trust_approve,
             commands::projects::set_project_panel_prefs,
             commands::projects::get_project_panel_prefs,
             commands::apps::list_installed_apps,

@@ -267,7 +267,15 @@ fn is_denylisted_config_key(key: &str) -> bool {
 /// itself invoke a filter or hook, so this cannot be the very thing it exists
 /// to prevent.
 fn sanitize_repo_git_config(project_dir: &Path) {
-    let config_path = project_dir.join(".git").join("config");
+    // `config.worktree` too: a repo that sets `extensions.worktreeConfig` makes
+    // git read it as a second repo-scope file, which would otherwise be a way
+    // around the strip.
+    for name in ["config", "config.worktree"] {
+        sanitize_git_config_file(&project_dir.join(".git").join(name));
+    }
+}
+
+fn sanitize_git_config_file(config_path: &Path) {
     let Some(config_path_str) = config_path.to_str() else {
         return;
     };
@@ -318,6 +326,21 @@ pub(crate) fn hardened_git_command_in<S: AsRef<str>, P: AsRef<Path>>(
     let mut cmd = hardened_git_command(args);
     cmd.current_dir(project_dir.as_ref());
     cmd
+}
+
+/// [`hardened_git_command_in`] with hooks pinned off as well — for the git Eldrun
+/// runs on its own (lockstep, the scaffold commit), where no hook in the repo
+/// should ever get to run on the host. A fenced agent can write `.git/hooks/`.
+pub(crate) fn hookless_git_command_in<S: AsRef<str>, P: AsRef<Path>>(
+    project_dir: P,
+    args: &[S],
+) -> std::process::Command {
+    let mut full: Vec<String> = NO_HOOKS_CONFIG
+        .iter()
+        .flat_map(|kv| ["-c".to_string(), (*kv).to_string()])
+        .collect();
+    full.extend(args.iter().map(|a| a.as_ref().to_string()));
+    hardened_git_command_in(project_dir, &full)
 }
 
 /// Run `git <args>` for a project, dispatching local-vs-remote on `target`.
@@ -694,6 +717,7 @@ pub async fn git_commit(project_dir: String, message: String) -> Result<(), Stri
 
 fn git_commit_blocking(project_dir: String, message: String) -> Result<(), String> {
     let target = remote_target_for_dir(&project_dir);
+    require_hook_trust(target.as_ref(), &project_dir)?;
     let out = run_git(target.as_ref(), &project_dir, &["commit", "-m", &message])?;
     if !out.status.success() {
         return Err(String::from_utf8_lossy(&out.stderr).to_string());
@@ -1103,14 +1127,41 @@ fn git_unpushed_commits_blocking(project_dir: String) -> Result<Vec<String>, Str
         .collect())
 }
 
-/// Ephemeral inline credential helper that answers an https challenge with the
-/// effective token. The token is read from the child's env INSIDE the snippet, so
-/// it never lands in argv or on disk. Always passed after a leading empty
-/// `credential.helper=`, which clears any system helper (e.g. GCM) so only ours
-/// runs. Harmless for SSH remotes — git won't call an http helper. Shared by
-/// `git_push` and `git_clone`.
-const TOKEN_CREDENTIAL_HELPER: &str =
-    "credential.helper=!f() { test \"$1\" = get && echo username=x-access-token && echo \"password=$ELDRUN_GIT_TOKEN\"; }; f";
+/// `-c` pairs for an ephemeral inline credential helper that answers an https
+/// challenge with the effective token — **only for `origins`** (from
+/// `git_hosting::token_origins`). The token is read from the child's env INSIDE
+/// the snippet, so it never lands in argv or on disk. A leading empty
+/// `credential.helper=` clears every helper configured so far (a system GCM, and
+/// any a repo's own config names) so only ours runs.
+///
+/// Scoping by origin is the point: the push URL comes from `.git/config`, which a
+/// fenced agent can rewrite (`pushurl`, `insteadOf`), and an unscoped helper
+/// would hand the token to whatever server that names. Harmless for SSH remotes —
+/// git won't call an http helper. Shared by push, publish and clone.
+pub(crate) fn scoped_token_config(origins: &[String], username: &str) -> Vec<String> {
+    let helper = format!(
+        "!f() {{ test \"$1\" = get && echo username={username} && echo \"password=$ELDRUN_GIT_TOKEN\"; }}; f"
+    );
+    let mut args = vec!["-c".to_string(), "credential.helper=".to_string()];
+    for origin in origins {
+        args.push("-c".to_string());
+        args.push(format!("credential.{origin}.helper={helper}"));
+    }
+    args
+}
+
+/// The ask-once gate (`services::exec_trust`) for git verbs that run the repo's
+/// hooks on this machine. A remote project's git runs on its host — that host's
+/// hooks are its own business — so only local repos are gated.
+fn require_hook_trust(target: Option<&RemoteTarget>, project_dir: &str) -> Result<(), String> {
+    if target.is_some() {
+        return Ok(());
+    }
+    crate::services::exec_trust::require(
+        crate::services::exec_trust::TrustKind::GitHooks,
+        Path::new(project_dir),
+    )
+}
 
 #[tauri::command]
 pub async fn git_push(project_dir: String, project_id: Option<String>) -> Result<String, String> {
@@ -1118,23 +1169,26 @@ pub async fn git_push(project_dir: String, project_id: Option<String>) -> Result
 }
 
 /// `git push` in a local directory, authenticating an https remote with `token`
-/// when one is set (see `TOKEN_CREDENTIAL_HELPER`). Shared by the local-project
-/// push and the mirror-side push below, so both sides get identical auth.
-fn push_local(dir: &std::path::Path, token: Option<&str>) -> Result<std::process::Output, String> {
-    let mut cmd = crate::paths::command_no_window("git");
-    cmd.current_dir(dir);
+/// when one is set — scoped to `project_id`'s token origins (see
+/// [`scoped_token_config`]). Hardened like every local git call, and gated on
+/// the repo's hooks (`pre-push`) being approved. Shared by the local-project push
+/// and the mirror-side push below, so both sides get identical auth.
+fn push_local(
+    dir: &std::path::Path,
+    token: Option<&str>,
+    project_id: Option<&str>,
+) -> Result<std::process::Output, String> {
+    crate::services::exec_trust::require(crate::services::exec_trust::TrustKind::GitHooks, dir)?;
+    let mut args: Vec<String> = Vec::new();
+    if token.is_some() {
+        let origins = crate::commands::git_hosting::token_origins(project_id, None);
+        args.extend(scoped_token_config(&origins, "x-access-token"));
+    }
+    args.push("push".to_string());
+    let mut cmd = hardened_git_command_in(dir, &args);
     if let Some(tok) = token {
-        cmd.args([
-            "-c",
-            "credential.helper=",
-            "-c",
-            TOKEN_CREDENTIAL_HELPER,
-            "push",
-        ]);
         cmd.env("ELDRUN_GIT_TOKEN", tok);
         cmd.env("GIT_TERMINAL_PROMPT", "0");
-    } else {
-        cmd.args(["push"]);
     }
     cmd.output().map_err(|e| e.to_string())
 }
@@ -1148,7 +1202,7 @@ fn git_push_blocking(project_dir: String, project_id: Option<String>) -> Result<
         match crate::commands::git_publish::mirror_origin_repo(&target.project_id) {
             Some(mirror) => {
                 let token = crate::commands::git_hosting::effective_git_creds(&target.project_id).1;
-                push_local(&mirror, token.as_deref())?
+                push_local(&mirror, token.as_deref(), Some(&target.project_id))?
             }
             // No mirror-side origin: the repo was published (or wired by hand) on
             // the host, so the push runs there and authenticates with the host's
@@ -1161,7 +1215,7 @@ fn git_push_blocking(project_dir: String, project_id: Option<String>) -> Result<
         let token = project_id
             .as_deref()
             .and_then(|id| crate::commands::git_hosting::effective_git_creds(id).1);
-        push_local(std::path::Path::new(&project_dir), token.as_deref())?
+        push_local(std::path::Path::new(&project_dir), token.as_deref(), project_id.as_deref())?
     };
     let stderr = String::from_utf8_lossy(&out.stderr).to_string();
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
@@ -1287,7 +1341,8 @@ pub(crate) fn git_clone_blocking(url: String, dest: String) -> Result<String, St
     cmd.env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes");
     if https {
         if let Some(tok) = token.as_deref() {
-            cmd.args(["-c", "credential.helper=", "-c", TOKEN_CREDENTIAL_HELPER]);
+            let origins = crate::commands::git_hosting::token_origins(None, None);
+            cmd.args(scoped_token_config(&origins, "x-access-token"));
             cmd.env("ELDRUN_GIT_TOKEN", tok);
         }
     }
@@ -1667,6 +1722,7 @@ fn git_reword_head_blocking(project_dir: String, message: String) -> Result<(), 
         return Err("Commit message cannot be empty".to_string());
     }
     let target = remote_target_for_dir(&project_dir);
+    require_hook_trust(target.as_ref(), &project_dir)?;
     let out = run_git(
         target.as_ref(),
         &project_dir,
@@ -3794,5 +3850,60 @@ filename note.txt
         assert!(!valid_positional_path("--force"));
         assert!(!valid_positional_path("-x"));
         assert!(!valid_positional_path("   "));
+    }
+
+    /// The background/automatic git path (lockstep, the scaffold commit) runs in
+    /// trees a fenced agent can write: neither a planted `core.fsmonitor` nor a
+    /// planted hook may run through it. Both directions, as above.
+    #[cfg(unix)]
+    #[test]
+    fn hookless_git_runs_neither_fsmonitor_nor_hooks() {
+        if !git_available() {
+            eprintln!("git not on PATH — skipping hookless_git_runs_neither_fsmonitor_nor_hooks");
+            return;
+        }
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
+        init_repo(dir);
+        let marker = dir.join("executed");
+        let payload = dir.join("payload.sh");
+        fs::write(&payload, format!("#!/bin/sh\ntouch '{}'\n", marker.display())).expect("write");
+        fs::set_permissions(&payload, fs::Permissions::from_mode(0o755)).expect("chmod");
+        let hook = dir.join(".git/hooks/pre-commit");
+        fs::copy(&payload, &hook).expect("hook");
+        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).expect("chmod");
+        let plain = |args: &[&str]| {
+            crate::paths::command_no_window("git").args(args).current_dir(dir).output().expect("git")
+        };
+        plain(&["config", "core.fsmonitor", payload.to_str().unwrap()]);
+        fs::write(dir.join("f.txt"), "a\n").expect("write");
+
+        plain(&["status", "--porcelain"]);
+        assert!(marker.exists(), "setup is stale: git no longer runs core.fsmonitor");
+        fs::remove_file(&marker).expect("clear");
+        let out = hookless_git_command_in(dir, &["status", "--porcelain"]).output().expect("git");
+        assert!(out.status.success());
+        assert!(!marker.exists(), "core.fsmonitor ran through hookless_git_command_in");
+
+        hookless_git_command_in(dir, &["add", "f.txt"]).output().expect("add");
+        let out = hookless_git_command_in(
+            dir,
+            &["-c", "user.name=T", "-c", "user.email=t@example.com", "commit", "-m", "x"],
+        )
+        .output()
+        .expect("commit");
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        assert!(!marker.exists(), "pre-commit hook ran through hookless_git_command_in");
+    }
+
+    #[test]
+    fn token_helper_is_registered_only_for_the_given_origins() {
+        let args = scoped_token_config(&["https://github.com".to_string()], "x-access-token");
+        assert_eq!(&args[..2], ["-c", "credential.helper="]);
+        let helpers: Vec<&String> = args.iter().filter(|a| a.contains(".helper=!")).collect();
+        assert_eq!(helpers.len(), 1);
+        assert!(helpers[0].starts_with("credential.https://github.com.helper=!"));
+        assert!(!args.iter().any(|a| a.starts_with("credential.helper=!")), "unscoped helper");
     }
 }

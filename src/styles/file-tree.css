@@ -1993,6 +1993,38 @@
   border-color: color-mix(in srgb, var(--danger) 40%, var(--border-subtle));
 }
 
+/* The ask-once "run this project's hooks / latexmkrc / prettier?" prompt
+   (ExecTrustHost): the files it would run, each expandable to its content, in the
+   same muted well as .file-delete-path. Scrolls rather than growing past the
+   window — a repo can carry a dozen hooks. */
+.exec-trust-items {
+  max-height: 40vh;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.exec-trust-item > summary {
+  padding: 5px 8px;
+  background: var(--control-bg);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-muted);
+  font-size: 11px;
+  word-break: break-all;
+  cursor: var(--cur-pointer, pointer);
+}
+.exec-trust-preview {
+  margin: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--border-subtle);
+  border-top: none;
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 16em;
+  overflow: auto;
+}
+
 /* A yes/no that qualifies the operation rather than answering it — the import
    collision's "apply to the remaining files". Not a `ToggleRow`: that is the
    settings design system's row, sized for a settings card, and these overlays

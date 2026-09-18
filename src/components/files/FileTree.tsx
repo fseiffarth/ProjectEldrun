@@ -2,6 +2,7 @@ import React, { useCallback, useContext, useEffect, useLayoutEffect, useMemo, us
 import { createPortal } from "react-dom";
 import { confirm as dialogConfirm, open as openDialog } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
+import { invokeTrusted } from "../../lib/execTrust";
 import { listen } from "@tauri-apps/api/event";
 import { startDrag } from "@crabnebula/tauri-plugin-drag";
 import { useTabsStore } from "../../stores/tabs";
@@ -3180,7 +3181,7 @@ export function FileTree({
     setCompiling((s) => new Set(s).add(entry.path));
     setError(null);
     try {
-      const res = await invoke<TexCompileResult>("compile_tex", {
+      const res = await invokeTrusted<TexCompileResult>("compile_tex", {
         path: entry.path,
         engine: null,
       });

@@ -31,6 +31,9 @@ pub mod agent_creds;
 // per-platform asset pick, staged download, per-platform install.
 pub mod app_update;
 pub mod big_folders;
+// Ask-once approval for project-supplied programs Eldrun runs on the host
+// (git hooks, latexmkrc, a project's own prettier), re-asked when they change.
+pub mod exec_trust;
 // In-app browser (TODO J #61): reader-mode fetch+sanitize, the live-page window
 // registry, and download quarantine. See docs/browser_plan_{b,c}.md.
 pub mod browser_engine;

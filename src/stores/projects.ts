@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { invokeTrusted } from "../lib/execTrust";
 import { listen } from "@tauri-apps/api/event";
 import { create } from "zustand";
 import {
@@ -1778,7 +1779,7 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
     // mirror it into local state. For a work-remote project `publishFrom`
     // chooses the side — the local mirror by default, because the provider
     // login is this machine's. Returns the CLI's stdout (repo URL).
-    const output = await invoke<string>("publish_project", {
+    const output = await invokeTrusted<string>("publish_project", {
       projectId: id,
       provider,
       visibility,
@@ -1835,7 +1836,7 @@ export const useProjectsStore = create<ProjectsStore>((set, get) => ({
     // holds it) and re-publishes to the new provider, writing the new git_type +
     // git_provider. Returns the create CLI stdout (new repo URL); mirror the new
     // provider/type into state.
-    const output = await invoke<string>("switch_project_provider", {
+    const output = await invokeTrusted<string>("switch_project_provider", {
       projectId: id,
       provider,
       visibility,

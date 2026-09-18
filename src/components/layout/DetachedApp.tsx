@@ -71,6 +71,7 @@ import { listenEditorJump } from "../../stores/viewers/editorJump";
 import { listenTexCenter } from "../../stores/viewers/texCenter";
 import { DetachedCenterPanel } from "./DetachedCenterPanel";
 import { BrowserDownloadHost } from "../browser/BrowserDownloadHost";
+import { ExecTrustHost } from "../common/ExecTrustHost";
 import { SyncConfirmDialog } from "../common/SyncConfirmDialog";
 import { HpcGuardDialog } from "../common/HpcGuardDialog";
 import { ScreenshotSaveOverlay } from "./ScreenshotSaveOverlay";
@@ -819,6 +820,9 @@ export function DetachedApp({ param }: Props) {
           emits browser events to every window — so it needs its own single
           download-consent host for the same reason AppShell does. */}
       <BrowserDownloadHost />
+      {/* A popout's viewer can Build or Format, so its exec-trust question
+          renders here, in this window's own store. */}
+      <ExecTrustHost />
       {/* Same reason: a popout hosts the per-subwindow file viewer, so a pull or
           push can be started in this window and its confirmation has to render
           here — this store instance is this window's. */}

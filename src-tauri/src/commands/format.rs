@@ -153,6 +153,14 @@ pub fn formatter_available(lang: String, path: Option<String>) -> bool {
 pub fn format_source(text: String, lang: String, path: Option<String>) -> Result<String, String> {
     let tool = resolve_tool(&lang, path.as_deref())
         .ok_or_else(|| format!("formatter-unavailable:{lang}"))?;
+    // A project's own prettier, a JS config or a config loading plugins is
+    // project code run on the host: ask once (`services::exec_trust`). black,
+    // rustfmt and gofmt read data-only configs and need no gate.
+    if is_prettier_lang(&lang) {
+        if let Some(cwd) = &tool.cwd {
+            crate::services::exec_trust::require(crate::services::exec_trust::TrustKind::Prettier, cwd)?;
+        }
+    }
 
     let mut cmd = crate::paths::command_for_program(&tool.program);
     cmd.args(&tool.args)

@@ -422,6 +422,7 @@ fn publish_project_blocking(
             // A remote project's `Local` site is its lockstep mirror, whose
             // branch names have to keep matching the host's.
             project.remote.is_none(),
+            &project_id,
         )?,
         // Explicit opt-in: run the CLI on the work-remote host, relying on that
         // host's own provider auth (the local token is never forwarded over ssh).
@@ -792,6 +793,7 @@ fn rename_origin_aside(site: PublishSite, project: &Project) -> Result<(), Strin
 /// project still on git's old built-in `master` would name the hosted default
 /// branch `master`. Only a plain local project opts in — see that module for why
 /// a lockstep mirror must keep the branch name the host knows it by.
+#[allow(clippy::too_many_arguments)]
 fn local_publish(
     provider: Provider,
     dir: &PathBuf,
@@ -799,7 +801,11 @@ fn local_publish(
     visibility: &str,
     token: Option<&str>,
     rename_master: bool,
+    project_id: &str,
 ) -> Result<String, String> {
+    // Both branches push from `dir` (gh's `--push` runs `git push` itself), so
+    // the repo's hooks run here: ask-once gate, as for Push.
+    crate::services::exec_trust::require(crate::services::exec_trust::TrustKind::GitHooks, dir)?;
     if rename_master {
         crate::services::git_init::ensure_default_branch(dir);
     }
@@ -838,10 +844,23 @@ fn local_publish(
             }
             let mut out = run_provider_command(&mut create, provider)?;
 
-            let mut push = crate::paths::command_no_window("git");
-            push.current_dir(dir);
-            push_with_token(&mut push, provider, token);
-            push.args(["push", "-u", "origin", "HEAD"]);
+            let mut args: Vec<String> = Vec::new();
+            if token.is_some() {
+                let origins = crate::commands::git_hosting::token_origins(
+                    Some(project_id),
+                    Some(provider.as_str()),
+                );
+                args.extend(crate::commands::git::scoped_token_config(
+                    &origins,
+                    provider.cred_username(),
+                ));
+            }
+            args.extend(["push", "-u", "origin", "HEAD"].map(String::from));
+            let mut push = crate::commands::git::hardened_git_command_in(dir, &args);
+            if let Some(tok) = token {
+                push.env("ELDRUN_GIT_TOKEN", tok);
+                push.env("GIT_TERMINAL_PROMPT", "0");
+            }
             out.push('\n');
             out.push_str(&run_command(&mut push)?);
             Ok(out)
@@ -869,21 +888,6 @@ fn remote_publish_script(
              && git push -u origin HEAD"
         ),
     }
-}
-
-/// Attach an ephemeral inline https credential helper that injects the effective
-/// token (read from the child env, never argv/disk) so a `git push` to a freshly
-/// created https remote authenticates. Harmless for ssh remotes — git won't call
-/// an http helper. Mirrors the helper in `commands::git::git_push`.
-fn push_with_token(cmd: &mut Command, provider: Provider, token: Option<&str>) {
-    let Some(tok) = token else { return };
-    let helper = format!(
-        "!f() {{ test \"$1\" = get && echo username={} && echo \"password=$ELDRUN_GIT_TOKEN\"; }}; f",
-        provider.cred_username()
-    );
-    cmd.args(["-c", "credential.helper=", "-c", &helper]);
-    cmd.env("ELDRUN_GIT_TOKEN", tok);
-    cmd.env("GIT_TERMINAL_PROMPT", "0");
 }
 
 /// Find a project entry by id, returning its index and the full (owned) list so
