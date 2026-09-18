@@ -205,6 +205,41 @@ describe("RootOverlayHost", () => {
     uninstall();
   });
 
+  it("merges a calendar a root agent created, and announces nothing", async () => {
+    const announced: unknown[] = [];
+    const uninstall = setCalendarWriteHandler(async (event) => {
+      announced.push(event);
+    });
+    useCalendarStore.setState({ calendars: [] } as never);
+    render(<RootOverlayHost />);
+    const row = { id: "c2", name: "Work", color: "#e8663d", visible: true, readonly: false };
+    await act(async () =>
+      listeners.get("root-mcp-changed")?.({ payload: { kind: "calendar", op: "upsert", row, local: true } }),
+    );
+    expect(useCalendarStore.getState().calendars.map((c) => c.name)).toEqual(["Work"]);
+    expect(announced).toHaveLength(0);
+    uninstall();
+  });
+
+  it("moves a synced event: the old server copy is deleted, the row comes back in its new calendar", async () => {
+    const announced: { op: string; row: { calendar_id: string } }[] = [];
+    const uninstall = setCalendarWriteHandler(async (event) => {
+      announced.push(event as never);
+    });
+    const before = {
+      id: "e1", calendar_id: "default", title: "Review", start: "2026-09-18T14:00", end: "2026-09-18T15:00",
+      all_day: false, caldav_href: "/cal/a.ics", caldav_etag: '"1"',
+    };
+    useCalendarStore.setState({ events: [before] } as never);
+    render(<RootOverlayHost />);
+    const after = { ...before, calendar_id: "c2", caldav_href: undefined, caldav_etag: undefined };
+    await act(async () => listeners.get("root-mcp-changed")?.({ payload: { kind: "event", op: "delete", row: before } }));
+    await act(async () => listeners.get("root-mcp-changed")?.({ payload: { kind: "event", op: "upsert", row: after } }));
+    expect(useCalendarStore.getState().events).toEqual([after]);
+    expect(announced.map((a) => [a.op, a.row.calendar_id])).toEqual([["delete", "default"], ["upsert", "c2"]]);
+    uninstall();
+  });
+
   it("merges a board card a root agent wrote, deletes it, and pushes no board-only move", async () => {
     const announced: unknown[] = [];
     const uninstall = setCalendarWriteHandler(async (event) => {

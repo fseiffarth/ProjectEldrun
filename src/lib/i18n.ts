@@ -3588,6 +3588,7 @@ export const en = {
   "eventDialog.errStartRequired": "A start date is required.",
   "eventDialog.errEndAfterStart": "The event must end after it starts.",
   "eventDialog.errEndOnOrAfterStart": "The event must end on or after the day it starts.",
+  "eventDialog.errMoveSyncedSeries": "“{title}” repeats, and some of its occurrences were edited on its CalDAV server. Move it to another calendar there instead.",
   "subwindowFiles.resizeHint": "Drag to resize · double-click to hide",
   "common.noProjectSelected": "No project selected",
   "quickOpen.placeholder": "Go to file…",

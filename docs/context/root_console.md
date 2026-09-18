@@ -155,6 +155,27 @@ would quietly shorten a three-hour meeting every time it was moved. An event in
 a read-only calendar is refused before anything is written locally, because the
 window could not push it.
 
+**A move between calendars is a delete plus a create, on the server only.**
+`calendar_move_events` (a list of ids, or every event in one calendar) and
+`calendar_update_event`'s `calendar` share one path,
+`commands::calendar::relocate_event`. The event dialog's calendar picker takes
+the same path through `stores/calendar`'s `updateEvent`. Locally the event
+keeps its id, so
+anything that links to it keeps working. A row synced from a CalDAV server is a
+resource inside one collection, though, and its address cannot come along.
+Pushed under its old `caldav_href`, the moved row would `PUT` straight back into
+the collection it left, and that calendar's next sync would restore a copy
+there. So the move drops the address and emits two changes in order. First
+comes a `delete` carrying the row as it was, which retires the old copy through
+the ordinary CalDAV hook. Then comes an `upsert`, which the new calendar pushes
+as a create. If that delete hits a conflict, "Keep mine" removes only the old
+copy (`resolveKeepMine` checks that the row still has that address), never the
+moved event. A series whose occurrences were edited on the server is several
+rows sharing one resource, and pushing those rows one by one would split it, so
+it is refused. A batch is one atomic write: every event moves or none does.
+`calendar_create` makes a local calendar only. CalDAV calendars come from a
+subscription, and nothing here creates a collection on a server.
+
 **Showing is not writing.** `mail_open`, `calendar_open` and `todo_open` put the
 header's overlays on screen — "show me my mail", "open the board on that card".
 They travel as their own event, `root-mcp-open`, because there is no row to

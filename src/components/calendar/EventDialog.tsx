@@ -315,6 +315,10 @@ export function EventDialog({
 
     const base = target.event;
     return {
+      // What the form does not edit rides along: a synced row's `caldav_href`,
+      // `caldav_etag` and `uid` above all. Without them every save pushed the
+      // event to its server as a brand-new appointment beside the old one.
+      ...base,
       id: base?.id ?? "",
       calendar_id: form.calendarId,
       start,

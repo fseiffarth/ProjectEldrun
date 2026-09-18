@@ -129,6 +129,112 @@ pub(crate) fn delete_event_at(path: &Path, id: &str) -> Result<(), String> {
     write_data(path, &data)
 }
 
+/// One event a move re-filed: the row as it was, and as it now is.
+#[derive(Debug, Clone)]
+pub(crate) struct MovedEvent {
+    pub before: CalendarEvent,
+    pub after: CalendarEvent,
+}
+
+/// Re-file `event` under `to`, in memory. `data` is the store it came from.
+///
+/// A row synced from a CalDAV server is a **resource in one collection**, and a
+/// move cannot carry that address along: pushing the row to its new calendar
+/// under its old `caldav_href` would `PUT` straight back into the collection it
+/// just left. So the address is dropped here, which makes the next push a
+/// create in the new collection, and the caller hands the `before` row to
+/// whatever deletes the old copy (`MovedEvent`).
+///
+/// A resource holding more than this one row (a series plus the occurrences
+/// the server stores as overrides) is refused: those rows move as one object
+/// or not at all, and pushing them one by one would split the series.
+pub(crate) fn relocate_event(
+    data: &CalendarData,
+    event: &mut CalendarEvent,
+    to: &str,
+) -> Result<(), String> {
+    let href = extra_str(&event.extra, CALDAV_HREF_KEY);
+    if !href.is_empty() {
+        let siblings = data
+            .events
+            .iter()
+            .filter(|e| {
+                e.id != event.id
+                    && e.calendar_id == event.calendar_id
+                    && extra_str(&e.extra, CALDAV_HREF_KEY) == href
+            })
+            .count();
+        if siblings > 0 {
+            return Err(format!(
+                "event '{}' is a recurring series with edited occurrences on its CalDAV server; move it there instead",
+                event.title
+            ));
+        }
+    }
+    event.extra.remove(CALDAV_HREF_KEY);
+    event.extra.remove(CALDAV_ETAG_KEY);
+    event.calendar_id = to.to_string();
+    Ok(())
+}
+
+/// Move the events `ids` into calendar `to`, in **one** atomic write: either
+/// every event moves or none does, so a refusal halfway through a batch leaves
+/// no half-moved calendar behind. An event already in `to` is left alone and
+/// not reported.
+pub(crate) fn move_events_at(path: &Path, ids: &[String], to: &str) -> Result<Vec<MovedEvent>, String> {
+    let _guard = lock_calendar();
+    let mut data = read_data(path)?;
+    let target = data
+        .calendars
+        .iter()
+        .find(|c| c.id == to)
+        .ok_or_else(|| format!("calendar '{to}' not found"))?;
+    if target.readonly {
+        return Err(format!("calendar '{}' is read-only", target.name));
+    }
+    let readonly: HashSet<&str> = data
+        .calendars
+        .iter()
+        .filter(|c| c.readonly)
+        .map(|c| c.id.as_str())
+        .collect();
+
+    let mut moved = Vec::new();
+    let mut seen = HashSet::new();
+    for id in ids {
+        if !seen.insert(id.as_str()) {
+            continue;
+        }
+        let before = data
+            .events
+            .iter()
+            .find(|e| &e.id == id)
+            .cloned()
+            .ok_or_else(|| format!("event '{id}' not found"))?;
+        if before.calendar_id == to {
+            continue;
+        }
+        // Moving out of a read-only calendar deletes from it, which is a write
+        // the window could not push either.
+        if readonly.contains(before.calendar_id.as_str()) {
+            return Err(format!("event '{id}' is in a read-only calendar"));
+        }
+        let mut after = before.clone();
+        relocate_event(&data, &mut after, to)?;
+        moved.push(MovedEvent { before, after });
+    }
+    for m in &moved {
+        if let Some(slot) = data.events.iter_mut().find(|e| e.id == m.after.id) {
+            *slot = m.after.clone();
+        }
+    }
+    if !moved.is_empty() {
+        data.normalize();
+        write_data(path, &data)?;
+    }
+    Ok(moved)
+}
+
 // ── Tasks ───────────────────────────────────────────────────────────────────
 
 /// Pull a task back out of the normalized store.
@@ -413,7 +519,7 @@ fn columns_set_at(
 
 // ── Calendars ───────────────────────────────────────────────────────────────
 
-fn create_calendar_at(path: &Path, mut calendar: Calendar) -> Result<Calendar, String> {
+pub(crate) fn create_calendar_at(path: &Path, mut calendar: Calendar) -> Result<Calendar, String> {
     let _guard = lock_calendar();
     let mut data = read_data(path)?;
     calendar.id = fresh_id(&calendar_ids(&data));

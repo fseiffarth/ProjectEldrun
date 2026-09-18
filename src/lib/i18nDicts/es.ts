@@ -3427,6 +3427,7 @@ export const dict: Dict = {
   "eventDialog.errStartRequired": "Se requiere una fecha de inicio.",
   "eventDialog.errEndAfterStart": "El evento debe terminar después de que empiece.",
   "eventDialog.errEndOnOrAfterStart": "El evento debe terminar el mismo día que empieza o después.",
+  "eventDialog.errMoveSyncedSeries": "«{title}» se repite y algunas de sus ocurrencias se editaron en su servidor CalDAV. Muévelo a otro calendario allí.",
   "subwindowFiles.resizeHint": "Arrastra para redimensionar · doble clic para ocultar",
   "common.noProjectSelected": "Ningún proyecto seleccionado",
   "quickOpen.placeholder": "Ir al archivo…",

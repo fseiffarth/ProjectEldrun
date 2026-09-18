@@ -506,6 +506,15 @@ export const useCalDavStore = create<CalDavStore>((set, get) => ({
       return;
     }
 
+    // A root agent's calendar move deletes the old copy and keeps the row,
+    // under the same id, in another calendar with an address of its own (or
+    // none yet). Keeping "mine" then means removing the copy it left behind,
+    // and nothing about the row: staging would stamp the old resource's ETag
+    // onto the moved row, and the local delete below would take the moved
+    // event with it.
+    const movedOn =
+      conflict.op === "delete" && (row.caldav_href ?? "").trim() !== conflict.resourceHref;
+
     try {
       // Re-read the validator and write against *that*. Still conditional: an
       // edit that lands between the question and the answer conflicts again
@@ -515,11 +524,13 @@ export const useCalDavStore = create<CalDavStore>((set, get) => ({
         conflict.kind === "event"
           ? { ...(row as CalendarEvent), caldav_etag: current }
           : { ...(row as CalendarTask), caldav_etag: current };
-      useCalendarStore.setState((s) =>
-        conflict.kind === "event"
-          ? { events: s.events.map((e) => (e.id === row.id ? (staged as CalendarEvent) : e)) }
-          : { tasks: s.tasks.map((t) => (t.id === row.id ? (staged as CalendarTask) : t)) },
-      );
+      if (!movedOn) {
+        useCalendarStore.setState((s) =>
+          conflict.kind === "event"
+            ? { events: s.events.map((e) => (e.id === row.id ? (staged as CalendarEvent) : e)) }
+            : { tasks: s.tasks.map((t) => (t.id === row.id ? (staged as CalendarTask) : t)) },
+        );
+      }
 
       if (conflict.op === "delete") {
         await caldavDelete({
@@ -534,8 +545,10 @@ export const useCalDavStore = create<CalDavStore>((set, get) => ({
         // the server answers `404`, which `delete_resource` reports as `gone`,
         // i.e. success. One wasted round trip, in exchange for the local delete
         // going through the single code path that owns it.
-        if (conflict.kind === "event") await calendar.deleteEvent(row.id);
-        else await calendar.deleteTask(row.id);
+        if (!movedOn) {
+          if (conflict.kind === "event") await calendar.deleteEvent(row.id);
+          else await calendar.deleteTask(row.id);
+        }
       } else {
         const outcome = await get().pushRow({ op: "upsert", kind: conflict.kind, row: staged });
         if (outcome === "conflict") return; // the question was re-raised; leave it up

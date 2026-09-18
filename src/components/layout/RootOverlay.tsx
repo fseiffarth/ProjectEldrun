@@ -36,7 +36,7 @@ import {
 } from "../files/SubwindowFilesSidebar";
 import { notifyCalendarWrite } from "../../lib/calendarWriteHook";
 import { bindDragRelease, dragPlatform } from "../../lib/dragPlatform";
-import type { CalendarEvent, CalendarTask } from "../../types";
+import type { Calendar, CalendarEvent, CalendarTask } from "../../types";
 import { useT } from "../../lib/i18n";
 import { UntestedTag } from "../common/UntestedTag";
 import { CustomAgentDialog } from "../tabs/CustomAgentDialog";
@@ -50,6 +50,7 @@ import { StarIcon } from "./StarIcon";
 type RootMcpChange = (
   | { kind: "event"; op: "upsert" | "delete"; row: CalendarEvent }
   | { kind: "task"; op: "upsert" | "delete"; row: CalendarTask }
+  | { kind: "calendar"; op: "upsert"; row: Calendar }
 ) & {
   /** Board-only fields changed (a move's column/rank): merge, push nothing. */
   local?: boolean;
@@ -163,6 +164,12 @@ export function RootOverlayHost() {
         rows.some((r) => r.id === row.id)
           ? rows.map((r) => (r.id === row.id ? row : r))
           : [...rows, row];
+      // A new calendar is Eldrun's own: merged, never pushed anywhere.
+      if (payload.kind === "calendar") {
+        const row = payload.row;
+        useCalendarStore.setState((s) => ({ calendars: upsert(s.calendars, row) }));
+        return;
+      }
       useCalendarStore.setState((s) => {
         if (payload.kind === "event") {
           return payload.op === "delete"

@@ -202,3 +202,52 @@ describe("a failure that is not a conflict", () => {
     ).rejects.toThrow("403");
   });
 });
+
+describe("keeping mine on a refused delete", () => {
+  function refusedDelete() {
+    return {
+      rowId: "e1",
+      kind: "event" as const,
+      accountId: "acc-1",
+      href: HREF,
+      resourceHref: RESOURCE,
+      title: "standup",
+      op: "delete" as const,
+      at: "2026-08-03T09:00",
+    };
+  }
+
+  beforeEach(() => {
+    invoke.mockImplementation(async (cmd: string) =>
+      cmd === "caldav_resource_etag" ? '"9"' : { href: RESOURCE, etag: "", conflict: false, gone: true },
+    );
+  });
+
+  it("deletes the row once the server's copy is gone", async () => {
+    seed(account());
+    useCalDavStore.setState({ conflicts: [refusedDelete()] });
+    await useCalDavStore.getState().resolveKeepMine(refusedDelete());
+    expect(useCalendarStore.getState().events).toHaveLength(0);
+    expect(useCalDavStore.getState().conflicts).toHaveLength(0);
+  });
+
+  it("removes only the copy a calendar move left behind, never the moved row", async () => {
+    // A root agent's `calendar_move_events` keeps the row's id and drops its
+    // old address, then deletes that address on the server. A conflict on the
+    // delete is about the copy — the event itself now lives in another calendar.
+    const moved = { ...ROW, calendar_id: "cal-2", caldav_href: undefined, caldav_etag: undefined };
+    seed(account(), moved);
+    useCalDavStore.setState({ conflicts: [refusedDelete()] });
+    await useCalDavStore.getState().resolveKeepMine(refusedDelete());
+
+    expect(invoke).toHaveBeenCalledWith("caldav_delete", {
+      accountId: "acc-1",
+      href: HREF,
+      resourceHref: RESOURCE,
+      etag: '"9"',
+    });
+    const [row] = useCalendarStore.getState().events;
+    expect(row).toEqual(moved);
+    expect(useCalDavStore.getState().conflicts).toHaveLength(0);
+  });
+});

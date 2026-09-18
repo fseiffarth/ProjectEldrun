@@ -296,7 +296,13 @@ export function CalendarPane({ visible }: Props) {
         : shiftBy(start, durationMin);
       next = { ...event, start, end };
     }
-    await updateEvent(next);
+    try {
+      await updateEvent(next);
+    } catch (err) {
+      // A synced series that cannot move to another calendar is refused before
+      // anything is written; say why rather than dropping the edit silently.
+      setNotice(err instanceof Error ? err.message : String(err));
+    }
   }
 
   async function deleteFromDialog(event: CalendarEvent, scope: EditScope) {

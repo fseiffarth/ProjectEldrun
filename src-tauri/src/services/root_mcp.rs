@@ -183,7 +183,7 @@ pub fn apply_to_spawn(opts: &mut PtyOptions) {
 /// A row a tool wrote, for the window to merge and (CalDAV) push.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct Change {
-    /// `"event"` | `"task"`.
+    /// `"event"` | `"task"` | `"calendar"`.
     pub kind: &'static str,
     /// `"upsert"` | `"delete"`.
     pub op: &'static str,
@@ -239,8 +239,10 @@ pub fn tool_names() -> Vec<&'static str> {
         "projects_git_status",
         "boxes_list",
         "calendar_list",
+        "calendar_create",
         "calendar_add_event",
         "calendar_update_event",
+        "calendar_move_events",
         "calendar_delete_event",
         "todo_list",
         "todo_add",
@@ -280,10 +282,17 @@ fn tool_annotations(name: &str) -> Value {
             | "todo_open"
     );
     // Overwrites or removes what the user wrote. A complete/reopen/move is
-    // undone by its opposite gesture; an add only adds.
+    // undone by its opposite gesture; an add only adds. A *calendar* move is
+    // not a board move: out of a CalDAV calendar it deletes the server's copy
+    // and re-creates the event from the local row, and whatever the server held
+    // that Eldrun does not model does not come back with a move back.
     let destructive = matches!(
         name,
-        "calendar_delete_event" | "calendar_update_event" | "todo_delete" | "todo_update"
+        "calendar_delete_event"
+            | "calendar_update_event"
+            | "calendar_move_events"
+            | "todo_delete"
+            | "todo_update"
     );
     if read_only {
         json!({ "readOnlyHint": true, "openWorldHint": false })
@@ -344,6 +353,18 @@ fn tool_schemas() -> Value {
             }
         },
         {
+            "name": "calendar_create",
+            "description": "Create a new, empty local calendar. Its name must not already be taken, since tools address calendars by name as well as id.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string" },
+                    "color": { "type": "string", "description": "\"#rrggbb\"; the next colour of the calendar palette when absent." }
+                },
+                "required": ["name"]
+            }
+        },
+        {
             "name": "calendar_add_event",
             "description": "Add an event to the user's Eldrun calendar. Give `start` and either `end` or `duration_minutes` (default 60).",
             "inputSchema": {
@@ -375,9 +396,22 @@ fn tool_schemas() -> Value {
                     "all_day": { "type": "boolean", "description": "Turn the event into (or out of) an all-day one; turning it into a timed event needs a `start`." },
                     "location": { "type": "string" },
                     "notes": { "type": "string" },
-                    "calendar": { "type": "string", "description": "Move the event to this calendar (id or name)." }
+                    "calendar": { "type": "string", "description": "Move the event to this calendar (id or name), as calendar_move_events does." }
                 },
                 "required": ["id"]
+            }
+        },
+        {
+            "name": "calendar_move_events",
+            "description": "Move events into another calendar: the events `ids`, or every event in calendar `from`. All of them move or none does. An event keeps its id, times and fields. Out of a CalDAV-synced calendar the server copy is deleted and the event is created anew in the target, so anything the server stored that Eldrun does not show (attendees, for one) is not carried over. Refuses read-only calendars on either side, and a recurring series whose occurrences were edited on a CalDAV server.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "ids": { "type": "array", "items": { "type": "string" }, "description": "Event ids (see calendar_list)." },
+                    "from": { "type": "string", "description": "Instead of `ids`: move every event in this calendar (id or name)." },
+                    "to": { "type": "string", "description": "Target calendar, id or name." }
+                },
+                "required": ["to"]
             }
         },
         {
@@ -800,7 +834,7 @@ fn updated_span(event: &CalendarEvent, args: &Value) -> Result<(String, String, 
     Ok((start, end, false))
 }
 
-fn calendar_update_event(stores: &Stores, args: &Value) -> Result<(Value, Change), String> {
+fn calendar_update_event(stores: &Stores, args: &Value) -> Result<(Value, Vec<Change>), String> {
     let id = str_arg(args, "id").ok_or("`id` is required")?;
     let data = crate::commands::calendar::read_data(stores.calendar)?;
     let mut event = data
@@ -815,6 +849,8 @@ fn calendar_update_event(stores: &Stores, args: &Value) -> Result<(Value, Change
     if data.calendars.iter().any(|c| c.id == event.calendar_id && c.readonly) {
         return Err(format!("event '{id}' is in a read-only calendar"));
     }
+    // The row as its server holds it, for the delete a move owes that server.
+    let before = event.clone();
     // Present-but-empty clears; absent keeps — as in `todo_update`.
     let given = |key: &str| args.get(key).and_then(Value::as_str).map(str::trim);
     if let Some(title) = given("title") {
@@ -833,15 +869,125 @@ fn calendar_update_event(stores: &Stores, args: &Value) -> Result<(Value, Change
         if calendar.is_empty() {
             return Err("`calendar` cannot be empty; name the calendar to move the event to".into());
         }
-        event.calendar_id = resolve_calendar(&data, Some(calendar))?;
+        let to = resolve_calendar(&data, Some(calendar))?;
+        if to != event.calendar_id {
+            crate::commands::calendar::relocate_event(&data, &mut event, &to)?;
+        }
     }
     let (start, end, all_day) = updated_span(&event, args)?;
     event.start = start;
     event.end = end;
     event.all_day = all_day;
+    let moved = before.calendar_id != event.calendar_id;
     let updated = crate::commands::calendar::update_event_at(stores.calendar, event)?;
     let row = serde_json::to_value(&updated).map_err(|e| e.to_string())?;
-    Ok((row.clone(), Change { kind: "event", op: "upsert", row, local: false }))
+    let mut changes = Vec::new();
+    if moved {
+        changes.extend(server_copy_delete(&before)?);
+    }
+    changes.push(Change { kind: "event", op: "upsert", row: row.clone(), local: false });
+    Ok((row, changes))
+}
+
+/// The delete that retires a moved event's copy on the CalDAV server it came
+/// from, or nothing for an event that never had one.
+///
+/// It is an ordinary `delete` change carrying the row as it was, which is all
+/// the window's CalDAV hook needs to address the old resource; the `upsert`
+/// that follows puts the row back under its new calendar, where, having no
+/// `caldav_href` any more, it is pushed as a create. Emitted *before* that
+/// upsert, since the window merges the two in order.
+fn server_copy_delete(before: &CalendarEvent) -> Result<Option<Change>, String> {
+    let href = before
+        .extra
+        .get(crate::commands::calendar::CALDAV_HREF_KEY)
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if href.trim().is_empty() {
+        return Ok(None);
+    }
+    let row = serde_json::to_value(before).map_err(|e| e.to_string())?;
+    Ok(Some(Change { kind: "event", op: "delete", row, local: false }))
+}
+
+/// A calendar colour: `#rrggbb`, the only form every surface renders as itself
+/// (the sidebar's native swatch turns anything else into its fallback).
+fn valid_color(s: &str) -> bool {
+    s.len() == 7 && s.starts_with('#') && s[1..].bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// The sidebar's palette (`CalendarSidebar.tsx`'s `CALENDAR_COLORS`), cycled
+/// the same way, so a calendar an agent made looks like one the user made.
+const CALENDAR_COLORS: [&str; 8] = [
+    "#4aa3df", "#e8663d", "#59b96a", "#c164d6", "#e2b93b", "#d9556b", "#4fc3c3", "#8d8fd6",
+];
+
+fn calendar_create(stores: &Stores, args: &Value) -> Result<(Value, Change), String> {
+    let name = str_arg(args, "name").ok_or("`name` is required")?;
+    let data = crate::commands::calendar::read_data(stores.calendar)?;
+    // Every calendar tool takes "id or name", and a name held twice would make
+    // the second calendar unreachable by it.
+    if data.calendars.iter().any(|c| c.name.eq_ignore_ascii_case(name)) {
+        return Err(format!("a calendar named '{name}' already exists (see calendar_list)"));
+    }
+    let color = match str_arg(args, "color") {
+        Some(c) if valid_color(c) => c.to_ascii_lowercase(),
+        Some(c) => return Err(format!("`color` '{c}' is not a #rrggbb colour")),
+        None => CALENDAR_COLORS[data.calendars.len() % CALENDAR_COLORS.len()].to_string(),
+    };
+    let calendar = crate::schema::calendar::Calendar {
+        id: String::new(),
+        name: name.to_string(),
+        color,
+        visible: true,
+        readonly: false,
+        extra: HashMap::new(),
+    };
+    let created = crate::commands::calendar::create_calendar_at(stores.calendar, calendar)?;
+    let row = serde_json::to_value(&created).map_err(|e| e.to_string())?;
+    // `local`: a calendar made here is Eldrun's own. CalDAV calendars are
+    // subscribed to from the server's side, never created from this one.
+    Ok((row.clone(), Change { kind: "calendar", op: "upsert", row, local: true }))
+}
+
+fn calendar_move_events(stores: &Stores, args: &Value) -> Result<(Value, Vec<Change>), String> {
+    let to = str_arg(args, "to").ok_or("`to` is required")?;
+    let data = crate::commands::calendar::read_data(stores.calendar)?;
+    let to = resolve_calendar(&data, Some(to))?;
+    let listed = args.get("ids").filter(|v| !v.is_null());
+    let ids: Vec<String> = match (listed, str_arg(args, "from")) {
+        (Some(_), Some(_)) => return Err("give `ids` or `from`, not both".into()),
+        (Some(ids), None) => {
+            let ids = ids.as_array().ok_or("`ids` must be an array of event ids")?;
+            let ids: Vec<String> = ids
+                .iter()
+                .map(|v| v.as_str().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string))
+                .collect::<Option<_>>()
+                .ok_or("`ids` must be an array of event ids")?;
+            if ids.is_empty() {
+                return Err("`ids` is empty".into());
+            }
+            ids
+        }
+        (None, Some(from)) => {
+            let from = resolve_calendar(&data, Some(from))?;
+            data.events
+                .iter()
+                .filter(|e| e.calendar_id == from)
+                .map(|e| e.id.clone())
+                .collect()
+        }
+        (None, None) => return Err("give `ids` (events to move) or `from` (a calendar to empty)".into()),
+    };
+    let moved = crate::commands::calendar::move_events_at(stores.calendar, &ids, &to)?;
+    let mut changes = Vec::new();
+    for m in &moved {
+        changes.extend(server_copy_delete(&m.before)?);
+        let row = serde_json::to_value(&m.after).map_err(|e| e.to_string())?;
+        changes.push(Change { kind: "event", op: "upsert", row, local: false });
+    }
+    let ids: Vec<&str> = moved.iter().map(|m| m.after.id.as_str()).collect();
+    Ok((json!({ "moved": ids, "to": to }), changes))
 }
 
 fn calendar_delete_event(stores: &Stores, args: &Value) -> Result<(Value, Change), String> {
@@ -1583,8 +1729,10 @@ fn call_store_tool(stores: &Stores, name: &str, args: &Value) -> Result<(Value, 
         "projects_git_status" => projects_git_status(stores, args).map(|v| (v, Vec::new())),
         "boxes_list" => boxes_list(stores, args).map(|v| (v, Vec::new())),
         "calendar_list" => calendar_list(stores, args).map(|v| (v, Vec::new())),
+        "calendar_create" => wrote(calendar_create(stores, args)),
         "calendar_add_event" => wrote(calendar_add_event(stores, args)),
-        "calendar_update_event" => wrote(calendar_update_event(stores, args)),
+        "calendar_update_event" => calendar_update_event(stores, args),
+        "calendar_move_events" => calendar_move_events(stores, args),
         "calendar_delete_event" => wrote(calendar_delete_event(stores, args)),
         "todo_list" => todo_list(stores, args).map(|v| (v, Vec::new())),
         "todo_add" => wrote(todo_add(stores, args)),
@@ -1854,6 +2002,7 @@ mod tests {
         ];
         const DESTRUCTIVE: &[&str] = &[
             "calendar_update_event",
+            "calendar_move_events",
             "calendar_delete_event",
             "todo_update",
             "todo_delete",
@@ -2223,6 +2372,174 @@ mod tests {
         let (r, changes) = f.call("calendar_update_event", json!({ "id": id, "title": "Moved" }));
         assert_eq!(r["isError"], true);
         assert!(r["content"][0]["text"].as_str().unwrap().contains("read-only"));
+        assert!(changes.is_empty());
+    }
+
+    #[test]
+    fn a_calendar_is_created_once_per_name_in_the_palette() {
+        let f = Fixture::new();
+        let (r, changes) = f.call("calendar_create", json!({ "name": "Work" }));
+        assert_eq!(r["isError"], false, "{r}");
+        let row = text(&r);
+        assert_eq!(row["name"], "Work");
+        // The default calendar is the first; the next palette colour is ours.
+        assert_eq!(row["color"], CALENDAR_COLORS[1]);
+        assert_eq!(row["visible"], true);
+        let change = changes.into_iter().next().unwrap();
+        assert_eq!((change.kind, change.op, change.local), ("calendar", "upsert", true));
+        // Reachable by name from then on.
+        add_event(&f, json!({ "title": "Sprint", "start": "2026-09-18T09:00", "calendar": "work" }));
+
+        let (r, _) = f.call("calendar_create", json!({ "name": "Garden", "color": "#A0B0C0" }));
+        assert_eq!(text(&r)["color"], "#a0b0c0");
+        for bad in [
+            json!({ "name": "WORK" }),
+            json!({ "name": "  " }),
+            json!({ "name": "Red", "color": "red" }),
+            json!({ "name": "Red", "color": "#abc" }),
+        ] {
+            let (r, changes) = f.call("calendar_create", bad.clone());
+            assert_eq!(r["isError"], true, "{bad}");
+            assert!(changes.is_empty(), "{bad}");
+        }
+        let (listed, _) = f.call("calendar_list", json!({}));
+        assert_eq!(text(&listed)["calendars"].as_array().unwrap().len(), 3);
+    }
+
+    /// Give an event the address a CalDAV sync would have left on it.
+    fn mark_synced(f: &Fixture, id: &str, href: &str) {
+        let mut data = crate::commands::calendar::read_data(&f.calendar).unwrap();
+        let event = data.events.iter_mut().find(|e| e.id == id).unwrap();
+        event.extra.insert("caldav_href".into(), json!(href));
+        event.extra.insert("caldav_etag".into(), json!("\"e1\""));
+        std::fs::write(&f.calendar, serde_json::to_string(&data).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn events_move_between_calendars_by_id_or_all_at_once() {
+        let f = Fixture::new();
+        f.call("calendar_create", json!({ "name": "Work" }));
+        f.call("calendar_create", json!({ "name": "Archive" }));
+        let a = add_event(&f, json!({ "title": "A", "start": "2026-09-18T09:00", "duration_minutes": 90 }));
+        let b = add_event(&f, json!({ "title": "B", "start": "2026-09-19T09:00" }));
+
+        let (r, changes) = f.call("calendar_move_events", json!({ "ids": [a, a], "to": "Work" }));
+        assert_eq!(r["isError"], false, "{r}");
+        assert_eq!(text(&r)["moved"], json!([a]), "a repeated id moves once");
+        let [change] = changes.as_slice() else { panic!("one row: {changes:?}") };
+        assert_eq!((change.kind, change.op, change.local), ("event", "upsert", false));
+        assert_eq!(change.row["id"], a, "a move keeps the event's identity");
+        assert_eq!(change.row["end"], "2026-09-18T10:30", "and its times");
+        let work = change.row["calendar_id"].clone();
+        assert_ne!(work, "default");
+
+        // Already there: nothing to do, nothing reported.
+        let (r, changes) = f.call("calendar_move_events", json!({ "ids": [a], "to": "Work" }));
+        assert_eq!(text(&r)["moved"], json!([]));
+        assert!(changes.is_empty());
+
+        // `from` empties a calendar.
+        let (r, changes) = f.call("calendar_move_events", json!({ "from": "Personal", "to": "Archive" }));
+        assert_eq!(text(&r)["moved"], json!([b]));
+        assert_eq!(changes.len(), 1);
+        let (listed, _) = f.call("calendar_list", json!({}));
+        let events = text(&listed)["events"].clone();
+        let calendar_of = |id: &str| {
+            events.as_array().unwrap().iter().find(|e| e["id"] == id).unwrap()["calendar_id"].clone()
+        };
+        assert_eq!(calendar_of(&a), work);
+        assert_ne!(calendar_of(&b), work);
+    }
+
+    #[test]
+    fn a_move_is_all_or_nothing_and_refused_where_it_could_not_be_pushed() {
+        let f = Fixture::new();
+        f.call("calendar_create", json!({ "name": "Work" }));
+        let a = add_event(&f, json!({ "title": "A", "start": "2026-09-18T09:00" }));
+        for bad in [
+            json!({ "ids": [a, "nope"], "to": "Work" }),
+            json!({ "ids": [a], "to": "nowhere" }),
+            json!({ "ids": [a], "from": "Personal", "to": "Work" }),
+            json!({ "ids": [], "to": "Work" }),
+            json!({ "ids": "a", "to": "Work" }),
+            json!({ "to": "Work" }),
+            json!({ "ids": [a] }),
+        ] {
+            let (r, changes) = f.call("calendar_move_events", bad.clone());
+            assert_eq!(r["isError"], true, "{bad}");
+            assert!(changes.is_empty(), "{bad}");
+        }
+        let (listed, _) = f.call("calendar_list", json!({}));
+        assert_eq!(text(&listed)["events"][0]["calendar_id"], "default", "the good id did not move either");
+
+        // Neither into nor out of a calendar Eldrun may not write back to.
+        let mut data = crate::commands::calendar::read_data(&f.calendar).unwrap();
+        data.calendars.push(crate::schema::calendar::Calendar {
+            id: "sub".into(),
+            name: "Subscribed".into(),
+            readonly: true,
+            ..crate::schema::calendar::Calendar::default_calendar()
+        });
+        std::fs::write(&f.calendar, serde_json::to_string(&data).unwrap()).unwrap();
+        let (r, _) = f.call("calendar_move_events", json!({ "ids": [a], "to": "Subscribed" }));
+        assert!(r["content"][0]["text"].as_str().unwrap().contains("read-only"));
+        let mut data = crate::commands::calendar::read_data(&f.calendar).unwrap();
+        data.events[0].calendar_id = "sub".into();
+        std::fs::write(&f.calendar, serde_json::to_string(&data).unwrap()).unwrap();
+        let (r, changes) = f.call("calendar_move_events", json!({ "ids": [a], "to": "Work" }));
+        assert!(r["content"][0]["text"].as_str().unwrap().contains("read-only"));
+        assert!(changes.is_empty());
+    }
+
+    /// A synced row is a resource in its old collection: the move must retire
+    /// that copy and hand the new calendar a row with no address to `PUT` to.
+    #[test]
+    fn moving_a_synced_event_deletes_the_server_copy_first() {
+        let f = Fixture::new();
+        f.call("calendar_create", json!({ "name": "Work" }));
+        let a = add_event(&f, json!({ "title": "A", "start": "2026-09-18T09:00" }));
+        mark_synced(&f, &a, "/cal/personal/a.ics");
+
+        let (_, changes) = f.call("calendar_move_events", json!({ "ids": [a], "to": "Work" }));
+        let [delete, upsert] = changes.as_slice() else { panic!("two rows: {changes:?}") };
+        assert_eq!((delete.kind, delete.op), ("event", "delete"));
+        assert_eq!(delete.row["calendar_id"], "default", "addressed in the calendar it left");
+        assert_eq!(delete.row["caldav_href"], "/cal/personal/a.ics");
+        assert_eq!(delete.row["caldav_etag"], "\"e1\"");
+        assert_eq!(upsert.op, "upsert");
+        assert_ne!(upsert.row["calendar_id"], "default");
+        assert!(upsert.row.get("caldav_href").is_none(), "{}", upsert.row);
+        assert!(upsert.row.get("caldav_etag").is_none());
+        let stored = crate::commands::calendar::read_data(&f.calendar).unwrap();
+        assert!(!stored.events[0].extra.contains_key("caldav_href"), "and on disk");
+
+        // `calendar_update_event`'s `calendar` is the same move.
+        let b = add_event(&f, json!({ "title": "B", "start": "2026-09-19T09:00" }));
+        mark_synced(&f, &b, "/cal/personal/b.ics");
+        let (r, changes) = f.call("calendar_update_event", json!({ "id": b, "calendar": "Work", "title": "B2" }));
+        assert_eq!(text(&r)["title"], "B2");
+        let ops: Vec<_> = changes.iter().map(|c| c.op).collect();
+        assert_eq!(ops, ["delete", "upsert"]);
+        assert!(changes[1].row.get("caldav_href").is_none());
+        // An edit that does not move keeps the address and deletes nothing.
+        let c = add_event(&f, json!({ "title": "C", "start": "2026-09-20T09:00" }));
+        mark_synced(&f, &c, "/cal/personal/c.ics");
+        let (_, changes) = f.call("calendar_update_event", json!({ "id": c, "calendar": "Personal", "title": "C2" }));
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].row["caldav_href"], "/cal/personal/c.ics");
+    }
+
+    #[test]
+    fn a_synced_series_with_server_overrides_does_not_move_in_pieces() {
+        let f = Fixture::new();
+        f.call("calendar_create", json!({ "name": "Work" }));
+        let master = add_event(&f, json!({ "title": "Weekly", "start": "2026-09-18T09:00" }));
+        let moved = add_event(&f, json!({ "title": "Weekly (moved)", "start": "2026-09-25T10:00" }));
+        mark_synced(&f, &master, "/cal/personal/weekly.ics");
+        mark_synced(&f, &moved, "/cal/personal/weekly.ics");
+        let (r, changes) = f.call("calendar_move_events", json!({ "ids": [master], "to": "Work" }));
+        assert_eq!(r["isError"], true);
+        assert!(r["content"][0]["text"].as_str().unwrap().contains("recurring series"));
         assert!(changes.is_empty());
     }
 

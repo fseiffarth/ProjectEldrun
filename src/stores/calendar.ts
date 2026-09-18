@@ -20,6 +20,7 @@ import {
 import { addDays, toStamp, todayStr } from "../lib/calendarTime";
 import { parseIcs } from "../lib/ics";
 import { notifyCalendarWrite } from "../lib/calendarWriteHook";
+import { translate, useI18nStore } from "../lib/i18n";
 
 /**
  * The native calendar's store: one global set of calendars, events and tasks,
@@ -158,8 +159,42 @@ export const useCalendarStore = create<CalendarStore>((set, get) => ({
   },
 
   updateEvent: async (event) => {
+    // A move to another calendar, of a row a CalDAV server holds. That row is
+    // a resource in its old collection, and its address cannot come along:
+    // pushed under it, the move would `PUT` straight back into the calendar it
+    // left. So the address is dropped (the new calendar's push is a create)
+    // and the old copy is deleted — the same path a root agent's
+    // `calendar_move_events` takes (`docs/context/root_console.md`).
+    const prev = get().events.find((e) => e.id === event.id);
+    const href = (prev?.caldav_href ?? "").trim();
+    const moved = prev && href && prev.calendar_id !== event.calendar_id ? prev : null;
+    if (moved) {
+      // A series with occurrences edited on the server is several rows in one
+      // resource; moving the master alone would split it.
+      const split = get().events.some(
+        (e) =>
+          e.id !== moved.id &&
+          e.calendar_id === moved.calendar_id &&
+          (e.caldav_href ?? "").trim() === href,
+      );
+      if (split) {
+        throw new Error(
+          translate(useI18nStore.getState().lang, "eventDialog.errMoveSyncedSeries", {
+            title: moved.title,
+          }),
+        );
+      }
+      event = { ...event, caldav_href: undefined, caldav_etag: undefined };
+    }
     const updated = await invoke<CalendarEvent>("update_event", { event });
     set((s) => ({ events: s.events.map((e) => (e.id === updated.id ? updated : e)) }));
+    if (moved) {
+      // After the local write, unlike an ordinary delete: nothing is lost if
+      // the server refuses, since the event already lives in its new calendar.
+      // A refusal lands in the CalDAV conflict list or `pushError`, and "keep
+      // mine" there removes only the copy left behind.
+      await notifyCalendarWrite({ op: "delete", kind: "event", row: moved }).catch(() => {});
+    }
     await notifyCalendarWrite({ op: "upsert", kind: "event", row: updated });
   },
 
