@@ -1,5 +1,5 @@
 /**
- * The native-move tracker behind `CenterPanel`'s pane hide (`stores/windowMove`).
+ * The native-move tracker behind `CenterPanel`'s pane hide (`stores/drag/windowMove`).
  * What it pins: the hide shows only on the FIRST `onMoved` (a plain click never
  * flashes it), and every one of the belt-and-suspenders ends — pointer release,
  * the 250 ms idle after the last move, the 10 s hard stop — clears it exactly
@@ -12,7 +12,7 @@ vi.mock("@tauri-apps/api/window", () => ({
   getCurrentWindow: () => ({ onMoved: (cb: () => void) => onMoved(cb) }),
 }));
 
-import { trackWindowMove, useWindowMoveStore } from "../stores/windowMove";
+import { trackWindowMove, useWindowMoveStore } from "../stores/drag/windowMove";
 
 const unlisten = vi.fn();
 let moved: (() => void) | undefined;

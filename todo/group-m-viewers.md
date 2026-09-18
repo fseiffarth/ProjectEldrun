@@ -440,7 +440,7 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       an external change while dirty raises a banner instead of clobbering either
       side. pdf.js *detaches* the buffer it is handed, so each source keeps a pristine
       byte copy for pdf-lib.
-    - **Cross-window drag (`stores/pdfDrag.ts` + `commands/pdf_clip.rs`).** Two
+    - **Cross-window drag (`stores/drag/pdfDrag.ts` + `commands/pdf_clip.rs`).** Two
       windows are separate WebViews with separate JS heaps, so the pages are built
       into a small PDF, parked in a backend slot, and only the *token* rides the
       event. Position comes from polling the OS cursor in physical desktop px

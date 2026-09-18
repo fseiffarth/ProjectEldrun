@@ -352,7 +352,7 @@ Contents:
 - **Search bar** — filters registered projects by name or path; `Enter`
   activates a unique match, `Escape` clears the search.
 - **Project pills** — one per active/current project, drag-to-reorder with
-  pointer events (`stores/pillDrag.ts`, `PILL_DRAG_TYPE`); HTML5 drag-and-drop is
+  pointer events (`stores/drag/pillDrag.ts`, `PILL_DRAG_TYPE`); HTML5 drag-and-drop is
   not used anywhere in Eldrun because it breaks on WebKitGTK. Hovering a pill
   shows the project path, status, today's active time (`get_time_today`), and
   live CPU%; a running-task indicator spins on pills with live terminal output,

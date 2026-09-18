@@ -13,7 +13,7 @@
  * user loses cards: the board opens showing three of forty and nothing on screen
  * says why.
  *
- * **The drag lives here, not in `stores/drag`.** That store's `drag !== null` is
+ * **The drag lives here, not in `stores/drag/drag`.** That store's `drag !== null` is
  * read by `CenterPanel`, `DetachedCenterPanel`, `FileTree` and
  * `dragPreviewLayout` as "a tab or file drag is in flight" — populating it for a
  * card drag would put the whole center panel into drag mode (panes

@@ -14,7 +14,7 @@ import { vi } from "vitest";
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
 import { SplitPreviewOverlay } from "../components/layout/CenterPanel";
-import { useDragStore } from "../stores/drag";
+import { useDragStore } from "../stores/drag/drag";
 import type { DropEdge } from "../stores/tabs";
 
 const RECTS = { g1: { left: 100, top: 50, width: 400, height: 300 } };

@@ -44,7 +44,7 @@ import {
   setPageDragActive,
   type PageTransfer,
   type DropTarget,
-} from "../../stores/pdfDrag";
+} from "../../stores/drag/pdfDrag";
 import {
   snapshotFrame,
   startCursorPoll,

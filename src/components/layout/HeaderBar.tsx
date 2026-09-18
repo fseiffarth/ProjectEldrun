@@ -1,7 +1,7 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { PLATFORM } from "../../lib/window/dragPlatform";
 import { IS_MAC } from "../../lib/platform";
-import { trackWindowMove } from "../../stores/windowMove";
+import { trackWindowMove } from "../../stores/drag/windowMove";
 import { Clock } from "../header/Clock";
 import { StatusCluster } from "../header/StatusCluster";
 import { MailIndicator } from "../header/MailIndicator";

@@ -1,4 +1,4 @@
-import { type TabDrag, type FileDragItem } from "../../stores/drag";
+import { type TabDrag, type FileDragItem } from "../../stores/drag/drag";
 import {
   EMPTY_GROUP_ID,
   findGroup,

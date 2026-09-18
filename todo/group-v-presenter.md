@@ -713,7 +713,7 @@ annotation plus animation (already built, and unique), and then #133–#138.*
      dual-window mode — the mode most people would use a laser in — the room sees
      no pointer at all. *Fix:* stream normalized points over the existing
      `present.ts` bus as a fourth event (the `DETACHED_DRAG_*` cursor stream in
-     `stores/pdfDrag.ts` is the precedent) and mount a read-only overlay in the
+     `stores/drag/pdfDrag.ts` is the precedent) and mount a read-only overlay in the
      audience window. **Note the trap:** strokes are currently normalized to the
      *stage host*, which includes the letterbox bars — normalize to
      `.deck-presenter-page` before streaming or the two windows' different

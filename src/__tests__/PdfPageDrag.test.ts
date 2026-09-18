@@ -1,5 +1,5 @@
 /**
- * Tests for cross-viewer / cross-window PDF page dragging (`stores/pdfDrag`).
+ * Tests for cross-viewer / cross-window PDF page dragging (`stores/drag/pdfDrag`).
  *
  * The two things that MUST hold, because getting either wrong loses a page:
  *
@@ -75,7 +75,7 @@ import {
   PDF_DRAG_END,
   PDF_DROP_ACK,
   type PageTransfer,
-} from "../stores/pdfDrag";
+} from "../stores/drag/pdfDrag";
 
 /** A strip occupying client rect (0,0)-(200,400), which imports into `landed`. */
 function mountStrip(id: string, landed: { transfer: PageTransfer; index: number }[]) {

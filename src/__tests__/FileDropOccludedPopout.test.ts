@@ -23,7 +23,7 @@ vi.mock("../stores/windows", () => ({
 
 import { commitFileDrop, fileDropGoesToNewWindow } from "../components/tabs/commitFileDrop";
 import { useTabsStore, allGroups, type GroupNode, type SplitNode } from "../stores/tabs";
-import { type TabDrag, type EmbedCap } from "../stores/drag";
+import { type TabDrag, type EmbedCap } from "../stores/drag/drag";
 
 const PASS: EmbedCap = { os_embeddable: true, app_embeddable: true, resolved_exec: "mousepad" };
 const VIEWPORT = { w: 1000, h: 800 };

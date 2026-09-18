@@ -5376,7 +5376,7 @@ export function isDetachedPtyId(id: string): boolean {
 // immutably along the changed path only (mapGroup), so an unchanged group node
 // keeps its reference identity — meaning these selectors return the SAME value
 // across an unrelated group's mutation and React bails out of the re-render.
-// Modelled on stores/drag.ts's coarse-selector discipline.
+// Modelled on stores/drag/drag.ts's coarse-selector discipline.
 
 /**
  * The current scope's `GroupNode` for `groupId`, or null if it isn't in the live

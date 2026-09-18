@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { ProjectPill } from "../projects/ProjectPill";
 import { BoxScopeChip } from "../projects/BoxScopeChip";
-import { usePillDragStore } from "../../stores/pillDrag";
+import { usePillDragStore } from "../../stores/drag/pillDrag";
 import { ProjectSearch } from "../projects/ProjectSearch";
 import { ProjectDialog } from "../projects/ProjectDialog";
 import { SettingsDialog, type SettingsPanelKind } from "./SettingsPanel";
@@ -13,7 +13,7 @@ import { useBigFoldersStore } from "../../stores/bigFolders";
 import { useProjectsStore } from "../../stores/projects";
 import { BOX_SCOPE_PREFIX, useBoxMembership, useBoxesStore } from "../../stores/boxes";
 import { useBoxEditorStore } from "../../stores/boxEditor";
-import { usePillSelectionStore } from "../../stores/pillSelection";
+import { usePillSelectionStore } from "../../stores/drag/pillSelection";
 import { useHeaderHoverMenuStore } from "../../stores/headerHoverMenu";
 import { TRASH_PROJECT_ID } from "../../lib/projects/trashProject";
 import { ROOT_SCOPE, useTabsStore } from "../../stores/tabs";
@@ -334,7 +334,7 @@ export function ProjectSwitcher({ open = true }: { open?: boolean }) {
     );
   }, [activeProjects, boxCandidateFilter, currentBox, currentBoxMemberIds]);
 
-  // Pointer-driven pill reorder (stores/pillDrag): every OTHER visible project
+  // Pointer-driven pill reorder (stores/drag/pillDrag): every OTHER visible project
   // pill "parts" to open the dragged one's landing slot — a `shiftPx` per id,
   // computed here (not in each pill) since it needs the FULL rendered order.
   // Mirrors MachinesIndicator's row-parting FLIP math, generalized to width:

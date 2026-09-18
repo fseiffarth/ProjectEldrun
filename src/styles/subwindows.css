@@ -775,7 +775,7 @@
 }
 
 /* One-shot send-off when a tab/subwindow is dropped OUT to its own OS window
-   (see DetachFlourish / stores/detachAnim). A card at the exit point lifts,
+   (see DetachFlourish / stores/drag/detachAnim). A card at the exit point lifts,
    scales, and slides toward the edge the content left through, then fades —
    reading as the content being ejected into its own window. The fly direction
    comes from CSS custom props set per play (--fly-dx / --fly-dy). */

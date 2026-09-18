@@ -24,7 +24,7 @@ import { applyColorToTabs } from "../stores/detached";
 import { TAB_COLORS, isTabColor, tabColorCss } from "../lib/theme/tabColors";
 import { TabBar } from "../components/tabs/TabBar";
 import { allGroups } from "../stores/tabs";
-import { useDragStore } from "../stores/drag";
+import { useDragStore } from "../stores/drag/drag";
 
 function shell(key: string, over: Partial<TabEntry> = {}): TabEntry {
   return { key, label: key, cmd: "", cwd: "/p", kind: "shell", scope: "p1", ...over };

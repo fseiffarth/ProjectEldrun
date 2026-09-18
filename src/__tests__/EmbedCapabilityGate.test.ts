@@ -18,7 +18,7 @@ vi.mock("../stores/windows", () => ({
 
 import { commitFileDrop } from "../components/tabs/commitFileDrop";
 import { useTabsStore } from "../stores/tabs";
-import { type TabDrag, type EmbedCap } from "../stores/drag";
+import { type TabDrag, type EmbedCap } from "../stores/drag/drag";
 
 function seedGroup() {
   useTabsStore.setState({

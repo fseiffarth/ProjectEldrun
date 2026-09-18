@@ -128,7 +128,7 @@ import { useSettingsStore } from "../../../stores/settings";
 import { PageStrip } from "../../common/PageStrip";
 import { PrinterIcon } from "../../common/PrinterIcon";
 import { UntestedTag } from "../../common/UntestedTag";
-import { subscribePageDragActive, type PageTransfer } from "../../../stores/pdfDrag";
+import { subscribePageDragActive, type PageTransfer } from "../../../stores/drag/pdfDrag";
 import { ContextFilePicker } from "../ContextFilePicker";
 import { useProjectsStore } from "../../../stores/projects";
 import { useScreenshotPendingStore } from "../../../stores/screenshotPending";
@@ -2847,7 +2847,7 @@ function PdfCanvas({
   // ── Dragging pages to another PDF viewer, in this window or another ──────
   // The bytes cannot ride a JS object across a window boundary (separate WebViews,
   // separate heaps), so the dragged pages are built into a small PDF and parked in the
-  // backend page clipboard; the drag carries only its token. See `stores/pdfDrag`.
+  // backend page clipboard; the drag carries only its token. See `stores/drag/pdfDrag`.
 
   /** Build the dragged pages into a standalone PDF and park it for the drop. */
   const exportPages = useCallback(

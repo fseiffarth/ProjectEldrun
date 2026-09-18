@@ -22,7 +22,7 @@ vi.mock("../components/tabs/TabPane", () => ({ TabPane: () => <div /> }));
 vi.mock("../components/header/WindowControls", () => ({ WindowControls: () => null }));
 
 import { DetachedCenterPanel } from "../components/layout/DetachedCenterPanel";
-import { useDragStore } from "../stores/drag";
+import { useDragStore } from "../stores/drag/drag";
 import type { GroupNode, LayoutNode, TabEntry } from "../stores/tabs";
 import { emit } from "@tauri-apps/api/event";
 import { DETACHED_DRAG_START } from "../stores/detached";

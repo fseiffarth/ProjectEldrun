@@ -34,7 +34,7 @@ onto another subwindow's strip or a body's edge rearranges it as in a project,
 through the tab store's `…InScope` actions. The ordinary layout actions only
 write the *active* scope, and root is not the active one while the overlay
 floats over a project. The drag keeps its state local rather than in
-`stores/drag`, because that store puts `CenterPanel` into drag mode underneath.
+`stores/drag/drag`, because that store puts `CenterPanel` into drag mode underneath.
 
 It is a window, not a dialog, so it behaves like one. The title bar is the move
 handle (a press on a tab or a control keeps its own meaning), eight grips on the

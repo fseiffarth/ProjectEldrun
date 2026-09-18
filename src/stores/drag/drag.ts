@@ -1,6 +1,6 @@
 import { create } from "zustand";
-import type { DropEdge } from "./tabs";
-import type { InternalViewer } from "../lib/viewers/fileUtils";
+import type { DropEdge } from "../tabs";
+import type { InternalViewer } from "../../lib/viewers/fileUtils";
 
 /**
  * Result of the backend `embed_capability` check for a dragged file, prefetched

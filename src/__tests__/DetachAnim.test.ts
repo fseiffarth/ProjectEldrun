@@ -4,7 +4,7 @@
  * clamping so an off-window drop still animates somewhere visible.
  */
 import { describe, it, expect, beforeEach } from "vitest";
-import { flyVector, useDetachAnimStore } from "../stores/detachAnim";
+import { flyVector, useDetachAnimStore } from "../stores/drag/detachAnim";
 
 describe("flyVector", () => {
   const VW = 1000;

@@ -58,7 +58,7 @@ import {
 } from "../../stores/tabs";
 import { withdrawnTabKinds } from "../../lib/experimental";
 import { PLATFORM } from "../../lib/platform";
-import { useTabLandStore } from "../../stores/tabLand";
+import { useTabLandStore } from "../../stores/drag/tabLand";
 import { startFocusTracking, useQuiesce } from "../../stores/power";
 import { clearStrayFullscreen } from "../../lib/window/strayFullscreen";
 import { applyFastModeAttribute, useFastMode } from "../../lib/agents/fastMode";

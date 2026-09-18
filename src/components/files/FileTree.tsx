@@ -5,7 +5,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { startDrag } from "@crabnebula/tauri-plugin-drag";
 import { useTabsStore } from "../../stores/tabs";
-import { useDragStore, type EmbedCap, type FileDragItem } from "../../stores/drag";
+import { useDragStore, type EmbedCap, type FileDragItem } from "../../stores/drag/drag";
 import { commitFileDrop, fileDropGoesToNewWindow } from "../tabs/commitFileDrop";
 import { startDetachedDropSession } from "../tabs/detachedDropTargets";
 import { FileDropContext } from "./fileDropContext";

@@ -19,9 +19,9 @@ import {
   type TabEntry,
   type TabKind,
 } from "../../stores/tabs";
-import { useDragStore } from "../../stores/drag";
-import { useTabLandStore } from "../../stores/tabLand";
-import { useDetachAnimStore, flyVector } from "../../stores/detachAnim";
+import { useDragStore } from "../../stores/drag/drag";
+import { useTabLandStore } from "../../stores/drag/tabLand";
+import { useDetachAnimStore, flyVector } from "../../stores/drag/detachAnim";
 import { commitDrop } from "./commitDrop";
 import { TabDropPlaceholder } from "./TabDropPlaceholder";
 import {

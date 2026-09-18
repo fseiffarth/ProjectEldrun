@@ -33,7 +33,7 @@ import {
   type ClientPoint,
   type PhysPoint,
   type WindowFrame,
-} from "../lib/window/coords";
+} from "../../lib/window/coords";
 
 /** The dragged pages, as parked in the backend page clipboard. */
 export interface PageTransfer {

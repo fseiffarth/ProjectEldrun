@@ -21,7 +21,7 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn().mockResolvedValue(nu
 import { ProjectSwitcher } from "../components/layout/ProjectSwitcher";
 import { useProjectsStore } from "../stores/projects";
 import { BOX_SCOPE_PREFIX, useBoxesStore } from "../stores/boxes";
-import { usePillDragStore } from "../stores/pillDrag";
+import { usePillDragStore } from "../stores/drag/pillDrag";
 import { useTabsStore } from "../stores/tabs";
 import { TRASH_PROJECT_ID } from "../lib/projects/trashProject";
 import { useActivityStore } from "../stores/activity";

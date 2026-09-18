@@ -62,8 +62,8 @@ import {
   isEditableTarget,
   isMacCommandChord,
 } from "../../hooks/useKeyboard";
-import { useDragStore } from "../../stores/drag";
-import { useTabLandStore } from "../../stores/tabLand";
+import { useDragStore } from "../../stores/drag/drag";
+import { useTabLandStore } from "../../stores/drag/tabLand";
 import { useSettingsStore } from "../../stores/settings";
 import {
   DEFAULT_MIN_SUBWINDOW_PX,

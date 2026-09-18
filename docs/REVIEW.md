@@ -64,7 +64,7 @@ the chain.
 These are the same underlying issue viewed from two angles: **subscription
 granularity is too coarse**. Introducing per-group / per-scope selectors (e.g. a
 `useGroup(groupId)` selector) fixes the re-render storms *and* gives the stores a
-cleaner, event-mediated boundary. `stores/drag.ts` is the model to copy — both
+cleaner, event-mediated boundary. `stores/drag/drag.ts` is the model to copy — both
 reviewers praised it as the example of correctly isolated subscriptions.
 
 ### 4. Append-only JSON state files are repeatedly read-modify-rewritten
@@ -165,7 +165,7 @@ to local compromise.
 
 ### Strengths
 
-- **Drag store isolation** (`stores/drag.ts`): per-frame pointermove updates a
+- **Drag store isolation** (`stores/drag/drag.ts`): per-frame pointermove updates a
   separate store with coarse primitive selectors, so the tab tree doesn't
   re-render during drags. The reference example for the whole frontend.
 - **Pane persistence across scope switches** (`CenterPanel`): all panes stay

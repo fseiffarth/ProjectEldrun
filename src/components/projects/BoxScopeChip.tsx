@@ -4,7 +4,7 @@ import type { ProjectBox } from "../../types";
 import { BOX_SCOPE_PREFIX } from "../../stores/boxes";
 import { ROOT_SCOPE } from "../../stores/tabs";
 import { useBoxEditorStore } from "../../stores/boxEditor";
-import { usePillDragStore } from "../../stores/pillDrag";
+import { usePillDragStore } from "../../stores/drag/pillDrag";
 import { useHeaderHoverMenuStore } from "../../stores/headerHoverMenu";
 import { useT } from "../../lib/i18n";
 import { StarIcon } from "../layout/StarIcon";

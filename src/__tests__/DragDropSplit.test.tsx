@@ -54,7 +54,7 @@ vi.mock("../components/files/FileBrowser", () => ({
 
 import { CenterPanel } from "../components/layout/CenterPanel";
 import { useTabsStore, type GroupNode, type SplitNode } from "../stores/tabs";
-import { useDragStore } from "../stores/drag";
+import { useDragStore } from "../stores/drag/drag";
 import { useProjectsStore } from "../stores/projects";
 import * as coords from "../lib/window/coords";
 

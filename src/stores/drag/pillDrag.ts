@@ -5,7 +5,7 @@ import { create } from "zustand";
  * old native HTML5 DnD, which WebKitGTK's other draggables — TabBar, YamlTree,
  * MachinesIndicator — all avoid for the same reason: a native drag out of a
  * gesture the webview didn't originate can hang or drop mid-drag). Kept in its
- * own store, mirroring `stores/drag.ts`'s tab-drag isolation, so the
+ * own store, mirroring `stores/drag/drag.ts`'s tab-drag isolation, so the
  * high-frequency pointermove updates only re-render the pills that actually
  * read it (the dragged pill + whichever siblings must part to open its landing
  * slot), not the whole switcher.

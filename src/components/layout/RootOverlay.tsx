@@ -78,7 +78,7 @@ interface Rect {
 }
 
 /**
- * A tab drag inside the console. Local state rather than `stores/drag`: that
+ * A tab drag inside the console. Local state rather than `stores/drag/drag`: that
  * store's `drag !== null` puts `CenterPanel` into drag mode, and the panel
  * under this modal is not what the tab is being dropped on.
  */

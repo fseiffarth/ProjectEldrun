@@ -1,11 +1,11 @@
 /**
- * The cross-bar drop flourish (`stores/tabLand`): the nonce strictly
+ * The cross-bar drop flourish (`stores/drag/tabLand`): the nonce strictly
  * increases so a repeat landing of the SAME tab re-runs the CSS animation,
  * and a bar clears exactly the play it started — never a newer one.
  */
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { useTabLandStore } from "../stores/tabLand";
+import { useTabLandStore } from "../stores/drag/tabLand";
 
 beforeEach(() => {
   useTabLandStore.setState({ landed: null });

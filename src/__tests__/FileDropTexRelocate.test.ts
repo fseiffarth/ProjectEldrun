@@ -28,7 +28,7 @@ vi.mock("../stores/windows", () => ({
 import { commitFileDrop } from "../components/tabs/commitFileDrop";
 import { detachedSeedEvent } from "../stores/detached";
 import { orderedTabKeys, useTabsStore, type GroupNode, type SplitNode } from "../stores/tabs";
-import { type TabDrag } from "../stores/drag";
+import { type TabDrag } from "../stores/drag/drag";
 
 const TEX = "/p/poster/Poster.tex";
 

@@ -37,14 +37,14 @@ import {
 } from "../../stores/tabs";
 import { useSettingsStore } from "../../stores/settings";
 import { useRootOverlayStore } from "../../stores/rootOverlay";
-import { useDragStore } from "../../stores/drag";
+import { useDragStore } from "../../stores/drag/drag";
 import { useSubwindowNavStore } from "../../stores/subwindowNav";
 import { useKeyboardSteeringStore } from "../../stores/keyboardSteering";
 import { useWindowFocused } from "../../hooks/useWindowFocused";
 import { useScrollSyncStore } from "../../stores/scrollSync";
-import { useWindowMoveStore } from "../../stores/windowMove";
-import { useDetachAnimStore } from "../../stores/detachAnim";
-import { useTabLandStore } from "../../stores/tabLand";
+import { useWindowMoveStore } from "../../stores/drag/windowMove";
+import { useDetachAnimStore } from "../../stores/drag/detachAnim";
+import { useTabLandStore } from "../../stores/drag/tabLand";
 import { TAB_ACCENT } from "../tabs/newTabItems";
 import { commitDrop } from "../tabs/commitDrop";
 import {
@@ -1274,7 +1274,7 @@ function CenterPanelImpl() {
 
 /**
  * The one-shot "fly-out" played when a tab or subwindow is dropped OUT of the
- * main window into its own OS window (see stores/detachAnim). A card appears at
+ * main window into its own OS window (see stores/drag/detachAnim). A card appears at
  * the gesture's last in-window position and — via a CSS animation — lifts,
  * scales, and fades while sliding toward the edge the content exited through, so
  * the detach reads as the content being ejected into its own window. Clears
@@ -1434,7 +1434,7 @@ const GHOST_THUMB_W = 280; // px; the thumbnail's on-screen width.
 export function DragGhost() {
   const t = useT();
   // Eff #14: subscribe to COARSE PRIMITIVE selectors (mirroring
-  // SplitPreviewOverlay / stores/drag.ts), not the whole `drag` object. The
+  // SplitPreviewOverlay / stores/drag/drag.ts), not the whole `drag` object. The
   // ghost still re-renders each frame to follow the pointer (pointerX/Y change),
   // but the heavy `previewNode` / its dimensions are read as stable primitives,
   // so the clone-mount effect's deps don't churn and React diffs only the moved

@@ -6,7 +6,7 @@
  *
  * **Every gesture is pointer-based, with pointer capture, and every handler is
  * bound in the JSX.** HTML5 drag-and-drop does not work under WebKitGTK (see
- * `stores/pdfDrag.ts` and `YamlTree`, which both learned this), and listeners
+ * `stores/drag/pdfDrag.ts` and `YamlTree`, which both learned this), and listeners
  * *added mid-gesture* can be skipped entirely — so the move/up handlers are on
  * the stage from the first render and `setPointerCapture` keeps them fed even
  * when the pointer leaves the element.

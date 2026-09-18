@@ -19,7 +19,7 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn().mockResolvedValue([]) }
 
 import { TabBar } from "../components/tabs/TabBar";
 import { allGroups, useTabsStore } from "../stores/tabs";
-import { useDragStore } from "../stores/drag";
+import { useDragStore } from "../stores/drag/drag";
 
 function reset() {
   useTabsStore.setState({

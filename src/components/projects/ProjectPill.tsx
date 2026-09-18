@@ -40,8 +40,8 @@ import { FolderPickerDialog } from "../common/FolderPickerDialog";
 import { RemoteConnMenu } from "../header/RemoteConnMenu";
 import { VmSettingsDialog } from "./VmSettingsDialog";
 import { categoryColor, primaryCategoryColor, projectCategories } from "../../lib/theme/categoryColor";
-import { usePillDragStore } from "../../stores/pillDrag";
-import { usePillSelectionStore } from "../../stores/pillSelection";
+import { usePillDragStore } from "../../stores/drag/pillDrag";
+import { usePillSelectionStore } from "../../stores/drag/pillSelection";
 import { useBoxEditorStore } from "../../stores/boxEditor";
 import { useBoxesStore } from "../../stores/boxes";
 import { bindDragRelease, dragPlatform } from "../../lib/window/dragPlatform";
@@ -69,7 +69,7 @@ interface Props {
   /** Drop onto a box pill: assign this project to that box instead of reordering. */
   onAssignToBox?: (boxId: string) => void;
   /** True while THIS pill is the one being pointer-dragged. ProjectSwitcher owns
-   *  the shared gesture state (`stores/pillDrag`) so every sibling can react to
+   *  the shared gesture state (`stores/drag/pillDrag`) so every sibling can react to
    *  one gesture without prop-drilling the raw drag object through each pill. */
   isDragged?: boolean;
   /** Live pointer-follow offset (px) while `isDragged`. */

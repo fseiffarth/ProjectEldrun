@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { downloadDir } from "@tauri-apps/api/path";
 import { useSettingsStore } from "../../stores/settings";
 import { useWindowsStore } from "../../stores/windows";
-import { useDragStore } from "../../stores/drag";
+import { useDragStore } from "../../stores/drag/drag";
 import { bindDragRelease } from "../../lib/window/dragPlatform";
 import { fmtModified, fmtSize, fileIcon, folderIcon, type FileEntry } from "../../lib/viewers/fileUtils";
 import { useT } from "../../lib/i18n";
