@@ -8,6 +8,7 @@ import { AlertsToggle } from "./AlertsToggle";
 import { VpnIndicator } from "./VpnIndicator";
 import { MachinesIndicator } from "./MachinesIndicator";
 import { AppResourceDisplay } from "./AppResourceDisplay";
+import { DevBuildIndicator } from "./DevBuildIndicator";
 import { useQuiesce, saverInterval, usePowerStore } from "../../stores/power";
 import { useSettingsStore } from "../../stores/settings";
 import {
@@ -173,6 +174,11 @@ export function StatusCluster() {
       </span>
       <span className="status-cluster-item" data-folded={folded("resources")}>
         <AppResourceDisplay />
+      </span>
+      {/* Dev checkouts only: a release build's backend answers no status and
+          the chip renders nothing (see DevBuildIndicator). */}
+      <span className="status-cluster-item" data-folded={folded("devBuild")}>
+        <DevBuildIndicator />
       </span>
       {/* The toggle only exists once there is something to fold: with a single
           member (or none) the cluster is already as small as it gets, and a

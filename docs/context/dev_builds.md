@@ -107,4 +107,10 @@ change was not run live.
   eldrun.autoDevBuild false`, or `ELDRUN_NO_AUTO_DEV_BUILD=1` for one commit;
   `scripts/package-dev-auto.sh --status` says what it is doing and
   `~/.local/share/eldrun/package-dev-auto.log` holds the last build's output.
+  The header's dev-build chip (`header/DevBuildIndicator.tsx`,
+  `services::dev_build`, 2026-09-18) reads the same files: step, elapsed, an
+  estimate from the last good pass, failure, commits behind, and "relaunch to
+  pick it up". It exists only in binaries built with `ELDRUN_DEV_SOURCE_ROOT`
+  (`package-dev.sh` and the hot-reload launcher export it), and a log line
+  format change in either script silently degrades its step readout.
 

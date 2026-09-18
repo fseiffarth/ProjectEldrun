@@ -104,6 +104,10 @@ publish_live_pwa() {
 # from. Unset in CI and in every release build, where the overlay does not exist
 # at all.
 export ELDRUN_MOBILE_LIVE_DIR="$LIVE_PWA_DIR"
+# The checkout the header's dev-build chip compares the installed snapshot with
+# (services::dev_build) — the main one even in --head mode, whose freeze tree
+# is a detached copy that never moves. Unset in CI and every release: no chip.
+export ELDRUN_DEV_SOURCE_ROOT="$ROOT"
 
 MODE=tree
 for arg in "$@"; do

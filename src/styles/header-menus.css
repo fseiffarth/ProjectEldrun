@@ -1916,7 +1916,8 @@
    of the header menus rather than a bespoke widget. */
 .vpn-indicator-btn,
 .machines-indicator-btn,
-.mobile-indicator-btn {
+.mobile-indicator-btn,
+.dev-build-btn {
   /* Unlike the other .global-apps-menu-btn siblings, this one reads as a
      quiet status readout (lamp + label), not a button — so its inherited
      button box (background/border) is stripped back to plain text/icon.
@@ -2021,7 +2022,9 @@
 .machines-indicator-btn:hover,
 .machines-indicator-btn[aria-expanded="true"],
 .mobile-indicator-btn:hover,
-.mobile-indicator-btn[aria-expanded="true"] {
+.mobile-indicator-btn[aria-expanded="true"],
+.dev-build-btn:hover,
+.dev-build-btn[aria-expanded="true"] {
   /* Same accent-tinted highlight as .tab-new-btn:hover (the + button), so the
      header's three "quiet until touched" controls (+, VPN, Machines) all light
      up the same way instead of these two staying flat while the + brightens. */
@@ -2031,7 +2034,9 @@
 .vpn-indicator-btn:hover .vpn-indicator-label,
 .vpn-indicator-btn[aria-expanded="true"] .vpn-indicator-label,
 .machines-indicator-btn:hover .vpn-indicator-label,
-.machines-indicator-btn[aria-expanded="true"] .vpn-indicator-label {
+.machines-indicator-btn[aria-expanded="true"] .vpn-indicator-label,
+.dev-build-btn:hover .vpn-indicator-label,
+.dev-build-btn[aria-expanded="true"] .vpn-indicator-label {
   color: var(--text-primary);
 }
 .vpn-indicator-label {
@@ -2047,15 +2052,50 @@
   width: 25px;
   padding-inline: 3px;
 }
-.mobile-indicator-icon {
+.mobile-indicator-icon,
+.dev-build-icon {
   width: 16px;
   height: 16px;
   flex: none;
   color: var(--text-secondary);
 }
 .mobile-indicator-icon.connected { color: var(--success); }
-.mobile-indicator-icon.connecting { color: var(--warning); }
-.mobile-indicator-icon.error { color: var(--danger); }
+.mobile-indicator-icon.connecting,
+.dev-build-icon.active { color: var(--warning); }
+.mobile-indicator-icon.error,
+.dev-build-icon.error { color: var(--danger); }
+
+/* ── Dev-build chip (DevBuildIndicator) ──────────────────────────────────────
+   The VPN chip's lamp-plus-label readout; the label carries the step and its
+   clock, so it is set in tabular digits to hold still while the clock ticks. A
+   2px estimate bar runs along the button's foot while a build is on. */
+.dev-build-btn {
+  position: relative;
+}
+.dev-build-chip-text {
+  font-variant-numeric: tabular-nums;
+}
+.dev-build-chip-text.error { color: var(--danger); }
+.dev-build-bar {
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  bottom: 3px;
+  height: 2px;
+  background: var(--border-subtle);
+  overflow: hidden;
+}
+.dev-build-bar > span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transition: width 1s linear;
+}
+.dev-build-bar.dev-build-bar-wide {
+  position: static;
+  height: 3px;
+  margin-top: 8px;
+}
 /* The dot is punched out of the surface behind the icon, so the stroke has to
    BE that surface. It named `--bg`, which is not a token in this app — an
    invalid value drops the declaration, leaving `stroke` at its initial `none`,

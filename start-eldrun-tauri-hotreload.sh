@@ -109,5 +109,8 @@ rustc --version
 # the bundle `beforeDevCommand` built at session start — fine for an hour, stale
 # by the end of a long session.
 export ELDRUN_MOBILE_LIVE_DIR="$ROOT/target/mobile-pwa"
+# The checkout the header's dev-build chip reads HEAD from (services::dev_build).
+# Unset — CI, a release — means no chip.
+export ELDRUN_DEV_SOURCE_ROOT="$ROOT"
 
 exec npm run tauri:dev

@@ -46,6 +46,17 @@ pub async fn debug_app_resource_usage() -> Result<AppResourceUsage, String> {
     })
 }
 
+/// The background "Eldrun (dev)" freeze, for the header's dev-build chip; `None`
+/// when this binary was not built from a checkout (see `services::dev_build`).
+/// Blocking-pool, because it reads a log tail and runs `git rev-list`.
+#[tauri::command]
+pub async fn dev_build_status() -> Option<crate::services::dev_build::DevBuildStatus> {
+    tauri::async_runtime::spawn_blocking(crate::services::dev_build::status)
+        .await
+        .ok()
+        .flatten()
+}
+
 /// Resident size (KiB) of the largest webview *renderer* process under the app.
 ///
 /// The renderer (WebKitWebProcess on Linux) holds the whole UI's JS heap in a

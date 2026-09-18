@@ -1893,6 +1893,7 @@ pub fn run() {
             commands::crash::report_frontend_error,
             // Debug diagnostics
             commands::debug::debug_app_resource_usage,
+            commands::debug::dev_build_status,
             commands::debug::webview_rss_kib,
             commands::debug::webview_renderer_rss,
             commands::debug::webview_renderer_claim,
@@ -2097,9 +2098,9 @@ pub fn run() {
                 // is deliberately left alone: Ollama is a machine service as
                 // often as it is an Eldrun detail.
                 commands::ollama::shutdown_owned_server();
-                // Let the machine sleep again if a talk was on: the presenter's
                 // The fenced Copilot language servers (one per consented project).
                 tauri::async_runtime::block_on(commands::copilot::stop_all_for_exit());
+                // Let the machine sleep again if a talk was on: the presenter's
                 // own unmount never runs on an exit the frontend didn't drive.
                 // Idempotent, and non-blocking on every OS (Windows only drops
                 // the parked thread's sender — no join inside the shutdown

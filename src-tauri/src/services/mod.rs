@@ -40,6 +40,10 @@ pub mod caldav;
 // What the phone's composer may attach from the desktop: recent screenshots and
 // pictures by opaque id, copied into the project inbox on request.
 pub mod desktop_images;
+// What the background "Eldrun (dev)" freeze (`scripts/package-dev-auto.sh`) is
+// doing, read from that script's own state files for the header's dev-build
+// chip. Compiled to "no chip" unless the binary was built from a checkout.
+pub mod dev_build;
 pub mod codex_bind;
 // Codex's own SQLite thread store (`~/.codex/state_<n>.sqlite`), read
 // read-only for the model a Codex tab is running now that its releases

@@ -1160,7 +1160,7 @@ pub fn add_minutes(stamp: &str, n: i64) -> String {
 /// Days from 1970-01-01 to a civil date, by Howard Hinnant's `days_from_civil`.
 /// Constant-time where [`add_days`] would loop, which is what makes a span
 /// between two arbitrary dates affordable.
-fn days_from_civil(y: i32, m: u32, d: u32) -> i64 {
+pub(crate) fn days_from_civil(y: i32, m: u32, d: u32) -> i64 {
     let y = i64::from(if m <= 2 { y - 1 } else { y });
     let era = if y >= 0 { y } else { y - 399 } / 400;
     let yoe = y - era * 400; // [0, 399]
