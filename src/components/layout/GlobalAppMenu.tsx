@@ -53,7 +53,9 @@ export function GlobalAppMenu() {
         aria-haspopup="menu"
         aria-expanded={open}
       >
-        ▦
+        <span className="global-apps-menu-icon" aria-hidden="true">
+          ▦
+        </span>
       </button>
       {open && <GlobalAppBar />}
     </div>

@@ -1047,12 +1047,14 @@
   background: var(--control-hover-bg);
   color: var(--text-primary);
 }
-/* The `!` on the 🧠 button itself, pointing at the notice inside the menu. Amber
-   (the mail button's failed-check badge, same reasoning): something needs
-   attention, without claiming anything was loaded. */
+/* The `!` on the Models & agents button itself, pointing at the notice inside
+   the menu. Amber (the mail button's failed-check badge, same reasoning):
+   something needs attention, without claiming anything was loaded. Inset, not
+   overhanging: the button is the bar's full height, so anything below its edge
+   would hang over the tab strip. */
 .local-model-autostart-flag {
   position: absolute;
-  bottom: -3px;
+  bottom: 1px;
   left: -3px;
   min-width: 14px;
   height: 14px;
@@ -1931,8 +1933,8 @@
   /* Unlike the other .global-apps-menu-btn siblings, this one reads as a
      quiet status readout (lamp + label), not a button — so its inherited
      button box (background/border) is stripped back to plain text/icon.
-     Height stays the shared 32px (matching the brain/local-model button
-     and every other .global-apps-menu-btn) so the header row's icons align.
+     Height stays the shared 32px .global-apps-menu-btn box (the 🔔 beside
+     it keeps it too; only the six icon launchers fill the 40px bar).
      The dropdowns line up regardless — they hang off the header's bottom edge
      (`.global-apps-menu .tab-new-menu`), not off each button. */
   display: inline-flex;

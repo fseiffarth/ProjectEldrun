@@ -34,7 +34,8 @@
 }
 
 /* ── Global apps in the header (MailIndicator, CalendarIndicator, ...) ──────
-   The ✉ 🗓 ☑ 🔔 buttons beside the brain button, and the overlays they open.
+   The ✉ 🗓 ☑ 🔔 buttons beside the Models & agents chip, and the overlays they
+   open.
    All four are the same kind of thing — a machine-wide control you reach from
    anywhere, not a per-project status readout like the right cluster — so they
    share one rule set here rather than each carrying a copy that can drift
@@ -44,7 +45,7 @@
    eye finds.
 
    Each button is a plain `.global-apps-menu-btn` inside a `.global-apps-menu`
-   wrapper: the brain button's exact chrome. Everything below is therefore
+   wrapper: the Models & agents button's exact chrome. Everything below is therefore
    *additive* — a positioning context for the badge, and the pressed state the
    shared rule spells for `aria-expanded` but not `aria-pressed`. Size, hover,
    colours and transitions are all inherited. */
@@ -66,9 +67,45 @@
   color: var(--text-primary);
   border-color: var(--text-muted);
 }
+/* The header's six icon buttons — ✉ 🗓 ☑, the Models & agents chip, ▦ and ⚙
+   — fill the bar: a 40px square (the `.app-header` height), with the icons
+   grown to match. The ▦ and ⚙ are matched by the icon span they hold, having
+   no class of their own. The 🔔 stays at the shared 32px/15px: it stands with
+   the status cluster, whose readouts are sized to each other. */
+.mail-indicator-btn,
+.calendar-indicator-btn,
+.todo-indicator-btn,
+.local-model-btn,
+.global-apps-menu-btn:has(> .global-apps-menu-icon),
+.global-apps-menu-btn:has(> .settings-menu-icon) {
+  min-width: 40px;
+  height: 40px;
+}
+/* One icon size for all six header buttons (these four plus the ▦ and ⚙):
+   each glyph's *ink* fills the same 22px square, centred in the button. Font
+   size can't give that — the fallback fonts draw ✉ short, 🗓 tall and ▦ below
+   the middle — so every glyph carries its own size and nudge, measured in
+   WebKitGTK (offscreen probe, dark theme, bundled Inter): at 30px the inks ran
+   ✉ 21.5×15.5, 🗓 22×29.5, ☑ 22×22, ▦ 23×23.5 (3.2px low), ⚙ 21.5×22.5. A
+   changed glyph or icon font means re-measuring, not eyeballing. */
 .mail-indicator-icon,
 .calendar-indicator-icon,
 .todo-indicator-icon,
+.global-apps-menu-icon,
+.settings-menu-icon {
+  display: inline-block;
+  line-height: 1;
+}
+.mail-indicator-icon { font-size: 30.7px; }
+.calendar-indicator-icon { font-size: 22.4px; transform: translateY(0.6px); }
+.todo-indicator-icon { font-size: 30px; }
+.global-apps-menu-icon { font-size: 28.1px; transform: translateY(-3px); }
+.settings-menu-icon { font-size: 29.3px; }
+svg.local-model-icon {
+  width: 25px;
+  height: 25px;
+  flex-shrink: 0;
+}
 .alerts-toggle-icon {
   font-size: 15px;
   line-height: 1;
@@ -90,16 +127,15 @@ svg.alerts-toggle-icon {
    cursor. `--danger` because the dot is the alert; the rest of the header is
    deliberately quiet.
 
-   It **overhangs** that corner (negative offsets) instead of sitting inside it,
-   which is what keeps the glyph itself readable: a 32px button holds a 15px icon
-   and a badge wide enough for "99+", and inside the box those two have to share
-   the same pixels — the count ends up lying across the ✉, and the icon reads as
-   pushed off-centre even though it is exactly centred. Hung outside, the glyph
-   stays clear and optically centred and the badge is still unmistakably its.
-   Safe because `.header-center` sets `overflow: visible` explicitly and leaves a
-   6px gap between these buttons, so a 3px overhang clips on nothing and touches
-   no neighbour — but that is the budget: a bigger one would reach the button
-   next door.
+   It **overhangs** the side (negative `right`) instead of sitting inside it,
+   which is what keeps the glyph itself readable: the box holds the icon and a
+   badge wide enough for "99+", and inside it those two have to share the same
+   pixels — the count ends up lying across the ✉, and the icon reads as pushed
+   off-centre even though it is exactly centred. Hung outside, the glyph stays
+   clearer and the badge is still unmistakably its. Only sideways: these
+   buttons are the bar's full 40px, so an overhang upward would be cut off by
+   the window's top edge. The 6px gap between buttons is the sideways budget —
+   a 3px overhang touches no neighbour; a bigger one would.
 
    What the number *means* differs between the two, and the difference lives in
    the components, not here: mail counts unread inbox messages and falls as they
@@ -109,7 +145,7 @@ svg.alerts-toggle-icon {
 .calendar-indicator-badge,
 .todo-indicator-badge {
   position: absolute;
-  top: -3px;
+  top: 1px;
   right: -3px;
   min-width: 14px;
   height: 14px;

@@ -194,7 +194,7 @@ export function NewTabMenu({ scope, projectCwd, projectName, anchor, onPick, onC
     <>
     {worktreePicker.dialogs}
     <div
-      className="tab-new-menu"
+      className="tab-new-menu tab-add-menu"
       ref={menuRef}
       style={{ position: "fixed", left: pos.x, top: pos.y }}
     >

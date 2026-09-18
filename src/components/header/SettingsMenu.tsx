@@ -77,7 +77,9 @@ export function SettingsMenu() {
         onClick={reveal}
         onFocus={reveal}
       >
-        ⚙
+        <span className="settings-menu-icon" aria-hidden="true">
+          ⚙
+        </span>
       </button>
       {open && (
         // The app's canonical dropdown-list chrome, shared with the switcher's

@@ -1468,7 +1468,7 @@ export function TabBar({ groupId, projectCwd, showGroupClose, filesReserveWidth 
       </div>
       {menuOpen && menuPos && createPortal(
         <div
-          className="tab-new-menu"
+          className="tab-new-menu tab-add-menu"
           ref={addMenuRef}
           style={{ position: "fixed", left: menuPos.x, top: menuPos.y }}
         >

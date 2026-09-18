@@ -218,6 +218,9 @@ export function AddTabMenuList({ groups }: { groups: AddMenuGroup[] }) {
           }
         }}
       />
+      {/* The search box stays pinned; only the entries scroll once the list
+          outgrows the window (unified `.menu-scroll-region` shape). */}
+      <div className="menu-scroll-region">
       {visible.length === 0 && <div className="tab-new-menu-hint">{t("newTabMenu.noMatches")}</div>}
       {visible.map((g) => (
         <Fragment key={g.label}>
@@ -266,6 +269,7 @@ export function AddTabMenuList({ groups }: { groups: AddMenuGroup[] }) {
           )}
         </Fragment>
       ))}
+      </div>
       {moreMenu && (
         <div
           ref={moreMenuRef}

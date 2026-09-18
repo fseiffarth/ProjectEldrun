@@ -1940,6 +1940,16 @@
   max-height: calc(100vh - 16px);
 }
 
+/* The "+" add-tab menu (main bar, popouts, root overlay): never taller than
+   the window. Its search box stays pinned and the entries below it scroll in a
+   `.menu-scroll-region` — the shape described next. */
+.tab-add-menu {
+  max-height: calc(100vh - 16px);
+}
+.tab-add-menu > .tab-new-menu-search {
+  flex-shrink: 0;
+}
+
 /* ── Unified scrolling-menu shape ───────────────────────────────────────────
    A menu that can overflow must NOT scroll on its own element: that element
    carries the rounded corners, the 2px accent top rail and the ::before accent
