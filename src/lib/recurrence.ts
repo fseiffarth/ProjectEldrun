@@ -67,6 +67,29 @@ function baseOccurrence(event: CalendarEvent, occurrenceStart: string, start: st
   };
 }
 
+/** `"YYYY-MM-DD"` from civil parts. */
+function civilDate(year: number, month: number, day: number): string {
+  return `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+/**
+ * The day of month of the `n`th `weekday` (`0` = Sunday) in `month` — counted
+ * from the end when `n` is negative, so `-1` is the last. `null` when the month
+ * has no such day (a 5th Thursday in a month with four).
+ */
+export function nthWeekdayOfMonth(year: number, month: number, n: number, weekday: number): number | null {
+  if (n === 0) return null;
+  const dim = daysInMonth(year, month);
+  if (n > 0) {
+    const firstDow = weekdayOf(civilDate(year, month, 1));
+    const day = 1 + ((weekday - firstDow + 7) % 7) + 7 * (n - 1);
+    return day <= dim ? day : null;
+  }
+  const lastDow = weekdayOf(civilDate(year, month, dim));
+  const day = dim - ((lastDow - weekday + 7) % 7) - 7 * (-n - 1);
+  return day >= 1 ? day : null;
+}
+
 /**
  * Step a start stamp to the next candidate under `rule`.
  *
@@ -147,7 +170,7 @@ function generateStarts(event: CalendarEvent, windowEnd: string): string[] {
   // Monthly + bymonthday: pin the day of month, skipping months too short to hold
   // it (Jan 31 monthly does NOT fire in February — the iCalendar behaviour, and
   // the one users expect: a "31st of the month" event simply has no February).
-  if (rule.freq === "monthly" && rule.bymonthday) {
+  if (rule.freq === "monthly" && rule.bymonthday && !rule.bynthweekday?.length) {
     const day = rule.bymonthday;
     const time = event.all_day ? "" : (first.split("T")[1] ?? "");
     const c = parseStamp(first);
@@ -157,7 +180,7 @@ function generateStarts(event: CalendarEvent, windowEnd: string): string[] {
 
     for (;;) {
       if (day <= daysInMonth(year, month)) {
-        const date = `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+        const date = civilDate(year, month, day);
         if (date >= datePart(first)) {
           const candidate = time ? `${date}T${time}` : date;
           if (stop(candidate)) return starts;
@@ -169,7 +192,46 @@ function generateStarts(event: CalendarEvent, windowEnd: string): string[] {
         month -= 12;
         year += 1;
       }
-      const probe = `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-01`;
+      const probe = civilDate(year, month, 1);
+      if (probe > datePart(windowEnd)) return starts;
+      if (until && probe > until) return starts;
+      if (count !== null && starts.length >= count) return starts;
+      if (starts.length >= MAX_OCCURRENCES) return starts;
+    }
+  }
+
+  // Numbered weekdays ("the 2nd Tuesday", "the last Friday"): each period is a
+  // month (monthly) or the master's month in every Nth year (yearly), and within
+  // it the rule fires on each listed weekday that month actually has — a "5th
+  // Thursday" rule skips the months with four.
+  const nth = (rule.bynthweekday ?? []).filter(
+    (e) => e.n !== 0 && Math.abs(e.n) <= 5 && e.day >= 0 && e.day <= 6,
+  );
+  if ((rule.freq === "monthly" || rule.freq === "yearly") && nth.length > 0) {
+    const time = event.all_day ? "" : (first.split("T")[1] ?? "");
+    const c = parseStamp(first);
+    if (!c) return [];
+    const step = rule.freq === "monthly" ? interval : 12 * interval;
+    let year = c.year;
+    let month = c.month;
+
+    for (;;) {
+      const days = [
+        ...new Set(nth.map((e) => nthWeekdayOfMonth(year, month, e.n, e.day)).filter((d): d is number => d !== null)),
+      ].sort((a, b) => a - b);
+      for (const day of days) {
+        const date = civilDate(year, month, day);
+        if (date < datePart(first)) continue;
+        const candidate = time ? `${date}T${time}` : date;
+        if (stop(candidate)) return starts;
+        starts.push(candidate);
+      }
+      month += step;
+      while (month > 12) {
+        month -= 12;
+        year += 1;
+      }
+      const probe = civilDate(year, month, 1);
       if (probe > datePart(windowEnd)) return starts;
       if (until && probe > until) return starts;
       if (count !== null && starts.length >= count) return starts;
@@ -351,11 +413,47 @@ export function overrideOccurrence(
   };
 }
 
-/** A short human summary of a rule, for the event list and the editor. */
+type Translate = (key: TranslationKey, params?: Record<string, string | number>) => string;
+
+/** "2nd", "last", "2nd-to-last" — the ordinal of a numbered weekday. */
+function ordinalLabel(n: number, t: Translate): string {
+  const key = (k: number) => `recurrence.ordinal${k}` as TranslationKey;
+  if (n > 0) return t(key(Math.min(n, 5)));
+  if (n === -1) return t("recurrence.ordinalLast");
+  return t("recurrence.ordinalFromEnd", { nth: t(key(Math.min(-n, 5))) });
+}
+
+/**
+ * The "on …" part of a monthly or yearly rule on numbered weekdays — "on the 2nd
+ * Tuesday", "on the last Friday of November" — or `""` when it has none. `start`
+ * names the month of a yearly rule.
+ */
+export function describeNthWeekdays(rule: Rrule, t: Translate, lang: string, start?: string): string {
+  if (rule.freq !== "monthly" && rule.freq !== "yearly") return "";
+  const nth = (rule.bynthweekday ?? []).filter((e) => e.n !== 0 && e.day >= 0 && e.day <= 6);
+  if (!nth.length) return "";
+  const days = nth
+    .map((e) => t("recurrence.nthWeekday", { nth: ordinalLabel(e.n, t), weekday: weekdayLabel(lang, e.day, "long") }))
+    .join(", ");
+  let text = t("recurrence.onNthWeekdays", { days });
+  const c = start ? parseStamp(start) : null;
+  if (rule.freq === "yearly" && c) {
+    const month = new Date(Date.UTC(2023, c.month - 1, 1)).toLocaleDateString(lang, { month: "long", timeZone: "UTC" });
+    text += ` ${t("recurrence.ofMonth", { month })}`;
+  }
+  return text;
+}
+
+/**
+ * A short human summary of a rule, for the event list and the editor. `start`
+ * is the event's start, which a yearly rule on a numbered weekday takes its
+ * month from.
+ */
 export function describeRrule(
   rule: Rrule | null | undefined,
-  t: (key: TranslationKey, params?: Record<string, string | number>) => string,
+  t: Translate,
   lang: string,
+  start?: string,
 ): string {
   if (!rule) return t("recurrence.doesNotRepeat");
   const n = Math.max(1, rule.interval || 1);
@@ -373,13 +471,19 @@ export function describeRrule(
       base = (n === 1 ? t("recurrence.weekly") : t("recurrence.everyNWeeks", { n })) + on;
       break;
     }
-    case "monthly":
+    case "monthly": {
+      const nth = describeNthWeekdays(rule, t, lang, start);
       base = (n === 1 ? t("recurrence.monthly") : t("recurrence.everyNMonths", { n })) +
-        (rule.bymonthday ? ` ${t("recurrence.onDayOfMonth", { day: rule.bymonthday })}` : "");
+        (nth
+          ? ` ${nth}`
+          : rule.bymonthday ? ` ${t("recurrence.onDayOfMonth", { day: rule.bymonthday })}` : "");
       break;
-    case "yearly":
-      base = n === 1 ? t("recurrence.yearly") : t("recurrence.everyNYears", { n });
+    }
+    case "yearly": {
+      const nth = describeNthWeekdays(rule, t, lang, start);
+      base = (n === 1 ? t("recurrence.yearly") : t("recurrence.everyNYears", { n })) + (nth ? ` ${nth}` : "");
       break;
+    }
     default:
       base = t("recurrence.repeats");
   }

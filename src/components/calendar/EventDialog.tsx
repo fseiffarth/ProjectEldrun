@@ -6,6 +6,7 @@ import type {
   CalendarEvent,
   EventStatus,
   Freq,
+  NthWeekday,
   Occurrence,
   Rrule,
 } from "../../types";
@@ -14,16 +15,21 @@ import {
   addMinutes,
   allDayEndToLastDay,
   datePart,
+  daysInMonth,
   lastDayToAllDayEnd,
   minutesBetween,
+  parseStamp,
   timePart,
   weekdayLabel,
+  weekdayOf,
 } from "../../lib/calendarTime";
 import { conferenceLink, isJoinableUrl } from "../../lib/conference";
 import { joinConference } from "../../lib/linkTarget";
-import { describeRrule } from "../../lib/recurrence";
+import { sameRule } from "../../lib/ics";
+import { describeNthWeekdays, describeRrule } from "../../lib/recurrence";
 import { useI18nStore, useT, type TranslationKey } from "../../lib/i18n";
 import { TimeField } from "../common/TimeField";
+import { UntestedTag } from "../common/UntestedTag";
 
 /** The reminder offsets the dropdown offers, in minutes before the start. */
 const REMINDER_CHOICE_KEYS: { labelKey: TranslationKey; minutes: number }[] = [
@@ -88,12 +94,22 @@ interface Form {
   freq: Freq;
   interval: number;
   byweekday: number[];
+  /**
+   * Monthly/yearly: repeat on the start's day of month (`"day"`), on its
+   * numbered weekday (`"nth"`, the 3rd Thursday) or on the last such weekday.
+   */
+  repeatOn: RepeatOn;
+  /** The start date the form opened with — while it stands, the rule's own
+   *  day/weekday choices are kept rather than re-derived from the start. */
+  initialStartDate: string;
   /** `""` = forever, `"count"`, or `"until"`. */
   endMode: "" | "count" | "until";
   count: number;
   until: string;
   alarms: Alarm[];
 }
+
+type RepeatOn = "day" | "nth" | "last";
 
 /** How long a new event runs once its start is moved, until its end is set by hand. */
 const DEFAULT_EVENT_MINUTES = 60;
@@ -134,6 +150,10 @@ function initialForm(
     freq: rrule?.freq ?? "weekly",
     interval: rrule?.interval ?? 1,
     byweekday: rrule?.byweekday ?? [],
+    repeatOn: rrule?.bynthweekday?.length
+      ? rrule.bynthweekday.every((e) => e.n < 0) ? "last" : "nth"
+      : "day",
+    initialStartDate: datePart(start),
     endMode: rrule?.count ? "count" : rrule?.until ? "until" : "",
     count: rrule?.count ?? 10,
     until: rrule?.until ?? "",
@@ -223,9 +243,39 @@ export function EventDialog({
   );
 
   const ruleSummary = useMemo(
-    () => (form.repeats ? describeRrule(buildRrule(form), t, lang) : t("recurrence.doesNotRepeat")),
-    [form, t, lang],
+    () =>
+      form.repeats
+        ? describeRrule(buildRrule(form, target.event?.rrule ?? null), t, lang, form.startDate)
+        : t("recurrence.doesNotRepeat"),
+    [form, target.event, t, lang],
   );
+
+  /** The monthly/yearly "repeats on" choices, labelled as the rule each would save. */
+  const repeatOnChoices = useMemo(() => {
+    const c = parseStamp(form.startDate);
+    if (!c || (form.freq !== "monthly" && form.freq !== "yearly")) return [];
+    const original = target.event?.rrule ?? null;
+    const label = (on: RepeatOn) => {
+      const rule = buildRrule({ ...form, repeatOn: on }, original);
+      if (on !== "day") return describeNthWeekdays(rule, t, lang, form.startDate);
+      if (form.freq === "monthly") {
+        return t("recurrence.onDayOfMonth", { day: rule.bymonthday ?? c.day });
+      }
+      const date = new Date(Date.UTC(2023, c.month - 1, c.day)).toLocaleDateString(lang, {
+        month: "long",
+        day: "numeric",
+        timeZone: "UTC",
+      });
+      return t("recurrence.onDate", { date });
+    };
+    // "The 5th Thursday" only exists in some months, and in those it IS the
+    // last — offer "last" there, and "nth" only for the 1st to 4th. Whatever
+    // the rule already says stays on the list.
+    const choices: RepeatOn[] = ["day"];
+    if (Math.ceil(c.day / 7) <= 4 || form.repeatOn === "nth") choices.push("nth");
+    if (c.day + 7 > daysInMonth(c.year, c.month) || form.repeatOn === "last") choices.push("last");
+    return choices.map((on) => ({ on, label: label(on) }));
+  }, [form, target.event, t, lang]);
 
   /** The form, back as a stored event. */
   function toEvent(): CalendarEvent | null {
@@ -267,7 +317,7 @@ export function EventDialog({
       conference: form.conference.trim(),
       category: form.category,
       status: form.status,
-      rrule: form.repeats ? buildRrule(form) : null,
+      rrule: form.repeats ? buildRrule(form, base?.rrule ?? null) : null,
       // Exdates/overrides belong to the series and must survive an edit to it.
       exdates: base?.exdates ?? [],
       overrides: base?.overrides ?? [],
@@ -555,6 +605,25 @@ export function EventDialog({
                     </label>
                   </div>
 
+                  {repeatOnChoices.length > 1 ? (
+                    <div className="cal-field-row">
+                      <label className="cal-field">
+                        <span className="cal-field-label">
+                          {t("eventDialog.repeatOnField")} <UntestedTag />
+                        </span>
+                        <select
+                          className="cal-input"
+                          value={form.repeatOn}
+                          onChange={(e) => patch({ repeatOn: e.target.value as RepeatOn })}
+                        >
+                          {repeatOnChoices.map(({ on, label }) => (
+                            <option key={on} value={on}>{label}</option>
+                          ))}
+                        </select>
+                      </label>
+                    </div>
+                  ) : null}
+
                   {form.freq === "weekly" ? (
                     <div className="cal-weekdays">
                       {Array.from({ length: 7 }, (_, d) => (
@@ -692,14 +761,49 @@ export function EventDialog({
   );
 }
 
-/** The form's repeat fields, as a stored rule. */
-function buildRrule(form: Form): Rrule {
-  return {
+/**
+ * The form's repeat fields, as a stored rule.
+ *
+ * A monthly/yearly rule's day comes from the start date — "the 3rd Thursday" is
+ * the start's own weekday and week — except while the start is still the one
+ * the dialog opened with: then the rule's own choice stands, so a rule the form
+ * cannot draw (the 1st AND 3rd Monday, the 15th of a series starting on the
+ * 12th) survives a save that did not touch it. A rule that comes out saying
+ * what `original` said IS `original`, imported RRULE text and all.
+ */
+function buildRrule(form: Form, original: Rrule | null): Rrule {
+  const byMonthOrYear = form.freq === "monthly" || form.freq === "yearly";
+  const repeatOn: RepeatOn = byMonthOrYear ? form.repeatOn : "day";
+  const keep = original !== null && original.freq === form.freq && form.startDate === form.initialStartDate;
+
+  let bynthweekday: NthWeekday[] = [];
+  let bymonthday: number | null = null;
+  if (repeatOn === "day") {
+    if (form.freq === "monthly" && keep && !original.bynthweekday?.length) {
+      bymonthday = original.bymonthday ?? null;
+    }
+  } else {
+    const originalOn = original?.bynthweekday?.length
+      ? original.bynthweekday.every((e) => e.n < 0) ? "last" : "nth"
+      : "day";
+    if (keep && originalOn === repeatOn) {
+      bynthweekday = original.bynthweekday ?? [];
+    } else {
+      const c = parseStamp(form.startDate);
+      bynthweekday = c
+        ? [{ n: repeatOn === "last" ? -1 : Math.ceil(c.day / 7), day: weekdayOf(form.startDate) }]
+        : [];
+    }
+  }
+
+  const rule: Rrule = {
     freq: form.freq,
     interval: Math.max(1, form.interval),
     byweekday: form.freq === "weekly" ? form.byweekday : [],
-    bymonthday: null,
+    bymonthday,
     until: form.endMode === "until" && form.until ? form.until : null,
     count: form.endMode === "count" ? Math.max(1, form.count) : null,
   };
+  if (bynthweekday.length) rule.bynthweekday = bynthweekday;
+  return original && sameRule(original, rule) ? original : rule;
 }

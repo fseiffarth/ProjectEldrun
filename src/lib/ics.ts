@@ -13,7 +13,9 @@
  * silently shift an event, and dropping to floating local is the honest failure.
  *
  * Supported: VEVENT, VTODO, VALARM (display, minute-offset triggers), RRULE
- * (FREQ/INTERVAL/BYDAY/BYMONTHDAY/UNTIL/COUNT), EXDATE, CATEGORIES, LOCATION,
+ * (FREQ/INTERVAL/BYDAY incl. numbered weekdays/BYMONTHDAY/UNTIL/COUNT, and
+ * BYSETPOS/BYMONTH where they spell a numbered weekday; any other rule keeps
+ * its text to be written back as it came), EXDATE, CATEGORIES, LOCATION,
  * DESCRIPTION, SUMMARY, STATUS, PRIORITY, PERCENT-COMPLETE, COMPLETED.
  */
 
@@ -215,6 +217,15 @@ function icsNowUtc(now: Date): string {
 
 // ── RRULE ───────────────────────────────────────────────────────────────────
 
+/**
+ * The RRULE parts the model holds. Anything else in a rule — `BYHOUR`,
+ * `BYYEARDAY`, `BYSETPOS` over several days… — cannot be expanded here, so the
+ * rule keeps its original text (`ics_value`) to write back unreduced.
+ * `WKST` only moves which day a week starts on, which Eldrun's weekly expansion
+ * does not consult either way.
+ */
+const HELD_RRULE_PARTS = new Set(["FREQ", "INTERVAL", "BYDAY", "BYMONTHDAY", "UNTIL", "COUNT", "WKST"]);
+
 /** `FREQ=WEEKLY;INTERVAL=2;BYDAY=MO,FR;COUNT=10` → an `Rrule`. */
 export function parseRrule(value: string): Rrule | null {
   const parts: Record<string, string> = {};
@@ -232,19 +243,53 @@ export function parseRrule(value: string): Rrule | null {
   if (!freq) return null;
 
   const rule: Rrule = { freq: freq as Freq, interval: Number(parts.INTERVAL) || 1 };
+  // Set wherever the model reads the rule as something narrower than it says.
+  let reduced = Object.keys(parts).some((k) => !HELD_RRULE_PARTS.has(k) && k !== "BYMONTH" && k !== "BYSETPOS");
 
   if (parts.BYDAY) {
-    const days = parts.BYDAY.split(",")
-      // Strip any ordinal prefix ("2MO" = the 2nd Monday); the ordinal itself is
-      // beyond what the model holds, so it degrades to a plain weekday.
-      .map((d) => ICS_WEEKDAYS.indexOf(d.trim().toUpperCase().replace(/^[+-]?\d+/, "")))
-      .filter((i) => i >= 0);
-    if (days.length) rule.byweekday = days;
+    // `2MO` = the 2nd Monday, `-1FR` = the last Friday, `TU` = every Tuesday.
+    const tokens = parts.BYDAY.split(",")
+      .map((d) => /^([+-]?\d{1,2})?([A-Z]{2})$/.exec(d.trim().toUpperCase()))
+      .filter((m): m is RegExpExecArray => !!m && ICS_WEEKDAYS.includes(m[2]))
+      .map((m) => ({ n: m[1] ? Number(m[1]) : 0, day: ICS_WEEKDAYS.indexOf(m[2]) }));
+    const numbered = tokens.filter((t) => t.n !== 0);
+    const setpos = parts.BYSETPOS !== undefined ? Number(parts.BYSETPOS) : null;
+    // Yearly ordinals count within a month only when BYMONTH names one; without
+    // it "20MO" is the 20th Monday of the YEAR, which the model does not hold.
+    const inMonth =
+      freq === "monthly" ||
+      (freq === "yearly" && parts.BYMONTH !== undefined && /^\d{1,2}$/.test(parts.BYMONTH.trim()));
+    const validN = (n: number) => n !== 0 && Math.abs(n) <= 5;
+
+    if (inMonth && numbered.length > 0 && numbered.length === tokens.length && tokens.every((t) => validN(t.n)) && setpos === null) {
+      rule.bynthweekday = tokens;
+    } else if (inMonth && numbered.length === 0 && tokens.length === 1 && setpos !== null && validN(setpos)) {
+      // Outlook/Exchange's spelling of the same thing: `BYDAY=TU;BYSETPOS=2`.
+      rule.bynthweekday = [{ n: setpos, day: tokens[0].day }];
+    } else {
+      // Plain weekdays — or ordinals the model cannot place, which degrade to
+      // their weekday. Only a weekly rule expands them as written.
+      const days = tokens.map((t) => t.day);
+      if (days.length) rule.byweekday = days;
+      if (tokens.length && (freq !== "weekly" || numbered.length > 0)) reduced = true;
+      if (setpos !== null) reduced = true;
+    }
+    if (parts.BYMONTH !== undefined && !(freq === "yearly" && rule.bynthweekday)) reduced = true;
+  } else if (parts.BYSETPOS !== undefined || parts.BYMONTH !== undefined) {
+    // A single BYMONTH on a yearly rule restates the start's own month.
+    if (!(freq === "yearly" && parts.BYSETPOS === undefined && /^\d{1,2}$/.test(parts.BYMONTH!.trim()))) {
+      reduced = true;
+    }
   }
 
   if (parts.BYMONTHDAY) {
-    const day = Number(parts.BYMONTHDAY.split(",")[0]);
+    const list = parts.BYMONTHDAY.split(",");
+    const day = Number(list[0]);
     if (day >= 1 && day <= 31) rule.bymonthday = day;
+    // Several days, or one counted from the month's end (`-1` = the last day).
+    if (list.length > 1 || (day < 0 && day >= -31)) reduced = true;
+    // BYMONTHDAY with BYDAY means their intersection (Friday the 13th).
+    if (parts.BYDAY) reduced = true;
   }
 
   if (parts.COUNT) {
@@ -257,17 +302,49 @@ export function parseRrule(value: string): Rrule | null {
     if (until) rule.until = datePart(until.stamp);
   }
 
+  if (reduced) rule.ics_value = value.trim();
   return rule;
 }
 
-/** An `Rrule` → an RRULE value. */
-export function formatRrule(rule: Rrule): string {
+/**
+ * Whether two rules say the same thing, by the fields the model expands — the
+ * imported `ics_value` aside. How an editor tells "the user changed the rule"
+ * from "the user saved an event whose rule came from a server".
+ */
+export function sameRule(a: Rrule, b: Rrule): boolean {
+  return formatRuleFields(a) === formatRuleFields(b);
+}
+
+/**
+ * An `Rrule` → an RRULE value.
+ *
+ * `start` is the event's start: a yearly rule on a numbered weekday names its
+ * month from it (`FREQ=YEARLY;BYMONTH=11;BYDAY=4TH`). An imported rule the
+ * model could not fully hold is written back as it arrived, as long as it still
+ * reads the same — an edit that changed it writes the model instead.
+ */
+export function formatRrule(rule: Rrule, start?: string): string {
+  if (rule.ics_value) {
+    const imported = parseRrule(rule.ics_value);
+    if (imported && sameRule(imported, rule)) return rule.ics_value;
+  }
+  return formatRuleFields(rule, start);
+}
+
+function formatRuleFields(rule: Rrule, start?: string): string {
   const parts = [`FREQ=${rule.freq.toUpperCase()}`];
   if (rule.interval && rule.interval !== 1) parts.push(`INTERVAL=${rule.interval}`);
-  if (rule.byweekday?.length) {
-    parts.push(`BYDAY=${rule.byweekday.map((d) => ICS_WEEKDAYS[d]).join(",")}`);
+  const nth = (rule.freq === "monthly" || rule.freq === "yearly") ? rule.bynthweekday ?? [] : [];
+  if (nth.length) {
+    const month = start ? parseStamp(start)?.month : undefined;
+    if (rule.freq === "yearly" && month) parts.push(`BYMONTH=${month}`);
+    parts.push(`BYDAY=${nth.map((e) => `${e.n}${ICS_WEEKDAYS[e.day]}`).join(",")}`);
+  } else {
+    if (rule.byweekday?.length) {
+      parts.push(`BYDAY=${rule.byweekday.map((d) => ICS_WEEKDAYS[d]).join(",")}`);
+    }
+    if (rule.bymonthday) parts.push(`BYMONTHDAY=${rule.bymonthday}`);
   }
-  if (rule.bymonthday) parts.push(`BYMONTHDAY=${rule.bymonthday}`);
   if (rule.count) parts.push(`COUNT=${rule.count}`);
   if (rule.until) parts.push(`UNTIL=${formatIcsDate(rule.until, true)}`);
   return parts.join(";");
@@ -660,7 +737,7 @@ export function serializeIcs(
     }
     if (e.category) push("CATEGORIES", escapeText(e.category));
     if (e.status) push("STATUS", e.status.toUpperCase());
-    if (e.rrule) push("RRULE", formatRrule(e.rrule));
+    if (e.rrule) push("RRULE", formatRrule(e.rrule, e.start));
     for (const ex of e.exdates ?? []) {
       lines.push(
         fold(

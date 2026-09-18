@@ -605,7 +605,7 @@ N5. **Multiple calendars, categories, tasks, ICS.** Named/colored/toggle-visible
 
 N6. **Deferred.** Timezone support (everything is floating local time; a `TZID`
     we do not understand is dropped rather than guessed at), CalDAV/URL
-    subscriptions, ordinal BYDAY ("2nd Monday" degrades to plain Monday), and
+    subscriptions, ordinal BYDAY (since done: X#2318), and
     per-occurrence category/status overrides.
 
 ---

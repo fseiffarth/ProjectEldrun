@@ -219,3 +219,32 @@ the invariants that make it worth having: [`docs/context/caldav.md`](../docs/con
       event to this Friday: it shows on this week's view.
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work
+
+2318. **Numbered weekdays in a recurrence ("the 2nd Tuesday").** An imported
+    or synced `RRULE` with an ordinal `BYDAY` — `FREQ=MONTHLY;BYDAY=2TU`,
+    `BYDAY=-1FR`, `FREQ=YEARLY;BYMONTH=11;BYDAY=4TH` — lost its ordinal in
+    `parseRrule`, so a monthly meeting showed on every Tuesday; with two-way push
+    on, `serializeIcs` then wrote the reduced `BYDAY=TU` back to the server.
+    Implemented 2026-09-18: `Rrule.bynthweekday` (`{n, day}` list, `n` ±1…±5;
+    yearly counts within the start's month) in `src/types` and
+    `src-tauri/src/schema/calendar.rs`; `parseRrule` reads ordinals and Outlook's
+    `BYDAY=TU;BYSETPOS=2` spelling; `formatRrule` writes them (yearly names
+    `BYMONTH` from the start); `recurrence.ts` expands them, skipping months
+    without a 5th; `describeRrule` says "Monthly on the 2nd Tuesday". Any rule the
+    model can only reduce (`BYHOUR`, `BYSETPOS` over several days, several or
+    negative `BYMONTHDAY`s, `20MO` in a year…) keeps its text in
+    `Rrule.ics_value`, written back verbatim while the rule still reads the same,
+    so a push no longer rewrites a server rule Eldrun cannot draw — it still
+    *displays* those reduced. `EventDialog` gains a "Repeats on" choice for
+    monthly/yearly (day of month / nth weekday / last weekday, derived from the
+    start), and a save that leaves the rule alone keeps the stored rule object.
+    Still dropped whole: `FREQ=HOURLY`/`MINUTELY` rules. **Not live-tested.**
+    - [x] 🤖 Automated test — `RecurrenceNthWeekday`, `EventDialogRepeatOn`,
+      `Ics`, Rust `rrule_numbered_weekdays_round_trip_and_old_rules_still_load`
+    - [ ] 🖐️ Manual test — import a monthly "2nd Tuesday" invite from Google or
+      Outlook: it shows once a month on the right day and the editor reads
+      "Repeats on: on the 2nd Tuesday"; edit its title with push on, then check
+      the server copy still reads `BYDAY=2TU`. Create a monthly event on a month's
+      last Friday and pick "on the last Friday".
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work

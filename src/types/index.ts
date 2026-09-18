@@ -1216,10 +1216,33 @@ export interface Rrule {
   byweekday?: number[];
   /** Monthly only: day of month (1-31). Absent → the event's own day. */
   bymonthday?: number | null;
+  /**
+   * Monthly and yearly: the numbered weekdays to fire on — `{ n: 2, day: 2 }` is
+   * the 2nd Tuesday, `{ n: -1, day: 5 }` the last Friday. Monthly counts within
+   * each month; yearly within the month the event starts in (iCalendar's
+   * `FREQ=YEARLY;BYMONTH=11;BYDAY=4TH`). Takes precedence over `bymonthday`.
+   */
+  bynthweekday?: NthWeekday[];
   /** Inclusive last date (`"YYYY-MM-DD"`) the rule may fire on. */
   until?: string | null;
   /** Total occurrences, counting the first. */
   count?: number | null;
+  /**
+   * The RRULE value exactly as imported, kept only when the fields above could
+   * not hold all of it (an `HOURLY` part, `BYSETPOS` over several days, several
+   * `BYMONTHDAY`s…). Export writes it back verbatim while the rule still says
+   * what it said on import, so a CalDAV push never replaces the server's rule
+   * with Eldrun's reduced reading of it. Any edit to the rule drops it.
+   */
+  ics_value?: string | null;
+}
+
+/** One numbered weekday of a recurrence: the `n`th (negative: from the end) `day`. */
+export interface NthWeekday {
+  /** `1`…`5` from the start of the month, `-1`…`-5` from its end. */
+  n: number;
+  /** `0` = Sunday … `6` = Saturday. */
+  day: number;
 }
 
 /** A single occurrence edited away from its master ("this event only"). */

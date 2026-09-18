@@ -131,14 +131,30 @@ pub struct Rrule {
     /// Monthly only: day of month (1–31). `None` → the event's own day of month.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bymonthday: Option<u8>,
+    /// Monthly and yearly: numbered weekdays (`{n: 2, day: 2}` = the 2nd
+    /// Tuesday, `n: -1` = the last). Yearly counts within the event's own month.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bynthweekday: Vec<NthWeekday>,
     /// Inclusive last date (`"YYYY-MM-DD"`) the rule may fire on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub until: Option<String>,
     /// Total number of occurrences, counting the first.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub count: Option<u32>,
+    /// The imported RRULE text, kept only when the fields above could not hold
+    /// all of it, so an export or CalDAV push can write it back unreduced.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ics_value: Option<String>,
     #[serde(flatten)]
     pub extra: HashMap<String, Value>,
+}
+
+/// One numbered weekday of a recurrence: the `n`th (negative: from the end)
+/// `day`, `0`=Sunday … `6`=Saturday.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NthWeekday {
+    pub n: i8,
+    pub day: u8,
 }
 
 fn default_interval() -> u32 {
@@ -1926,5 +1942,25 @@ mod tests {
         let future = mk(99);
         assert_eq!(old, future);
         assert_eq!(old.version, CALENDAR_VERSION);
+    }
+
+    #[test]
+    fn rrule_numbered_weekdays_round_trip_and_old_rules_still_load() {
+        let raw = r#"{"freq":"monthly","interval":1,"bynthweekday":[{"n":2,"day":2},{"n":-1,"day":5}],"ics_value":"FREQ=MONTHLY;BYDAY=2TU,-1FR;BYHOUR=9"}"#;
+        let rule: Rrule = serde_json::from_str(raw).unwrap();
+        assert_eq!(
+            rule.bynthweekday,
+            vec![NthWeekday { n: 2, day: 2 }, NthWeekday { n: -1, day: 5 }]
+        );
+        assert_eq!(rule.ics_value.as_deref(), Some("FREQ=MONTHLY;BYDAY=2TU,-1FR;BYHOUR=9"));
+        assert!(rule.extra.is_empty());
+        let back: Rrule = serde_json::from_str(&serde_json::to_string(&rule).unwrap()).unwrap();
+        assert_eq!(back, rule);
+
+        // A rule written before either field existed loads, and writes neither.
+        let old: Rrule = serde_json::from_str(r#"{"freq":"weekly","interval":2,"byweekday":[1]}"#).unwrap();
+        assert!(old.bynthweekday.is_empty() && old.ics_value.is_none());
+        let out = serde_json::to_string(&old).unwrap();
+        assert!(!out.contains("bynthweekday") && !out.contains("ics_value"), "{out}");
     }
 }
