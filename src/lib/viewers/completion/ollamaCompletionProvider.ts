@@ -69,6 +69,7 @@ export class OllamaCompletionProvider implements CompletionProvider {
         prefix, suffix, model: model.name, language: document.language === "plain" ? "" : document.language,
         mode, candidate, insert: model.capabilities?.includes("insert") === true,
         requestId, context: context.length ? context : undefined,
+        projectId: document.projectId ?? this.options.scope,
       });
       signal.throwIfAborted();
       this.cache.set(key, text);

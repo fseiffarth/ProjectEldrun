@@ -3385,12 +3385,17 @@ pub async fn complete_text(
     insert: Option<bool>,
     request_id: String,
     candidate: Option<u32>,
+    project_id: Option<String>,
 ) -> Result<String, String> {
     use crate::services::text_completion;
     use tauri::Emitter;
     let event = format!("text-completion-{request_id}");
     text_completion::run(request_id, async move {
-        let addr = ollama_addr()?;
+        let settings = read_settings().unwrap_or_default();
+        let local_only = project_id.as_ref().and_then(|id| settings.completion_project_policies.as_ref()?.get(id))
+            .is_some_and(|policy| policy.local_only);
+        let addr = resolve_ollama_addr(settings.ollama_host.as_deref(),
+            !local_only && settings.ollama_allow_remote_host.unwrap_or(false))?;
         let client = text_completion::client()?;
         let mode = CompletionMode::parse(mode.as_deref().unwrap_or("sentence"));
         let context = context
