@@ -117,7 +117,11 @@ fn basename(cmd: &str) -> &str {
 /// project agent started later inherits nothing.
 ///
 /// - **Claude**: `--mcp-config <inline json>`, last in argv (the flag is
-///   variadic; nothing positional may follow it).
+///   variadic; nothing positional may follow it). The header names the token
+///   as `${ELDRUN_ROOT_MCP_TOKEN}`, which Claude expands from its environment
+///   (verified on 2.1.276), so the secret is never in its argv. That matters
+///   beyond `ps`: a fenced argv is past tmux's message limit, so
+///   `tmux_local` moves the whole command line into a launcher script on disk.
 /// - **Codex**: `-c mcp_servers.eldrun.…` overrides, first in argv so they
 ///   precede a `resume <id>` subcommand. The token is named, not inlined.
 /// - Every other agent gets the env pair only, until its CLI has a
@@ -133,7 +137,7 @@ pub fn apply_to_spawn_with(opts: &mut PtyOptions, runtime: &Runtime) {
                     SERVER_NAME: {
                         "type": "http",
                         "url": url,
-                        "headers": { "Authorization": format!("Bearer {}", runtime.token) },
+                        "headers": { "Authorization": format!("Bearer ${{{TOKEN_ENV}}}") },
                     }
                 }
             });
@@ -1766,8 +1770,9 @@ mod tests {
         let cfg: Value = serde_json::from_str(&o.args[3]).unwrap();
         let server = &cfg["mcpServers"]["eldrun"];
         assert_eq!(server["url"], "http://127.0.0.1:4321/mcp");
-        assert_eq!(server["headers"]["Authorization"], "Bearer tok");
+        assert_eq!(server["headers"]["Authorization"], "Bearer ${ELDRUN_ROOT_MCP_TOKEN}");
         assert_eq!(o.env[TOKEN_ENV], "tok");
+        assert!(!o.args.iter().any(|a| a.contains("Bearer tok")), "the token is never in Claude's argv");
         // A respawn that re-runs the wiring must not stack the flag.
         apply_to_spawn_with(&mut o, &rt());
         assert_eq!(o.args.iter().filter(|a| *a == "--mcp-config").count(), 1);

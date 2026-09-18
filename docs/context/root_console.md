@@ -88,10 +88,16 @@ and one reply out).
   an agent cannot make Tauri calls, so it cannot ask for a root spawn.
 - **Given on the CLI's own command line, never through its config files.**
   Eldrun does not write another application's config, and a flag dies with the
-  tab. Claude gets an inline `--mcp-config`. Codex gets
-  `-c mcp_servers.eldrun.url=…` plus `bearer_token_env_var`, so its token stays
-  out of its argv. Every other agent gets `ELDRUN_ROOT_MCP_URL` and
-  `ELDRUN_ROOT_MCP_TOKEN` only.
+  tab. Claude gets an inline `--mcp-config` whose header reads
+  `Bearer ${ELDRUN_ROOT_MCP_TOKEN}`, which Claude expands from its environment.
+  Codex gets `-c mcp_servers.eldrun.url=…` plus `bearer_token_env_var`. Every
+  other agent gets `ELDRUN_ROOT_MCP_URL` and `ELDRUN_ROOT_MCP_TOKEN` only. So
+  no agent carries the token in its argv. This is what keeps it off disk, too:
+  a fenced argv is past tmux's message limit, and `tmux_local` then writes the
+  whole command line into a launcher script under the state dir. On a tmux
+  without `new-session -e` (< 3.2) that script would also hold the exported
+  environment, so the token is left out of it and travels as an `env` prefix on
+  tmux's own, short argv instead.
 - **Hidden from fenced project agents.** Bubblewrap gives each fenced agent its
   own pid namespace and `/proc`, so it cannot read the root agent's environment
   or argv.

@@ -133,6 +133,14 @@ Composition is explicit:
 - Windows has no unprivileged filesystem sandbox to build a fence on; the
   status says so rather than presenting a false guarantee.
 - Shell/script tabs are the user's terminals and are never fenced.
+- A persistent (tmux) agent tab keeps an **unfenced** login shell after the
+  agent exits, on the same terminal. Where the kernel still honours `TIOCSTI`
+  (Linux before 6.2 or with `dev.tty.legacy_tiocsti=1`, macOS), a fenced agent
+  could queue keystrokes on its own terminal and exit, and that shell would run
+  them. So the pane drains the input queue between the two
+  (`tmux_local::FENCE_INPUT_DRAIN`). bubblewrap's `--new-session` would block
+  `TIOCSTI` at the source, but it detaches the agent from its controlling
+  terminal, so it never gets `SIGWINCH` and a TUI stops reflowing on resize.
 
 Fenced Linux Codex gets no sandbox-backend override. Its own bubblewrap
 cannot nest under the fence on Ubuntu: the outer bwrap runs under the stacked

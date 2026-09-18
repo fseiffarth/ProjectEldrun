@@ -166,6 +166,53 @@ a filter hit.
    embedding-role model is already a refusal case here, so the role split
    exists). They must live inside the sealed store, never as plaintext.
 
+### Security review (mail, agent fence, MCP)
+
+A periodic pass over the three places where outside input meets local
+authority. Each item is a check or a hardening step, not a known hole. Confirmed
+holes are fixed before they are written down. The last pass (2026-09-18)
+removed two: the root console's MCP token no longer reaches the tmux launcher
+script on disk, and a fenced agent's tmux pane drains the terminal's input
+queue before handing it to the unfenced login shell.
+
+1. **Dependency audit in CI.** Nothing checks advisories today. Add
+   `cargo audit` (or `cargo deny`) and `npm audit --omit=dev` as a
+   non-blocking job first, then make it blocking. This matters most for the
+   parsers facing untrusted input: ammonia/html5ever, the MIME/IMAP stack,
+   pdf.js.
+2. **Fence escape suite.** Make the probe run by hand in the last pass a
+   script: run the real `bwrap_args` output and assert that from inside,
+   `~/.ssh`, the keyring, `/run/user/<uid>` (D-Bus, X authority), other
+   projects and the state dir are invisible, and that the X server refuses a
+   client. Run it after every fence change and on each distro in the matrix.
+3. **Inventory what fenced agents can reach.** The fence shares the host
+   network namespace by design, so every loopback listener is within reach.
+   Keep a list (root MCP, Mobile sidecar, Ollama, dev server, anything a
+   project starts) with each one's authentication. Ollama has none, which is
+   accepted today; write down that decision.
+4. **Defence in depth for the fence.** Landlock abstract-Unix-socket and
+   signal scoping (kernel ≥ 6.12) as a second layer beside bubblewrap. A
+   seccomp filter for `TIOCSTI`/`TIOCLINUX` as the source-level fix behind the
+   tmux input drain.
+5. **MCP: narrower authority.** Per-tab root tokens that die with the tab, and
+   a read-only tool set as the default, with write tools as an opt-in. Add a
+   local audit log of every write (tab, tool, row), and a trash or undo for
+   `todo_delete` / `calendar_delete_event` instead of a permanent delete.
+6. **MCP: label where data came from.** Rows a root agent reads can come from
+   outside: a CalDAV server, or a card extracted from mail. Tool output should
+   say so (`source: caldav|mail|user`), so that text from outside is never
+   presented as the user's own instruction. Add a test that the project
+   scaffold never pre-approves a repo's own MCP servers.
+7. **Mail: re-verify the boundaries on every bump.** Run ammonia's three
+   guarantees against a current mXSS corpus when html5ever or ammonia update.
+   Keep pdf.js attachment previews canvas-only, and keep `unsafe-eval` out of
+   the app CSP, which is what keeps pdf.js's font-compiling `eval` path inert.
+   Confirm the sealed store leaves no plaintext behind (caches, logs, crash
+   reports, the summary path).
+8. **Mail AI: tighten automation.** Keep `auto_create` off for senders the
+   user has never written to, cap the length of extracted titles, and show
+   mail provenance on every card or event made without review.
+
 ## Longer-Term Direction
 
 - **Eldrun Server — plan only.** Shared calendar/board and project collaboration

@@ -138,6 +138,13 @@ Claude's `/fast` — different thing.
 
 **Assumes**
 
+- Root console (`services::root_mcp`): `--mcp-config <inline json>` with an
+  HTTP server whose `headers` value `Bearer ${ELDRUN_ROOT_MCP_TOKEN}` is
+  **expanded from the environment** — verified on 2.1.276 against a logging
+  loopback server (`headersHelper` worked too). If expansion ever stops, the
+  root tools fail with 401 rather than leaking; the fallback is
+  `headersHelper`, never the literal token (it would reach the tmux launcher
+  script on disk).
 - Flags: `--session-id <uuid>`, `--resume <uuid>`, `--permission-mode <mode>`,
   `--dangerously-skip-permissions` (detected, never added),
   `--remote-control` (added by default, setting `agent_remote_control`),
@@ -512,7 +519,12 @@ from the shell instead); `history-limit` option; `ls -F …`, `kill-session -t`,
 new sessions inherit the *server's* global environment; the client refuses an
 argv over `MAX_IMSGSIZE` (16384 bytes) with `command too long`, which is why a
 long command line (a fenced agent's bubblewrap argv) is moved into
-`<state_dir>/tmux-launch/<session>.sh` (`tmux_local::TMUX_ARGV_LIMIT`).
+`<state_dir>/tmux-launch/<session>.sh` (`tmux_local::TMUX_ARGV_LIMIT`). That
+script is on disk, so `tmux_local::SECRET_ENV` values never go into it. The pane
+runs its command through `sh -c` and follows it with the login shell; after a
+fenced command it first drains the input queue with `stty -g`, `stty raw -echo
+min 0 time 0` and `cat` (POSIX `stty`, where `min 0 time 0` makes an empty queue
+read as end-of-file).
 
 **Verify** `tmux -V`; `cargo test --manifest-path src-tauri/Cargo.toml tmux`.
 Also check the remote host's tmux, which is usually older.
@@ -569,8 +581,9 @@ resolves; the package names above still resolve (`apt-cache policy <pkg>`,
 `docs/agent_fence_plan.md`.
 
 **Assumes** `bwrap` flags `--ro-bind --ro-bind-try --bind --bind-try --dev
---proc --tmpfs --symlink --unshare-pid --die-with-parent --new-session
---chdir`; unprivileged user namespaces allowed (AppArmor on Ubuntu ≥ 23.10
+--proc --tmpfs --symlink --unshare-pid --die-with-parent --chdir` — **not**
+`--new-session` (see `docs/context/agent_authority.md`: it costs the agent
+`SIGWINCH`; `TIOCSTI` is handled by the tmux pane's drain instead); unprivileged user namespaces allowed (AppArmor on Ubuntu ≥ 23.10
 restricts them); missing/unusable bwrap **fails closed**. The per-agent home
 list in §1 is what the fence exposes. A `--bind` of a single *file* pins its
 inode and makes `rename(2)` onto it `EBUSY` — which is why the config shadows
