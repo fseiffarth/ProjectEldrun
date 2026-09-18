@@ -4,7 +4,7 @@
  * There were four spellings of it (`useRemoteReconnect`, `ProjectPill`, the
  * Connect modal's non-headless branch, the Machines menu) and they disagreed on
  * the part that matters: a host tagged **HPC** is one Eldrun promises never to
- * dial by itself (`lib/hpcHost.ts` — `stores/projects` refuses the connect at the
+ * dial by itself (`lib/remote/hpc/hpcHost.ts` — `stores/projects` refuses the connect at the
  * gate). The Machines menu said so and disabled the switch; the project surfaces
  * left it live, so the user armed a toggle that was guaranteed to do nothing and
  * had no way to find out.

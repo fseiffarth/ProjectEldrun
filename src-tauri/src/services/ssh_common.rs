@@ -241,7 +241,7 @@ pub fn forget_user_connect(user: &Option<String>, host: &str, port: Option<u16>)
 /// user tagged HPC, and permit everything else.
 ///
 /// The refusal carries `services::hpc_mode`'s existing `HPC_GUARD` sentinel, so
-/// `src/lib/hpcGuard.ts` already knows how to read it — the frontend can name the
+/// `src/lib/remote/hpc/hpcGuard.ts` already knows how to read it — the frontend can name the
 /// machine and offer to connect anyway, and confirmation stays per act. The slug
 /// is `connect`, since what was refused is the connection itself.
 pub fn authorize_dial(
@@ -1952,7 +1952,7 @@ mod tests {
     /// The whole policy as a table. Split out of [`authorize_dial`] precisely so
     /// it can be stated without a `settings.json` on disk: exactly one of the
     /// four combinations refuses, and the refusal is the sentinel
-    /// `src/lib/hpcGuard.ts` already parses (three whitespace-separated fields).
+    /// `src/lib/remote/hpc/hpcGuard.ts` already parses (three whitespace-separated fields).
     #[test]
     fn only_a_background_dial_at_a_tagged_host_is_refused() {
         let key = "alice@login.example:22";

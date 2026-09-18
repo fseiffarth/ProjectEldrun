@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { useHpcGuardStore, type HpcGuardKind } from "../../stores/hpcGuardPrompt";
+import { useHpcGuardStore, type HpcGuardKind } from "../../stores/remote/hpc/hpcGuardPrompt";
 import { useT, type TranslationKey } from "../../lib/i18n";
 import { UntestedTag } from "./UntestedTag";
 

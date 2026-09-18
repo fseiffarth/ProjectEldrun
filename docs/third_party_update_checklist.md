@@ -694,7 +694,7 @@ project and run the lockstep matrix (`docs/git_lockstep_case_matrix.md`).
 ## 10. GPU tooling, SLURM, HPC probes
 
 **Where** `src-tauri/src/gpustat.rs`, `sysstat.rs`, `services/remote_usage.rs`,
-`commands/slurm.rs`, `src/lib/slurm.ts`, `services/hpc_mode.rs`,
+`commands/slurm.rs`, `src/lib/remote/hpc/slurm.ts`, `services/hpc_mode.rs`,
 `docs/context/hpc_careful_mode.md`.
 
 **Assumes**

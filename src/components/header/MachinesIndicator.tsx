@@ -15,8 +15,8 @@ import { useHostBusyStore, busyReading, busyLabel } from "../../stores/hostBusy"
 import { parseSshAddress } from "../projects/scaffold";
 import { TerminalSignInToggle } from "../projects/TerminalSignInToggle";
 import { openConnectionInRoot } from "../../lib/remoteConnect";
-import { isHpcHost, mayAutoTouch, setHpcPatch, targetOfSpec } from "../../lib/hpcHost";
-import { hpcGuardRefusal } from "../../lib/hpcGuard";
+import { isHpcHost, mayAutoTouch, setHpcPatch, targetOfSpec } from "../../lib/remote/hpc/hpcHost";
+import { hpcGuardRefusal } from "../../lib/remote/hpc/hpcGuard";
 import { useT, type TranslationKey } from "../../lib/i18n";
 import { useHeaderHoverMenuStore } from "../../stores/headerHoverMenu";
 import { useHeaderStatusReport } from "../../stores/headerStatus";
@@ -149,7 +149,7 @@ export function targetLabel(m: { user?: string; host: string; port?: number }): 
  * It shares the header's hover-menu interaction with Mobile and VPN. Opening it
  * refreshes the fleet snapshot; an in-flight guard and per-machine minimum
  * interval prevent repeated probes, and a machine tagged HPC remains excluded
- * (`lib/hpcHost`'s `mayAutoTouch`) — its row alone offers Check (◎) and login.
+ * (`lib/remote/hpc/hpcHost`'s `mayAutoTouch`) — its row alone offers Check (◎) and login.
  *
  * **A row reads two maps, not one** (see `RowState`): `status` is a session THIS
  * app opened, `reachable` is the last probe's answer. Green means the first;
@@ -2250,7 +2250,7 @@ export function MachinesIndicator() {
               {/* The tag, at the moment it is actually known: logging in is when
                   the user knows what they are logging in to. Everything Eldrun
                   would otherwise do to this machine on its own is gated behind it
-                  (`lib/hpcHost.ts`), so ticking it here means the very first
+                  (`lib/remote/hpc/hpcHost.ts`), so ticking it here means the very first
                   connect already behaves — nothing scans, nothing polls, and the
                   monitor reads it lightly from its first sample. */}
               <label

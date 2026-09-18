@@ -1,5 +1,5 @@
 /**
- * The HPC tag's resolution (`lib/hpcHost`). Keyed by SSH target like the
+ * The HPC tag's resolution (`lib/remote/hpc/hpcHost`). Keyed by SSH target like the
  * careful flag, but with the OPPOSITE default: an untagged host behaves exactly
  * as it always has, because every gate here changes what Eldrun does. The one
  * place that inverts is `mayAutoTouch`, which must fail closed while settings
@@ -7,7 +7,7 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { isHpcHost, mayAutoTouch, projectIsOnHpc, setHpcPatch } from "../lib/hpcHost";
+import { isHpcHost, mayAutoTouch, projectIsOnHpc, setHpcPatch } from "../lib/remote/hpc/hpcHost";
 import { targetKey } from "../lib/machineSync";
 import type { ProjectEntry, Settings } from "../types";
 

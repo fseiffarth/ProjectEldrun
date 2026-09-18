@@ -3,7 +3,7 @@ import { create } from "zustand";
 /**
  * Mediates the HPC tag's confirmation dialog.
  *
- * A machine tagged HPC (`lib/hpcHost.ts`) has its background work switched off
+ * A machine tagged HPC (`lib/remote/hpc/hpcHost.ts`) has its background work switched off
  * outright — sync loops, lockstep polling, auto-connect, full stats. Two things
  * can't be settled that way, because the user sometimes genuinely wants them: a
  * disk-usage scan of the cluster tree, and running a command in a login-node

@@ -119,7 +119,7 @@ beforeEach(() => {
   useRemoteStatusStore.setState({ byProject: {} });
   useProjectsStore.setState({ projects: [], activeId: null });
   // Settings must be **loaded** for auto-connect to run at all: the HPC gate
-  // (`lib/hpcHost`'s `mayAutoTouch`) fails closed on an unloaded store, because
+  // (`lib/remote/hpc/hpcHost`'s `mayAutoTouch`) fails closed on an unloaded store, because
   // "we haven't read the tag yet" must not authorise a connect. The app has them
   // by the time any project is activated — `load()` now waits for them — so the
   // tests give them too. The tag map is empty, so no host here is HPC-tagged.

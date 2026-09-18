@@ -61,8 +61,8 @@ import {
   shellScriptRunPlan,
   type ScriptShell,
 } from "../../lib/shellScriptRun";
-import { guardLoginNodeRun } from "../../lib/hpcGuard";
-import { projectIsOnHpc } from "../../lib/hpcHost";
+import { guardLoginNodeRun } from "../../lib/remote/hpc/hpcGuard";
+import { projectIsOnHpc } from "../../lib/remote/hpc/hpcHost";
 import { useRunHostPrefStore } from "../../stores/runHostPref";
 import { readFileText } from "../embed/fileAccess";
 import { SetDefaultAppDialog } from "./SetDefaultAppDialog";
@@ -1359,7 +1359,7 @@ export function FileTree({
     window.addEventListener("focus", refresh);
     // The 15 s tick is the third periodic walk of a host tree, after the 25 s
     // byte-sync pass and the 12 s lockstep poll — both of which the HPC tag
-    // already stops for exactly the reason `lib/hpcHost.ts` gives ("the same walk,
+    // already stops for exactly the reason `lib/remote/hpc/hpcHost.ts` gives ("the same walk,
     // unasked for, forever"). A tagged login node gets no timer here either: an
     // open file tree is not a standing request to stat a cluster every quarter
     // minute. What survives is the focus listener and every explicit re-list —
@@ -3096,7 +3096,7 @@ export function FileTree({
     // we're in one, else the focused subwindow of this project. Preceded by the
     // same login-node gate the Python Run has: if `plan.location` resolves to a
     // machine tagged HPC, running a script there is asked about first
-    // (`lib/hpcGuard.ts`) — a script is the likeliest thing on this menu to be
+    // (`lib/remote/hpc/hpcGuard.ts`) — a script is the likeliest thing on this menu to be
     // actual compute.
     void guardLoginNodeRun({
       projectId,

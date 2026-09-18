@@ -7,8 +7,8 @@ import { useRemoteStatusStore } from "../../stores/remoteStatus";
 import { useSettingsStore } from "../../stores/settings";
 import { useSyncStore, type BigFolderRow } from "../../stores/sync";
 import { isCarefulHost, primaryTargetOf } from "../../lib/carefulHost";
-import { isHpcHost } from "../../lib/hpcHost";
-import { confirmOnHpcHost } from "../../lib/hpcGuard";
+import { isHpcHost } from "../../lib/remote/hpc/hpcHost";
+import { confirmOnHpcHost } from "../../lib/remote/hpc/hpcGuard";
 import { fmtSize } from "../../lib/viewers/fileUtils";
 import { UntestedTag } from "../common/UntestedTag";
 import { useT } from "../../lib/i18n";
@@ -103,7 +103,7 @@ export function BigFolderExcludeDialog({ projectId }: { projectId: string }) {
 
   const measureHost = async () => {
     // On a tagged host the walk is asked about first, per act and never
-    // remembered (`lib/hpcGuard.ts`) — this is one of the two things the tag
+    // remembered (`lib/remote/hpc/hpcGuard.ts`) — this is one of the two things the tag
     // refuses rather than switches off, because people do legitimately want it.
     // Backing out here leaves the host column exactly as it was.
     if (hpcTagged && !(await confirmOnHpcHost("census", targetLabel))) return;

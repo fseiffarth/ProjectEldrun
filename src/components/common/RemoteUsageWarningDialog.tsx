@@ -14,7 +14,7 @@ import { hostsForProject } from "../../lib/remoteHosts";
 import { sameTarget } from "../../lib/machineSync";
 import { PRIMARY_HOST, sshOf, useRemoteStatusStore } from "../../stores/remoteStatus";
 import { useSettingsStore } from "../../stores/settings";
-import { isHpcHost } from "../../lib/hpcHost";
+import { isHpcHost } from "../../lib/remote/hpc/hpcHost";
 import { useT, type TranslationKey } from "../../lib/i18n";
 
 /**
@@ -275,7 +275,7 @@ interface UsageRow {
   target: UsageTarget;
   /** A session this app opened (a machine's lamp / the project host's pool). */
   connected: boolean;
-  /** Tagged as a shared cluster login node (`lib/hpcHost.ts`). */
+  /** Tagged as a shared cluster login node (`lib/remote/hpc/hpcHost.ts`). */
   hpc: boolean;
   /** Whether the open-the-dialog sweep may read it. */
   autoRead: boolean;

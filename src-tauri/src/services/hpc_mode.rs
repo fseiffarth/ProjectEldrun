@@ -146,7 +146,7 @@ pub fn is_hpc_spec(spec: &RemoteSpec) -> bool {
 }
 
 /// Sentinel carried by a command that refused because its target is tagged HPC
-/// and the user has not confirmed *this* run. Must match `src/lib/hpcGuard.ts`.
+/// and the user has not confirmed *this* run. Must match `src/lib/remote/hpc/hpcGuard.ts`.
 ///
 /// The shape is deliberately the one `UNKNOWN_HOST_KEY` already established
 /// (`services::ssh_common::guard_first_contact`): everything the frontend needs
@@ -224,7 +224,7 @@ mod tests {
         assert!(is_known_careful(&k));
     }
 
-    /// The wire contract with `src/lib/hpcGuard.ts`: sentinel, then the slug the
+    /// The wire contract with `src/lib/remote/hpc/hpcGuard.ts`: sentinel, then the slug the
     /// dialog switches its wording on, then the target it names. Parsed by
     /// splitting on whitespace, so neither field may gain a space.
     #[test]

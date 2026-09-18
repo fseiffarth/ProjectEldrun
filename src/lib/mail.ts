@@ -1,7 +1,7 @@
 /**
  * **The** typed invoke surface for the embedded mail client — one wrapper per
  * `mail_*` command, and nothing else in the frontend calls `invoke("mail_*")`
- * directly (the convention `lib/slurm.ts` and `lib/hpcWorkspace.ts` follow).
+ * directly (the convention `lib/remote/hpc/slurm.ts` and `lib/remote/hpc/hpcWorkspace.ts` follow).
  *
  * Two properties of this module are load-bearing rather than stylistic:
  *

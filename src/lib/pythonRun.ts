@@ -29,7 +29,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { basename, dirname, relativePathWithin } from "./paths";
 import { useTabsStore, isRemoteLocation, type TabEntry, type TabLocation } from "../stores/tabs";
-import { guardLoginNodeRun } from "./hpcGuard";
+import { guardLoginNodeRun } from "./remote/hpc/hpcGuard";
 
 /** How a run/debug tab is inserted into the layout. Given the built (keyless)
  *  tab, place it and return the created entry — or null when it streamed the tab
@@ -357,7 +357,7 @@ export async function runPythonFile(opts: {
   place?: PyTabPlacer;
 }): Promise<void> {
   // If the machine the plan names is a tagged cluster login node, ask before
-  // computing there (`lib/hpcGuard.ts`). Untagged hosts and local runs never see this.
+  // computing there (`lib/remote/hpc/hpcGuard.ts`). Untagged hosts and local runs never see this.
   if (!(await guardRunHost(opts.plan, opts.projectId))) return;
   const platform = currentPlatform();
   const interp = await resolveInterpreter(opts.projectId, opts.plan.probeDir, platform);

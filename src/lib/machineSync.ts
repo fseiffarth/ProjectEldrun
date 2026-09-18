@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useProjectsStore } from "../stores/projects";
 import { useGlobalMachinesStore } from "../stores/globalMachines";
 import { useSettingsStore } from "../stores/settings";
-import { mayAutoTouch } from "./hpcHost";
+import { mayAutoTouch } from "./remote/hpc/hpcHost";
 import {
   useRemoteStatusStore,
   hostStateOf,

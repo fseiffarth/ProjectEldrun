@@ -21,8 +21,8 @@ import {
   setCarefulPatch,
   targetOfSpec,
 } from "../../lib/carefulHost";
-import { isHpcHost } from "../../lib/hpcHost";
-import { hpcGuardRefusal } from "../../lib/hpcGuard";
+import { isHpcHost } from "../../lib/remote/hpc/hpcHost";
+import { hpcGuardRefusal } from "../../lib/remote/hpc/hpcGuard";
 import { useGlobalMachinesStore } from "../../stores/globalMachines";
 import { sameTarget } from "../../lib/machineSync";
 import { ConnLamp } from "../common/ConnLamp";
@@ -564,7 +564,7 @@ export function SystemMonitorPane({ projectId, visible, globalMachine }: Props) 
   // The mode asked for: careful for every remote machine until the user says
   // this one is theirs. A local sample is never careful — Eldrun is not a guest
   // on the machine it runs on.
-  // The HPC tag (`lib/hpcHost.ts`) outranks that answer in one direction: a
+  // The HPC tag (`lib/remote/hpc/hpcHost.ts`) outranks that answer in one direction: a
   // machine the user called a cluster login node is read lightly even if its
   // careful answer says "this one is mine". The two say different things — how
   // much may Eldrun look at, and is this a shared cluster — and there is no

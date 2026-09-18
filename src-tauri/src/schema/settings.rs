@@ -583,7 +583,7 @@ pub struct Settings {
     pub careful_hosts: Option<HashMap<String, bool>>,
     /// The machines the user has tagged **HPC** — a shared cluster login node,
     /// ticked on the login form and shown on the machine's row in the Machines
-    /// menu (`src/lib/hpcHost.ts`). Same SSH-target key as [`Self::careful_hosts`],
+    /// menu (`src/lib/remote/hpc/hpcHost.ts`). Same SSH-target key as [`Self::careful_hosts`],
     /// for the same reason.
     ///
     /// Where `careful_hosts` says how much Eldrun may *look at*, this says what

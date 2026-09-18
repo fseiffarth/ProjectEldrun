@@ -26,10 +26,10 @@
  * any of the three record ids.
  */
 
-import { targetKey, type Target } from "./machineSync";
-import type { ProjectEntry, Settings } from "../types";
+import { targetKey, type Target } from "../../machineSync";
+import type { ProjectEntry, Settings } from "../../../types";
 
-export { primaryTargetOf, targetOfSpec } from "./carefulHost";
+export { primaryTargetOf, targetOfSpec } from "../../carefulHost";
 export type { Target };
 
 /** Whether `target` is tagged as a cluster login node. `false` for a local

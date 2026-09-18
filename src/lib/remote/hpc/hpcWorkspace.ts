@@ -26,8 +26,8 @@
  */
 
 import { invoke } from "@tauri-apps/api/core";
-import type { HpcInfo, ProjectEntry } from "../types";
-import type { TranslationKey } from "./i18n";
+import type { HpcInfo, ProjectEntry } from "../../../types";
+import type { TranslationKey } from "../../i18n";
 
 export type { HpcInfo };
 

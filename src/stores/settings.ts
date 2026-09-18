@@ -470,7 +470,7 @@ interface SettingsStore {
  * Resolve once settings have loaded — or after `timeoutMs`, whichever comes first.
  *
  * Every gate that decides whether Eldrun may reach a host **without a gesture**
- * reads settings (`lib/hpcHost`'s `mayAutoTouch`, `machines_enabled`) and every one
+ * reads settings (`lib/remote/hpc/hpcHost`'s `mayAutoTouch`, `machines_enabled`) and every one
  * of them fails closed on an unloaded store. That is the right default, and its
  * consequence is that the launch sweeps must *wait* rather than fire into the gap:
  * `AppShell` starts this load in parallel with the projects load, so the answer is

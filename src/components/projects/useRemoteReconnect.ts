@@ -14,7 +14,7 @@ import { forgetConnection, markConnectionOpened } from "../../lib/remoteConnect"
 import { useProjectsStore } from "../../stores/projects";
 import { useSettingsStore } from "../../stores/settings";
 import { useRemoteStatusStore, type ConnState } from "../../stores/remoteStatus";
-import { isHpcHost, targetOfSpec } from "../../lib/hpcHost";
+import { isHpcHost, targetOfSpec } from "../../lib/remote/hpc/hpcHost";
 import { autoConnectEligibility } from "./autoConnectEligibility";
 import { useSavedCredential, type SshConnectOutcome } from "./useSavedCredential";
 import {

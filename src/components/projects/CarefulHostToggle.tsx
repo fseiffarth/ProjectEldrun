@@ -6,7 +6,7 @@ import {
   setCarefulPatch,
   type Target,
 } from "../../lib/carefulHost";
-import { isHpcHost } from "../../lib/hpcHost";
+import { isHpcHost } from "../../lib/remote/hpc/hpcHost";
 import { useSettingsStore } from "../../stores/settings";
 import { useT } from "../../lib/i18n";
 

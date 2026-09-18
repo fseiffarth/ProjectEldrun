@@ -1,7 +1,7 @@
 /**
  * **The** typed invoke surface for CalDAV — one wrapper per `caldav_*` command,
  * and nothing else in the frontend calls `invoke("caldav_*")` directly (the
- * convention `lib/mail.ts` and `lib/slurm.ts` follow).
+ * convention `lib/mail.ts` and `lib/remote/hpc/slurm.ts` follow).
  *
  * It also owns the one piece of real work this side of the boundary does:
  * [`parseChanges`] runs each fetched resource's iCalendar text through

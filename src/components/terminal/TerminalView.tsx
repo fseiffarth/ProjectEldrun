@@ -22,8 +22,8 @@ import {
   onTerminalReplay,
   type TerminalOutputRange,
 } from "../../lib/terminalBus";
-import { hpcGuardRefusal } from "../../lib/hpcGuard";
-import { useHpcGuardStore } from "../../stores/hpcGuardPrompt";
+import { hpcGuardRefusal } from "../../lib/remote/hpc/hpcGuard";
+import { useHpcGuardStore } from "../../stores/remote/hpc/hpcGuardPrompt";
 import { CSI_U_SHIFT_TAB, FORCE_SELECTION_MODIFIER, SILENT_START_MS, agentMouseDownAction, bufferTail, claimInitialInput, decodeOsc52Clipboard, initialInputForPty, claudeLaunchName, isClaudeCommand, isCodexCommand, isTerminalAutoReply, isTerminalIdentityResponse, isTerminalReport, showsAgentTrustDialog, silentStartNotice, stripTerminalQueries, suppressNativeContextMenu, terminalProgramLabel, type SilentStartNotice } from "../../lib/terminalControl";
 import { registerTerminal, unregisterTerminal } from "../../lib/terminalRegistry";
 import { clearPtyInput, writePtyInput } from "../../lib/terminalInput";

@@ -37,7 +37,7 @@ actions), **`src/stores/detachedContext.ts`** (new — the popout's store seam),
 `src/components/tabs/detachedDropTargets.ts`,
 **`src/components/tabs/detachedDragNet.ts`** (new), `src/components/tabs/TabPane.tsx`,
 `src/components/terminal/TerminalView.tsx`, `src/stores/settings.ts`,
-`src/stores/activity.ts`, `src/stores/usage.ts`, `src/stores/hpcGuardPrompt.ts`,
+`src/stores/activity.ts`, `src/stores/usage.ts`, `src/stores/remote/hpc/hpcGuardPrompt.ts`,
 `src-tauri/src/commands/subwindow.rs`, `src-tauri/src/commands/terminal.rs`,
 `src-tauri/src/terminal/mod.rs`, `src-tauri/src/services/project_runtime.rs`,
 `src-tauri/src/lib.rs` (`WindowEvent::Destroyed`).*

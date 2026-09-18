@@ -19,7 +19,7 @@
  * storm, a job on a login node) is a specific act, not a policy.
  */
 
-import { useHpcGuardStore, type HpcGuardKind } from "../stores/hpcGuardPrompt";
+import { useHpcGuardStore, type HpcGuardKind } from "../../../stores/remote/hpc/hpcGuardPrompt";
 
 /** Must match `services::hpc_mode::HPC_GUARD`. */
 export const HPC_GUARD = "ELDRUN_HPC_GUARD";
@@ -115,11 +115,11 @@ export async function guardLoginNodeRun(opts: {
   // Imported here rather than at module scope: this module is pulled in by the
   // dialog's own store, and the project/settings stores drag half the app behind
   // them — a cycle that only shows up as an undefined store at first render.
-  const { useProjectsStore } = await import("../stores/projects");
-  const { useSettingsStore } = await import("../stores/settings");
+  const { useProjectsStore } = await import("../../../stores/projects");
+  const { useSettingsStore } = await import("../../../stores/settings");
   const { isHpcHost } = await import("./hpcHost");
-  const { hostsForProject } = await import("./remoteHosts");
-  const { PRIMARY_HOST } = await import("../stores/remoteStatus");
+  const { hostsForProject } = await import("../../remoteHosts");
+  const { PRIMARY_HOST } = await import("../../../stores/remoteStatus");
 
   const project = useProjectsStore.getState().projects.find((p) => p.id === opts.projectId);
   const hostId = opts.location === "remote" ? PRIMARY_HOST : opts.location.replace(/^host:/, "");

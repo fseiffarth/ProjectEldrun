@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import { targetKey, type Target } from "../lib/machineSync";
-import { mayAutoTouch } from "../lib/hpcHost";
+import { mayAutoTouch } from "../lib/remote/hpc/hpcHost";
 import { useSettingsStore } from "./settings";
 import { PRIMARY_HOST } from "./remoteStatus";
 

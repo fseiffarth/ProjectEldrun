@@ -11,7 +11,7 @@
  */
 import { describe, it, expect, beforeEach } from "vitest";
 
-import { useHpcGuardStore } from "../stores/hpcGuardPrompt";
+import { useHpcGuardStore } from "../stores/remote/hpc/hpcGuardPrompt";
 
 describe("HPC guard with no dialog host (#233)", () => {
   beforeEach(() => {

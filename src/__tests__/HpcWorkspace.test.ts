@@ -1,5 +1,5 @@
 /**
- * The HPC **workspace** helpers (`lib/hpcWorkspace.ts`), all pure. A workspace is
+ * The HPC **workspace** helpers (`lib/remote/hpc/hpcWorkspace.ts`), all pure. A workspace is
  * a time-limited directory on a cluster's parallel filesystem — the place a
  * project's data must live so it never fills the user's home quota — and it is
  * *deleted* when it expires. These tests pin the two things the UI derives from a
@@ -21,7 +21,7 @@ import {
   wsTargetForHost,
   wsTargetForProject,
   type HpcWorkspace,
-} from "../lib/hpcWorkspace";
+} from "../lib/remote/hpc/hpcWorkspace";
 
 const WS: HpcWorkspace = {
   id: "demo",

@@ -1,11 +1,11 @@
 /**
- * The session's own memory of submitted SLURM jobs (`stores/hpcJobs`): newest
+ * The session's own memory of submitted SLURM jobs (`stores/remote/hpc/hpcJobs`): newest
  * first, deduped by job id AND host (two clusters can hand out the same id),
  * and a cancel forgets exactly one row.
  */
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { useHpcJobsStore, type HpcJob } from "../stores/hpcJobs";
+import { useHpcJobsStore, type HpcJob } from "../stores/remote/hpc/hpcJobs";
 
 const job = (jobId: string, host = "primary", extra: Partial<HpcJob> = {}): HpcJob => ({
   jobId,

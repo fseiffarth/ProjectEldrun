@@ -128,7 +128,7 @@ logged in to — the Machines menu's add-a-machine form, the per-host connect
 dialog (`HpcHostToggle`, beside "Go easy on this machine"), and the new/extend
 project flow — and shown afterwards as an `HPC` badge on that machine's row, with
 a toggle in its expanded detail. Stored per SSH target in `settings.hpc_hosts`
-(`src/lib/hpcHost.ts`, `schema::settings`): the same key as `careful_hosts`, so
+(`src/lib/remote/hpc/hpcHost.ts`, `schema::settings`): the same key as `careful_hosts`, so
 tagging a login node once covers it as a project primary, as another project's
 worker, and as a global machine.
 
@@ -139,7 +139,7 @@ Tagged, a machine gets:
 | monitor reading | careful by default, user may switch to Detailed | careful, **and the Detailed switch is disabled** |
 | connect-time usage probe | fires on every connect | not fired automatically (`commands::remote`) |
 | giant-folder census (`du -ak`) | runs on connect | never runs against the host (`commands::sync`) |
-| disk-usage scan | runs | **refused until confirmed for that scan** (`commands::disk_usage` → `HPC_GUARD` → `lib/hpcGuard.ts`) |
+| disk-usage scan | runs | **refused until confirmed for that scan** (`commands::disk_usage` → `HPC_GUARD` → `lib/remote/hpc/hpcGuard.ts`) |
 | auto byte-sync loop (25 s) | starts on connect | never starts (`services::sync_auto`) — manual push/pull still works, and the tag is re-read **per tick**, so tagging a connected host stops the loop mid-session |
 | git lockstep poll (12 s) | starts when lockstep is on | never starts (`services::git_peer`), same per-tick re-read |
 | auto-connect at launch/VPN-up | as armed | never, project or global machine (`stores/projects`, `stores/globalMachines`) |

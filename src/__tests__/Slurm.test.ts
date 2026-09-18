@@ -1,5 +1,5 @@
 /**
- * The SLURM (HPC) text helpers (`lib/slurm.ts`), all pure — the directive form is
+ * The SLURM (HPC) text helpers (`lib/remote/hpc/slurm.ts`), all pure — the directive form is
  * a *view on the text*, exactly like the YAML/table viewers: every edit splices the
  * script's `#SBATCH` lines rather than re-serializing, so unrelated lines, comments
  * and the flag spelling the author used all survive. These tests pin that bargain
@@ -13,7 +13,7 @@ import {
   spliceDirective,
   buildInteractiveCommand,
   buildTailCommand,
-} from "../lib/slurm";
+} from "../lib/remote/hpc/slurm";
 
 const SCRIPT = `#!/bin/bash
 #SBATCH --job-name=train

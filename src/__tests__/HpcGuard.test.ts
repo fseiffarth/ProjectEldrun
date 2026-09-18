@@ -1,5 +1,5 @@
 /**
- * The HPC tag's confirmable half, from the caller's side (`lib/hpcGuard`).
+ * The HPC tag's confirmable half, from the caller's side (`lib/remote/hpc/hpcGuard`).
  *
  * The backend refuses a gated act with `ELDRUN_HPC_GUARD <kind> <target>`, and
  * the wrapper reads both out of the error itself — no call site knows in
@@ -13,8 +13,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(() => Promise.resolve()) }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn().mockResolvedValue(() => {}) }));
 
-import { HPC_GUARD, guardLoginNodeRun, hpcGuardRefusal, withHpcConfirm } from "../lib/hpcGuard";
-import { useHpcGuardStore } from "../stores/hpcGuardPrompt";
+import { HPC_GUARD, guardLoginNodeRun, hpcGuardRefusal, withHpcConfirm } from "../lib/remote/hpc/hpcGuard";
+import { useHpcGuardStore } from "../stores/remote/hpc/hpcGuardPrompt";
 import { useProjectsStore } from "../stores/projects";
 import { useSettingsStore } from "../stores/settings";
 import { targetKey } from "../lib/machineSync";

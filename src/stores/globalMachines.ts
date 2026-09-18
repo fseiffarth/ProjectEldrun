@@ -5,7 +5,7 @@ import type { GlobalMachine, MachineImportEntry } from "../types";
 import { syncGlobalDisconnected } from "../lib/machineSync";
 import { useHostBusyStore } from "./hostBusy";
 import { withHostKeyConfirm } from "../lib/hostKey";
-import { mayAutoTouch } from "../lib/hpcHost";
+import { mayAutoTouch } from "../lib/remote/hpc/hpcHost";
 import { useSettingsStore } from "./settings";
 
 /** Per-machine outcome of a bulk import (`importMachines`): whether the shared

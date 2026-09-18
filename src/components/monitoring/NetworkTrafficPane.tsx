@@ -7,7 +7,7 @@ import { useProjectsStore } from "../../stores/projects";
 import { useRemoteStatusStore } from "../../stores/remoteStatus";
 import { useSettingsStore } from "../../stores/settings";
 import { isCarefulHost, primaryTargetOf } from "../../lib/carefulHost";
-import { isHpcHost } from "../../lib/hpcHost";
+import { isHpcHost } from "../../lib/remote/hpc/hpcHost";
 import { useT } from "../../lib/i18n";
 
 export interface NetworkInterfaceSnapshot {

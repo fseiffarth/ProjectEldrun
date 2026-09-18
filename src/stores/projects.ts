@@ -36,7 +36,7 @@ import {
 import { useRunHostPrefStore } from "./runHostPref";
 import { useTimerStore } from "./timer";
 import { useSettingsStore, whenSettingsLoaded } from "./settings";
-import { mayAutoTouch, targetOfSpec } from "../lib/hpcHost";
+import { mayAutoTouch, targetOfSpec } from "../lib/remote/hpc/hpcHost";
 import { PRIMARY_HOST, useRemoteStatusStore } from "./remoteStatus";
 import { markVpnConnected, markVpnConnecting, markVpnError, releaseVpn } from "./remote/vpn/vpnStatus";
 import { useConnectDialogStore } from "./connectDialog";
@@ -310,7 +310,7 @@ async function autoConnectPrimary(projectId: string): Promise<void> {
   const project = useProjectsStore.getState().projects.find((p) => p.id === projectId);
   const remote = project?.remote;
   if (!remote?.auto_connect) return;
-  // Never silently, on a machine tagged HPC (`lib/hpcHost.ts`). A connect is not
+  // Never silently, on a machine tagged HPC (`lib/remote/hpc/hpcHost.ts`). A connect is not
   // free on a cluster login node — it opens an SSH master, and Eldrun's own
   // session machinery may raise a tmux server behind it — and "silently, because
   // the app happened to start" is precisely the shape of unattended presence a

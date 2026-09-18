@@ -54,8 +54,8 @@ import {
   slurmJobOut,
   openLogTab,
   type SlurmJob,
-} from "../../lib/slurm";
-import { useHpcJobsStore } from "../../stores/hpcJobs";
+} from "../../lib/remote/hpc/slurm";
+import { useHpcJobsStore } from "../../stores/remote/hpc/hpcJobs";
 import { useSettingsStore } from "../../stores/settings";
 import {
   wsAvailable,
@@ -72,7 +72,7 @@ import {
   remainingLabel,
   expiryTone,
   type HpcWorkspace,
-} from "../../lib/hpcWorkspace";
+} from "../../lib/remote/hpc/hpcWorkspace";
 import { useT, type TranslationKey } from "../../lib/i18n";
 import { useExperimental } from "../../lib/experimental";
 import { useProjectRemarksStore } from "../../stores/projectRemarks";

@@ -578,7 +578,7 @@ export interface Settings {
    *  much Eldrun *looks at*, this governs what it *does*: a tagged host is careful
    *  regardless, and its disk-usage scan, giant-folder census, background sync +
    *  lockstep loops, silent auto-connect and unannounced login-node compute are
-   *  all gated behind it. See `lib/hpcHost.ts`. */
+   *  all gated behind it. See `lib/remote/hpc/hpcHost.ts`. */
   hpc_hosts?: Record<string, boolean>;
   /** Path of the stored `.ovpn` config brought up automatically **on launch** —
    *  armed from the header's VPN menu, with no project behind it. Unset/null = no

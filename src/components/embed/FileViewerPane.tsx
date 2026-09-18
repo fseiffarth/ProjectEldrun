@@ -122,7 +122,7 @@ import {
   COMMON_SBATCH_KEYS,
   type SlurmInfo,
   type InteractiveResources,
-} from "../../lib/slurm";
+} from "../../lib/remote/hpc/slurm";
 import { FileDropContext } from "../files/fileDropContext";
 import { UntestedTag } from "../common/UntestedTag";
 import { FolderPickerDialog } from "../common/FolderPickerDialog";
@@ -7406,7 +7406,7 @@ function TextView({
   // A `.slurm`-style file (one carrying a `#SBATCH` directive) gets a submit bar
   // beside the Python one — but only when the project's host actually has SLURM
   // (`slurm_available`), so the affordance never appears off-HPC. Everything here
-  // rides the same terminal-tab machinery Run uses (`lib/slurm.ts`).
+  // rides the same terminal-tab machinery Run uses (`lib/remote/hpc/slurm.ts`).
   const isSlurm = useMemo(() => loaded && isSlurmScript(draft), [loaded, draft]);
   const [slurmInfo, setSlurmInfo] = useState<SlurmInfo | null>(null);
   useEffect(() => {

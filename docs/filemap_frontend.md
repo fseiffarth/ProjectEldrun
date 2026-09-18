@@ -241,9 +241,9 @@ only when breaking it does damage. The *why* goes in code comments or
 | `lib/browser.ts` | Typed invoke surface for the browser (`browser_*`); no component invokes directly (`BrowserTripwire.test.ts`), no wrapper takes a path. `READER_FRAME_CSP` is `MAIL_FRAME_CSP` imported. |
 | `lib/linkTarget.ts` | Pure URI routing table (#33) + address-bar commit rule. URLs Eldrun itself starts go external; URLs from untrusted content open in reader mode, never live in one click. |
 | `lib/mail.ts` | Typed invoke surface for mail (`mail_*`); no wrapper takes a path (the sandbox boundary). Also `buildMessageSrcdoc`, `MAIL_FRAME_CSP`, `bodyLooksUnsafe` tripwire, `Authentication-Results` display rules. |
-| `lib/slurm.ts` | SLURM glue for HPC projects: pure `#SBATCH` parse/splice helpers (splice, never re-serialize) + tab glue (log window, submit). |
+| `lib/remote/hpc/slurm.ts` | SLURM glue for HPC projects: pure `#SBATCH` parse/splice helpers (splice, never re-serialize) + tab glue (log window, submit). |
 | `lib/spellDictionaries.ts` | Dictionary picker's pure half: Hunspell stem → BCP 47, names via `Intl.DisplayNames`, default choice, installed/downloadable split. |
-| `lib/hpcWorkspace.ts` | HPC workspaces (backend `commands::hpc_ws`): `ws*` invoke wrappers + shared pure helpers (`projectPathIn`, expiry labels/tones). Workspaces expire and get deleted. |
+| `lib/remote/hpc/hpcWorkspace.ts` | HPC workspaces (backend `commands::hpc_ws`): `ws*` invoke wrappers + shared pure helpers (`projectPathIn`, expiry labels/tones). Workspaces expire and get deleted. |
 | `lib/skills.ts` | Typed invoke surface for the Skills Library (`skills_*`); no manifest, installed list is a disk read; install addressed by `SkillTarget`, never a path. |
 | `lib/localDrivers.ts` | Typed invoke surface for local-model coding agents + model-update check. `listLocalDrivers(model)` hides agents a completion-only model (no tool calls) can't serve. |
 | `lib/printing.ts` | Typed invoke surface for the print manager (`print_*`): queues only, no wrapper takes a path; `printSnapshot` resolves rather than rejects. |

@@ -918,7 +918,7 @@ function RemoteConnectDialogInner({
               kind of machine even when they belong to the same cluster. */}
           <CarefulHostToggle target={carefulTarget} />
           {/* The stronger statement about the same machine: careful is how much
-              Eldrun reads, this is what it is allowed to do (`lib/hpcHost.ts`). */}
+              Eldrun reads, this is what it is allowed to do (`lib/remote/hpc/hpcHost.ts`). */}
           <HpcHostToggle target={carefulTarget} />
         </div>
 

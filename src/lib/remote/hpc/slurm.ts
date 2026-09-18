@@ -20,14 +20,14 @@
  */
 
 import { invoke } from "@tauri-apps/api/core";
-import { useTabsStore, type TabEntry, type TabLocation } from "../stores/tabs";
-import { useHpcJobsStore, type HpcJob } from "../stores/hpcJobs";
-import { shellQuote } from "./pythonRun";
-import { useProjectsStore } from "../stores/projects";
-import { useSettingsStore } from "../stores/settings";
+import { useTabsStore, type TabEntry, type TabLocation } from "../../../stores/tabs";
+import { useHpcJobsStore, type HpcJob } from "../../../stores/remote/hpc/hpcJobs";
+import { shellQuote } from "../../pythonRun";
+import { useProjectsStore } from "../../../stores/projects";
+import { useSettingsStore } from "../../../stores/settings";
 import { isHpcHost, targetOfSpec } from "./hpcHost";
-import { basename } from "./paths";
-import { translate, useI18nStore } from "./i18n";
+import { basename } from "../../paths";
+import { translate, useI18nStore } from "../../i18n";
 
 // ── Backend types (mirror `commands::slurm`) ─────────────────────────────────
 

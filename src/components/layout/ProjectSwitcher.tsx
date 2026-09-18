@@ -8,7 +8,7 @@ import { ProjectSearch } from "../projects/ProjectSearch";
 import { ProjectDialog } from "../projects/ProjectDialog";
 import { SettingsDialog, type SettingsPanelKind } from "./SettingsPanel";
 import { UntestedTag } from "../common/UntestedTag";
-import { useHpcPipelineStore } from "../../stores/hpcPipeline";
+import { useHpcPipelineStore } from "../../stores/remote/hpc/hpcPipeline";
 import { useBigFoldersStore } from "../../stores/bigFolders";
 import { useProjectsStore } from "../../stores/projects";
 import { BOX_SCOPE_PREFIX, useBoxMembership, useBoxesStore } from "../../stores/boxes";

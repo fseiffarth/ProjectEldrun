@@ -229,7 +229,7 @@ export function RemoteProjectSection({
   // target the save row is keyed by — the typed address, since the project does
   // not exist yet — so ticking it here is the same fact as ticking it on the
   // Machines menu's add form, and the very first connect already behaves
-  // (`lib/hpcHost.ts`).
+  // (`lib/remote/hpc/hpcHost.ts`).
   const hpcRow = sshTarget?.host ? (
     <HpcHostToggle
       target={{

@@ -1045,7 +1045,7 @@ container) — as opposed to the git **push** axis (#21/#22).*
     directive form editing the draft by splice (render-rows/edit-text, like the YAML
     viewer); **Interactive session…** opens an `srun --pty … bash -l` shell on a
     compute node. A **Jobs view** in `ProjectFilesView` (alongside Sessions/Orange)
-    polls `squeue`, per-row Watch/Cancel. Frontend `lib/slurm.ts` + `stores/hpcJobs`.
+    polls `squeue`, per-row Watch/Cancel. Frontend `lib/remote/hpc/slurm.ts` + `stores/remote/hpc/hpcJobs`.
     - [x] 🤖 Automated test — Rust parsers (`parse_submit_jobid` incl. `;cluster`
       suffix + numeric-guard, `parse_scontrol_paths`, `parse_squeue` incl.
       multi-word reason, `split_script_rel` incl. absolute paths, `default_out_file`);
@@ -1059,7 +1059,7 @@ container) — as opposed to the git **push** axis (#21/#22).*
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work
     - **Phase B — guided pipeline wizard (implemented, untested).** A 5-step stepper
-      (`HpcPipelineWizard.tsx` + `stores/hpcPipeline`, launched from the project-switcher
+      (`HpcPipelineWizard.tsx` + `stores/remote/hpc/hpcPipeline`, launched from the project-switcher
       **+** menu) that composes the existing flows rather than reimplementing them:
       **Login** (`RemoteProjectSection`/`useRemoteSession`) → **Project**
       (name + local-mirror location → `create_project`) → **Load data** (skippable; local
@@ -1086,7 +1086,7 @@ container) — as opposed to the git **push** axis (#21/#22).*
       is asked what it offers (`ws_list -l`); every interpolated value is validated
       **and** `shell_quote`d; each list/allocate is one round trip that appends a
       `ws_find` confirmation, since the *path* is what everything downstream uses.
-      Frontend `lib/hpcWorkspace.ts` + a new **Workspace** step in the wizard
+      Frontend `lib/remote/hpc/hpcWorkspace.ts` + a new **Workspace** step in the wizard
       (between Project and Load data, and now the step that calls `create_project`):
       the chosen workspace path becomes the project's **remote root**, which is the
       entire integration — SFTP upload, byte-sync, git lockstep and every run tab

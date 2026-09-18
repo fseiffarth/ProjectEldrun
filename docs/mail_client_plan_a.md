@@ -380,7 +380,7 @@ Two files land in one small commit and are then treated as frozen for the phase:
   `npx tsc --noEmit` meaningful from the start.
 
 Plus `src/lib/mail.ts` — **the** invoke wrapper module (the convention
-`lib/hpcWorkspace.ts` and `lib/slurm.ts` follow). No component calls
+`lib/remote/hpc/hpcWorkspace.ts` and `lib/remote/hpc/slurm.ts` follow). No component calls
 `invoke("mail_*")` directly; every command has exactly one typed wrapper.
 
 **Command surface (frozen contract).** All `pub async fn`, all

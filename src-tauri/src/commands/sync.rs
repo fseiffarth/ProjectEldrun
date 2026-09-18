@@ -369,7 +369,7 @@ pub struct BigFolderScan {
 /// numbers. With no flag to carry that distinction the explicit ask could only
 /// ever be refused, so the frontend was reduced to *saying* the census would be
 /// local-only. It now refuses with `hpc_mode`'s `HPC_GUARD` sentinel instead —
-/// the shape `disk_usage_scan` already uses — which `lib/hpcGuard`'s
+/// the shape `disk_usage_scan` already uses — which `lib/remote/hpc/hpcGuard`'s
 /// `withHpcConfirm` turns into a dialog naming the machine and one retry with
 /// `confirmed: true`. Per run, never remembered, exactly as the other gate.
 #[tauri::command]

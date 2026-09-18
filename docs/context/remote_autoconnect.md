@@ -55,7 +55,7 @@ embedded terminal), whose lifetime stays that surface's business.
 checked — which was the bug: a project could be dialled unattended by paths that
 never asked. Every unattended connect now passes the same three, in order:
 
-1. **`mayAutoTouch(settings, target)`** (`src/lib/hpcHost.ts`) — fail-**closed**.
+1. **`mayAutoTouch(settings, target)`** (`src/lib/remote/hpc/hpcHost.ts`) — fail-**closed**.
    `isHpcHost` answers `false` for a null settings object, which is right for
    painting a badge and wrong for authorising a connect; the launch sweep runs in
    exactly that window, so it needed a predicate that says *no* while it doesn't
