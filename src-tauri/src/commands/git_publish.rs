@@ -212,6 +212,40 @@ pub(crate) fn mirror_origin_repo(project_id: &str) -> Option<PathBuf> {
     mirror_repo(project_id).filter(|dir| has_origin(dir))
 }
 
+/// The project as publish/unpublish/visibility may act on it: `project.json`
+/// for descriptive data, with every field that decides *where* an operation runs
+/// or *what* it publishes taken from the trusted `projects.json` entry instead.
+/// `project.json` lives inside the project tree, where a fenced agent, a
+/// container tab or a `git pull` can rewrite it — and a `directory` read from
+/// there would aim "Publish (public)" at some other repository on disk.
+fn trusted_project(entry: &crate::schema::ProjectEntry) -> Project {
+    let mut project: Project = storage::read_json(Path::new(&entry.local_file)).unwrap_or_default();
+    let text = |key: &str| {
+        entry
+            .extra
+            .get(key)
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    };
+    project.id = entry.id.clone();
+    project.name = entry.name.clone();
+    project.directory = text("directory")
+        .or_else(|| {
+            Path::new(&entry.local_file)
+                .parent()
+                .map(|p| p.to_string_lossy().into_owned())
+        })
+        .unwrap_or_default();
+    project.remote = entry
+        .extra
+        .get("remote")
+        .and_then(|v| serde_json::from_value(v.clone()).ok());
+    project.git_type = text("git_type");
+    project.git_provider = text("git_provider");
+    project
+}
+
 /// A local project's tree, checked to exist.
 fn local_dir(project: &Project) -> Result<PathBuf, String> {
     let dir = PathBuf::from(&project.directory);
@@ -362,9 +396,7 @@ fn publish_project_blocking(
     };
 
     let (entry_index, list) = find_entry(&project_id)?;
-    let local_file = list[entry_index].local_file.clone();
-    let project: Project =
-        storage::read_json(&PathBuf::from(&local_file)).map_err(|e| e.to_string())?;
+    let project = trusted_project(&list[entry_index]);
 
     // Repo names can't contain spaces/special chars; reuse the project name
     // sanitizer that already produces a safe slug for local directories.
@@ -460,9 +492,7 @@ pub async fn project_has_origin(project_id: String) -> Result<bool, String> {
 
 fn project_has_origin_blocking(project_id: String) -> Result<bool, String> {
     let (entry_index, list) = find_entry(&project_id)?;
-    let local_file = list[entry_index].local_file.clone();
-    let project: Project =
-        storage::read_json(&PathBuf::from(&local_file)).map_err(|e| e.to_string())?;
+    let project = trusted_project(&list[entry_index]);
     if project.remote.is_some() {
         return Ok(true);
     }
@@ -484,9 +514,7 @@ pub async fn unpublish_project(project_id: String) -> Result<(), String> {
 
 fn unpublish_project_blocking(project_id: String) -> Result<(), String> {
     let (idx, list) = find_entry(&project_id)?;
-    let local_file = list[idx].local_file.clone();
-    let project: Project =
-        storage::read_json(&PathBuf::from(&local_file)).map_err(|e| e.to_string())?;
+    let project = trusted_project(&list[idx]);
 
     let gt = project
         .git_type
@@ -573,9 +601,7 @@ fn set_project_visibility_blocking(
     };
 
     let (idx, list) = find_entry(&project_id)?;
-    let local_file = list[idx].local_file.clone();
-    let project: Project =
-        storage::read_json(&PathBuf::from(&local_file)).map_err(|e| e.to_string())?;
+    let project = trusted_project(&list[idx]);
 
     let gt = project
         .git_type
@@ -662,9 +688,7 @@ fn switch_project_provider_blocking(
     };
 
     let (idx, list) = find_entry(&project_id)?;
-    let local_file = list[idx].local_file.clone();
-    let project: Project =
-        storage::read_json(&PathBuf::from(&local_file)).map_err(|e| e.to_string())?;
+    let project = trusted_project(&list[idx]);
 
     let gt = project
         .git_type
@@ -1187,5 +1211,38 @@ mod tests {
         assert!(msg.contains("glab"));
         assert!(msg.contains("glab auth login"));
         assert!(msg.contains("GitLab"));
+    }
+
+    /// Publish/visibility/unpublish act on the trusted entry: a `directory` or
+    /// `remote` planted in the in-folder `project.json` must not redirect them.
+    #[test]
+    fn trusted_project_ignores_the_in_folder_copy() {
+        let tmp = tempfile::tempdir().unwrap();
+        let local_file = tmp.path().join("project.json");
+        std::fs::write(
+            &local_file,
+            r#"{"id":"p","name":"evil","directory":"/home/u/other-private-repo",
+                "git_type":"remote-public","git_provider":"gitlab",
+                "remote":{"host":"attacker.example","remote_path":"/x"}}"#,
+        )
+        .unwrap();
+        let entry = crate::schema::ProjectEntry {
+            id: "p".into(),
+            name: "Mine".into(),
+            status: "active".into(),
+            position: 0,
+            local_file: local_file.to_string_lossy().into_owned(),
+            extra: serde_json::from_value(serde_json::json!({
+                "directory": "/home/u/mine",
+                "git_type": "local",
+            }))
+            .unwrap(),
+        };
+        let p = trusted_project(&entry);
+        assert_eq!(p.directory, "/home/u/mine");
+        assert_eq!(p.name, "Mine");
+        assert!(p.remote.is_none());
+        assert_eq!(p.git_type.as_deref(), Some("local"));
+        assert_eq!(p.git_provider, None);
     }
 }

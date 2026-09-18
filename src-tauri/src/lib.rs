@@ -1240,6 +1240,7 @@ pub fn run() {
             // Cheap: one small file per project, and it no-ops after the first
             // run. See `services::terminal_service::migrate_project_sessions_once`.
             services::terminal_service::migrate_project_sessions_once();
+            commands::projects::migrate_panel_prefs_once();
             // A crashed run's staged agent transcripts go home BEFORE the window
             // can restore a tab: the resume probe reads the host dir, and the
             // stage root is wiped here too, so no fenced spawn can race it.
@@ -1798,6 +1799,10 @@ pub fn run() {
             commands::apps::start_file_drag,
             commands::apps::cancel_file_drag,
             commands::apps::embed_capability,
+            commands::apps::get_project_default_apps,
+            commands::apps::set_project_default_apps,
+            commands::projects::set_project_panel_prefs,
+            commands::projects::get_project_panel_prefs,
             commands::apps::list_installed_apps,
             // Workspace / network
             commands::workspace::workspace_info,

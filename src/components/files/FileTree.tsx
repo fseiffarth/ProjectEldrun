@@ -148,8 +148,6 @@ const SORT_KEY_LABEL: Record<SortKey, TranslationKey> = {
 interface Props {
   projectDir: string;
   projectId: string | null;
-  /** Path to the project's project.json; enables the project-scoped default app. */
-  localFile?: string | null;
   sortKey?: SortKey;
   descending?: boolean;
   /** When given, the breadcrumb (⌂) row carries the sort control — a right-
@@ -329,7 +327,6 @@ function describeListError(
 export function FileTree({
   projectDir,
   projectId,
-  localFile = null,
   sortKey = "name",
   descending = false,
   onSortChange,
@@ -4769,7 +4766,7 @@ export function FileTree({
         <SetDefaultAppDialog
           ext={defaultAppFor.extension}
           fileName={defaultAppFor.name}
-          localFile={localFile}
+          projectId={projectId ?? null}
           onClose={() => setDefaultAppFor(null)}
         />
       )}

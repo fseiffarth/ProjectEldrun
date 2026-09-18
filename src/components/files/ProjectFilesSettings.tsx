@@ -24,8 +24,10 @@ import type { ProjectEntry, Settings, ViewerPref } from "../../types";
 /**
  * The file-view filters (which endings/paths a project's tree hides) and the
  * Project Settings dialog that edits them. Shared by the side panel and the
- * "Files (Project)" tab so the two views hide the same files: the lists live in
- * the project's own `project.json`, not in either host's state.
+ * "Files (Project)" tab so the two views hide the same files: the lists live on
+ * the project's trusted `projects.json` entry (`get_/set_project_panel_prefs`),
+ * not in either host's state — and not in the in-folder `project.json`, which
+ * anything working in the tree can rewrite to hide files from you.
  */
 
 type ProjectJson = Record<string, unknown>;
@@ -130,7 +132,7 @@ export function useProjectFileFilters(opts: {
   remoteBlocked: boolean;
 }): ProjectFileFilters {
   const { localFile, projectDir, remoteBlocked } = opts;
-  const [project, setProject] = useState<ProjectJson | null>(null);
+  const [prefs, setPrefs] = useState<ProjectJson | null>(null);
   const [hiddenEndings, setHiddenEndings] = useState<string[]>([]);
   const [availableEndings, setAvailableEndings] = useState<string[]>([]);
   const [hiddenPaths, setHiddenPaths] = useState<string[]>([]);
@@ -143,7 +145,7 @@ export function useProjectFileFilters(opts: {
   useEffect(() => {
     setError(null);
     if (!localFile || !projectDir) {
-      setProject(null);
+      setPrefs(null);
       setHiddenEndings([]);
       setAvailableEndings([]);
       setHiddenPaths([]);
@@ -154,14 +156,14 @@ export function useProjectFileFilters(opts: {
       return;
     }
     Promise.all([
-      invoke<ProjectJson>("load_project", { localFile }),
+      invoke<ProjectJson>("get_project_panel_prefs", { localFile }),
       remoteBlocked
         ? Promise.resolve<string[]>([])
         : invoke<string[]>("list_project_endings", { projectDir }).catch(() => []),
     ])
       .then(([loaded, endings]) => {
         const savedHiddenEndings = readStringList(loaded, PANEL_HIDDEN_ENDINGS_KEY);
-        setProject(loaded);
+        setPrefs(loaded);
         setHiddenEndings(savedHiddenEndings);
         setAvailableEndings(mergeEndings(endings, savedHiddenEndings));
         setHiddenPaths(readStringList(loaded, PANEL_HIDDEN_PATHS_KEY));
@@ -171,7 +173,7 @@ export function useProjectFileFilters(opts: {
         setSeparateGitignoredState(readBool(loaded, PANEL_SEPARATE_GITIGNORED_KEY));
       })
       .catch((e) => {
-        setProject(null);
+        setPrefs(null);
         setHiddenEndings([]);
         setAvailableEndings([]);
         setHiddenPaths([]);
@@ -184,18 +186,15 @@ export function useProjectFileFilters(opts: {
   }, [localFile, projectDir, remoteBlocked]);
 
   const saveHiddenEndings = async (nextEndings: string[]) => {
-    if (!localFile || !project) return;
-    const nextProject = {
-      ...project,
-      [PANEL_HIDDEN_ENDINGS_KEY]: nextEndings,
-      [PANEL_HIDDEN_PATHS_KEY]: hiddenPaths,
-      [PANEL_SHOWN_PATHS_KEY]: shownPaths,
-    };
+    if (!localFile || !prefs) return;
     setHiddenEndings(nextEndings);
-    setProject(nextProject);
+    setPrefs({ ...prefs, [PANEL_HIDDEN_ENDINGS_KEY]: nextEndings });
     setError(null);
     try {
-      await invoke("save_project", { localFile, project: nextProject });
+      await invoke("set_project_panel_prefs", {
+        localFile,
+        prefs: { [PANEL_HIDDEN_ENDINGS_KEY]: nextEndings },
+      });
     } catch (e) {
       setError(String(e));
     }
@@ -213,7 +212,7 @@ export function useProjectFileFilters(opts: {
 
   const toggleScanExcluded = (relPath: string, excluded: boolean) => {
     const rel = normalizeScanPath(relPath);
-    if (!rel || !localFile || !project) return;
+    if (!rel || !localFile || !prefs) return;
     const next = excluded
       ? scanExcluded.includes(rel)
         ? scanExcluded
@@ -223,31 +222,29 @@ export function useProjectFileFilters(opts: {
     // surfaces in `error` — the alternative (await, then update) leaves the row
     // showing a size the user just asked us to stop computing.
     setScanExcluded(next);
-    const nextProject = { ...project, [SCAN_EXCLUDED_PATHS_KEY]: next };
-    setProject(nextProject);
-    setError(null);
-    invoke("save_project", { localFile, project: nextProject }).catch((e) => setError(String(e)));
+    patchPref(SCAN_EXCLUDED_PATHS_KEY, next);
   };
 
   /** Optimistic single-key write, for the same reason `toggleScanExcluded` is
    *  one: the tree re-sections off these flags, and awaiting the write leaves
    *  the switch showing the old value while the file view has not moved. */
-  const patchProject = (key: string, value: unknown) => {
-    if (!localFile || !project) return;
-    const nextProject = { ...project, [key]: value };
-    setProject(nextProject);
+  const patchPref = (key: string, value: unknown) => {
+    if (!localFile || !prefs) return;
+    setPrefs({ ...prefs, [key]: value });
     setError(null);
-    invoke("save_project", { localFile, project: nextProject }).catch((e) => setError(String(e)));
+    invoke("set_project_panel_prefs", { localFile, prefs: { [key]: value } }).catch((e) =>
+      setError(String(e)),
+    );
   };
 
   const setSeparateScaffold = (value: boolean) => {
     setSeparateScaffoldState(value);
-    patchProject(PANEL_SEPARATE_SCAFFOLD_KEY, value);
+    patchPref(PANEL_SEPARATE_SCAFFOLD_KEY, value);
   };
 
   const setSeparateGitignored = (value: boolean) => {
     setSeparateGitignoredState(value);
-    patchProject(PANEL_SEPARATE_GITIGNORED_KEY, value);
+    patchPref(PANEL_SEPARATE_GITIGNORED_KEY, value);
   };
 
   return {

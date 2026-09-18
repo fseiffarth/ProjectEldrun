@@ -382,6 +382,104 @@ pub(crate) fn patch_project_entry<R>(
     })
 }
 
+/// The side panel's per-project view settings. They live on the trusted
+/// `projects.json` entry: the in-folder `project.json` copy is writable by
+/// anything working in the tree, and a list read from there could hide files
+/// from the tree or from scans. `project.json` keeps a display/export mirror.
+pub const PANEL_PREF_KEYS: &[&str] = &[
+    "panel_hidden_endings",
+    "panel_hidden_paths",
+    "panel_shown_paths",
+    "scan_excluded_paths",
+    "panel_separate_scaffold",
+    "panel_separate_gitignored",
+];
+
+/// The id of the registry entry whose `project.json` is `local_file` — the key
+/// the side panel's filter hook holds.
+fn project_id_for_local_file(local_file: &str) -> Result<String, String> {
+    read_projects_list()?
+        .into_iter()
+        .find(|e| e.local_file == local_file)
+        .map(|e| e.id)
+        .ok_or_else(|| format!("no project is registered for '{local_file}'"))
+}
+
+/// The panel settings, from the trusted entry (see [`PANEL_PREF_KEYS`]).
+#[tauri::command]
+pub fn get_project_panel_prefs(local_file: String) -> Result<serde_json::Map<String, Value>, String> {
+    let list = read_projects_list()?;
+    let entry = list
+        .iter()
+        .find(|e| e.local_file == local_file)
+        .ok_or_else(|| format!("no project is registered for '{local_file}'"))?;
+    Ok(PANEL_PREF_KEYS
+        .iter()
+        .filter_map(|k| entry.extra.get(*k).map(|v| ((*k).to_string(), v.clone())))
+        .collect())
+}
+
+/// Set (or, with `null`, clear) panel settings on the trusted entry and its
+/// mirror. Keys outside [`PANEL_PREF_KEYS`] are ignored.
+#[tauri::command]
+pub fn set_project_panel_prefs(
+    local_file: String,
+    prefs: serde_json::Map<String, Value>,
+) -> Result<(), String> {
+    let project_id = project_id_for_local_file(&local_file)?;
+    let prefs: Vec<(String, Value)> = prefs
+        .into_iter()
+        .filter(|(k, _)| PANEL_PREF_KEYS.contains(&k.as_str()))
+        .collect();
+    let apply = |extra: &mut HashMap<String, Value>| {
+        for (k, v) in &prefs {
+            if v.is_null() {
+                extra.remove(k);
+            } else {
+                extra.insert(k.clone(), v.clone());
+            }
+        }
+    };
+    patch_project_entry_mirrored(
+        &project_id,
+        |entry| {
+            apply(&mut entry.extra);
+            Ok(())
+        },
+        |project, ()| apply(&mut project.extra),
+    )
+}
+
+/// One-shot copy of the panel settings from each project's `project.json` into
+/// its `projects.json` entry, for projects registered before the settings moved.
+/// Once per installation (like `migrate_project_sessions_once`): a project
+/// registered afterwards is never read from its folder.
+pub fn migrate_panel_prefs_once() {
+    let marker = storage::state_dir().join(".panel_prefs_migrated");
+    if marker.exists() {
+        return;
+    }
+    let result = patch_projects_list(|list| {
+        for entry in list.iter_mut() {
+            let Ok(project) = storage::read_json::<Value>(Path::new(&entry.local_file)) else {
+                continue;
+            };
+            for key in PANEL_PREF_KEYS {
+                if let Some(v) = project.get(*key).filter(|v| !v.is_null()) {
+                    entry.extra.entry((*key).to_string()).or_insert_with(|| v.clone());
+                }
+            }
+        }
+        Ok(())
+    });
+    match result {
+        Ok(()) => {
+            let _ = std::fs::write(&marker, b"");
+        }
+        Err(e) => eprintln!("migrate_panel_prefs_once: {e}"),
+    }
+}
+
 /// [`patch_project_entry`] plus the mirror write every per-field setter used to
 /// open-code: after the registry patch lands, apply `patch_project` to the
 /// entry's own `project.json` and write it back atomically. The mirror closure

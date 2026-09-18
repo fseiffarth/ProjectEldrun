@@ -94,7 +94,7 @@ describe("file tree folder sizes", () => {
       if (cmd === "git_status")
         return Promise.resolve({ staged: 0, unstaged: 0, untracked: 0, has_remote: false, is_repo: false });
       if (cmd === "git_unpushed_commits") return Promise.resolve([]);
-      if (cmd === "load_project") return Promise.resolve({});
+      if (cmd === "get_project_panel_prefs") return Promise.resolve({});
       if (cmd === "list_project_endings") return Promise.resolve([]);
       return Promise.resolve(null);
     });
@@ -138,7 +138,7 @@ describe("file tree folder sizes", () => {
         return Promise.resolve({ staged: 0, unstaged: 0, untracked: 0, has_remote: false, is_repo: false });
       if (cmd === "git_unpushed_commits") return Promise.resolve([]);
       // The project's saved exclusion list — `venv` is out, `src` is not.
-      if (cmd === "load_project") return Promise.resolve({ scan_excluded_paths: ["venv"] });
+      if (cmd === "get_project_panel_prefs") return Promise.resolve({ scan_excluded_paths: ["venv"] });
       if (cmd === "list_project_endings") return Promise.resolve([]);
       return Promise.resolve(null);
     });
@@ -176,7 +176,7 @@ describe("file tree folder sizes", () => {
       if (cmd === "git_status")
         return Promise.resolve({ staged: 0, unstaged: 0, untracked: 0, has_remote: false, is_repo: true });
       if (cmd === "git_unpushed_commits") return Promise.resolve([]);
-      if (cmd === "load_project") return Promise.resolve({});
+      if (cmd === "get_project_panel_prefs") return Promise.resolve({});
       if (cmd === "list_project_endings") return Promise.resolve([]);
       return Promise.resolve(null);
     });

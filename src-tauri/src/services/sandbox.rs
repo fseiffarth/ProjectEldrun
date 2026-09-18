@@ -1450,7 +1450,11 @@ pub fn sandbox_spec_for(project_id: &str) -> Option<SandboxSpec> {
 }
 
 /// The project's directory (the bind-mount root), from the `projects.json`
-/// entry's flattened `extra["directory"]`, falling back to `project.json`.
+/// entry's flattened `extra["directory"]`, falling back to the parent of its
+/// `local_file` (always `<directory>/project.json`) for legacy entries. Never the
+/// `directory` *inside* `project.json`: that file sits in the container's own rw
+/// mount, and a value read from it would let the contained process choose what
+/// the next container mounts.
 pub fn project_dir_for(project_id: &str) -> Option<String> {
     if let Some(v) = project_entry_value(project_id, "directory") {
         if let Some(s) = v.as_str() {
@@ -1462,9 +1466,10 @@ pub fn project_dir_for(project_id: &str) -> Option<String> {
     let list_path = storage::state_dir().join("projects.json");
     let list: crate::schema::projects::ProjectsList = storage::read_json(&list_path).ok()?;
     let entry = list.iter().find(|e| e.id == project_id)?;
-    let project: crate::schema::project::Project =
-        storage::read_json(Path::new(&entry.local_file)).ok()?;
-    (!project.directory.is_empty()).then_some(project.directory)
+    Path::new(&entry.local_file)
+        .parent()
+        .map(|p| p.to_string_lossy().into_owned())
+        .filter(|s| !s.is_empty())
 }
 
 /// The project id whose tabs at `project_dir` would run **inside a container** —

@@ -443,7 +443,6 @@ function BoxRootSection({
             key={`${rootId}|${treeDir}`}
             projectDir={treeDir}
             projectId={rootId}
-            localFile={localFile}
             sortKey={sortKey}
             descending={descending}
             onSortChange={onSortChange}
@@ -952,7 +951,6 @@ export function ProjectFilesPane({
                 key={`${projectId ?? ""}|${treeDir}`}
                 projectDir={treeDir}
                 projectId={projectId}
-                localFile={project?.local_file}
                 sortKey={sortKey}
                 descending={descending}
                 onSortChange={compact ? undefined : onSortChange}

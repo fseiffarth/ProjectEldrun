@@ -313,26 +313,20 @@ fn watch_pruned(
     }
 }
 
-/// The user's own scan-exclusion list for `project_id` — `scan_excluded_paths` in
-/// the project's `project.json`, the same list the file tree writes and the size
-/// walk reads (`commands::fs::excluded_rel_set`).
-///
-/// Read from the project's *state* directory, which is where `project.json` lives
-/// for a local and a remote project alike — the remote one's watch root is its
-/// mirror, a different path entirely, so resolving the list from the watch root
-/// would find nothing.
+/// The user's own scan-exclusion list for `project_id` — `scan_excluded_paths` on
+/// the trusted `projects.json` entry, the same list the file tree writes and the
+/// size walk reads (`commands::fs::excluded_rel_set`). Never the in-folder
+/// `project.json` copy, which anything working in the tree can rewrite.
 fn user_excluded_dirs(project_id: &str) -> std::collections::HashSet<String> {
-    let Some(dir) = crate::services::remote::project_directory(project_id) else {
+    let list_path = crate::storage::state_dir().join("projects.json");
+    let Ok(list) = crate::storage::read_json::<crate::schema::projects::ProjectsList>(&list_path)
+    else {
         return Default::default();
     };
-    let Ok(raw) = std::fs::read_to_string(PathBuf::from(dir).join("project.json")) else {
-        return Default::default();
-    };
-    let Ok(json) = serde_json::from_str::<serde_json::Value>(&raw) else {
-        return Default::default();
-    };
-    let list: Vec<String> = json
-        .get("scan_excluded_paths")
+    let list: Vec<String> = list
+        .iter()
+        .find(|e| e.id == project_id)
+        .and_then(|e| e.extra.get("scan_excluded_paths"))
         .and_then(|v| v.as_array())
         .map(|a| {
             a.iter()

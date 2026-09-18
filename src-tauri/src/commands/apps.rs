@@ -1190,10 +1190,9 @@ pub fn embed_capability(
     }
 }
 
-/// Project-level default-app map for `project_id`, resolved via projects.json →
-/// the project's `local_file` → project.json `default_apps`. Returns an empty
-/// map when the id is absent or any read fails, so resolution then falls back to
-/// the global map / system default.
+/// Project-level default-app map for `project_id`, from the projects.json entry's
+/// `extra["default_apps"]`. Returns an empty map when the id is absent or any
+/// read fails, so resolution then falls back to the global map / system default.
 pub(crate) fn project_apps_for_id(project_id: Option<&str>) -> HashMap<String, String> {
     let Some(id) = project_id else {
         return HashMap::new();
@@ -1201,15 +1200,57 @@ pub(crate) fn project_apps_for_id(project_id: Option<&str>) -> HashMap<String, S
     let list_path = crate::storage::state_dir().join("projects.json");
     let list: Vec<crate::schema::ProjectEntry> =
         crate::storage::read_json(&list_path).unwrap_or_default();
-    let Some(entry) = list.into_iter().find(|e| e.id == id) else {
-        return HashMap::new();
-    };
-    let project: crate::schema::Project =
-        match crate::storage::read_json(Path::new(&entry.local_file)) {
-            Ok(p) => p,
-            Err(_) => return HashMap::new(),
-        };
-    project.default_apps.unwrap_or_default()
+    list.iter()
+        .find(|e| e.id == id)
+        .map(project_apps_from_entry)
+        .unwrap_or_default()
+}
+
+/// The project map as the trusted `projects.json` entry holds it
+/// (`extra["default_apps"]`). Never the in-folder `project.json` copy: that file
+/// is writable by a fenced agent, a container tab, a `git pull` or byte-sync, and
+/// an exec it names would launch on the host, unfenced, at the next open.
+fn project_apps_from_entry(entry: &crate::schema::ProjectEntry) -> HashMap<String, String> {
+    entry
+        .extra
+        .get("default_apps")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default()
+}
+
+/// The project-level default-app map, from the trusted registry only.
+#[tauri::command]
+pub fn get_project_default_apps(project_id: String) -> HashMap<String, String> {
+    project_apps_for_id(Some(&project_id))
+}
+
+/// Replace the project-level default-app map. Written to both stores like
+/// `set_project_python`: the `projects.json` mirror is what the open path reads,
+/// `project.json` keeps it with the project for display/export.
+#[tauri::command]
+pub fn set_project_default_apps(
+    project_id: String,
+    default_apps: HashMap<String, String>,
+) -> Result<HashMap<String, String>, String> {
+    let apps: HashMap<String, String> = default_apps
+        .into_iter()
+        .map(|(ext, exec)| (ext, exec.trim().to_string()))
+        .filter(|(ext, exec)| !ext.is_empty() && !exec.is_empty())
+        .collect();
+    crate::commands::projects::patch_project_entry_mirrored(
+        &project_id,
+        |entry| {
+            if apps.is_empty() {
+                entry.extra.remove("default_apps");
+            } else {
+                let value = serde_json::to_value(&apps).map_err(|e| e.to_string())?;
+                entry.extra.insert("default_apps".into(), value);
+            }
+            Ok(())
+        },
+        |project, ()| project.default_apps = (!apps.is_empty()).then(|| apps.clone()),
+    )?;
+    Ok(apps)
 }
 
 /// One installed application, surfaced to the "set default app" picker.
@@ -2829,6 +2870,46 @@ mod tests {
     fn blender_is_on_embeddable_allowlist() {
         assert!(is_embeddable_exec("/opt/blender-5.1.2-linux-x64/blender"));
         assert!(is_embeddable_exec("blender"));
+    }
+
+    /// An entry whose in-folder `project.json` carries `folder_json` — the file a
+    /// fenced agent, a container tab or a `git pull` can rewrite.
+    fn entry_with_poisoned_folder(
+        dir: &std::path::Path,
+        folder_json: &str,
+        extra: serde_json::Value,
+    ) -> crate::schema::ProjectEntry {
+        let local_file = dir.join("project.json");
+        std::fs::write(&local_file, folder_json).unwrap();
+        crate::schema::ProjectEntry {
+            id: "p".into(),
+            name: "p".into(),
+            status: "active".into(),
+            position: 0,
+            local_file: local_file.to_string_lossy().into_owned(),
+            extra: serde_json::from_value(extra).unwrap(),
+        }
+    }
+    #[test]
+    fn project_apps_ignore_the_in_folder_project_json() {
+        let tmp = tempfile::tempdir().unwrap();
+        let entry = entry_with_poisoned_folder(
+            tmp.path(),
+            r#"{"id":"p","name":"p","directory":"/x","default_apps":{".pdf":"/x/evil.sh"}}"#,
+            serde_json::json!({}),
+        );
+        assert!(project_apps_from_entry(&entry).is_empty());
+    }
+
+    #[test]
+    fn project_apps_come_from_the_registry_entry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let entry = entry_with_poisoned_folder(
+            tmp.path(),
+            r#"{"id":"p","name":"p","directory":"/x","default_apps":{".pdf":"/x/evil.sh"}}"#,
+            serde_json::json!({"default_apps": {".pdf": "okular"}}),
+        );
+        assert_eq!(project_apps_from_entry(&entry)[".pdf"], "okular");
     }
 
     #[test]

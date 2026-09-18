@@ -8,7 +8,8 @@
 //!
 //! Two layers, in this order:
 //!
-//! 1. **The project's explicit choice** (`Project::python_interpreter`), set in the
+//! 1. **The project's explicit choice** (the `projects.json` entry's
+//!    `extra["python_interpreter"]`, never the in-folder copy), set in the
 //!    pill's "Python interpreter…" dialog. Always wins, and once set costs nothing
 //!    to honour — no probing at all.
 //! 2. **Auto-detect**, which is what an unconfigured project gets. It probes the
@@ -34,7 +35,6 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-use crate::schema::project::Project;
 use crate::schema::projects::ProjectsList;
 use crate::storage;
 
@@ -476,22 +476,21 @@ pub async fn python_interpreter_for(
 }
 
 /// A project's pinned interpreter, read from the always-local `projects.json`
-/// mirror (falling back to `project.json` for entries predating the mirror) — the
-/// same two-store read as the sandbox spec.
+/// mirror only — like the sandbox spec. The in-folder `project.json` copy is
+/// never consulted: that file is writable by a fenced agent, a container tab, a
+/// `git pull` or byte-sync, and Run would execute what it names on the host.
 fn project_python(project_id: &str) -> Option<String> {
     let list_path = storage::state_dir().join("projects.json");
     let list: ProjectsList = storage::read_json(&list_path).ok()?;
-    let entry = list.iter().find(|p| p.id == project_id)?;
+    python_from_entry(list.iter().find(|p| p.id == project_id)?)
+}
+
+fn python_from_entry(entry: &crate::schema::ProjectEntry) -> Option<String> {
     entry
         .extra
         .get("python_interpreter")
         .and_then(|v| v.as_str())
         .map(str::to_string)
-        .or_else(|| {
-            storage::read_json::<Project>(&PathBuf::from(&entry.local_file))
-                .ok()?
-                .python_interpreter
-        })
         .filter(|s| !s.trim().is_empty())
 }
 
@@ -531,6 +530,30 @@ pub fn set_project_python(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pinned_python_ignores_the_in_folder_project_json() {
+        let tmp = tempfile::tempdir().unwrap();
+        let local_file = tmp.path().join("project.json");
+        std::fs::write(
+            &local_file,
+            r#"{"id":"p","name":"p","directory":"/x","python_interpreter":"/x/evil.sh"}"#,
+        )
+        .unwrap();
+        let mut entry = crate::schema::ProjectEntry {
+            id: "p".into(),
+            name: "p".into(),
+            status: "active".into(),
+            position: 0,
+            local_file: local_file.to_string_lossy().into_owned(),
+            extra: Default::default(),
+        };
+        assert_eq!(python_from_entry(&entry), None);
+        entry
+            .extra
+            .insert("python_interpreter".into(), "/usr/bin/python3".into());
+        assert_eq!(python_from_entry(&entry).as_deref(), Some("/usr/bin/python3"));
+    }
 
     #[test]
     fn conda_env_list_is_parsed_name_and_prefix() {
