@@ -9,6 +9,11 @@ file you touch. **One line per row**: what the file is for, plus an invariant
 only when breaking it does damage. The *why* goes in code comments or
 `docs/context/`, never here. Pre-2026-09-18 long-form rows: `docs/filemap_rationale/frontend.md`.
 
+`src/lib` and `src/stores` group by domain under the same folder names (`agents/`
+(+ `agents/prompt/`), `calendar/`, `remote/` (+ `hpc/`, `vpn/`), `terminal/`, `window/`,
+`theme/`, `shortcuts/`, `projects/`, `drag/`, `viewers/`); shared helpers and the big
+stores stay at the top. No `index.ts` barrels (`docs/src_restructure_plan.md`).
+
 **Entry & shell**
 
 | File | Purpose |

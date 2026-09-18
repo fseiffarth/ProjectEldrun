@@ -1,6 +1,10 @@
 # src/lib + src/stores — group by domain
 
-Status: proposed 2026-09-18, nothing moved yet.
+Status: **done 2026-09-18** — all thirteen moves landed, one commit per
+domain, in the §6 order. Step 1 (path alias) was skipped: a codemod that
+resolves every relative literal (imports, `import()`, `vi.mock`) against the
+old tree and re-relativizes it made each move mechanical without it. The
+`viewers/` split under **Later** is still open.
 
 ---
 
