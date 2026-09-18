@@ -36,7 +36,7 @@ import {
   fileTreeSnapshotKey,
   readFileTreeSnapshot,
   writeFileTreeSnapshot,
-} from "../../lib/fileViewSnapshots";
+} from "../../lib/projects/fileViewSnapshots";
 import { type TexCapability, type TexCompileResult, getTexCapability, lastLogLine } from "../../lib/viewers/tex";
 import { basename, dirname, relativePathWithin, resolvePath } from "../../lib/paths";
 import {
@@ -45,9 +45,9 @@ import {
   resolveMoveTarget,
   createSpringLoader,
   type ResolvedMoveTarget,
-} from "../../lib/fileMove";
+} from "../../lib/projects/fileMove";
 import { resolveLocalMirror, resolveProjectDirectory } from "../../types";
-import { DirSizeUnavailable, guardedDirSize, isHostTimeout } from "../../lib/dirSizeGuard";
+import { DirSizeUnavailable, guardedDirSize, isHostTimeout } from "../../lib/projects/dirSizeGuard";
 import { useFastMode } from "../../lib/agents/fastMode";
 import { isPythonPath } from "../../lib/viewers/python";
 import {

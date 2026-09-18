@@ -18,7 +18,7 @@ import {
   type DuNode,
   type DuProgress,
   type DuScan,
-} from "../../lib/diskUsage";
+} from "../../lib/projects/diskUsage";
 import { FILES_TAB_CMD, useTabsStore } from "../../stores/tabs";
 import { useProjectsStore } from "../../stores/projects";
 import { useRemoteStatusStore } from "../../stores/remoteStatus";
@@ -50,7 +50,7 @@ const ROW_H = 22;
 /** Rows rendered beyond the viewport on each side, to hide scroll tearing. */
 const OVERSCAN = 8;
 
-// ── Small pure helpers (the interesting maths lives in lib/diskUsage.ts) ───────
+// ── Small pure helpers (the interesting maths lives in lib/projects/diskUsage.ts) ───────
 
 function findNode(node: DuNode, path: string): DuNode | null {
   if (node.path === path) return node;

@@ -1,4 +1,4 @@
-import type { FilesPanelView, Settings } from "../types";
+import type { FilesPanelView, Settings } from "../../types";
 
 /** The side panel remembers which view it is on per scope: a project by its id,
  *  and the root/box scopes by their scope name (project ids are UUIDs, so the

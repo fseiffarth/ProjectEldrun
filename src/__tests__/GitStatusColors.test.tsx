@@ -10,7 +10,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { STATUS_COLOR } from "../components/files/FileTree";
-import { clearFileViewSnapshots } from "../lib/fileViewSnapshots";
+import { clearFileViewSnapshots } from "../lib/projects/fileViewSnapshots";
 
 const { mockInvoke } = vi.hoisted(() => ({ mockInvoke: vi.fn() }));
 
@@ -109,7 +109,7 @@ describe("git action button bars", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     // The panel seeds its git bar and tree from module-level snapshots so a
-    // reveal paints instantly (lib/fileViewSnapshots). Every case here renders
+    // reveal paints instantly (lib/projects/fileViewSnapshots). Every case here renders
     // the SAME project, so without a reset each one would start seeded from the
     // previous case's counts.
     clearFileViewSnapshots();
@@ -186,7 +186,7 @@ describe("git change tree", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     // The panel seeds its git bar and tree from module-level snapshots so a
-    // reveal paints instantly (lib/fileViewSnapshots). Every case here renders
+    // reveal paints instantly (lib/projects/fileViewSnapshots). Every case here renders
     // the SAME project, so without a reset each one would start seeded from the
     // previous case's counts.
     clearFileViewSnapshots();

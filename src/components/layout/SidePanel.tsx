@@ -15,7 +15,7 @@ import { useActivityStore, type AttentionKind } from "../../stores/activity";
 import { resolveProjectDirectory, type FilesPanelView } from "../../types";
 import { useT } from "../../lib/i18n";
 import { RailSwitchSideIcon } from "../common/EdgeRailIcons";
-import { sidePanelViewKey, sidePanelViewPatch } from "../../lib/sidePanelView";
+import { sidePanelViewKey, sidePanelViewPatch } from "../../lib/projects/sidePanelView";
 import { terminalCharsPerSecond } from "../../dev/terminalOutputRate";
 import {
   RENDERER_CEILING_MB,

@@ -14,7 +14,7 @@ import { RunHostPicker } from "../tabs/TabLocalityBadges";
 import { ProjectFilesSettingsDialog, useProjectFileFilters } from "./ProjectFilesSettings";
 import { useImportDrop } from "./importDrop";
 import { logoutRemote, useProjectsStore } from "../../stores/projects";
-import { isTrashProject } from "../../lib/trashProject";
+import { isTrashProject } from "../../lib/projects/trashProject";
 import { GIT_STATE_COLOR } from "../../lib/theme/gitColors";
 import { ContextMenuPortal } from "../common/ContextMenuPortal";
 import { useSyncStore, amberPaths, localNewPaths } from "../../stores/sync";
@@ -28,7 +28,7 @@ import {
   readGitBarSnapshot,
   writeGitBarSnapshot,
   type GitStatus,
-} from "../../lib/fileViewSnapshots";
+} from "../../lib/projects/fileViewSnapshots";
 import { basename, dirname } from "../../lib/paths";
 import { projectTypeTags } from "../projects/projectTypeTags";
 import { ProjectHoverCard, useProjectHoverCard } from "../projects/ProjectHoverCard";

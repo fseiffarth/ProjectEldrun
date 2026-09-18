@@ -1,11 +1,11 @@
 /**
- * The side panel's per-scope view memory (`lib/sidePanelView`): the panel and
+ * The side panel's per-scope view memory (`lib/projects/sidePanelView`): the panel and
  * the edge rail must name the same entry — a project by id, root/box scopes by
  * scope name — and a switch writes both the scope's own entry and the global
  * seed a scope with no entry opens on, without losing the other scopes' entries.
  */
 import { describe, expect, it } from "vitest";
-import { sidePanelViewKey, sidePanelViewPatch } from "../lib/sidePanelView";
+import { sidePanelViewKey, sidePanelViewPatch } from "../lib/projects/sidePanelView";
 import type { Settings } from "../types";
 
 describe("sidePanelViewKey", () => {

@@ -126,7 +126,7 @@
     > drag-and-drop in the multi-root view moved files *within the source
     > project* to the other project's rel path ("strangely moved" folders) —
     > every `[data-move-rel]` target now carries its tree's identity
-    > (`data-move-root`/`data-move-remote`), `lib/fileMove.ts`'s
+    > (`data-move-root`/`data-move-remote`), `lib/projects/fileMove.ts`'s
     > `resolveMoveTarget` routes the drop (cross-root local↔local only; remote
     > either side refuses the target up front), and `move_path` is called with
     > the TARGET root — this also fixes a right-panel drag into another
@@ -287,7 +287,7 @@
     re-resolving the drop target once the new rows paint; after an open the
     pointer must move before another folder can arm, so a held-still drag does
     not drill down a level per dwell. Timing core `createSpringLoader` in
-    `lib/fileMove.ts`; `components/files/FileTree.tsx`. Frontend only.
+    `lib/projects/fileMove.ts`; `components/files/FileTree.tsx`. Frontend only.
     Implemented 2026-09-14 (`de0f931`), **not live-tested**.
     - [x] 🤖 Automated test — `FileMove` (spring loader: dwell, re-arm only
       after movement, cancel)

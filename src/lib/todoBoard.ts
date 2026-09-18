@@ -54,7 +54,7 @@ import {
 import { dayAgenda, visibleCalendarIds } from "../stores/calendar/calendar";
 import type { TranslationKey } from "./i18n";
 import { dropSlot } from "./listReorder";
-import type { ProjectRemark } from "./projectRemarks";
+import type { ProjectRemark } from "./projects/projectRemarks";
 
 /** Gap between adjacent ranks. Mirrors the backend's `RANK_GAP`. */
 export const RANK_STEP = 1024;

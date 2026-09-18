@@ -360,7 +360,7 @@ Contents:
   closes it. The pill's menu exposes the container toggle, remote actions, and
   **Publish to GitHub / GitLab** (see below).
 - **The Trash pill** — the permanent disposable-agent workspace
-  (`trash-project-pill`, `lib/trashProject.ts`). It renders without the ordinary
+  (`trash-project-pill`, `lib/projects/trashProject.ts`). It renders without the ordinary
   pill affordances and cannot be closed or archived.
 - **The scope chip and the box pill** — `BoxScopeChip.tsx` is the row's fixed
   leading segment: one control standing for every scope that is not a project

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   REMARKS_TEMPLATE, addRemark, editRemarkText, formatRemarkBullet, parseRemarks,
   remarkCountsByFile, removeRemark, resolveRemarkAbsPath, setRemarkDone,
-} from "../lib/projectRemarks";
+} from "../lib/projects/projectRemarks";
 import { isLocalHref, splitLineHint } from "../lib/viewers/markdown";
 
 const SPEC = `# Remarks\n\n## src/foo.ts\n\n- [ ] [src/foo.ts:123](./src/foo.ts:123) — Why is this cast safe?\n  More context.\n- [x] [src/foo.ts](./src/foo.ts) — Rename this module.\n`;

@@ -4,7 +4,7 @@ import { FileTree } from "./FileTree";
 import { DownloadsSection } from "./DownloadsSection";
 import { GitHistory } from "./GitHistory";
 import { ProjectFilesSettingsDialog, useProjectFileFilters } from "./ProjectFilesSettings";
-import { remoteMemberTreeDir } from "../../lib/fileMove";
+import { remoteMemberTreeDir } from "../../lib/projects/fileMove";
 import { useProjectsStore } from "../../stores/projects";
 import { useRemoteStatusStore } from "../../stores/remoteStatus";
 import { useSyncStore } from "../../stores/sync";

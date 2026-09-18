@@ -5,7 +5,7 @@
  * no invokes: the component owns fetching/debouncing, this module owns the
  * shapes and the ranking so they are unit-testable on their own.
  */
-import { basename } from "./paths";
+import { basename } from "../paths";
 
 /** Mirror of the Rust `SearchMatch` struct from `commands::search`. */
 export interface SearchMatch {

@@ -18,7 +18,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { Settings } from "../types";
-import { clearFileViewSnapshots } from "../lib/fileViewSnapshots";
+import { clearFileViewSnapshots } from "../lib/projects/fileViewSnapshots";
 
 const { mockInvoke } = vi.hoisted(() => ({ mockInvoke: vi.fn() }));
 

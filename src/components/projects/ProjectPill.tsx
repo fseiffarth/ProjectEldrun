@@ -46,7 +46,7 @@ import { useBoxEditorStore } from "../../stores/boxEditor";
 import { useBoxesStore } from "../../stores/boxes";
 import { bindDragRelease, dragPlatform } from "../../lib/window/dragPlatform";
 import { useT } from "../../lib/i18n";
-import { isTrashProject } from "../../lib/trashProject";
+import { isTrashProject } from "../../lib/projects/trashProject";
 import { TrashProjectIcon } from "./TrashProjectIcon";
 import {
   agentFenceInstallCommand,

@@ -23,7 +23,7 @@ import { useProjectsStore } from "../stores/projects";
 import { BOX_SCOPE_PREFIX, useBoxesStore } from "../stores/boxes";
 import { usePillDragStore } from "../stores/pillDrag";
 import { useTabsStore } from "../stores/tabs";
-import { TRASH_PROJECT_ID } from "../lib/trashProject";
+import { TRASH_PROJECT_ID } from "../lib/projects/trashProject";
 import { useActivityStore } from "../stores/activity";
 
 function proj(id: string, position: number): ProjectEntry {

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { fileMtime } from "../embed/fileAccess";
 import { jumpToSource } from "../embed/FileViewerPane";
 import { resolvePath } from "../../lib/paths";
-import { REMARKS_FILE, resolveRemarkAbsPath, type ProjectRemark } from "../../lib/projectRemarks";
+import { REMARKS_FILE, resolveRemarkAbsPath, type ProjectRemark } from "../../lib/projects/projectRemarks";
 import { useProjectRemarksStore } from "../../stores/projectRemarks";
 import { useCalendarStore } from "../../stores/calendar/calendar";
 import { boardColumns, fallbackColumnId, taskFromRemark } from "../../lib/todoBoard";

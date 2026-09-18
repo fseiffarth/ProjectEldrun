@@ -3,7 +3,7 @@
  *
  * A closed panel doesn't hide its tree, it UNMOUNTS it (`mountTree={open}`), so
  * every reveal used to start from an empty tree and fill in over a `list_dir`, a
- * `git_file_statuses` and one recursive walk per folder. `lib/fileViewSnapshots`
+ * `git_file_statuses` and one recursive walk per folder. `lib/projects/fileViewSnapshots`
  * keeps the last state of each (project, root, folder) in module scope, so the
  * first frame after a reveal is already populated and the fetches only upgrade
  * it. These tests pin both halves: the seeded frame, and the refresh behind it.
@@ -39,7 +39,7 @@ import {
   writeFileTreeSnapshot,
   readGitBarSnapshot,
   writeGitBarSnapshot,
-} from "../lib/fileViewSnapshots";
+} from "../lib/projects/fileViewSnapshots";
 
 const mockUseProjectsStore = vi.mocked(useProjectsStore);
 

@@ -231,12 +231,12 @@ only when breaking it does damage. The *why* goes in code comments or
 | `lib/viewers/copilotCompletionProvider.ts` | Copilot adapter (#45a): `copilotServes` gate (flag + provider + consenting local project + code language, else Ollama), completion/cancel IPC, and `CopilotFeedback` (shown once, cumulative partial, single full acceptance, close). Settings/consent/sign-in UI is `components/layout/CopilotCompletionCard.tsx`. |
 | `lib/viewers/ollamaCompletionProvider.ts` | Ollama adapter: model selection, cancellable streaming IPC and bounded provider-keyed cache, extracted from the editor. |
 | `lib/viewers/mdGraph.ts` | Pure markdown-graph logic (#101): fence-aware link extraction, bounded BFS crawl, radial layout. Tests: `MdGraph.test.ts`. |
-| `lib/projectRemarks.ts` / `stores/projectRemarks.ts` | Defensive REMARKS.md parser/splicer plus local-or-SFTP I/O. Conforming bullets are editable; all other bytes are parked verbatim. |
+| `lib/projects/projectRemarks.ts` / `stores/projectRemarks.ts` | Defensive REMARKS.md parser/splicer plus local-or-SFTP I/O. Conforming bullets are editable; all other bytes are parked verbatim. |
 | `lib/viewers/{fileUtils,markdown,highlight,tex}.ts` | Pure viewer logic (XSS-safe markdown/highlight, TeX, file utils). `tex.ts` also resolves `\ref`/`\cite` keys to their `\label`/`.bib` entry via the editor-jump channel. |
 | `lib/viewers/pdfLoad.ts` | `loadPdf`: the only way to open a PDF with pdf.js (sets the worker). Destroys the loading task on failure — a rejected load otherwise leaks a Worker. |
 | `lib/viewers/texPreview.ts` | TeX hover preview (frontend half): typesets a hovered formula via `tex_preview_snippet`; cache keyed by preamble + snippet text, not position. |
 | `lib/viewers/beamer.ts` | Beamer mode for the TeX editor (pure): overlay-spec recognition, wrap/re-target (never nest), `insertPause`, `nextOverlayNumber`, `beamerEditRange`. |
-| `lib/fileViewSnapshots.ts` | Side panel's last-known data in module scope so a reveal's first frame is populated (the panel unmounts when closed). Tests need `clearFileViewSnapshots()`. |
+| `lib/projects/fileViewSnapshots.ts` | Side panel's last-known data in module scope so a reveal's first frame is populated (the panel unmounts when closed). Tests need `clearFileViewSnapshots()`. |
 | `lib/viewers/python.ts` | Python editor intelligence (#87), pure: breakpoints snap to executable lines and remap on edit; go-to-definition is a lexical import-graph walk (only followable names underlined). |
 | `lib/browser.ts` | Typed invoke surface for the browser (`browser_*`); no component invokes directly (`BrowserTripwire.test.ts`), no wrapper takes a path. `READER_FRAME_CSP` is `MAIL_FRAME_CSP` imported. |
 | `lib/linkTarget.ts` | Pure URI routing table (#33) + address-bar commit rule. URLs Eldrun itself starts go external; URLs from untrusted content open in reader mode, never live in one click. |

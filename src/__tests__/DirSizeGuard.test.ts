@@ -23,7 +23,7 @@ import {
   guardedDirSize,
   isHostTimeout,
   resetDirSizeGuard,
-} from "../lib/dirSizeGuard";
+} from "../lib/projects/dirSizeGuard";
 
 const PROJECT = "/home/u/eldrun/projects/demo";
 

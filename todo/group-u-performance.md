@@ -92,7 +92,7 @@ screen is not.*
     SSH round trip, so the wait was the *point* at which the panel was least
     usable.
 
-    `src/lib/fileViewSnapshots.ts` keeps the last state of each (project, root
+    `src/lib/projects/fileViewSnapshots.ts` keeps the last state of each (project, root
     dir, folder) — entries, per-file git statuses, folder sizes and their
     ignored split — plus the git bar's counts per repo, in module scope, where
     they outlive the components. A reveal seeds every one of those from the

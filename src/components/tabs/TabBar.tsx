@@ -66,7 +66,7 @@ import { useActivityStore } from "../../stores/activity";
 import { UntestedTag } from "../common/UntestedTag";
 import { useT } from "../../lib/i18n";
 import { useChordHint } from "../../lib/shortcuts/shortcutHint";
-import { TRASH_PROJECT_ID } from "../../lib/trashProject";
+import { TRASH_PROJECT_ID } from "../../lib/projects/trashProject";
 import { AgentScheduleDialog } from "../agents/AgentScheduleDialog";
 import { scheduleCacheKey, useAgentSchedulesStore } from "../../stores/agents/agentSchedules";
 import { nextScheduleOccurrence } from "../../lib/agents/agentSchedule";

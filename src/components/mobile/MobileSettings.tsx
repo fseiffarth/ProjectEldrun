@@ -6,7 +6,7 @@ import { useBoxesStore } from "../../stores/boxes";
 import { ROOT_SCOPE, useTabsStore } from "../../stores/tabs";
 import { SettingsCard, SettingsList, ToggleRow } from "../layout/settingsUi";
 import { UntestedTag } from "../common/UntestedTag";
-import { isTrashProject } from "../../lib/trashProject";
+import { isTrashProject } from "../../lib/projects/trashProject";
 import { IS_WINDOWS } from "../../lib/platform";
 import { runInstallInTab } from "../../lib/installCommand";
 import { translate, useI18nStore, useT } from "../../lib/i18n";

@@ -1,5 +1,5 @@
 /**
- * Pure tests for `lib/projectSearch` — the shared shapes and ranking behind the
+ * Pure tests for `lib/projects/projectSearch` — the shared shapes and ranking behind the
  * in-tree project search (`FileTreeSearch`), extracted when the redundant
  * side-panel Search view was folded into the tree's own search box.
  */
@@ -9,7 +9,7 @@ import {
   matchParts,
   rankNameMatches,
   type PathEntry,
-} from "../lib/projectSearch";
+} from "../lib/projects/projectSearch";
 
 function entries(...paths: string[]): PathEntry[] {
   return paths.map((path) => ({ path, is_dir: false }));

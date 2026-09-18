@@ -35,7 +35,7 @@ vi.mock("../stores/settings", () => {
 
 import { useProjectsStore } from "../stores/projects";
 import { SidePanel } from "../components/layout/SidePanel";
-import { clearFileViewSnapshots } from "../lib/fileViewSnapshots";
+import { clearFileViewSnapshots } from "../lib/projects/fileViewSnapshots";
 
 const mockUseProjectsStore = vi.mocked(useProjectsStore);
 

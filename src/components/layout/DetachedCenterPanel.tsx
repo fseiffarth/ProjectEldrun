@@ -44,7 +44,7 @@ import { TabHoverCard } from "../tabs/TabHoverCard";
 import { useFastMode } from "../../lib/agents/fastMode";
 import { WindowControls } from "../header/WindowControls";
 import { DragGhost, SplitPreviewOverlay } from "./CenterPanel";
-import { TRASH_PROJECT_ID } from "../../lib/trashProject";
+import { TRASH_PROJECT_ID } from "../../lib/projects/trashProject";
 import { TabDropPlaceholder } from "../tabs/TabDropPlaceholder";
 import { NewTabMenu } from "../tabs/NewTabMenu";
 import { CustomAgentDialog } from "../tabs/CustomAgentDialog";

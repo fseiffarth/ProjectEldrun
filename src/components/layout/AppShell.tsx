@@ -104,7 +104,7 @@ import { useTodoStore } from "../../stores/todo";
 import { flushUsage } from "../../stores/usage";
 import { useKeyboard } from "../../hooks/useKeyboard";
 import { useT, useI18nStore, translate, type TranslationKey } from "../../lib/i18n";
-import { sidePanelViewKey, sidePanelViewPatch } from "../../lib/sidePanelView";
+import { sidePanelViewKey, sidePanelViewPatch } from "../../lib/projects/sidePanelView";
 import type { FilesPanelView } from "../../types";
 import { noteTerminalOutputChars } from "../../dev/terminalOutputRate";
 

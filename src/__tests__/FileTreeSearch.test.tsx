@@ -27,7 +27,7 @@ import { useProjectsStore } from "../stores/projects";
 import { useTabsStore } from "../stores/tabs";
 import { useRemoteStatusStore } from "../stores/remoteStatus";
 import { useFileSourcePrefStore } from "../stores/fileSourcePref";
-import { clearFileViewSnapshots } from "../lib/fileViewSnapshots";
+import { clearFileViewSnapshots } from "../lib/projects/fileViewSnapshots";
 
 const PROJECT: ProjectEntry = {
   id: "p1",

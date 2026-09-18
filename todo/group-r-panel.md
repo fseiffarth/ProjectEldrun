@@ -92,7 +92,7 @@
     no reveal, every hit opened as raw text, and on a remote project it silently
     searched the local mirror. Deleted the view (main toolbar + box member-root
     mini toolbar), extracted the shared pure pieces into
-    `src/lib/projectSearch.ts` (`SearchMatch`, `matchParts`, `rankNameMatches`),
+    `src/lib/projects/projectSearch.ts` (`SearchMatch`, `matchParts`, `rankNameMatches`),
     and a remote-source tree now shows a "switch the source to Local to search"
     hint in the box's place instead of nothing. Implemented 2026-08-31.
     Follow-ups, deliberately out of scope: `QuickOpen` (Ctrl+P) is a third
@@ -201,7 +201,7 @@
     open the panel — and unmount the rail — before any button could be clicked.
     Hovering the edge above or below the rail still reveals the panel on its
     remembered view, and the click path stays the Windows/WebView2-safe one.
-    Frontend: `lib/sidePanelView.ts` (new), `components/layout/AppShell.tsx`,
+    Frontend: `lib/projects/sidePanelView.ts` (new), `components/layout/AppShell.tsx`,
     `components/layout/SidePanel.tsx`, `styles/onboarding.css`, `lib/i18n.ts`
     + the four dicts (`appShell.showPanelView` replaces `showFilesPanel` and
     `filesEdgeLabel`).

@@ -4,7 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useProjectsStore } from "../../stores/projects";
 import { resolveProjectDirectory, resolveLocalMirror, type ProjectEntry } from "../../types";
 import { type FileEntry } from "../../lib/viewers/fileUtils";
-import { loadLastSendTarget, saveLastSendTarget } from "../../lib/sendToProject";
+import { loadLastSendTarget, saveLastSendTarget } from "../../lib/projects/sendToProject";
 import { useT } from "../../lib/i18n";
 
 /** The item being sent — always a LOCAL absolute path (the dialog is only opened
@@ -46,7 +46,7 @@ function parentRel(rel: string): string {
  * folder) into another project. Two steps: pick one of the active projects, then
  * browse the folders inside it (project-confined via `list_dir`, so the browse
  * cannot escape the project) and confirm. The chosen project + folder are
- * remembered for next time (`lib/sendToProject`). The copy is non-destructive —
+ * remembered for next time (`lib/projects/sendToProject`). The copy is non-destructive —
  * the source stays put and a name collision keeps both (`import_external_file`
  * appends " (n)").
  */

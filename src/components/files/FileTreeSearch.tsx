@@ -5,7 +5,7 @@
  * only mounts this for a non-remote-source tree):
  *
  *  - **name**: literal ranked filename/path search over the whole project tree
- *    (`list_project_paths`, ranked by `lib/projectSearch`'s `rankNameMatches`).
+ *    (`list_project_paths`, ranked by `lib/projects/projectSearch`'s `rankNameMatches`).
  *    Fetched lazily on the first keystroke and cached per project dir.
  *  - **content**: literal line search inside files (`project_search` — this is
  *    its only frontend), debounced.
@@ -31,7 +31,7 @@ import {
   rankNameMatches,
   type PathEntry,
   type SearchMatch,
-} from "../../lib/projectSearch";
+} from "../../lib/projects/projectSearch";
 import { openFileEntry } from "./openFileEntry";
 import { useT } from "../../lib/i18n";
 

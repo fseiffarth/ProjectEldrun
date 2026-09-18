@@ -15,7 +15,7 @@ import { BOX_SCOPE_PREFIX, useBoxMembership, useBoxesStore } from "../../stores/
 import { useBoxEditorStore } from "../../stores/boxEditor";
 import { usePillSelectionStore } from "../../stores/pillSelection";
 import { useHeaderHoverMenuStore } from "../../stores/headerHoverMenu";
-import { TRASH_PROJECT_ID } from "../../lib/trashProject";
+import { TRASH_PROJECT_ID } from "../../lib/projects/trashProject";
 import { ROOT_SCOPE, useTabsStore } from "../../stores/tabs";
 import { useRootOverlayStore } from "../../stores/rootOverlay";
 import { useGitDirtyStore } from "../../stores/gitDirty";

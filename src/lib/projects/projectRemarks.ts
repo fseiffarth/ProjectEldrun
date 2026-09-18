@@ -1,6 +1,6 @@
-import { isAbsolute, isPathWithin, normalizePath, resolvePath } from "./paths";
-import { stripFormatControls } from "./textSafety";
-import { isLocalHref, splitLineHint } from "./viewers/markdown";
+import { isAbsolute, isPathWithin, normalizePath, resolvePath } from "../paths";
+import { stripFormatControls } from "../textSafety";
+import { isLocalHref, splitLineHint } from "../viewers/markdown";
 
 export const REMARKS_FILE = "REMARKS.md";
 export const REMARKS_TEMPLATE = `# Remarks
