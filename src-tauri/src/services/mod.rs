@@ -45,11 +45,11 @@ pub mod codex_bind;
 // read-only for the model a Codex tab is running now that its releases
 // no longer write the JSONL rollout the model tag used to come from.
 pub mod codex_store;
+pub mod copilot;
 pub mod git_credentials;
 // The default branch (`main`) for repositories Eldrun creates, and the
 // unpublished-`master` rename that runs just before a publish.
 pub mod git_init;
-pub mod copilot;
 pub mod git_peer;
 pub mod hpc_mode;
 pub mod local_loss;

@@ -226,10 +226,10 @@ only when breaking it does damage. The *why* goes in code comments or
 | `lib/machineSync.ts` | Keeps a global machine and the project host it also is in step, bridged only by SSH target (`sameTarget`: host case-insensitive, default port 22). |
 | `lib/viewers/autocomplete.ts` | Caret-window bounds, type-through, line acceptance, bounded model/completion caches and the code/prose model pick (`ollama_roles.autocomplete{,_prose}`) for native editors. |
 | `lib/viewers/completionContext.ts` | Static local import/TeX discovery and same-project open-tab references, cancellation and UTF-8 byte budgets before completion IPC. |
-| `lib/viewers/mdGraph.ts` | Pure markdown-graph logic (#101): fence-aware link extraction, bounded BFS crawl, radial layout. Tests: `MdGraph.test.ts`. |
 | `lib/viewers/completionProvider.ts` | Provider/candidate contract, UTF-16 positions, safe insertion ranges and original-item partial/full acceptance offsets for Group M #45a. |
 | `lib/viewers/copilotCompletionProvider.ts` | Copilot adapter (#45a): `copilotServes` gate (flag + provider + consenting local project + code language, else Ollama), completion/cancel IPC, and `CopilotFeedback` (shown once, cumulative partial, single full acceptance, close). Settings/consent/sign-in UI is `components/layout/CopilotCompletionCard.tsx`. |
 | `lib/viewers/ollamaCompletionProvider.ts` | Ollama adapter: model selection, cancellable streaming IPC and bounded provider-keyed cache, extracted from the editor. |
+| `lib/viewers/mdGraph.ts` | Pure markdown-graph logic (#101): fence-aware link extraction, bounded BFS crawl, radial layout. Tests: `MdGraph.test.ts`. |
 | `lib/projectRemarks.ts` / `stores/projectRemarks.ts` | Defensive REMARKS.md parser/splicer plus local-or-SFTP I/O. Conforming bullets are editable; all other bytes are parked verbatim. |
 | `lib/viewers/{fileUtils,markdown,highlight,tex}.ts` | Pure viewer logic (XSS-safe markdown/highlight, TeX, file utils). `tex.ts` also resolves `\ref`/`\cite` keys to their `\label`/`.bib` entry via the editor-jump channel. |
 | `lib/viewers/pdfLoad.ts` | `loadPdf`: the only way to open a PDF with pdf.js (sets the worker). Destroys the loading task on failure — a rejected load otherwise leaks a Worker. |
