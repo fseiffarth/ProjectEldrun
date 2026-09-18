@@ -15,6 +15,7 @@ import { useAgentModelsStore } from "../../stores/agentModels";
 import { persistScopeLayout } from "../../stores/agentSchedules";
 import { sendCollectedPrompt, useAgentPromptsStore, type ProjectAgentPrompt } from "../../stores/agentPrompts";
 import { isTrashProject } from "../../lib/trashProject";
+import { isTabColor } from "../../lib/tabColors";
 import type { AgentUsageReport } from "../../lib/agentUsage";
 import { METRIC, agentLabel, agentPromptLeaf, sub } from "../../lib/usageMetrics";
 import { dayKey } from "../../lib/usageRollup";
@@ -197,6 +198,7 @@ type DesktopRequest =
   | { type: "schedules"; request_id: string; project_id: string; tmux_session: string }
   | { type: "schedule_mutate"; request_id: string; project_id: string; tmux_session: string; action: ScheduleMutation }
   | { type: "rename_tab"; request_id: string; project_id: string; tmux_session: string; label: string }
+  | { type: "color_tab"; request_id: string; project_id: string; tmux_session: string; color?: string | null }
   | { type: "close_tab"; request_id: string; project_id: string; tmux_session: string }
   | { type: "prompts"; request_id: string; project_id: string }
   | { type: "prompt_mutate"; request_id: string; project_id: string; action: PromptMutation }
@@ -217,6 +219,7 @@ type DesktopResponse =
   | { status: "mail"; mail: MobileMailView }
   | { status: "schedules"; schedules: ScheduledAgentPrompt[]; time_zone: string; next_runs: Record<string, string> }
   | { status: "renamed"; label: string }
+  | { status: "colored"; color?: string | null }
   | { status: "closed" }
   | { status: "prompts"; prompts: ProjectAgentPrompt[] }
   | { status: "agent_status"; report: MobileAgentStatus }
@@ -614,6 +617,38 @@ async function closeMobileTab(projectId: string, tmuxSession: string): Promise<D
   // relaunch brings it back.
   await persistScopeLayout(scope.id);
   return { status: "closed" };
+}
+
+/** Paint one tab from the phone, or clear its colour (#264).
+ *
+ * Scoped, restored and persisted like the close above, and for the same three
+ * reasons: the phone colours a tab in whichever project it is LOOKING at (not
+ * the one the window shows), a project the desktop has not opened this session
+ * has its tabs only in the session file, and `CenterPanel`'s debounce persists
+ * the active scope alone — so without the write here the catalog the phone
+ * re-reads would keep publishing the old colour, and a relaunch would undo it.
+ *
+ * The id is validated here as well as at the sidecar route, because this bridge
+ * is reachable without going through it. */
+async function colorMobileTab(
+  projectId: string,
+  tmuxSession: string,
+  color: string | null | undefined,
+): Promise<DesktopResponse> {
+  const scope = mobileScope(projectId);
+  if (!scope) {
+    return { status: "error", code: "project_ineligible", message: "Project is not enabled for Mobile access" };
+  }
+  const next = color == null || color === "" ? undefined : color;
+  if (next !== undefined && !isTabColor(next)) {
+    return { status: "error", code: "invalid_color", message: "Tab colour is not in the palette" };
+  }
+  if (scope.project) await restoreProjectScope(scope.project).catch(() => {});
+  const tab = mobileTargetTab(scope.id, tmuxSession);
+  if (!tab) return { status: "error", code: "tab_not_found", message: "Tab is unavailable" };
+  useTabsStore.getState().setTabColorInScope(scope.id, tab.key, next);
+  await persistScopeLayout(scope.id);
+  return { status: "colored", color: next ?? null };
 }
 
 function scheduleTarget(projectId: string, tmuxSession: string): string | null {
@@ -1546,6 +1581,7 @@ async function handleRequest(
     case "mail_reply": return mailReadAllowed() ? mailReply(request.folder_id, request.message_id, request.offset, request.body, t) : MAIL_READ_DISABLED;
     case "rename_tab": return renameAgentTab(request.project_id, request.tmux_session, request.label);
     case "close_tab": return closeMobileTab(request.project_id, request.tmux_session);
+    case "color_tab": return colorMobileTab(request.project_id, request.tmux_session, request.color);
     case "schedules": return schedulesFor(request.project_id, request.tmux_session);
     case "schedule_mutate": return mutateSchedule(request.project_id, request.tmux_session, request.action);
     case "prompts": return promptsFor(request.project_id);
@@ -1596,7 +1632,7 @@ export function MobileBridgeHost() {
           }).catch(() => {});
         }
       };
-      if (request.type === "create" || request.type === "activate" || request.type === "rename_tab" || request.type === "close_tab" || request.type === "todo_mutate" || request.type === "alert_resolve" || request.type === "calendar_mutate" || request.type === "schedule_mutate" || request.type === "prompt_mutate" || request.type === "mail_mark" || request.type === "mail_reply") {
+      if (request.type === "create" || request.type === "activate" || request.type === "rename_tab" || request.type === "close_tab" || request.type === "color_tab" || request.type === "todo_mutate" || request.type === "alert_resolve" || request.type === "calendar_mutate" || request.type === "schedule_mutate" || request.type === "prompt_mutate" || request.type === "mail_mark" || request.type === "mail_reply") {
         mutationQueue = mutationQueue.then(run, run);
       } else {
         void run();

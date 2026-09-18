@@ -12,6 +12,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::Sha256;
 
+use super::protocol::TAB_COLORS;
+
 type HmacSha256 = Hmac<Sha256>;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -73,6 +75,9 @@ struct SavedTab {
     tmux_attach: Option<String>,
     #[serde(default)]
     ephemeral: bool,
+    /// The user's tab colour, a palette id (see `protocol::TAB_COLORS`).
+    #[serde(default)]
+    color: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -159,6 +164,12 @@ pub struct PublicTab {
     pub available: bool,
     pub viewer_busy: bool,
     pub last_activity: Option<u64>,
+    /// The tab's user-set colour as a palette id, absent when it has none. The
+    /// phone resolves the id to the same hex the desktop does, so a tab reads
+    /// as one colour on both surfaces; an id this build does not know is
+    /// dropped here rather than published for the phone to guess at.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -547,6 +558,11 @@ fn resolve_scope(
             available: live_row.is_some(),
             viewer_busy: false,
             last_activity: live_row.map(|r| r.activity),
+            color: tab
+                .color
+                .as_deref()
+                .filter(|id| TAB_COLORS.contains(id))
+                .map(str::to_string),
         };
         tabs.push(ResolvedTab {
             public,
@@ -667,6 +683,63 @@ mod tests {
         let b = catalog.projects.iter().find(|p| p.raw_id == "p-b").expect("B");
         assert_eq!(a.tabs.len(), 1, "the healthy project keeps its tabs");
         assert!(b.tabs.is_empty(), "the corrupt one has none, and is still listed");
+    }
+
+    /// A tab colour (#264) is published as the palette id the desktop stored, so
+    /// the phone resolves it to the same hex — and an id this build does not have
+    /// is dropped rather than passed on for the phone to guess at, which is the
+    /// same posture `clean_tab_color` takes on the way in.
+    #[test]
+    fn a_tab_publishes_a_palette_colour_and_drops_anything_else() {
+        let dir = tempfile::tempdir().expect("state dir");
+        let state = dir.path();
+        let root = state.join("p");
+        fs::create_dir_all(&root).expect("root dir");
+        fs::write(
+            state.join("projects.json"),
+            serde_json::to_vec(&serde_json::json!([{
+                "id": "p-1",
+                "name": "P",
+                "status": "active",
+                "directory": root.to_string_lossy(),
+                "eldrun_mobile_access": true,
+            }]))
+            .expect("projects"),
+        )
+        .expect("write projects");
+        let sessions = state.join("sessions").join("p-1");
+        fs::create_dir_all(&sessions).expect("session dir");
+        let tab = |suffix: &str, color: serde_json::Value| {
+            serde_json::json!({
+                "label": format!("Shell {suffix}"),
+                "cmd": "bash",
+                "cwd": root.to_string_lossy(),
+                "kind": "shell",
+                "tmuxSession": format!("eldrun-p-1--shell-10000000{suffix}"),
+                "color": color,
+            })
+        };
+        fs::write(
+            sessions.join("terminals.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "tabLayout": [
+                    tab("1", serde_json::json!("teal")),
+                    tab("2", serde_json::json!("chartreuse")),
+                    tab("3", serde_json::Value::Null),
+                ]
+            }))
+            .expect("session"),
+        )
+        .expect("write session");
+
+        let catalog = Catalog::load(state, &[7; 32]).expect("catalog");
+        let project = catalog.projects.first().expect("project");
+        let colors: Vec<Option<&str>> = project
+            .tabs
+            .iter()
+            .map(|t| t.public.color.as_deref())
+            .collect();
+        assert_eq!(colors, vec![Some("teal"), None, None]);
     }
 
     /// The root console never reaches the phone — not even through a

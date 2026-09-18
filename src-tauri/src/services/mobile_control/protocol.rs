@@ -14,6 +14,35 @@ pub const TERMINAL_PROTOCOL: &str = "eldrun-terminal.v1";
 /// with the row the phone is looking at. Rejected at the edge instead.
 pub const MAX_TAB_LABEL: usize = 120;
 
+/// The closed palette a tab colour comes from (#264), mirroring
+/// `src/lib/tabColors.ts` and `mobile-web/src/tabColors.ts` — both surfaces
+/// resolve these ids to the same hex, and the sidecar validates against the
+/// list rather than accepting a colour.
+///
+/// A named id, not a CSS value, is the whole point of the boundary here: what
+/// crosses is one of nine words, so nothing a phone sends can reach a style
+/// attribute as anything but a hue this build already knows.
+pub const TAB_COLORS: [&str; 8] = [
+    "blue", "orange", "green", "purple", "yellow", "red", "teal", "indigo",
+];
+
+/// A colour a phone named that is not in [`TAB_COLORS`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnknownTabColor;
+
+/// A phone-supplied tab colour, resolved to what may be stored: `Ok(Some(id))`
+/// for a palette colour, `Ok(None)` for "clear it" (a `null` or empty body
+/// field), and an error for anything else. Unknown ids are refused rather than
+/// silently cleared: a phone asking for a colour this build does not have is a
+/// version seam worth reporting, not a request to remove one.
+pub fn clean_tab_color(raw: Option<&str>) -> Result<Option<String>, UnknownTabColor> {
+    match raw.map(str::trim) {
+        None | Some("") => Ok(None),
+        Some(id) if TAB_COLORS.contains(&id) => Ok(Some(id.to_string())),
+        Some(_) => Err(UnknownTabColor),
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum CreateTabKind {
@@ -606,6 +635,17 @@ pub enum DesktopRequest {
         tmux_session: String,
         label: String,
     },
+    /// Paint one tab — agent or shell — with a palette colour, or clear it with
+    /// `None` (#264). Named by the same `project_id` + `tmux_session` pair the
+    /// rename uses, and carrying a palette id rather than a colour, so nothing
+    /// the phone sends can reach the window as raw CSS.
+    ColorTab {
+        request_id: String,
+        project_id: String,
+        tmux_session: String,
+        #[serde(default)]
+        color: Option<String>,
+    },
     /// Close one tab — agent or shell — exactly as the desktop's own × does:
     /// non-destructively. The tab leaves the desktop's layout and its viewer
     /// dies; the tmux session behind it keeps running and stays reattachable
@@ -714,6 +754,7 @@ impl DesktopRequest {
             | Self::Schedules { request_id, .. }
             | Self::ScheduleMutate { request_id, .. }
             | Self::RenameTab { request_id, .. }
+            | Self::ColorTab { request_id, .. }
             | Self::CloseTab { request_id, .. }
             | Self::Prompts { request_id, .. }
             | Self::PromptMutate { request_id, .. }
@@ -967,6 +1008,13 @@ pub enum DesktopResponse {
     /// renders that rather than the text it typed.
     Renamed {
         label: String,
+    },
+    /// The colour the desktop actually stored — `None` when the tab was cleared.
+    /// Answered rather than assumed, so the phone's swatch ring follows the
+    /// window instead of the tap.
+    Colored {
+        #[serde(default)]
+        color: Option<String>,
     },
     /// Acknowledges a [`DesktopRequest::CloseTab`]. Carries nothing: the tab is
     /// simply gone from the desktop's layout, and the phone drops the row it

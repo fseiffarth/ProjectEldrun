@@ -447,3 +447,86 @@ correctness/UX work atop the same layout model #42 detaches.*
       - Click again: that same agent's next tool call works, no restart.
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work
+
+---
+
+2317. **Colour a tab, on the desktop and on the phone.**
+    ✅ Implemented · 🧪 Awaiting live QA (2026-09-18). A tab bar of five
+    look-alike `claude` tabs had one mark to tell them apart — the label — and
+    the tab's *kind* colour, which is the same for all five. A tab now carries
+    an optional colour from a closed palette of eight hues
+    (`src/lib/tabColors.ts`, the calendar sidebar's own eight, so the app has
+    one palette rather than two): **right-click a tab → Colour**, a swatch grid
+    under the menu's accent group label, with a leading ⃠ chip that clears it.
+    The colour substitutes for the kind colour in the same `--tab-accent` slot,
+    so every treatment already keyed off it follows without a second code path;
+    what is new is that a coloured tab shows its bottom rule while **inactive**
+    too (dimmed, `.tab.has-tab-color`), because a mark only the current tab
+    carries says nothing about the other four. The picker deliberately keeps the
+    menu open after a pick — it is the one row in that menu that is not a
+    one-shot action — which is also why the popout's strip finally dismisses its
+    context menu on an outside click / Escape like the main window's does.
+    Persisted through `toSavedTabEntry` (so the colour survives the relaunch
+    that reopens the tabs) and validated against the palette on the way back
+    in; copied by Duplicate, since a colour describes a tab rather than
+    identifying it. The popout forwards its pick as the `setColor` edit, applied
+    optimistically so the tab recolours under the open picker.
+
+    On the phone the same colour is reachable and readable: **✻ Colour** on any
+    tab card (agent or shell — the rename beside it is agent-only) opens a
+    sheet of named chips that commits on the tap, and the colour becomes the
+    card's left border on the project screen *and* on the flat cross-project
+    Activity list, which is the list it earns most. `PUT
+    /api/v1/tabs/{id}/color` is its own route rather than a field on the
+    agent-only rename, whose body is `deny_unknown_fields`. **Only a palette id
+    crosses** — never a CSS value — validated by `protocol::clean_tab_color` at
+    the sidecar, again at the desktop bridge (reachable without that route),
+    and once more on restore; an unknown id is refused rather than read as a
+    clear, and the catalog drops one it does not know instead of publishing it
+    for the phone to guess at. The bridge write is scoped, restores the project
+    first and persists the layout itself, for the three reasons the close
+    beside it does: the phone colours a tab in whichever project it is looking
+    at, that project may not be open in the window at all, and `CenterPanel`
+    persists only the active scope — so without the write the catalog (read out
+    of that same session file) would keep publishing the old colour.
+    *Files: `src/lib/tabColors.ts`,
+    `src/components/tabs/TabColorPicker.tsx`, `src/components/tabs/TabBar.tsx`,
+    `src/components/layout/{DetachedCenterPanel,DetachedApp}.tsx`,
+    `src/stores/{tabs,detached}.ts`, `src/styles/projects-tabs.css`,
+    `src/lib/i18n.ts` (+ the four dictionaries),
+    `src/components/mobile/MobileBridgeHost.tsx`,
+    `src-tauri/src/services/mobile_control/{protocol,discovery,host}.rs`,
+    `mobile-web/src/tabColors.ts`, `mobile-web/src/screens/ColorSheet.tsx`,
+    `mobile-web/src/screens/{Project,Activity}.tsx`, `mobile-web/src/api.ts`,
+    `mobile-web/src/style.css`.*
+    - [x] 🤖 Automated test — `src/__tests__/TabColor.test.tsx` (the palette
+      resolves its ids and nothing else, incl. a hex and a CSS injection; the
+      scoped and active-scope writes; the disk projection; restore dropping an
+      unknown id; the popout's optimistic apply; and the real `TabBar` menu
+      painting, keeping itself open, and clearing),
+      `src/__tests__/MobileTabColor.test.tsx` (the bridge across a
+      non-showing scope, a shell tab, the layout write, clear-by-null and
+      clear-by-absent, every refusal; and the phone screen's chips, request
+      body, ring and card border), `services::mobile_control::host`
+      (`clean_tab_color`), `services::mobile_control::discovery` (a palette
+      colour published, an unknown one dropped).
+    - [ ] 🖐️ Manual test (needs a restart: backend change — the sidecar route
+      and the published field)
+      - Right-click a tab → pick a hue: the tab's bottom rule takes it at once,
+        and stays visible when another tab is active. Pick a second hue without
+        re-opening the menu. ⃠ clears it. Escape / a click outside closes the
+        menu.
+      - Colour three tabs, quit and relaunch: all three come back coloured.
+        Duplicate one: the copy carries the colour.
+      - Pop a coloured tab out: the popout's strip shows the colour; colour a
+        tab *in* the popout and dock it back — the colour survives.
+      - On the phone: ✻ Colour on an agent card and on a shell card. The chip
+        rings, the card gets a left border, and the desktop tab recolours
+        without a reload. The Activity list's row shows it too.
+      - Colour a tab of a project the desktop window is **not** showing: it
+        lands there, the project on screen is untouched, and it is still there
+        after a relaunch.
+      - With desktop Eldrun closed, the sheet says "Open desktop Eldrun to
+        colour a tab." rather than a generic failure.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work

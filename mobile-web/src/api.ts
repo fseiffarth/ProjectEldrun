@@ -17,7 +17,7 @@ export interface TabSchedules { total: number; enabled: number; next?: string }
  * formats in its own zone; a record that carried none arrives without one, and
  * so does the one line a transcript-less agent leaves on its own screen. */
 export interface TabPrompt { text: string; at?: string }
-export interface TabRow { id: string; label: string; kind: "shell" | "agent"; agent_label?: string; agent_status?: AgentStatus; agent_model?: string; working_at?: number; done_at?: number; schedules?: TabSchedules; prompts?: TabPrompt[]; available: boolean; viewer_busy: boolean; last_activity?: number }
+export interface TabRow { id: string; label: string; kind: "shell" | "agent"; agent_label?: string; agent_status?: AgentStatus; agent_model?: string; working_at?: number; done_at?: number; schedules?: TabSchedules; prompts?: TabPrompt[]; available: boolean; viewer_busy: boolean; last_activity?: number; /** The tab's colour as a palette id (see `tabColors.ts`); absent when it has none. */ color?: string }
 export interface AgentRow { id: string; label: string; modes: ("plan" | "auto")[] }
 /** One agent tab in the cross-project activity list: an ordinary tab row plus
  * the project it lives in, because that list is flat and a tab label on its own
@@ -284,6 +284,16 @@ export const MAX_TAB_LABEL = 120;
  * layout, so this is a bridge call and needs desktop Eldrun to be open. */
 export function renameTab(tabId: string, label: string): Promise<{ tab?: TabRow; label?: string }> {
   return api(`/api/v1/tabs/${encodeURIComponent(tabId)}`, { method: "PUT", body: JSON.stringify({ label }) });
+}
+
+/** `PUT /api/v1/tabs/{id}/color` — paint one tab, agent or shell, with a colour
+ * from the palette, or clear it by passing `null`. Only the palette id crosses;
+ * both surfaces resolve it to the same hex (see `tabColors.ts`). Its own route
+ * rather than a field on the rename above, because the rename is agent-only
+ * while a colour is for any tab the phone lists. A bridge call, so it needs
+ * desktop Eldrun open. */
+export function setTabColor(tabId: string, color: string | null): Promise<{ tab?: TabRow; color?: string | null }> {
+  return api(`/api/v1/tabs/${encodeURIComponent(tabId)}/color`, { method: "PUT", body: JSON.stringify({ color }) });
 }
 
 /** `DELETE /api/v1/tabs/{id}` — close one tab, agent or shell. Closing is the

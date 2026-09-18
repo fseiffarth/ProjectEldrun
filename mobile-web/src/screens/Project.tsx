@@ -3,9 +3,11 @@ import { DEFAULT_AGENT_SORT, sortAgentTabs } from "../../../shared/agentSort";
 import { promptClock, promptLines } from "../agentPrompts";
 import { api, type AgentRow, type ProjectDetail, type TabRow, type TabSchedules } from "../api";
 import { CloseSheet } from "./CloseSheet";
+import { ColorSheet } from "./ColorSheet";
 import { PromptsSheet } from "./PromptsSheet";
 import { RenameSheet } from "./RenameSheet";
 import { ScheduleSheet } from "./ScheduleSheet";
+import { tabColorCss } from "../tabColors";
 
 /** The line under an agent tab, in the words the desktop's Agents view uses:
  * how many prompts are scheduled and when the first one fires. The desktop
@@ -61,6 +63,10 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
   /** The agent tab being renamed. The desktop owns the tab layout, so the sheet
    * writes through the bridge and the next poll brings the new label back. */
   const [renameTab, setRenameTab] = useState<TabRow | null>(null);
+  /** The tab whose colour is being picked (#264), of any kind the phone lists —
+   * colouring is how a row of look-alike sessions is told apart, which is as
+   * true of five shells as of five agents. */
+  const [colorTab, setColorTab] = useState<TabRow | null>(null);
   /** The tab whose ✕ was pressed. The sheet asks before anything is closed: the
    *  button sits a thumb-width from the one that opens the terminal, and the
    *  answer is worth reading — closing leaves the session running. */
@@ -136,7 +142,16 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
         "Desktop unavailable" notice that vanished a moment later. */}
     {detail && !detail.desktop_available && <p className="notice">Desktop unavailable — existing sessions can still be opened, but activating a project and creating tabs require Eldrun.</p>}
     {error && <p className="error">{error}</p>}
-    <section className="cards">{tabs.map((tab) => <div className="tab-card" key={tab.id}>
+    <section className="cards">{tabs.map((tab) => <div
+      className={`tab-card${tabColorCss(tab.color) ? " has-tab-color" : ""}`}
+      key={tab.id}
+      // The desktop marks a coloured tab with its bottom rule; a phone card has
+      // no such edge to spend, so the colour becomes the card's left border —
+      // the same "which of these five is which" job, in the shape this surface
+      // has. The id→hex mapping is the desktop's (see `tabColors.ts`), so the
+      // two surfaces show one colour rather than two readings of a name.
+      style={tabColorCss(tab.color) ? { ["--tab-color" as string]: tabColorCss(tab.color) } : undefined}
+    >
       <button className="card" disabled={!tab.available} onClick={() => terminal(tab)}><span><strong>{tab.label}</strong><small>{tab.kind}{tab.agent_model ? ` · ${tab.agent_model}` : ""}{tab.viewer_busy ? " · open elsewhere" : tab.available ? " · live" : " · gone"}</small></span><span className="card-trailing">{tab.agent_status && <small className={`agent-status ${tab.agent_status}`}>{tab.agent_status}</small>}<span>›</span></span></button>
       {tab.kind === "agent" && <PromptLines tab={tab} />}
       {/* Scheduling lives out here beside the tab, not inside the session:
@@ -155,6 +170,7 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
             <button className="card-action" onClick={() => setRenameTab(tab)} aria-haspopup="dialog" aria-expanded={renameTab?.id === tab.id} aria-label={`Rename ${tab.label}`}>✎ Rename</button>
             <button className="card-action accent" onClick={() => setScheduleTab({ tab })} aria-haspopup="dialog" aria-expanded={scheduleTab?.tab.id === tab.id} aria-label={`Scheduled prompts for ${tab.label}`}>◷ Schedules</button>
           </>}
+          <button className="card-action" onClick={() => setColorTab(tab)} aria-haspopup="dialog" aria-expanded={colorTab?.id === tab.id} aria-label={`Colour ${tab.label}`}>✻ Colour</button>
           <button className="card-action danger" onClick={() => setCloseTab(tab)} aria-haspopup="dialog" aria-expanded={closeTab?.id === tab.id} aria-label={`Close ${tab.label}`}>✕ Close</button>
         </div>
       </div>
@@ -166,6 +182,20 @@ export function Project({ id, back, terminal }: { id: string; back: () => void; 
     </section>
     {promptsOpen && detail && <PromptsSheet projectId={id} tabs={detail.tabs} onClose={() => setPromptsOpen(false)} onSchedule={(tab, initialMessage) => { setPromptsOpen(false); setScheduleTab({ tab, initialMessage }); }} />}
     {closeTab && <CloseSheet tab={closeTab} onClose={() => setCloseTab(null)} onClosed={() => dropTab(closeTab.id)} />}
+    {colorTab && <ColorSheet
+      tab={colorTab}
+      onClose={() => setColorTab(null)}
+      onColored={(color) => {
+        // Patch the row in place rather than reloading. The desktop persists its
+        // tab layout asynchronously, so the next catalog read can still carry
+        // the old colour and the card would flicker back — the same reason
+        // `dropTab` above patches instead of reloading after a close.
+        setColorTab((prev) => prev ? { ...prev, color } : prev);
+        setDetail((prev) => prev
+          ? { ...prev, tabs: prev.tabs.map((row) => row.id === colorTab.id ? { ...row, color } : row) }
+          : prev);
+      }}
+    />}
     {renameTab && <RenameSheet tab={renameTab} onClose={() => setRenameTab(null)} onRenamed={() => { setRenameTab(null); void load(); }} />}
     {scheduleTab && <ScheduleSheet tabId={scheduleTab.tab.id} label={scheduleTab.tab.label} initialMessage={scheduleTab.initialMessage} onClose={() => setScheduleTab(null)} />}
   </main>;

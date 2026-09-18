@@ -30,10 +30,10 @@ use super::{
     outbox,
     limits,
     protocol::{
-        CalendarAction, CreateTabRequest, DesktopRequest, DesktopResponse, MailMarkAction,
-        MobilePromptInput, MobileScheduleInput, PromptMutation, ScheduleMutation, TodoAction,
-        MAX_CONTROL_MESSAGE, MAX_INPUT_FRAME, MAX_MAIL_REPLY_BYTES, MAX_TAB_LABEL,
-        TERMINAL_PROTOCOL,
+        clean_tab_color, CalendarAction, CreateTabRequest, DesktopRequest, DesktopResponse,
+        MailMarkAction, MobilePromptInput, MobileScheduleInput, PromptMutation, ScheduleMutation,
+        TodoAction, MAX_CONTROL_MESSAGE, MAX_INPUT_FRAME, MAX_MAIL_REPLY_BYTES,
+        MAX_TAB_LABEL, TERMINAL_PROTOCOL,
     },
     pty_bridge::{self, TerminalRegistry},
     live_pwa, MOBILE_ASSETS,
@@ -1275,6 +1275,82 @@ async fn rename_tab(
     }
 }
 
+/// `PUT /api/v1/tabs/{id}/color` — paint one tab, agent or shell, with a colour
+/// from the palette, or clear it with `null`/`""`.
+///
+/// Its own route rather than a field on the rename above, for two reasons that
+/// both matter: the rename is agent-only (`agent_tab_target`) while a colour is
+/// for any tab the phone lists, and that body is `deny_unknown_fields`, so a
+/// phone sending a colour to an older sidecar would have had its *rename*
+/// refused whole. The desktop owns the write, as with every tab-layout change.
+async fn color_tab(
+    State(state): State<HostState>,
+    headers: HeaderMap,
+    Path(tab_id): Path<String>,
+    body: Bytes,
+) -> impl IntoResponse {
+    if let Err(error) = authenticate(&headers, &state) {
+        return error;
+    }
+    if !exact_origin(&headers, &state) {
+        return api_error(StatusCode::FORBIDDEN, "invalid_origin");
+    }
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct ColorBody {
+        #[serde(default)]
+        color: Option<String>,
+    }
+    let Ok(request) = serde_json::from_slice::<ColorBody>(&body) else {
+        return api_error(StatusCode::BAD_REQUEST, "invalid_request");
+    };
+    let Ok(color) = clean_tab_color(request.color.as_deref()) else {
+        return api_error(StatusCode::BAD_REQUEST, "invalid_color");
+    };
+    let (project_id, tmux_session) = match tab_target(&state, &tab_id, false) {
+        Ok(target) => target,
+        Err(error) => return error,
+    };
+    let desktop_socket = state.config.control_dir.join("desktop-control.sock");
+    let request_id = Base64UrlUnpadded::encode_string(&random_16());
+    match admin::desktop_call(
+        &desktop_socket,
+        &DesktopRequest::ColorTab {
+            request_id,
+            project_id,
+            tmux_session: tmux_session.clone(),
+            color,
+        },
+    )
+    .await
+    {
+        Ok(DesktopResponse::Colored { color }) => {
+            let row = catalog_fresh(&state)
+                .ok()
+                .and_then(|next| next.tab(&tab_id).map(|(_, tab)| tab.public.clone()));
+            match row {
+                Some(mut row) => {
+                    row.viewer_busy = state.terminal_registry.is_busy(&tmux_session);
+                    (StatusCode::OK, Json(json!({ "tab": row })))
+                }
+                // The desktop persists asynchronously, so a catalog that has not
+                // caught up is not a failed write — answer with what it stored,
+                // exactly as the rename route does.
+                None => (StatusCode::OK, Json(json!({ "color": color }))),
+            }
+        }
+        Ok(DesktopResponse::Error { code, .. }) => api_error(
+            match code.as_str() {
+                "desktop_unavailable" => StatusCode::SERVICE_UNAVAILABLE,
+                "tab_not_found" => StatusCode::NOT_FOUND,
+                _ => StatusCode::BAD_REQUEST,
+            },
+            &code,
+        ),
+        _ => api_error(StatusCode::SERVICE_UNAVAILABLE, "desktop_unavailable"),
+    }
+}
+
 /// `DELETE /api/v1/tabs/{id}` — close one tab from the phone, agent or shell.
 /// The desktop owns the tab layout, so this is a bridge call, and it closes the
 /// way the desktop's own × does: the tab leaves the Eldrun window while the
@@ -2321,6 +2397,7 @@ fn router(state: HostState) -> Router {
             "/api/v1/tabs/{tab_id}",
             get(tab).put(rename_tab).delete(close_tab),
         )
+        .route("/api/v1/tabs/{tab_id}/color", put(color_tab))
         .route(
             "/api/v1/tabs/{tab_id}/schedules",
             get(schedules).post(schedule_create),
@@ -2862,6 +2939,24 @@ mod tests {
         assert_eq!(clean_tab_label("Claude\nrm -rf"), None);
         // The cap counts characters, not bytes: an emoji name is not 4x longer.
         assert!(clean_tab_label(&"\u{1f680}".repeat(MAX_TAB_LABEL)).is_some());
+    }
+
+    #[test]
+    fn a_tab_colour_is_a_palette_id_or_nothing() {
+        // The palette's ids pass; whitespace is trimmed the way a label is.
+        assert_eq!(clean_tab_color(Some("teal")), Ok(Some("teal".into())));
+        assert_eq!(clean_tab_color(Some("  indigo  ")), Ok(Some("indigo".into())));
+        // Two ways of saying "clear it", both accepted: an absent body field and
+        // an empty one. This is the phone's None chip.
+        assert_eq!(clean_tab_color(None), Ok(None));
+        assert_eq!(clean_tab_color(Some("")), Ok(None));
+        // Anything else is refused, NOT read as a clear — a colour this build
+        // does not know is a version seam, not a request to remove one.
+        assert!(clean_tab_color(Some("chartreuse")).is_err());
+        // And nothing that is not an id can reach a style attribute.
+        assert!(clean_tab_color(Some("#ff0000")).is_err());
+        assert!(clean_tab_color(Some("red; background:url(x)")).is_err());
+        assert!(clean_tab_color(Some("Red")).is_err());
     }
 
     #[tokio::test]

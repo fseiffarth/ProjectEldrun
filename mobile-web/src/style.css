@@ -42,6 +42,24 @@ nav button,.keys button { flex:1; }
    that scheduling had moved out here. */
 .tab-card { display:grid; border:1px solid #383c4d; border-radius:11px; background:rgba(28,31,43,.92); }
 .tab-card .card { border:0; background:transparent; }
+/* #264 — a tab the user has coloured. The desktop spends the tab's bottom rule
+   on the colour; a card has no such edge, so it spends its left border, which
+   stays visible however far the card's own content scrolls past. The hue comes
+   in as `--tab-color` from the row (one palette, resolved to hex the same way
+   in both surfaces), so this rule needs no per-colour class. */
+.tab-card.has-tab-color { border-left:3px solid var(--tab-color); }
+/* The same left edge on a plain `.card` — the Activity list's rows, which are
+   buttons rather than tab cards. One rule for both, so a colour reads the same
+   wherever a tab is listed. */
+.card.has-tab-color { border-left:3px solid var(--tab-color); }
+/* The colour picker's chips (`ColorSheet`). A dot plus its name, not a bare
+   swatch: nine unlabelled circles is a guessing game on a phone, and the name
+   is also what a screen reader reads out. Two per row at 360px. */
+.tab-color-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; padding:2px 6px; }
+.tab-color-chip { display:flex; align-items:center; gap:9px; padding:10px 12px; background:rgba(56,60,80,.8); font-size:.92rem; text-align:left; }
+.tab-color-chip.is-current { border-color:#7c6cff; background:#3b326e; }
+.tab-color-chip-dot { flex:0 0 auto; width:16px; height:16px; border-radius:50%; }
+.tab-color-chip-dot.none { border:1px solid #6f7488; background:transparent; }
 .tab-card-foot { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:8px; padding:0 16px 14px; }
 .tab-card-when { min-width:0; flex:1 1 auto; }
 .tab-card-actions { display:flex; flex:0 0 auto; gap:8px; }
