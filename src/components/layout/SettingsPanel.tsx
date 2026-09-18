@@ -8,6 +8,7 @@ import {
   MAX_UI_ZOOM,
   ZOOM_STEPS,
 } from "../../stores/settings";
+import { CopilotCompletionCard } from "./CopilotCompletionCard";
 import { UntestedTag } from "../common/UntestedTag";
 import { experimentalEnabled } from "../../lib/experimental";
 import { usePowerStore, useEnergySaver } from "../../stores/power";
@@ -1070,6 +1071,14 @@ export function SettingsDialog({
               onChange={(e) => void updateSettings({ project_remarks: e.target.checked })}
               help={t("settings.projectRemarksHelp")}
             />
+
+            <ToggleCard
+              label={<>{t("settings.copilotCompletion")} <UntestedTag /></>}
+              checked={experimentalEnabled(settings, "copilot_completion")}
+              onChange={(e) => void updateSettings({ copilot_completion: e.target.checked })}
+              help={t("settings.copilotCompletionHelp")}
+            />
+            {experimentalEnabled(settings, "copilot_completion") && <CopilotCompletionCard />}
 
             {/* Mail is ONE switch. It used to be two — this gate plus a
                 `mail_global_app` sub-toggle deciding whether the header button

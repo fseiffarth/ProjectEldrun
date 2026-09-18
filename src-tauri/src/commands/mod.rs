@@ -8,6 +8,7 @@ pub mod browser;
 pub mod caldav;
 pub mod calendar;
 pub mod clipboard;
+pub mod copilot;
 pub mod crash;
 pub mod credentials;
 pub mod debug;

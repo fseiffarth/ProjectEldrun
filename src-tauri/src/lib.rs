@@ -1956,6 +1956,19 @@ pub fn run() {
             commands::ollama::prepare_text_completion,
             commands::ollama::cancel_text_completion,
             // Local grammar/spelling check (opt-in, local-only)
+            commands::copilot::copilot_setup,
+            commands::copilot::copilot_project_policy,
+            commands::copilot::copilot_set_project_policy,
+            commands::copilot::copilot_complete,
+            commands::copilot::copilot_cancel,
+            commands::copilot::copilot_close_editor,
+            commands::copilot::copilot_shown,
+            commands::copilot::copilot_accepted,
+            commands::copilot::copilot_account,
+            commands::copilot::copilot_sign_in,
+            commands::copilot::copilot_finish_sign_in,
+            commands::copilot::copilot_sign_out,
+            commands::copilot::copilot_stop,
             commands::ollama::check_grammar,
             // Dictionary spell check (Hunspell dictionaries, local-only)
             commands::spell::spell_check,
@@ -2085,6 +2098,8 @@ pub fn run() {
                 // often as it is an Eldrun detail.
                 commands::ollama::shutdown_owned_server();
                 // Let the machine sleep again if a talk was on: the presenter's
+                // The fenced Copilot language servers (one per consented project).
+                tauri::async_runtime::block_on(commands::copilot::stop_all_for_exit());
                 // own unmount never runs on an exit the frontend didn't drive.
                 // Idempotent, and non-blocking on every OS (Windows only drops
                 // the parked thread's sender — no join inside the shutdown

@@ -3,7 +3,10 @@ import { DraftSaver } from "./draftSaver";
 import { lineStarts, indexedLine } from "./lineIndex";
 import { Suspense, createContext, lazy, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { CompletionCache, completionModels, completionLineLength, completionWindow, completionModelOrder, pickCompletionModel, typeThrough } from "../../lib/viewers/autocomplete";
+import { CompletionCache, completionLineLength, completionWindow, typeThrough, type CompletionGhost } from "../../lib/viewers/autocomplete";
+import { OllamaCompletionProvider } from "../../lib/viewers/ollamaCompletionProvider";
+import { CopilotCompletionProvider, CopilotFeedback, copilotServes } from "../../lib/viewers/copilotCompletionProvider";
+import type { CompletionCandidate, CompletionProvider } from "../../lib/viewers/completionProvider";
 import { completionContext } from "../../lib/viewers/completionContext";
 import { bumpUsage } from "../../stores/usage";
 import { METRIC } from "../../lib/usageMetrics";
@@ -2999,13 +3002,15 @@ function CodeEditor({
   }, []);
 
   // #45 autocomplete: a pending ghost-text suggestion + the caret it applies at.
-  const [suggestion, setSuggestion] = useState<{ text: string; at: number } | null>(null);
+  const [suggestion, setSuggestion] = useState<CompletionGhost | null>(null);
   // A short status shown to the user when a completion is in flight, returns
   // nothing, or can't run (e.g. no local model loaded) — otherwise the feature
   // fails silently and reads as broken. A trailing "…" marks a transient
   // in-flight message; final messages auto-dismiss (see the effect below).
   const [acStatus, setAcStatus] = useState<string | null>(null);
   const acAbort = useRef<AbortController | null>(null);
+  const acDocumentVersion = useRef(0);
+  useLayoutEffect(() => { acDocumentVersion.current++; }, [draft, path]);
   const acVisible = usePaneVisible();
   const acCache = useRef(new CompletionCache());
   const acCandidate = useRef(0);
@@ -3169,6 +3174,20 @@ function CodeEditor({
   // means we show the plain opaque textarea instead. A trailing newline mirrors
   // the textarea's own final empty line so scrolling stays aligned.
   const lang = useMemo(() => languageForPath(path), [path]);
+  // #45a: Copilot serves this editor only for a consented local project's code
+  // file; everything else stays on Ollama. The backend enforces the same gates.
+  const copilotEnabled = useExperimental("copilot_completion");
+  const acRemote = useProjectsStore((s) => !!s.projects.find((p) => p.id === scope)?.remote);
+  const acCopilot = useSettingsStore((s) => copilotServes(s.settings, copilotEnabled, scope, acRemote, lang));
+  // Per mount, so a remount never inherits the previous mount's document versions.
+  const [acEditorId] = useState(() => crypto.randomUUID());
+  const acFeedback = useMemo(
+    () => (acCopilot && scope ? new CopilotFeedback(scope, acEditorId) : null),
+    [acCopilot, scope, acEditorId],
+  );
+  // Hidden pane, other file, other provider, unmount: the server forgets the
+  // document. The next request after a show re-opens it with current content.
+  useEffect(() => () => acFeedback?.close(), [acFeedback, path, acVisible]);
   const highlighted = useMemo(
     () => (loaded ? highlight(draft, lang) : null),
     [loaded, draft, lang],
@@ -3611,6 +3630,7 @@ function CodeEditor({
           const matches = next.length > before.length && suggestion.text.startsWith(inserted) &&
             next === before.slice(0, suggestion.at) + inserted + before.slice(suggestion.at);
           recordAcOutcome(matches);
+          if (matches) acFeedback?.accept(inserted);
         }
         setSuggestion((ghost) => typeThrough(before, next, ghost));
         if (changeTintRef.current) {
@@ -3626,7 +3646,7 @@ function CodeEditor({
       }
       setDraft(next);
     },
-    [setDraft, noteChangeTrail, suggestion, recordAcOutcome],
+    [setDraft, noteChangeTrail, suggestion, recordAcOutcome, acFeedback],
   );
 
   // Where the caret and the view belong once React has re-rendered the textarea
@@ -4385,7 +4405,7 @@ function CodeEditor({
   useEffect(() => {
     dismissSuggestion();
     return dismissSuggestion;
-  }, [acVisible, autocomplete?.enabled, path, scope, autocomplete?.preferred, autocomplete?.preferredProse, autocomplete?.mode, acEndpoint, contextFiles, dismissSuggestion]);
+  }, [acVisible, autocomplete?.enabled, path, scope, autocomplete?.preferred, autocomplete?.preferredProse, autocomplete?.mode, acEndpoint, contextFiles, acCopilot, dismissSuggestion]);
 
   // External changes (reload / undo) bypass edit(). Invalidate their generation.
   useEffect(() => {
@@ -4407,8 +4427,9 @@ function CodeEditor({
     const caret = el.selectionStart;
     const snapshot = draftRef.current;
     if (auto && acDismissed.current?.draft === snapshot && acDismissed.current.caret === caret) return;
+    const version = acDocumentVersion.current;
     acDismissed.current = null;
-    const { prefix, suffix } = completionWindow(snapshot, caret);
+    const { prefix } = completionWindow(snapshot, caret);
     if (auto && prefix.replace(/\s+/g, "").length < 3) return;
     recordAcOutcome(false);
     acCandidate.current = opts?.candidate ?? 0;
@@ -4417,35 +4438,19 @@ function CodeEditor({
     const ctl = new AbortController();
     acAbort.current = ctl;
     setSuggestion(null);
-    setAcStatus(t("fileViewer.autocompleteStatus", { mode: acModeLabel(mode, t) }));
-    let requestId: string | undefined;
-    let unlisten: (() => void) | undefined;
-    const cancel = () => {
-      if (requestId) void invoke("cancel_text_completion", { requestId }).catch(() => {});
-      unlisten?.();
-      unlisten = undefined;
-    };
-    ctl.signal.addEventListener("abort", cancel, { once: true });
-    let offered: { model: string; mode: AutocompleteMode } | null = null;
-    const publish = (text: string) => {
-      if (ctl.signal.aborted || draftRef.current !== snapshot ||
+    setAcStatus(acCopilot ? t("fileViewer.copilotStatus") : t("fileViewer.autocompleteStatus", { mode: acModeLabel(mode, t) }));
+    const publish = (candidates: CompletionCandidate[]) => {
+      if (ctl.signal.aborted || acDocumentVersion.current !== version || draftRef.current !== snapshot ||
           el.selectionStart !== caret || el.selectionEnd !== caret) return;
-      acOutcome.current = text ? offered : null;
-      setSuggestion(text ? { text, at: caret } : null);
-      if (text) setAcStatus(null);
+      // Copilot returns its alternatives at once; Alt+[/] walks that list.
+      const item = candidates[acCopilot ? candidate % candidates.length : 0];
+      acOutcome.current = item ? { model: item.model ?? item.provider, mode: item.mode ?? mode } : null;
+      setSuggestion(item ? { text: item.text, at: item.at, candidate: item } : null);
+      if (item) setAcStatus(null);
     };
     try {
-      const detailed = await completionModels(acEndpoint, () => invoke("list_ollama_models_detailed"));
-      if (ctl.signal.aborted) return;
-      const loaded = detailed.filter((m) => m.running && (!m.capabilities?.length || m.capabilities.includes("completion")));
-      // Prose files ask for the prose role first; both fall back to the code role.
-      const model = pickCompletionModel(loaded, completionModelOrder(lang, autocomplete.preferred, autocomplete.preferredProse));
-      if (!model) {
-        setAcStatus(auto ? null : t("fileViewer.autocompleteUnavailable"));
-        return;
-      }
       const tabs = useTabsStore.getState();
-      const context = await completionContext({
+      const context = (signal: AbortSignal) => completionContext({
         path, root: acProjectDir, draft: snapshot,
         openPaths: (tabs.tabsByScope[scope ?? "root"] ?? tabs.tabs)
           .filter((tab) => (!tab.scope || tab.scope === (scope ?? "root")) &&
@@ -4457,48 +4462,38 @@ function CodeEditor({
           ...(texCompletions?.labels.map((l) => l.key) ?? []),
           ...(texCompletions?.cites.map((c) => c.key) ?? []),
         ].join("\n") : undefined,
-        read: (file) => readFileText(file, scope), signal: ctl.signal,
+        read: (file) => readFileText(file, scope), signal,
       });
+      const provider: CompletionProvider = acCopilot && scope ? new CopilotCompletionProvider({
+        projectId: scope, editor: acEditorId, automatic: auto,
+        tabSize: indentUnit.width || 4, insertSpaces: !indentUnit.text.startsWith("\t"),
+      }) : new OllamaCompletionProvider({
+        endpoint: acEndpoint, scope: scope ?? undefined, preferred: autocomplete.preferred,
+        preferredProse: autocomplete.preferredProse, mode, candidate, context,
+      }, acCache.current);
+      const result = await provider.complete({
+        path, text: snapshot, caret, language: lang, version,
+      }, ctl.signal, publish);
       if (ctl.signal.aborted) return;
-      const key = JSON.stringify([path, scope, acEndpoint, prefix, suffix, model, lang, mode, context, candidate]);
-      const cached = acCache.current.get(key);
-      offered = { model: model.name, mode };
-      if (cached !== undefined) {
-        publish(cached);
-        setAcStatus(cached || auto ? null : t("fileViewer.noSuggestion"));
-        if (!cached) acOutcome.current = null;
-        return;
-      }
-      requestId = await invoke<string>("prepare_text_completion");
-      if (ctl.signal.aborted) { cancel(); return; }
-      unlisten = await listen<string>(`text-completion-${requestId}`, (event) => publish(event.payload));
-      if (ctl.signal.aborted) return;
-      const text = await invoke<string>("complete_text", {
-        prefix, suffix, model: model.name,
-        language: lang === "plain" ? "" : lang,
-        mode, candidate,
-        insert: model.capabilities?.includes("insert") === true,
-        requestId,
-        context: context.length ? context : undefined,
-      });
-      if (ctl.signal.aborted) return;
-      acCache.current.set(key, text);
-      if (!text) acOutcome.current = null;
-      publish(text);
-      setAcStatus(text || auto ? null : t("fileViewer.noSuggestion"));
+      setAcStatus(result.length || auto ? null : t("fileViewer.noSuggestion"));
     } catch (e) {
       if (ctl.signal.aborted) return;
       acOutcome.current = null;
       setSuggestion(null);
-      setAcStatus(auto ? null : t(String(e).includes("not_running")
-        ? "fileViewer.autocompleteUnavailable" : "fileViewer.autocompleteFailed"));
+      const reason = String(e);
+      if (reason.includes("copilot_cancelled") || reason.includes("copilot_stale_document")) { setAcStatus(null); return; }
+      // Sign-in and setup problems would otherwise be invisible with automatic
+      // suggestions on, so those two are shown even for an automatic request.
+      const setup = reason.includes("copilot_not_signed_in") ? "fileViewer.copilotNotSignedIn"
+        : reason.includes("copilot_not_installed") ? "fileViewer.copilotNotInstalled" : null;
+      setAcStatus(setup ? t(setup) : auto ? null : t(reason.includes("not_running")
+        ? "fileViewer.autocompleteUnavailable"
+        : acCopilot ? "fileViewer.copilotFailed" : "fileViewer.autocompleteFailed"));
     } finally {
       ctl.abort();
-      cancel();
-      ctl.signal.removeEventListener("abort", cancel);
       if (acAbort.current === ctl) acAbort.current = null;
     }
-  }, [autocomplete, lang, acMode, contextFiles, acVisible, acEndpoint, path, scope, acProjectDir, texCompletions, recordAcOutcome, t]);
+  }, [autocomplete, lang, acMode, contextFiles, acVisible, acEndpoint, path, scope, acProjectDir, texCompletions, recordAcOutcome, t, acCopilot, acEditorId, indentUnit]);
 
   // #45 automatic suggestions: when the per-type toggle is on, request a
   // completion a short while after the user stops typing. Re-runs on each draft
@@ -4517,6 +4512,8 @@ function CodeEditor({
   useEffect(() => {
     if (suggestion) syncScroll();
   }, [suggestion, syncScroll]);
+
+  useEffect(() => acFeedback?.show(suggestion?.candidate), [suggestion, acFeedback]);
 
   const acceptSuggestion = useCallback(() => {
     const el = textareaRef.current;
@@ -4547,7 +4544,7 @@ function CodeEditor({
     edit(next);
     const caret = at + chunk.length;
     // Keep the rest ghosted at the new caret; clear once it's fully consumed.
-    setSuggestion(rest ? { text: rest, at: caret } : null);
+    setSuggestion(rest ? { ...suggestion, text: rest, at: caret } : null);
     requestAnimationFrame(() => {
       el.selectionStart = el.selectionEnd = caret;
     });
@@ -4814,7 +4811,9 @@ function CodeEditor({
       }
       if (e.key === "Tab") {
         e.preventDefault();
-        if (e.shiftKey) {
+        if (e.shiftKey && acCopilot) {
+          // The language server has no length modes; nothing to switch.
+        } else if (e.shiftKey) {
           // Toggle to the next mode and re-request, so the ghost switches to that
           // mode's completion in place.
           const m = nextAcMode(acMode);
@@ -5314,7 +5313,7 @@ function CodeEditor({
       )}
       {suggestion && !acStatus && (
         <div className="file-viewer-ac-status" role="status">
-          {t("fileViewer.autocompleteControls", { candidate: acCandidate.current + 1 })}
+          {acCopilot ? t("fileViewer.copilotControls") : t("fileViewer.autocompleteControls", { candidate: acCandidate.current + 1 })}
         </div>
       )}
       {acStatus && (
@@ -5450,7 +5449,7 @@ function CodeEditor({
       })()}
       {/* #45 context files: a button to attach project files plus chips for the
           attached ones, shown only when autocomplete is enabled for this type. */}
-      {autocomplete?.enabled && (
+      {autocomplete?.enabled && !acCopilot && (
         <div className="file-viewer-ac-context">
           <button
             type="button"

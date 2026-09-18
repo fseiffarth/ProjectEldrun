@@ -17,7 +17,11 @@ export function completionWindow(text: string, caret: number) {
   return { prefix: text.slice(start, caret), suffix: text.slice(caret, end) };
 }
 
-export type CompletionGhost = { text: string; at: number };
+export type CompletionGhost = {
+  text: string;
+  at: number;
+  candidate?: import("./completionProvider").CompletionCandidate;
+};
 
 export type CompletionModel = { name: string; running: boolean; capabilities?: string[] };
 
@@ -74,7 +78,7 @@ export function typeThrough(before: string, after: string, ghost: CompletionGhos
   const typed = after.slice(ghost.at, ghost.at + count);
   if (!ghost.text.startsWith(typed)) return null;
   const text = ghost.text.slice(count);
-  return text ? { text, at: ghost.at + count } : null;
+  return text ? { ...ghost, text, at: ghost.at + count } : null;
 }
 
 /** Languages where the text around the caret is natural language. They prefer

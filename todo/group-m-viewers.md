@@ -61,6 +61,166 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work
 
+45a. **Optional GitHub Copilot provider for autocomplete — in progress (2026-09-18).**
+    Add Copilot alongside Ollama, preserving Ollama as the default for existing
+    settings. First release: local code files, explicit project opt-in, manual
+    Ctrl+Space and debounced automatic suggestions. Keep prose on its existing
+    Ollama role initially; remote files, attached references and prose support
+    follow after their context and URI handling are verified.
+
+    Integration source: GitHub's official
+    [Copilot Language Server](https://github.com/github/copilot-language-server-release).
+    Its documented editor protocol provides inline completions, browser device
+    sign-in, cancellation, and shown/partial/full acceptance notifications.
+    Use its LSP interface over stdio for autocomplete. Eldrun's existing Copilot
+    agent-tab launcher is a separate integration.
+
+    - [ ] **Verify the protocol in a standalone probe.** Initialize the server,
+      sign in, synchronize an unsaved document, request an inline completion,
+      and cancel it. Check credential persistence, content exclusions, workspace
+      access, supported installation platforms and server-version compatibility.
+      Do not launch or restart Eldrun for the probe. Resolve credential storage
+      before shipping; no tokens in settings, browser storage or logs, and no
+      changes to another editor's configuration.
+    - [ ] **Extract completion-provider adapters.** Move provider-specific work
+      out of `src/components/embed/FileViewerPane.tsx` into a shared interface
+      with Ollama and Copilot implementations. Reuse ghost text, cancellation,
+      visibility guards and acceptance controls. Carry document versions,
+      replacement ranges, provider identity and opaque completion IDs rather
+      than reducing every result to a string. Support both Ollama's streaming
+      updates and Copilot's returned completion items.
+    - [ ] **Add settings and setup.** Offer Ollama / GitHub Copilot for code
+      autocomplete; missing provider settings retain today's behavior and
+      persisted settings round-trip without losing existing values. Keep the
+      current code/prose Ollama model assignments. Provide one-click installation
+      in a terminal tab, browser sign-in, sign-out and connection/quota status.
+      Use `useExperimental`, `UntestedTag`, the shared dialog scheme and i18n
+      strings. Surface relevant server account/billing messages. Provider changes
+      invalidate in-flight work and displayed suggestions.
+    - [ ] **Enforce cloud consent and context boundaries.** Require explicit
+      project-level opt-in before supplying documents to Copilot; enforce this
+      in the backend as well as the UI. Document synchronization needs its own
+      context policy: the current bounded Ollama prefix/suffix does not describe
+      what a language server receives. Explain that document content may leave
+      the machine, verify additional workspace reads, and honor exclusions.
+      Keep contexts isolated by project and account. Do not silently switch from
+      Ollama to Copilot or bypass a local-only project policy. Disabling consent
+      must cancel work and release synchronized project documents.
+    - [ ] **Implement the managed backend service.** Add an `AppHandle`-free
+      Rust service for process lifecycle and framed JSON-RPC, with thin Tauri
+      commands using camelCase payloads. Handle initialization, incremental
+      document open/change/close synchronization, focus changes, status messages,
+      timeouts, explicit request cancellation and bounded crash recovery.
+      Launch only an installed, resolved server executable; manage and reap its
+      child subtree on shutdown. Scope IPC results to the requesting window and
+      reject stale document versions. Pause hidden-pane work and synchronize
+      current content before requesting again when shown.
+    - [ ] **Adapt editor behavior to provider capabilities.** Preserve Tab,
+      word/line acceptance, Esc and type-through. Normalize line endings and
+      UTF-16 positions, convert compatible ranges into safe insertions, and
+      reject replacements the current ghost UI cannot represent safely. Cycle
+      actual returned candidates. The documented Copilot inline request has no
+      Eldrun Sentence/Block/Scope controls: hide unsupported controls rather
+      than implying they affect generation. Preserve original item metadata for
+      shown and partial/full acceptance notifications; report acceptance once
+      with correct offsets. Initially avoid reusing cached Copilot items across
+      document versions or server sessions. Include provider identity in local
+      usage metrics and any later cache keys.
+    - [ ] **Validate and document the implementation.** Add meaningful tests for
+      settings migration, disabled-provider/no-consent behavior, Unicode and
+      CRLF positions, replacement ranges, cancellation races, stale responses,
+      project isolation, partial acceptance and sign-in/server failures. Keep
+      existing Ollama regression coverage passing. Update affected file-map rows
+      when adding or reshaping files and follow the third-party update checklist
+      for the new wrapped server. Run `npm run build`, `npm test`,
+      `cargo test --manifest-path src-tauri/Cargo.toml`, `npm run lint`,
+      `cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings`,
+      and `git diff --check`. After backend edits run `npm run backend:stale`
+      and report its result without restarting the app.
+
+    Live checks for the user after the new backend is available: install/sign in,
+    opt in one local project, enable Copilot for code and request a suggestion;
+    accept by word, line and Tab, type through a matching prefix, then interrupt
+    with edits, caret movement, Esc and tab switches. Verify a second project
+    receives no Copilot context without consent, disabling consent stops work,
+    and changing back to Ollama restores its existing behavior. Exercise logout,
+    unavailable network, exclusions and quota errors. Keep `UntestedTag` until
+    the user confirms these checks; no live verification yet.
+
+    Implementation evidence (2026-09-18): Ollama's streaming/model/cache work is
+    extracted into `ollamaCompletionProvider.ts`; `completionProvider.ts` retains
+    original items and tests UTF-16/CRLF, safe ranges and cumulative acceptance.
+    Rust `services/copilot/{rpc,policy}.rs` supplies bounded framing, cancellation,
+    timeouts and directory-bound consent checks, with migration/isolation tests.
+    Wiring (2026-09-18, second pass): `services/copilot/{process,documents,session}.rs`
+    add the narrow fence, incremental sync and the per-project session; thin
+    commands in `commands/copilot.rs`; `copilotCompletionProvider.ts` + editor
+    selection/feedback; `CopilotCompletionCard` (provider, one-click install,
+    project consent, device sign-in) under Settings → Experimental. The real
+    1.547.0 server starts inside the fence and returns error 1000 through the
+    session (ignored test). All gates pass. Boxes above stay unticked: nothing
+    has run live, and sign-in/`checkStatus` are untested against a real account.
+    `scripts/copilot-probe.py` verified CLS 1.547.0 initialization, incremental
+    unsaved document sync, unauthenticated error 1000 and cancellation -32800.
+    Its inspected default auth store writes plaintext; the isolated probe blocks
+    `auth.db` and uses its in-memory fallback. Production credential policy and
+    authenticated workspace/exclusion behavior still need verification before
+    enabling sign-in. See `docs/context/copilot_completion.md`.
+
+45b. **More autocomplete providers: HTTP FIM, richer local context, next-edit
+    — planned (2026-09-18).** Follows #45a, which is in progress. Builds on its
+    `CompletionProvider` interface (`src/lib/viewers/completionProvider.ts`) and
+    reuses its settings, consent and acceptance machinery; nothing here waits on
+    the Copilot language-server service. Rationale (web survey 2026-09-18): a
+    fill-in-the-middle HTTP endpoint takes the same bounded prefix/suffix Ollama
+    already gets, so it needs no process lifecycle, document sync or device
+    sign-in. Zed ships a comparable provider set (Zeta, Mercury, Sweep, Ollama,
+    Codestral, Copilot). Supermaven is sunset; Tabby would be a second local
+    model server beside Ollama, so neither is planned.
+
+    Order: HTTP FIM providers first, then richer local context, then next-edit.
+
+    - [ ] **Mistral Codestral FIM provider.** Codestral's `/v1/fim/completions`
+      endpoint (`prompt` + `suffix`, `max_tokens`, `stop`, streaming) maps onto
+      the existing `completionWindow()` prefix/suffix. Verify the request shape,
+      streaming format and endpoint choice (dedicated Codestral key vs. general
+      Mistral key) in a standalone probe first. The HTTP call runs in the Rust
+      backend with thin camelCase commands, never a webview `fetch` (the CSP is
+      the perimeter). The API key goes only in the OS keychain: never in
+      settings, browser storage or logs. Same project opt-in and backend-enforced
+      consent as Copilot in #45a; it sends only the bounded window, which the
+      consent text must say. Map Sentence/Block/Scope onto `max_tokens`/`stop`
+      only where that is honest; otherwise hide them, as #45a does.
+    - [ ] **Inception Mercury Coder FIM provider.** Same shape (FIM endpoint,
+      API key, very low latency). Share one generic "HTTP FIM" adapter with
+      Codestral if the probe confirms compatible request/response formats;
+      per-vendor code stays limited to endpoint, auth header and model id.
+    - [ ] **Richer local context (llama.cpp `/infill`).** Optional llama-server
+      endpoint as a local provider. Besides prefix/suffix, `/infill` accepts
+      extra context chunks. Feed it a bounded ring buffer of recently edited or
+      viewed chunks, the way llama.vim does, taken only from the same project
+      and cleared when the project or provider changes. Check whether Ollama can
+      take the same extra context through its prompt before adding a second
+      local server.
+    - [ ] **Next-edit prediction (later).** Sweep Next-Edit (1.5B, open weights,
+      runs locally), Zed's Zeta2 (open weights) and Mercury Edit 2 (API) predict
+      a replacement near the caret, not an insertion at it. That needs a
+      replacement/diff preview in the editor. Today's ghost UI deliberately
+      rejects replacements (#45a), so design that preview first, then serve the
+      local models through Ollama or llama-server.
+    - [ ] **Validate.** Tests for key-absent/consent-absent behavior (no
+      request leaves the machine), streaming and cancellation, stop sequences,
+      provider switching, extra-context project isolation, and settings
+      round-trip. Run the full gates plus `npm run backend:stale` after backend
+      edits. Tag new providers with `UntestedTag` behind `useExperimental`.
+
+    Live checks for the user: add a Codestral key, opt in one project and
+    request suggestions (manual and automatic, all acceptance paths). Confirm a
+    project without consent sends nothing, removing the key disables the
+    provider cleanly, and switching back to Ollama restores today's behavior.
+    Repeat for Mercury and the llama-server provider. No implementation or live
+    verification yet.
+
 46. **Undo/redo in native text/TeX viewers.** Add an undo/redo history to the
     in-app text and TeX editors (keyboard `Ctrl+Z`/`Ctrl+Shift+Z` plus buttons).
     - [x] 🤖 Automated test

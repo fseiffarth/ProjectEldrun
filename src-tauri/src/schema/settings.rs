@@ -57,6 +57,20 @@ pub struct EldrunMobileHostSettings {
     pub mail_reply: Option<bool>,
 }
 
+/// Cloud completion authority lives in Eldrun's settings, never project.json.
+/// Bind consent to a directory as well as the id so moving/repointing a project
+/// cannot silently authorize a different tree. Unknown fields round-trip.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct CompletionProjectPolicy {
+    pub directory: String,
+    #[serde(default)]
+    pub copilot: bool,
+    #[serde(default)]
+    pub local_only: bool,
+    #[serde(flatten)]
+    pub extra: HashMap<String, Value>,
+}
+
 /// `~/.local/share/eldrun/settings.json`.
 ///
 /// Ollama fields (ollama_host, ollama_model, ollama_autostart) are preserved
@@ -308,6 +322,13 @@ pub struct Settings {
     /// has never heard of.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ollama_roles: Option<HashMap<String, String>>,
+    /// Missing/unknown provider retains Ollama. Prose always retains its role.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code_completion_provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub copilot_completion: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completion_project_policies: Option<HashMap<String, CompletionProjectPolicy>>,
     /// Hunspell dictionary code (e.g. `en_US`) for the editors' dictionary
     /// spell check (`services::spell`). Unset means the default — an installed
     /// English variant when there is one, else the first dictionary found.

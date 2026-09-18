@@ -444,6 +444,17 @@ export interface Settings {
    *  mail — and is the kind of thing to have answered before the feature runs,
    *  not after; the chip's tooltip says nothing reads it so far. */
   ollama_roles?: Record<string, string>;
+  /** Missing provider retains Ollama; prose keeps its existing Ollama role. */
+  code_completion_provider?: "ollama" | "copilot";
+  /** Experimental entry point; this alone never authorizes cloud context. */
+  copilot_completion?: boolean;
+  /** Eldrun-owned consent, bound to both project id and canonical directory. */
+  completion_project_policies?: Record<string, {
+    directory: string;
+    copilot: boolean;
+    local_only: boolean;
+    [key: string]: unknown;
+  }>;
   /** Hunspell dictionary code (e.g. `en_US`) for the editors' dictionary spell
    *  check. Unset means the default — an installed English variant when there
    *  is one. Machine-wide (the language you write in is not per project);

@@ -140,7 +140,7 @@ only when breaking it does damage. The *why* goes in code comments or
 | `files/GitHistory.tsx` | Commit history / commit / push, lockstep bar, Worktrees (#23). Branch control is a dropdown for checkout, text input for create; worktree removal is confirmed and escalating (it deletes ignored files). |
 | `files/SetDefaultAppDialog.tsx` | Pick the default app for a file type. |
 | `embed/EmbedPane.tsx` | Hosts an embedded external app window. |
-| `embed/FileViewerPane.tsx` | In-app viewers (image, markdown, code, TeX/SyncTeX) + shared plumbing. Markdown follows local links and `#fragment`s (`stores/mdAnchor`); cancellable streaming autocomplete with bounded context and type-through (`lib/viewers/autocomplete.ts`); code-editor key handling as pure exported helpers (`applyIndent`, `applyLineComment`, `applyAutoIndent`, `detectIndentUnit`). |
+| `embed/FileViewerPane.tsx` | In-app viewers (image, markdown, code, TeX/SyncTeX) + shared plumbing. Markdown follows local links and `#fragment`s (`stores/mdAnchor`); autocomplete ghost/visibility/acceptance UI delegates streaming/model/cache work to `lib/viewers/ollamaCompletionProvider.ts`; code-editor key helpers (`applyIndent`, `applyLineComment`, `applyAutoIndent`, `detectIndentUnit`). |
 | `embed/MdGraphView.tsx` | Markdown relationship graph (`md_graph` flag): BFS rings of links from `lib/viewers/mdGraph.ts`; one bounded scope-confined read per look, never polled. |
 | `embed/YamlTree.tsx` | YAML/JSON tree: renders rows but edits text (every action splices the draft), so edits are ordinary undoable changes. Pointer-drag reorder (HTML5 DnD is broken on WebKitGTK). |
 | `embed/BibCards.tsx` | BibTeX card view: one card per entry, filter over all fields, per-card fold (`ViewerState.bibCollapsed`); Source is the other half. |
@@ -227,6 +227,9 @@ only when breaking it does damage. The *why* goes in code comments or
 | `lib/viewers/autocomplete.ts` | Caret-window bounds, type-through, line acceptance, bounded model/completion caches and the code/prose model pick (`ollama_roles.autocomplete{,_prose}`) for native editors. |
 | `lib/viewers/completionContext.ts` | Static local import/TeX discovery and same-project open-tab references, cancellation and UTF-8 byte budgets before completion IPC. |
 | `lib/viewers/mdGraph.ts` | Pure markdown-graph logic (#101): fence-aware link extraction, bounded BFS crawl, radial layout. Tests: `MdGraph.test.ts`. |
+| `lib/viewers/completionProvider.ts` | Provider/candidate contract, UTF-16 positions, safe insertion ranges and original-item partial/full acceptance offsets for Group M #45a. |
+| `lib/viewers/copilotCompletionProvider.ts` | Copilot adapter (#45a): `copilotServes` gate (flag + provider + consenting local project + code language, else Ollama), completion/cancel IPC, and `CopilotFeedback` (shown once, cumulative partial, single full acceptance, close). Settings/consent/sign-in UI is `components/layout/CopilotCompletionCard.tsx`. |
+| `lib/viewers/ollamaCompletionProvider.ts` | Ollama adapter: model selection, cancellable streaming IPC and bounded provider-keyed cache, extracted from the editor. |
 | `lib/projectRemarks.ts` / `stores/projectRemarks.ts` | Defensive REMARKS.md parser/splicer plus local-or-SFTP I/O. Conforming bullets are editable; all other bytes are parked verbatim. |
 | `lib/viewers/{fileUtils,markdown,highlight,tex}.ts` | Pure viewer logic (XSS-safe markdown/highlight, TeX, file utils). `tex.ts` also resolves `\ref`/`\cite` keys to their `\label`/`.bib` entry via the editor-jump channel. |
 | `lib/viewers/pdfLoad.ts` | `loadPdf`: the only way to open a PDF with pdf.js (sets the worker). Destroys the loading task on failure — a rejected load otherwise leaks a Worker. |

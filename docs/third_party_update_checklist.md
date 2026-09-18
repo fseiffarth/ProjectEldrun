@@ -481,6 +481,47 @@ string format, a rename of the systemd unit.
 
 ---
 
+### 2.1 Copilot Language Server (autocomplete, Group M #45a)
+
+**Where** `services/copilot/`, `src/lib/viewers/completionProvider.ts`,
+`scripts/copilot-probe.py`, `docs/context/copilot_completion.md`.
+`commands/copilot.rs`, `CopilotCompletionCard.tsx`. Separate from the Copilot
+agent CLI. Behind the `copilot_completion` experimental flag; the pinned version
+is `services/copilot/process.rs` `SERVER_VERSION` (install dir and npm spec follow it).
+
+**Protocol reference** [GitHub's official server](https://github.com/github/copilot-language-server-release).
+Inspected/probed **1.547.0**, Linux x64, 2026-09-18. Native npm packages list
+Linux/macOS/Windows x64/arm64; upstream also documents Node >=20.8.
+
+**Assumes** stdio Content-Length framing; initialize/initialized; incremental
+didOpen/didChange/didClose plus didFocus; inlineCompletion includes document
+version and returns original items; cancel uses `$/cancelRequest`; shown and
+partial acceptance preserve the full original item, with cumulative UTF-16
+acceptedLength; full acceptance executes the returned command. Status and
+account/billing messages must be handled. Recheck all fields on server upgrades.
+
+**Credential finding** 1.547.0's bundled implementation creates `auth.db` with a
+plaintext writer. Do not infer keychain protection from its keytar dependency.
+The synthetic probe blocks that file and exercises the in-memory fallback;
+authenticated behavior and production credential policy are still unverified.
+
+**Unverified calls** `signIn` (→ `userCode`, `verificationUri`, `command`),
+finishing it via `workspace/executeCommand`, `signOut` and `checkStatus`
+(→ `status`, `user`) are written from upstream's README and tested only
+against a fake server. `didChangeStatus` `kind`/`message` likewise.
+
+**Verify** after bumping `SERVER_VERSION`, the real server inside the real fence:
+`ELDRUN_COPILOT_INSTALL=<npm prefix> cargo test --manifest-path src-tauri/Cargo.toml --lib copilot -- --ignored`
+(initialize + unauthenticated error 1000 through `session.rs`). Also
+`python3 scripts/copilot-probe.py /absolute/path/to/copilot-language-server`
+without launching Eldrun. It currently verifies initialization, unsaved document
+sync, unauthenticated error 1000 and cancellation -32800 only. Before release,
+also verify device sign-in/sign-out, credential persistence policy, exclusions,
+workspace filesystem reads, quota messages and accepted-item offsets against a
+real signed-in session. Never capture tokens or raw protocol logs.
+
+---
+
 ## 3. Tailscale (Eldrun Mobile)
 
 **Where** `services/mobile_control/config.rs` (`verify_tailscale_serve`,
