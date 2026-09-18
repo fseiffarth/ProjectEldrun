@@ -515,9 +515,13 @@ function attentionFor(
   // permission notice) AND from the screen regardless: Codex has no such hook,
   // so its approval menu sitting in a quiet tail is still the only sign — even
   // under a "working" verdict, which its tool-use hook left standing while
-  // the tool waits on the user.
+  // the tool waits on the user. Not after a Stop, though: a finished turn is
+  // back at its input box, so nothing on screen can be a pending approval —
+  // and what IS on screen is the agent's own reply, which quotes menus (a
+  // diff of this very classifier, a report on a prompt) often enough to light
+  // a finished tab as a question.
   if (turn?.state === "decision") return "decision";
-  if (quiet >= DECISION_QUIET_MS && tailLooksLikeDecision(ptyId)) {
+  if (turn?.state !== "done" && quiet >= DECISION_QUIET_MS && tailLooksLikeDecision(ptyId)) {
     return "decision";
   }
   // Past here everything is inferred from silence, which a watched tab's own

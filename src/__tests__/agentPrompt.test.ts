@@ -97,6 +97,23 @@ describe("looksLikeDecisionPrompt", () => {
   it("does not fire on a bare idle input-line cursor", () => {
     expect(looksLikeDecisionPrompt("❯ ")).toBe(false);
   });
+
+  it("does not mistake the user's own prompts in Codex's history for a menu", () => {
+    // Codex marks every sent prompt with "›", so a sent "continue" read as a
+    // pointer on a "Continue" option and lit a finished tab as a question.
+    const screen = [
+      "› continue",
+      "",
+      "• I'll collect the final check results and resolve anything still failing.",
+      "",
+      "› 1. fix the lint warnings",
+      "",
+      "• Implemented autocomplete roadmap items 6–9.",
+      "  done 1:27 PM",
+      "› Ask Codex to do anything",
+    ].join("\n");
+    expect(looksLikeDecisionPrompt(screen)).toBe(false);
+  });
 });
 
 describe("stripAnsi", () => {

@@ -15,13 +15,19 @@
 // after the number is optional because Codex's TUI (ratatui) repaints by
 // diffing cells and jumping the cursor over the unchanged ones, so the padding
 // between words never reaches the wire at all.
-const POINTER_CHOICE = /[❯▶►➤»›]\s*\d+[.)]\s*[^\s\d]/u;
+//
+// Codex's "›" is deliberately NOT a pointer here: it is also the marker Codex
+// puts before every prompt the user sent, so a sent "continue" or "1. fix x"
+// sat in its history looking exactly like a highlighted option and lit the tab
+// as blocked on a question that did not exist. Codex's approval menus are
+// numbered yes/no menus, which `hasYesNoMenu` catches without the glyph.
+const POINTER_CHOICE = /[❯▶►➤»]\s*\d+[.)]\s*[^\s\d]/u;
 
 // A pointer glyph directly beside a bare yes/no-style word, e.g. "❯ Yes" /
 // "❯ Allow" — the shape a simple binary confirmation takes when it isn't
 // numbered (only multi-choice menus number their options).
 const POINTER_WORD =
-  /[❯▶►➤»›]\s*(yes|no|proceed|allow|approve|continue|cancel|reject|deny|don'?t)\b/i;
+  /[❯▶►➤»]\s*(yes|no|proceed|allow|approve|continue|cancel|reject|deny|don'?t)\b/i;
 
 // One row of a numbered menu: the option's number and the FIRST WORD of its
 // label. Matched independently of the pointer glyph, which a partial redraw can

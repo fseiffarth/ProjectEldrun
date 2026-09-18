@@ -192,6 +192,22 @@ describe("activity store — hook verdicts", () => {
     expect(state().statusTabsByScope["proj-a"]).toEqual([{ key: "agent-1", state: "needs-decision" }]);
   });
 
+  it("reads no question into a finished turn whose reply quotes a menu", () => {
+    // The agent's last reply showed a diff of the classifier itself; Stop
+    // then fired. The turn is over, so the quoted menu is prose, not a prompt.
+    noteAgentTurn(PTY, "working");
+    notePtyOutput(
+      PTY,
+      '  24 -  // "❯ Yes" / "❯ Allow" — a binary confirmation\r\n' +
+        "The menu looks like:\r\n❯ 1. Yes\r\n  2. No, and tell Claude what to do differently\r\n",
+    );
+    noteAgentTurn(PTY, "done");
+    vi.advanceTimersByTime(700); // past DECISION_QUIET_MS
+    state().recompute();
+    expect(attention()).toBe("done");
+    expect(state().statusTabsByScope["proj-a"]).toEqual([{ key: "agent-1", state: "finished" }]);
+  });
+
   it("retires a working verdict on an interrupt key, and on nothing else typed", () => {
     noteAgentTurn(PTY, "working");
     noteUserInput(PTY); // queuing the next prompt
