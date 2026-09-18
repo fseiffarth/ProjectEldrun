@@ -252,7 +252,12 @@ function MailListImpl({
             column. */}
         <span className="mail-sort-spacer" aria-hidden="true" />
         {sortHeader({ field: "attachments", label: "📎", title: t("mail.sortAttachments") })}
-        <span className="mail-sort-from">{t("mail.sortFrom")}</span>
+        <span className="mail-sort-from">
+          {t("mail.sortFrom")}
+          {/* For the per-row ✕ at the far end: a pill in a 14px column on every
+              row would bury the list, so it is said once, up here. */}
+          <UntestedTag />
+        </span>
         {sortHeader({
           field: "size",
           label: t("mail.sortSize"),
@@ -265,6 +270,8 @@ function MailListImpl({
           title: t("mail.sortDate"),
           className: "numeric",
         })}
+        {/* The delete column has nothing to sort; the cell keeps the grid. */}
+        <span className="mail-sort-spacer" aria-hidden="true" />
       </div>
       {loading && headers.length === 0 && <div className="mail-empty">{t("mail.loading")}</div>}
       {!loading && headers.length === 0 && (
@@ -389,6 +396,28 @@ function MailListImpl({
                   on the click that selected it. */}
               <span className="mail-row-size">{formatSize(h.size)}</span>
               <span className="mail-row-date">{formatMailListDate(h.date, lang, use24h)}</span>
+              {/* This row only, never the ticked set: a glyph on a row that
+                  quietly acted on nine others would be a trap. It goes through
+                  the same `onDelete` as the menu, so the permanent half still
+                  gets its confirmation; the tooltip says which half this is. */}
+              {(() => {
+                const label =
+                  deletePlan([h]).purged > 0 ? t("mail.deleteForever") : t("mail.moveToTrash");
+                return (
+                  <button
+                    type="button"
+                    className="mail-delete-btn"
+                    title={label}
+                    aria-label={label}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onDelete([h]);
+                    }}
+                  >
+                    ×
+                  </button>
+                );
+              })()}
             </div>
             <div className="mail-row-subject">
               {/* The mark is shown on the row wherever the row is — in its own

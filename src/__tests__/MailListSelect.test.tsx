@@ -205,3 +205,31 @@ describe("the selection strip", () => {
     expect(screen.getByText(t("mail.selectedCount", { count: 2 }))).toBeTruthy();
   });
 });
+
+describe("the row's ✕", () => {
+  const deleteBtn = (id: string) => row(id).querySelector(".mail-delete-btn") as HTMLElement;
+
+  it("deletes that row and opens nothing", async () => {
+    const calls = renderList();
+    await userEvent.click(deleteBtn("m2"));
+    expect(calls.deleted).toEqual([["m2"]]);
+    expect(calls.selected).toEqual([]);
+    expect(calls.checks).toEqual([]);
+  });
+
+  it("deletes only its own row even inside a ticked set", async () => {
+    const calls = renderList({ checkedIds: ["m1", "m2", "m3"] });
+    await userEvent.click(deleteBtn("m2"));
+    expect(calls.deleted).toEqual([["m2"]]);
+  });
+
+  it("says in its tooltip whether the delete is permanent", () => {
+    renderList({ purged: 1 });
+    expect(deleteBtn("m1").title).toBe(t("mail.deleteForever"));
+  });
+
+  it("says Trash when there is one", () => {
+    renderList();
+    expect(deleteBtn("m1").title).toBe(t("mail.moveToTrash"));
+  });
+});

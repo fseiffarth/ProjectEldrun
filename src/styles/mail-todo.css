@@ -1781,14 +1781,14 @@ handle — it swallows the pointer before the card ever sees it. */
      line up, and splitting it into two matching lists is how they drift apart
      the first time a column is added.
 
-     Star · read-dot · clip · sender · size · date. Every column but the sender
+     Star · read-dot · clip · sender · size · date · delete. Every column but the sender
      is a FIXED width, and that is load-bearing rather than lazy: each row is
      its own grid container, so `auto` columns are sized per row — a row reading
      "1.2 KB" and one reading "12.4 MB" would each pick their own width and the
      "columns" would be a staircase. Fixed tracks (plus one `1fr` that resolves
      identically because every row is the same width) are what actually make
      them line up, header included. */
-  --mail-cols: 16px 14px 16px minmax(0, 1fr) 54px 118px;
+  --mail-cols: 16px 14px 16px minmax(0, 1fr) 54px 118px 14px;
   --mail-col-gap: 6px;
   /* Where the sender column starts — the three glyph cells plus their gaps.
      The subject/preview lines are indented by exactly this, so they hang under
@@ -1946,6 +1946,32 @@ handle — it swallows the pointer before the card ever sees it. */
 }
 .mail-seen-btn.on {
   color: var(--accent);
+}
+/* Delete (to Trash, or for good from Trash itself), the row's last cell. Faint
+   until the row is hovered — a full-strength ✕ down every row reads as a list
+   of things about to go — and red only under the pointer, the moment it is
+   about to be clicked. */
+.mail-delete-btn {
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: var(--cur-pointer, pointer);
+  padding: 0;
+  font-size: 14px;
+  line-height: 1;
+  opacity: 0.35;
+}
+.mail-row:hover .mail-delete-btn,
+.mail-delete-btn:focus-visible {
+  opacity: 1;
+}
+.mail-delete-btn:hover {
+  color: var(--danger);
+}
+.mail-sort-from > .untested-tag {
+  margin-left: 6px;
+  text-transform: none;
+  letter-spacing: 0;
 }
 .mail-row-from {
   overflow: hidden;
