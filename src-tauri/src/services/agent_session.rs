@@ -586,8 +586,10 @@ fn timed_prompt_in_record(line: &str, kind: TranscriptKind) -> Option<Transcript
 /// A message the user sent while Claude was working: a `queued_command`
 /// attachment (`attachment.prompt`), absorbed into the running turn. Only a
 /// human's plain prompt counts — a queued `!` line or a notification the CLI
-/// queued for itself is not one.
-fn claude_queued_prompt(value: &serde_json::Value) -> Option<String> {
+/// queued for itself is not one, nor a peer session's message. The prompt is
+/// a string, or blocks when an image rode along. Claude never also writes a
+/// `user` record for it, so the phone's stored session reads it too.
+pub(crate) fn claude_queued_prompt(value: &serde_json::Value) -> Option<String> {
     if value.get("type").and_then(|t| t.as_str()) != Some("attachment") {
         return None;
     }
@@ -603,7 +605,17 @@ fn claude_queued_prompt(value: &serde_json::Value) -> Option<String> {
     if origin.is_some_and(|origin| origin != "human") {
         return None;
     }
-    claude_prompt_text(attachment.get("prompt")?.as_str()?)
+    let text = match attachment.get("prompt")? {
+        serde_json::Value::String(text) => text.clone(),
+        serde_json::Value::Array(blocks) => blocks
+            .iter()
+            .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("text"))
+            .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => return None,
+    };
+    claude_prompt_text(&text)
 }
 
 fn model_in_record(line: &str, kind: TranscriptKind) -> Option<String> {

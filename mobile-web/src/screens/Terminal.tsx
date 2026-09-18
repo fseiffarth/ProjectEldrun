@@ -45,7 +45,9 @@ import {
 import { currentMode, modeChoices, modeFixed, shiftTabKey } from "../terminal/agentModes";
 import { agentInputWrites } from "../terminal/composer";
 import { chatTurns, isPromptEcho } from "../terminal/chatTurns";
+import { answerHtml } from "../terminal/answerMarkdown";
 import { transcriptTurns } from "../terminal/transcriptTurns";
+import { MAX_PENDING, pendingPrompt, withPending, type PendingPrompt } from "../terminal/pendingPrompts";
 import { oldestFirst, placeOutbox, type OutboxPlacement } from "../terminal/outboxTimeline";
 import { resetText, StatusSheet } from "./StatusSheet";
 import { limitMeters, parseUsageReport, type LimitMeters } from "../../../shared/usageReport";
@@ -271,6 +273,14 @@ const ReadableTurns = memo(function ReadableTurns({ lines, chat, agent, promptLa
       </div>)}</>;
 });
 
+/** One answer of the stored session as formatted text (`answerHtml`: the
+ * formatting only — nothing in it opens or loads). Memoized on the text, so a
+ * poll that brings a new turn does not re-render every answer above it. */
+const AnswerText = memo(function AnswerText({ text }: { text: string }) {
+  const html = useMemo(() => answerHtml(text), [text]);
+  return <div className="transcript-md" dangerouslySetInnerHTML={{ __html: html }} />;
+});
+
 /** The prompts and answers of the stored session (`api.getTranscript`), laid
  * out the same way as the screen's chat — bubbles on the right for the
  * reader's own prompts, the agent's answers on the left — from the record the
@@ -293,7 +303,7 @@ const TranscriptTurns = memo(function TranscriptTurns({ entries, cutLabel, promp
           {turn.cut && <small className="transcript-cut">{cutLabel}</small>}
         </div>
       : <div className="readable-turn agent answer">
-          <p className="transcript-text">{turn.text}</p>
+          <AnswerText text={turn.text} />
           {turn.cut && <small className="transcript-cut">{cutLabel}</small>}
         </div>}
     {renderFiles(placement.after.get(turn.index) ?? [])}
@@ -503,6 +513,10 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
    * the first read answers. Focus reads from it whenever it is available and
    * the reader has not switched the view to the screen. */
   const [transcript, setTranscript] = useState<SessionTranscript | null>(null);
+  /** Prompts the composer sent that the stored session does not hold yet,
+   * shown as the reader's bubbles at the end of the session chat. */
+  const [pending, setPending] = useState<PendingPrompt[]>([]);
+  const pendingId = useRef(0);
   const [focusSource, setFocusSource] = useState<"session" | "screen">("session");
   /** Whether the tools row says why the Session toggle is dimmed. A phone
    * shows no tooltip, so the reason is spelled out on a tap instead. */
@@ -554,6 +568,7 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     setView(readTerminalView(viewAgentOf(tab)));
     setDraft("");
     setTranscript(null);
+    setPending([]);
     setFocusSource("session");
     setSessionWhy(false);
     setStatusStrip(false);
@@ -1150,6 +1165,9 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
    * away from. Until the first read answers, the screen is shown, so the view
    * never opens blank. */
   const sessionShown = sessionFocus && transcript?.available === true;
+  /** The session chat's entries: the stored ones, with each prompt sent
+   * from here held in its place (`withPending`). */
+  const sessionEntries = useMemo(() => withPending(transcript?.entries ?? [], pending), [transcript, pending]);
   // A new turn in the stored session, or a file the agent sent into the
   // Focus chat, scrolls the view to it, as new screen output does, unless
   // the reader has scrolled up to read.
@@ -1157,7 +1175,7 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     if (!(sessionShown || (view === "focus" && outbox.length > 0)) || !atBottom) return;
     const stream = readableHost.current;
     if (stream) stream.scrollTo({ top: stream.scrollHeight });
-  }, [sessionShown, transcript, outbox, view, atBottom]);
+  }, [sessionShown, transcript, pending, outbox, view, atBottom]);
   /** Reads the outbox now and every `OUTBOX_POLL` while the page is visible;
    * coming back to the page reads it at once. A listing that could not be
    * fetched keeps what was shown — the next poll retries. */
@@ -1242,8 +1260,8 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     <OutboxMessage key={`outbox:${file.name}`} tabId={tab.id} file={file} onOpen={openOutbox} onDetails={setOutboxOpen} />
   )), [tab.id, openOutbox]);
   const outboxPlacement = useMemo(
-    () => placeOutbox(transcript?.entries ?? [], outbox, transcript?.truncated === true),
-    [transcript, outbox],
+    () => placeOutbox(sessionEntries, outbox, transcript?.truncated === true),
+    [sessionEntries, transcript?.truncated, outbox],
   );
   /** The screen has no times to place a file by, so the files close its chat. */
   const screenOutbox = useMemo(() => oldestFirst(outbox), [outbox]);
@@ -1343,6 +1361,15 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
     }
     if (!sendAgentText(draft)) return;
     setLastSent(draft);
+    // A slash command is the CLI's, not a turn: the session never records it,
+    // so a bubble for it would wait forever. `/clear` also ends the chat the
+    // earlier bubbles were waiting in.
+    if (/^\s*\//u.test(draft)) {
+      if (/^\s*\/clear\b/u.test(draft)) setPending([]);
+    } else {
+      const sent = pendingPrompt(++pendingId.current, draft, transcript?.entries ?? []);
+      setPending((current) => [...current, sent].slice(-MAX_PENDING));
+    }
     setDraft("");
     forgetDictation();
   };
@@ -1350,7 +1377,7 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
    * first because the agent forgets the chat. The draft is left alone. */
   const clearConversation = () => {
     if (!window.confirm(t("mobile.composer.clearChatConfirm"))) return;
-    sendAgentText("/clear");
+    if (sendAgentText("/clear")) setPending([]);
   };
   /** The composer's ✕: an empty draft, and the dictation transcript with it. */
   const clearDraft = () => {
@@ -1820,11 +1847,11 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
             followReadable(stream.scrollHeight - stream.scrollTop - stream.clientHeight < 120);
           }}>
           {sessionShown
-            ? (transcript && transcript.entries.length === 0 && !liveQuestion && outbox.length === 0
+            ? (transcript && sessionEntries.length === 0 && !liveQuestion && outbox.length === 0
               ? <div className="readable-empty"><strong>{t("mobile.transcript.empty")}</strong><span>{t("mobile.transcript.emptyHint")}</span></div>
               : <div className="readable-lines chat transcript" data-testid="session-transcript">
                   {transcript?.truncated && <button className="readable-earlier" onClick={() => setTranscriptLimit((limit) => limit + TRANSCRIPT_STEP)}>{t("mobile.transcript.earlier")}</button>}
-                  <TranscriptTurns entries={transcript?.entries ?? []} cutLabel={t("mobile.transcript.cut")} promptLabel={t("mobile.transcript.prompt")} placement={outboxPlacement} renderFiles={renderOutbox} />
+                  <TranscriptTurns entries={sessionEntries} cutLabel={t("mobile.transcript.cut")} promptLabel={t("mobile.transcript.prompt")} placement={outboxPlacement} renderFiles={renderOutbox} />
                   {liveQuestion && <div className="transcript-screen" role="group" aria-label={t("mobile.transcript.onScreen")}>
                     <small>{t("mobile.transcript.onScreen")}</small>
                     <ReadableTurns lines={liveTail} chat={chat} agent={agentLabel} promptLabel={t("mobile.transcript.prompt")} columns={paneColumns.current} />
@@ -1897,7 +1924,7 @@ export function Terminal({ tab, back }: { tab: TabRow; back: () => void }) {
           })}
         </div>
       </div>}
-      {lastSent && <div className="last-sent"><span>Sent</span><p>{lastSent}</p></div>}
+      {lastSent && !sessionShown && <div className="last-sent"><span>Sent</span><p>{lastSent}</p></div>}
       {uploads.map((upload) => upload.failure
         ? <div key={upload.id} className="inbox-upload error" role="alert"><strong>{upload.name}</strong><span>{upload.failure}</span><button onClick={() => dismissUpload(upload.id)} aria-label={`Dismiss ${upload.name}`}>✕</button></div>
         : <div key={upload.id} className="inbox-upload" role="status"><strong>{upload.name}</strong><span>{upload.source === "desktop" ? "Copying from the desktop…" : "Sending to the project inbox…"}</span></div>)}

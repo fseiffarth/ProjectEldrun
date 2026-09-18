@@ -45,7 +45,7 @@ pub const MAX_LIMIT: usize = 1000;
 /// Longest text of one prompt. The full prompt is the user's own words, so
 /// the bound is generous; a pasted log is cut and marked.
 const MAX_PROMPT_CHARS: usize = 6_000;
-/// Longest text of one answer, after the text blocks of one turn are joined.
+/// Longest text of one answer record (its text blocks joined).
 const MAX_ANSWER_CHARS: usize = 12_000;
 
 /// One turn of the conversation as the phone shows it.
@@ -211,9 +211,10 @@ pub fn read_transcript(
     })
 }
 
-/// The turns in `lines`, in order. Consecutive answer records are one turn:
-/// Claude writes each text block of an answer as a record of its own, with
-/// the tool calls it made in between, and the reader wants the answer whole.
+/// The turns in `lines`, in order. Each answer record is an entry of its own:
+/// Claude writes each message of a turn as a record, with the tool calls it
+/// made in between, and the phone shows them as separate bubbles — joined
+/// into one they ran together ("Let me check…" glued to the final answer).
 fn parse_entries<'a>(lines: impl Iterator<Item = &'a str>, kind: TranscriptKind) -> Vec<TranscriptEntry> {
     let mut entries: Vec<TranscriptEntry> = Vec::new();
     for line in lines {
@@ -238,16 +239,6 @@ fn parse_entries<'a>(lines: impl Iterator<Item = &'a str>, kind: TranscriptKind)
         let Some(text) = clean_text(&raw) else {
             continue;
         };
-        if role == "answer" {
-            if let Some(last) = entries.last_mut().filter(|last| last.kind == "answer") {
-                if !last.cut {
-                    last.text.push_str("\n\n");
-                    last.text.push_str(&text);
-                    bound_entry(last, bound);
-                }
-                continue;
-            }
-        }
         let mut entry = TranscriptEntry {
             kind: role.to_string(),
             text,
@@ -282,11 +273,16 @@ fn clean_text(raw: &str) -> Option<String> {
 
 /// A Claude record as a turn: a `user` record that is a prompt (the same
 /// reading the last-prompt line makes — tool results, meta notes and
-/// reminders are not), or an `assistant` record's text blocks. Thinking and
+/// reminders are not), a prompt the user queued mid-turn (the prompt chart's
+/// reading), or an `assistant` record's text blocks. Thinking and
 /// tool-use blocks are stepped over, as is a sidechain (a subagent's) record.
 fn claude_entry(value: &Value) -> Option<(&'static str, String)> {
     match value.get("type").and_then(Value::as_str)? {
         "user" => agent_session::claude_prompt_in_record(value).map(|text| ("prompt", text)),
+        // A prompt typed while Claude was working lives only here.
+        "attachment" if value.get("isSidechain").and_then(Value::as_bool) != Some(true) => {
+            agent_session::claude_queued_prompt(value).map(|text| ("prompt", text))
+        }
         "assistant" => {
             if value.get("isSidechain").and_then(Value::as_bool) == Some(true) {
                 return None;
@@ -353,7 +349,7 @@ mod tests {
     }
 
     #[test]
-    fn a_claude_transcript_reads_as_prompts_and_whole_answers() {
+    fn a_claude_transcript_reads_as_prompts_and_one_bubble_per_message() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("s.jsonl");
         std::fs::write(
@@ -380,9 +376,11 @@ mod tests {
             kinds(&read),
             vec![
                 ("prompt", "add a clear\nbutton"),
-                // The two text blocks of one turn, the tool call and its
-                // result between them left out, the escape byte dropped.
-                ("answer", "Looking at the composer.\n\nDone: the button[0m clears the draft."),
+                // The two messages of one turn, each its own bubble, the
+                // tool call and its result between them left out, the escape
+                // byte dropped.
+                ("answer", "Looking at the composer."),
+                ("answer", "Done: the button[0m clears the draft."),
                 ("prompt", "/model opus"),
             ]
         );
@@ -394,7 +392,7 @@ mod tests {
         assert!(again.unchanged && again.entries.is_empty());
         assert_eq!(again.version, Some(version.clone()));
         let stale = read_transcript(&path, TranscriptKind::Claude, Some("0:0"), DEFAULT_LIMIT).unwrap();
-        assert!(!stale.unchanged && stale.entries.len() == 3);
+        assert!(!stale.unchanged && stale.entries.len() == 4);
 
         // The limit keeps the newest turns and says that older ones exist.
         let last = read_transcript(&path, TranscriptKind::Claude, None, 2).unwrap();
@@ -402,6 +400,41 @@ mod tests {
         assert_eq!(kinds(&last).iter().map(|(k, _)| *k).collect::<Vec<_>>(), vec!["answer", "prompt"]);
 
         assert!(read_transcript(&dir.path().join("missing.jsonl"), TranscriptKind::Claude, None, 5).is_none());
+    }
+
+    #[test]
+    fn a_prompt_typed_while_claude_worked_is_a_bubble_in_its_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.jsonl");
+        std::fs::write(
+            &path,
+            concat!(
+                "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"fix the build\"}}\n",
+                "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"Checking.\"}]}}\n",
+                // The shapes a census of real sessions found, as written.
+                "{\"type\":\"queue-operation\",\"operation\":\"enqueue\",\"content\":\"also the tests\"}\n",
+                "{\"type\":\"attachment\",\"isSidechain\":false,\"timestamp\":\"2026-09-18T18:51:27.432Z\",\"attachment\":{\"type\":\"queued_command\",\"prompt\":\"also the tests\",\"commandMode\":\"prompt\",\"origin\":{\"kind\":\"human\"}}}\n",
+                "{\"type\":\"attachment\",\"isSidechain\":false,\"attachment\":{\"type\":\"queued_command\",\"prompt\":[{\"type\":\"image\",\"source\":{}},{\"type\":\"text\",\"text\":\"and this screenshot\"}],\"commandMode\":\"prompt\",\"origin\":{\"kind\":\"human\"}}}\n",
+                "{\"type\":\"attachment\",\"isSidechain\":false,\"attachment\":{\"type\":\"queued_command\",\"prompt\":\"<cross-session-message from=\\\"x\\\">hi</cross-session-message>\",\"commandMode\":\"prompt\",\"origin\":{\"kind\":\"peer\"},\"isMeta\":true}}\n",
+                "{\"type\":\"attachment\",\"isSidechain\":false,\"attachment\":{\"type\":\"queued_command\",\"prompt\":\"<task-notification>done</task-notification>\",\"commandMode\":\"task-notification\"}}\n",
+                "{\"type\":\"attachment\",\"isSidechain\":true,\"attachment\":{\"type\":\"queued_command\",\"prompt\":\"a note\",\"origin\":{\"kind\":\"coordinator\"}}}\n",
+                "{\"type\":\"attachment\",\"attachment\":{\"type\":\"date\"}}\n",
+                "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"Both fixed.\"}]}}\n",
+            ),
+        )
+        .unwrap();
+        let read = read_transcript(&path, TranscriptKind::Claude, None, DEFAULT_LIMIT).unwrap();
+        assert_eq!(
+            kinds(&read),
+            vec![
+                ("prompt", "fix the build"),
+                ("answer", "Checking."),
+                ("prompt", "also the tests"),
+                ("prompt", "and this screenshot"),
+                ("answer", "Both fixed."),
+            ]
+        );
+        assert_eq!(read.entries[2].at.as_deref(), Some("2026-09-18T18:51:27.432Z"));
     }
 
     #[test]
@@ -455,8 +488,8 @@ mod tests {
         )
         .unwrap();
         let read = read_transcript(&path, TranscriptKind::Claude, None, DEFAULT_LIMIT).unwrap();
-        assert_eq!(read.entries.len(), 1);
-        assert!(read.entries[0].cut);
+        assert_eq!(read.entries.len(), 2);
+        assert!(read.entries[0].cut && !read.entries[1].cut);
         assert_eq!(read.entries[0].text.chars().count(), MAX_ANSWER_CHARS);
 
         let gemini = agent_session_transcript("gemini", None, "0f5f9b7e-1c2d-4e3f-8a9b-0c1d2e3f4a5b", None, 5);

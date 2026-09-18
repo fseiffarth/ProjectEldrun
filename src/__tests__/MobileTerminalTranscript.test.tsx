@@ -78,7 +78,8 @@ const STORED = {
   truncated: false,
   entries: [
     { kind: "prompt", text: "add a clear button", at: "2026-09-15T05:49:39.013Z" },
-    { kind: "answer", text: "Looking at the composer.\n\nDone: the ✕ empties the draft." },
+    { kind: "answer", text: "Looking at the composer." },
+    { kind: "answer", text: "Done: the **✕** empties the draft. See [the docs](https://example.com)." },
   ],
 };
 
@@ -129,8 +130,12 @@ describe("Eldrun Mobile Focus reads the stored session", () => {
     const prompt = screen.getByRole("group", { name: "Your prompt" });
     expect(prompt.textContent).toBe("add a clear button");
     expect(prompt.className).toBe("readable-turn user");
-    const answer = chat.querySelector(".readable-turn.agent.answer");
-    expect(answer?.textContent).toContain("Done: the ✕ empties the draft.");
+    // One bubble per message the agent wrote, its Markdown formatted, its
+    // link only a label.
+    const answers = chat.querySelectorAll(".readable-turn.agent.answer");
+    expect([...answers].map((bubble) => bubble.textContent)).toEqual(["Looking at the composer.", "Done: the ✕ empties the draft. See the docs."]);
+    expect(answers[1].querySelector("strong")?.textContent).toBe("✕");
+    expect(chat.querySelector("a")).toBeNull();
     // The next read names the version it holds, so an unmoved file answers small.
     act(() => { document.dispatchEvent(new Event("visibilitychange")); });
     await settle();
@@ -140,7 +145,7 @@ describe("Eldrun Mobile Focus reads the stored session", () => {
     // Copy copies the stored turns, prompts marked the way the screen marks them.
     fireEvent.click(screen.getByRole("button", { name: "Copy the session text" }));
     await settle();
-    expect(navigator.clipboard.writeText).toHaveBeenCalledWith("> add a clear button\n\nLooking at the composer.\n\nDone: the ✕ empties the draft.");
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith("> add a clear button\n\nLooking at the composer.\n\nDone: the **✕** empties the draft. See [the docs](https://example.com).");
   });
 
   it("falls back to the screen when the session is unavailable, and can be switched to it", async () => {
@@ -174,6 +179,38 @@ describe("Eldrun Mobile Focus reads the stored session", () => {
     expect(screen.getByText("Hi there.")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Session" }));
     screen.getByTestId("session-transcript");
+  });
+
+  it("shows a sent prompt as the reader's bubble at once, and never changes it", async () => {
+    localStorage.setItem("eldrun.mobile.view.claude-code", "focus");
+    let stored = STORED;
+    vi.stubGlobal("fetch", sidecarFetch(() => stored));
+    render(<Terminal tab={TAB} back={() => {}} />);
+    await settle();
+    fireEvent.change(screen.getByRole("textbox", { name: "Message agent" }), { target: { value: "also the tests" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await settle();
+    // In the chat at once, as any prompt, not a "Sent" strip under it.
+    const chat = screen.getByTestId("session-transcript");
+    const prompts = () => [...chat.querySelectorAll(".readable-turn.user")];
+    const bubble = prompts()[1];
+    expect(bubble.textContent).toBe("also the tests");
+    expect(bubble.className).toBe("readable-turn user");
+    expect(document.querySelector(".last-sent")).toBeNull();
+
+    // The agent answered, then took the prompt in: the record lands after
+    // that answer in the file, the bubble stays where it was, as it was.
+    stored = { ...STORED, version: "1300:2", entries: [
+      ...STORED.entries,
+      { kind: "answer", text: "Still on the button.", at: "2026-09-15T05:51:00.000Z" },
+      { kind: "prompt", text: "also the tests", at: "2026-09-15T05:52:00.000Z" },
+    ] };
+    act(() => { document.dispatchEvent(new Event("visibilitychange")); });
+    await settle();
+    expect(prompts()).toHaveLength(2);
+    expect(prompts()[1]).toBe(bubble);
+    expect(bubble.textContent).toBe("also the tests");
+    expect(bubble.nextElementSibling?.textContent).toBe("Still on the button.");
   });
 
   it("clears the draft with the composer's ✕", async () => {
