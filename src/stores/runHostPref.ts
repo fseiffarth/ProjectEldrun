@@ -5,7 +5,7 @@ import type { TabLocation } from "./tabs";
 /**
  * "Which machine should scripts and shells launched from this project run on"
  * preference, keyed by project id (`docs/multi_host_remote_plan.md`). Set from the
- * `RunHostPicker`, read at launch time by `lib/pythonRun`, `lib/shellScriptRun`,
+ * `RunHostPicker`, read at launch time by `lib/terminal/pythonRun`, `lib/terminal/shellScriptRun`,
  * and `stores/tabs`' new-shell-tab funnel so a Run/Debug or a "+" shell lands on
  * the chosen host (primary or a worker) instead of the shell default.
  *
@@ -16,7 +16,7 @@ import type { TabLocation } from "./tabs";
  *
  * It chooses among the REMOTE machines, and it does not outrank the side a file is
  * on: a Run of a file the user is looking at on the local mirror runs in a local
- * shell whatever this says (`lib/pythonRun`'s `pythonRunPlan` owns that rule, and
+ * shell whatever this says (`lib/terminal/pythonRun`'s `pythonRunPlan` owns that rule, and
  * the picker is not even rendered on the Local side). The value here is persisted
  * and therefore usually set from an earlier session — a stored choice must not
  * silently redirect a click made somewhere else.

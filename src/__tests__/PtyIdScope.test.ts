@@ -23,7 +23,7 @@ const { invokeMock } = vi.hoisted(() => ({
 }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: (...a: unknown[]) => invokeMock(...a) }));
 
-import { BOX_SCOPE_PREFIX, splitPtyId } from "../lib/ptyId";
+import { BOX_SCOPE_PREFIX, splitPtyId } from "../lib/terminal/ptyId";
 import { useTabsStore, isDetachedPtyId, type GroupNode, type SplitNode } from "../stores/tabs";
 import { splitPtyId as splitPtyIdFromActivity } from "../stores/activity";
 

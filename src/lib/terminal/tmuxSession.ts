@@ -9,7 +9,7 @@
  * a session it did not just spawn (the Sessions view, the explicit-close kill).
  */
 
-import type { RemoteSpec } from "../types";
+import type { RemoteSpec } from "../../types";
 
 /**
  * A project id can appear verbatim in a tmux session name (it's practice a uuid),

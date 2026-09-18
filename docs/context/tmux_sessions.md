@@ -36,7 +36,7 @@ when it is gone (host rebooted, session killed) `-A` creates a fresh session tha
 `--resume`, so the conversation resumes exactly as it did before. The agent bootstrap
 prelude is nested inside the tmux target unchanged, the same way a shell tab's login
 shell is. The session name is a **`eldrun-<scope>--<kind>-<uuid>` the frontend mints
-once per tab and persists** (`TabEntry.tmuxSession`, `lib/tmuxSession.ts`'s
+once per tab and persists** (`TabEntry.tmuxSession`, `lib/terminal/tmuxSession.ts`'s
 `newTmuxSessionName`) — *not* derived from the PTY id, which `loadFromLayout`
 regenerates on restore (a derived name would fork a second session on relaunch
 instead of reattaching); `tmux_attach` overrides it for a Sessions-view attach.

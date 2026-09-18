@@ -455,7 +455,7 @@ pub async fn python_interpreters(project_dir: String) -> Result<Vec<PyInterprete
 
 /// The interpreter Run/Debug should use *right now*: the project's explicit choice
 /// if it has one (no probing), else the best auto-detected candidate, else the
-/// system default. This is the only thing `lib/pythonRun.ts` needs to ask.
+/// system default. This is the only thing `lib/terminal/pythonRun.ts` needs to ask.
 #[tauri::command]
 pub async fn python_interpreter_for(
     project_id: Option<String>,

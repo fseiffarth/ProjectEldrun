@@ -553,7 +553,7 @@ should treat as eligible or not.
 ## 4. tmux
 
 **Where** `services/tmux_local.rs`, `services/remote.rs` (remote tabs),
-`src/lib/tmuxSession.ts`, `services/mobile_control/*` (phone replay),
+`src/lib/terminal/tmuxSession.ts`, `services/mobile_control/*` (phone replay),
 `docs/context/tmux_sessions.md`.
 
 **Assumes** `tmux -V` parses as `tmux <major>.<minor>[letter]` (`next-3.4`
@@ -824,7 +824,7 @@ prints (parsed to learn the account); token env vars honoured by each CLI.
 
 ## 16. Python environment tooling
 
-**Where** `commands/python.rs`, `src/lib/pythonRun.ts`.
+**Where** `commands/python.rs`, `src/lib/terminal/pythonRun.ts`.
 
 **Assumes** `conda env list` output shape (`#` comments, `name  prefix`),
 `poetry env info`, active venv detection; interpreter precedence is ranked in

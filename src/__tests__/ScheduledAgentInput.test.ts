@@ -1,10 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("../lib/terminalInput", () => ({
+vi.mock("../lib/terminal/terminalInput", () => ({
   writePtyInput: vi.fn(() => Promise.resolve()),
 }));
 
-import { writePtyInput } from "../lib/terminalInput";
+import { writePtyInput } from "../lib/terminal/terminalInput";
 import {
   _clearScheduledAgentInputsForTest,
   registerScheduledAgentInput,

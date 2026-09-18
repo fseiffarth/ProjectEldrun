@@ -287,7 +287,7 @@ export function LocalityMenu({
  * Remote/Local *source* switch) that chooses WHICH machine a Run/Debug or shell
  * launched from this project runs on, distinct from which side its files are
  * *read* from. Writes the per-project run-host preference (`useRunHostPrefStore`)
- * that `lib/pythonRun` reads at launch. Reuses the same two-level `LocalityMenu`
+ * that `lib/terminal/pythonRun` reads at launch. Reuses the same two-level `LocalityMenu`
  * as the tab badge, so the machine list + worker eligibility stay identical.
  * Shown only for remote projects (a local project has no machine axis).
  */

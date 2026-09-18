@@ -6,7 +6,7 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(() => Promise.resolve([])
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(() => Promise.resolve(() => {})), emit: vi.fn(() => Promise.resolve()) }));
 
 import { lastPromptEcho } from "../lib/agents/prompt/echo";
-import { registerTerminal, unregisterTerminal } from "../lib/terminalRegistry";
+import { registerTerminal, unregisterTerminal } from "../lib/terminal/terminalRegistry";
 import type { ReadableBufferLike } from "../../mobile-web/src/terminal/readableScreen";
 import { useActivityStore } from "../stores/activity";
 import { useAgentModelsStore } from "../stores/agents/agentModels";

@@ -59,7 +59,7 @@ import {
   type WindowFrame,
 } from "../../lib/coords";
 import { bindDragRelease, dragPlatform } from "../../lib/dragPlatform";
-import { shouldPersistTab, shouldPersistLocalTab } from "../../lib/tmuxSession";
+import { shouldPersistTab, shouldPersistLocalTab } from "../../lib/terminal/tmuxSession";
 import { isTrashProject } from "../../lib/trashProject";
 import { IS_WINDOWS } from "../../lib/platform";
 import { restoreProjectScope, useProjectsStore } from "../../stores/projects";

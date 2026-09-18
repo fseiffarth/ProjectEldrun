@@ -1,6 +1,6 @@
-import { relativePathWithin } from "./paths";
-import { isRemoteLocation, type TabLocation } from "../stores/tabs";
-import type { ProjectEntry } from "../types";
+import { relativePathWithin } from "../paths";
+import { isRemoteLocation, type TabLocation } from "../../stores/tabs";
+import type { ProjectEntry } from "../../types";
 
 export type ScriptShell = "bash" | "zsh" | "fish" | "ksh" | "powershell" | "cmd";
 

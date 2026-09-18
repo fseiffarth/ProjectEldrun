@@ -5,7 +5,7 @@ import { useHeaderStatusReport, type HeaderStatusReport } from "../../stores/hea
 import { useQuiesce, saverInterval } from "../../stores/power";
 import { useProjectsStore } from "../../stores/projects";
 import { openTabInRootConsole } from "../../stores/rootOverlay";
-import { shellQuote } from "../../lib/shellScriptRun";
+import { shellQuote } from "../../lib/terminal/shellScriptRun";
 import { useT } from "../../lib/i18n";
 import { UntestedTag } from "../common/UntestedTag";
 

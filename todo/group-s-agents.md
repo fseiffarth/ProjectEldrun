@@ -1343,7 +1343,7 @@ unchanged; the new agents are additive.
     also flushes on mouse-up instead of waiting out its 60 ms debounce, and holds
     the text it captured, so a repaint under the selection can no longer eat it.
     Agent panes only — a shell tab keeps xterm's word-select and its clicks.
-    Frontend only: `lib/terminalControl.ts`, `components/terminal/TerminalView.tsx`.
+    Frontend only: `lib/terminal/terminalControl.ts`, `components/terminal/TerminalView.tsx`.
     Built 2026-09-07, **not live-tested**.
     - [x] 🤖 Automated test — `TerminalControl` (the gesture decision: paste on a
       double-click, force-select only while the program holds the mouse, never on
@@ -1379,7 +1379,7 @@ unchanged; the new agents are additive.
     is a baseline, never a record. An agent whose transcript Eldrun cannot read
     (Gemini, Qwen, Codex 0.153.4 whose thread store keeps no messages, a custom
     command) gets the prompt echoed on the pane's own screen instead
-    (`lib/agents/prompt/echo` over `lib/terminalRegistry`, parsed by the phone's
+    (`lib/agents/prompt/echo` over `lib/terminal/terminalRegistry`, parsed by the phone's
     own `readableScreen`/`inputFrameStart`/`chatTurns`, so a draft still being
     typed is never taken for a prompt). Built 2026-09-07, **not live-tested**; the Rust side is uncompiled on
     the GNOME host (no toolchain) — CI compiles it.
@@ -1577,7 +1577,7 @@ unchanged; the new agents are additive.
       key holds nothing; and a tab whose agent fires no hooks (Gemini, Qwen,
       custom) falls back to its bytes — after a keystroke's grace before a
       delivery, and after 30 s of quiet (`HOOKLESS_DONE_QUIET_MS`) after one —
-      instead of never being deliverable again. Files: `lib/terminalControl.ts`,
+      instead of never being deliverable again. Files: `lib/terminal/terminalControl.ts`,
       `TerminalView.tsx`, `stores/activity.ts`, `AgentScheduleHost.tsx`.
       Frontend only, hot-reloads; **not live-tested**.
       - [x] 🤖 Automated test — `AgentScheduleParallelTabs` (two tabs, a

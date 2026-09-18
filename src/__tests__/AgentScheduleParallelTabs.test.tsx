@@ -11,12 +11,12 @@ vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn(() => Promise.resolve(() => {})),
   emit: vi.fn(() => Promise.resolve()),
 }));
-vi.mock("../lib/terminalInput", () => ({
+vi.mock("../lib/terminal/terminalInput", () => ({
   writePtyInput: vi.fn(() => Promise.resolve()),
 }));
 
 import { AgentScheduleHost } from "../components/layout/AgentScheduleHost";
-import { writePtyInput } from "../lib/terminalInput";
+import { writePtyInput } from "../lib/terminal/terminalInput";
 import {
   _clearScheduledAgentInputsForTest,
   registerScheduledAgentInput,

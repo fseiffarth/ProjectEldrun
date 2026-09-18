@@ -1,5 +1,5 @@
-import type { TabKind } from "../stores/tabs";
-import { IS_MAC } from "./platform";
+import type { TabKind } from "../../stores/tabs";
+import { IS_MAC } from "../platform";
 
 const CSI = "\x1b[";
 const claimedInitialInputs = new Set<string>();

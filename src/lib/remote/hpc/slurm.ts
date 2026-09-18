@@ -6,7 +6,7 @@
  * This module lets a `.slurm` file be submitted, watched, and cancelled from the
  * code viewer without the user memorizing `sbatch`/`squeue`/`scancel`.
  *
- * Two halves, both modeled on `lib/pythonRun.ts`:
+ * Two halves, both modeled on `lib/terminal/pythonRun.ts`:
  *
  *  1. **Pure text helpers** — `isSlurmScript`, `parseSbatchDirectives`,
  *     `spliceDirective`. Like the YAML/table viewers, the directive form *renders
@@ -22,7 +22,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useTabsStore, type TabEntry, type TabLocation } from "../../../stores/tabs";
 import { useHpcJobsStore, type HpcJob } from "../../../stores/remote/hpc/hpcJobs";
-import { shellQuote } from "../../pythonRun";
+import { shellQuote } from "../../terminal/pythonRun";
 import { useProjectsStore } from "../../../stores/projects";
 import { useSettingsStore } from "../../../stores/settings";
 import { isHpcHost, targetOfSpec } from "./hpcHost";

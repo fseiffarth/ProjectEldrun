@@ -21,12 +21,12 @@ import {
   onTerminalReady,
   onTerminalReplay,
   type TerminalOutputRange,
-} from "../../lib/terminalBus";
+} from "../../lib/terminal/terminalBus";
 import { hpcGuardRefusal } from "../../lib/remote/hpc/hpcGuard";
 import { useHpcGuardStore } from "../../stores/remote/hpc/hpcGuardPrompt";
-import { CSI_U_SHIFT_TAB, FORCE_SELECTION_MODIFIER, SILENT_START_MS, agentMouseDownAction, bufferTail, claimInitialInput, decodeOsc52Clipboard, initialInputForPty, claudeLaunchName, isClaudeCommand, isCodexCommand, isTerminalAutoReply, isTerminalIdentityResponse, isTerminalReport, showsAgentTrustDialog, silentStartNotice, stripTerminalQueries, suppressNativeContextMenu, terminalProgramLabel, type SilentStartNotice } from "../../lib/terminalControl";
-import { registerTerminal, unregisterTerminal } from "../../lib/terminalRegistry";
-import { clearPtyInput, writePtyInput } from "../../lib/terminalInput";
+import { CSI_U_SHIFT_TAB, FORCE_SELECTION_MODIFIER, SILENT_START_MS, agentMouseDownAction, bufferTail, claimInitialInput, decodeOsc52Clipboard, initialInputForPty, claudeLaunchName, isClaudeCommand, isCodexCommand, isTerminalAutoReply, isTerminalIdentityResponse, isTerminalReport, showsAgentTrustDialog, silentStartNotice, stripTerminalQueries, suppressNativeContextMenu, terminalProgramLabel, type SilentStartNotice } from "../../lib/terminal/terminalControl";
+import { registerTerminal, unregisterTerminal } from "../../lib/terminal/terminalRegistry";
+import { clearPtyInput, writePtyInput } from "../../lib/terminal/terminalInput";
 import { registerScheduledAgentInput } from "../../lib/agents/scheduledAgentInput";
 import "@xterm/xterm/css/xterm.css";
 
@@ -998,7 +998,7 @@ export function TerminalView({ id, cmd, args = [], env = {}, initialInput, cwd, 
       return true;
     });
 
-    // Subscribed by id through the shared bus (lib/terminalBus) rather than each
+    // Subscribed by id through the shared bus (lib/terminal/terminalBus) rather than each
     // pane calling `listen()` itself — the backend emits these window-wide, not
     // scoped per PTY, so one `listen()` per mounted terminal meant every output
     // chunk from every running PTY was dispatched to and filtered by every

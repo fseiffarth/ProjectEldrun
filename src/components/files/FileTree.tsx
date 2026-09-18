@@ -54,13 +54,13 @@ import {
   checkMainScripts,
   isMainScriptCached,
   needsMainCheck,
-} from "../../lib/pythonMainCache";
-import { runPythonFile, pythonRunPlan, placeForFocused } from "../../lib/pythonRun";
+} from "../../lib/terminal/pythonMainCache";
+import { runPythonFile, pythonRunPlan, placeForFocused } from "../../lib/terminal/pythonRun";
 import {
   shellRunnerFor,
   shellScriptRunPlan,
   type ScriptShell,
-} from "../../lib/shellScriptRun";
+} from "../../lib/terminal/shellScriptRun";
 import { guardLoginNodeRun } from "../../lib/remote/hpc/hpcGuard";
 import { projectIsOnHpc } from "../../lib/remote/hpc/hpcHost";
 import { useRunHostPrefStore } from "../../stores/runHostPref";
@@ -769,7 +769,7 @@ export function FileTree({
   // `if __name__ == "__main__":` guard) — the Run ▶ button only shows for
   // those, not for every importable module. It needs the file's content, which
   // the tree listing doesn't carry, so it is read once per *version* of a file
-  // and the verdict is persisted in settings.json (`lib/pythonMainCache`).
+  // and the verdict is persisted in settings.json (`lib/terminal/pythonMainCache`).
   //
   // Persisting is what makes this affordable on BOTH sides. It used to be a
   // component-lifetime ref, so every reopen of the viewer re-read every visible
@@ -3111,7 +3111,7 @@ export function FileTree({
 
   /** Run a Python file: open a terminal tab in the project's scope running the
    *  project's interpreter on it. Same mechanism as the viewer's Run button
-   *  (`lib/pythonRun`), so it inherits remote-host/container locality and picks
+   *  (`lib/terminal/pythonRun`), so it inherits remote-host/container locality and picks
    *  up the project's pinned/auto-detected interpreter. */
   function runPythonScript(event: React.MouseEvent<HTMLButtonElement>, entry: FileEntry) {
     event.preventDefault();
@@ -3127,7 +3127,7 @@ export function FileTree({
   }
 
   /** Open a run terminal for `entry`, appending `args` to the command line (see
-   *  `lib/pythonRun`). Same placement as the viewer's Run; failures surface into
+   *  `lib/terminal/pythonRun`). Same placement as the viewer's Run; failures surface into
    *  the tree's error banner. */
   function launchPython(entry: FileEntry, args?: string) {
     runPythonFile({

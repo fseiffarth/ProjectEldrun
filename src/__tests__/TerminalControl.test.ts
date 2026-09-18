@@ -11,7 +11,7 @@ import {
   isTerminalReport,
   stripTerminalQueries,
   suppressNativeContextMenu,
-} from "../lib/terminalControl";
+} from "../lib/terminal/terminalControl";
 
 describe("terminal control helpers", () => {
   beforeEach(() => {

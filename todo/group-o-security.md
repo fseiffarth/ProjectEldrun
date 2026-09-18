@@ -372,7 +372,7 @@ intent. What is left is listed here.
     `cwd` names a path on the far host, which this process cannot check, and the
     ssh-wrapped command does the `cd` over there. The "run tab on an absolute
     path" case flagged below turned out not to be a counterexample:
-    `lib/pythonRun.ts`'s `runCwd` only falls back to the file's own directory
+    `lib/terminal/pythonRun.ts`'s `runCwd` only falls back to the file's own directory
     when the viewer has **no** project (root-scope tab, `project_id: None`),
     which the gate already exempts. Comparison is component-wise
     (`Path::starts_with`), mirroring `services::sandbox::cwd_is_within`'s shape

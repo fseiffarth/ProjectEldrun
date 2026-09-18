@@ -420,7 +420,7 @@ it. Concretely:
 
 - `browser` is **absent from `isLocatableKind`**, so the locality badge, the
   locality menu and `effectiveTabLocation` never touch it.
-- It is absent from `lib/tmuxSession.ts`'s `shouldPersistTab` /
+- It is absent from `lib/terminal/tmuxSession.ts`'s `shouldPersistTab` /
   `shouldPersistLocalTab` (both require a *shell* tab), so no tmux wrap.
 - **The run-host preference must not claim it.** `applyRunHostPref`
   (`tabs.ts:40-46`) already gates on `tab.kind !== "shell"`, so this is free —

@@ -44,7 +44,7 @@ import { connectionStillOpen, openConnectionInRoot } from "../lib/remoteConnect"
 import { describeScaffoldRepair, type ProjectScaffoldRepair } from "../components/projects/scaffold";
 import type { SavedPasswordState } from "../components/projects/useSavedCredential";
 import { IS_WINDOWS } from "../lib/platform";
-import { shouldPersistLocalTab, shouldPersistTab } from "../lib/tmuxSession";
+import { shouldPersistLocalTab, shouldPersistTab } from "../lib/terminal/tmuxSession";
 import { translate, useI18nStore } from "../lib/i18n";
 import { TRASH_PROJECT_ID } from "../lib/trashProject";
 

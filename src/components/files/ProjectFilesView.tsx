@@ -38,7 +38,7 @@ import { AgentSchedulesView } from "../agents/AgentSchedulesView";
 import { useDialogs } from "../common/PromptDialogs";
 import { ROOT_SCOPE, useTabsStore, type TabEntry } from "../../stores/tabs";
 import { persistentSessionOf } from "../../lib/closeRemoteTab";
-import { sessionKindFromName, type TmuxSessionKind } from "../../lib/tmuxSession";
+import { sessionKindFromName, type TmuxSessionKind } from "../../lib/terminal/tmuxSession";
 import { useRemoteStatusStore, sshOf } from "../../stores/remoteStatus";
 import {
   sessionHostsOf,
@@ -1444,7 +1444,7 @@ export function ProjectFilesView({
               local machine, so the control would have nothing to choose, and
               showing a machine name there would state the opposite of what happens
               (a Local-side ▶ runs in a local shell and the preference cannot
-              overrule it — see `lib/pythonRun`'s `pythonRunPlan`). */}
+              overrule it — see `lib/terminal/pythonRun`'s `pythonRunPlan`). */}
           {source === "remote" && (
             <RunHostPicker
               projectId={projectId}

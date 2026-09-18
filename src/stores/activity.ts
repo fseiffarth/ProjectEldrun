@@ -3,7 +3,7 @@ import { emit, listen } from "@tauri-apps/api/event";
 import { create } from "zustand";
 import { looksLikeDecisionPromptStripped, stripAnsi } from "../lib/agents/prompt/prompt";
 import { METRIC, agentPromptLeaf } from "../lib/usageMetrics";
-import { splitPtyId } from "../lib/ptyId";
+import { splitPtyId } from "../lib/terminal/ptyId";
 import { allGroups, isPtyTabKind, useTabsStore } from "./tabs";
 import type { TabEntry } from "./tabs";
 import { bumpUsage } from "./usage";
@@ -419,7 +419,7 @@ export function notePtySpawn(ptyId: string) {
   decisionMemo.delete(ptyId);
 }
 
-// The parser lives in `lib/ptyId` — one cut for every consumer, and one that
+// The parser lives in `lib/terminal/ptyId` — one cut for every consumer, and one that
 // knows a box scope carries a colon of its own. Re-exported so the call sites
 // that have always imported it from here keep working.
 export { splitPtyId };

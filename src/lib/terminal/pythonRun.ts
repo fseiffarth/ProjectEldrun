@@ -27,9 +27,9 @@
  */
 
 import { invoke } from "@tauri-apps/api/core";
-import { basename, dirname, relativePathWithin } from "./paths";
-import { useTabsStore, isRemoteLocation, type TabEntry, type TabLocation } from "../stores/tabs";
-import { guardLoginNodeRun } from "./remote/hpc/hpcGuard";
+import { basename, dirname, relativePathWithin } from "../paths";
+import { useTabsStore, isRemoteLocation, type TabEntry, type TabLocation } from "../../stores/tabs";
+import { guardLoginNodeRun } from "../remote/hpc/hpcGuard";
 
 /** How a run/debug tab is inserted into the layout. Given the built (keyless)
  *  tab, place it and return the created entry — or null when it streamed the tab

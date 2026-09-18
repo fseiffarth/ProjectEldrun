@@ -11,7 +11,7 @@ import {
   type WindowState,
 } from "../types";
 import { applyLanguage, type Language } from "../lib/i18n";
-import { mergeVerdicts, verdictsUnchanged, type PyMainCache } from "../lib/pythonMainCache";
+import { mergeVerdicts, verdictsUnchanged, type PyMainCache } from "../lib/terminal/pythonMainCache";
 import { THEME_COLOR_RE, THEME_VAR_NAMES } from "../lib/themeTokens";
 import {
   buildCursorVars,
@@ -460,7 +460,7 @@ interface SettingsStore {
    *  persisted in settings.json so they survive a restart (see Settings.python_run_args). */
   setPythonRunArgs: (path: string, args: string) => Promise<void>;
   /** Fold a batch of `.py` "is this a script" verdicts into the persisted cache
-   *  that gates the tree's ▶ (see `lib/pythonMainCache`). Batched — one settings
+   *  that gates the tree's ▶ (see `lib/terminal/pythonMainCache`). Batched — one settings
    *  write per folder scan, not one per file — and a no-op when every verdict
    *  already matches, so re-listing an unchanged folder writes nothing. */
   setPythonMainVerdicts: (updates: PyMainCache) => Promise<void>;

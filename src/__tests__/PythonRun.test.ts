@@ -8,7 +8,7 @@ import {
   runCwd,
   shellQuote,
   systemInterpreter,
-} from "../lib/pythonRun";
+} from "../lib/terminal/pythonRun";
 
 describe("shellQuote", () => {
   it("single-quotes on unix and escapes an embedded quote", () => {

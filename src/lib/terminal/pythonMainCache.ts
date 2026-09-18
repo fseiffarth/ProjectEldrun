@@ -29,7 +29,7 @@
  * would answer for a file that has since become something else entirely.
  */
 
-import { isPythonMainScript } from "./viewers/python";
+import { isPythonMainScript } from "../viewers/python";
 
 /** One cached verdict: the answer, plus the file version it was computed from. */
 export interface PyMainVerdict {

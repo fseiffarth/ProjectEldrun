@@ -1,5 +1,5 @@
 import { agentInputWrites } from "../../../shared/agentComposer";
-import { writePtyInput } from "../terminalInput";
+import { writePtyInput } from "../terminal/terminalInput";
 
 const ENCODER = new TextEncoder();
 const WRITE_GAP_MS = 24;

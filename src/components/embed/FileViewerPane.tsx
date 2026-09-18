@@ -108,7 +108,7 @@ import {
   pythonRunPlan,
   fileSideLocation,
   placeForFocused,
-} from "../../lib/pythonRun";
+} from "../../lib/terminal/pythonRun";
 import { RunHostPicker } from "../tabs/TabLocalityBadges";
 import { useRunHostPrefStore } from "../../stores/runHostPref";
 import {

@@ -6,12 +6,12 @@ import { useShallow } from "zustand/react/shallow";
 import type { InternalViewer } from "../lib/viewers/fileUtils";
 import type { AutocompleteMode } from "../types";
 import { forgetPty } from "../lib/agents/promptCount";
-import { BOX_SCOPE_PREFIX, splitPtyId } from "../lib/ptyId";
+import { BOX_SCOPE_PREFIX, splitPtyId } from "../lib/terminal/ptyId";
 import { METRIC, agentMetricLeaf, sub } from "../lib/usageMetrics";
 import { useLinkRoutingStore } from "./linkRouting";
 import { bumpUsage } from "./usage";
 import { translate, useI18nStore } from "../lib/i18n";
-import { newTmuxSessionName } from "../lib/tmuxSession";
+import { newTmuxSessionName } from "../lib/terminal/tmuxSession";
 import { useRunHostPrefStore } from "./runHostPref";
 import { withdrawnTabKinds } from "../lib/experimental";
 import { useSettingsStore } from "./settings";
@@ -574,7 +574,7 @@ export interface TabEntry {
   // The backend strips it from the project-tree export/adoption path.
   scheduleTargetId?: string;
   // This tab's work is **not** worth outliving it: never tmux-wrapped, however
-  // persist-enabled its project is (`lib/tmuxSession`'s `shouldPersistTab`). Set
+  // persist-enabled its project is (`lib/terminal/tmuxSession`'s `shouldPersistTab`). Set
   // by the SLURM log tab on an HPC-tagged host — a `tail -F` left running under a
   // tmux daemon on a shared login node after Eldrun quits is exactly the standing
   // presence the tag forbids, and the tail is one click away in the Jobs view.
@@ -648,7 +648,7 @@ export interface TabEntry {
   // must live on the tab to survive a relaunch and let the tab REATTACH rather than
   // start a second session. Passed to the backend as `tmux_session` when the tab
   // actually runs persistently (a remote shell tab of a persist-enabled project);
-  // inert otherwise. See `lib/tmuxSession.ts`, `shouldPersistTab`.
+  // inert otherwise. See `lib/terminal/tmuxSession.ts`, `shouldPersistTab`.
   tmuxSession?: string;
   // When set, this shell tab **attaches** to an existing named tmux session on the
   // host (opened from the Sessions view onto a running, possibly hand-started

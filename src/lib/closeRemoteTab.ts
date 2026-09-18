@@ -26,7 +26,7 @@ import {
 } from "../stores/tabs";
 import { useProjectsStore } from "../stores/projects";
 import { useSettingsStore } from "../stores/settings";
-import { shouldPersistTab } from "./tmuxSession";
+import { shouldPersistTab } from "./terminal/tmuxSession";
 import { IS_WINDOWS } from "./platform";
 
 /**

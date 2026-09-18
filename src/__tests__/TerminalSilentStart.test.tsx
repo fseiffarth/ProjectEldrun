@@ -7,7 +7,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, act, cleanup } from "@testing-library/react";
-import { SILENT_START_MS, silentStartNotice, terminalProgramLabel } from "../lib/terminalControl";
+import { SILENT_START_MS, silentStartNotice, terminalProgramLabel } from "../lib/terminal/terminalControl";
 
 class ResizeObserverStub {
   observe() {}

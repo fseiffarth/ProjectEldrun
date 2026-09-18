@@ -265,7 +265,7 @@ const AGENT_CMDS: &[&str] = &[
     "ollama",
 ];
 
-/// Script interpreters a Run tab persists as its `cmd` (`lib/shellScriptRun.ts`'s
+/// Script interpreters a Run tab persists as its `cmd` (`lib/terminal/shellScriptRun.ts`'s
 /// `ScriptShell`, plus bare `sh`). A Python Run tab persists `cmd: ""` and types
 /// its command line as input instead, so no interpreter path appears here.
 const SCRIPT_INTERP_CMDS: &[&str] = &["sh", "bash", "zsh", "fish", "ksh", "powershell", "cmd"];

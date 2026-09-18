@@ -38,7 +38,7 @@ const { bus } = vi.hoisted(() => ({
     output: new Map<string, (data: string) => void>(),
   },
 }));
-vi.mock("../lib/terminalBus", () => ({
+vi.mock("../lib/terminal/terminalBus", () => ({
   onTerminalOutput: (id: string, h: (data: string) => void) => {
     bus.output.set(id, h);
     return () => bus.output.delete(id);
@@ -84,7 +84,7 @@ vi.mock("../stores/settings", () => ({
 }));
 
 import { TerminalView } from "../components/terminal/TerminalView";
-import { claudeLaunchName, clearClaimedInitialInputsForTest } from "../lib/terminalControl";
+import { claudeLaunchName, clearClaimedInitialInputsForTest } from "../lib/terminal/terminalControl";
 
 /** Everything written to the PTY, in order, as text. */
 function written(): string {

@@ -236,7 +236,7 @@ const CSI_U_SHIFT_TAB = "\u001b[9;2u";
  * a whole lap and report a failed switch on a session that offers the mode.
  * Codex accepts CSI-u whether or not the terminal answered its keyboard-
  * enhancement probe. The desktop pane re-encodes the same key for the same
- * reason (`src/lib/terminalControl.ts`). */
+ * reason (`src/lib/terminal/terminalControl.ts`). */
 export function shiftTabKey(agentLabel?: string): string {
   return agentLabel && CODEX.agent.test(agentLabel) ? CSI_U_SHIFT_TAB : LEGACY_SHIFT_TAB;
 }

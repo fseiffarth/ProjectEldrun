@@ -470,7 +470,7 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     Turn the text editor into a usable Python workbench for the three things a
     script actually needs, without importing an LSP or a DAP client.
 
-    - **Run / Debug open a terminal tab** (`lib/pythonRun.ts`) rather than a bespoke
+    - **Run / Debug open a terminal tab** (`lib/terminal/pythonRun.ts`) rather than a bespoke
       execution path — the same one-click-open-a-tab-and-run policy as
       `installCommand.ts`. That is what makes them work everywhere Eldrun already
       works, *for free*: a shell tab carries the project's locality and sandboxing,

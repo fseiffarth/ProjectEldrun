@@ -1,5 +1,5 @@
 import type { LinkOpenTarget } from "./browser";
-import type { PyMainVerdict } from "../lib/pythonMainCache";
+import type { PyMainVerdict } from "../lib/terminal/pythonMainCache";
 import type { AgentCron } from "../lib/agents/agentCron";
 import type { CursorPack } from "../lib/cursorPacks";
 import type { TranslationKey } from "../lib/i18n";
@@ -495,7 +495,7 @@ export interface Settings {
    *  here precisely because the check needs the file's *content*: on a remote
    *  listing that is an SFTP round trip per file, which is why it used to be
    *  skipped there (and ▶ wrongly shown on every `.py`). Bounded and pruned by
-   *  `lib/pythonMainCache`. Round-trips through the backend's `extra` catch-all —
+   *  `lib/terminal/pythonMainCache`. Round-trips through the backend's `extra` catch-all —
    *  no Rust field needed. */
   python_main_scripts?: Record<string, PyMainVerdict>;
   run_scripts_in_background?: boolean;

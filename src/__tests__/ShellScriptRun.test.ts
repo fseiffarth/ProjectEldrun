@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { shellRunCommand, shellScriptRunPlan } from "../lib/shellScriptRun";
+import { shellRunCommand, shellScriptRunPlan } from "../lib/terminal/shellScriptRun";
 import type { ProjectEntry } from "../types";
 
 const remoteProject: ProjectEntry = {
@@ -73,7 +73,7 @@ describe("shell script run planning", () => {
   });
 
   it("keeps a mirror-browsed script LOCAL even with a worker chosen", () => {
-    // The browsed side is dominant (`lib/pythonRun`'s `pythonRunPlan` carries the
+    // The browsed side is dominant (`lib/terminal/pythonRun`'s `pythonRunPlan` carries the
     // reasoning): the preference is persisted per project, so it is normally set
     // from some earlier session on the host side, and it must not reach back and
     // redirect a Run of a file the user is looking at on the local mirror.

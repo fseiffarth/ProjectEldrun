@@ -40,7 +40,7 @@ const { bus } = vi.hoisted(() => ({
     output: new Map<string, (data: string) => void>(),
   },
 }));
-vi.mock("../lib/terminalBus", () => ({
+vi.mock("../lib/terminal/terminalBus", () => ({
   onTerminalOutput: (id: string, h: (data: string) => void) => {
     bus.output.set(id, h);
     return () => bus.output.delete(id);
@@ -93,7 +93,7 @@ vi.mock("../stores/settings", () => ({
 }));
 
 import { TerminalView } from "../components/terminal/TerminalView";
-import { clearClaimedInitialInputsForTest } from "../lib/terminalControl";
+import { clearClaimedInitialInputsForTest } from "../lib/terminal/terminalControl";
 
 /** Fire `terminal-ready` plus a first output chunk, then let the boot cushion
  *  and the type/Enter timers run out. */

@@ -983,7 +983,7 @@ container) — as opposed to the git **push** axis (#21/#22).*
     tmux_wrap_exec,tmux_kill_session_script,tmux_rename_session_script,tmux_ls_script,parse_tmux_ls,
     valid_tmux_session_name}`, `services::tmux_local`, `remote_tmux_{list,kill,rename}` +
     `local_tmux_{list,kill,rename}` + `set_project_persist_sessions` commands;
-    frontend `lib/tmuxSession.ts`, `lib/closeRemoteTab.ts`, CenterPanel/TabPane/TerminalView
+    frontend `lib/terminal/tmuxSession.ts`, `lib/closeRemoteTab.ts`, CenterPanel/TabPane/TerminalView
     plumbing, the pill toggle + a global Settings toggle, and the multi-host Sessions view in
     `ProjectFilesView`.)* Shipped **default ON** rather than behind the experimental flag (per user).
     Beyond the original remote scope it also covers: **local** persistence (Unix — survives an
