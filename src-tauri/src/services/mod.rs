@@ -113,3 +113,5 @@ pub mod webkit_a11y;
 pub mod window_service;
 pub mod window_state;
 pub mod worker_sync;
+
+pub mod text_completion;

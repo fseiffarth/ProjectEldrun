@@ -87,44 +87,54 @@ each entry names where the work lives. Add new groups below as they come up.
 
 ### Text viewer autocomplete (#45, `FileViewerPane.tsx` + `commands/ollama.rs`)
 
-Today: a debounced (600 ms) ghost from whichever Ollama model is loaded, via
-`/api/chat` with a BEFORE/AFTER prompt, Sentence/Block/Scope modes, hand-picked
+Implemented **2026-09-18**, pending live verification: a debounced (600 ms)
+ghost from a loaded Ollama model, Sentence/Block/Scope modes, hand-picked
 reference files, and Tab / → / Esc to accept, walk, or dismiss.
 
-1. **Bound the window sent.** `requestCompletion` sends the whole draft on
-   either side of the caret on every pause; a long `.tex` file costs a full
-   prompt evaluation each time. Send a caret-centred window (e.g. ~4 k chars
-   before, ~1 k after, cut on line boundaries) so latency stops scaling with
-   file size.
-2. **Native fill-in-the-middle for FIM models.** Coder models (qwen2.5-coder,
-   codegemma, starcoder2, deepseek-coder) complete far better through
-   `/api/generate` with `suffix` than through a chat instruction. Detect
-   insert capability per model and keep the chat path as the fallback.
-   This removes most of the need for `clean_completion`'s preamble and fence
-   stripping.
-3. **Cancel for real.** Aborting only drops the result. The blocking
-   `ollama_http` call still runs to its `num_predict` cap, so fast typing
-   queues stale generations inside Ollama. Close the socket on abort, or move
-   the request to a cancellable task.
-4. **Stream into the ghost.** Show tokens as they arrive instead of after the
-   full reply. This matters most for Block and Scope modes (256+ tokens).
-5. **Type-through keeps the ghost.** Any keystroke dismisses the suggestion,
-   and the next one comes 600 ms later. If the typed characters match the
-   start of the ghost, consume them and keep the rest.
-6. **Drop the per-request model lookup.** Every trigger first calls
-   `list_ollama_models_detailed`. Cache the loaded set briefly, or refresh it
-   when the 🧠 menu changes it.
-7. **Automatic context.** Beyond the manual picker: the files open in other
-   tabs, files the current one imports or `\input`s, and for LaTeX the
-   document's `\label` / bib keys. Keep it capped by the existing
-   `MAX_CONTEXT_*` budget.
-8. **Prose awareness.** For Markdown/LaTeX/plain text, tell the model to keep
-   the document's own language, so a German paragraph is not continued in
-   English. Add a stop at a line or sentence end in Sentence mode.
-9. **Smaller wins.** Accept one line at a time (next to →'s word walk). Cycle
-   2–3 candidates. A cache keyed on the prefix tail, so undo/redo and
-   re-visiting a caret do not re-query. Local-only accept/dismiss counters
-   (`usage_stats`) to judge which mode and model are worth it.
+1. **Implemented: bound the window sent.** IPC carries at most 4,096 UTF-16
+   units before and 1,024 after the caret, cut at line boundaries where possible
+   without splitting Unicode pairs. The backend independently caps input too.
+2. **Implemented: native fill-in-the-middle.** Models advertising `insert` use
+   `/api/generate` with `suffix`. Unknown/non-insert models, reference-file
+   requests, and an empty suffix use chat. An unsupported insert request falls
+   back to chat before publishing any text. Native whitespace is preserved.
+3. **Implemented: cancel for real.** A reservation makes cancel-before-start
+   race-free; cancellation drops the HTTP response/socket. Typing, navigation,
+   blur, hiding/disabling, context changes and unmount cancel stale generation.
+4. **Implemented: stream into the ghost.** NDJSON tokens update the ghost via a
+   per-request event targeted only at the editor window. Old streams cannot overwrite a newer draft; errors
+   discard partial ghosts. Requests have an overall timeout and bounded output.
+5. **Implemented: type-through keeps the ghost.** Matching insertions consume
+   only the typed prefix; replacements, deletions and mismatches dismiss it.
+   Typing/accepting part of a stream cancels generation and keeps its remainder.
+
+Additional improvements: chat prompts preserve the document's natural language;
+completion disables thinking and skips known non-completion models. Automated
+coverage includes split UTF-8 streams, socket cancellation, early cancellation,
+stale replies, input bounds and type-through. Live quality/latency comparison
+with actual models remains open (Group M #45).
+
+6. **Implemented: cache model discovery.** Concurrent editors share a five-second
+   model-list cache, keyed by endpoint/policy. Errors retry immediately; loaded
+   model changes are picked up on the next trigger after expiry.
+7. **Implemented: automatic context.** Attached files have priority, followed by
+   LaTeX label/bib keys, static local imports/`\input`s and other open text tabs
+   in the same project. Optional disk reads are capped at 16; UTF-8 context stays
+   within 6,000 bytes per reference / 24,000 total, including before IPC. Missing
+   references are skipped; reference changes invalidate cached completions.
+8. **Implemented: prose awareness.** Markdown/LaTeX/plain text use chat with an
+   explicit document-language/markup instruction. Sentence mode cuts at the first
+   line/sentence boundary and closes the stream; decimal periods are preserved.
+   Block/Scope and code-intent completions retain their longer output budget.
+9. **Implemented: suggestion controls and feedback.** Alt+→ accepts a line;
+   Alt+[ / Alt+] cycle three on-demand seeded candidates. A per-editor, bounded
+   60-second memory cache includes prefix/suffix, model, mode and references.
+   Accept/dismiss outcomes are recorded once per candidate in local `usage_stats`
+   and shown by mode/model in the usage recap. No document text is recorded.
+
+Items 6–9 implemented **2026-09-18**, pending live verification. Check imports,
+open-tab context and TeX keys; a German paragraph in Sentence mode; Alt+→ and
+candidate cycling; undo/revisit reuse; and the usage recap. UntestedTag remains.
 
 ### Mail AI (Group Q #203–#208, `services/mail_ai.rs`, `MailAi*.tsx`)
 

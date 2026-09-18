@@ -3,6 +3,10 @@ import { DraftSaver } from "./draftSaver";
 import { lineStarts, indexedLine } from "./lineIndex";
 import { Suspense, createContext, lazy, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { CompletionCache, completionModels, completionLineLength, completionWindow, completionModelOrder, pickCompletionModel, typeThrough } from "../../lib/viewers/autocomplete";
+import { completionContext } from "../../lib/viewers/completionContext";
+import { bumpUsage } from "../../stores/usage";
+import { METRIC } from "../../lib/usageMetrics";
 import { emit, listen } from "@tauri-apps/api/event";
 import { useWindowsStore } from "../../stores/windows";
 import {
@@ -2854,7 +2858,7 @@ function CodeEditor({
    *  `preferred` is the user's active local model (🧠 menu); the completion runs
    *  against whichever model is *currently loaded* in Ollama memory at trigger
    *  time, preferring `preferred` when it is among the loaded set. */
-  autocomplete?: { enabled: boolean; preferred?: string; mode?: AutocompleteMode };
+  autocomplete?: { enabled: boolean; preferred?: string; preferredProse?: string; mode?: AutocompleteMode };
   /** Opt-in local grammar/spelling check (#45 follow-up). When enabled, the whole
    *  draft is checked against the currently-loaded local model after an idle
    *  pause; issues are underlined (colour by category) with a hover tooltip and
@@ -3002,6 +3006,14 @@ function CodeEditor({
   // in-flight message; final messages auto-dismiss (see the effect below).
   const [acStatus, setAcStatus] = useState<string | null>(null);
   const acAbort = useRef<AbortController | null>(null);
+  const acVisible = usePaneVisible();
+  const acCache = useRef(new CompletionCache());
+  const acCandidate = useRef(0);
+  const acDismissed = useRef<{ draft: string; caret: number } | null>(null);
+  const acOutcome = useRef<{ model: string; mode: AutocompleteMode } | null>(null);
+  const acEndpoint = useSettingsStore((s) => JSON.stringify([
+    s.settings?.ollama_host, s.settings?.ollama_allow_remote_host,
+  ]));
   // #45 live completion-length mode: starts from the per-type default and is
   // cycled in-editor with Shift+Tab while a suggestion is showing. Re-seeded if
   // the per-type default changes (e.g. the user picks a new default in settings).
@@ -3027,6 +3039,14 @@ function CodeEditor({
   >([]);
   const [acPicker, setAcPicker] = useState(false);
   const scope = useFileScope();
+
+  // Count one outcome per offered candidate, including partial acceptance.
+  const recordAcOutcome = useCallback((accepted: boolean) => {
+    const offered = acOutcome.current;
+    if (!offered) return;
+    acOutcome.current = null;
+    bumpUsage(scope ?? "root", `${accepted ? METRIC.AUTOCOMPLETE_ACCEPT : METRIC.AUTOCOMPLETE_DISMISS}.${offered.mode}.${offered.model}`);
+  }, [scope]);
 
   // Resolve the project the edited file belongs to (the longest project directory
   // that is a prefix of `path`), falling back to the active project — so the
@@ -3582,6 +3602,17 @@ function CodeEditor({
   const edit = useCallback(
     (next: string, via?: string) => {
       if (next !== draftRef.current) {
+        acAbort.current?.abort();
+        acAbort.current = null;
+        setAcStatus(null);
+        const before = draftRef.current;
+        if (suggestion) {
+          const inserted = next.slice(suggestion.at, suggestion.at + next.length - before.length);
+          const matches = next.length > before.length && suggestion.text.startsWith(inserted) &&
+            next === before.slice(0, suggestion.at) + inserted + before.slice(suggestion.at);
+          recordAcOutcome(matches);
+        }
+        setSuggestion((ghost) => typeThrough(before, next, ghost));
         if (changeTintRef.current) {
           const stages =
             via != null && via !== draftRef.current && via !== next ? [via, next] : [next];
@@ -3595,7 +3626,7 @@ function CodeEditor({
       }
       setDraft(next);
     },
-    [setDraft, noteChangeTrail],
+    [setDraft, noteChangeTrail, suggestion, recordAcOutcome],
   );
 
   // Where the caret and the view belong once React has re-rendered the textarea
@@ -4341,93 +4372,133 @@ function CodeEditor({
   }, [gotoLine?.nonce, loaded]);
 
   const dismissSuggestion = useCallback(() => {
+    const el = textareaRef.current;
+    if (el) acDismissed.current = { draft: draftRef.current, caret: el.selectionStart };
+    recordAcOutcome(false);
     acAbort.current?.abort();
     acAbort.current = null;
     setSuggestion(null);
     setAcStatus(null);
-  }, []);
+  }, [recordAcOutcome]);
 
-  // #45: request a completion at the caret. Privacy-gated by the caller (only
-  // wired when the per-type setting is on). Completion runs against whichever
-  // local model is CURRENTLY LOADED in Ollama memory (the running set from
-  // /api/ps), preferring the user's active model when it is loaded.
-  //
-  // Two modes:
-  //  - manual (Ctrl+Space): surfaces a message when nothing is loaded / it fails,
-  //    so the user gets feedback rather than silence.
-  //  - auto (debounced as you type): only runs for the focused editor with a
-  //    collapsed caret and enough context, and stays SILENT on the unavailable/
-  //    error paths so typing isn't spammed with toasts. There is no remote
-  //    fallback either way (local-only by design, DECISION A).
-  const requestCompletion = useCallback(async (opts?: { auto?: boolean; mode?: AutocompleteMode }) => {
+  // Cancel on hiding, disabling, switching document/context/default mode, and unmount.
+  useEffect(() => {
+    dismissSuggestion();
+    return dismissSuggestion;
+  }, [acVisible, autocomplete?.enabled, path, scope, autocomplete?.preferred, autocomplete?.preferredProse, autocomplete?.mode, acEndpoint, contextFiles, dismissSuggestion]);
+
+  // External changes (reload / undo) bypass edit(). Invalidate their generation.
+  useEffect(() => {
+    acAbort.current?.abort();
+    acAbort.current = null;
+    setAcStatus(null);
+    if (draft !== lastEditRef.current) {
+      recordAcOutcome(false);
+      setSuggestion(null);
+    }
+  }, [draft, recordAcOutcome]);
+
+  const requestCompletion = useCallback(async (opts?: { auto?: boolean; mode?: AutocompleteMode; candidate?: number }) => {
     const auto = opts?.auto === true;
-    // Explicit override (from the live cycle key) wins over the current mode,
-    // since setState hasn't flushed yet when the key handler calls through.
     const mode = opts?.mode ?? acMode;
     const el = textareaRef.current;
-    if (!el || !autocomplete?.enabled) return;
-    // Auto mode: only the focused editor, only at a collapsed caret, and only
-    // with a little context to complete from — otherwise skip the round trip.
-    if (auto) {
-      if (document.activeElement !== el) return;
-      if (el.selectionStart !== el.selectionEnd) return;
-    }
+    if (!el || !autocomplete?.enabled || !acVisible || el.selectionStart !== el.selectionEnd) return;
+    if (auto && document.activeElement !== el) return;
     const caret = el.selectionStart;
-    const prefix = draft.slice(0, caret);
-    const suffix = draft.slice(caret);
+    const snapshot = draftRef.current;
+    if (auto && acDismissed.current?.draft === snapshot && acDismissed.current.caret === caret) return;
+    acDismissed.current = null;
+    const { prefix, suffix } = completionWindow(snapshot, caret);
     if (auto && prefix.replace(/\s+/g, "").length < 3) return;
+    recordAcOutcome(false);
+    acCandidate.current = opts?.candidate ?? 0;
+    const candidate = acCandidate.current;
     acAbort.current?.abort();
     const ctl = new AbortController();
     acAbort.current = ctl;
     setSuggestion(null);
     setAcStatus(t("fileViewer.autocompleteStatus", { mode: acModeLabel(mode, t) }));
+    let requestId: string | undefined;
+    let unlisten: (() => void) | undefined;
+    const cancel = () => {
+      if (requestId) void invoke("cancel_text_completion", { requestId }).catch(() => {});
+      unlisten?.();
+      unlisten = undefined;
+    };
+    ctl.signal.addEventListener("abort", cancel, { once: true });
+    let offered: { model: string; mode: AutocompleteMode } | null = null;
+    const publish = (text: string) => {
+      if (ctl.signal.aborted || draftRef.current !== snapshot ||
+          el.selectionStart !== caret || el.selectionEnd !== caret) return;
+      acOutcome.current = text ? offered : null;
+      setSuggestion(text ? { text, at: caret } : null);
+      if (text) setAcStatus(null);
+    };
     try {
-      // Resolve the currently-loaded model at trigger time (it may have been
-      // unloaded since the editor mounted). `list_ollama_models_detailed`
-      // doubles as the running-check; "not_running" means Ollama is down.
-      const detailed = await invoke<{ name: string; running: boolean }[]>(
-        "list_ollama_models_detailed",
-      );
+      const detailed = await completionModels(acEndpoint, () => invoke("list_ollama_models_detailed"));
       if (ctl.signal.aborted) return;
-      const loaded = detailed.filter((m) => m.running).map((m) => m.name);
-      const model =
-        autocomplete.preferred && loaded.includes(autocomplete.preferred)
-          ? autocomplete.preferred
-          : loaded[0] ?? "";
+      const loaded = detailed.filter((m) => m.running && (!m.capabilities?.length || m.capabilities.includes("completion")));
+      // Prose files ask for the prose role first; both fall back to the code role.
+      const model = pickCompletionModel(loaded, completionModelOrder(lang, autocomplete.preferred, autocomplete.preferredProse));
       if (!model) {
         setAcStatus(auto ? null : t("fileViewer.autocompleteUnavailable"));
         return;
       }
-      const text = await invoke<string>("complete_text", {
-        prefix,
-        suffix,
-        model,
-        language: lang === "plain" ? "" : lang,
-        mode,
-        context: contextFiles.length
-          ? contextFiles.map((f) => ({ name: f.rel, content: f.content }))
-          : undefined,
+      const tabs = useTabsStore.getState();
+      const context = await completionContext({
+        path, root: acProjectDir, draft: snapshot,
+        openPaths: (tabs.tabsByScope[scope ?? "root"] ?? tabs.tabs)
+          .filter((tab) => (!tab.scope || tab.scope === (scope ?? "root")) &&
+            ["text", "markdown", "tex", "texworkspace"].includes(tab.viewer ?? ""))
+          .flatMap((tab) => tab.embedPath ? [tab.embedPath] : []),
+        manual: contextFiles.map((f) => ({ name: f.rel, content: f.content })),
+        keys: lang === "tex" ? [
+          ...[...snapshot.matchAll(/\\label\{([^}]+)\}/g)].map((m) => m[1]),
+          ...(texCompletions?.labels.map((l) => l.key) ?? []),
+          ...(texCompletions?.cites.map((c) => c.key) ?? []),
+        ].join("\n") : undefined,
+        read: (file) => readFileText(file, scope), signal: ctl.signal,
       });
       if (ctl.signal.aborted) return;
-      if (text) {
-        setSuggestion({ text, at: caret });
-        setAcStatus(null);
-      } else {
-        setAcStatus(auto ? null : t("fileViewer.noSuggestion"));
-      }
-    } catch (e) {
-      if (ctl.signal.aborted) return;
-      if (auto) {
-        setAcStatus(null);
+      const key = JSON.stringify([path, scope, acEndpoint, prefix, suffix, model, lang, mode, context, candidate]);
+      const cached = acCache.current.get(key);
+      offered = { model: model.name, mode };
+      if (cached !== undefined) {
+        publish(cached);
+        setAcStatus(cached || auto ? null : t("fileViewer.noSuggestion"));
+        if (!cached) acOutcome.current = null;
         return;
       }
-      setAcStatus(
-        String(e).includes("not_running")
-          ? t("fileViewer.autocompleteUnavailable")
-          : t("fileViewer.autocompleteFailed"),
-      );
+      requestId = await invoke<string>("prepare_text_completion");
+      if (ctl.signal.aborted) { cancel(); return; }
+      unlisten = await listen<string>(`text-completion-${requestId}`, (event) => publish(event.payload));
+      if (ctl.signal.aborted) return;
+      const text = await invoke<string>("complete_text", {
+        prefix, suffix, model: model.name,
+        language: lang === "plain" ? "" : lang,
+        mode, candidate,
+        insert: model.capabilities?.includes("insert") === true,
+        requestId,
+        context: context.length ? context : undefined,
+      });
+      if (ctl.signal.aborted) return;
+      acCache.current.set(key, text);
+      if (!text) acOutcome.current = null;
+      publish(text);
+      setAcStatus(text || auto ? null : t("fileViewer.noSuggestion"));
+    } catch (e) {
+      if (ctl.signal.aborted) return;
+      acOutcome.current = null;
+      setSuggestion(null);
+      setAcStatus(auto ? null : t(String(e).includes("not_running")
+        ? "fileViewer.autocompleteUnavailable" : "fileViewer.autocompleteFailed"));
+    } finally {
+      ctl.abort();
+      cancel();
+      ctl.signal.removeEventListener("abort", cancel);
+      if (acAbort.current === ctl) acAbort.current = null;
     }
-  }, [autocomplete, draft, lang, acMode, contextFiles]);
+  }, [autocomplete, lang, acMode, contextFiles, acVisible, acEndpoint, path, scope, acProjectDir, texCompletions, recordAcOutcome, t]);
 
   // #45 automatic suggestions: when the per-type toggle is on, request a
   // completion a short while after the user stops typing. Re-runs on each draft
@@ -4435,11 +4506,11 @@ function CodeEditor({
   // Skipped while a suggestion is already showing or the \ref/\cite dropdown is
   // open. The focus/caret/context guards live in `requestCompletion`.
   useEffect(() => {
-    if (!autocomplete?.enabled || !loaded) return;
+    if (!autocomplete?.enabled || !loaded || !acVisible) return;
     if (suggestion || compl) return;
     const id = window.setTimeout(() => void requestCompletion({ auto: true }), AUTO_AC_DEBOUNCE_MS);
     return () => window.clearTimeout(id);
-  }, [autocomplete?.enabled, loaded, draft, suggestion, compl, requestCompletion]);
+  }, [autocomplete?.enabled, loaded, draft, suggestion, compl, requestCompletion, acVisible]);
 
   // The ghost mounts fresh (scrollTop 0) each time a suggestion appears; align it
   // to the editor's current scroll so the inserted preview lands at the caret.
@@ -4464,12 +4535,12 @@ function CodeEditor({
   // suggestion and keep the remainder ghosted, so the user can walk a long
   // suggestion in word-sized steps. A word = any leading whitespace (including a
   // newline + indentation) plus the following run of non-space characters.
-  const acceptWord = useCallback(() => {
+  const acceptWord = useCallback((line = false) => {
     const el = textareaRef.current;
     if (!el || !suggestion) return;
     const { text, at } = suggestion;
     const m = text.match(/^\s*\S+/);
-    const take = m ? m[0].length : text.length;
+    const take = line ? completionLineLength(text) : m ? m[0].length : text.length;
     const chunk = text.slice(0, take);
     const rest = text.slice(take);
     const next = draft.slice(0, at) + chunk + draft.slice(at);
@@ -4655,6 +4726,8 @@ function CodeEditor({
   }, [draft, caretTick, refreshCompl]);
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // Let the IME own composition keys; input events validate any type-through.
+    if (e.nativeEvent.isComposing || e.key === "Process") return;
     if (onFollowLink && (e.ctrlKey || e.metaKey) && lastMouse.current) {
       updateLinkHover(lastMouse.current.x, lastMouse.current.y, true);
     }
@@ -4729,6 +4802,16 @@ function CodeEditor({
       return;
     }
     if (suggestion) {
+      if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && ["[", "]"].includes(e.key)) {
+        e.preventDefault();
+        void requestCompletion({ candidate: (acCandidate.current + (e.key === "]" ? 1 : 2)) % 3 });
+        return;
+      }
+      if (e.key === "ArrowRight" && e.altKey && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
+        e.preventDefault();
+        acceptWord(true);
+        return;
+      }
       if (e.key === "Tab") {
         e.preventDefault();
         if (e.shiftKey) {
@@ -4754,9 +4837,12 @@ function CodeEditor({
         dismissSuggestion();
         return;
       }
-      // Any other key invalidates the pending suggestion.
-      dismissSuggestion();
+      // Let input events consume matching text (including paste and IME).
+      if (Array.from(e.key).length !== 1 && e.key !== "Enter" && !MODIFIER_KEYS.has(e.key)) dismissSuggestion();
     }
+
+    if (!MODIFIER_KEYS.has(e.key) && (e.key.startsWith("Arrow") ||
+        ["Home", "End", "PageUp", "PageDown", "Escape"].includes(e.key))) dismissSuggestion();
 
     // #46 undo/redo.
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
@@ -4891,7 +4977,7 @@ function CodeEditor({
   };
 
   const onClick = (e: React.MouseEvent<HTMLTextAreaElement>) => {
-    if (suggestion) dismissSuggestion();
+    dismissSuggestion();
     emitCaret();
     if (e.ctrlKey || e.metaKey) {
       // Prefer the link span under the pointer: a Ctrl/⌘+click leaves the caret
@@ -5224,6 +5310,11 @@ function CodeEditor({
           role="tooltip"
         >
           {unclosedTip.hint || t("fileViewer.unclosedBracketHint")}
+        </div>
+      )}
+      {suggestion && !acStatus && (
+        <div className="file-viewer-ac-status" role="status">
+          {t("fileViewer.autocompleteControls", { candidate: acCandidate.current + 1 })}
         </div>
       )}
       {acStatus && (
@@ -5889,7 +5980,7 @@ function useViewerPref(type: InternalViewer) {
 /** What {@link useTabAiPrefs} returns: the effective autocomplete/grammar config
  *  for the editor, plus the current control state + setters for the in-tab UI. */
 export interface TabAiPrefs {
-  ac: { enabled: boolean; preferred?: string; mode: AutocompleteMode };
+  ac: { enabled: boolean; preferred?: string; preferredProse?: string; mode: AutocompleteMode };
   gc: { enabled: boolean; preferred?: string };
   sc: { enabled: boolean; language?: string };
   autocomplete: boolean;
@@ -5921,6 +6012,7 @@ function useTabAiPrefs(tabKey: string | undefined, type: InternalViewer): TabAiP
   const defaultModel = useSettingsStore((s) => s.settings?.ollama_model as string | undefined);
   const acRole = useSettingsStore((s) => s.settings?.ollama_roles?.autocomplete as string | undefined);
   const gcRole = useSettingsStore((s) => s.settings?.ollama_roles?.grammar as string | undefined);
+  const acProseRole = useSettingsStore((s) => s.settings?.ollama_roles?.autocomplete_prose as string | undefined);
   const acPreferred = acRole ?? defaultModel;
   const gcPreferred = gcRole ?? defaultModel;
   // Dictionary spell check: no model involved — its one setting is which
@@ -5994,7 +6086,7 @@ function useTabAiPrefs(tabKey: string | undefined, type: InternalViewer): TabAiP
   );
 
   return {
-    ac: { enabled: autocomplete, preferred: acPreferred, mode },
+    ac: { enabled: autocomplete, preferred: acPreferred, preferredProse: acProseRole, mode },
     gc: { enabled: grammar, preferred: gcPreferred },
     sc: { enabled: spelling, language: spellLanguage },
     autocomplete,
@@ -6263,7 +6355,7 @@ function EditorAiControls({ ai }: { ai: TabAiPrefs }) {
                 : t("fileViewer.autocompleteOffHint")
             }
           >
-            {t("fileViewer.autocompleteLabel")}
+            {t("fileViewer.autocompleteLabel")} <UntestedTag />
           </button>
           {ai.autocomplete && (
             <Dropdown

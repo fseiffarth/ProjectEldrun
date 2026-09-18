@@ -138,6 +138,10 @@ interface AgentInfo {
  */
 const MODEL_ROLES: Array<{ key: string; labelKey: TranslationKey; pending?: boolean }> = [
   { key: "autocomplete", labelKey: "localModel.role.autocomplete" },
+  // Plain text, Markdown and TeX ask for this one first (an instruct model suits
+  // prose; a fill-in-the-middle coder model suits code) and fall back to the
+  // `autocomplete` tag, so leaving it unset keeps one model for both.
+  { key: "autocomplete_prose", labelKey: "localModel.role.autocompleteProse" },
   { key: "grammar", labelKey: "localModel.role.grammar" },
   { key: "tabs", labelKey: "localModel.role.tabs" },
   // `mail` was `pending` until Group Q; the mail assistant (#204–#208) now reads

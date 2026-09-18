@@ -12,6 +12,9 @@
 import type { TabKind } from "../stores/tabs";
 
 export const METRIC = {
+  /** `autocomplete.accept/dismiss.<mode>.<model>` — one outcome per suggestion. */
+  AUTOCOMPLETE_ACCEPT: "autocomplete.accept",
+  AUTOCOMPLETE_DISMISS: "autocomplete.dismiss",
   /** `agent.tab.<cmd>` — an agent tab was opened. */
   AGENT_TAB: "agent.tab",
   /** `agent.tab.local.<model>` — a local (Ollama-backed) agent tab was opened. */

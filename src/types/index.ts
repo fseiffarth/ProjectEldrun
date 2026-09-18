@@ -423,8 +423,9 @@ export interface Settings {
    *  Settings panel's one-click drop-in (`ollama_models_dir_plan`). */
   ollama_models_path?: string | null;
   /** Per-task local-model assignments (🧠 menu role chips). Maps a task key —
-   *  `"autocomplete"`, `"grammar"`, `"tabs"` or `"mail"` — to the model name that
-   *  should serve it, so several loaded models can run different jobs in parallel.
+   *  `"autocomplete"`, `"autocomplete_prose"`, `"grammar"`, `"tabs"` or `"mail"` —
+   *  to the model name that should serve it (`autocomplete_prose` covers plain
+   *  text, Markdown and TeX, and falls back to `autocomplete`), so several loaded models can run different jobs in parallel.
    *  A task absent here falls back to `ollama_model`, then to any loaded model.
    *  `"mail"` is written by the chip and **read by nothing yet**: the mail task it
    *  names (importance scoring, summaries) is not built. It is offered ahead of

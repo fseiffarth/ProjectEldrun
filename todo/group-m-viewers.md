@@ -37,6 +37,25 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     (`commands/ollama.rs`). *Accept (while a ghost is showing):* `Tab` inserts the
     whole suggestion; `Right` (→) inserts only the next word and keeps the rest
     ghosted (walk word-by-word); `Esc` dismisses.
+    *Roadmap 1–5 (2026-09-18):* bounded caret context, capability-based native
+    FIM (chat fallback for references/empty suffix/unsupported insert), cancellable
+    streaming with socket teardown, and matching-input type-through implemented.
+    Chat preserves the document language; thinking is off and known non-text
+    models are skipped. Regression coverage exercises Unicode/chunk boundaries,
+    cancellation before startup/first token, stale output and matching edits.
+    *Roadmap 6–9 (2026-09-18):* five-second shared model discovery; bounded
+    automatic same-project imports/open-tab references and TeX label/bib keys;
+    prose chat instructions and streaming sentence/line stops; Alt+→ line accept,
+    Alt+[/] three lazy candidates, a bounded 60-second per-editor completion cache,
+    and local accept/dismiss counts by mode/model in the usage recap. Manual
+    references take priority; automatic references are disk snapshots refreshed
+    on requests. Test the new keys, reference edits, German prose, caret revisits
+    and recap counters live before removing UntestedTag.
+    Live checks: load a local model in the brain menu, enable Autocomplete in a
+    text/TeX tab, then Ctrl+Space mid-file; verify streaming, type its matching
+    prefix, accept with →/Tab, and interrupt with typing/Esc/tab switches. Repeat
+    with an insert-capable model, attached references, and a long document.
+    Compare first-token latency and suggestion quality; the UntestedTag remains.
     - [x] 🤖 Automated test
     - [ ] 🖐️ Manual test
       - [ ] ✅ Works

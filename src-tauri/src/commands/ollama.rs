@@ -2892,16 +2892,9 @@ pub async fn list_ollama_models() -> Result<Vec<String>, String> {
 
 // ── Local code/text autocomplete (TODO Group M #45) ──────────────────────────
 //
-// DECISION A: completion is LOCAL OLLAMA ONLY and OPT-IN. We reuse `ollama_http`
-// against the local `/api/chat` endpoint — no remote endpoint is ever contacted.
-// The frontend gates the call behind a per-type `autocomplete` setting (default
-// OFF) and runs it against whichever model is currently loaded in memory; if none
-// is loaded / Ollama isn't reachable this returns `not_running` and the UI shows a
-// "load a local model" hint.
-//
-// We use /api/chat (not /api/generate) with a dedicated system role: a general
-// instruct/chat model like llama3.2 otherwise reads the surrounding text as a
-// *task* and replies "Here is the reformatted version…" instead of continuing it.
+// Opt-in completion uses the configured, policy-checked Ollama endpoint, with
+// no cloud fallback. Native insert-capable models use /api/generate; chat models
+// use a dedicated system role. Both streams are cancellable at the socket.
 
 /// System message that turns a general instruct/chat model into a fill-in-the-
 /// middle completion engine: it must INSERT between BEFORE and AFTER (not author a
@@ -2913,6 +2906,7 @@ editor. You receive the text BEFORE the cursor and the text AFTER the cursor. Ou
 to INSERT at the cursor so that BEFORE + your insertion + AFTER reads as one correct, natural, continuous \
 piece of text. Continue directly from the end of BEFORE and join smoothly into the start of AFTER. Insert \
 exactly what the TASK asks for and no more. Never repeat, rewrite, or quote any text from BEFORE or AFTER. \
+Keep the natural language of the surrounding document; never translate it. \
 No preamble, no quotes, no code fences, no explanations, no labels.";
 
 /// How much of a completion to generate (#45 modes). Chosen per file type in
@@ -2961,12 +2955,32 @@ fn is_mid_sentence(prefix: &str) -> bool {
     }
 }
 
-/// Line-comment token(s) for `language`, used to recognise an "intent comment" the
-/// user wrote to describe the code they want next (e.g. `// new for loop to compute
-/// the sum`). Known code languages map to their comment syntax; prose-ish languages
-/// (markdown / plain text / unknown-empty) return an empty slice so headings like
-/// `# Title` are never mistaken for a code-intent comment; any other named (but
-/// unrecognised) language falls back to the two most common tokens. Pure + tested.
+/// Prose needs chat instructions even when the loaded model supports FIM.
+fn is_completion_prose(language: &str) -> bool {
+    matches!(language.to_ascii_lowercase().as_str(), "" | "text" | "plain" | "txt" | "markdown" | "md" | "mdx" | "tex" | "latex" | "rst")
+}
+
+/// Byte boundary of the first line/sentence end. Wait for lookahead after a
+/// period so a decimal split across stream chunks is not cut in half.
+fn completion_stop(text: &str, prose: bool, done: bool) -> Option<usize> {
+    for (at, ch) in text.char_indices() {
+        if ch == '\n' || ch == '\r' { return Some(at); }
+        if prose && matches!(ch, '.' | '!' | '?' | '。' | '！' | '？') {
+            let end = at + ch.len_utf8();
+            let next = text[end..].chars().next();
+            if matches!(ch, '。' | '！' | '？')
+                || next.is_some_and(char::is_whitespace)
+                || (done && next.is_none())
+            {
+                return Some(end);
+            }
+        }
+    }
+    None
+}
+
+/// Line-comment tokens used to recognise code-intent comments. Prose headings
+/// are not comments; unknown code languages use the two most common tokens.
 fn line_comment_tokens(language: &str) -> &'static [&'static str] {
     match language.to_ascii_lowercase().as_str() {
         "rust" | "c" | "cpp" | "c++" | "h" | "hpp" | "java" | "javascript" | "js" | "jsx"
@@ -3018,7 +3032,7 @@ fn strip_comment_line(line: &str, tokens: &[&str]) -> Option<String> {
 /// so a lone `//` or a `// ----` divider never triggers). Pure + tested.
 fn trailing_comment_intent(prefix: &str, language: &str) -> Option<String> {
     let tokens = line_comment_tokens(language);
-    if tokens.is_empty() {
+    if is_completion_prose(language) || tokens.is_empty() {
         return None;
     }
     let lines: Vec<&str> = prefix.split('\n').collect();
@@ -3182,7 +3196,10 @@ the end of that function or scope; do not continue past it."
 insertion; never output, quote, or repeat them):\n{context}\n"
         )
     };
-    format!("Language: {lang}\n{task}\n\n{reference}BEFORE:\n{prefix}\n\nAFTER:\n{suffix}")
+    let prose = if is_completion_prose(language) {
+        "Continue prose in the natural language of BEFORE and AFTER, even when references use another language. Preserve Markdown/LaTeX markup. Do not translate or switch to English.\n"
+    } else { "" };
+    format!("Language: {lang}\n{prose}{task}\n\n{reference}BEFORE:\n{prefix}\n\nAFTER:\n{suffix}")
 }
 
 /// Strip wrapping artefacts a chat model sometimes adds around a raw completion:
@@ -3272,50 +3289,178 @@ fn trim_context_overlap(prefix: &str, suffix: &str, completion: &str) -> String 
     c.to_string()
 }
 
-/// Single-shot local completion: given the text around the caret, ask the local
-/// Ollama `model` for the insertion. Local-only (`ollama_http` talks to
-/// 127.0.0.1:11434); returns `not_running` when Ollama isn't reachable.
+/// Reserve before starting so a frontend abort can cancel even before the
+/// generation command has arrived. Reservations expire if the caller disappears.
 #[tauri::command]
+pub fn prepare_text_completion() -> Result<String, String> {
+    crate::services::text_completion::reserve()
+}
+
+#[tauri::command]
+pub fn cancel_text_completion(request_id: String) {
+    crate::services::text_completion::cancel(&request_id);
+}
+
+/// Preserve native FIM whitespace. Chat output still needs conservative wrapper
+/// cleanup; withhold incomplete fence/preamble lines while tokens arrive.
+fn completion_preview(raw: &str, fim: bool, done: bool, prefix: &str, suffix: &str) -> String {
+    if fim {
+        return raw.to_string();
+    }
+    if !done && !raw.contains('\n') {
+        let first = raw.trim_start().to_ascii_lowercase();
+        if first.starts_with('`')
+            || [
+                "here is",
+                "here's",
+                "here are",
+                "sure",
+                "certainly",
+                "of course",
+                "continuation",
+                "the continuation",
+                "the completed",
+                "the reformatted",
+            ]
+            .iter()
+            .any(|p| p.starts_with(&first) || first.starts_with(p))
+        {
+            return String::new();
+        }
+    }
+    let cleaned = clean_completion(raw);
+    // Do not flicker by removing a suffix match that may still grow. The final
+    // snapshot applies both seams before the frontend marks it finished.
+    trim_context_overlap(prefix, if done { suffix } else { "" }, &cleaned)
+}
+
+fn completion_body(
+    prefix: &str,
+    suffix: &str,
+    model: &str,
+    language: &str,
+    mode: CompletionMode,
+    context: &str,
+    fim: bool,
+) -> serde_json::Value {
+    let intent = trailing_comment_intent(prefix, language).is_some();
+    let cap = if intent {
+        mode.num_predict().max(CompletionMode::Block.num_predict())
+    } else {
+        mode.num_predict()
+    };
+    let mut body = serde_json::json!({
+        "model": model, "stream": true, "think": false,
+        "options": { "temperature": 0.1, "num_predict": cap }
+    });
+    if fim {
+        body["prompt"] = prefix.into();
+        body["suffix"] = suffix.into();
+        if mode == CompletionMode::Sentence && !intent {
+            body["options"]["stop"] = serde_json::json!(["\n"]);
+        }
+    } else {
+        body["messages"] = serde_json::json!([
+            { "role": "system", "content": COMPLETION_SYSTEM },
+            { "role": "user", "content": completion_prompt(prefix, suffix, language, mode, context) }
+        ]);
+    }
+    body
+}
+
+/// Streaming completion through the configured Ollama endpoint. Insert support
+/// comes from /api/show capabilities, carried by list_ollama_models_detailed.
+/// Attached references stay on the chat path to avoid injecting prose into raw
+/// source. Unsupported FIM falls back to chat before any ghost is published.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn complete_text(
+    window: tauri::WebviewWindow,
     prefix: String,
     suffix: String,
     model: String,
     language: String,
     mode: Option<String>,
     context: Option<Vec<ContextFile>>,
+    insert: Option<bool>,
+    request_id: String,
+    candidate: Option<u32>,
 ) -> Result<String, String> {
-    let mode = CompletionMode::parse(mode.as_deref().unwrap_or("sentence"));
-    let context_block = context
-        .as_deref()
-        .map(build_context_block)
-        .unwrap_or_default();
-    let user = completion_prompt(&prefix, &suffix, &language, mode, &context_block);
-    // Implementing a comment needs room for a whole statement/block even in the
-    // conservative Sentence mode, so give intent completions at least the Block cap.
-    let num_predict = if trailing_comment_intent(&prefix, &language).is_some() {
-        mode.num_predict().max(CompletionMode::Block.num_predict())
-    } else {
-        mode.num_predict()
-    };
-    // `/api/chat` with a system role keeps a chat model from treating the text as
-    // a task to rewrite. `stream: false` returns one JSON object; low temperature
-    // + a mode-scaled output cap keep completions tight and deterministic.
-    let body = serde_json::json!({
-        "model": model,
-        "stream": false,
-        "messages": [
-            { "role": "system", "content": COMPLETION_SYSTEM },
-            { "role": "user", "content": user }
-        ],
-        "options": { "temperature": 0.1, "num_predict": num_predict }
+    use crate::services::text_completion;
+    use tauri::Emitter;
+    let event = format!("text-completion-{request_id}");
+    text_completion::run(request_id, async move {
+        let addr = ollama_addr()?;
+        let client = text_completion::client()?;
+        let mode = CompletionMode::parse(mode.as_deref().unwrap_or("sentence"));
+        let context = context
+            .as_deref()
+            .map(build_context_block)
+            .unwrap_or_default();
+        // Bound independently of the UI for callers other than the text viewer.
+        let prefix = bounded_completion_prefix(&prefix);
+        let suffix = truncate_chars(&suffix, 4096);
+        let prose = is_completion_prose(&language);
+        let sentence = mode == CompletionMode::Sentence && trailing_comment_intent(&prefix, &language).is_none();
+        // Prose always uses chat so language/markup instructions are effective.
+        let fim = !prose && insert == Some(true) && context.is_empty() && !suffix.is_empty();
+        for use_fim in if fim { vec![true, false] } else { vec![false] } {
+            let mut body =
+                completion_body(&prefix, &suffix, &model, &language, mode, &context, use_fim);
+            let candidate = candidate.unwrap_or(0).min(2);
+            body["options"]["seed"] = serde_json::json!(candidate + 1);
+            if candidate > 0 {
+                body["options"]["temperature"] = serde_json::json!(0.5);
+            }
+            let endpoint = if use_fim { "generate" } else { "chat" };
+            let mut published = false;
+            let result = text_completion::stream(
+                &client,
+                &format!("http://{addr}/api/{endpoint}"),
+                &body,
+                |raw, done| {
+                    let mut text = completion_preview(raw, use_fim, done, &prefix, &suffix);
+                    let stop = sentence.then(|| completion_stop(&text, prose, done)).flatten();
+                    if let Some(end) = stop { text.truncate(end); }
+                    published |= !text.is_empty();
+                    // Target only the requesting editor window. IPC Channels bypass
+                    // the embedded browser's origin ACL (see browser.rs tests).
+                    window
+                        .emit_to(window.label(), &event, text)
+                        .map_err(|e| e.to_string())?;
+                    Ok(stop.is_some())
+                },
+            )
+            .await;
+            match result {
+                Ok(raw) => {
+                    let mut text = completion_preview(&raw, use_fim, true, &prefix, &suffix);
+                    if sentence {
+                        if let Some(end) = completion_stop(&text, prose, true) { text.truncate(end); }
+                    }
+                    return Ok(text);
+                }
+                Err(e)
+                    if use_fim
+                        && !published
+                        && (e.contains("400") || e.contains("does not support insert")) =>
+                {
+                    continue
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        unreachable!("chat always returns")
     })
-    .to_string();
-    let response = ollama_http("POST", "/api/chat", Some(&body))?;
-    let v: serde_json::Value =
-        serde_json::from_str(&response).map_err(|e| format!("ollama json: {e}"))?;
-    let text = v["message"]["content"].as_str().unwrap_or("");
-    let text = clean_completion(text);
-    Ok(trim_context_overlap(&prefix, &suffix, &text))
+    .await
+}
+
+fn bounded_completion_prefix(prefix: &str) -> String {
+    let mut start = prefix.len().saturating_sub(16_384);
+    while !prefix.is_char_boundary(start) {
+        start += 1;
+    }
+    prefix[start..].to_string()
 }
 
 // ── Local grammar / spelling check (TODO Group M #45 follow-up) ───────────────
@@ -4182,6 +4327,98 @@ mod owned_server_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prose_sentence_stops_preserve_language_punctuation_and_decimals() {
+        assert_eq!(completion_stop(" kostet 3.14 Euro. Weiter", true, false), Some(" kostet 3.14 Euro.".len()));
+        assert_eq!(completion_stop(" kostet 3.", true, false), None);
+        assert_eq!(completion_stop(" fertig!", true, true), Some(" fertig!".len()));
+        assert_eq!(completion_stop("一文。次", true, false), Some("一文。".len()));
+        assert_eq!(completion_stop("call().next()\nother()", false, false), Some("call().next()".len()));
+        for language in ["markdown", "tex", "text", ""] {
+            let prompt = completion_prompt("% Ein deutscher Absatz", "", language, CompletionMode::Sentence, "English reference");
+            assert!(prompt.contains("Do not translate or switch to English"));
+            assert!(!prompt.contains("code that implements"));
+        }
+    }
+
+    #[test]
+    fn completion_fim_uses_native_suffix_and_preserves_whitespace() {
+        let body = completion_body(
+            "fn f() {",
+            "\n}",
+            "coder",
+            "rust",
+            CompletionMode::Sentence,
+            "",
+            true,
+        );
+        assert_eq!(body["prompt"], "fn f() {");
+        assert_eq!(body["suffix"], "\n}");
+        assert!(body.get("messages").is_none());
+        assert_eq!(body["options"]["stop"], serde_json::json!(["\n"]));
+        assert_eq!(body["stream"], true);
+        assert_eq!(body["think"], false);
+        assert_eq!(
+            completion_preview("\n    return 1;\n", true, true, "", ""),
+            "\n    return 1;\n"
+        );
+    }
+
+    #[test]
+    fn completion_chat_keeps_reference_context_and_language_instruction() {
+        let body = completion_body(
+            "Ein Satz",
+            ".",
+            "chat",
+            "markdown",
+            CompletionMode::Block,
+            "notes",
+            false,
+        );
+        assert!(body.get("suffix").is_none());
+        assert!(body["messages"][1]["content"]
+            .as_str()
+            .unwrap()
+            .contains("notes"));
+        assert!(body["messages"][0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("never translate"));
+        assert_eq!(
+            body["options"]["num_predict"],
+            CompletionMode::Block.num_predict()
+        );
+    }
+
+    #[test]
+    fn completion_stream_withholds_partial_wrappers() {
+        assert_eq!(completion_preview("```py", false, false, "", ""), "");
+        assert_eq!(completion_preview("Here is the", false, false, "", ""), "");
+        assert_eq!(
+            completion_preview(
+                "Here is the continuation:\n```py\nreturn",
+                false,
+                false,
+                "",
+                ""
+            ),
+            "return"
+        );
+        assert_eq!(
+            completion_preview("return a + b", false, true, "return ", ""),
+            "a + b"
+        );
+        assert_eq!(completion_preview("x\nnext", false, true, "", "next"), "x");
+    }
+
+    #[test]
+    fn completion_backend_window_is_utf8_safe() {
+        let text = "界".repeat(10_000);
+        let tail = bounded_completion_prefix(&text);
+        assert!(tail.len() <= 16_384);
+        assert!(text.ends_with(&tail));
+    }
 
     #[test]
     fn partial_file_match_takes_the_layer_and_its_chunks_only() {

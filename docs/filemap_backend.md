@@ -36,7 +36,7 @@ only when breaking it does damage. The *why* goes in code comments or
 | `ssh.rs` | SSH commands for remote projects (`ssh_connect`, `ssh_default_dir`, `ssh_list_dir`, `ssh_tooling_status`) + explicit-click disconnects: `remote_kill_all_jobs` (`tmux kill-server`) and `ssh_close_master`. |
 | `remote.rs` | Pooled SSH/SFTP lifecycle (`remote_connect`/`remote_disconnect`), `remote_upload_file` (sanitized dest), and remote tmux commands (`remote_tmux_{list,kill,rename}`, per host) (#85). |
 | `openvpn.rs` | OpenVPN tunnel connect/store-config commands. |
-| `ollama.rs` | Ollama model list/pull/delete + local autocomplete. Server address only via `resolve_ollama_addr` (read per call); `https://` is an error, never a downgrade. |
+| `ollama.rs` | Ollama model list/pull/delete + cancellable streaming autocomplete; capability-based FIM with prose chat, semantic stream stops and seeded candidates. Server address only via `resolve_ollama_addr` (read per call); `https://` is an error, never a downgrade. |
 | `tex.rs` | TeX compile + SyncTeX (shell-escape defense). `compile_tex` is async (`spawn_blocking`); pdflatex full compiles use a cached-preamble `.fmt` keyed by preamble + local inputs. |
 | `synctex.rs` | Native SyncTeX reverse search from `.synctex(.gz)` (the CLI picks the wrong `.tex` file on margin clicks). |
 | `boxes.rs` | Project-box CRUD + the `box:<id>` scope's allowed-roots (`box_allowed_roots`, fail-closed) + the box folder's agent-doc link blocks and per-member symlink farm (`.eldrun-box-links.json` ownership manifest — only Eldrun-created links are ever removed). Membership is N:M via `member_ids` only. |
@@ -70,6 +70,7 @@ only when breaking it does damage. The *why* goes in code comments or
 
 | File | Purpose |
 |------|---------|
+| `text_completion.rs` | AppHandle-free completion reservations/cancellation and bounded NDJSON transport; abort drops the HTTP socket, with Unicode/chunk/cancellation tests. |
 | `ssh_common.rs` | Shared SSH argv + validation helpers (`validate_arg`, `ssh_*_base_args`, `ssh_target`, `sshpass_available`). |
 | `mobile_control/` | AppHandle-free Eldrun Mobile sidecar core: loopback HTTP/PWA server, exact-origin device auth, bounded admin/desktop protocols, audit store, tmux PTY/WebSocket bridge. Raw project ids, paths, commands, tmux targets never cross the browser API; tab labels are the only tab state the phone writes (via `agent_tab_target`). |
 | `git_init.rs` | Default branch `main` for every repo Eldrun creates: `init_repo` (local), `INIT_SHELL` (remote, with fallback for git < 2.28), `ensure_default_branch`. |

@@ -246,9 +246,20 @@ export function StatsRecap({ onClose, initialAnchorMs, showAutoToggle }: Props) 
   const workedS = counters[METRIC.AGENT_WORKED_S] ?? 0;
   const decisions = counters[METRIC.AGENT_DECISION] ?? 0;
 
+  const autocomplete = new Map<string, { accepted: number; dismissed: number }>();
+  for (const [key, count] of Object.entries(counters)) {
+    for (const [prefix, outcome] of [[METRIC.AUTOCOMPLETE_ACCEPT, "accepted"], [METRIC.AUTOCOMPLETE_DISMISS, "dismissed"]] as const) {
+      if (!key.startsWith(prefix + ".")) continue;
+      const identity = key.slice(prefix.length + 1);
+      const row = autocomplete.get(identity) ?? { accepted: 0, dismissed: 0 };
+      row[outcome] += count;
+      autocomplete.set(identity, row);
+    }
+  }
+
   const label =
     period === "day" ? dayLabel(anchorMs, t) : period === "week" ? t("stats.thisWeek") : t("stats.thisMonth");
-  const empty = openedTabs + prompts + shellCommands + created + modified + deleted === 0;
+  const empty = openedTabs + prompts + shellCommands + created + modified + deleted === 0 && autocomplete.size === 0;
 
   return createPortal(
     <div className="modal-backdrop" onMouseDown={onClose}>
@@ -343,6 +354,17 @@ export function StatsRecap({ onClose, initialAnchorMs, showAutoToggle }: Props) 
                 sub={`↑ ${formatBytes(bytes.tx)}`}
               />
             </div>
+
+            {autocomplete.size > 0 && <div className="stats-metrics">
+              {[...autocomplete].map(([identity, counts]) => {
+                const dot = identity.indexOf(".");
+                const mode = identity.slice(0, dot);
+                const modeLabel = mode === "scope" ? t("projectSettings.scope") : mode === "block" ? t("projectSettings.block") : t("projectSettings.sentence");
+                return <Metric key={identity}
+                  label={t("stats.autocomplete", { mode: modeLabel, model: identity.slice(dot + 1) })}
+                  value={t("stats.autocompleteOutcomes", counts)} />;
+              })}
+            </div>}
 
             {/* ── Files ────────────────────────────────────────────────── */}
             <div className="settings-section-title">{t("stats.sectionFiles")}</div>

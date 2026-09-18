@@ -290,8 +290,9 @@ pub struct Settings {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ollama_model: Option<String>,
     /// Per-task local-model assignments set from the 🧠 menu's role chips. Maps a
-    /// task key (`"autocomplete"`, `"grammar"`, `"tabs"`, `"mail"`) to the model
-    /// name that serves it, so several loaded models can run different jobs in
+    /// task key (`"autocomplete"`, `"autocomplete_prose"`, `"grammar"`, `"tabs"`,
+    /// `"mail"`) to the model name that serves it (`autocomplete_prose` is plain
+    /// text/Markdown/TeX, falling back to `autocomplete`), so several loaded models can run different jobs in
     /// parallel. Optional + flat so older settings files round-trip cleanly; a
     /// task absent here falls back to `ollama_model`. Frontend logic only —
     /// persisted here. An open map rather than a struct of known keys, which is

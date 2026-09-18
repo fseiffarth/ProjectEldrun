@@ -140,7 +140,7 @@ only when breaking it does damage. The *why* goes in code comments or
 | `files/GitHistory.tsx` | Commit history / commit / push, lockstep bar, Worktrees (#23). Branch control is a dropdown for checkout, text input for create; worktree removal is confirmed and escalating (it deletes ignored files). |
 | `files/SetDefaultAppDialog.tsx` | Pick the default app for a file type. |
 | `embed/EmbedPane.tsx` | Hosts an embedded external app window. |
-| `embed/FileViewerPane.tsx` | In-app viewers (image, markdown, code, TeX/SyncTeX) + shared plumbing. Markdown follows local links and `#fragment`s (`stores/mdAnchor`); code-editor key handling as pure exported helpers (`applyIndent`, `applyLineComment`, `applyAutoIndent`, `detectIndentUnit`). |
+| `embed/FileViewerPane.tsx` | In-app viewers (image, markdown, code, TeX/SyncTeX) + shared plumbing. Markdown follows local links and `#fragment`s (`stores/mdAnchor`); cancellable streaming autocomplete with bounded context and type-through (`lib/viewers/autocomplete.ts`); code-editor key handling as pure exported helpers (`applyIndent`, `applyLineComment`, `applyAutoIndent`, `detectIndentUnit`). |
 | `embed/MdGraphView.tsx` | Markdown relationship graph (`md_graph` flag): BFS rings of links from `lib/viewers/mdGraph.ts`; one bounded scope-confined read per look, never polled. |
 | `embed/YamlTree.tsx` | YAML/JSON tree: renders rows but edits text (every action splices the draft), so edits are ordinary undoable changes. Pointer-drag reorder (HTML5 DnD is broken on WebKitGTK). |
 | `embed/BibCards.tsx` | BibTeX card view: one card per entry, filter over all fields, per-card fold (`ViewerState.bibCollapsed`); Source is the other half. |
@@ -174,7 +174,7 @@ only when breaking it does damage. The *why* goes in code comments or
 | `common/SyncConfirmDialog.tsx` | The confirmation every manual byte-sync pull/push asks, mounted once per window (`AppShell` + `DetachedApp`); says which side's bytes overwrite which. |
 | `common/PromptDialogs.tsx` | The four in-app question shapes (`TextPromptDialog`, `ConfirmDialog`, `ChoiceDialog`, `MessageDialog`) on `.file-delete-dialog`, plus awaitable `useDialogs()`. Never `window.prompt/confirm/alert`. |
 | `common/LocalLossDialog.tsx` | Warns that lockstep or sync **destroyed something in the local mirror** (#28q). Mounted at the shell, like the alarm popup: a background pass can delete a file while the user is three tabs away. It reports, it does not confirm — the write has already happened; the gates that prevent one live upstream. |
-| `stats/StatsRecap.tsx` | Usage recap dialog: agents/models used, prompts asked, file churn, commits, time per project, Day/Week/Month. |
+| `stats/StatsRecap.tsx` | Usage recap dialog: agents/models used, prompts asked, autocomplete accept/dismiss by mode/model, file churn, commits, time per project, Day/Week/Month. |
 | `stats/StatsRecapHost.tsx` | Decides when the recap is on screen: once per day at launch (anchored on *yesterday*), or on demand via the `eldrun:open-stats` event. Mounted in `AppShell`. |
 
 **Stores (`src/stores/`), hooks, lib**
@@ -224,6 +224,8 @@ only when breaking it does damage. The *why* goes in code comments or
 | `lib/vpnGate.ts` | VPN gate for mail/CalDAV accounts flagged `require_vpn`: scheduler skips while no tunnel is up. `useVpnTunnelUp` is tri-state (`null` before first reconcile). Enforcement is backend (`services::openvpn::account_gate`). |
 | `lib/i18n.ts` | The i18n module: every UI string for `en/de/es/fr/it`. English holds every key; others fall back. Non-English dicts code-split into `lib/i18nDicts/*.ts`. |
 | `lib/machineSync.ts` | Keeps a global machine and the project host it also is in step, bridged only by SSH target (`sameTarget`: host case-insensitive, default port 22). |
+| `lib/viewers/autocomplete.ts` | Caret-window bounds, type-through, line acceptance, bounded model/completion caches and the code/prose model pick (`ollama_roles.autocomplete{,_prose}`) for native editors. |
+| `lib/viewers/completionContext.ts` | Static local import/TeX discovery and same-project open-tab references, cancellation and UTF-8 byte budgets before completion IPC. |
 | `lib/viewers/mdGraph.ts` | Pure markdown-graph logic (#101): fence-aware link extraction, bounded BFS crawl, radial layout. Tests: `MdGraph.test.ts`. |
 | `lib/projectRemarks.ts` / `stores/projectRemarks.ts` | Defensive REMARKS.md parser/splicer plus local-or-SFTP I/O. Conforming bullets are editable; all other bytes are parked verbatim. |
 | `lib/viewers/{fileUtils,markdown,highlight,tex}.ts` | Pure viewer logic (XSS-safe markdown/highlight, TeX, file utils). `tex.ts` also resolves `\ref`/`\cite` keys to their `\label`/`.bib` entry via the editor-jump channel. |
