@@ -623,6 +623,17 @@ impl MailStore {
             conn.execute_batch("DROP TABLE mail_remote_allow_v1;")
                 .map_err(|e| e.to_string())?;
         }
+        // Rows written before `upsert_header` normalized `date` to UTC still
+        // carry the sender's offset and sort out of order (see there). Only mail
+        // a sync fetches again would be rewritten, so they are converted here.
+        // Idempotent: a converted row ends in `Z` and is not matched again.
+        conn.execute(
+            "UPDATE messages SET date = strftime('%Y-%m-%dT%H:%M:%SZ', date)
+             WHERE date <> '' AND date NOT LIKE '%Z'
+               AND strftime('%Y-%m-%dT%H:%M:%SZ', date) IS NOT NULL",
+            [],
+        )
+        .map_err(|e| e.to_string())?;
         conn.execute(
             "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?1)",
             params![SCHEMA_VERSION.to_string()],
@@ -826,11 +837,18 @@ impl MailStore {
             .optional()
             .map_err(|e| e.to_string())?
             .unwrap_or(false);
+        // `date` is stored in UTC because every list orders by it as TEXT. The
+        // parser hands back the sender's own offset, and RFC 3339 strings with
+        // different offsets do not sort as the instants they name: a 06:00 at
+        // `+02:00` sorted above a 09:00 sent as `03:00-04:00`. `strftime`
+        // converts any offset to UTC and answers NULL for what it cannot read,
+        // which keeps that value as it came rather than blanking it.
         conn.execute(
             "INSERT INTO messages (id, account_id, folder_id, uid, subject, from_json, to_json,
                                    cc_json, date, seen, flagged, answered, has_attachments,
                                    size, preview, malformed, rfc_message_id, authres_json)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,COALESCE(strftime('%Y-%m-%dT%H:%M:%SZ', ?9), ?9),
+                     ?10,?11,?12,?13,?14,?15,?16,?17,?18)
              ON CONFLICT(id) DO UPDATE SET
                 subject = excluded.subject, from_json = excluded.from_json,
                 to_json = excluded.to_json, cc_json = excluded.cc_json,
@@ -2925,6 +2943,55 @@ mod tests {
             .unwrap();
         assert_eq!(asc.items[0].uid, 5, "smallest first, newest of the ties");
         assert_eq!(asc.items[4].uid, 1, "the big one goes last");
+    }
+
+    /// Dates arrive with the sender's offset, and the list orders by the text.
+    /// A 06:00 UTC mail written `08:00+02:00` must still sort below a 09:00 UTC
+    /// one written `05:00-04:00`, which as strings it would not.
+    #[test]
+    fn date_order_is_by_instant_not_by_the_senders_offset() {
+        let (_d, store) = store();
+        let f = folder("a1", "INBOX");
+        store.upsert_folder(&f).unwrap();
+        store
+            .upsert_header(&header(&f, 1, "early", "2026-09-18T08:00:00+02:00"))
+            .unwrap();
+        store
+            .upsert_header(&header(&f, 2, "late", "2026-09-18T05:00:00-04:00"))
+            .unwrap();
+        store.upsert_header(&header(&f, 3, "undated", "")).unwrap();
+
+        let page = store
+            .headers_page(&f.id, 0, 10, None, MailSort::Date, true, false)
+            .unwrap();
+        let uids: Vec<u32> = page.items.iter().map(|h| h.uid).collect();
+        assert_eq!(uids, vec![2, 1, 3], "newest instant first, undated last");
+        assert_eq!(page.items[0].date, "2026-09-18T09:00:00Z");
+        assert_eq!(page.items[1].date, "2026-09-18T06:00:00Z");
+        assert_eq!(page.items[2].date, "", "an empty date stays empty");
+    }
+
+    /// Rows stored before the UTC rule are converted when the store opens.
+    #[test]
+    fn opening_the_store_converts_dates_stored_with_an_offset() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let store = MailStore::open(dir.path()).unwrap();
+            let f = folder("a1", "INBOX");
+            store.upsert_folder(&f).unwrap();
+            store
+                .upsert_header(&header(&f, 1, "old row", "2026-09-18T09:00:00Z"))
+                .unwrap();
+            let conn = store.conn.lock().unwrap();
+            conn.execute(
+                "UPDATE messages SET date = '2026-09-18T08:00:00+02:00' WHERE uid = 1",
+                [],
+            )
+            .unwrap();
+        }
+        let store = MailStore::open(dir.path()).unwrap();
+        let h = store.header("a1|INBOX#1").unwrap().unwrap();
+        assert_eq!(h.date, "2026-09-18T06:00:00Z");
     }
 
     /// Unread-only is a filter over the folder, not over the page: the total
