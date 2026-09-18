@@ -26,10 +26,10 @@
  * any of the three record ids.
  */
 
-import { targetKey, type Target } from "../../machineSync";
+import { targetKey, type Target } from "../machineSync";
 import type { ProjectEntry, Settings } from "../../../types";
 
-export { primaryTargetOf, targetOfSpec } from "../../carefulHost";
+export { primaryTargetOf, targetOfSpec } from "../carefulHost";
 export type { Target };
 
 /** Whether `target` is tagged as a cluster login node. `false` for a local
@@ -47,7 +47,7 @@ export function isHpcHost(
 /**
  * **May Eldrun reach `target` without a gesture?** — the single authority behind
  * every unattended path: the launch/VPN-up sweeps, the reachability probe, the
- * dead-host silent reconnect, and the pool `lib/machineSync` opens to mirror one
+ * dead-host silent reconnect, and the pool `lib/remote/machineSync` opens to mirror one
  * lamp onto another. Nothing re-derives the rule; they all ask here.
  *
  * **Fails closed while settings are unloaded.** `isHpcHost(null, …)` answering

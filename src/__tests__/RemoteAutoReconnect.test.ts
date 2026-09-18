@@ -1,5 +1,5 @@
 /**
- * The event-driven half of remote auto-connect (`lib/remoteAutoReconnect`):
+ * The event-driven half of remote auto-connect (`lib/remote/remoteAutoReconnect`):
  * a tunnel *rising* to connected re-tries the active remote project and sweeps
  * the armed global machines; the sweep is behind the Machines feature switch
  * and waits for settings to be **loaded** (an unloaded store reads as "off");
@@ -21,7 +21,7 @@ const settle = () => new Promise<void>((r) => setTimeout(r, 0));
 async function fresh(opts: { machinesEnabled?: boolean; loaded?: boolean; gmLoaded?: boolean } = {}) {
   vi.resetModules();
   const { useSettingsStore } = await import("../stores/settings");
-  const { useGlobalMachinesStore } = await import("../stores/globalMachines");
+  const { useGlobalMachinesStore } = await import("../stores/remote/globalMachines");
   const { useVpnStatusStore } = await import("../stores/remote/vpn/vpnStatus");
   const projects = await import("../stores/projects");
   const retry = vi.mocked(projects.retryAutoConnectAfterVpn);
@@ -35,7 +35,7 @@ async function fresh(opts: { machinesEnabled?: boolean; loaded?: boolean; gmLoad
   });
   useGlobalMachinesStore.setState({ loaded: opts.gmLoaded ?? true, load, autoConnect });
   useVpnStatusStore.setState({ byConfig: {}, holders: {} });
-  const { initRemoteAutoReconnect } = await import("../lib/remoteAutoReconnect");
+  const { initRemoteAutoReconnect } = await import("../lib/remote/remoteAutoReconnect");
   return { useSettingsStore, useGlobalMachinesStore, useVpnStatusStore, retry, load, autoConnect, initRemoteAutoReconnect };
 }
 

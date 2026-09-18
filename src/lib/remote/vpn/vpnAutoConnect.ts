@@ -9,7 +9,7 @@ import {
 } from "../../../stores/remote/vpn/vpnStatus";
 import { canConnectVpnSilently, connectVpnSilently } from "./vpnConnect";
 import { keyringState } from "../../keyring";
-import { openConnectionInRoot } from "../../remoteConnect";
+import { openConnectionInRoot } from "../remoteConnect";
 import { translate, useI18nStore } from "../../i18n";
 
 /**

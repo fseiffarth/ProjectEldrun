@@ -33,8 +33,8 @@ import { SidePanel } from "../components/layout/SidePanel";
 import { useProjectsStore } from "../stores/projects";
 import { useBoxesStore } from "../stores/boxes";
 import { useTabsStore } from "../stores/tabs";
-import { useRemoteStatusStore } from "../stores/remoteStatus";
-import { useFileSourcePrefStore } from "../stores/fileSourcePref";
+import { useRemoteStatusStore } from "../stores/remote/remoteStatus";
+import { useFileSourcePrefStore } from "../stores/remote/fileSourcePref";
 
 function proj(id: string, _boxId?: string): ProjectEntry {
   // Membership is member_ids-only now; the second arg is kept so call sites read

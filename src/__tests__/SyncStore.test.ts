@@ -18,7 +18,7 @@ import {
   dirSyncAggregate,
   localNewPaths,
   type SyncEntryStatus,
-} from "../stores/sync";
+} from "../stores/remote/sync";
 
 const invokeMock = vi.mocked(invoke);
 const listenMock = vi.mocked(listen);

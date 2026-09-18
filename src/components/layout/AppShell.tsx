@@ -78,7 +78,7 @@ import {
   listenProjectRuntimeSwitched,
   silentReconnectDeadHost,
 } from "../../stores/projects";
-import { useRemoteStatusStore } from "../../stores/remoteStatus";
+import { useRemoteStatusStore } from "../../stores/remote/remoteStatus";
 import { disconnectAllTunnelsOnQuit } from "../../stores/remote/vpn/vpnStatus";
 import {
   closeOrphanedPopouts,
@@ -86,11 +86,11 @@ import {
   shutdownDetachedWindows,
 } from "../../stores/detached";
 import { listenPdfReveal } from "../../stores/viewers/pdfSync";
-import { listenSyncProgress } from "../../stores/sync";
+import { listenSyncProgress } from "../../stores/remote/sync";
 import { autoConnectVpnOnLaunch } from "../../lib/remote/vpn/vpnAutoConnect";
-import { initRemoteAutoReconnect } from "../../lib/remoteAutoReconnect";
+import { initRemoteAutoReconnect } from "../../lib/remote/remoteAutoReconnect";
 import { initExperimentalSweep } from "../../lib/experimentalSweep";
-import { initMachineSync } from "../../lib/machineSync";
+import { initMachineSync } from "../../lib/remote/machineSync";
 import { installWindowsEvents } from "../../stores/windows";
 import { listenEditorJump } from "../../stores/viewers/editorJump";
 import { listenTexCenter } from "../../stores/viewers/texCenter";

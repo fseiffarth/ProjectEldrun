@@ -12,7 +12,7 @@ import { useLinkRoutingStore } from "./linkRouting";
 import { bumpUsage } from "./usage";
 import { translate, useI18nStore } from "../lib/i18n";
 import { newTmuxSessionName } from "../lib/terminal/tmuxSession";
-import { useRunHostPrefStore } from "./runHostPref";
+import { useRunHostPrefStore } from "./remote/runHostPref";
 import { withdrawnTabKinds } from "../lib/experimental";
 import { useSettingsStore } from "./settings";
 import { getDetachedWindowContext } from "./detachedContext";
@@ -79,7 +79,7 @@ function withRunHostDefault(
  * - `hostBoundUid` is dropped because the grant is a file the backend writes
  *   against a specific uid; the caller re-registers one and passes it back in
  *   (a store action cannot await). Without it the copy simply runs inside the
- *   project's container, which is the safe direction (`lib/hostBound.ts`).
+ *   project's container, which is the safe direction (`lib/remote/hostBound.ts`).
  */
 export function duplicateSpec(tab: TabEntry): Omit<TabEntry, "key"> {
   const {
@@ -655,7 +655,7 @@ export interface TabEntry {
   // session) instead of spawning a fresh one. Persisted so it reattaches across a
   // restart. Passed as `tmux_attach`, which takes precedence over `tmuxSession`.
   tmuxAttach?: string;
-  // The tab's HOST-BOUND MARKER id (`lib/hostBound.ts`, #150): set on a local-model
+  // The tab's HOST-BOUND MARKER id (`lib/remote/hostBound.ts`, #150): set on a local-model
   // driver tab, which is the one kind of tab allowed to run on the host when the
   // project's container toggle is on. Minted and registered at creation and
   // persisted here for the same reason `tmuxSession` is — the tab's key and PTY id
@@ -1140,7 +1140,7 @@ interface TabsStore {
   // which need not be the one the desktop is showing — and `removeTab` writes
   // to the active scope, so without the scope said out loud a close from the
   // phone would drop a tab out of the project on the user's screen. Closing
-  // stays what it is on the desktop (`lib/closeRemoteTab`): the pane unmounts
+  // stays what it is on the desktop (`lib/remote/closeRemoteTab`): the pane unmounts
   // and its PTY dies, while a tmux session behind the tab keeps running. A tab
   // living in a popout is closed through that window's own teardown, since its
   // pane is mounted there and nothing here would otherwise kill its PTY.

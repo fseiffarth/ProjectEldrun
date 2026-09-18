@@ -1,6 +1,6 @@
 /**
  * The persistent-session list is ONE reading shared by every surface that shows
- * it (`stores/hostSessions`), not a private copy per `ProjectFilesView`.
+ * it (`stores/remote/hostSessions`), not a private copy per `ProjectFilesView`.
  *
  * The same viewer is rendered by the side panel, by every Files (Project) tab
  * and by every subwindow's docked file column at once. When each owned its own
@@ -16,9 +16,9 @@ const invoke = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({ invoke: (...a: unknown[]) => invoke(...a) }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn().mockResolvedValue(() => {}) }));
 
-import { useHostSessionsStore, sessionHostsOf } from "../stores/hostSessions";
+import { useHostSessionsStore, sessionHostsOf } from "../stores/remote/hostSessions";
 import { useProjectsStore } from "../stores/projects";
-import { useRemoteStatusStore } from "../stores/remoteStatus";
+import { useRemoteStatusStore } from "../stores/remote/remoteStatus";
 import type { ProjectEntry } from "../types";
 
 /** A fresh project id per test. The store's refcount/interval bookkeeping is

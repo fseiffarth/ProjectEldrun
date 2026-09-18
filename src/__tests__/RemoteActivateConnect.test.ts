@@ -22,12 +22,12 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(() => Promise.resolve()) 
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(() => Promise.resolve(() => {})) }));
 
 import { retryAutoConnectAfterVpn, useProjectsStore } from "../stores/projects";
-import { useConnectDialogStore } from "../stores/connectDialog";
-import { useRemoteStatusStore } from "../stores/remoteStatus";
+import { useConnectDialogStore } from "../stores/remote/connectDialog";
+import { useRemoteStatusStore } from "../stores/remote/remoteStatus";
 import { useSettingsStore } from "../stores/settings";
 import { useTabsStore } from "../stores/tabs";
 import { useVpnStatusStore } from "../stores/remote/vpn/vpnStatus";
-import { forgetConnection } from "../lib/remoteConnect";
+import { forgetConnection } from "../lib/remote/remoteConnect";
 import type { ProjectEntry, RemoteSpec, Settings, SshProbe } from "../types";
 
 const invokeMock = vi.mocked(invoke);

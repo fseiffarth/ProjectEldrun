@@ -1,4 +1,4 @@
-import { useHostKeyPromptStore } from "../stores/hostKeyPrompt";
+import { useHostKeyPromptStore } from "../../stores/remote/hostKeyPrompt";
 
 /**
  * First-contact host-key confirmation, from the caller's side.

@@ -1,5 +1,5 @@
 /**
- * The busy reading behind the pulsing machine lamp (`stores/hostBusy`).
+ * The busy reading behind the pulsing machine lamp (`stores/remote/hostBusy`).
  *
  * What these pin: a reading is keyed by SSH target (so one probe lights every
  * record of the same machine), it goes stale rather than lying, a host that
@@ -12,9 +12,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const invokeMock = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({ invoke: (...a: unknown[]) => invokeMock(...a) }));
 
-import { busyLabel, busyReading, isBusy, useHostBusyStore } from "../stores/hostBusy";
+import { busyLabel, busyReading, isBusy, useHostBusyStore } from "../stores/remote/hostBusy";
 import { useSettingsStore } from "../stores/settings";
-import { targetKey } from "../lib/machineSync";
+import { targetKey } from "../lib/remote/machineSync";
 
 const gpu = { user: "alice", host: "gpu.example.org", port: 22 };
 const MIN = 60 * 1000;

@@ -10,7 +10,7 @@ and a skipped host census, a wrong full reading costs a usage-policy violation o
 somebody else's cluster. So the question is never asked of the host, only of the
 user, and only when they care to answer: the system monitor's per-machine
 **Light / Detailed** switch, stored per SSH target in `settings.careful_hosts`
-(`src/lib/carefulHost.ts`), which is what "this machine is mine" is written down
+(`src/lib/remote/carefulHost.ts`), which is what "this machine is mine" is written down
 as. The rest of this document is what the reduced reading actually is, and the
 rules that shaped it.
 
@@ -142,7 +142,7 @@ Tagged, a machine gets:
 | disk-usage scan | runs | **refused until confirmed for that scan** (`commands::disk_usage` → `HPC_GUARD` → `lib/remote/hpc/hpcGuard.ts`) |
 | auto byte-sync loop (25 s) | starts on connect | never starts (`services::sync_auto`) — manual push/pull still works, and the tag is re-read **per tick**, so tagging a connected host stops the loop mid-session |
 | git lockstep poll (12 s) | starts when lockstep is on | never starts (`services::git_peer`), same per-tick re-read |
-| auto-connect at launch/VPN-up | as armed | never, project or global machine (`stores/projects`, `stores/globalMachines`) |
+| auto-connect at launch/VPN-up | as armed | never, project or global machine (`stores/projects`, `stores/remote/globalMachines`) |
 | silent reconnect of a dead pool (15 s) | re-dials | never (`stores/projects`' `silentReconnectDeadHost`) — a dropped session ends at a red lamp the user clicks |
 | Machines-menu reachability sweep | probes every machine on open | never swept; the row reads *not checked* until its **◎ Check** is pressed |
 | system-monitor poll | 3 s (12 s careful) | sampled once when the pane opens, then only on **↻ Refresh** |

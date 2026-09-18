@@ -1,6 +1,6 @@
 import { useT } from "../../lib/i18n";
 import { fmtSize } from "../../lib/viewers/fileUtils";
-import { useSyncConfirmStore } from "../../stores/syncConfirm";
+import { useSyncConfirmStore } from "../../stores/remote/syncConfirm";
 import { UntestedTag } from "./UntestedTag";
 
 /**

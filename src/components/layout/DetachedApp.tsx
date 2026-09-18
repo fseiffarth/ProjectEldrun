@@ -62,7 +62,7 @@ import { useTabLandStore } from "../../stores/drag/tabLand";
 import { startFocusTracking, useQuiesce } from "../../stores/power";
 import { clearStrayFullscreen } from "../../lib/window/strayFullscreen";
 import { applyFastModeAttribute, useFastMode } from "../../lib/agents/fastMode";
-import { useRemoteStatusStore } from "../../stores/remoteStatus";
+import { useRemoteStatusStore } from "../../stores/remote/remoteStatus";
 import { useProjectsStore } from "../../stores/projects";
 import { useBoxesStore } from "../../stores/boxes";
 import { installWindowsEvents } from "../../stores/windows";

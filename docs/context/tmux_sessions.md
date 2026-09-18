@@ -80,12 +80,12 @@ reopens a master whose socket went away; a sibling teardown, an `ssh -O exit`)
 it falls back to a fresh login with no credential to answer, fails for one 7 s
 tick and succeeds on the next — a Sessions view that blanks and comes back.
 `remote_tmux_list` now returns `Err` on a non-zero exit status, and
-`stores/hostSessions`' poll carries a **failed host's previous rows forward**
+`stores/remote/hostSessions`' poll carries a **failed host's previous rows forward**
 rather than folding them into the reading; a host that answers with nothing
 still empties, or a killed session would never leave the list. This is the same
 rule `release` already kept the last reading for.
 **Kill vs. detach**: closing a tab **always detaches** —
-`lib/closeRemoteTab.ts`'s `closeTabWithConfirm` just `removeTab`s, killing only the
+`lib/remote/closeRemoteTab.ts`'s `closeTabWithConfirm` just `removeTab`s, killing only the
 ssh/PTY client, so the session lives on under its tmux daemon; a crash or a
 respawn likewise **leaves the session alive**, and so does an app exit for a
 **remote** session. A **clean quit ends every local `eldrun-*` session** —

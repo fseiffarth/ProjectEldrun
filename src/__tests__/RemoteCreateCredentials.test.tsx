@@ -27,7 +27,7 @@ vi.mock("../components/terminal/TerminalView", () => ({ TerminalView: () => null
 
 import { ExtendToRemoteDialog } from "../components/projects/ExtendToRemoteDialog";
 import { useProjectsStore } from "../stores/projects";
-import { useRemoteStatusStore } from "../stores/remoteStatus";
+import { useRemoteStatusStore } from "../stores/remote/remoteStatus";
 import { useSettingsStore } from "../stores/settings";
 import { useVpnStatusStore } from "../stores/remote/vpn/vpnStatus";
 import type { ProjectEntry } from "../types";

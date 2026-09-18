@@ -26,8 +26,8 @@ import {
   fileSourceSettled,
   useFileSourcePrefStore,
   viewerSourceKey,
-} from "../stores/fileSourcePref";
-import { useRemoteStatusStore } from "../stores/remoteStatus";
+} from "../stores/remote/fileSourcePref";
+import { useRemoteStatusStore } from "../stores/remote/remoteStatus";
 import { useFileSource, useIndependentFileSource } from "../components/files/ProjectFilesPane";
 
 const PID = "p1";

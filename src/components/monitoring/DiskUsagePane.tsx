@@ -21,7 +21,7 @@ import {
 } from "../../lib/projects/diskUsage";
 import { FILES_TAB_CMD, useTabsStore } from "../../stores/tabs";
 import { useProjectsStore } from "../../stores/projects";
-import { useRemoteStatusStore } from "../../stores/remoteStatus";
+import { useRemoteStatusStore } from "../../stores/remote/remoteStatus";
 import { OrbitSpinner } from "../common/OrbitSpinner";
 import { useT } from "../../lib/i18n";
 

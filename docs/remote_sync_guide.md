@@ -5,7 +5,7 @@ The working guide to keeping a remote (SSH) project's **local mirror** and its
 what it is; this document says *what happens*, in what order, and what to do
 when the UI goes amber, orange or red. Code: `src-tauri/src/services/
 {remote_sync,sync_auto,git_peer,local_loss,worker_sync}.rs` and
-`src-tauri/src/commands/{sync,git_peer}.rs`; UI: `src/stores/sync.ts`,
+`src-tauri/src/commands/{sync,git_peer}.rs`; UI: `src/stores/remote/sync.ts`,
 `src/components/files/{FileTree,ProjectFilesView,ProjectFilesPane}.tsx`,
 `src/components/files/GitHistory.tsx` (the Lockstep bar).
 

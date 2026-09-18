@@ -7,7 +7,7 @@ import { create } from "zustand";
  * store only decides whether it is on screen, so the project-switcher **+** menu
  * (and anywhere else) can launch it without prop-drilling a callback down.
  *
- * Mirrors `stores/remoteMachines` — one boolean plus open/close, mounted once as a
+ * Mirrors `stores/remote/remoteMachines` — one boolean plus open/close, mounted once as a
  * host in `AppShell`.
  */
 interface HpcPipelineStore {

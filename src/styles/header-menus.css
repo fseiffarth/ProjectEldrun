@@ -745,7 +745,7 @@
 /* ── Up vs. working ───────────────────────────────────────────────────────
    A machine that is CONNECTED but has nothing running on it is drawn HOLLOW —
    an outline of the same green — and one with live work on it (≥1 tmux session,
-   `stores/hostBusy`) stays the solid dot. It is the tab ring's vocabulary at dot
+   `stores/remote/hostBusy`) stays the solid dot. It is the tab ring's vocabulary at dot
    scale: same colour for the same subject, the shape saying whether it is under
    way. With a fleet held open all day "connected" is the resting state and stops
    distinguishing anything, so what the lamp usefully answers is "where am I

@@ -593,7 +593,7 @@ function mobileTargetTab(scope: string, tmuxSession: string) {
 }
 
 /** Close one tab from the phone. Closing means here what it means on the
- * desktop (`lib/closeRemoteTab`): the tab leaves the layout and its viewer
+ * desktop (`lib/remote/closeRemoteTab`): the tab leaves the layout and its viewer
  * dies, while the tmux session behind it keeps running and stays reattachable
  * from the Sessions view — a tap on a phone must not be able to end a running
  * agent.

@@ -11,7 +11,7 @@ import { PasswordInput } from "../common/PasswordInput";
 import { Toggle } from "../common/Toggle";
 import { VpnTunnelUpNotice } from "../common/VpnTunnelUpNotice";
 import { useVpnSectionVisible } from "../../stores/remote/vpn/vpnStatus";
-import type { ConnState } from "../../stores/remoteStatus";
+import type { ConnState } from "../../stores/remote/remoteStatus";
 import type { useRemoteSession } from "./useRemoteSession";
 import { useT, type TranslationKey } from "../../lib/i18n";
 import { HpcHostToggle } from "./HpcHostToggle";

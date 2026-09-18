@@ -1,6 +1,6 @@
 import { emit } from "@tauri-apps/api/event";
 import { create } from "zustand";
-import { isDetachedWindow } from "./detachedContext";
+import { isDetachedWindow } from "../detachedContext";
 
 /** Mirrors `DETACHED_OPEN_DIALOG` in stores/detached (spelled here to keep this
  *  module free of that import: detached.ts imports this one). */
@@ -27,7 +27,7 @@ export interface DroppedGlobalMachine {
  * never retargets an open manager.
  *
  * `pendingDrop` seeds the "confirm shared path" panel when a global machine
- * (`stores/globalMachines.ts`) is added to this **remote** project — picked from
+ * (`stores/remote/globalMachines.ts`) is added to this **remote** project — picked from
  * the header machine menu's "add to a project" list, which calls
  * `open(projectId, payload)` to open this window with the machine pre-filled.
  *

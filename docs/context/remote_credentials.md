@@ -159,7 +159,7 @@ Referenced from `AGENTS.md`.
   ever shown the fingerprint they were implicitly trusting. So every password path
   calls `guard_first_contact` **before** the askpass is attached and refuses an
   unknown host with an `UNKNOWN_HOST_KEY`-marked error;
-  `HostKeyConfirmDialog` (raised via `lib/hostKey.ts`'s `withHostKeyConfirm`, which
+  `HostKeyConfirmDialog` (raised via `lib/remote/hostKey.ts`'s `withHostKeyConfirm`, which
   reads the target out of that error and retries once) shows the fingerprints and, on
   a yes, writes them to `known_hosts` — which is what clears the gate, so there is no
   second "confirmed" state to keep in step. Interactive connects opt in; **background
@@ -168,7 +168,7 @@ Referenced from `AGENTS.md`.
   goes red *at once* rather than after a retry loop, since the refusal is a decision
   that will repeat identically, not a race worth waiting out. (The one retry loop
   left that can meet an unknown host, extend-to-remote's, asks **once** and holds the
-  answer for the rest of the loop — `lib/hostKeyOnce.ts`.)
+  answer for the rest of the loop — `lib/remote/hostKeyOnce.ts`.)
   The bulk machine **import** loop is exempt for the same reason in reverse: one modal
   per imported host would be a wall of prompts, so each lands as a red row whose
   Connect asks once. The gate itself runs two short *local* subprocesses (`ssh -G` to

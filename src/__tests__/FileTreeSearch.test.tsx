@@ -25,8 +25,8 @@ vi.mock("../components/files/openFileEntry", () => ({ openFileEntry: mockOpenFil
 import { SidePanel } from "../components/layout/SidePanel";
 import { useProjectsStore } from "../stores/projects";
 import { useTabsStore } from "../stores/tabs";
-import { useRemoteStatusStore } from "../stores/remoteStatus";
-import { useFileSourcePrefStore } from "../stores/fileSourcePref";
+import { useRemoteStatusStore } from "../stores/remote/remoteStatus";
+import { useFileSourcePrefStore } from "../stores/remote/fileSourcePref";
 import { clearFileViewSnapshots } from "../lib/projects/fileViewSnapshots";
 
 const PROJECT: ProjectEntry = {

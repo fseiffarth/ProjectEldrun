@@ -17,8 +17,8 @@ import { logoutRemote, useProjectsStore } from "../../stores/projects";
 import { isTrashProject } from "../../lib/projects/trashProject";
 import { GIT_STATE_COLOR } from "../../lib/theme/gitColors";
 import { ContextMenuPortal } from "../common/ContextMenuPortal";
-import { useSyncStore, amberPaths, localNewPaths } from "../../stores/sync";
-import { confirmSyncTransfer } from "../../stores/syncConfirm";
+import { useSyncStore, amberPaths, localNewPaths } from "../../stores/remote/sync";
+import { confirmSyncTransfer } from "../../stores/remote/syncConfirm";
 import { openLinkedFile, viewerForPath } from "../embed/FileViewerPane";
 import { useWindowsStore } from "../../stores/windows";
 import { useGitDirtyStore, gitDirtyState } from "../../stores/gitDirty";
@@ -32,21 +32,21 @@ import {
 import { basename, dirname } from "../../lib/paths";
 import { projectTypeTags } from "../projects/projectTypeTags";
 import { ProjectHoverCard, useProjectHoverCard } from "../projects/ProjectHoverCard";
-import { useRemoteMachinesStore } from "../../stores/remoteMachines";
+import { useRemoteMachinesStore } from "../../stores/remote/remoteMachines";
 import { UntestedTag } from "../common/UntestedTag";
 import { AgentSchedulesView } from "../agents/AgentSchedulesView";
 import { useDialogs } from "../common/PromptDialogs";
 import { ROOT_SCOPE, useTabsStore, type TabEntry } from "../../stores/tabs";
-import { persistentSessionOf } from "../../lib/closeRemoteTab";
+import { persistentSessionOf } from "../../lib/remote/closeRemoteTab";
 import { sessionKindFromName, type TmuxSessionKind } from "../../lib/terminal/tmuxSession";
-import { useRemoteStatusStore, sshOf } from "../../stores/remoteStatus";
+import { useRemoteStatusStore, sshOf } from "../../stores/remote/remoteStatus";
 import {
   sessionHostsOf,
   useHostSessions,
   useHostSessionsStore,
   useShowAllSessions,
   type SessionRow,
-} from "../../stores/hostSessions";
+} from "../../stores/remote/hostSessions";
 import {
   slurmAvailable,
   slurmQueue,
@@ -660,7 +660,7 @@ export function ProjectFilesView({
   // worker, each row tagged with its host; polled while this view is active (rides
   // each host's pooled ControlMaster). An absent tmux / no server yields nothing.
   //
-  // The list, its poll and its toggle all live in `stores/hostSessions`, NOT
+  // The list, its poll and its toggle all live in `stores/remote/hostSessions`, NOT
   // here: this component is rendered by the side panel, by every Files (Project)
   // tab and by every subwindow's docked column at once, and a per-instance poll
   // meant one `tmux ls` per host per surface every 7s — and, worse, that a

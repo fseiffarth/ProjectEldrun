@@ -17,7 +17,7 @@ import { HPC_GUARD, guardLoginNodeRun, hpcGuardRefusal, withHpcConfirm } from ".
 import { useHpcGuardStore } from "../stores/remote/hpc/hpcGuardPrompt";
 import { useProjectsStore } from "../stores/projects";
 import { useSettingsStore } from "../stores/settings";
-import { targetKey } from "../lib/machineSync";
+import { targetKey } from "../lib/remote/machineSync";
 import type { ProjectEntry } from "../types";
 
 const REFUSAL = `${HPC_GUARD} du-scan alice@login.example.org:22`;

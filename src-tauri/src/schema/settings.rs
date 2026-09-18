@@ -564,7 +564,7 @@ pub struct Settings {
     /// `remote`, a `compute_hosts` worker on another project, and a project-free
     /// global machine — three tables, three ids, one machine. A per-record `bool`
     /// would be three values free to disagree about the same host; the SSH target
-    /// is the identity `lib/machineSync`'s `sameTarget` already treats as the
+    /// is the identity `lib/remote/machineSync`'s `sameTarget` already treats as the
     /// bridge between them, so it is the identity used here too.
     ///
     /// The stored value is the user's **explicit** answer. A target *absent* from

@@ -1325,7 +1325,7 @@ not a from-scratch port. Builds on / supersedes the OS half of #19 (Group C).*
   pass `true` where `DELETE /api/v1/tabs/{id}` passes `false`.
   - **Closing is the desktop's ×, and nothing stronger.** The tab leaves the
     layout and its viewer dies; the tmux session behind it keeps running and
-    stays reattachable from the desktop's Sessions view — `lib/closeRemoteTab`'s
+    stays reattachable from the desktop's Sessions view — `lib/remote/closeRemoteTab`'s
     rule, applied rather than restated. A tap on a phone must not be able to
     end a running agent, which is also why the sheet says so in place of a
     yes/no confirm, and why the plan's deferred "tab termination" is still

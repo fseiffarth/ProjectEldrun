@@ -192,7 +192,7 @@ export function useAlertsFeed(options?: AlertsFeedOptions): AlertsFeed {
 
   // ── The reads ─────────────────────────────────────────────────────────────
   // The mail read joins the refcounted module-level poll (`stores/todo`'s
-  // retain/release, the `stores/hostSessions` pattern): this hook is mounted
+  // retain/release, the `stores/remote/hostSessions` pattern): this hook is mounted
   // many times at once, and a per-instance interval — worse, one keyed on
   // `newCount` — meant N identical queries per minute and N more per delivery.
   // The poll itself re-reads on arrival, so no `newCount` subscription is left

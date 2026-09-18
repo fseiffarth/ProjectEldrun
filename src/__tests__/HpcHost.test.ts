@@ -8,7 +8,7 @@
 import { describe, expect, it } from "vitest";
 
 import { isHpcHost, mayAutoTouch, projectIsOnHpc, setHpcPatch } from "../lib/remote/hpc/hpcHost";
-import { targetKey } from "../lib/machineSync";
+import { targetKey } from "../lib/remote/machineSync";
 import type { ProjectEntry, Settings } from "../types";
 
 const login = { user: "alice", host: "login.example.org", port: 22 };

@@ -1,5 +1,5 @@
 import { unknownHostKeyTarget } from "./hostKey";
-import { useHostKeyPromptStore } from "../stores/hostKeyPrompt";
+import { useHostKeyPromptStore } from "../../stores/remote/hostKeyPrompt";
 
 /**
  * `withHostKeyConfirm` for a **retry loop**.

@@ -1,11 +1,11 @@
 /**
- * `hostsForProject` (`lib/remoteHosts`): the one host list the monitor's source
+ * `hostsForProject` (`lib/remote/remoteHosts`): the one host list the monitor's source
  * picker and the usage dialog share — primary first, workers after, each with
  * the SSH target the careful/HPC flags are keyed by.
  */
 import { describe, expect, it } from "vitest";
 
-import { hostsForProject } from "../lib/remoteHosts";
+import { hostsForProject } from "../lib/remote/remoteHosts";
 import type { ProjectEntry } from "../types";
 
 const base = { id: "p", name: "p", status: "active" as const, position: 0, local_file: "/p" };

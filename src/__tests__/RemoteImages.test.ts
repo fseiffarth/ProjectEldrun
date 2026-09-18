@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { decodeBase64, hostsLabel, remoteImageHosts } from "../lib/remoteImages";
+import { decodeBase64, hostsLabel, remoteImageHosts } from "../lib/remote/remoteImages";
 
 describe("remote markdown images", () => {
   it("lists each host once, in document order, skipping unparsable URLs", () => {

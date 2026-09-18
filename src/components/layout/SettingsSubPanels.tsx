@@ -19,7 +19,7 @@ import {
 import type { GlobalAppEntry } from "../../types";
 import { parseSshAddress } from "../projects/scaffold";
 import { useProjectsStore } from "../../stores/projects";
-import { useGlobalMachinesStore } from "../../stores/globalMachines";
+import { useGlobalMachinesStore } from "../../stores/remote/globalMachines";
 import { useT, type TranslationKey } from "../../lib/i18n";
 import { notifyAgentRegistryChanged } from "../../lib/agents/agentRegistry";
 import {

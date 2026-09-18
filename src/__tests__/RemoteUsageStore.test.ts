@@ -1,5 +1,5 @@
 /**
- * Host usage reports (`stores/remoteUsage`): keyed by HOST rather than project,
+ * Host usage reports (`stores/remote/remoteUsage`): keyed by HOST rather than project,
  * read through two probe commands behind one `recheck` (a global machine
  * authenticates ad hoc, a project host rides its pool), best-effort so a dead
  * host leaves its last report rather than tearing down the dialog — and the
@@ -15,7 +15,7 @@ import {
   projectHostKey,
   useRemoteUsageStore,
   type RemoteUsageReport,
-} from "../stores/remoteUsage";
+} from "../stores/remote/remoteUsage";
 
 const report = (cpuPct: number): RemoteUsageReport => ({
   users: [],

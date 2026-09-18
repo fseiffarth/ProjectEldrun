@@ -3,10 +3,10 @@ import { createPortal } from "react-dom";
 
 import { useBigFoldersStore } from "../../stores/bigFolders";
 import { useProjectsStore } from "../../stores/projects";
-import { useRemoteStatusStore } from "../../stores/remoteStatus";
+import { useRemoteStatusStore } from "../../stores/remote/remoteStatus";
 import { useSettingsStore } from "../../stores/settings";
-import { useSyncStore, type BigFolderRow } from "../../stores/sync";
-import { isCarefulHost, primaryTargetOf } from "../../lib/carefulHost";
+import { useSyncStore, type BigFolderRow } from "../../stores/remote/sync";
+import { isCarefulHost, primaryTargetOf } from "../../lib/remote/carefulHost";
 import { isHpcHost } from "../../lib/remote/hpc/hpcHost";
 import { confirmOnHpcHost } from "../../lib/remote/hpc/hpcGuard";
 import { fmtSize } from "../../lib/viewers/fileUtils";

@@ -33,7 +33,7 @@ import { autoConnectEligibility } from "./autoConnectEligibility";
 import { describeDetectedSpecSource, sanitizeName } from "./scaffold";
 import { useSavedCredential } from "./useSavedCredential";
 import { isHpcHost, targetOfSpec } from "../../lib/remote/hpc/hpcHost";
-import { useRemoteMachinesStore, type DroppedGlobalMachine } from "../../stores/remoteMachines";
+import { useRemoteMachinesStore, type DroppedGlobalMachine } from "../../stores/remote/remoteMachines";
 import { Dropdown } from "../common/Dropdown";
 import { PasswordInput } from "../common/PasswordInput";
 import { FolderPickerDialog } from "../common/FolderPickerDialog";

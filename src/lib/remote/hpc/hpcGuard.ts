@@ -9,7 +9,7 @@
  * refused and which machine it was protecting, and the caller opts into a dialog
  * by wrapping itself in [`withHpcConfirm`].
  *
- * Exactly the shape `lib/hostKey.ts` already established for an unknown host key,
+ * Exactly the shape `lib/remote/hostKey.ts` already established for an unknown host key,
  * and for the same reason: everything needed to explain and retry rides in the
  * error, so no call site has to know in advance that its target might be a
  * cluster, and the 99% of users with no cluster never see any of it.
@@ -118,8 +118,8 @@ export async function guardLoginNodeRun(opts: {
   const { useProjectsStore } = await import("../../../stores/projects");
   const { useSettingsStore } = await import("../../../stores/settings");
   const { isHpcHost } = await import("./hpcHost");
-  const { hostsForProject } = await import("../../remoteHosts");
-  const { PRIMARY_HOST } = await import("../../../stores/remoteStatus");
+  const { hostsForProject } = await import("../remoteHosts");
+  const { PRIMARY_HOST } = await import("../../../stores/remote/remoteStatus");
 
   const project = useProjectsStore.getState().projects.find((p) => p.id === opts.projectId);
   const hostId = opts.location === "remote" ? PRIMARY_HOST : opts.location.replace(/^host:/, "");

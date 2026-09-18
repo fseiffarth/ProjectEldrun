@@ -16,7 +16,7 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(() => Promise.resolve(() => {})) }));
 
 import { runInstallInTab } from "../lib/installCommand";
-import { openConnectionInRoot, forgetConnection } from "../lib/remoteConnect";
+import { openConnectionInRoot, forgetConnection } from "../lib/remote/remoteConnect";
 import { allGroups, useTabsStore } from "../stores/tabs";
 import { useProjectsStore } from "../stores/projects";
 import { useRootOverlayStore } from "../stores/rootOverlay";

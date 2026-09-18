@@ -1,5 +1,5 @@
 /**
- * The per-project run-host preference (`stores/runHostPref`): the live cache
+ * The per-project run-host preference (`stores/remote/runHostPref`): the live cache
  * updates on the click and the disk write is fire-and-forget, and a reload's
  * `seed` never clobbers a choice made this session — the two can only differ
  * if the user just changed it before the reload.
@@ -9,7 +9,7 @@ import { invoke } from "@tauri-apps/api/core";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(() => Promise.resolve()) }));
 
-import { useRunHostPrefStore } from "../stores/runHostPref";
+import { useRunHostPrefStore } from "../stores/remote/runHostPref";
 
 const invokeMock = vi.mocked(invoke);
 

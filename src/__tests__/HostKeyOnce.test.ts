@@ -1,5 +1,5 @@
 /**
- * `hostKeyConfirmOnce` (`lib/hostKeyOnce`): the fingerprint question for a
+ * `hostKeyConfirmOnce` (`lib/remote/hostKeyOnce`): the fingerprint question for a
  * RETRY LOOP. The extend-to-remote flow dials a fresh host up to six times, so
  * the decision is taken once per loop and held — accepted means later attempts
  * simply run, declined means they fail with the original error and never
@@ -10,9 +10,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const invokeMock = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({ invoke: (...a: unknown[]) => invokeMock(...a) }));
 
-import { UNKNOWN_HOST_KEY } from "../lib/hostKey";
-import { hostKeyConfirmOnce } from "../lib/hostKeyOnce";
-import { useHostKeyPromptStore } from "../stores/hostKeyPrompt";
+import { UNKNOWN_HOST_KEY } from "../lib/remote/hostKey";
+import { hostKeyConfirmOnce } from "../lib/remote/hostKeyOnce";
+import { useHostKeyPromptStore } from "../stores/remote/hostKeyPrompt";
 
 const REFUSAL = `${UNKNOWN_HOST_KEY} new.example:22 — never accepted on this machine.`;
 

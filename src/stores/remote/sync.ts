@@ -223,7 +223,7 @@ interface SyncStore {
    *  `scanHost` (default true) is what a **careful** host turns off: the host half
    *  is a recursive `du -ak -x`, which on a cluster runs against a parallel
    *  filesystem's metadata server. Passing false keeps the local walk and skips
-   *  the host entirely, leaving `hostScanned` false. See `lib/carefulHost.ts`. */
+   *  the host entirely, leaving `hostScanned` false. See `lib/remote/carefulHost.ts`. */
   /** `confirmed` carries "the user asked for this machine by name" past the HPC
    *  tag's refusal of the host `du` half — see `commands::sync::sync_big_folders`.
    *  It is only ever `true` on the explicit button, never on the automatic pass. */

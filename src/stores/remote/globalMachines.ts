@@ -1,12 +1,12 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import type { ConnState } from "./remoteStatus";
-import type { GlobalMachine, MachineImportEntry } from "../types";
-import { syncGlobalDisconnected } from "../lib/machineSync";
+import type { GlobalMachine, MachineImportEntry } from "../../types";
+import { syncGlobalDisconnected } from "../../lib/remote/machineSync";
 import { useHostBusyStore } from "./hostBusy";
-import { withHostKeyConfirm } from "../lib/hostKey";
-import { mayAutoTouch } from "../lib/remote/hpc/hpcHost";
-import { useSettingsStore } from "./settings";
+import { withHostKeyConfirm } from "../../lib/remote/hostKey";
+import { mayAutoTouch } from "../../lib/remote/hpc/hpcHost";
+import { useSettingsStore } from "../settings";
 
 /** Per-machine outcome of a bulk import (`importMachines`): whether the shared
  *  credentials authenticated against that host. The machine is added to the list
@@ -38,7 +38,7 @@ interface GlobalMachinesStore {
   machines: GlobalMachine[];
   /** Per-machine id; absent = "off". **"A session this app opened"**, never "the
    *  host answered" — that is `reachable`. The distinction is load-bearing:
-   *  `lib/machineSync` propagates a machine's `connected` onto the project that
+   *  `lib/remote/machineSync` propagates a machine's `connected` onto the project that
    *  holds the same host and opens its pool, so a lamp lit by a mere probe would
    *  claim a session nothing ever opened. Written only by `add`/`register`/
    *  `connect`/`disconnect`. */
@@ -214,7 +214,7 @@ export const useGlobalMachinesStore = create<GlobalMachinesStore>((set, get) => 
       }),
     );
     const machine = await invoke<GlobalMachine>("global_machine_add", { user, host, port, label });
-    // The lamp is the propagation trigger: `lib/machineSync`'s subscription reflects
+    // The lamp is the propagation trigger: `lib/remote/machineSync`'s subscription reflects
     // this onto any project that already holds the host. Nothing is called by hand
     // here — that is exactly how `register` and the probe sweep ended up propagating
     // nothing at all.
@@ -324,7 +324,7 @@ export const useGlobalMachinesStore = create<GlobalMachinesStore>((set, get) => 
         const errors = { ...s.errors };
         delete errors[id];
         // Propagation onto a project holding this host rides the lamp itself
-        // (`lib/machineSync`'s subscription), not a call from here.
+        // (`lib/remote/machineSync`'s subscription), not a call from here.
         return { status: { ...s.status, [id]: "connected" }, errors };
       });
     } catch (e) {
@@ -389,7 +389,7 @@ export const useGlobalMachinesStore = create<GlobalMachinesStore>((set, get) => 
       ),
     );
     // The sweep writes `reachable`, NEVER `status`. A probe says the host answered;
-    // `status` says this app holds a session on it, and `lib/machineSync` acts on
+    // `status` says this app holds a session on it, and `lib/remote/machineSync` acts on
     // the second — opening the pool of a project that holds the same host. Folding
     // the first into the second is what lit a machine green off a hover while every
     // project holding it stayed unconnected, with nothing to propagate.

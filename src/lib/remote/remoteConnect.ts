@@ -1,7 +1,7 @@
-import { openTabInRootConsole } from "../stores/rootOverlay";
+import { openTabInRootConsole } from "../../stores/rootOverlay";
 import { invoke } from "@tauri-apps/api/core";
-import { useTabsStore } from "../stores/tabs";
-import { useProjectsStore } from "../stores/projects";
+import { useTabsStore } from "../../stores/tabs";
+import { useProjectsStore } from "../../stores/projects";
 
 /**
  * The directory a fresh connect/browse should open in for `host`: the standard

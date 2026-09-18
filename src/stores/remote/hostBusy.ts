@@ -1,8 +1,8 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
-import { targetKey, type Target } from "../lib/machineSync";
-import { mayAutoTouch } from "../lib/remote/hpc/hpcHost";
-import { useSettingsStore } from "./settings";
+import { targetKey, type Target } from "../../lib/remote/machineSync";
+import { mayAutoTouch } from "../../lib/remote/hpc/hpcHost";
+import { useSettingsStore } from "../settings";
 import { PRIMARY_HOST } from "./remoteStatus";
 
 /**
@@ -22,9 +22,9 @@ import { PRIMARY_HOST } from "./remoteStatus";
  * training run. A foreign session (one Eldrun never started) counts too: the
  * question is what the machine is doing, not what Eldrun launched.
  *
- * **Keyed by SSH target, never by id.** A global machine (`stores/globalMachines`)
+ * **Keyed by SSH target, never by id.** A global machine (`stores/remote/globalMachines`)
  * and the project host it also is (a primary `remote` or a `compute_hosts`
- * worker) are copies by value with different ids — `lib/machineSync` already
+ * worker) are copies by value with different ids — `lib/remote/machineSync` already
  * establishes that `user@host:port` is the only bridge between them. Keying on
  * `targetKey` means one probe of a machine lights it in the header, on every
  * project pill that holds it, and in the Remote-machines hub, with no second

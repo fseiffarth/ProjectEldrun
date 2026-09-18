@@ -25,12 +25,12 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const { mockInvoke } = vi.hoisted(() => ({ mockInvoke: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: mockInvoke }));
 // Pulled in by the store's connect/disconnect paths; irrelevant here.
-vi.mock("../lib/machineSync", () => ({
+vi.mock("../lib/remote/machineSync", () => ({
   syncGlobalConnected: vi.fn(),
   syncGlobalDisconnected: vi.fn(),
 }));
 
-import { useGlobalMachinesStore } from "../stores/globalMachines";
+import { useGlobalMachinesStore } from "../stores/remote/globalMachines";
 import { useSettingsStore } from "../stores/settings";
 import type { Settings } from "../types";
 
@@ -115,7 +115,7 @@ describe("globalMachines — a no-op status write must not notify", () => {
 
   // The expectation moved from `status` to `reachable` on purpose. A probe answers
   // "did the host answer", which is NOT "does this app hold a session on it" — and
-  // `status` means the second, because `lib/machineSync` propagates it onto any
+  // `status` means the second, because `lib/remote/machineSync` propagates it onto any
   // project holding the same host and opens that project's pool. Letting a hover-time
   // sweep write `status` is what lit a machine green with no session behind it while
   // the project stayed unconnected. The idempotence guarantee this file exists for is

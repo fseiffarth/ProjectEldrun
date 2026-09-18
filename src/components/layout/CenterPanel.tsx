@@ -64,8 +64,8 @@ import { isTrashProject } from "../../lib/projects/trashProject";
 import { IS_WINDOWS } from "../../lib/platform";
 import { restoreProjectScope, useProjectsStore } from "../../stores/projects";
 import { BOX_SCOPE_PREFIX, boxFolderOfScope, restoreBoxScope, useBoxesStore } from "../../stores/boxes";
-import { useRemoteMachinesStore } from "../../stores/remoteMachines";
-import { useRemoteStatusStore } from "../../stores/remoteStatus";
+import { useRemoteMachinesStore } from "../../stores/remote/remoteMachines";
+import { useRemoteStatusStore } from "../../stores/remote/remoteStatus";
 import { resolveLocalMirror, resolveProjectDirectory } from "../../types";
 import { useT } from "../../lib/i18n";
 

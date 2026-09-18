@@ -43,7 +43,7 @@ login tab **is** the connection on that path, closing it is an outcome of its ow
 (`"closed"`, distinct from `"timeout"`): the lamp goes back to *disconnected*, not
 red, since the re-attempt guard only fires from `"off"` — a red lamp would read a
 deliberate dismissal as a failure and wedge the project shut. The root-terminal
-dedupe (`lib/remoteConnect`) expires with the tab for the same reason: it now maps
+dedupe (`lib/remote/remoteConnect`) expires with the tab for the same reason: it now maps
 each key to the tab carrying it, so a closed login stops claiming the key and the
 next activation offers the login again instead of waiting on a master that is never
 coming. A `null` mapping is a connection another surface owns (the Connect dialog's

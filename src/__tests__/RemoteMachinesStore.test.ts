@@ -1,5 +1,5 @@
 /**
- * The Remote-machines manager's store (`stores/remoteMachines`): keyed by an
+ * The Remote-machines manager's store (`stores/remote/remoteMachines`): keyed by an
  * explicit project id so a project switch never retargets an open manager, a
  * machine handoff seeded into `pendingDrop` (remote project) or `extendTarget`
  * (local project), and — Group B #233 — a popout forwarding the open.
@@ -9,7 +9,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const emitMock = vi.fn<(...a: unknown[]) => Promise<void>>(() => Promise.resolve());
 vi.mock("@tauri-apps/api/event", () => ({ emit: (...a: unknown[]) => emitMock(...a) }));
 
-import { useRemoteMachinesStore } from "../stores/remoteMachines";
+import { useRemoteMachinesStore } from "../stores/remote/remoteMachines";
 import { setDetachedWindowContext, type DetachedWindowContext } from "../stores/detachedContext";
 
 const machine = { id: "m1", host: "gpu.example.org", user: "alice", port: 22, label: "gpu" };

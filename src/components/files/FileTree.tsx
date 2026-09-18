@@ -25,9 +25,9 @@ import { useExperimental } from "../../lib/experimental";
 import { GIT_STATE_COLOR } from "../../lib/theme/gitColors";
 import { createDeckFile } from "../../lib/viewers/deck/create";
 import { useProjectsStore } from "../../stores/projects";
-import { useRemoteStatusStore } from "../../stores/remoteStatus";
-import { useSyncStore, isPathExcluded, dirSyncAggregate, type SyncFileState } from "../../stores/sync";
-import { confirmSyncTransfer } from "../../stores/syncConfirm";
+import { useRemoteStatusStore } from "../../stores/remote/remoteStatus";
+import { useSyncStore, isPathExcluded, dirSyncAggregate, type SyncFileState } from "../../stores/remote/sync";
+import { confirmSyncTransfer } from "../../stores/remote/syncConfirm";
 import { useActivityStore } from "../../stores/activity";
 import { useFileClipboardStore } from "../../stores/fileClipboard";
 import { type FileEntry, type InternalViewer, type SortKey, fileIcon, folderIcon, fmtSize, fmtModified, visibleEntries, isHiddenByEnding, internalViewerFor, disabledViewers, fileEntriesEqual, stringMapsEqual, nextSelection, STANDARD_PROJECT_FILES } from "../../lib/viewers/fileUtils";
@@ -63,7 +63,7 @@ import {
 } from "../../lib/terminal/shellScriptRun";
 import { guardLoginNodeRun } from "../../lib/remote/hpc/hpcGuard";
 import { projectIsOnHpc } from "../../lib/remote/hpc/hpcHost";
-import { useRunHostPrefStore } from "../../stores/runHostPref";
+import { useRunHostPrefStore } from "../../stores/remote/runHostPref";
 import { readFileText } from "../embed/fileAccess";
 import { SetDefaultAppDialog } from "./SetDefaultAppDialog";
 import { SendToProjectDialog, type SendSource } from "./SendToProjectDialog";
@@ -2538,7 +2538,7 @@ export function FileTree({
   // selected), or stop tracking it. Remote source view only.
   //
   // A pull writes the host's bytes over the mirror's — for a folder row, over the
-  // whole subtree — so it asks first (`stores/syncConfirm`), naming what would be
+  // whole subtree — so it asks first (`stores/remote/syncConfirm`), naming what would be
   // replaced and what would be lost. The button used to do it on one click, which
   // is what made an ordinary misclick destructive.
   /**

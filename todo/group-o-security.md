@@ -319,7 +319,7 @@ intent. What is left is listed here.
 150. **DONE (2026-07-27) — Stop keying host-bound authority on a usage-stats env
     var.** `is_host_bound_local_agent(cmd, marker)` now takes a *registered marker*
     instead of the tab's env: a local-model tab mints a uid at creation
-    (`src/lib/hostBound.ts` → `register_host_bound_tab`), the backend writes
+    (`src/lib/remote/hostBound.ts` → `register_host_bound_tab`), the backend writes
     `<state_dir>/sessions/<project>/host_bound/<uid>`, and the spawn path checks
     for that file. `ELDRUN_LOCAL_MODEL` is a usage label again. Markers are pruned
     on every layout save against the uids still in the layout.

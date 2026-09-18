@@ -17,7 +17,7 @@ import {
   forgetConnection,
   markConnectionOpened,
   resolveRemoteStartDir,
-} from "../../lib/remoteConnect";
+} from "../../lib/remote/remoteConnect";
 import { useSettingsStore } from "../../stores/settings";
 import { useT, type TranslationKey } from "../../lib/i18n";
 import type { LogLine } from "../common/ConnectionLog";

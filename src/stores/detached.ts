@@ -42,11 +42,11 @@ import {
   useRemoteStatusStore,
   type ConnState,
   type HostConnState,
-} from "./remoteStatus";
+} from "./remote/remoteStatus";
 import { BOX_SCOPE_PREFIX, useBoxesStore } from "./boxes";
 import { useActivityStore, noteUserInput } from "./activity";
 import { bumpUsage } from "./usage";
-import { useRemoteMachinesStore } from "./remoteMachines";
+import { useRemoteMachinesStore } from "./remote/remoteMachines";
 import { useBigFoldersStore } from "./bigFolders";
 import type { ProjectBox, ProjectEntry } from "../types";
 import { isTabColor, type TabColor } from "../lib/theme/tabColors";

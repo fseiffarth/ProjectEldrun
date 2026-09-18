@@ -10,7 +10,7 @@ const DETACHED_OPEN_DIALOG_EVENT = "detached-open-dialog";
  * Which project's giant-folder prompt is open, if any.
  *
  * A single `<BigFolderDialogHost>` is mounted once (in AppShell) and reads this
- * store, mirroring `stores/remoteMachines`. Keyed by an explicit project id —
+ * store, mirroring `stores/remote/remoteMachines`. Keyed by an explicit project id —
  * not the active project — because the moment that opens it (a project just
  * created, imported, or extended to a host) is also a moment the user may switch
  * away from, and the prompt must keep asking about the tree it measured.

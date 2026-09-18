@@ -2,7 +2,7 @@ import { create } from "zustand";
 
 /** The global machine a `GlobalMachineMonitorDialog` samples — enough identity
  *  to both authenticate ad-hoc (`user`/`host`/`port`) and title the dialog
- *  (`label`). Mirrors `DroppedGlobalMachine` (`stores/remoteMachines.ts`). */
+ *  (`label`). Mirrors `DroppedGlobalMachine` (`stores/remote/remoteMachines.ts`). */
 export interface GlobalMachineMonitorTarget {
   id: string;
   user?: string;
@@ -16,7 +16,7 @@ export interface GlobalMachineMonitorTarget {
  * `<GlobalMachineMonitorDialogHost>` is mounted once (in AppShell) and reads
  * this store; the header's Machines menu (`MachinesIndicator`) opens it via
  * `open(machine)` from a row's "System monitor…" button — the same
- * mount-once/store-driven pattern `stores/remoteMachines.ts` uses for the
+ * mount-once/store-driven pattern `stores/remote/remoteMachines.ts` uses for the
  * project-scoped Remote machines window.
  */
 interface GlobalMachineMonitorStore {

@@ -1,17 +1,17 @@
 import { invoke } from "@tauri-apps/api/core";
-import { useProjectsStore } from "../stores/projects";
-import { useGlobalMachinesStore } from "../stores/globalMachines";
-import { useSettingsStore } from "../stores/settings";
-import { mayAutoTouch } from "./remote/hpc/hpcHost";
+import { useProjectsStore } from "../../stores/projects";
+import { useGlobalMachinesStore } from "../../stores/remote/globalMachines";
+import { useSettingsStore } from "../../stores/settings";
+import { mayAutoTouch } from "./hpc/hpcHost";
 import {
   useRemoteStatusStore,
   hostStateOf,
   PRIMARY_HOST,
   type ConnState,
-} from "../stores/remoteStatus";
+} from "../../stores/remote/remoteStatus";
 
 /**
- * Keep a **global machine** (`stores/globalMachines`, header "Machines") and the
+ * Keep a **global machine** (`stores/remote/globalMachines`, header "Machines") and the
  * **project host** it also is (a project's primary `remote` or a `compute_hosts`
  * worker) in step, so connecting/disconnecting one reflects on the other.
  *

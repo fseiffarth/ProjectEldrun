@@ -10,7 +10,7 @@ import {
   type TabLocation,
 } from "../../stores/tabs";
 import { useFileSourcesStore } from "../../stores/viewers/fileSources";
-import { useRunHostPrefStore } from "../../stores/runHostPref";
+import { useRunHostPrefStore } from "../../stores/remote/runHostPref";
 import { UntestedTag } from "../common/UntestedTag";
 import { ContextMenuPortal } from "../common/ContextMenuPortal";
 import { useT } from "../../lib/i18n";

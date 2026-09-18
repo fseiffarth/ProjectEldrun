@@ -564,13 +564,13 @@ export interface Settings {
   connections_headless?: boolean;
   /** Hosts marked **careful** — "this machine is shared and policed, keep
    *  Eldrun's background load off it" — keyed by canonical SSH target
-   *  (`lib/machineSync`'s `targetKey`, i.e. `user@host:port`), because one login
+   *  (`lib/remote/machineSync`'s `targetKey`, i.e. `user@host:port`), because one login
    *  node is simultaneously a primary `remote`, a worker and a global machine.
    *  The value is the user's EXPLICIT answer; a target absent from the map is
    *  **careful** — the default for every remote machine — which is why this is a
    *  map and not a list: an explicit `false` ("this one is mine") must be
    *  distinguishable from an unanswered host, or the default would keep
-   *  re-enabling itself. See `lib/carefulHost.ts`. */
+   *  re-enabling itself. See `lib/remote/carefulHost.ts`. */
   careful_hosts?: Record<string, boolean>;
   /** Machines tagged **HPC** — a shared cluster login node — keyed by the same
    *  SSH target as `careful_hosts`. Ticked on the login form and shown as a badge
@@ -746,7 +746,7 @@ export interface StoredVpnConfig {
   name: string;
 }
 
-/** A globally connected worker machine (`stores/globalMachines.ts`):
+/** A globally connected worker machine (`stores/remote/globalMachines.ts`):
  *  authenticated once via the ordinary login mechanism, with no
  *  `remote_path` — project-free, unlike {@link ComputeHost}. Drag-and-dropped
  *  onto an SSH project to become a `shared_fs` compute host there (a value

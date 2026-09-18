@@ -1,5 +1,5 @@
 /**
- * Which tmux session a tab owns (`lib/closeRemoteTab`), as the Sessions view
+ * Which tmux session a tab owns (`lib/remote/closeRemoteTab`), as the Sessions view
  * reads it to mark owned rows. Two classifiers that must keep mirroring the
  * spawn-side rules (`shouldPersistTab` / `shouldPersistLocalTab`): a remote
  * session for a shell/agent tab on a host of a persist-enabled remote project,
@@ -16,7 +16,7 @@ vi.mock("@tauri-apps/api/event", () => ({
   emit: vi.fn(() => Promise.resolve()),
 }));
 
-import { localPersistentSessionOf, persistentSessionOf } from "../lib/closeRemoteTab";
+import { localPersistentSessionOf, persistentSessionOf } from "../lib/remote/closeRemoteTab";
 import { useProjectsStore } from "../stores/projects";
 import { useSettingsStore } from "../stores/settings";
 import type { TabEntry } from "../stores/tabs";

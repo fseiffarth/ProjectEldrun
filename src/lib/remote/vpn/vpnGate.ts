@@ -1,5 +1,5 @@
 import { useVpnStatusStore } from "../../../stores/remote/vpn/vpnStatus";
-import type { ConnState } from "../../../stores/remoteStatus";
+import type { ConnState } from "../../../stores/remote/remoteStatus";
 
 /**
  * The VPN gate for network accounts — mail and CalDAV accounts flagged

@@ -84,7 +84,7 @@ export type UsageTarget =
     }
   | { kind: "projectHost"; key: string; label: string; projectId: string; hostId: string };
 
-/** Report key for a global machine (`stores/globalMachines` id). */
+/** Report key for a global machine (`stores/remote/globalMachines` id). */
 export const machineKey = (id: string) => `gm:${id}`;
 /** Report key for one of a project's own hosts (`"primary"` or a worker id). */
 export const projectHostKey = (projectId: string, hostId: string) =>

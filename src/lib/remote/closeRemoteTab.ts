@@ -23,11 +23,11 @@ import {
   effectiveTabLocation,
   remoteHostIdOf,
   type TabEntry,
-} from "../stores/tabs";
-import { useProjectsStore } from "../stores/projects";
-import { useSettingsStore } from "../stores/settings";
-import { shouldPersistTab } from "./terminal/tmuxSession";
-import { IS_WINDOWS } from "./platform";
+} from "../../stores/tabs";
+import { useProjectsStore } from "../../stores/projects";
+import { useSettingsStore } from "../../stores/settings";
+import { shouldPersistTab } from "../terminal/tmuxSession";
+import { IS_WINDOWS } from "../platform";
 
 /**
  * The persistent host tmux session a tab owns, or `null` if the tab is not a

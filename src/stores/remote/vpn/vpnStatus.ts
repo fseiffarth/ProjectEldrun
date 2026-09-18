@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
-import { useRemoteStatusStore, type ConnState } from "../../remoteStatus";
+import { useRemoteStatusStore, type ConnState } from "../remoteStatus";
 
 /**
  * Live state of the machine's OpenVPN tunnels, keyed by **config path**.

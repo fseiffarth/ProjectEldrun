@@ -1,9 +1,9 @@
 import { useEffect } from "react";
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
-import { useProjectsStore } from "./projects";
+import { useProjectsStore } from "../projects";
 import { PRIMARY_HOST, sshOf, useRemoteStatusStore } from "./remoteStatus";
-import type { ProjectEntry } from "../types";
+import type { ProjectEntry } from "../../types";
 
 /**
  * The project's **persistent (tmux) sessions**, as ONE shared reading (TODO #85).
@@ -32,7 +32,7 @@ import type { ProjectEntry } from "../types";
  *    per-surface flag would need a second poll per value, and two viewers of one
  *    project would answer "what is running here?" differently.
  *
- * Deliberately NOT folded into `stores/hostBusy`, which reads the same `tmux ls`:
+ * Deliberately NOT folded into `stores/remote/hostBusy`, which reads the same `tmux ls`:
  * that reading is machine-wide and keyed by SSH target (it answers "is this
  * machine working?" for a lamp shared with the header and every pill), while this
  * one is scoped to a project by default. Feeding a project-filtered count into it

@@ -1,12 +1,12 @@
-import { PRIMARY_HOST } from "../stores/remoteStatus";
+import { PRIMARY_HOST } from "../../stores/remote/remoteStatus";
 import { targetOfSpec, type Target } from "./carefulHost";
-import type { ProjectEntry } from "../types";
+import type { ProjectEntry } from "../../types";
 
 export interface RemoteHostRef {
   id: string;
   label: string;
   /** The host's SSH target (`user@host:port`) — the identity the **careful**
-   *  flag is keyed by (`lib/carefulHost.ts`), since one physical machine can be
+   *  flag is keyed by (`lib/remote/carefulHost.ts`), since one physical machine can be
    *  this project's worker, another's primary and a global machine at once. The
    *  host id cannot serve: it is per-record, the flag is per-machine. */
   target: Target | null;

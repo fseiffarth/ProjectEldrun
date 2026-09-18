@@ -36,7 +36,7 @@
  */
 
 import { targetKey, type Target } from "./machineSync";
-import type { ProjectEntry, Settings } from "../types";
+import type { ProjectEntry, Settings } from "../../types";
 
 export type { Target };
 

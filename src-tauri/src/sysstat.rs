@@ -970,7 +970,7 @@ fi
 /// `Some(true)`/`Some(false)` pin `ELDRUN_CAREFUL`, so the script skips its own
 /// `sbatch` probe entirely; `None` leaves the probe in place. **Both** directions
 /// are pinnable, which is the change the per-machine switch needed: careful is
-/// now the default for every remote machine (`src/lib/carefulHost.ts`), so the
+/// now the default for every remote machine (`src/lib/remote/carefulHost.ts`), so the
 /// only way to get a full reading of a machine the user owns is for their answer
 /// to outrank host-side detection. That answer is the *user's*, recorded per SSH
 /// target and deliberate — the asymmetry the old force-on-only signature encoded

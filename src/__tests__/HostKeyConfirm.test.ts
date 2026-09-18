@@ -3,8 +3,8 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const invokeMock = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({ invoke: (...a: unknown[]) => invokeMock(...a) }));
 
-import { UNKNOWN_HOST_KEY, unknownHostKeyTarget, withHostKeyConfirm } from "../lib/hostKey";
-import { useHostKeyPromptStore } from "../stores/hostKeyPrompt";
+import { UNKNOWN_HOST_KEY, unknownHostKeyTarget, withHostKeyConfirm } from "../lib/remote/hostKey";
+import { useHostKeyPromptStore } from "../stores/remote/hostKeyPrompt";
 
 /**
  * The first-contact host-key gate, from the frontend's side.

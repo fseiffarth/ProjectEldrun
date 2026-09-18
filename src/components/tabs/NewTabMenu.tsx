@@ -26,7 +26,7 @@ import { useAddTabMenuData } from "./useAddTabMenuData";
 import { useAgentWorktreePicker } from "./agentWorktrees";
 import { useExperimental } from "../../lib/experimental";
 import { useT } from "../../lib/i18n";
-import { registerHostBoundTab } from "../../lib/hostBound";
+import { registerHostBoundTab } from "../../lib/remote/hostBound";
 
 interface Props {
   /** Scope (project id or "root") the new tab belongs to. Gates the project-only

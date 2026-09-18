@@ -86,7 +86,7 @@ interface Props {
   // Attach this tab to an existing named tmux session instead of spawning one
   // (TODO #85 Sessions view). Takes precedence over `tmuxSession`. No-op locally.
   tmuxAttach?: string | null;
-  /** Host-bound marker id (#150) — see `lib/hostBound.ts`. */
+  /** Host-bound marker id (#150) — see `lib/remote/hostBound.ts`. */
   hostBoundUid?: string | null;
   // Whether this pane is laid out on screen (single-mode active tab, or any
   // pane in grid mode). Drives display + xterm fit.

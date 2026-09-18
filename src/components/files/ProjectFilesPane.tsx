@@ -6,18 +6,18 @@ import { GitHistory } from "./GitHistory";
 import { ProjectFilesSettingsDialog, useProjectFileFilters } from "./ProjectFilesSettings";
 import { remoteMemberTreeDir } from "../../lib/projects/fileMove";
 import { useProjectsStore } from "../../stores/projects";
-import { useRemoteStatusStore } from "../../stores/remoteStatus";
-import { useSyncStore } from "../../stores/sync";
-import { confirmSyncTransfer } from "../../stores/syncConfirm";
+import { useRemoteStatusStore } from "../../stores/remote/remoteStatus";
+import { useSyncStore } from "../../stores/remote/sync";
+import { confirmSyncTransfer } from "../../stores/remote/syncConfirm";
 import { useBigFoldersStore } from "../../stores/bigFolders";
-import { useRemoteMachinesStore } from "../../stores/remoteMachines";
+import { useRemoteMachinesStore } from "../../stores/remote/remoteMachines";
 import {
   autoFileSource,
   fileSourceSettled,
   useFileSourcePrefStore,
   viewerSourceKey,
   type FileSourceSide,
-} from "../../stores/fileSourcePref";
+} from "../../stores/remote/fileSourcePref";
 import { BOX_SCOPE_PREFIX, boxScopeId, useBoxesStore } from "../../stores/boxes";
 import { resolveLocalMirror, resolveProjectDirectory } from "../../types";
 import type { ProjectBox, ProjectEntry } from "../../types";
@@ -815,7 +815,7 @@ export function ProjectFilesPane({
             {t("projectFilesPane.bigFolders")}
           </button>
           <UntestedTag />
-          {/* Both directions ask first (`stores/syncConfirm`). This is the widest
+          {/* Both directions ask first (`stores/remote/syncConfirm`). This is the widest
               transfer in the app — one click over the *whole* tree, in whichever
               direction the source switch happens to be on — so the one thing it
               must never be is ambiguous about which side it is about to

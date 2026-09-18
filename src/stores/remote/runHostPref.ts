@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
-import type { TabLocation } from "./tabs";
+import type { TabLocation } from "../tabs";
 
 /**
  * "Which machine should scripts and shells launched from this project run on"

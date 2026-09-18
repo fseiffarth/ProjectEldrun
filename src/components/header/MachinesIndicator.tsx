@@ -5,22 +5,22 @@ import { ConnLamp } from "../common/ConnLamp";
 import { Toggle } from "../common/Toggle";
 import { PasswordInput } from "../common/PasswordInput";
 import { UntestedTag } from "../common/UntestedTag";
-import { useGlobalMachinesStore, type ImportResult } from "../../stores/globalMachines";
-import { useGlobalMachineMonitorStore } from "../../stores/globalMachineMonitor";
+import { useGlobalMachinesStore, type ImportResult } from "../../stores/remote/globalMachines";
+import { useGlobalMachineMonitorStore } from "../../stores/remote/globalMachineMonitor";
 import { useProjectsStore } from "../../stores/projects";
 import { useSettingsStore } from "../../stores/settings";
-import { useRemoteMachinesStore } from "../../stores/remoteMachines";
-import { useRemoteUsageStore } from "../../stores/remoteUsage";
-import { useHostBusyStore, busyReading, busyLabel } from "../../stores/hostBusy";
+import { useRemoteMachinesStore } from "../../stores/remote/remoteMachines";
+import { useRemoteUsageStore } from "../../stores/remote/remoteUsage";
+import { useHostBusyStore, busyReading, busyLabel } from "../../stores/remote/hostBusy";
 import { parseSshAddress } from "../projects/scaffold";
 import { TerminalSignInToggle } from "../projects/TerminalSignInToggle";
-import { openConnectionInRoot } from "../../lib/remoteConnect";
+import { openConnectionInRoot } from "../../lib/remote/remoteConnect";
 import { isHpcHost, mayAutoTouch, setHpcPatch, targetOfSpec } from "../../lib/remote/hpc/hpcHost";
 import { hpcGuardRefusal } from "../../lib/remote/hpc/hpcGuard";
 import { useT, type TranslationKey } from "../../lib/i18n";
 import { useHeaderHoverMenuStore } from "../../stores/headerHoverMenu";
 import { useHeaderStatusReport } from "../../stores/headerStatus";
-import type { ConnState } from "../../stores/remoteStatus";
+import type { ConnState } from "../../stores/remote/remoteStatus";
 import type { GlobalMachine, MachineImportEntry, ProjectEntry } from "../../types";
 
 const MENU_ID = "machines";
@@ -29,7 +29,7 @@ const MENU_ID = "machines";
  * **What a row actually knows**, from the two maps that used to be one.
  *
  * `status` means "a session THIS app opened" and nothing else; `reachable` is the
- * last probe's answer, and a probe is not a session (see `stores/globalMachines`).
+ * last probe's answer, and a probe is not a session (see `stores/remote/globalMachines`).
  * Folding them together is what painted a merely-reachable host green — and, the
  * dangerous direction, what would now leave a machine whose session died sitting
  * on a green lamp forever, because no sweep writes `status` any more. So a row
@@ -144,7 +144,7 @@ export function targetLabel(m: { user?: string; host: string; port?: number }): 
  * WebKitGTK (the menu closes or hangs mid-drag, and a drop that misses its
  * target never fires, stranding the row in its dimmed drag state).
  * Detaching a machine from a project never touches this list — see
- * `stores/globalMachines.ts` / `commands::global_machines`.
+ * `stores/remote/globalMachines.ts` / `commands::global_machines`.
  *
  * It shares the header's hover-menu interaction with Mobile and VPN. Opening it
  * refreshes the fleet snapshot; an in-flight guard and per-machine minimum
@@ -192,7 +192,7 @@ export function MachinesIndicator() {
   const update = useGlobalMachinesStore((s) => s.update);
   // The terminal-login edit path adopts a session the user opened in the root
   // terminal, so it persists the identity with `connect: false` and lights the
-  // lamp itself — `setStatus` is what `lib/machineSync`'s subscription propagates.
+  // lamp itself — `setStatus` is what `lib/remote/machineSync`'s subscription propagates.
   const setStatus = useGlobalMachinesStore((s) => s.setStatus);
   const setAutoConnect = useGlobalMachinesStore((s) => s.setAutoConnect);
   const reorder = useGlobalMachinesStore((s) => s.reorder);
@@ -232,7 +232,7 @@ export function MachinesIndicator() {
   const keepOpenRef = useRef(false);
   // ── The open-sweep's two brakes ─────────────────────────────────────────────
   // In flight: a second open while the first sweep is still running must not
-  // stack a second round trip per host (`stores/hostBusy`'s `inFlight` makes the
+  // stack a second round trip per host (`stores/remote/hostBusy`'s `inFlight` makes the
   // same promise for the busy probe; the store's `probeAll` makes none).
   const probeInFlight = useRef(false);
   // And a minimum interval, stamped per machine: reopening the menu is a glance,
@@ -494,7 +494,7 @@ export function MachinesIndicator() {
    *  against a tagged host, which is right for every sweep and wrong for the one
    *  button that IS the gesture. So this row's connect says so (`background:
    *  false`) and writes the same lamp the store would — `setStatus` is what
-   *  `lib/machineSync`'s subscription propagates, so a project holding this host
+   *  `lib/remote/machineSync`'s subscription propagates, so a project holding this host
    *  still follows. Untagged machines keep the store's path untouched. */
   const explicitConnect = async (m: GlobalMachine) => {
     setLocalErrors((prev) => {
@@ -503,7 +503,7 @@ export function MachinesIndicator() {
       return next;
     });
     // The store owns the connect itself — including the host-key confirm, the
-    // `remember: null` rule and the lamp writes `lib/machineSync`'s subscription
+    // `remember: null` rule and the lamp writes `lib/remote/machineSync`'s subscription
     // propagates. It defaults to the *gesture* spelling, which is what makes this
     // path work on a tagged host at all; only the launch sweep says `background`.
     await connect(m.id);
@@ -535,7 +535,7 @@ export function MachinesIndicator() {
     // Reachability first, then the busy sweep over whatever we hold a SESSION on
     // — a probe answer is not a session, and asking a host we never logged into
     // what it is running costs a second doomed login. On-open only: the busy
-    // reading is never polled (see `stores/hostBusy`).
+    // reading is never polled (see `stores/remote/hostBusy`).
     //
     // Both brakes are on before any of it. Nothing sweeps while a sweep is in
     // flight, and nothing sweeps at all unless some eligible machine's answer has
@@ -1064,7 +1064,7 @@ export function MachinesIndicator() {
       { connect: false },
     );
     // The session exists, so light the lamp — `setStatus` is the write
-    // `lib/machineSync`'s subscription propagates onto a project holding this host.
+    // `lib/remote/machineSync`'s subscription propagates onto a project holding this host.
     setStatus(id, "connected");
     setEditId(null);
     setEditPassword("");
@@ -1837,7 +1837,7 @@ export function MachinesIndicator() {
                     fails, not only once the user opens Retry. This is what tells
                     apart a stale saved password from an unknown host key from the
                     host simply being off the network, none of which a colour says
-                    on its own (see `stores/globalMachines`' `errors`). No longer
+                    on its own (see `stores/remote/globalMachines`' `errors`). No longer
                     gated on `error`: the same map now also carries a failed
                     *probe*'s reason (an unreachable row that can explain itself)
                     and `setAutoConnect`'s "auto-connect not saved: …", which used
@@ -1865,7 +1865,7 @@ export function MachinesIndicator() {
                       <Toggle
                         // The EFFECTIVE value, not the stored flag. A tagged
                         // machine is never in the launch/VPN-up sweep whatever
-                        // `auto_connect` says (`stores/globalMachines`'
+                        // `auto_connect` says (`stores/remote/globalMachines`'
                         // `autoConnect` filters it out), so rendering a stored
                         // `true` showed it armed-and-frozen: a promise the app
                         // does not keep, on a control disabled from clearing it.

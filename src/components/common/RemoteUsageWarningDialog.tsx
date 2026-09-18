@@ -2,17 +2,17 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useProjectsStore } from "../../stores/projects";
-import { useGlobalMachinesStore } from "../../stores/globalMachines";
+import { useGlobalMachinesStore } from "../../stores/remote/globalMachines";
 import {
   machineKey,
   projectHostKey,
   useRemoteUsageStore,
   type RemoteUsageReport,
   type UsageTarget,
-} from "../../stores/remoteUsage";
-import { hostsForProject } from "../../lib/remoteHosts";
-import { sameTarget } from "../../lib/machineSync";
-import { PRIMARY_HOST, sshOf, useRemoteStatusStore } from "../../stores/remoteStatus";
+} from "../../stores/remote/remoteUsage";
+import { hostsForProject } from "../../lib/remote/remoteHosts";
+import { sameTarget } from "../../lib/remote/machineSync";
+import { PRIMARY_HOST, sshOf, useRemoteStatusStore } from "../../stores/remote/remoteStatus";
 import { useSettingsStore } from "../../stores/settings";
 import { isHpcHost } from "../../lib/remote/hpc/hpcHost";
 import { useT, type TranslationKey } from "../../lib/i18n";
@@ -43,9 +43,9 @@ import { useT, type TranslationKey } from "../../lib/i18n";
  *
  * **Its subject is the machine list, not a project.** It opens from the Machines
  * menu, so it shows a section for **every global machine, in that menu's exact
- * order** (`stores/globalMachines`), then the active project's own hosts — the
+ * order** (`stores/remote/globalMachines`), then the active project's own hosts — the
  * primary and any `compute_hosts` worker — that aren't already in the list. The
- * two are matched by SSH target (`lib/machineSync`'s `sameTarget`), never by id:
+ * two are matched by SSH target (`lib/remote/machineSync`'s `sameTarget`), never by id:
  * dropping a machine onto a project copies it by value, so `user@host:port` is
  * the only bridge, and without that dedupe one machine would appear twice.
  *

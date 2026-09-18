@@ -38,7 +38,7 @@ import { RemoteProjectSection } from "./RemoteProjectSection";
 import { useRemoteSession } from "./useRemoteSession";
 import { useHpcPipelineStore } from "../../stores/remote/hpc/hpcPipeline";
 import { useProjectsStore, stashRemotePassword, stashRemoteViaLogin } from "../../stores/projects";
-import { useGlobalMachinesStore } from "../../stores/globalMachines";
+import { useGlobalMachinesStore } from "../../stores/remote/globalMachines";
 import { resolveProjectDirectory, resolveLocalMirror, type ProjectEntry } from "../../types";
 import { basename } from "../../lib/paths";
 import { writeFileText } from "../embed/fileAccess";

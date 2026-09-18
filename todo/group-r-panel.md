@@ -50,7 +50,7 @@
     same `ProjectFilesView` is mounted many times over at once (right panel, each
     Files (Project) tab, each subwindow's docked file column, main window + every
     popout). The persistent-session list was pulled out into one shared, refcounted
-    reading (`src/stores/hostSessions.ts`); the same duplication remains for the
+    reading (`src/stores/remote/hostSessions.ts`); the same duplication remains for the
     HPC probes, which are per-project facts held per surface:
     `slurmAvailable(projectDir)` (one SSH round trip per mounted viewer),
     `slurmQueue` (a 7s poll per viewer showing the Jobs view — so a cancel in one

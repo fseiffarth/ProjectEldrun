@@ -1,5 +1,5 @@
 /**
- * The host-bound marker a local-model tab mints (`lib/hostBound`). Pinned: the
+ * The host-bound marker a local-model tab mints (`lib/remote/hostBound`). Pinned: the
  * root scope registers nothing, the uid is a marker-filename-safe string the
  * backend records under the project, a refused registration yields no uid (so
  * the tab runs inside the container — the safe direction), and the crypto-less
@@ -10,7 +10,7 @@ import { invoke } from "@tauri-apps/api/core";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(() => Promise.resolve()) }));
 
-import { registerHostBoundTab } from "../lib/hostBound";
+import { registerHostBoundTab } from "../lib/remote/hostBound";
 
 const invokeMock = vi.mocked(invoke);
 const MARKER = /^[A-Za-z0-9_-]{1,64}$/;

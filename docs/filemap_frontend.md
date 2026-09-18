@@ -224,7 +224,7 @@ only when breaking it does damage. The *why* goes in code comments or
 | `lib/remote/vpn/vpnAutoConnect.ts` | "Connect on launch" per `.ovpn` (`settings.vpn_auto_connect`), never prompts. Also `openVpnLoginInTerminal` + `pollVpnUp`, the one non-headless VPN login. |
 | `lib/remote/vpn/vpnGate.ts` | VPN gate for mail/CalDAV accounts flagged `require_vpn`: scheduler skips while no tunnel is up. `useVpnTunnelUp` is tri-state (`null` before first reconcile). Enforcement is backend (`services::openvpn::account_gate`). |
 | `lib/i18n.ts` | The i18n module: every UI string for `en/de/es/fr/it`. English holds every key; others fall back. Non-English dicts code-split into `lib/i18nDicts/*.ts`. |
-| `lib/machineSync.ts` | Keeps a global machine and the project host it also is in step, bridged only by SSH target (`sameTarget`: host case-insensitive, default port 22). |
+| `lib/remote/machineSync.ts` | Keeps a global machine and the project host it also is in step, bridged only by SSH target (`sameTarget`: host case-insensitive, default port 22). |
 | `lib/viewers/autocomplete.ts` | Caret-window bounds, type-through, line acceptance, bounded model/completion caches and the code/prose model pick (`ollama_roles.autocomplete{,_prose}`) for native editors. |
 | `lib/viewers/completionContext.ts` | Static local import/TeX discovery and same-project open-tab references, cancellation and UTF-8 byte budgets before completion IPC. |
 | `lib/viewers/completionProvider.ts` | Provider/candidate contract, UTF-16 positions, safe insertion ranges and original-item partial/full acceptance offsets for Group M #45a. |
@@ -255,9 +255,9 @@ only when breaking it does damage. The *why* goes in code comments or
 | `lib/experimentalSweep.ts` | Closes tabs of a switched-off tab-owning experiment in every loaded scope (`closeTabsOfKinds`); installed once per window, re-run on settings change. Popouts sweep their own. |
 | `lib/theme/customScrollbar.ts` | App-drawn scrollbars: WebKitGTK lacks `::-webkit-scrollbar` and only honours `scrollbar-width/color`, so the native bar is hidden and a thumb is painted. |
 | `lib/terminal/tmuxSession.ts` | Persistent tmux sessions (#85): `newTmuxSessionName(scope, kind)` mints the stable `eldrun-<scope>--<kind>-<uuid>` persisted as `TabEntry.tmuxSession` (PTY ids aren't stable); `sessionKindFromName` inverts it. |
-| `lib/hostBound.ts` | Host-bound marker for local-model tabs in containerized projects (#150): uid minted once, registered via `register_host_bound_tab`, persisted as `TabEntry.hostBoundUid`. |
+| `lib/remote/hostBound.ts` | Host-bound marker for local-model tabs in containerized projects (#150): uid minted once, registered via `register_host_bound_tab`, persisted as `TabEntry.hostBoundUid`. |
 | `lib/agents/agentFence.ts` | Pure frontend contract for the agent fence: the settings allowlist defaults/parser and project-pill inherit/on/off + backend-status reason keys. `AgentFence.test.ts` keeps its default paths aligned with the Rust schema. Enforcement and root authority remain backend-only in `services::agent_fence`. |
-| `lib/closeRemoteTab.ts` | Tab close for persistent tabs (#85) is non-destructive: kills only the client, the tmux session lives on. Clean quit reaps local `eldrun-*` sessions only; remote sessions die only via the Sessions view's ×. |
+| `lib/remote/closeRemoteTab.ts` | Tab close for persistent tabs (#85) is non-destructive: kills only the client, the tmux session lives on. Clean quit reaps local `eldrun-*` sessions only; remote sessions die only via the Sessions view's ×. |
 | `lib/viewers/yaml.ts` | YAML/JSON tree model + edit ops (pure): every edit is a surgical splice, never re-serialization; block and flow (JSON) syntax both first-class and preserved. |
 | `lib/viewers/bib.ts` | BibTeX model + edit ops (pure), the one `.bib` reader (`tex.ts`'s `parseBibEntries` adapts it). All ops splice by source offsets, never re-serialize. |
 | `lib/viewers/yamlGrid.ts` | YAML/JSON card-grid helpers (pure): `hasCards`, node classification; edits delegate to `yaml.ts` splices. Also the tabular model (`gridModelFor`/`hasGrid`). |

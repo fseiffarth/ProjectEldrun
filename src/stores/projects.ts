@@ -33,14 +33,14 @@ import {
   type TabEntry,
   type ViewerState,
 } from "./tabs";
-import { useRunHostPrefStore } from "./runHostPref";
+import { useRunHostPrefStore } from "./remote/runHostPref";
 import { useTimerStore } from "./timer";
 import { useSettingsStore, whenSettingsLoaded } from "./settings";
 import { mayAutoTouch, targetOfSpec } from "../lib/remote/hpc/hpcHost";
-import { PRIMARY_HOST, useRemoteStatusStore } from "./remoteStatus";
+import { PRIMARY_HOST, useRemoteStatusStore } from "./remote/remoteStatus";
 import { markVpnConnected, markVpnConnecting, markVpnError, releaseVpn } from "./remote/vpn/vpnStatus";
-import { useConnectDialogStore } from "./connectDialog";
-import { connectionStillOpen, openConnectionInRoot } from "../lib/remoteConnect";
+import { useConnectDialogStore } from "./remote/connectDialog";
+import { connectionStillOpen, openConnectionInRoot } from "../lib/remote/remoteConnect";
 import { describeScaffoldRepair, type ProjectScaffoldRepair } from "../components/projects/scaffold";
 import type { SavedPasswordState } from "../components/projects/useSavedCredential";
 import { IS_WINDOWS } from "../lib/platform";
@@ -665,7 +665,7 @@ export async function silentReconnectDeadHost(projectId: string, hostId: string)
 
 /**
  * Re-attempt auto-connect for the **active** remote project after a VPN tunnel has
- * just come up (the machine-wide event `lib/remoteAutoReconnect` subscribes to).
+ * just come up (the machine-wide event `lib/remote/remoteAutoReconnect` subscribes to).
  *
  * A first auto-connect at launch may have run *before* the armed tunnel was up: the
  * probe found the host unreachable and left the lamp red (`autoConnectPrimary` step

@@ -2258,7 +2258,7 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
     (remembered per document for the session), and Load goes through the new
     `markdown_remote_image` command on the reader's hardened fetch — https on
     every hop, no loopback/private address even on hop 0, image content types
-    only, 2 MB cap — landing as a `blob:` URL. Files: `lib/remoteImages.ts`,
+    only, 2 MB cap — landing as a `blob:` URL. Files: `lib/remote/remoteImages.ts`,
     `lib/viewers/markdown.ts`, `components/embed/FileViewerPane.tsx`,
     `commands/markdown.rs`, `services/browser_engine.rs`. Implemented 2026-09-14
     (`2ee40a3`), **not live-tested; Load needs a backend restart.**

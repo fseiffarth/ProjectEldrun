@@ -23,8 +23,8 @@ import { saverInterval, useQuiesce } from "../../stores/power";
 import { useTexViewPrefStore, texViewScopeKey } from "../../stores/viewers/texViewPref";
 import { useExperimental } from "../../lib/experimental";
 import { useProjectsStore } from "../../stores/projects";
-import { useRemoteStatusStore } from "../../stores/remoteStatus";
-import { useRemoteMachinesStore } from "../../stores/remoteMachines";
+import { useRemoteStatusStore } from "../../stores/remote/remoteStatus";
+import { useRemoteMachinesStore } from "../../stores/remote/remoteMachines";
 import { RemotePaneHold } from "../projects/RemotePaneHold";
 import { useLinkRoutingStore } from "../../stores/linkRouting";
 import {
@@ -110,7 +110,7 @@ import {
   placeForFocused,
 } from "../../lib/terminal/pythonRun";
 import { RunHostPicker } from "../tabs/TabLocalityBadges";
-import { useRunHostPrefStore } from "../../stores/runHostPref";
+import { useRunHostPrefStore } from "../../stores/remote/runHostPref";
 import {
   isSlurmScript,
   parseSbatchDirectives,
@@ -126,7 +126,7 @@ import {
 import { FileDropContext } from "../files/fileDropContext";
 import { UntestedTag } from "../common/UntestedTag";
 import { FolderPickerDialog } from "../common/FolderPickerDialog";
-import { fetchRemoteImage, hostsLabel, remoteImageHosts } from "../../lib/remoteImages";
+import { fetchRemoteImage, hostsLabel, remoteImageHosts } from "../../lib/remote/remoteImages";
 import { AddRemarkDialog } from "../files/AddRemarkDialog";
 import { FileSourceSwitch } from "../files/ProjectFilesPane";
 import {
@@ -148,7 +148,7 @@ import {
   type AutocompleteMode,
   type GrammarIssue,
 } from "../../types";
-import { useSyncStore } from "../../stores/sync";
+import { useSyncStore } from "../../stores/remote/sync";
 import { ContextFilePicker } from "./ContextFilePicker";
 import { useFileSourcesStore } from "../../stores/viewers/fileSources";
 import {

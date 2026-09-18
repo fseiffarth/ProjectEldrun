@@ -4,9 +4,9 @@ import { Dropdown } from "../common/Dropdown";
 import { isoWeekKeys, summarizeBuckets } from "../../lib/usageRollup";
 import { formatBytes } from "../../lib/formatBytes";
 import { useProjectsStore } from "../../stores/projects";
-import { useRemoteStatusStore } from "../../stores/remoteStatus";
+import { useRemoteStatusStore } from "../../stores/remote/remoteStatus";
 import { useSettingsStore } from "../../stores/settings";
-import { isCarefulHost, primaryTargetOf } from "../../lib/carefulHost";
+import { isCarefulHost, primaryTargetOf } from "../../lib/remote/carefulHost";
 import { isHpcHost } from "../../lib/remote/hpc/hpcHost";
 import { useT } from "../../lib/i18n";
 

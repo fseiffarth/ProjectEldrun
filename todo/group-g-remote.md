@@ -574,7 +574,7 @@ container) — as opposed to the git **push** axis (#21/#22).*
       input. `buildRemoteSpec` collapsed to one branch + Windows fallback. Added
       red/orange/green `ConnLamp` for SSH + OpenVPN, shown in-dialog and
       persistently in the header for the active remote project, driven by a new
-      `stores/remoteStatus.ts` (keyed by project id). Activation (`stores/projects.ts`)
+      `stores/remote/remoteStatus.ts` (keyed by project id). Activation (`stores/projects.ts`)
       drives the lamps (pooled `remote_connect` with retry; VPN from the prompt
       result or a bounded `openvpn_status` poll) and fires a dedicated `connToast`
       ("VPN connected · <proj>"). **Known gaps for live QA:** (a) ~~macOS
@@ -983,7 +983,7 @@ container) — as opposed to the git **push** axis (#21/#22).*
     tmux_wrap_exec,tmux_kill_session_script,tmux_rename_session_script,tmux_ls_script,parse_tmux_ls,
     valid_tmux_session_name}`, `services::tmux_local`, `remote_tmux_{list,kill,rename}` +
     `local_tmux_{list,kill,rename}` + `set_project_persist_sessions` commands;
-    frontend `lib/terminal/tmuxSession.ts`, `lib/closeRemoteTab.ts`, CenterPanel/TabPane/TerminalView
+    frontend `lib/terminal/tmuxSession.ts`, `lib/remote/closeRemoteTab.ts`, CenterPanel/TabPane/TerminalView
     plumbing, the pill toggle + a global Settings toggle, and the multi-host Sessions view in
     `ProjectFilesView`.)* Shipped **default ON** rather than behind the experimental flag (per user).
     Beyond the original remote scope it also covers: **local** persistence (Unix — survives an
@@ -1318,7 +1318,7 @@ deliberately did **not** do, in priority order:
   not happen and names the pill as the way to connect, rather than leaving a
   blank pane.
 - [ ] **A tagged machine connected by hand does not propagate to its project**
-  (`lib/machineSync` skips HPC refs before opening a pool). Correct as a default —
+  (`lib/remote/machineSync` skips HPC refs before opening a pool). Correct as a default —
   a pool is a `ControlPersist` master — but the user is not told the project needs
   a second click. Product call.
 - [x] **`useSavedCredential` fires per keystroke** (2026-08-04; ✅ Done · 🧪

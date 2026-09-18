@@ -198,7 +198,7 @@ correctness/UX work atop the same layout model #42 detaches.*
     after a relaunch, an install started BEFORE the console was first opened
     keeps the saved root tabs (root is restored before the tab is added) —
     same for a login parked by `openConnectionInRoot`.
-    *Files: `src/lib/installCommand.ts`, `src/lib/remoteConnect.ts`,
+    *Files: `src/lib/installCommand.ts`, `src/lib/remote/remoteConnect.ts`,
     `src/stores/rootOverlay.ts` (`openTabInRootConsole`),
     `src/components/layout/AppShell.tsx`.*
     - [x] 🤖 Automated test — `src/__tests__/InstallInRootConsole.test.tsx`
@@ -299,7 +299,7 @@ correctness/UX work atop the same layout model #42 detaches.*
     `commands/calendar.rs`, `services/mobile_control/discovery.rs`, `lib.rs`;
     `src/components/layout/RootOverlay.tsx`, `src/stores/rootOverlay.ts`,
     `CenterPanel.tsx`, `AppShell.tsx`, `ProjectSwitcher.tsx`,
-    `src/lib/remoteConnect.ts`, `src/lib/shortcuts/shortcuts.ts`, `src/hooks/useKeyboard.ts`,
+    `src/lib/remote/remoteConnect.ts`, `src/lib/shortcuts/shortcuts.ts`, `src/hooks/useKeyboard.ts`,
     `src/styles/subwindows.css`, `src/lib/i18n.ts` (+ the four dictionaries).*
     - [x] 🤖 Automated test — `services::root_mcp` (spawn wiring per CLI,
       bearer check, every tool incl. the 1 h default and bad input),

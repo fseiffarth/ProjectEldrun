@@ -1,7 +1,7 @@
-import { useVpnStatusStore } from "../stores/remote/vpn/vpnStatus";
-import { useGlobalMachinesStore } from "../stores/globalMachines";
-import { useSettingsStore, whenSettingsLoaded } from "../stores/settings";
-import { retryAutoConnectAfterVpn } from "../stores/projects";
+import { useVpnStatusStore } from "../../stores/remote/vpn/vpnStatus";
+import { useGlobalMachinesStore } from "../../stores/remote/globalMachines";
+import { useSettingsStore, whenSettingsLoaded } from "../../stores/settings";
+import { retryAutoConnectAfterVpn } from "../../stores/projects";
 
 /**
  * Wire the two *event-driven* halves of remote auto-connect that the imperative
