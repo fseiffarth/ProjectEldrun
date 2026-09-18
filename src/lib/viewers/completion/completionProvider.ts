@@ -1,4 +1,4 @@
-import type { AutocompleteMode } from "../../types";
+import type { AutocompleteMode } from "../../../types";
 
 export type CompletionProviderId = "ollama" | "copilot";
 export type Position = { line: number; character: number };

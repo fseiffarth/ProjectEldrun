@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { CompletionAcceptance, inlineCandidate, offsetToPosition, positionToOffset,
-  type CompletionDocument } from "../lib/viewers/completionProvider";
+  type CompletionDocument } from "../lib/viewers/completion/completionProvider";
 
 function doc(text: string, caret = text.length): CompletionDocument {
   return { path: "/project/example.ts", version: 7, text, caret, language: "typescript" };

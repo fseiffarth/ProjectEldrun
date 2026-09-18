@@ -169,7 +169,7 @@ default-app resolution), `src/types/index.ts`, `README.md`.*
 
 45b. **More autocomplete providers: HTTP FIM, richer local context, next-edit
     — planned (2026-09-18).** Follows #45a, which is in progress. Builds on its
-    `CompletionProvider` interface (`src/lib/viewers/completionProvider.ts`) and
+    `CompletionProvider` interface (`src/lib/viewers/completion/completionProvider.ts`) and
     reuses its settings, consent and acceptance machinery; nothing here waits on
     the Copilot language-server service. Rationale (web survey 2026-09-18): a
     fill-in-the-middle HTTP endpoint takes the same bounded prefix/suffix Ollama

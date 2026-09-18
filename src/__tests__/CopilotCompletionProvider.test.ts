@@ -3,8 +3,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const invoke = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({ invoke: (...args: unknown[]) => invoke(...args) }));
 
-import { CopilotCompletionProvider, CopilotFeedback, copilotServes } from "../lib/viewers/copilotCompletionProvider";
-import type { CompletionDocument } from "../lib/viewers/completionProvider";
+import { CopilotCompletionProvider, CopilotFeedback, copilotServes } from "../lib/viewers/completion/copilotCompletionProvider";
+import type { CompletionDocument } from "../lib/viewers/completion/completionProvider";
 import type { Settings } from "../types";
 
 const consented = {

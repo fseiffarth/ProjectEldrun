@@ -1,4 +1,4 @@
-import { dirname, isPathWithin, normalizePath, relativePathWithin, resolvePath } from "../paths";
+import { dirname, isPathWithin, normalizePath, relativePathWithin, resolvePath } from "../../paths";
 
 export type CompletionReference = { name: string; content: string };
 // Mirror commands::ollama's byte budgets before crossing IPC too.

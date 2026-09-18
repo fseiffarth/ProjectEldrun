@@ -10,7 +10,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, act, waitFor, fireEvent } from "@testing-library/react";
-import { completionModelOrder, completionWindow, pickCompletionModel, typeThrough } from "../lib/viewers/autocomplete";
+import { completionModelOrder, completionWindow, pickCompletionModel, typeThrough } from "../lib/viewers/completion/autocomplete";
 
 const { mockInvoke, mockListen, mockBump } = vi.hoisted(() => ({ mockInvoke: vi.fn(), mockListen: vi.fn(), mockBump: vi.fn() }));
 vi.mock("../stores/usage", () => ({ bumpUsage: mockBump }));

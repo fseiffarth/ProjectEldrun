@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import type { AutocompleteMode } from "../../types";
+import type { AutocompleteMode } from "../../../types";
 import { CompletionCache, completionModels, completionModelOrder, completionWindow, pickCompletionModel } from "./autocomplete";
 import type { CompletionReference } from "./completionContext";
 import { offsetToPosition, type CompletionCandidate, type CompletionDocument, type CompletionProvider } from "./completionProvider";

@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Settings } from "../../types";
+import type { Settings } from "../../../types";
 import { isProseLang } from "./autocomplete";
 import {
   CompletionAcceptance, inlineCandidate, offsetToPosition,

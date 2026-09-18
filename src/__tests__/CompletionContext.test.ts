@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { completionContext, completionImports } from "../lib/viewers/completionContext";
-import { CompletionCache, completionLineLength, modelLookupCache } from "../lib/viewers/autocomplete";
+import { completionContext, completionImports } from "../lib/viewers/completion/completionContext";
+import { CompletionCache, completionLineLength, modelLookupCache } from "../lib/viewers/completion/autocomplete";
 
 describe("completion references", () => {
   it("resolves local imports and TeX inputs without escaping the project", () => {

@@ -483,7 +483,7 @@ string format, a rename of the systemd unit.
 
 ### 2.1 Copilot Language Server (autocomplete, Group M #45a)
 
-**Where** `services/copilot/`, `src/lib/viewers/completionProvider.ts`,
+**Where** `services/copilot/`, `src/lib/viewers/completion/completionProvider.ts`,
 `scripts/copilot-probe.py`, `docs/context/copilot_completion.md`.
 `commands/copilot.rs`, `CopilotCompletionCard.tsx`. Separate from the Copilot
 agent CLI. Behind the `copilot_completion` experimental flag; the pinned version
