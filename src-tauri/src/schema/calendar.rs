@@ -1141,6 +1141,40 @@ pub fn add_minutes(stamp: &str, n: i64) -> String {
     format!("{}T{:02}:{:02}", new_date, within / 60, within % 60)
 }
 
+/// Days from 1970-01-01 to a civil date, by Howard Hinnant's `days_from_civil`.
+/// Constant-time where [`add_days`] would loop, which is what makes a span
+/// between two arbitrary dates affordable.
+fn days_from_civil(y: i32, m: u32, d: u32) -> i64 {
+    let y = i64::from(if m <= 2 { y - 1 } else { y });
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400; // [0, 399]
+    let mp = i64::from((m + 9) % 12); // March is 0
+    let doy = (153 * mp + 2) / 5 + i64::from(d) - 1; // [0, 365]
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy; // [0, 146096]
+    era * 146_097 + doe - 719_468
+}
+
+/// Whole days from `a` to `b`, both `"YYYY-MM-DD"` (a `T…` suffix is ignored).
+/// Negative when `b` is the earlier date; `None` when either is unparseable.
+pub fn days_between(a: &str, b: &str) -> Option<i64> {
+    let (ay, am, ad) = parse_date(a)?;
+    let (by, bm, bd) = parse_date(b)?;
+    Some(days_from_civil(by, bm, bd) - days_from_civil(ay, am, ad))
+}
+
+/// Whole minutes from `a` to `b`, both `"YYYY-MM-DDTHH:MM"`. `None` when either
+/// is unparseable — the caller then has no duration to preserve and says so,
+/// rather than silently editing an event to a made-up length.
+pub fn minutes_between(a: &str, b: &str) -> Option<i64> {
+    let minutes_of = |stamp: &str| -> Option<i64> {
+        let (_, time) = stamp.split_once('T')?;
+        let (h, mi) = time.split_once(':')?;
+        let (h, mi): (i64, i64) = (h.parse().ok()?, mi.parse().ok()?);
+        (h < 24 && mi < 60).then_some(h * 60 + mi)
+    };
+    Some(days_between(a, b)? * 24 * 60 + minutes_of(b)? - minutes_of(a)?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1164,6 +1198,30 @@ mod tests {
     #[test]
     fn add_days_leaves_garbage_alone() {
         assert_eq!(add_days("not-a-date", 1), "not-a-date");
+    }
+
+    #[test]
+    fn days_between_spans_months_years_and_leap_days() {
+        assert_eq!(days_between("2026-09-17", "2026-09-17"), Some(0));
+        assert_eq!(days_between("2026-09-17", "2026-09-20"), Some(3));
+        assert_eq!(days_between("2026-09-20", "2026-09-17"), Some(-3));
+        assert_eq!(days_between("2024-02-28", "2024-03-01"), Some(2));
+        assert_eq!(days_between("2026-02-28", "2026-03-01"), Some(1));
+        assert_eq!(days_between("2025-12-31", "2026-01-01"), Some(1));
+        // The `T…` suffix of a timed stamp is ignored, as `parse_date` does.
+        assert_eq!(days_between("2026-09-17T23:00", "2026-09-18T01:00"), Some(1));
+        assert_eq!(days_between("nonsense", "2026-09-17"), None);
+    }
+
+    #[test]
+    fn minutes_between_measures_a_span_across_midnight() {
+        assert_eq!(minutes_between("2026-09-17T09:00", "2026-09-17T10:30"), Some(90));
+        assert_eq!(minutes_between("2026-09-17T23:30", "2026-09-18T00:30"), Some(60));
+        assert_eq!(minutes_between("2026-09-18T00:30", "2026-09-17T23:30"), Some(-60));
+        // Its inverse: adding the span back lands on the far end.
+        let (start, end) = ("2026-09-17T14:15", "2026-09-19T08:45");
+        assert_eq!(add_minutes(start, minutes_between(start, end).unwrap()), end);
+        assert_eq!(minutes_between("2026-09-17", "2026-09-18T09:00"), None);
     }
 
     #[test]

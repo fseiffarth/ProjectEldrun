@@ -554,7 +554,16 @@ function RootOverlay() {
     [addMenu],
   );
 
-  const agentsWithTools = status?.running ? t("rootConsole.rightsOn") : t("rootConsole.rightsOff");
+  // The global switch is the settings store's, so the badge follows a flip made
+  // in Settings at once; `running` is the listener's and only a restart moves it.
+  const toolsEnabled = useSettingsStore((s) => s.settings?.root_mcp ?? true);
+  const updateSettings = useSettingsStore((s) => s.updateSettings);
+  const toolsOn = toolsEnabled && !!status?.running;
+  const agentsWithTools = !toolsEnabled
+    ? t("rootConsole.rightsDisabled")
+    : status?.running
+      ? t("rootConsole.rightsOn")
+      : t("rootConsole.rightsOff");
   const groupOfKey = useMemo(() => {
     const map = new Map<string, { groupId: string; active: boolean }>();
     for (const g of groups) {
@@ -691,14 +700,17 @@ function RootOverlay() {
             className="tab-controls root-overlay-controls"
             style={soleFiles ? filesReserveStyle(sole ?? undefined) : undefined}
           >
-            <span
-              className={`root-overlay-rights${status?.running ? " on" : ""}`}
+            <button
+              type="button"
+              className={`root-overlay-rights${toolsOn ? " on" : ""}${toolsEnabled ? "" : " off"}`}
+              aria-pressed={toolsEnabled}
               title={`${agentsWithTools}${
-                status?.running ? `\n${status.tools.join(", ")}` : ""
-              }\n${t("rootConsole.noPhone")}`}
+                toolsOn ? `\n${status?.tools.join(", ")}` : ""
+              }\n${t(toolsEnabled ? "rootConsole.rightsToggleOff" : "rootConsole.rightsToggleOn")}\n${t("rootConsole.noPhone")}`}
+              onClick={() => void updateSettings({ root_mcp: !toolsEnabled })}
             >
               {t("rootConsole.rightsBadge")}
-            </span>
+            </button>
             <UntestedTag />
             {!split && soleGroupId && soleGroupId !== EMPTY_GROUP_ID && (
               filesToggle(soleGroupId, !!sole?.filesOpen)

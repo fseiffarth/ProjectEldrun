@@ -1049,7 +1049,12 @@ fn now_secs() -> u64 {
 
 /// `<state_dir>/remote-projects/<id>/git_peer.json` (sibling of `sync.json`).
 pub fn state_path(project_id: &str) -> PathBuf {
-    crate::storage::state_dir()
+    state_path_in(&crate::storage::state_dir(), project_id)
+}
+
+/// [`state_path`] under an explicit state dir — see `local_loss::log_path_in`.
+pub fn state_path_in(state_dir: &Path, project_id: &str) -> PathBuf {
+    state_dir
         .join("remote-projects")
         .join(project_id)
         .join("git_peer.json")

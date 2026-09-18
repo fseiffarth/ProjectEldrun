@@ -119,6 +119,36 @@ on the board does too — no server stores those fields. A delete is permanent
 and its tool description says so; the row rides along so the CalDAV copy can
 still be addressed.
 
+**The sweeps answer for every project at once.** `projects_git_status`,
+`sync_status`, `time_summary`, `usage_recap` and `boxes_list` are the questions
+a *project* agent structurally cannot answer — which projects have uncommitted
+work, whether anything is out of step with its host, how long last week went.
+All five are pure reads of files Eldrun already owns, and none of them opens a
+connection. The git sweep runs `git` on the **local** working copy only: a
+remote project through its mirror, and reported as skipped, with the reason,
+when it has none. `sync_status` reports what the last pass recorded rather than
+probing the host. A synchronous SSH round trip inside a tool call would stall
+the handler for as long as a dead session takes to time out, once per project —
+the freeze the remote UI's connected-gates already exist to avoid. The git sweep
+also runs with `GIT_OPTIONAL_LOCKS=0`, because a background reader that
+refreshes the index takes `index.lock`, which is half of the root git-status
+loop.
+
+The two rollups are bucketed by **UTC** date, since that is how
+`time_summary.json` and `usage_stats.json` were written; the tool descriptions
+say so rather than passing them off as local days. Eldrun's own window time is
+reported as `app_seconds` and never inside a project's total, and a scope whose
+project has since been deleted keeps its bare id — the hours are still real.
+
+**An event is edited, not re-created.** `calendar_update_event` closes the gap
+that made rescheduling a delete plus an add, which loses the row's identity: a
+CalDAV server would see a cancellation and a new invitation instead of a change.
+Moving `start` alone keeps the event's own length — an agent that omits `end` is
+moving the event, not resizing it, and `calendar_add_event`'s one-hour default
+would quietly shorten a three-hour meeting every time it was moved. An event in
+a read-only calendar is refused before anything is written locally, because the
+window could not push it.
+
 **Showing is not writing.** `mail_open`, `calendar_open` and `todo_open` put the
 header's overlays on screen — "show me my mail", "open the board on that card".
 They travel as their own event, `root-mcp-open`, because there is no row to
@@ -138,6 +168,16 @@ writes no store and closes with Escape), and the deletes and
 read-only, so reads now go through without a prompt and writes still ask.
 Eldrun never passes `default_tools_approval_mode`: approval is the CLI's own,
 like its permission mode.
+
+**One switch turns it all off.** `settings.json`'s `root_mcp` — absent means
+on — is read per spawn and per request rather than at startup, so it needs no
+restart in either direction. Off closes both halves, because only one would be
+a lie: a root agent spawned from then on is handed no endpoint, and the
+endpoint answers `503` to the agents that already hold the token. The check
+sits after the bearer check, so an unauthenticated caller learns nothing from
+it. The listener itself stays bound; rebinding would mint a port the running
+agents were never told about, and turning the tools back on would not reach
+them. Settings and the console's ⚿ badge are two doors onto that one key.
 
 **Failure is safe.** If the listener cannot bind, or the OS has no entropy,
 root agents are ordinary agents. The ⚿ badge in the overlay says which case

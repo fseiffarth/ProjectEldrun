@@ -145,6 +145,17 @@ pub struct Settings {
     /// `mail_client`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub todo_board: Option<bool>,
+    /// Root console: whether Eldrun serves its own MCP tools (projects,
+    /// calendar, to-do board, the overlays) to root agents at all
+    /// (`services::root_mcp`). **Absent means on** — the tools shipped on, so an
+    /// existing `settings.json` needs no migration — and a stored `false` is a
+    /// deliberate switch-off nothing may normalize back to `None`.
+    ///
+    /// Off closes both halves: a root agent spawned from then on is handed no
+    /// endpoint, and the endpoint refuses the agents that already hold the
+    /// token, so the switch takes effect without closing a tab.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_mcp: Option<bool>,
     /// Side panel: the opt-in **Alerts** group in the file viewer — urgent
     /// mail, the calendar entries about to start, and the to-do cards whose due
     /// date is here or past, in one time-ordered strip.
@@ -819,6 +830,11 @@ impl Settings {
     /// console's `mail_open` tool so it can refuse instead of opening nothing.
     pub fn mail_client(&self) -> bool {
         self.experimental(self.mail_client)
+    }
+
+    /// Whether the root console's MCP tools are served. On unless switched off.
+    pub fn root_mcp(&self) -> bool {
+        self.root_mcp.unwrap_or(true)
     }
 
     /// Whether the experimental native presenter ("deck") is offered — the

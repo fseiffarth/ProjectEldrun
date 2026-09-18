@@ -177,6 +177,14 @@ pub fn manifest_path(project_id: &str) -> PathBuf {
     state_dir(project_id).join("sync.json")
 }
 
+/// [`manifest_path`] under an explicit state dir — see `local_loss::log_path_in`.
+pub fn manifest_path_in(state_dir: &Path, project_id: &str) -> PathBuf {
+    state_dir
+        .join("remote-projects")
+        .join(project_id)
+        .join("sync.json")
+}
+
 /// Whether `abs_path` lies inside the project's local mirror. Used by the file
 /// readers (G2 path-prefix routing): a path under the mirror is read/written on
 /// the LOCAL fs even though the project is remote, so the local source view and

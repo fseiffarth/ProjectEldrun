@@ -951,6 +951,15 @@ export function SettingsDialog({
               />
             )}
 
+            {/* Absent means on. The backend reads the key per spawn and per
+                request, so the switch needs no restart in either direction. */}
+            <ToggleCard
+              label={<>{t("settings.rootMcp")} <UntestedTag /></>}
+              checked={settings?.root_mcp ?? true}
+              onChange={(e) => void updateSettings({ root_mcp: e.target.checked })}
+              help={t("settings.rootMcpHelp")}
+            />
+
             {/* Eldrun Mobile runs its host sidecar on every desktop (systemd
                 user unit, launchd agent, or the Windows Run key), so the
                 section is not platform-gated. */}

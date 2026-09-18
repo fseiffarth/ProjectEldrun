@@ -980,7 +980,16 @@
   border-radius: 999px;
   border: 1px solid var(--border, currentColor);
   color: var(--text-secondary, inherit);
-  cursor: var(--cur-help, help);
+  background: none;
+  font-family: inherit;
+  line-height: inherit;
+  cursor: var(--cur-pointer, pointer);
+}
+/* Switched off in Settings (or by a click here): struck through, so it reads
+   as a deliberate off rather than the listener's "not running". */
+.root-overlay-rights.off {
+  text-decoration: line-through;
+  opacity: 0.7;
 }
 .root-overlay-rights.on {
   color: var(--accent);

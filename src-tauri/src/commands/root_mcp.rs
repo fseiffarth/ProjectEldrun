@@ -53,17 +53,36 @@ async fn handle(State(state): State<ServerState>, headers: HeaderMap, body: Stri
     }
 
     let outcome = tokio::task::spawn_blocking(move || {
+        let state = storage::state_dir();
         let calendar = crate::commands::calendar::calendar_path();
-        let projects = storage::state_dir().join("projects.json");
-        let settings = storage::state_dir().join("settings.json");
-        root_mcp::handle_message(
-            &Stores { calendar: &calendar, projects: &projects, settings: &settings },
+        let projects = state.join("projects.json");
+        let settings = state.join("settings.json");
+        // The global switch, read per request: an agent spawned while the
+        // tools were on still holds the token, and "off" has to mean off for
+        // it too, without closing its tab.
+        if !root_mcp::enabled_in(&settings) {
+            return None;
+        }
+        Some(root_mcp::handle_message(
+            &Stores {
+                calendar: &calendar,
+                projects: &projects,
+                settings: &settings,
+                state: &state,
+            },
             &message,
-        )
+        ))
     })
     .await;
-    let Ok((reply, effects)) = outcome else {
+    let Ok(outcome) = outcome else {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    };
+    let Some((reply, effects)) = outcome else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Eldrun's tools are switched off in Eldrun's Settings; the user has to turn them on first",
+        )
+            .into_response();
     };
     // One event per row: a board move can reindex a whole column.
     for change in effects.changes {
@@ -109,6 +128,9 @@ pub fn start(app: AppHandle) {
 pub struct RootMcpStatus {
     /// The listener is up, so a root agent opened now gets the tools.
     pub running: bool,
+    /// The global switch (`Settings::root_mcp`). Off → no agent gets the tools
+    /// and the endpoint refuses the ones that already hold the token.
+    pub enabled: bool,
     pub tools: Vec<&'static str>,
 }
 
@@ -118,6 +140,7 @@ pub struct RootMcpStatus {
 pub fn root_mcp_status() -> RootMcpStatus {
     RootMcpStatus {
         running: root_mcp::runtime().is_some(),
+        enabled: root_mcp::enabled(),
         tools: root_mcp::tool_names(),
     }
 }

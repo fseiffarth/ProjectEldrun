@@ -245,6 +245,10 @@ export interface Settings {
    *  — and `experimental()` additionally means "on in debug", which would put a
    *  third header button in every developer's window unasked. */
   todo_board?: boolean;
+  /** Root console: whether Eldrun serves its own MCP tools to root agents
+   *  (`services::root_mcp`). **Default true** — absent means on. Off hands new
+   *  root agents no endpoint and refuses the ones already holding the token. */
+  root_mcp?: boolean;
   /** Side panel: the **Alerts** group in the file viewer — urgent mail, the
    *  calendar entries about to start, and the to-do cards whose due date is here
    *  or past, merged into one time-ordered strip. **Default true.**

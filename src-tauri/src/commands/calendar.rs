@@ -104,7 +104,7 @@ pub(crate) fn create_event_at(path: &Path, mut event: CalendarEvent) -> Result<C
 }
 
 /// Replace the event with `event.id` wholesale.
-fn update_event_at(path: &Path, event: CalendarEvent) -> Result<CalendarEvent, String> {
+pub(crate) fn update_event_at(path: &Path, event: CalendarEvent) -> Result<CalendarEvent, String> {
     let _guard = lock_calendar();
     let mut data = read_data(path)?;
     let slot = data

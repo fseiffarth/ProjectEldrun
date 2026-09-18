@@ -38,6 +38,7 @@
 //! neither, and `discovery` refuses the id outright. Root Claude tabs also spawn
 //! without `--remote-control` (see `commands::terminal`).
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::OnceLock;
 
@@ -152,9 +153,23 @@ pub fn apply_to_spawn_with(opts: &mut PtyOptions, runtime: &Runtime) {
     }
 }
 
-/// [`apply_to_spawn_with`] against the live listener; a no-op while none is up.
+/// The global switch (`Settings::root_mcp`), read per use so flipping it needs
+/// no restart. A missing or unreadable file is a fresh install: on.
+pub fn enabled_in(settings: &Path) -> bool {
+    crate::storage::read_json::<crate::schema::Settings>(settings)
+        .map(|settings| settings.root_mcp())
+        .unwrap_or(true)
+}
+
+/// [`enabled_in`] against the live `settings.json`.
+pub fn enabled() -> bool {
+    enabled_in(&crate::storage::state_dir().join("settings.json"))
+}
+
+/// [`apply_to_spawn_with`] against the live listener; a no-op while none is up
+/// or while the tools are switched off.
 pub fn apply_to_spawn(opts: &mut PtyOptions) {
-    if let Some(runtime) = runtime() {
+    if let Some(runtime) = runtime().filter(|_| enabled()) {
         apply_to_spawn_with(opts, runtime);
     }
 }
@@ -205,13 +220,23 @@ pub struct Stores<'a> {
     pub projects: &'a Path,
     /// Read only, for the gates the `*_open` tools answer against.
     pub settings: &'a Path,
+    /// The state directory itself (`~/.local/share/eldrun`), for the read-only
+    /// stores addressed *per project id* — `remote-projects/<id>/{git_peer,sync,
+    /// local_loss}.json` — and for the flat rollups beside it
+    /// (`boxes.json`, `time_summary.json`, `usage_stats.json`). One field rather
+    /// than one per file: every store below is a read, and a new one must not
+    /// cost a signature change in the command layer as well.
+    pub state: &'a Path,
 }
 
 pub fn tool_names() -> Vec<&'static str> {
     vec![
         "projects_list",
+        "projects_git_status",
+        "boxes_list",
         "calendar_list",
         "calendar_add_event",
+        "calendar_update_event",
         "calendar_delete_event",
         "todo_list",
         "todo_add",
@@ -220,6 +245,9 @@ pub fn tool_names() -> Vec<&'static str> {
         "todo_update",
         "todo_move",
         "todo_delete",
+        "time_summary",
+        "usage_recap",
+        "sync_status",
         "mail_open",
         "calendar_open",
         "todo_open",
@@ -235,11 +263,24 @@ fn tool_annotations(name: &str) -> Value {
     // and writes no store, which is what the hint is about.
     let read_only = matches!(
         name,
-        "projects_list" | "calendar_list" | "todo_list" | "mail_open" | "calendar_open" | "todo_open"
+        "projects_list"
+            | "projects_git_status"
+            | "boxes_list"
+            | "calendar_list"
+            | "todo_list"
+            | "time_summary"
+            | "usage_recap"
+            | "sync_status"
+            | "mail_open"
+            | "calendar_open"
+            | "todo_open"
     );
     // Overwrites or removes what the user wrote. A complete/reopen/move is
     // undone by its opposite gesture; an add only adds.
-    let destructive = matches!(name, "calendar_delete_event" | "todo_delete" | "todo_update");
+    let destructive = matches!(
+        name,
+        "calendar_delete_event" | "calendar_update_event" | "todo_delete" | "todo_update"
+    );
     if read_only {
         json!({ "readOnlyHint": true, "openWorldHint": false })
     } else {
@@ -265,6 +306,27 @@ fn tool_schemas() -> Value {
             "name": "projects_list",
             "description": "List every Eldrun project: id, name, status (current/active/inactive), folder, and whether it runs on a remote host.",
             "inputSchema": { "type": "object", "properties": {} }
+        },
+        {
+            "name": "projects_git_status",
+            "description": "Git state of every project's working copy, in one sweep: branch, commits ahead/behind its upstream, and staged/unstaged/untracked counts. Answers \"which projects have uncommitted work\". Local reads only — it never contacts a remote host, so a remote project is read through its local mirror and reported as skipped when it has none.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "project": { "type": "string", "description": "Only this project (id or name); every project when absent." },
+                    "dirty_only": { "type": "boolean", "description": "Leave out repos that are clean and level with their upstream." }
+                }
+            }
+        },
+        {
+            "name": "boxes_list",
+            "description": "List the project boxes: each box's members (the projects grouped in it), its folder when it has one, and any declared relations between members.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "project": { "type": "string", "description": "Only boxes holding this project (id or name)." }
+                }
+            }
         },
         {
             "name": "calendar_list",
@@ -293,6 +355,25 @@ fn tool_schemas() -> Value {
                     "calendar": { "type": "string", "description": "Calendar id or name; the default calendar when absent." }
                 },
                 "required": ["title", "start"]
+            }
+        },
+        {
+            "name": "calendar_update_event",
+            "description": "Edit one calendar event by id. Only the fields given change, and an empty string clears `location` or `notes`. Moving `start` alone keeps the event's length, so rescheduling needs no `end`; give `end` or `duration_minutes` to change the length too. A recurring event is edited as a whole series. Refuses an event in a read-only calendar.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string" },
+                    "title": { "type": "string" },
+                    "start": { "type": "string", "description": stamp },
+                    "end": { "type": "string", "description": "Exclusive end, same format as start." },
+                    "duration_minutes": { "type": "integer", "minimum": 1, "description": "New length, from `start`. Ignored when `end` is given." },
+                    "all_day": { "type": "boolean", "description": "Turn the event into (or out of) an all-day one; turning it into a timed event needs a `start`." },
+                    "location": { "type": "string" },
+                    "notes": { "type": "string" },
+                    "calendar": { "type": "string", "description": "Move the event to this calendar (id or name)." }
+                },
+                "required": ["id"]
             }
         },
         {
@@ -390,6 +471,42 @@ fn tool_schemas() -> Value {
                 "type": "object",
                 "properties": { "id": { "type": "string" } },
                 "required": ["id"]
+            }
+        },
+        {
+            "name": "time_summary",
+            "description": "Tracked working time per project over a date range, in seconds, from Eldrun's own timer. Days are keyed by UTC date, not local date, so a late-evening session east of UTC lands on the next day's bucket. Eldrun's own window time is reported separately as `app_seconds`, never inside a project's total.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "from": { "type": "string", "description": "Inclusive lower bound, \"YYYY-MM-DD\"; everything recorded when absent." },
+                    "to": { "type": "string", "description": "Exclusive upper bound, \"YYYY-MM-DD\"." },
+                    "project": { "type": "string", "description": "Only this project (id or name)." }
+                }
+            }
+        },
+        {
+            "name": "usage_recap",
+            "description": "Eldrun's local activity counters over a date range — agent tabs and prompts, shell commands, files created/modified/deleted, tabs, apps launched — as the daily recap reads them. Counts only, no content, and only what happened inside Eldrun. Days are keyed by UTC date. Distinct from time_summary (worked seconds) and from git history.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "from": { "type": "string", "description": "Inclusive lower bound, \"YYYY-MM-DD\"; everything retained when absent (about 13 months)." },
+                    "to": { "type": "string", "description": "Exclusive upper bound, \"YYYY-MM-DD\"." },
+                    "project": { "type": "string", "description": "Only this project (id or name); implies by_project." },
+                    "by_project": { "type": "boolean", "description": "Also break the totals down per project." }
+                }
+            }
+        },
+        {
+            "name": "sync_status",
+            "description": "Where each remote project stands with its host: git lockstep (on/off, in step or not, and why), what byte-sync tracks, and any unacknowledged warning that a local file was overwritten or deleted by a sync or lockstep pass. Reads Eldrun's recorded state only — it opens no SSH connection, so the answer is as of the last pass, not a fresh probe.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "project": { "type": "string", "description": "Only this project (id or name)." },
+                    "include_acked": { "type": "boolean", "description": "Include local-loss warnings the user has already seen." }
+                }
             }
         },
         {
@@ -592,6 +709,134 @@ fn calendar_add_event(stores: &Stores, args: &Value) -> Result<(Value, Change), 
     };
     let created = crate::commands::calendar::create_event_at(stores.calendar, event)?;
     let row = serde_json::to_value(&created).map_err(|e| e.to_string())?;
+    Ok((row.clone(), Change { kind: "event", op: "upsert", row, local: false }))
+}
+
+/// The span an edit leaves behind: `(start, end, all_day)`.
+///
+/// The rule worth stating is the one for a bare `start`: a move **keeps the
+/// event's own length**. Falling back to the one-hour default that
+/// `calendar_add_event` uses would quietly resize a three-hour meeting every
+/// time it was rescheduled, and an agent that omits `end` is moving the event,
+/// not shortening it.
+fn updated_span(event: &CalendarEvent, args: &Value) -> Result<(String, String, bool), String> {
+    let all_day = args.get("all_day").and_then(Value::as_bool).unwrap_or(event.all_day);
+    let start_given = str_arg(args, "start");
+    let end_given = str_arg(args, "end");
+    let minutes = match args.get("duration_minutes") {
+        None | Some(Value::Null) => None,
+        Some(value) => {
+            let n = value.as_i64().ok_or("`duration_minutes` must be an integer")?;
+            if !(1..=60 * 24 * 31).contains(&n) {
+                return Err("`duration_minutes` must be between 1 and 44640".into());
+            }
+            Some(n)
+        }
+    };
+    // Nothing about the time was asked to change (a title or notes edit): keep
+    // the stored span exactly as it is, rather than recomputing a row we were
+    // not asked to touch.
+    if start_given.is_none() && end_given.is_none() && minutes.is_none() && all_day == event.all_day {
+        return Ok((event.start.clone(), event.end.clone(), event.all_day));
+    }
+
+    if all_day {
+        let raw = start_given.unwrap_or(&event.start);
+        let start = raw.split('T').next().unwrap_or(raw);
+        if !valid_date(start) {
+            return Err(format!("'{raw}' is not a YYYY-MM-DD date"));
+        }
+        let end = match end_given {
+            Some(e) if valid_date(e) => e.to_string(),
+            Some(e) => return Err(format!("'{e}' is not a YYYY-MM-DD date")),
+            // Keep the length in days when it already was an all-day event; one
+            // that is only now becoming all-day gets the single day it starts on
+            // (`end` is exclusive).
+            None => {
+                let days = event
+                    .all_day
+                    .then(|| crate::schema::calendar::days_between(&event.start, &event.end))
+                    .flatten()
+                    .filter(|d| *d > 0)
+                    .unwrap_or(1);
+                crate::schema::calendar::add_days(start, days)
+            }
+        };
+        if end.as_str() <= start {
+            return Err("`end` must be a date after `start` (it is exclusive)".into());
+        }
+        return Ok((start.to_string(), end, true));
+    }
+
+    let start = match start_given {
+        Some(raw) => normalize_stamp(raw)
+            .ok_or_else(|| format!("'{raw}' is not a local YYYY-MM-DDTHH:MM time"))?,
+        // An all-day event has no time of day to keep, so turning it into a timed
+        // one without saying when would be Eldrun inventing an hour.
+        None if event.all_day => {
+            return Err("give `start` as a local YYYY-MM-DDTHH:MM time when turning an all-day event into a timed one".into())
+        }
+        None => event.start.clone(),
+    };
+    let end = match (end_given, minutes) {
+        (Some(e), _) => {
+            normalize_stamp(e).ok_or_else(|| format!("'{e}' is not a local YYYY-MM-DDTHH:MM time"))?
+        }
+        (None, Some(n)) => add_minutes(&start, n),
+        (None, None) => {
+            let span = crate::schema::calendar::minutes_between(&event.start, &event.end)
+                .filter(|m| *m > 0)
+                .unwrap_or(60);
+            add_minutes(&start, span)
+        }
+    };
+    if end <= start {
+        return Err("`end` must be after `start`".into());
+    }
+    Ok((start, end, false))
+}
+
+fn calendar_update_event(stores: &Stores, args: &Value) -> Result<(Value, Change), String> {
+    let id = str_arg(args, "id").ok_or("`id` is required")?;
+    let data = crate::commands::calendar::read_data(stores.calendar)?;
+    let mut event = data
+        .events
+        .iter()
+        .find(|e| e.id == id)
+        .cloned()
+        .ok_or_else(|| format!("event '{id}' not found"))?;
+    // A read-only calendar is one Eldrun shows but may not write back to; the
+    // window would refuse the CalDAV push this change asks for, so the edit is
+    // refused here instead of half-landing in the local file.
+    if data.calendars.iter().any(|c| c.id == event.calendar_id && c.readonly) {
+        return Err(format!("event '{id}' is in a read-only calendar"));
+    }
+    // Present-but-empty clears; absent keeps — as in `todo_update`.
+    let given = |key: &str| args.get(key).and_then(Value::as_str).map(str::trim);
+    if let Some(title) = given("title") {
+        if title.is_empty() {
+            return Err("`title` cannot be empty".into());
+        }
+        event.title = title.to_string();
+    }
+    if let Some(location) = given("location") {
+        event.location = location.to_string();
+    }
+    if let Some(notes) = given("notes") {
+        event.notes = notes.to_string();
+    }
+    if let Some(calendar) = given("calendar") {
+        if calendar.is_empty() {
+            return Err("`calendar` cannot be empty; name the calendar to move the event to".into());
+        }
+        event.calendar_id = resolve_calendar(&data, Some(calendar))?;
+    }
+    let (start, end, all_day) = updated_span(&event, args)?;
+    event.start = start;
+    event.end = end;
+    event.all_day = all_day;
+    let updated = crate::commands::calendar::update_event_at(stores.calendar, event)?;
+    let row = serde_json::to_value(&updated).map_err(|e| e.to_string())?;
     Ok((row.clone(), Change { kind: "event", op: "upsert", row, local: false }))
 }
 
@@ -823,6 +1068,476 @@ fn todo_delete(stores: &Stores, args: &Value) -> Result<(Value, Change), String>
     Ok((json!({ "deleted": id }), Change { kind: "task", op: "delete", row, local: false }))
 }
 
+// ── The read-only sweeps ────────────────────────────────────────────────────
+//
+// Five tools that answer a question about *every* project at once, which is the
+// one thing a project agent structurally cannot do. All of them are pure reads of
+// files Eldrun already owns, and none of them opens a connection: the git sweep
+// runs `git` on the local working copy only, and `sync_status` reports the state
+// the last sync pass recorded rather than probing the host. That is deliberate —
+// a synchronous SSH round trip from a tool call would stall the handler for as
+// long as a dead session takes to time out, per project.
+
+/// The `[from, to)` window the rollup readers share: inclusive lower bound,
+/// exclusive upper, either or both absent. Same convention as `calendar_list`.
+fn date_range(args: &Value) -> Result<(Option<&str>, Option<&str>), String> {
+    let range = (str_arg(args, "from"), str_arg(args, "to"));
+    for bound in [range.0, range.1].into_iter().flatten() {
+        if !valid_date(bound) {
+            return Err(format!("'{bound}' is not a YYYY-MM-DD date"));
+        }
+    }
+    Ok(range)
+}
+
+fn in_range(day: &str, (from, to): (Option<&str>, Option<&str>)) -> bool {
+    from.is_none_or(|f| day >= f) && to.is_none_or(|t| day < t)
+}
+
+/// The optional `project` argument, resolved to an id.
+fn project_filter(stores: &Stores, args: &Value) -> Result<Option<String>, String> {
+    match str_arg(args, "project") {
+        Some(wanted) => resolve_project(stores.projects, wanted).map(Some),
+        None => Ok(None),
+    }
+}
+
+fn project_names(path: &Path) -> HashMap<String, String> {
+    read_projects(path).into_iter().map(|p| (p.id, p.name)).collect()
+}
+
+/// What to call a counter's scope. The rollups are keyed by scope id, not by
+/// project id alone: the root terminal has its own, and a project deleted since
+/// the counter was written has no name left — which is reported as the bare id
+/// rather than dropped, because the time is still real.
+fn scope_name(names: &HashMap<String, String>, id: &str) -> String {
+    if id == crate::storage::ROOT_SCOPE {
+        return "Root".to_string();
+    }
+    names.get(id).cloned().unwrap_or_else(|| id.to_string())
+}
+
+/// A unix stamp as an ISO-8601 UTC string, for the "when did this last happen"
+/// fields. `None` stays `None` — a never-synced project must not read as 1970.
+fn iso_utc(secs: Option<u64>) -> Option<String> {
+    let (y, mo, d, h, mi, s) = crate::storage::epoch_to_utc(secs?);
+    Some(format!("{y:04}-{mo:02}-{d:02}T{h:02}:{mi:02}:{s:02}Z"))
+}
+
+fn time_summary(stores: &Stores, args: &Value) -> Result<Value, String> {
+    let range = date_range(args)?;
+    let only = project_filter(stores, args)?;
+    // The file, not `time_log::load_summary_migrating`: the running app has long
+    // since folded any legacy log in, and a tool annotated read-only must not be
+    // the thing that rewrites the store.
+    let summary: crate::schema::time_log::TimeSummary =
+        crate::storage::read_json(&stores.state.join(crate::schema::time_log::SUMMARY_FILE))
+            .unwrap_or_default();
+    let names = project_names(stores.projects);
+
+    let mut per_project: HashMap<&str, f64> = HashMap::new();
+    let mut per_day: Vec<(&str, f64)> = Vec::new();
+    let mut app = 0f64;
+    for (day, by_project) in &summary.days {
+        if !in_range(day, range) {
+            continue;
+        }
+        let mut day_total = 0f64;
+        for (id, secs) in by_project {
+            if !secs.is_finite() || *secs <= 0.0 {
+                continue;
+            }
+            // Eldrun's own window time is not any project's work.
+            if id == crate::commands::timer::APP_TIMER_ID {
+                app += secs;
+                continue;
+            }
+            if only.as_deref().is_some_and(|o| o != id) {
+                continue;
+            }
+            *per_project.entry(id.as_str()).or_insert(0.0) += secs;
+            day_total += secs;
+        }
+        if day_total > 0.0 {
+            per_day.push((day.as_str(), day_total));
+        }
+    }
+
+    let mut projects: Vec<(&str, f64)> = per_project.into_iter().collect();
+    projects.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(b.0)));
+    per_day.sort_by(|a, b| a.0.cmp(b.0));
+    let total: f64 = projects.iter().map(|(_, secs)| *secs).sum();
+    Ok(json!({
+        "unit": "seconds",
+        "from": range.0,
+        "to": range.1,
+        "total_seconds": total.round() as u64,
+        "app_seconds": app.round() as u64,
+        "projects": projects
+            .iter()
+            .map(|(id, secs)| json!({
+                "id": id,
+                "name": scope_name(&names, id),
+                "seconds": secs.round() as u64,
+            }))
+            .collect::<Vec<_>>(),
+        "days": per_day
+            .iter()
+            .map(|(day, secs)| json!({ "date": day, "seconds": secs.round() as u64 }))
+            .collect::<Vec<_>>(),
+    }))
+}
+
+fn usage_recap(stores: &Stores, args: &Value) -> Result<Value, String> {
+    let range = date_range(args)?;
+    let only = project_filter(stores, args)?;
+    // Asking about one project is asking for its own numbers, so the filter
+    // implies the breakdown; without either, the totals alone keep the reply small.
+    let by_project = only.is_some() || args.get("by_project").and_then(Value::as_bool).unwrap_or(false);
+    let stats: crate::schema::usage_stats::UsageStats =
+        crate::storage::read_json(&stores.state.join(crate::schema::usage_stats::STATS_FILE))
+            .unwrap_or_default();
+    let names = project_names(stores.projects);
+
+    let mut totals: HashMap<&str, u64> = HashMap::new();
+    let mut per_project: HashMap<&str, HashMap<&str, u64>> = HashMap::new();
+    let mut days = 0usize;
+    for (day, by_id) in &stats.days {
+        if !in_range(day, range) {
+            continue;
+        }
+        days += 1;
+        for (id, counters) in by_id {
+            if only.as_deref().is_some_and(|o| o != id) {
+                continue;
+            }
+            for (key, count) in counters {
+                *totals.entry(key.as_str()).or_insert(0) += count;
+                if by_project {
+                    *per_project
+                        .entry(id.as_str())
+                        .or_default()
+                        .entry(key.as_str())
+                        .or_insert(0) += count;
+                }
+            }
+        }
+    }
+
+    let counter_map = |counters: &HashMap<&str, u64>| -> Value {
+        counters.iter().map(|(k, v)| ((*k).to_string(), json!(v))).collect::<serde_json::Map<_, _>>().into()
+    };
+    let mut rows: Vec<(&str, Value)> = per_project
+        .iter()
+        .map(|(id, counters)| {
+            let total: u64 = counters.values().sum();
+            (
+                *id,
+                json!({ "id": id, "name": scope_name(&names, id), "counters": counter_map(counters), "total": total }),
+            )
+        })
+        .collect();
+    rows.sort_by(|a, b| {
+        let key = |v: &Value| v["total"].as_u64().unwrap_or(0);
+        key(&b.1).cmp(&key(&a.1)).then_with(|| a.0.cmp(b.0))
+    });
+    let mut out = json!({
+        "from": range.0,
+        "to": range.1,
+        "days_counted": days,
+        "totals": counter_map(&totals),
+    });
+    if by_project {
+        out["projects"] = rows.into_iter().map(|(_, row)| row).collect::<Vec<_>>().into();
+    }
+    Ok(out)
+}
+
+fn boxes_list(stores: &Stores, args: &Value) -> Result<Value, String> {
+    let only = project_filter(stores, args)?;
+    let boxes: crate::schema::boxes::BoxesList =
+        crate::storage::read_json(&stores.state.join("boxes.json")).unwrap_or_default();
+    let names = project_names(stores.projects);
+    let mut boxes: Vec<_> = boxes
+        .into_iter()
+        .filter(|b| only.as_deref().is_none_or(|p| b.member_ids.iter().any(|m| m == p)))
+        .collect();
+    boxes.sort_by(|a, b| a.position.cmp(&b.position).then_with(|| a.name.cmp(&b.name)));
+    let rows: Vec<Value> = boxes
+        .iter()
+        .map(|b| {
+            json!({
+                "id": b.id,
+                "name": b.name,
+                "folder": b.folder,
+                "members": b.member_ids
+                    .iter()
+                    .map(|id| json!({ "id": id, "name": scope_name(&names, id) }))
+                    .collect::<Vec<_>>(),
+                "relations": b.relations
+                    .iter()
+                    .map(|r| json!({
+                        "source": scope_name(&names, &r.source),
+                        "target": scope_name(&names, &r.target),
+                        "kind": r.kind,
+                    }))
+                    .collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+    Ok(json!({ "boxes": rows }))
+}
+
+/// What `git status --porcelain=v1 --branch` says about one working copy.
+#[derive(Debug, Default, PartialEq)]
+struct GitSnapshot {
+    /// `None` on a detached HEAD.
+    branch: Option<String>,
+    upstream: Option<String>,
+    ahead: u32,
+    behind: u32,
+    staged: usize,
+    unstaged: usize,
+    untracked: usize,
+}
+
+/// Parse the `## …` header line: the branch, its upstream, and how far apart
+/// they are. The shapes git emits are `## main`, `## main...origin/main`,
+/// `## main...origin/main [ahead 1, behind 2]`, `## main...origin/main [gone]`,
+/// `## HEAD (no branch)` and `## No commits yet on main`.
+fn parse_branch_header(line: &str) -> (Option<String>, Option<String>, u32, u32) {
+    let rest = line.trim_start_matches("## ");
+    let rest = rest.strip_prefix("No commits yet on ").unwrap_or(rest);
+    let (names, track) = match rest.split_once(" [") {
+        Some((names, track)) => (names, track.trim_end_matches(']')),
+        None => (rest, ""),
+    };
+    let (branch, upstream) = match names.split_once("...") {
+        Some((branch, upstream)) => (branch, Some(upstream.to_string())),
+        None => (names, None),
+    };
+    let count = |what: &str| {
+        track
+            .split(", ")
+            .find_map(|part| part.strip_prefix(what)?.trim().parse::<u32>().ok())
+            .unwrap_or(0)
+    };
+    let branch = (branch != "HEAD (no branch)").then(|| branch.to_string());
+    (branch, upstream, count("ahead "), count("behind "))
+}
+
+fn parse_porcelain(text: &str) -> GitSnapshot {
+    let mut snap = GitSnapshot::default();
+    for line in text.lines() {
+        if let Some(header) = line.strip_prefix("## ") {
+            let (branch, upstream, ahead, behind) = parse_branch_header(header);
+            (snap.branch, snap.upstream, snap.ahead, snap.behind) = (branch, upstream, ahead, behind);
+            continue;
+        }
+        let mut chars = line.chars();
+        let (Some(x), Some(y)) = (chars.next(), chars.next()) else { continue };
+        if x == '?' && y == '?' {
+            snap.untracked += 1;
+        } else {
+            if x != ' ' {
+                snap.staged += 1;
+            }
+            if y != ' ' {
+                snap.unstaged += 1;
+            }
+        }
+    }
+    snap
+}
+
+/// `git status` on one local directory. `Ok(None)` for "not a git repository",
+/// which is an answer about the folder rather than a failure of the sweep.
+///
+/// `GIT_OPTIONAL_LOCKS=0` for the same reason the file tree sets it: a status
+/// read that refreshes the index takes `index.lock`, and a background reader
+/// doing that is half of the root git-status loop.
+fn git_snapshot(dir: &Path) -> Result<Option<GitSnapshot>, String> {
+    let out = crate::paths::command_no_window("git")
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .arg("-C")
+        .arg(dir)
+        .args(["status", "--porcelain=v1", "--branch"])
+        .output()
+        .map_err(|e| format!("running git: {e}"))?;
+    if !out.status.success() {
+        return Ok(None);
+    }
+    Ok(Some(parse_porcelain(&String::from_utf8_lossy(&out.stdout))))
+}
+
+/// The **local** working copy to read for a project, and what it is: a local
+/// project's own folder, or a remote project's local mirror. `Err` carries the
+/// reason there is none, which the sweep reports rather than swallowing.
+fn local_checkout(entry: &crate::schema::projects::ProjectEntry) -> Result<(String, &'static str), String> {
+    let field = |key: &str| {
+        entry
+            .extra
+            .get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+    };
+    let (dir, source) = if entry.extra.get("remote").is_some_and(|r| !r.is_null()) {
+        // Never the host: see the note above this section.
+        let mirror = field("mirror")
+            .ok_or("remote project with no local mirror; its files live on the host")?;
+        (mirror, "mirror")
+    } else {
+        (field("directory").ok_or("no folder recorded")?, "project")
+    };
+    if !Path::new(dir).is_dir() {
+        return Err(format!("folder is missing: {dir}"));
+    }
+    Ok((dir.to_string(), source))
+}
+
+fn projects_git_status(stores: &Stores, args: &Value) -> Result<Value, String> {
+    if !crate::commands::git::git_available() {
+        return Err("git is not installed (or not on PATH), so no working copy can be read".into());
+    }
+    let only = project_filter(stores, args)?;
+    let dirty_only = args.get("dirty_only").and_then(Value::as_bool).unwrap_or(false);
+    let (mut rows, mut skipped) = (Vec::new(), Vec::new());
+    for entry in read_projects(stores.projects) {
+        if crate::paths::is_trash_project_id(&entry.id) || only.as_deref().is_some_and(|o| o != entry.id) {
+            continue;
+        }
+        let skip = |reason: String| json!({ "id": entry.id, "name": entry.name, "reason": reason });
+        let (dir, source) = match local_checkout(&entry) {
+            Ok(found) => found,
+            Err(reason) => {
+                skipped.push(skip(reason));
+                continue;
+            }
+        };
+        let snap = match git_snapshot(Path::new(&dir)) {
+            Ok(Some(snap)) => snap,
+            Ok(None) => {
+                skipped.push(skip("not a git repository".into()));
+                continue;
+            }
+            Err(error) => {
+                skipped.push(skip(error));
+                continue;
+            }
+        };
+        let clean = snap.staged == 0 && snap.unstaged == 0 && snap.untracked == 0;
+        if dirty_only && clean && snap.ahead == 0 && snap.behind == 0 {
+            continue;
+        }
+        rows.push(json!({
+            "id": entry.id,
+            "name": entry.name,
+            "source": source,
+            "directory": dir,
+            "branch": snap.branch,
+            "upstream": snap.upstream,
+            "ahead": snap.ahead,
+            "behind": snap.behind,
+            "staged": snap.staged,
+            "unstaged": snap.unstaged,
+            "untracked": snap.untracked,
+            "clean": clean,
+        }));
+    }
+    Ok(json!({ "projects": rows, "skipped": skipped }))
+}
+
+/// A lockstep HEAD as one line — "main @ a1b2c3d4" — rather than the stored
+/// record. An agent comparing two sides wants to read them, not destructure them.
+fn head_line(head: Option<&crate::services::git_peer::HeadRef>) -> Option<String> {
+    use crate::services::git_peer::HeadRef;
+    let short = |sha: &String| sha.chars().take(8).collect::<String>();
+    match head? {
+        HeadRef::Branch { name, sha } => Some(format!("{name} @ {}", short(sha))),
+        HeadRef::Detached { sha } => Some(format!("detached @ {}", short(sha))),
+        HeadRef::Unborn => Some("no commits yet".to_string()),
+    }
+}
+
+fn sync_status(stores: &Stores, args: &Value) -> Result<Value, String> {
+    let only = project_filter(stores, args)?;
+    let include_acked = args.get("include_acked").and_then(Value::as_bool).unwrap_or(false);
+    let (mut rows, mut local) = (Vec::new(), 0usize);
+    for entry in read_projects(stores.projects) {
+        if crate::paths::is_trash_project_id(&entry.id) || only.as_deref().is_some_and(|o| o != entry.id) {
+            continue;
+        }
+        let Some(remote) = entry.extra.get("remote").filter(|r| !r.is_null()) else {
+            local += 1;
+            continue;
+        };
+        let peer: crate::services::git_peer::GitPeerState = crate::storage::read_json(
+            &crate::services::git_peer::state_path_in(stores.state, &entry.id),
+        )
+        .unwrap_or_default();
+        let manifest: crate::services::remote_sync::Manifest = crate::storage::read_json(
+            &crate::services::remote_sync::manifest_path_in(stores.state, &entry.id),
+        )
+        .unwrap_or_default();
+        let losses: Vec<crate::services::local_loss::LocalLoss> = crate::storage::read_json(
+            &crate::services::local_loss::log_path_in(stores.state, &entry.id),
+        )
+        .unwrap_or_default();
+
+        let tracked = manifest.values().filter(|e| e.selected && !e.is_dir).count();
+        let folders = manifest.values().filter(|e| e.selected && e.is_dir).count();
+        let auto = manifest.values().filter(|e| e.auto_sync).count();
+        let excluded = manifest.values().filter(|e| e.excluded).count();
+        let warnings: Vec<Value> = losses
+            .iter()
+            .filter(|l| include_acked || !l.acked)
+            .map(|l| {
+                json!({
+                    "when": iso_utc(Some(l.ts)),
+                    "source": l.source,
+                    "kind": l.kind,
+                    "op": l.op,
+                    // The log already caps its path list; this caps what a sweep
+                    // over every project spends on one of them.
+                    "paths": l.paths.iter().take(5).collect::<Vec<_>>(),
+                    "total": l.total,
+                    "recovery": l.recovery,
+                    "acknowledged": l.acked,
+                })
+            })
+            .collect();
+        rows.push(json!({
+            "id": entry.id,
+            "name": entry.name,
+            "host": remote.get("host").and_then(Value::as_str),
+            "lockstep": {
+                "enabled": peer.enabled,
+                "status": peer.status,
+                "detail": peer.detail,
+                "local_head": head_line(peer.local_head.as_ref()),
+                "remote_head": head_line(peer.remote_head.as_ref()),
+                "last_pass": iso_utc(peer.last_sync_ts),
+                "blocked_by_pairing_conflict": peer.pairing_conflict.is_some(),
+            },
+            "byte_sync": {
+                "tracked_files": tracked,
+                "tracked_folders": folders,
+                "auto_paths": auto,
+                "excluded_paths": excluded,
+                "last_pull": iso_utc(manifest.values().filter_map(|e| e.last_pull_ts).max()),
+                "last_push": iso_utc(manifest.values().filter_map(|e| e.last_push_ts).max()),
+            },
+            "warnings": warnings,
+        }));
+    }
+    Ok(json!({
+        "as_of": "the last recorded pass; no host was contacted",
+        "remote_projects": rows,
+        "local_projects_skipped": local,
+    }))
+}
+
 /// Show one of the header overlays. Each has a settings gate the window's host
 /// applies on its own, so a call against a closed gate would report success and
 /// show nothing — the gate is read here to answer truthfully instead.
@@ -861,8 +1576,11 @@ fn call_store_tool(stores: &Stores, name: &str, args: &Value) -> Result<(Value, 
     let wrote = |r: Result<(Value, Change), String>| r.map(|(v, c)| (v, vec![c]));
     match name {
         "projects_list" => projects_list(stores).map(|v| (v, Vec::new())),
+        "projects_git_status" => projects_git_status(stores, args).map(|v| (v, Vec::new())),
+        "boxes_list" => boxes_list(stores, args).map(|v| (v, Vec::new())),
         "calendar_list" => calendar_list(stores, args).map(|v| (v, Vec::new())),
         "calendar_add_event" => wrote(calendar_add_event(stores, args)),
+        "calendar_update_event" => wrote(calendar_update_event(stores, args)),
         "calendar_delete_event" => wrote(calendar_delete_event(stores, args)),
         "todo_list" => todo_list(stores, args).map(|v| (v, Vec::new())),
         "todo_add" => wrote(todo_add(stores, args)),
@@ -871,6 +1589,9 @@ fn call_store_tool(stores: &Stores, name: &str, args: &Value) -> Result<(Value, 
         "todo_update" => wrote(todo_update(stores, args)),
         "todo_move" => todo_move(stores, args),
         "todo_delete" => wrote(todo_delete(stores, args)),
+        "time_summary" => time_summary(stores, args).map(|v| (v, Vec::new())),
+        "usage_recap" => usage_recap(stores, args).map(|v| (v, Vec::new())),
+        "sync_status" => sync_status(stores, args).map(|v| (v, Vec::new())),
         other => Err(format!("unknown tool '{other}'")),
     }
 }
@@ -895,7 +1616,7 @@ pub fn handle_message(stores: &Stores, message: &Value) -> (Option<Value>, Effec
                 "protocolVersion": PROTOCOL_VERSION,
                 "capabilities": { "tools": {} },
                 "serverInfo": { "name": SERVER_NAME, "version": env!("CARGO_PKG_VERSION") },
-                "instructions": "Eldrun's cross-project console: the user's projects, calendar and to-do board, and the window's mail, calendar and to-do overlays. Times are local wall-clock, never UTC.",
+                "instructions": "Eldrun's cross-project console: the user's projects (their boxes, git state, tracked time and activity counters, and how remote ones stand with their hosts), the calendar and the to-do board, and the window's mail, calendar and to-do overlays. Event and card times are local wall-clock, never UTC; the rollups time_summary and usage_recap are bucketed by UTC date, as they were recorded.",
             })),
             Effects::default(),
         ),
@@ -958,8 +1679,22 @@ mod tests {
         Runtime { port: 4321, token: "tok".into() }
     }
 
+    /// The global switch: absent (and a missing file) means on, and only a
+    /// stored `false` turns the tools off.
+    #[test]
+    fn the_switch_is_on_unless_stored_off() {
+        let fx = Fixture::new();
+        assert!(enabled_in(&fx.settings), "no settings.json is a fresh install");
+        fx.write_state("settings.json", json!({ "debug": true }));
+        assert!(enabled_in(&fx.settings));
+        fx.write_state("settings.json", json!({ "root_mcp": false }));
+        assert!(!enabled_in(&fx.settings));
+        fx.write_state("settings.json", json!({ "root_mcp": true }));
+        assert!(enabled_in(&fx.settings));
+    }
+
     struct Fixture {
-        _dir: tempfile::TempDir,
+        dir: tempfile::TempDir,
         calendar: std::path::PathBuf,
         projects: std::path::PathBuf,
         settings: std::path::PathBuf,
@@ -977,10 +1712,25 @@ mod tests {
             )
             .unwrap();
             let settings = dir.path().join("settings.json");
-            Fixture { _dir: dir, calendar, projects, settings }
+            Fixture { dir, calendar, projects, settings }
         }
         fn stores(&self) -> Stores<'_> {
-            Stores { calendar: &self.calendar, projects: &self.projects, settings: &self.settings }
+            Stores {
+                calendar: &self.calendar,
+                projects: &self.projects,
+                settings: &self.settings,
+                state: self.dir.path(),
+            }
+        }
+        /// Write one of the flat state files the read-only sweeps roll up.
+        fn write_state(&self, name: &str, body: Value) {
+            std::fs::write(self.dir.path().join(name), body.to_string()).unwrap();
+        }
+        /// Write one of a remote project's per-project state files.
+        fn write_remote_state(&self, project_id: &str, name: &str, body: Value) {
+            let dir = self.dir.path().join("remote-projects").join(project_id);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join(name), body.to_string()).unwrap();
         }
         fn call_fx(&self, name: &str, args: Value) -> (Value, Effects) {
             let msg = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call",
@@ -1079,18 +1829,48 @@ mod tests {
         assert_eq!(listed, tool_names());
     }
 
+    /// Codex prompts before any tool that does not say it is read-only, so the
+    /// classification is listed here in full rather than derived from the name: a
+    /// tool added without deciding which side it is on fails this test.
     #[test]
-    fn only_the_list_tools_are_annotated_read_only() {
+    fn every_tool_is_deliberately_classified() {
+        const READ_ONLY: &[&str] = &[
+            "projects_list",
+            "projects_git_status",
+            "boxes_list",
+            "calendar_list",
+            "todo_list",
+            "time_summary",
+            "usage_recap",
+            "sync_status",
+            "mail_open",
+            "calendar_open",
+            "todo_open",
+        ];
+        const DESTRUCTIVE: &[&str] = &[
+            "calendar_update_event",
+            "calendar_delete_event",
+            "todo_update",
+            "todo_delete",
+        ];
         let tools = tool_definitions();
         let tools = tools.as_array().unwrap();
         assert_eq!(tools.len(), tool_names().len());
         for tool in tools {
             let name = tool["name"].as_str().unwrap();
             let hints = &tool["annotations"];
-            assert_eq!(hints["readOnlyHint"], name.ends_with("_list") || name.ends_with("_open"), "{name}");
-            if name.ends_with("_delete") || name.ends_with("_delete_event") {
-                assert_eq!(hints["destructiveHint"], true, "{name}");
+            assert_eq!(hints["readOnlyHint"], READ_ONLY.contains(&name), "{name}");
+            if !READ_ONLY.contains(&name) {
+                assert_eq!(hints["destructiveHint"], DESTRUCTIVE.contains(&name), "{name}");
             }
+        }
+        // Every listed tool is dispatched: a schema with no arm would be a tool
+        // the agent can see and never call.
+        let f = Fixture::new();
+        for name in tool_names() {
+            let (result, _) = f.call_fx(name, json!({}));
+            let error = result["content"][0]["text"].as_str().unwrap_or_default();
+            assert!(!error.starts_with("unknown tool"), "{name}");
         }
     }
 
@@ -1331,5 +2111,377 @@ mod tests {
         assert_eq!(projects[0]["directory"], "/w/alpha");
         assert_eq!(projects[0]["remote"], false);
         assert_eq!(projects[1]["remote"], true);
+    }
+
+    // ── calendar_update_event ───────────────────────────────────────────────
+
+    /// Add an event and hand back its id.
+    fn add_event(f: &Fixture, args: Value) -> String {
+        let (r, _) = f.call("calendar_add_event", args);
+        assert_eq!(r["isError"], false, "{r}");
+        text(&r)["id"].as_str().unwrap().to_string()
+    }
+
+    /// The point of the tool: "move it to 15:00" must not also resize it.
+    #[test]
+    fn moving_an_event_keeps_its_length() {
+        let f = Fixture::new();
+        let id = add_event(&f, json!({ "title": "Review", "start": "2026-09-18T09:00", "duration_minutes": 180 }));
+        let (r, changes) = f.call("calendar_update_event", json!({ "id": id, "start": "2026-09-18T15:00" }));
+        let row = text(&r);
+        assert_eq!(row["start"], "2026-09-18T15:00");
+        assert_eq!(row["end"], "2026-09-18T18:00", "three hours stay three hours");
+        assert_eq!(row["title"], "Review");
+        let change = changes.into_iter().next().unwrap();
+        assert_eq!((change.kind, change.op, change.local), ("event", "upsert", false));
+        assert_eq!(change.row["id"], id);
+
+        // An explicit length still wins, in either spelling.
+        let (r, _) = f.call("calendar_update_event", json!({ "id": id, "duration_minutes": 30 }));
+        assert_eq!(text(&r)["end"], "2026-09-18T15:30");
+        let (r, _) = f.call("calendar_update_event", json!({ "id": id, "end": "2026-09-18T16:00" }));
+        assert_eq!(text(&r)["end"], "2026-09-18T16:00");
+    }
+
+    #[test]
+    fn an_edit_touches_only_the_fields_it_is_given() {
+        let f = Fixture::new();
+        let id = add_event(&f, json!({
+            "title": "Standup", "start": "2026-09-18T09:00", "location": "Room 2", "notes": "bring the plan"
+        }));
+        let (r, _) = f.call("calendar_update_event", json!({ "id": id, "title": "Standup (short)" }));
+        let row = text(&r);
+        assert_eq!(row["title"], "Standup (short)");
+        assert_eq!(row["start"], "2026-09-18T09:00");
+        assert_eq!(row["end"], "2026-09-18T10:00", "an untouched span is left byte for byte");
+        assert_eq!(row["location"], "Room 2");
+        // Present-but-empty clears, as in todo_update.
+        let (r, _) = f.call("calendar_update_event", json!({ "id": id, "notes": "", "location": "Room 3" }));
+        let row = text(&r);
+        assert!(row["notes"].is_null(), "a cleared note is not serialized at all");
+        assert_eq!(row["location"], "Room 3");
+    }
+
+    #[test]
+    fn an_edit_can_turn_an_event_all_day_and_back() {
+        let f = Fixture::new();
+        let id = add_event(&f, json!({ "title": "Trip", "start": "2026-09-18", "end": "2026-09-21", "all_day": true }));
+        // A moved all-day event keeps its three-day span.
+        let (r, _) = f.call("calendar_update_event", json!({ "id": id, "start": "2026-09-25" }));
+        let row = text(&r);
+        assert_eq!((row["start"].as_str(), row["end"].as_str()), (Some("2026-09-25"), Some("2026-09-28")));
+        assert_eq!(row["all_day"], true);
+        // Turning it into a timed event needs an hour to put it at.
+        let (r, changes) = f.call("calendar_update_event", json!({ "id": id, "all_day": false }));
+        assert_eq!(r["isError"], true);
+        assert!(changes.is_empty());
+        let (r, _) = f.call("calendar_update_event", json!({ "id": id, "all_day": false, "start": "2026-09-25T10:00" }));
+        let row = text(&r);
+        assert_eq!(row["all_day"], false);
+        assert_eq!((row["start"].as_str(), row["end"].as_str()), (Some("2026-09-25T10:00"), Some("2026-09-25T11:00")));
+        // And back: an event becoming all-day covers the day it starts on.
+        let (r, _) = f.call("calendar_update_event", json!({ "id": id, "all_day": true }));
+        let row = text(&r);
+        assert_eq!((row["start"].as_str(), row["end"].as_str()), (Some("2026-09-25"), Some("2026-09-26")));
+    }
+
+    #[test]
+    fn an_edit_is_refused_where_it_could_not_be_pushed() {
+        let f = Fixture::new();
+        let id = add_event(&f, json!({ "title": "Talk", "start": "2026-09-18T09:00" }));
+        for bad in [
+            json!({ "id": "nope", "title": "x" }),
+            json!({ "id": id, "title": "" }),
+            json!({ "id": id, "start": "Friday" }),
+            json!({ "id": id, "end": "2026-09-18T08:00" }),
+            json!({ "id": id, "duration_minutes": 0 }),
+            json!({ "id": id, "calendar": "nowhere" }),
+            json!({}),
+        ] {
+            let (r, changes) = f.call("calendar_update_event", bad.clone());
+            assert_eq!(r["isError"], true, "{bad}");
+            assert!(changes.is_empty(), "{bad}");
+        }
+
+        // A calendar Eldrun may show but not write back to.
+        let mut data = crate::commands::calendar::read_data(&f.calendar).unwrap();
+        data.calendars.push(crate::schema::calendar::Calendar {
+            id: "sub".into(),
+            name: "Subscribed".into(),
+            readonly: true,
+            ..crate::schema::calendar::Calendar::default_calendar()
+        });
+        if let Some(event) = data.events.iter_mut().find(|e| e.id == id) {
+            event.calendar_id = "sub".into();
+        }
+        std::fs::write(&f.calendar, serde_json::to_string(&data).unwrap()).unwrap();
+        let (r, changes) = f.call("calendar_update_event", json!({ "id": id, "title": "Moved" }));
+        assert_eq!(r["isError"], true);
+        assert!(r["content"][0]["text"].as_str().unwrap().contains("read-only"));
+        assert!(changes.is_empty());
+    }
+
+    // ── The read-only sweeps ────────────────────────────────────────────────
+
+    #[test]
+    fn time_summary_ranges_by_day_and_keeps_the_app_out_of_the_projects() {
+        let f = Fixture::new();
+        f.write_state(
+            "time_summary.json",
+            json!({ "version": 1, "migrated": true, "days": {
+                "2026-09-15": { "p1": 3600.0, "__eldrun__": 60.0 },
+                "2026-09-16": { "p1": 1800.0, "p2": 7200.0 },
+                "2026-09-17": { "p1": 900.0 },
+            }}),
+        );
+        let (r, _) = f.call("time_summary", json!({ "from": "2026-09-15", "to": "2026-09-17" }));
+        let out = text(&r);
+        assert_eq!(out["total_seconds"], 3600 + 1800 + 7200);
+        assert_eq!(out["app_seconds"], 60, "Eldrun's own window time is never a project's");
+        // Sorted by time spent, and named.
+        assert_eq!(out["projects"][0]["id"], "p2");
+        assert_eq!(out["projects"][0]["name"], "Beta");
+        assert_eq!(out["projects"][1]["seconds"], 5400);
+        assert_eq!(out["days"].as_array().unwrap().len(), 2, "`to` is exclusive");
+        assert_eq!(out["days"][0]["date"], "2026-09-15");
+
+        let (r, _) = f.call("time_summary", json!({ "project": "Alpha" }));
+        let out = text(&r);
+        assert_eq!(out["total_seconds"], 6300);
+        assert_eq!(out["projects"].as_array().unwrap().len(), 1);
+        assert_eq!(f.call("time_summary", json!({ "from": "nope" })).0["isError"], true);
+    }
+
+    #[test]
+    fn usage_recap_totals_and_breaks_down_only_when_asked() {
+        let f = Fixture::new();
+        f.write_state(
+            "usage_stats.json",
+            json!({ "version": 1, "hours": {}, "days": {
+                "2026-09-16": { "p1": { "agent.prompt.claude": 3, "shell.command": 10 }, "p2": { "agent.prompt.claude": 4 } },
+                "2026-09-17": { "p1": { "agent.prompt.claude": 1 } },
+            }}),
+        );
+        let (r, _) = f.call("usage_recap", json!({}));
+        let out = text(&r);
+        assert_eq!(out["totals"]["agent.prompt.claude"], 8);
+        assert_eq!(out["totals"]["shell.command"], 10);
+        assert_eq!(out["days_counted"], 2);
+        assert!(out["projects"].is_null(), "the breakdown is opt-in");
+
+        let (r, _) = f.call("usage_recap", json!({ "by_project": true, "to": "2026-09-17" }));
+        let out = text(&r);
+        assert_eq!(out["totals"]["agent.prompt.claude"], 7);
+        assert_eq!(out["projects"][0]["id"], "p1", "the busiest project leads");
+        assert_eq!(out["projects"][0]["counters"]["shell.command"], 10);
+        assert_eq!(out["projects"][1]["name"], "Beta");
+
+        // Naming a project is asking for its own numbers.
+        let (r, _) = f.call("usage_recap", json!({ "project": "p2" }));
+        let out = text(&r);
+        assert_eq!(out["totals"]["agent.prompt.claude"], 4);
+        assert_eq!(out["projects"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn boxes_list_names_its_members() {
+        let f = Fixture::new();
+        f.write_state(
+            "boxes.json",
+            json!([
+                { "id": "b2", "name": "Later", "member_ids": ["p2"], "position": 20 },
+                { "id": "b1", "name": "Thesis", "member_ids": ["p1", "p2", "gone"], "position": 10,
+                  "folder": "/home/u/eldrun/boxes/thesis",
+                  "relations": [{ "source": "p1", "target": "p2", "kind": "python-lib" }] },
+            ]),
+        );
+        let (r, _) = f.call("boxes_list", json!({}));
+        let boxes = text(&r)["boxes"].clone();
+        assert_eq!(boxes[0]["name"], "Thesis", "ordered by position, not by file order");
+        assert_eq!(boxes[0]["members"][0]["name"], "Alpha");
+        // A member whose project is gone keeps its id rather than vanishing.
+        assert_eq!(boxes[0]["members"][2]["name"], "gone");
+        assert_eq!(boxes[0]["relations"][0]["source"], "Alpha");
+        assert_eq!(boxes[0]["folder"], "/home/u/eldrun/boxes/thesis");
+        assert!(boxes[1]["folder"].is_null());
+
+        let (r, _) = f.call("boxes_list", json!({ "project": "Alpha" }));
+        let boxes = text(&r)["boxes"].clone();
+        assert_eq!(boxes.as_array().unwrap().len(), 1);
+        assert_eq!(boxes[0]["id"], "b1");
+        assert_eq!(f.call("boxes_list", json!({ "project": "nope" })).0["isError"], true);
+    }
+
+    #[test]
+    fn a_branch_header_is_read_in_every_shape_git_writes_it() {
+        let cases = [
+            ("## main", (Some("main"), None, 0, 0)),
+            ("## main...origin/main", (Some("main"), Some("origin/main"), 0, 0)),
+            ("## main...origin/main [ahead 2]", (Some("main"), Some("origin/main"), 2, 0)),
+            ("## main...origin/main [behind 3]", (Some("main"), Some("origin/main"), 0, 3)),
+            ("## dev...origin/dev [ahead 1, behind 2]", (Some("dev"), Some("origin/dev"), 1, 2)),
+            ("## main...origin/main [gone]", (Some("main"), Some("origin/main"), 0, 0)),
+            ("## No commits yet on main", (Some("main"), None, 0, 0)),
+            ("## HEAD (no branch)", (None, None, 0, 0)),
+        ];
+        for (line, want) in cases {
+            let (branch, upstream, ahead, behind) = parse_branch_header(line.trim_start_matches("## "));
+            let got = (branch.as_deref(), upstream.as_deref(), ahead, behind);
+            assert_eq!(got, want, "{line}");
+        }
+    }
+
+    #[test]
+    fn porcelain_counts_split_staged_unstaged_and_untracked() {
+        let snap = parse_porcelain(
+            "## dev...origin/dev [ahead 1]\nM  staged.rs\n M unstaged.rs\nMM both.rs\n?? new.rs\nR  old.rs -> new_name.rs\n",
+        );
+        assert_eq!(snap.branch.as_deref(), Some("dev"));
+        assert_eq!(snap.ahead, 1);
+        assert_eq!((snap.staged, snap.unstaged, snap.untracked), (3, 2, 1));
+    }
+
+    /// A real repo, because the point of the tool is the answer about a folder.
+    #[test]
+    fn the_git_sweep_reads_local_copies_and_says_why_it_skipped_the_rest() {
+        if !crate::commands::git::git_available() {
+            return; // Reported honestly by the tool itself; nothing to test here.
+        }
+        let f = Fixture::new();
+        let repo = f.dir.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let git = |args: &[&str]| {
+            crate::paths::command_no_window("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(args)
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+        };
+        if !git(&["init", "-q", "-b", "main"]) {
+            return; // A git too old for `init -b`; the parser tests still hold.
+        }
+        git(&["config", "user.email", "t@example.invalid"]);
+        git(&["config", "user.name", "T"]);
+        std::fs::write(repo.join("a.txt"), "one").unwrap();
+        git(&["add", "a.txt"]);
+        git(&["commit", "-qm", "first"]);
+        std::fs::write(repo.join("a.txt"), "two").unwrap();
+        std::fs::write(repo.join("b.txt"), "new").unwrap();
+
+        let plain = f.dir.path().join("plain");
+        std::fs::create_dir_all(&plain).unwrap();
+        std::fs::write(
+            &f.projects,
+            json!([
+                { "id": "p1", "name": "Alpha", "status": "active", "position": 0, "local_file": "", "directory": repo.to_str().unwrap() },
+                { "id": "p2", "name": "Beta", "status": "active", "position": 1, "local_file": "", "remote": { "host": "h" } },
+                { "id": "p3", "name": "Gamma", "status": "active", "position": 2, "local_file": "", "directory": plain.to_str().unwrap() },
+                { "id": "p4", "name": "Delta", "status": "active", "position": 3, "local_file": "", "directory": "/nope/gone" },
+            ])
+            .to_string(),
+        )
+        .unwrap();
+
+        let (r, changes) = f.call("projects_git_status", json!({}));
+        assert_eq!(r["isError"], false, "{r}");
+        assert!(changes.is_empty(), "a sweep writes nothing");
+        let out = text(&r);
+        let row = &out["projects"][0];
+        assert_eq!(row["id"], "p1");
+        assert_eq!(row["source"], "project");
+        assert_eq!(row["branch"], "main");
+        assert!(row["upstream"].is_null());
+        assert_eq!((row["unstaged"].as_u64(), row["untracked"].as_u64()), (Some(1), Some(1)));
+        assert_eq!(row["clean"], false);
+        assert_eq!(out["projects"].as_array().unwrap().len(), 1);
+
+        let reasons: HashMap<&str, &str> = out["skipped"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| (s["id"].as_str().unwrap(), s["reason"].as_str().unwrap()))
+            .collect();
+        assert!(reasons["p2"].contains("no local mirror"), "never over SSH: {:?}", reasons["p2"]);
+        assert_eq!(reasons["p3"], "not a git repository");
+        assert!(reasons["p4"].starts_with("folder is missing"));
+
+        // `dirty_only` keeps a sweep over many projects short.
+        git(&["checkout", "-q", "--", "a.txt"]);
+        std::fs::remove_file(repo.join("b.txt")).unwrap();
+        let (r, _) = f.call("projects_git_status", json!({ "dirty_only": true }));
+        assert!(text(&r)["projects"].as_array().unwrap().is_empty());
+        let (r, _) = f.call("projects_git_status", json!({ "project": "Alpha" }));
+        assert_eq!(text(&r)["projects"][0]["clean"], true);
+    }
+
+    #[test]
+    fn sync_status_reports_the_last_pass_and_the_unseen_warnings() {
+        let f = Fixture::new();
+        f.write_remote_state(
+            "p2",
+            "git_peer.json",
+            json!({
+                "enabled": true,
+                "status": "desynchronized",
+                "detail": "both sides moved",
+                "localHead": { "kind": "branch", "name": "main", "sha": "abcdef1234567890" },
+                "remoteHead": { "kind": "detached", "sha": "0123456789abcdef" },
+                "lastSyncTs": 1_789_603_200,
+            }),
+        );
+        f.write_remote_state(
+            "p2",
+            "sync.json",
+            json!({
+                "data/big.csv": { "selected": true, "is_dir": false, "last_pull_ts": 1_789_500_000, "auto_sync": true },
+                "data": { "selected": true, "is_dir": true },
+                "scratch": { "selected": false, "is_dir": true, "excluded": true },
+            }),
+        );
+        f.write_remote_state(
+            "p2",
+            "local_loss.json",
+            json!([
+                { "ts": 1_789_600_000, "source": "git", "kind": "deleted", "op": "fast-forward from the host",
+                  "paths": ["a.rs", "b.rs"], "total": 2, "recovery": "git checkout HEAD@{1}", "acked": false },
+                { "ts": 1_789_000_000, "source": "sync", "kind": "overwritten", "op": "manual pull",
+                  "paths": ["notes.md"], "total": 1, "recovery": null, "acked": true },
+            ]),
+        );
+
+        let (r, changes) = f.call("sync_status", json!({}));
+        assert!(changes.is_empty());
+        let out = text(&r);
+        assert_eq!(out["local_projects_skipped"], 1, "a local project has no host to be in step with");
+        let row = &out["remote_projects"][0];
+        assert_eq!((row["id"].as_str(), row["host"].as_str()), (Some("p2"), Some("h")));
+        assert_eq!(row["lockstep"]["status"], "desynchronized");
+        assert_eq!(row["lockstep"]["local_head"], "main @ abcdef12");
+        assert_eq!(row["lockstep"]["remote_head"], "detached @ 01234567");
+        assert_eq!(row["lockstep"]["last_pass"], "2026-09-17T00:00:00Z");
+        assert_eq!(row["lockstep"]["blocked_by_pairing_conflict"], false);
+        assert_eq!(row["byte_sync"]["tracked_files"], 1);
+        assert_eq!(row["byte_sync"]["tracked_folders"], 1);
+        assert_eq!(row["byte_sync"]["auto_paths"], 1);
+        assert_eq!(row["byte_sync"]["excluded_paths"], 1);
+        assert!(row["byte_sync"]["last_push"].is_null(), "never pushed is not 1970");
+        let warnings = row["warnings"].as_array().unwrap();
+        assert_eq!(warnings.len(), 1, "an acknowledged warning is not raised again");
+        assert_eq!(warnings[0]["source"], "git");
+        assert_eq!(warnings[0]["kind"], "deleted");
+        assert_eq!(warnings[0]["total"], 2);
+
+        let (r, _) = f.call("sync_status", json!({ "include_acked": true }));
+        assert_eq!(text(&r)["remote_projects"][0]["warnings"].as_array().unwrap().len(), 2);
+
+        // A remote project with no recorded state is still listed, at its defaults.
+        let f = Fixture::new();
+        let (r, _) = f.call("sync_status", json!({ "project": "Beta" }));
+        let row = text(&r)["remote_projects"][0].clone();
+        assert_eq!(row["lockstep"]["enabled"], false);
+        assert_eq!(row["byte_sync"]["tracked_files"], 0);
+        assert!(row["warnings"].as_array().unwrap().is_empty());
     }
 }

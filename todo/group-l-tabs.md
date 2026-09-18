@@ -371,3 +371,79 @@ correctness/UX work atop the same layout model #42 detaches.*
       - Relaunch: the console opens where it was left, at the size it was left.
       - [ ] ✅ Works
       - [ ] ❌ Doesn't work
+
+2315. **Root console: an event is edited in place, and five sweeps answer for
+    every project at once.** ✅ Implemented · 🧪 Awaiting live QA (2026-09-17).
+    Six tools on top of the console's original set. **`calendar_update_event`**
+    was the missing sibling of `todo_update`: rescheduling an event used to mean
+    delete + add, which loses the row's identity, so a CalDAV server saw a
+    cancellation and a new invitation. Only the fields given change, an empty
+    string clears `location`/`notes`, and moving `start` alone **keeps the
+    event's length** (an agent that omits `end` is moving it, not resizing it);
+    `all_day` can be turned on and off, and an event in a read-only calendar is
+    refused before anything is written. The five read-only sweeps answer what no
+    project agent can: **`projects_git_status`** (branch, ahead/behind,
+    staged/unstaged/untracked per project, `dirty_only` to keep it short),
+    **`sync_status`** (lockstep state and why, what byte-sync tracks, and the
+    unacknowledged local-loss warnings), **`time_summary`** (tracked seconds per
+    project, Eldrun's own window time separate), **`usage_recap`** (the daily
+    recap's counters over a range) and **`boxes_list`** (each box's members and
+    relations). None of them opens a connection: the git sweep reads the local
+    working copy only — a remote project through its mirror, skipped with a
+    reason when it has none — and `sync_status` reports the last recorded pass,
+    because a synchronous SSH round trip per project inside a tool call is the
+    window freeze the remote gates exist to avoid. Both rollups are bucketed by
+    UTC date, as they were written, and say so. Design:
+    `docs/context/root_console.md`.
+    *Files: `src-tauri/src/services/root_mcp.rs`,
+    `src-tauri/src/commands/root_mcp.rs`, `commands/calendar.rs`,
+    `schema/calendar.rs` (`days_between`/`minutes_between`),
+    `services/{git_peer,remote_sync,local_loss}.rs` (`*_in` path helpers).*
+    - [x] 🤖 Automated test — `services::root_mcp` (the move-keeps-its-length
+      rule, field-by-field edits, all-day both ways, every refusal incl. the
+      read-only calendar; the porcelain/branch-header parsers; the git sweep
+      against a real repo, a non-repo, a missing folder and a mirror-less remote;
+      the rollups' ranges, filters and app-time split; `sync_status` against
+      written state), `schema::calendar` (the two date helpers).
+    - [ ] 🖐️ Manual test (needs a restart: backend change)
+      - In a root Claude/Codex tab: "move tomorrow's 14:00 Review to 16:00" —
+        the header's 🗓 shows it at 16:00, still one hour long (or whatever it
+        was), and the same event, not a new one. With CalDAV write on, the
+        server gets an update rather than a cancel + invite.
+      - "Rename it", "clear its notes", "make it an all-day event", "put it back
+        at 10:00 for 90 minutes" — each lands at once, with no reload.
+      - "Which of my projects have uncommitted work?" — the answer matches the
+        switcher's dots; a remote project without a mirror is named as skipped
+        rather than silently missing.
+      - "How long was I on <project> last week?" and "what did I do yesterday?"
+        — the numbers match the daily recap's.
+      - "Is anything out of step with its host?" — matches the pill lamps and
+        the local-loss dialog, with no SSH connection made (a disconnected
+        remote project answers instantly).
+      - "What's in my boxes?" — members and their names match the switcher.
+      - The ⚿ badge's tooltip lists twenty tools.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work
+
+2316. **Root console: one global switch for Eldrun's MCP tools.** ✅
+    Implemented · 🧪 Untested (2026-09-17). `settings.json`'s `root_mcp`
+    (absent means on, so nothing migrates) turns the root console's tools off
+    and on. It is read per spawn and per request, so neither direction needs a
+    restart, and off closes both halves: `apply_to_spawn` hands a new root agent
+    no endpoint, and `POST /mcp` answers `503` to the agents that already hold
+    the token — after the bearer check, so an unauthenticated caller learns
+    nothing from it. Two doors onto the one key: Settings → "Eldrun's tools
+    (MCP) for root-console agents", and the console's ⚿ badge, now a button
+    that is struck through while off.
+    *Files: `src-tauri/src/schema/settings.rs`, `services/root_mcp.rs`
+    (`enabled_in`), `commands/root_mcp.rs`,
+    `src/components/layout/{RootOverlay,SettingsPanel}.tsx`.*
+    - [x] 🤖 Automated test — `services::root_mcp::the_switch_is_on_unless_stored_off`.
+    - [ ] 🖐️ Manual test (needs a restart once: backend change)
+      - Click the ⚿ badge: it strikes through, and the Settings toggle follows.
+        A root Claude tab opened now has no `eldrun` server under `/mcp`.
+      - In a root agent opened *before* the click, ask for the calendar: the
+        tool call fails with "switched off in Eldrun's Settings".
+      - Click again: that same agent's next tool call works, no restart.
+      - [ ] ✅ Works
+      - [ ] ❌ Doesn't work

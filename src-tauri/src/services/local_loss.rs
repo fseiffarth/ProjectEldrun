@@ -96,7 +96,14 @@ fn now_secs() -> u64 {
 /// `git_peer.json` in the project's local state dir — the log is about the *local*
 /// mirror, so it belongs on the machine that lost the file, not on the host.
 pub fn log_path(project_id: &str) -> PathBuf {
-    crate::storage::state_dir()
+    log_path_in(&crate::storage::state_dir(), project_id)
+}
+
+/// [`log_path`] under an explicit state dir, so a reader that already has one
+/// (`services::root_mcp`, whose tests drive a tempdir) does not restate where
+/// the log lives.
+pub fn log_path_in(state_dir: &std::path::Path, project_id: &str) -> PathBuf {
+    state_dir
         .join("remote-projects")
         .join(project_id)
         .join("local_loss.json")

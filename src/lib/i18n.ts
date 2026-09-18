@@ -3369,6 +3369,8 @@ export const en = {
   "filesAlerts.sourceMail": "Urgent mail",
   "filesAlerts.sourceEvents": "Appointments",
   "filesAlerts.sourceTasks": "To-dos",
+  "settings.rootMcp": "Eldrun's tools (MCP) for root-console agents",
+  "settings.rootMcpHelp": "Agents opened in the root console (Ctrl+Shift+R) get Eldrun's own tools: your projects, calendar and to-do board. Off hands new agents nothing and refuses the ones already running, without a restart. No project's agents ever get them.",
   "settings.todoBoard": "To-do board button in the header",
   "settings.todoBoardHelp": "Adds a ☑ button that opens the global to-do board, badged with what is due today. The cards are the same to-dos the calendar keeps, so nothing is duplicated.",
   "alarmPopup.snooze5": "5 min",
@@ -6607,6 +6609,10 @@ export const en = {
     "Agents opened here get Eldrun's own tools (MCP): your projects, calendar and to-do board. No project's agents do.",
   "rootConsole.rightsOff":
     "Eldrun's tools are not running — agents opened here are ordinary agents until Eldrun is restarted.",
+  "rootConsole.rightsDisabled":
+    "Eldrun's tools (MCP) are switched off — agents here are ordinary agents, and the ones already running are refused.",
+  "rootConsole.rightsToggleOn": "Click to switch the tools on.",
+  "rootConsole.rightsToggleOff": "Click to switch the tools off.",
   "rootConsole.noPhone": "The root console is never offered to Eldrun Mobile or to Claude's remote control.",
   "rootConsole.moveHint": "Drag the bar to move the console · double-click to fill the window",
   "rootConsole.resizeHint": "Drag to resize the console",
